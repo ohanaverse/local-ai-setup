@@ -25,7 +25,8 @@ import (
 
 // Test seams of the slot-profile launch. Production writes config.yaml,
 // restarts and probes the LiteLLM proxy and looks the agent binary up;
-// TestMain makes each fail closed.
+// TestMain makes each fail closed. The flow's wait for a restart in flight is
+// the start flow's seam, waitPendingRoutes.
 var (
 	ensureSlotRoutes = lifecycle.EnsureModelRoutes
 	restartProxyNow  = lifecycle.RestartProxy
@@ -111,7 +112,7 @@ func slotRouteError(p *catalog.ProfileRow, err error) error {
 //  3. Write the cloud slots' missing routes, restart deferred.
 //  5. Write the local model's route when it is already running.
 //  6. Restart the proxy once if a write changed config.yaml.
-//  7. Probe the proxy.
+//  7. Wait for any proxy restart in flight, then probe the proxy.
 //
 // A start row stops after step 3: the start that follows writes the local
 // route and restarts the proxy itself, and is told a restart is owed.
@@ -158,6 +159,11 @@ func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []strin
 			return res
 		}
 	}
+	// A restart started earlier in this session (a start flow backed out
+	// of, a profile dropped on the replace dialog) can still be in flight.
+	// ProbeProxy does not wait for one: it would answer from the proxy about
+	// to be replaced, before that restart's outcome is remembered.
+	d.wait()
 	if err := d.probe(ctx, cfg); err != nil {
 		res.err = err
 	}

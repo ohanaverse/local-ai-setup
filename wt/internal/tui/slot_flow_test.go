@@ -95,9 +95,9 @@ func TestWithSlotProfilesCarriesChecksAndApplier(t *testing.T) {
 	}
 }
 
-// slotStub scripts the five slot-flow seams and records, in order, what a
-// profile launch asked of them: "ensure:<id>,<id>:owed=<owedIn>", "restart",
-// "probe", "settle", "build". A stage runs in a command, which one test runs
+// slotStub scripts the slot-flow seams and records, in order, what a profile
+// launch asked of them: "ensure:<id>,<id>:owed=<owedIn>", "restart", "wait"
+// (for a proxy restart in flight), "probe", "settle", "build". A stage runs in a command, which one test runs
 // on its own goroutine, so every access takes the lock.
 type slotStub struct {
 	mu     sync.Mutex
@@ -131,17 +131,20 @@ func (s *slotStub) got() string {
 	return strings.Join(s.events, ",")
 }
 
-// stubSlotSeams swaps ensureSlotRoutes, restartProxyNow, probeProxyNow,
-// settleRoutesNow and buildSlotCmd for recorders scripted by the returned
+// stubSlotSeams swaps ensureSlotRoutes, restartProxyNow, waitPendingRoutes,
+// probeProxyNow, settleRoutesNow and buildSlotCmd for recorders scripted by the returned
 // slotStub, and restores them on cleanup. Nothing real is touched: no
 // config.yaml, no proxy, no agent binary.
 func stubSlotSeams(t *testing.T) *slotStub {
 	t.Helper()
 	s := &slotStub{}
 	oldEnsure, oldRestart, oldProbe, oldSettle, oldBuild := ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow, buildSlotCmd
+	oldWait := waitPendingRoutes
 	t.Cleanup(func() {
 		ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow, buildSlotCmd = oldEnsure, oldRestart, oldProbe, oldSettle, oldBuild
+		waitPendingRoutes = oldWait
 	})
+	waitPendingRoutes = func() { s.add("wait") }
 	ensureSlotRoutes = func(_ context.Context, out io.Writer, _ *config.Config, models []config.Model, owedIn bool) (bool, error) {
 		ids := make([]string, len(models))
 		for i, m := range models {
@@ -293,7 +296,7 @@ func TestEnterOnProfileRowRunsTheStepsThenLaunches(t *testing.T) {
 	}
 
 	launching, launch := updateMsg(preparing, slotStageFrom(t, cmd)())
-	if got, want := stub.got(), "ensure:openrouter/a,openrouter/b:owed=false,restart,probe,build"; got != want {
+	if got, want := stub.got(), "ensure:openrouter/a,openrouter/b:owed=false,restart,wait,probe,build"; got != want {
 		t.Fatalf("events = %q, want %q", got, want)
 	}
 	if launching.slot != nil || launching.phase != phaseModel || launch == nil {
@@ -335,8 +338,8 @@ func TestProfileLaunchWithEveryRouteInPlaceRestartsNothing(t *testing.T) {
 	preparing, cmd := enterProfileRow(t, m, "profile/cloud")
 	updateMsg(preparing, slotStageFrom(t, cmd)())
 
-	if got, want := stub.got(), "ensure:openrouter/a,openrouter/b:owed=false,probe,build"; got != want {
-		t.Fatalf("events = %q, want %q (no restart)", got, want)
+	if got, want := stub.got(), "ensure:openrouter/a,openrouter/b:owed=false,wait,probe,build"; got != want {
+		t.Fatalf("events = %q, want %q (no restart, and the probe only after a restart in flight was waited for)", got, want)
 	}
 }
 
@@ -395,7 +398,7 @@ func TestSlotStageFailuresReturnToThePicker(t *testing.T) {
 				s.ensureErr = &lifecycle.RouteEnsureError{ModelID: "openrouter/b", Err: errors.New("LiteLLM config not found")}
 			},
 			status: "slot sonnet: LiteLLM route for openrouter/b not written: LiteLLM config not found",
-			events: ensured,
+			events: ensured + ",wait",
 		},
 		{
 			name: "a proxy restart that fails",
@@ -411,13 +414,13 @@ func TestSlotStageFailuresReturnToThePicker(t *testing.T) {
 				s.probeErr = errors.New("the LiteLLM proxy does not answer at http://localhost:4000: connection refused")
 			},
 			status: "the LiteLLM proxy does not answer at http://localhost:4000: connection refused",
-			events: ensured + ",probe",
+			events: ensured + ",wait,probe",
 		},
 		{
 			name:    "a command that cannot be built",
 			arrange: func(_ *model, s *slotStub) { s.buildErr = errors.New("agent claude not installed") },
 			status:  "launch failed: agent claude not installed",
-			events:  ensured + ",probe,build",
+			events:  ensured + ",wait,probe,build",
 		},
 	}
 	for _, c := range cases {
@@ -581,7 +584,7 @@ func TestCtrlCDuringSlotStageNeverLaunches(t *testing.T) {
 	if got, want := out.String(), routeWaitingLine+updated; got != want {
 		t.Fatalf("printed = %q, want %q", got, want)
 	}
-	if got, want := stub.got(), "ensure:openrouter/a,openrouter/b:owed=false,restart,probe"; got != want {
+	if got, want := stub.got(), "ensure:openrouter/a,openrouter/b:owed=false,restart,wait,probe"; got != want {
 		t.Fatalf("events = %q, want %q: the stage runs once and finishes its restart", got, want)
 	}
 
@@ -765,7 +768,7 @@ func TestProfileStartRefusedKeepsTheOwedRestart(t *testing.T) {
 			if next.phase != phaseModel || next.slot != nil {
 				t.Fatalf("phase = %v slot = %v, want the picker with the flow ended", next.phase, next.slot)
 			}
-			if got := stub.got(); got != "ensure:openrouter/a:owed=false,settle" {
+			if got := stub.got(); got != "ensure:openrouter/a:owed=false,wait,settle" {
 				t.Errorf("events = %q, want exactly one settle", got)
 			}
 			if calls.len() != 1 {
@@ -779,7 +782,7 @@ func TestProfileStartRefusedKeepsTheOwedRestart(t *testing.T) {
 		got, stub, _ := dialog(t, true)
 		var out bytes.Buffer
 		flushRouteNotesAfterRun(got, &out)
-		if got := stub.got(); got != "ensure:openrouter/a:owed=false,settle" {
+		if got := stub.got(); got != "ensure:openrouter/a:owed=false,wait,settle" {
 			t.Errorf("events = %q, want exactly one settle", got)
 		}
 	})
@@ -811,8 +814,8 @@ func TestProfileStartFailureReturnsToThePicker(t *testing.T) {
 	if want := "failed to start omlx/qwen3.8: omlx refused the load"; back.status != want {
 		t.Errorf("status = %q, want the start flow's own error, %q", back.status, want)
 	}
-	if got := stub.got(); got != "ensure:openrouter/a:owed=false" {
-		t.Errorf("events = %q, want no settle, probe or build after a failed start", got)
+	if got := stub.got(); got != "ensure:openrouter/a:owed=false,wait" {
+		t.Errorf("events = %q, want the start's own wait and no settle, probe or build after a failed start", got)
 	}
 	assertNothingRecorded(t)
 }
@@ -852,7 +855,7 @@ func TestPinOnProfileBeginsItsLaunch(t *testing.T) {
 			t.Errorf("events = %q, want none before the command runs", events)
 		}
 		updateMsg(got, slotStageFrom(t, cmd)())
-		if want := "ensure:openrouter/a,openrouter/b:owed=false,probe,build"; stub.got() != want {
+		if want := "ensure:openrouter/a,openrouter/b:owed=false,wait,probe,build"; stub.got() != want {
 			t.Errorf("events = %q, want %q", stub.got(), want)
 		}
 	})

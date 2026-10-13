@@ -171,8 +171,8 @@ func stubSlotChecks(t *testing.T, checks ...profiles.SlotCheck) {
 }
 
 // slotSeams records, in order, what a profile launch asked of the engine:
-// "ensure:<id>,<id>", "start:<id>:owed=<bool>", "restart", "probe",
-// "settle", "build". Its fields script each seam's result.
+// "ensure:<id>,<id>", "start:<id>:owed=<bool>", "restart", "wait" (for a
+// proxy restart in flight), "probe", "settle", "build". Its fields script each seam's result.
 type slotSeams struct {
 	events     []string
 	ensureOwed bool // what ensureSlotRoutes reports as owed when it adds nothing to owedIn
@@ -188,14 +188,16 @@ type slotSeams struct {
 // log is the recorded events joined with ";".
 func (s *slotSeams) log() string { return strings.Join(s.events, ";") }
 
-// stubSlotSeams swaps the six seams of slot_launch.go for recorders and
-// silences osStderr. The command buildSlotCmd hands back runs in the launch's
+// stubSlotSeams swaps the six seams of slot_launch.go and waitPendingRoutes
+// for recorders and silences osStderr. The command buildSlotCmd hands back runs in the launch's
 // worktree, as the real one does.
 func stubSlotSeams(t *testing.T) *slotSeams {
 	t.Helper()
 	s := &slotSeams{}
 	oldEnsure, oldRestart, oldProbe, oldSettle := ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow
 	oldStart, oldBuild, oldOut := startSlotModel, buildSlotCmd, osStderr
+	oldWait := waitPendingRoutes
+	waitPendingRoutes = func() { s.events = append(s.events, "wait") }
 	ensureSlotRoutes = func(_ context.Context, _ io.Writer, _ *config.Config, models []config.Model, owedIn bool) (bool, error) {
 		ids := make([]string, len(models))
 		for i, m := range models {
@@ -236,6 +238,7 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 	t.Cleanup(func() {
 		ensureSlotRoutes, restartProxyNow, probeProxyNow, settleRoutesNow = oldEnsure, oldRestart, oldProbe, oldSettle
 		startSlotModel, buildSlotCmd, osStderr = oldStart, oldBuild, oldOut
+		waitPendingRoutes = oldWait
 	})
 	return s
 }
@@ -526,17 +529,17 @@ func TestLaunchSlotProfileSteps(t *testing.T) {
 		want       string
 	}{
 		{"all cloud, every route exists", slotCloud(), false, false,
-			"ensure:openrouter/a,openrouter/b;probe;build"},
+			"ensure:openrouter/a,openrouter/b;wait;probe;build"},
 		{"all cloud, a route was missing", slotCloud(), false, true,
-			"ensure:openrouter/a,openrouter/b;restart;probe;build"},
+			"ensure:openrouter/a,openrouter/b;restart;wait;probe;build"},
 		{"idle local model, a cloud route was missing", slotMixed(), false, true,
-			"ensure:openrouter/a;start:omlx/q:owed=true;probe;build"},
+			"ensure:openrouter/a;start:omlx/q:owed=true;wait;probe;build"},
 		{"idle local model, routes in place", slotMixed(), false, false,
-			"ensure:openrouter/a;start:omlx/q:owed=false;probe;build"},
+			"ensure:openrouter/a;start:omlx/q:owed=false;wait;probe;build"},
 		{"running local model, routes in place", slotMixed(), true, false,
-			"ensure:openrouter/a;ensure:omlx/q;probe;build"},
+			"ensure:openrouter/a;ensure:omlx/q;wait;probe;build"},
 		{"running local model, a route was missing", slotMixed(), true, true,
-			"ensure:openrouter/a;ensure:omlx/q;restart;probe;build"},
+			"ensure:openrouter/a;ensure:omlx/q;restart;wait;probe;build"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -714,12 +717,12 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 				s.probeErr = errors.New("the LiteLLM proxy does not answer at http://localhost:4000: connection refused")
 			},
 			want:  "does not answer at http://localhost:4000",
-			steps: "ensure:openrouter/a,openrouter/b;probe"},
+			steps: "ensure:openrouter/a,openrouter/b;wait;probe"},
 		{name: "the command cannot be built",
 			checks: one(cloud()),
 			seams:  func(s *slotSeams) { s.buildErr = errors.New("agent claude not installed") },
 			want:   "agent claude not installed",
-			steps:  "ensure:openrouter/a,openrouter/b;probe;build"},
+			steps:  "ensure:openrouter/a,openrouter/b;wait;probe;build"},
 		{name: "the wrapper cannot be applied",
 			checks: func() []profiles.SlotCheck {
 				c := cloud()
@@ -727,7 +730,7 @@ func TestSlotProfileFailuresRunNoAgent(t *testing.T) {
 				return []profiles.SlotCheck{c}
 			},
 			want:  "not installed",
-			steps: "ensure:openrouter/a,openrouter/b;probe;build"},
+			steps: "ensure:openrouter/a,openrouter/b;wait;probe;build"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

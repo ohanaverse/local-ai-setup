@@ -38,7 +38,8 @@ func (p *slotPin) Error() string { return "model pin " + p.row.Model.ID + " is a
 // Seams over the engine a profile launch drives. cmd/wt's TestMain makes each
 // fail with "<name> not stubbed in this test", so no test writes the real
 // config.yaml, restarts the real proxy or starts a real model; tests call
-// stubSlotSeams.
+// stubSlotSeams. The wait before the probe is start.go's seam,
+// waitPendingRoutes, which only waits and so is not made to fail.
 var (
 	ensureSlotRoutes = lifecycle.EnsureModelRoutes
 	restartProxyNow  = lifecycle.RestartProxy
@@ -152,7 +153,11 @@ func launchSlotProfile(agent, worktreePath string, cfg *config.Config, yolo bool
 		}
 	}
 
-	// Step 7: the proxy must answer, on every launch.
+	// Step 7: the proxy must answer, on every launch. ProbeProxy does not
+	// wait for a restart in flight, so that wait is made here: without it the
+	// probe could answer from the proxy about to be replaced, before the
+	// restart's outcome is remembered.
+	waitPendingRoutes()
 	if err := probeProxyNow(ctx, cfg); err != nil {
 		return err
 	}
