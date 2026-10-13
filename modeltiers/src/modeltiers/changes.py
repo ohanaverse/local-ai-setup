@@ -12,6 +12,7 @@ from modeltiers.show import (
     candidate_name,
     entries,
     model_name,
+    table,
     table_lines,
 )
 
@@ -42,9 +43,7 @@ def _candidates(doc: Document) -> dict[str, str]:
 
 def _source_statuses(old: Document, new: Document) -> str:
     def status(doc: Document, name: str) -> str:
-        sources = doc.get("sources", {})
-        entry = sources.get(name) if isinstance(sources, dict) else None
-        return str(entry.get("status", "?")) if isinstance(entry, dict) else "?"
+        return str(table(table(doc.get("sources")).get(name)).get("status", "?"))
 
     parts = []
     for name in SOURCES:
