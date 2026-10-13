@@ -290,6 +290,16 @@ def test_a_model_takes_open_weights_from_its_keys_rows(
     # An ignored row has no key, so nothing is known.
     assert shut["nomic-embed-text:latest"] is None
 
+    # One row of the key is enough, whichever it is: first, last or between.
+    glm = [row for row in sources.modelsdev.data.rows if row.canonical == "zhipuai/glm-5.3"]
+    assert len(glm) >= 3
+    for keep in (glm[0], glm[-1], glm[1]):
+
+        def only(row: ModelsDevRow, keep: ModelsDevRow = keep) -> ModelsDevRow:
+            return closed(row) if row is not keep else row
+
+        assert result(_with_rows(sources, only))["glm-5.3:cloud"] is True
+
 
 def test_an_ignored_row_is_unrated_not_applicable(assignment: Assignment) -> None:
     ignored = assignment.models[5]

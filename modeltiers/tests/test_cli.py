@@ -793,6 +793,20 @@ def test_show_html_that_cannot_be_written_exits_1(
     assert [p.name for p in tmp_path.parent.iterdir() if p.name.endswith(".tmp")] == []
 
 
+@pytest.mark.usefixtures("written")
+def test_show_html_refuses_to_replace_the_tiers_file_with_the_page(
+    out: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = out.read_text()
+    assert cli.main(["show", "--html", str(out)], deps=_reader_deps(T0)) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        f"modeltiers: --html {out} is tiers.toml itself; name another file for the page\n"
+    )
+    assert out.read_text() == before
+
+
 def test_show_html_without_a_tiers_file_writes_no_page(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

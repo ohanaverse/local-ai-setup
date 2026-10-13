@@ -78,10 +78,15 @@ def stale_warning(doc: Document, now: datetime) -> str | None:
 def number(value: Any) -> float | None:
     """A number the file holds, or None for anything else. `True` is not a
     number here, though Python counts it as one, and neither are the `nan`
-    and `inf` that TOML can spell: nothing sorts or prints as either."""
+    and `inf` that TOML can spell, nor an integer too large for a float:
+    nothing sorts or prints as any of them."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return float(value) if isfinite(value) else None
+    try:
+        found = float(value)
+    except OverflowError:
+        return None
+    return found if isfinite(found) else None
 
 
 def score(entry: Mapping[str, Any], name: str) -> float | None:
@@ -186,9 +191,11 @@ def attribution_lines(doc: Document, sources: Iterable[str] = SOURCES) -> list[s
 
 
 def short(value: Any) -> str:
-    """A score for display: at most four decimal places, no trailing zeros."""
+    """A score for display: at most four decimal places, no trailing zeros,
+    and no sign on a value that rounds to zero."""
     if isinstance(value, float):
-        return f"{value:.4f}".rstrip("0").rstrip(".")
+        text = f"{value:.4f}".rstrip("0").rstrip(".")
+        return "0" if text == "-0" else text
     return str(value)
 
 

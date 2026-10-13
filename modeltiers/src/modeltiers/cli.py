@@ -234,6 +234,10 @@ def _show(args: argparse.Namespace, deps: Deps) -> int:
         _warn(warning)
     if args.html is not None:
         target: Path = args.html.resolve()
+        if target == paths.output_path().resolve():
+            raise ConfigError(
+                f"--html {target} is tiers.toml itself; name another file for the page"
+            )
         output.write_text(target, page.page_html(document, now, sort=args.sort))
         print(f"wrote {target}")
         return EXIT_OK

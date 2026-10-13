@@ -376,20 +376,53 @@ def test_a_value_that_is_not_a_number_sorts_as_missing() -> None:
             {"provider_id": "p", "model_name": "table", "scores": "none"},
             {"provider_id": "p", "model_name": "nan", "scores": {"eci": float("nan")}},
             {"provider_id": "p", "model_name": "inf", "scores": {"eci": float("inf")}},
+            # TOML integers have no upper bound; a float does.
+            {
+                "provider_id": "p",
+                "model_name": "huge",
+                "context": 10**400,
+                "scores": {"eci": 10**400},
+            },
             {"provider_id": "p", "model_name": "scored", "scores": {"eci": 150.0}},
         ]
     }
     lines = show.table_lines(doc, sort="eci", wide=True)
-    assert [line.split()[-2] for line in lines[1:7]] == [
+    assert [line.split()[-2] for line in lines[1:8]] == [
         "p/scored",
         "p/text",
         "p/flag",
         "p/table",
         "p/nan",
         "p/inf",
+        "p/huge",
     ]
     # Each of them is a dash in its own column, not a score.
-    assert [line.split()[7] for line in lines[1:7]] == ["150", "-", "-", "-", "-", "-"]
+    assert [line.split()[7] for line in lines[1:8]] == ["150", "-", "-", "-", "-", "-", "-"]
+    assert show.table_lines(doc, sort="context", wide=True)[7].split()[4] == "-"
+
+
+def test_a_score_that_rounds_to_zero_from_below_prints_as_zero() -> None:
+    assert show.short(-0.00001) == "0"
+    assert show.short(-0.0001) == "-0.0001"
+    assert show.short(0.0) == "0"
+
+
+def test_sorting_by_model_ignores_case_and_candidates_follow_the_score() -> None:
+    doc = {
+        "models": [
+            {"provider_id": "p", "model_name": "beta"},
+            {"provider_id": "p", "model_name": "Alpha"},
+            {"provider_id": "P", "model_name": "aardvark"},
+        ],
+        "candidates": [
+            {"canonical": "v/low", "scores": {"eci": 140.0}},
+            {"canonical": "v/none"},
+            {"canonical": "v/high", "scores": {"eci": 160.0}},
+        ],
+    }
+    assert _models(show.table_lines(doc, sort="model")) == ["P/aardvark", "p/Alpha", "p/beta"]
+    lines = show.table_lines(doc, candidates=True, sort="eci")
+    assert [line.split()[-1] for line in lines[-3:]] == ["v/high", "v/low", "v/none"]
 
 
 WIDE = [

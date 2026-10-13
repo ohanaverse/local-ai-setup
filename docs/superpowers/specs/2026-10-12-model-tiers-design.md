@@ -86,7 +86,7 @@ It is run as `uv run --directory modeltiers modeltiers <command>`.
 | Command | Effect |
 |---|---|
 | `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Fetch, resolve, assign, print the change report, write. `--dry-run` does everything except write the output file. `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt model list --json` output and does not run wt. |
-| `modeltiers show [--candidates]` | Print the tier table from the output file: inventory models by default, candidates too with `--candidates`. Prints the file's age in days, with a warning line past 14 days, and the attribution lines. |
+| `modeltiers show [--candidates] [--sort COLUMN] [--wide] [--html FILE]` | Print the tier table from the output file: inventory models by default, candidates too with `--candidates`. Prints the file's age in days, with a warning line past 14 days, and the attribution lines. `--sort` orders the rows by tier, model, context or a score; `--wide` adds open weights, context and the scores; `--html FILE` writes the whole table, candidates included, as one self-contained page and prints only where it wrote. |
 | `modeltiers explain <model>` | Print an entry's identity, votes, scores, efforts, gates, notes and the attribution lines, from the output file. |
 
 `show` and `explain` read only the output file. They never fetch and never run wt.

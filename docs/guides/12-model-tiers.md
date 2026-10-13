@@ -161,14 +161,15 @@ with the attribution lines of the sources whose data they print.
 `show` has three ways to show more:
 
 - **`--wide`** adds seven columns to the table: `open` (open weights: `T`,
-  `F`, or `-` when models.dev has no row for the key), `context`, and the
+  `F`, or `-` when models.dev has no row for the key or the row is ignored), `context`, and the
   scores `intel`, `arena`, `eci`, `coding` and `agentic`. A `-` is a value the
   file does not have. The table is then about 150 columns wide.
 - **`--sort COLUMN`** orders the rows by `tier`, `model`, `context`,
   `intelligence_index`, `arena_agent`, `eci`, `coding_index` or
   `agentic_index`. `model` is alphabetical; every other column puts the
-  highest value first and the rows with no value last. Your models and the
-  candidates are sorted separately. Without it the order is the file's.
+  highest value first and the rows with no value last. In the terminal your
+  models and the candidates are sorted separately; the page sorts them
+  together. Without it the order is the file's.
 - **`--html FILE`** writes one page and prints only `wrote <path>`. The page
   lists your models, the unmapped rows and every candidate together, with
   every `--wide` column, the canonical key and the reason an unrated row is
@@ -177,6 +178,7 @@ with the attribution lines of the sources whose data they print.
   sets the order the page opens in. The file holds everything it needs and
   requests nothing, so it opens straight from disk (`open "$HOME/tiers.html"`).
   It is a copy of `tiers.toml` at that moment: write it again after a run.
+  `FILE` cannot be `tiers.toml` itself.
 
 The three scores that vote are on different scales, so there is no single
 score to rank by: sort by the one you trust for the job, or by `tier`.

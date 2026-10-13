@@ -181,10 +181,21 @@ def test_a_score_that_is_not_finite_is_none_and_the_page_is_still_json() -> None
                 "provider_id": "p",
                 "model_name": "m",
                 "context": float("inf"),
-                "scores": {"eci": float("nan"), "arena_agent": float("-inf")},
+                "scores": {
+                    "eci": float("nan"),
+                    "arena_agent": float("-inf"),
+                    "coding_index": 10**400,
+                },
             }
         ]
     }
     (row,) = page.page_rows(doc)
     assert (row["context"], row["eci"], row["arena_agent"]) == (None, None, None)
+    assert row["coding_index"] is None
     assert _data(page.page_html(doc, T0))["rows"] == [row]
+
+
+def test_the_page_tells_a_file_with_no_rows_from_filters_that_match_none() -> None:
+    text = page.page_html({}, T0)
+    assert "tiers.toml lists no model" in text
+    assert "No row matches these filters." in text

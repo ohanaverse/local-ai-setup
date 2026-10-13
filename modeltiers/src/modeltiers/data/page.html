@@ -135,7 +135,7 @@
       <thead><tr id="head"></tr></thead>
       <tbody id="body"></tbody>
     </table>
-    <div id="empty" hidden>No row matches these filters.</div>
+    <div id="empty" hidden></div>
     <noscript><div id="noscript">The table is drawn by a script in this file; allow scripts for it to appear.</div></noscript>
   </div>
   <footer>
@@ -248,7 +248,11 @@
         return tr;
       })
     );
-    document.getElementById("empty").hidden = rows.length > 0;
+    const empty = document.getElementById("empty");
+    empty.hidden = rows.length > 0;
+    empty.textContent = data.rows.length
+      ? "No row matches these filters."
+      : "tiers.toml lists no model. Run `modeltiers run` to fill it.";
     document.getElementById("count").textContent =
       rows.length + " of " + data.rows.length + " rows";
     for (const th of document.getElementById("head").children) {
