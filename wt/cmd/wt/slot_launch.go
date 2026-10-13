@@ -48,6 +48,31 @@ var (
 	buildSlotCmd     = agents.BuildSlotLaunchCmd
 )
 
+// slotWarnings are the lines a launch prints once about slot-profiles.toml:
+// the load error; one line per profile that is not Usable (no usable name or
+// agent, so it has no row and cannot be pinned); and one line when the
+// registry has a provider with id "profile" while at least one profile is
+// Usable, since no profile row is then built. A Usable profile that fails
+// validation gets no line: its blocked row carries the reason.
+func slotWarnings(a *app) []string {
+	var out []string
+	if a.slotLoadErr != nil {
+		out = append(out, fmt.Sprintf("wt: %v — slot profiles are unavailable", a.slotLoadErr))
+	}
+	usable := false
+	for _, c := range a.slotChecks {
+		if c.Usable {
+			usable = true
+			continue
+		}
+		out = append(out, fmt.Sprintf("wt: %s: %v — skipped (see 'wt profile list')", c.Label(), c.Err))
+	}
+	if usable && catalog.SlotPrefixReserved(a.cfg) {
+		out = append(out, `wt: the registry has a provider with id "profile" — slot profiles are unavailable`)
+	}
+	return out
+}
+
 // slotRouteError words a route that could not be ensured by the slot it
 // fills: "slot haiku: LiteLLM route for <id> not written: <cause>". Any other
 // error is returned as it is.

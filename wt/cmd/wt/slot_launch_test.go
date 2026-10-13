@@ -21,6 +21,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
+	"github.com/spf13/cobra"
 )
 
 // startCall is what one engine call of a start carried.
@@ -854,5 +855,229 @@ func TestSlotProfileLaunchSkipsAutomaticProfiles(t *testing.T) {
 	}
 	if slices.Contains(cmd.Env, "WT_TEST_AUTO_PROFILE=1") {
 		t.Errorf("cmd.Env = %v: the automatic profile was applied to a slot-profile launch", cmd.Env)
+	}
+}
+
+// launchCobraCmd is a command with the two flags runLaunchPath reads.
+func launchCobraCmd() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().StringP("model", "M", "", "")
+	cmd.Flags().Bool("yolo", false, "")
+	return cmd
+}
+
+// restoreLaunchSlotChecks puts launchSlotChecks back when the test ends:
+// runLaunchPath sets it for the whole process.
+func restoreLaunchSlotChecks(t *testing.T) {
+	t.Helper()
+	old := launchSlotChecks
+	t.Cleanup(func() { launchSlotChecks = old })
+}
+
+// TestSlotWarnings verifies the warning lines of a launch: the load error;
+// one line per profile that has no usable name or agent, naming its position
+// in the file; and one line when the registry has a provider "profile" while
+// a usable profile exists. A profile that merely fails validation gets no
+// line here: it has a blocked row that carries its reason.
+func TestSlotWarnings(t *testing.T) {
+	usable := slotFixtureCheck(0, "cloud", "opus", slotCloud())
+	blocked := slotFixtureCheck(1, "broken", "opus", slotCloud())
+	blocked.Err = errors.New("default is missing")
+	unusable := profiles.SlotCheck{Index: 2, Profile: profiles.SlotProfile{Agent: "claude"}, Err: errors.New("name is missing")}
+	reserved := slotFixtureConfig()
+	reserved.Providers = append(reserved.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
+	cases := []struct {
+		name string
+		a    *app
+		want []string
+	}{
+		{"nothing wrong", &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, blocked}}, nil},
+		{"no file", &app{cfg: slotFixtureConfig()}, nil},
+		{"the file does not parse",
+			&app{cfg: slotFixtureConfig(), slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")},
+			[]string{"wt: parse slot-profiles.toml: toml: line 2: unexpected EOF — slot profiles are unavailable"}},
+		{"a profile with no usable name",
+			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, unusable}},
+			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},
+		{"the reserved provider id",
+			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{usable}},
+			[]string{`wt: the registry has a provider with id "profile" — slot profiles are unavailable`}},
+		{"the reserved provider id with no usable profile",
+			&app{cfg: reserved, slotChecks: []profiles.SlotCheck{unusable}},
+			[]string{"wt: slot-profiles.toml[2]: name is missing — skipped (see 'wt profile list')"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := slotWarnings(tc.a); !slices.Equal(got, tc.want) {
+				t.Errorf("slotWarnings() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunLaunchPathWarnsAboutSlotProfilesOncePerRun verifies who sees the
+// warnings: a launch with no agent chosen yet, or with an agent that has
+// slots, prints each line once; a shell launch prints none, since a slot
+// profile could never apply to it.
+func TestRunLaunchPathWarnsAboutSlotProfilesOncePerRun(t *testing.T) {
+	cases := []struct {
+		agent string
+		want  int
+	}{{"claude", 1}, {"", 1}, {"shell", 0}}
+	for _, tc := range cases {
+		t.Run("agent="+tc.agent, func(t *testing.T) {
+			restoreLaunchSlotChecks(t)
+			stubStdinTTY(t, false)
+			oldLaunch, oldSweep := launchFiltered, sweepRefcounts
+			launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+				return nil
+			}
+			sweepRefcounts = func() {}
+			t.Cleanup(func() { launchFiltered, sweepRefcounts = oldLaunch, oldSweep })
+			cfg := slotFixtureConfig()
+			cfg.Agents = append(cfg.Agents, config.Agent{Name: "shell"})
+			a := &app{cfg: cfg, slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")}
+
+			stderr := captureFile(t, &os.Stderr, func() {
+				// Without a pin an agent launch ends at "the picker needs a
+				// TTY"; the warnings are printed before that.
+				_ = runLaunchPath(launchCobraCmd(), a, tc.agent, "", "", "", nil, ".", "")
+			})
+
+			if got := strings.Count(stderr, "slot profiles are unavailable"); got != tc.want {
+				t.Errorf("warning printed %d times, want %d; stderr = %q", got, tc.want, stderr)
+			}
+		})
+	}
+}
+
+// TestBrokenSlotFileLeavesModelLaunchesAlone is Review Focus 1. With a TOML
+// typo in slot-profiles.toml, or one profile with a malformed name, a pinned
+// single-model launch and a rotated one behave exactly as before, wt prints
+// exactly one warning line for the problem, and `-M profile/<name>` exits
+// non-zero with the "not in the eligible list" message. A hand-written file
+// must never be able to break the launches that do not use it.
+func TestBrokenSlotFileLeavesModelLaunchesAlone(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		pin     string
+		warning string
+	}{
+		{"a TOML typo", "[[profile]]\nname = \"mixed\n", "profile/mixed", "slot profiles are unavailable"},
+		{"a malformed name",
+			"[[profile]]\nname = \"Bad_Name\"\nagent = \"claude\"\ndefault = \"opus\"\n\n[profile.slots]\nopus = \"openrouter/a\"\n",
+			"profile/Bad_Name", "skipped (see 'wt profile list')"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreLaunchSlotChecks(t)
+			path := writeSlotProfilesTOML(t, tc.body)
+			stateDir := filepath.Dir(path)
+			worktree := t.TempDir()
+			fakeAgentOnPath(t, "claude")
+			stubEnsureRoute(t)
+			stubSlotSeams(t)
+			oldSweep := sweepRefcounts
+			sweepRefcounts = func() {}
+			t.Cleanup(func() { sweepRefcounts = oldSweep })
+
+			// The app's slot state, loaded the way newApp loads it.
+			a := &app{cfg: slotFixtureConfig()}
+			store, lerr := loadSlotStore()
+			a.slotLoadErr = lerr
+			if lerr == nil && len(store.Profiles) > 0 {
+				a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
+			}
+
+			rotationState := func() string {
+				data, _ := os.ReadFile(filepath.Join(stateDir, "rotation.state"))
+				return strings.TrimSpace(string(data))
+			}
+
+			// A pinned single-model launch: it runs, and the warning is
+			// printed once.
+			var err error
+			var stderr string
+			captureFile(t, &os.Stdout, func() {
+				stderr = captureFile(t, &os.Stderr, func() {
+					err = runLaunchPath(launchCobraCmd(), a, "claude", "openrouter/a", "", "", nil, worktree, "")
+				})
+			})
+			if err != nil {
+				t.Fatalf("pinned launch error = %v", err)
+			}
+			if got := rotationState(); got != "openrouter/a" {
+				t.Errorf("rotation.state = %q after the pinned launch, want openrouter/a", got)
+			}
+			if got := strings.Count(stderr, tc.warning); got != 1 {
+				t.Errorf("warning printed %d times, want exactly once; stderr = %q", got, stderr)
+			}
+			slotLines := 0
+			for _, line := range strings.Split(stderr, "\n") {
+				if strings.Contains(line, "slot") {
+					slotLines++
+				}
+			}
+			if slotLines != 1 {
+				t.Errorf("%d stderr lines mention slot profiles, want one; stderr = %q", slotLines, stderr)
+			}
+
+			// A rotated launch: rotation advances to the next launchable
+			// model, as it does with no slot file at all.
+			captureFile(t, &os.Stdout, func() {
+				err = launchFiltered("claude", worktree, a.cfg, false, "", "", "", false, nil, nil, nil)
+			})
+			if err != nil {
+				t.Fatalf("rotated launch error = %v", err)
+			}
+			if got := rotationState(); got != "openrouter/b" {
+				t.Errorf("rotation.state = %q after the rotated launch, want openrouter/b", got)
+			}
+
+			// The profile itself cannot be pinned.
+			captureFile(t, &os.Stderr, func() {
+				err = runLaunchPath(launchCobraCmd(), a, "claude", tc.pin, "", "", nil, worktree, "")
+			})
+			want := fmt.Sprintf("model %q is not in the eligible list for agent %q", tc.pin, "claude")
+			if err == nil || err.Error() != want {
+				t.Errorf("profile pin error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// TestRunLaunchPathLaunchesAPinnedSlotProfile verifies the whole non-TUI path
+// from runLaunchPath: `-A claude -M profile/<name>` with a worktree reaches
+// the profile launch and runs the agent, and a pin of a blocked profile
+// returns its reason, which main turns into a non-zero exit.
+func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
+	restoreLaunchSlotChecks(t)
+	_, worktree := slotLaunchEnv(t)
+	oldSweep := sweepRefcounts
+	sweepRefcounts = func() {}
+	t.Cleanup(func() { sweepRefcounts = oldSweep })
+	seams := stubSlotSeams(t)
+	sentinel := filepath.Join(t.TempDir(), "agent-ran")
+	seams.cmd = exec.Command("touch", sentinel)
+	a := &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{
+		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
+		slotFixtureCheck(1, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
+	}}
+
+	var err error
+	captureFile(t, &os.Stdout, func() {
+		err = runLaunchPath(launchCobraCmd(), a, "claude", "profile/cloud", "", "", nil, worktree, "")
+	})
+	if err != nil {
+		t.Fatalf("runLaunchPath() error = %v", err)
+	}
+	if _, statErr := os.Stat(sentinel); statErr != nil {
+		t.Error("the agent command did not run for a pinned launch profile")
+	}
+
+	err = runLaunchPath(launchCobraCmd(), a, "claude", "profile/broken", "", "", nil, worktree, "")
+	if err == nil || err.Error() != "slot opus: openrouter/gone is not in the registry" {
+		t.Errorf("blocked pin error = %v, want the row's reason", err)
 	}
 }

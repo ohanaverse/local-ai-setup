@@ -105,6 +105,17 @@ func runLaunchPath(
 	// keep other concurrent sessions' counts accurate. Best-effort.
 	sweepRefcounts()
 
+	// Slot profiles are pin targets for resolveModel during this run. What is
+	// wrong with slot-profiles.toml is said once, here, before any picker
+	// opens, and only for a launch that could use a profile: no agent chosen
+	// yet, or an agent whose driver has slots.
+	launchSlotChecks = a.slotChecks
+	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
+		for _, line := range slotWarnings(a) {
+			fmt.Fprintln(os.Stderr, line)
+		}
+	}
+
 	// Install the guard once when inside any git repo.
 	if root != "" {
 		maybeInstallGuard()
