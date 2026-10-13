@@ -32,7 +32,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use/create the worktree for `<name>`; skip the worktree picker |
 | `-A <name>`, `--agent <name>` | Pin the agent or `shell`; never defaulted |
-| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`; cloud or running → launch; a non-running local starts (with a progress display); a blocked model errors with that row's reason. Without `-A`, prompts for the agent first, then validates the pin |
+| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`; cloud or running → launch; a non-running local starts (with a progress display); a blocked model errors with that row's reason. Without `-A`, prompts for the agent first, then validates the pin. `-M profile/<name>` pins a slot profile |
 | `--replace` | With `-M`, start the model even if it means stopping a running one |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
@@ -61,6 +61,7 @@ After the launched subprocess exits, the TUI and non-TUI paths run the same fixe
 - `survey.ReleaseSession()` runs before the stop picker, so the model just used does not count as in use.
 - The summary line (`agents.Summary`) is the single formatter for both paths and never affects the exit code.
 - A batch of stops costs one LiteLLM restart: `lifecycle.StopModelDeferred` per model, then one `lifecycle.SettleRoutes` (#142).
+- A slot-profile session has a shorter tail on both paths: release → stop picker → summary, with no survey and no price notice (`runSlotAgentCmd`; the `profile` branch of `printPendingSummaryAndSurvey`).
 
 Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before changing the summary line, the stop picker (`survey.Picker`, `chooseLabeled`, `stopEntries`), the stale-pricing notice, the session survey, session handling, or profiles.
 
@@ -74,6 +75,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 - `docs/wt-config.md` — `wt config` subcommands
 - `docs/wt-agents/` — per-agent reference (one file per launcher); `README.md` there covers LiteLLM routes/proxy lifecycle and post-exit order
 - `docs/wt-agents/profiles.md` — local-model launch profiles
+- `docs/wt-agents/slot-profiles.md` — slot profiles: named multi-model launches for Claude Code
 - `docs/wt-smoke.md`, `docs/wt-start-stop.md`, `docs/wt-stats.md`, `docs/wt-model.md`, `docs/wt-cloud-sync.md` — command references
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — wt design specs and plans (newer cross-package specs live in the monorepo's [../docs/superpowers/](../docs/superpowers/))
 - `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, shared config ownership (wt is the only writer of `registry.toml` — the `wt model` commands, the Models tab of `wt config` and `wt cloud-sync`; wt owns `~/.config/agent-wt/config.toml`)
@@ -120,6 +122,8 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/model_cmds.go` | `wt start` / `wt stop` |
 | `cmd/wt/smoke.go` | `wt smoke` — one-shot model×agent smoke test |
 | `cmd/wt/profile.go` | `wt profile list/show/status/on/off`; `setEnabledLine`'s surgical `enabled = ...` edit |
+| `cmd/wt/slot_launch.go` | `launchSlotProfile` — the non-TUI slot-profile launch (ten steps, fail closed); `applySlotProfile`, `runSlotAgentCmd`, the `slotPin` sentinel |
+| `cmd/wt/profile_slots.go` | the slot-profile half of `wt profile list` and `wt profile show`; `maskKey` |
 | `cmd/wt/litellm.go` | `wt litellm ...` |
 | `cmd/wt/model.go` | `wt model` group (bare: the Models tab of `wt config`); `wt model init` |
 | `cmd/wt/model_write.go` | `wt model add`, `edit`, `rm` — each one `modeladmin` write, then one route sync |
@@ -131,14 +135,14 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/tomlw/` | ordered TOML document and an emitter that reproduces tomli-w's layout byte for byte; never use the stock `toml.Encoder` on the registry |
 | `internal/cloudsync/` | the pure core of `wt cloud-sync` (parsers, planners, `Apply`); no I/O, no clock: see [Cloud sync](#cloud-sync-wt-cloud-sync) |
-| `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection |
+| `internal/rotation/` | global rotation state (`rotation.state`) + next-model selection; `last-picked.state`, the picker's marker |
 | `internal/usage/` | append-only JSONL launch history (1d/7d/30d), per model and per agent×model |
-| `internal/refcount/` | live-session "in use" counts: JSONL keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point |
+| `internal/refcount/` | live-session "in use" counts: JSONL keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point (`RecordAll`: one line per slot model of a profile session) |
 | `internal/survey/` | post-session survey + stats; stop picker and stop loop (`Picker`, `PickerWith`, `ReadStopState`, `StopEntries`) |
 | `internal/agents/` | driver abstraction (`BuildLaunchCmd`, capabilities), picker catalog, drivers, `RunAndCleanup`, `BuildPassthroughCmd` |
-| `internal/profiles/` | launch-profile overlays — see [Profiles](#profiles-internalprofiles) |
+| `internal/profiles/` | launch-profile overlays and slot profiles — see [Profiles](#profiles-internalprofiles) |
 | `internal/smoke/` | `wt smoke`'s core: `Eligibility`/`Candidates` (rows per agent from one inventory snapshot), `RunRow` (PASS/FAIL/SKIP) |
-| `internal/catalog/` | the shared row policy for every model list wt shows or resolves: `Build`, `Find`, `MissingReason`, `Row.Action`. No rendering, counts or sorting |
+| `internal/catalog/` | the shared row policy for every model list wt shows or resolves: `Build`, `Find`, `MissingReason`, `Row.Action`; slot-profile rows (`ResolveSlotProfile`), opt-in. No rendering, counts or sorting |
 | `internal/localmodels/` | local inventory — see [Local-model resolution](#local-model-resolution) |
 | `internal/modeladmin/` | the core of model management, shared by the `wt model` commands and the Models tab, with no UI import: `Rows`, `Add`, `Edit`, `Remove` (each one `config.UpdateRegistry`, no route sync) |
 | `internal/lifecycle/` | local-model start/stop engine — see [Lifecycle](#lifecycle-internallifecycle) |
@@ -199,6 +203,7 @@ Every model row wt shows or resolves — the TUI picker, `wt start`/`wt smoke`'s
 - **`localmodels.ServedIDs` is the one answer to "what is this server serving"** — omlx's `/v1/models` lists its whole pool, loaded or not (#201).
 - A `-M` pin is looked up among all rows, discovered ones included (`catalog.Find`); no row → `catalog.MissingReason`.
 - Without `-M`, the non-TUI path picks only among launch rows; only a pin may start a model.
+- **A slot-profile row is not a model row**: its `Model` holds only the id `profile/<name>` and `Row.Profile` holds the rest. Rows are emitted only for a caller that sets `catalog.Input.SlotProfiles` (the picker, `resolveModel`, `wt profile show`), never for `wt start` or `wt smoke`. Test `r.Profile != nil` before reading a `Model` field other than `ID`, calling `ResolveRoute`, or launching or starting `Model`.
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md) before changing row policy, the inventory probes, omlx loaded-state detection, pin resolution, rotation, or `wt start`/`wt stop`.
 
@@ -208,6 +213,7 @@ The start/stop engine: `Start` (`Options.Out` takes every line a start prints, t
 
 - **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`, `Occupants` lists them): an `Exclusive` occupant (mtplx) to be replaced, or the `Pool` victims (omlx) the eviction plan (`evictions.go`) predicts omlx will unload (`poolAdmissionMarginPct` margin, 15% of the ceiling; `reconcilePool` handles what omlx unloaded anyway, on failure too); undeterminable occupancy is `*OccupancyUnknownError`, never assumed empty.
 - **Route hook** (`routes.go`): a start/stop wt performs updates `config.yaml` through `internal/litellm`. A launch of an already-running model gets the Add-only launch-time check, `lifecycle.EnsureModelRoute` (#192), which never fails a launch.
+- **A slot-profile launch uses its own route calls** (`profile_routes.go`): `EnsureModelRoutes` (several models, restart deferred, every failure returned), `Options.RestartOwed` on `Start` (one restart for the cloud routes and the started model; a refusal leaves it owed, `RestartStillOwed`), `RestartProxy` and `ProbeProxy` (failures returned, not printed). `EnsureModelRoute` stays the single-model check that never fails a launch. `internal/lifecycle` remembers the outcome of the most recent proxy restart attempt in the wt process, and `ProbeProxy` refuses a profile launch with `the last LiteLLM proxy restart failed, so routes written since may not be live` until a later restart succeeds or a new wt process starts; both launch paths call `WaitPendingRoutes` immediately before that probe.
 - **Call `WaitPendingRoutes()` on every process exit and before handing a model to an agent**: the `config.yaml` write is synchronous, the proxy restart and readiness wait are async.
 - **A `Start` that returned nil is followed by one call, `SettleStart(ctx, out, cfg, target)`** (`confirm.go`, #343, #349): the wait for the proxy, then one probe of the provider's server, because another terminal's `wt stop` can land in that wait. A server that is gone is a `*StoppedError`, and the model's own route is removed. It drops the caller's cancellation itself, so callers pass the context they have. Each package has one seam over it that its `TestMain` stubs (`lifecycleSettleStart` in `cmd/wt`, `settleStart` in `internal/tui`); a new caller of `Start` makes the same one call.
 - **The restart goroutine runs on `context.WithoutCancel(ctx)` on purpose** — callers cancel as soon as the hook returns. Pinned by `TestRouteRestartSurvivesCallerCancelAfterReturn`.
@@ -219,9 +225,10 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-i
 
 ## Rotation (Go)
 
-Each successful launch records one model id in `~/.config/agent-wt/rotation.state`; the picker cursor lands on the model after it (`FirstAfter`). `rotation.RecordFor(agent, id)` also appends the usage event to `usage.jsonl`.
+Each successful single-model launch records its model id in `~/.config/agent-wt/rotation.state`; the picker cursor lands on the model after it (`FirstAfter`). `rotation.RecordFor(agent, id)` also writes `last-picked.state` and appends the usage event to `usage.jsonl`.
 
-- **The sort order is also the default selection** — changing `sortRows` changes what a bare Enter picks.
+- **The marker and the pointer are two files.** `rotation.state` stays one bare registry id. `last-picked.state` holds the row the `> ` marker sits on (`LastPicked`, falling back to `Last`). A slot-profile launch calls `RecordProfile`, which writes the marker and the usage event and never `rotation.state`; a profile row never rotates.
+- **The sort order is also the default selection** — changing `sortRows` changes what a bare Enter picks. The bands are native rows, slot-profile rows in file order, then the rest.
 - The last-launched marker is plain ASCII `> ` (Unicode shapes misalign CJK terminals).
 
 Columns, sort rules and the pinned tests: [docs/internals/local-models.md](docs/internals/local-models.md#rotation-go). Debug helper: `go run ./cmd/wt rotate code`.
@@ -244,7 +251,13 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml`, resolved per agent × m
 - Call the `config_content` cleanup explicitly after the run — `runAgentCmd`'s `os.Exit` skips defers.
 - Apply order is env/args → `config_content` → wrapper; load/validate/apply errors degrade to an unprofiled launch with a warning.
 
-Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-internalprofiles) before changing apply order, confirmation, `SelfHeal`, or `wt profile`.
+**Slot profiles** are a second kind, from the hand-written `~/.config/agent-wt/slot-profiles.toml` (wt never writes it): a named entry that maps an agent's model slots to registry models, shown as a picker row and pinned with `-M profile/<name>`. Claude is the only agent with slots (`profiles.SlotCapable`). Operator reference: [docs/wt-agents/slot-profiles.md](docs/wt-agents/slot-profiles.md).
+
+- **A slot profile is its own launch unit**: `launchSlotProfile` (`cmd/wt`) and `slot_flow.go` (`internal/tui`) run the same ten steps. Change both paths together.
+- **Fail closed, always the proxy, no file written**: a profile that cannot be fully applied never launches; nothing on the path reads `cfg.IsLitellm()`; claude's `config_content` travels only in the inline `--settings` JSON, and the proxy token only in the process env.
+- **Automatic profiles are never applied to a slot-profile launch**: it calls `applySlotProfile`, never `applyProfileForLaunch`.
+
+Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-internalprofiles) before changing apply order, confirmation, `SelfHeal`, or `wt profile`, and [its slot-profile section](docs/internals/launch-flow.md#slot-profile-launch) before changing a slot-profile launch step, its applier or its recording.
 
 ## Smoke test (`wt smoke`)
 
@@ -300,10 +313,11 @@ wt launches a fresh agent every time and leaves session handling to the agent (#
 
 ## TUI (Go)
 
-`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → launch, plus starting, routing, replace-confirm and ollama-warning screens. A picker is skipped when its selection is already resolved. Every picker uses `ThemedListDelegate`.
+`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → launch, plus starting, routing, slot-profile, replace-confirm and ollama-warning screens. A picker is skipped when its selection is already resolved. Every picker uses `ThemedListDelegate`.
 
 - **A view fits the terminal** (`internal/tuilayout`, shared with `wt config`): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update`. Add a new line to the frame, and size lists through `fitTo`. Pinned by `TestEveryListPhaseFitsTheTerminal`. A status that ends in what to do is wrapped, not clipped; one too tall to share the terminal with the table has the screen until the next key (`statusAlone`).
 - **The update goroutine never waits**: the launch-time route check uses the non-blocking `tryEnsureModelRoute`; waits happen in a command behind `phaseRouting`, and the start flow waits for the proxy restart and confirms the start (`settleStart`, #343) on the start's own goroutine (`runStart`). A server that is gone arrives as `startDoneMsg.err` and is a failed start. A start the user quit out of at the routing stage is waited for once the alt screen is gone (`settleQuitStart`), so wt never exits under that check's route removal and restart.
+- **A slot-profile launch waits behind `phaseSlot`** (`slot_flow.go`): the route writes, the restart and the probe run in a command, the profile's local model starts through the existing start flow (`beginStartOwed`), and ctrl+c quits without launching or recording; `flushRouteNotesAfterRun` settles the stage and any restart still owed. A profile row is drawn from `Row.Profile`: `renderTable` makes no `ResolveRoute` call for it, and `slotLine` replaces the mode line while it is highlighted.
 - **A start prints into the flow, not onto the screen** (#275): `runStart` passes `lifecycle.Options.Out` (a `startOutput`), and `finishStart` puts the engine's lines on the status and in `pendingRouteNotes`. From the routing stage on a start cannot be cancelled (`pastCancel`), and a row the picker just started gets the launch-time route check like any other.
 - **A model table is priced once, when it is built** (`modelrows.go`): `buildRows` reads one clock and `tableRow.pricedAt` resolves each row's price in force. The cost sort, the COST cell, the `~` mark and the mode line read `tableRow.price()` / `timePriced()`, never `Model.Cost`'s flat fields and never a clock, so an open picker's rows do not move at a window boundary. The mark and the heading cost width: read the two notes in [docs/internals/tui.md](docs/internals/tui.md) before changing either.
 - **The model table drops whole columns on a narrow terminal** (`tuilayout.Columns`, fitted by `tuilayout.FitTo`), keeping MODEL, STATUS and RUNNING.
@@ -346,6 +360,8 @@ wt model edit <id> --tags code       # change family, tags, location or prices; 
 wt model rm <id> [--yes]             # registry only; prints where the weights are
 wt cloud-sync --dry-run              # plan a price and ollama-catalog refresh; changes nothing (fetches public pages, runs `ollama list`)
 wt profile show -A <agent> -M <id>   # dry-run profile resolution
+wt profile list                      # automatic profiles, then slot profiles with each one's static verdict
+wt profile show -A claude -M profile/<name>   # a slot profile: the picker's verdict, the slots, the --settings payload (key masked)
 wt stats [--window 7d] [--family F] [--json]  # survey table, then launches and LiteLLM spend per model
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
 make test-agents                     # live agent × model matrix in both routing modes (flips `wt litellm off|on`, restoring config.toml; --modes current for one pass)

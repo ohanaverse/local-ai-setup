@@ -23,6 +23,8 @@ None — this is a reference doc, not a procedure.
 | `~/.config/agent-wt/models.conf` | you by hand (pre-wt bash era) | `wt` first-run migration (read-only input) | Legacy bash rotation config |
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `wt stats` | Launch log |
 | `~/.config/agent-wt/rotation.state` + `rotation-*.state` | `wt` | `wt` | Rotation position |
+| `~/.config/agent-wt/last-picked.state` | `wt` | `wt` | The row launched last, a model or a slot profile: the model picker's `> ` marker |
+| `~/.config/agent-wt/slot-profiles.toml` | you by hand; wt never writes it | `wt` | Slot profiles: named sets that map each of Claude Code's model slots to a registry model ([06-wt-agents-and-models](06-wt-agents-and-models.md) §10). Absent by default |
 | `~/.config/agent-wt/profiles.toml` | you by hand; `wt profile on\|off` sets its `enabled` line | `wt` | Local-model launch profiles ([06-wt-agents-and-models](06-wt-agents-and-models.md) §9). Absent by default; `profile-backups/` beside it holds wt's snapshots of the files a profile rewrites |
 | `~/.config/agent-wt/survey.jsonl` | `wt` (the post-session survey, which is switched off) | `wt stats`, the model picker | Recorded survey answers ([07-usage-and-spend](07-usage-and-spend.md)) |
 | `~/.config/agent-wt/refcount.jsonl` | `wt` | `wt` | Which live wt sessions use which model; an entry lasts until its session's process is gone |
@@ -225,13 +227,54 @@ Example (illustrative — your ids will differ):
 
 - **Owner:** `wt` (single global rotation file; per-slot files legacy).
 - **Consumers:** `wt` (rotation cursor).
-- **Purpose:** rotation position — the file body is just the model id of the last launch. Per-slot files such as `rotation-claude-code-_.state` / `rotation-pi-code-_.state`, if present, are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/local-ai-setup/wt/internal/rotation/rotation.go:138-175`).
+- **Purpose:** rotation position — the file body is just the model id of the last single-model launch. A slot-profile launch does not write it. Per-slot files such as `rotation-claude-code-_.state` / `rotation-pi-code-_.state`, if present, are legacy — wt deletes them after its one-time migration (source: `~/github/ohanaverse/local-ai-setup/wt/internal/rotation/rotation.go`).
 
 Example (illustrative — your id will differ):
 
 ```
 ollama/glm-5.3-flash:cloud
 ```
+
+### `~/.config/agent-wt/last-picked.state`
+
+- **Owner:** `wt` (every launch that records: a model launch and a slot-profile launch).
+- **Consumers:** `wt` (the model picker's `> ` marker, and the starting cursor when the last pick was a slot profile).
+- **Purpose:** one line, the id of the row launched last. It is separate from `rotation.state` so that launching a slot profile moves the marker without moving the rotation position. When the file is missing, wt reads `rotation.state` instead, so state written before this file existed keeps working.
+
+Example (illustrative — your id will differ):
+
+```
+profile/<name>
+```
+
+### `~/.config/agent-wt/slot-profiles.toml`
+
+- **Owner:** you, by hand. wt reads it and never writes it. Absent by default; a missing file means no profile rows.
+- **Consumers:** `wt` (the claude model picker, `-M profile/<name>`, `wt profile list`, `wt profile show`).
+- **Purpose:** slot profiles. Each `[[profile]]` names an agent, assigns a registry model id to some or all of the agent's model slots, and names the slot the session starts on.
+
+Shape (the ids are placeholders — take real ones from `wt model list`):
+
+```toml
+[[profile]]
+name    = "<name>"
+agent   = "claude"
+default = "sonnet"
+
+[profile.slots]
+opus   = "<registry id>"
+sonnet = "<registry id>"
+haiku  = "<registry id>"
+```
+
+See what wt makes of the file:
+
+```bash
+wt profile list                                # from: any dir, read-only
+wt profile show -A claude -M profile/<name>    # from: any dir; probes local providers, changes nothing
+```
+
+Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slot-profiles.md).
 
 ### `~/Library/LaunchAgents/` plists
 

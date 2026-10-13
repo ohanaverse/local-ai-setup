@@ -135,6 +135,21 @@ zero-width characters, non-ASCII spaces — as `\u202e`.
 
 Nothing is printed for an empty table but `no usage data`.
 
+**A slot profile has a row of its own.** A launch of a slot profile
+([wt-agents/slot-profiles.md](wt-agents/slot-profiles.md)) is recorded under
+`profile/<name>`, so that id appears as a row with its launch count and `-`
+in `REQUESTS`, `PROMPT`, `COMPLETION` and `SPEND` (`null` with `--json`).
+The proxy logs each request of the session under the slot model that served
+it, so the spend is on those models' rows, which can show requests with no
+launch of their own. wt does not add a profile's spend back to its row.
+Example (illustrative values):
+
+```
+MODEL                        LAUNCHES  REQUESTS     PROMPT  COMPLETION    SPEND
+ollama/glm-5.3-flash:cloud          0       212    981,204      40,118  $0.0000
+profile/mixed                       3         -          -           -        -
+```
+
 ## Where spend comes from
 
 wt runs one aggregated query against the proxy's Postgres table

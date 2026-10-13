@@ -90,6 +90,11 @@ Quick reference (homepage, GitHub, install): [supported-agents.md](supported-age
 | OpenCode | [opencode-wt.md](opencode-wt.md) | Verified on this machine, 2026-09-02 |
 | Shell command | [shell-wt.md](shell-wt.md) | Verified on this machine, 2026-07-22 |
 
+Claude Code can also be launched with a **slot profile**, which maps each of
+its model slots to a registry model in one launch: [slot-profiles.md](slot-profiles.md).
+Automatic launch profiles, which adjust a single-model launch, are in
+[profiles.md](profiles.md).
+
 ## Verification convention
 
 Each per-agent file ends with a "Verified on this machine" section. Verified files carry a `Verified on this machine, YYYY-MM-DD` stamp inside that section; convention-only files state non-verification explicitly. Re-verifying a file is a single-file edit, not a rename.
@@ -105,7 +110,7 @@ defaulted (it always comes from `-A` or the agent+command picker).
 |------|-------------|
 | `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch name. For branches with slashes (e.g., `feature/my-branch`, `origin/feature`), the last path component is used as the worktree directory name (`.worktrees/my-branch`, `.worktrees/feature`). Remote tracking branches are checked out as new local branches. Skips the worktree picker. The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. |
 | `-A <name>`, `--agent <name>` | Pin the agent (`claude`, `codex`, `copilot`, `pi`, `agy`, `opencode`) or command (`shell`) to launch. The agent is never defaulted: when `-A` is omitted the agent+command picker is always shown. Supplying `-A` skips the picker. |
-| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). A pinned local model that is not running is started first. Errors if the model is not in the eligible list or its row is blocked. Skips the model picker. Without `-A`, the agent+command picker is shown first, then the pin is validated against the chosen agent. |
+| `-M <id>`, `--model <id>` | Pin the model as `<provider>/<name>` (e.g. `claude/opus`, `ollama/gemma4:9b`). A pinned local model that is not running is started first. Errors if the model is not in the eligible list or its row is blocked. Skips the model picker. Without `-A`, the agent+command picker is shown first, then the pin is validated against the chosen agent. `-M profile/<name>` pins a slot profile instead of a model ([slot-profiles.md](slot-profiles.md)). |
 | `--replace` | With `-M`, start the model even if it means stopping a running one. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
@@ -256,6 +261,12 @@ line.
   still prints its summary. Nothing above the picker is watching for those
   signals any more — the agent has already exited — so this is the only
   Ctrl+C handling left on the path.
+- **After a slot-profile session** the order is shorter: release the
+  session's refcount entries (one per slot model) → stop picker → summary
+  line. The summary names the profile (`wt: claude · profile/<name> · <duration>`).
+  There is no survey and no pricing notice, since a profile is not one
+  priced model. The stop picker is the same one: it offers every running
+  local model no live session uses, not only the profile's.
 
 See `docs/wt-stats.md` for how the collected survey data is reported.
 

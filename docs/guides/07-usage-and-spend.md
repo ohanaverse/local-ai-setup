@@ -86,7 +86,7 @@ Without `psql`, a reachable database or a configured URL, the launch counts stil
 - **An arbitrary `--days N`.** The windows are `1d`, `7d` and `30d`.
 - **Markdown output.** `wt stats` prints a plain table, or one JSON document with `--json`.
 - **The Reconciliation sections.** Read them off the table (Step 2).
-- **The "Last wt launch" line.** `cat ~/.config/agent-wt/rotation.state` shows it: one global slot, the last model launch and nothing more (guide 06).
+- **The "Last wt launch" line.** `cat ~/.config/agent-wt/last-picked.state` shows it: the row launched last, a model or a slot profile, and nothing more. `rotation.state` beside it is the last single-model launch (guide 06).
 
 Totals can differ at the edges of a window from a report made with the old command: wt compares the proxy's timestamps as UTC, and leaves out a request logged exactly at the start of the window, as it leaves out a launch at that instant.
 
@@ -105,7 +105,8 @@ Totals can differ at the edges of a window from a report made with the old comma
 ## Gotchas
 
 - **Only LiteLLM-routed traffic produces spend.** Native and direct launches (ollama cloud, oMLX `:8000`) never appear in LiteLLM spend: they are rows with launches and `0` requests. Expect many if most of your launches are native.
-- **`rotation.state` is the *last* model launch, nothing more** — one global slot; `esc`/canceled prompts never touch it. It is not a usage summary (guide 06), and `wt stats` does not print it.
+- **`rotation.state` is the *last* single-model launch, nothing more** — one global slot; `esc`/canceled prompts and slot-profile launches never touch it. It is not a usage summary (guide 06), and `wt stats` does not print it.
+- **A slot profile is a row with launches and no spend.** A launch of `profile/<name>` (guide 06 §10) is counted on its own row, and the spend columns there read `-`. The proxy logs the session's requests under the slot models, so the spend is on their rows, which can show requests without a launch. wt does not attribute spend back to a profile.
 - **Point-in-time snapshot.** Every model launch appends to `usage.jsonl` and LiteLLM logs to Postgres asynchronously — rerun tomorrow (or in a minute) and the numbers shift. There is no live/budget dashboard here.
 
 ## Going deeper
