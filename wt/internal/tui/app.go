@@ -810,9 +810,9 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	snap := &inv
 
 	// One Rotation for both the marker and the cursor (each New() scans the
-	// config dir). A missing rotation.state yields "". tableFor also reads it
-	// for the marker; the cursor logic below reuses rot so the config dir is
-	// scanned once.
+	// config dir). tableFor reads the last-picked row id from it for the
+	// marker ("" when nothing was ever launched); the cursor logic below
+	// reuses rot so the config dir is scanned once.
 	rot := rotation.New()
 	tbl, lastID := m.tableFor(agent, models, snap, rot)
 
@@ -878,28 +878,42 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 		return routeBack(catalog.NoRowsReason(agent))
 	}
 
-	// Cursor: the rotation's next-to-use model among actionable rows
-	// (launch or start — anything without a hint), otherwise the first
-	// actionable row, otherwise the top.
+	// Cursor, in this order: the last-picked row when it is a slot profile
+	// that is here and not blocked (profiles do not rotate, so the one just
+	// used is offered again); otherwise the rotation's next-to-use model
+	// among actionable model rows (launch or start: anything without a
+	// hint); otherwise the first actionable row, a profile row included;
+	// otherwise the top.
+	//
+	// actionable holds model rows only. Rotation walks the registry, so a
+	// profile row could never be its answer, and a profile row's model is an
+	// id with nothing else in it.
 	var actionable []config.Model
 	first := -1
 	for i, it := range tbl.items {
-		if it.blocked == "" {
+		if it.blocked != "" {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		if it.profile == nil {
 			actionable = append(actionable, it.model)
-			if first < 0 {
-				first = i
-			}
 		}
 	}
 	pos := 0
 	if first >= 0 {
 		pos = first
 	}
-	// Rotation positions the cursor only when the last-launched model is a
-	// registry model: with no rotation state (or a stale/discovered id that
-	// is never in cfg.Models) NextFromEligible would fall back to the
-	// registry-first model, so the first launchable row is used instead.
-	if lastID != "" && config.IndexModelByID(m.cfg.Models, lastID) >= 0 {
+	if idx, ok := idIndex[lastID]; ok && tbl.items[idx].profile != nil && tbl.items[idx].blocked == "" {
+		pos = idx
+	} else if rotLast, _ := rot.Last(); rotLast != "" && config.IndexModelByID(m.cfg.Models, rotLast) >= 0 {
+		// Rotation positions the cursor only when the last-launched model is
+		// a registry model: with no rotation state (or a stale/discovered id
+		// that is never in cfg.Models) NextFromEligible would fall back to
+		// the registry-first model, so the first actionable row is used
+		// instead. The pointer is read from rotation.state (rot.Last), not
+		// from lastID: after a profile launch the two differ.
 		if next, ok := rot.NextFromEligible(actionable, m.cfg); ok {
 			if idx, ok := idIndex[next.ID]; ok {
 				pos = idx
@@ -936,12 +950,14 @@ func (m model) routeBackToAgent(status string) (model, tea.Cmd) {
 }
 
 // tableFor builds the selector table for agent from models and an inventory
-// snapshot, returning the table and the rotation's last-launched id. It is
-// the exact table build enterModelPhase performs (rotation last id from rot,
+// snapshot, returning the table and the last-picked row id, which is the row
+// the marker sits on: a model's id or a slot profile's (rot.LastPicked). It
+// is not the rotation pointer; a caller that needs that reads rot.Last. This
+// is the exact table build enterModelPhase performs (last-picked id from rot,
 // agent-scoped survey stats, one usage + refcount store read), shared with
 // refreshTable so a rebuilt table matches the original in every column.
 func (m model) tableFor(agent string, models []config.Model, snap *localmodels.Snapshot, rot *rotation.Rotation) (modelTable, string) {
-	lastID, _ := rot.Last()
+	lastID, _ := rot.LastPicked()
 	// Agent-scoped 30-day survey stats, one Events() read for the picker.
 	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
 	tbl := buildTable(tableInput{
