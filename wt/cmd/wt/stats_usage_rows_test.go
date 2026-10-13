@@ -377,3 +377,90 @@ func TestBuildUsageRowsFoldsIntoAnIdLaunchedOutsideTheWindow(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildUsageRowsProfileRowHasNoSpend verifies a slot profile's launches
+// appear as their own row: counted like any id's, in the family "profile",
+// and with no spend at all, while a model row beside it keeps its numbers.
+// The proxy logs each request under the slot model's registry id, so a zero
+// in the profile's spend cells would read as "this profile cost nothing"; a
+// nil Spend prints "-" and is null in --json.
+func TestBuildUsageRowsProfileRowHasNoSpend(t *testing.T) {
+	sp := &spend.Result{Rows: []spend.Row{
+		{Model: "ollama/glm:cloud", Requests: 40, PromptTokens: 1000, CompletionTokens: 200, Spend: 0.01},
+	}}
+	families := map[string]string{"ollama/glm:cloud": "glm", "ollama/idle": "glm"}
+	rows := buildUsageRows(map[string]usage.UsageCounts{
+		"profile/mixed":    counts(1, 2, 3),
+		"ollama/glm:cloud": counts(1, 1, 1),
+		"ollama/idle":      counts(0, 4, 4),
+	}, survey.Window7d, sp, families, statsFilter{})
+
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v, want 3", rows)
+	}
+	// Sorted by id: ollama/glm:cloud, ollama/idle, profile/mixed.
+	if r := rows[0]; r.Spend == nil || r.Spend.Requests != 40 {
+		t.Errorf("model row = %+v, want its spend kept", r)
+	}
+	if r := rows[1]; r.Spend == nil || r.Spend.Requests != 0 {
+		t.Errorf("launch-only model row = %+v, want a zero spend row, never nil", r)
+	}
+	p := rows[2]
+	if p.Model != "profile/mixed" || p.Family != "profile" || p.Launches != 2 {
+		t.Errorf("profile row = %+v, want profile/mixed in family profile with 2 launches", p)
+	}
+	if p.Spend != nil {
+		t.Errorf("profile row's Spend = %+v, want nil", p.Spend)
+	}
+	if got, want := usageCells(p), [6]string{"profile/mixed", "2", "-", "-", "-", "-"}; got != want {
+		t.Errorf("profile row's cells = %v, want %v", got, want)
+	}
+
+	// --family profile names the profile rows and nothing else.
+	only := buildUsageRows(map[string]usage.UsageCounts{
+		"profile/mixed":    counts(1, 2, 3),
+		"ollama/glm:cloud": counts(1, 1, 1),
+	}, survey.Window7d, sp, families, statsFilter{family: "profile"})
+	if len(only) != 1 || only[0].Model != "profile/mixed" {
+		t.Errorf("--family profile rows = %+v, want the one profile row", only)
+	}
+}
+
+// TestBuildUsageRowsProfileIDEdges verifies the two edges of the profile rule.
+// A registry model whose id happens to start with "profile/" (a provider with
+// that id) is a model: it keeps its zero spend row. Spend the proxy did log
+// under a profile's id is kept, not thrown away: wt does not write it there,
+// but hiding real money would be worse than an odd row.
+func TestBuildUsageRowsProfileIDEdges(t *testing.T) {
+	sp := &spend.Result{Rows: []spend.Row{{Model: "profile/logged", Requests: 3, Spend: 0.5}}}
+	families := map[string]string{"profile/registered": "odd"}
+	rows := buildUsageRows(map[string]usage.UsageCounts{
+		"profile/registered": counts(1, 1, 1),
+		"profile/logged":     counts(1, 1, 1),
+	}, survey.Window7d, sp, families, statsFilter{})
+
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want 2", rows)
+	}
+	if r := rows[0]; r.Model != "profile/logged" || r.Spend == nil || r.Spend.Requests != 3 || r.Spend.Spend != 0.5 {
+		t.Errorf("row = %+v, want the logged spend kept", r)
+	}
+	if r := rows[1]; r.Model != "profile/registered" || r.Spend == nil || r.Family != "odd" {
+		t.Errorf("row = %+v, want a registry model's zero spend row and its registry family", r)
+	}
+	for id, want := range map[string]bool{"profile/mixed": true, "profile/registered": false, "ollama/glm:cloud": false, "profile": false} {
+		if got := isSlotProfileID(id, families); got != want {
+			t.Errorf("isSlotProfileID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+// TestBuildUsageRowsProfileRowWithoutSpendData verifies a profile row is
+// unchanged when the report has no spend data at all: launches counted, Spend
+// nil, as for every row then.
+func TestBuildUsageRowsProfileRowWithoutSpendData(t *testing.T) {
+	rows := buildUsageRows(map[string]usage.UsageCounts{"profile/mixed": counts(1, 2, 3)}, survey.Window30d, nil, nil, statsFilter{})
+	if len(rows) != 1 || rows[0].Launches != 3 || rows[0].Spend != nil || rows[0].Family != "profile" {
+		t.Fatalf("rows = %+v, want one profile row with 3 launches and nil Spend", rows)
+	}
+}

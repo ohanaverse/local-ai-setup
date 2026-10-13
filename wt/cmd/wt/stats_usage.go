@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
@@ -85,6 +86,18 @@ func foldTarget(s string, known func(string) bool) (string, bool) {
 	return k, known(k)
 }
 
+// isSlotProfileID reports whether id is a slot profile's launch id: it has
+// the profile/ prefix and is not a registry model id. A registry can hold a
+// provider with id "profile", whose models' ids start the same way; wt builds
+// no slot-profile row then, and such an id is a model's.
+func isSlotProfileID(id string, families map[string]string) bool {
+	if !strings.HasPrefix(id, profiles.SlotIDPrefix) {
+		return false
+	}
+	_, registered := families[id]
+	return !registered
+}
+
 // buildUsageRows joins launch counts with spend rows on the model id — the
 // LiteLLM route's model_name is the registry id, so the proxy's model_group
 // and usage.jsonl's model_id are the same string, except for the other
@@ -98,6 +111,11 @@ func foldTarget(s string, known func(string) bool) (string, bool) {
 // after folding: a folded spelling has no row of its own to match. f.agent
 // is not read here: the launch counts arrive already narrowed to it, and a
 // spend row has no agent. Rows are sorted by model id.
+//
+// A slot profile's launches are recorded under its own id, "profile/<name>"
+// (isSlotProfileID). Its row has its launch count and a nil Spend even when
+// there is spend data: its spend lands on the slot models' rows, and this
+// report does not attribute it back to the profile.
 //
 // An empty id never gets a row, from either side: it would print as a line
 // with a blank MODEL cell that no --model value can name. usage.AllCounts
@@ -150,6 +168,16 @@ func buildUsageRows(counts map[string]usage.UsageCounts, window time.Duration, s
 		}
 		for _, r := range byModel {
 			sort.Strings(r.AlsoLoggedAs)
+		}
+	}
+
+	// A slot profile's row counts launches only. The proxy logs each request
+	// of a profile session under the slot model's registry id, so the zero
+	// spend the join gave this row would read as "this profile cost nothing".
+	// Spend the proxy did log under the id is kept.
+	for _, r := range byModel {
+		if r.Spend != nil && isSlotProfileID(r.Model, families) && *r.Spend == (spend.Row{Model: r.Model}) {
+			r.Spend = nil
 		}
 	}
 
