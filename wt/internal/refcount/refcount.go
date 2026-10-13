@@ -98,6 +98,39 @@ func (s *StoreImpl) Record(pid int, modelID string) error {
 	})
 }
 
+// RecordAll appends one live-session entry per distinct, non-empty id of
+// modelIDs for pid, in one locked write. A slot-profile session uses several
+// models at once, and each of them must read as in use for as long as the
+// session lives; one write means another wt process never sees half of them.
+// With nothing to record it writes nothing. It is not part of the Store
+// interface: its callers hold the concrete type.
+func (s *StoreImpl) RecordAll(pid int, modelIDs []string) error {
+	var lines []byte
+	seen := make(map[string]bool, len(modelIDs))
+	for _, id := range modelIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		line, err := json.Marshal(entry{Pid: pid, ModelID: id})
+		if err != nil {
+			return err
+		}
+		lines = append(lines, line...)
+		lines = append(lines, '\n')
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return s.withLock(func() error {
+		existing, err := os.ReadFile(s.path())
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return config.WriteFileAtomic(s.path(), append(existing, lines...), 0o600)
+	})
+}
+
 // Sweep drops every entry whose pid is no longer alive and rewrites the
 // state file. Called once at the top of every launch (runLaunchPath) so
 // counts stay accurate after a crashed or killed wt session. A corrupt line
