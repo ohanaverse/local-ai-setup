@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"sync/atomic"
@@ -348,5 +350,275 @@ func TestEnsureModelRoutesPrintsToTheCallersWriter(t *testing.T) {
 	}
 	if warn.Len() != 0 {
 		t.Fatalf("stderr got %q, want nothing: the caller passed a writer", warn.String())
+	}
+}
+
+// TestRestartProxy pins the restart a profile launch waits for and can fail
+// on. The asynchronous restart prints a failed command or a readiness
+// timeout as a warning and the launch goes on; here both are returned, so
+// the agent never starts against a proxy that does not know its routes.
+func TestRestartProxy(t *testing.T) {
+	notReady := errors.New("LiteLLM proxy not ready at http://localhost:4000/health/liveliness: context deadline exceeded")
+	tests := []struct {
+		name      string
+		warnings  []string
+		waitErr   error
+		wantErr   string
+		wantWaits int
+	}{
+		{name: "restarted and ready", wantWaits: 1},
+		{name: "restart command failed", warnings: []string{"failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart"}, wantErr: "failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart"},
+		{name: "readiness timeout", waitErr: notReady, wantErr: notReady.Error(), wantWaits: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, warn := stubRoutes(t, litellm.Result{}, nil)
+			var restartCtx context.Context
+			var waits []string
+			pendingDuringWait := false
+			restartProxy = func(ctx context.Context) []string {
+				restartCtx = ctx
+				return tc.warnings
+			}
+			waitProxy = func(_ context.Context, url string, d time.Duration) error {
+				waits = append(waits, fmt.Sprintf("%s %s", url, d))
+				pendingDuringWait = RoutesPending()
+				return tc.waitErr
+			}
+			// Nothing was listening before: the asynchronous restart skips
+			// the readiness wait then. This call must not.
+			probeProxy = func(context.Context, string, time.Duration) bool { return false }
+			cfg := profileCfg()
+
+			ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "sentinel"))
+			cancel() // a caller that was cancelled cannot call the restart off
+			err := RestartProxy(ctx, cfg)
+
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("RestartProxy = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr):
+				t.Fatalf("RestartProxy = %v, want %q", err, tc.wantErr)
+			}
+			if restartCtx == nil {
+				t.Fatal("the restart never ran")
+			}
+			if restartCtx.Err() != nil || restartCtx.Value(ctxKey{}) != "sentinel" {
+				t.Errorf("restart ctx: err %v value %v, want the caller's values without its cancellation", restartCtx.Err(), restartCtx.Value(ctxKey{}))
+			}
+			if len(waits) != tc.wantWaits {
+				t.Fatalf("readiness waits = %v, want %d", waits, tc.wantWaits)
+			}
+			if tc.wantWaits == 1 {
+				if want := proxyURL + " " + proxyReadyTimeout.String(); waits[0] != want {
+					t.Errorf("readiness wait = %q, want %q", waits[0], want)
+				}
+				if !pendingDuringWait {
+					t.Error("RoutesPending() = false during the restart: a process exit would not wait for it")
+				}
+			}
+			if RoutesPending() {
+				t.Error("RoutesPending() = true after RestartProxy returned")
+			}
+			if warn.Len() != 0 {
+				t.Errorf("output = %q, want none: the failure is returned, not printed", warn.String())
+			}
+		})
+	}
+}
+
+// TestRestartProxyWaitsForARestartInFlight pins that two restarts never
+// overlap: a restart that started while another was running would kill the
+// proxy the first had just brought up.
+func TestRestartProxyWaitsForARestartInFlight(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	release := make(chan struct{})
+	var running, overlapped atomic.Int32
+	var count atomic.Int32
+	restartProxy = func(context.Context) []string {
+		if running.Add(1) > 1 {
+			overlapped.Add(1)
+		}
+		if count.Add(1) == 1 {
+			<-release // the first restart is still running
+		}
+		running.Add(-1)
+		return nil
+	}
+	cfg := profileCfg()
+
+	bounceRoutes(context.Background(), cfg) // an earlier operation's restart, in flight
+	done := make(chan error, 1)
+	go func() { done <- RestartProxy(context.Background(), cfg) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("RestartProxy returned (%v) while another restart was in flight", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("RestartProxy = %v", err)
+	}
+	if count.Load() != 2 || overlapped.Load() != 0 {
+		t.Fatalf("restarts = %d, overlapping = %d, want 2 in sequence", count.Load(), overlapped.Load())
+	}
+}
+
+// TestRestartProxyWithoutAURL pins the unconfigured case: with no [litellm]
+// url there is no address to wait for, so nothing is restarted and the
+// error says why.
+func TestRestartProxyWithoutAURL(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	restarts := fakeRestarter(t)
+	err := RestartProxy(context.Background(), routesCfg())
+	if !errors.Is(err, config.ErrLitellmUnconfigured) {
+		t.Fatalf("RestartProxy = %v, want an error wrapping config.ErrLitellmUnconfigured", err)
+	}
+	if n := restarts.Load(); n != 0 {
+		t.Fatalf("restarts = %d, want 0", n)
+	}
+}
+
+// TestProbeProxy pins the probe every profile launch makes before it starts
+// the agent, including a launch that restarted nothing. It needs a 200:
+// litellm.Listening counts a timeout as an answer, and a launch into a
+// proxy that does not answer fails on the agent's first request instead of
+// here, with the reason.
+func TestProbeProxy(t *testing.T) {
+	down := errors.New("LiteLLM proxy not ready at http://localhost:4000/health/liveliness: context deadline exceeded")
+	tests := []struct {
+		name    string
+		url     string
+		waitErr error
+		wantErr string
+		wantIs  error
+		waits   int
+	}{
+		{name: "answers", url: proxyURL, waits: 1},
+		{name: "a trailing slash is trimmed", url: proxyURL + "/", waits: 1},
+		{name: "does not answer", url: proxyURL, waitErr: down, wantErr: "the LiteLLM proxy does not answer at http://localhost:4000: " + down.Error(), wantIs: down, waits: 1},
+		{name: "no url", url: "", wantErr: "the LiteLLM proxy cannot be probed: " + config.ErrLitellmUnconfigured.Error(), wantIs: config.ErrLitellmUnconfigured},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stubRoutes(t, litellm.Result{}, nil)
+			restarts := fakeRestarter(t)
+			var waits []string
+			waitProxy = func(_ context.Context, url string, d time.Duration) error {
+				waits = append(waits, fmt.Sprintf("%s %s", url, d))
+				return tc.waitErr
+			}
+			cfg := routesCfg()
+			cfg.SetLitellmForTest(config.LitellmState{URL: tc.url, APIKey: "sk-test-1234"})
+
+			err := ProbeProxy(context.Background(), cfg)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("ProbeProxy = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr):
+				t.Fatalf("ProbeProxy = %v, want %q", err, tc.wantErr)
+			}
+			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+				t.Errorf("err = %v, want it to wrap %v", err, tc.wantIs)
+			}
+			if len(waits) != tc.waits {
+				t.Fatalf("waits = %v, want %d", waits, tc.waits)
+			}
+			if tc.waits == 1 {
+				if want := proxyURL + " " + proxyProbeTimeout.String(); waits[0] != want {
+					t.Errorf("wait = %q, want %q", waits[0], want)
+				}
+			}
+			if n := restarts.Load(); n != 0 {
+				t.Errorf("restarts = %d, want 0: a probe restarts nothing", n)
+			}
+		})
+	}
+}
+
+// TestProbeProxyAgainstARealListener runs the probe through the real
+// litellm.WaitReady and a local test server, so the seam's stub is not the
+// only thing that ever answers it: a 200 on /health/liveliness is "there".
+func TestProbeProxyAgainstARealListener(t *testing.T) {
+	stubRoutes(t, litellm.Result{}, nil)
+	waitProxy = litellm.WaitReady
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	cfg := routesCfg()
+	cfg.SetLitellmForTest(config.LitellmState{URL: srv.URL, APIKey: "sk-test-1234"})
+
+	if err := ProbeProxy(context.Background(), cfg); err != nil {
+		t.Fatalf("ProbeProxy = %v, want nil", err)
+	}
+	if !slices.Equal(paths, []string{"/health/liveliness"}) {
+		t.Fatalf("requests = %v, want one to /health/liveliness", paths)
+	}
+}
+
+// TestProfileRoutesRestartCounts pins the restart budget of a profile
+// launch against the real config.yaml writer, with the route calls made in
+// the order the launch makes them: the cloud slots' routes, then the local
+// model's when it is already running, then one restart if one is owed.
+// Zero restarts when every route exists, so launching the same profile twice
+// does not drop the first session's in-flight requests; exactly one when
+// several are missing, so the routes are live before the agent starts.
+func TestProfileRoutesRestartCounts(t *testing.T) {
+	tests := []struct {
+		name  string
+		cloud []string
+		local []string
+	}{
+		{name: "several missing cloud routes", cloud: []string{"openrouter/x", "openrouter/y", "ollama/g:cloud"}},
+		{name: "missing cloud routes and a running local model", cloud: []string{"openrouter/x", "openrouter/y"}, local: []string{"ollama/a:1"}},
+		{name: "one slot model named twice", cloud: []string{"openrouter/x", "openrouter/x"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path, _, warn := realRoutes(t, "model_list: []\n")
+			restarts := fakeRestarter(t)
+			cfg := profileCfg()
+			ctx := context.Background()
+
+			launch := func() {
+				t.Helper()
+				owed, err := EnsureModelRoutes(ctx, nil, cfg, modelsByID(t, cfg, tc.cloud...), false)
+				if err != nil {
+					t.Fatalf("cloud routes: %v", err)
+				}
+				if len(tc.local) > 0 {
+					if owed, err = EnsureModelRoutes(ctx, nil, cfg, modelsByID(t, cfg, tc.local...), owed); err != nil {
+						t.Fatalf("local route: %v", err)
+					}
+				}
+				if owed {
+					if err := RestartProxy(ctx, cfg); err != nil {
+						t.Fatalf("RestartProxy: %v", err)
+					}
+				}
+			}
+
+			launch()
+			if n := restarts.Load(); n != 1 {
+				t.Fatalf("first launch: restarts = %d, want exactly 1 (output %q)", n, warn.String())
+			}
+			want := slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(tc.cloud), tc.local...))))
+			if got := sortedRoutedIDs(t, path); !slices.Equal(got, want) {
+				t.Fatalf("routed = %v, want %v", got, want)
+			}
+
+			warn.Reset()
+			launch()
+			if n := restarts.Load(); n != 1 {
+				t.Fatalf("second launch: restarts = %d in all, want still 1: every route exists", n)
+			}
+			if warn.Len() != 0 {
+				t.Fatalf("second launch printed %q, want nothing", warn.String())
+			}
+		})
 	}
 }

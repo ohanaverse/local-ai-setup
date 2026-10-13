@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
@@ -106,4 +108,50 @@ func EnsureModelRoutes(ctx context.Context, out io.Writer, cfg *config.Config, m
 		reportEnsured(ctx, w, ch.Add[0].ID)
 	}
 	return owed, nil
+}
+
+// proxyProbeTimeout bounds ProbeProxy.
+const proxyProbeTimeout = 5 * time.Second
+
+// RestartProxy restarts the LiteLLM proxy and waits for it to answer,
+// returning what bounceProxyAsync only prints: the restart command's
+// failure, or the readiness timeout. It first waits for any restart
+// already in flight (WaitPendingRoutes), counts itself in routeWG and
+// routesInFlight while it runs, and always waits for readiness
+// (waitProxy, proxyReadyTimeout). ctx gives it its values only; its
+// cancellation is dropped (context.WithoutCancel), because a restart
+// cannot be called off.
+//
+// An empty [litellm] url is an error wrapping config.ErrLitellmUnconfigured,
+// returned before anything is restarted: there is no address to wait for.
+func RestartProxy(ctx context.Context, cfg *config.Config) error {
+	url := cfg.LitellmBaseURL()
+	if url == "" {
+		return fmt.Errorf("the LiteLLM proxy was not restarted: %w", config.ErrLitellmUnconfigured)
+	}
+	WaitPendingRoutes()
+	routeWG.Add(1)
+	routesInFlight.Add(1)
+	defer routeWG.Done()
+	defer routesInFlight.Add(-1)
+	bg := context.WithoutCancel(ctx)
+	if warnings := restartProxy(bg); len(warnings) > 0 {
+		return errors.New(strings.Join(warnings, "; "))
+	}
+	return waitProxy(bg, url, proxyReadyTimeout)
+}
+
+// ProbeProxy checks that the proxy at cfg's [litellm] url answers 200 on
+// its liveness endpoint within proxyProbeTimeout (one waitProxy call).
+// Error: fmt.Errorf("the LiteLLM proxy does not answer at %s: %w", url, err).
+// An empty url is an error wrapping config.ErrLitellmUnconfigured.
+func ProbeProxy(ctx context.Context, cfg *config.Config) error {
+	url := cfg.LitellmBaseURL()
+	if url == "" {
+		return fmt.Errorf("the LiteLLM proxy cannot be probed: %w", config.ErrLitellmUnconfigured)
+	}
+	if err := waitProxy(ctx, url, proxyProbeTimeout); err != nil {
+		return fmt.Errorf("the LiteLLM proxy does not answer at %s: %w", url, err)
+	}
+	return nil
 }
