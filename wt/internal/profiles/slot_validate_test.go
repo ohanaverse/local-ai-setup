@@ -13,11 +13,17 @@ import (
 //     reserved keys;
 //   - "wrapped": two slots, the env, args and wrapper mechanisms, where env
 //     has no effect without wrapper;
+//   - "lenient": one slot, the env and config_file mechanisms, and no rule
+//     of its own for config_content;
 //   - "plain": a known agent with no slot support.
+//
+// "claude" alone has a config_content rule, the real driver's: an env key,
+// when present, is a table.
 func slotTestDrivers() SlotDrivers {
 	slots := map[string][]string{
 		"claude":  {"fable", "opus", "sonnet", "haiku"},
 		"wrapped": {"big", "small"},
+		"lenient": {"only"},
 	}
 	reserved := map[string][]string{
 		"claude": {
@@ -32,9 +38,12 @@ func slotTestDrivers() SlotDrivers {
 	mechanisms := map[string][]Mechanism{
 		"claude":  {MechanismEnv, MechanismConfigFile},
 		"wrapped": {MechanismEnv, MechanismArgs, MechanismWrapper},
+		"lenient": {MechanismEnv, MechanismConfigFile},
 	}
 	return SlotDrivers{
-		Known:       func(agent string) bool { return slices.Contains([]string{"claude", "wrapped", "plain"}, agent) },
+		Known: func(agent string) bool {
+			return slices.Contains([]string{"claude", "wrapped", "lenient", "plain"}, agent)
+		},
 		Slots:       func(agent string) []string { return slots[agent] },
 		ReservedEnv: func(agent string) []string { return reserved[agent] },
 		Mechanisms:  func(agent string) []Mechanism { return mechanisms[agent] },
@@ -44,6 +53,28 @@ func slotTestDrivers() SlotDrivers {
 			}
 			return "", false
 		},
+		ConfigContent: func(agent string, cc map[string]any) error {
+			if agent != "claude" {
+				return nil
+			}
+			if raw, ok := cc["env"]; ok {
+				if _, ok := raw.(map[string]any); !ok {
+					return errors.New("config_content.env must be a table")
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// validLenientSlot is a profile for the "lenient" agent, whose driver has no
+// rule for config_content, that passes every static rule.
+func validLenientSlot() SlotProfile {
+	return SlotProfile{
+		Name:    "lenient-one",
+		Agent:   "lenient",
+		Default: "only",
+		Slots:   map[string]string{"only": "ollama/mid:cloud"},
 	}
 }
 
@@ -97,9 +128,24 @@ func TestValidateSlotsRules(t *testing.T) {
 			}
 		}, wantUsable: true},
 		{name: "env, args and wrapper on an agent that allows them", base: validWrappedSlot, edit: func(p *SlotProfile) {}, wantUsable: true},
-		{name: "a config_content.env that is not a table is left to the slot build", edit: func(p *SlotProfile) {
-			p.ConfigContent = map[string]any{"env": "ANTHROPIC_BASE_URL"}
+		{name: "a config_content.env that is not a table, on an agent with no rule for it", base: validLenientSlot, edit: func(p *SlotProfile) {
+			p.ConfigContent = map[string]any{"env": "x"}
 		}, wantUsable: true},
+		{name: "a config_content with no env key on an agent with a rule for env", edit: func(p *SlotProfile) {
+			p.ConfigContent = map[string]any{"modelOverrides": map[string]any{"a": "b"}}
+		}, wantUsable: true},
+
+		// The agent's own config_content rule.
+		{name: "a config_content.env that is a string", edit: func(p *SlotProfile) {
+			p.ConfigContent = map[string]any{"env": "x"}
+		}, wantErr: `config_content.env must be a table`, wantUsable: true},
+		{name: "a config_content.env that is an array", edit: func(p *SlotProfile) {
+			p.ConfigContent = map[string]any{"env": []any{"ANTHROPIC_BASE_URL"}}
+		}, wantErr: `config_content.env must be a table`, wantUsable: true},
+		{name: "a reserved env key is reported before the agent's config_content rule", edit: func(p *SlotProfile) {
+			p.Env = map[string]string{"ANTHROPIC_BASE_URL": "http://elsewhere.invalid"}
+			p.ConfigContent = map[string]any{"env": "x"}
+		}, wantErr: `env sets ANTHROPIC_BASE_URL, which wt sets for the launch`, wantUsable: true},
 
 		// Rule 1.
 		{name: "name missing", edit: func(p *SlotProfile) { p.Name = "" }, wantErr: `name is missing`},
@@ -374,5 +420,27 @@ func TestValidateSlotsDeclaredIsACopy(t *testing.T) {
 	checks[0].Declared[0] = "changed"
 	if shared[0] != "fable" {
 		t.Errorf("writing to Declared changed the driver's own slot list to %v", shared)
+	}
+}
+
+// TestValidateSlotsWithoutConfigContentCallback checks what a SlotDrivers
+// with no ConfigContent callback does: a profile that sets config_content is
+// refused, since nothing can say whether its agent accepts the content, and a
+// profile without config_content passes as before. If the missing callback
+// passed the content instead, a caller that forgot to wire it would show a
+// launch row for a profile whose launch the slot build then refuses.
+func TestValidateSlotsWithoutConfigContentCallback(t *testing.T) {
+	d := slotTestDrivers()
+	d.ConfigContent = nil
+	with := validClaudeSlot()
+	with.ConfigContent = map[string]any{"modelOverrides": map[string]any{"a": "b"}}
+	checks := ValidateSlots(SlotStore{Profiles: []SlotProfile{with}}, d)
+	const want = `config_content cannot be checked for agent "claude"`
+	if len(checks) != 1 || checks[0].Err == nil || checks[0].Err.Error() != want {
+		t.Errorf("ValidateSlots() with a nil ConfigContent = %+v, want one check with Err %q", checks, want)
+	}
+	checks = ValidateSlots(SlotStore{Profiles: []SlotProfile{validClaudeSlot()}}, d)
+	if len(checks) != 1 || checks[0].Err != nil {
+		t.Errorf("ValidateSlots() of a profile with no config_content = %+v, want one passing check", checks)
 	}
 }

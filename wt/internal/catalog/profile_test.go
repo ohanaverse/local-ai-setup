@@ -664,3 +664,55 @@ func TestResolveSlotProfileBlockedRowCarriesItsLocalModelsState(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildBlocksAProfileTheAgentsContentRuleRefuses follows a profile from
+// static validation to its row: when the agent's driver refuses the
+// profile's config_content, the profile is still Usable, so it gets a row,
+// and the row is blocked with the driver's message. The same content for an
+// agent whose driver has no such rule, and content the rule accepts, give a
+// launch row. Before the rule was static, such a profile was drawn as a
+// launch row and failed at the slot build, after the routes were written.
+func TestBuildBlocksAProfileTheAgentsContentRuleRefuses(t *testing.T) {
+	drivers := profiles.SlotDrivers{
+		Known:       func(string) bool { return true },
+		Slots:       func(string) []string { return slotDeclared },
+		ReservedEnv: func(string) []string { return nil },
+		Mechanisms: func(string) []profiles.Mechanism {
+			return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile}
+		},
+		ConfigContent: func(agent string, cc map[string]any) error {
+			if _, table := cc["env"].(map[string]any); agent == "claude" && cc["env"] != nil && !table {
+				return errors.New("config_content.env must be a table")
+			}
+			return nil
+		},
+	}
+	profile := func(name, agent string, env any) profiles.SlotProfile {
+		return profiles.SlotProfile{Name: name, Agent: agent, Default: "sonnet",
+			Slots: map[string]string{"sonnet": "openrouter/a"}, ConfigContent: map[string]any{"env": env}}
+	}
+	store := profiles.SlotStore{Profiles: []profiles.SlotProfile{
+		profile("string-env", "claude", "x"),
+		profile("table-env", "claude", map[string]any{"MAX_THINKING_TOKENS": "4096"}),
+		profile("other-agent", "codex", "x"),
+	}}
+	checks := profiles.ValidateSlots(store, drivers)
+	for _, tc := range []struct {
+		agent, id  string
+		wantAction Action
+		wantReason string
+	}{
+		{"claude", "profile/string-env", ActionBlock, "config_content.env must be a table"},
+		{"claude", "profile/table-env", ActionLaunch, ""},
+		{"codex", "profile/other-agent", ActionLaunch, ""},
+	} {
+		row, ok := Find(Build(Input{Config: slotTestCfg(), Agent: tc.agent, SlotProfiles: checks}), tc.id)
+		if !ok {
+			t.Errorf("%s: no row for agent %s", tc.id, tc.agent)
+			continue
+		}
+		if row.Action() != tc.wantAction || row.BlockReason() != tc.wantReason {
+			t.Errorf("%s: action = %v, reason = %q\nwant %v, %q", tc.id, row.Action(), row.BlockReason(), tc.wantAction, tc.wantReason)
+		}
+	}
+}

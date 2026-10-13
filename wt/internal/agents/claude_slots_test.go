@@ -244,3 +244,40 @@ func TestClaudeBuildSlotsErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestClaudeCheckConfigContentIsTheBuildsRule pins that static validation
+// and the slot build refuse the same config_content with the same words:
+// whatever CheckConfigContent refuses, BuildSlots refuses with that message,
+// and whatever it passes, the build accepts. Two copies of the rule could
+// drift, and then the picker would offer a row whose launch fails, or block
+// one that would have launched.
+func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cc   map[string]any
+		want string // "" means accepted
+	}{
+		{"no config_content", nil, ""},
+		{"no env key", map[string]any{"modelOverrides": map[string]any{"a": "b"}}, ""},
+		{"env is a table", map[string]any{"env": map[string]any{"MAX_THINKING_TOKENS": "4096"}}, ""},
+		{"env is a string", map[string]any{"env": "x"}, "config_content.env must be a table"},
+		{"env is an array", map[string]any{"env": []any{"A=1"}}, "config_content.env must be a table"},
+		{"env is a number", map[string]any{"env": int64(1)}, "config_content.env must be a table"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkErr := claudeDriver{}.CheckConfigContent(tc.cc)
+			in := slotTestInput(false)
+			in.ConfigContent = tc.cc
+			_, buildErr := claudeDriver{}.BuildSlots(in)
+			msg := func(err error) string {
+				if err == nil {
+					return ""
+				}
+				return err.Error()
+			}
+			if msg(checkErr) != tc.want || msg(buildErr) != tc.want {
+				t.Errorf("CheckConfigContent = %q, BuildSlots = %q, want %q from both", msg(checkErr), msg(buildErr), tc.want)
+			}
+		})
+	}
+}

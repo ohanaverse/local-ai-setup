@@ -352,6 +352,9 @@ type fakeSlotDriver struct{}
 
 func (fakeSlotDriver) SlotNames() []string       { return []string{"big", "small"} }
 func (fakeSlotDriver) ReservedEnvKeys() []string { return []string{"FAKE_MODEL"} }
+func (fakeSlotDriver) CheckConfigContent(map[string]any) error {
+	return nil
+}
 func (fakeSlotDriver) BuildSlots(in SlotBuildInput) (SlotCommand, error) {
 	return SlotCommand{
 		Bin:              in.Agent,
