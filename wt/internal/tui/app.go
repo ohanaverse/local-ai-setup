@@ -817,8 +817,10 @@ func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
 // the pin and the picker can never disagree: a launch row (cloud, or a local
 // model the probe reports running) proceeds straight to launch, an idle local
 // start row is selected and shown for the user to start, and a blocked row
-// routes back with the row's own reason. A mismatch routes to phaseAgent (the
-// bad pin is cleared so re-entry validates fresh).
+// routes back with the row's own reason. A pinned slot profile
+// (-M profile/<name>) that is not blocked begins its launch through
+// beginSlotLaunch; a blocked one routes back like any blocked row. A mismatch
+// routes to phaseAgent (the bad pin is cleared so re-entry validates fresh).
 //
 // The header's tag line and hideDiscovered answer two different questions
 // and are intentionally not the same value: the tag line shows firstTag (the
@@ -898,6 +900,18 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 			// agent picker, where the user can choose another agent or fix
 			// the model.
 			return routeBack(it.blocked)
+		case it.profile != nil:
+			// A slot profile: begin its launch, as the non-TUI pin does. The
+			// row is selected first so a failed launch returns to the picker
+			// on it. --replace applies when its local model has to start
+			// (handleSlotMsg reads it against the pin).
+			m.models.Select(idx)
+			m.phase = phaseModel
+			pinned, ok := m.models.SelectedItem().(*modelItem)
+			if !ok {
+				return m, nil
+			}
+			return m.beginSlotLaunch(pinned)
 		case it.start:
 			// The pin needs a start: run it through the same start flow every
 			// other start row uses, exactly as the non-TUI -M path does, so

@@ -816,3 +816,91 @@ func TestProfileStartFailureReturnsToThePicker(t *testing.T) {
 	}
 	assertNothingRecorded(t)
 }
+
+// pinnedProfile enters the claude model phase with a -M pin and the given
+// profiles, the way the TUI does after the agent was picked.
+func pinnedProfile(t *testing.T, pin string, allowReplace bool, checks ...profiles.SlotCheck) (model, tea.Cmd) {
+	t.Helper()
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubRouteNotes(t)
+	stubInventory(t, idleOmlxSnapshot())
+	cfg := slotTestConfig()
+	m := model{cfg: cfg, agent: "claude", pinnedModel: pin, allowReplace: allowReplace, slotChecks: checks, selectedPath: t.TempDir(), width: 80, height: 24}
+	models, _ := cfg.EligibleModels("claude", "", "")
+	return m.enterModelPhase("claude", models, "code")
+}
+
+// TestPinOnProfileBeginsItsLaunch pins `-M profile/<name>` in the TUI: the
+// pin and the picker read the same row, and a usable profile begins its
+// launch without waiting for Enter, as a pinned model does. --replace is the
+// pin's permission to stop a running occupant when the profile's local model
+// has to start. Without the pin branch the profile's id-only row would go to
+// the single-model launch and fail with "unknown provider".
+func TestPinOnProfileBeginsItsLaunch(t *testing.T) {
+	t.Run("a launch row", func(t *testing.T) {
+		stub := stubSlotSeams(t)
+		got, cmd := pinnedProfile(t, "profile/cloud", false, cloudProfile(), mixedProfile())
+		if got.phase != phaseSlot || got.slot == nil || got.slot.item.model.ID != "profile/cloud" {
+			t.Fatalf("phase = %v slot = %+v, want the pinned profile's launch in flight", got.phase, got.slot)
+		}
+		if selectedModelID(got) != "profile/cloud" {
+			t.Errorf("cursor on %q, want the pinned row, so a failed launch returns to it", selectedModelID(got))
+		}
+		if events := stub.got(); events != "" {
+			t.Errorf("events = %q, want none before the command runs", events)
+		}
+		updateMsg(got, slotStageFrom(t, cmd)())
+		if want := "ensure:openrouter/a,openrouter/b:owed=false,probe,build"; stub.got() != want {
+			t.Errorf("events = %q, want %q", stub.got(), want)
+		}
+	})
+
+	t.Run("a start row under --replace", func(t *testing.T) {
+		stubSlotSeams(t)
+		calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+		got, cmd := pinnedProfile(t, "profile/mixed", true, cloudProfile(), mixedProfile())
+		starting, _ := updateMsg(got, slotStageFrom(t, cmd)())
+		if starting.start != nil && starting.start.cancel != nil {
+			t.Cleanup(starting.start.cancel)
+		}
+		waitStartCalls(t, calls, 1)
+		if c := calls.at(0); !c.opts.AllowReplace || c.target != omlxTarget {
+			t.Errorf("start = %+v, want AllowReplace for the pinned profile's local model", c)
+		}
+	})
+}
+
+// TestPinOnUnusableProfileRoutesBackToTheAgentPicker pins the rejected pin:
+// a blocked profile returns to the agent picker with the row's reason, and a
+// profile that has no row for this agent gets the existing "not in the
+// eligible list" message. Either way the pin is cleared and nothing is
+// written or probed.
+func TestPinOnUnusableProfileRoutesBackToTheAgentPicker(t *testing.T) {
+	broken := slotCheckFor(0, "broken", "opus", map[string]string{"opus": "openrouter/gone"})
+	cases := []struct {
+		name, pin, status string
+	}{
+		{"a blocked profile", "profile/broken", "slot opus: openrouter/gone is not in the registry"},
+		{"a profile with no row", "profile/nope", `model "profile/nope" is not in the eligible list for agent "claude"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stub := stubSlotSeams(t)
+			got, cmd := pinnedProfile(t, c.pin, false, broken, cloudProfile())
+			if got.phase != phaseAgent || got.slot != nil || cmd != nil {
+				t.Fatalf("phase = %v slot = %v cmd nil = %v, want the agent picker and no command", got.phase, got.slot, cmd == nil)
+			}
+			if got.status != c.status {
+				t.Errorf("status = %q, want %q", got.status, c.status)
+			}
+			if got.pinnedModel != "" {
+				t.Errorf("pinnedModel = %q, want it cleared so re-entry validates fresh", got.pinnedModel)
+			}
+			if events := stub.got(); events != "" {
+				t.Errorf("events = %q, want none", events)
+			}
+		})
+	}
+}
