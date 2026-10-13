@@ -1290,8 +1290,12 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // this session makes; cmd/wt's main.go builds it as a closure over the
 // already-loaded profiles.toml state (mirrors the non-TUI path's
 // applyProfileForLaunch).
-func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier) error {
-	p := tea.NewProgram(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), tea.WithAltScreen())
+// slots carries the slot profiles: the picker shows a row for each one that
+// names this agent, and a profile launch applies slots.Apply in place of
+// applyProfile.
+func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles) error {
+	initial := withSlotProfiles(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), slots)
+	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
@@ -1397,6 +1401,19 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 	summary := pendingSummary
 	pendingSurveyState = pendingSurvey{}
 	pendingSummary = ""
+
+	if launched.profile {
+		// A slot-profile session. The refcount lines are released, then the
+		// stop picker runs as after any non-native launch; it is not
+		// filtered to the profile. No survey and no price notice: the
+		// profile is not one priced registry model.
+		releaseSession()
+		runStopPhase(cfg)
+		if summary != "" {
+			fmt.Println("\n" + summary)
+		}
+		return
+	}
 
 	var stats string
 	if launched.agent != "" {
