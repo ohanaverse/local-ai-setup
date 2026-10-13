@@ -541,3 +541,126 @@ func TestFindResolvesAProfilePin(t *testing.T) {
 		t.Errorf("Find(openrouter/a): found = %v, IsProfile = %v, want the model row", ok, m.IsProfile())
 	}
 }
+
+// TestResolveSlotProfileBlockedRowCarriesItsLocalModelsState verifies that a
+// profile blocked by a rule that runs before the local model is judged still
+// reports that model's state: running, still loading or stopped, the value
+// the same profile shows when nothing blocks it. The RUNNING cell is read
+// from the row, so without this a profile blocked by a missing [litellm] url
+// showed "-" while its model was serving, and the user could not tell a
+// loaded model from an idle one. The verdict and the reason stay what the
+// blocking rule gave, and the row is no nearer to a start: Local stays nil.
+// A profile with two local models, or one whose local model has no inventory
+// row, has no single state to show and keeps none.
+func TestResolveSlotProfileBlockedRowCarriesItsLocalModelsState(t *testing.T) {
+	const noURL = "a slot profile always uses the LiteLLM proxy, but no URL is configured — run 'wt litellm set --url ... --api-key ...'"
+	const noKey = "a slot profile always uses the LiteLLM proxy, but no API key is configured — run 'wt litellm set --url ... --api-key ...'"
+	omlx := func(running, loading bool) *localmodels.Snapshot {
+		return &localmodels.Snapshot{Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/q", Artifact: "q", Registered: true, ArtifactKnown: true, Running: running, Loading: loading},
+			{ProviderID: "ollama", ModelID: "ollama/g", Artifact: "g", Registered: true, ArtifactKnown: true, Running: true},
+		}}
+	}
+	states := []struct {
+		name             string
+		snap             *localmodels.Snapshot
+		running, loading bool
+	}{
+		{"running", omlx(true, false), true, false},
+		{"still loading", omlx(true, true), true, true},
+		{"stopped", omlx(false, false), false, false},
+	}
+	mixed := map[string]string{"sonnet": "openrouter/a", "haiku": "omlx/q"}
+	blocks := []struct {
+		name     string
+		url, key string
+		slots    map[string]string
+		reason   string
+	}{
+		{"no litellm url", "", "sk-test", mixed, noURL},
+		{"no litellm api key", "http://localhost:4000", "", mixed, noKey},
+		{"another slot's model is not in the registry", "http://localhost:4000", "sk-test",
+			map[string]string{"sonnet": "openrouter/a", "haiku": "omlx/q", "opus": "ollama/gone"},
+			"slot opus: ollama/gone is not in the registry"},
+		{"another slot's model cannot be routed", "http://localhost:4000", "sk-test",
+			map[string]string{"sonnet": "openrouter/a", "haiku": "omlx/q", "opus": "nopolicy/x"},
+			`slot opus: nopolicy/x cannot be routed: provider "nopolicy" has no LiteLLM mapping`},
+	}
+	for _, b := range blocks {
+		for _, s := range states {
+			t.Run(b.name+", "+s.name, func(t *testing.T) {
+				cfg := slotTestCfg()
+				cfg.SetLitellmForTest(config.LitellmState{URL: b.url, APIKey: b.key})
+				row := ResolveSlotProfile(cfg, s.snap, slotCheck(0, "mixed", "sonnet", b.slots))
+				if row.Action() != ActionBlock || row.BlockReason() != b.reason {
+					t.Errorf("action = %v, reason = %q\nwant ActionBlock, %q", row.Action(), row.BlockReason(), b.reason)
+				}
+				if row.Running != s.running || row.Loading != s.loading {
+					t.Errorf("Running = %v, Loading = %v, want %v, %v", row.Running, row.Loading, s.running, s.loading)
+				}
+				if row.Profile.Local != nil {
+					t.Errorf("Local = %q, want none: the row was blocked before its local model was judged", row.Profile.Local.Model.ID)
+				}
+			})
+		}
+	}
+
+	// The state is the one the same profile shows when nothing blocks it.
+	for _, s := range states {
+		free := ResolveSlotProfile(slotTestCfg(), s.snap, slotCheck(0, "mixed", "sonnet", mixed))
+		if free.Action() == ActionBlock || free.Running != s.running || free.Loading != s.loading {
+			t.Errorf("%s, not blocked: action = %v, Running = %v, Loading = %v, want %v, %v", s.name, free.Action(), free.Running, free.Loading, s.running, s.loading)
+		}
+	}
+
+	// A static failure is a blocking rule like any other: the row resolves no
+	// slot models and no location, and still names the state of the one local
+	// model the file's slots name.
+	static := slotCheck(0, "mixed", "", mixed)
+	static.Err = errors.New("default is missing")
+	for _, s := range states {
+		row := ResolveSlotProfile(slotTestCfg(), s.snap, static)
+		if row.Action() != ActionBlock || row.BlockReason() != "default is missing" || row.Profile.Models != nil || row.Profile.Loc != "" {
+			t.Errorf("static failure, %s: action = %v, reason = %q, models = %v, loc = %q", s.name, row.Action(), row.BlockReason(), row.Profile.Models, row.Profile.Loc)
+		}
+		if row.Running != s.running || row.Loading != s.loading {
+			t.Errorf("static failure, %s: Running = %v, Loading = %v, want %v, %v", s.name, row.Running, row.Loading, s.running, s.loading)
+		}
+	}
+	// The one row of a group of profiles sharing a name stands for several
+	// profiles, so it has no one local model whose state it could show.
+	dup := slotCheck(0, "mixed", "sonnet", mixed)
+	dup.Duplicate, dup.Err = true, profiles.ErrSlotDuplicate
+	if row := ResolveSlotProfile(slotTestCfg(), omlx(true, false), dup); row.Running || row.Loading || row.BlockReason() != profiles.ErrSlotDuplicate.Error() {
+		t.Errorf("duplicate name: Running = %v, Loading = %v, reason = %q, want no state and the duplicate reason", row.Running, row.Loading, row.BlockReason())
+	}
+
+	none := []struct {
+		name   string
+		slots  map[string]string
+		snap   *localmodels.Snapshot
+		reason string
+	}{
+		{"two distinct local models, both running", map[string]string{"sonnet": "omlx/q", "haiku": "ollama/g"}, omlx(true, false),
+			"slots name two local models (omlx/q and ollama/g); a slot profile may name one"},
+		{"two distinct local models and an earlier rule", map[string]string{"sonnet": "omlx/q", "haiku": "ollama/g", "opus": "ollama/gone"}, omlx(true, false),
+			"slot opus: ollama/gone is not in the registry"},
+		{"all cloud", map[string]string{"sonnet": "openrouter/a", "opus": "ollama/gone"}, omlx(true, false),
+			"slot opus: ollama/gone is not in the registry"},
+		{"the local model has no inventory row", map[string]string{"sonnet": "openrouter/a", "haiku": "omlx/q", "opus": "ollama/gone"},
+			&localmodels.Snapshot{}, "slot opus: ollama/gone is not in the registry"},
+		{"the local model is the one not in the registry", map[string]string{"sonnet": "openrouter/a", "haiku": "omlx/gone"}, omlx(true, false),
+			"slot haiku: omlx/gone is not in the registry"},
+	}
+	for _, tc := range none {
+		t.Run(tc.name, func(t *testing.T) {
+			row := ResolveSlotProfile(slotTestCfg(), tc.snap, slotCheck(0, "p", "sonnet", tc.slots))
+			if row.Action() != ActionBlock || row.BlockReason() != tc.reason {
+				t.Errorf("action = %v, reason = %q\nwant ActionBlock, %q", row.Action(), row.BlockReason(), tc.reason)
+			}
+			if row.Running || row.Loading {
+				t.Errorf("Running = %v, Loading = %v, want neither", row.Running, row.Loading)
+			}
+		})
+	}
+}
