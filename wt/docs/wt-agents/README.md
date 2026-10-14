@@ -63,9 +63,9 @@ what it prints:
   blocks for that long too.
 - After 2 seconds of waiting wt prints `wt: the LiteLLM proxy is finishing a
   request in flight; it restarts when the request ends (up to 3m0s)`.
-- A proxy still serving after three minutes is restarted with the forced
-  command below, and wt warns `the LiteLLM proxy was still serving a request
-  after 3m0s; it was restarted anyway and that request was cut off`.
+- A proxy still serving after three minutes is killed (SIGKILL) and started
+  again, and wt prints `the LiteLLM proxy was still serving a request after
+  3m0s; it was restarted anyway and that request was cut off`.
 - When launchd reports no pid for the job (it is not running, or there is no
   `launchctl`), wt runs the forced command directly.
 

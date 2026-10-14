@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -45,7 +44,10 @@ var (
 // (flushRouteNotesAfterRun), since main() waits for that restart. The settles
 // made after the alt screen (settleQuitSlot) print to stderr as they happen.
 // Reset by Run() before launch.
-var settleOut = &startOutput{}
+var settleOut = &startOutput{what: settleOutWhat}
+
+// settleOutWhat names settleOut's output in its overflow line.
+const settleOutWhat = "LiteLLM proxy restart"
 
 // slotResult is what one off-goroutine stage of a profile launch found.
 type slotResult struct {
@@ -116,7 +118,7 @@ type slotDeps struct {
 // A start row stops after step 3: the start that follows writes the local
 // route and restarts the proxy itself, and is told a restart is owed.
 func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []string, check profiles.SlotCheck) slotResult {
-	buf := &bytes.Buffer{}
+	buf := &noticeBuffer{}
 	inv := d.inventory(cfg)
 	row := catalog.ResolveSlotProfile(cfg, &inv, check)
 	res := slotResult{row: row}
@@ -143,7 +145,7 @@ func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []strin
 // slot, and nothing is owed. The ensure settled what was owed with an
 // asynchronous restart, which prints its warnings into buf until the wait
 // returns.
-func slotRouteFailed(d slotDeps, res slotResult, buf *bytes.Buffer, err error) slotResult {
+func slotRouteFailed(d slotDeps, res slotResult, buf *noticeBuffer, err error) slotResult {
 	d.wait()
 	res.owed, res.err, res.notes = false, catalog.SlotRouteError(res.row.Profile, err), buf.String()
 	return res
@@ -158,7 +160,7 @@ func slotRouteFailed(d slotDeps, res slotResult, buf *bytes.Buffer, err error) s
 //  7. Wait for any proxy restart in flight, then probe the proxy.
 //
 // owed says an earlier write of this launch changed config.yaml.
-func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *bytes.Buffer, owed bool) slotResult {
+func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *noticeBuffer, owed bool) slotResult {
 	ctx := context.Background()
 	if p := res.row.Profile; p.Local != nil {
 		var err error
@@ -169,9 +171,10 @@ func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *bytes
 	var restartErr error
 	if owed {
 		// Whether it succeeds or not, the restart was made: nothing is owed.
-		// It prints into buf, not on stderr under the alt screen: it can say
-		// that the proxy is finishing a request in flight, which it gives up
-		// to three minutes, or that the request was cut off at that bound.
+		// It prints into buf, not on stderr under the alt screen. That the
+		// proxy is finishing a request in flight, which it gives up to three
+		// minutes, goes on this stage's screen instead (noticeBuffer); that
+		// the request was cut off at that bound goes into buf.
 		restartErr = d.restart(ctx, buf, cfg)
 	}
 	res.notes = buf.String()
@@ -247,7 +250,7 @@ func (m model) settleSlotAfterStart() (model, tea.Cmd) {
 	st.owed = false
 	row := st.row
 	return m.runSlotStage(st,
-		func() slotResult { return finishSlotRoutes(d, cfg, slotResult{row: row}, &bytes.Buffer{}, false) },
+		func() slotResult { return finishSlotRoutes(d, cfg, slotResult{row: row}, &noticeBuffer{}, false) },
 		func(id int, res slotResult) tea.Msg { return slotSettledMsg{id: id, res: res} })
 }
 
@@ -333,7 +336,8 @@ func (m model) slotView() string {
 		return ""
 	}
 	elapsed := time.Since(m.slot.began).Round(time.Second)
-	return fmt.Sprintf("Preparing %s — updating LiteLLM routes (%s)\n\n[ctrl+c] quit wt", m.slot.item.model.ID, elapsed)
+	head := fmt.Sprintf("Preparing %s — updating LiteLLM routes (%s)", m.slot.item.model.ID, elapsed)
+	return withDrain(head, m.width) + "\n\n[ctrl+c] quit wt"
 }
 
 // abortSlot ends the flow with no launch: back to the picker with reason as

@@ -23,6 +23,7 @@ func TestMain(m *testing.M) {
 	proxyProc = proxyProcess{
 		pid:   func(context.Context) (int, bool) { return 0, false },
 		term:  func(int) error { return errors.New("proxyProc.term not stubbed in this test") },
+		kill:  func(int) error { return errors.New("proxyProc.kill not stubbed in this test") },
 		alive: func(int) bool { return false },
 	}
 	os.Exit(m.Run())

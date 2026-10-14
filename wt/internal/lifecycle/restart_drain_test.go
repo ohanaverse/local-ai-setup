@@ -11,12 +11,25 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
-// The two lines the default restart can produce while it lets a request in
+// The two notices the default restart can give while it lets a request in
 // flight finish (#377), as package litellm words them for the 3-minute bound.
 const (
 	drainLine  = "the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to 3m0s)"
 	cutOffLine = "the LiteLLM proxy was still serving a request after 3m0s; it was restarted anyway and that request was cut off"
 )
+
+var (
+	drainNotice  = litellm.Notice{Msg: drainLine, InProgress: true}
+	cutOffNotice = litellm.Notice{Msg: cutOffLine}
+)
+
+// drainThenCutOff stands in for a restart that waited out the bound: both
+// notices, and no warning, since the restart was made.
+func drainThenCutOff(ctx context.Context) []string {
+	litellm.RestartNotice(ctx, drainNotice)
+	litellm.RestartNotice(ctx, cutOffNotice)
+	return nil
+}
 
 // TestAsyncRestartNoticeFollowsTheOperation pins where the "finishing a
 // request in flight" line goes: to the writer of the operation that caused
@@ -26,7 +39,7 @@ const (
 func TestAsyncRestartNoticeFollowsTheOperation(t *testing.T) {
 	_, stderr := stubRoutes(t, wrote("ollama/a:1"), nil)
 	restartProxy = func(ctx context.Context) []string {
-		litellm.RestartNotice(ctx, drainLine)
+		litellm.RestartNotice(ctx, drainNotice)
 		return nil
 	}
 	mdl := config.Model{ID: "ollama/a:1", ProviderID: "ollama", ModelName: "a:1", Location: config.LocationLocal}
@@ -51,14 +64,48 @@ func TestAsyncRestartNoticeFollowsTheOperation(t *testing.T) {
 	}
 }
 
-// TestCutOffWarningIsNotAFailedRestart pins what the drain bound's warning
-// means to the asynchronous restart: it is printed, the readiness wait still
-// runs, and the restart is remembered as one that worked. The proxy WAS
-// restarted, so recording a failure would refuse the next slot-profile
-// launch (ProbeProxy) over routes that are live.
-func TestCutOffWarningIsNotAFailedRestart(t *testing.T) {
+// noticeWriter is a route writer that takes the restart's notices itself
+// (RestartNoticer), as the TUI's does.
+type noticeWriter struct {
+	bytes.Buffer
+	notices []litellm.Notice
+}
+
+func (w *noticeWriter) RestartNotice(n litellm.Notice) { w.notices = append(w.notices, n) }
+
+// TestRestartNoticerTakesTheNotices pins the hook a live screen uses: a writer
+// that is a RestartNoticer gets each notice whole, InProgress included, and
+// none of them is printed into it. The TUI shows the in-progress line while
+// it waits; printed into its buffer, the line would be read only after the
+// restart, when it is no longer true.
+func TestRestartNoticerTakesTheNotices(t *testing.T) {
+	_, stderr := stubRoutes(t, litellm.Result{}, nil)
+	restartProxy = drainThenCutOff
+	waitProxy = func(context.Context, string, time.Duration) error { return nil }
+
+	var w noticeWriter
+	if err := RestartProxyTo(context.Background(), &w, profileCfg()); err != nil {
+		t.Fatalf("RestartProxyTo = %v, want nil", err)
+	}
+	if len(w.notices) != 2 || w.notices[0] != drainNotice || w.notices[1] != cutOffNotice {
+		t.Fatalf("notices = %+v, want the drain notice, then the cut-off", w.notices)
+	}
+	if w.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("printed %q to the writer and %q to stderr, want nothing", w.String(), stderr.String())
+	}
+}
+
+// TestCutOffIsNotAFailedRestart pins what the drain bound's cut-off means to
+// the asynchronous restart: it is printed, the readiness wait still runs, and
+// the restart is remembered as one that worked. The proxy WAS restarted, so
+// recording a failure would refuse the next slot-profile launch (ProbeProxy)
+// over routes that are live.
+func TestCutOffIsNotAFailedRestart(t *testing.T) {
 	_, warn := stubRoutes(t, litellm.Result{}, nil)
-	restartProxy = func(context.Context) []string { return []string{cutOffLine} }
+	restartProxy = func(ctx context.Context) []string {
+		litellm.RestartNotice(ctx, cutOffNotice)
+		return nil
+	}
 	var waited bool
 	waitProxy = func(_ context.Context, _ string, d time.Duration) error {
 		if d == proxyReadyTimeout {
@@ -81,8 +128,8 @@ func TestCutOffWarningIsNotAFailedRestart(t *testing.T) {
 		t.Fatalf("ProbeProxy = %v, want nil: the proxy was restarted", err)
 	}
 
-	// A real failure beside it still fails the probe, and names only itself.
-	restartProxy = func(context.Context) []string { return []string{cutOffLine, "restart command failed"} }
+	// A warning is a failed restart, whatever it says.
+	restartProxy = func(context.Context) []string { return []string{"restart command failed"} }
 	bounceRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
 	if err := ProbeProxy(context.Background(), cfg); err == nil || err.Error() != restartFailed("restart command failed") {
@@ -91,15 +138,12 @@ func TestCutOffWarningIsNotAFailedRestart(t *testing.T) {
 }
 
 // TestRestartProxyToPrintsTheDrainLines pins the synchronous restart of a
-// slot-profile launch: the notice and the cut-off warning go to the writer it
-// was handed (stderr for none), and a restart forced at the bound is a
-// restart that worked — nil, the readiness wait made, the next probe clean.
+// slot-profile launch: the notice and the cut-off go to the writer it was
+// handed (stderr for none), and a restart forced at the bound is a restart
+// that worked — nil, the readiness wait made, the next probe clean.
 func TestRestartProxyToPrintsTheDrainLines(t *testing.T) {
 	_, stderr := stubRoutes(t, litellm.Result{}, nil)
-	restartProxy = func(ctx context.Context) []string {
-		litellm.RestartNotice(ctx, drainLine)
-		return []string{cutOffLine}
-	}
+	restartProxy = drainThenCutOff
 	var waits int
 	waitProxy = func(_ context.Context, _ string, d time.Duration) error {
 		if d == proxyReadyTimeout {
@@ -148,14 +192,11 @@ func TestRestartProxyToPrintsTheDrainLines(t *testing.T) {
 
 // TestSettleRoutesToPrintsTheDrainLines pins where a settling restart prints
 // for a caller that cannot show stderr (the picker, back on its alt screen):
-// the notice and the cut-off warning go to the writer it handed in, although
-// the restart runs detached, and to stderr for a caller that handed in none.
+// the notice and the cut-off go to the writer it handed in, although the
+// restart runs detached, and to stderr for a caller that handed in none.
 func TestSettleRoutesToPrintsTheDrainLines(t *testing.T) {
 	_, stderr := stubRoutes(t, litellm.Result{}, nil)
-	restartProxy = func(ctx context.Context) []string {
-		litellm.RestartNotice(ctx, drainLine)
-		return []string{cutOffLine}
-	}
+	restartProxy = drainThenCutOff
 	cfg := routesCfg()
 	const want = "wt: " + drainLine + "\nwt: " + cutOffLine + "\n"
 

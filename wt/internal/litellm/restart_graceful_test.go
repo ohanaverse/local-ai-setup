@@ -13,16 +13,20 @@ const plainKickstart = "launchctl kickstart gui/$(id -u)/local.litellm.proxy"
 
 // fakeProxy stands in for the launchd job behind the proxyProc seam: a pid
 // launchd reports (or none), a record of every signal sent, and a process that
-// goes away exitAfter the first SIGTERM (never, when exitAfter is negative).
+// goes away exitAfter the first SIGTERM (never, when exitAfter is negative)
+// or at a SIGKILL that killErr does not refuse.
 // No test in this package may look up or signal a real process.
 type fakeProxy struct {
 	pid       int
 	found     bool
 	termErr   error
+	killErr   error
 	exitAfter time.Duration
 	lookups   int
 	terms     []int
+	kills     []int
 	termAt    time.Time
+	killed    bool
 }
 
 func (f *fakeProxy) seam() proxyProcess {
@@ -36,7 +40,18 @@ func (f *fakeProxy) seam() proxyProcess {
 			f.termAt = time.Now()
 			return nil
 		},
+		kill: func(pid int) error {
+			f.kills = append(f.kills, pid)
+			if f.killErr != nil {
+				return f.killErr
+			}
+			f.killed = true
+			return nil
+		},
 		alive: func(int) bool {
+			if f.killed {
+				return false
+			}
 			if f.termAt.IsZero() || f.exitAfter < 0 {
 				return true
 			}
@@ -71,11 +86,11 @@ func stubDefaultRestart(t *testing.T, fp *fakeProxy, timing drainTiming, fail ma
 	return &runs
 }
 
-// noticeCtx returns a context whose restart notice is recorded in the
+// noticeCtx returns a context whose restart notices are recorded in the
 // returned slice.
-func noticeCtx() (context.Context, *[]string) {
-	var got []string
-	return WithRestartNotice(context.Background(), func(s string) { got = append(got, s) }), &got
+func noticeCtx() (context.Context, *[]Notice) {
+	var got []Notice
+	return WithRestartNotice(context.Background(), func(n Notice) { got = append(got, n) }), &got
 }
 
 var testTiming = drainTiming{bound: 2 * time.Second, notice: time.Second, poll: 2 * time.Millisecond, command: 5 * time.Second}
@@ -100,7 +115,7 @@ func TestGracefulRestartProcessExits(t *testing.T) {
 		t.Fatalf("commands = %+v, want only %q", *runs, plainKickstart)
 	}
 	if len(*notices) != 0 {
-		t.Fatalf("notices = %q, want none for a proxy that exited at once", *notices)
+		t.Fatalf("notices = %+v, want none for a proxy that exited at once", *notices)
 	}
 }
 
@@ -120,7 +135,7 @@ func TestGracefulRestartSlowExitPrintsOneNotice(t *testing.T) {
 		t.Fatalf("warnings = %v, want none", w)
 	}
 	if len(*notices) != 1 || (*notices)[0] != drainNotice(timing.bound) {
-		t.Fatalf("notices = %q, want exactly one: %q", *notices, drainNotice(timing.bound))
+		t.Fatalf("notices = %+v, want exactly one: %+v", *notices, drainNotice(timing.bound))
 	}
 	if len(fp.terms) != 1 {
 		t.Fatalf("SIGTERMs = %v, want one", fp.terms)
@@ -134,48 +149,87 @@ func TestGracefulRestartSlowExitPrintsOneNotice(t *testing.T) {
 }
 
 // TestGracefulRestartBoundExpires pins the forced end: a proxy that is still
-// serving at the bound is restarted with today's `kickstart -k`, and wt says
-// in one warning that the request was cut off. That warning reports a restart
-// that happened, so it is not a failed restart (IsCutOffWarning).
+// serving at the bound is SIGKILLed by pid and started again with the plain
+// kickstart, and wt says in a notice, not a warning, that the request was cut
+// off: the restart was made, and every warning is a failed restart.
 func TestGracefulRestartBoundExpires(t *testing.T) {
 	timing := drainTiming{bound: 300 * time.Millisecond, notice: 5 * time.Millisecond, poll: 2 * time.Millisecond, command: time.Second}
 	fp := &fakeProxy{pid: 7, found: true, exitAfter: -1}
 	runs := stubDefaultRestart(t, fp, timing, nil)
 	ctx, notices := noticeCtx()
 
-	w := RestartContext(ctx)
-	if len(w) != 1 || w[0] != cutOffWarning(timing.bound) {
-		t.Fatalf("warnings = %q, want exactly %q", w, cutOffWarning(timing.bound))
+	if w := RestartContext(ctx); len(w) != 0 {
+		t.Fatalf("warnings = %q, want none: the restart was made", w)
 	}
-	if !IsCutOffWarning(w[0]) {
-		t.Fatalf("IsCutOffWarning(%q) = false", w[0])
+	if want := []Notice{drainNotice(timing.bound), cutOffNotice(timing.bound)}; len(*notices) != 2 || (*notices)[0] != want[0] || (*notices)[1] != want[1] {
+		t.Fatalf("notices = %+v, want %+v", *notices, want)
 	}
-	if len(*runs) != 1 || (*runs)[0].cmd != fallbackRestartCmd {
-		t.Fatalf("commands = %+v, want only %q", *runs, fallbackRestartCmd)
+	if len(fp.terms) != 1 || len(fp.kills) != 1 || fp.kills[0] != 7 {
+		t.Fatalf("SIGTERMs = %v, SIGKILLs = %v, want one of each, to pid 7", fp.terms, fp.kills)
 	}
-	if len(fp.terms) != 1 {
-		t.Fatalf("SIGTERMs = %v, want one: wt never signals twice", fp.terms)
+	if len(*runs) != 1 || (*runs)[0].cmd != plainKickstart {
+		t.Fatalf("commands = %+v, want only %q: `kickstart -k` would kill the job, whichever process it runs", *runs, plainKickstart)
 	}
-	if len(*notices) != 1 {
-		t.Fatalf("notices = %q, want one", *notices)
+}
+
+// TestGracefulRestartExitAtTheBound pins the race at the bound: the proxy
+// finished its request and exited after the last look, so the SIGKILL finds
+// no process (ESRCH). Nothing was cut off and nothing is forced: a
+// `kickstart -k` there would kill the proxy launchd had just respawned.
+func TestGracefulRestartExitAtTheBound(t *testing.T) {
+	timing := drainTiming{bound: 30 * time.Millisecond, notice: time.Second, poll: 2 * time.Millisecond, command: time.Second}
+	fp := &fakeProxy{pid: 7, found: true, exitAfter: -1, killErr: syscall.ESRCH}
+	runs := stubDefaultRestart(t, fp, timing, nil)
+	ctx, notices := noticeCtx()
+
+	if w := RestartContext(ctx); len(w) != 0 {
+		t.Fatalf("warnings = %q, want none", w)
+	}
+	if len(*notices) != 0 {
+		t.Fatalf("notices = %+v, want none: no request was cut off", *notices)
+	}
+	if len(*runs) != 1 || (*runs)[0].cmd != plainKickstart {
+		t.Fatalf("commands = %+v, want only %q", *runs, plainKickstart)
 	}
 }
 
 // TestGracefulRestartForcedCommandFails pins that a forced restart which
 // itself fails is reported as the failed restart it is, in the wording
-// docs/contracts/litellm-cli.sample.json pins, and not as a cut-off request.
+// docs/contracts/litellm-cli.sample.json pins, with no cut-off notice. The
+// forced command runs at the bound only when the SIGKILL is refused.
 func TestGracefulRestartForcedCommandFails(t *testing.T) {
 	timing := drainTiming{bound: 30 * time.Millisecond, notice: time.Second, poll: 2 * time.Millisecond, command: time.Second}
-	fp := &fakeProxy{pid: 7, found: true, exitAfter: -1}
+	fp := &fakeProxy{pid: 7, found: true, exitAfter: -1, killErr: syscall.EPERM}
 	stubDefaultRestart(t, fp, timing, map[string]error{fallbackRestartCmd: errors.New("exit status 1")})
+	ctx, notices := noticeCtx()
 
-	w := RestartContext(context.Background())
+	w := RestartContext(ctx)
 	want := "failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"
 	if len(w) != 1 || w[0] != want {
 		t.Fatalf("warnings = %q, want %q", w, want)
 	}
-	if IsCutOffWarning(w[0]) {
-		t.Fatal("a failed restart must not read as a cut-off warning")
+	if len(*notices) != 0 {
+		t.Fatalf("notices = %+v, want none for a restart that failed", *notices)
+	}
+}
+
+// TestGracefulRestartKillRefused pins the fallback when the SIGKILL fails for
+// another reason than a process already gone: the forced command runs, and
+// once it has, the request was cut off.
+func TestGracefulRestartKillRefused(t *testing.T) {
+	timing := drainTiming{bound: 30 * time.Millisecond, notice: time.Second, poll: 2 * time.Millisecond, command: time.Second}
+	fp := &fakeProxy{pid: 7, found: true, exitAfter: -1, killErr: syscall.EPERM}
+	runs := stubDefaultRestart(t, fp, timing, nil)
+	ctx, notices := noticeCtx()
+
+	if w := RestartContext(ctx); len(w) != 0 {
+		t.Fatalf("warnings = %q, want none", w)
+	}
+	if len(*runs) != 1 || (*runs)[0].cmd != fallbackRestartCmd {
+		t.Fatalf("commands = %+v, want only %q", *runs, fallbackRestartCmd)
+	}
+	if len(*notices) != 1 || (*notices)[0] != cutOffNotice(timing.bound) {
+		t.Fatalf("notices = %+v, want the cut-off notice", *notices)
 	}
 }
 
@@ -198,7 +252,7 @@ func TestGracefulRestartNoPidRunsForcedCommand(t *testing.T) {
 		t.Fatalf("commands = %+v, want only %q", *runs, fallbackRestartCmd)
 	}
 	if len(*notices) != 0 {
-		t.Fatalf("notices = %q, want none", *notices)
+		t.Fatalf("notices = %+v, want none", *notices)
 	}
 }
 
@@ -244,9 +298,6 @@ func TestGracefulRestartCancelledDuringDrain(t *testing.T) {
 	}
 	if len(w) != 1 || !strings.Contains(w[0], "context canceled") {
 		t.Fatalf("warnings = %q, want one naming the cancellation", w)
-	}
-	if IsCutOffWarning(w[0]) {
-		t.Fatal("an abandoned wait is not a completed restart")
 	}
 	if len(*runs) != 0 {
 		t.Fatalf("commands = %+v, want none after a cancelled wait", *runs)
@@ -323,15 +374,11 @@ func TestDrainWording(t *testing.T) {
 	if drain.bound != proxyDrainTimeout || drain.notice != 2*time.Second || drain.poll != 100*time.Millisecond || drain.command != restartTimeout {
 		t.Fatalf("default timing = %+v", drain)
 	}
-	if got, want := drainNotice(proxyDrainTimeout), "the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to 3m0s)"; got != want {
-		t.Fatalf("notice = %q, want %q", got, want)
+	if got, want := drainNotice(proxyDrainTimeout), (Notice{Msg: "the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to 3m0s)", InProgress: true}); got != want {
+		t.Fatalf("notice = %+v, want %+v", got, want)
 	}
-	want := "the LiteLLM proxy was still serving a request after 3m0s; it was restarted anyway and that request was cut off"
-	if got := cutOffWarning(proxyDrainTimeout); got != want {
-		t.Fatalf("warning = %q, want %q", got, want)
-	}
-	if !IsCutOffWarning(want) {
-		t.Fatal("IsCutOffWarning does not recognise the warning")
+	if got, want := cutOffNotice(proxyDrainTimeout), (Notice{Msg: "the LiteLLM proxy was still serving a request after 3m0s; it was restarted anyway and that request was cut off"}); got != want {
+		t.Fatalf("cut-off notice = %+v, want %+v", got, want)
 	}
 }
 
@@ -340,9 +387,9 @@ func TestDrainWording(t *testing.T) {
 // (it prints to stderr).
 func TestRestartNoticeFollowsTheContext(t *testing.T) {
 	ctx, got := noticeCtx()
-	RestartNotice(context.WithoutCancel(ctx), "hello")
-	if len(*got) != 1 || (*got)[0] != "hello" {
-		t.Fatalf("notices = %q", *got)
+	RestartNotice(context.WithoutCancel(ctx), Notice{Msg: "hello"})
+	if len(*got) != 1 || (*got)[0].Msg != "hello" {
+		t.Fatalf("notices = %+v", *got)
 	}
 }
 
@@ -401,6 +448,9 @@ func TestUnstubbedSeamFailsClosed(t *testing.T) {
 	}
 	if err := proxyProc.term(1 << 30); err == nil {
 		t.Fatal("the unstubbed signal seam returned nil")
+	}
+	if err := proxyProc.kill(1 << 30); err == nil {
+		t.Fatal("the unstubbed kill seam returned nil")
 	}
 	if proxyProc.alive(1 << 30) {
 		t.Fatal("the unstubbed liveness seam reports a live process")

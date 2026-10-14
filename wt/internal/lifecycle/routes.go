@@ -667,9 +667,9 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// goroutine, so they pay no probe at all. The restart itself stays
 		// best-effort either way.
 		//
-		// The restart's own progress line (the proxy is finishing a request in
-		// flight) is delivered through routePrintf too, so it follows this
-		// operation's writer like the warnings below.
+		// The restart's own notices (the proxy is finishing a request in
+		// flight; one was cut off) follow this operation's writer like the
+		// warnings below (withRestartNotice).
 		bgCtx := withRestartNotice(context.WithoutCancel(ctx))
 		wasUp := url != "" && probeProxy(bgCtx, url, proxyAliveTimeout)
 		// Warnings are always surfaced: bgCtx cannot be cancelled by the
@@ -679,9 +679,9 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		//
 		// What is printed is also remembered (lastRestart), for ProbeProxy:
 		// the restart command's warnings when it gave any, else the failed
-		// readiness wait, else nil, which clears an earlier failure. A warning
-		// that a request was cut off at the drain bound is printed and not
-		// remembered: that restart was made (restartFailure).
+		// readiness wait, else nil, which clears an earlier failure. That a
+		// request was cut off at the drain bound is a notice, not a warning:
+		// that restart was made.
 		warnings := restartProxy(bgCtx)
 		for _, w := range warnings {
 			routePrintf(bgCtx, "wt: %s\n", w)

@@ -108,6 +108,8 @@ type proxyProcess struct {
 	pid func(ctx context.Context) (pid int, ok bool)
 	// term sends the process one SIGTERM.
 	term func(pid int) error
+	// kill sends the process one SIGKILL. ESRCH means it was already gone.
+	kill func(pid int) error
 	// alive reports whether the process still exists.
 	alive func(pid int) bool
 }
@@ -119,7 +121,7 @@ type proxyProcess struct {
 // the packages that can reach RestartContext with neither seam stubbed.
 var proxyProc = realProxyProcess
 
-var realProxyProcess = proxyProcess{pid: realProxyPID, term: realProxyTerm, alive: realProxyAlive}
+var realProxyProcess = proxyProcess{pid: realProxyPID, term: realProxyTerm, kill: realProxyKill, alive: realProxyAlive}
 
 // underTest reports whether this is a test binary.
 func underTest() bool { return testing.Testing() }
@@ -143,6 +145,13 @@ func realProxyTerm(pid int) error {
 		return errUnderTest
 	}
 	return syscall.Kill(pid, syscall.SIGTERM)
+}
+
+func realProxyKill(pid int) error {
+	if underTest() {
+		return errUnderTest
+	}
+	return syscall.Kill(pid, syscall.SIGKILL)
 }
 
 // realProxyAlive probes with signal 0. Only ESRCH means the process is gone:
@@ -177,49 +186,51 @@ func parseLaunchctlPID(out string) (int, bool) {
 
 type restartNoticeKey struct{}
 
+// Notice is one line RestartContext reports besides its warnings, which are
+// all failed restarts. Msg has no "wt: " prefix and no newline. InProgress
+// marks the line that is true only while the restart waits (the proxy is
+// finishing a request in flight): a caller with a live screen shows it there
+// and drops it once the restart is over, where printed later it would be
+// stale. A notice without it reports what happened (the request was cut off
+// at the drain bound), and stays true.
+type Notice struct {
+	Msg        string
+	InProgress bool
+}
+
 // WithRestartNotice returns a context that carries where RestartContext's
-// progress line goes: fn is called with the line, without a "wt: " prefix or
-// a newline. The lifecycle package sets it to the writer of the operation
-// that owes the restart, so the line follows that operation's other output.
-func WithRestartNotice(ctx context.Context, fn func(msg string)) context.Context {
+// notices go. The lifecycle package sets it to the writer of the operation
+// that owes the restart, so the lines follow that operation's other output.
+func WithRestartNotice(ctx context.Context, fn func(Notice)) context.Context {
 	return context.WithValue(ctx, restartNoticeKey{}, fn)
 }
 
-// RestartNotice delivers msg to the notice function ctx carries, or to stderr
-// when it carries none.
-func RestartNotice(ctx context.Context, msg string) {
-	if fn, ok := ctx.Value(restartNoticeKey{}).(func(string)); ok && fn != nil {
-		fn(msg)
+// RestartNotice delivers n to the notice function ctx carries, or prints it
+// to stderr when it carries none.
+func RestartNotice(ctx context.Context, n Notice) {
+	if fn, ok := ctx.Value(restartNoticeKey{}).(func(Notice)); ok && fn != nil {
+		fn(n)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "wt: %s\n", msg)
+	fmt.Fprintf(os.Stderr, "wt: %s\n", n.Msg)
 }
 
-func drainNotice(bound time.Duration) string {
-	return fmt.Sprintf("the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to %s)", bound)
+func drainNotice(bound time.Duration) Notice {
+	return Notice{
+		Msg:        fmt.Sprintf("the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to %s)", bound),
+		InProgress: true,
+	}
 }
 
-const (
-	cutOffPrefix = "the LiteLLM proxy was still serving a request after "
-	cutOffSuffix = "; it was restarted anyway and that request was cut off"
-)
-
-func cutOffWarning(bound time.Duration) string {
-	return cutOffPrefix + bound.String() + cutOffSuffix
-}
-
-// IsCutOffWarning reports whether w, a warning RestartContext returned, says
-// the proxy was restarted at the drain bound with a request still in flight.
-// It is the one warning that reports a restart that happened: the new routes
-// are live, so a caller that treats warnings as a failed restart must not
-// count this one.
-func IsCutOffWarning(w string) bool {
-	return strings.HasPrefix(w, cutOffPrefix) && strings.HasSuffix(w, cutOffSuffix)
+func cutOffNotice(bound time.Duration) Notice {
+	return Notice{Msg: fmt.Sprintf("the LiteLLM proxy was still serving a request after %s; it was restarted anyway and that request was cut off", bound)}
 }
 
 // RestartContext bounces the proxy after a config write. It never fails the
 // caller: the config write is the source of truth, and a failed restart only
-// leaves the proxy stale, reported as a warning naming the manual fix.
+// leaves the proxy stale, reported as a warning naming the manual fix. Every
+// warning it returns is a failed restart; what it says of a restart that was
+// made goes through RestartNotice.
 //
 // An override command (WT_LITELLM_RESTART_CMD or its legacy alias) is run as
 // given, bounded by restartTimeout, on the caller's context.
@@ -235,12 +246,15 @@ func IsCutOffWarning(w string) bool {
 //     failed lookup): run fallbackRestartCmd, as before.
 //  2. Send that pid one SIGTERM.
 //  3. Wait for the process to exit, for at most proxyDrainTimeout. After
-//     drain.notice of waiting, say so once (RestartNotice).
+//     drain.notice of waiting, say so once (RestartNotice, InProgress).
 //  4. Gone: run plainStartCmd. launchd has normally respawned the job already
 //     and the command does nothing.
-//  5. Still there at the bound: run fallbackRestartCmd and return
-//     cutOffWarning, the one warning that is not a failed restart
-//     (IsCutOffWarning).
+//  5. Still there at the bound: SIGKILL that pid, wait for it to go, run
+//     plainStartCmd and give cutOffNotice. The kill names the old process,
+//     never the job: `kickstart -k` here would kill a proxy launchd had just
+//     respawned, had the old one exited after the last look. A kill that
+//     finds it gone (ESRCH) is that exit, so nothing was cut off. A kill that
+//     fails otherwise falls back to fallbackRestartCmd.
 //
 // The proxy refuses new connections for the whole of step 3.
 //
@@ -273,13 +287,44 @@ func RestartContext(ctx context.Context) []string {
 	case err == nil:
 		return runRestartCmd(ctx, plainStartCmd, fallbackRestartCmd, t.command)
 	case errors.Is(err, errDrainBound):
-		if w := forced(); len(w) > 0 {
-			return w
-		}
-		return []string{cutOffWarning(t.bound)}
+		return killAtBound(ctx, pid, t, forced)
 	default:
 		return []string{fmt.Sprintf("stopped waiting for the LiteLLM proxy to restart (%v); it was asked to exit and restarts when its request in flight ends", err)}
 	}
+}
+
+// killAtBound is step 5 of RestartContext: the proxy outlived the drain bound.
+func killAtBound(ctx context.Context, pid int, t drainTiming, forced func() []string) []string {
+	plain := func() []string { return runRestartCmd(ctx, plainStartCmd, fallbackRestartCmd, t.command) }
+	switch err := proxyProc.kill(pid); {
+	case errors.Is(err, syscall.ESRCH):
+		// It exited after the last look: it finished its request.
+		return plain()
+	case err != nil:
+		if w := forced(); len(w) > 0 {
+			return w
+		}
+	default:
+		// A SIGKILL is not refused, but the exit is not instant: the plain
+		// start is a no-op while launchd still has the job running.
+		gone := time.NewTimer(t.command)
+		defer gone.Stop()
+		poll := time.NewTicker(t.poll)
+		defer poll.Stop()
+	wait:
+		for proxyProc.alive(pid) {
+			select {
+			case <-gone.C:
+				break wait
+			case <-poll.C:
+			}
+		}
+		if w := plain(); len(w) > 0 {
+			return w
+		}
+	}
+	RestartNotice(ctx, cutOffNotice(t.bound))
+	return nil
 }
 
 // runRestartCmd runs one restart command under its own timeout and turns a

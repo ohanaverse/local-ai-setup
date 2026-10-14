@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -158,7 +157,7 @@ func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
 	try, ensure, wait, pending := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes, routesPending
 	cfg := m.cfg
 	// A pointer: the command below outlives this Update and writes to it.
-	captured := &bytes.Buffer{}
+	captured := &noticeBuffer{}
 	changed, done := try(captured, cfg, mdl)
 	if done && !changed && !pending() {
 		m.recordRouteNotes(captured.String())
@@ -258,7 +257,8 @@ func (m model) handleRouteMsg(msg tea.Msg) (model, tea.Cmd) {
 // is none: see handleRouteKey.
 func (m model) routingView() string {
 	elapsed := time.Since(m.routing.began).Round(time.Second)
-	return fmt.Sprintf("Updating the LiteLLM route for %s — restarting the proxy (%s)\n\n[ctrl+c] quit wt", m.routing.modelID, elapsed)
+	head := fmt.Sprintf("Updating the LiteLLM route for %s — restarting the proxy (%s)", m.routing.modelID, elapsed)
+	return withDrain(head, m.width) + "\n\n[ctrl+c] quit wt"
 }
 
 // startState is the in-flight start: which row, the current stage, when it
@@ -678,7 +678,7 @@ func (m model) startingView() string {
 			// started model's own when the cancel lost.
 			waiting = "waiting for the LiteLLM proxy restart"
 		}
-		return tuilayout.WrapText(fmt.Sprintf("Cancelling %s… (%s)\n\n%s", m.start.item.model.ID, elapsed, waiting), m.width) +
+		return withDrain(tuilayout.WrapText(fmt.Sprintf("Cancelling %s… (%s)\n\n%s", m.start.item.model.ID, elapsed, waiting), m.width), m.width) +
 			"\n\n[ctrl+c] quit wt"
 	}
 	hint := "[esc] cancel"
@@ -695,5 +695,5 @@ func (m model) startingView() string {
 		// a line of its own it is not what the terminal's edge cuts.
 		line = head + "\n" + stage
 	}
-	return tuilayout.WrapText(line, m.width) + "\n\n" + hint
+	return withDrain(tuilayout.WrapText(line, m.width), m.width) + "\n\n" + hint
 }

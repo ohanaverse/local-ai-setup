@@ -138,12 +138,11 @@ func RestartProxy(ctx context.Context, cfg *config.Config) error {
 
 // RestartProxyTo is RestartProxy printing to out (nil: stderr), for a caller
 // whose stderr is not where the user is looking (the TUI). The restart can
-// print two lines, both through routePrintf: the notice that the proxy is
-// finishing a request in flight (litellm.RestartContext gives the proxy up to
-// three minutes for that, so this call can block that long, plus the
-// readiness wait), and the warning that the request was cut off at that
-// bound. The second reports a restart that happened and is not an error
-// (litellm.IsCutOffWarning): the readiness wait still follows it.
+// give two notices (withRestartNotice): that the proxy is finishing a request
+// in flight (litellm.RestartContext gives the proxy up to three minutes for
+// that, so this call can block that long, plus the readiness wait), and that
+// the request was cut off at that bound. Neither is an error: the second
+// reports a restart that was made, and the readiness wait still follows it.
 func RestartProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) (err error) {
 	url := cfg.LitellmBaseURL()
 	if url == "" {
@@ -156,38 +155,43 @@ func RestartProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) (err
 	defer routesInFlight.Add(-1)
 	defer func() { setLastRestartErr(err) }()
 	bg := withRestartNotice(context.WithoutCancel(withRouteOutput(ctx, out)))
-	warnings := restartProxy(bg)
-	if err := restartFailure(warnings); err != nil {
+	if err := restartFailure(restartProxy(bg)); err != nil {
 		return err
-	}
-	for _, w := range warnings {
-		routePrintf(bg, "wt: %s\n", w)
 	}
 	return waitProxy(bg, url, proxyReadyTimeout)
 }
 
-// withRestartNotice returns ctx carrying the function the proxy restart's
-// progress line is delivered to (litellm.WithRestartNotice): routePrintf on
-// ctx, so the line goes where the operation's other output goes.
-func withRestartNotice(ctx context.Context) context.Context {
-	return litellm.WithRestartNotice(ctx, func(msg string) { routePrintf(ctx, "wt: %s\n", msg) })
+// RestartNoticer is a route writer (Options.Out, the writer of a *To call)
+// that takes the proxy restart's notices itself rather than having them
+// printed into it: a caller with a live screen shows a notice marked
+// InProgress while the restart runs, where a line printed into its buffer
+// would only be read once the restart was over and the line no longer true.
+// RestartNotice may be called from the restart's goroutine.
+type RestartNoticer interface {
+	RestartNotice(litellm.Notice)
 }
 
-// restartFailure is the error a restart's warnings amount to, nil when the
-// proxy was restarted. Every warning is a failure but one: the notice that a
-// request was cut off at the drain bound (litellm.IsCutOffWarning) reports a
-// restart that was made, so it is left out.
-func restartFailure(warnings []string) error {
-	var failed []string
-	for _, w := range warnings {
-		if !litellm.IsCutOffWarning(w) {
-			failed = append(failed, w)
+// withRestartNotice returns ctx carrying the function the proxy restart's
+// notices are delivered to (litellm.WithRestartNotice): the operation's
+// writer when it is a RestartNoticer, else routePrintf on ctx, so the line
+// goes where the operation's other output goes.
+func withRestartNotice(ctx context.Context) context.Context {
+	return litellm.WithRestartNotice(ctx, func(n litellm.Notice) {
+		if rn, ok := ctx.Value(routeOutKey{}).(RestartNoticer); ok {
+			rn.RestartNotice(n)
+			return
 		}
-	}
-	if len(failed) == 0 {
+		routePrintf(ctx, "wt: %s\n", n.Msg)
+	})
+}
+
+// restartFailure is the error a restart's warnings amount to, nil when there
+// are none: every warning litellm.RestartContext returns is a failed restart.
+func restartFailure(warnings []string) error {
+	if len(warnings) == 0 {
 		return nil
 	}
-	return errors.New(strings.Join(failed, "; "))
+	return errors.New(strings.Join(warnings, "; "))
 }
 
 // ProbeProxy is the last check before a slot-profile launch hands the proxy

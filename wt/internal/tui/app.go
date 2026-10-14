@@ -1371,7 +1371,8 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 	// from a test invocation sharing the process).
 	pendingSummary = ""
 	pendingRouteNotes = ""
-	settleOut = &startOutput{}
+	settleOut = &startOutput{what: settleOutWhat}
+	drainLine.Store(nil)
 	pendingSurveyState = pendingSurvey{}
 	profileApplier = applyProfile
 	finalModel, err := p.Run()
@@ -1405,6 +1406,10 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	if fm, ok := final.(model); ok && fm.routing != nil {
 		if !fm.routing.settled.Load() {
 			fmt.Fprintln(w, "wt: waiting for the LiteLLM proxy restart…")
+			// The screen that showed why is gone.
+			if d := drainView(); d != "" {
+				fmt.Fprintf(w, "wt: %s\n", d)
+			}
 		}
 		pendingRouteNotes += fm.routing.settle()
 	}
