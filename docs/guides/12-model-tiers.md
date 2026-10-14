@@ -3,7 +3,8 @@
 > Use this to: see which of your models suit which kind of work. `modeltiers`
 > reads the wt inventory and four public sources, gives every model an
 > advisory capability tier with the evidence behind it, and writes
-> `~/.config/local-ai/tiers.toml`. Nothing routes on a tier yet.
+> `~/.config/local-ai/tiers.toml`, which wt's model picker shows as a TIER
+> column. Nothing routes on a tier yet.
 >
 > Verified against: modeltiers 0.1.0 on 2026-10-12 (one live run against all four sources).
 
@@ -250,6 +251,39 @@ ollama/minimax-m3:cloud
 To read the file directly, its format is
 [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml). A model
 absent from the file, or listed under `[[unmapped]]`, is `unrated`.
+
+#### See tiers in the wt picker
+
+wt's model picker reads the same file each time it builds its table and shows
+it in a TIER column after MODEL: the tier's letter (`M` marathon, `D` deep,
+`S` standard, `Q` quick) and the aligned score rounded to a whole number. The
+highlighted row's tier is spelt out on the line under the table, after the
+price, when there is room. An illustrative picker, not a live one (and not
+a sample the modeltiers tests pin):
+
+```
+    FAMILY   MODEL                     TIER  LOC    STATUS  RUNNING  COST
+    glm-5.3  ollama/glm-5.3:cloud      S44   cloud  ok      -        ...
+    qwen3.8  ollama/qwen3.8:27b-mlx    S34   local  ok      -        ...
+    -        ollama/gemma4:31b-mlx     -     local  new     -        -
+
+  LiteLLM: on   cost 0.6/0.06/2.2   tier standard · score 44 (3 sources) · high confidence
+```
+
+- `-` means no rating: the entry is `unrated`, the model is not in the file
+  (added since the last `modeltiers run`), or there is no file or it cannot
+  be parsed. The picker never warns about any of these.
+- wt finds a model's entry by `provider_id` and `model_name`, the fields
+  `wt model list --json` gives modeltiers, so a model renamed in the registry
+  reads `-` until the next run.
+- A slot-profile row's TIER is `-`; the line under the table, which lists the
+  profile's slots, puts each slot model's code after its name.
+- On a narrow terminal TIER is dropped after the usage columns and COST, and
+  before LOC and FAMILY. The column is advisory: it does not change the sort
+  or which row Enter picks.
+- wt reads the file at `MODELTIERS_OUT` when it is set, exactly as
+  `modeltiers run` writes it, so a scratch run (step 6) shows in a picker
+  started with the same variable.
 
 ### 3. Decide what the report asks of you
 
@@ -580,8 +614,8 @@ MODELTIERS_OUT="$SCRATCH/tiers.toml" uv run --directory modeltiers modeltiers sh
 
 ## Gotchas
 
-- **Nothing reads the file yet.** The wt model selector does not show tiers. That is the next phase; this guide fixes only what the file says.
-- **A tier is a capability band, not a price or a speed.** Cost is a column in the wt selector already. No keyless source gives measured speed.
+- **Only the wt picker reads the file,** and only to show it (the TIER column and the line under the table). No route, sort or default choice depends on a tier.
+- **A tier is a capability band, not a price or a speed.** Cost is a column in the wt picker beside it. No keyless source gives measured speed.
 - **Two rows of one model can differ.** The context gate uses the context the row's own host serves. Two hosts of one key can therefore end in different tiers.
 - **A local row's context is unknown,** so the context gate is skipped for it and the entry says so in a note.
 - **Low floors are rough.** Sources often disagree by one tier near a floor, which is what `medium` confidence shows. A two-vote model takes the lower vote, so thin evidence cannot promote a model.

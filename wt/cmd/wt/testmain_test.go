@@ -22,6 +22,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 )
 
 // TestMain stubs the live seams a cmd/wt test would otherwise hit: the
@@ -39,6 +40,10 @@ func TestMain(m *testing.M) {
 	// one in a temp directory or changes into a bare one to be outside any —
 	// gitenv.IsolateForTest carries the full rationale.
 	gitenv.IsolateForTest()
+	// No model table may read the developer's tiers.toml (or the one a
+	// MODELTIERS_OUT in their shell names): every TIER cell is "-" unless a
+	// test names a file of its own (tiers.IsolateForTest).
+	tiers.IsolateForTest()
 	probeInventory = localmodels.OnDiskSnapshotForTest
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests

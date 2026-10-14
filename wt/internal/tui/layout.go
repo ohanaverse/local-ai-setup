@@ -45,16 +45,40 @@ func modeLine(mode, cost string, width int) string {
 	return mode
 }
 
+// withTierNote is the mode line (modeLine's) with the highlighted row's tier
+// after it: the longest of the row's tier notes (tiers.Entry.Notes, longest
+// first) that fits the width beside the line, or the line alone when not even
+// the shortest does. The tier is guidance and the TIER column shows its short
+// form, so it is the first thing this line gives up: the mode and the price
+// are kept exactly as modeLine chose them.
+func withTierNote(line string, notes []string, width int) string {
+	for _, n := range notes {
+		if line == "" {
+			if lipgloss.Width(n) <= width {
+				return n
+			}
+			continue
+		}
+		if lipgloss.Width(line)+3+lipgloss.Width(n) <= width {
+			return line + "   " + n
+		}
+	}
+	return line
+}
+
 // slotLine is the line under the model table while a slot-profile row is
 // highlighted; it takes the mode line's place and adds no line to the frame.
 // A blocked row shows its reason, cut with an ellipsis when it is too wide.
 // Any other row lists the slots the profile fills, the default first and
 // marked "*", the rest in the agent's declared order, each with its model's
-// provider-side name. Entries are shown whole or not at all, as the mode
-// line's price is (modeLine): the longest run of leading entries that fits
-// width is shown and the rest are counted as "+N more". It is "" when not
-// even that count fits. A width that is not positive cuts nothing.
-func slotLine(p *catalog.ProfileRow, width int) string {
+// provider-side name and, when the tiers file rates that model, its TIER cell
+// ("opus* glm-5.3:cloud S44"; tiers, by slot). Entries are shown whole or not
+// at all, as the mode line's price is (modeLine): the longest run of leading
+// entries that fits width is shown and the rest are counted as "+N more".
+// For each run the entries are tried with their tiers first and then without,
+// so the tiers go before a slot does. It is "" when not even the count fits.
+// A width that is not positive cuts nothing.
+func slotLine(p *catalog.ProfileRow, tiers map[string]string, width int) string {
 	if p == nil {
 		return ""
 	}
@@ -64,22 +88,35 @@ func slotLine(p *catalog.ProfileRow, width int) string {
 	const sep = " · "
 	def := p.Check.Profile.Default
 	slots := p.Check.Profile.FilledOrder(p.Check.Declared)
-	entries := make([]string, len(slots))
+	plain := make([]string, len(slots))
+	rated := make([]string, len(slots))
+	anyRated := false
 	for i, s := range slots {
 		label := s
 		if s == def {
 			label += "*"
 		}
-		entries[i] = label + " " + p.Models[s].ModelName
-	}
-	for shown := len(entries); shown >= 0; shown-- {
-		parts := append([]string(nil), entries[:shown]...)
-		if rest := len(entries) - shown; rest > 0 {
-			parts = append(parts, fmt.Sprintf("+%d more", rest))
+		plain[i] = label + " " + p.Models[s].ModelName
+		rated[i] = plain[i]
+		if code := tiers[s]; code != "" {
+			rated[i] += " " + code
+			anyRated = true
 		}
-		line := strings.Join(parts, sep)
-		if width <= 0 || lipgloss.Width(line) <= width {
-			return line
+	}
+	variants := [][]string{rated}
+	if anyRated {
+		variants = append(variants, plain)
+	}
+	for shown := len(slots); shown >= 0; shown-- {
+		for _, entries := range variants {
+			parts := append([]string(nil), entries[:shown]...)
+			if rest := len(entries) - shown; rest > 0 {
+				parts = append(parts, fmt.Sprintf("+%d more", rest))
+			}
+			line := strings.Join(parts, sep)
+			if width <= 0 || lipgloss.Width(line) <= width {
+				return line
+			}
 		}
 	}
 	return ""
@@ -152,16 +189,17 @@ func (m *model) modelFrames() []listFrame {
 			// given up on a narrow terminal (a table with an OpenRouter id
 			// gives it up at 80 columns), and this line is not. It is on
 			// the mode line, not a line of its own, so the footer is as tall
-			// as it was and nothing about the fit changes.
+			// as it was and nothing about the fit changes. The row's tier
+			// follows when there is room (withTierNote).
 			//
 			// A slot-profile row has the line to itself: its slots, or its
 			// block reason (slotLine). Every profile launches through the
 			// proxy, so neither the mode nor a price is named for it.
 			if it, ok := m.models.SelectedItem().(*modelItem); ok {
 				if it.profile != nil {
-					mode = slotLine(it.profile, inner)
+					mode = slotLine(it.profile, it.slotTiers, inner)
 				} else {
-					mode = modeLine(mode, it.cost, inner)
+					mode = withTierNote(modeLine(mode, it.cost, inner), it.tier, inner)
 				}
 			}
 			// Enter's effect depends on the highlighted row — launch for a cloud or

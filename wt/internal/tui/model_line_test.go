@@ -31,7 +31,8 @@ func (s *mockStore) CountsForAgent(agent string, ids []string) map[string]usage.
 }
 
 // TestModelItemLineFormat verifies the selector table's one-line model
-// rendering: header columns, then per row the family, model ID, location,
+// rendering: header columns, then per row the family, model ID, tier ("-":
+// no tiers file in tests unless one names it), location,
 // status, running flag, cost cell, and the separate 1D/7D/30D usage
 // cells (tags are no longer shown). Rows are ordered by the table's sort
 // (cloud first, then non-running local alphabetically). The marker prefix is
@@ -61,9 +62,9 @@ func TestModelItemLineFormat(t *testing.T) {
 			// Group 1 (cloud) sorts before group 2 (non-running local, by id):
 			// m3, then m1, m2. No cost data renders "-"; usage is per model.
 			expected: []string{
-				"fam-b m3 cloud ok - - 100 200 300",
-				"fam-a m1 local ok - - 1 2 3",
-				"fam-a m2 local ok - - 10 20 30",
+				"fam-b m3 - cloud ok - - 100 200 300",
+				"fam-a m1 - local ok - - 1 2 3",
+				"fam-a m2 - local ok - - 10 20 30",
 			},
 		},
 		{
@@ -73,7 +74,7 @@ func TestModelItemLineFormat(t *testing.T) {
 			},
 			// An empty family renders as "-".
 			expected: []string{
-				"- m1 local ok - - 1 2 3",
+				"- m1 - local ok - - 1 2 3",
 			},
 		},
 	}
@@ -81,7 +82,7 @@ func TestModelItemLineFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tbl := buildTable(tableInput{models: tt.models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
-			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"; got != want {
+			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"; got != want {
 				t.Errorf("header = %q, want %q", got, want)
 			}
 			if len(tbl.items) != len(tt.expected) {

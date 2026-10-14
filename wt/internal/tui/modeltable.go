@@ -28,6 +28,7 @@ type modelTable struct {
 const (
 	colFamily = iota
 	colModel
+	colTier
 	colLoc
 	colStatus
 	colRunning
@@ -40,10 +41,13 @@ const (
 
 // colDropOrder is the order in which columns are given up when the table is
 // wider than its list (tuilayout.Columns.DropOrder): the survey segment
-// first, then usage from the longest window to the shortest, cost, location
-// and family. MODEL, STATUS and RUNNING are not in it: they say what a row is
-// and whether Enter launches or starts it, so they are never dropped.
-var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colLoc, colFamily}
+// first, then usage from the longest window to the shortest, cost, the tier,
+// location and family. The tier outlasts usage and cost because it is the
+// guidance for choosing a model and costs four or five columns; the mode line
+// still names a highlighted row's price and tier when their columns are gone.
+// MODEL, STATUS and RUNNING are not in it: they say what a row is and whether
+// Enter launches or starts it, so they are never dropped.
+var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colTier, colLoc, colFamily}
 
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
 
@@ -187,7 +191,8 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	fam := make([]string, len(rows))
 	c1, c7, c30 := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
 	famW, idW, costW, w1, w7, w30 := len("FAMILY"), len("MODEL"), len("COST"), len("1D"), len("7D"), len("30D")
-	wS := len("STATUS")
+	wS, wT := len("STATUS"), len("TIER")
+	tier := make([]string, len(rows))
 	timePriced := false
 	for i, r := range rows {
 		fam[i] = r.Model.Family
@@ -202,6 +207,10 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			cost[i] = costCell(r)
 			timePriced = timePriced || r.timePriced()
 		}
+		// A slot-profile row's tier is "-": its slots' tiers are on its
+		// slot line (slotLine).
+		tier[i] = r.tier.Short()
+		wT = maxRunes(wT, tier[i])
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])
 		idW = maxRunes(idW, r.Model.ID)
@@ -217,11 +226,11 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	// shown; whoever sizes the list narrows it (tuilayout.FitTo).
 	cols := tuilayout.NewColumns(
 		[]string{
-			padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("LOC", 5), padRunes("STATUS", wS),
+			padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("TIER", wT), padRunes("LOC", 5), padRunes("STATUS", wS),
 			padRunes("RUNNING", 7), padRunes(costHead, costW),
 			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
 		},
-		[]int{famW, idW, 5, wS, 7, costW, w1, w7, w30, len("SURVEY")},
+		[]int{famW, idW, wT, 5, wS, 7, costW, w1, w7, w30, len("SURVEY")},
 		rowPrefixWidth, colDropOrder,
 	)
 	header := cols.Header()
@@ -239,13 +248,13 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		// trims them, so they stay only when the survey segment follows (and
 		// keeps it column-aligned).
 		cells := []string{
-			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(loc, 5), padRunes(string(r.Status), wS),
+			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(tier[i], wT), padRunes(loc, 5), padRunes(string(r.Status), wS),
 			padRunes(runningText(r.Row), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
 			survey.FormatPickerSegment(r.stats),
 		}
 		cols.Widths[colSurvey] = maxRunes(cols.Widths[colSurvey], cells[colSurvey])
-		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r)}
+		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r), tier: r.tier.Notes()}
 		switch r.Action() {
 		case catalog.ActionBlock:
 			it.blocked = r.BlockReason()
@@ -254,8 +263,9 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		}
 		if r.Profile != nil {
 			// The slot line takes the mode line's place for this row
-			// (slotLine), so the item carries the profile and no price note.
-			it.profile, it.cost = r.Profile, ""
+			// (slotLine), so the item carries the profile and its slots'
+			// tiers, and no price or tier note.
+			it.profile, it.cost, it.tier, it.slotTiers = r.Profile, "", nil, r.slotTiers
 		}
 		if cfg != nil && r.Profile == nil {
 			route, err := routes[i].route, routes[i].err
