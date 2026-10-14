@@ -115,7 +115,7 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 	// Every filled slot whose id is in the registry, then the default's model
 	// for each slot the profile leaves unfilled, and the row's location from
 	// the filled slots that have one. A blocked row keeps what resolved.
-	slots := c.Profile.FilledOrder(c.Declared)
+	slots := c.FilledOrder()
 	p.Models = map[string]config.Model{}
 	cloud, local := false, false
 	for _, s := range slots {
@@ -133,7 +133,7 @@ func ResolveSlotProfile(cfg *config.Config, snap *localmodels.Snapshot, c profil
 			cloud = true
 		}
 	}
-	if def, ok := p.Models[c.Profile.Default]; ok {
+	if def, ok := p.Models[c.RestSlot()]; ok {
 		for _, s := range c.Declared {
 			if _, filled := c.Profile.Slots[s]; !filled {
 				p.Models[s] = def
@@ -257,11 +257,11 @@ func slotLocalState(cfg *config.Config, snap *localmodels.Snapshot, sp profiles.
 }
 
 // Distinct lists the resolved slot models once each, in the order of
-// Check.Profile.FilledOrder(Check.Declared): the default slot's model first.
+// Check.FilledOrder(): the model of the slot the session rests on first.
 func (p *ProfileRow) Distinct() []config.Model {
 	var out []config.Model
 	seen := map[string]bool{}
-	for _, s := range p.Check.Profile.FilledOrder(p.Check.Declared) {
+	for _, s := range p.Check.FilledOrder() {
 		m, ok := p.Models[s]
 		if !ok || seen[m.ID] {
 			continue
@@ -287,7 +287,7 @@ func (p *ProfileRow) Cloud() []config.Model {
 // SlotOf is the first slot, in FilledOrder, whose model has the given id; ""
 // when none.
 func (p *ProfileRow) SlotOf(modelID string) string {
-	for _, s := range p.Check.Profile.FilledOrder(p.Check.Declared) {
+	for _, s := range p.Check.FilledOrder() {
 		if m, ok := p.Models[s]; ok && m.ID == modelID {
 			return s
 		}

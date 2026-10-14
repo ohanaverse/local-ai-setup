@@ -117,10 +117,13 @@ func showSlotProfile(w io.Writer, a *app, agent, id string) error {
 
 	p := row.Profile
 	sp := p.Check.Profile
+	if p.Check.Alias.Rest != "" {
+		fmt.Fprintf(w, "default: %s — %s\n", sp.Default, p.Check.Alias.Doc)
+	}
 	for _, slot := range p.Check.Declared {
 		m := p.Models[slot]
 		name := slot
-		if slot == sp.Default {
+		if slot == p.Check.RestSlot() {
 			name += "*"
 		}
 		line := fmt.Sprintf("slot %s: %s (%s)", name, m.ID, m.ModelName)

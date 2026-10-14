@@ -25,6 +25,27 @@ type SlotDrivers struct {
 	// the error that blocks the profile. It is asked only about a profile
 	// that sets config_content.
 	ConfigContent func(agent string, cc map[string]any) error
+	// DefaultAlias is the agent's own aliases for a default
+	// (SlotCapable.DefaultAlias). nil: no agent has one, and a default must
+	// name a slot.
+	DefaultAlias func(agent, name string) (SlotAlias, bool)
+}
+
+// alias asks DefaultAlias, which may be nil.
+func (d SlotDrivers) alias(agent, name string) (SlotAlias, bool) {
+	if d.DefaultAlias == nil {
+		return SlotAlias{}, false
+	}
+	return d.DefaultAlias(agent, name)
+}
+
+// defaultAlias is the agent's alias that p's default names, when it names
+// one and no filled slot of that name takes precedence.
+func defaultAlias(p SlotProfile, d SlotDrivers) (SlotAlias, bool) {
+	if _, filled := p.Slots[p.Default]; filled {
+		return SlotAlias{}, false
+	}
+	return d.alias(p.Agent, p.Default)
 }
 
 // ErrSlotDuplicate is the static error of every profile that shares its
@@ -39,6 +60,29 @@ type SlotCheck struct {
 	Duplicate bool     // Usable, and another Usable profile has the same Agent and Name
 	Declared  []string // the agent's slot names in display order; nil when !Usable
 	Err       error    // the first failing static rule; nil when the profile passes
+	// DefaultSlot is the slot the session starts and works on: Profile.Default
+	// when it names a slot, Alias.Rest when it is an alias. "" when Err is set.
+	DefaultSlot string
+	// Alias is the default's alias, when the default is one; else the zero
+	// SlotAlias.
+	Alias SlotAlias
+}
+
+// RestSlot is the slot the session starts and works on, the one a row is
+// priced as, listed first and marked: DefaultSlot, or Profile.Default for a
+// check built without one.
+func (c SlotCheck) RestSlot() string {
+	if c.DefaultSlot != "" {
+		return c.DefaultSlot
+	}
+	return c.Profile.Default
+}
+
+// FilledOrder lists the slots the profile fills, RestSlot first, then the
+// rest in the agent's declared order. It is the order every slot list is
+// shown and walked in.
+func (c SlotCheck) FilledOrder() []string {
+	return c.Profile.filledOrderFrom(c.Declared, c.RestSlot())
 }
 
 // Label names the profile in a message: Profile.ID() for a Usable check,
@@ -88,6 +132,12 @@ func ValidateSlots(store SlotStore, d SlotDrivers) []SlotCheck {
 			continue
 		}
 		c.Err = slotBodyErr(c.Profile, c.Declared, d)
+		if c.Err == nil {
+			c.DefaultSlot = c.Profile.Default
+			if a, ok := defaultAlias(c.Profile, d); ok {
+				c.DefaultSlot, c.Alias = a.Rest, a
+			}
+		}
 	}
 	return checks
 }
@@ -132,7 +182,15 @@ func slotBodyErr(p SlotProfile, declared []string, d SlotDrivers) error {
 		return errors.New("default is missing")
 	}
 	if _, ok := p.Slots[p.Default]; !ok {
-		return fmt.Errorf("default %q is not a slot this profile fills", p.Default)
+		a, isAlias := defaultAlias(p, d)
+		if !isAlias {
+			return fmt.Errorf("default %q is not a slot this profile fills", p.Default)
+		}
+		for _, slot := range a.Requires {
+			if _, filled := p.Slots[slot]; !filled {
+				return fmt.Errorf("default %q needs the %s slot filled", p.Default, slot)
+			}
+		}
 	}
 
 	// The same four fields, judged "used" exactly as an automatic profile's are.

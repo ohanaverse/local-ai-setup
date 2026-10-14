@@ -25,3 +25,12 @@ default = "opus"
 
 [profile.slots]
 opus = "ollama/glm-5.2:cloud"
+
+[[profile]]
+name    = "planned"
+agent   = "claude"
+default = "opusplan"
+
+[profile.slots]
+opus   = "openrouter/z-ai/glm-5.3"
+sonnet = "ollama/glm-5.3-flash:cloud"

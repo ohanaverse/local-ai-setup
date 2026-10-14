@@ -380,6 +380,25 @@ func TestSlotLine(t *testing.T) {
 	}
 }
 
+// TestSlotLineOpusplan pins the line for a profile whose default is claude's
+// opusplan alias: the alias's name first, then the slot the session works on
+// (sonnet) marked, then the rest. Marking the opus slot, or no slot, would
+// say the session runs on a model it only plans with; leaving out the name
+// would hide that the session switches models with plan mode.
+func TestSlotLineOpusplan(t *testing.T) {
+	row := slotLineRow()
+	row.Check.Profile.Default = "opusplan"
+	row.Check.DefaultSlot = "sonnet"
+	row.Check.Alias = profiles.SlotAlias{Requires: []string{"opus", "sonnet"}, Rest: "sonnet", Doc: "doc"}
+	all := "opusplan · sonnet* glm-5.3-flash:cloud · fable kimi-k3:cloud · opus glm-5.2:cloud · haiku qwen3.8"
+	if got := slotLine(row, nil, 0); got != all {
+		t.Errorf("slotLine = %q, want %q", got, all)
+	}
+	if got, want := slotLine(row, nil, 50), "opusplan · sonnet* glm-5.3-flash:cloud · +3 more"; got != want {
+		t.Errorf("slotLine(width 50) = %q, want %q (the alias kept with the slot it rests on)", got, want)
+	}
+}
+
 // footerLine is the line of view that sits just above the picker's key
 // hints: the mode line, or the slot line when a profile row is highlighted.
 func footerLine(t *testing.T, view string) string {

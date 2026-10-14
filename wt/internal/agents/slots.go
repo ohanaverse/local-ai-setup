@@ -61,6 +61,13 @@ func SlotDrivers() profiles.SlotDrivers {
 			}
 			return sc.CheckConfigContent(cc)
 		},
+		DefaultAlias: func(agent, name string) (profiles.SlotAlias, bool) {
+			sc, ok := SlotsFor(agent)
+			if !ok {
+				return profiles.SlotAlias{}, false
+			}
+			return sc.DefaultAlias(name)
+		},
 		Required: func(agent string, m profiles.Mechanism) (profiles.Mechanism, bool) {
 			mr, ok := ByName(agent).(profiles.MechanismRequirer)
 			if !ok {
