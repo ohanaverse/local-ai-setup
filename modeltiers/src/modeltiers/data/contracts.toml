@@ -10,7 +10,7 @@
 # [sources.<source>] attribution = the line printed with that source's data
 # [[sentinels]]      canonical, tier (before the gates), votes = the pinned ones
 
-version = "2026-10-12"
+version = "2026-10-13"
 
 [tiers.quick]
 code = "Q"
@@ -58,7 +58,7 @@ attribution = "Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchma
 
 [[sentinels]]
 canonical = "anthropic/claude-fable-5-1"
-tier = "marathon"
+tier = "deep"
 votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
 
 [[sentinels]]
