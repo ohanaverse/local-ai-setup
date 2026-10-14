@@ -448,34 +448,10 @@ func stop(ctx context.Context, e *env, cfg *config.Config, providerID string) er
 	return b.stop(ctx, e, cfg)
 }
 
-// StopModelDeferred stops one running model and writes its route removal,
-// leaving the LiteLLM proxy restart to the caller (issue #142). en is the
-// inventory entry: ProviderID and ModelName name what to stop, ModelID the
-// route id its row was built under, which the removal needs to tell the model
-// from a sibling whose name merely resembles it (poolRouteIDs, #195). On ollama
-// it unloads just that model; on an Exclusive provider (mtplx) it stops the
-// provider's sole occupant; on a Pool (omlx) it unloads that one model, leaving
-// the service and its loaded siblings up and routed. The caller must only pass
-// a model live Inventory reported running.
-//
-// restartOwed reports that a removal was written and the proxy therefore still
-// needs its restart: the caller must call SettleRoutes once after the last stop
-// of a batch when any call owed one — including when the batch ends early on
-// Ctrl+C or a failure, since every removal already written still needs that
-// restart. One settling bounce replaces N overlapping restarts, each of which
-// killed the proxy the previous one had just brought up. A failed stop writes
-// nothing and owes nothing.
-func StopModelDeferred(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error) {
-	if err := stopModel(ctx, defaultEnv(), cfg, en.ProviderID, en.ModelName); err != nil {
-		return false, err
-	}
-	return routeRemoveModel(ctx, cfg, en, restartDeferred), nil
-}
-
 // SettleRoutes restarts the LiteLLM proxy (and waits for it, asynchronously —
-// see WaitPendingRoutes) to apply the route removals a StopModelDeferred batch
-// wrote. It rewrites nothing: the removals are already in config.yaml, and
-// every caller reaches it because some StopModelDeferred reported restartOwed.
+// see WaitPendingRoutes) to apply the route removals a StopBatch wrote. It
+// rewrites nothing: the removals are already in config.yaml, and every caller
+// reaches it because some StopBatch.Stop reported restartOwed.
 // It runs detached from ctx, so a batch cut short by Ctrl+C still settles what
 // it wrote.
 //
@@ -492,8 +468,10 @@ func SettleRoutesTo(ctx context.Context, out io.Writer, cfg *config.Config) {
 	bounceRoutes(withRouteOutput(ctx, out), cfg)
 }
 
-// stopModel is StopModelDeferred's injectable core, the same shape as
-// stop/start.
+// stopModel stops one model outside a batch, the same shape as stop/start:
+// each backend's own stop, an ollama one waiting under a bound of its own.
+// StopBatch.Stop is the production path; this is the per-backend core tests
+// drive directly.
 func stopModel(ctx context.Context, e *env, cfg *config.Config, providerID, modelName string) error {
 	b := e.backends[localmodels.Family(providerID)]
 	if b == nil {
@@ -512,7 +490,7 @@ func Startable(providerID string) bool {
 
 // CanStop reports whether wt has a stop backend for providerID's family, so a
 // picker never offers a model (e.g. one on mlx_lm_server) that
-// StopModelDeferred would refuse with *UnsupportedError. Every backend
+// StopBatch.Stop would refuse with *UnsupportedError. Every backend
 // implements both start and stop, so this is Startable under its stop-side
 // name.
 func CanStop(providerID string) bool { return Startable(providerID) }

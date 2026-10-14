@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -47,6 +48,70 @@ type stopHarness struct {
 	// families the stop state read it for.
 	loading      map[string]lifecycle.Loading
 	loadingAsked []string
+	// finishingOn names a modelName whose stop ollama accepted and has not
+	// carried out within the batch's wait (*lifecycle.StillFinishingError).
+	finishingOn string
+	// noticeOn names a modelName whose stop gives the wait's notice before it
+	// returns, as the real one does after about two seconds.
+	noticeOn string
+	// accepted makes every ollama entry of the batch one whose stop ollama
+	// accepted when the batch began, so Accepted lists what has not reported.
+	accepted bool
+	// begun is every entry handed to begin, in order.
+	begun []localmodels.Entry
+}
+
+// harnessBatch is the batch begin hands the stop loop: each Stop is the
+// harness's own stop, and Accepted lists the ollama entries begun and not yet
+// reported when the harness says ollama accepted them.
+type harnessBatch struct {
+	h        *stopHarness
+	answered map[string]bool
+}
+
+func (b *harnessBatch) Stop(ctx context.Context, en localmodels.Entry) (bool, error) {
+	h := b.h
+	if h.ctxSeen == nil {
+		h.ctxSeen = ctx
+	}
+	h.stops = append(h.stops, en.ProviderID+"|"+en.ModelName)
+	if en.ModelName == h.noticeOn {
+		h.noticeCtx(ctx, lifecycle.StopNotice{Msg: "waiting for ollama to finish a request in flight (up to 3m0s)"})
+	}
+	if h.cancel != nil && en.ModelName == h.cancelOn {
+		h.cancel()
+		if h.cancelFails {
+			return false, ctx.Err()
+		}
+	}
+	b.answered[en.ModelID] = true
+	if en.ModelName == h.failOn {
+		return false, errors.New("boom")
+	}
+	if en.ModelName == h.finishingOn {
+		return false, &lifecycle.StillFinishingError{Provider: "ollama", Model: en.ModelName, Waited: 180 * time.Second}
+	}
+	return !h.notOwed, nil
+}
+
+func (b *harnessBatch) Accepted() []localmodels.Entry {
+	if !b.h.accepted {
+		return nil
+	}
+	var out []localmodels.Entry
+	for _, en := range b.h.begun {
+		if en.ProviderID == "ollama" && !b.answered[en.ModelID] {
+			out = append(out, en)
+		}
+	}
+	return out
+}
+
+// noticeCtx delivers n the way lifecycle's stops do: to the function the
+// stop loop put on ctx (lifecycle.WithStopNotice). It goes through a real
+// lifecycle context so the test reads what the loop installed, not a copy.
+func (h *stopHarness) noticeCtx(ctx context.Context, n lifecycle.StopNotice) {
+	lifecycle.DeliverStopNoticeForTest(ctx, n)
 }
 
 func (h *stopHarness) deps() stopDeps {
@@ -60,21 +125,9 @@ func (h *stopHarness) deps() stopDeps {
 			return out
 		},
 		live: func() map[string]int { return h.counts },
-		stop: func(ctx context.Context, _ *config.Config, en localmodels.Entry) (bool, error) {
-			if h.ctxSeen == nil {
-				h.ctxSeen = ctx
-			}
-			h.stops = append(h.stops, en.ProviderID+"|"+en.ModelName)
-			if h.cancel != nil && en.ModelName == h.cancelOn {
-				h.cancel()
-				if h.cancelFails {
-					return false, ctx.Err()
-				}
-			}
-			if en.ModelName == h.failOn {
-				return false, errors.New("boom")
-			}
-			return !h.notOwed, nil
+		begin: func(_ context.Context, _ *config.Config, entries []localmodels.Entry) stopBatch {
+			h.begun = append(h.begun, entries...)
+			return &harnessBatch{h: h, answered: map[string]bool{}}
 		},
 		settle: func(context.Context, *config.Config) { h.settles++ },
 		loading: func(_ *config.Config, fam string) lifecycle.Loading {
@@ -721,5 +774,128 @@ func TestStopCandidatesIncludeAModelMidLoad(t *testing.T) {
 	cands := stopState(&config.Config{}, h.deps()).Candidates
 	if len(cands) != 1 || cands[0].Entry.ModelID != "omlx/x" {
 		t.Errorf("candidates = %+v, want the loading omlx/x", cands)
+	}
+}
+
+// TestStopEntriesStillFinishingIsNotAFailure pins #379's first item: a stop
+// ollama accepted and has not carried out when the wait's bound is spent is
+// its own outcome. It is reported as still finishing, never as "done" (the
+// model is still loaded) and never as "failed" (it unloads once its request
+// ends): the loop returns nil, so `wt stop` exits 0, and the batch goes on.
+func TestStopEntriesStillFinishingIsNotAFailure(t *testing.T) {
+	h := &stopHarness{finishingOn: "a"}
+	var out bytes.Buffer
+	entries := []localmodels.Entry{runningEntry("ollama", "ollama/a", "a"), runningEntry("ollama", "ollama/b", "b")}
+	if err := stopEntries(context.Background(), &out, &config.Config{}, h.deps(), entries); err != nil {
+		t.Fatalf("err = %v, want nil: a stop ollama accepted is not a failed stop", err)
+	}
+	want := "Stopping ollama/a... still finishing a request; ollama unloads it when that ends\nStopping ollama/b... done\n"
+	if out.String() != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", out.String(), want)
+	}
+	if len(h.stops) != 2 {
+		t.Errorf("stops = %v, want both: the batch goes on past a model still finishing", h.stops)
+	}
+}
+
+// TestStopEntriesBeginsTheWholeBatchFirst pins #379's second item at the
+// loop: every entry reaches the batch (lifecycle.BeginStops sends every
+// ollama stop) before the first model is reported, so the waits overlap and
+// share one bound instead of running one after another.
+func TestStopEntriesBeginsTheWholeBatchFirst(t *testing.T) {
+	entries := []localmodels.Entry{
+		runningEntry("ollama", "ollama/a", "a"),
+		runningEntry("mtplx", "mtplx/m", "m"),
+		runningEntry("ollama", "ollama/b", "b"),
+	}
+	h := &stopHarness{}
+	d := h.deps()
+	begin := d.begin
+	var begunAtFirstStop int
+	d.begin = func(ctx context.Context, cfg *config.Config, es []localmodels.Entry) stopBatch {
+		b := begin(ctx, cfg, es)
+		return stopFunc{b, func() {
+			if begunAtFirstStop == 0 {
+				begunAtFirstStop = len(h.begun)
+			}
+		}}
+	}
+	if err := stopEntries(context.Background(), io.Discard, &config.Config{}, d, entries); err != nil {
+		t.Fatal(err)
+	}
+	if begunAtFirstStop != 3 || !slices.Equal(h.begun, entries) {
+		t.Fatalf("begun = %v (%d at the first stop), want all 3 entries before any stop", h.begun, begunAtFirstStop)
+	}
+	if want := []string{"ollama|a", "mtplx|m", "ollama|b"}; !slices.Equal(h.stops, want) {
+		t.Errorf("stops = %v, want %v: models are still reported in the caller's order", h.stops, want)
+	}
+}
+
+// stopFunc is a stopBatch that runs before ahead of each Stop.
+type stopFunc struct {
+	stopBatch
+	before func()
+}
+
+func (s stopFunc) Stop(ctx context.Context, en localmodels.Entry) (bool, error) {
+	s.before()
+	return s.stopBatch.Stop(ctx, en)
+}
+
+// TestStopEntriesPrintsTheWaitNoticeOnTheOpenLine pins #379's third item:
+// the notice a stop gives while it waits for ollama (lifecycle.StopNotice)
+// continues the model's open "Stopping x... " line on the loop's own writer,
+// so a line that can sit open for minutes says why. It never goes to stderr
+// or anywhere else the caller did not hand the loop: the exit flow's picker
+// prints only through its writer, after the TUI's alt screen is gone.
+func TestStopEntriesPrintsTheWaitNoticeOnTheOpenLine(t *testing.T) {
+	r, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stderr
+	os.Stderr = wr
+	t.Cleanup(func() { os.Stderr = prev })
+
+	h := &stopHarness{noticeOn: "a"}
+	var out bytes.Buffer
+	entries := []localmodels.Entry{runningEntry("ollama", "ollama/a", "a")}
+	if err := stopEntries(context.Background(), &out, &config.Config{}, h.deps(), entries); err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = prev
+	_ = wr.Close()
+	stderr, _ := io.ReadAll(r)
+
+	want := "Stopping ollama/a... waiting for ollama to finish a request in flight (up to 3m0s)... done\n"
+	if out.String() != want {
+		t.Fatalf("output:\n%q\nwant:\n%q", out.String(), want)
+	}
+	if len(stderr) != 0 {
+		t.Errorf("stderr = %q, want nothing: the notice belongs to the loop's writer", stderr)
+	}
+}
+
+// TestStopEntriesCancelNamesStopsOllamaAccepted pins what a Ctrl+C says once
+// the batch has sent every ollama stop: the models after the one in flight
+// are skipped by the loop, but ollama accepted their stops and still carries
+// them out. Without the line, "cancelled" reads as "nothing else was
+// touched" while those models go on to unload.
+func TestStopEntriesCancelNamesStopsOllamaAccepted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := &stopHarness{cancelOn: "a", cancel: cancel, cancelFails: true, accepted: true}
+	var out bytes.Buffer
+	entries := []localmodels.Entry{
+		runningEntry("ollama", "ollama/a", "a"),
+		runningEntry("ollama", "ollama/b", "b"),
+		runningEntry("ollama", "ollama/c", "c"),
+	}
+	if err := stopEntries(ctx, &out, &config.Config{}, h.deps(), entries); !errors.Is(err, ErrStopCancelled) {
+		t.Fatalf("err = %v, want ErrStopCancelled", err)
+	}
+	want := "Stopping ollama/a... cancelled\nwt: ollama had already accepted the stop of ollama/a, ollama/b, ollama/c; it unloads each one once any request in flight ends (`ollama ps` shows when)\n"
+	if out.String() != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", out.String(), want)
 	}
 }

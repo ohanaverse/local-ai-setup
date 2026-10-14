@@ -330,6 +330,18 @@
 
 ### Fixed
 
+- An ollama stop that outlasts wt's 3-minute wait is no longer a failure
+  (#379). ollama accepted the stop and unloads the model when its request
+  ends, so the line now ends in
+  `still finishing a request; ollama unloads it when that ends` and that
+  model alone does not make `wt stop` exit 1. Stopping several ollama models
+  at once (`wt stop ollama`, `wt stop --all`, the stop picker's `a`) sends
+  every `ollama stop` first and waits for all of them under one 3-minute
+  bound, so three models finishing long requests no longer hold `--all`'s
+  omlx halt or the exit flow's summary back for 9 minutes. A stop still
+  waiting after 2 seconds says so on its line
+  (`waiting for ollama to finish a request in flight (up to 3m0s)`), and a
+  Ctrl+C names the models whose stop ollama had already accepted.
 - Stopping an ollama model that is still answering a request no longer
   reports a failure. ollama accepts the stop, keeps the model in
   `ollama ps` as `Stopping...` and unloads it when the request ends (6 to 20
@@ -338,8 +350,8 @@
   `wt stop` exited 1 for a model that did stop. After an `ollama stop` that
   exits 0, wt now checks every second until the model is gone, for up to 3
   minutes, and the `Stopping <id>...` line stays open for that long. A model
-  still listed after that fails with
-  `/api/ps still lists the model after waiting 180s (ollama may still be finishing a request; ...)`.
+  still listed after that wait is reported as still finishing a request
+  (#379, above), not as a failed stop.
   A stop ollama refuses is still reported at once, and Ctrl+C during the
   wait ends wt's wait (ollama still unloads the model when its request ends). A Ctrl+C that landed in wt's first check could be printed
   as `done`; it is `cancelled` now.

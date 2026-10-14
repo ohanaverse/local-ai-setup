@@ -21,7 +21,7 @@ import (
 )
 
 // stopDeps are the picker's seams: live inventory, the two live-session
-// refcount reads, the per-model stop, the batch's single proxy restart and the
+// refcount reads, the batch of stops, the batch's single proxy restart and the
 // pidfile read behind a refused port. Tests substitute all six.
 type stopDeps struct {
 	inventory func(*config.Config) localmodels.Snapshot
@@ -29,13 +29,26 @@ type stopDeps struct {
 	// live is the session count of every model id with a live session,
 	// unregistered ids included (refcount.Live) — the family-wide count.
 	live func() map[string]int
-	// stop stops one model and writes its route removal without restarting
-	// the proxy; restartOwed reports that settle must run (issue #142).
-	stop   func(ctx context.Context, cfg *config.Config, en localmodels.Entry) (restartOwed bool, err error)
+	// begin starts a batch of stops (lifecycle.BeginStops): it sends every
+	// ollama stop at once, and the batch's Stop then finishes one model at a
+	// time under one shared wait (#379).
+	begin  func(ctx context.Context, cfg *config.Config, entries []localmodels.Entry) stopBatch
 	settle func(ctx context.Context, cfg *config.Config)
 	// loading reads what the pidfile of a family's server says, for a family
 	// whose port refused (lifecycle.LoadingServer). It signals nothing.
 	loading func(cfg *config.Config, family string) lifecycle.Loading
+}
+
+// stopBatch is what the stop loop needs of a lifecycle.StopBatch.
+type stopBatch interface {
+	// Stop finishes one model's stop and writes its route removal without
+	// restarting the proxy; restartOwed reports that settle must run (issue
+	// #142). A *lifecycle.StillFinishingError is a stop ollama accepted and
+	// has not carried out within the batch's wait.
+	Stop(ctx context.Context, en localmodels.Entry) (restartOwed bool, err error)
+	// Accepted lists the models whose stop ollama accepted and whose Stop
+	// has not reported: what a Ctrl+C leaves ollama to unload by itself.
+	Accepted() []localmodels.Entry
 }
 
 func defaultStopDeps() stopDeps {
@@ -64,7 +77,9 @@ func defaultStopDeps() stopDeps {
 			sweep()
 			return store.Live()
 		},
-		stop:    lifecycle.StopModelDeferred,
+		begin: func(ctx context.Context, cfg *config.Config, entries []localmodels.Entry) stopBatch {
+			return lifecycle.BeginStops(ctx, cfg, entries)
+		},
 		settle:  lifecycle.SettleRoutes,
 		loading: lifecycle.LoadingServer,
 	}
@@ -408,10 +423,22 @@ func runStopPickerWith(r io.Reader, w io.Writer, cfg *config.Config, d stopDeps,
 // "the user asked to stop" from "a stop failed" and leave the rest alone.
 var ErrStopCancelled = errors.New("cancelled")
 
-// stopEntries is the picker's stop loop: sequential stops with progress lines,
-// one failure never blocks the rest, Ctrl+C (ctx) cancels the stop in flight
-// and skips the remainder. Returns nil, a "N of M stops failed" error, or
+// stopEntries is the picker's stop loop: stops with progress lines, one
+// failure never blocks the rest, Ctrl+C (ctx) cancels the stop in flight and
+// skips the remainder. Returns nil, a "N of M stops failed" error, or
 // ErrStopCancelled.
+//
+// The stops run as one batch (#379): every ollama stop is sent before the
+// first line, then each model is reported in order, an ollama model once
+// ollama has unloaded it. The waits share one bound, so ollama models
+// finishing long requests cost that bound once, not once each, before the
+// models after them and the caller's next step (`wt stop --all`'s halts, the
+// exit flow's summary). A wait that has lasted a couple of seconds says so on
+// the model's open line (lifecycle.StopNotice), so the line does not look
+// hung. A model ollama still lists when the bound is spent is "still
+// finishing": ollama accepted the stop and unloads the model when its request
+// ends, so it is not a failed stop. A Ctrl+C names the models whose stop
+// ollama had already accepted, since ollama still carries those out.
 //
 // The stops only write their route removals; one settle from the deferred tail
 // of the loop restarts the LiteLLM proxy once for the whole batch (issue #142).
@@ -428,12 +455,27 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 			d.settle(ctx, cfg)
 		}
 	}()
+	batch := d.begin(ctx, cfg, entries)
+	// A wait's notice continues the model's open line ("Stopping x... ").
+	stopCtx := lifecycle.WithStopNotice(ctx, func(n lifecycle.StopNotice) {
+		fmt.Fprintf(w, "%s... ", n.Msg)
+	})
+	cancelled := func() error {
+		fmt.Fprintln(w, "cancelled")
+		if acc := batch.Accepted(); len(acc) > 0 {
+			ids := make([]string, 0, len(acc))
+			for _, en := range acc {
+				ids = append(ids, en.ModelID)
+			}
+			fmt.Fprintf(w, "wt: ollama had already accepted the stop of %s; it unloads each one once any request in flight ends (`ollama ps` shows when)\n", strings.Join(ids, ", "))
+		}
+		return ErrStopCancelled
+	}
 	for _, e := range entries {
 		if ctx.Err() != nil {
 			// Ctrl+C landed while a stop was in flight (or before the first
 			// one): complete the current line and stop offering the rest.
-			fmt.Fprintln(w, "cancelled")
-			return ErrStopCancelled
+			return cancelled()
 		}
 		fmt.Fprintf(w, "Stopping %s... ", e.ModelID)
 		fam := localmodels.Family(e.ProviderID)
@@ -446,20 +488,24 @@ func stopEntries(ctx context.Context, w io.Writer, cfg *config.Config, d stopDep
 		// The whole entry goes through: its ModelID is the route id the
 		// removal must use, so an omlx model whose name merely ends in a
 		// sibling's cannot have the sibling's route removed instead (#195).
-		owed, err := d.stop(ctx, cfg, e)
+		owed, err := batch.Stop(stopCtx, e)
 		restartOwed = restartOwed || owed
-		if err != nil {
-			if ctx.Err() != nil {
-				// Cancelled mid-stop: the provider CLI was killed, not broken.
-				fmt.Fprintln(w, "cancelled")
-				return ErrStopCancelled
-			}
+		var finishing *lifecycle.StillFinishingError
+		switch {
+		case err == nil:
+			stoppedFamily[fam] = true
+			fmt.Fprintln(w, "done")
+		case ctx.Err() != nil:
+			// Cancelled mid-stop: the provider CLI was killed, not broken.
+			return cancelled()
+		case errors.As(err, &finishing):
+			// Accepted, and carried out when the request ends: not a
+			// failure, and not "done" either — the model is still loaded.
+			fmt.Fprintln(w, "still finishing a request; ollama unloads it when that ends")
+		default:
 			fmt.Fprintf(w, "failed: %v\n", err)
 			failed++
-			continue
 		}
-		stoppedFamily[fam] = true
-		fmt.Fprintln(w, "done")
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d stops failed", failed, len(entries))
