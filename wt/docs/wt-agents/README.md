@@ -147,7 +147,7 @@ defaulted (it always comes from `-A` or the agent+command picker).
 | `--replace` | With `-M`, start the model even if it means stopping a running one. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
-| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. It takes no value: with `--cwd`, a first argument before `--` that names an existing directory (`claude-wt --cwd ~/proj`) is refused, since it would reach the agent as its first argument (claude's prompt) while the launch ran in the current directory. `cd` into the directory first, or pass the path after `--`. A `shell` command's bare name found on `$PATH` is not refused (`shell-wt --cwd wt model list` beside a `wt/` directory). |
 | `--yolo` | Skip permission prompts (agent-specific). |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 

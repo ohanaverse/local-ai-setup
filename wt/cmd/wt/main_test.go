@@ -233,6 +233,171 @@ func TestShellPassthrough_StillWorks(t *testing.T) {
 	}
 }
 
+// stubCwdLaunch replaces launchFiltered for a --cwd test and reports
+// whether the launch was reached and with what. The test runs in a fresh
+// temporary directory holding one subdirectory, "proj", the directory a
+// user would have meant to name with `--cwd proj`.
+func stubCwdLaunch(t *testing.T) (launched *bool, gotArgs *[]string) {
+	t.Helper()
+	expectDirectLaunch(t)
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	withCleanConfigEnv(t, t.TempDir())
+	launched, gotArgs = new(bool), new([]string)
+	prev := launchFiltered
+	launchFiltered = func(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, pinnedSupplied bool, extraArgs []string, eligible []config.Model, pp *precomputedProfiles) error {
+		*launched, *gotArgs = true, extraArgs
+		return nil
+	}
+	t.Cleanup(func() { launchFiltered = prev })
+	return launched, gotArgs
+}
+
+// TestCwdRefusesADirectoryBeforeTheDash pins #392: --cwd takes no value, so
+// `claude-wt --cwd <dir> -- -p "task"` used to hand <dir> to the agent as
+// its first argument (claude read it as the prompt), launch in the shell's
+// directory instead of <dir>, and exit 0. The first word before a `--` is
+// checked, wherever the flag stands, and one that names an existing
+// directory refuses the launch before anything starts, with a message
+// that says --cwd takes no value and how to pass the path on purpose.
+func TestCwdRefusesADirectoryBeforeTheDash(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"--cwd <dir>", []string{"-A", "shell", "--cwd", "proj"}},
+		{"<dir> --cwd", []string{"-A", "shell", "proj", "--cwd"}},
+		{"--cwd <dir> before a dash", []string{"-A", "shell", "--cwd", "proj", "--", "-p", "task"}},
+		{"--cwd <dir/> with a slash", []string{"-A", "shell", "--cwd", "proj/"}},
+		{"--cwd .", []string{"-A", "shell", "--cwd", "."}},
+		{"--cwd <absolute dir>", []string{"-A", "shell", "--cwd", os.TempDir()}},
+		{"claude: --cwd <dir> before a dash", []string{"-A", "claude", "--cwd", "proj", "--", "-p", "task"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launched, _ := stubCwdLaunch(t)
+			out, err := runWT(t, tc.args...)
+			if err == nil {
+				t.Fatalf("wt %v was not refused (output: %q)", tc.args, out)
+			}
+			for _, want := range []string{"--cwd takes no value", "is a directory", "after --"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err.Error(), want)
+				}
+			}
+			if *launched {
+				t.Error("the launch was reached; the refusal must come before anything starts")
+			}
+		})
+	}
+}
+
+// TestCwdPassesWordsThatAreNotADirectory pins the other side of #392's
+// guard: a first word before `--` that names no directory is a
+// passthrough argument as before (`shell-wt --cwd npm test`, a prompt typed
+// without `--`), a directory later in the command is the command's own
+// argument (`shell-wt --cwd ls proj`), and a directory after `--` is passed
+// on unchanged. A guard that refused every positional, or looked past the
+// `--`, would break these.
+func TestCwdPassesWordsThatAreNotADirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"words that name no directory", []string{"-A", "shell", "--cwd", "npm", "test"}, []string{"npm", "test"}},
+		{"a directory as a later word", []string{"-A", "shell", "--cwd", "ls", "proj"}, []string{"ls", "proj"}},
+		{"a directory after the dash", []string{"-A", "shell", "--cwd", "--", "ls", "proj"}, []string{"ls", "proj"}},
+		{"a directory first after the dash", []string{"-A", "shell", "--cwd", "--", "proj"}, []string{"proj"}},
+		{"a word that names nothing on disk", []string{"-A", "shell", "--cwd", "no-such-path"}, []string{"no-such-path"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launched, gotArgs := stubCwdLaunch(t)
+			out, err := runWT(t, tc.args...)
+			if err != nil {
+				t.Fatalf("wt %v was refused: %v", tc.args, err)
+			}
+			if !*launched {
+				t.Fatalf("the launch was never reached (output: %q)", out)
+			}
+			if !slices.Equal(*gotArgs, tc.want) {
+				t.Errorf("launched with args %q, want %q", *gotArgs, tc.want)
+			}
+		})
+	}
+}
+
+// TestCwdDotIsToldToDropIt pins the advice for `--cwd .`: the directory
+// named is the one the launch would run in already, so "cd into it" would
+// send the user nowhere; the message says to drop the word instead.
+func TestCwdDotIsToldToDropIt(t *testing.T) {
+	stubCwdLaunch(t)
+	_, err := runWT(t, "-A", "shell", "--cwd", ".")
+	if err == nil {
+		t.Fatal("wt -A shell --cwd . was not refused")
+	}
+	if !strings.Contains(err.Error(), "the current one; drop it") || strings.Contains(err.Error(), "cd into it") {
+		t.Errorf("error %q does not tell the user to drop the word", err.Error())
+	}
+}
+
+// TestCwdPassesACommandThatSharesADirectorysName pins the shell side of
+// #392's guard: a command agent's first word is the program to run, and a
+// bare name found on PATH runs that program whatever the current directory
+// holds. `shell-wt --cwd wt model list` from the monorepo root, beside its
+// `wt/` directory, must run wt, not be refused as --cwd's value. A model
+// agent gets no such pass: its first word is never a program.
+func TestCwdPassesACommandThatSharesADirectorysName(t *testing.T) {
+	launched, gotArgs := stubCwdLaunch(t)
+	if err := os.Mkdir("tool", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "tool"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, err := runWT(t, "-A", "shell", "--cwd", "tool", "run")
+	if err != nil {
+		t.Fatalf("wt -A shell --cwd tool run was refused: %v", err)
+	}
+	if !*launched {
+		t.Fatalf("the launch was never reached (output: %q)", out)
+	}
+	if !slices.Equal(*gotArgs, []string{"tool", "run"}) {
+		t.Errorf("launched with args %q, want [tool run]", *gotArgs)
+	}
+
+	*launched = false
+	if _, err := runWT(t, "-A", "shell", "--cwd", "./tool"); err == nil || *launched {
+		t.Errorf("wt -A shell --cwd ./tool was not refused (err %v): a path names the directory, not the program", err)
+	}
+	if _, err := runWT(t, "-A", "claude", "--cwd", "tool"); err == nil || *launched {
+		t.Errorf("wt -A claude --cwd tool was not refused (err %v)", err)
+	}
+}
+
+// TestWithoutCwdADirectoryIsStillPassedThrough pins the guard's scope: it
+// is #392's --cwd mistake only. Without --cwd a launch outside a repository
+// runs in the current directory too, and a word before `--` stays a
+// passthrough argument whatever it names, as it was before the guard.
+func TestWithoutCwdADirectoryIsStillPassedThrough(t *testing.T) {
+	launched, gotArgs := stubCwdLaunch(t)
+	out, err := runWT(t, "-A", "shell", "ls", "proj")
+	if err != nil {
+		t.Fatalf("wt -A shell ls proj was refused: %v", err)
+	}
+	if !*launched {
+		t.Fatalf("the launch was never reached (output: %q)", out)
+	}
+	if !slices.Equal(*gotArgs, []string{"ls", "proj"}) {
+		t.Errorf("launched with args %q, want [ls proj]", *gotArgs)
+	}
+}
+
 // initTestRepo creates a minimal git repo with one commit on the default
 // branch so `git worktree add` (used by -W) succeeds. Returns the repo dir.
 func initTestRepo(t *testing.T) string {
