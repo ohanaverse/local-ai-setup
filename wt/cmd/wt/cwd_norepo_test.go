@@ -21,6 +21,8 @@ type cwdLaunch struct {
 	err        error
 	agentDir   string   // the agent's own working directory, links resolved
 	guarded    bool     // maybeInstallGuard was called
+	guardRoot  string   // the checkout root git reported when it was called, links resolved ("" if none)
+	released   int      // times releaseSession was called
 	stateDir   string   // the scratch config home's agent-wt directory
 	stateFiles []string // the files a launch wrote there, sorted
 }
@@ -68,8 +70,18 @@ func runCwdLaunch(t *testing.T, dir string, extra ...string) cwdLaunch {
 		t.Error("tuiRun was called: a launch with -A and -M pinned went to the TUI")
 		return nil
 	}
-	maybeInstallGuard = func() { res.guarded = true }
-	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
+	// The guard takes no root argument: it acts on the repository git finds
+	// from the working directory. So the root it was "given" is read the
+	// same way at the moment it is called.
+	maybeInstallGuard = func() {
+		res.guarded = true
+		if out, gerr := exec.Command("git", "rev-parse", "--show-toplevel").Output(); gerr == nil {
+			res.guardRoot, _ = filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+		}
+	}
+	oldRelease := releaseSession
+	releaseSession = func() { res.released++ }
+	t.Cleanup(func() { tuiRun, maybeInstallGuard, releaseSession = oldTUI, oldGuard, oldRelease })
 
 	before, err := os.ReadDir(cfgDir)
 	if err != nil {
@@ -107,7 +119,11 @@ func physical(t *testing.T, dir string) string {
 
 // wantCwdBookkeeping asserts the state one single-model --cwd launch records:
 // the rotation pointer, the picker's marker, one usage event for the pair and
-// one live-session line, all in the scratch config home.
+// one live-session line, all in the scratch config home, and that the launch
+// released its session exactly once. The live-session line is still there
+// after the agent exited only because releaseSession is stubbed here (and in
+// TestMain), so that count pins the record made at launch; the release is
+// pinned by the res.released count.
 func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 	t.Helper()
 	for _, name := range []string{"rotation.state", "last-picked.state"} {
@@ -124,7 +140,10 @@ func wantCwdBookkeeping(t *testing.T, res cwdLaunch) {
 		t.Errorf("usage events for claude × claude/opus = %d, want 1", got.ThirtyDay)
 	}
 	if got := refcount.NewStoreAt(res.stateDir).Counts([]string{"claude/opus"})["claude/opus"]; got != 1 {
-		t.Errorf("live-session count for claude/opus = %d, want 1", got)
+		t.Errorf("record at launch: live-session count for claude/opus = %d, want 1 (releaseSession is stubbed, so this does not show the release)", got)
+	}
+	if res.released != 1 {
+		t.Errorf("releaseSession called %d times after the agent exited, want 1", res.released)
 	}
 }
 
@@ -195,6 +214,10 @@ func TestCwdInsideARepoIsUnchanged(t *testing.T) {
 	}
 	if !res.guarded {
 		t.Error("the main guard was not installed: --cwd in a subdirectory is still inside a repository")
+	}
+	// The checkout root, not the subdirectory the command was typed in.
+	if want := physical(t, repo); res.guardRoot != want {
+		t.Errorf("the guard was installed for root %q, want the checkout root %q", res.guardRoot, want)
 	}
 	wantCwdBookkeeping(t, res)
 	if !slices.Equal(res.stateFiles, cwdStateFiles) {
@@ -338,4 +361,62 @@ func TestCwdInAGitDirectoryWithNoCheckoutLaunches(t *testing.T) {
 		t.Error("the main guard was installed for a directory with no checkout root")
 	}
 	wantCwdBookkeeping(t, res)
+}
+
+// runCwdPlain runs `wt --cwd <args>` from dir against an empty scratch config
+// home (no agents configured, no registry) with a claude on PATH that records
+// the directory it was started in. It returns the error, the directory the
+// agent saw, and whether the guard was installed.
+func runCwdPlain(t *testing.T, dir string, args ...string) (err error, agentDir string, guarded bool) {
+	t.Helper()
+	t.Chdir(dir)
+	withCleanConfigEnv(t, t.TempDir())
+	binDir := t.TempDir()
+	pwdFile := filepath.Join(t.TempDir(), "pwd")
+	script := "#!/bin/sh\npwd -P > '" + pwdFile + "'\nexit 0\n"
+	if werr := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); werr != nil {
+		t.Fatal(werr)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PWD_FILE", pwdFile)
+
+	expectDirectLaunch(t)
+	oldGuard := maybeInstallGuard
+	maybeInstallGuard = func() { guarded = true }
+	t.Cleanup(func() { maybeInstallGuard = oldGuard })
+
+	captureFile(t, &os.Stdout, func() { _, err = runWT(t, args...) })
+	if b, rerr := os.ReadFile(pwdFile); rerr == nil {
+		agentDir = strings.TrimSpace(string(b))
+	}
+	return err, agentDir, guarded
+}
+
+// TestCwdOutsideARepoLaunchesShellAndAnUnconfiguredAgentInPlace covers the
+// two --cwd launches that skip the model layer: a command agent (shell, through
+// launchFiltered) and a model-driven agent with no config.toml entry
+// (launchPassthrough). Outside a repository both must run in the current
+// directory, install no guard and return no error.
+func TestCwdOutsideARepoLaunchesShellAndAnUnconfiguredAgentInPlace(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"shell", []string{"--cwd", "-A", "shell", "--", "sh", "-c", `pwd -P > "$PWD_FILE"`}},
+		{"unconfigured agent", []string{"--cwd", "-A", "claude"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			err, agentDir, guarded := runCwdPlain(t, dir, c.args...)
+			if err != nil {
+				t.Fatalf("wt %s outside a repository: %v", strings.Join(c.args, " "), err)
+			}
+			if want := physical(t, dir); agentDir != want {
+				t.Errorf("the command ran in %q, want the current directory %q", agentDir, want)
+			}
+			if guarded {
+				t.Error("the main guard was installed outside a git repository")
+			}
+		})
+	}
 }
