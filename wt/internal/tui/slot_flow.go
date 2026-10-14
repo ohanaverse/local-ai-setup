@@ -29,7 +29,7 @@ import (
 // the start flow's seam, waitPendingRoutes.
 var (
 	ensureSlotRoutes = lifecycle.EnsureModelRoutes
-	restartProxyNow  = lifecycle.RestartProxy
+	restartProxyNow  = lifecycle.RestartProxyTo
 	probeProxyNow    = lifecycle.ProbeProxy
 	settleRoutesNow  = lifecycle.SettleRoutes
 	buildSlotCmd     = agents.BuildSlotLaunchCmd
@@ -88,7 +88,7 @@ func slotTick(id int) tea.Cmd {
 type slotDeps struct {
 	inventory func(*config.Config) localmodels.Snapshot
 	ensure    func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error)
-	restart   func(context.Context, *config.Config) error
+	restart   func(context.Context, io.Writer, *config.Config) error
 	probe     func(context.Context, *config.Config) error
 	wait      func()
 }
@@ -154,14 +154,19 @@ func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *bytes
 			return slotRouteFailed(d, res, buf, err)
 		}
 	}
-	res.notes = buf.String()
 	if owed {
 		// Whether it succeeds or not, the restart was made: nothing is owed.
-		if err := d.restart(ctx, cfg); err != nil {
+		// It prints into buf, not on stderr under the alt screen: it can say
+		// that the proxy is finishing a request in flight, which it gives up
+		// to three minutes, or that the request was cut off at that bound.
+		err := d.restart(ctx, buf, cfg)
+		res.notes = buf.String()
+		if err != nil {
 			res.err = err
 			return res
 		}
 	}
+	res.notes = buf.String()
 	// A restart started earlier in this session (a start flow backed out
 	// of, a profile dropped on the replace dialog) can still be in flight.
 	// ProbeProxy does not wait for one: it would answer from the proxy about

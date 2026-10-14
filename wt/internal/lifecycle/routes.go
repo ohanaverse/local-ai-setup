@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -648,8 +647,9 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// scoped defer cancel() the instant its (now async) call returns —
 		// which happens before this restart even starts. A caller's normal
 		// completion is not a signal to abandon the restart; only litellm's
-		// own per-call timeouts (RestartContext's ~30s, Listening's and
-		// WaitReady's own bounds) need to cap this goroutine's lifetime.
+		// own bounds (RestartContext's: three minutes for a request in flight
+		// to finish, plus 30s per launchctl command; Listening's and
+		// WaitReady's) need to cap this goroutine's lifetime.
 		// WaitPendingRoutes() is where a caller (a process about to exit, or
 		// a launch path about to use the proxy) rejoins this goroutine.
 		//
@@ -666,7 +666,11 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// never restart (deferred, or nothing changed) never reach this
 		// goroutine, so they pay no probe at all. The restart itself stays
 		// best-effort either way.
-		bgCtx := context.WithoutCancel(ctx)
+		//
+		// The restart's own progress line (the proxy is finishing a request in
+		// flight) is delivered through routePrintf too, so it follows this
+		// operation's writer like the warnings below.
+		bgCtx := withRestartNotice(context.WithoutCancel(ctx))
 		wasUp := url != "" && probeProxy(bgCtx, url, proxyAliveTimeout)
 		// Warnings are always surfaced: bgCtx cannot be cancelled by the
 		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
@@ -675,15 +679,14 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		//
 		// What is printed is also remembered (lastRestart), for ProbeProxy:
 		// the restart command's warnings when it gave any, else the failed
-		// readiness wait, else nil, which clears an earlier failure.
-		var failed error
+		// readiness wait, else nil, which clears an earlier failure. A warning
+		// that a request was cut off at the drain bound is printed and not
+		// remembered: that restart was made (restartFailure).
 		warnings := restartProxy(bgCtx)
 		for _, w := range warnings {
 			routePrintf(bgCtx, "wt: %s\n", w)
 		}
-		if len(warnings) > 0 {
-			failed = errors.New(strings.Join(warnings, "; "))
-		}
+		failed := restartFailure(warnings)
 		if wasUp {
 			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
 				routePrintf(bgCtx, "wt: %v\n", err)

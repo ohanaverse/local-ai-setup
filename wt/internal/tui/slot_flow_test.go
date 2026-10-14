@@ -110,9 +110,11 @@ type slotStub struct {
 	// it was given, so a test can fail the second write and not the first.
 	ensureErrOn func(ids []string) error
 	restartErr  error
-	probeErr    error
-	buildErr    error
-	cmd         *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
+	// restartOutput is written to the writer the stage handed the restart.
+	restartOutput string
+	probeErr      error
+	buildErr      error
+	cmd           *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
 
 	// ensureEntered and ensureRelease, when set, hold the first route write
 	// open: ensureEntered is closed once it is inside, and it returns only
@@ -177,8 +179,11 @@ func stubSlotSeams(t *testing.T) *slotStub {
 		}
 		return owedIn || s.ensureOwed, nil
 	}
-	restartProxyNow = func(context.Context, *config.Config) error {
+	restartProxyNow = func(_ context.Context, out io.Writer, _ *config.Config) error {
 		s.add("restart")
+		if out != nil && s.restartOutput != "" {
+			_, _ = io.WriteString(out, s.restartOutput)
+		}
 		return s.restartErr
 	}
 	probeProxyNow = func(context.Context, *config.Config) error {
@@ -1132,5 +1137,30 @@ func TestPinOnUnusableProfileRoutesBackToTheAgentPicker(t *testing.T) {
 				t.Errorf("events = %q, want none", events)
 			}
 		})
+	}
+}
+
+// TestSlotRestartOutputBecomesNotes pins where the proxy restart of a profile
+// launch prints (#377). The restart can now say the proxy is finishing a
+// request in flight, or that the request was cut off at the bound, and it runs
+// while the picker holds the alt screen: a line on stderr there is drawn over
+// the picker and gone at the next repaint. So the stage hands the restart its
+// own buffer, and reads the notes only after the restart has returned.
+func TestSlotRestartOutputBecomesNotes(t *testing.T) {
+	const updated = "wt: LiteLLM route for openrouter/a updated\n"
+	const draining = "wt: the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to 3m0s)\n"
+	stubInventory(t, idleOmlxSnapshot())
+	stub := stubSlotSeams(t)
+	stub.ensureOwed, stub.ensureOutput, stub.restartOutput = true, updated, draining
+
+	res := prepareSlot(currentSlotDeps(), slotTestConfig(), "claude", nil, cloudProfile())
+	if res.err != nil {
+		t.Fatalf("prepareSlot: %v", res.err)
+	}
+	if want := updated + draining; res.notes != want {
+		t.Fatalf("notes = %q, want %q", res.notes, want)
+	}
+	if got := stub.got(); !strings.Contains(got, "restart") {
+		t.Fatalf("events = %s, want a restart", got)
 	}
 }

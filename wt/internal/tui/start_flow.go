@@ -123,7 +123,8 @@ func routeTick(id int) tea.Cmd {
 //   - Free lock, nothing written: nothing was restarted, so there is nothing to
 //     wait for and the launch continues in this same Update — no routing
 //     screen, not for a frame.
-//   - Free lock, route written: the proxy is restarting, which takes 10–20 s.
+//   - Free lock, route written: the proxy is restarting, which takes 10–20 s,
+//     and up to three minutes more when it has a request in flight to finish.
 //     Waiting for it here would freeze the picker with no status, so the model
 //     enters phaseRouting and the wait runs in the returned command.
 //   - Free lock, but a cloud model's row is missing: building it resolves the

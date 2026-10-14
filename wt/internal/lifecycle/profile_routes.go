@@ -122,7 +122,8 @@ const proxyProbeTimeout = 5 * time.Second
 // routesInFlight while it runs, and always waits for readiness
 // (waitProxy, proxyReadyTimeout). ctx gives it its values only; its
 // cancellation is dropped (context.WithoutCancel), because a restart
-// cannot be called off.
+// cannot be called off. What the restart prints goes to stderr
+// (RestartProxyTo names another writer).
 //
 // What it returns is also remembered as the outcome of the last restart
 // attempt (lastRestart), nil included: a restart that worked clears an
@@ -131,7 +132,19 @@ const proxyProbeTimeout = 5 * time.Second
 // An empty [litellm] url is an error wrapping config.ErrLitellmUnconfigured,
 // returned before anything is restarted: there is no address to wait for.
 // That is no restart attempt, so it is not remembered.
-func RestartProxy(ctx context.Context, cfg *config.Config) (err error) {
+func RestartProxy(ctx context.Context, cfg *config.Config) error {
+	return RestartProxyTo(ctx, nil, cfg)
+}
+
+// RestartProxyTo is RestartProxy printing to out (nil: stderr), for a caller
+// whose stderr is not where the user is looking (the TUI). The restart can
+// print two lines, both through routePrintf: the notice that the proxy is
+// finishing a request in flight (litellm.RestartContext gives the proxy up to
+// three minutes for that, so this call can block that long, plus the
+// readiness wait), and the warning that the request was cut off at that
+// bound. The second reports a restart that happened and is not an error
+// (litellm.IsCutOffWarning): the readiness wait still follows it.
+func RestartProxyTo(ctx context.Context, out io.Writer, cfg *config.Config) (err error) {
 	url := cfg.LitellmBaseURL()
 	if url == "" {
 		return fmt.Errorf("the LiteLLM proxy was not restarted: %w", config.ErrLitellmUnconfigured)
@@ -142,11 +155,39 @@ func RestartProxy(ctx context.Context, cfg *config.Config) (err error) {
 	defer routeWG.Done()
 	defer routesInFlight.Add(-1)
 	defer func() { setLastRestartErr(err) }()
-	bg := context.WithoutCancel(ctx)
-	if warnings := restartProxy(bg); len(warnings) > 0 {
-		return errors.New(strings.Join(warnings, "; "))
+	bg := withRestartNotice(context.WithoutCancel(withRouteOutput(ctx, out)))
+	warnings := restartProxy(bg)
+	if err := restartFailure(warnings); err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		routePrintf(bg, "wt: %s\n", w)
 	}
 	return waitProxy(bg, url, proxyReadyTimeout)
+}
+
+// withRestartNotice returns ctx carrying the function the proxy restart's
+// progress line is delivered to (litellm.WithRestartNotice): routePrintf on
+// ctx, so the line goes where the operation's other output goes.
+func withRestartNotice(ctx context.Context) context.Context {
+	return litellm.WithRestartNotice(ctx, func(msg string) { routePrintf(ctx, "wt: %s\n", msg) })
+}
+
+// restartFailure is the error a restart's warnings amount to, nil when the
+// proxy was restarted. Every warning is a failure but one: the notice that a
+// request was cut off at the drain bound (litellm.IsCutOffWarning) reports a
+// restart that was made, so it is left out.
+func restartFailure(warnings []string) error {
+	var failed []string
+	for _, w := range warnings {
+		if !litellm.IsCutOffWarning(w) {
+			failed = append(failed, w)
+		}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(failed, "; "))
 }
 
 // ProbeProxy is the last check before a slot-profile launch hands the proxy

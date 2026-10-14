@@ -123,7 +123,7 @@ func TestMain(m *testing.M) {
 	ensureSlotRoutes = func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error) {
 		return false, errors.New("ensureSlotRoutes not stubbed in this test")
 	}
-	restartProxyNow = func(context.Context, *config.Config) error {
+	restartProxyNow = func(context.Context, io.Writer, *config.Config) error {
 		return errors.New("restartProxyNow not stubbed in this test")
 	}
 	probeProxyNow = func(context.Context, *config.Config) error {
