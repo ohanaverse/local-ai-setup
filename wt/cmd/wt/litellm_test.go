@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -83,6 +85,55 @@ func TestLitellmSyncUsesLiveInventory(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "model_name: 'ollama/gemma:9b'") {
 		t.Fatalf("running model not routed:\n%s", b)
+	}
+}
+
+// TestLitellmSyncWaitsForTheProxy pins #379 at the command: `wt litellm
+// sync` (which `wt cloud-sync`, `wt model add|edit|rm|init` and the Models tab
+// run after a registry write) waited for nothing after its restart, so it
+// returned while the proxy still refused connections. With a proxy listening
+// at the [litellm] url, the restart — the WT_LITELLM_RESTART_CMD override
+// here, which the lifecycle path waits after too — is followed by the wait,
+// before the command returns, and a proxy that never answers is a warning on
+// stderr, not a failed sync.
+func TestLitellmSyncWaitsForTheProxy(t *testing.T) {
+	p := litellmEnv(t, "model_list: []\n")
+	restarts := filepath.Join(t.TempDir(), "restarts")
+	t.Setenv("WT_LITELLM_RESTART_CMD", "echo restart >> "+restarts)
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma:9b", ModelName: "gemma:9b", Registered: true, Running: true},
+		}})
+	const url = "http://proxy.test:4000"
+	var steps []string
+	t.Cleanup(litellm.StubProxyReadinessForTest(
+		func(_ context.Context, u string, _ time.Duration) bool {
+			steps = append(steps, "probe "+u)
+			return true
+		},
+		func(_ context.Context, u string, d time.Duration) error {
+			b, _ := os.ReadFile(restarts)
+			steps = append(steps, fmt.Sprintf("wait %s %s after %q", u, d, b))
+			return errors.New("LiteLLM proxy not ready at " + u + "/health/liveliness: context deadline exceeded")
+		},
+	))
+	cfg := litellmTestConfig()
+	cfg.SetLitellmForTest(config.LitellmState{URL: url})
+
+	var out, errOut bytes.Buffer
+	if err := runLitellmSync(&out, &errOut, cfg, false, false); err != nil {
+		t.Fatalf("a proxy that did not answer failed the sync: %v", err)
+	}
+	want := []string{"probe " + url, fmt.Sprintf("wait %s %s after %q", url, litellm.ProxyReadyTimeout, "restart\n")}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q, want %q", steps, want)
+	}
+	if !strings.Contains(errOut.String(), "warning: LiteLLM proxy not ready at "+url) {
+		t.Fatalf("stderr = %q, want the failed wait as a warning", errOut.String())
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "model_name: 'ollama/gemma:9b'") {
+		t.Fatalf("route not written:\n%s", b)
 	}
 }
 

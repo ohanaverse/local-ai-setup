@@ -481,7 +481,7 @@ func TestBounceRoutesSurvivesCancelledContext(t *testing.T) {
 
 // TestRouteProbesProxyOnlyWhenRestarting pins the lazy probe: a deferred write
 // and an unchanged write never restart, so they must not pay the proxy probe
-// (up to proxyAliveTimeout each) on every start and stop.
+// (up to litellm.ProxyAliveTimeout each) on every start and stop.
 func TestRouteProbesProxyOnlyWhenRestarting(t *testing.T) {
 	cfg := routesCfg()
 	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000"})

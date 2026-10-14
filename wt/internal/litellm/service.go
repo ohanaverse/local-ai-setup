@@ -42,7 +42,11 @@ func runRecheck(o Options) (fresh []string, ok bool) {
 // There is no ready gate (#179 Phase B): a local model is routed because the
 // live inventory found it, never because of a stored flag.
 type Options struct {
-	Path    string
+	Path string
+	// Restart replaces the proxy restart a changed write makes. nil is the
+	// default: restartAndWait, which restarts the proxy and, when one was
+	// listening, waits for it to answer again (Bounce.Run) before the call
+	// returns.
 	Restart func() []string
 	// Ctx bounds the wait for the config.yaml lock (nil = unbounded). The
 	// lifecycle route hook passes its caller's context, so a contended lock
@@ -371,7 +375,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 		}
 		// A deferred row holds the whole write: see Options.DeferMissingAdd.
 		return add, rm, len(missing) > 0
-	}, o, OllamaAPIBase(cfg))
+	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
 	if err != nil {
 		return Result{}, err
 	}
@@ -388,7 +392,9 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 // plan's third result holds the write: the document is left exactly as it was
 // read — nothing applied, repaired or saved, so nothing restarted — for a
 // caller that will make the whole change again (Options.DeferMissingAdd).
-func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, hold bool), o Options, ollamaBase string) (Result, error) {
+//
+// proxyURL is the proxy the default restart (restartAndWait) waits for.
+func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, hold bool), o Options, ollamaBase, proxyURL string) (Result, error) {
 	path := o.path()
 	var res Result
 	err := WithLock(o.Ctx, path, func() error {
@@ -453,7 +459,7 @@ func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, ho
 	if (res.Changed && !o.NoRestart) || o.ForceRestart {
 		restart := o.Restart
 		if restart == nil {
-			restart = Restart
+			restart = func() []string { return restartAndWait(proxyURL) }
 		}
 		res.Warnings = restart()
 	}
@@ -959,7 +965,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 		// prepare each one a second time.
 		add, remove := plan.planned(built)
 		return add, remove, false
-	}, o, OllamaAPIBase(cfg))
+	}, o, OllamaAPIBase(cfg), cfg.LitellmBaseURL())
 	if err != nil {
 		return res, err
 	}
