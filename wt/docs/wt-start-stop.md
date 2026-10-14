@@ -186,6 +186,22 @@ wt stop --all                    # stop every running local model, then the omlx
     when ollama's probe gives no usable answer (and its port does not
     refuse) there is nothing wt can stop: `wt stop ollama` fails with
     `cannot tell what is running on ollama` and exits 1.
+  - Stopping an ollama model is `ollama stop <name>` against the registry's
+    ollama address, followed by a check that ollama no longer lists the
+    model as loaded. A model that is still answering a request is not
+    unloaded at once: ollama accepts the stop, shows the model as
+    `Stopping...` in `ollama ps`, and unloads it when the request ends. wt
+    waits for that, checking every second for up to 60 seconds, and prints
+    nothing more while it does: the `Stopping <id>...` line stays open
+    until it ends in `done`. A model still listed after 60 seconds is a
+    failed stop (exit 1):
+    ``ollama stop <name>: /api/ps still lists the model after waiting 60s (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)``.
+    The model usually unloads by itself once the request ends, so look at
+    `ollama ps` before stopping it again. wt does not wait when ollama
+    refuses the stop (a non-zero exit with the model still loaded): ollama's
+    own message is the failure, at once. A model that is already unloaded is
+    a successful stop whatever `ollama stop` said. Ctrl+C during the wait
+    cancels the stop.
 - `--all` stops every running local model wt can stop, on every provider,
   and then halts the omlx service as `wt stop omlx` does — also when omlx has
   nothing loaded, since that is what frees its memory. omlx's models are not

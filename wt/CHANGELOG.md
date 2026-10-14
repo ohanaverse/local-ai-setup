@@ -330,6 +330,19 @@
 
 ### Fixed
 
+- Stopping an ollama model that is still answering a request no longer
+  reports a failure. ollama accepts the stop, keeps the model in
+  `ollama ps` as `Stopping...` and unloads it when the request ends (6 to 20
+  seconds later, as seen after an agent session's last background request);
+  wt checked once, at once, so the stop picker printed `failed` and
+  `wt stop` exited 1 for a model that did stop. After an `ollama stop` that
+  exits 0, wt now checks every second until the model is gone, for up to 60
+  seconds, and the `Stopping <id>...` line stays open for that long. A model
+  still listed after that fails with
+  `/api/ps still lists the model after waiting 60s (ollama may still be finishing a request; ...)`.
+  A stop ollama refuses is still reported at once, and Ctrl+C during the
+  wait cancels it. A Ctrl+C that landed in wt's first check could be printed
+  as `done`; it is `cancelled` now.
 - `wt --cwd` launches in the current directory whether or not it is inside a
   git repository. Outside one it stopped with `wt: not in a git repo: exit
   status 128`, although nothing a `--cwd` launch does needs a repository. It
