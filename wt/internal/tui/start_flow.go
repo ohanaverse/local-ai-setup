@@ -120,9 +120,14 @@ func routeTick(id int) tea.Cmd {
 //
 // What follows depends on what that first attempt could establish:
 //
-//   - Free lock, nothing written: nothing was restarted, so there is nothing to
+//   - Free lock, nothing written, no restart in flight: there is nothing to
 //     wait for and the launch continues in this same Update — no routing
 //     screen, not for a frame.
+//   - Free lock, nothing written, but a restart started earlier in this session
+//     is still in flight (a profile dropped on the replace dialog, a start
+//     backed out of: settleRoutesNow): the proxy refuses connections while it
+//     drains, for up to three minutes, so the launch waits for it behind
+//     phaseRouting, as `wt` does before a launch (ensureRouteBeforeLaunch).
 //   - Free lock, route written: the proxy is restarting, which takes 10–20 s,
 //     and up to three minutes more when it has a request in flight to finish.
 //     Waiting for it here would freeze the picker with no status, so the model
@@ -150,12 +155,12 @@ func routeTick(id int) tea.Cmd {
 // closes over the values, so a test's seam swap cannot race the command — the
 // same reason runStart reads startModel before starting its goroutine.
 func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
-	try, ensure, wait := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes
+	try, ensure, wait, pending := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes, routesPending
 	cfg := m.cfg
 	// A pointer: the command below outlives this Update and writes to it.
 	captured := &bytes.Buffer{}
 	changed, done := try(captured, cfg, mdl)
-	if done && !changed {
+	if done && !changed && !pending() {
 		m.recordRouteNotes(captured.String())
 		return m.launchSelected()
 	}

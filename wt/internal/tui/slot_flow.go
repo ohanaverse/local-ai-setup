@@ -166,19 +166,19 @@ func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *bytes
 			return slotRouteFailed(d, res, buf, err)
 		}
 	}
+	var restartErr error
 	if owed {
 		// Whether it succeeds or not, the restart was made: nothing is owed.
 		// It prints into buf, not on stderr under the alt screen: it can say
 		// that the proxy is finishing a request in flight, which it gives up
 		// to three minutes, or that the request was cut off at that bound.
-		err := d.restart(ctx, buf, cfg)
-		res.notes = buf.String()
-		if err != nil {
-			res.err = err
-			return res
-		}
+		restartErr = d.restart(ctx, buf, cfg)
 	}
 	res.notes = buf.String()
+	if restartErr != nil {
+		res.err = restartErr
+		return res
+	}
 	// A restart started earlier in this session (a start flow backed out
 	// of, a profile dropped on the replace dialog) can still be in flight.
 	// ProbeProxy does not wait for one: it would answer from the proxy about
