@@ -66,7 +66,7 @@ A slot profile (`~/.config/agent-wt/slot-profiles.toml`, hand-written; operator 
 | 3 Cloud routes | `lifecycle.EnsureModelRoutes` over `ProfileRow.Cloud()`, restart deferred | the same |
 | 4 Start | `startForLaunchOwed(cfg, *Local, allowReplace, owed)` when the row is a start row; a Ctrl+C that lost to the start is its error `started <id>; launch cancelled` | `beginStartOwed`: the existing start flow, with `lifecycle.Options.RestartOwed` |
 | 5 Local route | `EnsureModelRoutes` for the local model: one already running, and again after a step-4 start | the same (`finishSlotRoutes`): in the first stage for a running model, in the second stage after a start |
-| 6 Restart | `lifecycle.RestartProxy` when still owed | the same |
+| 6 Restart | `lifecycle.RestartProxy` when still owed | `lifecycle.RestartProxyTo`, printing into the stage's notes buffer |
 | 7 Wait, probe | `waitPendingRoutes()`, then `lifecycle.ProbeProxy`, on every launch | the same; after a start steps 5 to 7 are the second stage (`settleSlotAfterStart`) |
 | 8 Build | `agents.BuildSlotLaunchCmd(row.Profile.Launch(), …)` | the same, in `launchSlot` |
 | 9 Apply | `applySlotProfile` | `tui.SlotProfiles.Apply`, which `main.go` sets to `applySlotProfile` |
