@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 )
 
 // startOutputMax is how much of one start's output is kept. The engine
@@ -21,6 +23,9 @@ const startOutputMax = 16 << 10
 // may leave running, and read by the goroutine that reports the start, so
 // every method takes the lock.
 type startOutput struct {
+	// what names the output in the line that says some was not kept: "start"
+	// when empty.
+	what    string
 	mu      sync.Mutex
 	buf     []byte
 	dropped int
@@ -61,7 +66,35 @@ func (o *startOutput) textLocked() string {
 	if i := bytes.LastIndexByte(kept, '\n'); i >= 0 {
 		kept = kept[:i+1]
 	}
-	return string(kept) + fmt.Sprintf("wt: … %d more bytes of start output not kept\n", o.dropped+len(o.buf)-len(kept))
+	what := o.what
+	if what == "" {
+		what = "start"
+	}
+	return string(kept) + fmt.Sprintf("wt: … %d more bytes of %s output not kept\n", o.dropped+len(o.buf)-len(kept), what)
+}
+
+// RestartNotice takes the proxy restart's notices (lifecycle.RestartNoticer).
+// The in-progress one is for the waiting screen while the alt screen is up,
+// and is printed only once release has given the output a real terminal.
+func (o *startOutput) RestartNotice(n litellm.Notice) {
+	o.mu.Lock()
+	released := o.to != nil
+	o.mu.Unlock()
+	if n.InProgress && !released {
+		showDrain(n.Msg)
+		return
+	}
+	fmt.Fprintf(o, "wt: %s\n", n.Msg)
+}
+
+// take returns what has been kept so far and forgets it, for a reader that
+// prints it and comes back for whatever is written later.
+func (o *startOutput) take() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	kept := o.textLocked()
+	o.buf, o.dropped = nil, 0
+	return kept
 }
 
 // release prints what was kept to w and sends everything written from now on

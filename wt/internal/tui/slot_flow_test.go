@@ -110,9 +110,15 @@ type slotStub struct {
 	// it was given, so a test can fail the second write and not the first.
 	ensureErrOn func(ids []string) error
 	restartErr  error
-	probeErr    error
-	buildErr    error
-	cmd         *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
+	// restartOutput is written to the writer the stage handed the restart.
+	restartOutput string
+	// settleOutput is written to the writer the settling restart was handed,
+	// and settleOuts records each of those writers (nil: stderr).
+	settleOutput string
+	settleOuts   []io.Writer
+	probeErr     error
+	buildErr     error
+	cmd          *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
 
 	// ensureEntered and ensureRelease, when set, hold the first route write
 	// open: ensureEntered is closed once it is inside, and it returns only
@@ -177,15 +183,30 @@ func stubSlotSeams(t *testing.T) *slotStub {
 		}
 		return owedIn || s.ensureOwed, nil
 	}
-	restartProxyNow = func(context.Context, *config.Config) error {
+	restartProxyNow = func(_ context.Context, out io.Writer, _ *config.Config) error {
 		s.add("restart")
+		if out != nil && s.restartOutput != "" {
+			_, _ = io.WriteString(out, s.restartOutput)
+		}
 		return s.restartErr
 	}
 	probeProxyNow = func(context.Context, *config.Config) error {
 		s.add("probe")
 		return s.probeErr
 	}
-	settleRoutesNow = func(context.Context, *config.Config) { s.add("settle") }
+	oldSettleOut := settleOut
+	settleOut = &startOutput{}
+	t.Cleanup(func() { settleOut = oldSettleOut })
+	settleRoutesNow = func(_ context.Context, out io.Writer, _ *config.Config) {
+		s.mu.Lock()
+		s.events = append(s.events, "settle")
+		s.settleOuts = append(s.settleOuts, out)
+		text := s.settleOutput
+		s.mu.Unlock()
+		if out != nil && text != "" {
+			_, _ = io.WriteString(out, text)
+		}
+	}
 	buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
 		s.add("build")
 		if s.buildErr != nil {
@@ -708,6 +729,13 @@ func mixedStarting(t *testing.T, owed bool) (model, *slotStub) {
 	return starting, stub
 }
 
+// What a settling restart can print while it lets a request in flight finish
+// (#377): the notice after two seconds, the warning at the bound.
+const (
+	drainNote  = "wt: the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to 3m0s)\n"
+	cutOffNote = "wt: the LiteLLM proxy was still serving a request after 3m0s; it was restarted anyway and that request was cut off\n"
+)
+
 var omlxTarget = lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", ModelID: "omlx/qwen3.8"}
 
 // TestStartProfileRowStartsItsLocalModelThenLaunches pins success criteria 4
@@ -883,6 +911,29 @@ func TestProfileStartRefusedKeepsTheOwedRestart(t *testing.T) {
 			}
 			assertNothingRecorded(t)
 		})
+		// The picker's alt screen is still up when this restart runs, so a
+		// line it prints (the proxy is finishing a request in flight, #377)
+		// must not go to stderr: it is kept, and printed on the real terminal.
+		t.Run(name+" keeps what the restart prints off the picker", func(t *testing.T) {
+			stubRouteNotes(t)
+			got, stub, _ := dialog(t, true)
+			stub.settleOutput = drainNote
+			next := leave(got)
+			if len(stub.settleOuts) != 1 || stub.settleOuts[0] == nil {
+				t.Fatalf("settle writers = %v, want one, not stderr", stub.settleOuts)
+			}
+			var term bytes.Buffer
+			flushRouteNotesAfterRun(next, &term)
+			if term.String() != drainNote {
+				t.Errorf("the terminal got %q after the alt screen, want %q", term.String(), drainNote)
+			}
+			// The restart can outlive the picker: main() waits for it, and
+			// what it prints from here on has a real terminal to go to.
+			_, _ = io.WriteString(stub.settleOuts[0], cutOffNote)
+			if term.String() != drainNote+cutOffNote {
+				t.Errorf("the terminal got %q, want the late line written through", term.String())
+			}
+		})
 	}
 
 	t.Run("quitting wt on the dialog settles it once", func(t *testing.T) {
@@ -891,6 +942,10 @@ func TestProfileStartRefusedKeepsTheOwedRestart(t *testing.T) {
 		flushRouteNotesAfterRun(got, &out)
 		if got := stub.got(); got != "ensure:openrouter/a:owed=false,wait,settle" {
 			t.Errorf("events = %q, want exactly one settle", got)
+		}
+		// The alt screen is gone here, so this restart prints live.
+		if len(stub.settleOuts) != 1 || stub.settleOuts[0] != nil {
+			t.Errorf("settle writers = %v, want one, stderr", stub.settleOuts)
 		}
 	})
 
@@ -1047,6 +1102,41 @@ func TestProfileStartFailureReturnsToThePicker(t *testing.T) {
 	assertNothingRecorded(t)
 }
 
+// TestProfileStartRefusedUnderACancelSettlesOffThePicker pins the one way a
+// refused start ends the flow at once: the user cancelled while it ran. The
+// refusal restarted nothing, so the owed restart is started on the way back
+// to the picker, whose alt screen is still up: what that restart prints
+// (#377's notice that the proxy is finishing a request) must not go to
+// stderr, where it would land on the picker and be painted over.
+func TestProfileStartRefusedUnderACancelSettlesOffThePicker(t *testing.T) {
+	release := make(chan struct{})
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		<-release
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}
+	})
+	starting, stub := mixedStarting(t, true)
+	stub.settleOutput = drainNote
+	cancelling, _ := updateMsg(starting, tea.KeyMsg{Type: tea.KeyCtrlC})
+	close(release)
+
+	back, _ := updateMsg(cancelling, recvStart(t, cancelling))
+
+	if back.phase != phaseModel || back.slot != nil || back.status != "cancelled" {
+		t.Fatalf("phase = %v slot = %v status = %q, want the picker, the flow ended, cancelled", back.phase, back.slot, back.status)
+	}
+	if got := stub.got(); got != "ensure:openrouter/a:owed=false,wait,settle" {
+		t.Errorf("events = %q, want exactly one settle", got)
+	}
+	if len(stub.settleOuts) != 1 || stub.settleOuts[0] == nil {
+		t.Fatalf("settle writers = %v, want one, not stderr", stub.settleOuts)
+	}
+	var term bytes.Buffer
+	flushRouteNotesAfterRun(back, &term)
+	if term.String() != drainNote {
+		t.Errorf("the terminal got %q after the alt screen, want %q", term.String(), drainNote)
+	}
+}
+
 // pinnedProfile enters the claude model phase with a -M pin and the given
 // profiles, the way the TUI does after the agent was picked.
 func pinnedProfile(t *testing.T, pin string, allowReplace bool, checks ...profiles.SlotCheck) (model, tea.Cmd) {
@@ -1132,5 +1222,30 @@ func TestPinOnUnusableProfileRoutesBackToTheAgentPicker(t *testing.T) {
 				t.Errorf("events = %q, want none", events)
 			}
 		})
+	}
+}
+
+// TestSlotRestartOutputBecomesNotes pins where the proxy restart of a profile
+// launch prints (#377). The restart can now say the proxy is finishing a
+// request in flight, or that the request was cut off at the bound, and it runs
+// while the picker holds the alt screen: a line on stderr there is drawn over
+// the picker and gone at the next repaint. So the stage hands the restart its
+// own buffer, and reads the notes only after the restart has returned.
+func TestSlotRestartOutputBecomesNotes(t *testing.T) {
+	const updated = "wt: LiteLLM route for openrouter/a updated\n"
+	const draining = "wt: the LiteLLM proxy is finishing a request in flight; it restarts when the request ends (up to 3m0s)\n"
+	stubInventory(t, idleOmlxSnapshot())
+	stub := stubSlotSeams(t)
+	stub.ensureOwed, stub.ensureOutput, stub.restartOutput = true, updated, draining
+
+	res := prepareSlot(currentSlotDeps(), slotTestConfig(), "claude", nil, cloudProfile())
+	if res.err != nil {
+		t.Fatalf("prepareSlot: %v", res.err)
+	}
+	if want := updated + draining; res.notes != want {
+		t.Fatalf("notes = %q, want %q", res.notes, want)
+	}
+	if got := stub.got(); !strings.Contains(got, "restart") {
+		t.Fatalf("events = %s, want a restart", got)
 	}
 }

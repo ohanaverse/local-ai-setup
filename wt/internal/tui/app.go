@@ -1371,6 +1371,8 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 	// from a test invocation sharing the process).
 	pendingSummary = ""
 	pendingRouteNotes = ""
+	settleOut = &startOutput{what: settleOutWhat}
+	drainLine.Store(nil)
 	pendingSurveyState = pendingSurvey{}
 	profileApplier = applyProfile
 	finalModel, err := p.Run()
@@ -1404,6 +1406,10 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 	if fm, ok := final.(model); ok && fm.routing != nil {
 		if !fm.routing.settled.Load() {
 			fmt.Fprintln(w, "wt: waiting for the LiteLLM proxy restart…")
+			// The screen that showed why is gone.
+			if d := drainView(); d != "" {
+				fmt.Fprintf(w, "wt: %s\n", d)
+			}
 		}
 		pendingRouteNotes += fm.routing.settle()
 	}
@@ -1411,6 +1417,9 @@ func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
 		settleQuitSlot(fm, w)
 	}
 	flushRouteNotes(w)
+	// A settling restart started from the picker can still be running, and
+	// main() waits for it: from here on its lines have a terminal to go to.
+	settleOut.release(w)
 	// A start that was still running when wt quit (ctrl+c twice on the start
 	// screen) never reported, so what the engine had printed is still in its
 	// buffer: print it, and let whatever the engine and its proxy restart

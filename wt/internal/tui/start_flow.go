@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -120,10 +119,16 @@ func routeTick(id int) tea.Cmd {
 //
 // What follows depends on what that first attempt could establish:
 //
-//   - Free lock, nothing written: nothing was restarted, so there is nothing to
+//   - Free lock, nothing written, no restart in flight: there is nothing to
 //     wait for and the launch continues in this same Update — no routing
 //     screen, not for a frame.
-//   - Free lock, route written: the proxy is restarting, which takes 10–20 s.
+//   - Free lock, nothing written, but a restart started earlier in this session
+//     is still in flight (a profile dropped on the replace dialog, a start
+//     backed out of: settleRoutesNow): the proxy refuses connections while it
+//     drains, for up to three minutes, so the launch waits for it behind
+//     phaseRouting, as `wt` does before a launch (ensureRouteBeforeLaunch).
+//   - Free lock, route written: the proxy is restarting, which takes 10–20 s,
+//     and up to three minutes more when it has a request in flight to finish.
 //     Waiting for it here would freeze the picker with no status, so the model
 //     enters phaseRouting and the wait runs in the returned command.
 //   - Free lock, but a cloud model's row is missing: building it resolves the
@@ -149,12 +154,12 @@ func routeTick(id int) tea.Cmd {
 // closes over the values, so a test's seam swap cannot race the command — the
 // same reason runStart reads startModel before starting its goroutine.
 func (m model) checkLaunchRoute(mdl config.Model) (model, tea.Cmd) {
-	try, ensure, wait := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes
+	try, ensure, wait, pending := tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes, routesPending
 	cfg := m.cfg
 	// A pointer: the command below outlives this Update and writes to it.
-	captured := &bytes.Buffer{}
+	captured := &noticeBuffer{}
 	changed, done := try(captured, cfg, mdl)
-	if done && !changed {
+	if done && !changed && !pending() {
 		m.recordRouteNotes(captured.String())
 		return m.launchSelected()
 	}
@@ -252,7 +257,8 @@ func (m model) handleRouteMsg(msg tea.Msg) (model, tea.Cmd) {
 // is none: see handleRouteKey.
 func (m model) routingView() string {
 	elapsed := time.Since(m.routing.began).Round(time.Second)
-	return fmt.Sprintf("Updating the LiteLLM route for %s — restarting the proxy (%s)\n\n[ctrl+c] quit wt", m.routing.modelID, elapsed)
+	head := fmt.Sprintf("Updating the LiteLLM route for %s — restarting the proxy (%s)", m.routing.modelID, elapsed)
+	return withDrain(head, m.width) + "\n\n[ctrl+c] quit wt"
 }
 
 // startState is the in-flight start: which row, the current stage, when it
@@ -571,9 +577,10 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		if m.slot != nil {
 			// This start belonged to a profile launch, which ends here. The
 			// engine settled the owed restart on every error but a refusal;
-			// a refusal can only reach this way out under a cancel.
+			// a refusal can only reach this way out under a cancel. The
+			// picker follows, so what the restart prints is kept (settleOut).
 			if m.slot.owed && lifecycle.RestartStillOwed(msg.err) {
-				settleRoutesNow(context.Background(), m.cfg)
+				settleRoutesNow(context.Background(), settleOut, m.cfg)
 			}
 			m.slot = nil
 		}
@@ -671,7 +678,7 @@ func (m model) startingView() string {
 			// started model's own when the cancel lost.
 			waiting = "waiting for the LiteLLM proxy restart"
 		}
-		return tuilayout.WrapText(fmt.Sprintf("Cancelling %s… (%s)\n\n%s", m.start.item.model.ID, elapsed, waiting), m.width) +
+		return withDrain(tuilayout.WrapText(fmt.Sprintf("Cancelling %s… (%s)\n\n%s", m.start.item.model.ID, elapsed, waiting), m.width), m.width) +
 			"\n\n[ctrl+c] quit wt"
 	}
 	hint := "[esc] cancel"
@@ -688,5 +695,5 @@ func (m model) startingView() string {
 		// a line of its own it is not what the terminal's edge cuts.
 		line = head + "\n" + stage
 	}
-	return tuilayout.WrapText(line, m.width) + "\n\n" + hint
+	return withDrain(tuilayout.WrapText(line, m.width), m.width) + "\n\n" + hint
 }

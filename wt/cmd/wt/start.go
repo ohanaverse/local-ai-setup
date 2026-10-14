@@ -120,7 +120,9 @@ func ensureRouteBeforeLaunch(cfg *config.Config, m config.Model) {
 
 // waitForProxyRestart blocks until the route hook's asynchronous proxy restart
 // has finished, printing a line first and repeating it with elapsed time. The
-// restart plus the readiness poll behind it runs 10–20s, and the only thing on
+// restart plus the readiness poll behind it runs 10–20s with an idle proxy, and
+// up to three minutes more while the proxy finishes a request in flight
+// (litellm.RestartContext), and the only thing on
 // stderr before it is the route check's one-line "updated" notice — so without
 // this the user sees wt stop moving and cannot tell that from a hang. It is the
 // CLI's counterpart to the TUI picker's route screen (#192 review).

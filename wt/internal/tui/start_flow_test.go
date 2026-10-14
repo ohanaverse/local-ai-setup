@@ -1049,6 +1049,43 @@ func TestLaunchWithRouteAlreadyPresentLaunchesAtOnce(t *testing.T) {
 	}
 }
 
+// TestLaunchWithRouteAlreadyPresentWaitsForARestartInFlight: the route is in
+// place, but a restart started earlier in the session (a profile dropped on
+// the replace dialog settles one) is still in flight. The proxy refuses
+// connections while it drains, for up to three minutes, so the launch goes
+// behind the routing screen and its command waits for that restart, as the
+// CLI's ensureRouteBeforeLaunch does.
+func TestLaunchWithRouteAlreadyPresentWaitsForARestartInFlight(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.changed = false
+	stubRouteNotes(t)
+	oldPending := routesPending
+	routesPending = func() bool { return true }
+	t.Cleanup(func() { routesPending = oldPending })
+
+	next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if next.phase != phaseRouting || next.routing == nil {
+		t.Fatalf("phase = %v routing = %+v, want phaseRouting while an earlier restart is in flight", next.phase, next.routing)
+	}
+	if strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q: the launch was attempted before the restart in flight finished", next.status)
+	}
+	if cmd == nil {
+		t.Fatal("no command returned: nothing would ever end the routing phase")
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q, want only ensure:omlx/qwen3.8 — the wait belongs to the command", got)
+	}
+	if notes := next.routing.settle(); notes != "" {
+		t.Fatalf("notes = %q, want none", notes)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want the check once and then the wait, with no second check", got)
+	}
+}
+
 // TestRouteCheckOutputIsKept pins that what the route check prints is not
 // lost under the alt screen: the captured text lands in pendingRouteNotes, to
 // be printed on the real terminal once it is released. Both paths are covered

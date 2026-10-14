@@ -42,13 +42,41 @@ concern.
 
 **wt owns reconciliation.** `wt litellm sync` (and the
 automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
-restart the proxy after a change, via `WT_LITELLM_RESTART_CMD` (legacy alias
-`MODELMAN_LITELLM_RESTART_CMD`) or, when unset, `launchctl kickstart -k
-gui/$(id -u)/local.litellm.proxy`. `wt litellm sync` restarts and returns
+restart the proxy after a change. `wt litellm sync` restarts and returns
 (the proxy may need a few seconds before the new route is live); only the
 automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI start flow
 and stop picker, and the route check at launch, then wait up to 30s for `/health/liveliness`, when a LiteLLM
 URL is configured and a pre-probe before the restart was not refused.
+
+**The restart lets a request in flight finish.** With no restart command
+configured, wt asks launchd for the proxy's pid, sends it one SIGTERM, and
+waits for it to exit, for up to three minutes. The proxy stops accepting
+connections at once and exits when its open responses have ended; launchd
+(`KeepAlive`) then starts it again, and wt runs a plain `launchctl kickstart
+gui/$(id -u)/local.litellm.proxy` in case it did not. What this costs and
+what it prints:
+
+- An idle proxy exits in a fraction of a second and wt prints nothing new.
+- While the proxy drains, every new request to it is refused (connection
+  refused), in every session, until the slowest request in flight has ended
+  and the proxy has booted again. Every wt command that restarts the proxy
+  blocks for that long too.
+- After 2 seconds of waiting wt prints `wt: the LiteLLM proxy is finishing a
+  request in flight; it restarts when the request ends (up to 3m0s)`.
+- A proxy still serving after three minutes is killed (SIGKILL) and started
+  again, and wt prints `the LiteLLM proxy was still serving a request after
+  3m0s; it was restarted anyway and that request was cut off`.
+- When launchd reports no pid for the job (it is not running, or there is no
+  `launchctl`), wt runs the forced command directly.
+
+The forced command is `launchctl kickstart -k
+gui/$(id -u)/local.litellm.proxy`: launchd sends SIGTERM and kills the proxy 5
+seconds later, cutting off any request still in flight. It is the manual
+restart, and what `bin/update/litellm` runs. A command set in
+`WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`) replaces
+all of the above: wt runs it as given, with a 30s limit, and neither looks up
+nor signals the proxy.
+
 A model id that two registry rows carry has one route at most: sync builds it
 from the row of the provider that is serving the model, and when more than
 one of the rows is to be routed — or a cloud row shares the id with a local
@@ -56,7 +84,8 @@ row whose provider's probe did not succeed — it leaves the id's route as it is
 (`model "<id>" is in the registry twice (providers A, B); its route is left
 as it is — fix the entry in <registry path>`).
 If a model was added by hand or the restart failed, restart the proxy
-manually:
+manually (this is the forced restart: it cuts off a request in flight after 5
+seconds):
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/local.litellm.proxy

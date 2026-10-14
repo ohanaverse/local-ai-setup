@@ -48,8 +48,11 @@ var pendingRouteNotes string
 // flushRouteNotes prints pendingRouteNotes to w and clears it, so the lines
 // are shown exactly once. Callers pass os.Stderr at a point where it is the
 // real terminal; it takes a writer so tests can read what was printed.
+//
+// What a settling restart has printed so far (settleOut) goes out with them:
+// both emit points are where the terminal is real.
 func flushRouteNotes(w io.Writer) {
-	notes := pendingRouteNotes
+	notes := pendingRouteNotes + settleOut.take()
 	pendingRouteNotes = ""
 	if notes == "" {
 		return

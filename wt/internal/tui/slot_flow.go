@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,11 +28,26 @@ import (
 // the start flow's seam, waitPendingRoutes.
 var (
 	ensureSlotRoutes = lifecycle.EnsureModelRoutes
-	restartProxyNow  = lifecycle.RestartProxy
+	restartProxyNow  = lifecycle.RestartProxyTo
 	probeProxyNow    = lifecycle.ProbeProxy
-	settleRoutesNow  = lifecycle.SettleRoutes
+	settleRoutesNow  = lifecycle.SettleRoutesTo
 	buildSlotCmd     = agents.BuildSlotLaunchCmd
 )
+
+// settleOut collects what a settling restart prints when the flow starts it
+// and goes back to the picker (dropSlot, finishStart): the alt screen is up,
+// and that restart runs on for as long as the proxy has a request in flight
+// to finish, printing from its own goroutine (#377). A line sent to stderr
+// there lands on the picker and is gone at the next repaint. What is kept is
+// printed with the route notes, on the real terminal (flushRouteNotes); once
+// the alt screen is gone for good the rest is written straight through
+// (flushRouteNotesAfterRun), since main() waits for that restart. The settles
+// made after the alt screen (settleQuitSlot) print to stderr as they happen.
+// Reset by Run() before launch.
+var settleOut = &startOutput{what: settleOutWhat}
+
+// settleOutWhat names settleOut's output in its overflow line.
+const settleOutWhat = "LiteLLM proxy restart"
 
 // slotResult is what one off-goroutine stage of a profile launch found.
 type slotResult struct {
@@ -88,7 +102,7 @@ func slotTick(id int) tea.Cmd {
 type slotDeps struct {
 	inventory func(*config.Config) localmodels.Snapshot
 	ensure    func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error)
-	restart   func(context.Context, *config.Config) error
+	restart   func(context.Context, io.Writer, *config.Config) error
 	probe     func(context.Context, *config.Config) error
 	wait      func()
 }
@@ -104,7 +118,7 @@ type slotDeps struct {
 // A start row stops after step 3: the start that follows writes the local
 // route and restarts the proxy itself, and is told a restart is owed.
 func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []string, check profiles.SlotCheck) slotResult {
-	buf := &bytes.Buffer{}
+	buf := &noticeBuffer{}
 	inv := d.inventory(cfg)
 	row := catalog.ResolveSlotProfile(cfg, &inv, check)
 	res := slotResult{row: row}
@@ -131,7 +145,7 @@ func prepareSlot(d slotDeps, cfg *config.Config, agent string, extraArgs []strin
 // slot, and nothing is owed. The ensure settled what was owed with an
 // asynchronous restart, which prints its warnings into buf until the wait
 // returns.
-func slotRouteFailed(d slotDeps, res slotResult, buf *bytes.Buffer, err error) slotResult {
+func slotRouteFailed(d slotDeps, res slotResult, buf *noticeBuffer, err error) slotResult {
 	d.wait()
 	res.owed, res.err, res.notes = false, catalog.SlotRouteError(res.row.Profile, err), buf.String()
 	return res
@@ -146,7 +160,7 @@ func slotRouteFailed(d slotDeps, res slotResult, buf *bytes.Buffer, err error) s
 //  7. Wait for any proxy restart in flight, then probe the proxy.
 //
 // owed says an earlier write of this launch changed config.yaml.
-func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *bytes.Buffer, owed bool) slotResult {
+func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *noticeBuffer, owed bool) slotResult {
 	ctx := context.Background()
 	if p := res.row.Profile; p.Local != nil {
 		var err error
@@ -154,13 +168,19 @@ func finishSlotRoutes(d slotDeps, cfg *config.Config, res slotResult, buf *bytes
 			return slotRouteFailed(d, res, buf, err)
 		}
 	}
-	res.notes = buf.String()
+	var restartErr error
 	if owed {
 		// Whether it succeeds or not, the restart was made: nothing is owed.
-		if err := d.restart(ctx, cfg); err != nil {
-			res.err = err
-			return res
-		}
+		// It prints into buf, not on stderr under the alt screen. That the
+		// proxy is finishing a request in flight, which it gives up to three
+		// minutes, goes on this stage's screen instead (noticeBuffer); that
+		// the request was cut off at that bound goes into buf.
+		restartErr = d.restart(ctx, buf, cfg)
+	}
+	res.notes = buf.String()
+	if restartErr != nil {
+		res.err = restartErr
+		return res
 	}
 	// A restart started earlier in this session (a start flow backed out
 	// of, a profile dropped on the replace dialog) can still be in flight.
@@ -230,7 +250,7 @@ func (m model) settleSlotAfterStart() (model, tea.Cmd) {
 	st.owed = false
 	row := st.row
 	return m.runSlotStage(st,
-		func() slotResult { return finishSlotRoutes(d, cfg, slotResult{row: row}, &bytes.Buffer{}, false) },
+		func() slotResult { return finishSlotRoutes(d, cfg, slotResult{row: row}, &noticeBuffer{}, false) },
 		func(id int, res slotResult) tea.Msg { return slotSettledMsg{id: id, res: res} })
 }
 
@@ -316,7 +336,8 @@ func (m model) slotView() string {
 		return ""
 	}
 	elapsed := time.Since(m.slot.began).Round(time.Second)
-	return fmt.Sprintf("Preparing %s — updating LiteLLM routes (%s)\n\n[ctrl+c] quit wt", m.slot.item.model.ID, elapsed)
+	head := fmt.Sprintf("Preparing %s — updating LiteLLM routes (%s)", m.slot.item.model.ID, elapsed)
+	return withDrain(head, m.width) + "\n\n[ctrl+c] quit wt"
 }
 
 // abortSlot ends the flow with no launch: back to the picker with reason as
@@ -331,12 +352,14 @@ func (m model) abortSlot(reason string) (model, tea.Cmd) {
 // dropSlot ends a flow the user backed out of on the replace dialog. A
 // restart still owed by the cloud-route write is settled here, so the written
 // routes go live; SettleRoutes only starts the restart, so this does not wait.
+// The picker is what the user sees next, so what the restart prints is kept
+// (settleOut).
 func (m model) dropSlot() model {
 	if m.slot == nil {
 		return m
 	}
 	if m.slot.owed {
-		settleRoutesNow(context.Background(), m.cfg)
+		settleRoutesNow(context.Background(), settleOut, m.cfg)
 	}
 	m.slot = nil
 	return m
@@ -453,7 +476,7 @@ func settleQuitSlot(fm model, w io.Writer) {
 		return
 	}
 	if owed {
-		settleRoutesNow(context.Background(), fm.cfg)
+		settleRoutesNow(context.Background(), nil, fm.cfg)
 	}
 }
 
@@ -472,5 +495,5 @@ func settleQuitSlotStart(fm model) {
 	if err, done := fm.start.result.get(); done && !lifecycle.RestartStillOwed(err) {
 		return
 	}
-	settleRoutesNow(context.Background(), fm.cfg)
+	settleRoutesNow(context.Background(), nil, fm.cfg)
 }

@@ -123,13 +123,13 @@ func TestMain(m *testing.M) {
 	ensureSlotRoutes = func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error) {
 		return false, errors.New("ensureSlotRoutes not stubbed in this test")
 	}
-	restartProxyNow = func(context.Context, *config.Config) error {
+	restartProxyNow = func(context.Context, io.Writer, *config.Config) error {
 		return errors.New("restartProxyNow not stubbed in this test")
 	}
 	probeProxyNow = func(context.Context, *config.Config) error {
 		return errors.New("probeProxyNow not stubbed in this test")
 	}
-	settleRoutesNow = func(context.Context, *config.Config) {}
+	settleRoutesNow = func(context.Context, io.Writer, *config.Config) {}
 	buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
 		return nil, errors.New("buildSlotCmd not stubbed in this test")
 	}
