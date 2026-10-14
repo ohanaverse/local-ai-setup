@@ -336,10 +336,10 @@
   seconds later, as seen after an agent session's last background request);
   wt checked once, at once, so the stop picker printed `failed` and
   `wt stop` exited 1 for a model that did stop. After an `ollama stop` that
-  exits 0, wt now checks every second until the model is gone, for up to 60
-  seconds, and the `Stopping <id>...` line stays open for that long. A model
+  exits 0, wt now checks every second until the model is gone, for up to 3
+  minutes, and the `Stopping <id>...` line stays open for that long. A model
   still listed after that fails with
-  `/api/ps still lists the model after waiting 60s (ollama may still be finishing a request; ...)`.
+  `/api/ps still lists the model after waiting 180s (ollama may still be finishing a request; ...)`.
   A stop ollama refuses is still reported at once, and Ctrl+C during the
   wait ends wt's wait (ollama still unloads the model when its request ends). A Ctrl+C that landed in wt's first check could be printed
   as `done`; it is `cancelled` now.

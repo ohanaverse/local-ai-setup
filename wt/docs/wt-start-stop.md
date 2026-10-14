@@ -191,11 +191,11 @@ wt stop --all                    # stop every running local model, then the omlx
     model as loaded. A model that is still answering a request is not
     unloaded at once: ollama accepts the stop, shows the model as
     `Stopping...` in `ollama ps`, and unloads it when the request ends. wt
-    waits for that, checking every second for up to 60 seconds, and prints
+    waits for that, checking every second for up to 3 minutes, and prints
     nothing more while it does: the `Stopping <id>...` line stays open
-    until it ends in `done`. A model still listed after 60 seconds is a
+    until it ends in `done`. A model still listed after 3 minutes is a
     failed stop (exit 1):
-    ``ollama stop <name>: /api/ps still lists the model after waiting 60s (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)``.
+    ``ollama stop <name>: /api/ps still lists the model after waiting 180s (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)``.
     The model usually unloads by itself once the request ends, so look at
     `ollama ps` before stopping it again. wt does not wait when ollama
     refuses the stop (a non-zero exit with the model still loaded): ollama's

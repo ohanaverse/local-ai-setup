@@ -57,9 +57,11 @@ type env struct {
 
 	// ollamaUnloadTimeout bounds the wait for a model to leave /api/ps after
 	// an `ollama stop` that exited 0. ollama accepts a stop of a model with a
-	// request in flight and unloads it once the request ends, seen to take 6
-	// to 20 seconds; the bound is that with margin. The wait re-probes every
-	// pollInterval, ollamaUnloadTimeout/pollInterval times at most.
+	// request in flight and unloads it once the request ends: 6 to 20 seconds
+	// after an agent's last request, 55 seconds behind a 1,500-word generation
+	// queued behind another request; the bound is that with margin. The wait
+	// re-probes every pollInterval, ollamaUnloadTimeout/pollInterval times at
+	// most.
 	ollamaUnloadTimeout time.Duration
 }
 
@@ -84,7 +86,7 @@ func defaultEnv() *env {
 		portUpTimeout:     90 * time.Second,
 		prebindTimeout:    10 * time.Second,
 
-		ollamaUnloadTimeout: 60 * time.Second,
+		ollamaUnloadTimeout: 3 * time.Minute,
 	}
 }
 
