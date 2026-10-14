@@ -1,6 +1,26 @@
-# wt launch flow: post-exit, survey, sessions, profiles, slot profiles
+# wt launch flow: launch directory, post-exit, survey, sessions, profiles, slot profiles
 
 Internals reference for `wt/`, reached from [`wt/CLAUDE.md`](../../CLAUDE.md). Backticked paths are relative to `wt/` unless they start with `../`.
+
+## Launch directory and the repository
+
+The root command's `RunE` (`cmd/wt/main.go`) picks one of four entries into `runLaunchPath(…, launchPath, root)`, tried in this order:
+
+| Entry | `launchPath` | `root` | Outside a git repository |
+|---|---|---|---|
+| `-W <name>` | the worktree `EnsureForName` returned | the checkout root | refused: `not in a git repo: <git's error>` |
+| `--cwd` | `os.Getwd()`, absolute | the checkout root, or `""` when `worktree.RepoRoot` finds none | launches |
+| no flag, outside a repository (`!worktree.IsRepo(".")`) | `"."` | `""` | this is that case |
+| no flag, inside one | `""` (the worktree picker resolves it) | `""` (the caller installs the guard itself) | never reached |
+
+- **`root` gates the guard install and nothing else.** `runLaunchPath` calls `maybeInstallGuard` when `root != ""`. Nothing downstream reads it: `launchFiltered`, `launchSlotProfile`, `launchPassthrough` and `tui.Run` take the directory only.
+- **No launch state is derived from git.** `rotation.state` and `last-picked.state` hold a model id, `usage.jsonl` is keyed by agent and model, `refcount.jsonl` by pid and model, and a session's name is the agent's own business. So `--cwd` outside a repository has no key to invent: it writes the same files as a launch inside one, under the same config directory, and cannot collide with a repository's state because no state belongs to a repository. The directory matters in two places, both by path and neither by repository: the agent's working directory (`cmd.Dir`), and an automatic profile's `config_content` target for claude (`<dir>/.claude/settings.local.json`, written only when a profile with that mechanism applies, and restored after the run). That target's backup under `profile-backups/` is the one piece of wt state keyed by a directory: `profiles.ConfigFileTarget` makes the path absolute before it is hashed, so two directories never share a backup, repository or not.
+- **The TUI's `repoRoot` is already optional.** `newRunModel` seeds it from `worktree.RepoRootAt(prePath)` and leaves it `""` on an error; it is read only when the TUI creates a worktree (the new-worktree prompt, a branch row), and a pre-resolved path starts past the worktree picker.
+- **`--cwd` and the no-flag launch outside a repository are the same launch**, except that `--cwd` passes an absolute path where the other passes `"."`. Both name the same directory; `agents.RelativeArgNotes` and `profiles.ConfigFileTarget` resolve either form. The no-flag branch is kept as it is rather than folded into `--cwd`'s.
+- **`RepoRoot` (`--show-toplevel`) and `IsRepo` (`--git-dir`) disagree in a bare repository and inside `.git`**: a git directory with no checkout. `--cwd` there used to be refused and now launches with `root == ""`, so no guard is installed by that launch; the no-flag launch there still goes to the worktree picker.
+- **`wt smoke --cwd` never asked git.** `runSmoke` reads the flag and `os.Getwd()` only, so it ran outside a repository before this and is unchanged. An agent may still refuse the directory itself (codex: "Not inside a trusted directory"), which is why the default row directory is a temporary repository ([smoke.md](smoke.md)).
+
+Pinned by `cmd/wt/cwd_norepo_test.go` (a real launch with a recording agent, inside and outside a repository, comparing the state files written) and `TestRunLaunchPath`.
 
 ## Post-exit flow
 

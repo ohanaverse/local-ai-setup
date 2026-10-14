@@ -43,7 +43,7 @@ claude-wt
 # Work on a specific branch directly (skip TUI)
 claude-wt -W my-feature
 
-# Run in the current directory (no picker)
+# Run in the current directory (no worktree picker; works outside a git repo too)
 claude-wt --cwd
 
 # Seed agent instruction files in a new repo
@@ -71,7 +71,7 @@ All launchers support:
 | Flag | Description |
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip the worktree picker |
-| `--cwd` | Launch in the current directory; skips the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |

@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repo.
 
 The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. Three launch inputs:
 
-1. **Where** — `--cwd` (the current directory — the one launch that does not move to a checkout root), `-W <name>` (named worktree), or the worktree picker.
+1. **Where** — `--cwd` (the current directory — the one launch that does not move to a checkout root, and needs no git repository), `-W <name>` (named worktree), or the worktree picker. Outside a repository `-W` refuses (`not in a git repo`) and a launch without `--cwd` runs in the current directory too.
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
 3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (eligible models rotate on successive launches).
 
@@ -36,7 +36,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 | `--replace` | With `-M`, start the model even if it means stopping a running one |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
-| `--cwd` | Launch in the current directory; skip the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed AGENTS.md + pointer files, then exit |
 | `--version` | Print version and exit |
@@ -331,6 +331,8 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout or si
 ## Worktree (Go)
 
 `internal/worktree` handles enumeration (`Enumerate` → worktrees / local branches / remote-only branches) and creation (`EnsureForName` for `-W`, `EnsureForBranch` for the picker). Every function takes `dir` (repo root) first for testability.
+
+> **A launch that has a directory needs no repository.** The repo root handed to `runLaunchPath` gates the guard install and nothing else: rotation, usage and refcount state are keyed by model, agent and pid, never by a repository, branch or directory. `--cwd` passes the checkout root when `RepoRoot` finds one and `""` when it does not (outside a repository, in a bare one, inside `.git`, or with no git on PATH), so it launches either way; only `-W` and the worktree picker refuse. Don't key new launch state on the repository without deciding what a launch outside one records. Details: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#launch-directory-and-the-repository).
 
 > **`Enumerate` fetches before listing.** It runs `git fetch --all --prune` (5s timeout, every remote) before building the picker's groups. Failure — offline, no remotes, timeout — is silently ignored; the picker falls back to existing local refs. `-W`/`--cwd` skip `Enumerate` entirely, and `EnsureForName` never consults remotes.
 
