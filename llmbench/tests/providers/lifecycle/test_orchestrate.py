@@ -13,7 +13,7 @@ import pytest
 
 from llmbench.providers.lifecycle import orchestrate
 from llmbench.providers.lifecycle.backends import BACKENDS
-from llmbench.providers.lifecycle.backends.base import StartPlan
+from llmbench.providers.lifecycle.backends.base import StartPlan, StillFinishing
 from llmbench.providers.lifecycle.backends.mtplx import MTPLX, MTPLX_DIRECT_URL
 from llmbench.providers.lifecycle.backends.omlx import OMLX_4BIT, OMLX_6BIT
 from llmbench.providers.lifecycle.envelope import LifecycleError
@@ -532,6 +532,20 @@ def test_stop_others_warns_but_never_raises_on_a_stuck_provider(stub_stops):
     stub_stops["mtplx"].side_effect = OSError("mtplx exploded")
     orchestrate._stop_others()  # must not raise
     assert stub_stops["omlx"].called or stub_stops["omlx-6bit"].called
+
+
+def test_stop_reports_a_model_still_finishing_as_not_stopped(stub_stops):
+    """A stop ollama accepted and is still carrying out (StillFinishing, #379)
+    is told apart from a failed stop, but it is not a clean stop: the model
+    is still loaded, so `stop()` stays strict (ok=False, the warning as the
+    error) — a caller that needs the provider empty, as an isolation does,
+    must not go on as if it were."""
+    warning = StillFinishing("ollama is still finishing a request on busy after waiting 180s")
+    stub_stops["ollama"].return_value = warning
+    result = orchestrate.stop("ollama")
+    assert result.ok is False
+    assert result.error == warning
+    assert isinstance(result.error, StillFinishing)
 
 
 def test_stop_all_always_reports_ok(stub_stops):

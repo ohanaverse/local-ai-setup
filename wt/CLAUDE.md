@@ -60,7 +60,7 @@ After the launched subprocess exits, the TUI and non-TUI paths run the same fixe
 
 - `survey.ReleaseSession()` runs before the stop picker, so the model just used does not count as in use.
 - The summary line (`agents.Summary`) is the single formatter for both paths and never affects the exit code.
-- A batch of stops costs one LiteLLM restart: `lifecycle.StopModelDeferred` per model, then one `lifecycle.SettleRoutes` (#142).
+- A batch of stops costs one LiteLLM restart and one ollama wait: `lifecycle.BeginStops` sends every ollama stop, the batch's `Stop` finishes each model under one shared 3-minute bound (#379), then one `lifecycle.SettleRoutes` (#142). A model ollama accepted and still lists at the bound is `*lifecycle.StillFinishingError`: the stop loop prints it as still finishing and does not count it as failed; every other caller gets an error.
 - A slot-profile session has a shorter tail on both paths: release → stop picker → summary, with no survey and no price notice (`runSlotAgentCmd`; the `profile` branch of `printPendingSummaryAndSurvey`).
 
 Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before changing the summary line, the stop picker (`survey.Picker`, `chooseLabeled`, `stopEntries`), the stale-pricing notice, the session survey, session handling, or profiles.
@@ -210,7 +210,7 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md) before cha
 
 ## Lifecycle (`internal/lifecycle`)
 
-The start/stop engine: `Start` (`Options.Out` takes every line a start prints, the proxy restart's included, in place of stderr; the model picker passes one), `Stop`, `StopModelDeferred` + `SettleRoutes`, `LoadingServer` + `StopLoading`; backends ollama (`Shared`), omlx (`Pool`: loads beside, `/unload` per model), mtplx (`Exclusive`). Used by the TUI start flow, `startForLaunch`, `wt start`, and `wt smoke`.
+The start/stop engine: `Start` (`Options.Out` takes every line a start prints, the proxy restart's included, in place of stderr; the model picker passes one), `Stop`, `BeginStops` (a `StopBatch`, whose `Stop` stops one model and writes its route removal) + `SettleRoutes`, `LoadingServer` + `StopLoading`; backends ollama (`Shared`), omlx (`Pool`: loads beside, `/unload` per model), mtplx (`Exclusive`). Used by the TUI start flow, `startForLaunch`, `wt start`, and `wt smoke`.
 
 - **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`, `Occupants` lists them): an `Exclusive` occupant (mtplx) to be replaced, or the `Pool` victims (omlx) the eviction plan (`evictions.go`) predicts omlx will unload (`poolAdmissionMarginPct` margin, 15% of the ceiling; `reconcilePool` handles what omlx unloaded anyway, on failure too); undeterminable occupancy is `*OccupancyUnknownError`, never assumed empty.
 - **Route hook** (`routes.go`): a start/stop wt performs updates `config.yaml` through `internal/litellm`. A launch of an already-running model gets the Add-only launch-time check, `lifecycle.EnsureModelRoute` (#192), which never fails a launch.
@@ -220,6 +220,7 @@ The start/stop engine: `Start` (`Options.Out` takes every line a start prints, t
 - **The restart goroutine runs on `context.WithoutCancel(ctx)` on purpose** — callers cancel as soon as the hook returns. Pinned by `TestRouteRestartSurvivesCallerCancelAfterReturn`.
 - Route output goes through `routePrintf(ctx, …)`; a caller-supplied writer rides on the context.
 - **A failed start is printed once, by `main`** (#344): `wt start` and `wt smoke` set `SilenceErrors`; the root command silences cobra only for an error that came out of a `-M` pin's start (`asStartError` in `resolveModel`, `printOnce` in `runLaunchPath`). A new command that can return a failed start needs one of the two, or the message and its log tail print twice.
+- **An ollama stop ollama accepted and has not carried out is `*StillFinishingError`, never nil** (#379): strict by default, so a caller that needs the model gone fails on it; only the stop loop (`survey.stopEntries`) reads it as its own outcome (exit 0). A stop that waits past `stopNoticeAfter` (2s) gives one `StopNotice`; the caller takes it with `WithStopNotice`, else it is a route line. A screen that stops a model must take the notice itself: the TUI stops models only in the post-exit phase, after the alt screen is gone (`TestModelStopsRunOnlyAfterTheAltScreen`).
 - **wt signals a process only after identifying it** (`mtplx_loading.go`): the one stop with no port to go through is an mtplx still loading, found by wt's pidfile. A pid is never enough: alive, the user's own, an mtplx server on the provider's port by exact argv, and the recorded start time when there is one, checked again before SIGKILL. The pidfile stays a bare pid (llmbench shares the path); wt's start record is `<pidfile>.wt`; both are removed only when the server they name is confirmed gone. Ctrl+C after a signal was sent is a `*StopInterruptedError`.
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, the launch-time route check, restart or readiness waits, or replace.

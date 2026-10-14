@@ -191,20 +191,31 @@ wt stop --all                    # stop every running local model, then the omlx
     model as loaded. A model that is still answering a request is not
     unloaded at once: ollama accepts the stop, shows the model as
     `Stopping...` in `ollama ps`, and unloads it when the request ends. wt
-    waits for that, checking every second for up to 3 minutes, and prints
-    nothing more while it does: the `Stopping <id>...` line stays open
-    until it ends in `done`. A model still listed after 3 minutes is a
-    failed stop (exit 1):
-    ``ollama stop <name>: /api/ps still lists the model after waiting 180s (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)``.
-    The model usually unloads by itself once the request ends, so look at
-    `ollama ps` before stopping it again. wt does not wait when ollama
-    refuses the stop (a non-zero exit with the model still loaded): ollama's
-    own message is the failure, at once. A model that is already unloaded is
-    a successful stop whatever `ollama stop` said. Ctrl+C during the wait
-    ends wt's wait (the line ends in `cancelled`); ollama still unloads the
-    model when its request ends. If ollama stops answering during the wait,
-    wt goes by `ollama stop`'s own exit, so the line can read `done` a
-    moment before the model has left `ollama ps`.
+    waits for that, checking every second for up to 3 minutes. After 2
+    seconds of waiting the open line says so —
+    `Stopping <id>... waiting for ollama to finish a request in flight (up to 3m0s)... `
+    — and then ends in `done` once the model is gone.
+  - A model ollama still lists after the 3 minutes is not a failed stop:
+    ollama accepted it and unloads the model when its request ends. The line
+    ends in `still finishing a request; ollama unloads it when that ends`,
+    the other stops go on, and that model alone does not make `wt stop`
+    exit 1. `ollama ps` shows when it has unloaded.
+  - When several ollama models are stopped together (`wt stop ollama`,
+    `--all`, the picker's `a`), wt sends every `ollama stop` first and then
+    waits for all of them under one 3-minute bound, not 3 minutes each. The
+    lines still come one model at a time, in order, and the omlx halt of
+    `--all` still comes after them.
+  - wt does not wait when ollama refuses the stop (a non-zero exit with the
+    model still loaded): ollama's own message is the failure, at once, and
+    the command exits 1. A model that is already unloaded is a successful
+    stop whatever `ollama stop` said. Ctrl+C during the wait ends wt's wait
+    (the line ends in `cancelled`) and skips the models after it, and wt
+    names the ones whose stop ollama had already accepted — ollama still
+    unloads those when their requests end:
+    ``wt: ollama had already accepted the stop of <ids>; it unloads each one once any request in flight ends (`ollama ps` shows when)``.
+    If ollama stops answering during the wait, wt goes by `ollama stop`'s
+    own exit, so the line can read `done` a moment before the model has
+    left `ollama ps`.
 - `--all` stops every running local model wt can stop, on every provider,
   and then halts the omlx service as `wt stop omlx` does — also when omlx has
   nothing loaded, since that is what frees its memory. omlx's models are not

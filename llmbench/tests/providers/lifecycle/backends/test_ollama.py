@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from llmbench.providers.lifecycle.backends import BACKENDS
+from llmbench.providers.lifecycle.backends.base import StillFinishing
 from llmbench.providers.lifecycle.backends.ollama import (
     DEFAULT_MODEL,
     ENV_VAR,
@@ -252,6 +253,54 @@ def test_stop_and_wait_returns_warning_when_models_still_loaded_after_retries():
     mock_run.assert_called_once_with(
         ["ollama", "stop", "stuck-model"], capture_output=True, check=False
     )
+
+
+def test_stop_and_wait_accepted_stop_still_finishing_is_its_own_warning():
+    """`ollama stop` exited 0 for the model (ollama accepted the stop) and
+    `ollama ps` still lists it after the whole wait: ollama is finishing a
+    request and unloads the model when that ends. That is told apart from a
+    failed stop (a StillFinishing warning, #379, as wt's
+    StillFinishingError), and it is still a warning, never None: the model is
+    loaded, so an isolation is not isolated yet."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            return_value=["busy"],
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert isinstance(result, StillFinishing)
+    assert result == (
+        "ollama is still finishing a request on busy after waiting 180s; "
+        "it unloads it when that ends"
+    )
+    assert mock_sleep.call_count == UNLOAD_TRIES
+
+
+def test_stop_and_wait_refused_stop_is_not_still_finishing():
+    """A model whose `ollama stop` exited non-zero, or one loaded after the
+    stops were sent, is not something ollama agreed to unload: still listed
+    after the wait, it is the plain failure warning, never StillFinishing."""
+    for loaded, rcs in ((["busy", "refused"], [0, 1]), (["busy", "late"], [0])):
+        with (
+            patch(
+                "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+                side_effect=[loaded[: len(rcs)]] + [loaded] * (UNLOAD_TRIES + 1),
+            ),
+            patch(
+                "llmbench.providers.lifecycle.backends.ollama.subprocess.run",
+                side_effect=[subprocess.CompletedProcess([], rc) for rc in rcs],
+            ),
+            patch("llmbench.providers.lifecycle.backends.ollama.time.sleep"),
+        ):
+            result = OllamaBackend().stop_and_wait()
+        assert result == "ollama still has models loaded after waiting 180s", loaded
+        assert not isinstance(result, StillFinishing), loaded
 
 
 # --- restore() ------------------------------------------------------------
