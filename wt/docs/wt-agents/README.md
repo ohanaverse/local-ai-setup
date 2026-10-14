@@ -46,7 +46,7 @@ restart the proxy after a change. Every one of them then waits up to 30s for
 `/health/liveliness` before it is done, when a LiteLLM URL is configured and a
 pre-probe before the restart was not refused: `wt litellm sync` and the
 commands that run it after a registry write (`wt cloud-sync`, `wt model
-add|edit|rm|init`, the Models tab of `wt config`) before they return (#379),
+add|edit|rm|init`, the Models tab of `wt config`) before they return (#382),
 and the automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI
 start flow and stop picker, and the route check at launch, before wt exits or
 hands the proxy to an agent. A proxy that does not answer in time is a

@@ -24,11 +24,17 @@ func TestEntryItemTitleLocalBranch(t *testing.T) {
 	}
 }
 
-// Title must strip a remote prefix so users see just the short branch name.
+// Title must strip a remote row's remote so users see just the short branch
+// name, and only a remote row's: a local branch named fix/feature keeps its
+// whole name, the one a PR is opened from (#384).
 func TestEntryItemTitleRemoteBranch(t *testing.T) {
-	item := entryItem{entry: worktree.Entry{Branch: "origin/feature"}}
+	item := entryItem{entry: worktree.Entry{Branch: "origin/feature"}, remote: true}
 	if got := item.Title(); got != "feature" {
 		t.Errorf("Title = %q, want feature", got)
+	}
+	local := entryItem{entry: worktree.Entry{Branch: "fix/feature"}}
+	if got := local.Title(); got != "fix/feature" {
+		t.Errorf("local Title = %q, want fix/feature", got)
 	}
 }
 

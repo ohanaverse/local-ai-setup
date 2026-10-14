@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -40,13 +41,15 @@ const (
 // (worktree.PRBranch: the remote stripped off a remote-tracking row), set by
 // buildList, which alone knows the row's group; pr is the pull request found
 // there, set by applyPRs once `gh pr list` has answered, nil until then and
-// for a branch with none.
+// for a branch with none. remote marks a remote-tracking row, the only kind
+// whose displayed name drops its first path segment (the remote).
 type entryItem struct {
 	kind     entryKind
 	entry    worktree.Entry
 	label    string
 	prBranch string
 	pr       *worktree.PR
+	remote   bool
 }
 
 // FilterValue is used by the list's built-in filter. Non-entry rows
@@ -63,7 +66,7 @@ func (e entryItem) FilterValue() string {
 	return e.entry.Branch
 }
 
-// Title renders the branch name (remote prefix stripped for display)
+// Title renders the branch name (a remote row's remote stripped for display)
 // for real entries, with any (current)/(default) marker appended and then
 // the pull request tag ("#383 open"); "+ New worktree…" for the sentinel;
 // and the separator's label otherwise. The picker's delegate draws the same
@@ -87,8 +90,11 @@ func (e entryItem) baseTitle() string {
 		return e.label
 	}
 	b := e.entry.Branch
-	if i := strings.IndexByte(b, '/'); i >= 0 {
-		b = b[i+1:] // strip remote prefix for display
+	if e.remote {
+		// origin/foo shows as foo; a local fix/foo keeps its whole name.
+		if i := strings.IndexByte(b, '/'); i >= 0 {
+			b = b[i+1:]
+		}
 	}
 	if e.label != "" {
 		b += "  " + e.label
@@ -127,7 +133,7 @@ func (e entryItem) Description() string {
 	}
 	parts := []string{fmt.Sprintf("%-9s", "["+string(e.entry.Type)+"]")}
 	if e.pr != nil {
-		if title := strings.TrimSpace(e.pr.Title); title != "" {
+		if title := strings.TrimSpace(printable(e.pr.Title)); title != "" {
 			parts = append(parts, ansi.Truncate(title, prTitleMax, "…")+" ·")
 		}
 	}
@@ -240,7 +246,7 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 			if worktree.SkipInPicker(g.Kind, e, defaultBranch) {
 				continue
 			}
-			ei := entryItem{kind: kindEntry, entry: e, prBranch: worktree.PRBranch(g.Kind, e)}
+			ei := entryItem{kind: kindEntry, entry: e, prBranch: worktree.PRBranch(g.Kind, e), remote: g.Kind == worktree.GroupRemoteBranches}
 			// Mark default-branch entries with (default). This applies to
 			// non-current worktrees on the default branch (a linked worktree
 			// created outside wt); bare default-branch rows are skipped above.
@@ -363,4 +369,16 @@ func prTagStyle(theme themes.Theme, state worktree.PRState) lipgloss.Style {
 		token = themes.TokenError
 	}
 	return lipgloss.NewStyle().Foreground(theme.Token(token))
+}
+
+// printable drops the control characters (escape sequences' ESC included)
+// from text that came from outside wt, such as a pull request title, so it
+// cannot write to the terminal as anything but text.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }

@@ -73,13 +73,12 @@ func TestApplyPRsTagsEveryKindOfRow(t *testing.T) {
 	l := buildList(groups, "", root, themes.Default, 80, 24)
 	applyPRs(&l, prMap())
 	items := l.Items()
-	// Title drops everything up to the first "/" of every branch, local ones
-	// included (the remote-prefix strip predates PR tags); the lookup does
-	// not (worktree.PRBranch).
+	// Only a remote row drops its remote; a local fix/foo keeps its whole
+	// name, the name its PR was opened from.
 	cases := map[string]string{
-		"fix/current":                "current  (current)  #384 draft",
-		"fix/wt-ollama-stop-outcome": "wt-ollama-stop-outcome  #383 open",
-		"feat/local":                 "local  #382 merged",
+		"fix/current":                "fix/current  (current)  #384 draft",
+		"fix/wt-ollama-stop-outcome": "fix/wt-ollama-stop-outcome  #383 open",
+		"feat/local":                 "feat/local  #382 merged",
 		"origin/feat/remote":         "feat/remote  #381 closed",
 		"no-pr":                      "no-pr",
 	}
@@ -170,7 +169,7 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 
 	short := renderRow(l, 1)
 	first, second, _ := strings.Cut(short, "\n")
-	if first != "wt-ollama-stop-outcome  #383 open" {
+	if first != "fix/wt-ollama-stop-outcome  #383 open" {
 		t.Errorf("title line = %q", first)
 	}
 	if !strings.HasPrefix(second, "[branch]  Stop · (no worktree)") {
@@ -195,7 +194,7 @@ func TestPRTagDroppedWhenTooNarrow(t *testing.T) {
 	l := buildList(groups, "", "/repo", themes.Default, 20, 24)
 	applyPRs(&l, map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}})
 	line, _, _ := strings.Cut(renderRow(l, 1), "\n")
-	if strings.TrimSpace(line) != "some-branch" {
+	if strings.TrimSpace(line) != "fix/some-branch" {
 		t.Errorf("narrow title line = %q, want the branch alone", line)
 	}
 }
@@ -353,5 +352,21 @@ func TestLoadPRsCmdOutsideARepoIsEmpty(t *testing.T) {
 	msg := loadPRsCmd()().(prsLoadedMsg)
 	if msg.prs == nil || len(msg.prs) != 0 {
 		t.Errorf("prs = %#v, want an empty map", msg.prs)
+	}
+}
+
+// TestPRTitleControlCharactersAreDropped pins that a PR title, which comes
+// from GitHub and not from wt, reaches the row's description without its
+// control characters. A regression lets a title carrying an escape sequence
+// write to the alt screen as terminal control, not text.
+func TestPRTitleControlCharactersAreDropped(t *testing.T) {
+	ei := entryItem{kind: kindEntry, entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "x"},
+		pr: &worktree.PR{Number: 7, State: worktree.PROpen, Title: "evil\x1b]0;pwned\x07 title\r"}}
+	got := ei.Description()
+	if strings.ContainsAny(got, "\x1b\x07\r") {
+		t.Errorf("Description() = %q, still holds control characters", got)
+	}
+	if !strings.Contains(got, "evil]0;pwned title") {
+		t.Errorf("Description() = %q, lost the printable text", got)
 	}
 }

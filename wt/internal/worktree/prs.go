@@ -61,9 +61,10 @@ func realListPRs(dir string) ([]byte, error) {
 		cmd.Dir = dir
 	}
 	// gh must never prompt, page, colour or check for its own update: the
-	// picker owns the terminal (alt screen), and stdin and stderr are not
-	// connected to it (exec leaves both on the null device), so a prompt
-	// could only hang until the timeout.
+	// picker owns the terminal (alt screen), and neither stdin (the null
+	// device, as exec leaves it) nor stderr (captured by Output, then
+	// dropped) is connected to it, so a prompt could only hang until the
+	// timeout.
 	cmd.Env = append(os.Environ(),
 		"GH_PROMPT_DISABLED=1",
 		"GH_PAGER=cat",
