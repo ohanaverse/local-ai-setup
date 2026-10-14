@@ -31,9 +31,20 @@ func (ollamaBackend) stop(ctx context.Context, e *env, cfg *config.Config) error
 // restart or eviction between the picker's probe and this stop makes
 // `ollama stop` exit 1 with "model not found") — the same
 // trust-the-state-not-the-exit-code shape omlx and mtplx use, on every exit
-// code. When the re-probe cannot answer, the CLI's exit decides (exit 0 with
-// a daemon gone mid-stop has nothing left to check); a cancelled stop returns
-// the cancellation without probing, so Ctrl-C can never be read as success.
+// code.
+//
+// A model still listed is judged by the exit. Non-zero is a stop ollama
+// refused: its message is returned at once. Zero is a stop ollama accepted
+// and has not finished: with a request to the model in flight ollama keeps it
+// in /api/ps (as "Stopping...") and unloads it when the request ends, so wt
+// re-probes every pollInterval until the model is gone, and only a model
+// still listed after ollamaUnloadTimeout is an error.
+//
+// When a probe cannot answer, the first or a later one, the CLI's exit
+// decides and the wait ends (exit 0 with a daemon gone mid-stop has nothing
+// left to check). A cancelled stop returns the cancellation, without probing
+// when it landed in the CLI and without another probe when it landed in the
+// wait, so Ctrl-C can never be read as success.
 func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
 	bin, err := e.lookPath("ollama")
 	if err != nil {
@@ -52,19 +63,53 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 			cliErr = fmt.Errorf("ollama stop %s failed: %w", modelName, runErr)
 		}
 	}
-	loaded, perr := localmodels.OllamaLoaded(ctx, e.probeClient, origin)
-	if perr == nil {
-		if slices.ContainsFunc(loaded, func(n string) bool { return SameModel("ollama", n, modelName) }) {
-			if cliErr != nil {
-				return cliErr
-			}
-			return fmt.Errorf("ollama stop %s: /api/ps still lists the model", modelName)
-		}
-		return nil
+	// The probes after the first: none for a refused stop, and a count, not a
+	// deadline, so the wait is bounded whatever a clock says. bound is that
+	// count: waits is spent by the loop while it runs.
+	bound := 0
+	if cliErr == nil && e.pollInterval > 0 {
+		bound = int(e.ollamaUnloadTimeout / e.pollInterval)
 	}
-	// The re-probe cannot answer: the daemon gave no usable verdict, so the
-	// CLI's own exit decides.
-	return cliErr
+	waits := bound
+	for ; ; waits-- {
+		loaded, perr := localmodels.OllamaLoaded(ctx, e.probeClient, origin)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if perr != nil {
+			// The probe cannot answer: the daemon gave no usable verdict, so
+			// the CLI's own exit decides.
+			return cliErr
+		}
+		if !slices.ContainsFunc(loaded, func(n string) bool { return SameModel("ollama", n, modelName) }) {
+			return nil
+		}
+		if cliErr != nil {
+			return cliErr
+		}
+		if waits <= 0 {
+			// The wait's sleeping total, interval by interval, not the
+			// configured bound: integer division can cut the count under
+			// ollamaUnloadTimeout, and the message must not claim more than
+			// the wait sat out.
+			return ollamaStillListed(modelName, time.Duration(bound)*e.pollInterval)
+		}
+		if err := e.sleep(ctx, e.pollInterval); err != nil {
+			return err
+		}
+	}
+}
+
+// ollamaStillListed is the failed stop of a model `ollama stop` accepted and
+// /api/ps still lists after the whole wait. waited is the sleeping total the
+// wait sat out, not the configured bound. It says how long wt waited and
+// what the likeliest cause is, since the model usually does unload.
+func ollamaStillListed(modelName string, waited time.Duration) error {
+	d := waited.String()
+	if waited >= time.Second {
+		d = fmt.Sprintf("%.0fs", waited.Seconds())
+	}
+	return fmt.Errorf("ollama stop %s: /api/ps still lists the model after waiting %s (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)", modelName, d)
 }
 
 func (ollamaBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {

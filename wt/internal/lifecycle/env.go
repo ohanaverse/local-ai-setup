@@ -54,6 +54,13 @@ type env struct {
 	stopGrace      time.Duration // SIGTERM-to-SIGKILL wait for a loading mtplx (`mtplx stop`'s --grace-seconds)
 	portUpTimeout  time.Duration // wait for a daemon to answer after `start`
 	prebindTimeout time.Duration // wait for a port to free before spawning
+
+	// ollamaUnloadTimeout bounds the wait for a model to leave /api/ps after
+	// an `ollama stop` that exited 0. ollama accepts a stop of a model with a
+	// request in flight and unloads it once the request ends, seen to take 6
+	// to 20 seconds; the bound is that with margin. The wait re-probes every
+	// pollInterval, ollamaUnloadTimeout/pollInterval times at most.
+	ollamaUnloadTimeout time.Duration
 }
 
 func defaultEnv() *env {
@@ -76,6 +83,8 @@ func defaultEnv() *env {
 		stopGrace:         10 * time.Second,
 		portUpTimeout:     90 * time.Second,
 		prebindTimeout:    10 * time.Second,
+
+		ollamaUnloadTimeout: 60 * time.Second,
 	}
 }
 
