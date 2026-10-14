@@ -39,11 +39,11 @@ func TestRestartNeverFails(t *testing.T) {
 	t.Cleanup(func() { runShell = orig })
 	var ran string
 	runShell = func(_ context.Context, cmd string) error { ran = cmd; return nil }
-	if w := Restart(); len(w) != 0 || ran != "mycmd" {
+	if w := RestartContext(context.Background()); len(w) != 0 || ran != "mycmd" {
 		t.Fatalf("ok restart: warnings=%v ran=%q", w, ran)
 	}
 	runShell = func(context.Context, string) error { return context.DeadlineExceeded }
-	w := Restart()
+	w := RestartContext(context.Background())
 	if len(w) != 1 || !strings.Contains(w[0], "restart it manually") {
 		t.Fatalf("failed restart warnings = %v", w)
 	}

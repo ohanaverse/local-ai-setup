@@ -16,6 +16,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -151,6 +152,18 @@ func TestMain(m *testing.M) {
 	ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
 		return nil, true, errors.New("ollamacheck list not stubbed in this test (ollama list at " + origin + ")")
 	})
+	// The readiness half of the proxy restart a route sync makes (#379): the
+	// restart itself is the test's WT_LITELLM_RESTART_CMD, but the probe
+	// before it and the wait after it would reach whatever answers at the
+	// test config's [litellm] url, the developer's proxy included. Unstubbed,
+	// a test sees nothing listening, so no sync waits. Tests of the wait call
+	// litellm.StubProxyReadinessForTest themselves.
+	litellm.StubProxyReadinessForTest(
+		func(context.Context, string, time.Duration) bool { return false },
+		func(_ context.Context, url string, _ time.Duration) error {
+			return errors.New("proxy readiness wait not stubbed in this test: " + url)
+		},
+	)
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)

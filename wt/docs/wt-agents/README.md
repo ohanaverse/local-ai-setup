@@ -42,11 +42,15 @@ concern.
 
 **wt owns reconciliation.** `wt litellm sync` (and the
 automatic route updates from `wt start`/`wt stop`) write `config.yaml` and then
-restart the proxy after a change. `wt litellm sync` restarts and returns
-(the proxy may need a few seconds before the new route is live); only the
-automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI start flow
-and stop picker, and the route check at launch, then wait up to 30s for `/health/liveliness`, when a LiteLLM
-URL is configured and a pre-probe before the restart was not refused.
+restart the proxy after a change. Every one of them then waits up to 30s for
+`/health/liveliness` before it is done, when a LiteLLM URL is configured and a
+pre-probe before the restart was not refused: `wt litellm sync` and the
+commands that run it after a registry write (`wt cloud-sync`, `wt model
+add|edit|rm|init`, the Models tab of `wt config`) before they return (#379),
+and the automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI
+start flow and stop picker, and the route check at launch, before wt exits or
+hands the proxy to an agent. A proxy that does not answer in time is a
+warning, never a failed command: the routes were written.
 
 **The restart lets a request in flight finish.** With no restart command
 configured, wt asks launchd for the proxy's pid, sends it one SIGTERM, and

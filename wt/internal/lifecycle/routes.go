@@ -130,13 +130,9 @@ func lastRestartErr() error {
 }
 
 const (
-	// proxyReadyTimeout bounds the wait for the proxy after a route change.
-	proxyReadyTimeout = 30 * time.Second
-	// proxyAliveTimeout bounds the single probe taken just before a restart.
-	// Short on purpose: it is paid on every restart. It only has to
-	// tell "nothing there" (refused: no wait) from "something there" (any
-	// other outcome, even a timeout: wait for it after the restart).
-	proxyAliveTimeout = 1500 * time.Millisecond
+	// proxyReadyTimeout bounds the wait for the proxy after a route change;
+	// litellm's own, so this package and `wt litellm sync` wait as long.
+	proxyReadyTimeout = litellm.ProxyReadyTimeout
 	// ensureRouteLockTimeout bounds the config.yaml lock wait of a launch-time
 	// route check. A launch must not hang behind another wt process holding
 	// the lock; giving up only costs the check, and the launch proceeds.
@@ -657,21 +653,33 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// fires the moment this goroutine returns, and it would still inherit
 		// the caller's post-return cancellation regardless.
 		//
-		// The proxy is probed once, lazily, just before the restart
-		// (Listening: only a refused connection counts as down, so a slow
-		// proxy is still waited for). Waiting for readiness afterwards is
-		// only meaningful when a proxy was actually serving: a configured URL
-		// with nothing listening (routing may even be switched off) used to
-		// cost every start and stop the full proxyReadyTimeout. Writes that
-		// never restart (deferred, or nothing changed) never reach this
-		// goroutine, so they pay no probe at all. The restart itself stays
-		// best-effort either way.
+		// The probe before the restart, the restart and the readiness wait
+		// are litellm.Bounce.Run, the sequence `wt litellm sync` runs too,
+		// here over this package's seams. The proxy is probed once, lazily,
+		// just before the restart (Listening: only a refused connection
+		// counts as down, so a slow proxy is still waited for). Waiting for
+		// readiness afterwards is only meaningful when a proxy was actually
+		// serving: a configured URL with nothing listening (routing may even
+		// be switched off) used to cost every start and stop the full
+		// proxyReadyTimeout. Writes that never restart (deferred, or nothing
+		// changed) never reach this goroutine, so they pay no probe at all.
+		// The restart itself stays best-effort either way.
 		//
 		// The restart's own notices (the proxy is finishing a request in
 		// flight; one was cut off) follow this operation's writer like the
 		// warnings below (withRestartNotice).
 		bgCtx := withRestartNotice(context.WithoutCancel(ctx))
-		wasUp := url != "" && probeProxy(bgCtx, url, proxyAliveTimeout)
+		// The restart's warnings are printed as soon as it returns, before
+		// the readiness wait (up to proxyReadyTimeout), not after it.
+		restartPrinting := func(ctx context.Context) []string {
+			warnings := restartProxy(ctx)
+			for _, w := range warnings {
+				routePrintf(ctx, "wt: %s\n", w)
+			}
+			return warnings
+		}
+		b := litellm.Bounce{Restart: restartPrinting, Listening: probeProxy, WaitReady: waitProxy}
+		warnings, waitErr := b.Run(bgCtx, url)
 		// Warnings are always surfaced: bgCtx cannot be cancelled by the
 		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
 		// restart is expected" case to stay quiet about — suppressing them on
@@ -682,17 +690,11 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// readiness wait, else nil, which clears an earlier failure. That a
 		// request was cut off at the drain bound is a notice, not a warning:
 		// that restart was made.
-		warnings := restartProxy(bgCtx)
-		for _, w := range warnings {
-			routePrintf(bgCtx, "wt: %s\n", w)
-		}
 		failed := restartFailure(warnings)
-		if wasUp {
-			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
-				routePrintf(bgCtx, "wt: %v\n", err)
-				if failed == nil {
-					failed = err
-				}
+		if waitErr != nil {
+			routePrintf(bgCtx, "wt: %v\n", waitErr)
+			if failed == nil {
+				failed = waitErr
 			}
 		}
 		setLastRestartErr(failed)

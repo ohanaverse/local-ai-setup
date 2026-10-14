@@ -370,9 +370,70 @@ func waitProxyExit(ctx context.Context, pid int, t drainTiming) error {
 	}
 }
 
-// Restart is RestartContext for callers with no context of their own (the
-// Apply default when Options.Restart is nil).
-func Restart() []string { return RestartContext(context.Background()) }
+const (
+	// ProxyReadyTimeout bounds the wait for the proxy to answer after a
+	// restart (Bounce.Run).
+	ProxyReadyTimeout = 30 * time.Second
+	// ProxyAliveTimeout bounds the one probe Bounce.Run takes just before the
+	// restart. Short on purpose: every restart pays it. It only has to tell
+	// "nothing there" (refused: no wait) from "something there" (any other
+	// outcome, even a timeout: wait for it after the restart).
+	ProxyAliveTimeout = 1500 * time.Millisecond
+)
+
+// Bounce is a proxy restart followed by the wait for the proxy to answer
+// again. Each field is one step, so a caller with seams of its own (the
+// lifecycle package's asynchronous restart) runs the same sequence over them
+// that `wt litellm sync` runs over this package's (bounce).
+type Bounce struct {
+	// Restart restarts the proxy; every warning it returns is a failed
+	// restart (RestartContext).
+	Restart func(ctx context.Context) []string
+	// Listening is the probe taken before the restart (Listening).
+	Listening func(ctx context.Context, baseURL string, timeout time.Duration) bool
+	// WaitReady is the wait after it (WaitReady).
+	WaitReady func(ctx context.Context, baseURL string, timeout time.Duration) error
+}
+
+// Run probes the proxy at baseURL once, restarts it, and, only when the probe
+// found a proxy listening, waits up to ProxyReadyTimeout for it to answer.
+// The proxy refuses connections while it restarts (for as long as it drains a
+// request in flight, then while it boots), so a caller that returned as soon
+// as the restart command did would hand the user a proxy that is not there.
+// A URL with nothing listening (the proxy is not running, or routing is off
+// and nobody started it) is not waited for: it would cost every restart the
+// whole bound. An empty baseURL is never probed or waited for. An override
+// restart command (WT_LITELLM_RESTART_CMD) is waited for too, but the wait
+// only polls for an answer, so it is sound only when the command returns
+// after the old proxy has stopped answering: one that returns sooner (a
+// backgrounded restart) lets the old proxy pass the wait.
+//
+// warnings are the restart's own; waitErr is the failed wait, nil when it
+// answered or was not waited for. Neither fails the caller's route write.
+func (b Bounce) Run(ctx context.Context, baseURL string) (warnings []string, waitErr error) {
+	wasUp := baseURL != "" && b.Listening(ctx, baseURL, ProxyAliveTimeout)
+	warnings = b.Restart(ctx)
+	if wasUp {
+		waitErr = b.WaitReady(ctx, baseURL, ProxyReadyTimeout)
+	}
+	return warnings, waitErr
+}
+
+// bounce is the Bounce the Apply default runs; a package var so tests fake
+// the restart and the readiness steps (StubProxyReadinessForTest).
+var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: WaitReady}
+
+// restartAndWait is the Apply default when Options.Restart is nil (`wt
+// litellm sync`, and through it `wt cloud-sync`, `wt model add|edit|rm|init`
+// and the Models tab of `wt config`): bounce.Run, with a failed wait made one
+// more warning, which the command prints like the restart's own.
+func restartAndWait(baseURL string) []string {
+	warnings, err := bounce.Run(context.Background(), baseURL)
+	if err != nil {
+		warnings = append(warnings, err.Error())
+	}
+	return warnings
+}
 
 // Listening reports whether a proxy may be serving at baseURL: false only when
 // the request positively fails because nothing is there (connection refused,
