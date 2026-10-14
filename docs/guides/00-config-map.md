@@ -68,7 +68,7 @@ tags = []
 - **Env override:** `MODELTIERS_OUT` (a file path), else `$XDG_CONFIG_HOME/local-ai/tiers.toml`. It does **not** follow `WT_REGISTRY`: when the registry wt read is not `registry.toml` beside the output file and `MODELTIERS_OUT` is unset, `modeltiers run` refuses and exits 1, so an inventory from a scratch registry cannot replace this file (`run --dry-run` writes nothing, so it warns and goes on).
 - `modeltiers` reads the inventory only through `wt model list --json`. It never opens `registry.toml` and never writes it, `config.yaml` or any wt state.
 
-Illustrative example from the test fixtures, not from any machine: the first two lines and the first `[[models]]` entry of [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml), which the test suite regenerates from `modeltiers/tests/fixtures/` and the sample inventory [`docs/contracts/model-list.sample.json`](../contracts/model-list.sample.json). Your models will differ.
+Illustrative example from the test fixtures, not from any machine: the first two lines and the first `[[models]]` entry of [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml), which `run` regenerates from `modeltiers/tests/fixtures/` and the sample inventory [`docs/contracts/model-list.sample.json`](../contracts/model-list.sample.json) — the test suite only pins it, it never rewrites the file (see `modeltiers/CLAUDE.md` for the regenerate procedure). Your models will differ.
 
 ```toml
 generated_at = "2026-10-12T15:58:00Z"

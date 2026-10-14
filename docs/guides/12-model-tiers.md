@@ -599,6 +599,6 @@ MODELTIERS_OUT="$SCRATCH/tiers.toml" uv run --directory modeltiers modeltiers sh
 - Design spec: `docs/superpowers/specs/2026-10-12-model-tiers-design.md`
 - Module map, test seams and the data files: `modeltiers/CLAUDE.md`
 - The output contract: [`docs/contracts/tiers.sample.toml`](../contracts/tiers.sample.toml)
-- The inventory contract, a sample of what `wt model list --json` prints (made-up rows, not any machine's): [`docs/contracts/model-list.sample.json`](../contracts/model-list.sample.json)
+- The inventory contract, a sample of what `wt model list --json` prints (rows recorded from one machine; the registry path in it is made up and `size_bytes` and `path` are nulled): [`docs/contracts/model-list.sample.json`](../contracts/model-list.sample.json)
 - Who owns `tiers.toml` and the snapshot cache: [00-config-map](00-config-map.md)
 - Source: `modeltiers/src/modeltiers/`
