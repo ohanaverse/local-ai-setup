@@ -321,7 +321,7 @@ func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 	}
 	t.Chdir(repo)
 	var dirs []string
-	t.Cleanup(worktree.StubPRListForTest(func(dir string) ([]byte, error) {
+	t.Cleanup(worktree.StubPRListForTest(func(dir, _ string) ([]byte, error) {
 		dirs = append(dirs, dir)
 		return []byte(`[{"number": 383, "state": "OPEN", "isDraft": false, "headRefName": "fix/x", "isCrossRepository": false, "title": "X"}]`), nil
 	}))
@@ -333,11 +333,13 @@ func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 		t.Errorf("prs[fix/x] = %+v, want #383 open", got)
 	}
 	want, _ := filepath.EvalSymlinks(repo)
-	if len(dirs) != 1 {
-		t.Fatalf("gh ran %d times, want once", len(dirs))
+	if len(dirs) != 2 {
+		t.Fatalf("gh ran %d times, want twice (open, then every state)", len(dirs))
 	}
-	if got, _ := filepath.EvalSymlinks(dirs[0]); got != want {
-		t.Errorf("gh ran in %q, want the repository root %q", dirs[0], want)
+	for _, dir := range dirs {
+		if got, _ := filepath.EvalSymlinks(dir); got != want {
+			t.Errorf("gh ran in %q, want the repository root %q", dir, want)
+		}
 	}
 }
 
@@ -345,7 +347,7 @@ func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 // and the message carries an empty map, so the picker shows no tags.
 func TestLoadPRsCmdOutsideARepoIsEmpty(t *testing.T) {
 	t.Chdir(t.TempDir())
-	t.Cleanup(worktree.StubPRListForTest(func(string) ([]byte, error) {
+	t.Cleanup(worktree.StubPRListForTest(func(string, string) ([]byte, error) {
 		t.Error("gh ran outside a repository")
 		return nil, nil
 	}))
@@ -357,13 +359,15 @@ func TestLoadPRsCmdOutsideARepoIsEmpty(t *testing.T) {
 
 // TestPRTitleControlCharactersAreDropped pins that a PR title, which comes
 // from GitHub and not from wt, reaches the row's description without its
-// control characters. A regression lets a title carrying an escape sequence
-// write to the alt screen as terminal control, not text.
+// control characters or its bidi controls. A regression lets a title
+// carrying an escape sequence write to the alt screen as terminal control,
+// not text, or one carrying an open right-to-left override reverse the path
+// drawn after it.
 func TestPRTitleControlCharactersAreDropped(t *testing.T) {
 	ei := entryItem{kind: kindEntry, entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "x"},
-		pr: &worktree.PR{Number: 7, State: worktree.PROpen, Title: "evil\x1b]0;pwned\x07 title\r"}}
+		pr: &worktree.PR{Number: 7, State: worktree.PROpen, Title: "evil\x1b]0;pwned\x07 ‮title\r"}}
 	got := ei.Description()
-	if strings.ContainsAny(got, "\x1b\x07\r") {
+	if strings.ContainsAny(got, "\x1b\x07\r‮") {
 		t.Errorf("Description() = %q, still holds control characters", got)
 	}
 	if !strings.Contains(got, "evil]0;pwned title") {

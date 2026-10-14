@@ -148,7 +148,7 @@ func TestMain(m *testing.M) {
 	// The worktree picker's pull request tags (loadPRsCmd): unstubbed, a
 	// test that runs Init's commands would run the developer's gh against
 	// GitHub. Tests that want tags call stubPRList.
-	worktree.StubPRListForTest(func(string) ([]byte, error) {
+	worktree.StubPRListForTest(func(string, string) ([]byte, error) {
 		return nil, errors.New("gh pr list not stubbed in this test")
 	})
 	code := m.Run()
@@ -160,7 +160,7 @@ func TestMain(m *testing.M) {
 // data for the duration of a test.
 func stubPRList(t *testing.T, data string) {
 	t.Helper()
-	t.Cleanup(worktree.StubPRListForTest(func(string) ([]byte, error) { return []byte(data), nil }))
+	t.Cleanup(worktree.StubPRListForTest(func(string, string) ([]byte, error) { return []byte(data), nil }))
 }
 
 // stubOllamaList makes the picker's pre-launch ollama check see an installed

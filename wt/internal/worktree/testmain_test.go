@@ -15,7 +15,7 @@ import (
 // GitHub account anything; tests of PRs install their own answer.
 func TestMain(m *testing.M) {
 	gitenv.IsolateForTest()
-	listPRs = func(string) ([]byte, error) {
+	listPRs = func(string, string) ([]byte, error) {
 		return nil, errors.New("listPRs not stubbed in this test")
 	}
 	os.Exit(m.Run())

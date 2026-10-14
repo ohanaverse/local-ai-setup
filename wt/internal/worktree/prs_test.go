@@ -61,12 +61,12 @@ func TestParsePRsKeepsTheHighestNumberWhateverTheOrder(t *testing.T) {
 // no tags and no error to show. A regression would surface a gh error (or
 // panic on a nil map) in a picker that worked fine before PR tags existed.
 func TestPRsFailureIsAnEmptyMap(t *testing.T) {
-	for name, fn := range map[string]func(string) ([]byte, error){
-		"gh fails": func(string) ([]byte, error) {
+	for name, fn := range map[string]func(string, string) ([]byte, error){
+		"gh fails": func(string, string) ([]byte, error) {
 			return nil, errors.New("exec: \"gh\": executable file not found in $PATH")
 		},
-		"bad json":    func(string) ([]byte, error) { return []byte("not json"), nil },
-		"wrong shape": func(string) ([]byte, error) { return []byte(`{"number": 1}`), nil },
+		"bad json":    func(string, string) ([]byte, error) { return []byte("not json"), nil },
+		"wrong shape": func(string, string) ([]byte, error) { return []byte(`{"number": 1}`), nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Cleanup(StubPRListForTest(fn))
@@ -78,21 +78,61 @@ func TestPRsFailureIsAnEmptyMap(t *testing.T) {
 	}
 }
 
-// TestPRsRunsInTheRepoDir pins that the listing runs in the directory the
-// picker enumerated, so gh finds that repository's remote whatever wt's own
-// working directory is.
+// TestPRsRunsInTheRepoDir pins that both listings run in the directory the
+// picker enumerated, open PRs first, so gh finds that repository's remote
+// whatever wt's own working directory is.
 func TestPRsRunsInTheRepoDir(t *testing.T) {
-	var dirs []string
-	t.Cleanup(StubPRListForTest(func(dir string) ([]byte, error) {
-		dirs = append(dirs, dir)
+	var calls []string
+	t.Cleanup(StubPRListForTest(func(dir, state string) ([]byte, error) {
+		calls = append(calls, dir+" "+state)
 		return []byte(`[{"number": 5, "state": "OPEN", "headRefName": "x"}]`), nil
 	}))
 	got := PRs("/repo")
-	if !reflect.DeepEqual(dirs, []string{"/repo"}) {
-		t.Errorf("dirs = %v, want [/repo]", dirs)
+	if want := []string{"/repo open", "/repo all"}; !reflect.DeepEqual(calls, want) {
+		t.Errorf("calls = %v, want %v", calls, want)
 	}
 	if got["x"].Number != 5 {
 		t.Errorf("x = %+v, want #5", got["x"])
+	}
+}
+
+// TestPRsKeepsAnOldOpenPRTheAllListingDropped pins why there are two
+// listings: an open PR older than the newest prLimit PRs of every state is
+// missing from the all-states listing but still in the open one, and its
+// branch keeps its tag. A regression back to one listing loses the tag on
+// exactly the long-lived open PRs.
+func TestPRsKeepsAnOldOpenPRTheAllListingDropped(t *testing.T) {
+	t.Cleanup(StubPRListForTest(func(_, state string) ([]byte, error) {
+		if state == "open" {
+			return []byte(`[{"number": 7, "state": "OPEN", "headRefName": "old"}]`), nil
+		}
+		return []byte(`[{"number": 900, "state": "MERGED", "headRefName": "new"}]`), nil
+	}))
+	got := PRs("/repo")
+	if got["old"].Number != 7 || got["old"].State != PROpen {
+		t.Errorf("old = %+v, want #7 open", got["old"])
+	}
+	if got["new"].Number != 900 || got["new"].State != PRMerged {
+		t.Errorf("new = %+v, want #900 merged", got["new"])
+	}
+}
+
+// TestPRsOneFailedListingKeepsTheOther pins that the two listings fail
+// independently: a timeout or bad output from one still leaves the other's
+// tags on screen instead of none.
+func TestPRsOneFailedListingKeepsTheOther(t *testing.T) {
+	for _, failing := range []string{"open", "all"} {
+		t.Run(failing+" fails", func(t *testing.T) {
+			t.Cleanup(StubPRListForTest(func(_, state string) ([]byte, error) {
+				if state == failing {
+					return []byte("not json"), nil
+				}
+				return []byte(`[{"number": 3, "state": "OPEN", "headRefName": "b"}]`), nil
+			}))
+			if got := PRs("/repo"); got["b"].Number != 3 {
+				t.Errorf("PRs = %#v, want b -> #3", got)
+			}
+		})
 	}
 }
 
@@ -101,7 +141,7 @@ func TestPRsRunsInTheRepoDir(t *testing.T) {
 // whose TestMain forgot the stub) gets an error instead of running the
 // developer's gh against GitHub.
 func TestRealListPRsRefusesInATestBinary(t *testing.T) {
-	if _, err := realListPRs(t.TempDir()); !errors.Is(err, errPRListUnderTest) {
+	if _, err := realListPRs(t.TempDir(), "all"); !errors.Is(err, errPRListUnderTest) {
 		t.Errorf("realListPRs err = %v, want errPRListUnderTest", err)
 	}
 }

@@ -91,10 +91,9 @@ func (e entryItem) baseTitle() string {
 	}
 	b := e.entry.Branch
 	if e.remote {
-		// origin/foo shows as foo; a local fix/foo keeps its whole name.
-		if i := strings.IndexByte(b, '/'); i >= 0 {
-			b = b[i+1:]
-		}
+		// origin/foo shows as foo, the name its PR is looked up under; a local
+		// fix/foo keeps its whole name.
+		b = worktree.PRBranch(worktree.GroupRemoteBranches, e.entry)
 	}
 	if e.label != "" {
 		b += "  " + e.label
@@ -323,13 +322,13 @@ func (d prTagDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	if ok {
 		tag = ei.prTag()
 	}
-	s := &d.Styles
-	room := m.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight() -
-		ansi.StringWidth(prTagGap) - ansi.StringWidth(tag)
 	if tag == "" {
 		d.DefaultDelegate.Render(w, m, index, item)
 		return
 	}
+	s := &d.Styles
+	room := m.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight() -
+		ansi.StringWidth(prTagGap) - ansi.StringWidth(tag)
 	if room < prTagMinTitle {
 		// Too narrow for both: the branch is what the row is for.
 		d.DefaultDelegate.Render(w, m, index, untaggedItem{title: ei.baseTitle(), entryItem: ei})
@@ -373,10 +372,13 @@ func prTagStyle(theme themes.Theme, state worktree.PRState) lipgloss.Style {
 
 // printable drops the control characters (escape sequences' ESC included)
 // from text that came from outside wt, such as a pull request title, so it
-// cannot write to the terminal as anything but text.
+// cannot write to the terminal as anything but text. It drops the bidi
+// controls too (unicode.Bidi_Control: the embeddings, overrides and
+// isolates): an override left open in a title would reorder the rest of the
+// description line, the path after it, in a terminal that applies bidi.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
 			return -1
 		}
 		return r
