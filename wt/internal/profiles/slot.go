@@ -37,22 +37,40 @@ func (p SlotProfile) ID() string { return SlotIDPrefix + p.Name }
 
 // FilledOrder lists the slots p fills that are in declared: Default first
 // (when it is filled and declared), then the rest in declared's order.
-// A slot p fills that the agent does not declare is left out.
+// A slot p fills that the agent does not declare is left out. A profile
+// whose default is an alias lists its slots by SlotCheck.FilledOrder, which
+// puts the slot the alias rests on first.
 func (p SlotProfile) FilledOrder(declared []string) []string {
+	return p.filledOrderFrom(declared, p.Default)
+}
+
+func (p SlotProfile) filledOrderFrom(declared []string, first string) []string {
 	filled := func(slot string) bool {
 		_, ok := p.Slots[slot]
 		return ok
 	}
 	var out []string
-	if filled(p.Default) && slices.Contains(declared, p.Default) {
-		out = append(out, p.Default)
+	if filled(first) && slices.Contains(declared, first) {
+		out = append(out, first)
 	}
 	for _, slot := range declared {
-		if slot != p.Default && filled(slot) {
+		if slot != first && filled(slot) {
 			out = append(out, slot)
 		}
 	}
 	return out
+}
+
+// SlotAlias is a default that names one of the agent's own modes rather
+// than a slot: Claude Code's opusplan, which plans on the opus slot and does
+// everything else on the sonnet slot. The profile must fill every slot in
+// Requires. Rest is the slot the session starts and works on: the one the
+// row is priced as, listed first and marked. Doc says what the alias does,
+// in a few words, for `wt profile show`.
+type SlotAlias struct {
+	Requires []string
+	Rest     string
+	Doc      string
 }
 
 // slotFileSchema is the on-disk shape.
@@ -170,6 +188,10 @@ type SlotCapable interface {
 	// error it would return. Static validation asks it, so a profile the
 	// build would refuse is a blocked row and never a launch row.
 	CheckConfigContent(cc map[string]any) error
+	// DefaultAlias reports whether name, as a profile's default, is one of
+	// the agent's aliases over its slots (claude's "opusplan"), and what it
+	// needs. A default that is neither a slot nor an alias is refused.
+	DefaultAlias(name string) (SlotAlias, bool)
 	// BuildSlots builds the command for one resolved profile.
 	BuildSlots(in SlotBuildInput) (SlotCommand, error)
 }

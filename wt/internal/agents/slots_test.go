@@ -107,8 +107,11 @@ func TestSlotFixtureIsValidForTheRealClaudeDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := profiles.ValidateSlots(store, SlotDrivers())
-	if len(checks) != 2 {
-		t.Fatalf("got %d checks, want 2 (the fixture's two profiles)", len(checks))
+	if len(checks) != 3 {
+		t.Fatalf("got %d checks, want 3 (the fixture's three profiles)", len(checks))
+	}
+	if got := checks[2]; got.Profile.Default != "opusplan" || got.RestSlot() != "sonnet" {
+		t.Errorf("profile %q: default %q rests on %q, want opusplan resting on sonnet", got.Profile.Name, got.Profile.Default, got.RestSlot())
 	}
 	for _, c := range checks {
 		if !c.Usable || c.Err != nil {

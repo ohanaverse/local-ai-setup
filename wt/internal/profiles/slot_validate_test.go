@@ -18,7 +18,8 @@ import (
 //   - "plain": a known agent with no slot support.
 //
 // "claude" alone has a config_content rule, the real driver's: an env key,
-// when present, is a table.
+// when present, is a table. It alone has a default alias too, the real
+// driver's opusplan: it reads the opus and sonnet slots and rests on sonnet.
 func slotTestDrivers() SlotDrivers {
 	slots := map[string][]string{
 		"claude":  {"fable", "opus", "sonnet", "haiku"},
@@ -52,6 +53,12 @@ func slotTestDrivers() SlotDrivers {
 				return MechanismWrapper, true
 			}
 			return "", false
+		},
+		DefaultAlias: func(agent, name string) (SlotAlias, bool) {
+			if agent != "claude" || name != "opusplan" {
+				return SlotAlias{}, false
+			}
+			return SlotAlias{Requires: []string{"opus", "sonnet"}, Rest: "sonnet", Doc: "plans on opus, works on sonnet"}, true
 		},
 		ConfigContent: func(agent string, cc map[string]any) error {
 			if agent != "claude" {
@@ -194,6 +201,18 @@ func TestValidateSlotsRules(t *testing.T) {
 			wantErr: `default "haiku" is not a slot this profile fills`, wantUsable: true},
 		{name: "default names no slot at all", edit: func(p *SlotProfile) { p.Default = "turbo" },
 			wantErr: `default "turbo" is not a slot this profile fills`, wantUsable: true},
+		{name: "default is an alias whose slots the profile fills", edit: func(p *SlotProfile) { p.Default = "opusplan" },
+			wantUsable: true},
+		{name: "default is an alias over a slot the profile leaves unfilled", edit: func(p *SlotProfile) {
+			p.Default = "opusplan"
+			delete(p.Slots, "opus")
+		}, wantErr: `default "opusplan" needs the opus slot filled`, wantUsable: true},
+		{name: "default is an alias over two unfilled slots: the first is named", edit: func(p *SlotProfile) {
+			p.Default = "opusplan"
+			p.Slots = map[string]string{"haiku": "a/1"}
+		}, wantErr: `default "opusplan" needs the opus slot filled`, wantUsable: true},
+		{name: "an alias of another agent is not a default", base: validWrappedSlot, edit: func(p *SlotProfile) { p.Default = "opusplan" },
+			wantErr: `default "opusplan" is not a slot this profile fills`, wantUsable: true},
 		// Rule 12.
 		{name: "args on an agent that does not allow them", edit: func(p *SlotProfile) { p.Args = []string{"--flag"} },
 			wantErr: `agent "claude" does not support mechanism "args"`, wantUsable: true},
@@ -291,6 +310,36 @@ func TestValidateSlotsRules(t *testing.T) {
 				t.Errorf("check carries Index %d and Profile %#v, want 0 and the profile as given", c.Index, c.Profile)
 			}
 		})
+	}
+}
+
+// TestValidateSlotsDefaultSlot pins SlotCheck.DefaultSlot, the slot a
+// session starts and works on: the default itself when it names a slot, the
+// alias's Rest when it is an alias (opusplan rests on sonnet), and "" for a
+// profile that fails. The picker prices a profile row as this slot's model,
+// lists it first and marks it, so a wrong answer shows the opus slot's price
+// for an opusplan profile, or marks no slot at all.
+func TestValidateSlotsDefaultSlot(t *testing.T) {
+	plain := validClaudeSlot()
+	alias := validClaudeSlot()
+	alias.Name, alias.Default = "planned", "opusplan"
+	alias.Slots = map[string]string{"opus": "a/1", "sonnet": "a/2", "haiku": "a/3"}
+	broken := validClaudeSlot()
+	broken.Name, broken.Default = "broken", "turbo"
+	checks := ValidateSlots(SlotStore{Profiles: []SlotProfile{plain, alias, broken}}, slotTestDrivers())
+	for i, want := range []string{"sonnet", "sonnet", ""} {
+		if got := checks[i].DefaultSlot; got != want {
+			t.Errorf("checks[%d] (%s, default %q).DefaultSlot = %q, want %q", i, checks[i].Profile.Name, checks[i].Profile.Default, got, want)
+		}
+	}
+	if got, want := checks[1].FilledOrder(), []string{"sonnet", "opus", "haiku"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("opusplan profile: FilledOrder() = %v, want %v (the slot it rests on first)", got, want)
+	}
+	if got, want := checks[1].Alias, (SlotAlias{Requires: []string{"opus", "sonnet"}, Rest: "sonnet", Doc: "plans on opus, works on sonnet"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("opusplan profile: Alias = %#v, want %#v", got, want)
+	}
+	if got := checks[0].Alias; !reflect.DeepEqual(got, SlotAlias{}) {
+		t.Errorf("plain profile: Alias = %#v, want the zero SlotAlias", got)
 	}
 }
 

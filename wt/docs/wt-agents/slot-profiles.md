@@ -74,7 +74,7 @@ Go test reads, so this format and the parser cannot drift apart.
 | `name` | Required. Lowercase letters, digits and hyphens, starting with a letter or digit. Unique per agent |
 | `agent` | Required. An agent whose driver supports slots (`claude`) |
 | `slots` | Required table, slot name → registry id. At least one entry. Every key must be a slot the agent declares |
-| `default` | Required. A slot that `slots` fills. wt passes it as `--model`, so the session starts on it |
+| `default` | Required. A slot that `slots` fills, or `opusplan` for a profile that fills `opus` and `sonnet` ([opusplan](#opusplan)). wt passes it as `--model`, so the session starts on it |
 | `env` | Optional, string → string |
 | `args` | Optional string list |
 | `config_content` | Optional free-form table, merged into the agent's settings. `config_content.modelOverrides` is how a profile supplies Claude Code's `modelOverrides` setting; wt does not validate its keys. Checked on 2026-10-13: `modelOverrides` is honoured behind the proxy; an id it names is sent as the id it maps to. |
@@ -82,7 +82,50 @@ Go test reads, so this format and the parser cannot drift apart.
 
 **Unfilled slots use the `default` slot's model.** The example fills three
 of four slots; `fable` gets the `sonnet` model. No slot is ever left sending
-an Anthropic id.
+an Anthropic id. With `default = "opusplan"` they use the `sonnet` slot's
+model.
+
+### opusplan
+
+`default = "opusplan"` hands Claude Code its own `opusplan` model alias: the
+`opus` slot's model while the session is in plan mode, the `sonnet` slot's
+model for everything else. Switching plan mode on and off switches the
+model. Use it when `opus` holds a stronger model than `sonnet`.
+
+```toml
+[[profile]]
+name    = "planned"
+agent   = "claude"
+default = "opusplan"
+
+[profile.slots]
+opus   = "openrouter/z-ai/glm-5.3"
+sonnet = "ollama/glm-5.3-flash:cloud"
+```
+
+- **Both slots are required.** Claude Code reads
+  `ANTHROPIC_DEFAULT_OPUS_MODEL` in plan mode and
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` otherwise. With either unset it falls back
+  to a built-in Anthropic id, which the proxy rejects, so a profile that does
+  not fill both is blocked.
+- **The session works on `sonnet`.** The row is priced as the `sonnet`
+  slot's model, `sonnet` is listed first and marked `*`, and the unfilled
+  slots take its model.
+- **wt sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`.** In plan mode Claude Code
+  promotes opusplan's opus model to its `[1m]` variant and assumes a
+  1M-token context window, which a slot model rarely has; compaction would
+  then start far too late. wt's value wins over one the profile sets.
+- **`fable` and `haiku` are never opusplan's.** `haiku` still takes Claude
+  Code's background requests; `fable` is reached only with `/model fable`.
+- **Above 200K tokens of context, plan mode stays on `sonnet`**: Claude Code
+  skips the switch to `opus` for a session that large.
+- **`wt smoke` exercises `sonnet` only**: its one-shot prompt does not run in
+  plan mode.
+
+Checked on 2026-10-14 with Claude Code 2.1.299 (#391): plan mode reached the
+`opus` slot's model, other requests the `sonnet` slot's, and resuming a
+session in the other mode switched models. A native launch has its own
+`claude/opusplan` row ([claude-wt.md](claude-wt.md#model-selection)).
 
 **The optional fields follow the agent's allow-list**, the one automatic
 profiles use ([profiles.md](profiles.md), "Mechanisms by agent"). Claude
@@ -114,7 +157,8 @@ Static reasons:
 | `slots is empty: assign at least one slot` | No `slots` entry |
 | `slot "x" is not a slot of agent "claude" (slots: fable, opus, sonnet, haiku)` | A `slots` key the agent does not declare |
 | `slot "opus" names no model` | An empty id |
-| `default is missing` / `default "x" is not a slot this profile fills` | `default` must name a filled slot |
+| `default is missing` / `default "x" is not a slot this profile fills` | `default` must name a filled slot, or an alias of the agent's |
+| `default "opusplan" needs the opus slot filled` | An alias over a slot the profile leaves unfilled; the first such slot is named |
 | `agent "claude" does not support mechanism "wrapper"` | A field outside the agent's allow-list |
 | `mechanism "x" has no effect without "y" on the same profile` | The agent's driver requires field `y` whenever `x` is set, and the profile sets only `x`. No rule of this kind applies to Claude |
 | `env sets ANTHROPIC_BASE_URL, which wt sets for the launch` | A reserved key (also `config_content.env sets …`) |
@@ -200,7 +244,7 @@ some columns omitted.
 | LOC | `cloud`, `local`, or `mixed` |
 | STATUS | `ok`. A start or blocked profile is shown as a start or blocked model row is, by its action and note |
 | RUNNING | The local model's state (`run`, `load` or `-`), on a blocked row too, whichever rule blocked it; `-` for an all-cloud profile, for a profile that names two local models, for one whose local model is not in the registry or has no row of its own, and for the one row of profiles sharing a name |
-| COST | The `default` slot model's price in force, with `~` when it is time-priced |
+| COST | The `default` slot model's price in force (the `sonnet` slot's for `opusplan`), with `~` when it is time-priced |
 | 1D / 7D / 30D | Launches of this profile |
 | In-use prefix, SURVEY | Blank |
 
@@ -209,7 +253,8 @@ some columns omitted.
   the rest in the agent's order, each with the model's provider-side name
   and, when `tiers.toml` rates that model, its tier code and score
   (`opus* glm-5.3:cloud S44 · haiku qwen3.8:27b-mlx S34`, an illustrative
-  line). It shows whole entries only, giving up the tiers before an entry;
+  line). An `opusplan` profile's line starts with `opusplan`, then
+  `sonnet*`. It shows whole entries only, giving up the tiers before an entry;
   what does not fit becomes `+N more`.
   `wt profile show` gives the full list. On a blocked row the line is the
   reason.
@@ -321,7 +366,9 @@ override `ANTHROPIC_DEFAULT_HAIKU_MODEL`; wt removes it all the same.
 
 Arguments: the yolo flag when `--yolo` is given, `--model <default slot>`
 (an alias such as `sonnet`, so `/model` inside the session switches between
-the profile's slots), and `--settings '<json>'`: one inline JSON object.
+the profile's slots; `opusplan` for an [opusplan](#opusplan) profile, whose
+payload also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`), and
+`--settings '<json>'`: one inline JSON object.
 For the example profile, with the proxy at `http://localhost:4000`:
 
 ```json
@@ -459,7 +506,9 @@ settings:
 ```
 
 The proxy key is masked as `wt litellm status` masks it. A blocked profile
-prints `reason: …` and the command exits non-zero.
+prints `reason: …` and the command exits non-zero. An `opusplan` profile
+prints `default: opusplan — the opus slot in plan mode, the sonnet slot
+otherwise` under the first line and marks `sonnet*`.
 
 `wt profile on|off` and `wt profile status` govern automatic profiles only.
 

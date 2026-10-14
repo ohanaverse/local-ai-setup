@@ -355,6 +355,7 @@ func (fakeSlotDriver) ReservedEnvKeys() []string { return []string{"FAKE_MODEL"}
 func (fakeSlotDriver) CheckConfigContent(map[string]any) error {
 	return nil
 }
+func (fakeSlotDriver) DefaultAlias(string) (SlotAlias, bool) { return SlotAlias{}, false }
 func (fakeSlotDriver) BuildSlots(in SlotBuildInput) (SlotCommand, error) {
 	return SlotCommand{
 		Bin:              in.Agent,

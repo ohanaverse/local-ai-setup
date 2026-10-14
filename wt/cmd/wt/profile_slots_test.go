@@ -154,8 +154,19 @@ func slotShowApp() *app {
 			slotFixtureCheck(0, "cloud", "opus", slotCloud()),
 			slotFixtureCheck(1, "mixed", "opus", slotMixed()),
 			slotFixtureCheck(2, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
+			opusplanFixtureCheck(3, "planned"),
 		},
 	}
+}
+
+// opusplanFixtureCheck is a profile whose default is claude's opusplan
+// alias, as ValidateSlots returns it: opus and sonnet filled, resting on
+// sonnet.
+func opusplanFixtureCheck(index int, name string) profiles.SlotCheck {
+	c := slotFixtureCheck(index, name, "opusplan", map[string]string{"opus": "openrouter/b", "sonnet": "openrouter/a"})
+	c.DefaultSlot = "sonnet"
+	c.Alias, _ = agents.SlotDrivers().DefaultAlias("claude", "opusplan")
+	return c
 }
 
 // TestProfileShowSlotProfile verifies `wt profile show -A claude -M
@@ -196,6 +207,16 @@ func TestProfileShowSlotProfile(t *testing.T) {
 			"slot haiku: omlx/q (q)\n",
 			"env: ANTHROPIC_AUTH_TOKEN=***1234\n",
 			`"ANTHROPIC_DEFAULT_HAIKU_MODEL": "omlx/q"`,
+		}, ""},
+		{"opusplan default", "profile/planned", []string{
+			"profile/planned (claude): launch\n",
+			"default: opusplan — the opus slot in plan mode, the sonnet slot otherwise\n",
+			"slot fable: openrouter/a (a) [default's model]\n",
+			"slot opus: openrouter/b (b)\n",
+			"slot sonnet*: openrouter/a (a)\n",
+			"slot haiku: openrouter/a (a) [default's model]\n",
+			"args: --model opusplan --settings <settings>\n",
+			`"CLAUDE_CODE_DISABLE_1M_CONTEXT": "1"`,
 		}, ""},
 		{"blocked row", "profile/broken", []string{
 			"profile/broken (claude): blocked\n",
