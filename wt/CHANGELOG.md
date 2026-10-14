@@ -343,13 +343,15 @@
 ### Fixed
 
 - A directory written after `--cwd` is refused (#392). `--cwd` takes no
-  value, so `claude-wt --cwd ~/proj -- -p "task"` used to pass `~/proj` to
-  claude as its first argument, which claude read as the prompt, launch in
-  the current directory, and exit 0. With `--cwd`, a first argument before
-  `--` that names an existing directory now stops the launch with
+  value, so `claude-wt --cwd ~/proj -- -p "task"` used to launch in the
+  current directory, pass `~/proj` to claude as its first argument (which
+  claude read as the prompt), and exit 0. With `--cwd`, a first argument
+  before `--` that names an existing directory now stops the launch with
   `--cwd takes no value: "<dir>" is a directory; cd into it and run --cwd
-  there, or pass it to the agent after --`. Any other word, and anything
-  after `--`, is passed on as before.
+  there, or pass it to the agent after --` (for `.`, the message says to
+  drop it). Any other word, and anything after `--`, is passed on as
+  before, and so is a shell command's bare name found on `$PATH`
+  (`shell-wt --cwd wt model list` beside a `wt/` directory).
 - An ollama stop that outlasts wt's 3-minute wait is no longer a failure
   (#379). ollama accepted the stop and unloads the model when its request
   ends, so the line now ends in

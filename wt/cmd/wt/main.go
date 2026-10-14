@@ -212,6 +212,30 @@ func printOnce(cmd *cobra.Command, err error) error {
 	return err
 }
 
+// refuseCwdValue is #392's guard for the first word before any `--` of a
+// --cwd launch: a word that names an existing directory was meant as
+// --cwd's value, which the flag does not take, and is refused. A command
+// agent's first word is the program to run, and a bare name that resolves
+// on PATH runs that program whatever the current directory holds
+// (`shell-wt --cwd wt model list` beside a `wt/` directory), so it is
+// passed on. The current directory itself gets its own advice: there is
+// nothing to cd into.
+func refuseCwdValue(agent, word string) error {
+	fi, err := os.Stat(word)
+	if err != nil || !fi.IsDir() {
+		return nil
+	}
+	if agents.IsCommand(agent) && !strings.ContainsRune(word, os.PathSeparator) {
+		if _, err := exec.LookPath(word); err == nil {
+			return nil
+		}
+	}
+	if here, err := os.Stat("."); err == nil && os.SameFile(fi, here) {
+		return fmt.Errorf("--cwd takes no value: %q is a directory, the current one; drop it, or pass it to the agent after --", word)
+	}
+	return fmt.Errorf("--cwd takes no value: %q is a directory; cd into it and run --cwd there, or pass it to the agent after --", word)
+}
+
 func rootCmd() *cobra.Command {
 	a, err := newApp()
 	if err != nil {
@@ -269,7 +293,8 @@ func rootCmd() *cobra.Command {
 			// it is passed through whatever its name. -1 (no `--`) and 1 or
 			// more (`wt models -- x`) leave the word where a subcommand
 			// would stand.
-			if len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
+			firstBeforeDash := len(args) > 0 && cmd.ArgsLenAtDash() != 0
+			if firstBeforeDash {
 				switch args[0] {
 				case "models":
 					return fmt.Errorf("wt models is removed; use `wt config` to view models")
@@ -286,9 +311,10 @@ func rootCmd() *cobra.Command {
 			// starts. Only the first word: `shell-wt --cwd ls proj` names a
 			// directory as the command's own argument. After `--` the user
 			// has said the word is the agent's, and it is passed on.
-			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd && len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
-				if fi, err := os.Stat(args[0]); err == nil && fi.IsDir() {
-					return fmt.Errorf("--cwd takes no value: %q is a directory; cd into it and run --cwd there, or pass it to the agent after --", args[0])
+			cwd, _ := cmd.Flags().GetBool("cwd")
+			if cwd && firstBeforeDash {
+				if err := refuseCwdValue(agentFlag, args[0]); err != nil {
+					return err
 				}
 			}
 
@@ -437,7 +463,7 @@ func rootCmd() *cobra.Command {
 			// same. Only -W (above) and the worktree picker (below) need
 			// a repository: -W says so, and the picker is never reached
 			// outside one.
-			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
+			if cwd {
 				root, err := worktree.RepoRoot()
 				if err != nil {
 					root = ""

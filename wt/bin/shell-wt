@@ -6,5 +6,7 @@
 # flag parser reads that argument as a wt flag, wherever it stands.
 # It is also required when <command>'s first word is the name of a wt
 # subcommand (`shell-wt config` is `wt config`) or one of the removed names
-# `models` and `agents`, which wt refuses: after `--` every word is the command.
+# `models` and `agents`, which wt refuses, and, with --cwd, when it names an
+# existing directory and is not a command on PATH (--cwd takes no value):
+# after `--` every word is the command.
 exec wt --agent shell "$@"

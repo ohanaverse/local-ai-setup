@@ -273,6 +273,8 @@ func TestCwdRefusesADirectoryBeforeTheDash(t *testing.T) {
 		{"--cwd <dir> before a dash", []string{"-A", "shell", "--cwd", "proj", "--", "-p", "task"}},
 		{"--cwd <dir/> with a slash", []string{"-A", "shell", "--cwd", "proj/"}},
 		{"--cwd .", []string{"-A", "shell", "--cwd", "."}},
+		{"--cwd <absolute dir>", []string{"-A", "shell", "--cwd", os.TempDir()}},
+		{"claude: --cwd <dir> before a dash", []string{"-A", "claude", "--cwd", "proj", "--", "-p", "task"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			launched, _ := stubCwdLaunch(t)
@@ -324,6 +326,57 @@ func TestCwdPassesWordsThatAreNotADirectory(t *testing.T) {
 				t.Errorf("launched with args %q, want %q", *gotArgs, tc.want)
 			}
 		})
+	}
+}
+
+// TestCwdDotIsToldToDropIt pins the advice for `--cwd .`: the directory
+// named is the one the launch would run in already, so "cd into it" would
+// send the user nowhere; the message says to drop the word instead.
+func TestCwdDotIsToldToDropIt(t *testing.T) {
+	stubCwdLaunch(t)
+	_, err := runWT(t, "-A", "shell", "--cwd", ".")
+	if err == nil {
+		t.Fatal("wt -A shell --cwd . was not refused")
+	}
+	if !strings.Contains(err.Error(), "the current one; drop it") || strings.Contains(err.Error(), "cd into it") {
+		t.Errorf("error %q does not tell the user to drop the word", err.Error())
+	}
+}
+
+// TestCwdPassesACommandThatSharesADirectorysName pins the shell side of
+// #392's guard: a command agent's first word is the program to run, and a
+// bare name found on PATH runs that program whatever the current directory
+// holds. `shell-wt --cwd wt model list` from the monorepo root, beside its
+// `wt/` directory, must run wt, not be refused as --cwd's value. A model
+// agent gets no such pass: its first word is never a program.
+func TestCwdPassesACommandThatSharesADirectorysName(t *testing.T) {
+	launched, gotArgs := stubCwdLaunch(t)
+	if err := os.Mkdir("tool", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "tool"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, err := runWT(t, "-A", "shell", "--cwd", "tool", "run")
+	if err != nil {
+		t.Fatalf("wt -A shell --cwd tool run was refused: %v", err)
+	}
+	if !*launched {
+		t.Fatalf("the launch was never reached (output: %q)", out)
+	}
+	if !slices.Equal(*gotArgs, []string{"tool", "run"}) {
+		t.Errorf("launched with args %q, want [tool run]", *gotArgs)
+	}
+
+	*launched = false
+	if _, err := runWT(t, "-A", "shell", "--cwd", "./tool"); err == nil || *launched {
+		t.Errorf("wt -A shell --cwd ./tool was not refused (err %v): a path names the directory, not the program", err)
+	}
+	if _, err := runWT(t, "-A", "claude", "--cwd", "tool"); err == nil || *launched {
+		t.Errorf("wt -A claude --cwd tool was not refused (err %v)", err)
 	}
 }
 

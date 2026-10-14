@@ -34,15 +34,20 @@ shell-wt --cwd -- npm test
 ```
 
 After `--`, every word is the command, whatever its name. Without `--`, `wt`
-reads the first word before it treats it as a command, so two kinds of first
-word need the `--`:
+reads the first word before it treats it as a command, so three kinds of
+first word need the `--`:
 
 - the name of a `wt` subcommand (`config`, `start`, `stop`, `stats`, `model`
   and the rest of `wt --help`'s list): `shell-wt config` opens `wt config`,
   `shell-wt -- config` runs a command named `config`;
 - `models` and `agents`, two subcommands `wt` no longer has: `shell-wt models`
   exits with ``wt models is removed; use `wt config` to view models``,
-  `shell-wt -- models` runs a command named `models`.
+  `shell-wt -- models` runs a command named `models`;
+- with `--cwd`, a path to an existing directory, which `--cwd` would be
+  taken to name (it takes no value, #392): `shell-wt --cwd ./scripts` exits
+  with `--cwd takes no value: "./scripts" is a directory; …`. A bare name
+  found on `$PATH` is the command whatever the directory holds:
+  `shell-wt --cwd wt model list` beside a `wt/` directory runs `wt`.
 
 A `--` placed after such a word does not help (`shell-wt models -- x` is
 still refused): put it before the command.
