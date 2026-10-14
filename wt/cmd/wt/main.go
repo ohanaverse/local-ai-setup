@@ -278,6 +278,20 @@ func rootCmd() *cobra.Command {
 				}
 			}
 
+			// --cwd takes no value (#392). `--cwd <dir>` leaves <dir> as
+			// the first positional, which ArbitraryArgs passes on: claude
+			// read it as the prompt, ran in the shell's directory, and wt
+			// exited 0. A first word before any `--` that names an existing
+			// directory is that mistake, so it is refused before anything
+			// starts. Only the first word: `shell-wt --cwd ls proj` names a
+			// directory as the command's own argument. After `--` the user
+			// has said the word is the agent's, and it is passed on.
+			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd && len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
+				if fi, err := os.Stat(args[0]); err == nil && fi.IsDir() {
+					return fmt.Errorf("--cwd takes no value: %q is a directory; cd into it and run --cwd there, or pass it to the agent after --", args[0])
+				}
+			}
+
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
 				status, err := checkGuardStatus()
 				if err != nil {

@@ -36,7 +36,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 | `--replace` | With `-M`, start the model even if it means stopping a running one |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
-| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. Takes no value: a first argument before `--` that names an existing directory is refused (#392) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed AGENTS.md + pointer files, then exit |
 | `--version` | Print version and exit |
