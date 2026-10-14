@@ -1,14 +1,19 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -29,14 +34,15 @@ func TestStopModelOllamaRunsOllamaStop(t *testing.T) {
 		envs = append(envs, env...)
 		return nil, nil
 	}
-	if err := stopModel(context.Background(), e, &config.Config{}, "ollama", "qwen3.8:27b-mlx"); err != nil {
+	daemon := psServing(t) // nothing loaded; the re-probe never reaches a real daemon
+	if err := stopModel(context.Background(), e, provCfg("ollama", daemon.URL), "ollama", "qwen3.8:27b-mlx"); err != nil {
 		t.Fatalf("stopModel: %v", err)
 	}
 	if len(ran) != 1 || ran[0] != "/bin/ollama stop qwen3.8:27b-mlx" {
 		t.Fatalf("ran = %v, want [/bin/ollama stop qwen3.8:27b-mlx]", ran)
 	}
-	if len(envs) != 1 || envs[0] != "OLLAMA_HOST="+config.OllamaBaseURL {
-		t.Fatalf("env = %v, want [OLLAMA_HOST=%s]", envs, config.OllamaBaseURL)
+	if len(envs) != 1 || envs[0] != "OLLAMA_HOST="+daemon.URL {
+		t.Fatalf("env = %v, want [OLLAMA_HOST=%s]", envs, daemon.URL)
 	}
 }
 
@@ -89,29 +95,195 @@ func TestStopModelOllamaAlreadyUnloadedIsSuccess(t *testing.T) {
 
 // TestStopModelOllamaStillLoadedSurfacesFailure verifies a failed `ollama stop`
 // is still an error when /api/ps shows the model loaded — including under
-// ollama's implicit ":latest" tag — so a real failure is never masked.
+// ollama's implicit ":latest" tag — so a real failure is never masked. It is
+// returned after the one probe: wt waits for an unload only after a stop
+// ollama accepted (exit 0), so a refused stop never sits out the wait's bound.
 func TestStopModelOllamaStillLoadedSurfacesFailure(t *testing.T) {
 	for _, loaded := range []string{"x", "x:latest"} {
-		daemon := psServing(t, loaded)
+		daemon, probes := psSequence(t, func(int) ([]string, bool) { return []string{loaded}, true })
 		err := stopModel(context.Background(), failingOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x")
 		if err == nil || err.Error() != "model not found" {
 			t.Errorf("loaded=%q: err = %v, want ollama's own message", loaded, err)
+		}
+		if got := probes.Load(); got != 1 {
+			t.Errorf("loaded=%q: probes = %d, want 1 (a refused stop is reported at once)", loaded, got)
+		}
+	}
+}
+
+// psSequence is a stub ollama daemon whose /api/ps answers the nth probe
+// (from 1) with step(n): the loaded models, or ok=false for a 500 (a probe
+// that cannot answer). It returns the probe counter, so a test of the wait
+// after `ollama stop` advances by counting probes and never by sleeping.
+func psSequence(t *testing.T, step func(n int) (loaded []string, ok bool)) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var probes atomic.Int32
+	srv, _ := serveFree(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		loaded, ok := step(int(probes.Add(1)))
+		if !ok {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		psBodyHandler(loaded...).ServeHTTP(w, r)
+	}))
+	return srv, &probes
+}
+
+// cleanOllamaStop is an env whose `ollama stop` exits 0, as it does when
+// ollama accepts a stop, and whose wait for the unload is 5 probes after the
+// first (bound 5ns at a 1ns interval), so no test waits on a clock.
+func cleanOllamaStop() *env {
+	e := testEnv()
+	e.lookPath = func(string) (string, error) { return "/bin/ollama", nil }
+	e.runEnv = func(context.Context, []string, string, ...string) ([]byte, error) { return nil, nil }
+	e.pollInterval = time.Nanosecond
+	e.ollamaUnloadTimeout = 5 * time.Nanosecond
+	return e
+}
+
+// TestStopModelOllamaWaitsForInFlightRequest verifies the false failure is
+// gone: ollama accepts a stop of a model that is still answering a request,
+// keeps it in /api/ps ("Stopping...") and unloads it some seconds later, so a
+// model listed on the first probe and gone on a later one is a successful
+// stop. Before the wait, the picker printed "failed" and `wt stop` exited 1
+// for a model that did stop. The implicit ":latest" tag counts as listed.
+func TestStopModelOllamaWaitsForInFlightRequest(t *testing.T) {
+	for _, listed := range []string{"x", "x:latest"} {
+		daemon, probes := psSequence(t, func(n int) ([]string, bool) {
+			if n <= 3 {
+				return []string{listed, "other"}, true
+			}
+			return []string{"other"}, true
+		})
+		if err := stopModel(context.Background(), cleanOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x"); err != nil {
+			t.Errorf("listed=%q: err = %v, want nil: the model left /api/ps on the 4th probe", listed, err)
+		}
+		if got := probes.Load(); got != 4 {
+			t.Errorf("listed=%q: probes = %d, want 4 (wt stops probing once the model is gone)", listed, got)
 		}
 	}
 }
 
 // TestStopModelOllamaExitZeroButStillLoadedIsError verifies a clean `ollama
 // stop` exit is never trusted by itself: when /api/ps still lists the model
-// (a stop racing a re-load, or a CLI quirk reporting success wrongly), the
-// stop is an error — the same state-not-exit-code standard omlx and mtplx
-// hold even on exit 0, so the picker never prints "done" for a loaded model.
+// once the wait's bound has passed (a stop racing a re-load, a request that
+// outlasts the bound, or a CLI quirk reporting success wrongly), the stop is
+// an error, so the picker never prints "done" for a loaded model. The message
+// says how long wt waited and that ollama may still be finishing a request,
+// since the user's next step is to look again, not to assume a broken stop.
+// The probes are bounded: the first one plus bound/interval, never more.
 func TestStopModelOllamaExitZeroButStillLoadedIsError(t *testing.T) {
-	daemon := psServing(t, "x")
-	e := testEnv()
-	e.lookPath = func(string) (string, error) { return "/bin/ollama", nil }
-	e.runEnv = func(context.Context, []string, string, ...string) ([]byte, error) { return nil, nil }
-	if err := stopModel(context.Background(), e, provCfg("ollama", daemon.URL), "ollama", "x"); err == nil {
-		t.Fatal("stopModel returned nil while /api/ps still lists the model")
+	daemon, probes := psSequence(t, func(int) ([]string, bool) { return []string{"x"}, true })
+	e := cleanOllamaStop()
+	e.pollInterval = 15 * time.Nanosecond
+	e.ollamaUnloadTimeout = 60 * time.Nanosecond
+	err := stopModel(context.Background(), e, provCfg("ollama", daemon.URL), "ollama", "x")
+	want := "ollama stop x: /api/ps still lists the model after waiting 60ns (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v\nwant  %s", err, want)
+	}
+	if got := probes.Load(); got != 5 {
+		t.Errorf("probes = %d, want 5 (the first, then 60ns/15ns more)", got)
+	}
+}
+
+// TestStopModelOllamaDefaultWaitCoversObservedUnloads pins the production
+// bound and interval: ollama was seen to take 6 to 20 seconds to unload a
+// model with a request in flight, so the wait must cover that with margin
+// while a stop that will never finish still ends within about a minute.
+func TestStopModelOllamaDefaultWaitCoversObservedUnloads(t *testing.T) {
+	e := defaultEnv()
+	if e.ollamaUnloadTimeout != 60*time.Second || e.pollInterval != time.Second {
+		t.Fatalf("wait = %v every %v, want 1m0s every 1s", e.ollamaUnloadTimeout, e.pollInterval)
+	}
+	want := "ollama stop x: /api/ps still lists the model after waiting 60s (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)"
+	if got := ollamaStillListed("x", e.ollamaUnloadTimeout).Error(); got != want {
+		t.Fatalf("message = %s\nwant      %s", got, want)
+	}
+}
+
+// afterTrip is a transport that hands back each response fully read and then
+// calls after with the probe's number (from 1). A cancellation made there
+// lands after the probe answered and before the wait's next step, with no
+// timer: the buffered body reads the same whatever the context says.
+type afterTrip struct {
+	n     int
+	after func(n int)
+}
+
+func (a *afterTrip) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	a.n++
+	a.after(a.n)
+	return resp, nil
+}
+
+// TestStopModelOllamaCancelledDuringWaitReturnsCancel verifies Ctrl-C during
+// the wait for an unload surfaces as a cancellation, whether it lands between
+// two probes or inside one, the first included: the picker prints
+// "cancelled", never "failed", and never "done" (a cancelled probe fails, and
+// a failed probe after a clean exit would otherwise read as success).
+func TestStopModelOllamaCancelledDuringWaitReturnsCancel(t *testing.T) {
+	t.Run("between probes", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		daemon, probes := psSequence(t, func(int) ([]string, bool) { return []string{"x"}, true })
+		e := cleanOllamaStop()
+		e.ollamaUnloadTimeout = 100 * time.Nanosecond
+		e.probeClient = &http.Client{Transport: &afterTrip{after: func(n int) {
+			if n == 2 {
+				cancel()
+			}
+		}}}
+		if err := stopModel(ctx, e, provCfg("ollama", daemon.URL), "ollama", "x"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+		if got := probes.Load(); got != 2 {
+			t.Errorf("probes = %d, want 2 (none after the cancellation)", got)
+		}
+	})
+	for _, at := range []int{1, 3} {
+		t.Run(fmt.Sprintf("inside probe %d", at), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			daemon, probes := psSequence(t, func(n int) ([]string, bool) {
+				if n == at {
+					cancel()
+					return nil, false // what the probe is told no longer matters
+				}
+				return []string{"x"}, true
+			})
+			if err := stopModel(ctx, cleanOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x"); !errors.Is(err, context.Canceled) {
+				t.Fatalf("err = %v, want context.Canceled", err)
+			}
+			if got := int(probes.Load()); got != at {
+				t.Errorf("probes = %d, want %d (none after the cancellation)", got, at)
+			}
+		})
+	}
+}
+
+// TestStopModelOllamaProbeFailureDuringWaitDefersToCLI verifies a daemon that
+// stops answering part-way through the wait ends it at once under the same
+// rule as a first probe that cannot answer: the CLI's exit decides, and it
+// was 0 (wt waits only after a clean exit), so the stop is a success and wt
+// does not sit out the bound against a daemon with nothing left to check.
+func TestStopModelOllamaProbeFailureDuringWaitDefersToCLI(t *testing.T) {
+	daemon, probes := psSequence(t, func(n int) ([]string, bool) { return []string{"x"}, n <= 2 })
+	if err := stopModel(context.Background(), cleanOllamaStop(), provCfg("ollama", daemon.URL), "ollama", "x"); err != nil {
+		t.Fatalf("err = %v, want nil: the probe gave no verdict and `ollama stop` exited 0", err)
+	}
+	if got := probes.Load(); got != 3 {
+		t.Errorf("probes = %d, want 3 (no probe after the one that failed)", got)
 	}
 }
 

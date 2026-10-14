@@ -28,6 +28,7 @@ func testEnv() *env {
 	e.stopGrace = 100 * time.Millisecond
 	e.portUpTimeout = 300 * time.Millisecond
 	e.prebindTimeout = 200 * time.Millisecond
+	e.ollamaUnloadTimeout = 20 * time.Millisecond
 	return e
 }
 
