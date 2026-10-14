@@ -277,7 +277,7 @@ def test_stop_and_wait_accepted_stop_still_finishing_is_its_own_warning():
     assert isinstance(result, StillFinishing)
     assert result == (
         "ollama is still finishing a request on busy after waiting 180s; "
-        "it unloads them when that ends"
+        "it unloads it when that ends"
     )
     assert mock_sleep.call_count == UNLOAD_TRIES
 

@@ -115,7 +115,7 @@ func (ollamaBackend) awaitUnload(ctx context.Context, e *env, cfg *config.Config
 			return cliErr
 		}
 		if w.left <= 0 {
-			return &StillFinishingError{Provider: "ollama", Model: modelName, Waited: w.slept()}
+			return ollamaStillListed(modelName, w.slept())
 		}
 		if !noticed && e.stopNoticeAfter > 0 && slept >= e.stopNoticeAfter {
 			noticed = true

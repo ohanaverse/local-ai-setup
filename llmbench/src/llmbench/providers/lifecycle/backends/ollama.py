@@ -110,9 +110,10 @@ class OllamaBackend(Backend):
             # ollama accepted every stop still pending: each model unloads
             # when its request in flight ends. Not a failed stop, but not a
             # clean one either — the model is still loaded (StillFinishing).
+            them = "it" if len(left) == 1 else "them"
             return StillFinishing(
                 f"ollama is still finishing a request on {', '.join(left)} after waiting "
-                f"{waited:.0f}s; it unloads them when that ends"
+                f"{waited:.0f}s; it unloads {them} when that ends"
             )
         return f"ollama still has models loaded after waiting {waited:.0f}s"
 
