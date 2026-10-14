@@ -175,7 +175,8 @@ tags come from two `gh pr list` calls per picker open — open PRs, and PRs
 of every state, so an old open PR is never crowded out by newer merged ones —
 and appear as each answers (within five seconds), the open PRs' usually
 first; the picker does not wait for them. A branch with
-several PRs shows the highest-numbered one; PRs from forks are not shown.
+several PRs shows its open one, else the highest-numbered; PRs from forks
+are not shown.
 Without `gh`, outside a GitHub repository, or with `gh` not logged in, the
 picker simply shows no tags.
 

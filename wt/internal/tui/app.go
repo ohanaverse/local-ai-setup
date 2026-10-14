@@ -636,6 +636,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	if m.ready && m.phase == phaseList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
+		// A filter run a keystroke started before the latest tags arrived
+		// matched the items as they were then; its rows carry the old tags.
+		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs != nil && !prsCurrent(m.list.VisibleItems(), m.prs) {
+			applyPRs(&m.list, m.prs)
+		}
 		return m, cmd
 	}
 	if m.phase == phaseOllamaWarn && m.width > 0 && m.height > 0 {

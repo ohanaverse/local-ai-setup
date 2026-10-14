@@ -119,14 +119,14 @@ func PRs(dir, state string) map[string]PR {
 }
 
 // MergePRs returns a new map with every branch of a and b, a branch in both
-// keeping the higher-numbered PR — the rule parsePRs applies within one
+// keeping the PR preferPR picks — the rule parsePRs applies within one
 // listing, so the merge of two listings does not depend on which arrived
 // first. Either map may be nil.
 func MergePRs(a, b map[string]PR) map[string]PR {
 	out := make(map[string]PR, len(a)+len(b))
 	for _, m := range []map[string]PR{a, b} {
 		for branch, pr := range m {
-			if cur, ok := out[branch]; ok && cur.Number > pr.Number {
+			if cur, ok := out[branch]; ok && !preferPR(pr, cur) {
 				continue
 			}
 			out[branch] = pr
@@ -145,10 +145,23 @@ type ghPR struct {
 	Title             string `json:"title"`
 }
 
-// parsePRs maps gh's JSON to one PR per head branch. A branch with several
-// PRs keeps the one with the highest number — the one opened last, which is
-// the branch's current PR whatever later activity (a comment, a label) did
-// to an older one's updatedAt. A PR from a fork (isCrossRepository) is
+// preferPR reports whether p should replace cur as a branch's PR. A live PR
+// (open or draft) beats a closed or merged one, so a closed duplicate opened
+// later does not hide the branch's open PR; otherwise the higher number wins
+// — the one opened last, which is the branch's current PR whatever later
+// activity (a comment, a label) did to an older one's updatedAt.
+func preferPR(p, cur PR) bool {
+	if pl, cl := p.State.live(), cur.State.live(); pl != cl {
+		return pl
+	}
+	return p.Number > cur.Number
+}
+
+// live reports whether a PR in state s is still open, draft or not.
+func (s PRState) live() bool { return s == PROpen || s == PRDraft }
+
+// parsePRs maps gh's JSON to one PR per head branch, a branch with several
+// PRs keeping the one preferPR picks. A PR from a fork (isCrossRepository) is
 // skipped: its head branch names a branch in someone else's repository, not
 // one of this repository's. An element with no head branch or no number is
 // skipped too.
@@ -162,10 +175,11 @@ func parsePRs(data []byte) (map[string]PR, error) {
 		if p.IsCrossRepository || p.HeadRefName == "" || p.Number <= 0 {
 			continue
 		}
-		if cur, ok := prs[p.HeadRefName]; ok && cur.Number > p.Number {
+		pr := PR{Number: p.Number, State: prState(p.State, p.IsDraft), Title: p.Title}
+		if cur, ok := prs[p.HeadRefName]; ok && !preferPR(pr, cur) {
 			continue
 		}
-		prs[p.HeadRefName] = PR{Number: p.Number, State: prState(p.State, p.IsDraft), Title: p.Title}
+		prs[p.HeadRefName] = pr
 	}
 	return prs, nil
 }

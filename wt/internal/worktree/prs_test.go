@@ -7,10 +7,11 @@ import (
 )
 
 // TestParsePRsMapsEachBranchToItsLatestPR pins the JSON-to-tag mapping the
-// picker shows: one PR per head branch, the highest number winning when a
-// branch has several, fork PRs skipped, an open draft reading "draft", and
+// picker shows: one PR per head branch, an open (or draft) PR winning over
+// a closed or merged one and the highest number winning otherwise, fork PRs
+// skipped, an open draft reading "draft", and
 // merged and closed reading as themselves. A regression shows a branch's old
-// closed PR instead of its open one, or tags a local branch with a stranger's
+// closed PR instead of its open one — even when the closed one is newer — or tags a local branch with a stranger's
 // fork PR that happens to share its name.
 func TestParsePRsMapsEachBranchToItsLatestPR(t *testing.T) {
 	data := []byte(`[
@@ -21,6 +22,8 @@ func TestParsePRsMapsEachBranchToItsLatestPR(t *testing.T) {
 		{"number": 381, "state": "OPEN", "isDraft": true, "headRefName": "feat/draft", "isCrossRepository": false, "title": "WIP"},
 		{"number": 379, "state": "CLOSED", "isDraft": false, "headRefName": "feat/dropped", "isCrossRepository": false, "title": "Dropped"},
 		{"number": 378, "state": "OPEN", "isDraft": false, "headRefName": "only/fork", "isCrossRepository": true, "title": "Fork only"},
+		{"number": 300, "state": "CLOSED", "isDraft": false, "headRefName": "fix/dup", "isCrossRepository": false, "title": "Duplicate"},
+		{"number": 50, "state": "OPEN", "isDraft": true, "headRefName": "fix/dup", "isCrossRepository": false, "title": "Live"},
 		{"number": 0, "state": "OPEN", "headRefName": "no/number"},
 		{"number": 377, "state": "OPEN", "headRefName": ""}
 	]`)
@@ -33,6 +36,7 @@ func TestParsePRsMapsEachBranchToItsLatestPR(t *testing.T) {
 		"fix/sync":     {Number: 382, State: PRMerged, Title: "Sync waits"},
 		"feat/draft":   {Number: 381, State: PRDraft, Title: "WIP"},
 		"feat/dropped": {Number: 379, State: PRClosed, Title: "Dropped"},
+		"fix/dup":      {Number: 50, State: PRDraft, Title: "Live"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parsePRs =\n%#v\nwant\n%#v", got, want)
@@ -96,18 +100,29 @@ func TestPRsRunsInTheRepoDir(t *testing.T) {
 	}
 }
 
-// TestMergePRsKeepsTheHigherNumberInEitherOrder pins how the picker joins
-// its two listings: every branch of both, and a branch in both keeps the
-// higher-numbered PR whichever listing came first — the same rule as within
-// one listing. A regression lets the slower listing's older PR overwrite a
-// newer one, or drops an old open PR only the open listing had.
-func TestMergePRsKeepsTheHigherNumberInEitherOrder(t *testing.T) {
-	open := map[string]PR{"old": {Number: 7, State: PROpen}, "b": {Number: 10, State: PROpen}}
-	all := map[string]PR{"new": {Number: 900, State: PRMerged}, "b": {Number: 12, State: PRClosed}}
+// TestMergePRsPrefersOpenThenTheHigherNumberInEitherOrder pins how the
+// picker joins its two listings: every branch of both, and a branch in both
+// keeps its open PR over a closed or merged one, else the higher-numbered
+// PR, whichever listing came first — the same rule as within one listing. A
+// regression lets the slower listing's older PR overwrite a newer one, lets
+// a newer closed duplicate hide the branch's open PR, or drops an old open
+// PR only the open listing had.
+func TestMergePRsPrefersOpenThenTheHigherNumberInEitherOrder(t *testing.T) {
+	open := map[string]PR{
+		"old": {Number: 7, State: PROpen},
+		"b":   {Number: 10, State: PROpen},
+		"c":   {Number: 20, State: PRDraft},
+	}
+	all := map[string]PR{
+		"new": {Number: 900, State: PRMerged},
+		"b":   {Number: 12, State: PRClosed},
+		"c":   {Number: 21, State: PROpen},
+	}
 	want := map[string]PR{
 		"old": {Number: 7, State: PROpen},
 		"new": {Number: 900, State: PRMerged},
-		"b":   {Number: 12, State: PRClosed},
+		"b":   {Number: 10, State: PROpen},
+		"c":   {Number: 21, State: PROpen},
 	}
 	if got := MergePRs(open, all); !reflect.DeepEqual(got, want) {
 		t.Errorf("MergePRs(open, all) = %v, want %v", got, want)

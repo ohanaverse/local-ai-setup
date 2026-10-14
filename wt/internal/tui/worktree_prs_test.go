@@ -386,10 +386,10 @@ func TestInitRunsEveryPRListing(t *testing.T) {
 
 // TestPRListingsMergeInEitherOrder pins the progressive tags: the first
 // listing to answer tags the rows at once, the second adds its branches
-// without dropping the first's, and a branch in both keeps the
-// higher-numbered PR whichever arrived first. A regression either wipes the
+// without dropping the first's, and a branch in both keeps its open PR over
+// a newer merged one whichever arrived first. A regression either wipes the
 // open tags when the every-state listing lands, or lets the late listing's
-// older PR replace a newer one.
+// merged PR hide the branch's open one.
 func TestPRListingsMergeInEitherOrder(t *testing.T) {
 	open := map[string]worktree.PR{
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop reports its outcome"},
@@ -420,8 +420,8 @@ func TestPRListingsMergeInEitherOrder(t *testing.T) {
 			if tag := rowByBranch(t, m.list.Items(), "fix/wt-ollama-stop-outcome").prTag(); tag != "#383 open" {
 				t.Errorf("stop-outcome tag = %q, want #383 open", tag)
 			}
-			if tag := rowByBranch(t, m.list.Items(), "feat/local").prTag(); tag != "#382 merged" {
-				t.Errorf("feat/local tag = %q, want #382 merged (the higher number)", tag)
+			if tag := rowByBranch(t, m.list.Items(), "feat/local").prTag(); tag != "#380 open" {
+				t.Errorf("feat/local tag = %q, want #380 open (open beats a newer merged PR)", tag)
 			}
 		})
 	}
@@ -456,5 +456,39 @@ func TestPRTitleControlCharactersAreDropped(t *testing.T) {
 	}
 	if !strings.Contains(got, "evil]0;pwned title") {
 		t.Errorf("Description() = %q, lost the printable text", got)
+	}
+	ei.pr.Title = "two\twords"
+	if got := ei.Description(); !strings.Contains(got, "two words") {
+		t.Errorf("Description() = %q, want the tab read as a space", got)
+	}
+}
+
+// TestStaleFilterRunAfterPRsKeepsTheTags pins the filter run a keystroke
+// started before the tags arrived: bubbles runs it as a command over the
+// items as they were, so its matches carry the untagged rows. Arriving after
+// the tags, it must not put those rows back on screen. A regression drops
+// every tag from the filtered rows (and a typed "#383" finds nothing) until
+// the next keystroke.
+func TestStaleFilterRunAfterPRsKeepsTheTags(t *testing.T) {
+	m := pickerModel(t)
+	m.list.SetFilterState(list.Filtering)
+	m.list.FilterInput.SetValue("fix")
+	// The keystroke's filter run, over the untagged items.
+	before := m.list
+	staleRun := before.SetItems(before.Items())
+
+	got, _ := m.Update(prsLoadedMsg{prs: prMap()})
+	m = got.(model)
+	got, _ = m.Update(staleRun())
+	m = got.(model)
+
+	vis := m.list.VisibleItems()
+	if len(vis) == 0 {
+		t.Fatal("no visible rows after the stale filter run")
+	}
+	for _, it := range vis {
+		if ei := it.(entryItem); ei.pr == nil {
+			t.Errorf("row %q lost its tag to a stale filter run", ei.entry.Branch)
+		}
 	}
 }

@@ -102,12 +102,13 @@ func (e entryItem) baseTitle() string {
 }
 
 // prTag is the row's pull request tag, "#<number> <state>", or "" for a row
-// with none.
+// with none. The state goes through printable: a state gh adds later is
+// shown under its own name (worktree.PRState), text from outside wt.
 func (e entryItem) prTag() string {
 	if e.kind != kindEntry || e.pr == nil {
 		return ""
 	}
-	return prNumber(*e.pr) + " " + string(e.pr.State)
+	return prNumber(*e.pr) + " " + printable(string(e.pr.State))
 }
 
 func prNumber(pr worktree.PR) string { return "#" + strconv.Itoa(pr.Number) }
@@ -155,10 +156,7 @@ func applyPRs(l *list.Model, prs map[string]worktree.PR) {
 	next := make([]list.Item, len(items))
 	for i, it := range items {
 		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry {
-			ei.pr = nil
-			if pr, found := prs[ei.prBranch]; found && ei.prBranch != "" {
-				ei.pr = &pr
-			}
+			ei.pr = prFor(ei, prs)
 			it = ei
 		}
 		next[i] = it
@@ -183,6 +181,34 @@ func applyPRs(l *list.Model, prs map[string]worktree.PR) {
 	if len(visible) > 0 {
 		l.Select(min(index, len(visible)-1))
 	}
+}
+
+// prFor is the pull request prs holds for ei's branch, nil for none.
+func prFor(ei entryItem, prs map[string]worktree.PR) *worktree.PR {
+	if ei.prBranch == "" {
+		return nil
+	}
+	if pr, found := prs[ei.prBranch]; found {
+		return &pr
+	}
+	return nil
+}
+
+// prsCurrent reports whether every entry row in items carries the tag prs
+// gives it. A filter run that a keystroke started before the latest tags
+// arrived matched the items as they were then, and its rows fail this.
+func prsCurrent(items []list.Item, prs map[string]worktree.PR) bool {
+	for _, it := range items {
+		ei, ok := it.(entryItem)
+		if !ok || ei.kind != kindEntry {
+			continue
+		}
+		want := prFor(ei, prs)
+		if (want == nil) != (ei.pr == nil) || (want != nil && *want != *ei.pr) {
+			return false
+		}
+	}
+	return true
 }
 
 // selectedEntryMsg is emitted when the user picks a worktree or branch.
@@ -375,9 +401,14 @@ func prTagStyle(theme themes.Theme, state worktree.PRState) lipgloss.Style {
 // cannot write to the terminal as anything but text. It drops the bidi
 // controls too (unicode.Bidi_Control: the embeddings, overrides and
 // isolates): an override left open in a title would reorder the rest of the
-// description line, the path after it, in a terminal that applies bidi.
+// description line, the path after it, in a terminal that applies bidi. A
+// tab, newline or carriage return becomes a space, so the words either side
+// of it stay apart.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
 		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
 			return -1
 		}
