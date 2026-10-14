@@ -149,7 +149,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/litellm/` | the sole implementation of LiteLLM `config.yaml` route management: entries and policy, `ApplyChange`, `Sync`/`PlanSync`, restart and readiness, `DatabaseURL` |
 | `internal/spend/` | per-model request, token and cost totals from the proxy's spend table: one aggregated query through `psql`, typed failures, no Postgres driver; the connection string is never a `psql` argument (#282) |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
-| `internal/worktree/` | repo detection, enumeration, creation |
+| `internal/worktree/` | repo detection, enumeration, creation; the picker's pull request tags (`PRs`, `prs.go`) |
 | `internal/gitenv/` | `IsolateForTest`: git isolation for test binaries |
 | `internal/initseed/` | `--init` seeding |
 | `internal/ollamacheck/` | pre-launch `ollama list` availability check, pinned to the registry's ollama address; `StubListForTest` is its seam (`fortest.go`) |
@@ -336,6 +336,8 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout or si
 > **A launch that has a directory needs no repository.** The repo root handed to `runLaunchPath` gates the guard install and nothing else: rotation, usage and refcount state are keyed by model, agent and pid, never by a repository or branch (claude's `config_content` backup is keyed by the absolute settings path, which cannot collide). `--cwd` passes the checkout root when `RepoRoot` finds one and `""` when it does not (outside a repository, in a bare one, inside `.git`, or with no git on PATH), so it launches either way; only `-W` and the worktree picker refuse. Don't key new launch state on the repository without deciding what a launch outside one records. Details: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#launch-directory-and-the-repository).
 
 > **`Enumerate` fetches before listing.** It runs `git fetch --all --prune` (5s timeout, every remote) before building the picker's groups. Failure — offline, no remotes, timeout — is silently ignored; the picker falls back to existing local refs. `-W`/`--cwd` skip `Enumerate` entirely, and `EnsureForName` never consults remotes.
+
+> **The picker's pull request tags never hold it up** (`worktree.PRs`, `prs.go`, #384). One `gh pr list --state all --limit 200` per picker open (5s timeout, `GH_PROMPT_DISABLED=1`, no pager, stdin and stderr on the null device) runs beside `Enumerate` in its own command (`loadPRsCmd`); its answer (`prsLoadedMsg`) tags the list already on screen in place (`applyPRs`: cursor, page and filter kept). Each row gets its branch's highest-numbered PR, looked up by head branch (`worktree.PRBranch`: a remote row without its remote), fork PRs skipped. Any failure is no tags and no message. The seam is `listPRs` (`worktree.StubPRListForTest`), stubbed to fail by the `TestMain`s of `internal/worktree` and `internal/tui`; the real call also refuses inside a test binary.
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree, so `--show-toplevel` fails there; `--git-dir` succeeds. Don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 

@@ -167,6 +167,16 @@ beside a stopped local model or a blocked row still shows the picker.
 `-W foo -M claude/opus` (no `-A`) shows the agent+command picker first and
 then validates the pin against the chosen agent.
 
+The worktree picker tags each worktree or branch that has a pull request on
+GitHub with its number and state after the branch name — `#383 open`, or
+`draft`, `merged`, `closed` — and puts the PR's title on the row's second line,
+before the path. Typing the number (`/383`) in the filter finds the row. The
+tags come from one `gh pr list` per picker open and appear when it answers
+(within five seconds); the picker does not wait for them. A branch with
+several PRs shows the highest-numbered one; PRs from forks are not shown.
+Without `gh`, outside a GitHub repository, or with `gh` not logged in, the
+picker simply shows no tags.
+
 The agent+command picker lists every registered agent and command. An
 agent with no binary on PATH is marked "not installed", and selecting it is
 blocked with a clear error rather than advancing to a model screen that can

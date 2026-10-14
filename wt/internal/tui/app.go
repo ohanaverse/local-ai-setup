@@ -131,6 +131,12 @@ type model struct {
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
 
+	// prs is each branch's pull request, from the one `gh pr list` a picker
+	// open runs (loadPRsCmd); nil until it answers, empty when it failed.
+	// Every build of the worktree list (the first, and the reload after a
+	// create) is tagged from it.
+	prs map[string]worktree.PR
+
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
 	// error, matching the non-TUI path's exit-with-message behavior
@@ -152,7 +158,10 @@ func (m model) Init() tea.Cmd {
 			return selectedEntryMsg{entry: worktree.Entry{Path: m.prePath}}
 		}
 	}
-	return loadEntriesCmd()
+	// The pull request listing runs beside the enumeration, never before
+	// it: the picker shows as soon as the worktrees are in, and the tags
+	// appear when gh answers (prsLoadedMsg), whichever comes first.
+	return tea.Batch(loadEntriesCmd(), loadPRsCmd())
 }
 
 // isTyping reports whether the current phase is actively receiving character
@@ -260,6 +269,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.defaultBranch = msg.defaultBranch
 		m.repoRoot = msg.repoRoot
 		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
+		if m.prs != nil {
+			applyPRs(&m.list, m.prs)
+		}
 		m.ready = true
 
 		// Default-branch warning: if the only picker target is the current
@@ -288,6 +300,16 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			selectFirstEntry(&m.list, func(ei entryItem) bool {
 				return ei.label == "(current)"
 			})
+		}
+		return m, nil
+	case prsLoadedMsg:
+		// The pull requests arrived: kept for any later build of the list,
+		// and put on the list already on screen in place, so the cursor,
+		// the filter and the page stay where the user left them. Nothing
+		// is shown for a listing that failed: msg.prs is then empty.
+		m.prs = msg.prs
+		if m.ready {
+			applyPRs(&m.list, m.prs)
 		}
 		return m, nil
 	case selectedEntryMsg:
@@ -1239,6 +1261,26 @@ func loadEntriesCmd() tea.Cmd {
 		defaultBranch := worktree.DefaultBranch(root)
 		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
 	}
+}
+
+// loadPRsCmd returns a command that lists the repository's pull requests
+// with gh (worktree.PRs: one call, five seconds at most, every failure an
+// empty map) for the worktree picker's tags. It runs beside loadEntriesCmd
+// and finds the repository root itself, so the picker never waits for it.
+func loadPRsCmd() tea.Cmd {
+	return func() tea.Msg {
+		root, err := worktree.RepoRoot()
+		if err != nil {
+			return prsLoadedMsg{prs: map[string]worktree.PR{}}
+		}
+		return prsLoadedMsg{prs: worktree.PRs(root)}
+	}
+}
+
+// prsLoadedMsg carries loadPRsCmd's answer: each branch's pull request,
+// keyed by head branch name; empty, never nil, when the listing failed.
+type prsLoadedMsg struct {
+	prs map[string]worktree.PR
 }
 
 // selectFirstEntry selects the first kindEntry item in l matching pred.

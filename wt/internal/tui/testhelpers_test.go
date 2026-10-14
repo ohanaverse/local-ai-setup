@@ -22,6 +22,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // compactModelList builds a 78x22 list.Model from buildTable rows for models
@@ -144,9 +145,22 @@ func TestMain(m *testing.M) {
 	ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
 		return nil, true, errors.New("ollamacheck list not stubbed in this test (ollama list at " + origin + ")")
 	})
+	// The worktree picker's pull request tags (loadPRsCmd): unstubbed, a
+	// test that runs Init's commands would run the developer's gh against
+	// GitHub. Tests that want tags call stubPRList.
+	worktree.StubPRListForTest(func(string) ([]byte, error) {
+		return nil, errors.New("gh pr list not stubbed in this test")
+	})
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)
+}
+
+// stubPRList makes the worktree picker's `gh pr list` answer with the JSON
+// data for the duration of a test.
+func stubPRList(t *testing.T, data string) {
+	t.Helper()
+	t.Cleanup(worktree.StubPRListForTest(func(string) ([]byte, error) { return []byte(data), nil }))
 }
 
 // stubOllamaList makes the picker's pre-launch ollama check see an installed

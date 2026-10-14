@@ -2,11 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -31,27 +35,51 @@ const (
 // separator rows and "(current)"/"(default)" markers for entry rows;
 // the underlying entry worktree.Entry is never mutated, so it stays
 // safe to forward into selectedEntryMsg at launch time.
+//
+// prBranch is the head branch name the row's pull request is looked up under
+// (worktree.PRBranch: the remote stripped off a remote-tracking row), set by
+// buildList, which alone knows the row's group; pr is the pull request found
+// there, set by applyPRs once `gh pr list` has answered, nil until then and
+// for a branch with none.
 type entryItem struct {
-	kind  entryKind
-	entry worktree.Entry
-	label string
+	kind     entryKind
+	entry    worktree.Entry
+	label    string
+	prBranch string
+	pr       *worktree.PR
 }
 
 // FilterValue is used by the list's built-in filter. Non-entry rows
 // (sentinel and separator) return "" so they are hidden when the user
-// is filtering.
+// is filtering. A row with a pull request adds its number ("#383"), so
+// typing the number finds the row.
 func (e entryItem) FilterValue() string {
 	if e.kind != kindEntry {
 		return ""
+	}
+	if e.pr != nil {
+		return e.entry.Branch + " " + prNumber(*e.pr)
 	}
 	return e.entry.Branch
 }
 
 // Title renders the branch name (remote prefix stripped for display)
-// for real entries, with any (current)/(default) marker appended;
-// "+ New worktree…" for the sentinel; and the separator's label
-// otherwise.
+// for real entries, with any (current)/(default) marker appended and then
+// the pull request tag ("#383 open"); "+ New worktree…" for the sentinel;
+// and the separator's label otherwise. The picker's delegate draws the same
+// text with the tag coloured by state (prTagDelegate).
 func (e entryItem) Title() string {
+	if tag := e.prTag(); tag != "" {
+		return e.baseTitle() + prTagGap + tag
+	}
+	return e.baseTitle()
+}
+
+// prTagGap separates the branch (and marker) from the pull request tag.
+const prTagGap = "  "
+
+// baseTitle is Title without the pull request tag.
+func (e entryItem) baseTitle() string {
 	switch e.kind {
 	case kindNewWorktree:
 		return "+ New worktree…"
@@ -68,7 +96,23 @@ func (e entryItem) Title() string {
 	return b
 }
 
-// Description renders the metadata columns. The sentinel gets a static
+// prTag is the row's pull request tag, "#<number> <state>", or "" for a row
+// with none.
+func (e entryItem) prTag() string {
+	if e.kind != kindEntry || e.pr == nil {
+		return ""
+	}
+	return prNumber(*e.pr) + " " + string(e.pr.State)
+}
+
+func prNumber(pr worktree.PR) string { return "#" + strconv.Itoa(pr.Number) }
+
+// prTitleMax caps the pull request title in a row's description, so at 80
+// columns some of the path still shows after it.
+const prTitleMax = 48
+
+// Description renders the metadata columns: the row's type, its pull
+// request's title when it has one, and its path. The sentinel gets a static
 // descriptor; separators get an empty descriptor.
 func (e entryItem) Description() string {
 	switch e.kind {
@@ -81,10 +125,59 @@ func (e entryItem) Description() string {
 	if path == "" {
 		path = "(no worktree)"
 	}
-	return strings.TrimSpace(strings.Join([]string{
-		fmt.Sprintf("%-9s", "["+string(e.entry.Type)+"]"),
-		path,
-	}, " "))
+	parts := []string{fmt.Sprintf("%-9s", "["+string(e.entry.Type)+"]")}
+	if e.pr != nil {
+		if title := strings.TrimSpace(e.pr.Title); title != "" {
+			parts = append(parts, ansi.Truncate(title, prTitleMax, "…")+" ·")
+		}
+	}
+	parts = append(parts, path)
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+// applyPRs tags every entry row of l with its branch's pull request from
+// prs (a row whose branch has none loses any tag it had) and keeps what the
+// list holds: the highlighted row (by identity, else by position), an
+// applied filter and the query being typed. With a filter in place, the
+// matches are recomputed here, in the same Update, against the new filter
+// values, so the list is never drawn empty while they are recomputed and
+// typing a PR number before the tags arrived finds the row once they do.
+func applyPRs(l *list.Model, prs map[string]worktree.PR) {
+	selected, hadSelected := l.SelectedItem().(entryItem)
+	index := l.Index()
+
+	items := l.Items()
+	next := make([]list.Item, len(items))
+	for i, it := range items {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry {
+			ei.pr = nil
+			if pr, found := prs[ei.prBranch]; found && ei.prBranch != "" {
+				ei.pr = &pr
+			}
+			it = ei
+		}
+		next[i] = it
+	}
+	if cmd := l.SetItems(next); cmd != nil {
+		// SetItems returns the filter run as a command; running it now
+		// keeps the visible rows (and the page the cursor is on) intact.
+		if msg := cmd(); msg != nil {
+			*l, _ = l.Update(msg)
+		}
+	}
+
+	visible := l.VisibleItems()
+	if hadSelected {
+		for i, it := range visible {
+			if ei, ok := it.(entryItem); ok && ei.kind == selected.kind && ei.entry == selected.entry && ei.label == selected.label {
+				l.Select(i)
+				return
+			}
+		}
+	}
+	if len(visible) > 0 {
+		l.Select(min(index, len(visible)-1))
+	}
 }
 
 // selectedEntryMsg is emitted when the user picks a worktree or branch.
@@ -147,7 +240,7 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 			if worktree.SkipInPicker(g.Kind, e, defaultBranch) {
 				continue
 			}
-			ei := entryItem{kind: kindEntry, entry: e}
+			ei := entryItem{kind: kindEntry, entry: e, prBranch: worktree.PRBranch(g.Kind, e)}
 			// Mark default-branch entries with (default). This applies to
 			// non-current worktrees on the default branch (a linked worktree
 			// created outside wt); bare default-branch rows are skipped above.
@@ -176,7 +269,7 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 		items = append([]list.Item{items[0], *currentItem}, items[1:]...)
 	}
 
-	l := list.New(items, ThemedListDelegate(theme), width, height)
+	l := list.New(items, prTagDelegate{DefaultDelegate: ThemedListDelegate(theme), theme: theme}, width, height)
 	l.Title = "Pick a worktree or branch"
 	l.SetShowStatusBar(true)
 	// Advertise the 'n' shortcut in the footer help line so users know they
@@ -188,4 +281,86 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 	l.AdditionalShortHelpKeys = func() []key.Binding { return []key.Binding{newBinding} }
 	l.AdditionalFullHelpKeys = func() []key.Binding { return []key.Binding{newBinding} }
 	return l
+}
+
+// prTagDelegate is the worktree picker's delegate: ThemedListDelegate, with a
+// row's pull request tag drawn after its title in the colour of the PR's
+// state (prTagStyle). The default delegate cannot colour part of a title: it
+// styles the whole title, and while filtering it underlines matched
+// characters by their position in the plain text, which escape codes inside
+// the title would throw off. So the delegate draws the row without its tag,
+// its title cut short enough to leave room for the tag, and then puts the
+// styled tag on the end of the title line. A row with no tag is drawn as the
+// default delegate draws it, and so is a row in a list too narrow to keep
+// prTagMinTitle columns of title beside the tag, without the tag.
+type prTagDelegate struct {
+	list.DefaultDelegate
+	theme themes.Theme
+}
+
+// prTagMinTitle is the fewest columns of title the tag may leave.
+const prTagMinTitle = 10
+
+// untaggedItem is an entry row as the default delegate draws it under the
+// tag: the title without the tag, already cut to the room the tag leaves.
+type untaggedItem struct {
+	title string
+	entryItem
+}
+
+func (u untaggedItem) Title() string { return u.title }
+
+// Render draws one row; see prTagDelegate.
+func (d prTagDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	ei, ok := item.(entryItem)
+	tag := ""
+	if ok {
+		tag = ei.prTag()
+	}
+	s := &d.Styles
+	room := m.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight() -
+		ansi.StringWidth(prTagGap) - ansi.StringWidth(tag)
+	if tag == "" {
+		d.DefaultDelegate.Render(w, m, index, item)
+		return
+	}
+	if room < prTagMinTitle {
+		// Too narrow for both: the branch is what the row is for.
+		d.DefaultDelegate.Render(w, m, index, untaggedItem{title: ei.baseTitle(), entryItem: ei})
+		return
+	}
+	var buf strings.Builder
+	d.DefaultDelegate.Render(&buf, m, index, untaggedItem{title: ansi.Truncate(ei.baseTitle(), room, "…"), entryItem: ei})
+	row := buf.String()
+	titleLine, rest, hasRest := strings.Cut(row, "\n")
+
+	style := prTagStyle(d.theme, ei.pr.State)
+	emptyFilter := m.FilterState() == list.Filtering && m.FilterValue() == ""
+	switch {
+	case emptyFilter:
+		style = s.DimmedTitle
+	case index == m.Index() && m.FilterState() != list.Filtering:
+		style = style.Bold(true)
+	}
+	_, _ = io.WriteString(w, titleLine+prTagGap+style.Render(tag))
+	if hasRest {
+		_, _ = io.WriteString(w, "\n"+rest)
+	}
+}
+
+// prTagStyle colours a pull request tag by state, from the theme's tokens:
+// open is success, draft is dim, merged is the header colour and closed is
+// the error colour — GitHub's green, grey, purple-ish and red, as near as a
+// theme's fixed token set gets.
+func prTagStyle(theme themes.Theme, state worktree.PRState) lipgloss.Style {
+	token := themes.TokenDim
+	switch state {
+	case worktree.PROpen:
+		token = themes.TokenSuccess
+	case worktree.PRMerged:
+		token = themes.TokenHeader
+	case worktree.PRClosed:
+		token = themes.TokenError
+	}
+	return lipgloss.NewStyle().Foreground(theme.Token(token))
 }
