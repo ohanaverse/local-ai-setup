@@ -32,8 +32,16 @@ T0 = datetime(2026, 10, 12, 15, 58, 0, tzinfo=UTC)
 # The fixtures share three models between the intelligence index and each of
 # the other two signals: the fewest an alignment is fitted on in the tests.
 ALIGN_MIN = 3
+# The cross-language fixtures at the repo root, beside wt's and llmbench's.
+CONTRACTS_DIR = Path(__file__).parents[2] / "docs" / "contracts"
+# The inventory contract: one `wt model list --json` document. wt's own tests
+# hold the same file to what the command prints
+# (wt/cmd/wt/model_list_contract_test.go), so a key wt renames fails there
+# before it can reach a run here. Every test that needs the golden inventory
+# reads it through this name.
+INVENTORY = CONTRACTS_DIR / "model-list.sample.json"
 # The output contract: what `run` writes for the golden fixtures.
-SAMPLE = Path(__file__).parents[2] / "docs" / "contracts" / "tiers.sample.toml"
+SAMPLE = CONTRACTS_DIR / "tiers.sample.toml"
 _STAMPS = re.compile(r'^(generated_at|fetched_at) = "[^"]*"$', re.MULTILINE)
 
 
@@ -148,8 +156,8 @@ def rule() -> Contracts:
 
 @pytest.fixture
 def inventory() -> Inventory:
-    """The golden inventory fixture, parsed."""
-    return inventory_mod.parse_inventory((FIXTURES / "inventory.json").read_text())
+    """The golden inventory (the shared contract fixture), parsed."""
+    return inventory_mod.parse_inventory(INVENTORY.read_text())
 
 
 @pytest.fixture

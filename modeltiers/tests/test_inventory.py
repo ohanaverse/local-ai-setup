@@ -4,12 +4,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import INVENTORY
 
 from modeltiers import inventory
 from modeltiers.errors import InventoryError
 from modeltiers.records import InventoryRow
-
-FIXTURE = Path(__file__).parent / "fixtures" / "inventory.json"
 
 
 def _never_run_wt() -> str:
@@ -17,7 +16,7 @@ def _never_run_wt() -> str:
 
 
 def test_reads_registry_providers_and_rows() -> None:
-    inv = inventory.parse_inventory(FIXTURE.read_text())
+    inv = inventory.parse_inventory(INVENTORY.read_text())
     assert inv.registry == "/home/owner/.config/local-ai/registry.toml"
     assert inv.providers == {"mtplx": "partial", "ollama": "ok", "omlx": "ok"}
     assert inv.rows[0] == InventoryRow("ollama", "glm-5.3:cloud", "cloud", True)
@@ -34,20 +33,20 @@ def test_reads_registry_providers_and_rows() -> None:
 
 
 def test_native_rows_are_dropped_and_counted() -> None:
-    inv = inventory.parse_inventory(FIXTURE.read_text())
+    inv = inventory.parse_inventory(INVENTORY.read_text())
     assert inv.native_dropped == 1
     assert all(r.model_name != "native" for r in inv.rows)
 
 
 def test_discovered_and_missing_rows_are_kept() -> None:
-    inv = inventory.parse_inventory(FIXTURE.read_text())
+    inv = inventory.parse_inventory(INVENTORY.read_text())
     by_name = {r.model_name: r for r in inv.rows}
     assert by_name["gemma4:31b-mlx"].registered is False  # discovered
     assert by_name["medgemma:27b"].location == "local"  # status "missing" in the fixture
 
 
 def test_a_provider_that_is_not_ok_is_named_in_a_warning() -> None:
-    inv = inventory.parse_inventory(FIXTURE.read_text())
+    inv = inventory.parse_inventory(INVENTORY.read_text())
     warnings = inventory.provider_warnings(inv)
     assert len(warnings) == 1
     assert "mtplx" in warnings[0]
@@ -82,7 +81,7 @@ def test_a_document_in_another_shape_is_an_inventory_error(text: str, message: s
 
 
 def test_inventory_file_is_read_and_wt_is_not_run() -> None:
-    inv = inventory.load_inventory(path=FIXTURE, run_wt=_never_run_wt)
+    inv = inventory.load_inventory(path=INVENTORY, run_wt=_never_run_wt)
     assert len(inv.rows) == 8
 
 
@@ -95,13 +94,13 @@ def test_an_inventory_file_that_is_not_utf8_is_an_inventory_error(tmp_path: Path
     """A saved copy written by, say, PowerShell is not text we can read: the
     message must say so rather than a UnicodeDecodeError traceback."""
     saved = tmp_path / "inventory.json"
-    saved.write_bytes(FIXTURE.read_text().encode("utf-16"))
+    saved.write_bytes(INVENTORY.read_text().encode("utf-16"))
     with pytest.raises(InventoryError, match="is not UTF-8 text"):
         inventory.load_inventory(path=saved, run_wt=_never_run_wt)
 
 
 def test_without_a_file_the_runner_is_called() -> None:
-    inv = inventory.load_inventory(path=None, run_wt=FIXTURE.read_text)
+    inv = inventory.load_inventory(path=None, run_wt=INVENTORY.read_text)
     assert len(inv.rows) == 8
 
 
@@ -120,7 +119,7 @@ class FakeRun:
 
 
 def test_run_wt_runs_exactly_model_list_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    done = subprocess.CompletedProcess(["wt"], 0, stdout=FIXTURE.read_text(), stderr="")
+    done = subprocess.CompletedProcess(["wt"], 0, stdout=INVENTORY.read_text(), stderr="")
     fake = FakeRun(done)
     monkeypatch.setattr(subprocess, "run", fake)
     assert json.loads(inventory.run_wt())["registry"].endswith("registry.toml")

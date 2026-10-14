@@ -5,7 +5,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import ALIGN_MIN, FIXTURES, SAMPLE, T0, scaled_openrouter, without_timestamps
+from conftest import (
+    ALIGN_MIN,
+    FIXTURES,
+    INVENTORY,
+    SAMPLE,
+    T0,
+    scaled_openrouter,
+    without_timestamps,
+)
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch, snapshots
@@ -14,7 +22,6 @@ from modeltiers.identity import HOST_NOTE
 from modeltiers.loader import SourceSpecs
 
 T1 = T0 + timedelta(days=7)
-INVENTORY = FIXTURES / "inventory.json"
 ALIASES = FIXTURES / "aliases.toml"
 CONTRACTS = FIXTURES / "contracts.toml"
 RUN = ["run", "--inventory", str(INVENTORY)]

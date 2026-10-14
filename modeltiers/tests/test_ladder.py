@@ -6,7 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from conftest import FIXTURES, T0
+from conftest import FIXTURES, INVENTORY, T0
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, ladder, snapshots
@@ -45,7 +45,7 @@ def cache(
     specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> Path:
     """The cache after one run over the golden fixtures: a snapshot a source."""
-    run = ["run", "--inventory", str(FIXTURES / "inventory.json"), "--dry-run"]
+    run = ["run", "--inventory", str(INVENTORY), "--dry-run"]
     assert cli.main(run, deps=_deps(specs, good_answers)[0]) == 0
     capsys.readouterr()
     return tmp_path / "cache"

@@ -12,14 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import ALIGN_MIN, FIXTURES, T0, scaled_openrouter
+from conftest import ALIGN_MIN, FIXTURES, INVENTORY, T0, scaled_openrouter
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch
 from modeltiers.assign import NOTE_NO_ROWS
 from modeltiers.loader import SourceSpecs
 
-INVENTORY = FIXTURES / "inventory.json"
 UNCALIBRATED = FIXTURES / "aliases.toml"
 CALIBRATED = FIXTURES / "aliases_calibrated.toml"
 CONTRACTS = FIXTURES / "contracts.toml"

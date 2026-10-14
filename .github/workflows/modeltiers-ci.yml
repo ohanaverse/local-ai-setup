@@ -6,6 +6,9 @@ on:
     paths:
       - "modeltiers/**"
       - "docs/contracts/tiers.sample.toml"
+      # The inventory fixture, shared with wt's contract test (wt-ci runs on
+      # all of docs/contracts/).
+      - "docs/contracts/model-list.sample.json"
       # tests/test_guide_samples.py pins the sample blocks of these two guides.
       - "docs/guides/00-config-map.md"
       - "docs/guides/12-model-tiers.md"
@@ -15,6 +18,9 @@ on:
     paths:
       - "modeltiers/**"
       - "docs/contracts/tiers.sample.toml"
+      # The inventory fixture, shared with wt's contract test (wt-ci runs on
+      # all of docs/contracts/).
+      - "docs/contracts/model-list.sample.json"
       # tests/test_guide_samples.py pins the sample blocks of these two guides.
       - "docs/guides/00-config-map.md"
       - "docs/guides/12-model-tiers.md"
