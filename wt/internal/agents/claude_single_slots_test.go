@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -139,7 +140,13 @@ func TestBuildLaunchCmdClaudeReplacesInheritedSlotVars(t *testing.T) {
 }
 
 // TestBuildLaunchCmdClaudeNativeKeepsInheritedSlotVars pins the other side:
-// the native launch neither sets nor removes a slot variable.
+// the native launch neither sets nor removes a slot variable, so each key
+// reaches claude exactly as the process environment has it. What the process
+// environment has is read from it, never assumed empty: wt itself exports all
+// eight on a single-model launch, so the shell of anyone who has run one (a
+// session started by claude-wt -M <model>, this feature's own case) carries
+// them, and expecting them absent would pass on a bare CI machine and fail
+// there.
 func TestBuildLaunchCmdClaudeNativeKeepsInheritedSlotVars(t *testing.T) {
 	fakeSlotClaude(t)
 	t.Setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-from-the-shell")
@@ -151,11 +158,11 @@ func TestBuildLaunchCmdClaudeNativeKeepsInheritedSlotVars(t *testing.T) {
 	}
 	for _, key := range claudeSlotVarKeys {
 		var want []string
-		if key == "ANTHROPIC_DEFAULT_HAIKU_MODEL" {
-			want = []string{"claude-haiku-from-the-shell"}
+		if v, ok := os.LookupEnv(key); ok {
+			want = []string{v}
 		}
 		if got := envValues(cmd.Env, key); !slices.Equal(got, want) {
-			t.Errorf("%s entries = %v, want %v", key, got, want)
+			t.Errorf("%s entries = %v, want the inherited %v left untouched", key, got, want)
 		}
 	}
 }
