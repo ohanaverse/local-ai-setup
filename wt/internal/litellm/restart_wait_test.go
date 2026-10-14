@@ -276,3 +276,34 @@ func TestBounceRunOrder(t *testing.T) {
 		})
 	}
 }
+
+// TestRestartAndAwaitWaitsEvenWhenNothingWasListening pins that `wt litellm
+// restart` waits for the proxy to answer when it was down before the restart
+// (a crash-looping proxy after an upgrade), taking no pre-restart probe, where
+// RestartAndWait would skip the wait and report a restart nobody confirmed.
+func TestRestartAndAwaitWaitsEvenWhenNothingWasListening(t *testing.T) {
+	fb := &fakeBounce{listening: false, waitErr: errors.New("never answered")}
+	stubBounce(t, fb)
+
+	warnings := RestartAndAwait(testProxyURL)
+	if want := []string{"restart", waitStep}; !slices.Equal(fb.steps, want) {
+		t.Fatalf("steps = %q, want %q", fb.steps, want)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "never answered") {
+		t.Fatalf("warnings = %q, want the failed wait", warnings)
+	}
+}
+
+// TestRestartAndAwaitWithNoURLOnlyRestarts pins that an empty url, which names
+// no proxy to wait for, is a bare restart.
+func TestRestartAndAwaitWithNoURLOnlyRestarts(t *testing.T) {
+	fb := &fakeBounce{}
+	stubBounce(t, fb)
+
+	if warnings := RestartAndAwait(""); len(warnings) != 0 {
+		t.Fatalf("warnings = %q, want none", warnings)
+	}
+	if want := []string{"restart"}; !slices.Equal(fb.steps, want) {
+		t.Fatalf("steps = %q, want %q", fb.steps, want)
+	}
+}

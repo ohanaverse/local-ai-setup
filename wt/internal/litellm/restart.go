@@ -419,16 +419,42 @@ func (b Bounce) Run(ctx context.Context, baseURL string) (warnings []string, wai
 	return warnings, waitErr
 }
 
+// RunWaiting is Run for a caller whose job is the restart itself (`wt litellm
+// restart`): it restarts the proxy and, whenever baseURL is set, waits for it
+// to answer, whether or not the pre-restart probe found one listening. A proxy
+// that was down (or crash-looping) must not be reported restarted until it
+// answers. It takes no probe, so the restart does not pay ProxyAliveTimeout.
+func (b Bounce) RunWaiting(ctx context.Context, baseURL string) (warnings []string, waitErr error) {
+	warnings = b.Restart(ctx)
+	if baseURL != "" {
+		waitErr = b.WaitReady(ctx, baseURL, ProxyReadyTimeout)
+	}
+	return warnings, waitErr
+}
+
 // bounce is the Bounce the Apply default runs; a package var so tests fake
 // the restart and the readiness steps (StubProxyReadinessForTest).
 var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: WaitReady}
 
-// restartAndWait is the Apply default when Options.Restart is nil (`wt
+// RestartAndWait is the Apply default when Options.Restart is nil (`wt
 // litellm sync`, and through it `wt cloud-sync`, `wt model add|edit|rm|init`
-// and the Models tab of `wt config`): bounce.Run, with a failed wait made one
-// more warning, which the command prints like the restart's own.
-func restartAndWait(baseURL string) []string {
+// and the Models tab of `wt config`), and all of `wt litellm restart`:
+// bounce.Run, with a failed wait made one more warning, which the command
+// prints like the restart's own. Every warning is a restart that failed or a
+// proxy that did not answer again.
+func RestartAndWait(baseURL string) []string {
 	warnings, err := bounce.Run(context.Background(), baseURL)
+	if err != nil {
+		warnings = append(warnings, err.Error())
+	}
+	return warnings
+}
+
+// RestartAndAwait is `wt litellm restart`: bounce.RunWaiting, with a failed
+// wait made one more warning like RestartAndWait's. Unlike RestartAndWait it
+// waits even when nothing was listening before the restart.
+func RestartAndAwait(baseURL string) []string {
+	warnings, err := bounce.RunWaiting(context.Background(), baseURL)
 	if err != nil {
 		warnings = append(warnings, err.Error())
 	}

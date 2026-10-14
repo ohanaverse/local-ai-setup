@@ -710,8 +710,25 @@ func litellmCmd(a *app) *cobra.Command {
 	}
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")
+	restartC := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the LiteLLM proxy, letting a request in flight finish, and wait for it to answer",
+		Long: "Restart the LiteLLM proxy the way `wt litellm sync` does after a route change.\n\n" +
+			"With WT_LITELLM_RESTART_CMD set, that command is run as given. Otherwise wt sends the\n" +
+			"proxy's process one SIGTERM, waits up to 3 minutes for a request in flight to finish,\n" +
+			"and has launchd start it again; `launchctl kickstart -k` would kill that request after\n" +
+			"5 seconds. It then waits up to 30 seconds for the proxy at the [litellm] url to answer.\n" +
+			"A restart that fails, or a proxy that does not answer again, exits 1.",
+		Args: cobra.NoArgs, SilenceUsage: true,
+		// No config gate: the restart reads only the [litellm] url, and a
+		// config.toml that does not load leaves it empty, so the restart is
+		// made and not waited for.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runLitellmRestart(cmd.OutOrStdout(), a.cfg)
+		},
+	}
 	c.AddCommand(
-		syncC, listC, provC, statusC, onC, offC, setC,
+		syncC, listC, provC, statusC, onC, offC, setC, restartC,
 		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 	)
 	return c
@@ -739,4 +756,25 @@ func removedLitellmCmd(name string) *cobra.Command {
 			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt litellm sync`", name)
 		},
 	}
+}
+
+// runLitellmRestart is `wt litellm restart`: litellm.RestartAndAwait on the
+// [litellm] url, waiting for the proxy to answer even if it was down before. Its notices (a request in flight being waited for, or cut
+// off at the bound) go to os.Stderr as they happen (litellm.RestartNotice's
+// default); any warning it returns is the command's error, so a script that
+// restarts the proxy learns it failed.
+func runLitellmRestart(out io.Writer, cfg *config.Config) error {
+	url := ""
+	if cfg != nil {
+		url = cfg.LitellmBaseURL()
+	}
+	if warnings := litellm.RestartAndAwait(url); len(warnings) > 0 {
+		return fmt.Errorf("LiteLLM proxy restart: %s", strings.Join(warnings, "; "))
+	}
+	if url == "" {
+		fmt.Fprintln(out, "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)")
+		return nil
+	}
+	fmt.Fprintf(out, "restarted the LiteLLM proxy at %s\n", url)
+	return nil
 }

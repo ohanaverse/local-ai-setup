@@ -44,7 +44,7 @@ func runRecheck(o Options) (fresh []string, ok bool) {
 type Options struct {
 	Path string
 	// Restart replaces the proxy restart a changed write makes. nil is the
-	// default: restartAndWait, which restarts the proxy and, when one was
+	// default: RestartAndWait, which restarts the proxy and, when one was
 	// listening, waits for it to answer again (Bounce.Run) before the call
 	// returns.
 	Restart func() []string
@@ -393,7 +393,7 @@ func ApplyChange(cfg *config.Config, ch Change, o Options) (Result, error) {
 // read — nothing applied, repaired or saved, so nothing restarted — for a
 // caller that will make the whole change again (Options.DeferMissingAdd).
 //
-// proxyURL is the proxy the default restart (restartAndWait) waits for.
+// proxyURL is the proxy the default restart (RestartAndWait) waits for.
 func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, hold bool), o Options, ollamaBase, proxyURL string) (Result, error) {
 	path := o.path()
 	var res Result
@@ -459,7 +459,7 @@ func applyPlanned(plan func(*File) (add []plannedAdd, remove []plannedRemove, ho
 	if (res.Changed && !o.NoRestart) || o.ForceRestart {
 		restart := o.Restart
 		if restart == nil {
-			restart = func() []string { return restartAndWait(proxyURL) }
+			restart = func() []string { return RestartAndWait(proxyURL) }
 		}
 		res.Warnings = restart()
 	}

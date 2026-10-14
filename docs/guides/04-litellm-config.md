@@ -343,6 +343,7 @@ wt owns all LiteLLM management. Commands:
 | `wt litellm status [--json]` | Routing state: enabled, url, whether an api key is set (never printed) |
 | `wt litellm on` / `off` | Route non-native models through the proxy / dial providers directly (policy only; the proxy is untouched) |
 | `wt litellm set [--url U] [--api-key K]` | Update the proxy URL and/or key wt uses |
+| `wt litellm restart` | Restart the proxy the way `sync` does after a route change (§2): one SIGTERM, a wait of up to 3 minutes for a request in flight, launchd starts it again, then a wait of up to 30 s for it to answer; exit 1 on a failed restart or a proxy that does not answer. A `WT_LITELLM_RESTART_CMD` is run as given |
 
 `wt litellm expose` / `unexpose` were removed in #179; they remain only as hidden stubs that exit 1 and point to `wt litellm sync`.
 

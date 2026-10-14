@@ -21,9 +21,14 @@
 # unpinned reinstall can land on 3.14, where Prisma's engine binaries are
 # missing ("Unable to find Prisma binaries").
 #
-# The kickstart honours WT_LITELLM_RESTART_CMD (wt's own override, legacy
+# The restart honours WT_LITELLM_RESTART_CMD (wt's own override, legacy
 # alias MODELMAN_LITELLM_RESTART_CMD) so a redirected or non-launchd proxy
-# restarts the way the rest of the stack already restarts it.
+# restarts the way the rest of the stack already restarts it. Without one it
+# is `wt litellm restart`, the restart `wt litellm sync` makes: one SIGTERM, a
+# wait of up to 3 minutes for a request in flight to finish, then launchd
+# starts the proxy again (#377). `launchctl kickstart -k` is only the fallback
+# for a wt too old to have that command: launchd follows its own SIGTERM with
+# a SIGKILL 5 seconds later, cutting off whatever an agent was waiting for.
 #
 # Usage: update/litellm [--reinstall] [--no-restart] [--dry-run] [--check]
 
@@ -66,6 +71,15 @@ TOOL_ROOT="$HOME/.local/share/uv/tools/litellm"
 TOOL_BIN="$TOOL_ROOT/bin"
 RECEIPT="$TOOL_ROOT/uv-receipt.toml"
 PLIST="${WT_LITELLM_PLIST:-$HOME/Library/LaunchAgents/local.litellm.proxy.plist}"
+
+# wt_restarts — whether the wt on PATH has `wt litellm restart`. Asked of the
+# subcommand list, not of `wt litellm restart --help`: cobra answers an unknown
+# subcommand's --help with the parent's help and exit 0. update-tools updates
+# litellm before wt, so the wt here can predate the command.
+wt_restarts() {
+    command -v wt > /dev/null 2>&1 &&
+        wt litellm --help 2> /dev/null | grep -Eq '^[[:space:]]+restart[[:space:]]'
+}
 
 installed_version=$(litellm --version 2> /dev/null | sed -n 's/^LiteLLM: Current Version = //p')
 installed_version=${installed_version:-unknown}
@@ -132,8 +146,10 @@ if dry_run_stop; then
     if [ -z "${NO_RESTART:-}" ]; then
         if [ -n "${WT_LITELLM_RESTART_CMD:-${MODELMAN_LITELLM_RESTART_CMD:-}}" ]; then
             update_note "would run: ${WT_LITELLM_RESTART_CMD:-$MODELMAN_LITELLM_RESTART_CMD} (WT_LITELLM_RESTART_CMD)"
+        elif [ -f "$PLIST" ] && wt_restarts; then
+            update_note "would run: wt litellm restart"
         elif [ -f "$PLIST" ]; then
-            update_note "would run: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"
+            update_note "would run: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy (this wt has no 'litellm restart'; a request in flight is cut off)"
         else
             update_note "no $PLIST and no WT_LITELLM_RESTART_CMD; nothing to restart"
         fi
@@ -184,7 +200,14 @@ if [ -z "${NO_RESTART:-}" ]; then
         rm -f "$restart_log"
         [ "$restart_rc" -eq 0 ] || update_fail "restart command exited $restart_rc: $restart_cmd"
         restarted="the proxy was restarted ($restart_cmd)"
+    elif [ -f "$PLIST" ] && wt_restarts; then
+        # wt prints the drain notice itself while a request in flight holds
+        # the restart up (up to 3 minutes), and exits 1 when the restart
+        # fails or the proxy does not answer again.
+        run wt litellm restart || update_fail "wt litellm restart failed"
+        restarted="the proxy was restarted by wt litellm restart and re-read config.yaml"
     elif [ -f "$PLIST" ]; then
+        update_note "the wt on PATH has no 'litellm restart' (update wt); falling back to launchctl kickstart -k, which cuts off a request in flight"
         run launchctl kickstart -k "gui/$(id -u)/local.litellm.proxy" ||
             update_fail "launchctl kickstart failed"
         restarted="the proxy was kicked and re-read config.yaml"
