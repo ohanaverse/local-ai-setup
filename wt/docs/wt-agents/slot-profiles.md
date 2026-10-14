@@ -7,14 +7,13 @@ one model it names: wt sets `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot
 to the `--model` value (see
 [claude-wt.md](claude-wt.md#model-slots-on-a-single-model-launch)), so no
 slot keeps an Anthropic id for the LiteLLM proxy to reject with
-`Invalid model name passed in model=claude-…`. On its own, a single-model
-launch sends every tier to the one model.
+`Invalid model name passed in model=claude-…`.
 
-A **slot profile** does that. It is a named, hand-written entry that
-assigns a registry model to each of an agent's model slots. It appears as a
-row in the model picker, and you choose it like a model. Claude Code is the
-only agent with slots today; its slots are `fable`, `opus`, `sonnet` and
-`haiku`.
+A **slot profile** gives each slot its own model. It is a named,
+hand-written entry that assigns a registry model to each of an agent's model
+slots. It appears as a row in the model picker, and you choose it like a
+model. Claude Code is the only agent with slots today; its slots are
+`fable`, `opus`, `sonnet` and `haiku`.
 
 Slot profiles are not the automatic profiles of [profiles.md](profiles.md).
 An automatic profile has no name, is never chosen, and is applied to a
