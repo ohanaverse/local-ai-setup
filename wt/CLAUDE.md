@@ -291,7 +291,7 @@ Read [docs/internals/cloud-sync.md](docs/internals/cloud-sync.md) before changin
 
 ## LiteLLM routes (`wt litellm`)
 
-`cmd/wt/litellm.go` + `internal/litellm`, the sole implementation of `config.yaml` route management. Subcommands `sync|list|providers|status|on|off|set`; `sync` is the only CLI route write. Operator doc: [docs/wt-agents/README.md](docs/wt-agents/README.md#litellm-routes-are-wt-owned). JSON shapes are pinned by [../docs/contracts/litellm-cli.sample.json](../docs/contracts/litellm-cli.sample.json).
+`cmd/wt/litellm.go` + `internal/litellm`, the sole implementation of `config.yaml` route management. Subcommands `sync|list|providers|status|on|off|set|restart`; `sync` is the only CLI route write, and `restart` (`litellm.RestartAndWait`, the restart `sync` makes, on its own; exit 1 on a failed restart or a proxy that does not answer) is what `bin/update/litellm` runs after an upgrade. Operator doc: [docs/wt-agents/README.md](docs/wt-agents/README.md#litellm-routes-are-wt-owned). JSON shapes are pinned by [../docs/contracts/litellm-cli.sample.json](../docs/contracts/litellm-cli.sample.json).
 
 - **wt owns only its own rows**: each carries `model_info.wt_managed: true`. A hand-written row keeps everything except an empty ollama `api_base`, which every write fills (#202).
 - **`sync` trusts only `ok` families**: a family whose probe is untrustworthy is frozen with a warning; one that refuses the connection has its local routes removed.

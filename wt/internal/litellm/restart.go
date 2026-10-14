@@ -423,11 +423,13 @@ func (b Bounce) Run(ctx context.Context, baseURL string) (warnings []string, wai
 // the restart and the readiness steps (StubProxyReadinessForTest).
 var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: WaitReady}
 
-// restartAndWait is the Apply default when Options.Restart is nil (`wt
+// RestartAndWait is the Apply default when Options.Restart is nil (`wt
 // litellm sync`, and through it `wt cloud-sync`, `wt model add|edit|rm|init`
-// and the Models tab of `wt config`): bounce.Run, with a failed wait made one
-// more warning, which the command prints like the restart's own.
-func restartAndWait(baseURL string) []string {
+// and the Models tab of `wt config`), and all of `wt litellm restart`:
+// bounce.Run, with a failed wait made one more warning, which the command
+// prints like the restart's own. Every warning is a restart that failed or a
+// proxy that did not answer again.
+func RestartAndWait(baseURL string) []string {
 	warnings, err := bounce.Run(context.Background(), baseURL)
 	if err != nil {
 		warnings = append(warnings, err.Error())

@@ -73,10 +73,16 @@ what it prints:
 - When launchd reports no pid for the job (it is not running, or there is no
   `launchctl`), wt runs the forced command directly.
 
+`wt litellm restart` makes this restart on its own: the same drain, then the
+wait for the proxy to answer again (up to 30s). It exits 1 when the restart
+fails or the proxy does not answer, and `bin/update/litellm` runs it after an
+upgrade.
+
 The forced command is `launchctl kickstart -k
 gui/$(id -u)/local.litellm.proxy`: launchd sends SIGTERM and kills the proxy 5
 seconds later, cutting off any request still in flight. It is the manual
-restart, and what `bin/update/litellm` runs. A command set in
+restart for a proxy that is stuck, and what `bin/update/litellm` falls back to
+with a wt too old to have `wt litellm restart`. A command set in
 `WT_LITELLM_RESTART_CMD` (legacy alias `MODELMAN_LITELLM_RESTART_CMD`) replaces
 all of the above: wt runs it as given, with a 30s limit, and neither looks up
 nor signals the proxy.
@@ -88,11 +94,13 @@ row whose provider's probe did not succeed — it leaves the id's route as it is
 (`model "<id>" is in the registry twice (providers A, B); its route is left
 as it is — fix the entry in <registry path>`).
 If a model was added by hand or the restart failed, restart the proxy
-manually (this is the forced restart: it cuts off a request in flight after 5
-seconds):
+manually. `wt litellm restart` lets a request in flight finish first; the
+forced restart cuts it off after 5 seconds, and is for a proxy that does not
+exit on its own:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/local.litellm.proxy
+wt litellm restart
+launchctl kickstart -k gui/$(id -u)/local.litellm.proxy   # forced
 ```
 
 This affects every agent routed through the proxy (claude, codex, copilot,

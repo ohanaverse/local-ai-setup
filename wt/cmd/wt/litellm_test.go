@@ -137,6 +137,68 @@ func TestLitellmSyncWaitsForTheProxy(t *testing.T) {
 	}
 }
 
+// TestLitellmRestartWaitsAndReports pins `wt litellm restart`: the restart
+// `wt litellm sync` runs (here the WT_LITELLM_RESTART_CMD override), the
+// probe of the [litellm] url before it and the wait after it, one line on
+// stdout when the proxy answers again, and an error naming the cause when
+// the restart command fails or the proxy never answers. bin/update/litellm
+// runs it after an upgrade in place of `launchctl kickstart -k`, which kills
+// a request in flight after 5 seconds; a failure that exited 0 would leave
+// the updater reporting a proxy it never restarted.
+func TestLitellmRestartWaitsAndReports(t *testing.T) {
+	const url = "http://proxy.test:4000"
+	for _, tc := range []struct {
+		name, cmd string
+		waitErr   error
+		wantErr   string
+	}{
+		{name: "restarted and answering", cmd: "echo restart >> RESTARTS"},
+		{name: "the restart command fails", cmd: "echo restart >> RESTARTS; exit 3", wantErr: "exit status 3"},
+		{name: "the proxy never answers", cmd: "echo restart >> RESTARTS", waitErr: errors.New("LiteLLM proxy not ready at " + url + "/health/liveliness: context deadline exceeded"),
+			wantErr: "LiteLLM proxy not ready at " + url},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restarts := filepath.Join(t.TempDir(), "restarts")
+			t.Setenv("WT_LITELLM_RESTART_CMD", strings.ReplaceAll(tc.cmd, "RESTARTS", restarts))
+			var steps []string
+			t.Cleanup(litellm.StubProxyReadinessForTest(
+				func(_ context.Context, u string, _ time.Duration) bool {
+					steps = append(steps, "probe "+u)
+					return true
+				},
+				func(_ context.Context, u string, _ time.Duration) error {
+					b, _ := os.ReadFile(restarts)
+					steps = append(steps, fmt.Sprintf("wait %s after %q", u, b))
+					return tc.waitErr
+				},
+			))
+			cfg := litellmTestConfig()
+			cfg.SetLitellmForTest(config.LitellmState{URL: url})
+
+			var out, errOut bytes.Buffer
+			err := runLitellmRestart(&out, &errOut, cfg)
+			if want := []string{"probe " + url, fmt.Sprintf("wait %s after %q", url, "restart\n")}; !slices.Equal(steps, want) {
+				t.Errorf("steps = %q, want %q", steps, want)
+			}
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				if got, want := out.String(), "restarted the LiteLLM proxy at "+url+"\n"; got != want {
+					t.Errorf("stdout = %q, want %q", got, want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+			if out.Len() != 0 {
+				t.Errorf("a failed restart printed %q on stdout", out.String())
+			}
+		})
+	}
+}
+
 // TestLitellmListAndProviders pins the read-only commands' JSON shapes: the
 // "routed" id list and ownership rows of `list --json`, and the per-provider
 // policy of `providers --json` (cloud or not). They are what a script reads
