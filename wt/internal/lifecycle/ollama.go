@@ -64,11 +64,13 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 		}
 	}
 	// The probes after the first: none for a refused stop, and a count, not a
-	// deadline, so the wait is bounded whatever a clock says.
-	waits := 0
+	// deadline, so the wait is bounded whatever a clock says. bound is that
+	// count: waits is spent by the loop while it runs.
+	bound := 0
 	if cliErr == nil && e.pollInterval > 0 {
-		waits = int(e.ollamaUnloadTimeout / e.pollInterval)
+		bound = int(e.ollamaUnloadTimeout / e.pollInterval)
 	}
+	waits := bound
 	for ; ; waits-- {
 		loaded, perr := localmodels.OllamaLoaded(ctx, e.probeClient, origin)
 		if err := ctx.Err(); err != nil {
@@ -86,7 +88,11 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 			return cliErr
 		}
 		if waits <= 0 {
-			return ollamaStillListed(modelName, e.ollamaUnloadTimeout)
+			// The wait's sleeping total, interval by interval, not the
+			// configured bound: integer division can cut the count under
+			// ollamaUnloadTimeout, and the message must not claim more than
+			// the wait sat out.
+			return ollamaStillListed(modelName, time.Duration(bound)*e.pollInterval)
 		}
 		if err := e.sleep(ctx, e.pollInterval); err != nil {
 			return err
@@ -95,7 +101,8 @@ func (ollamaBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, 
 }
 
 // ollamaStillListed is the failed stop of a model `ollama stop` accepted and
-// /api/ps still lists after the whole wait. It says how long wt waited and
+// /api/ps still lists after the whole wait. waited is the sleeping total the
+// wait sat out, not the configured bound. It says how long wt waited and
 // what the likeliest cause is, since the model usually does unload.
 func ollamaStillListed(modelName string, waited time.Duration) error {
 	d := waited.String()
