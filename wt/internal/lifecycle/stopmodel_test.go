@@ -189,8 +189,9 @@ func TestStopModelOllamaExitZeroButStillLoadedIsError(t *testing.T) {
 
 // TestStopModelOllamaDefaultWaitCoversObservedUnloads pins the production
 // bound and interval: ollama was seen to take 6 to 20 seconds to unload a
-// model with a request in flight, and 55 seconds behind a long generation, so the wait must
-// cover that with margin while a stop that will never finish still ends within about three minutes.
+// model with a request in flight, and 55 seconds behind a long generation, so
+// the wait must cover that with margin while a stop that will never finish
+// still ends within about three minutes.
 func TestStopModelOllamaDefaultWaitCoversObservedUnloads(t *testing.T) {
 	e := defaultEnv()
 	if e.ollamaUnloadTimeout != 180*time.Second || e.pollInterval != time.Second {
