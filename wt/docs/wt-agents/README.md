@@ -171,10 +171,10 @@ The worktree picker tags each worktree or branch that has a pull request on
 GitHub with its number and state after the branch name — `#383 open`, or
 `draft`, `merged`, `closed` — and puts the PR's title on the row's second line,
 before the path. Typing the number (`/383`) in the filter finds the row. The
-tags come from two `gh pr list` calls per picker open — open PRs, then PRs
+tags come from two `gh pr list` calls per picker open — open PRs, and PRs
 of every state, so an old open PR is never crowded out by newer merged ones —
-and appear when both have answered (within ten seconds); the picker does not
-wait for them. A branch with
+and appear as each answers (within five seconds), the open PRs' usually
+first; the picker does not wait for them. A branch with
 several PRs shows the highest-numbered one; PRs from forks are not shown.
 Without `gh`, outside a GitHub repository, or with `gh` not logged in, the
 picker simply shows no tags.

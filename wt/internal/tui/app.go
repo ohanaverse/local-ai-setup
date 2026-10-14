@@ -131,8 +131,10 @@ type model struct {
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
 
-	// prs is each branch's pull request, from the one `gh pr list` a picker
-	// open runs (loadPRsCmd); nil until it answers, empty when it failed.
+	// prs is each branch's pull request, merged from the `gh pr list`
+	// listings a picker open runs (loadPRsCmd, one per
+	// worktree.PRListStates) as each answers; nil until the first does,
+	// empty when every one so far failed.
 	// Every build of the worktree list (the first, and the reload after a
 	// create) is tagged from it.
 	prs map[string]worktree.PR
@@ -160,8 +162,13 @@ func (m model) Init() tea.Cmd {
 	}
 	// The pull request listing runs beside the enumeration, never before
 	// it: the picker shows as soon as the worktrees are in, and the tags
-	// appear when gh answers (prsLoadedMsg), whichever comes first.
-	return tea.Batch(loadEntriesCmd(), loadPRsCmd())
+	// appear as each listing answers (prsLoadedMsg) — the open PRs' usually
+	// first, every state's filled in after — whichever comes first.
+	cmds := []tea.Cmd{loadEntriesCmd()}
+	for _, state := range worktree.PRListStates {
+		cmds = append(cmds, loadPRsCmd(state))
+	}
+	return tea.Batch(cmds...)
 }
 
 // isTyping reports whether the current phase is actively receiving character
@@ -303,11 +310,13 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case prsLoadedMsg:
-		// The pull requests arrived: kept for any later build of the list,
-		// and put on the list already on screen in place, so the cursor,
-		// the filter and the page stay where the user left them. Nothing
-		// is shown for a listing that failed: msg.prs is then empty.
-		m.prs = msg.prs
+		// One listing's pull requests arrived: merged with any listing
+		// already in (the higher-numbered PR per branch, so arrival order
+		// does not matter), kept for any later build of the list, and put
+		// on the list already on screen in place, so the cursor, the
+		// filter and the page stay where the user left them. A listing
+		// that failed adds nothing: msg.prs is then empty.
+		m.prs = worktree.MergePRs(m.prs, msg.prs)
 		if m.ready {
 			applyPRs(&m.list, m.prs)
 		}
@@ -1263,22 +1272,24 @@ func loadEntriesCmd() tea.Cmd {
 	}
 }
 
-// loadPRsCmd returns a command that lists the repository's pull requests
-// with gh (worktree.PRs: one call, five seconds at most, every failure an
-// empty map) for the worktree picker's tags. It runs beside loadEntriesCmd
-// and finds the repository root itself, so the picker never waits for it.
-func loadPRsCmd() tea.Cmd {
+// loadPRsCmd returns a command that runs one listing of the repository's
+// pull requests with gh (worktree.PRs with state: one call, five seconds at
+// most, every failure an empty map) for the worktree picker's tags. Each
+// listing runs beside loadEntriesCmd and the other listings and finds the
+// repository root itself, so the picker never waits for it.
+func loadPRsCmd(state string) tea.Cmd {
 	return func() tea.Msg {
 		root, err := worktree.RepoRoot()
 		if err != nil {
 			return prsLoadedMsg{prs: map[string]worktree.PR{}}
 		}
-		return prsLoadedMsg{prs: worktree.PRs(root)}
+		return prsLoadedMsg{prs: worktree.PRs(root, state)}
 	}
 }
 
-// prsLoadedMsg carries loadPRsCmd's answer: each branch's pull request,
-// keyed by head branch name; empty, never nil, when the listing failed.
+// prsLoadedMsg carries one loadPRsCmd's answer: each branch's pull request
+// in that listing, keyed by head branch name; empty, never nil, when the
+// listing failed.
 type prsLoadedMsg struct {
 	prs map[string]worktree.PR
 }

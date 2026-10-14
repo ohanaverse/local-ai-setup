@@ -19,13 +19,20 @@ const prTimeout = 5 * time.Second
 
 // prLimit is how many pull requests one listing asks for. gh lists the
 // newest first, so a branch whose only PR is older than the newest prLimit
-// of its listing shows no tag. There are two listings (prStates): open PRs
-// alone, so merged and closed ones can never crowd an old open PR out, then
-// every state.
+// of its listing shows no tag. The picker runs two listings (PRListStates):
+// open PRs alone, so merged and closed ones can never crowd an old open PR
+// out, and every state.
 const prLimit = 200
 
-// prStates are the `gh pr list --state` values PRs lists, in order.
-var prStates = []string{"open", "all"}
+// The `gh pr list --state` values the picker lists. The open listing is
+// shorter, so its tags usually arrive first.
+const (
+	PRListOpen = "open"
+	PRListAll  = "all"
+)
+
+// PRListStates are the listings the picker runs, each its own PRs call.
+var PRListStates = []string{PRListOpen, PRListAll}
 
 // PRState is the state the picker shows for a pull request.
 type PRState string
@@ -94,26 +101,38 @@ func StubPRListForTest(fn func(dir, state string) ([]byte, error)) (restore func
 }
 
 // PRs returns the pull request to show for each branch of the repository at
-// dir, keyed by head branch name (no remote prefix). It lists open PRs, then
-// PRs of every state (prStates), and parses the two listings as one, so a
-// PR in both counts once. A listing that fails — gh not installed, not a
-// GitHub remote, not logged in, the timeout, output that is not the
-// expected JSON — adds nothing and nothing is printed: with both failed the
-// map is empty and the picker shows no tags.
-func PRs(dir string) map[string]PR {
-	var all []ghPR
-	for _, state := range prStates {
-		out, err := listPRs(dir, state)
-		if err != nil {
-			continue
-		}
-		var raw []ghPR
-		if err := json.Unmarshal(out, &raw); err != nil {
-			continue
-		}
-		all = append(all, raw...)
+// dir from one listing, `gh pr list --state state` (PRListOpen or
+// PRListAll), keyed by head branch name (no remote prefix). Any failure —
+// gh not installed, not a GitHub remote, not logged in, the timeout, output
+// that is not the expected JSON — returns an empty map and nothing else:
+// that listing then adds no tags, and nothing is printed.
+func PRs(dir, state string) map[string]PR {
+	out, err := listPRs(dir, state)
+	if err != nil {
+		return map[string]PR{}
 	}
-	return pickPRs(all)
+	prs, err := parsePRs(out)
+	if err != nil {
+		return map[string]PR{}
+	}
+	return prs
+}
+
+// MergePRs returns a new map with every branch of a and b, a branch in both
+// keeping the higher-numbered PR — the rule parsePRs applies within one
+// listing, so the merge of two listings does not depend on which arrived
+// first. Either map may be nil.
+func MergePRs(a, b map[string]PR) map[string]PR {
+	out := make(map[string]PR, len(a)+len(b))
+	for _, m := range []map[string]PR{a, b} {
+		for branch, pr := range m {
+			if cur, ok := out[branch]; ok && cur.Number > pr.Number {
+				continue
+			}
+			out[branch] = pr
+		}
+	}
+	return out
 }
 
 // ghPR is one element of `gh pr list --json ...`.
@@ -126,22 +145,18 @@ type ghPR struct {
 	Title             string `json:"title"`
 }
 
-// parsePRs maps one listing's JSON to one PR per head branch (pickPRs).
+// parsePRs maps gh's JSON to one PR per head branch. A branch with several
+// PRs keeps the one with the highest number — the one opened last, which is
+// the branch's current PR whatever later activity (a comment, a label) did
+// to an older one's updatedAt. A PR from a fork (isCrossRepository) is
+// skipped: its head branch names a branch in someone else's repository, not
+// one of this repository's. An element with no head branch or no number is
+// skipped too.
 func parsePRs(data []byte) (map[string]PR, error) {
 	var raw []ghPR
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	return pickPRs(raw), nil
-}
-
-// pickPRs keeps one PR per head branch. A branch with several PRs keeps the
-// one with the highest number — the one opened last, which is the branch's
-// current PR whatever later activity (a comment, a label) did to an older
-// one's updatedAt. A PR from a fork (isCrossRepository) is skipped: its head
-// branch names a branch in someone else's repository, not one of this
-// repository's. An element with no head branch or no number is skipped too.
-func pickPRs(raw []ghPR) map[string]PR {
 	prs := make(map[string]PR, len(raw))
 	for _, p := range raw {
 		if p.IsCrossRepository || p.HeadRefName == "" || p.Number <= 0 {
@@ -152,7 +167,7 @@ func pickPRs(raw []ghPR) map[string]PR {
 		}
 		prs[p.HeadRefName] = PR{Number: p.Number, State: prState(p.State, p.IsDraft), Title: p.Title}
 	}
-	return prs
+	return prs, nil
 }
 
 // prState names gh's state the way the picker shows it: an open draft is

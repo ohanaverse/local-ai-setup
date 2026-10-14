@@ -70,7 +70,7 @@ func TestPRsFailureIsAnEmptyMap(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Cleanup(StubPRListForTest(fn))
-			got := PRs("/repo")
+			got := PRs("/repo", PRListAll)
 			if got == nil || len(got) != 0 {
 				t.Errorf("PRs = %#v, want an empty, non-nil map", got)
 			}
@@ -78,17 +78,17 @@ func TestPRsFailureIsAnEmptyMap(t *testing.T) {
 	}
 }
 
-// TestPRsRunsInTheRepoDir pins that both listings run in the directory the
-// picker enumerated, open PRs first, so gh finds that repository's remote
-// whatever wt's own working directory is.
+// TestPRsRunsInTheRepoDir pins that a listing runs once, for the state asked
+// for, in the directory the picker enumerated, so gh finds that
+// repository's remote whatever wt's own working directory is.
 func TestPRsRunsInTheRepoDir(t *testing.T) {
 	var calls []string
 	t.Cleanup(StubPRListForTest(func(dir, state string) ([]byte, error) {
 		calls = append(calls, dir+" "+state)
 		return []byte(`[{"number": 5, "state": "OPEN", "headRefName": "x"}]`), nil
 	}))
-	got := PRs("/repo")
-	if want := []string{"/repo open", "/repo all"}; !reflect.DeepEqual(calls, want) {
+	got := PRs("/repo", PRListOpen)
+	if want := []string{"/repo open"}; !reflect.DeepEqual(calls, want) {
 		t.Errorf("calls = %v, want %v", calls, want)
 	}
 	if got["x"].Number != 5 {
@@ -96,43 +96,27 @@ func TestPRsRunsInTheRepoDir(t *testing.T) {
 	}
 }
 
-// TestPRsKeepsAnOldOpenPRTheAllListingDropped pins why there are two
-// listings: an open PR older than the newest prLimit PRs of every state is
-// missing from the all-states listing but still in the open one, and its
-// branch keeps its tag. A regression back to one listing loses the tag on
-// exactly the long-lived open PRs.
-func TestPRsKeepsAnOldOpenPRTheAllListingDropped(t *testing.T) {
-	t.Cleanup(StubPRListForTest(func(_, state string) ([]byte, error) {
-		if state == "open" {
-			return []byte(`[{"number": 7, "state": "OPEN", "headRefName": "old"}]`), nil
-		}
-		return []byte(`[{"number": 900, "state": "MERGED", "headRefName": "new"}]`), nil
-	}))
-	got := PRs("/repo")
-	if got["old"].Number != 7 || got["old"].State != PROpen {
-		t.Errorf("old = %+v, want #7 open", got["old"])
+// TestMergePRsKeepsTheHigherNumberInEitherOrder pins how the picker joins
+// its two listings: every branch of both, and a branch in both keeps the
+// higher-numbered PR whichever listing came first — the same rule as within
+// one listing. A regression lets the slower listing's older PR overwrite a
+// newer one, or drops an old open PR only the open listing had.
+func TestMergePRsKeepsTheHigherNumberInEitherOrder(t *testing.T) {
+	open := map[string]PR{"old": {Number: 7, State: PROpen}, "b": {Number: 10, State: PROpen}}
+	all := map[string]PR{"new": {Number: 900, State: PRMerged}, "b": {Number: 12, State: PRClosed}}
+	want := map[string]PR{
+		"old": {Number: 7, State: PROpen},
+		"new": {Number: 900, State: PRMerged},
+		"b":   {Number: 12, State: PRClosed},
 	}
-	if got["new"].Number != 900 || got["new"].State != PRMerged {
-		t.Errorf("new = %+v, want #900 merged", got["new"])
+	if got := MergePRs(open, all); !reflect.DeepEqual(got, want) {
+		t.Errorf("MergePRs(open, all) = %v, want %v", got, want)
 	}
-}
-
-// TestPRsOneFailedListingKeepsTheOther pins that the two listings fail
-// independently: a timeout or bad output from one still leaves the other's
-// tags on screen instead of none.
-func TestPRsOneFailedListingKeepsTheOther(t *testing.T) {
-	for _, failing := range []string{"open", "all"} {
-		t.Run(failing+" fails", func(t *testing.T) {
-			t.Cleanup(StubPRListForTest(func(_, state string) ([]byte, error) {
-				if state == failing {
-					return []byte("not json"), nil
-				}
-				return []byte(`[{"number": 3, "state": "OPEN", "headRefName": "b"}]`), nil
-			}))
-			if got := PRs("/repo"); got["b"].Number != 3 {
-				t.Errorf("PRs = %#v, want b -> #3", got)
-			}
-		})
+	if got := MergePRs(all, open); !reflect.DeepEqual(got, want) {
+		t.Errorf("MergePRs(all, open) = %v, want %v", got, want)
+	}
+	if got := MergePRs(nil, map[string]PR{}); got == nil || len(got) != 0 {
+		t.Errorf("MergePRs(nil, empty) = %#v, want an empty, non-nil map", got)
 	}
 }
 

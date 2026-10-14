@@ -1,13 +1,18 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -298,7 +303,7 @@ func TestPRsBeforeEntriesTagTheFirstBuild(t *testing.T) {
 // status or list error.
 func TestFailedPRListingShowsNoTags(t *testing.T) {
 	m := pickerModel(t)
-	msg := loadPRsCmd()()
+	msg := loadPRsCmd(worktree.PRListAll)()
 	got, _ := m.Update(msg)
 	m = got.(model)
 	for _, it := range m.list.Items() {
@@ -311,21 +316,23 @@ func TestFailedPRListingShowsNoTags(t *testing.T) {
 	}
 }
 
-// TestLoadPRsCmdReturnsTheListing pins loadPRsCmd's plumbing: gh runs in the
-// repository root wt was started under (here a fresh repository), and its
-// JSON reaches the message as tags. No real gh runs: the listing is stubbed.
+// TestLoadPRsCmdReturnsTheListing pins loadPRsCmd's plumbing: gh runs once,
+// for the listing asked for, in the repository root wt was started under
+// (here a fresh repository), and its JSON reaches the message as tags. No
+// real gh runs: the listing is stubbed.
 func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 	repo := t.TempDir()
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
 	t.Chdir(repo)
-	var dirs []string
-	t.Cleanup(worktree.StubPRListForTest(func(dir, _ string) ([]byte, error) {
+	var dirs, states []string
+	t.Cleanup(worktree.StubPRListForTest(func(dir, state string) ([]byte, error) {
 		dirs = append(dirs, dir)
+		states = append(states, state)
 		return []byte(`[{"number": 383, "state": "OPEN", "isDraft": false, "headRefName": "fix/x", "isCrossRepository": false, "title": "X"}]`), nil
 	}))
-	msg, ok := loadPRsCmd()().(prsLoadedMsg)
+	msg, ok := loadPRsCmd(worktree.PRListOpen)().(prsLoadedMsg)
 	if !ok {
 		t.Fatalf("loadPRsCmd returned %T", msg)
 	}
@@ -333,13 +340,90 @@ func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 		t.Errorf("prs[fix/x] = %+v, want #383 open", got)
 	}
 	want, _ := filepath.EvalSymlinks(repo)
-	if len(dirs) != 2 {
-		t.Fatalf("gh ran %d times, want twice (open, then every state)", len(dirs))
+	if len(dirs) != 1 || states[0] != worktree.PRListOpen {
+		t.Fatalf("gh ran for %v, want once for %q", states, worktree.PRListOpen)
 	}
-	for _, dir := range dirs {
-		if got, _ := filepath.EvalSymlinks(dir); got != want {
-			t.Errorf("gh ran in %q, want the repository root %q", dir, want)
+	if got, _ := filepath.EvalSymlinks(dirs[0]); got != want {
+		t.Errorf("gh ran in %q, want the repository root %q", dirs[0], want)
+	}
+}
+
+// TestInitRunsEveryPRListing pins that a picker open asks for each listing
+// in worktree.PRListStates, each in its own command, so the open PRs' tags
+// are not held back behind the longer every-state listing. A regression to
+// one listing loses either old open PRs or merged and closed tags.
+func TestInitRunsEveryPRListing(t *testing.T) {
+	var mu sync.Mutex
+	var states []string
+	t.Cleanup(worktree.StubPRListForTest(func(_, state string) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		states = append(states, state)
+		return nil, errors.New("stubbed")
+	}))
+	t.Chdir(t.TempDir())
+	if out, err := exec.Command("git", "init", "-q", ".").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	batch, ok := model{}.Init()().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("Init did not return a batch")
+	}
+	// The batch is the entry load followed by one command per listing.
+	if len(batch) != 1+len(worktree.PRListStates) {
+		t.Fatalf("Init batched %d commands, want 1 + %d listings", len(batch), len(worktree.PRListStates))
+	}
+	for _, cmd := range batch[1:] {
+		if _, ok := cmd().(prsLoadedMsg); !ok {
+			t.Error("a listing command did not answer with prsLoadedMsg")
 		}
+	}
+	sort.Strings(states)
+	if want := []string{worktree.PRListAll, worktree.PRListOpen}; !reflect.DeepEqual(states, want) {
+		t.Errorf("listings run = %v, want %v", states, want)
+	}
+}
+
+// TestPRListingsMergeInEitherOrder pins the progressive tags: the first
+// listing to answer tags the rows at once, the second adds its branches
+// without dropping the first's, and a branch in both keeps the
+// higher-numbered PR whichever arrived first. A regression either wipes the
+// open tags when the every-state listing lands, or lets the late listing's
+// older PR replace a newer one.
+func TestPRListingsMergeInEitherOrder(t *testing.T) {
+	open := map[string]worktree.PR{
+		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop reports its outcome"},
+		"feat/local":                 {Number: 380, State: worktree.PROpen, Title: "Older open"},
+	}
+	all := map[string]worktree.PR{
+		"feat/local":  {Number: 382, State: worktree.PRMerged, Title: "Local one"},
+		"fix/current": {Number: 384, State: worktree.PRDraft, Title: "Current work"},
+	}
+	for name, order := range map[string][]map[string]worktree.PR{
+		"open first": {open, all},
+		"all first":  {all, open},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := pickerModel(t)
+			got, _ := m.Update(prsLoadedMsg{prs: order[0]})
+			m = got.(model)
+			for branch := range order[0] {
+				if branch == "fix/current" {
+					continue // the (current) row is found by label below
+				}
+				if rowByBranch(t, m.list.Items(), branch).pr == nil {
+					t.Errorf("%s untagged after the first listing", branch)
+				}
+			}
+			got, _ = m.Update(prsLoadedMsg{prs: order[1]})
+			m = got.(model)
+			if tag := rowByBranch(t, m.list.Items(), "fix/wt-ollama-stop-outcome").prTag(); tag != "#383 open" {
+				t.Errorf("stop-outcome tag = %q, want #383 open", tag)
+			}
+			if tag := rowByBranch(t, m.list.Items(), "feat/local").prTag(); tag != "#382 merged" {
+				t.Errorf("feat/local tag = %q, want #382 merged (the higher number)", tag)
+			}
+		})
 	}
 }
 
@@ -351,7 +435,7 @@ func TestLoadPRsCmdOutsideARepoIsEmpty(t *testing.T) {
 		t.Error("gh ran outside a repository")
 		return nil, nil
 	}))
-	msg := loadPRsCmd()().(prsLoadedMsg)
+	msg := loadPRsCmd(worktree.PRListAll)().(prsLoadedMsg)
 	if msg.prs == nil || len(msg.prs) != 0 {
 		t.Errorf("prs = %#v, want an empty map", msg.prs)
 	}
