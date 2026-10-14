@@ -302,16 +302,18 @@ func TestModelTableCountsTheExceptionNote(t *testing.T) {
 		}
 	}
 	// With the note counted, each column arrives later than the header alone
-	// would allow (FAMILY at 87, where the header fits from 73).
+	// would allow (FAMILY at 87, where the header fits from 73). No row of
+	// this table is rated, so TIER, all dashes, is the last column to arrive
+	// (unratedDropOrder).
 	assertColumnBoundaries(t, tbl, []columnBoundary{
 		{keptFit, "MODEL STATUS RUNNING"},
 		{87, "FAMILY MODEL STATUS RUNNING"},
 		{94, "FAMILY MODEL LOC STATUS RUNNING"},
-		{100, "FAMILY MODEL TIER LOC STATUS RUNNING"},
-		{125, "FAMILY MODEL TIER LOC STATUS RUNNING COST"},
-		{129, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D"},
-		{133, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D"},
-		{138, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
+		{119, "FAMILY MODEL LOC STATUS RUNNING COST"},
+		{123, "FAMILY MODEL LOC STATUS RUNNING COST 1D"},
+		{127, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D"},
+		{132, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D"},
+		{140, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
 		{146, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
 	})
 }

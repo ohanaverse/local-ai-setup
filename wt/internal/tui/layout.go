@@ -53,12 +53,6 @@ func modeLine(mode, cost string, width int) string {
 // are kept exactly as modeLine chose them.
 func withTierNote(line string, notes []string, width int) string {
 	for _, n := range notes {
-		if line == "" {
-			if lipgloss.Width(n) <= width {
-				return n
-			}
-			continue
-		}
 		if lipgloss.Width(line)+3+lipgloss.Width(n) <= width {
 			return line + "   " + n
 		}
@@ -98,8 +92,8 @@ func slotLine(p *catalog.ProfileRow, tiers map[string]string, width int) string 
 		}
 		plain[i] = label + " " + p.Models[s].ModelName
 		rated[i] = plain[i]
-		if code := tiers[s]; code != "" {
-			rated[i] += " " + code
+		if short := tiers[s]; short != "" {
+			rated[i] += " " + short
 			anyRated = true
 		}
 	}

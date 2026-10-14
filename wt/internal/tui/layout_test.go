@@ -882,11 +882,9 @@ func timedPickerConfig() *config.Config {
 // is longer, so this is where a table could come out one column too wide for
 // its list, which loses the header or the last column on a real screen. The
 // view must fit; where the COST column is drawn it must show the price in
-// force at that instant, marked; and at 140 columns it must be drawn, so the
-// price is somewhere a user can see it. (At 120 the TIER column, which
-// outlasts COST in colDropOrder, takes the six columns COST needed; 120 must
-// still draw TIER.) Both pickers are measured: the launcher's and the
-// standalone one `wt start` and `wt smoke` open.
+// force at that instant, marked; and at 120 columns it must be drawn, so the
+// price is somewhere a user can see it. Both pickers are measured: the
+// launcher's and the standalone one `wt start` and `wt smoke` open.
 func TestModelPickerWithTimePricedModelsFitsTheTerminal(t *testing.T) {
 	old := pickerNow
 	t.Cleanup(func() { pickerNow = old })
@@ -899,18 +897,15 @@ func TestModelPickerWithTimePricedModelsFitsTheTerminal(t *testing.T) {
 		{"deepseek cheap, ollama peak", ollamaPeak, " 0.6600  0.0220  1.9800~", " 0.5000  0.0500  2.0000~"},
 	} {
 		pickerNow = func() time.Time { return c.at }
-		for _, width := range append(append([]int(nil), layoutWidths...), 140) {
+		for _, width := range layoutWidths {
 			for _, height := range layoutHeights {
 				stubInventory(t, runningOmlxSnapshot())
 				cfg := timedPickerConfig()
 				check := func(picker, view string, cols *tuilayout.Columns) {
 					t.Helper()
 					assertFits(t, c.name+", "+picker, view, width, height)
-					if width == 140 && !cols.Shown(colCost) {
+					if width == 120 && !cols.Shown(colCost) {
 						t.Errorf("%s, %s at %dx%d: the COST column is not drawn", c.name, picker, width, height)
-					}
-					if width >= 120 && !cols.Shown(colTier) {
-						t.Errorf("%s, %s at %dx%d: the TIER column is not drawn", c.name, picker, width, height)
 					}
 					if !cols.Shown(colCost) {
 						return
@@ -955,15 +950,15 @@ func TestAnOpenPickerKeepsThePricesItOpenedWith(t *testing.T) {
 	pickerNow = func() time.Time { reads++; return now }
 	t.Cleanup(func() { pickerNow = old })
 	stubInventory(t, runningOmlxSnapshot())
-	m := flowEnter(t, model{cfg: timedPickerConfig(), agent: "claude", selectedPath: t.TempDir(), width: 140, height: 24}, "claude")
-	m = resized(t, m, 140, 24)
+	m := flowEnter(t, model{cfg: timedPickerConfig(), agent: "claude", selectedPath: t.TempDir(), width: 120, height: 24}, "claude")
+	m = resized(t, m, 120, 24)
 	order := strings.Join(itemIDs(m), ",")
 	if view := m.View(); reads != 1 || !strings.Contains(view, " 1.3200  0.0440  3.9600~") || !strings.Contains(view, " 0.2500  0.0250  1.0000~") {
 		t.Fatalf("on opening: the clock was read %d time(s), want 1, and the view must show deepseek's dear price and ollama's off-peak one:\n%s", reads, view)
 	}
 
 	now = ollamaPeak
-	for _, size := range [][2]int{{40, 12}, {120, 50}, {80, 24}, {140, 24}} {
+	for _, size := range [][2]int{{40, 12}, {120, 50}, {80, 24}, {120, 24}} {
 		m = resized(t, m, size[0], size[1])
 		_ = m.View()
 		m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyDown})

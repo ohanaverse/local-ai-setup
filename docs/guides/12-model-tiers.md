@@ -283,9 +283,11 @@ a sample the modeltiers tests pin):
   `wt model list --json` gives modeltiers, so a model renamed in the registry
   reads `-` until the next run.
 - A slot-profile row's TIER is `-`; the line under the table, which lists the
-  profile's slots, puts each slot model's code after its name.
+  profile's slots, puts each rated slot model's letter and score (`S44`)
+  after its name.
 - On a narrow terminal TIER is dropped after the usage columns and COST, and
-  before LOC and FAMILY. The column is advisory: it does not change the sort
+  before LOC and FAMILY. When no model in the table has a tier or a score
+  (no file yet), TIER is all dashes and is dropped first. The column is advisory: it does not change the sort
   or which row Enter picks.
 - wt reads the file at `MODELTIERS_OUT` when it is set, exactly as
   `modeltiers run` writes it, so a scratch run (step 6) shows in a picker

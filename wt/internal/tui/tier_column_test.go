@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
 // writeTiers writes a tiers.toml rating the slot fixture's models and points
@@ -106,6 +108,36 @@ func TestTierColumnWithoutAFile(t *testing.T) {
 			t.Errorf("%s: tier note %q / slot tiers %v with no tiers file", it.model.ID, it.tier, it.slotTiers)
 		}
 	}
+}
+
+// TestAnAllDashTierColumnIsDroppedFirst pins which column a table one
+// column too wide for its list gives up: with ratings, the survey segment,
+// so TIER outlasts the usage columns and COST; with no row rated or scored
+// (no tiers file, the case of a user who never ran modeltiers), TIER, a
+// column of dashes. Without this, that user's picker drops COST at a width
+// where it fits beside everything but the dashes.
+func TestAnAllDashTierColumnIsDroppedFirst(t *testing.T) {
+	oneTooNarrow := func(tbl modelTable) *tuilayout.Columns {
+		cols := tbl.items[0].cols
+		cols.Fit(1 << 20)
+		full := max(cols.Width(), utf8.RuneCountInString(cols.Header())+tuilayout.TitleRoom)
+		cols.Fit(full - 1)
+		return cols
+	}
+	t.Run("rated", func(t *testing.T) {
+		writeTiers(t)
+		cols := oneTooNarrow(slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks()))
+		if cols.Shown(colSurvey) || !cols.Shown(colTier) {
+			t.Errorf("rated table: SURVEY shown %v, TIER shown %v; want SURVEY dropped and TIER kept", cols.Shown(colSurvey), cols.Shown(colTier))
+		}
+	})
+	t.Run("no tiers file", func(t *testing.T) {
+		t.Setenv(tiers.OutEnv, filepath.Join(t.TempDir(), "absent.toml"))
+		cols := oneTooNarrow(slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks()))
+		if cols.Shown(colTier) || !cols.Shown(colSurvey) || !cols.Shown(colCost) {
+			t.Errorf("unrated table: TIER shown %v, SURVEY shown %v, COST shown %v; want only TIER dropped", cols.Shown(colTier), cols.Shown(colSurvey), cols.Shown(colCost))
+		}
+	})
 }
 
 // TestWithTierNote pins how the mode line takes the tier: after the mode and

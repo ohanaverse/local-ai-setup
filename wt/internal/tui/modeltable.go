@@ -49,6 +49,12 @@ const (
 // Enter launches or starts it, so they are never dropped.
 var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colTier, colLoc, colFamily}
 
+// unratedDropOrder is colDropOrder for a table in which no row has a tier or
+// a score (no tiers.toml, or none of its models in it): TIER is a column of
+// dashes there, so it goes first and never costs a column that says
+// something.
+var unratedDropOrder = []int{colTier, colSurvey, col30D, col7D, col1D, colCost, colLoc, colFamily}
+
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
 
 // timePricedMark follows the COST cell of a model that has cost.time_prices
@@ -193,7 +199,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	famW, idW, costW, w1, w7, w30 := len("FAMILY"), len("MODEL"), len("COST"), len("1D"), len("7D"), len("30D")
 	wS, wT := len("STATUS"), len("TIER")
 	tier := make([]string, len(rows))
-	timePriced := false
+	timePriced, rated := false, false
 	// Every TIER cell pads its score to the widest score in the table, so
 	// the digits line up on the right.
 	digits := 0
@@ -216,6 +222,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		// A slot-profile row's tier is "-": its slots' tiers are on its
 		// slot line (slotLine).
 		tier[i] = r.tier.Cell(digits)
+		rated = rated || tier[i] != "-"
 		wT = maxRunes(wT, tier[i])
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])
@@ -228,6 +235,10 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	if timePriced && len(costLegend) <= costW {
 		costHead = costLegend
 	}
+	dropOrder := colDropOrder
+	if !rated {
+		dropOrder = unratedDropOrder
+	}
 	// One layout for the header and every row. It starts with every column
 	// shown; whoever sizes the list narrows it (tuilayout.FitTo).
 	cols := tuilayout.NewColumns(
@@ -237,7 +248,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
 		},
 		[]int{famW, idW, wT, 5, wS, 7, costW, w1, w7, w30, len("SURVEY")},
-		rowPrefixWidth, colDropOrder,
+		rowPrefixWidth, dropOrder,
 	)
 	header := cols.Header()
 
