@@ -7,7 +7,7 @@
 - `wt litellm restart` restarts the LiteLLM proxy the way `wt litellm sync`
   does after a route change: one SIGTERM, a wait of up to 3 minutes for a
   request in flight to finish, launchd starts it again, then a wait of up to
-  30s for it to answer. It exits 1 when the restart fails or the proxy does
+  30s for it to answer, even when it was down before the restart. It exits 1 when the restart fails or the proxy does
   not answer. `bin/update/litellm` now runs it after an upgrade in place of
   `launchctl kickstart -k`, which killed the proxy 5 seconds after its
   SIGTERM and cut off any request an agent was waiting on; with a wt too old

@@ -138,8 +138,9 @@ func TestLitellmSyncWaitsForTheProxy(t *testing.T) {
 }
 
 // TestLitellmRestartWaitsAndReports pins `wt litellm restart`: the restart
-// `wt litellm sync` runs (here the WT_LITELLM_RESTART_CMD override), the
-// probe of the [litellm] url before it and the wait after it, one line on
+// `wt litellm sync` runs (here the WT_LITELLM_RESTART_CMD override) and the
+// wait after it, taken with no pre-restart probe so a proxy that was down is
+// waited for too (the probe stub says nothing is listening), one line on
 // stdout when the proxy answers again, and an error naming the cause when
 // the restart command fails or the proxy never answers. bin/update/litellm
 // runs it after an upgrade in place of `launchctl kickstart -k`, which kills
@@ -164,7 +165,7 @@ func TestLitellmRestartWaitsAndReports(t *testing.T) {
 			t.Cleanup(litellm.StubProxyReadinessForTest(
 				func(_ context.Context, u string, _ time.Duration) bool {
 					steps = append(steps, "probe "+u)
-					return true
+					return false
 				},
 				func(_ context.Context, u string, _ time.Duration) error {
 					b, _ := os.ReadFile(restarts)
@@ -175,9 +176,9 @@ func TestLitellmRestartWaitsAndReports(t *testing.T) {
 			cfg := litellmTestConfig()
 			cfg.SetLitellmForTest(config.LitellmState{URL: url})
 
-			var out, errOut bytes.Buffer
-			err := runLitellmRestart(&out, &errOut, cfg)
-			if want := []string{"probe " + url, fmt.Sprintf("wait %s after %q", url, "restart\n")}; !slices.Equal(steps, want) {
+			var out bytes.Buffer
+			err := runLitellmRestart(&out, cfg)
+			if want := []string{fmt.Sprintf("wait %s after %q", url, "restart\n")}; !slices.Equal(steps, want) {
 				t.Errorf("steps = %q, want %q", steps, want)
 			}
 			if tc.wantErr == "" {

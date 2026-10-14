@@ -205,7 +205,7 @@ if [ -z "${NO_RESTART:-}" ]; then
         # the restart up (up to 3 minutes), and exits 1 when the restart
         # fails or the proxy does not answer again.
         run wt litellm restart || update_fail "wt litellm restart failed"
-        restarted="the proxy finished its requests in flight, restarted and re-read config.yaml"
+        restarted="the proxy was restarted by wt litellm restart and re-read config.yaml"
     elif [ -f "$PLIST" ]; then
         update_note "the wt on PATH has no 'litellm restart' (update wt); falling back to launchctl kickstart -k, which cuts off a request in flight"
         run launchctl kickstart -k "gui/$(id -u)/local.litellm.proxy" ||

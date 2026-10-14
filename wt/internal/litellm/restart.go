@@ -419,6 +419,19 @@ func (b Bounce) Run(ctx context.Context, baseURL string) (warnings []string, wai
 	return warnings, waitErr
 }
 
+// RunWaiting is Run for a caller whose job is the restart itself (`wt litellm
+// restart`): it restarts the proxy and, whenever baseURL is set, waits for it
+// to answer, whether or not the pre-restart probe found one listening. A proxy
+// that was down (or crash-looping) must not be reported restarted until it
+// answers. It takes no probe, so the restart does not pay ProxyAliveTimeout.
+func (b Bounce) RunWaiting(ctx context.Context, baseURL string) (warnings []string, waitErr error) {
+	warnings = b.Restart(ctx)
+	if baseURL != "" {
+		waitErr = b.WaitReady(ctx, baseURL, ProxyReadyTimeout)
+	}
+	return warnings, waitErr
+}
+
 // bounce is the Bounce the Apply default runs; a package var so tests fake
 // the restart and the readiness steps (StubProxyReadinessForTest).
 var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: WaitReady}
@@ -431,6 +444,17 @@ var bounce = Bounce{Restart: RestartContext, Listening: Listening, WaitReady: Wa
 // proxy that did not answer again.
 func RestartAndWait(baseURL string) []string {
 	warnings, err := bounce.Run(context.Background(), baseURL)
+	if err != nil {
+		warnings = append(warnings, err.Error())
+	}
+	return warnings
+}
+
+// RestartAndAwait is `wt litellm restart`: bounce.RunWaiting, with a failed
+// wait made one more warning like RestartAndWait's. Unlike RestartAndWait it
+// waits even when nothing was listening before the restart.
+func RestartAndAwait(baseURL string) []string {
+	warnings, err := bounce.RunWaiting(context.Background(), baseURL)
 	if err != nil {
 		warnings = append(warnings, err.Error())
 	}

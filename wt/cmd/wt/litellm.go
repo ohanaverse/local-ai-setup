@@ -724,7 +724,7 @@ func litellmCmd(a *app) *cobra.Command {
 		// config.toml that does not load leaves it empty, so the restart is
 		// made and not waited for.
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLitellmRestart(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg)
+			return runLitellmRestart(cmd.OutOrStdout(), a.cfg)
 		},
 	}
 	c.AddCommand(
@@ -758,16 +758,17 @@ func removedLitellmCmd(name string) *cobra.Command {
 	}
 }
 
-// runLitellmRestart is `wt litellm restart`: litellm.RestartAndWait on the
-// [litellm] url. Its notices (a request in flight being waited for, or cut
-// off at the bound) go to stderr as they happen; any warning it returns is
-// the command's error, so a script that restarts the proxy learns it failed.
-func runLitellmRestart(out, _ io.Writer, cfg *config.Config) error {
+// runLitellmRestart is `wt litellm restart`: litellm.RestartAndAwait on the
+// [litellm] url, waiting for the proxy to answer even if it was down before. Its notices (a request in flight being waited for, or cut
+// off at the bound) go to os.Stderr as they happen (litellm.RestartNotice's
+// default); any warning it returns is the command's error, so a script that
+// restarts the proxy learns it failed.
+func runLitellmRestart(out io.Writer, cfg *config.Config) error {
 	url := ""
 	if cfg != nil {
 		url = cfg.LitellmBaseURL()
 	}
-	if warnings := litellm.RestartAndWait(url); len(warnings) > 0 {
+	if warnings := litellm.RestartAndAwait(url); len(warnings) > 0 {
 		return fmt.Errorf("LiteLLM proxy restart: %s", strings.Join(warnings, "; "))
 	}
 	if url == "" {
