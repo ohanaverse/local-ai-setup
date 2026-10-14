@@ -23,8 +23,13 @@ OLLAMA_HEALTH_URL = f"{OLLAMA_BASE}/api/tags"
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE}/v1/chat/completions"
 DEFAULT_MODEL = "ornith-1.5:35b"
 ENV_VAR = "LLM_ISOLATE_OLLAMA_MODEL"
-UNLOAD_TRIES = 5
-UNLOAD_INTERVAL = 0.2
+# `ollama stop` exits 0 at once, and the model stays in `ollama ps` until the
+# request it is serving ends: 6 to 20 seconds as observed, and 55 behind a
+# long generation. Three minutes covers that with margin, and is the bound
+# wt's own ollama stop uses (`ollamaUnloadTimeout`, wt/internal/lifecycle).
+UNLOAD_TIMEOUT = 180.0
+UNLOAD_INTERVAL = 1.0
+UNLOAD_TRIES = int(UNLOAD_TIMEOUT / UNLOAD_INTERVAL)
 
 
 def _loaded_model_names() -> list[str]:
@@ -85,12 +90,17 @@ class OllamaBackend(Backend):
         for name in _loaded_model_names():
             subprocess.run(["ollama", "stop", name], capture_output=True, check=False)
         # `ollama stop` unloads the model but leaves the daemon (port 11434)
-        # up, so poll `ollama ps` for an empty model list, not the port.
+        # up, so poll `ollama ps` for an empty model list, not the port. The
+        # wait ends on a poll, not a sleep: a model may unload in the last
+        # interval.
         for _ in range(UNLOAD_TRIES):
             if not _loaded_model_names():
                 return None
             time.sleep(UNLOAD_INTERVAL)
-        return "ollama still has models loaded"
+        if not _loaded_model_names():
+            return None
+        waited = UNLOAD_TRIES * UNLOAD_INTERVAL
+        return f"ollama still has models loaded after waiting {waited:.0f}s"
 
     def restore(self) -> None:
         self._restart_if_down(restart=lambda: launchd.kickstart(launchd.OLLAMA_LABEL))

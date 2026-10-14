@@ -10,6 +10,7 @@ from llmbench.providers.lifecycle.backends.ollama import (
     OLLAMA,
     OLLAMA_CHAT_URL,
     OLLAMA_HEALTH_URL,
+    UNLOAD_INTERVAL,
     UNLOAD_TRIES,
     OllamaBackend,
     _loaded_model_names,
@@ -194,11 +195,49 @@ def test_stop_and_wait_stops_every_loaded_model_and_returns_none_on_clean_stop()
     mock_sleep.assert_not_called()
 
 
+def test_stop_and_wait_outlasts_a_model_finishing_a_request_in_flight():
+    """`ollama stop` exits 0 at once and the model stays listed until the
+    request it is serving ends: 6 to 20 seconds as observed, and 55 behind a
+    long generation. stop_and_wait() must sit that out and report a clean
+    stop, or the isolation goes on with the model still generating."""
+    polls_while_listed = 56  # the first poll, then one per second for 55s
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["busy"]] + [["busy"]] * polls_while_listed + [[]],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run"),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert result is None
+    waited = sum(c.args[0] for c in mock_sleep.call_args_list)
+    assert waited == pytest.approx(polls_while_listed * UNLOAD_INTERVAL)
+    assert waited >= 55
+
+
+def test_stop_and_wait_polls_once_more_after_the_last_sleep():
+    """The model may unload during the final interval, so the wait ends on a
+    poll, not on a sleep."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["busy"]] + [["busy"]] * UNLOAD_TRIES + [[]],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run"),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert result is None
+    assert mock_sleep.call_count == UNLOAD_TRIES
+
+
 def test_stop_and_wait_returns_warning_when_models_still_loaded_after_retries():
-    """If a model is still loaded after UNLOAD_TRIES polls, stop_and_wait()
-    must return a warning string (not raise) — matching bash's
+    """If a model is still loaded after the whole wait, stop_and_wait() must
+    return a warning string (not raise) — matching bash's
     `wait_for_ollama_unloaded 5 || echo "ollama still has models loaded"`,
-    which warns rather than fails the whole isolation."""
+    which warns rather than fails the whole isolation. The warning says how
+    long the wait was."""
     with (
         patch(
             "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
@@ -208,7 +247,7 @@ def test_stop_and_wait_returns_warning_when_models_still_loaded_after_retries():
         patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
     ):
         result = OllamaBackend().stop_and_wait()
-    assert result == "ollama still has models loaded"
+    assert result == "ollama still has models loaded after waiting 180s"
     assert mock_sleep.call_count == UNLOAD_TRIES
     mock_run.assert_called_once_with(
         ["ollama", "stop", "stuck-model"], capture_output=True, check=False
