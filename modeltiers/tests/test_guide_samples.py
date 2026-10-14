@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 
 import pytest
-from conftest import ALIGN_MIN, FIXTURES, SAMPLE, T0, scaled_openrouter
+from conftest import ALIGN_MIN, FIXTURES, INVENTORY, SAMPLE, T0, scaled_openrouter
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import cli, fetch
@@ -16,7 +16,7 @@ from modeltiers.loader import SourceSpecs
 GUIDES = SAMPLE.parent.parent / "guides"
 GUIDE = GUIDES / "12-model-tiers.md"
 CONFIG_MAP = GUIDES / "00-config-map.md"
-RUN = ["run", "--inventory", str(FIXTURES / "inventory.json")]
+RUN = ["run", "--inventory", str(INVENTORY)]
 Answers = dict[str, list[bytes | Exception]]
 
 
