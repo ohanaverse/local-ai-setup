@@ -341,7 +341,7 @@
   still listed after that fails with
   `/api/ps still lists the model after waiting 60s (ollama may still be finishing a request; ...)`.
   A stop ollama refuses is still reported at once, and Ctrl+C during the
-  wait cancels it. A Ctrl+C that landed in wt's first check could be printed
+  wait ends wt's wait (ollama still unloads the model when its request ends). A Ctrl+C that landed in wt's first check could be printed
   as `done`; it is `cancelled` now.
 - `wt --cwd` launches in the current directory whether or not it is inside a
   git repository. Outside one it stopped with `wt: not in a git repo: exit

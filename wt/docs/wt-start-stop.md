@@ -201,7 +201,10 @@ wt stop --all                    # stop every running local model, then the omlx
     refuses the stop (a non-zero exit with the model still loaded): ollama's
     own message is the failure, at once. A model that is already unloaded is
     a successful stop whatever `ollama stop` said. Ctrl+C during the wait
-    cancels the stop.
+    ends wt's wait (the line ends in `cancelled`); ollama still unloads the
+    model when its request ends. If ollama stops answering during the wait,
+    wt goes by `ollama stop`'s own exit, so the line can read `done` a
+    moment before the model has left `ollama ps`.
 - `--all` stops every running local model wt can stop, on every provider,
   and then halts the omlx service as `wt stop omlx` does — also when omlx has
   nothing loaded, since that is what frees its memory. omlx's models are not
