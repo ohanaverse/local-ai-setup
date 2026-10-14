@@ -669,7 +669,16 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// flight; one was cut off) follow this operation's writer like the
 		// warnings below (withRestartNotice).
 		bgCtx := withRestartNotice(context.WithoutCancel(ctx))
-		b := litellm.Bounce{Restart: restartProxy, Listening: probeProxy, WaitReady: waitProxy}
+		// The restart's warnings are printed as soon as it returns, before
+		// the readiness wait (up to proxyReadyTimeout), not after it.
+		restartPrinting := func(ctx context.Context) []string {
+			warnings := restartProxy(ctx)
+			for _, w := range warnings {
+				routePrintf(ctx, "wt: %s\n", w)
+			}
+			return warnings
+		}
+		b := litellm.Bounce{Restart: restartPrinting, Listening: probeProxy, WaitReady: waitProxy}
 		warnings, waitErr := b.Run(bgCtx, url)
 		// Warnings are always surfaced: bgCtx cannot be cancelled by the
 		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
@@ -681,9 +690,6 @@ func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 		// readiness wait, else nil, which clears an earlier failure. That a
 		// request was cut off at the drain bound is a notice, not a warning:
 		// that restart was made.
-		for _, w := range warnings {
-			routePrintf(bgCtx, "wt: %s\n", w)
-		}
 		failed := restartFailure(warnings)
 		if waitErr != nil {
 			routePrintf(bgCtx, "wt: %v\n", waitErr)

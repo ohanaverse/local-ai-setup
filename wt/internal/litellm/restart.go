@@ -370,11 +370,6 @@ func waitProxyExit(ctx context.Context, pid int, t drainTiming) error {
 	}
 }
 
-// Restart is RestartContext for callers with no context of their own. It does
-// not wait for the proxy to answer again; the Apply default when
-// Options.Restart is nil does (restartAndWait).
-func Restart() []string { return RestartContext(context.Background()) }
-
 const (
 	// ProxyReadyTimeout bounds the wait for the proxy to answer after a
 	// restart (Bounce.Run).
@@ -408,7 +403,10 @@ type Bounce struct {
 // A URL with nothing listening (the proxy is not running, or routing is off
 // and nobody started it) is not waited for: it would cost every restart the
 // whole bound. An empty baseURL is never probed or waited for. An override
-// restart command (WT_LITELLM_RESTART_CMD) is waited for the same way.
+// restart command (WT_LITELLM_RESTART_CMD) is waited for too, but the wait
+// only polls for an answer, so it is sound only when the command returns
+// after the old proxy has stopped answering: one that returns sooner (a
+// backgrounded restart) lets the old proxy pass the wait.
 //
 // warnings are the restart's own; waitErr is the failed wait, nil when it
 // answered or was not waited for. Neither fails the caller's route write.

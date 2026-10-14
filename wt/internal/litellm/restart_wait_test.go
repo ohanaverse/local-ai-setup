@@ -195,9 +195,8 @@ func TestSyncDefaultRestartStillGivesTheDrainNotice(t *testing.T) {
 	fp := &fakeProxy{pid: 7, found: true, exitAfter: 200 * time.Millisecond}
 	stubDefaultRestart(t, fp, timing, nil)
 	fb := &fakeBounce{listening: true}
-	old := bounce
-	bounce = Bounce{Restart: RestartContext, Listening: fb.bounce().Listening, WaitReady: fb.bounce().WaitReady}
-	t.Cleanup(func() { bounce = old })
+	stubBounce(t, fb)
+	bounce.Restart = RestartContext
 	o, _, _ := opts(t, "model_list: []\n")
 	o.Restart = nil
 
