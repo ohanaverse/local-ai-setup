@@ -31,9 +31,21 @@ var (
 	ensureSlotRoutes = lifecycle.EnsureModelRoutes
 	restartProxyNow  = lifecycle.RestartProxyTo
 	probeProxyNow    = lifecycle.ProbeProxy
-	settleRoutesNow  = lifecycle.SettleRoutes
+	settleRoutesNow  = lifecycle.SettleRoutesTo
 	buildSlotCmd     = agents.BuildSlotLaunchCmd
 )
+
+// settleOut collects what a settling restart prints when the flow starts it
+// and goes back to the picker (dropSlot, finishStart): the alt screen is up,
+// and that restart runs on for as long as the proxy has a request in flight
+// to finish, printing from its own goroutine (#377). A line sent to stderr
+// there lands on the picker and is gone at the next repaint. What is kept is
+// printed with the route notes, on the real terminal (flushRouteNotes); once
+// the alt screen is gone for good the rest is written straight through
+// (flushRouteNotesAfterRun), since main() waits for that restart. The settles
+// made after the alt screen (settleQuitSlot) print to stderr as they happen.
+// Reset by Run() before launch.
+var settleOut = &startOutput{}
 
 // slotResult is what one off-goroutine stage of a profile launch found.
 type slotResult struct {
@@ -336,12 +348,14 @@ func (m model) abortSlot(reason string) (model, tea.Cmd) {
 // dropSlot ends a flow the user backed out of on the replace dialog. A
 // restart still owed by the cloud-route write is settled here, so the written
 // routes go live; SettleRoutes only starts the restart, so this does not wait.
+// The picker is what the user sees next, so what the restart prints is kept
+// (settleOut).
 func (m model) dropSlot() model {
 	if m.slot == nil {
 		return m
 	}
 	if m.slot.owed {
-		settleRoutesNow(context.Background(), m.cfg)
+		settleRoutesNow(context.Background(), settleOut, m.cfg)
 	}
 	m.slot = nil
 	return m
@@ -458,7 +472,7 @@ func settleQuitSlot(fm model, w io.Writer) {
 		return
 	}
 	if owed {
-		settleRoutesNow(context.Background(), fm.cfg)
+		settleRoutesNow(context.Background(), nil, fm.cfg)
 	}
 }
 
@@ -477,5 +491,5 @@ func settleQuitSlotStart(fm model) {
 	if err, done := fm.start.result.get(); done && !lifecycle.RestartStillOwed(err) {
 		return
 	}
-	settleRoutesNow(context.Background(), fm.cfg)
+	settleRoutesNow(context.Background(), nil, fm.cfg)
 }

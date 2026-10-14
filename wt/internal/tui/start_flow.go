@@ -572,9 +572,10 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		if m.slot != nil {
 			// This start belonged to a profile launch, which ends here. The
 			// engine settled the owed restart on every error but a refusal;
-			// a refusal can only reach this way out under a cancel.
+			// a refusal can only reach this way out under a cancel. The
+			// picker follows, so what the restart prints is kept (settleOut).
 			if m.slot.owed && lifecycle.RestartStillOwed(msg.err) {
-				settleRoutesNow(context.Background(), m.cfg)
+				settleRoutesNow(context.Background(), settleOut, m.cfg)
 			}
 			m.slot = nil
 		}

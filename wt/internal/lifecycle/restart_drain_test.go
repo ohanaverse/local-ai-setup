@@ -145,3 +145,33 @@ func TestRestartProxyToPrintsTheDrainLines(t *testing.T) {
 		t.Fatalf("output = %q, want nothing: the failure is the returned error", out.String())
 	}
 }
+
+// TestSettleRoutesToPrintsTheDrainLines pins where a settling restart prints
+// for a caller that cannot show stderr (the picker, back on its alt screen):
+// the notice and the cut-off warning go to the writer it handed in, although
+// the restart runs detached, and to stderr for a caller that handed in none.
+func TestSettleRoutesToPrintsTheDrainLines(t *testing.T) {
+	_, stderr := stubRoutes(t, litellm.Result{}, nil)
+	restartProxy = func(ctx context.Context) []string {
+		litellm.RestartNotice(ctx, drainLine)
+		return []string{cutOffLine}
+	}
+	cfg := routesCfg()
+	const want = "wt: " + drainLine + "\nwt: " + cutOffLine + "\n"
+
+	var out bytes.Buffer
+	SettleRoutesTo(context.Background(), &out, cfg)
+	WaitPendingRoutes()
+	if got := out.String(); got != want {
+		t.Fatalf("the caller's writer got %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr got %q, want nothing", stderr.String())
+	}
+
+	SettleRoutes(context.Background(), cfg)
+	WaitPendingRoutes()
+	if got := stderr.String(); got != want {
+		t.Fatalf("stderr after a settle with no writer = %q, want %q", got, want)
+	}
+}

@@ -64,6 +64,16 @@ func (o *startOutput) textLocked() string {
 	return string(kept) + fmt.Sprintf("wt: … %d more bytes of start output not kept\n", o.dropped+len(o.buf)-len(kept))
 }
 
+// take returns what has been kept so far and forgets it, for a reader that
+// prints it and comes back for whatever is written later.
+func (o *startOutput) take() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	kept := o.textLocked()
+	o.buf, o.dropped = nil, 0
+	return kept
+}
+
 // release prints what was kept to w and sends everything written from now on
 // straight to w. It is for the one way out that never reads the start's
 // result: wt quitting while the start is still running.

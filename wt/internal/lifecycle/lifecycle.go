@@ -478,7 +478,19 @@ func StopModelDeferred(ctx context.Context, cfg *config.Config, en localmodels.E
 // every caller reaches it because some StopModelDeferred reported restartOwed.
 // It runs detached from ctx, so a batch cut short by Ctrl+C still settles what
 // it wrote.
-func SettleRoutes(ctx context.Context, cfg *config.Config) { bounceRoutes(ctx, cfg) }
+//
+// What the restart prints goes to stderr (SettleRoutesTo names another writer).
+func SettleRoutes(ctx context.Context, cfg *config.Config) { SettleRoutesTo(ctx, nil, cfg) }
+
+// SettleRoutesTo is SettleRoutes printing to out (nil: stderr), for a caller
+// whose stderr is not visible while the restart runs: the picker, back on its
+// alt screen. The restart is asynchronous and can print minutes later (the
+// notice that the proxy is finishing a request in flight, a failed restart's
+// warning), from its own goroutine: out must be safe to write while the
+// caller reads it, and is complete only once WaitPendingRoutes has returned.
+func SettleRoutesTo(ctx context.Context, out io.Writer, cfg *config.Config) {
+	bounceRoutes(withRouteOutput(ctx, out), cfg)
+}
 
 // stopModel is StopModelDeferred's injectable core, the same shape as
 // stop/start.

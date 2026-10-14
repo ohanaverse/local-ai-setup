@@ -129,7 +129,7 @@ func TestMain(m *testing.M) {
 	probeProxyNow = func(context.Context, *config.Config) error {
 		return errors.New("probeProxyNow not stubbed in this test")
 	}
-	settleRoutesNow = func(context.Context, *config.Config) {}
+	settleRoutesNow = func(context.Context, io.Writer, *config.Config) {}
 	buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
 		return nil, errors.New("buildSlotCmd not stubbed in this test")
 	}
