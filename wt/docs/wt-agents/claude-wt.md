@@ -35,7 +35,7 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` handles two cases:
 
 - **`claude/native`** — passes no `--model` flag and clears any inherited `ANTHROPIC_*` env vars, so Claude Code uses its native subscription (the model configured in `~/.claude/settings.json`).
-- **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)).
+- **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)). It also maps all four of Claude Code's model slots to that model (see [Model slots on a single-model launch](#model-slots-on-a-single-model-launch)).
 
 For Ollama-routed models, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.
 
@@ -65,13 +65,66 @@ The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`
 
 claude only speaks the `anthropic` wire protocol, so a provider that doesn't serve it (e.g. openrouter, `openai-chat` only) forces LiteLLM routing regardless of the on/off setting — wt prints a one-line stderr notice when that happens.
 
+### Model slots on a single-model launch
+
+Claude Code has four model slots (`fable`, `opus`, `sonnet`, `haiku`) and
+uses them unasked: background requests go to the `haiku` slot, and a built-in
+subagent may be defined with a slot alias. An unmapped slot resolves to an
+Anthropic id such as `claude-haiku-5-5`, which another endpoint rejects with
+`Invalid model name`; Claude Code then falls back to the session model.
+
+So on every single-model launch where wt points Claude Code at another
+endpoint (a direct provider or the LiteLLM proxy; never `claude/native` or
+another native model), wt sets eight more variables in the process
+environment, shown here for a launch of `ollama/qwen3.8:27b-mlx` through
+LiteLLM (an example id):
+
+```bash
+ANTHROPIC_DEFAULT_FABLE_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_FABLE_MODEL_NAME="qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_OPUS_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_SONNET_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_HAIKU_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="qwen3.8:27b-mlx"
+```
+
+- Each `ANTHROPIC_DEFAULT_<SLOT>_MODEL` is exactly the value of `--model`:
+  the registry id through LiteLLM, the bare provider-side name on a direct
+  route.
+- Each `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` is the model's provider-side
+  name, the label Claude Code's `/model` picker shows for the slot.
+
+Precedence, lowest first:
+
+1. A value for one of the eight exported in your shell. wt removes it from
+   the environment it hands to claude, so it never takes effect.
+2. wt's value.
+3. A value an applied [automatic profile](profiles.md) sets in its `env`.
+   It wins for that variable, and the other seven keep wt's values. This
+   holds for a launch from the command line and from the picker.
+
+A profile that overrides one `ANTHROPIC_DEFAULT_<SLOT>_MODEL` should set the
+matching `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` too. Otherwise wt's label for
+that slot still names the session model, and Claude Code's `/model` list
+shows the wrong name.
+
+This precedence rule is for a profile's `env`. A profile that sets one of
+these variables under `config_content.env` (written to
+`.claude/settings.local.json`) is not decided by wt. Claude Code's own
+settings-over-environment rule decides, and wt does not test it.
+
+wt sets nothing else for the slots: no `modelOverrides`, no
+`CLAUDE_CODE_SUBAGENT_MODEL`, and it leaves every other inherited variable
+alone (`ANTHROPIC_SMALL_FAST_MODEL` included). The native launch gets none
+of the eight and keeps whatever your shell exports.
+
 ### Slot profiles
 
-A single-model launch redirects only the model it names. Claude Code's other
-tiers (background work, subagents, a `/model` switch) keep their Anthropic
-ids, which the proxy rejects with `Invalid model name`. A slot profile maps
-all four slots (`fable`, `opus`, `sonnet`, `haiku`) to registry models in
-one launch, through the LiteLLM proxy:
+A single-model launch sends all four slots to the one model it names. A slot
+profile gives each slot (`fable`, `opus`, `sonnet`, `haiku`) its own
+registry model in one launch, through the LiteLLM proxy:
 
 ```bash
 claude-wt -M profile/<name>     # or pick the profile/<name> row in the model picker

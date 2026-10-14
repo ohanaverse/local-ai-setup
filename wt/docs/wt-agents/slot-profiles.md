@@ -2,21 +2,27 @@
 
 A wt launch of Claude Code names one model, and Claude Code uses several:
 a main model, a small fast model for background work, and whatever `/model`
-or a subagent switches to. wt redirects only the one it names. The others
-keep their Anthropic ids, and the LiteLLM proxy rejects them with
+or a subagent switches to. A single-model launch sends all of them to the
+one model it names: wt sets `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot
+to the `--model` value (see
+[claude-wt.md](claude-wt.md#model-slots-on-a-single-model-launch)), so no
+slot keeps an Anthropic id for the LiteLLM proxy to reject with
 `Invalid model name passed in model=claude-…`.
 
-A **slot profile** fixes that. It is a named, hand-written entry that
-assigns a registry model to each of an agent's model slots. It appears as a
-row in the model picker, and you choose it like a model. Claude Code is the
-only agent with slots today; its slots are `fable`, `opus`, `sonnet` and
-`haiku`.
+A **slot profile** gives each slot its own model. It is a named,
+hand-written entry that assigns a registry model to each of an agent's model
+slots. It appears as a row in the model picker, and you choose it like a
+model. Claude Code is the only agent with slots today; its slots are
+`fable`, `opus`, `sonnet` and `haiku`.
 
 Slot profiles are not the automatic profiles of [profiles.md](profiles.md).
 An automatic profile has no name, is never chosen, and is applied to a
 single-model launch that matches it. A slot profile is its own launch: wt
 never applies an automatic profile to it, and `wt profile on|off` does not
-hide it.
+hide it. The two launches also treat the slot variables differently. On a
+single-model launch they are process environment variables that an
+automatic profile's `env` may override; on a slot-profile launch they
+travel in `--settings`, and a profile may not set them.
 
 Design: `docs/superpowers/specs/2026-10-13-wt-slot-profiles-design.md`
 (monorepo root). Anthropic does not support routing Claude Code to

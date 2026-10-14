@@ -7,17 +7,52 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // claudeSlots are Claude Code's model slots, in display order.
 var claudeSlots = []string{"fable", "opus", "sonnet", "haiku"}
 
-// claudeSlotModelKey is the variable Claude Code reads for one slot's model:
-// "ANTHROPIC_DEFAULT_" + upper(slot) + "_MODEL". The same name with "_NAME"
-// appended is the label Claude Code's own /model picker shows for it.
-func claudeSlotModelKey(slot string) string {
-	return "ANTHROPIC_DEFAULT_" + strings.ToUpper(slot) + "_MODEL"
+// claudeSlotVar is one variable Claude Code reads for a model slot.
+type claudeSlotVar struct{ Key, Value string }
+
+// claudeSlotVars returns the two variables that map one slot to a model:
+// "ANTHROPIC_DEFAULT_" + upper(slot) + "_MODEL", the reference Claude Code
+// sends for the slot, and the same name with "_NAME" appended, the label its
+// own /model picker shows, which is the model's provider-side name. ref is
+// what the endpoint routes: a registry id through the proxy, the provider's
+// own name on a direct route. The slot-profile build and the single-model
+// build both take the names and the label rule from here.
+func claudeSlotVars(slot, ref string, m config.Model) [2]claudeSlotVar {
+	key := "ANTHROPIC_DEFAULT_" + strings.ToUpper(slot) + "_MODEL"
+	return [2]claudeSlotVar{{key, ref}, {key + "_NAME", m.ModelName}}
+}
+
+// claudeSlotKeys lists the two variable names of every slot, in slot order.
+func claudeSlotKeys() []string {
+	keys := make([]string, 0, 2*len(claudeSlots))
+	for _, slot := range claudeSlots {
+		for _, v := range claudeSlotVars(slot, "", config.Model{}) {
+			keys = append(keys, v.Key)
+		}
+	}
+	return keys
+}
+
+// claudeSingleModelSlotEnv maps every slot to the one model of a single-model
+// launch, as "KEY=VALUE" entries. Claude Code uses its tiers unasked
+// (background requests on haiku, built-in subagents defined with a tier
+// alias), and an unmapped tier resolves to an Anthropic id the endpoint
+// rejects.
+func claudeSingleModelSlotEnv(ref string, m config.Model) []string {
+	env := make([]string, 0, 2*len(claudeSlots))
+	for _, slot := range claudeSlots {
+		for _, v := range claudeSlotVars(slot, ref, m) {
+			env = append(env, v.Key+"="+v.Value)
+		}
+	}
+	return env
 }
 
 // SlotNames returns a copy, so a caller cannot reorder the driver's list.
@@ -26,11 +61,7 @@ func (claudeDriver) SlotNames() []string { return slices.Clone(claudeSlots) }
 // ReservedEnvKeys are the variables wt sets for a slot-profile launch. A
 // profile may not set them, in env or under config_content.env.
 func (claudeDriver) ReservedEnvKeys() []string {
-	keys := []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
-	for _, slot := range claudeSlots {
-		keys = append(keys, claudeSlotModelKey(slot), claudeSlotModelKey(slot)+"_NAME")
-	}
-	return keys
+	return append([]string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}, claudeSlotKeys()...)
 }
 
 // CheckConfigContent is claude's static rule for a profile's config_content:
@@ -142,8 +173,9 @@ func claudeSlotSettings(in profiles.SlotBuildInput) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("slot %s has no model", slot)
 		}
-		env[claudeSlotModelKey(slot)] = m.ID
-		env[claudeSlotModelKey(slot)+"_NAME"] = m.ModelName
+		for _, v := range claudeSlotVars(slot, m.ID, m) {
+			env[v.Key] = v.Value
+		}
 	}
 	// Repeated here so an env block in the user's own settings files cannot
 	// redirect the session.

@@ -185,6 +185,19 @@
 
 ### Changed
 
+- A single-model launch of Claude Code on a non-native model now maps all
+  four of Claude Code's model slots to that model. Wherever wt sets
+  `ANTHROPIC_BASE_URL` (a direct provider or the LiteLLM proxy), it also
+  sets `ANTHROPIC_DEFAULT_FABLE_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
+  `ANTHROPIC_DEFAULT_SONNET_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` to
+  the `--model` reference, and the four matching `…_MODEL_NAME` variables
+  to the model's provider-side name. Before, background requests and
+  built-in subagents sent an Anthropic id such as `claude-haiku-5-5`, the
+  endpoint rejected it with `Invalid model name`, and Claude Code fell back
+  to the session model. A value an applied automatic profile sets in `env`
+  for one of the eight still wins; a value exported in the shell is now
+  replaced by wt's. The native launch and slot-profile launches are
+  unchanged. See `docs/wt-agents/claude-wt.md`.
 - What follows a start that succeeded is one call into the engine,
   `lifecycle.SettleStart` (#349): the wait for the LiteLLM proxy restart, the
   check that the model's server is still there (#343), and, when it is not,
