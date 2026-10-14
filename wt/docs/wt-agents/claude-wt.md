@@ -105,6 +105,16 @@ Precedence, lowest first:
    It wins for that variable, and the other seven keep wt's values. This
    holds for a launch from the command line and from the picker.
 
+A profile that overrides one `ANTHROPIC_DEFAULT_<SLOT>_MODEL` should set the
+matching `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` too. Otherwise wt's label for
+that slot still names the session model, and Claude Code's `/model` list
+shows the wrong name.
+
+This precedence rule is for a profile's `env`. A profile that sets one of
+these variables under `config_content.env` (written to
+`.claude/settings.local.json`) is not decided by wt. Claude Code's own
+settings-over-environment rule decides, and wt does not test it.
+
 wt sets nothing else for the slots: no `modelOverrides`, no
 `CLAUDE_CODE_SUBAGENT_MODEL`, and it leaves every other inherited variable
 alone (`ANTHROPIC_SMALL_FAST_MODEL` included). The native launch gets none

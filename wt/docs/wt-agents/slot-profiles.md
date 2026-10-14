@@ -7,8 +7,8 @@ one model it names: wt sets `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot
 to the `--model` value (see
 [claude-wt.md](claude-wt.md#model-slots-on-a-single-model-launch)), so no
 slot keeps an Anthropic id for the LiteLLM proxy to reject with
-`Invalid model name passed in model=claude-…`. It cannot give background
-work a smaller model than the main one.
+`Invalid model name passed in model=claude-…`. On its own, a single-model
+launch sends every tier to the one model.
 
 A **slot profile** does that. It is a named, hand-written entry that
 assigns a registry model to each of an agent's model slots. It appears as a

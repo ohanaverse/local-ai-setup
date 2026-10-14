@@ -89,8 +89,9 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 }
 
 // ProfileMechanisms declares which profile mechanisms claude accepts:
-// env (the attribution-header/thinking-token tweaks) and config_file
-// (the ANTHROPIC_DEFAULT_*_MODEL mapping via .claude/settings.local.json).
+// env (the attribution-header/thinking-token tweaks, and any override of the
+// ANTHROPIC_DEFAULT_*_MODEL variables wt itself sets on a single-model
+// launch) and config_file (settings written to .claude/settings.local.json).
 func (claudeDriver) ProfileMechanisms() []profiles.Mechanism {
 	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile}
 }

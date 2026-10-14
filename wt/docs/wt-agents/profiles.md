@@ -268,6 +268,13 @@ the same entry matches an `ollama`, `omlx`, or `mtplx` model.
   provider-side name, so through LiteLLM write the registry id out. To give
   each slot its own model, use a slot profile, which names a registry model
   per slot: see [slot-profiles.md](slot-profiles.md).
+  A profile that overrides one `ANTHROPIC_DEFAULT_<SLOT>_MODEL` should set
+  the matching `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` too. Otherwise wt's
+  label for that slot still names the session model, and Claude Code's
+  `/model` list shows the wrong name. This rule is for a profile's `env`. A
+  profile that sets one of these variables under `config_content.env`
+  (written to `.claude/settings.local.json`) is not decided by wt. Claude
+  Code's own settings-over-environment rule decides, and wt does not test it.
 - **The claude attribution header belongs in `config_content`, not
   `env`.** A shell environment variable does not stick for
   `CLAUDE_CODE_ATTRIBUTION_HEADER`; it has to be set in Claude Code's
