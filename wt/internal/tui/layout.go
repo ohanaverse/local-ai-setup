@@ -71,8 +71,8 @@ func withTierNote(line string, notes []string, width int) string {
 // A blocked row shows its reason, cut with an ellipsis when it is too wide.
 // Any other row lists the slots the profile fills, the default first and
 // marked "*", the rest in the agent's declared order, each with its model's
-// provider-side name and, when the tiers file rates that model, its TIER cell
-// ("opus* glm-5.3:cloud S44"; tiers, by slot). Entries are shown whole or not
+// provider-side name and, when the tiers file rates that model, its short form
+// (tiers.Entry.Short: "opus* glm-5.3:cloud S44"; tiers, by slot). Entries are shown whole or not
 // at all, as the mode line's price is (modeLine): the longest run of leading
 // entries that fits width is shown and the rest are counted as "+N more".
 // For each run the entries are tried with their tiers first and then without,

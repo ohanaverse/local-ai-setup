@@ -45,9 +45,10 @@ type tableRow struct {
 	in    config.PriceInForce
 	timed bool
 	// tier is the model's rating in the tiers file (tiers.Index.Rating): the
-	// zero Entry, which shows as "-", for a model the file does not rate and
-	// for a slot-profile row. slotTiers is a slot-profile row's: each slot's
-	// model's TIER cell, by slot, for the slots whose model is rated.
+	// zero Entry, which shows as "-", for a model the file gives neither a
+	// tier nor an aligned score and for a slot-profile row. slotTiers is a
+	// slot-profile row's: each slot's model's short form (tiers.Entry.Short),
+	// by slot, for the slots whose model is rated.
 	tier      tiers.Entry
 	slotTiers map[string]string
 }

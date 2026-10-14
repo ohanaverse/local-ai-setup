@@ -76,7 +76,7 @@ type modelItem struct {
 	tier []string
 	// profile is set on a slot-profile row; model then holds only the row id.
 	profile *catalog.ProfileRow
-	// slotTiers is a slot-profile row's slots' TIER cells, by slot, for the
+	// slotTiers is a slot-profile row's slots' short forms (tiers.Entry.Short), by slot, for the
 	// slots whose model is rated (slotLine).
 	slotTiers map[string]string
 }

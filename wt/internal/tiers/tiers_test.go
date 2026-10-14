@@ -93,6 +93,12 @@ func TestNotesShortenPartByPart(t *testing.T) {
 			"tier quick",
 		}},
 		{"unrated", Entry{Tier: "unrated", Code: "-"}, nil},
+		{"unknown code with a score reads as unrated", Entry{Tier: "legendary", Code: "L", Confidence: "high", Aligned: 40, HasAligned: true, Sources: 1}, []string{
+			"unrated · score 40 (1 source) · high confidence",
+			"unrated · score 40 (1 source)",
+			"unrated · score 40",
+			"unrated",
+		}},
 		{"unrated with a score", Entry{Tier: "unrated", Code: "-", Confidence: "none", Aligned: 9.3, HasAligned: true, Sources: 2}, []string{
 			"unrated · score 9 (2 sources)",
 			"unrated · score 9",
