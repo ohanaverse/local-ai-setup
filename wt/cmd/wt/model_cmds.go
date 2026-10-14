@@ -88,6 +88,10 @@ func stopCmd(a *app) *cobra.Command {
 			"process is confirmed to be the mtplx server on this port (anything else is\n" +
 			"left alone). ollama's models are stopped one by one, so when wt cannot tell\n" +
 			"what ollama is running it stops nothing there and exits 1.\n\n" +
+			"ollama keeps a model that is answering a request loaded until the request\n" +
+			"ends. wt sends every ollama stop first and waits up to 3 minutes for all of\n" +
+			"them together; a model still loaded then is reported as still finishing,\n" +
+			"not as a failed stop, and ollama unloads it when its request ends.\n\n" +
 			"Stopping a model or a provider a live wt session uses asks for confirmation;\n" +
 			"--yes skips it.",
 		Example: "  wt stop ollama/qwen3.8:27b-mlx\n  wt stop ollama\n  wt stop\n  wt stop --all --yes",
