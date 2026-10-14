@@ -15,7 +15,7 @@ import time
 import urllib.request
 
 from .. import launchd
-from .base import Backend, StartPlan
+from .base import Backend, StartPlan, StillFinishing
 
 OLLAMA_PORT = 11434
 OLLAMA_BASE = f"http://localhost:{OLLAMA_PORT}"
@@ -86,9 +86,14 @@ class OllamaBackend(Backend):
     def stop_and_wait(self) -> str | None:
         # Stop EVERY model `ollama ps` reports loaded (not just the default
         # model — something else may have been loaded, with `wt start` or
-        # `ollama run`), matching bash's `stop_ollama_and_wait`.
+        # `ollama run`), matching bash's `stop_ollama_and_wait`. Every stop
+        # is sent before the wait, so the models finish their requests side
+        # by side under one bound.
+        accepted = set()
         for name in _loaded_model_names():
-            subprocess.run(["ollama", "stop", name], capture_output=True, check=False)
+            result = subprocess.run(["ollama", "stop", name], capture_output=True, check=False)
+            if result.returncode == 0:
+                accepted.add(name)
         # `ollama stop` unloads the model but leaves the daemon (port 11434)
         # up, so poll `ollama ps` for an empty model list, not the port. The
         # wait ends on a poll, not a sleep: a model may unload in the last
@@ -97,9 +102,18 @@ class OllamaBackend(Backend):
             if not _loaded_model_names():
                 return None
             time.sleep(UNLOAD_INTERVAL)
-        if not _loaded_model_names():
+        left = _loaded_model_names()
+        if not left:
             return None
         waited = UNLOAD_TRIES * UNLOAD_INTERVAL
+        if set(left) <= accepted:
+            # ollama accepted every stop still pending: each model unloads
+            # when its request in flight ends. Not a failed stop, but not a
+            # clean one either — the model is still loaded (StillFinishing).
+            return StillFinishing(
+                f"ollama is still finishing a request on {', '.join(left)} after waiting "
+                f"{waited:.0f}s; it unloads them when that ends"
+            )
         return f"ollama still has models loaded after waiting {waited:.0f}s"
 
     def restore(self) -> None:
