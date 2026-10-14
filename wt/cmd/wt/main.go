@@ -414,12 +414,15 @@ func rootCmd() *cobra.Command {
 			// from git is the checkout root, and that root only says
 			// whether to install the main guard (runLaunchPath): rotation,
 			// usage and refcount state are keyed by model, agent and pid,
-			// never by a repository, a branch or a directory. So a
+			// never by a repository or a branch (claude's config_content
+			// backup is keyed by the absolute settings path, so it cannot
+			// collide either). So a
 			// directory with no checkout root — outside any repository,
 			// or with no git to ask — launches with root "", like the
 			// outside-a-repo launch below: no guard, everything else the
 			// same. Only -W (above) and the worktree picker (below) need
-			// a repository, and both still say so.
+			// a repository: -W says so, and the picker is never reached
+			// outside one.
 			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
 				root, err := worktree.RepoRoot()
 				if err != nil {

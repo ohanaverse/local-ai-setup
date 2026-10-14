@@ -163,7 +163,9 @@ repository it is the same launch as inside one (agent and model pickers,
 usage records, the stop picker and summary afterwards) with one difference:
 the [main guard](../../README.md#main-guard) is a git hook, so it is installed
 only when the directory is inside a checkout. Nothing wt records about a
-launch is keyed by a repository, a branch or a directory, so a launch outside
+launch is keyed by a repository or a branch (the one directory-keyed item,
+claude's `config_content` backup, uses the absolute settings path, which
+cannot collide), so a launch outside
 a repository shares no state with one inside it beyond what every launch
 shares (which model was launched last, how often, and which are in use).
 Without `--cwd`, wt outside a repository already launches in the directory
