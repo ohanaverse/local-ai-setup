@@ -514,7 +514,7 @@ func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ loca
 
 // bounceRoutes settles route writes a deferred write already made — when the
 // start that followed them failed, or when a batch of
-// stops wrote its removals and owed the bounce (StopModelDeferred/SettleRoutes).
+// stops wrote its removals and owed the bounce (StopBatch.Stop/SettleRoutes).
 // It restarts the proxy and waits for it; it writes nothing.
 //
 // That is deliberate. The removals are already in config.yaml — every caller

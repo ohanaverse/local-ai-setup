@@ -503,12 +503,12 @@ func TestPoolRouteIDsDoesNotMatchASiblingByNameSuffix(t *testing.T) {
 	}
 }
 
-// TestStopModelDeferredOnPoolKeepsSiblingRoutes drives the public stop through
+// TestStopBatchOnPoolKeepsSiblingRoutes drives the public stop through
 // the real omlx backend and the real litellm.ApplyChange: stopping one omlx
 // model unloads it and removes its row only. The family sweep an Exclusive
 // stop does would here delete the routes of models that are still loaded, and
 // every session on them would get "Invalid model name" from the proxy (#213).
-func TestStopModelDeferredOnPoolKeepsSiblingRoutes(t *testing.T) {
+func TestStopBatchOnPoolKeepsSiblingRoutes(t *testing.T) {
 	const rows = `model_list:
   - model_name: omlx/a
     litellm_params: {model: openai/A, api_base: http://localhost:8000/v1, api_key: not-needed}
@@ -533,9 +533,9 @@ func TestStopModelDeferredOnPoolKeepsSiblingRoutes(t *testing.T) {
 			{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal},
 		},
 	}
-	owed, err := StopModelDeferred(context.Background(), cfg, localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/a", ModelName: "org/A"})
+	owed, err := stopAlone(context.Background(), cfg, localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/a", ModelName: "org/A"})
 	if err != nil || !owed {
-		t.Fatalf("StopModelDeferred = (%v, %v), want (true, nil)", owed, err)
+		t.Fatalf("Stop = (%v, %v), want (true, nil)", owed, err)
 	}
 	SettleRoutes(context.Background(), cfg)
 	WaitPendingRoutes()

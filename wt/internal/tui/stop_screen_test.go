@@ -23,7 +23,7 @@ import (
 func TestModelStopsRunOnlyAfterTheAltScreen(t *testing.T) {
 	stopCalls := map[string]bool{
 		"survey.Picker": true, "survey.PickerWith": true, "survey.StopEntries": true,
-		"lifecycle.BeginStops": true, "lifecycle.StopModelDeferred": true,
+		"lifecycle.BeginStops": true,
 	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {

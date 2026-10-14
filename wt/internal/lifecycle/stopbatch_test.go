@@ -257,14 +257,15 @@ func TestStopWaitNoticeProductionWording(t *testing.T) {
 	}
 }
 
-// TestStopModelDeferredStillFinishingStaysAnError pins the strict side of the
-// new outcome: a caller of the engine's stop that needs the model gone before
-// it goes on (anything checking err != nil — the way a start that must free
+// TestStopBatchStillFinishingStaysAnError pins the strict side of the new
+// outcome: a caller of the engine's stop that needs the model gone before it
+// goes on (anything checking err != nil — the way a start that must free
 // memory or an exclusivity check would) still fails on a model ollama has not
-// unloaded. The outcome is a typed error, *StillFinishingError, not a nil;
-// only the stop loop, which reports it and goes on, reads it as its own
-// outcome. Its message is the one a failed wait gave before.
-func TestStopModelDeferredStillFinishingStaysAnError(t *testing.T) {
+// unloaded, in a batch and in a single stop (stopModel, under a bound of its
+// own). The outcome is a typed error, *StillFinishingError, not a nil; only
+// the stop loop, which reports it and goes on, reads it as its own outcome.
+// Its message is the one a failed wait gave before.
+func TestStopBatchStillFinishingStaysAnError(t *testing.T) {
 	log := &batchLog{}
 	url := loggedPs(t, log, func(int) []string { return []string{"a"} })
 	b := beginStops(context.Background(), batchEnv(log), provCfg("ollama", url), []localmodels.Entry{ollamaEntry("a")})
@@ -276,5 +277,18 @@ func TestStopModelDeferredStillFinishingStaysAnError(t *testing.T) {
 	want := "ollama stop a: /api/ps still lists the model after waiting 5ns (ollama may still be finishing a request; `ollama ps` shows whether it has unloaded)"
 	if err.Error() != want {
 		t.Fatalf("err = %s\nwant  %s", err, want)
+	}
+
+	single := &batchLog{}
+	url = loggedPs(t, single, func(int) []string { return []string{"a"} })
+	err = stopModel(context.Background(), batchEnv(single), provCfg("ollama", url), "ollama", "a")
+	if !errors.As(err, &sf) {
+		t.Fatalf("stopModel = %v, want *StillFinishingError", err)
+	}
+	if err.Error() != want {
+		t.Fatalf("stopModel err = %s\nwant  %s", err, want)
+	}
+	if single.count("stop") != 1 {
+		t.Errorf("single stop sent %d stops, want 1", single.count("stop"))
 	}
 }

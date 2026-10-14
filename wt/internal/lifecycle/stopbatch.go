@@ -111,11 +111,27 @@ func (b *StopBatch) send(ctx context.Context, aw unloadAwaiter, en localmodels.E
 }
 
 // Stop finishes the stop of one model of the batch and writes its route
-// removal, as StopModelDeferred does: restartOwed reports that the caller
-// owes SettleRoutes once after the batch. An ollama model is waited for under
-// the batch's shared bound; one still listed once that bound is spent is a
-// *StillFinishingError, which writes nothing and owes nothing (the model is
-// still loaded).
+// removal, leaving the LiteLLM proxy restart to the caller (#142). en is the
+// inventory entry: ProviderID and ModelName name what to stop, ModelID the
+// route id its row was built under, which the removal needs to tell the model
+// from a sibling whose name merely resembles it (poolRouteIDs, #195). On
+// ollama it unloads just that model and keeps its route (#179); on an
+// Exclusive provider (mtplx) it stops the provider's sole occupant; on a Pool
+// (omlx) it unloads that one model, leaving the service and its loaded
+// siblings up and routed. The caller must only pass a model live Inventory
+// reported running.
+//
+// restartOwed reports that a removal was written and the proxy therefore
+// still needs its restart: the caller must call SettleRoutes once after the
+// last Stop of the batch when any call owed one — including when the batch
+// ends early on Ctrl+C or a failure, since every removal already written
+// still needs that restart. One settling bounce replaces N overlapping
+// restarts, each of which killed the proxy the previous one had just brought
+// up. A failed stop writes nothing and owes nothing.
+//
+// An ollama model is waited for under the batch's shared bound; one still
+// listed once that bound is spent is a *StillFinishingError, which writes
+// nothing and owes nothing (the model is still loaded).
 func (b *StopBatch) Stop(ctx context.Context, en localmodels.Entry) (restartOwed bool, err error) {
 	if err := b.stopOne(ctx, en); err != nil {
 		return false, err
