@@ -30,6 +30,17 @@ class StartPlan:
     extra: dict[str, str] = field(default_factory=dict)
 
 
+class StillFinishing(str):
+    """A `stop_and_wait()` warning for a stop the provider ACCEPTED and has
+    not carried out within the wait: ollama keeps a model that is answering a
+    request loaded until the request ends, then unloads it by itself. It is
+    still a warning (non-None, so `orchestrate.stop()` reports ok=False and
+    an isolation warns): the model is loaded, so nothing is isolated yet. A
+    caller that wants to tell it from a failed stop checks
+    `isinstance(warning, StillFinishing)`. Mirrors wt's
+    `lifecycle.StillFinishingError` (#379)."""
+
+
 class Backend(ABC):
     """One local-provider backend's lifecycle: availability, resolving a
     start request into a plan, starting/waiting/warming it, stopping it,
@@ -116,7 +127,8 @@ class Backend(ABC):
         """Stop this backend and wait for it to fully release its
         resources (port, GPU/RAM). Return a warning string if the stop
         didn't fully complete within its wait budget, or None on a clean
-        stop."""
+        stop. A stop the provider accepted and is still carrying out is a
+        `StillFinishing` warning — still a warning, never None."""
         ...
 
     def restore(self) -> None:  # noqa: B027 — intentional default no-op

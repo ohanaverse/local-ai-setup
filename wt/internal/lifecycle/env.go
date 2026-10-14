@@ -61,8 +61,11 @@ type env struct {
 	// after an agent's last request, 55 seconds behind a 1,500-word generation
 	// queued behind another request; the bound is that with margin. The wait
 	// re-probes every pollInterval, ollamaUnloadTimeout/pollInterval times at
-	// most.
+	// most. A batch of stops shares one such bound (StopBatch).
 	ollamaUnloadTimeout time.Duration
+	// stopNoticeAfter is how long a stop waits for an unload before it says
+	// so (StopNotice): a line that sits open longer than this looks hung.
+	stopNoticeAfter time.Duration
 }
 
 func defaultEnv() *env {
@@ -87,6 +90,7 @@ func defaultEnv() *env {
 		prebindTimeout:    10 * time.Second,
 
 		ollamaUnloadTimeout: 3 * time.Minute,
+		stopNoticeAfter:     2 * time.Second,
 	}
 }
 
