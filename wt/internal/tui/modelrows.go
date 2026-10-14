@@ -173,7 +173,10 @@ func (r *tableRow) rate(ratings tiers.Index) {
 		return
 	}
 	for slot, m := range r.Profile.Models {
-		if code := ratings.Rating(m.ProviderID, m.ModelName).Short(); code != "-" {
+		// The slot line names rated models only: a bare score after a
+		// model name would read as part of it.
+		if e := ratings.Rating(m.ProviderID, m.ModelName); e.Rated() {
+			code := e.Short()
 			if r.slotTiers == nil {
 				r.slotTiers = map[string]string{}
 			}

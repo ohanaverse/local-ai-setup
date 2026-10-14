@@ -7,8 +7,9 @@
 - The model picker has a TIER column after MODEL: each model's advisory
   capability tier from modeltiers' `tiers.toml` (`MODELTIERS_OUT`, else
   `~/.config/local-ai/tiers.toml`), as its letter and rounded aligned score
-  (`S44`), or `-` when the model is unrated, not in the file, or there is no
-  file. The line under the table spells out the highlighted model's tier
+  (`S44`, the digits right-aligned down the column: `Q 9`); an unrated model
+  with an aligned score shows the score alone (`  9`), and `-` means no
+  score at all, not in the file, or no file. The line under the table spells out the highlighted model's tier
   after its price where it fits (`tier standard · score 44 (3 sources) ·
   high confidence`), and a slot profile's line puts each slot model's code
   after its name. On a narrow terminal TIER goes after COST and before LOC.

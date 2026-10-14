@@ -33,9 +33,10 @@ func TestPathFollowsModeltiersRule(t *testing.T) {
 	}
 }
 
-// TestShortCell pins the picker's TIER cell for every kind of entry: the code
-// and the rounded aligned score, the code alone without a score, and "-" for
-// an unrated or unknown model. No mark for low confidence: the owner chose
+// TestShortCell pins the short form for every kind of entry: the code and
+// the rounded aligned score, the code alone without a score, the bare score
+// for an unrated model that has one (the owner wants every score shown), and
+// "-" for a model with neither. No mark for low confidence: the owner chose
 // the plain cell.
 func TestShortCell(t *testing.T) {
 	cases := []struct {
@@ -48,8 +49,10 @@ func TestShortCell(t *testing.T) {
 		{"low confidence is not marked", Entry{Tier: "deep", Code: "D", Confidence: "low", Aligned: 51.6, HasAligned: true}, "D52"},
 		{"no score", Entry{Tier: "marathon", Code: "M"}, "M"},
 		{"unrated code", Entry{Tier: "unrated", Code: "-"}, "-"},
-		{"unrated tier with a stray code", Entry{Tier: "unrated", Code: "S", Aligned: 40, HasAligned: true}, "-"},
-		{"unknown code", Entry{Tier: "legendary", Code: "L", Aligned: 40, HasAligned: true}, "-"},
+		{"unrated tier with a stray code", Entry{Tier: "unrated", Code: "S", Aligned: 40, HasAligned: true}, "40"},
+		{"unknown code", Entry{Tier: "legendary", Code: "L", Aligned: 40, HasAligned: true}, "40"},
+		{"unrated with a score", Entry{Tier: "unrated", Code: "-", Aligned: 9.3, HasAligned: true}, "9"},
+		{"unrated, no score", Entry{Tier: "unrated", Code: "-", Confidence: "none"}, "-"},
 		{"zero entry", Entry{}, "-"},
 	}
 	for _, c := range cases {
@@ -90,6 +93,11 @@ func TestNotesShortenPartByPart(t *testing.T) {
 			"tier quick",
 		}},
 		{"unrated", Entry{Tier: "unrated", Code: "-"}, nil},
+		{"unrated with a score", Entry{Tier: "unrated", Code: "-", Confidence: "none", Aligned: 9.3, HasAligned: true, Sources: 2}, []string{
+			"unrated · score 9 (2 sources)",
+			"unrated · score 9",
+			"unrated",
+		}},
 	}
 	for _, c := range cases {
 		if got := c.e.Notes(); !reflect.DeepEqual(got, c.want) {
@@ -189,5 +197,37 @@ func TestLoadReadsMODELTIERS_OUT(t *testing.T) {
 	t.Setenv(OutEnv, p)
 	if got := Load().Rating("omlx", "m").Short(); got != "Q31" {
 		t.Errorf("Load via MODELTIERS_OUT: %q, want Q31", got)
+	}
+}
+
+// TestCellRightAlignsTheScore pins the TIER cell's layout: every score is
+// padded on the left to the table's widest, after the code's one column, so
+// the digits of S44, Q 9 and an unrated model's "  9" end in the same column.
+// A regression leaves a ragged column where a one-digit score reads like a
+// two-digit one cut short.
+func TestCellRightAlignsTheScore(t *testing.T) {
+	cases := []struct {
+		name   string
+		e      Entry
+		digits int
+		want   string
+	}{
+		{"two digits", Entry{Tier: "standard", Code: "S", Aligned: 44.3, HasAligned: true}, 2, "S44"},
+		{"one digit padded", Entry{Tier: "quick", Code: "Q", Aligned: 9.2, HasAligned: true}, 2, "Q 9"},
+		{"unrated keeps the code column blank", Entry{Tier: "unrated", Code: "-", Aligned: 9.3, HasAligned: true}, 2, "  9"},
+		{"three-digit table", Entry{Tier: "deep", Code: "D", Aligned: 52, HasAligned: true}, 3, "D 52"},
+		{"code alone", Entry{Tier: "marathon", Code: "M"}, 2, "M"},
+		{"nothing", Entry{}, 2, "-"},
+	}
+	for _, c := range cases {
+		if got := c.e.Cell(c.digits); got != c.want {
+			t.Errorf("%s: Cell(%d) = %q, want %q", c.name, c.digits, got, c.want)
+		}
+	}
+	if got := (Entry{Aligned: 9.3, HasAligned: true}).ScoreDigits(); got != 1 {
+		t.Errorf("ScoreDigits(9) = %d, want 1", got)
+	}
+	if got := (Entry{}).ScoreDigits(); got != 0 {
+		t.Errorf("ScoreDigits of no score = %d, want 0", got)
 	}
 }

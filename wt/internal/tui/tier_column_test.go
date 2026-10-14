@@ -16,7 +16,8 @@ import (
 // writeTiers writes a tiers.toml rating the slot fixture's models and points
 // MODELTIERS_OUT at it for the test: openrouter/a standard with three
 // sources and high confidence, omlx/qwen3.8 quick with one source and low
-// confidence, openrouter/b unrated. claude/opus has no entry.
+// confidence, openrouter/b unrated with an aligned score of 9.3. claude/opus
+// has no entry.
 func writeTiers(t *testing.T) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "tiers.toml")
@@ -47,6 +48,8 @@ tier = "unrated"
 code = "-"
 reason = "no_votes"
 confidence = "none"
+aligned_score = 9.3
+aligned_sources = ["arena_agent", "eci"]
 `
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -56,8 +59,9 @@ confidence = "none"
 
 // TestTierColumnShowsTheFilesRatings pins the TIER cell of every kind of row:
 // the code and rounded aligned score of a rated model, looked up by its
-// provider and provider-side name; "-" for an unrated entry, for a model the
-// file does not have, and for a slot-profile row, whose slots' tiers go on
+// provider and provider-side name; an unrated model's score with the code's
+// column left blank, right-aligned under the others' digits; "-" for a model
+// the file does not have and for a slot-profile row, whose slots' tiers go on
 // its slot line instead. A lookup by wt's id instead would rate nothing whose
 // id is not "<provider>/<name>" (an openrouter id with a slash in its name).
 func TestTierColumnShowsTheFilesRatings(t *testing.T) {
@@ -69,12 +73,12 @@ func TestTierColumnShowsTheFilesRatings(t *testing.T) {
 	for id, want := range map[string]string{
 		"openrouter/a":  "S44",
 		"omlx/qwen3.8":  "Q31",
-		"openrouter/b":  "-",
+		"openrouter/b":  "  9",
 		"claude/opus":   "-",
 		"profile/cloud": "-",
 		"profile/mixed": "-",
 	} {
-		if got := strings.TrimSpace(tableItem(t, tbl, id).cells[colTier]); got != want {
+		if got := strings.TrimRight(tableItem(t, tbl, id).cells[colTier], " "); got != want {
 			t.Errorf("%s: TIER = %q, want %q", id, got, want)
 		}
 	}

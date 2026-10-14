@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -80,17 +81,38 @@ func (e Entry) Rated() bool {
 // it.
 func (e Entry) score() int { return int(math.Round(e.Aligned)) }
 
-// Short is the picker's TIER cell: the code followed by the rounded aligned
-// score ("S44"), the code alone when the entry has no aligned score, and "-"
-// for an entry that is not rated (the zero Entry included).
-func (e Entry) Short() string {
-	if !e.Rated() {
-		return "-"
-	}
-	if !e.HasAligned {
+// Short is the entry in its fewest characters, for the slot line: the code
+// followed by the rounded aligned score ("S44"), the code alone when the
+// entry has no aligned score, the score alone ("9") for an unrated entry that
+// has one, and "-" for an entry with neither (the zero Entry included).
+func (e Entry) Short() string { return e.Cell(0) }
+
+// Cell is the picker's TIER cell with the score right-aligned in digits
+// columns, so a table's scores line up whatever their length: "S44", "Q 9",
+// and for an unrated entry with a score a blank where the code would be
+// ("  9"). A rated entry with no score is its code alone and an entry with
+// neither is "-". digits 0 pads nothing (Short).
+func (e Entry) Cell(digits int) string {
+	switch {
+	case e.Rated() && e.HasAligned:
+		return fmt.Sprintf("%s%*d", e.Code, digits, e.score())
+	case e.Rated():
 		return e.Code
+	case e.HasAligned && digits == 0:
+		return strconv.Itoa(e.score())
+	case e.HasAligned:
+		return fmt.Sprintf(" %*d", digits, e.score())
 	}
-	return fmt.Sprintf("%s%d", e.Code, e.score())
+	return "-"
+}
+
+// ScoreDigits is how many columns the entry's rounded aligned score takes,
+// 0 when it has none: what a table pads every score to (Cell).
+func (e Entry) ScoreDigits() int {
+	if !e.HasAligned {
+		return 0
+	}
+	return len(strconv.Itoa(e.score()))
 }
 
 // Notes are the long forms of the entry for the picker's mode line, longest
@@ -103,13 +125,17 @@ func (e Entry) Short() string {
 //
 // A part the entry does not have is left out (no aligned score, a confidence
 // of none), and a form that would equal the one before it is not repeated.
-// nil for an entry that is not rated.
+// An unrated entry with an aligned score reads "unrated · score 9 …"; one
+// with neither is nil.
 func (e Entry) Notes() []string {
-	if !e.Rated() {
+	if !e.Rated() && !e.HasAligned {
 		return nil
 	}
 	tier := "tier " + e.Tier
-	if e.Tier == "" {
+	switch {
+	case !e.Rated():
+		tier = "unrated"
+	case e.Tier == "":
 		tier = "tier " + e.Code
 	}
 	score := ""
@@ -165,10 +191,11 @@ func (ix Index) Lookup(providerID, modelName string) (Entry, bool) {
 	return e, ok
 }
 
-// Rating returns the entry for a model when the file has one that is rated,
-// and the zero Entry (Short "-", no Notes) otherwise.
+// Rating returns the entry for a model when the file has one that is rated or
+// has an aligned score (an unrated model's score still says how it compares),
+// and the zero Entry (Cell "-", no Notes) otherwise.
 func (ix Index) Rating(providerID, modelName string) Entry {
-	if e, ok := ix.Lookup(providerID, modelName); ok && e.Rated() {
+	if e, ok := ix.Lookup(providerID, modelName); ok && (e.Rated() || e.HasAligned) {
 		return e
 	}
 	return Entry{}

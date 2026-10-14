@@ -194,6 +194,12 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 	wS, wT := len("STATUS"), len("TIER")
 	tier := make([]string, len(rows))
 	timePriced := false
+	// Every TIER cell pads its score to the widest score in the table, so
+	// the digits line up on the right.
+	digits := 0
+	for _, r := range rows {
+		digits = max(digits, r.tier.ScoreDigits())
+	}
 	for i, r := range rows {
 		fam[i] = r.Model.Family
 		if r.Profile != nil {
@@ -209,7 +215,7 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		}
 		// A slot-profile row's tier is "-": its slots' tiers are on its
 		// slot line (slotLine).
-		tier[i] = r.tier.Short()
+		tier[i] = r.tier.Cell(digits)
 		wT = maxRunes(wT, tier[i])
 		c1[i], c7[i], c30[i] = fmt.Sprint(r.counts.OneDay), fmt.Sprint(r.counts.SevenDay), fmt.Sprint(r.counts.ThirtyDay)
 		famW = maxRunes(famW, fam[i])

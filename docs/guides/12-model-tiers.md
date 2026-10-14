@@ -256,7 +256,8 @@ absent from the file, or listed under `[[unmapped]]`, is `unrated`.
 
 wt's model picker reads the same file each time it builds its table and shows
 it in a TIER column after MODEL: the tier's letter (`M` marathon, `D` deep,
-`S` standard, `Q` quick) and the aligned score rounded to a whole number. The
+`S` standard, `Q` quick) and the aligned score rounded to a whole number,
+its digits right-aligned down the column. The
 highlighted row's tier is spelt out on the line under the table, after the
 price, when there is room. An illustrative picker, not a live one (and not
 a sample the modeltiers tests pin):
@@ -265,12 +266,17 @@ a sample the modeltiers tests pin):
     FAMILY   MODEL                     TIER  LOC    STATUS  RUNNING  COST
     glm-5.3  ollama/glm-5.3:cloud      S44   cloud  ok      -        ...
     qwen3.8  ollama/qwen3.8:27b-mlx    S34   local  ok      -        ...
+    gpt-oss  ollama/gpt-oss:20b-cloud   12   cloud  ok      -        ...
     -        ollama/gemma4:31b-mlx     -     local  new     -        -
 
   LiteLLM: on   cost 0.6/0.06/2.2   tier standard · score 44 (3 sources) · high confidence
 ```
 
-- `-` means no rating: the entry is `unrated`, the model is not in the file
+- An `unrated` model that still has an aligned score shows the score alone,
+  with the letter's place left blank (the `gpt-oss` row above): a low score is a reason
+  to pass a model over too. The line under the table reads
+  `unrated · score 12 …` for it.
+- `-` means no score at all: the entry is `unrated` with no aligned score, the model is not in the file
   (added since the last `modeltiers run`), or there is no file or it cannot
   be parsed. The picker never warns about any of these.
 - wt finds a model's entry by `provider_id` and `model_name`, the fields
