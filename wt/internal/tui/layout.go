@@ -80,28 +80,34 @@ func slotLine(p *catalog.ProfileRow, tiers map[string]string, width int) string 
 		return cutLines(p.Reason, width)
 	}
 	const sep = " · "
-	def := p.Check.Profile.Default
-	slots := p.Check.Profile.FilledOrder(p.Check.Declared)
-	plain := make([]string, len(slots))
-	rated := make([]string, len(slots))
+	def := p.Check.RestSlot()
+	slots := p.Check.FilledOrder()
+	// A default that is an alias (claude's opusplan) leads the line, named,
+	// ahead of the slot the session works on.
+	var plain, rated []string
+	if p.Check.Profile.Default != def {
+		plain = append(plain, p.Check.Profile.Default)
+		rated = append(rated, p.Check.Profile.Default)
+	}
 	anyRated := false
-	for i, s := range slots {
+	for _, s := range slots {
 		label := s
 		if s == def {
 			label += "*"
 		}
-		plain[i] = label + " " + p.Models[s].ModelName
-		rated[i] = plain[i]
+		entry := label + " " + p.Models[s].ModelName
+		plain = append(plain, entry)
 		if short := tiers[s]; short != "" {
-			rated[i] += " " + short
+			entry += " " + short
 			anyRated = true
 		}
+		rated = append(rated, entry)
 	}
 	variants := [][]string{rated}
 	if anyRated {
 		variants = append(variants, plain)
 	}
-	for shown := len(slots); shown >= 0; shown-- {
+	for shown := len(plain); shown >= 0; shown-- {
 		for _, entries := range variants {
 			parts := append([]string(nil), entries[:shown]...)
 			if rest := len(entries) - shown; rest > 0 {

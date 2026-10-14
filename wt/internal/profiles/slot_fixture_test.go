@@ -9,7 +9,7 @@ import (
 // TestSlotProfilesFixtureMatchesTheParser reads the contract fixture
 // docs/contracts/slot-profiles.sample.toml, the documented shape of
 // ~/.config/agent-wt/slot-profiles.toml. It pins every field the fixture
-// sets and checks that both profiles pass static validation for an agent
+// sets and checks that every profile, opusplan's included, passes static validation for an agent
 // with Claude's slots, mechanisms and reserved keys. If the parser and the
 // documented format drift apart, a file written from the documentation
 // loads with a field missing or as a blocked row; this test fails first.
@@ -43,6 +43,15 @@ func TestSlotProfilesFixtureMatchesTheParser(t *testing.T) {
 			Default: "opus",
 			Slots:   map[string]string{"opus": "ollama/glm-5.2:cloud"},
 		},
+		{
+			Name:    "planned",
+			Agent:   "claude",
+			Default: "opusplan",
+			Slots: map[string]string{
+				"opus":   "openrouter/z-ai/glm-5.3",
+				"sonnet": "ollama/glm-5.3-flash:cloud",
+			},
+		},
 	}
 	if !reflect.DeepEqual(store.Profiles, want) {
 		t.Fatalf("fixture profiles =\n%#v\nwant\n%#v", store.Profiles, want)
@@ -62,5 +71,8 @@ func TestSlotProfilesFixtureMatchesTheParser(t *testing.T) {
 	}
 	if got, want := checks[1].Label(), "profile/one-slot"; got != want {
 		t.Errorf("checks[1].Label() = %q, want %q", got, want)
+	}
+	if got := checks[2].RestSlot(); got != "sonnet" {
+		t.Errorf("planned: RestSlot() = %q, want sonnet (opusplan works on the sonnet slot)", got)
 	}
 }

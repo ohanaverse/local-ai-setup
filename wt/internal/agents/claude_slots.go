@@ -113,6 +113,25 @@ func claudeConfigEnv(cc map[string]any) (map[string]any, error) {
 	return table, nil
 }
 
+// claudeOpusplan is Claude Code's opusplan model alias: the opus slot's
+// model in plan mode, the sonnet slot's model otherwise. Claude Code reads
+// ANTHROPIC_DEFAULT_OPUS_MODEL and ANTHROPIC_DEFAULT_SONNET_MODEL for it
+// (checked live with Claude Code 2.1.299 on 2026-10-14, #391), so a profile
+// may name it as its default only when it fills both slots.
+const claudeOpusplan = "opusplan"
+
+// DefaultAlias reports claude's one alias for a profile's default, opusplan.
+func (claudeDriver) DefaultAlias(name string) (profiles.SlotAlias, bool) {
+	if name != claudeOpusplan {
+		return profiles.SlotAlias{}, false
+	}
+	return profiles.SlotAlias{
+		Requires: []string{"opus", "sonnet"},
+		Rest:     "sonnet",
+		Doc:      "the opus slot in plan mode, the sonnet slot otherwise",
+	}, true
+}
+
 // RefusedSlotPassthrough names the flags that, passed after `--`, would
 // replace the slot mapping: --settings carries it and --model picks the slot.
 func (claudeDriver) RefusedSlotPassthrough() []string { return []string{"--settings", "--model"} }
@@ -122,7 +141,7 @@ func (claudeDriver) RefusedSlotPassthrough() []string { return []string{"--setti
 // proxy key is set in the process environment only: argv is visible in the
 // process list, and the key must not be.
 func (claudeDriver) BuildSlots(in profiles.SlotBuildInput) (profiles.SlotCommand, error) {
-	if !slices.Contains(claudeSlots, in.Default) {
+	if !slices.Contains(claudeSlots, in.Default) && in.Default != claudeOpusplan {
 		return profiles.SlotCommand{}, fmt.Errorf("default slot %q is not a claude slot", in.Default)
 	}
 	payload, err := claudeSlotSettings(in)
@@ -176,6 +195,13 @@ func claudeSlotSettings(in profiles.SlotBuildInput) (string, error) {
 		for _, v := range claudeSlotVars(slot, m.ID, m) {
 			env[v.Key] = v.Value
 		}
+	}
+	// In plan mode Claude Code promotes opusplan's opus model to its [1m]
+	// variant and assumes a 1M-token window for it, so a slot model with a
+	// smaller window would be compacted far too late (#391). wt's value wins
+	// over the profile's own.
+	if in.Default == claudeOpusplan {
+		env["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "1"
 	}
 	// Repeated here so an env block in the user's own settings files cannot
 	// redirect the session.

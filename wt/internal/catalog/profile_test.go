@@ -350,6 +350,36 @@ func TestResolveSlotProfileFillsEverySlot(t *testing.T) {
 	}
 }
 
+// TestResolveSlotProfileOpusplanRestsOnSonnet pins a row whose default is
+// claude's opusplan alias: the slots the profile leaves unfilled take the
+// sonnet slot's model, the slot opusplan works on, and Distinct lists that
+// model first; the launch still carries "opusplan" as the default, which is
+// what the slot build passes as --model. Filling from Profile.Default would
+// look up a slot named "opusplan", find none, and leave fable and haiku
+// unmapped, so they would send Anthropic ids the proxy rejects.
+func TestResolveSlotProfileOpusplanRestsOnSonnet(t *testing.T) {
+	check := slotCheck(0, "planned", "opusplan", map[string]string{"opus": "openrouter/b", "sonnet": "openrouter/a"})
+	check.DefaultSlot = "sonnet"
+	check.Alias = profiles.SlotAlias{Requires: []string{"opus", "sonnet"}, Rest: "sonnet", Doc: "doc"}
+	row := ResolveSlotProfile(slotTestCfg(), nil, check)
+	if row.Action() != ActionLaunch {
+		t.Fatalf("action = %v (%s), want ActionLaunch", row.Action(), row.BlockReason())
+	}
+	p := row.Profile
+	want := map[string]string{"fable": "openrouter/a", "opus": "openrouter/b", "sonnet": "openrouter/a", "haiku": "openrouter/a"}
+	for slot, id := range want {
+		if p.Models[slot].ID != id {
+			t.Errorf("slot %s = %q, want %q", slot, p.Models[slot].ID, id)
+		}
+	}
+	if got := strings.Join(rowModelIDs(p.Distinct()), ","); got != "openrouter/a,openrouter/b" {
+		t.Errorf("Distinct = %s, want the sonnet slot's model first", got)
+	}
+	if got := p.Launch().Default; got != "opusplan" {
+		t.Errorf("Launch().Default = %q, want opusplan", got)
+	}
+}
+
 // rowModelIDs lists the ids of models, in order.
 func rowModelIDs(models []config.Model) []string {
 	ids := make([]string, len(models))

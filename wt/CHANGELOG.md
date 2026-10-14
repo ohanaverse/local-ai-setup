@@ -4,6 +4,19 @@
 
 ### Added
 
+- A slot profile may set `default = "opusplan"` when it fills the `opus` and
+  `sonnet` slots (#391). wt launches Claude Code with `--model opusplan`, so
+  plan mode runs on the `opus` slot's model and everything else on the
+  `sonnet` slot's, and sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`: in plan mode
+  Claude Code would otherwise assume a 1M-token window for the opus model.
+  The row is priced as the `sonnet` slot's model, the picker's slot line
+  starts with `opusplan`, and `wt profile show` prints a `default:` line. A
+  profile that names `opusplan` without filling both slots is blocked with
+  `default "opusplan" needs the opus slot filled` (or `sonnet`). A native
+  `claude/opusplan` row (`wt model add claude opusplan --family claude`)
+  launches the subscription with `--model opusplan`; no code change was
+  needed for it.
+
 - The model picker has a TIER column after MODEL: each model's advisory
   capability tier from modeltiers' `tiers.toml` (`MODELTIERS_OUT`, else
   `~/.config/local-ai/tiers.toml`), as its letter and rounded aligned score

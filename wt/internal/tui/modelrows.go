@@ -54,13 +54,14 @@ type tableRow struct {
 }
 
 // costModel is the model a row is priced as: its own, or for a slot-profile
-// row the default slot's model. A profile row whose default slot did not
+// row the model of the slot the session rests on (the default slot, or the
+// sonnet slot of an opusplan profile). A profile row whose default slot did not
 // resolve (a blocked row) has the zero Model, which has no price.
 func (r tableRow) costModel() config.Model {
 	if r.Profile == nil {
 		return r.Model
 	}
-	return r.Profile.Models[r.Profile.Check.Profile.Default]
+	return r.Profile.Models[r.Profile.Check.RestSlot()]
 }
 
 // pricedAt is the row with its clock set to at and its price resolved for

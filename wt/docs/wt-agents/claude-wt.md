@@ -35,6 +35,7 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` handles two cases:
 
 - **`claude/native`** — passes no `--model` flag and clears any inherited `ANTHROPIC_*` env vars, so Claude Code uses its native subscription (the model configured in `~/.claude/settings.json`).
+- **`claude/<alias>`** (`claude/opus`, `claude/opusplan`, …) — the native subscription too, with `--model <alias>`. Add one with `wt model add claude <alias> --family claude`. `claude/opusplan` runs Opus in plan mode and Sonnet otherwise (checked on 2026-10-14, #391), so outside plan mode it works on Sonnet where a bare `claude/native` launch works on your account's default model.
 - **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)). It also maps all four of Claude Code's model slots to that model (see [Model slots on a single-model launch](#model-slots-on-a-single-model-launch)).
 
 For Ollama-routed models, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.

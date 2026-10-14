@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -287,5 +288,70 @@ func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 				t.Errorf("CheckConfigContent = %q, BuildSlots = %q, want %q from both", msg(checkErr), msg(buildErr), tc.want)
 			}
 		})
+	}
+}
+
+// TestClaudeDefaultAliasOpusplan pins claude's one default alias: opusplan
+// reads the opus and sonnet slots and rests on sonnet, and nothing else is
+// an alias. Claude Code resolves opusplan through ANTHROPIC_DEFAULT_OPUS_MODEL
+// in plan mode and ANTHROPIC_DEFAULT_SONNET_MODEL otherwise (checked live on
+// 2026-10-14, #391), so a profile without both would send plan or execution
+// requests to a built-in Anthropic id the proxy rejects.
+func TestClaudeDefaultAliasOpusplan(t *testing.T) {
+	a, ok := claudeDriver{}.DefaultAlias("opusplan")
+	if !ok {
+		t.Fatal(`DefaultAlias("opusplan") is not an alias`)
+	}
+	if !slices.Equal(a.Requires, []string{"opus", "sonnet"}) || a.Rest != "sonnet" || a.Doc == "" {
+		t.Errorf("opusplan = %#v, want Requires [opus sonnet], Rest sonnet and a Doc", a)
+	}
+	for _, name := range []string{"sonnet", "opus", "Opusplan", "opusplan[1m]", "turbo", ""} {
+		if _, ok := (claudeDriver{}).DefaultAlias(name); ok {
+			t.Errorf("DefaultAlias(%q) is an alias; only opusplan is", name)
+		}
+	}
+	got, ok := SlotDrivers().DefaultAlias("claude", "opusplan")
+	if !ok || !reflect.DeepEqual(got, a) {
+		t.Errorf("SlotDrivers().DefaultAlias(claude, opusplan) = %#v, %v; want the driver's own answer", got, ok)
+	}
+	if _, ok := SlotDrivers().DefaultAlias("codex", "opusplan"); ok {
+		t.Error("SlotDrivers().DefaultAlias gave an alias to an agent without slots")
+	}
+}
+
+// TestClaudeBuildSlotsOpusplan pins the build of a profile whose default is
+// opusplan: --model opusplan, so Claude Code switches between the opus and
+// sonnet slots with plan mode, and CLAUDE_CODE_DISABLE_1M_CONTEXT=1 in the
+// settings env above the profile's own, since in plan mode Claude Code would
+// otherwise promote the opus slot's id to [1m] and assume a 1M-token window
+// the model does not have (#391). A profile with a slot default gets neither.
+func TestClaudeBuildSlotsOpusplan(t *testing.T) {
+	in := slotTestInput(false)
+	in.Default = "opusplan"
+	in.Env["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "0"
+	sc, err := claudeDriver{}.BuildSlots(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--model", "opusplan", "--settings"}
+	if len(sc.Args) != 4 || !slices.Equal(sc.Args[:3], want) {
+		t.Fatalf("Args = %v, want %v followed by the payload", sc.Args, want)
+	}
+	env := slotSettings(t, sc.Args)["env"].(map[string]any)
+	if got := env["CLAUDE_CODE_DISABLE_1M_CONTEXT"]; got != "1" {
+		t.Errorf("CLAUDE_CODE_DISABLE_1M_CONTEXT = %v, want \"1\", over the profile's own value", got)
+	}
+	for _, slot := range []string{"OPUS", "SONNET"} {
+		if env["ANTHROPIC_DEFAULT_"+slot+"_MODEL"] == nil {
+			t.Errorf("ANTHROPIC_DEFAULT_%s_MODEL is missing; opusplan reads it", slot)
+		}
+	}
+
+	plain, err := claudeDriver{}.BuildSlots(slotTestInput(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, set := slotSettings(t, plain.Args)["env"].(map[string]any)["CLAUDE_CODE_DISABLE_1M_CONTEXT"]; set {
+		t.Error("a profile with a slot default got CLAUDE_CODE_DISABLE_1M_CONTEXT; only opusplan sets it")
 	}
 }
