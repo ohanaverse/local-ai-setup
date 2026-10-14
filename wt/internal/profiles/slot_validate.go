@@ -39,6 +39,15 @@ func (d SlotDrivers) alias(agent, name string) (SlotAlias, bool) {
 	return d.DefaultAlias(agent, name)
 }
 
+// defaultAlias is the agent's alias that p's default names, when it names
+// one and no filled slot of that name takes precedence.
+func defaultAlias(p SlotProfile, d SlotDrivers) (SlotAlias, bool) {
+	if _, filled := p.Slots[p.Default]; filled {
+		return SlotAlias{}, false
+	}
+	return d.alias(p.Agent, p.Default)
+}
+
 // ErrSlotDuplicate is the static error of every profile that shares its
 // name with another profile of the same agent.
 var ErrSlotDuplicate = errors.New("duplicate profile name")
@@ -125,10 +134,8 @@ func ValidateSlots(store SlotStore, d SlotDrivers) []SlotCheck {
 		c.Err = slotBodyErr(c.Profile, c.Declared, d)
 		if c.Err == nil {
 			c.DefaultSlot = c.Profile.Default
-			if a, ok := d.alias(c.Profile.Agent, c.Profile.Default); ok {
-				if _, filled := c.Profile.Slots[c.Profile.Default]; !filled {
-					c.DefaultSlot, c.Alias = a.Rest, a
-				}
+			if a, ok := defaultAlias(c.Profile, d); ok {
+				c.DefaultSlot, c.Alias = a.Rest, a
 			}
 		}
 	}
@@ -175,7 +182,7 @@ func slotBodyErr(p SlotProfile, declared []string, d SlotDrivers) error {
 		return errors.New("default is missing")
 	}
 	if _, ok := p.Slots[p.Default]; !ok {
-		a, isAlias := d.alias(p.Agent, p.Default)
+		a, isAlias := defaultAlias(p, d)
 		if !isAlias {
 			return fmt.Errorf("default %q is not a slot this profile fills", p.Default)
 		}

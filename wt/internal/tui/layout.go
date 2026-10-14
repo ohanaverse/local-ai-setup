@@ -63,8 +63,10 @@ func withTierNote(line string, notes []string, width int) string {
 // slotLine is the line under the model table while a slot-profile row is
 // highlighted; it takes the mode line's place and adds no line to the frame.
 // A blocked row shows its reason, cut with an ellipsis when it is too wide.
-// Any other row lists the slots the profile fills, the default first and
-// marked "*", the rest in the agent's declared order, each with its model's
+// Any other row lists the slots the profile fills, the slot the session works
+// on first and marked "*" (a default that is an alias, such as claude's
+// opusplan, leads the line by name, as an entry of its own), the rest in the
+// agent's declared order, each with its model's
 // provider-side name and, when the tiers file rates that model, its short form
 // (tiers.Entry.Short: "opus* glm-5.3:cloud S44"; tiers, by slot). Entries are shown whole or not
 // at all, as the mode line's price is (modeLine): the longest run of leading

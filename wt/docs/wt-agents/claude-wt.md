@@ -131,7 +131,7 @@ registry model in one launch, through the LiteLLM proxy:
 claude-wt -M profile/<name>     # or pick the profile/<name> row in the model picker
 ```
 
-wt then passes `--model <default slot>` and one inline `--settings` JSON
+wt then passes `--model <default slot>` (`--model opusplan` for an [opusplan](slot-profiles.md#opusplan) profile) and one inline `--settings` JSON
 holding `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot. It writes no
 settings file. The file format, the picker row and every failure are in
 [slot-profiles.md](slot-profiles.md).
