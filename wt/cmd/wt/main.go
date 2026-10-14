@@ -84,9 +84,11 @@ func main() {
 // auto-launches or routes to the picker/TUI. launchPath is the resolved
 // worktree path for -W, the current directory for --cwd, "." for outside-a-repo
 // passthrough, and "" when the worktree picker should be shown. root is the
-// repo root that owns launchPath ("" when not inside a git repo, or when the
-// worktree picker will resolve it); it gates the guard install. Callers pass
-// the root they already resolved so no git subprocess is spawned twice.
+// repo root that owns launchPath ("" when not inside a git repo — --cwd
+// included — or when the worktree picker will resolve it); it gates the guard
+// install and nothing else, which is why a launch that has a directory needs
+// no repository. Callers pass the root they already resolved so no git
+// subprocess is spawned twice.
 //
 // Callers must install the guard themselves when launchPath == "" (the TUI
 // branch), because the repo root is not known until the user selects a
@@ -407,10 +409,24 @@ func rootCmd() *cobra.Command {
 			// `--` means the same thing to the agent as it did to the user.
 			// The agent starts here too, so a `-- --continue` finds the
 			// sessions of this directory.
+			//
+			// It needs no repository. The one thing a --cwd launch takes
+			// from git is the checkout root, and that root only says
+			// whether to install the main guard (runLaunchPath): rotation,
+			// usage and refcount state are keyed by model, agent and pid,
+			// never by a repository or a branch (claude's config_content
+			// backup is keyed by the absolute settings path, so it cannot
+			// collide either). So a
+			// directory with no checkout root — outside any repository,
+			// or with no git to ask — launches with root "", like the
+			// outside-a-repo launch below: no guard, everything else the
+			// same. Only -W (above) and the worktree picker (below) need
+			// a repository: -W says so, and the picker is never reached
+			// outside one.
 			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
 				root, err := worktree.RepoRoot()
 				if err != nil {
-					return fmt.Errorf("not in a git repo: %w", err)
+					root = ""
 				}
 				wd, err := os.Getwd()
 				if err != nil {
@@ -444,7 +460,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
-	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
+	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.

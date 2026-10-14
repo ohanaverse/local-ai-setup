@@ -114,7 +114,7 @@ defaulted (it always comes from `-A` or the agent+command picker).
 | `--replace` | With `-M`, start the model even if it means stopping a running one. |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within flag). |
 | `-F <family>`, `--family <family>` | Filter the model list by model family (comma-delimited, OR within flag). |
-| `--cwd` | Launch in the current directory; skip the worktree picker. The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skip the worktree picker. The agent+command picker still appears when `-A` is omitted. With `-A` and no `-M`, wt launches directly when exactly one model is launchable; otherwise the model picker appears. |
 | `--yolo` | Skip permission prompts (agent-specific). |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer if applicable) and exit. |
 
@@ -151,9 +151,26 @@ agent starts in**, which is not always the one you typed the command in:
 
 | How you launch | Where the agent starts |
 |---|---|
-| `--cwd` | the directory you typed the command in |
+| `--cwd` (inside a git repo or not) | the directory you typed the command in |
 | `-W <name>`, or the worktree picker | the root of that worktree |
-| outside a git repo | the directory you typed the command in |
+| outside a git repo, no `--cwd` | the directory you typed the command in |
+
+**What needs a git repository.** Only choosing or creating a worktree does:
+`-W <name>` outside a repository stops with `wt: not in a git repo: …`, and
+the worktree picker is never shown there. `--cwd` needs none. Outside a
+repository it is the same launch as inside one (agent and model pickers,
+`-M` pins and slot profiles, LiteLLM routes, automatic profiles, rotation and
+usage records, the stop picker and summary afterwards) with one difference:
+the [main guard](../../README.md#main-guard) is a git hook, so it is installed
+only when the directory is inside a checkout. Nothing wt records about a
+launch is keyed by a repository or a branch (the one directory-keyed item,
+claude's `config_content` backup, uses the absolute settings path, which
+cannot collide), so a launch outside
+a repository shares no state with one inside it beyond what every launch
+shares (which model was launched last, how often, and which are in use).
+Without `--cwd`, wt outside a repository already launches in the directory
+you typed the command in; `--cwd` there says the same thing explicitly, and
+a script can pass it without knowing where it runs.
 
 So with `--cwd` a relative path means what you meant. With `-W` or the picker
 it is read from the worktree's root: run from `<repo>/wt` and pick the main

@@ -62,7 +62,7 @@ still refused): put it before the command.
 | Flag | Description |
 |------|-------------|
 | `-W <name>`, `--worktree <name>` | Use/create worktree for branch, skip worktree picker |
-| `--cwd` | Run in the current directory, skip worktree picker |
+| `--cwd` | Run in the current directory (inside a git repository or not), skip worktree picker |
 | `--init` | Seed agent instruction files (AGENTS.md) and exit |
 | `--no-guard` | Remove main-branch commit guard |
 | `--check-guard` | Report guard status |

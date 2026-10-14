@@ -330,6 +330,16 @@
 
 ### Fixed
 
+- `wt --cwd` launches in the current directory whether or not it is inside a
+  git repository. Outside one it stopped with `wt: not in a git repo: exit
+  status 128`, although nothing a `--cwd` launch does needs a repository. It
+  is now the same launch as inside one (pickers, `-M` pins and slot profiles,
+  LiteLLM routes, automatic profiles, rotation and usage records, the stop
+  picker and summary), minus the main guard, which is a git hook and is
+  installed only inside a checkout. A bare repository and a directory inside
+  `.git` launch the same way, also without the guard. Inside a repository
+  nothing changes. `-W` and the worktree picker still need a repository and
+  `-W` still says so; `wt smoke --cwd` never needed one and is unchanged.
 - Two gaps between slot profiles and their design. A blocked profile row now
   shows its local model's state in RUNNING (`run`, `load` or `-`) whichever
   rule blocked it; a profile blocked by a missing `[litellm]` url or api key,
