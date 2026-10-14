@@ -46,7 +46,7 @@ restart the proxy after a change. Every one of them then waits up to 30s for
 `/health/liveliness` before it is done, when a LiteLLM URL is configured and a
 pre-probe before the restart was not refused: `wt litellm sync` and the
 commands that run it after a registry write (`wt cloud-sync`, `wt model
-add|edit|rm|init`, the Models tab of `wt config`) before they return (#379),
+add|edit|rm|init`, the Models tab of `wt config`) before they return (#382),
 and the automatic route updates from `wt start`/`wt stop`/`wt smoke`/the TUI
 start flow and stop picker, and the route check at launch, before wt exits or
 hands the proxy to an agent. A proxy that does not answer in time is a
@@ -166,6 +166,19 @@ table holds a single row and that row is launchable: one launchable model
 beside a stopped local model or a blocked row still shows the picker.
 `-W foo -M claude/opus` (no `-A`) shows the agent+command picker first and
 then validates the pin against the chosen agent.
+
+The worktree picker tags each worktree or branch that has a pull request on
+GitHub with its number and state after the branch name — `#383 open`, or
+`draft`, `merged`, `closed` — and puts the PR's title on the row's second line,
+before the path. Typing the number (`/383`) in the filter finds the row. The
+tags come from two `gh pr list` calls per picker open — open PRs, and PRs
+of every state, so an old open PR is never crowded out by newer merged ones —
+and appear as each answers (within five seconds), the open PRs' usually
+first; the picker does not wait for them. A branch with
+several PRs shows its open one, else the highest-numbered; PRs from forks
+are not shown.
+Without `gh`, outside a GitHub repository, or with `gh` not logged in, the
+picker simply shows no tags.
 
 The agent+command picker lists every registered agent and command. An
 agent with no binary on PATH is marked "not installed", and selecting it is

@@ -131,6 +131,14 @@ type model struct {
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
 
+	// prs is each branch's pull request, merged from the `gh pr list`
+	// listings a picker open runs (loadPRsCmd, one per
+	// worktree.PRListStates) as each answers; nil until the first does,
+	// empty when every one so far failed.
+	// Every build of the worktree list (the first, and the reload after a
+	// create) is tagged from it.
+	prs map[string]worktree.PR
+
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
 	// error, matching the non-TUI path's exit-with-message behavior
@@ -152,7 +160,15 @@ func (m model) Init() tea.Cmd {
 			return selectedEntryMsg{entry: worktree.Entry{Path: m.prePath}}
 		}
 	}
-	return loadEntriesCmd()
+	// The pull request listing runs beside the enumeration, never before
+	// it: the picker shows as soon as the worktrees are in, and the tags
+	// appear as each listing answers (prsLoadedMsg) — the open PRs' usually
+	// first, every state's filled in after — whichever comes first.
+	cmds := []tea.Cmd{loadEntriesCmd()}
+	for _, state := range worktree.PRListStates {
+		cmds = append(cmds, loadPRsCmd(state))
+	}
+	return tea.Batch(cmds...)
 }
 
 // isTyping reports whether the current phase is actively receiving character
@@ -260,6 +276,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.defaultBranch = msg.defaultBranch
 		m.repoRoot = msg.repoRoot
 		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
+		if m.prs != nil {
+			applyPRs(&m.list, m.prs)
+		}
 		m.ready = true
 
 		// Default-branch warning: if the only picker target is the current
@@ -288,6 +307,18 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			selectFirstEntry(&m.list, func(ei entryItem) bool {
 				return ei.label == "(current)"
 			})
+		}
+		return m, nil
+	case prsLoadedMsg:
+		// One listing's pull requests arrived: merged with any listing
+		// already in (the higher-numbered PR per branch, so arrival order
+		// does not matter), kept for any later build of the list, and put
+		// on the list already on screen in place, so the cursor, the
+		// filter and the page stay where the user left them. A listing
+		// that failed adds nothing: msg.prs is then empty.
+		m.prs = worktree.MergePRs(m.prs, msg.prs)
+		if m.ready {
+			applyPRs(&m.list, m.prs)
 		}
 		return m, nil
 	case selectedEntryMsg:
@@ -605,6 +636,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	if m.ready && m.phase == phaseList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
+		// A filter run a keystroke started before the latest tags arrived
+		// matched the items as they were then; its rows carry the old tags.
+		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs != nil && !prsCurrent(m.list.VisibleItems(), m.prs) {
+			applyPRs(&m.list, m.prs)
+		}
 		return m, cmd
 	}
 	if m.phase == phaseOllamaWarn && m.width > 0 && m.height > 0 {
@@ -1239,6 +1275,28 @@ func loadEntriesCmd() tea.Cmd {
 		defaultBranch := worktree.DefaultBranch(root)
 		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
 	}
+}
+
+// loadPRsCmd returns a command that runs one listing of the repository's
+// pull requests with gh (worktree.PRs with state: one call, five seconds at
+// most, every failure an empty map) for the worktree picker's tags. Each
+// listing runs beside loadEntriesCmd and the other listings and finds the
+// repository root itself, so the picker never waits for it.
+func loadPRsCmd(state string) tea.Cmd {
+	return func() tea.Msg {
+		root, err := worktree.RepoRoot()
+		if err != nil {
+			return prsLoadedMsg{prs: map[string]worktree.PR{}}
+		}
+		return prsLoadedMsg{prs: worktree.PRs(root, state)}
+	}
+}
+
+// prsLoadedMsg carries one loadPRsCmd's answer: each branch's pull request
+// in that listing, keyed by head branch name; empty, never nil, when the
+// listing failed.
+type prsLoadedMsg struct {
+	prs map[string]worktree.PR
 }
 
 // selectFirstEntry selects the first kindEntry item in l matching pred.

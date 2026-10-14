@@ -57,7 +57,7 @@ Interactive behaviors (key feel) are not driven here — see the UNVERIFIED note
 
 Run a bare `wt` (from any git repo; shims pin the agent up front, skipping the agent screen). Phases in `internal/tui/app.go`: worktree list → agent/command picker (only when no `-A` was supplied) → agent+model screen → launch.
 
-- **Worktree picker:** scroll with `j`/`k` (or arrows), `/` to filter, `n` or selecting `+ New worktree…` to create a branch, `enter` to select, `q` or `esc` to quit.
+- **Worktree picker:** scroll with `j`/`k` (or arrows), `/` to filter, `n` or selecting `+ New worktree…` to create a branch, `enter` to select, `q` or `esc` to quit. A row whose branch has a GitHub pull request shows `#<number> <state>` (`open`, `draft`, `merged`, `closed`) after the branch and the PR title on its second line; the filter matches the number. The tags come from `gh pr list` and appear a moment after the picker; without `gh` or a GitHub remote there are none ([wt-agents/README.md](../../wt/docs/wt-agents/README.md)).
 - **Agent+model screen header** shows the agent and the active tag slot (`internal/tui/layout.go`):
 
   ```
