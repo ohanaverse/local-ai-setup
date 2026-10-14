@@ -196,6 +196,7 @@ some columns omitted.
 |---|---|
 | FAMILY | `profile` |
 | MODEL | `profile/<name>` |
+| TIER | `-`; the slots' tiers are on the line under the table |
 | LOC | `cloud`, `local`, or `mixed` |
 | STATUS | `ok`. A start or blocked profile is shown as a start or blocked model row is, by its action and note |
 | RUNNING | The local model's state (`run`, `load` or `-`), on a blocked row too, whichever rule blocked it; `-` for an all-cloud profile, for a profile that names two local models, for one whose local model is not in the registry or has no row of its own, and for the one row of profiles sharing a name |
@@ -205,8 +206,11 @@ some columns omitted.
 
 - **The line under the table** lists the highlighted profile's slots in
   place of the `LiteLLM: on|off` line: the default first, marked `*`, then
-  the rest in the agent's order, each with the model's provider-side name.
-  It shows whole entries only; what does not fit becomes `+N more`.
+  the rest in the agent's order, each with the model's provider-side name
+  and, when `tiers.toml` rates that model, its tier code and score
+  (`opus* glm-5.3:cloud S44 · haiku qwen3.8:27b-mlx S34`, an illustrative
+  line). It shows whole entries only, giving up the tiers before an entry;
+  what does not fit becomes `+N more`.
   `wt profile show` gives the full list. On a blocked row the line is the
   reason.
 - **Enter** on a launch row launches. On a start row it starts the

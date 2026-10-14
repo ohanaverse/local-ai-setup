@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -29,6 +30,7 @@ func realisticTable() modelTable {
 			},
 			counts: usage.UsageCounts{OneDay: 3, SevenDay: 12, ThirtyDay: 104},
 			stats:  survey.Stats{Answered: 12, Worked: 11, Failed: 1, RatedSpeed: 12, SpeedSum: 44, RatedQuality: 12, QualitySum: 51},
+			tier:   tiers.Entry{Tier: "deep", Code: "D", Confidence: "high", Aligned: 51.6, HasAligned: true, Sources: 3},
 		},
 		{
 			Row: catalog.Row{
@@ -48,12 +50,13 @@ func realisticTable() modelTable {
 }
 
 // The realistic table as it was rendered before columns could be dropped,
-// captured from that code: the header and the three rows' titles.
+// captured from that code, with the TIER column added after MODEL: the header
+// and the three rows' titles.
 const (
-	goldenHeader = "    FAMILY   MODEL                                            LOC    STATUS  RUNNING  COST                     1D  7D  30D  SURVEY"
-	goldenRow0   = "  > sonnet   openrouter/anthropic/claude-sonnet-4.5-thinking  cloud  ok      -         3.0000  0.3000 15.0000  3   12  104  ✓92% q4.2 s3.7 n12"
-	goldenRow1   = "2   qwen3.8  omlx/Qwen3.8-27B-Instruct-MLX-6bit               local  ok      run      -                        1   4   9"
-	goldenRow2   = "    -        ollama/gemma4:9b                                 local  new     -        -                        0   0   0"
+	goldenHeader = "    FAMILY   MODEL                                            TIER  LOC    STATUS  RUNNING  COST                     1D  7D  30D  SURVEY"
+	goldenRow0   = "  > sonnet   openrouter/anthropic/claude-sonnet-4.5-thinking  D52   cloud  ok      -         3.0000  0.3000 15.0000  3   12  104  ✓92% q4.2 s3.7 n12"
+	goldenRow1   = "2   qwen3.8  omlx/Qwen3.8-27B-Instruct-MLX-6bit               -     local  ok      run      -                        1   4   9"
+	goldenRow2   = "    -        ollama/gemma4:9b                                 -     local  new     -        -                        0   0   0"
 )
 
 // refusedTable is a table whose widest row ends in an exception note: a cloud
@@ -117,7 +120,7 @@ func shownColumns(header string) string {
 
 // TestModelTableDropsWholeColumnsInOrder pins what a model table shows when it
 // is wider than its list: whole columns go, from the right-hand end of the
-// drop order (survey, 30D, 7D, 1D, cost, location, family), and MODEL, STATUS
+// drop order (survey, 30D, 7D, 1D, cost, tier, location, family), and MODEL, STATUS
 // and RUNNING always stay. Before this the terminal cut the row wherever its
 // edge fell, so on an 80-column terminal a long model id pushed STATUS and
 // RUNNING — whether Enter launches or starts — off the screen. Each width also
@@ -125,14 +128,14 @@ func shownColumns(header string) string {
 // whole in the header and in every row, and that the header and the rows start
 // each shown column at the same place.
 func TestModelTableDropsWholeColumnsInOrder(t *testing.T) {
-	const all = "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"
+	const all = "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"
 	for _, tc := range []struct {
 		width int
 		want  string
 	}{
 		{200, all},
-		{120, "FAMILY MODEL LOC STATUS RUNNING COST 1D"},
-		{100, "FAMILY MODEL LOC STATUS RUNNING"},
+		{120, "FAMILY MODEL TIER LOC STATUS RUNNING COST"},
+		{100, "FAMILY MODEL TIER LOC STATUS RUNNING"},
 		{80, "MODEL STATUS RUNNING"},
 		{60, "MODEL STATUS RUNNING"},
 		{40, "MODEL STATUS RUNNING"},
@@ -261,11 +264,13 @@ func TestModelTableColumnBoundaries(t *testing.T) {
 		{75, "MODEL STATUS RUNNING"},
 		{84, "FAMILY MODEL STATUS RUNNING"},
 		{91, "FAMILY MODEL LOC STATUS RUNNING"},
-		{113, "FAMILY MODEL LOC STATUS RUNNING COST"},
-		{120, "FAMILY MODEL LOC STATUS RUNNING COST 1D"},
-		{124, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D"},
-		{129, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D"},
-		{146, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
+		// TIER is 4 columns and its separator 2.
+		{97, "FAMILY MODEL TIER LOC STATUS RUNNING"},
+		{119, "FAMILY MODEL TIER LOC STATUS RUNNING COST"},
+		{126, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D"},
+		{130, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D"},
+		{135, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
+		{152, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
 	})
 	// One column short of the first boundary the rows still fit — they need no
 	// title-bar room — and the header is what is cut.
@@ -297,7 +302,9 @@ func TestModelTableCountsTheExceptionNote(t *testing.T) {
 		}
 	}
 	// With the note counted, each column arrives later than the header alone
-	// would allow (FAMILY at 87, where the header fits from 73).
+	// would allow (FAMILY at 87, where the header fits from 73). No row of
+	// this table is rated, so TIER, all dashes, is the last column to arrive
+	// (unratedDropOrder).
 	assertColumnBoundaries(t, tbl, []columnBoundary{
 		{keptFit, "MODEL STATUS RUNNING"},
 		{87, "FAMILY MODEL STATUS RUNNING"},
@@ -307,6 +314,7 @@ func TestModelTableCountsTheExceptionNote(t *testing.T) {
 		{127, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D"},
 		{132, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D"},
 		{140, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
+		{146, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
 	})
 }
 

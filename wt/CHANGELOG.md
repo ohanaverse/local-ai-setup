@@ -4,6 +4,18 @@
 
 ### Added
 
+- The model picker has a TIER column after MODEL: each model's advisory
+  capability tier from modeltiers' `tiers.toml` (`MODELTIERS_OUT`, else
+  `~/.config/local-ai/tiers.toml`), as its letter and rounded aligned score
+  (`S44`, the digits right-aligned down the column: `Q 9`); an unrated model
+  with an aligned score shows the score alone (`  9`), and `-` means no
+  score at all, not in the file, or no file. The line under the table spells out the highlighted model's tier
+  after its price where it fits (`tier standard · score 44 (3 sources) ·
+  high confidence`), and a slot profile's line puts each rated slot model's
+  letter and score (`S44`) after its name. On a narrow terminal TIER goes
+  after COST and before LOC, or first when no model has a tier or a score
+  (no `tiers.toml`), so a column of dashes never costs the prices.
+  wt only reads the file; nothing sorts or routes on a tier.
 - Slot profiles: a named, hand-written entry in
   `~/.config/agent-wt/slot-profiles.toml` assigns a registry model to each of
   Claude Code's model slots (`fable`, `opus`, `sonnet`, `haiku`), so

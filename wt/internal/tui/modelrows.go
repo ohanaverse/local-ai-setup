@@ -9,8 +9,16 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
+
+// loadTiers reads modeltiers' advisory tiers file (tiers.toml), once for each
+// table that is built (buildRows). It never fails: a missing or unparseable
+// file is no ratings, and the TIER cells are all "-". Tests point it at a
+// file of their own through MODELTIERS_OUT (tiers.IsolateForTest in
+// TestMain points it at no file).
+var loadTiers = tiers.Load
 
 // pickerNow is the clock a model table reads its prices at. It is read once
 // for each table that is built (buildRows), never while one is drawn. A test
@@ -36,6 +44,13 @@ type tableRow struct {
 	// the table resolves again. Neither is set for a row with no clock.
 	in    config.PriceInForce
 	timed bool
+	// tier is the model's rating in the tiers file (tiers.Index.Rating): the
+	// zero Entry, which shows as "-", for a model the file gives neither a
+	// tier nor an aligned score and for a slot-profile row. slotTiers is a
+	// slot-profile row's: each slot's model's short form (tiers.Entry.Short),
+	// by slot, for the slots whose model is rated.
+	tier      tiers.Entry
+	slotTiers map[string]string
 }
 
 // costModel is the model a row is priced as: its own, or for a slot-profile
@@ -140,11 +155,34 @@ func buildRows(in tableInput) []tableRow {
 			counts = in.usage.Counts(ids)
 		}
 	}
+	ratings := loadTiers()
 	for i := range out {
 		out[i].counts = counts[out[i].Model.ID]
 		out[i].stats = in.stats[out[i].Model.ID]
+		out[i].rate(ratings)
 	}
 	return out
+}
+
+// rate looks the row's model up in the tiers file by the identity modeltiers
+// keys it by (provider_id and model_name, the inventory's own fields). A
+// slot-profile row is not a model and has no rating of its own; each of its
+// slots' models is looked up instead, for the slot line.
+func (r *tableRow) rate(ratings tiers.Index) {
+	if r.Profile == nil {
+		r.tier = ratings.Rating(r.Model.ProviderID, r.Model.ModelName)
+		return
+	}
+	for slot, m := range r.Profile.Models {
+		// The slot line names rated models only: a bare score after a
+		// model name would read as part of it.
+		if e := ratings.Rating(m.ProviderID, m.ModelName); e.Rated() {
+			if r.slotTiers == nil {
+				r.slotTiers = map[string]string{}
+			}
+			r.slotTiers[slot] = e.Short()
+		}
+	}
 }
 
 // costKey is the sort key for "cost ascending": output price per million,

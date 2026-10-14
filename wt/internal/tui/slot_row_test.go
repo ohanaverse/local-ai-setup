@@ -349,7 +349,7 @@ func TestSlotLine(t *testing.T) {
 		{7, "+4 more"},
 		{6, ""},
 	} {
-		got := slotLine(slotLineRow(), c.width)
+		got := slotLine(slotLineRow(), nil, c.width)
 		if got != c.want {
 			t.Errorf("slotLine(width %d) = %q, want %q", c.width, got, c.want)
 		}
@@ -363,19 +363,19 @@ func TestSlotLine(t *testing.T) {
 	two := slotLineRow()
 	two.Check.Profile.Default = "sonnet"
 	two.Check.Profile.Slots = map[string]string{"sonnet": "ollama/glm-5.3-flash:cloud", "opus": "ollama/glm-5.2:cloud"}
-	if got, want := slotLine(two, 76), "sonnet* glm-5.3-flash:cloud · opus glm-5.2:cloud"; got != want {
+	if got, want := slotLine(two, nil, 76), "sonnet* glm-5.3-flash:cloud · opus glm-5.2:cloud"; got != want {
 		t.Errorf("two filled slots: slotLine = %q, want %q", got, want)
 	}
 
 	// A blocked row shows its reason, and says so when it is cut.
 	blocked := &catalog.ProfileRow{Check: two.Check, Verdict: catalog.ActionBlock, Reason: "slot haiku: ollama/gemma4:31b-cloud is not in the registry"}
-	if got := slotLine(blocked, 76); got != blocked.Reason {
+	if got := slotLine(blocked, nil, 76); got != blocked.Reason {
 		t.Errorf("blocked row: slotLine = %q, want the reason", got)
 	}
-	if got, want := slotLine(blocked, 36), "slot haiku: ollama/gemma4:31b-cloud…"; got != want {
+	if got, want := slotLine(blocked, nil, 36), "slot haiku: ollama/gemma4:31b-cloud…"; got != want {
 		t.Errorf("blocked row at 36 columns: slotLine = %q, want %q", got, want)
 	}
-	if got := slotLine(nil, 76); got != "" {
+	if got := slotLine(nil, nil, 76); got != "" {
 		t.Errorf("slotLine(nil) = %q, want nothing", got)
 	}
 }

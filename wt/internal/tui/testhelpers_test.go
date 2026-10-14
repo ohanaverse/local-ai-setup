@@ -21,6 +21,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -99,6 +100,10 @@ func TestMain(m *testing.M) {
 	// build theirs in temp directories — gitenv.IsolateForTest carries the
 	// full rationale.
 	gitenv.IsolateForTest()
+	// No model table may read the developer's tiers.toml (or the one a
+	// MODELTIERS_OUT in their shell names): every TIER cell is "-" unless a
+	// test names a file of its own (tiers.IsolateForTest).
+	tiers.IsolateForTest()
 	runInventory = localmodels.OnDiskSnapshotForTest
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")

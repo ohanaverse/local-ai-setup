@@ -70,8 +70,15 @@ type modelItem struct {
 	// for the highlighted row (costNote); "" for a row with no per-token
 	// price.
 	cost string
+	// tier is the row's rating in the tiers file as the mode line names it
+	// for the highlighted row, longest form first (tiers.Entry.Notes); nil
+	// for a row with no rating.
+	tier []string
 	// profile is set on a slot-profile row; model then holds only the row id.
 	profile *catalog.ProfileRow
+	// slotTiers is a slot-profile row's slots' short forms (tiers.Entry.Short), by slot, for the
+	// slots whose model is rated (slotLine).
+	slotTiers map[string]string
 }
 
 // markerMarked is the last-launched row's 2-rune prefix; markerBlank keeps
