@@ -163,7 +163,10 @@ agent = "claude"
 match = "location"
 location = "local"
 env = { MAX_THINKING_TOKENS = "4096", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
-config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" } }
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 also starts Claude Code in auto
+# mode, whose classifier sends the local model a ~31k-token request on every
+# tool turn (#393); defaultMode = "default" keeps local sessions out of it.
+config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" }, permissions = { defaultMode = "default" } }
 
 # codex: args are appended AFTER wt's driver args and any user passthrough, and
 # codex's repeated -c form is last-wins — so these values also win over a user's
@@ -190,7 +193,7 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
 | pi | `wrapper` | runs `little-coder` instead of bare `pi`, splicing wt's own `--model …` argv into `{{args}}` |
 | pi | `env` | sets `LITTLE_CODER_PERMISSION_MODE=accept-all` on the wrapper process (little-coder), skipping its shell whitelist |
 | claude | `env` | caps thinking at 4096 tokens; suppresses nonessential background traffic |
-| claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`, then restores it |
+| claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` and `permissions.defaultMode = "default"` into `<worktree>/.claude/settings.local.json`, then restores both (see the `permissions` caveat under "Why these values") |
 | codex | `args` | caps `model_reasoning_effort` at `low`; truncates tool output at 12000 tokens |
 | opencode | `config_file` | merges `compaction { auto = true, prune = false, reserved = 10000 }` into the `OPENCODE_CONFIG_CONTENT` payload (no file written) |
 
@@ -213,12 +216,26 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
   spec-approved trade-off —
   `docs/superpowers/specs/2026-09-25-pi-local-accept-all-design.md`,
   monorepo root).
-- **claude — thinking + attribution.** `MAX_THINKING_TOKENS=4096` stops a
+- **claude — thinking, attribution + permission mode.** `MAX_THINKING_TOKENS=4096` stops a
   small model from over-deliberating instead of acting;
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` keeps background requests
   off an endpoint that cannot use them. The attribution header is the one
   setting the optimization doc says must live in Claude Code's settings
   rather than the process environment, hence the `config_file` split.
+  `permissions.defaultMode = "default"` rides along in the same file:
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also starts Claude Code in
+  auto mode (seen on 2.1.300), and auto mode's classifier then sends the
+  local model a non-streamed ~31k-token request on every turn that uses a
+  tool, which made turns 2–5x slower and added prefill memory pressure
+  (#393). Pinning the default mode keeps the traffic setting without it.
+  Two costs of that pin: it overrides any `permissions.defaultMode` you set
+  in that worktree's `settings.local.json` (`plan`, `acceptEdits`, ...) for
+  every local launch, and because restore is per top-level key, the whole
+  `permissions` object is put back to its pre-launch value at exit — an
+  "always allow" grant Claude Code saved under `permissions.allow` during
+  the session is lost (the file-safety rule above protects only keys the
+  profile does not touch). Approve such grants in `.claude/settings.json`
+  or `~/.claude/settings.json` instead.
 - **codex — reasoning effort + output cap.** `model_reasoning_effort="low"`
   is codex's thinking-budget knob; `tool_output_token_limit=12000` is its
   built-in read-guard, capping runaway file reads before they flood a
