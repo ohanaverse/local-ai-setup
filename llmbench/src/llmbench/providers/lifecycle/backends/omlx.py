@@ -2,8 +2,10 @@
 `omlx-6bit)` case arms, `start_omlx()`, and `stop_omlx_and_wait()`.
 
 Both the 4-bit and 6-bit variants are served by ONE physical `omlx` daemon
-on ONE port (8000) — there is no per-variant process or port, only whichever
-model the daemon was last told to load. `OmlxBackend` is therefore a single
+on ONE port (8000) — there is no per-variant process or port. The daemon
+keeps every model it loaded until told otherwise, which is why
+`replace_own_occupant()` unloads the others before an isolation warms its
+model. `OmlxBackend` is therefore a single
 class parameterized by constructor args (id/env var/default model/restore
 action), with two module-level instances below rather than two subclasses,
 since the behavior is otherwise identical.
@@ -92,6 +94,32 @@ class OmlxBackend(Backend):
                 raise LifecycleError(
                     f"omlx refused the keyless warmup, and the one through wt failed: {exc}"
                 ) from exc
+
+    def replace_own_occupant(self, plan: StartPlan) -> None:
+        """Unload every model omlx holds but `plan.model` before it warms.
+
+        omlx keeps each model it loaded until told otherwise (no idle
+        timeout unless one is set), so a sweep that isolates omlx for one
+        model and then another would hold both. Listing and unloading go
+        through wt (`wt served omlx`, `wt stop omlx/<name>`): a keyed omlx
+        refuses keyless management calls, and only wt resolves the key. A
+        down omlx serves nothing, so wt's "no usable answer" is not an error
+        here.
+        """
+        try:
+            loaded = wt_bridge.served("omlx")
+        except wt_bridge.WtBridgeError:
+            return
+        # omlx serves a model under its directory's basename; a plan may name
+        # it with its org prefix.
+        target = plan.model.rsplit("/", 1)[-1]
+        for name in loaded:
+            if name == target:
+                continue
+            try:
+                wt_bridge.stop(f"omlx/{name}")
+            except wt_bridge.WtBridgeError as exc:
+                raise LifecycleError(f"omlx could not unload {name}: {exc}") from exc
 
     def stop_and_wait(self) -> str | None:
         # bash: `silence_stdout omlx stop || true` — output discarded,

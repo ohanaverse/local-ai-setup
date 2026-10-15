@@ -103,7 +103,7 @@ class Backend(ABC):
     def replace_own_occupant(self, plan: StartPlan) -> None:  # noqa: B027 — intentional default no-op
         """Tear down this backend's own previous occupant (a different
         model on the same single-model-per-process backend) before
-        starting `plan`. Default: no-op — mtplx overrides."""
+        starting `plan`. Default: no-op — mtplx, ollama and omlx override."""
 
     @abstractmethod
     def start(self, plan: StartPlan) -> None:

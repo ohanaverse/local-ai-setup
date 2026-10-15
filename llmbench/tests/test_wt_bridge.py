@@ -129,3 +129,44 @@ def test_msg_is_one_clean_line_and_never_shows_argv(stdout, stderr, want):
     for secret in ("--api-key", _FAKE_KEY):
         assert secret not in got, "_msg put argv in its message; build it from wt's output only"
     assert got == want
+
+
+def test_served_lists_the_models_wt_reports(monkeypatch, wt_on_path):
+    """`wt served <provider>` prints one served model id per line; a provider
+    that is down (exit 1) raises, so a caller can tell "nothing loaded" from
+    "could not ask"."""
+    seen = []
+    result = {"cp": _cp("Qwen3.6-35B-A3B-6bit\n\nQwen3.8-27B-8bit\n")}
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return result["cp"]
+
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+    assert wt_bridge.served("omlx") == ["Qwen3.6-35B-A3B-6bit", "Qwen3.8-27B-8bit"]
+    assert seen == [["wt", "served", "omlx"]]
+
+    result["cp"] = _cp(returncode=1, stderr="wt: omlx gave no usable answer\n")
+    with pytest.raises(wt_bridge.WtBridgeError, match="^omlx gave no usable answer$"):
+        wt_bridge.served("omlx")
+
+
+def test_stop_runs_wt_stop_and_reports_its_failure(monkeypatch, wt_on_path):
+    """`wt stop <provider>/<name>` unloads one model; on omlx it leaves the
+    service and its other models up. The timeout outlasts the LiteLLM
+    proxy restart wt may wait for after a route change."""
+    seen = []
+    result = {"cp": _cp("Stopping omlx/Qwen... done\n")}
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs.get("timeout")))
+        return result["cp"]
+
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+    wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")
+    assert seen == [(["wt", "stop", "omlx/Qwen3.6-35B-A3B-6bit"], wt_bridge.STOP_TIMEOUT)]
+    assert wt_bridge.STOP_TIMEOUT > 180
+
+    result["cp"] = _cp(returncode=1, stderr="Error: not running\n")
+    with pytest.raises(wt_bridge.WtBridgeError, match="^not running$"):
+        wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")

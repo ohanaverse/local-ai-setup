@@ -1,0 +1,84 @@
+# benchmarks/suites/eval-quant-tier.toml
+#
+# Can a downloaded local Qwen variant (ollama / omlx / mtplx, each its own
+# quantization) work at a Claude tier? Each local row is placed against
+# anchors whose tier modeltiers already assigns (tiers.toml, 2026-10-15):
+# Claude Haiku 4.5 and Sonnet 4.5 (quick), Claude Haiku 5.5 and Sonnet 5
+# (standard). Only the quick/standard line is tested locally.
+#
+# Calibration (2026-10-15, cloud anchors, one judge sample) found that only
+# planning separates the two tiers (quick ~74, standard ~93); reasoning and
+# doc_summary saturate near 100 and code_review barely separates. So run the
+# local rows with --category planning --category code_review. Six planning
+# items is a small sample: read a placement near the line as undecided.
+#
+# OpenRouter references of the base models were dropped: OpenRouter spread
+# them across fp4/fp8 hosts, so they were not full precision.
+name = "eval-quant-tier"
+cooldown_s = 15.0
+
+[judge]
+model = "anthropic/claude-opus-5"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "openrouter"
+
+# Full HumanEval: EvalPlus refuses to grade a partial dataset (see eval-sweep).
+[coding]
+dataset = "humaneval"
+
+[routes.direct.omlx]
+base_url = "http://localhost:8000/v1"
+
+[routes.direct.mtplx]
+base_url = "http://localhost:8003/v1"
+
+# --- Qwen3.8-27B ------------------------------------------------------------
+[[rows]]
+model = "ollama/qwen3.8:27b-mlx"                # 4-bit MLX
+route = "litellm"
+
+[[rows]]
+model = "omlx/Qwen3.8-27B-8bit"                 # 8-bit
+provider = "omlx"
+route = "direct"
+direct_model = "Qwen3.8-27B-8bit"
+
+[[rows]]
+model = "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+provider = "mtplx"
+route = "direct"
+
+# --- Qwen3.6-35B-A3B --------------------------------------------------------
+[[rows]]
+model = "ollama/qwen3.6:35b-mlx"                # 4-bit MLX
+route = "litellm"
+
+[[rows]]
+model = "omlx/Qwen3.6-35B-A3B-6bit"             # 6-bit
+provider = "omlx"
+route = "direct"
+direct_model = "Qwen3.6-35B-A3B-6bit"
+
+[[rows]]
+model = "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"
+provider = "mtplx"
+route = "direct"
+
+# --- Tier anchors (tier from tiers.toml) -------------------------------------
+[[rows]]
+model = "openrouter/anthropic--claude-haiku-4.5"   # quick
+route = "litellm"
+
+[[rows]]
+model = "openrouter/anthropic--claude-sonnet-4.5"  # quick
+route = "litellm"
+
+[[rows]]
+model = "openrouter/anthropic--claude-haiku-5.5"   # standard
+route = "litellm"
+
+[[rows]]
+model = "openrouter/anthropic--claude-sonnet-5"    # standard
+route = "litellm"

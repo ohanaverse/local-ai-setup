@@ -203,9 +203,10 @@ def isolate(
             else:
                 _stop_others(keep=backend.occupancy_key)
                 # Then this backend's OWN occupant. A documented no-op for
-                # every backend but mtplx (ollama/omlx reuse their daemon;
-                # mlx_lm_server self-replaces inside start()), which is
-                # exactly bash's `stop_all_local <self>` keep behavior.
+                # mlx_lm_server (it self-replaces inside start()). ollama and
+                # omlx unload every other model their daemon still holds, so
+                # a second row on the same provider does not share RAM with
+                # the first (ollama's keep-alive, omlx's model pool).
                 # mtplx is the exception: it is single-model-per-process AND
                 # its start() does not stop a predecessor, so bash reached
                 # that teardown through a KEEP-LESS stop-all instead — i.e.
