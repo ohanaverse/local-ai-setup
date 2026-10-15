@@ -307,6 +307,7 @@ def _run_row(
         model=model_name,
         timeout_s=GENERATION_TIMEOUT_S,
         fail_fast_on_read_timeout=True,
+        extra_params=suite.generation.extra_params(),
     )
 
     results: dict[str, object] = {}
@@ -333,7 +334,7 @@ def _run_row(
                 )
             else:
                 results[category.name] = judged_runner.generate_category(
-                    category, row_transport, temperature=0.0
+                    category, row_transport, temperature=suite.generation.temperature
                 )
         except judged_runner.CategoryGenerationError as exc:
             # Keep the items generated before the failure (only when there

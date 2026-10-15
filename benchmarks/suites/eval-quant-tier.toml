@@ -12,6 +12,12 @@
 # local rows with --category planning --category code_review. Six planning
 # items is a small sample: read a placement near the line as undecided.
 #
+# Rows are sampled as the Qwen models' own generation_config.json recommends
+# ([generation] below), not greedy: under temperature 0 a Qwen3.x row can loop
+# inside its thinking until the server's token cap cuts it off. The anchors'
+# calibration scores above were measured greedy (Claude does not loop that
+# way); re-run them with this table if exact parity matters.
+#
 # OpenRouter references of the base models were dropped: OpenRouter spread
 # them across fp4/fp8 hosts, so they were not full precision.
 name = "eval-quant-tier"
@@ -23,6 +29,11 @@ temperature = 0.0
 samples = 1
 max_attempts = 2
 route = "openrouter"
+
+[generation]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
 
 # Full HumanEval: EvalPlus refuses to grade a partial dataset (see eval-sweep).
 [coding]
@@ -40,6 +51,12 @@ model = "ollama/qwen3.8:27b-mlx"                # 4-bit MLX
 route = "litellm"
 
 [[rows]]
+model = "omlx/mlx-community--Qwen3.8-27B-4bit"  # 4-bit, same precision as ollama's
+provider = "omlx"
+route = "direct"
+direct_model = "Qwen3.8-27B-4bit"
+
+[[rows]]
 model = "omlx/Qwen3.8-27B-8bit"                 # 8-bit
 provider = "omlx"
 route = "direct"
@@ -47,6 +64,12 @@ direct_model = "Qwen3.8-27B-8bit"
 
 [[rows]]
 model = "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+provider = "mtplx"
+route = "direct"
+
+[[rows]]
+# Same 8-bit weights; only the unquantized bf16 tensors are cast to fp16.
+model = "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16"
 provider = "mtplx"
 route = "direct"
 

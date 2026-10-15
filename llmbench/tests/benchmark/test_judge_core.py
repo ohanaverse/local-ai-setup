@@ -206,3 +206,30 @@ def test_parse_response_accepts_integral_float_scores_and_rejects_fractional():
     assert ok.total == 70 and isinstance(ok.total, int)
     with pytest.raises(JudgeContractError):
         parse_response(json.dumps({"scores": {"x": 40.5, "y": 20, "z": 10}}), NO_VERDICT_RUBRIC)
+
+
+def test_litellm_transport_sends_extra_params_beside_temperature(monkeypatch):
+    # An eval row's top_p/top_k ride in the same request body as its
+    # temperature; a transport built without them (the judge) sends neither.
+    bodies = []
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def fake_post(*args, **kwargs):
+        bodies.append(kwargs["json"])
+        return _Resp()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    LiteLLMJudgeTransport("http://x", "k", "m", extra_params={"top_p": 0.95, "top_k": 20}).complete(
+        "p", temperature=0.6
+    )
+    LiteLLMJudgeTransport("http://x", "k", "m").complete("p", temperature=0.0)
+    assert bodies[0]["temperature"] == 0.6
+    assert bodies[0]["top_p"] == 0.95
+    assert bodies[0]["top_k"] == 20
+    assert "top_p" not in bodies[1] and "top_k" not in bodies[1]
