@@ -1,7 +1,7 @@
-"""Subprocess bridge to wt: `wt warm`, the one wt call llmbench makes (#256).
+"""Subprocess bridge to wt: `wt warm`, `wt served` and `wt stop`.
 
 wt resolves the registry's secret_ref, which an omlx with an API key wants
-before it loads a model.
+before it loads a model (#256), lists what it serves, or unloads one.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""The `wt warm` bridge: the one wt call llmbench makes."""
+"""The wt bridge: `wt warm`, `wt served` and `wt stop`, llmbench's calls into wt."""
 
 import subprocess
 
