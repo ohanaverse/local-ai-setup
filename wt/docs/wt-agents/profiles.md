@@ -163,7 +163,10 @@ agent = "claude"
 match = "location"
 location = "local"
 env = { MAX_THINKING_TOKENS = "4096", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
-config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" } }
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 also starts Claude Code in auto
+# mode, whose classifier sends the local model a ~31k-token request on every
+# tool turn (#393); defaultMode = "default" keeps local sessions out of it.
+config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" }, permissions = { defaultMode = "default" } }
 
 # codex: args are appended AFTER wt's driver args and any user passthrough, and
 # codex's repeated -c form is last-wins — so these values also win over a user's
@@ -219,6 +222,12 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
   off an endpoint that cannot use them. The attribution header is the one
   setting the optimization doc says must live in Claude Code's settings
   rather than the process environment, hence the `config_file` split.
+  `permissions.defaultMode = "default"` rides along in the same file:
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also starts Claude Code in
+  auto mode (seen on 2.1.300), and auto mode's classifier then sends the
+  local model a non-streamed ~31k-token request on every turn that uses a
+  tool, which made turns 2–5x slower and added prefill memory pressure
+  (#393). Pinning the default mode keeps the traffic setting without it.
 - **codex — reasoning effort + output cap.** `model_reasoning_effort="low"`
   is codex's thinking-budget knob; `tool_output_token_limit=12000` is its
   built-in read-guard, capping runaway file reads before they flood a
