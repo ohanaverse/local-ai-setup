@@ -99,7 +99,8 @@ def test_isolate_provider_env_ignored_for_providers_without_an_env_var():
 def test_restore_providers_success():
     with patch(f"{LIFECYCLE}.restore", return_value=_ok("restore", "", "")) as mock_restore:
         restore_providers()
-    mock_restore.assert_called_once_with()
+    # The run is over: its last model must not stay resident (unload=True).
+    mock_restore.assert_called_once_with(unload=True)
 
 
 def test_restore_providers_failure_raises():

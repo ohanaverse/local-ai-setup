@@ -325,7 +325,7 @@ def _restore_litellm() -> str | None:
     return None
 
 
-def restore() -> LifecycleResult:
+def restore(*, unload: bool = False) -> LifecycleResult:
     """Bring local providers back to their standing baseline after a
     benchmark run releases exclusivity.
 
@@ -333,6 +333,13 @@ def restore() -> LifecycleResult:
     `BACKENDS` — a hardcoded provider list here would drift the moment a
     backend is added:
       - "restart": `backend.restore()`; a failure fails the aggregate.
+        With `unload=True` (the benchmarks' end-of-run restore), first
+        `backend.unload_models()`: a sweep restores once, after its last
+        row, and that row's model would otherwise stay resident (ollama's
+        keep-alive, omlx's model pool) and squeeze whatever is tested next.
+        A model that will not unload is logged, never fails the aggregate.
+        Plain `restore` leaves loaded models alone: it is also the "bring
+        the stack back" command, run while agent sessions use them.
       - "stop": `backend.stop_and_wait()` — mlx_lm_server and mtplx are
         never part of the standing baseline, so their entry here is a stop,
         not a restart, and it must run on every invocation (a benchmark
@@ -345,6 +352,10 @@ def restore() -> LifecycleResult:
     log_prefix = f"{RESTORE_LOG_PREFIX} "
 
     def _restart_step(backend: Backend) -> str | None:
+        if unload:
+            warning = backend.unload_models()
+            if warning:
+                _log(f"{RESTORE_LOG_PREFIX} warning: {warning}")
         # Backend.restore()'s contract is raise-on-failure, not
         # return-an-error — discard whatever it returns rather than
         # letting a non-None value masquerade as an error string.

@@ -100,26 +100,45 @@ class OmlxBackend(Backend):
 
         omlx keeps each model it loaded until told otherwise (no idle
         timeout unless one is set), so a sweep that isolates omlx for one
-        model and then another would hold both. Listing and unloading go
-        through wt (`wt served omlx`, `wt stop omlx/<name>`): a keyed omlx
-        refuses keyless management calls, and only wt resolves the key. A
-        down omlx serves nothing, so wt's "no usable answer" is not an error
-        here.
+        model and then another would hold both.
+        """
+        # omlx serves a model under its directory's basename; a plan may name
+        # it with its org prefix.
+        warning = self._unload_others(keep=plan.model.rsplit("/", 1)[-1])
+        if warning is not None:
+            raise LifecycleError(warning)
+
+    def unload_models(self) -> str | None:
+        return self._unload_others(keep=None)
+
+    def _unload_others(self, keep: str | None) -> str | None:
+        """Unload every model omlx serves except `keep`, then ask again; a
+        warning names a model that would not unload or is still listed.
+
+        Listing and unloading go through wt (`wt served omlx`, `wt stop
+        omlx/<name>`): a keyed omlx refuses keyless management calls, and
+        only wt resolves the key. A down omlx serves nothing, so wt's "no
+        usable answer" is not an error here.
         """
         try:
             loaded = wt_bridge.served("omlx")
         except wt_bridge.WtBridgeError:
-            return
-        # omlx serves a model under its directory's basename; a plan may name
-        # it with its org prefix.
-        target = plan.model.rsplit("/", 1)[-1]
-        for name in loaded:
-            if name == target:
-                continue
+            return None
+        others = [name for name in loaded if name != keep]
+        if not others:
+            return None
+        for name in others:
             try:
                 wt_bridge.stop(f"omlx/{name}")
             except wt_bridge.WtBridgeError as exc:
-                raise LifecycleError(f"omlx could not unload {name}: {exc}") from exc
+                return f"omlx could not unload {name}: {exc}"
+        try:
+            left = [name for name in wt_bridge.served("omlx") if name != keep]
+        except wt_bridge.WtBridgeError:
+            return None
+        if left:
+            return f"omlx still holds {', '.join(left)} after wt stop"
+        return None
 
     def stop_and_wait(self) -> str | None:
         # bash: `silence_stdout omlx stop || true` — output discarded,

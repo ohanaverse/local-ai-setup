@@ -119,5 +119,7 @@ def isolate_provider(
 
 
 def restore_providers() -> None:
-    """Restore all local providers to their standing baseline."""
-    _require_ok(lifecycle.restore(), "failed to restore providers")
+    """Restore all local providers to their standing baseline, unloading the
+    models ollama and omlx still hold: the run is over, and its last model
+    must not stay resident for whatever is tested next."""
+    _require_ok(lifecycle.restore(unload=True), "failed to restore providers")

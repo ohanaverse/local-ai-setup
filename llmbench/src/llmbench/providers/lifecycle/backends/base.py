@@ -105,6 +105,15 @@ class Backend(ABC):
         model on the same single-model-per-process backend) before
         starting `plan`. Default: no-op — mtplx, ollama and omlx override."""
 
+    def unload_models(self) -> str | None:
+        """Unload every model this backend's long-running service still
+        holds, leaving the service up; a warning string when one stays
+        loaded. restore() calls it before the restart step, so a sweep's last
+        model does not stay resident after the run. Default: nothing to do —
+        ollama and omlx override (mtplx and mlx_lm_server are stopped
+        outright)."""
+        return None
+
     @abstractmethod
     def start(self, plan: StartPlan) -> None:
         """Start this backend serving `plan`."""

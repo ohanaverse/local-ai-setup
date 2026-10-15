@@ -21,6 +21,7 @@ the same convention `llmbench.benchmark.isolation` and
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 from collections.abc import Callable
 
@@ -153,10 +154,17 @@ def stop_all_cmd(
 
 
 @provider_app.command("restore")
-def restore_cmd(json_output: bool = typer.Option(False, "--json")) -> None:
+def restore_cmd(
+    json_output: bool = typer.Option(False, "--json"),
+    unload: bool = typer.Option(
+        False,
+        "--unload",
+        help="First unload every model ollama and omlx still hold (end of a benchmark run).",
+    ),
+) -> None:
     """Bring local providers back to their standing baseline after a
     benchmark run releases exclusivity."""
-    result = _run_command(lifecycle.restore, provider="restore")
+    result = _run_command(functools.partial(lifecycle.restore, unload=unload), provider="restore")
     _emit(result, json_output, success_message=lambda r: "restored providers")
     raise typer.Exit(0 if result.ok else 1)
 

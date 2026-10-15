@@ -374,7 +374,10 @@ def test_replace_own_occupant_unloads_every_other_loaded_model_through_wt():
     with (
         patch(
             "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
-            return_value=["Qwen3.6-35B-A3B-6bit", "Qwen3.8-27B-8bit", "gemma-4-31b-8bit"],
+            side_effect=[
+                ["Qwen3.6-35B-A3B-6bit", "Qwen3.8-27B-8bit", "gemma-4-31b-8bit"],
+                ["Qwen3.8-27B-8bit"],
+            ],
         ),
         patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
     ):
@@ -437,3 +440,44 @@ def test_replace_own_occupant_raises_when_wt_cannot_unload_a_model():
         pytest.raises(LifecycleError, match="could not unload Qwen3.6-35B-A3B-6bit.*boom"),
     ):
         OMLX_4BIT.replace_own_occupant(plan)
+
+
+def test_replace_own_occupant_raises_when_a_model_is_still_loaded_after_wt_stop():
+    """wt said done, but omlx still lists the model: the isolation is not
+    isolated, and the failure names the model instead of letting the test
+    run beside it."""
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            return_value=["Qwen3.6-35B-A3B-6bit", "Qwen3.8-27B-8bit"],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop"),
+        pytest.raises(LifecycleError, match="still holds Qwen3.6-35B-A3B-6bit"),
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+
+
+def test_unload_models_unloads_everything_and_reports_instead_of_raising():
+    from llmbench import wt_bridge
+
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["a", "b"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        assert OMLX_4BIT.unload_models() is None
+    assert [c.args[0] for c in wt_stop.call_args_list] == ["omlx/a", "omlx/b"]
+
+    with (
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.served", return_value=["a"]),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop",
+            side_effect=wt_bridge.WtBridgeError("boom"),
+        ),
+    ):
+        assert OMLX_4BIT.unload_models() == "omlx could not unload a: boom"

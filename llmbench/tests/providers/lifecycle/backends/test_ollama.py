@@ -419,3 +419,19 @@ def test_restore_raises_lifecycle_error_when_it_never_comes_back():
         pytest.raises(LifecycleError, match="ollama did not come back up"),
     ):
         OllamaBackend().restore()
+
+
+def test_unload_models_stops_every_loaded_model():
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["a", "b"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep"),
+    ):
+        assert OllamaBackend().unload_models() is None
+    assert [c.args[0] for c in mock_run.call_args_list] == [
+        ["ollama", "stop", "a"],
+        ["ollama", "stop", "b"],
+    ]

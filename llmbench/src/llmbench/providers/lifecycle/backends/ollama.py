@@ -90,6 +90,10 @@ class OllamaBackend(Backend):
         # `ollama run`), matching bash's `stop_ollama_and_wait`.
         return self._stop_loaded(keep=None)
 
+    def unload_models(self) -> str | None:
+        # The daemon stays up: `ollama stop` unloads, it does not stop it.
+        return self._stop_loaded(keep=None)
+
     def replace_own_occupant(self, plan: StartPlan) -> None:
         """Unload every loaded model but `plan.model` before it warms.
 
