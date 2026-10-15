@@ -22,7 +22,7 @@ User guides: `../docs/guides/05-benchmarks.md` (throughput and isolation), `../d
 ## Monorepo context
 
 - The bash scripts under `../benchmarks/` call `uv run --directory llmbench llmbench provider ...` (`../benchmarks/lib/benchmark-common.sh`).
-- `wt` owns LiteLLM routing and the omlx key. llmbench's one call into wt is `wt warm <provider> <model>` (`wt_bridge.py`), which the omlx backend uses when a keyed omlx refuses the keyless warmup (#256).
+- `wt` owns LiteLLM routing and the omlx key. llmbench calls into wt only through `wt_bridge.py`, from the omlx backend: `wt warm <provider> <model>` when a keyed omlx refuses the keyless warmup (#256), and `wt served omlx` plus `wt stop omlx/<name>` to unload the other models omlx holds before an isolation warms its own (a keyed omlx refuses keyless management calls).
 
 ## Common development commands
 
