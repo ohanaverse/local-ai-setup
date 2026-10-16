@@ -137,8 +137,7 @@ def test_build_judge_prompt_truncates_oversized_responses():
     # and risking the transport's 120s timeout (which would score the item
     # judge_fail/N/A instead). The judge prompt must cap the embedded
     # response, with an explicit marker so the judge knows the tail was
-    # cut — the agent benchmark's anonymize_diff applies the same 20k-char
-    # cap to its judged payloads.
+    # cut.
     from llmbench.benchmark.eval.judged_runner import (
         MAX_JUDGE_RESPONSE_CHARS,
         _build_judge_prompt,
@@ -148,7 +147,7 @@ def test_build_judge_prompt_truncates_oversized_responses():
     prompt = _build_judge_prompt(CATEGORY.items[0], CATEGORY, huge)
     # "x" appears nowhere else in this prompt (rubric, item prompt, meta
     # note are all x-free), so the count pins exactly how much of the
-    # response survived the cap — 20k, not the full 25k.
+    # response survived the cap, not the full cap + 5k.
     assert prompt.count("x") == MAX_JUDGE_RESPONSE_CHARS
     # The cut is marked, not silent: a judge shown an unmarked mid-thought
     # ending would score the response as incomplete rather than truncated.

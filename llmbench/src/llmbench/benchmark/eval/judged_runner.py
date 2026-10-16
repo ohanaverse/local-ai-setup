@@ -17,12 +17,13 @@ from statistics import mean
 from llmbench.benchmark.eval.category import Category, Item
 from llmbench.benchmark.judge_core import JudgeOutcome, JudgeTransport, judge_row
 
-# Cap on the model response embedded in a judge prompt, matching
-# benchmark/agent/judge.py's anonymize_diff max_chars: a looping model can
+# Cap on the model response embedded in a judge prompt: a looping model can
 # emit 100KB+ on a reasoning item, and at judge samples=3 that payload is
 # sent to the (paid) judge three times — ballooning spend and risking the
 # transport's 120s timeout, which turns into judge_fail/N/A for the item.
-MAX_JUDGE_RESPONSE_CHARS = 20000
+# Higher than the agent judge's 20k diff cap: a complete planning answer
+# can run 20-35k characters, and a cut one is scored as incomplete.
+MAX_JUDGE_RESPONSE_CHARS = 60000
 
 
 @dataclass

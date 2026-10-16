@@ -481,3 +481,65 @@ def test_unload_models_unloads_everything_and_reports_instead_of_raising():
         ),
     ):
         assert OMLX_4BIT.unload_models() == "omlx could not unload a: boom"
+
+
+def test_unload_names_each_model_by_its_registry_id():
+    """omlx serves a model under its directory's basename, while wt stop
+    takes the registry id, which may carry the org (`omlx/mlx-community--
+    Qwen3.8-27B-4bit`). The id comes from the registry row whose model_name
+    names the served model; a served model the registry does not hold
+    keeps the `omlx/<name>` spelling."""
+    from llmbench.registry import ModelEntry, Registry
+
+    registry = Registry(
+        providers=[],
+        models=[
+            ModelEntry(
+                id="omlx/mlx-community--Qwen3.8-27B-4bit",
+                family="qwen3.8",
+                provider_id="omlx",
+                model_name="mlx-community/Qwen3.8-27B-4bit",
+            ),
+            # Same basename on another provider: not omlx's model.
+            ModelEntry(
+                id="mtplx/Qwen3.6-27B-8bit",
+                family="qwen3.6",
+                provider_id="mtplx",
+                model_name="Qwen3.6-27B-8bit",
+            ),
+        ],
+    )
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.load_registry",
+            return_value=registry,
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["Qwen3.8-27B-4bit", "Qwen3.6-27B-8bit"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        assert OMLX_4BIT.unload_models() is None
+    assert [c.args[0] for c in wt_stop.call_args_list] == [
+        "omlx/mlx-community--Qwen3.8-27B-4bit",
+        "omlx/Qwen3.6-27B-8bit",
+    ]
+
+
+def test_unload_falls_back_to_the_served_name_when_the_registry_cannot_be_read():
+    from llmbench.registry import RegistryError
+
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.load_registry",
+            side_effect=RegistryError("Registry file not found"),
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["Qwen3.8-27B-4bit"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        assert OMLX_4BIT.unload_models() is None
+    assert [c.args[0] for c in wt_stop.call_args_list] == ["omlx/Qwen3.8-27B-4bit"]

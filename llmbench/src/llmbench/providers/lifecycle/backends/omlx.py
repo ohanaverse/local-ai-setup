@@ -27,6 +27,7 @@ import shutil
 import subprocess
 
 from .... import wt_bridge
+from ....registry import RegistryError, load_registry
 from .. import probe
 from ..envelope import LifecycleError
 from .base import Backend, StartPlan
@@ -39,6 +40,28 @@ DEFAULT_4BIT_MODEL = "Ornith-1.5-35B-A3B-MLX-4bit"
 DEFAULT_6BIT_MODEL = "Ornith-1.5-35B-A3B-MLX-6bit"
 ENV_VAR_4BIT = "LLM_ISOLATE_OMLX_4BIT_MODEL"
 ENV_VAR_6BIT = "LLM_ISOLATE_OMLX_6BIT_MODEL"
+
+
+def _wt_ref(served: str) -> str:
+    """The reference `wt stop` takes for the model omlx serves as `served`.
+
+    omlx names a model by its directory's basename, but wt takes the
+    registry id, which can carry the org (`omlx/mlx-community--Qwen3.8-27B-
+    4bit`). The id is the omlx row whose model_name is `served`, or ends in
+    `/<served>` (wt's NameMatches rule; an exact name wins). A model the
+    registry does not hold, or an unreadable registry, keeps `omlx/<served>`.
+    """
+    try:
+        models = [m for m in load_registry().models if m.provider_id == "omlx"]
+    except RegistryError:
+        models = []
+    for m in models:
+        if m.model_name == served:
+            return m.id
+    for m in models:
+        if m.model_name.endswith(f"/{served}"):
+            return m.id
+    return f"omlx/{served}"
 
 
 class OmlxBackend(Backend):
@@ -129,7 +152,7 @@ class OmlxBackend(Backend):
             return None
         for name in others:
             try:
-                wt_bridge.stop(f"omlx/{name}")
+                wt_bridge.stop(_wt_ref(name))
             except wt_bridge.WtBridgeError as exc:
                 return f"omlx could not unload {name}: {exc}"
         try:
