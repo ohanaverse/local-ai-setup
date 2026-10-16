@@ -27,6 +27,7 @@ from llmbench.benchmark.agent.task import TaskBundle, load_task
 from llmbench.benchmark.agent.workspace import create_workspace, destroy_workspace
 from llmbench.benchmark.errors import BenchmarkError, RunSavedButRestoreFailed
 from llmbench.benchmark.runmeta import git_sha
+from llmbench.local_process import ENV_VAR_BY_PROVIDER
 from llmbench.registry import Registry
 
 DEFAULT_RESULTS_DIR = Path.home() / ".config" / "local-ai" / "benchmarks"
@@ -467,7 +468,7 @@ def run_suite(
         # for the group. A broken mlx_lm_server model (no pairing resolvable)
         # raises before any isolate call and is contained to its row, as is a
         # failed isolate call.
-        prev_extra: tuple[str, ...] | None = None
+        prev_key: tuple[tuple[str, ...], str | None] | None = None
         for row in group_rows:
             try:
                 # Resolve provider-specific positional args inline, mirroring
@@ -493,15 +494,30 @@ def run_suite(
                     extra_args = (row.mtplx_model_name,)
                 else:
                     extra_args = ()
-                if provider_id in ISOLATABLE_PROVIDERS and extra_args != prev_extra:
+                # ollama and omlx name their model through the env dict, or
+                # warmup loads the backend's baked-in default instead. A cloud
+                # model on their provider id (`ollama/*:cloud`) runs remotely
+                # and is never isolated.
+                env: dict[str, str] | None = None
+                env_var = ENV_VAR_BY_PROVIDER.get(provider_id)
+                is_cloud = False
+                if env_var:
+                    entry = registry.model(row.model_id)
+                    is_cloud = entry.location == "cloud"
+                    env = {env_var: row.direct_model or entry.model_name}
+                key = (extra_args, env[env_var] if env and env_var else None)
+                if provider_id in ISOLATABLE_PROVIDERS and not is_cloud and key != prev_key:
                     # A cloud row contends with nothing on this machine, and
                     # isolating it fails outright — the lifecycle's BACKENDS
                     # registry knows only the local backends — which used to
                     # mark every cloud row ISOLATION_ERROR before a single
                     # request was made.
-                    isolation.isolate_provider(provider_id, *extra_args)
+                    if env is None:
+                        isolation.isolate_provider(provider_id, *extra_args)
+                    else:
+                        isolation.isolate_provider(provider_id, *extra_args, env=env)
                     isolated_any = True
-                    prev_extra = extra_args
+                    prev_key = key
             except BenchmarkError as exc:
                 index += 1
                 for pass_number in range(1, suite.passes + 1):

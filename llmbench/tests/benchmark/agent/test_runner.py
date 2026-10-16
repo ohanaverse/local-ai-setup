@@ -139,7 +139,9 @@ def _hermetic_preflight(monkeypatch):
 def test_run_suite_isolates_once_per_provider_group(tmp_path, monkeypatch):
     """Two rows on the same provider share one isolate_provider() call."""
     calls = []
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: calls.append(pid))
+    monkeypatch.setattr(
+        isolation_module, "isolate_provider", lambda pid, *_a, **_kw: calls.append(pid)
+    )
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: calls.append("restore"))
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -260,7 +262,7 @@ def test_diff_captured_before_hidden_tests_are_seeded(tmp_path, monkeypatch):
     be captured before that seeding, or the frontier-model judge reads the exact
     acceptance tests it is meant to be blind to. The mini-drift bundle ships a
     hidden test, so a diff captured after seeding would stage it and leak it."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
 
     def _run_with_change(cmd, *args, **kwargs):
@@ -294,7 +296,7 @@ def test_run_suite_contains_isolation_failure_to_its_group(tmp_path, monkeypatch
     the suite continues — matching the existing single-turn runner's
     per-target error containment."""
 
-    def _fail_isolate(pid):
+    def _fail_isolate(pid, *_a, **_kw):
         raise BenchmarkError(f"isolation failed for {pid}")
 
     monkeypatch.setattr(isolation_module, "isolate_provider", _fail_isolate)
@@ -319,7 +321,7 @@ def test_run_suite_marks_agent_error_when_the_agent_writes_no_session_file(tmp_p
     """Gate 1's session-file evidence is a real requirement, not decoration:
     a process that exits 0 without ever producing a session must not be scored
     as a completed row (nothing downstream can be trusted about what it did)."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _fake_run(session=False))
 
@@ -341,7 +343,7 @@ def test_run_suite_marks_agent_error_when_the_agent_writes_no_session_file(tmp_p
 
 
 def test_run_suite_row_filter_selects_by_label(tmp_path, monkeypatch):
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -365,7 +367,7 @@ def test_run_suite_judges_rows_after_restore_and_sets_composite(tmp_path, monkey
     evaluated, and the composite is rubric_total x cap (spec Scoring)."""
     order = []
     monkeypatch.setattr(
-        isolation_module, "isolate_provider", lambda pid: order.append(("isolate", pid))
+        isolation_module, "isolate_provider", lambda pid, *_a, **_kw: order.append(("isolate", pid))
     )
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: order.append(("restore",)))
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
@@ -399,7 +401,7 @@ def test_persist_judge_artifact_does_not_rewrite_the_full_row(tmp_path, monkeypa
     re-gzips the entire event stream and rewrites diff/gates/metrics files
     that did not change, a second time, per row, on every sweep with any
     judge phase at all."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -431,7 +433,7 @@ def test_persist_judge_artifact_does_not_rewrite_the_full_row(tmp_path, monkeypa
 
 
 def test_run_suite_skip_judge_leaves_composite_none(tmp_path, monkeypatch):
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -450,7 +452,7 @@ def test_run_suite_skip_judge_leaves_composite_none(tmp_path, monkeypatch):
 def test_run_suite_writes_run_artifacts(tmp_path, monkeypatch):
     """run_suite persists run.toml, summary.md, and metrics.jsonl — the CLI's
     show command reads these files, not the in-memory result list."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -474,7 +476,7 @@ def test_rejudge_run_rewrites_judge_json_from_persisted_artifacts(tmp_path, monk
     """`agent judge` re-scores from row.json/diff.patch/gates.json alone — no
     agent process, no workspace, no isolation — and leaves every other artifact
     in the row directory byte-identical."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -508,7 +510,7 @@ def test_failed_restore_still_persists_the_sweep(tmp_path, monkeypatch):
     """Restoring the providers after a sweep can fail (one of them does not
     come back up in time) with every row's data intact; the failure must
     surface, but never by discarding the run it happened to interrupt."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
     def _boom() -> None:
@@ -566,7 +568,7 @@ def test_run_suite_never_isolates_a_cloud_provider(tmp_path, monkeypatch, litell
     ISOLATION_ERROR - and a cloud row contends with nothing on this machine."""
     isolated: list[str] = []
 
-    def _isolate(pid: str) -> None:
+    def _isolate(pid: str, *_a, **_kw) -> None:
         isolated.append(pid)
         if pid not in ("ollama", "omlx", "omlx-6bit", "mtplx"):
             raise BenchmarkError(f"unknown provider: {pid}")
@@ -594,7 +596,9 @@ def test_run_suite_still_isolates_local_rows_once(tmp_path, monkeypatch):
     """The guard must not quietly disable isolation for the local backends it
     exists to protect - that is the whole point of the harness."""
     isolated: list[str] = []
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: isolated.append(pid))
+    monkeypatch.setattr(
+        isolation_module, "isolate_provider", lambda pid, *_a, **_kw: isolated.append(pid)
+    )
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -615,7 +619,9 @@ def test_omlx_6bit_override_still_isolates(tmp_path, monkeypatch, litellm_models
     isolating the variant that most needs it (4-bit and 6-bit share one
     process, and isolating the wrong one benchmarks the wrong weights)."""
     isolated: list[str] = []
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: isolated.append(pid))
+    monkeypatch.setattr(
+        isolation_module, "isolate_provider", lambda pid, *_a, **_kw: isolated.append(pid)
+    )
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
 
@@ -693,7 +699,7 @@ def test_judge_transport_without_openrouter_key_names_the_missing_key(monkeypatc
 def test_row_dir_has_no_metrics_log_unless_debug(tmp_path, monkeypatch, litellm_models_json):
     """The metrics trace is half a megabyte of prose per row restating the
     compressed event stream beside it; the first live run wrote four."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
     monkeypatch.delenv("LLMBENCH_AGENT_DEBUG", raising=False)
@@ -718,7 +724,7 @@ def test_row_dir_has_a_metrics_log_under_debug(tmp_path, monkeypatch, litellm_mo
     MODELMAN_AGENT_DEBUG, its name under modelman, keeps working: someone
     debugging a metric with the old name must not get a run with no trace
     and have to repeat it."""
-    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid: None)
+    monkeypatch.setattr(isolation_module, "isolate_provider", lambda pid, *_a, **_kw: None)
     monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
     monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
     monkeypatch.delenv("LLMBENCH_AGENT_DEBUG", raising=False)
@@ -796,3 +802,50 @@ def test_run_suite_mlx_lm_server_missing_pairing_errors_that_group():
             None,  # draft_local_path
             None,  # draft_repo
         )
+
+
+def test_run_suite_warms_each_local_ollama_model_and_never_isolates_a_cloud_row(
+    tmp_path, monkeypatch
+):
+    """ollama and omlx take their model through isolate_provider's env dict:
+    without it the backend warms its baked-in default (ornith-1.5), which
+    fails when that model is not pulled and otherwise runs beside the wrong
+    model. A cloud model on ollama's provider id (`ollama/*:cloud`) runs
+    remotely, so it is never isolated."""
+    calls: list[tuple] = []
+
+    def _isolate(pid, *extra_args, env=None):
+        calls.append((pid, extra_args, env))
+
+    monkeypatch.setattr(isolation_module, "isolate_provider", _isolate)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    registry = Registry(
+        providers=[ProviderEntry(id="ollama", name="Ollama", location="local")],
+        models=[
+            ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a"),
+            ModelEntry(id="ollama/b", family="f", provider_id="ollama", model_name="b"),
+            ModelEntry(
+                id="ollama/c:cloud",
+                family="f",
+                provider_id="ollama",
+                model_name="c:cloud",
+                location="cloud",
+            ),
+        ],
+    )
+    body = _suite_toml(MINI_DRIFT, models='["ollama/a", "ollama/b", "ollama/c:cloud"]')
+    suite = load_suite(_write_suite(tmp_path, body), registry)
+    run_suite(
+        suite,
+        registry,
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+
+    assert calls == [
+        ("ollama", (), {"LLM_ISOLATE_OLLAMA_MODEL": "a"}),
+        ("ollama", (), {"LLM_ISOLATE_OLLAMA_MODEL": "b"}),
+    ]
