@@ -306,6 +306,66 @@ def test_stop_and_wait_refused_stop_is_not_still_finishing():
 # --- restore() ------------------------------------------------------------
 
 
+# --- replace_own_occupant() -----------------------------------------------
+
+
+def test_replace_own_occupant_unloads_every_other_model_and_keeps_the_target():
+    """Isolating ollama for a second model in one sweep must unload the first:
+    without it, ollama keeps the previous model for its keep-alive (5 min)
+    and two models share RAM, which is what isolation exists to prevent.
+    The target itself is never stopped: re-isolating the loaded model pays
+    only warmup."""
+    plan = OLLAMA.resolve("next", ())
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["prev", "next", "other"], ["next"]],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        OllamaBackend().replace_own_occupant(plan)
+    stop_calls = [c.args[0] for c in mock_run.call_args_list]
+    assert stop_calls == [["ollama", "stop", "prev"], ["ollama", "stop", "other"]]
+    mock_sleep.assert_not_called()
+
+
+def test_replace_own_occupant_is_a_no_op_when_nothing_else_is_loaded():
+    plan = OLLAMA.resolve("next", ())
+    for loaded in ([], ["next"]):
+        with (
+            patch(
+                "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+                return_value=loaded,
+            ),
+            patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+            patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+        ):
+            OllamaBackend().replace_own_occupant(plan)
+        mock_run.assert_not_called()
+        mock_sleep.assert_not_called()
+
+
+def test_replace_own_occupant_raises_when_another_model_stays_loaded():
+    """A model still loaded after the whole wait raises, as the contract
+    asks: a solo isolate surfaces the real cause instead of a later
+    generic failure."""
+    plan = OLLAMA.resolve("next", ())
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            return_value=["prev", "next"],
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep"),
+        pytest.raises(LifecycleError, match="still finishing a request on prev"),
+    ):
+        OllamaBackend().replace_own_occupant(plan)
+
+
 def test_restore_no_ops_when_already_up():
     """restore() must not touch launchd at all when ollama already answers
     its health check — a no-op restart would be pointless churn."""
@@ -359,3 +419,19 @@ def test_restore_raises_lifecycle_error_when_it_never_comes_back():
         pytest.raises(LifecycleError, match="ollama did not come back up"),
     ):
         OllamaBackend().restore()
+
+
+def test_unload_models_stops_every_loaded_model():
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["a", "b"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep"),
+    ):
+        assert OllamaBackend().unload_models() is None
+    assert [c.args[0] for c in mock_run.call_args_list] == [
+        ["ollama", "stop", "a"],
+        ["ollama", "stop", "b"],
+    ]

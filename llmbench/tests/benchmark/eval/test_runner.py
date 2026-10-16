@@ -983,3 +983,31 @@ def test_run_suite_leaves_no_run_directory_when_judge_transport_fails(mock_isola
         )
 
     assert list(tmp_path.glob("eval-*")) == []
+
+
+@patch("llmbench.benchmark.eval.runner.LiteLLMJudgeTransport")
+@patch("llmbench.benchmark.eval.runner.judged_runner.generate_category")
+@patch("llmbench.benchmark.eval.runner.resolve_row_endpoint")
+@patch("llmbench.benchmark.eval.runner.isolation")
+def test_run_suite_generates_rows_with_suite_sampling(
+    mock_isolation, mock_resolve, mock_generate, mock_transport, tmp_path
+):
+    # The suite's [generation] reaches each row's requests: temperature
+    # through generate_category, top_p/top_k through the row transport.
+    from llmbench.benchmark.eval.suite import GenerationConfig
+
+    mock_resolve.return_value = ("http://localhost:4000/v1", "ollama/a", "sk-x")
+    mock_generate.return_value = _fake_category_result(50.0)
+    suite = _suite()
+    suite.generation = GenerationConfig(temperature=0.6, top_p=0.95, top_k=20)
+
+    run_suite(
+        suite,
+        _registry(),
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda suite: object(),
+    )
+
+    assert mock_generate.call_args.kwargs["temperature"] == 0.6
+    assert mock_transport.call_args.kwargs["extra_params"] == {"top_p": 0.95, "top_k": 20}

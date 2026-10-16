@@ -359,3 +359,239 @@ def test_warm_reports_wts_reason_when_the_keyed_warmup_fails_too():
         pytest.raises(LifecycleError, match="refused the keyless warmup.*set auth.secret_ref"),
     ):
         OMLX_4BIT.warm(plan)
+
+
+# --- replace_own_occupant() -----------------------------------------------
+
+
+def test_replace_own_occupant_unloads_every_other_loaded_model_through_wt():
+    """omlx keeps every model it loaded until it is told otherwise (no idle
+    timeout by default), so isolating omlx for a second model must unload
+    the first. Asking and unloading go through wt, which holds omlx's key."""
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[
+                ["Qwen3.6-35B-A3B-6bit", "Qwen3.8-27B-8bit", "gemma-4-31b-8bit"],
+                ["Qwen3.8-27B-8bit"],
+            ],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+    assert [c.args[0] for c in wt_stop.call_args_list] == [
+        "omlx/Qwen3.6-35B-A3B-6bit",
+        "omlx/gemma-4-31b-8bit",
+    ]
+
+
+def test_replace_own_occupant_keeps_the_target_named_with_its_org():
+    """A plan may name the model as org/name while omlx serves the basename:
+    that is the same model, so it is not stopped."""
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="mlx-community/Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            return_value=["Qwen3.8-27B-8bit"],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+    wt_stop.assert_not_called()
+
+
+def test_replace_own_occupant_is_a_no_op_when_omlx_is_down():
+    """A stopped omlx has nothing loaded: wt's "no usable answer" is not an
+    error there, and nothing is stopped. Only a closed port makes it so —
+    the next test covers a server that is up and will not say."""
+    from llmbench import wt_bridge
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=wt_bridge.WtBridgeError("omlx gave no usable answer"),
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.probe.port_closed_within",
+            return_value=True,
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+    wt_stop.assert_not_called()
+
+
+def test_replace_own_occupant_raises_when_an_running_omlx_will_not_say_what_it_serves():
+    """wt's "no usable answer" also covers a server that is up and would not
+    say — omlx's own /health and /v1/models/status disagreeing, or a status
+    call it refuses. That is not an empty pool: warming beside occupants
+    nobody could list is the RAM sharing this teardown exists to prevent, so
+    it must fail loudly rather than read as "nothing loaded"."""
+    from llmbench import wt_bridge
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=wt_bridge.WtBridgeError("omlx gave no usable answer"),
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.probe.port_closed_within",
+            return_value=False,
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+        pytest.raises(LifecycleError, match="could not ask wt what omlx serves"),
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+    wt_stop.assert_not_called()
+
+
+def test_unload_models_unloads_the_rest_after_one_model_would_not_go():
+    """One model wt refuses to unload must not leave the others loaded beside
+    the incoming one: every remaining model is still asked, and the warning
+    names each failure."""
+    from llmbench import wt_bridge
+
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["a", "b", "c"], []],
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop",
+            side_effect=[wt_bridge.WtBridgeError("boom"), None, wt_bridge.WtBridgeError("bang")],
+        ) as wt_stop,
+    ):
+        warning = OMLX_4BIT.unload_models()
+    assert [c.args[0] for c in wt_stop.call_args_list] == ["omlx/a", "omlx/b", "omlx/c"]
+    assert warning == "omlx could not unload a: boom, c: bang"
+
+
+def test_replace_own_occupant_raises_when_wt_cannot_unload_a_model():
+    from llmbench import wt_bridge
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            return_value=["Qwen3.6-35B-A3B-6bit"],
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop",
+            side_effect=wt_bridge.WtBridgeError("boom"),
+        ),
+        pytest.raises(LifecycleError, match="could not unload Qwen3.6-35B-A3B-6bit.*boom"),
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+
+
+def test_replace_own_occupant_raises_when_a_model_is_still_loaded_after_wt_stop():
+    """wt said done, but omlx still lists the model: the isolation is not
+    isolated, and the failure names the model instead of letting the test
+    run beside it."""
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            return_value=["Qwen3.6-35B-A3B-6bit", "Qwen3.8-27B-8bit"],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop"),
+        pytest.raises(LifecycleError, match="still holds Qwen3.6-35B-A3B-6bit"),
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+
+
+def test_unload_models_unloads_everything_and_reports_instead_of_raising():
+    from llmbench import wt_bridge
+
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["a", "b"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        assert OMLX_4BIT.unload_models() is None
+    assert [c.args[0] for c in wt_stop.call_args_list] == ["omlx/a", "omlx/b"]
+
+    with (
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.served", return_value=["a"]),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop",
+            side_effect=wt_bridge.WtBridgeError("boom"),
+        ),
+    ):
+        assert OMLX_4BIT.unload_models() == "omlx could not unload a: boom"
+
+
+def test_unload_names_each_model_by_its_registry_id():
+    """omlx serves a model under its directory's basename, while wt stop
+    takes the registry id, which may carry the org (`omlx/mlx-community--
+    Qwen3.8-27B-4bit`). The id comes from the registry row whose model_name
+    names the served model; a served model the registry does not hold
+    keeps the `omlx/<name>` spelling."""
+    from llmbench.registry import ModelEntry, Registry
+
+    registry = Registry(
+        providers=[],
+        models=[
+            ModelEntry(
+                id="omlx/mlx-community--Qwen3.8-27B-4bit",
+                family="qwen3.8",
+                provider_id="omlx",
+                model_name="mlx-community/Qwen3.8-27B-4bit",
+            ),
+            # Same basename on another provider: not omlx's model.
+            ModelEntry(
+                id="mtplx/Qwen3.6-27B-8bit",
+                family="qwen3.6",
+                provider_id="mtplx",
+                model_name="Qwen3.6-27B-8bit",
+            ),
+        ],
+    )
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.load_registry",
+            return_value=registry,
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["Qwen3.8-27B-4bit", "Qwen3.6-27B-8bit"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        assert OMLX_4BIT.unload_models() is None
+    assert [c.args[0] for c in wt_stop.call_args_list] == [
+        "omlx/mlx-community--Qwen3.8-27B-4bit",
+        "omlx/Qwen3.6-27B-8bit",
+    ]
+
+
+def test_unload_falls_back_to_the_served_name_when_the_registry_cannot_be_read():
+    from llmbench.registry import RegistryError
+
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.load_registry",
+            side_effect=RegistryError("Registry file not found"),
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["Qwen3.8-27B-4bit"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+    ):
+        assert OMLX_4BIT.unload_models() is None
+    assert [c.args[0] for c in wt_stop.call_args_list] == ["omlx/Qwen3.8-27B-4bit"]

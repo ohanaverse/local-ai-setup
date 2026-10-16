@@ -13,9 +13,11 @@ from __future__ import annotations
 import os
 
 from llmbench.benchmark.errors import BenchmarkError
+from llmbench.local_process import ENV_VAR_BY_PROVIDER
 from llmbench.local_process import ProcessResult as IsolateResult
 
 from ..providers import lifecycle
+from ..registry import ModelEntry
 
 # The isolable provider set now lives with the backends that implement it
 # (llmbench/providers/lifecycle/backends/__init__.py) — re-exported here
@@ -88,6 +90,44 @@ def mlx_lm_server_pairing_args(
     )
 
 
+def row_warm_env(
+    provider_id: str, warm_name: str, entry: ModelEntry
+) -> tuple[dict[str, str] | None, bool]:
+    """(env, is_cloud) for isolating `provider_id` with `warm_name` loaded —
+    the one reading of that rule, for every benchmark runner that isolates a
+    row (the eval and agent runners both call it; `benchmark/runner.py`
+    reaches the same rule through its own Target).
+
+    A backend takes its model through one of two channels:
+    mlx_lm_server/mtplx take positional model args, ollama/omlx name their
+    model through the LLM_ISOLATE_*_MODEL env dict — `isolate_provider`'s
+    only channel for them, since their backends' resolve() reads extra_args
+    as absent (env is None here for a provider in neither group). Without it,
+    warmup loads the backend's baked-in default (ornith) instead of the row's
+    model: direct-route omlx rows then 404 against the still-loaded default
+    (single-model-per-daemon), and ollama rows lazily stack the row's model
+    on top of the warmed default, breaking the one-model-at-a-time isolation
+    invariant the call exists to enforce.
+
+    `warm_name` must be the name the row's own requests will use, so the
+    warmed weights and the benchmarked weights agree: `direct_model` when the
+    row sets one (omlx rows need the basename the daemon serves, not the
+    org-prefixed registry model_name), else the registry model_name (ollama
+    tags, omlx via litellm — both spellings live-verified against the oMLX
+    daemon 2026-09-18).
+
+    `is_cloud` marks a cloud model on a local provider's id (e.g. an
+    `ollama/*:cloud` registry row): its requests go to a remote API, so it
+    contends with nothing on this machine — and naming a model would make
+    warmup POST a cloud model name at the local daemon and fail after the
+    600s timeout. A caller skips isolation for it entirely.
+    """
+    env_var = ENV_VAR_BY_PROVIDER.get(provider_id)
+    if not env_var:
+        return None, False
+    return {env_var: warm_name}, entry.location == "cloud"
+
+
 def isolate_provider(
     provider_id: str, *extra_args: str, env: dict[str, str] | None = None
 ) -> IsolateResult:
@@ -119,5 +159,7 @@ def isolate_provider(
 
 
 def restore_providers() -> None:
-    """Restore all local providers to their standing baseline."""
-    _require_ok(lifecycle.restore(), "failed to restore providers")
+    """Restore all local providers to their standing baseline, unloading the
+    models ollama and omlx still hold: the run is over, and its last model
+    must not stay resident for whatever is tested next."""
+    _require_ok(lifecycle.restore(unload=True), "failed to restore providers")

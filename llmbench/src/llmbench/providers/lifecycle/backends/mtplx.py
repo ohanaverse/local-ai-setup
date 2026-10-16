@@ -124,10 +124,10 @@ class MtplxBackend(PidfileTrackedBackend):
 
         The port check runs regardless of `mtplx stop`'s exit code, not
         only after a clean exit — `mtplx stop` itself exits non-zero
-        whenever nothing is listening on the port (see orchestrate.py's
-        module docstring), which is exactly the state on a machine's first
-        start of an mtplx model. Short-circuiting on that exit
-        code alone (the original shape of this fix) treated "nothing to
+        whenever nothing is listening on the port, which is exactly the
+        state on a machine's first start of an mtplx model.
+        Short-circuiting on that exit code alone (the original shape of
+        this fix) treated "nothing to
         stop" as a hard failure and made `replace_own_occupant()` raise on
         a start that had nothing to replace. Checking the port first makes
         "stop command failed, but the port is already closed" resolve to

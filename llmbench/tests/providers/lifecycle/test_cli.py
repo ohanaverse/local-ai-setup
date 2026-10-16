@@ -189,7 +189,16 @@ def test_restore_command_success():
     assert invoked.exit_code == 0, invoked.stderr
     parsed = json.loads(invoked.stdout)
     assert set(parsed.keys()) == {"provider", "model", "direct_url", "ok", "error"}
-    mock_restore.assert_called_once_with()
+    # A plain restore leaves loaded models alone; --unload frees them.
+    mock_restore.assert_called_once_with(unload=False)
+
+
+def test_restore_command_unload_flag():
+    result = LifecycleResult("restore", "", "", True, None)
+    with patch(f"{LIFECYCLE}.restore", return_value=result) as mock_restore:
+        invoked = runner.invoke(app, ["provider", "restore", "--unload"])
+    assert invoked.exit_code == 0, invoked.stderr
+    mock_restore.assert_called_once_with(unload=True)
 
 
 def test_isolate_exception_from_lifecycle_becomes_clean_envelope_not_traceback():

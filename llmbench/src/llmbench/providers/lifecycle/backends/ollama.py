@@ -15,6 +15,7 @@ import time
 import urllib.request
 
 from .. import launchd
+from ..envelope import LifecycleError
 from .base import Backend, StartPlan, StillFinishing
 
 OLLAMA_PORT = 11434
@@ -86,23 +87,48 @@ class OllamaBackend(Backend):
     def stop_and_wait(self) -> str | None:
         # Stop EVERY model `ollama ps` reports loaded (not just the default
         # model — something else may have been loaded, with `wt start` or
-        # `ollama run`), matching bash's `stop_ollama_and_wait`. Every stop
-        # is sent before the wait, so the models finish their requests side
-        # by side under one bound.
+        # `ollama run`), matching bash's `stop_ollama_and_wait`.
+        return self._stop_loaded(keep=None)
+
+    def unload_models(self) -> str | None:
+        # The daemon stays up: `ollama stop` unloads, it does not stop it.
+        return self._stop_loaded(keep=None)
+
+    def replace_own_occupant(self, plan: StartPlan) -> None:
+        """Unload every loaded model but `plan.model` before it warms.
+
+        One daemon serves every ollama model, and a model it is not asked to
+        stop stays loaded for its keep-alive (5 minutes by default). Without
+        this, a sweep that isolates ollama for one model and then another
+        holds both in RAM at once. The target itself stays loaded, so
+        re-isolating the model already loaded pays only warmup.
+        """
+        warning = self._stop_loaded(keep=plan.model)
+        if warning is not None:
+            raise LifecycleError(str(warning))
+
+    def _stop_loaded(self, keep: str | None) -> str | None:
+        """Stop every loaded model except `keep`, then wait until none of
+        them is loaded. Every stop is sent before the wait, so the models
+        finish their requests side by side under one bound."""
+
+        def others() -> list[str]:
+            return [name for name in _loaded_model_names() if name != keep]
+
         accepted = set()
-        for name in _loaded_model_names():
+        for name in others():
             result = subprocess.run(["ollama", "stop", name], capture_output=True, check=False)
             if result.returncode == 0:
                 accepted.add(name)
         # `ollama stop` unloads the model but leaves the daemon (port 11434)
-        # up, so poll `ollama ps` for an empty model list, not the port. The
-        # wait ends on a poll, not a sleep: a model may unload in the last
+        # up, so poll `ollama ps` for the model list, not the port. The wait
+        # ends on a poll, not a sleep: a model may unload in the last
         # interval.
         for _ in range(UNLOAD_TRIES):
-            if not _loaded_model_names():
+            if not others():
                 return None
             time.sleep(UNLOAD_INTERVAL)
-        left = _loaded_model_names()
+        left = others()
         if not left:
             return None
         waited = UNLOAD_TRIES * UNLOAD_INTERVAL

@@ -37,6 +37,7 @@ from llmbench.benchmark.eval.suite import (
     preflight,
     resolve_row_endpoint,
 )
+from llmbench.benchmark.isolation import row_warm_env
 from llmbench.benchmark.judge_core import (
     JudgeOutcome,
     JudgeScore,
@@ -99,29 +100,18 @@ def _row_isolation_spec(
     """(extra_args, env) for isolating `row`'s provider with the ROW'S model
     loaded, or None when the row needs no isolation at all.
 
-    A backend takes its model through one of two channels:
-    mlx_lm_server/mtplx take positional model args, ollama/omlx name their
-    model through the LLM_ISOLATE_*_MODEL env dict — isolate_provider's only
-    channel for them, since their backends' resolve() reads extra_args as
-    absent. Without it, warmup loads the backend's baked-in default (ornith)
-    instead of the row's model: direct-route omlx rows then 404 against the
-    still-loaded default (single-model-per-daemon), and ollama rows lazily
-    stack the row's model on top of the warmed default, breaking the
-    one-model-at-a-time isolation invariant this call exists to enforce.
+    `env` and the cloud-row decision come from `isolation.row_warm_env`, the
+    one reading of that rule (the agent runner calls the same helper); the
+    extra_args half is this suite's own, since only its rows carry the
+    mlx_lm_server pairing fields:
 
-    The warm name must be the name the row's own requests will use, so the
-    warmed weights and the benchmarked weights agree: `direct_model` when the
-    row sets one (omlx rows need the basename the daemon serves, not the
-    org-prefixed registry model_name), else the registry model_name (ollama
-    tags, omlx via litellm — both spellings live-verified against the oMLX
-    daemon 2026-09-18).
+    * mlx_lm_server/mtplx take their model positionally.
+    * ollama/omlx name theirs through the LLM_ISOLATE_*_MODEL env dict, or
+      warmup loads the backend's baked-in default instead.
 
     None = a cloud model on a local provider's id (e.g. an `ollama/*:cloud`
-    registry row): its requests go to a remote API, so it contends with
-    nothing on this machine — and naming a model would make warmup POST a
-    cloud model name at the local daemon and fail after the 600s timeout.
-    Skip isolation for it, the same cloud-row stance the agent benchmark
-    takes."""
+    registry row): see `row_warm_env` for why such a row is never isolated —
+    the same cloud-row stance the agent benchmark takes."""
     if row.provider_id == "mlx_lm_server":
         return (
             isolation.mlx_lm_server_pairing_args(
@@ -147,10 +137,8 @@ def _row_isolation_spec(
             # the model), but an isolate call must never be what crashes the
             # sweep — fall back to the provider's default-warm behavior.
             return (), None
-        if entry.location == "cloud":
-            return None
-        warm_name = row.direct_model or entry.model_name
-        return (), {_ENV_VAR_BY_PROVIDER[row.provider_id]: warm_name}
+        env, is_cloud = row_warm_env(row.provider_id, row.direct_model or entry.model_name, entry)
+        return None if is_cloud else ((), env)
     return (), None
 
 
@@ -307,6 +295,7 @@ def _run_row(
         model=model_name,
         timeout_s=GENERATION_TIMEOUT_S,
         fail_fast_on_read_timeout=True,
+        extra_params=suite.generation.extra_params(),
     )
 
     results: dict[str, object] = {}
@@ -333,7 +322,7 @@ def _run_row(
                 )
             else:
                 results[category.name] = judged_runner.generate_category(
-                    category, row_transport, temperature=0.0
+                    category, row_transport, temperature=suite.generation.temperature
                 )
         except judged_runner.CategoryGenerationError as exc:
             # Keep the items generated before the failure (only when there

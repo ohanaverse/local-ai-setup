@@ -193,6 +193,30 @@ def test_write_run_toml_persists_judge_config_for_rejudging(tmp_path):
     assert data["suite"]["judge"]["model"] == "j"
     assert data["suite"]["judge"]["samples"] == 2
     assert data["suite"]["coding"]["dataset"] == "humaneval"
+    # No [generation] in the suite: recorded as the greedy default.
+    assert data["suite"]["generation"] == {"temperature": 0.0}
+
+
+def test_write_run_toml_records_generation_sampling(tmp_path):
+    # Scores from a greedy run and a sampled run are not comparable, so the
+    # run records how its rows were sampled.
+    import tomllib
+
+    from llmbench.benchmark.eval.report import write_run_toml
+    from llmbench.benchmark.eval.suite import CodingConfig, GenerationConfig, JudgeConfig, Suite
+
+    suite = Suite(
+        name="t",
+        cooldown_s=15.0,
+        judge=JudgeConfig(model="j", temperature=0.0, samples=1, max_attempts=1, route="litellm"),
+        coding=CodingConfig(),
+        generation=GenerationConfig(temperature=0.6, top_p=0.95, top_k=20),
+    )
+    out_path = tmp_path / "run.toml"
+    write_run_toml(out_path, suite, git_sha="abc123")
+    with out_path.open("rb") as f:
+        data = tomllib.load(f)
+    assert data["suite"]["generation"] == {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
 
 
 def test_write_metrics_jsonl_writes_one_line_per_row(tmp_path):

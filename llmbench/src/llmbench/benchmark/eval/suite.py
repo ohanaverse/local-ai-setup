@@ -54,6 +54,25 @@ class CodingConfig:
 
 
 @dataclass
+class GenerationConfig:
+    """Sampling for every row's own (judged-category) requests. The default
+    is greedy (temperature 0, server-side top_p/top_k). Thinking models such
+    as Qwen3.x can loop under greedy decoding until a server's token cap cuts
+    them off, so a suite comparing them can set the vendor's recommended
+    sampling here; top_p/top_k are sent only when set."""
+
+    temperature: float = 0.0
+    top_p: float | None = None
+    top_k: int | None = None
+
+    def extra_params(self) -> dict[str, float | int]:
+        return {k: v for k, v in (("top_p", self.top_p), ("top_k", self.top_k)) if v is not None}
+
+
+GENERATION_KEYS = ("temperature", "top_p", "top_k")
+
+
+@dataclass
 class RowConfig:
     label: str
     model_id: str
@@ -84,6 +103,43 @@ class Suite:
     coding: CodingConfig
     routes_direct: dict[str, DirectRouteConfig] = field(default_factory=dict)
     rows: list[RowConfig] = field(default_factory=list)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _load_generation(raw: object, suite_name: str) -> GenerationConfig:
+    if raw is None:
+        return GenerationConfig()
+    if not isinstance(raw, dict):
+        raise BenchmarkError(f"suite {suite_name} [generation] must be a table")
+    # A typo'd key (`temp`, `topk`) would otherwise run the whole suite
+    # greedy without a word.
+    unknown = sorted(set(raw) - set(GENERATION_KEYS))
+    if unknown:
+        raise BenchmarkError(
+            f"suite {suite_name} [generation] has unknown key(s) {unknown}; "
+            f"allowed: {list(GENERATION_KEYS)}"
+        )
+    temperature = raw.get("temperature", 0.0)
+    if not _is_number(temperature) or temperature < 0:
+        raise BenchmarkError(
+            f"suite {suite_name} [generation] temperature must be a number >= 0, "
+            f"got {temperature!r}"
+        )
+    top_p = raw.get("top_p")
+    if top_p is not None and (not _is_number(top_p) or not 0 < top_p <= 1):
+        raise BenchmarkError(
+            f"suite {suite_name} [generation] top_p must be a number in (0, 1], got {top_p!r}"
+        )
+    top_k = raw.get("top_k")
+    if top_k is not None and (isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1):
+        raise BenchmarkError(
+            f"suite {suite_name} [generation] top_k must be an integer >= 1, got {top_k!r}"
+        )
+    return GenerationConfig(temperature=float(temperature), top_p=top_p, top_k=top_k)
 
 
 def _short_model(model_id: str) -> str:
@@ -248,6 +304,7 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         coding=coding,
         routes_direct=routes_direct,
         rows=_expand_rows(raw.get("rows", []), registry),
+        generation=_load_generation(raw.get("generation"), path.name),
     )
 
 

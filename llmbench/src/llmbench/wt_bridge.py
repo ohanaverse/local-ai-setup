@@ -1,7 +1,7 @@
-"""Subprocess bridge to wt: `wt warm`, the one wt call llmbench makes (#256).
+"""Subprocess bridge to wt: `wt warm`, `wt served` and `wt stop`.
 
 wt resolves the registry's secret_ref, which an omlx with an API key wants
-before it loads a model.
+before it loads a model (#256), lists what it serves, or unloads one.
 """
 
 from __future__ import annotations
@@ -74,5 +74,50 @@ def warm(provider: str, model: str, timeout: float = WARM_TIMEOUT) -> None:
         raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
     except OSError as e:
         raise WtBridgeError(f"wt warm could not run: {type(e).__name__}") from None
+    if proc.returncode != 0:
+        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+
+
+SERVED_TIMEOUT = 30.0
+# Above the LiteLLM proxy restart wt may wait for after a route change (up
+# to 3 minutes for a request in flight, then 30s for the proxy to answer).
+STOP_TIMEOUT = 240.0
+
+
+def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    ensure_wt()
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, encoding="utf-8", timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        raise WtBridgeTimeoutError(f"{' '.join(argv[:2])} timed out after {timeout:g}s") from None
+    except FileNotFoundError:
+        raise WtNotFoundError("wt not found on PATH; install it with `make install`") from None
+    except OSError as e:
+        raise WtBridgeError(f"{' '.join(argv[:2])} could not run: {type(e).__name__}") from None
+
+
+def served(provider: str, timeout: float = SERVED_TIMEOUT) -> list[str]:
+    """The model ids `provider`'s server is serving now (`wt served`): for
+    omlx, the models loaded or loading. Raises WtBridgeError when the server
+    gave no usable answer — not running, or it would not say."""
+    proc = _run(["wt", "served", provider], timeout)
+    if proc.returncode != 0:
+        raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def stop(model_ref: str, timeout: float = STOP_TIMEOUT) -> None:
+    """Stop one running local model (`wt stop <provider>/<name>`). On omlx
+    that unloads the model and leaves the service and its other models up.
+
+    `--yes` is passed because `wt stop` otherwise asks "stop anyway? [y/N]"
+    on /dev/tty when a live wt session has the model in use — a prompt
+    nothing here can answer (stdin is the caller's own terminal, and stdin
+    inherited by this subprocess means a stray keystroke could answer it),
+    so without the flag the call would block until STOP_TIMEOUT.
+    """
+    proc = _run(["wt", "stop", model_ref, "--yes"], timeout)
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))

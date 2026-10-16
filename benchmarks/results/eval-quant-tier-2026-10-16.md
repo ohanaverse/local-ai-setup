@@ -1,0 +1,119 @@
+# Can a local Qwen build fill a Claude tier? (2026-10-15 to 2026-10-16)
+
+A dated record of the `eval-quant-tier` runs (`benchmarks/suites/eval-quant-tier.toml`). They compare the downloaded Qwen3.8 and Qwen3.6 builds on ollama, omlx and mtplx against Claude models whose tier is known, and then compare the Qwen3.8 builds' speed and run ollama Qwen3.8 through an agentic coding task. The numbers are from this machine on these dates. Re-run the suite to get current ones.
+
+## Conclusions
+
+- **Qwen3.8-27B on ollama or mtplx sits just below standard.** It scored 90–91 on planning, against 93–94 for the standard anchors and about 74 for the quick ones. The engine, the quantization (4-bit or 8-bit) and the mtplx build (Quality, FP16, Speed) made no measurable difference.
+- **Qwen3.6-27B (dense) falls between the tiers**, at 80–87. With six planning items, that can't be narrowed further.
+- **Qwen3.6-35B-A3B is quick**, at 77–79 on every engine.
+- **Avoid Qwen3.8 on omlx for now.** It scored 82–85, 5–8 points below the same model elsewhere, because it writes padded, checklist-style answers. The cause is open in #403. omlx is not behind on the Qwen3.6 models.
+- **For Qwen3.8, ollama is the build to use.** Its quality matches mtplx, and it generates fastest: 64–83 tokens/s, against 45–63 for the mtplx builds.
+- **On one agentic coding task, ollama Qwen3.8 matched Sonnet 5 and glm-5.3-flash on quality** and finished every pass, at about twice glm's time per pass. The task can't rank them, so a trial in the sonnet slot is the next step.
+- **Code review doesn't separate anything:** every row scored 96–99, anchors included.
+
+## Setup
+
+| | |
+|---|---|
+| Engines | omlx 0.7.0, then 0.7.1rc1 (the 27B run); ollama 0.40.5; mtplx 2.12.2 |
+| Categories | planning (6 items) and code_review (6 items) |
+| Judge | `anthropic/claude-opus-5` through OpenRouter, temperature 0, 1 sample (3 for the calibration) |
+| Generation | Greedy (temperature 0) for the calibration and the first local run. Temperature 1.0 / top_p 0.95 / top_k 20 (the Qwen models' `generation_config.json`) for the 27B run |
+| Isolation | One local model loaded at a time; each one is unloaded when its row is done |
+| omlx limits | `sampling.max_tokens` and `max_context_window` raised from 32768 to 65536 before the 27B run |
+
+## Calibration: which categories separate the tiers (greedy, cloud)
+
+| Anchor | Tier | Planning | Code review |
+|---|---|---|---|
+| Claude Haiku 4.5 | quick | 74.7 | 92.8 |
+| Claude Sonnet 4.5 | quick | 73.5 | 98.0 |
+| Claude Haiku 5.5 | standard | 93.8 | 99.0 |
+| Claude Sonnet 5 | standard | 93.0 | 98.7 |
+
+Reasoning and doc_summary scored near 100 for every model, and code review barely separates. Only planning splits quick from standard, so the local rows ran planning and code review only. OpenRouter's hosted Qwen models were dropped as references because OpenRouter spread them across fp4 and fp8 hosts, so they weren't full precision.
+
+## Run 1: first local run (greedy, 2026-10-15)
+
+| Model | Engine / build | Planning | Code review |
+|---|---|---|---|
+| Qwen3.8-27B | ollama `qwen3.8:27b-mlx` | 91.0 | 97.8 |
+| | omlx 8-bit | 80.5 | 98.2 (5/6 items) |
+| | mtplx Optimized-Quality | 91.8 | 98.8 |
+| Qwen3.6-35B-A3B | ollama `qwen3.6:35b-mlx` | 76.7 | 97.2 |
+| | omlx 6-bit | 78.2 | 97.0 |
+| | mtplx Optimized-Balance | 78.5 | 96.3 |
+
+On omlx 8-bit, one code-review answer (39 KB) is thinking that looped and never closed, so the thinking itself came back as the answer. The judge failed on it here, so that code-review score is a mean over five items. A greedy re-run of the row reproduced the low planning score (81.0) and scored that item 34 (code review 87.7). Greedy decoding is what lets a Qwen3.x model loop inside its thinking, so the 27B run used the models' own sampling settings instead.
+
+## Run 2: the 27B builds (sampled, 2026-10-16)
+
+| Model | Engine / build | Planning | Code review |
+|---|---|---|---|
+| Qwen3.8-27B | ollama `qwen3.8:27b-mlx` (4-bit) | 90.3 | 98.0 |
+| | omlx 4-bit | 80.8 (82.5 re-judged) | 97.3 |
+| | omlx 8-bit | 84.3 (85.0 re-judged) | 97.8 |
+| | mtplx Optimized-Quality (8-bit) | 91.0 | 99.2 |
+| | mtplx Optimized-Quality-FP16 | 90.3 | 98.7 |
+| | mtplx Optimized-Speed (mostly 4-bit) | 90.0 | 98.5 |
+| Qwen3.6-27B | ollama `qwen3.6:27b-mlx` | 86.7 | 98.0 |
+| | omlx 4-bit | 80.0 | 96.8 |
+| | omlx 8-bit | 84.0 | 95.8 |
+| | mtplx Optimized-Quality | 83.3 | 97.5 |
+
+The FP16 build has the same 8-bit weights as Quality, with only the bf16 tensors cast to fp16 for M1/M2 chips. As expected, it scored the same.
+
+### The judge cap
+
+The judge used to see at most 20,000 characters of an answer. Seven of the twelve omlx Qwen3.8 planning answers were longer than that (20–33 KB), so they were cut, and the judge marked six of them incomplete. The cap is now 60,000. The saved answers of rows 01–03 were re-judged with it:
+
+| Row | Planning before → after |
+|---|---|
+| ollama (control: no answer was over the cap) | 90.3 → 89.8 |
+| omlx 4-bit | 80.8 → 82.5 |
+| omlx 8-bit | 84.3 → 85.0 |
+
+After the re-judge, no verdict calls an answer cut off, and mentions of verbosity rose from 28 to 40. Most of the omlx gap is the padding, not the cap. No other row had an answer over 20,000 characters, so no other score changes.
+
+## Speed: Qwen3.8-27B (2026-10-16)
+
+`llmbench run --direct --passes 3`: a 200-token completion at temperature 0, one model loaded at a time. Each figure is the range over the three passes. Tokens/s is the generation speed after the first token, thinking tokens included.
+
+| Build | Weights | `chat` tok/s | `code` tok/s | First token (ms) |
+|---|---|---|---|---|
+| ollama `qwen3.8:27b-mlx` | 4-bit | 64–72 | 71–83 | 97–194 |
+| mtplx Optimized-Speed | mostly 4-bit | 56 | 63 | 177–276 |
+| mtplx Optimized-Quality-FP16 | 8-bit | 47–48 | 51–52 | 314–367 |
+| mtplx Optimized-Quality | 8-bit | 45 | 53 | 227–349 |
+
+ollama's first pass is the slowest each time. These are short completions; a long answer may not scale the same way.
+
+## Agentic coding: can ollama Qwen3.8 fill the sonnet slot? (2026-10-16)
+
+The eval above is one-shot. Claude Code's sonnet slot does agentic coding: it runs tools over many turns with a long prompt. So `benchmarks/suites/sonnet-slot-qwen38.toml` runs the `day31-drift` task through the pi agent harness, 3 passes per row, judged by Claude Opus 5. Rows: ollama `qwen3.8:27b-mlx` (thinking off and high, direct), Claude Sonnet 5 (thinking high) and `glm-5.3-flash:cloud`, the sonnet slot of the `ollama-local` slot profile at the time.
+
+ollama loads the model with its full 262,144-token context, on the GPU, at 18 GB.
+
+| Row | Passes finished | Hidden tests | Rubric | Composite | Wall time per pass |
+|---|---|---|---|---|---|
+| Qwen3.8 ollama, thinking off | 3/3 | 5/6 each | 89–91 | 44–46 | 207–313 s |
+| Qwen3.8 ollama, thinking high | 3/3 | 5/6 each | 89–95 | 44–48 | 203–320 s |
+| Claude Sonnet 5, thinking high | 2/3 (one hit the 600 s limit) | 5/6 each | 91–93 | 46 | 174–275 s |
+| glm-5.3-flash:cloud | 2/3 (one made no change) | 5/6 each | 95–96 | 48 | 112–126 s |
+
+- **Quality:** the judge scored Qwen3.8 within a few points of Sonnet 5 and glm, and rated every finished pass of every row a principled fix.
+- **Reliability:** Qwen3.8 finished all six passes; Sonnet 5 and glm each lost one.
+- **Speed:** Qwen3.8 generated at 62–67 tok/s, against 114 for Sonnet 5 (in its finished passes) and over 200 for glm. ollama's prompt cache reused 160,000–340,000 prompt tokens per pass.
+- **Regression tests:** the harness marks an added test vacuous when it would also pass without the fix. All six of Qwen3.8's added tests were marked vacuous, as were one of Sonnet 5's two and both of glm's.
+
+**The task doesn't separate the models.** No row passed all six hidden tests, so every composite is capped at half its rubric score, and one task with three passes per row can't rank models whose rubric scores are this close. The result is that Qwen3.8 can do agentic coding on this task as well as the cloud models. It does not show that Qwen3.8 matches Sonnet 5.
+
+**Thinking may not have taken effect.** Thinking off and high gave nearly the same output size and scores, and ollama reported no reasoning tokens for either. ollama lists this model's thinking levels as low, medium and xhigh, with no `high`, so both rows may have run at the model's default.
+
+## Open questions
+
+- **#403:** why omlx's Qwen3.8 answers are padded. The template, thinking mode, sampling, omlx version and quantization are ruled out.
+- **Anchor sampling:** the anchors were scored greedy and the 27B rows sampled. Re-run the anchors with the suite's `[generation]` table for exact parity.
+- **Sonnet slot:** a trial in Claude Code itself (a slot profile with ollama Qwen3.8 in the sonnet slot, on real work) is the test the agent benchmark can't replace. Map pi's thinking levels to ollama's (low/medium/xhigh) before re-running the thinking rows.
+- **Sample size:** six planning items, one generation each. Re-judging alone moved a score by about half a point; a fresh generation probably moves it more. Read gaps of 1–3 points as ties.

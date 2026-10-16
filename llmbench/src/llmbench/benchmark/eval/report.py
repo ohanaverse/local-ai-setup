@@ -230,6 +230,12 @@ def write_run_toml(path: Path, suite: Suite, *, git_sha: str) -> None:
                 for k, v in {"dataset": suite.coding.dataset, "limit": suite.coding.limit}.items()
                 if v is not None
             },
+            # How the rows were sampled, so two runs' scores can be told
+            # apart when one was greedy and the other was not.
+            "generation": {
+                "temperature": suite.generation.temperature,
+                **suite.generation.extra_params(),
+            },
         },
     }
     atomic_write_toml(payload, path)

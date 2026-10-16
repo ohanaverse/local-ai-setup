@@ -299,3 +299,39 @@ def test_load_suite_reads_and_validates_coding_timeout(tmp_path):
         load_suite(
             _write(tmp_path, SUITE_BODY.replace("limit = 5", 'timeout_s = "9"')), _registry()
         )
+
+
+def test_load_suite_generation_defaults_to_greedy(tmp_path):
+    # A suite with no [generation] table keeps the rows' historical greedy
+    # sampling and sends no top_p/top_k, so older suites score as before.
+    suite = load_suite(_write(tmp_path, SUITE_BODY), _registry())
+    assert suite.generation.temperature == 0.0
+    assert suite.generation.extra_params() == {}
+
+
+def test_load_suite_reads_generation_table(tmp_path):
+    body = SUITE_BODY + "\n[generation]\ntemperature = 0.6\ntop_p = 0.95\ntop_k = 20\n"
+    suite = load_suite(_write(tmp_path, body), _registry())
+    assert suite.generation.temperature == 0.6
+    assert suite.generation.extra_params() == {"top_p": 0.95, "top_k": 20}
+
+
+@pytest.mark.parametrize(
+    ("table", "message"),
+    [
+        ("temp = 0.6", "unknown key"),
+        ("temperature = -1", "temperature must be"),
+        ('temperature = "0.6"', "temperature must be"),
+        ("top_p = 0", "top_p must be"),
+        ("top_p = 1.5", "top_p must be"),
+        ("top_k = 0", "top_k must be"),
+        ("top_k = 2.5", "top_k must be"),
+        ("top_k = true", "top_k must be"),
+    ],
+)
+def test_load_suite_refuses_bad_generation(tmp_path, table, message):
+    body = SUITE_BODY.replace(
+        "[routes.direct.omlx]", f"[generation]\n{table}\n\n[routes.direct.omlx]"
+    )
+    with pytest.raises(BenchmarkError, match=message):
+        load_suite(_write(tmp_path, body), _registry())

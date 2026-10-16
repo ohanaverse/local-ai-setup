@@ -203,23 +203,40 @@ def isolate(
             else:
                 _stop_others(keep=backend.occupancy_key)
                 # Then this backend's OWN occupant. A documented no-op for
-                # every backend but mtplx (ollama/omlx reuse their daemon;
-                # mlx_lm_server self-replaces inside start()), which is
-                # exactly bash's `stop_all_local <self>` keep behavior.
+                # mlx_lm_server (it self-replaces inside start()). ollama and
+                # omlx unload every other model their daemon still holds, so
+                # a second row on the same provider does not share RAM with
+                # the first (ollama's keep-alive, omlx's model pool).
                 # mtplx is the exception: it is single-model-per-process AND
                 # its start() does not stop a predecessor, so bash reached
-                # that teardown through a KEEP-LESS stop-all instead — i.e.
-                # through a backgrounded subshell whose failure was
-                # swallowed. Hence the suppress: `mtplx stop` exits non-zero
-                # when nothing is listening, and an isolate on a machine
-                # where mtplx simply isn't running yet must not fail because
-                # of it. start()'s own port-closed poll is the real gate on
-                # whether the predecessor actually let go. (The solo branch
-                # above deliberately does NOT suppress: there the caller is
-                # replacing a known occupant, and the real stop failure is
-                # more useful than a generic port-timeout 10s later.)
-                with contextlib.suppress(Exception):
+                # that teardown through a KEEP-LESS stop-all instead.
+                #
+                # A warning here rather than a failure, the same stance
+                # _stop_others() takes just above and for the same reason:
+                # both are the in-process replacement for bash's
+                # backgrounded-subshell teardown, whose failures ended in
+                # `true` and so could never abort an isolate. What decides
+                # whether the predecessor actually let go is start()'s own
+                # port-closed poll, not `mtplx stop`'s exit code —
+                # stop_and_wait() already resolves "nothing was listening" to
+                # success by checking the port whatever that exit code was.
+                #
+                # Logged, never dropped: ollama ("still finishing a request")
+                # and omlx ("still holds ... after wt stop") raise
+                # LifecycleError for a model that would NOT let go, and a
+                # model still resident through the measurement is exactly the
+                # RAM sharing this teardown exists to prevent. Swallowing it
+                # silently (contextlib.suppress) made every one of those
+                # failures invisible to the caller.
+                #
+                # The solo branch above stays strict on purpose: there the
+                # caller is replacing a known occupant, and the real stop
+                # failure is more useful than a generic port-timeout 10s
+                # later.
+                try:
                     backend.replace_own_occupant(plan)
+                except Exception as exc:  # noqa: BLE001 — a warning, not a failure
+                    _log(f"warning: {exc}")
             backend.start(plan)
             started = True
             backend.wait_ready(plan)
@@ -324,7 +341,7 @@ def _restore_litellm() -> str | None:
     return None
 
 
-def restore() -> LifecycleResult:
+def restore(*, unload: bool = False) -> LifecycleResult:
     """Bring local providers back to their standing baseline after a
     benchmark run releases exclusivity.
 
@@ -332,6 +349,13 @@ def restore() -> LifecycleResult:
     `BACKENDS` — a hardcoded provider list here would drift the moment a
     backend is added:
       - "restart": `backend.restore()`; a failure fails the aggregate.
+        With `unload=True` (the benchmarks' end-of-run restore), first
+        `backend.unload_models()`: a sweep restores once, after its last
+        row, and that row's model would otherwise stay resident (ollama's
+        keep-alive, omlx's model pool) and squeeze whatever is tested next.
+        A model that will not unload is logged, never fails the aggregate.
+        Plain `restore` leaves loaded models alone: it is also the "bring
+        the stack back" command, run while agent sessions use them.
       - "stop": `backend.stop_and_wait()` — mlx_lm_server and mtplx are
         never part of the standing baseline, so their entry here is a stop,
         not a restart, and it must run on every invocation (a benchmark
@@ -344,6 +368,10 @@ def restore() -> LifecycleResult:
     log_prefix = f"{RESTORE_LOG_PREFIX} "
 
     def _restart_step(backend: Backend) -> str | None:
+        if unload:
+            warning = backend.unload_models()
+            if warning:
+                _log(f"{RESTORE_LOG_PREFIX} warning: {warning}")
         # Backend.restore()'s contract is raise-on-failure, not
         # return-an-error — discard whatever it returns rather than
         # letting a non-None value masquerade as an error string.

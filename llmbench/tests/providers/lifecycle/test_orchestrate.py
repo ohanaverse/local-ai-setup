@@ -264,8 +264,9 @@ def test_isolate_non_solo_stops_siblings_before_own_occupant():
     assert result.ok is True
 
 
-def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal():
-    """Non-solo only: a failed own-occupant stop must NOT fail the isolate.
+def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal(capsys):
+    """Non-solo only: a failed own-occupant stop must NOT fail the isolate —
+    but it must be LOGGED, never swallowed.
 
     bash reached mtplx's own teardown through a keep-less stop-all — a
     backgrounded subshell whose failure was swallowed — and `mtplx stop`
@@ -273,7 +274,13 @@ def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal():
     break every isolate of a provider that simply isn't running yet
     (`llmbench` against an mtplx target on a cold machine).
     start()'s own port-closed poll is the real gate on whether the port is
-    free."""
+    free.
+
+    The message is what ollama and omlx put a model that would NOT let go
+    into ("ollama is still finishing a request on ...", "omlx still holds ...
+    after wt stop") — and a model resident through the measurement is the RAM
+    sharing this teardown exists to prevent, so discarding it silently made
+    every such failure invisible to whoever ran the sweep."""
     plan = _plan("org/new")
     with (
         patch.object(MTPLX, "check_available", return_value=None),
@@ -292,6 +299,7 @@ def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal():
         result = orchestrate.isolate("mtplx", "org/new")
     mock_start.assert_called_once_with(plan)
     assert result.ok is True
+    assert "No MTPLX server is listening on port 8003." in capsys.readouterr().err
 
 
 def test_isolate_solo_restart_stops_only_own_occupant():
@@ -621,6 +629,69 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
     mock_mtplx_stop.assert_called_once()
     assert result.ok is True
     assert result.provider == "restore"
+
+
+def test_restore_unload_frees_the_models_ollama_and_omlx_still_hold():
+    """A sweep restores once, after its last row: whatever that row loaded on
+    ollama (5-min keep-alive) or omlx (no idle timeout) would stay resident
+    and squeeze the next test. restore(unload=True) unloads it before the
+    restart step, and only on the instance that restores (never the
+    skip-only omlx-6bit)."""
+    order = []
+    with (
+        patch.object(
+            BACKENDS["ollama"], "unload_models", side_effect=lambda: order.append("ollama-unload")
+        ),
+        patch.object(
+            BACKENDS["ollama"], "restore", side_effect=lambda: order.append("ollama-restore")
+        ),
+        patch.object(OMLX_4BIT, "unload_models", return_value=None) as omlx_unload,
+        patch.object(OMLX_4BIT, "restore"),
+        patch.object(OMLX_6BIT, "unload_models") as omlx6_unload,
+        patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch(f"{ORCH}._restore_litellm", return_value=None),
+    ):
+        result = orchestrate.restore(unload=True)
+    assert order == ["ollama-unload", "ollama-restore"]
+    omlx_unload.assert_called_once()
+    omlx6_unload.assert_not_called()
+    assert result.ok is True
+
+
+def test_restore_unload_warning_is_logged_and_never_fails_the_aggregate(capsys):
+    with (
+        patch.object(
+            BACKENDS["ollama"], "unload_models", return_value="ollama still has models loaded"
+        ),
+        patch.object(BACKENDS["ollama"], "restore"),
+        patch.object(OMLX_4BIT, "unload_models", return_value=None),
+        patch.object(OMLX_4BIT, "restore"),
+        patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch(f"{ORCH}._restore_litellm", return_value=None),
+    ):
+        result = orchestrate.restore(unload=True)
+    assert result.ok is True
+    assert "ollama still has models loaded" in capsys.readouterr().err
+
+
+def test_plain_restore_leaves_loaded_models_alone():
+    """`llmbench provider restore` is also the "bring the stack back"
+    command, run while agent sessions use their models: without unload it
+    must not unload anything."""
+    with (
+        patch.object(BACKENDS["ollama"], "unload_models") as ollama_unload,
+        patch.object(BACKENDS["ollama"], "restore"),
+        patch.object(OMLX_4BIT, "unload_models") as omlx_unload,
+        patch.object(OMLX_4BIT, "restore"),
+        patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch(f"{ORCH}._restore_litellm", return_value=None),
+    ):
+        assert orchestrate.restore().ok is True
+    ollama_unload.assert_not_called()
+    omlx_unload.assert_not_called()
 
 
 def test_restore_restart_failure_fails_the_aggregate():

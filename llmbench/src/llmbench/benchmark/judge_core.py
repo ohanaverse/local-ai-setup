@@ -245,7 +245,11 @@ class LiteLLMJudgeTransport:
         retry_backoff_s: float = 2.0,
         timeout_s: float = 120,
         fail_fast_on_read_timeout: bool = False,
+        extra_params: dict[str, float | int] | None = None,
     ):
+        # Request-body fields sent beside temperature (an eval row's top_p /
+        # top_k); the judge sends none.
+        self.extra_params = dict(extra_params or {})
         self.timeout_s = timeout_s
         self.fail_fast_on_read_timeout = fail_fast_on_read_timeout
         self.base_url = base_url.rstrip("/")
@@ -280,6 +284,7 @@ class LiteLLMJudgeTransport:
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
+                **self.extra_params,
                 "stream": False,
             },
             timeout=self.timeout_s,

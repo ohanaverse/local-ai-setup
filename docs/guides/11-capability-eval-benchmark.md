@@ -31,7 +31,7 @@ A category lives under `benchmarks/tasks/eval/<name>/` — `items.toml` (the fix
 
 ### 2. Write or reuse a suite
 
-A suite (`benchmarks/suites/eval-*.toml`) picks a `[judge]`, an optional `[coding]` override (dataset/limit), and a `[[rows]]` list (model + route, optionally a per-row `categories =` narrowing). `eval-sweep.toml` is the reference suite. Always `--dry-run` a new/edited suite first.
+A suite (`benchmarks/suites/eval-*.toml`) picks a `[judge]`, an optional `[coding]` override (dataset/limit), an optional `[generation]` table (how the rows themselves are sampled: `temperature`, plus `top_p`/`top_k`, sent only when set; without it rows run greedy at temperature 0), and a `[[rows]]` list (model + route, optionally a per-row `categories =` narrowing). `eval-sweep.toml` is the reference suite. Always `--dry-run` a new/edited suite first.
 
 ### 3. Run it
 
@@ -63,6 +63,7 @@ Re-scores every judged category's items from their persisted `response.txt` — 
 - **`coding` needs `uv sync --extra eval`** — a plain `make install`/`uv sync` does not pull EvalPlus, since it executes model-generated code and only this one category needs it.
 - **`omlx` 4-bit/6-bit disambiguation is the same as every other suite here** — use a row's `provider =` override, and `direct_model =` for the server-side basename. See [05-benchmarks](05-benchmarks.md) Gotchas.
 - **A row's `categories =` narrows which categories that row runs**, independent of `--category`'s CLI-level narrowing — both apply, intersected.
+- **Thinking models can loop under greedy decoding.** Rows default to temperature 0; a Qwen3.x row can then repeat itself inside its thinking until the server's token cap cuts it off, and the judge scores the leftover thinking. When comparing such models, set the vendor's recommended sampling in `[generation]` for every row of the suite, and compare runs only when their `run.toml` `[suite.generation]` match. Engines also cap a request at different lengths (omlx: `sampling.max_tokens` and `max_context_window` in `~/.omlx/settings.json`), and the thinking counts against the cap.
 - **Judging (and coding's EvalPlus grading) both cost real time/spend per item** — a 5-category sweep across many rows adds up; use `--category`/`--row` to scope a suite down while iterating on content or rubrics.
 - **`coding`'s shipped config runs the FULL dataset — keep it that way (or set `limit` to the full dataset size).** EvalPlus 0.3.1's grading step requires every problem in the FULL dataset (164 for humaneval) to have a sample before it computes pass@k — `--id-range`/`limit` only bounds what gets *generated*, not what grading demands — so a `limit` smaller than the dataset size makes the `coding` category fail cleanly with a `CodingResult.error` every time, not a score. The reference suite and the coding category both ship with no `limit` for exactly this reason; only set one (a follow-up may address the gap) if you accept an EVALPLUS_ERROR cell in the report.
 

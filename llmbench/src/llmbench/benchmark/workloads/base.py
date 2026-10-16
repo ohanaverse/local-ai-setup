@@ -121,4 +121,6 @@ def _chunk_has_content(chunk: dict[str, Any]) -> bool:
     if not isinstance(first_choice, dict):
         return False
     delta = first_choice.get("delta", {})
-    return bool(delta.get("content"))
+    # Thinking tokens count: they are generated (completion_tokens includes
+    # them), and a thinking model streams them before any answer text.
+    return bool(delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"))
