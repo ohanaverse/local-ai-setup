@@ -73,7 +73,35 @@ model = "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16"
 provider = "mtplx"
 route = "direct"
 
-# --- Qwen3.6-35B-A3B --------------------------------------------------------
+[[rows]]
+# Mostly 4-bit with some 8-bit layers: what the speed build costs in quality.
+model = "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
+provider = "mtplx"
+route = "direct"
+
+# --- Qwen3.6-27B (dense) ----------------------------------------------------
+[[rows]]
+model = "ollama/qwen3.6:27b-mlx"                # 4-bit MLX
+route = "litellm"
+
+[[rows]]
+model = "omlx/Qwen3.6-27B-4bit"
+provider = "omlx"
+route = "direct"
+direct_model = "Qwen3.6-27B-4bit"
+
+[[rows]]
+model = "omlx/Qwen3.6-27B-8bit"
+provider = "omlx"
+route = "direct"
+direct_model = "Qwen3.6-27B-8bit"
+
+[[rows]]
+model = "mtplx/Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality"
+provider = "mtplx"
+route = "direct"
+
+# --- Qwen3.6-35B-A3B (mixture of experts, ~3B active) --------------------------------------------------------
 [[rows]]
 model = "ollama/qwen3.6:35b-mlx"                # 4-bit MLX
 route = "litellm"
