@@ -70,3 +70,32 @@ def test_raw_run_defaults():
 def test_metrics_computes_throughput():
     m = BenchmarkMetrics(ttft_ms=100, total_ms=500, completion_tokens=100, prompt_tokens=10)
     assert m.throughput_tok_s == 250.0
+
+
+def test_first_token_counts_thinking_tokens():
+    """A thinking model streams its reasoning before any answer text (omlx
+    and mtplx as `reasoning_content`, ollama as `reasoning`). Those are
+    generated tokens and completion_tokens counts them, so the first one
+    starts the clock. Waiting for answer text instead leaves TTFT empty when
+    the token cap ends the stream inside the thinking, or folds the whole
+    thinking into TTFT and inflates throughput."""
+    workload = ChatStreamingWorkload()
+    for field in ("reasoning_content", "reasoning"):
+        session = MagicMock()
+        session.post.return_value = _fake_response(
+            [
+                'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+                f'data: {{"choices":[{{"delta":{{"{field}":"Let me think"}}}}]}}',
+                "data: [DONE]",
+            ]
+        )
+        raw = workload.run(session, "http://localhost:8000/v1/chat/completions", {})
+        assert raw.first_token_time is not None, field
+
+    # A role-only chunk carries no generated token.
+    session = MagicMock()
+    session.post.return_value = _fake_response(
+        ['data: {"choices":[{"delta":{"role":"assistant"}}]}', "data: [DONE]"]
+    )
+    raw = workload.run(session, "http://localhost:8000/v1/chat/completions", {})
+    assert raw.first_token_time is None

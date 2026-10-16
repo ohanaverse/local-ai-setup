@@ -58,7 +58,7 @@ def test_run_benchmark_saves_results_when_restore_fails(tmp_path, monkeypatch):
         models=[ModelEntry(id="ollama/a", family="f", provider_id="ollama", model_name="a")],
     )
 
-    def _fake_isolate(pid):
+    def _fake_isolate(pid, *extra_args, env=None):
         return type("I", (), {"ok": True, "direct_url": "http://localhost:8080"})()
 
     def _fail_restore():
@@ -420,3 +420,46 @@ def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_p
 
     assert all(r.error is not None for r in run.results)
     assert "draft" in run.results[0].error.lower() or "target" in run.results[0].error.lower()
+
+
+def test_run_benchmark_warms_each_ollama_and_omlx_target_by_name(tmp_path, monkeypatch):
+    """ollama and omlx take their model through isolate_provider's env dict.
+    Without it the backend warms its baked-in default (ornith-1.5), which
+    fails when that model is not pulled and otherwise benchmarks beside the
+    wrong model. Two targets on one provider each get their own isolation."""
+    import llmbench.benchmark.runner as runner_module
+
+    registry = Registry(
+        providers=[
+            ProviderEntry(id="ollama", name="Ollama", location="local"),
+            ProviderEntry(id="omlx", name="oMLX", location="local"),
+        ],
+        models=[
+            ModelEntry(id="ollama/a:1", family="f", provider_id="ollama", model_name="a:1"),
+            ModelEntry(id="omlx/b-4bit", family="f", provider_id="omlx", model_name="b-4bit"),
+            ModelEntry(id="omlx/b-8bit", family="f", provider_id="omlx", model_name="b-8bit"),
+        ],
+    )
+
+    calls: list[tuple] = []
+
+    def _fake_isolate(provider_id, *extra_args, env=None):
+        calls.append((provider_id, extra_args, env))
+        return type("I", (), {"ok": True, "direct_url": "http://localhost:8000"})()
+
+    monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
+    monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(runner_module, "_run_route", _fake_route)
+
+    run_benchmark(
+        registry,
+        _FakeWorkload(),
+        model_ids=["ollama/a:1", "omlx/b-4bit", "omlx/b-8bit"],
+        results_dir=tmp_path,
+    )
+
+    assert calls == [
+        ("ollama", (), {"LLM_ISOLATE_OLLAMA_MODEL": "a:1"}),
+        ("omlx", (), {"LLM_ISOLATE_OMLX_4BIT_MODEL": "b-4bit"}),
+        ("omlx", (), {"LLM_ISOLATE_OMLX_4BIT_MODEL": "b-8bit"}),
+    ]

@@ -18,6 +18,7 @@ from llmbench.benchmark.isolation import (
 from llmbench.benchmark.results import BenchmarkRun, TargetResult, write_results
 from llmbench.benchmark.workloads import Workload
 from llmbench.benchmark.workloads.base import BenchmarkMetrics
+from llmbench.local_process import ENV_VAR_BY_PROVIDER
 from llmbench.providers.registry import ProviderRegistry
 from llmbench.registry import DEFAULT_PROVIDER_IDS, Registry, is_model_local
 
@@ -160,22 +161,21 @@ def run_benchmark(
     )
 
     session = requests.Session()
-    # Isolation is keyed on (provider_id, pairing) rather than bare
-    # provider_id: consecutive targets on the same key reuse the running
-    # isolation instead of paying another stop-others + warmup cycle (~a
-    # minute of polling per target otherwise). For every provider except
-    # mlx_lm_server, extra_args is always () so this reduces to the old
-    # provider_id-only comparison. mlx_lm_server is one-model-per-process, so
-    # two consecutive mlx_lm_server targets with *different* pairings must
-    # still trigger a fresh isolate call — comparing only provider_id would
-    # silently keep serving the first pairing.
-    last_isolation_key: tuple[str, tuple[str, ...]] | None = None
+    # Isolation is keyed on (provider_id, positional args, warmed model):
+    # consecutive targets on the same key reuse the running isolation instead
+    # of paying another stop-others + warmup cycle (~a minute of polling per
+    # target otherwise). A target with a different model always re-isolates —
+    # mtplx and mlx_lm_server serve one model per process, and on ollama and
+    # omlx the new isolation unloads the previous target's model, so each
+    # target runs with only its own model loaded.
+    last_isolation_key: tuple[str, tuple[str, ...], str | None] | None = None
     direct_url: str | None = None
     try:
         for target in targets:
             try:
-                # Resolve provider-specific positional args inline; providers
-                # with a baked-in default model (ollama/omlx) need none.
+                # Resolve provider-specific positional args inline. ollama and
+                # omlx take none: they name their model through the env dict
+                # below, or the backend warms its baked-in default instead.
                 extra_args: tuple[str, ...]
                 if target.provider_id == "mlx_lm_server":
                     extra_args = mlx_lm_server_pairing_args(
@@ -191,9 +191,17 @@ def run_benchmark(
                     extra_args = (target.model_name,)
                 else:
                     extra_args = ()
-                isolation_key = (target.provider_id, extra_args)
+                env_var = ENV_VAR_BY_PROVIDER.get(target.provider_id)
+                warm_name = target.model_name if env_var else None
+                isolation_key = (target.provider_id, extra_args, warm_name)
                 if isolation_key != last_isolation_key:
-                    isolate = isolate_provider(target.provider_id, *extra_args)
+                    isolate = (
+                        isolate_provider(
+                            target.provider_id, *extra_args, env={env_var: target.model_name}
+                        )
+                        if env_var
+                        else isolate_provider(target.provider_id, *extra_args)
+                    )
                     direct_url = isolate.direct_url
                     last_isolation_key = isolation_key
             except BenchmarkError as exc:
