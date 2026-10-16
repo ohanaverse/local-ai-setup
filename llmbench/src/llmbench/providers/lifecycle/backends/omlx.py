@@ -27,7 +27,7 @@ import shutil
 import subprocess
 
 from .... import wt_bridge
-from ....registry import RegistryError, load_registry
+from ....registry import ModelEntry, RegistryError, load_registry
 from .. import probe
 from ..envelope import LifecycleError
 from .base import Backend, StartPlan
@@ -42,7 +42,25 @@ ENV_VAR_4BIT = "LLM_ISOLATE_OMLX_4BIT_MODEL"
 ENV_VAR_6BIT = "LLM_ISOLATE_OMLX_6BIT_MODEL"
 
 
-def _wt_ref(served: str) -> str:
+def _omlx_is_down() -> bool:
+    """True when nothing is listening on omlx's port — the one case where
+    wt's "no usable answer" means "this server holds nothing" rather than
+    "this server would not say". Only for the failure paths: it polls for
+    about a second before it can answer no (probe.port_closed_within)."""
+    return probe.port_closed_within(OMLX_HEALTH_URL, timeout=1.0)
+
+
+def _omlx_rows() -> list[ModelEntry]:
+    """The registry's omlx rows — read ONCE per unload, since `load_registry()`
+    re-reads and re-parses the whole file on every call and one unload asks
+    about every model omlx serves. [] when the registry is unreadable."""
+    try:
+        return [m for m in load_registry().models if m.provider_id == "omlx"]
+    except RegistryError:
+        return []
+
+
+def _wt_ref(served: str, rows: list[ModelEntry]) -> str:
     """The reference `wt stop` takes for the model omlx serves as `served`.
 
     omlx names a model by its directory's basename, but wt takes the
@@ -50,15 +68,14 @@ def _wt_ref(served: str) -> str:
     4bit`). The id is the omlx row whose model_name is `served`, or ends in
     `/<served>` (wt's NameMatches rule; an exact name wins). A model the
     registry does not hold, or an unreadable registry, keeps `omlx/<served>`.
+
+    `rows` is `_omlx_rows()` — passed in rather than read here, so one
+    unload reads the registry once instead of once per served model.
     """
-    try:
-        models = [m for m in load_registry().models if m.provider_id == "omlx"]
-    except RegistryError:
-        models = []
-    for m in models:
+    for m in rows:
         if m.model_name == served:
             return m.id
-    for m in models:
+    for m in rows:
         if m.model_name.endswith(f"/{served}"):
             return m.id
     return f"omlx/{served}"
@@ -140,25 +157,35 @@ class OmlxBackend(Backend):
 
         Listing and unloading go through wt (`wt served omlx`, `wt stop
         omlx/<name>`): a keyed omlx refuses keyless management calls, and
-        only wt resolves the key. A down omlx serves nothing, so wt's "no
-        usable answer" is not an error here.
+        only wt resolves the key. A DOWN omlx serves nothing, so wt's "no
+        usable answer" is not an error there — but the same message covers a
+        server that is UP and would not say (mixed pool counts, a status call
+        it refuses), and that is not "nothing loaded": warming beside
+        occupants nobody could list is the silent RAM sharing this teardown
+        exists to prevent, so that one is a warning.
         """
         try:
             loaded = wt_bridge.served("omlx")
-        except wt_bridge.WtBridgeError:
-            return None
+        except wt_bridge.WtBridgeError as exc:
+            return None if _omlx_is_down() else f"could not ask wt what omlx serves: {exc}"
         others = [name for name in loaded if name != keep]
         if not others:
             return None
+        rows = _omlx_rows()
+        failures: list[str] = []
         for name in others:
             try:
-                wt_bridge.stop(_wt_ref(name))
+                wt_bridge.stop(_wt_ref(name, rows))
             except wt_bridge.WtBridgeError as exc:
-                return f"omlx could not unload {name}: {exc}"
+                # Keep unloading the rest: one model wt refused is no reason
+                # to leave the others loaded beside the incoming one.
+                failures.append(f"{name}: {exc}")
+        if failures:
+            return f"omlx could not unload {', '.join(failures)}"
         try:
             left = [name for name in wt_bridge.served("omlx") if name != keep]
-        except wt_bridge.WtBridgeError:
-            return None
+        except wt_bridge.WtBridgeError as exc:
+            return None if _omlx_is_down() else f"could not confirm what omlx still serves: {exc}"
         if left:
             return f"omlx still holds {', '.join(left)} after wt stop"
         return None

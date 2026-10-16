@@ -264,8 +264,9 @@ def test_isolate_non_solo_stops_siblings_before_own_occupant():
     assert result.ok is True
 
 
-def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal():
-    """Non-solo only: a failed own-occupant stop must NOT fail the isolate.
+def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal(capsys):
+    """Non-solo only: a failed own-occupant stop must NOT fail the isolate —
+    but it must be LOGGED, never swallowed.
 
     bash reached mtplx's own teardown through a keep-less stop-all — a
     backgrounded subshell whose failure was swallowed — and `mtplx stop`
@@ -273,7 +274,13 @@ def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal():
     break every isolate of a provider that simply isn't running yet
     (`llmbench` against an mtplx target on a cold machine).
     start()'s own port-closed poll is the real gate on whether the port is
-    free."""
+    free.
+
+    The message is what ollama and omlx put a model that would NOT let go
+    into ("ollama is still finishing a request on ...", "omlx still holds ...
+    after wt stop") — and a model resident through the measurement is the RAM
+    sharing this teardown exists to prevent, so discarding it silently made
+    every such failure invisible to whoever ran the sweep."""
     plan = _plan("org/new")
     with (
         patch.object(MTPLX, "check_available", return_value=None),
@@ -292,6 +299,7 @@ def test_isolate_non_solo_own_occupant_stop_failure_is_not_fatal():
         result = orchestrate.isolate("mtplx", "org/new")
     mock_start.assert_called_once_with(plan)
     assert result.ok is True
+    assert "No MTPLX server is listening on port 8003." in capsys.readouterr().err
 
 
 def test_isolate_solo_restart_stops_only_own_occupant():

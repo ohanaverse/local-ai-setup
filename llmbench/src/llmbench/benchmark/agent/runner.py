@@ -26,6 +26,7 @@ from llmbench.benchmark.agent.suite import JudgeConfig, RowConfig, Suite, prefli
 from llmbench.benchmark.agent.task import TaskBundle, load_task
 from llmbench.benchmark.agent.workspace import create_workspace, destroy_workspace
 from llmbench.benchmark.errors import BenchmarkError, RunSavedButRestoreFailed
+from llmbench.benchmark.isolation import row_warm_env
 from llmbench.benchmark.runmeta import git_sha
 from llmbench.local_process import ENV_VAR_BY_PROVIDER
 from llmbench.registry import Registry
@@ -495,17 +496,19 @@ def run_suite(
                 else:
                     extra_args = ()
                 # ollama and omlx name their model through the env dict, or
-                # warmup loads the backend's baked-in default instead. A cloud
+                # warmup loads the backend's baked-in default instead. The
+                # rule itself (and the cloud-row exemption) is
+                # isolation.row_warm_env, shared with the eval runner. A cloud
                 # model on their provider id (`ollama/*:cloud`) runs remotely
                 # and is never isolated.
                 env: dict[str, str] | None = None
-                env_var = ENV_VAR_BY_PROVIDER.get(provider_id)
                 is_cloud = False
-                if env_var:
+                warm_name: str | None = None
+                if ENV_VAR_BY_PROVIDER.get(provider_id):
                     entry = registry.model(row.model_id)
-                    is_cloud = entry.location == "cloud"
-                    env = {env_var: row.direct_model or entry.model_name}
-                key = (extra_args, env[env_var] if env and env_var else None)
+                    warm_name = row.direct_model or entry.model_name
+                    env, is_cloud = row_warm_env(provider_id, warm_name, entry)
+                key = (extra_args, warm_name)
                 if provider_id in ISOLATABLE_PROVIDERS and not is_cloud and key != prev_key:
                     # A cloud row contends with nothing on this machine, and
                     # isolating it fails outright — the lifecycle's BACKENDS

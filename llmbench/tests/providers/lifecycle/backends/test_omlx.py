@@ -407,7 +407,8 @@ def test_replace_own_occupant_keeps_the_target_named_with_its_org():
 
 def test_replace_own_occupant_is_a_no_op_when_omlx_is_down():
     """A stopped omlx has nothing loaded: wt's "no usable answer" is not an
-    error here, and nothing is stopped."""
+    error there, and nothing is stopped. Only a closed port makes it so —
+    the next test covers a server that is up and will not say."""
     from llmbench import wt_bridge
     from llmbench.providers.lifecycle.backends.base import StartPlan
 
@@ -417,10 +418,61 @@ def test_replace_own_occupant_is_a_no_op_when_omlx_is_down():
             "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
             side_effect=wt_bridge.WtBridgeError("omlx gave no usable answer"),
         ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.probe.port_closed_within",
+            return_value=True,
+        ),
         patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
     ):
         OMLX_4BIT.replace_own_occupant(plan)
     wt_stop.assert_not_called()
+
+
+def test_replace_own_occupant_raises_when_an_running_omlx_will_not_say_what_it_serves():
+    """wt's "no usable answer" also covers a server that is up and would not
+    say — omlx's own /health and /v1/models/status disagreeing, or a status
+    call it refuses. That is not an empty pool: warming beside occupants
+    nobody could list is the RAM sharing this teardown exists to prevent, so
+    it must fail loudly rather than read as "nothing loaded"."""
+    from llmbench import wt_bridge
+    from llmbench.providers.lifecycle.backends.base import StartPlan
+
+    plan = StartPlan(model="Qwen3.8-27B-8bit", direct_url=OMLX_CHAT_URL)
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=wt_bridge.WtBridgeError("omlx gave no usable answer"),
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.probe.port_closed_within",
+            return_value=False,
+        ),
+        patch("llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop") as wt_stop,
+        pytest.raises(LifecycleError, match="could not ask wt what omlx serves"),
+    ):
+        OMLX_4BIT.replace_own_occupant(plan)
+    wt_stop.assert_not_called()
+
+
+def test_unload_models_unloads_the_rest_after_one_model_would_not_go():
+    """One model wt refuses to unload must not leave the others loaded beside
+    the incoming one: every remaining model is still asked, and the warning
+    names each failure."""
+    from llmbench import wt_bridge
+
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.served",
+            side_effect=[["a", "b", "c"], []],
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.omlx.wt_bridge.stop",
+            side_effect=[wt_bridge.WtBridgeError("boom"), None, wt_bridge.WtBridgeError("bang")],
+        ) as wt_stop,
+    ):
+        warning = OMLX_4BIT.unload_models()
+    assert [c.args[0] for c in wt_stop.call_args_list] == ["omlx/a", "omlx/b", "omlx/c"]
+    assert warning == "omlx could not unload a: boom, c: bang"
 
 
 def test_replace_own_occupant_raises_when_wt_cannot_unload_a_model():

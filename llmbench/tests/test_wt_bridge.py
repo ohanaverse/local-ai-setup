@@ -152,9 +152,11 @@ def test_served_lists_the_models_wt_reports(monkeypatch, wt_on_path):
 
 
 def test_stop_runs_wt_stop_and_reports_its_failure(monkeypatch, wt_on_path):
-    """`wt stop <provider>/<name>` unloads one model; on omlx it leaves the
-    service and its other models up. The timeout outlasts the LiteLLM
-    proxy restart wt may wait for after a route change."""
+    """`wt stop <provider>/<name> --yes` unloads one model; on omlx it leaves
+    the service and its other models up. `--yes` is what keeps a model a live
+    wt session holds from turning the call into a /dev/tty prompt nothing here
+    can answer (it would block until STOP_TIMEOUT). The timeout outlasts the
+    LiteLLM proxy restart wt may wait for after a route change."""
     seen = []
     result = {"cp": _cp("Stopping omlx/Qwen... done\n")}
 
@@ -164,7 +166,7 @@ def test_stop_runs_wt_stop_and_reports_its_failure(monkeypatch, wt_on_path):
 
     monkeypatch.setattr(wt_bridge.subprocess, "run", run)
     wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")
-    assert seen == [(["wt", "stop", "omlx/Qwen3.6-35B-A3B-6bit"], wt_bridge.STOP_TIMEOUT)]
+    assert seen == [(["wt", "stop", "omlx/Qwen3.6-35B-A3B-6bit", "--yes"], wt_bridge.STOP_TIMEOUT)]
     assert wt_bridge.STOP_TIMEOUT > 180
 
     result["cp"] = _cp(returncode=1, stderr="Error: not running\n")

@@ -110,7 +110,14 @@ def served(provider: str, timeout: float = SERVED_TIMEOUT) -> list[str]:
 
 def stop(model_ref: str, timeout: float = STOP_TIMEOUT) -> None:
     """Stop one running local model (`wt stop <provider>/<name>`). On omlx
-    that unloads the model and leaves the service and its other models up."""
-    proc = _run(["wt", "stop", model_ref], timeout)
+    that unloads the model and leaves the service and its other models up.
+
+    `--yes` is passed because `wt stop` otherwise asks "stop anyway? [y/N]"
+    on /dev/tty when a live wt session has the model in use — a prompt
+    nothing here can answer (stdin is the caller's own terminal, and stdin
+    inherited by this subprocess means a stray keystroke could answer it),
+    so without the flag the call would block until STOP_TIMEOUT.
+    """
+    proc = _run(["wt", "stop", model_ref, "--yes"], timeout)
     if proc.returncode != 0:
         raise WtBridgeError(_msg(proc, f"wt exited {proc.returncode}"))

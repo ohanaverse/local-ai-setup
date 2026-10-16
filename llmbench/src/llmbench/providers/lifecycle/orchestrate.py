@@ -209,18 +209,34 @@ def isolate(
                 # the first (ollama's keep-alive, omlx's model pool).
                 # mtplx is the exception: it is single-model-per-process AND
                 # its start() does not stop a predecessor, so bash reached
-                # that teardown through a KEEP-LESS stop-all instead — i.e.
-                # through a backgrounded subshell whose failure was
-                # swallowed. Hence the suppress: `mtplx stop` exits non-zero
-                # when nothing is listening, and an isolate on a machine
-                # where mtplx simply isn't running yet must not fail because
-                # of it. start()'s own port-closed poll is the real gate on
-                # whether the predecessor actually let go. (The solo branch
-                # above deliberately does NOT suppress: there the caller is
-                # replacing a known occupant, and the real stop failure is
-                # more useful than a generic port-timeout 10s later.)
-                with contextlib.suppress(Exception):
+                # that teardown through a KEEP-LESS stop-all instead.
+                #
+                # A warning here rather than a failure, the same stance
+                # _stop_others() takes just above and for the same reason:
+                # both are the in-process replacement for bash's
+                # backgrounded-subshell teardown, whose failures ended in
+                # `true` and so could never abort an isolate. What decides
+                # whether the predecessor actually let go is start()'s own
+                # port-closed poll, not `mtplx stop`'s exit code —
+                # stop_and_wait() already resolves "nothing was listening" to
+                # success by checking the port whatever that exit code was.
+                #
+                # Logged, never dropped: ollama ("still finishing a request")
+                # and omlx ("still holds ... after wt stop") raise
+                # LifecycleError for a model that would NOT let go, and a
+                # model still resident through the measurement is exactly the
+                # RAM sharing this teardown exists to prevent. Swallowing it
+                # silently (contextlib.suppress) made every one of those
+                # failures invisible to the caller.
+                #
+                # The solo branch above stays strict on purpose: there the
+                # caller is replacing a known occupant, and the real stop
+                # failure is more useful than a generic port-timeout 10s
+                # later.
+                try:
                     backend.replace_own_occupant(plan)
+                except Exception as exc:  # noqa: BLE001 — a warning, not a failure
+                    _log(f"warning: {exc}")
             backend.start(plan)
             started = True
             backend.wait_ready(plan)
