@@ -371,6 +371,28 @@
 
 ### Fixed
 
+- A claude profile that pins an array in `config_content` (such as
+  `permissions.allow`) no longer leaves its elements in
+  `.claude/settings.local.json` when the session appended to the array
+  (#401). Cleanup now takes the profile's elements out and keeps the ones the
+  session added, with the original's elements first; before, any change to
+  the array kept the whole array.
+- The worktree picker no longer tags a remote branch with another
+  repository's pull request (#388). A remote-tracking row such as
+  `keith/feat-x`, from a fork you push to, showed the base repository's PR
+  for its own `feat-x`, because the lookup went by branch name alone. A
+  remote row is now tagged only when its remote is the repository
+  `gh pr list` reports; rows from other remotes stay untagged (showing their
+  own repository's PRs is #387). Local branches and worktrees still match by
+  branch name. The host in a remote's URL is ignored when comparing, so an
+  Enterprise host with the same owner/repo matches; a remote that is a local
+  path or a `file://` URL never does. The row's name is unchanged
+  (`keith/feat-x` still shows `feat-x`).
+  When the listing has pull requests but no remote row is in the repository
+  `gh` named (a renamed or transferred repository, an old `gh`), the picker
+  now says so in its status line instead of dropping the remote tags
+  silently. `RemoteRepos` reads every remote's URL with one `git remote -v`
+  instead of one `git remote get-url` per remote.
 - A claude profile's `config_content` no longer costs the session what Claude
   Code saved under the same table (#401). Cleanup restored
   `.claude/settings.local.json` per top-level key, so a profile that pins

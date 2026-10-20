@@ -184,7 +184,13 @@ of every state, so an old open PR is never crowded out by newer merged ones —
 and appear as each answers (within five seconds), the open PRs' usually
 first; the picker does not wait for them. A branch with
 several PRs shows its open one, else the highest-numbered; PRs from forks
-are not shown.
+are not shown. A local branch or worktree matches by its branch name. A
+remote branch is tagged only when its remote is the repository `gh pr list`
+reports, so `keith/feat-x` from a fork you push to stays untagged even when
+the base repository has a PR from its own `feat-x` (#388; tagging such rows
+with their own repository's PRs is #387). The host in a remote's URL is
+ignored when comparing, so an Enterprise host with the same owner/repo
+matches; a remote that is a local path or a `file://` URL never does.
 Without `gh`, outside a GitHub repository, or with `gh` not logged in, the
 picker simply shows no tags.
 

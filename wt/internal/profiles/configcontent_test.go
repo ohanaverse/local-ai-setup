@@ -1081,17 +1081,18 @@ func TestRestoreTypeConflictKeepsSessionSiblingAndRestoresScalar(t *testing.T) {
 	})
 }
 
-// TestCleanupArraysAreWholeValues verifies an array the profile pinned is
-// one leaf: a session that appended to it changed it, so the session's
-// array stays rather than being reverted or merged element by element.
-func TestCleanupArraysAreWholeValues(t *testing.T) {
+// TestCleanupArrayKeepsOnlyTheSessionsAppends verifies an array the profile
+// pinned is restored element-wise: a session that appended to it keeps its
+// own element, the profile's element goes, and the original's comes back, so
+// the profile's value never leaks into later launches.
+func TestCleanupArrayKeepsOnlyTheSessionsAppends(t *testing.T) {
 	content := map[string]any{"permissions": map[string]any{"allow": []any{"A"}}}
 	got := leafSession(t, []byte(`{"permissions":{"allow":["X"]}}`), content, func(doc map[string]any) {
 		perms := doc["permissions"].(map[string]any)
 		perms["allow"] = append(perms["allow"].([]any), "B")
 	})
-	assertSameJSON(t, "restored content", "the session's appended array",
-		got, []byte(`{"permissions":{"allow":["A","B"]}}`))
+	assertSameJSON(t, "restored content", "the original element plus the session's append",
+		got, []byte(`{"permissions":{"allow":["X","B"]}}`))
 }
 
 // TestCleanupHandlesNullLeaf verifies a null the profile wrote is a leaf

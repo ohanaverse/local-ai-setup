@@ -15,9 +15,13 @@ import (
 // and a hash of the value written, never the value itself. An empty Hash
 // marks a legacy record, from a marker that listed top-level keys only: it
 // has no value to compare against, so it is put back whatever it is now.
+// Elems, set for a non-empty array only, holds a hash of each element
+// written, so restore can take the profile's elements out of an array the
+// session appended to and keep what the session added.
 type leafRec struct {
-	Path []string `json:"path"`
-	Hash string   `json:"hash,omitempty"`
+	Path  []string `json:"path"`
+	Hash  string   `json:"hash,omitempty"`
+	Elems []string `json:"elems,omitempty"`
 }
 
 // collectLeaves returns the leaves mergeInto(doc, content) will write. A leaf
@@ -42,7 +46,7 @@ func appendLeaves(recs []leafRec, prefix []string, doc, content map[string]any) 
 		case isMap && docIsMap:
 			// {} merged into an existing object: a no-op.
 		default:
-			recs = append(recs, leafRec{Path: path, Hash: hashLeaf(v)})
+			recs = append(recs, leafRec{Path: path, Hash: hashLeaf(v), Elems: elemHashes(v)})
 		}
 	}
 	return recs
@@ -57,21 +61,81 @@ func appendLeaves(recs []leafRec, prefix []string, doc, content map[string]any) 
 // a pinned reserved = 9007199254740993) marshals two different ways, and
 // a hash of the write-side form alone would read that untouched leaf as
 // changed by the session and leave the profile's own value un-restored.
-func hashLeaf(v any) string {
-	rt := v
+func hashLeaf(v any) string { return hashJSON(roundTrip(v)) }
+
+// roundTrip is v as a read-back from disk would give it.
+func roundTrip(v any) any {
 	if b, err := json.Marshal(v); err == nil {
 		var back any
 		if json.Unmarshal(b, &back) == nil {
-			rt = back
+			return back
 		}
 	}
-	b, err := json.Marshal(rt)
+	return v
+}
+
+func hashJSON(v any) string {
+	b, err := json.Marshal(v)
 	if err != nil {
 		// Never an empty hash: that would read as a legacy record.
 		b = []byte("unmarshalable")
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// elemHashes hashes each element of a non-empty array v (round-tripped like
+// hashLeaf); nil for any other value.
+func elemHashes(v any) []string {
+	arr, ok := roundTrip(v).([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	hs := make([]string, len(arr))
+	for i, e := range arr {
+		hs[i] = hashJSON(e)
+	}
+	return hs
+}
+
+// revertArray handles an array leaf the session changed: the profile's
+// elements come out of cur's array (one per element written) and what is
+// left is the session's own. With none left the leaf is restored as if
+// untouched, and revertArray reports true so the caller does not skip it;
+// otherwise the original array (if any) followed by the session's elements
+// is set, and it reports false. A leaf with no element hashes, or a value
+// that is not an array, is the session's whole: false, nothing set.
+func revertArray(cur, orig map[string]any, r leafRec, v any) (restoreOrig bool) {
+	arr, ok := v.([]any)
+	if !ok || len(r.Elems) == 0 {
+		return false
+	}
+	owed := map[string]int{}
+	for _, h := range r.Elems {
+		owed[h]++
+	}
+	var extras []any
+	for _, e := range arr {
+		if h := hashJSON(e); owed[h] > 0 {
+			owed[h]--
+		} else {
+			extras = append(extras, e)
+		}
+	}
+	if len(extras) == 0 {
+		return true
+	}
+	var merged []any
+	if oa, isArr := getPathValue(orig, r.Path).([]any); isArr {
+		merged = append(merged, oa...)
+	}
+	setPath(cur, r.Path, append(merged, extras...))
+	return false
+}
+
+func getPathValue(doc map[string]any, path []string) any {
+	v, _ := getPath(doc, path)
+	return v
 }
 
 // collectAbsentLeaves returns the leaves of defaults whose path is absent
@@ -95,7 +159,7 @@ func appendAbsent(recs []leafRec, prefix []string, doc, defaults map[string]any)
 			continue
 		}
 		if !found {
-			recs = append(recs, leafRec{Path: path, Hash: hashLeaf(v)})
+			recs = append(recs, leafRec{Path: path, Hash: hashLeaf(v), Elems: elemHashes(v)})
 		}
 	}
 	return recs
@@ -136,7 +200,9 @@ func getPath(doc map[string]any, path []string) (v any, ok bool) {
 // exist. A leaf is skipped when cur no longer has it (missing, or a
 // container on its path is no longer an object: the session deleted or
 // replaced it) and when its hash no longer matches what the merge wrote (the
-// session changed it); either way the session's state wins. Otherwise the
+// session changed it); either way the session's state wins. An array the
+// session only appended to is the exception (revertArray): the profile's
+// elements go and the session's stay. Otherwise the
 // original value is set back, creating parent objects, or the leaf is
 // deleted when orig has no value there. A legacy record (empty Hash) skips
 // only the second check: its marker never held a value to compare, so it is
@@ -154,7 +220,7 @@ func revertLeaves(cur, orig map[string]any, recs []leafRec) {
 		if !ok {
 			continue
 		}
-		if r.Hash != "" && hashLeaf(v) != r.Hash {
+		if r.Hash != "" && hashLeaf(v) != r.Hash && !revertArray(cur, orig, r, v) {
 			continue
 		}
 		if ov, has := getPath(orig, r.Path); has {

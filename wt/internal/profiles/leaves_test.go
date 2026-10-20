@@ -267,6 +267,39 @@ func TestOlderWtCannotDecodeTheLeafMarker(t *testing.T) {
 	}
 }
 
+// TestRevertLeavesKeepsSessionAppendsToAnArrayLeaf: a profile pins
+// permissions.allow and the session appends a grant. Restore takes the
+// profile's elements out, keeps the grant and puts the original elements
+// first; with nothing appended the leaf is restored whole.
+func TestRevertLeavesKeepsSessionAppendsToAnArrayLeaf(t *testing.T) {
+	orig := map[string]any{"permissions": map[string]any{"allow": []any{"Bash(git:*)"}}}
+	content := map[string]any{"permissions": map[string]any{"allow": []any{"Bash(ls)"}}}
+	recs := collectLeaves(orig, content)
+
+	cur := map[string]any{"permissions": map[string]any{"allow": []any{"Bash(ls)", "Bash(make:*)"}}}
+	revertLeaves(cur, orig, recs)
+	got, _ := getPath(cur, []string{"permissions", "allow"})
+	if want := []any{"Bash(git:*)", "Bash(make:*)"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("appended: allow = %v, want %v", got, want)
+	}
+
+	cur = map[string]any{"permissions": map[string]any{"allow": []any{"Bash(ls)"}}}
+	revertLeaves(cur, orig, recs)
+	got, _ = getPath(cur, []string{"permissions", "allow"})
+	if want := []any{"Bash(git:*)"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("untouched: allow = %v, want %v", got, want)
+	}
+
+	// No original array: only the session's grant stays.
+	recs = collectLeaves(map[string]any{}, content)
+	cur = map[string]any{"permissions": map[string]any{"allow": []any{"Bash(ls)", "Bash(make:*)"}}}
+	revertLeaves(cur, map[string]any{}, recs)
+	got, _ = getPath(cur, []string{"permissions", "allow"})
+	if want := []any{"Bash(make:*)"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("no original: allow = %v, want %v", got, want)
+	}
+}
+
 func absentDefaults() map[string]any {
 	return map[string]any{"permissions": map[string]any{"defaultMode": "default"}}
 }

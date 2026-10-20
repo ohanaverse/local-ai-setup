@@ -68,7 +68,7 @@ func realListPRs(dir, state string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
 		"--state", state,
 		"--limit", strconv.Itoa(prLimit),
-		"--json", "number,state,isDraft,headRefName,isCrossRepository,title")
+		"--json", "number,state,isDraft,headRefName,isCrossRepository,title,headRepository")
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -100,36 +100,51 @@ func StubPRListForTest(fn func(dir, state string) ([]byte, error)) (restore func
 	return func() { listPRs = old }
 }
 
-// PRs returns the pull request to show for each branch of the repository at
+// PRSet is one listing's (or the join of several) pull requests: ByBranch is
+// the PR to show for each head branch, and Repo the owner/repo (lower-cased)
+// of their head repository. Every kept PR is same-repo, so Repo is the base
+// repo gh listed; it is empty when no listed PR said.
+type PRSet struct {
+	Repo     string
+	ByBranch map[string]PR
+}
+
+// Loaded reports whether a listing has answered (even with no PRs).
+func (s PRSet) Loaded() bool { return s.ByBranch != nil }
+
+// PRs returns the pull requests to show for each branch of the repository at
 // dir from one listing, `gh pr list --state state` (PRListOpen or
 // PRListAll), keyed by head branch name (no remote prefix). Any failure —
 // gh not installed, not a GitHub remote, not logged in, the timeout, output
-// that is not the expected JSON — returns an empty map and nothing else:
-// that listing then adds no tags, and nothing is printed.
-func PRs(dir, state string) map[string]PR {
+// that is not the expected JSON — returns a loaded, empty set and nothing
+// else: that listing then adds no tags, and nothing is printed.
+func PRs(dir, state string) PRSet {
 	out, err := listPRs(dir, state)
 	if err != nil {
-		return map[string]PR{}
+		return PRSet{ByBranch: map[string]PR{}}
 	}
 	prs, err := parsePRs(out)
 	if err != nil {
-		return map[string]PR{}
+		return PRSet{ByBranch: map[string]PR{}}
 	}
 	return prs
 }
 
-// MergePRs returns a new map with every branch of a and b, a branch in both
+// MergePRs returns a new set with every branch of a and b, a branch in both
 // keeping the PR preferPR picks — the rule parsePRs applies within one
 // listing, so the merge of two listings does not depend on which arrived
-// first. Either map may be nil.
-func MergePRs(a, b map[string]PR) map[string]PR {
-	out := make(map[string]PR, len(a)+len(b))
-	for _, m := range []map[string]PR{a, b} {
+// first — and the first non-empty Repo. Either set may be the zero value.
+func MergePRs(a, b PRSet) PRSet {
+	out := PRSet{Repo: a.Repo, ByBranch: make(map[string]PR, len(a.ByBranch)+len(b.ByBranch))}
+	if out.Repo == "" {
+		out.Repo = b.Repo
+	}
+	for _, m := range []map[string]PR{a.ByBranch, b.ByBranch} {
 		for branch, pr := range m {
-			if cur, ok := out[branch]; ok && !preferPR(pr, cur) {
+			if cur, ok := out.ByBranch[branch]; ok && !preferPR(pr, cur) {
 				continue
 			}
-			out[branch] = pr
+			out.ByBranch[branch] = pr
 		}
 	}
 	return out
@@ -143,6 +158,9 @@ type ghPR struct {
 	HeadRefName       string `json:"headRefName"`
 	IsCrossRepository bool   `json:"isCrossRepository"`
 	Title             string `json:"title"`
+	HeadRepository    struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"headRepository"`
 }
 
 // preferPR reports whether p should replace cur as a branch's PR. A live PR
@@ -165,23 +183,26 @@ func (s PRState) live() bool { return s == PROpen || s == PRDraft }
 // skipped: its head branch names a branch in someone else's repository, not
 // one of this repository's. An element with no head branch or no number is
 // skipped too.
-func parsePRs(data []byte) (map[string]PR, error) {
+func parsePRs(data []byte) (PRSet, error) {
 	var raw []ghPR
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
+		return PRSet{}, err
 	}
-	prs := make(map[string]PR, len(raw))
+	set := PRSet{ByBranch: make(map[string]PR, len(raw))}
 	for _, p := range raw {
 		if p.IsCrossRepository || p.HeadRefName == "" || p.Number <= 0 {
 			continue
 		}
+		if set.Repo == "" {
+			set.Repo = strings.ToLower(p.HeadRepository.NameWithOwner)
+		}
 		pr := PR{Number: p.Number, State: prState(p.State, p.IsDraft), Title: p.Title}
-		if cur, ok := prs[p.HeadRefName]; ok && !preferPR(pr, cur) {
+		if cur, ok := set.ByBranch[p.HeadRefName]; ok && !preferPR(pr, cur) {
 			continue
 		}
-		prs[p.HeadRefName] = pr
+		set.ByBranch[p.HeadRefName] = pr
 	}
-	return prs, nil
+	return set, nil
 }
 
 // prState names gh's state the way the picker shows it: an open draft is
@@ -204,7 +225,9 @@ func prState(state string, draft bool) PRState {
 // PRBranch is the head branch name a picker entry's PR is looked up under:
 // the branch itself for a worktree or local branch, and the branch without
 // its remote (origin/foo -> foo) for a remote-tracking branch. A detached
-// worktree has none.
+// worktree has none. The picker shows a remote row under this name, but
+// looks its PR up under Entry.RemoteBranch, split by the remote's real name,
+// and only when Entry.RemoteRepo is the listed repository (#388).
 func PRBranch(kind GroupKind, e Entry) string {
 	if e.Branch == "" || e.Branch == "(detached)" {
 		return ""
