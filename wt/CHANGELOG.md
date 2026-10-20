@@ -371,6 +371,14 @@
 
 ### Fixed
 
+- The full-screen picker's replace dialog now says how many wt sessions use
+  each model it would stop (#412), as the `wt -M` and `wt start` prompt
+  always has: `Starting <id> will stop <occupant> (in use by N wt
+  session(s))`, for an ordinary start row and a slot profile's local model
+  alike. A model nobody uses is named by its id alone, and the count, taken
+  when the dialog opens, never includes the wt that is asking. Before, the
+  dialog named the occupants only, so "Replace and start" gave no sign that
+  it would cut off a session in another terminal.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
   `.claude/settings.local.json` when the session appended to the array
