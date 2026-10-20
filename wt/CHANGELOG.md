@@ -363,6 +363,16 @@
 
 ### Fixed
 
+- A claude profile's `config_content` no longer costs the session what Claude
+  Code saved under the same table (#401). Cleanup restored
+  `.claude/settings.local.json` per top-level key, so a profile that pins
+  `permissions.defaultMode` put the whole `permissions` object back at exit
+  and an "always allow" grant saved under `permissions.allow` mid-session was
+  lost. wt now records each value the profile wrote by its path (with a hash
+  of the value, never the value) and restores only those: a sibling the
+  session wrote stays, a value the session changed or deleted after the merge
+  keeps the session's state, and a table the profile created is removed once
+  it is empty. A backup left by an older wt still self-heals as before.
 - A directory written after `--cwd` is refused (#392). `--cwd` takes no
   value, so `claude-wt --cwd ~/proj -- -p "task"` used to launch in the
   current directory, pass `~/proj` to claude as its first argument (which

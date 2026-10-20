@@ -2,6 +2,7 @@
 package profiles
 
 import (
+	"encoding/json"
 	"reflect"
 	"sort"
 	"strings"
@@ -144,5 +145,102 @@ func TestDecodeLeafRecsRejectsGarbage(t *testing.T) {
 		if got, ok := decodeLeafRecs([]byte(raw)); ok {
 			t.Errorf("decodeLeafRecs(%q) = (%#v, true), want false", raw, got)
 		}
+	}
+}
+
+// revertCase merges content into a copy of orig (nil: no file), lets
+// session edit the result, reverts it and returns what is left.
+func revertCase(t *testing.T, orig, content map[string]any, session func(map[string]any)) map[string]any {
+	t.Helper()
+	cur := map[string]any{}
+	if orig != nil {
+		cur = deepCopy(orig).(map[string]any)
+	}
+	recs := collectLeaves(cur, content)
+	mergeInto(cur, deepCopy(content).(map[string]any))
+	if session != nil {
+		session(cur)
+	}
+	revertLeaves(cur, orig, recs)
+	return cur
+}
+
+func deepCopy(v any) any {
+	if m, ok := v.(map[string]any); ok {
+		out := map[string]any{}
+		for k, sub := range m {
+			out[k] = deepCopy(sub)
+		}
+		return out
+	}
+	return v
+}
+
+// TestRevertLeavesTypeConflictStopsAtTheFirstNonObject verifies a profile
+// subtree written two levels under an original scalar is unwound level by
+// level: the emptied inner object the merge created is deleted (the
+// original had nothing there), and the scalar comes back at the level the
+// original held it. Keeping either object would leave the profile's
+// structure behind after cleanup.
+func TestRevertLeavesTypeConflictStopsAtTheFirstNonObject(t *testing.T) {
+	orig := map[string]any{"a": "x", "keep": 1.0}
+	content := map[string]any{"a": map[string]any{"b": map[string]any{"c": "pinned"}}}
+	got := revertCase(t, orig, content, nil)
+	if !reflect.DeepEqual(got, orig) {
+		t.Errorf("reverted = %v, want the original %v", got, orig)
+	}
+}
+
+// TestRevertLeavesKeysWithDotsSlashesAndEmptyNames verifies a leaf whose
+// key holds a dot, a slash or nothing at all is reverted by its own path
+// segment: a dotted-string path would confuse "a.b" with a under b.
+func TestRevertLeavesKeysWithDotsSlashesAndEmptyNames(t *testing.T) {
+	orig := map[string]any{"a.b": "orig", "a": map[string]any{"b": "other"}}
+	content := map[string]any{"a.b": "new", "x/y": map[string]any{"": 1.0}}
+	got := revertCase(t, orig, content, nil)
+	if !reflect.DeepEqual(got, orig) {
+		t.Errorf("reverted = %v, want the original %v", got, orig)
+	}
+}
+
+// TestRevertLeavesLegacyRecordRestoresUnconditionally verifies a hashless
+// record (an older wt's top-level key) restores the original value even
+// though the session changed it: an older marker carries no hash to compare
+// with, so it keeps that wt's restore rule.
+func TestRevertLeavesLegacyRecordRestoresUnconditionally(t *testing.T) {
+	cur := map[string]any{"permissions": map[string]any{"defaultMode": "acceptEdits"}, "model": "s"}
+	orig := map[string]any{"permissions": map[string]any{"defaultMode": "plan"}}
+	revertLeaves(cur, orig, []leafRec{{Path: []string{"permissions"}}, {Path: []string{"env"}}})
+	want := map[string]any{"permissions": map[string]any{"defaultMode": "plan"}, "model": "s"}
+	if !reflect.DeepEqual(cur, want) {
+		t.Errorf("reverted = %v, want %v", cur, want)
+	}
+}
+
+// TestRevertLeavesSkipsALeafUnderAContainerTheSessionReplaced verifies a
+// record whose path now runs through a non-object (the session replaced the
+// container) is left alone: the session's value wins.
+func TestRevertLeavesSkipsALeafUnderAContainerTheSessionReplaced(t *testing.T) {
+	orig := map[string]any{"permissions": map[string]any{"defaultMode": "plan"}}
+	got := revertCase(t, orig, map[string]any{"permissions": map[string]any{"defaultMode": "default"}},
+		func(cur map[string]any) { cur["permissions"] = "session" })
+	if want := map[string]any{"permissions": "session"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("reverted = %v, want %v", got, want)
+	}
+}
+
+// TestOlderWtCannotDecodeTheLeafMarker records what a wt from before #401
+// does with today's marker: it decoded .keys as a list of key names, which
+// a list of records is not, so it falls back to the whole-file restore (or
+// delete) — the session's own writes are lost there, but nothing is guessed
+// from a marker it cannot read.
+func TestOlderWtCannotDecodeTheLeafMarker(t *testing.T) {
+	raw, err := encodeLeafRecs([]leafRec{{Path: []string{"permissions", "defaultMode"}, Hash: hashLeaf("default")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	if err := json.Unmarshal(raw, &keys); err == nil {
+		t.Errorf("an older wt decodes %s as key names %v, want a decode error (its whole-file fallback)", raw, keys)
 	}
 }

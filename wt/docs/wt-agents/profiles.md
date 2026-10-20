@@ -85,13 +85,19 @@ differs by agent:
   wt-exclusive file — Claude Code itself writes to it during the session
   (e.g. persisting a user-approved "always allow" permission grant) — so
   the write merges `config_content` into whatever is already there, and
-  cleanup restores only the specific top-level keys `config_content`
-  itself touched (or removes them, if the file didn't exist before the
-  write), leaving anything the agent wrote to OTHER keys during the
-  session untouched. Hand-editing a key the profile does NOT touch is
-  therefore safe even mid-session; hand-editing a key it DOES touch will
-  be reverted to its pre-launch value (or removed, if it didn't exist
-  before) when the session ends.
+  cleanup works per leaf: each value the profile wrote (anything that is
+  not a non-empty table, found by its path, such as
+  `permissions.defaultMode`) is put back to its pre-launch value, or
+  removed if it didn't exist before, and a table the merge created for it
+  is removed once it is empty. Everything else in the file stays as the
+  session left it, a sibling under the same table included — a
+  `permissions.allow` grant Claude Code saves beside a pinned
+  `permissions.defaultMode` survives the session (#401). A leaf the
+  session changed or deleted after the merge also keeps the session's
+  state, so a hand edit mid-session is kept whether or not the profile
+  pins that value; wt keeps a hash of each value it wrote to tell, never
+  the value itself. A file that didn't exist before is deleted at exit
+  only when nothing but the profile's own values was in it.
 - **codex's `agent-wt-profile.config.toml` is a dedicated, wt-owned global
   file** nothing else writes to, so it keeps a simple whole-file
   snapshot/replace/restore — don't hand-edit it while a profiled codex
@@ -157,7 +163,7 @@ env = { LITTLE_CODER_PERMISSION_MODE = "accept-all" }
 # reports a shell env var does not stick for it, and a per-request attribution
 # header invalidates the local KV cache (~90% slower). It goes through
 # <worktree>/.claude/settings.local.json via config_content, which wt merges
-# and restores.
+# and restores value by value.
 [[profiles]]
 agent = "claude"
 match = "location"
@@ -193,7 +199,7 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
 | pi | `wrapper` | runs `little-coder` instead of bare `pi`, splicing wt's own `--model …` argv into `{{args}}` |
 | pi | `env` | sets `LITTLE_CODER_PERMISSION_MODE=accept-all` on the wrapper process (little-coder), skipping its shell whitelist |
 | claude | `env` | caps thinking at 4096 tokens; suppresses nonessential background traffic |
-| claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` and `permissions.defaultMode = "default"` into `<worktree>/.claude/settings.local.json`, then restores both (see the `permissions` caveat under "Why these values") |
+| claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` and `permissions.defaultMode = "default"` into `<worktree>/.claude/settings.local.json`, then puts those two values back at exit, leaving what the session saved beside them (see the `permissions` cost under "Why these values") |
 | codex | `args` | caps `model_reasoning_effort` at `low`; truncates tool output at 12000 tokens |
 | opencode | `config_file` | merges `compaction { auto = true, prune = false, reserved = 10000 }` into the `OPENCODE_CONFIG_CONTENT` payload (no file written) |
 
@@ -228,14 +234,11 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
   local model a non-streamed ~31k-token request on every turn that uses a
   tool, which made turns 2–5x slower and added prefill memory pressure
   (#393). Pinning the default mode keeps the traffic setting without it.
-  Two costs of that pin: it overrides any `permissions.defaultMode` you set
+  The cost of that pin: it overrides any `permissions.defaultMode` you set
   in that worktree's `settings.local.json` (`plan`, `acceptEdits`, ...) for
-  every local launch, and because restore is per top-level key, the whole
-  `permissions` object is put back to its pre-launch value at exit — an
-  "always allow" grant Claude Code saved under `permissions.allow` during
-  the session is lost (the file-safety rule above protects only keys the
-  profile does not touch). Approve such grants in `.claude/settings.json`
-  or `~/.claude/settings.json` instead.
+  every local launch; your value comes back at exit. An "always allow"
+  grant Claude Code saves under `permissions.allow` during the session is
+  kept (see "File safety" above).
 - **codex — reasoning effort + output cap.** `model_reasoning_effort="low"`
   is codex's thinking-budget knob; `tool_output_token_limit=12000` is its
   built-in read-guard, capping runaway file reads before they flood a

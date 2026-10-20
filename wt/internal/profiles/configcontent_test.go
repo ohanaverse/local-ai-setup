@@ -933,3 +933,286 @@ func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSessionWhenTargetDid
 		t.Errorf("restored content = %s, want the profile's own env key removed (target did not exist before)", got)
 	}
 }
+
+// leafSession runs one claude config_content session against a fresh
+// target: original is the pre-existing file (nil: none), content the
+// profile's config_content, and session, when non-nil, edits the merged
+// document on disk the way the launched agent would mid-session. It returns
+// the target after cleanup, or nil when cleanup deleted it.
+func leafSession(t *testing.T, original []byte, content map[string]any, session func(doc map[string]any)) []byte {
+	t.Helper()
+	worktree, target := claudeTarget(t, original)
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: content})
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	if session != nil {
+		written, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(written, &doc); err != nil {
+			t.Fatalf("written file is not valid JSON: %v (%s)", err, written)
+		}
+		session(doc)
+		edited, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, edited, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// addAllow is the session's "always allow" grant: Claude Code saving
+// permissions.allow beside whatever permissions already holds.
+func addAllow(doc map[string]any) {
+	perms, _ := doc["permissions"].(map[string]any)
+	if perms == nil {
+		perms = map[string]any{}
+		doc["permissions"] = perms
+	}
+	perms["allow"] = []any{"Bash(ls)"}
+}
+
+func pinDefaultMode(mode string) map[string]any {
+	return map[string]any{"permissions": map[string]any{"defaultMode": mode}}
+}
+
+// TestCleanupKeepsSessionPermissionsAllowBesideThePinnedDefaultMode is the
+// repro of #401: a profile that pins permissions.defaultMode used to make
+// cleanup put the whole permissions object back, dropping the
+// permissions.allow grant Claude Code saved mid-session. Restore is per
+// leaf now, so only defaultMode goes back.
+func TestCleanupKeepsSessionPermissionsAllowBesideThePinnedDefaultMode(t *testing.T) {
+	got := leafSession(t, []byte(`{"permissions":{"defaultMode":"plan"}}`), pinDefaultMode("default"), addAllow)
+	assertSameJSON(t, "restored content", "the session's allow kept, defaultMode restored",
+		got, []byte(`{"permissions":{"allow":["Bash(ls)"],"defaultMode":"plan"}}`))
+}
+
+// TestCleanupKeepsSessionPermissionsAllowWhenTargetDidNotExistBefore is the
+// new-file half of #401: with no settings.local.json before the launch, the
+// pinned defaultMode is removed and the session's grant stays, rather than
+// the whole permissions key (or file) going.
+func TestCleanupKeepsSessionPermissionsAllowWhenTargetDidNotExistBefore(t *testing.T) {
+	got := leafSession(t, nil, pinDefaultMode("default"), addAllow)
+	if got == nil {
+		t.Fatal("target was deleted, losing the session's permissions.allow")
+	}
+	assertSameJSON(t, "restored content", "the session's allow kept, defaultMode gone",
+		got, []byte(`{"permissions":{"allow":["Bash(ls)"]}}`))
+}
+
+// TestCleanupKeepsAValueTheSessionChangedAfterTheMerge pins the owner's
+// rule for #401: a leaf the profile wrote and the session then changed
+// keeps the session's value, since the user chose it mid-session.
+func TestCleanupKeepsAValueTheSessionChangedAfterTheMerge(t *testing.T) {
+	change := func(doc map[string]any) {
+		doc["permissions"].(map[string]any)["defaultMode"] = "acceptEdits"
+	}
+	for name, original := range map[string][]byte{
+		"existing file": []byte(`{"permissions":{"defaultMode":"plan"}}`),
+		"new file":      nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := leafSession(t, original, pinDefaultMode("default"), change)
+			assertSameJSON(t, "restored content", "the session's acceptEdits kept",
+				got, []byte(`{"permissions":{"defaultMode":"acceptEdits"}}`))
+		})
+	}
+}
+
+// TestCleanupDoesNotResurrectALeafTheSessionDeleted verifies a profile leaf
+// the session removed stays removed: putting the original back would undo
+// the user's own mid-session edit.
+func TestCleanupDoesNotResurrectALeafTheSessionDeleted(t *testing.T) {
+	got := leafSession(t, []byte(`{"permissions":{"defaultMode":"plan","allow":["X"]}}`), pinDefaultMode("default"),
+		func(doc map[string]any) { delete(doc["permissions"].(map[string]any), "defaultMode") })
+	assertSameJSON(t, "restored content", "defaultMode stays deleted",
+		got, []byte(`{"permissions":{"allow":["X"]}}`))
+}
+
+// TestCleanupPrunesAContainerTheProfileCreatedAndRemovesTheFileWhenNothingIsLeft
+// verifies a profile-only write into a file that did not exist leaves
+// nothing behind: the permissions object the merge created is pruned once
+// its leaf is gone, and the empty file is deleted.
+func TestCleanupPrunesAContainerTheProfileCreatedAndRemovesTheFileWhenNothingIsLeft(t *testing.T) {
+	if got := leafSession(t, nil, pinDefaultMode("default"), nil); got != nil {
+		t.Errorf("target = %s after cleanup, want it deleted", got)
+	}
+}
+
+// TestCleanupKeepsAnEmptyContainerTheOriginalHad verifies pruning stops at
+// what the original held: an empty permissions object that was there
+// before the launch is still there after it.
+func TestCleanupKeepsAnEmptyContainerTheOriginalHad(t *testing.T) {
+	got := leafSession(t, []byte(`{"permissions":{}}`), pinDefaultMode("default"), nil)
+	assertSameJSON(t, "restored content", "the original empty permissions", got, []byte(`{"permissions":{}}`))
+}
+
+// TestRestoreTypeConflictKeepsSessionSiblingAndRestoresScalar covers an
+// original that held a non-object where the profile writes an object: the
+// merge replaces it. The profile's leaf is removed, a session sibling under
+// the replaced key is kept, and the original scalar comes back only once
+// nothing is left there.
+func TestRestoreTypeConflictKeepsSessionSiblingAndRestoresScalar(t *testing.T) {
+	original := []byte(`{"permissions":"legacy"}`)
+	t.Run("session sibling", func(t *testing.T) {
+		got := leafSession(t, original, pinDefaultMode("default"), addAllow)
+		assertSameJSON(t, "restored content", "the session's allow, no defaultMode",
+			got, []byte(`{"permissions":{"allow":["Bash(ls)"]}}`))
+	})
+	t.Run("no session sibling", func(t *testing.T) {
+		got := leafSession(t, original, pinDefaultMode("default"), nil)
+		assertSameJSON(t, "restored content", "the original scalar", got, original)
+	})
+}
+
+// TestCleanupArraysAreWholeValues verifies an array the profile pinned is
+// one leaf: a session that appended to it changed it, so the session's
+// array stays rather than being reverted or merged element by element.
+func TestCleanupArraysAreWholeValues(t *testing.T) {
+	content := map[string]any{"permissions": map[string]any{"allow": []any{"A"}}}
+	got := leafSession(t, []byte(`{"permissions":{"allow":["X"]}}`), content, func(doc map[string]any) {
+		perms := doc["permissions"].(map[string]any)
+		perms["allow"] = append(perms["allow"].([]any), "B")
+	})
+	assertSameJSON(t, "restored content", "the session's appended array",
+		got, []byte(`{"permissions":{"allow":["A","B"]}}`))
+}
+
+// TestCleanupHandlesNullLeaf verifies a null the profile wrote is a leaf
+// distinct from an absent one: with no original value it is deleted, and an
+// original null stays null.
+func TestCleanupHandlesNullLeaf(t *testing.T) {
+	content := map[string]any{"statusLine": nil}
+	t.Run("absent original", func(t *testing.T) {
+		got := leafSession(t, []byte(`{"model":"x"}`), content, nil)
+		assertSameJSON(t, "restored content", "statusLine deleted", got, []byte(`{"model":"x"}`))
+	})
+	t.Run("null original", func(t *testing.T) {
+		got := leafSession(t, []byte(`{"model":"x","statusLine":null}`), content, nil)
+		assertSameJSON(t, "restored content", "statusLine still null", got, []byte(`{"model":"x","statusLine":null}`))
+	})
+}
+
+// TestCleanupKeepsSessionContentWhenTheProfileWroteNothingNew verifies a
+// profile whose config_content changes nothing (an empty table merged into
+// an existing object, which records no leaf) still restores surgically:
+// falling back to the whole-file snapshot would drop the session's grant.
+func TestCleanupKeepsSessionContentWhenTheProfileWroteNothingNew(t *testing.T) {
+	content := map[string]any{"permissions": map[string]any{}}
+	got := leafSession(t, []byte(`{"permissions":{"defaultMode":"plan"}}`), content, addAllow)
+	assertSameJSON(t, "restored content", "the session's allow kept",
+		got, []byte(`{"permissions":{"allow":["Bash(ls)"],"defaultMode":"plan"}}`))
+}
+
+// TestSelfHealRestoresLegacyKeysMarker verifies a backup an older wt left
+// behind (a .keys marker listing top-level key names) still self-heals
+// after an upgrade: the named key is restored from the snapshot whole, as
+// that wt would have, and a key the session wrote elsewhere is kept.
+func TestSelfHealRestoresLegacyKeysMarker(t *testing.T) {
+	_, target := claudeTarget(t, []byte(`{"permissions":{"defaultMode":"default"},"model":"session"}`))
+	if err := os.MkdirAll(backupDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupPresentPath(target), []byte(`{"permissions":{"defaultMode":"plan","allow":["X"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupKeysPath(target), []byte(`["permissions"]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := SelfHeal(target)
+	if err != nil {
+		t.Fatalf("SelfHeal() error = %v", err)
+	}
+	if !restored {
+		t.Fatal("SelfHeal() restored = false, want true (orphaned legacy backup)")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameJSON(t, "self-healed content", "permissions from the snapshot, the session's model kept",
+		got, []byte(`{"permissions":{"defaultMode":"plan","allow":["X"]},"model":"session"}`))
+	if _, err := os.Stat(backupKeysPath(target)); !os.IsNotExist(err) {
+		t.Errorf("legacy .keys marker left behind after self-heal (stat err = %v)", err)
+	}
+}
+
+// TestSecondLaunchRefusedWhileFirstIsLiveWithLeafRecords verifies the
+// live-owner guard still holds with the leaf-record marker: a second
+// launch on a target a live session owns is refused, and neither the
+// target nor the first session's backup and records are touched.
+func TestSecondLaunchRefusedWhileFirstIsLiveWithLeafRecords(t *testing.T) {
+	worktree, target := claudeTarget(t, []byte(`{"permissions":{"defaultMode":"plan"}}`))
+	if _, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: pinDefaultMode("default")}); err != nil {
+		t.Fatalf("session A ApplyConfigContent() error = %v", err)
+	}
+	keysA, err := os.ReadFile(backupKeysPath(target))
+	if err != nil {
+		t.Fatalf("session A wrote no .keys marker: %v", err)
+	}
+	if recs, ok := decodeLeafRecs(keysA); !ok || len(recs) != 1 || recs[0].Hash == "" {
+		t.Fatalf(".keys = %s, want one leaf record with a hash", keysA)
+	}
+
+	fakeOwnerPid := os.Getpid() + 999983
+	if err := os.WriteFile(backupOwnerPath(target), []byte(strconv.Itoa(fakeOwnerPid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origPidAlive := pidAlive
+	pidAlive = func(pid int) bool { return pid == fakeOwnerPid }
+	t.Cleanup(func() { pidAlive = origPidAlive })
+	contentA, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: pinDefaultMode("acceptEdits")}); err == nil {
+		t.Fatal("session B ApplyConfigContent() error = nil, want an error (target owned by a live session)")
+	}
+	if got, _ := os.ReadFile(target); string(got) != string(contentA) {
+		t.Errorf("target = %s, want session A's untouched %s", got, contentA)
+	}
+	if got, _ := os.ReadFile(backupKeysPath(target)); string(got) != string(keysA) {
+		t.Errorf(".keys = %s, want session A's untouched %s", got, keysA)
+	}
+	if _, err := os.Stat(backupPresentPath(target)); err != nil {
+		t.Errorf("session A's backup was removed by session B's refused attempt: %v", err)
+	}
+}
+
+// TestKeysMarkerHoldsNoWrittenValue verifies the .keys marker records a
+// hash of each value written, never the value: config_content may carry a
+// secret in env, and the marker must not copy it into a second file.
+func TestKeysMarkerHoldsNoWrittenValue(t *testing.T) {
+	worktree, target := claudeTarget(t, nil)
+	content := map[string]any{"env": map[string]any{"TOKEN": "s3cret"}}
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: content})
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	defer cleanup()
+	raw, err := os.ReadFile(backupKeysPath(target))
+	if err != nil {
+		t.Fatalf("no .keys marker written: %v", err)
+	}
+	if strings.Contains(string(raw), "s3cret") {
+		t.Errorf(".keys = %s, holds the written value", raw)
+	}
+}

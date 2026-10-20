@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"sort"
+	"strings"
 )
 
 // leafRec is one value a config_content merge wrote: its path from the
@@ -77,6 +79,98 @@ func getPath(doc map[string]any, path []string) (v any, ok bool) {
 		}
 	}
 	return nil, false
+}
+
+// revertLeaves puts back, in cur, the original value of each leaf recs
+// names; orig is the document before the merge, nil when the file did not
+// exist. A leaf is skipped when cur no longer has it (missing, or a
+// container on its path is no longer an object: the session deleted or
+// replaced it) and when its hash no longer matches what the merge wrote (the
+// session changed it); either way the session's state wins. Otherwise the
+// original value is set back, creating parent objects, or the leaf is
+// deleted when orig has no value there. A legacy record (empty Hash) skips
+// only the first check.
+//
+// Then every ancestor of a record's path that is an empty object in cur is
+// settled by orig, deepest first: a non-object orig value there is set back
+// (the merge replaced a scalar with the profile's subtree, and nothing the
+// session wrote is left under it), no orig value deletes it, and an orig
+// object leaves it empty. The root is never touched.
+func revertLeaves(cur, orig map[string]any, recs []leafRec) {
+	for _, r := range recs {
+		v, ok := getPath(cur, r.Path)
+		if !ok {
+			continue
+		}
+		if r.Hash != "" && hashLeaf(v) != r.Hash {
+			continue
+		}
+		if ov, has := getPath(orig, r.Path); has {
+			setPath(cur, r.Path, ov)
+		} else {
+			deletePath(cur, r.Path)
+		}
+	}
+
+	var ancestors [][]string
+	seen := map[string]bool{}
+	for _, r := range recs {
+		for n := 1; n < len(r.Path); n++ {
+			anc := r.Path[:n]
+			key := strings.Join(anc, "\x00")
+			if !seen[key] {
+				seen[key] = true
+				ancestors = append(ancestors, anc)
+			}
+		}
+	}
+	sort.SliceStable(ancestors, func(i, j int) bool { return len(ancestors[i]) > len(ancestors[j]) })
+	for _, anc := range ancestors {
+		v, ok := getPath(cur, anc)
+		if !ok {
+			continue
+		}
+		if m, isMap := v.(map[string]any); !isMap || len(m) > 0 {
+			continue
+		}
+		ov, has := getPath(orig, anc)
+		if _, origIsMap := ov.(map[string]any); has && origIsMap {
+			continue
+		}
+		if has {
+			setPath(cur, anc, ov)
+		} else {
+			deletePath(cur, anc)
+		}
+	}
+}
+
+// setPath sets the value at path, creating a missing parent object; a
+// parent that is not an object is replaced by one.
+func setPath(doc map[string]any, path []string, v any) {
+	cur := doc
+	for _, seg := range path[:len(path)-1] {
+		next, ok := cur[seg].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			cur[seg] = next
+		}
+		cur = next
+	}
+	cur[path[len(path)-1]] = v
+}
+
+// deletePath removes the key at path; a missing parent is a no-op.
+func deletePath(doc map[string]any, path []string) {
+	cur := doc
+	for _, seg := range path[:len(path)-1] {
+		next, ok := cur[seg].(map[string]any)
+		if !ok {
+			return
+		}
+		cur = next
+	}
+	delete(cur, path[len(path)-1])
 }
 
 // encodeLeafRecs is the backup marker's body.
