@@ -270,7 +270,7 @@ func TestResidentFigure(t *testing.T) {
 		{Resident{Entry: localmodels.Entry{ProviderID: "ollama", LoadedSize: 9_600_000_000}, Stoppable: true}, "9.6 GB loaded"},
 		{Resident{Entry: localmodels.Entry{ProviderID: "omlx-6bit", LoadedSize: 18_200_000_000}, Stoppable: true}, "18.2 GB resident (omlx estimate)"},
 		{Resident{Entry: localmodels.Entry{ProviderID: "mtplx"}, Stoppable: true}, "memory use unknown"},
-		{Resident{Entry: localmodels.Entry{ProviderID: "mlx_lm_server"}}, "memory use unknown (wt cannot stop it)"},
+		{Resident{Entry: localmodels.Entry{ProviderID: "mlx_lm_server"}}, "memory use unknown; wt cannot stop it"},
 	} {
 		if got := tc.r.Figure(); got != tc.want {
 			t.Errorf("Figure(%+v) = %q, want %q", tc.r.Entry, got, tc.want)

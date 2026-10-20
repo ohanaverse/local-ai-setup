@@ -32,7 +32,7 @@ func othersFixture() *lifecycle.OccupiedError {
 const othersQuestionWant = "starting omlx/qwen3.8 loads it beside models of other providers:\n" +
 	"  mtplx/qwen3.8-35b — memory use unknown (in use by 1 wt session(s))\n" +
 	"  ollama/gemma4:12b — 9.6 GB loaded\n" +
-	"  mlx_lm_server/p — memory use unknown (wt cannot stop it)\n" +
+	"  mlx_lm_server/p — memory use unknown; wt cannot stop it\n" +
 	"stop them first, keep them and start, or cancel? [s/k/N]"
 
 // stubOthersEngine replaces the engine: a call that has not decided about
@@ -255,7 +255,7 @@ func TestDriveStartOthersPromptDropsStopWhenNothingIsStoppable(t *testing.T) {
 		t.Fatalf("err = %v, want nil", err)
 	}
 	want := "starting omlx/qwen3.8 loads it beside models of other providers:\n" +
-		"  mlx_lm_server/p — memory use unknown (wt cannot stop it)\n" +
+		"  mlx_lm_server/p — memory use unknown; wt cannot stop it\n" +
 		"  cannot tell whether mtplx at http://localhost:8003 is serving a model\n" +
 		"keep them and start, or cancel? [k/N]"
 	if len(*asked) != 1 || (*asked)[0].question != want || (*asked)[0].canStop {
@@ -347,7 +347,7 @@ func TestDriveStartWithoutTTYKeepsOthersAndWarnsOnce(t *testing.T) {
 		t.Fatalf("err = %v, want nil", err)
 	}
 	want := "wt: warning: starting omlx/qwen3.8 beside mtplx/qwen3.8-35b (memory use unknown), " +
-		"ollama/gemma4:12b (9.6 GB loaded), mlx_lm_server/p (memory use unknown (wt cannot stop it)), " +
+		"ollama/gemma4:12b (9.6 GB loaded), mlx_lm_server/p (memory use unknown; wt cannot stop it), " +
 		"whatever mtplx at http://localhost:8003 is serving; " +
 		"pass --others=stop to stop them, --others=keep to silence this\n"
 	if got := stderr.String(); got != want {

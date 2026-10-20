@@ -105,8 +105,9 @@ func (r Resident) Label() string {
 
 // Figure is the memory the resident holds as wt knows it: what its server
 // says (Entry.LoadedSize, printed with localmodels.FormatSize), else "memory
-// use unknown", never 0 and never a guess; with " (wt cannot stop it)" when
-// it is not Stoppable.
+// use unknown", never 0 and never a guess; with "; wt cannot stop it" when
+// it is not Stoppable (a clause, not a parenthesis: the warning line puts the
+// whole figure in parentheses).
 func (r Resident) Figure() string {
 	fig := "memory use unknown"
 	if r.Entry.LoadedSize > 0 {
@@ -118,7 +119,7 @@ func (r Resident) Figure() string {
 		}
 	}
 	if !r.Stoppable {
-		fig += " (wt cannot stop it)"
+		fig += "; wt cannot stop it"
 	}
 	return fig
 }

@@ -305,8 +305,8 @@ stop them first, keep them and start, or cancel? [s/k/N]
   `9.6 GB loaded` (ollama), `18.2 GB resident (omlx estimate)`, or
   `memory use unknown` (mtplx, and any server that does not say; never 0 and
   never a guess), with its live wt session count when sessions use it. An
-  mtplx still loading reads `mtplx/<id> (loading)`. An mlx_lm_server pairing
-  reads `(wt cannot stop it)`: wt has no way to stop one. A provider whose
+  mtplx still loading reads `mtplx/<id> (loading)`. An mlx_lm_server pairing's
+  figure ends `; wt cannot stop it`: wt has no way to stop one. A provider whose
   server answered but whose answer wt cannot read is a `cannot tell whether …`
   line; one that refuses the connection holds nothing and is not listed.
 - `s` (or `stop`) stops every listed model wt can stop, then starts; `k` (or
