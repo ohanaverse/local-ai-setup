@@ -24,7 +24,9 @@ import (
 // fakeProxy is a stand-in LiteLLM proxy that answers 200 on every path, the
 // liveness endpoint included. A test points [litellm] url at it so that a
 // probe or readiness wait that does run reaches this server, never whatever
-// answers at the developer's proxy address.
+// answers at the developer's proxy address. internal/tui's blocked-profile
+// test keeps a copy of this helper and of failLastProxyRestart below it; the
+// launch path each package tests, not the helpers, differ.
 func fakeProxy(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
