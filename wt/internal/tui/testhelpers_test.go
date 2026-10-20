@@ -102,9 +102,9 @@ func stubSessionCounts(t *testing.T, counts map[string]int) *[]string {
 }
 
 // replaceCountCases are the occupants a start would stop and the sessions
-// using them, with the title the replace dialog must show: "(in use by N wt
-// session(s))" after each occupant someone uses, in the non-TUI prompt's
-// words, and nothing after one nobody uses.
+// using them, with the header the replace dialog must show: one occupant per
+// line, "(in use by N wt session(s))" after each one someone uses, in the
+// non-TUI prompt's words, and nothing after one nobody uses.
 var replaceCountCases = []struct {
 	name      string
 	occupants []string
@@ -112,11 +112,11 @@ var replaceCountCases = []struct {
 	want      string
 }{
 	{"one occupant, two sessions", []string{"omlx/old"}, map[string]int{"omlx/old": 2},
-		"Starting omlx/qwen3.8 will stop omlx/old (in use by 2 wt session(s))"},
+		"Starting omlx/qwen3.8 will stop:\n  omlx/old (in use by 2 wt session(s))"},
 	{"two occupants, one in use", []string{"omlx/busy", "omlx/idle"}, map[string]int{"omlx/busy": 1},
-		"Starting omlx/qwen3.8 will stop omlx/busy (in use by 1 wt session(s)), omlx/idle"},
+		"Starting omlx/qwen3.8 will stop:\n  omlx/busy (in use by 1 wt session(s))\n  omlx/idle"},
 	{"no sessions", []string{"omlx/old"}, map[string]int{},
-		"Starting omlx/qwen3.8 will stop omlx/old"},
+		"Starting omlx/qwen3.8 will stop:\n  omlx/old"},
 }
 
 // occupiedBy is the engine's refusal naming ids as the occupants.
@@ -128,22 +128,25 @@ func occupiedBy(ids []string) *lifecycle.OccupiedError {
 	return occ
 }
 
-// assertReplaceCountTitle checks the dialog is up with want as its title,
-// that the counts were asked for the occupants, and that the count (or its
-// absence) is what the screen shows.
+// assertReplaceCountTitle checks the dialog is up with want as its header,
+// that the counts were asked for the occupants, and that every line of the
+// header, each occupant's count with it, is on screen in full.
 func assertReplaceCountTitle(t *testing.T, got model, asked *[]string, occupants []string, want string) {
 	t.Helper()
 	if got.phase != phaseReplaceConfirm || got.replace == nil {
 		t.Fatalf("phase = %v, want the replace dialog", got.phase)
 	}
-	if title := got.replace.choices.Title; title != want {
-		t.Errorf("dialog title = %q, want %q", title, want)
+	if header := got.replace.header; header != want {
+		t.Errorf("dialog header = %q, want %q", header, want)
 	}
 	if strings.Join(*asked, ",") != strings.Join(occupants, ",") {
 		t.Errorf("sessionCounts asked for %v, want the occupants %v", *asked, occupants)
 	}
-	if view := got.View(); strings.Contains(want, "in use by") != strings.Contains(view, "in use by") {
-		t.Errorf("screen and title disagree on the session count; title %q, screen:\n%s", want, view)
+	view := got.View()
+	for _, line := range strings.Split(want, "\n") {
+		if !strings.Contains(view, strings.TrimSpace(line)) {
+			t.Errorf("screen lacks %q; screen:\n%s", strings.TrimSpace(line), view)
+		}
 	}
 }
 

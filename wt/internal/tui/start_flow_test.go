@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -242,8 +243,8 @@ func TestOccupiedOpensReplaceConfirmWithCancelDefault(t *testing.T) {
 	if got.phase != phaseReplaceConfirm {
 		t.Fatalf("phase = %v, want phaseReplaceConfirm", got.phase)
 	}
-	if !strings.Contains(got.replace.choices.Title, "omlx/old") {
-		t.Errorf("dialog title %q must name the occupant", got.replace.choices.Title)
+	if !strings.Contains(got.replace.header, "omlx/old") {
+		t.Errorf("dialog header %q must name the occupant", got.replace.header)
 	}
 	items := got.replace.choices.Items()
 	if len(items) != 2 {
@@ -284,6 +285,38 @@ func TestReplaceDialogNamesTheOccupantsSessions(t *testing.T) {
 	}
 }
 
+// TestReplaceDialogShowsEveryCountAt80Columns builds the dialog for real
+// model ids on a standard 80x24 terminal (#412): every occupant's full
+// "<id> (in use by N wt session(s))" must be on screen, on one line. The
+// count is the end of a long line, so a dialog that puts every occupant on
+// its title line loses exactly the warning to the terminal's edge, and later
+// occupants with it.
+func TestReplaceDialogShowsEveryCountAt80Columns(t *testing.T) {
+	occupants := []string{"omlx/Ornith-1.5-35B-A3B-6bit", "omlx/Qwen3-Coder-30B-A3B-Instruct-4bit", "omlx/gemma-4-27b-it-qat-4bit"}
+	stubSessionCounts(t, map[string]int{occupants[0]: 1, occupants[1]: 2, occupants[2]: 3})
+	m := startFixture(t, "omlx", "omlx/Qwen3.6-35B-A3B-4bit", "Qwen3.6-35B-A3B-4bit")
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		return occupiedBy(occupants)
+	})
+	got, _ := enterStartRow(t, m, "omlx/Qwen3.6-35B-A3B-4bit")
+	got, _ = updateMsg(got, recvStart(t, got))
+	if got.phase != phaseReplaceConfirm {
+		t.Fatalf("phase = %v, want the replace dialog", got.phase)
+	}
+	view := got.View()
+	for i, oid := range occupants {
+		want := fmt.Sprintf("%s (in use by %d wt session(s))", oid, i+1)
+		if !strings.Contains(view, want) {
+			t.Errorf("screen lacks %q in full; screen:\n%s", want, view)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Errorf("line %q is %d columns, wider than the terminal", line, w)
+		}
+	}
+}
+
 // TestReplaceDialogCountsOtherSessionsOnly runs the dialog over the real
 // count source (the refcount file under the test's throwaway config
 // home): another live process using the occupant is counted, and the picker
@@ -308,9 +341,9 @@ func TestReplaceDialogCountsOtherSessionsOnly(t *testing.T) {
 	if got.phase != phaseReplaceConfirm {
 		t.Fatalf("phase = %v, want the replace dialog", got.phase)
 	}
-	want := "Starting omlx/qwen3.8 will stop omlx/old (in use by 1 wt session(s))"
-	if title := got.replace.choices.Title; title != want {
-		t.Errorf("dialog title = %q, want %q", title, want)
+	want := "Starting omlx/qwen3.8 will stop:\n  omlx/old (in use by 1 wt session(s))"
+	if header := got.replace.header; header != want {
+		t.Errorf("dialog header = %q, want %q", header, want)
 	}
 	if live := refcount.NewStore().Live(); len(live) != 1 || live["omlx/old"] != 1 {
 		t.Errorf("live sessions = %v, want only the other process's on omlx/old (the picker records nothing before it launches)", live)
@@ -333,8 +366,8 @@ func TestUnknownOccupancyOpensReplaceConfirm(t *testing.T) {
 	if got.phase != phaseReplaceConfirm {
 		t.Fatalf("phase = %v, want phaseReplaceConfirm", got.phase)
 	}
-	if !strings.Contains(got.replace.choices.Title, "omlx") || !strings.Contains(got.replace.choices.Title, "http://localhost:8000") {
-		t.Errorf("dialog title %q must mention the provider and origin", got.replace.choices.Title)
+	if !strings.Contains(got.replace.header, "omlx") || !strings.Contains(got.replace.header, "http://localhost:8000") {
+		t.Errorf("dialog header %q must mention the provider and origin", got.replace.header)
 	}
 }
 

@@ -641,9 +641,9 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		})},
 		{"replace confirm", modelPhase(func(t *testing.T, width, height int) model {
 			m := model{cfg: &config.Config{}, theme: themes.Default, phase: phaseReplaceConfirm, width: width, height: height}
-			choices := list.New(buildReplaceChoices(), ThemedListDelegate(m.theme), 78, 22)
-			choices.Title = "Starting omlx/a will stop omlx/b, which is running"
-			m.replace = &replaceState{choices: choices}
+			m.replace = &replaceState{choices: newReplaceChoices(m.theme, 78, 22), header: "Starting omlx/Qwen3.6-35B-A3B-4bit will stop:\n" +
+				"  omlx/Ornith-1.5-35B-A3B-6bit (in use by 2 wt session(s))\n" +
+				"  omlx/gemma-4-27b-it-qat-4bit (in use by 1 wt session(s))"}
 			return m
 		})},
 		{"routing", modelPhase(func(t *testing.T, width, height int) model {
