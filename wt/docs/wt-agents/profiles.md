@@ -36,10 +36,23 @@ wt profile on / wt profile off        # global kill switch
 
 | Agent | Mechanisms | Notes |
 |---|---|---|
-| claude | env, config_file | config_file → `<worktree>/.claude/settings.local.json`, never your global `~/.claude/settings.json` |
+| claude | env, config_file, config_defaults | config_file and config_defaults → `<worktree>/.claude/settings.local.json`, never your global `~/.claude/settings.json` |
 | pi | wrapper, env | swaps the launched binary (e.g. `little-coder`) around pi's own argv; env lands on the launched wrapper process, which reads `LITTLE_CODER_*` |
 | codex | env, args, config_file | config_file → `~/.codex/agent-wt-profile.config.toml` (`--profile agent-wt-profile`); codex has no project-scoped profile mechanism, so this one file is global and wt-owned |
 | opencode | env, config_file | config_file merges into the `OPENCODE_CONFIG_CONTENT` env payload wt already sets — no file at all |
+
+**`config_defaults`** (claude only) has the same shape as `config_content`
+but writes a value only where `<worktree>/.claude/settings.local.json`
+does not already have one: every leaf the file already holds, whatever its
+value, is left alone, and a leaf whose path crosses a value that is not a
+table (`permissions = "x"`) counts as present. It is applied after
+`config_content`, so a leaf both set is `config_content`'s. "Absent" means
+absent from that one file: `.claude/settings.json` and
+`~/.claude/settings.json` are never read, so a value set there is still
+overridden for the session. A leaf it writes is restored at exit like a
+`config_content` leaf (see "File safety"). A later tier's value wins per
+leaf, as for `config_content`. Slot profiles do not take it: in
+`slot-profiles.toml` it is reported as an unknown key.
 
 A profile using a mechanism its agent doesn't declare fails at startup with
 a clear error (`wt -A <agent> ...` still launches, unprofiled — see
@@ -97,7 +110,11 @@ differs by agent:
   state, so a hand edit mid-session is kept whether or not the profile
   pins that value; wt keeps a hash of each value it wrote to tell, never
   the value itself. A file that didn't exist before is deleted at exit
-  only when nothing but the profile's own values was in it.
+  only when nothing but the profile's own values was in it. When the file
+  is no longer a JSON object at exit, the whole file is still restored from the snapshot, or deleted if it did
+  not exist before, as wt always did. `config_defaults` leaves are written
+  and restored the same way, and a value the file already had is never
+  written, so it is never restored either.
 - **codex's `agent-wt-profile.config.toml` is a dedicated, wt-owned global
   file** nothing else writes to, so it keeps a simple whole-file
   snapshot/replace/restore — don't hand-edit it while a profiled codex
@@ -169,10 +186,12 @@ agent = "claude"
 match = "location"
 location = "local"
 env = { MAX_THINKING_TOKENS = "4096", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
+config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" } }
 # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 also starts Claude Code in auto
 # mode, whose classifier sends the local model a ~31k-token request on every
 # tool turn (#393); defaultMode = "default" keeps local sessions out of it.
-config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" }, permissions = { defaultMode = "default" } }
+# A default, not an override: a defaultMode already in settings.local.json wins.
+config_defaults = { permissions = { defaultMode = "default" } }
 
 # codex: args are appended AFTER wt's driver args and any user passthrough, and
 # codex's repeated -c form is last-wins — so these values also win over a user's
@@ -199,7 +218,7 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
 | pi | `wrapper` | runs `little-coder` instead of bare `pi`, splicing wt's own `--model …` argv into `{{args}}` |
 | pi | `env` | sets `LITTLE_CODER_PERMISSION_MODE=accept-all` on the wrapper process (little-coder), skipping its shell whitelist |
 | claude | `env` | caps thinking at 4096 tokens; suppresses nonessential background traffic |
-| claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` and `permissions.defaultMode = "default"` into `<worktree>/.claude/settings.local.json`, then puts those two values back at exit, leaving what the session saved beside them (see the `permissions` cost under "Why these values") |
+| claude | `config_file` + `config_defaults` | `config_content` merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`; `config_defaults` adds `permissions.defaultMode = "default"` only when that file has no `defaultMode`. Both values are put back at exit, leaving what the session saved beside them (see the `permissions` cost under "Why these values") |
 | codex | `args` | caps `model_reasoning_effort` at `low`; truncates tool output at 12000 tokens |
 | opencode | `config_file` | merges `compaction { auto = true, prune = false, reserved = 10000 }` into the `OPENCODE_CONFIG_CONTENT` payload (no file written) |
 
@@ -228,17 +247,19 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
   off an endpoint that cannot use them. The attribution header is the one
   setting the optimization doc says must live in Claude Code's settings
   rather than the process environment, hence the `config_file` split.
-  `permissions.defaultMode = "default"` rides along in the same file:
+  `permissions.defaultMode = "default"` goes to the same file, as a
+  `config_defaults` entry:
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also starts Claude Code in
   auto mode (seen on 2.1.300), and auto mode's classifier then sends the
   local model a non-streamed ~31k-token request on every turn that uses a
   tool, which made turns 2–5x slower and added prefill memory pressure
-  (#393). Pinning the default mode keeps the traffic setting without it.
-  The cost of that pin: it overrides any `permissions.defaultMode` you set
-  in that worktree's `settings.local.json` (`plan`, `acceptEdits`, ...) for
-  every local launch; your value comes back at exit. An "always allow"
-  grant Claude Code saves under `permissions.allow` during the session is
-  kept (see "File safety" above).
+  (#393). Setting the default mode keeps the traffic setting without it.
+  Because it is a default, a `permissions.defaultMode` in
+  `.claude/settings.local.json` wins; one set in `.claude/settings.json` or
+  `~/.claude/settings.json` is still overridden for the session, and an
+  existing `auto` brings back the classifier slowdown (#393). An "always
+  allow" grant Claude Code saves under `permissions.allow` during the
+  session is kept (see "File safety" above).
 - **codex — reasoning effort + output cap.** `model_reasoning_effort="low"`
   is codex's thinking-budget knob; `tool_output_token_limit=12000` is its
   built-in read-guard, capping runaway file reads before they flood a

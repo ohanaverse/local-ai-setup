@@ -156,12 +156,13 @@ func TestClaudeNativeIgnoresGateway(t *testing.T) {
 	}
 }
 
-// TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms verifies
-// claude's ProfileMechanisms matches the Phase-1 design (env for the
-// attribution header/thinking cap and overrides of the slot variables wt
-// sets itself, config_content for settings.local.json) — a profile
-// using any other mechanism for claude must fail Validate.
-func TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
+// TestClaudeDriverDeclaresEnvConfigFileAndConfigDefaultsProfileMechanisms
+// verifies claude's ProfileMechanisms is exactly env (the thinking cap and
+// overrides of the slot variables wt sets itself), config_file
+// (config_content for settings.local.json) and config_defaults (values
+// written there only where absent, #402) — a profile using a mechanism
+// outside these three for claude must fail Validate.
+func TestClaudeDriverDeclaresEnvConfigFileAndConfigDefaultsProfileMechanisms(t *testing.T) {
 	mechs := claudeDriver{}.ProfileMechanisms()
 	want := map[profiles.Mechanism]bool{profiles.MechanismEnv: true, profiles.MechanismConfigFile: true, profiles.MechanismConfigDefaults: true}
 	if len(mechs) != len(want) {

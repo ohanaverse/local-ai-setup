@@ -1216,3 +1216,160 @@ func TestKeysMarkerHoldsNoWrittenValue(t *testing.T) {
 		t.Errorf(".keys = %s, holds the written value", raw)
 	}
 }
+
+// defaultsSession runs one claude session with rp against a fresh target:
+// original is the pre-existing file (nil: none), and session, when non-nil,
+// edits the document on disk the way the launched agent would mid-session.
+// It returns the target as the session saw it and after cleanup (nil when
+// cleanup deleted it).
+func defaultsSession(t *testing.T, original []byte, rp ResolvedProfile, session func(doc map[string]any)) (during, after []byte) {
+	t.Helper()
+	worktree, target := claudeTarget(t, original)
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	during, err = os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("target unreadable during the session: %v", err)
+	}
+	if session != nil {
+		var doc map[string]any
+		if err := json.Unmarshal(during, &doc); err != nil {
+			t.Fatalf("written file is not valid JSON: %v (%s)", err, during)
+		}
+		session(doc)
+		edited, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, edited, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	after, err = os.ReadFile(target)
+	if os.IsNotExist(err) {
+		return during, nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return during, after
+}
+
+// TestConfigDefaultsWritesAnAbsentLeafAndRestoresIt verifies a
+// config_defaults leaf the user's settings.local.json does not have is
+// written for the session and removed at cleanup, while a grant the session
+// saved beside it survives. Without it the claude local profile could not
+// keep auto mode off for a worktree that never chose a mode (#402).
+func TestConfigDefaultsWritesAnAbsentLeafAndRestoresIt(t *testing.T) {
+	rp := ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}
+	for name, tc := range map[string]struct{ original, want []byte }{
+		"existing file": {[]byte(`{"model":"x"}`), []byte(`{"model":"x","permissions":{"allow":["Bash(ls)"]}}`)},
+		"new file":      {nil, []byte(`{"permissions":{"allow":["Bash(ls)"]}}`)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			during, after := defaultsSession(t, tc.original, rp, addAllow)
+			var doc map[string]any
+			if err := json.Unmarshal(during, &doc); err != nil {
+				t.Fatal(err)
+			}
+			if mode, _ := getPath(doc, []string{"permissions", "defaultMode"}); mode != "default" {
+				t.Errorf("during the session = %s, want permissions.defaultMode = \"default\"", during)
+			}
+			if after == nil {
+				t.Fatal("target deleted at cleanup, losing the session's permissions.allow")
+			}
+			assertSameJSON(t, "restored content", "defaultMode gone, the session's allow kept", after, tc.want)
+		})
+	}
+}
+
+// TestConfigDefaultsLeavesAnExistingValueAlone is the repro of #402: the
+// claude local profile pinned permissions.defaultMode over the user's own
+// value. As a default it now leaves any value the file already has alone:
+// the file is not rewritten during the session, and cleanup changes nothing.
+func TestConfigDefaultsLeavesAnExistingValueAlone(t *testing.T) {
+	rp := ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}
+	for _, mode := range []string{"plan", "default", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			original := []byte(`{"permissions":{"defaultMode":"` + mode + `"}}`)
+			during, after := defaultsSession(t, original, rp, nil)
+			if string(during) != string(original) {
+				t.Errorf("during the session = %s, want the untouched %s", during, original)
+			}
+			assertSameJSON(t, "restored content", "the user's own defaultMode", after, original)
+		})
+	}
+}
+
+// TestConfigDefaultsLeavesANonObjectPermissionsAlone verifies a default
+// whose path crosses a non-object counts as present: a "permissions" the
+// user set to a string is never replaced by the default's object.
+func TestConfigDefaultsLeavesANonObjectPermissionsAlone(t *testing.T) {
+	original := []byte(`{"permissions":"x"}`)
+	during, after := defaultsSession(t, original, ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}, nil)
+	if string(during) != string(original) {
+		t.Errorf("during the session = %s, want the untouched %s", during, original)
+	}
+	assertSameJSON(t, "restored content", "the original non-object permissions", after, original)
+}
+
+// TestConfigContentStillOverridesWhileConfigDefaultsDoNot verifies the two
+// tables of one profile keep their own rules: config_content overwrites an
+// existing value for the session, config_defaults does not, and cleanup puts
+// the original back either way.
+func TestConfigContentStillOverridesWhileConfigDefaultsDoNot(t *testing.T) {
+	original := []byte(`{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"1"},"permissions":{"defaultMode":"plan"}}`)
+	rp := ResolvedProfile{
+		ConfigContent:  map[string]any{"env": map[string]any{"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}},
+		ConfigDefaults: pinDefaultMode("default"),
+	}
+	during, after := defaultsSession(t, original, rp, nil)
+	assertSameJSON(t, "during the session", "config_content's header, the user's defaultMode",
+		during, []byte(`{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0"},"permissions":{"defaultMode":"plan"}}`))
+	assertSameJSON(t, "restored content", "the original", after, original)
+}
+
+// TestApplyConfigContentRejectsConfigDefaultsForCodexAndOpenCode verifies
+// config_defaults is refused, with nothing written, for the agents it is not
+// implemented for: Validate already rejects it, and applying it as
+// config_content instead would override the user's values, the bug it
+// exists to avoid.
+func TestApplyConfigContentRejectsConfigDefaultsForCodexAndOpenCode(t *testing.T) {
+	rp := ResolvedProfile{
+		ConfigContent:  map[string]any{"model_reasoning_effort": "high"},
+		ConfigDefaults: map[string]any{"approval_policy": "never"},
+	}
+	t.Run("codex", func(t *testing.T) {
+		dir := t.TempDir()
+		home := filepath.Join(dir, "home")
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+		cmd := exec.Command("codex")
+		_, err := ApplyConfigContent(cmd, "codex", "/tmp/some-worktree", rp)
+		if err == nil || err.Error() != `profile: agent "codex" does not take config_defaults` {
+			t.Fatalf("ApplyConfigContent() error = %v, want the config_defaults refusal", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(home, ".codex", "agent-wt-profile.config.toml")); !os.IsNotExist(statErr) {
+			t.Errorf("codex profile file written despite the refusal (stat err = %v)", statErr)
+		}
+		if len(cmd.Args) != 1 {
+			t.Errorf("cmd.Args = %v, want no --profile appended", cmd.Args)
+		}
+	})
+	t.Run("opencode", func(t *testing.T) {
+		cmd := exec.Command("opencode")
+		cmd.Env = []string{openCodeConfigEnvPrefix + `{}`}
+		_, err := ApplyConfigContent(cmd, "opencode", "/tmp/some-worktree", rp)
+		if err == nil || err.Error() != `profile: agent "opencode" does not take config_defaults` {
+			t.Fatalf("ApplyConfigContent() error = %v, want the config_defaults refusal", err)
+		}
+		if cmd.Env[0] != openCodeConfigEnvPrefix+`{}` {
+			t.Errorf("cmd.Env = %v, want OPENCODE_CONFIG_CONTENT untouched", cmd.Env)
+		}
+	})
+}

@@ -74,10 +74,21 @@ const openCodeConfigEnvPrefix = "OPENCODE_CONFIG_CONTENT="
 // keeps the session's state (#401). codex's target is a dedicated,
 // wt-owned global file nothing else writes to, so it keeps the simpler
 // whole-file snapshot/replace/restore.
+//
+// rp.ConfigDefaults (claude only) is written after that merge, and only
+// each leaf the merged document does not already have: a value the user's
+// settings.local.json holds is never written, recorded or reverted (#402).
+// A defaults leaf that is written is recorded beside config_content's own,
+// so cleanup treats the two alike. Any other agent with ConfigDefaults set
+// is refused (Validate already rejects such a profile). It is a no-op only
+// when both tables are empty.
 func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedProfile) (cleanup func() error, err error) {
 	noop := func() error { return nil }
-	if len(rp.ConfigContent) == 0 {
+	if len(rp.ConfigContent) == 0 && len(rp.ConfigDefaults) == 0 {
 		return noop, nil
+	}
+	if len(rp.ConfigDefaults) > 0 && agent != "claude" {
+		return nil, fmt.Errorf("profile: agent %q does not take config_defaults", agent)
 	}
 	if agent == "opencode" {
 		if err := mergeOpenCodeEnv(cmd, rp.ConfigContent); err != nil {
@@ -109,6 +120,9 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 				if err := json.Unmarshal(existing, &doc); err != nil {
 					return nil, nil, fmt.Errorf("profile: existing %s is not valid JSON, refusing to merge config_content: %w", path, err)
 				}
+				if doc == nil { // a JSON null: nothing to keep, nothing to set into
+					doc = map[string]any{}
+				}
 			}
 			// Collected before the merge, which changes doc in place.
 			// Never nil: a merge that writes no leaf (only {} into existing
@@ -116,6 +130,16 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 			// writes instead of falling back to the whole-file snapshot.
 			recs := append([]leafRec{}, collectLeaves(doc, rp.ConfigContent)...)
 			mergeInto(doc, rp.ConfigContent)
+			// Defaults go after the merge and are judged against it, so a
+			// leaf config_content already wrote is not a default's to write.
+			defaultRecs := collectAbsentLeaves(doc, rp.ConfigDefaults)
+			setLeaves(doc, rp.ConfigDefaults, defaultRecs)
+			recs = append(recs, defaultRecs...)
+			if existed && len(recs) == 0 && len(rp.ConfigContent) == 0 {
+				// Defaults only, and the file already has every one: it
+				// stays byte for byte as the user left it.
+				return existing, recs, nil
+			}
 			data, err := json.MarshalIndent(doc, "", "  ")
 			if err != nil {
 				return nil, nil, fmt.Errorf("encode profile config_content: %w", err)
