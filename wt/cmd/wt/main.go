@@ -141,10 +141,12 @@ func runLaunchPath(
 		// tui.Run returns the agent's run error after its post-exit flow;
 		// a non-zero exit becomes wt's own status, as on the non-TUI path,
 		// and like runAgentCmd's os.Exit it prints nothing: no cobra
-		// "Error:" line or usage block, no main "wt:" line (#412).
+		// "Error:" line or usage block, no main "wt:" line (#412). Any
+		// other error is main's one "wt:" line: cobra's "Error:" copy and
+		// usage block would only repeat it, as printOnce spares a failed
+		// start.
 		err = agentExitStatus(err)
-		var coded *exitCodeError
-		if errors.As(err, &coded) && coded.quiet {
+		if err != nil {
 			cmd.SilenceErrors = true
 			cmd.SilenceUsage = true
 		}

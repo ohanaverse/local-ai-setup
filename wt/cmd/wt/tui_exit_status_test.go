@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os/exec"
 	"testing"
 
@@ -88,16 +89,10 @@ func TestPickerLaunchThatSucceededStaysZero(t *testing.T) {
 // line and its exitCodeOf status, so no command lost its message.
 func TestReportExitPrintsOtherErrors(t *testing.T) {
 	var stderr bytes.Buffer
-	if got := reportExit(&exitCodeError{code: 4, err: errNoTTYForTest}, &stderr); got != 4 {
+	if got := reportExit(&exitCodeError{code: 4, err: errors.New("no terminal")}, &stderr); got != 4 {
 		t.Errorf("exit status = %d, want 4", got)
 	}
 	if stderr.String() != "wt: no terminal\n" {
 		t.Errorf("stderr = %q, want the error's wt: line", stderr.String())
 	}
 }
-
-var errNoTTYForTest = errString("no terminal")
-
-type errString string
-
-func (e errString) Error() string { return string(e) }
