@@ -73,10 +73,7 @@ func main() {
 	// wt smoke's failure exit) wait for the same thing themselves.
 	lifecycle.WaitPendingRoutes()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "wt:", err)
-		// 1 unless the error carries another status (exitCodeError): `wt
-		// cloud-sync` says with 2 to 5 why its ollama flow changed nothing.
-		os.Exit(exitCodeOf(err))
+		os.Exit(reportExit(err, os.Stderr))
 	}
 }
 
@@ -141,6 +138,16 @@ func runLaunchPath(
 	runTUI := func() error {
 		err := tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
 		printSlotNotes()
+		// tui.Run returns the agent's run error after its post-exit flow;
+		// a non-zero exit becomes wt's own status, as on the non-TUI path,
+		// and like runAgentCmd's os.Exit it prints nothing: no cobra
+		// "Error:" line or usage block, no main "wt:" line (#412).
+		err = agentExitStatus(err)
+		var coded *exitCodeError
+		if errors.As(err, &coded) && coded.quiet {
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+		}
 		return err
 	}
 
