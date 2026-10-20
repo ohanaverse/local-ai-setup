@@ -1373,3 +1373,21 @@ func TestApplyConfigContentRejectsConfigDefaultsForCodexAndOpenCode(t *testing.T
 		}
 	})
 }
+
+// TestJSONNullSettingsFileIsMergedAsAnEmptyObject verifies a
+// settings.local.json that holds the JSON null is merged into as an empty
+// object rather than panicking the launch, and that cleanup removes only
+// the profile's leaves: falling back to the whole-file restore would write
+// null back over the grant the session saved.
+func TestJSONNullSettingsFileIsMergedAsAnEmptyObject(t *testing.T) {
+	t.Run("config_content", func(t *testing.T) {
+		got := leafSession(t, []byte(`null`), pinDefaultMode("default"), addAllow)
+		assertSameJSON(t, "restored content", "the session's allow kept, defaultMode removed",
+			got, []byte(`{"permissions":{"allow":["Bash(ls)"]}}`))
+	})
+	t.Run("config_defaults", func(t *testing.T) {
+		during, after := defaultsSession(t, []byte(`null`), ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}, nil)
+		assertSameJSON(t, "during the session", "the default written", during, []byte(`{"permissions":{"defaultMode":"default"}}`))
+		assertSameJSON(t, "restored content", "the default removed", after, []byte(`{}`))
+	})
+}

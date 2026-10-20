@@ -203,11 +203,12 @@ func TestRevertLeavesKeysWithDotsSlashesAndEmptyNames(t *testing.T) {
 	}
 }
 
-// TestRevertLeavesLegacyRecordRestoresUnconditionally verifies a hashless
-// record (an older wt's top-level key) restores the original value even
-// though the session changed it: an older marker carries no hash to compare
-// with, so it keeps that wt's restore rule.
-func TestRevertLeavesLegacyRecordRestoresUnconditionally(t *testing.T) {
+// TestRevertLeavesLegacyRecordRestoresWithoutTheHashCheck verifies a
+// hashless record (an older wt's top-level key) restores the original value
+// even though the session changed it: an older marker carries no hash to
+// compare with, so it skips that check (a key the session deleted is still
+// not brought back).
+func TestRevertLeavesLegacyRecordRestoresWithoutTheHashCheck(t *testing.T) {
 	cur := map[string]any{"permissions": map[string]any{"defaultMode": "acceptEdits"}, "model": "s"}
 	orig := map[string]any{"permissions": map[string]any{"defaultMode": "plan"}}
 	revertLeaves(cur, orig, []leafRec{{Path: []string{"permissions"}}, {Path: []string{"env"}}})

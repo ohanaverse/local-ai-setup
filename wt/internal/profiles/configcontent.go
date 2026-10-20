@@ -132,6 +132,9 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 			mergeInto(doc, rp.ConfigContent)
 			// Defaults go after the merge and are judged against it, so a
 			// leaf config_content already wrote is not a default's to write.
+			// mergeInto put rp.ConfigContent's tables into doc by reference,
+			// so setLeaves may write into them too; that is harmless, since
+			// rp is a per-launch deep copy (Resolve) dropped after the write.
 			defaultRecs := collectAbsentLeaves(doc, rp.ConfigDefaults)
 			setLeaves(doc, rp.ConfigDefaults, defaultRecs)
 			recs = append(recs, defaultRecs...)

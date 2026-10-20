@@ -111,8 +111,9 @@ differs by agent:
   pins that value; wt keeps a hash of each value it wrote to tell, never
   the value itself. A file that didn't exist before is deleted at exit
   only when nothing but the profile's own values was in it. When the file
-  is no longer a JSON object at exit, the whole file is still restored from the snapshot, or deleted if it did
-  not exist before, as wt always did. `config_defaults` leaves are written
+  is no longer a JSON object at exit, the whole file is still restored
+  from the snapshot, or deleted if it did not exist before, as wt always
+  did. `config_defaults` leaves are written
   and restored the same way, and a value the file already had is never
   written, so it is never restored either.
 - **codex's `agent-wt-profile.config.toml` is a dedicated, wt-owned global
@@ -218,7 +219,7 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
 | pi | `wrapper` | runs `little-coder` instead of bare `pi`, splicing wt's own `--model …` argv into `{{args}}` |
 | pi | `env` | sets `LITTLE_CODER_PERMISSION_MODE=accept-all` on the wrapper process (little-coder), skipping its shell whitelist |
 | claude | `env` | caps thinking at 4096 tokens; suppresses nonessential background traffic |
-| claude | `config_file` + `config_defaults` | `config_content` merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`; `config_defaults` adds `permissions.defaultMode = "default"` only when that file has no `defaultMode`. Both values are put back at exit, leaving what the session saved beside them (see the `permissions` cost under "Why these values") |
+| claude | `config_file` + `config_defaults` | `config_content` merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`; `config_defaults` adds `permissions.defaultMode = "default"` only when that file has no `defaultMode`. At exit the header is put back and a `defaultMode` wt added is removed; one the file already had is never touched. What the session saved beside them stays (see the `permissions` cost under "Why these values") |
 | codex | `args` | caps `model_reasoning_effort` at `low`; truncates tool output at 12000 tokens |
 | opencode | `config_file` | merges `compaction { auto = true, prune = false, reserved = 10000 }` into the `OPENCODE_CONFIG_CONTENT` payload (no file written) |
 
