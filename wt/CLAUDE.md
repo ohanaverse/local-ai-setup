@@ -150,7 +150,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `internal/litellm/` | the sole implementation of LiteLLM `config.yaml` route management: entries and policy, `ApplyChange`, `Sync`/`PlanSync`, restart and readiness, `DatabaseURL` |
 | `internal/spend/` | per-model request, token and cost totals from the proxy's spend table: one aggregated query through `psql`, typed failures, no Postgres driver; the connection string is never a `psql` argument (#282) |
 | `internal/guard/` | `block-main-commit` pre-commit hook |
-| `internal/worktree/` | repo detection, enumeration, creation; the picker's pull request tags (`PRs`, `prs.go`) |
+| `internal/worktree/` | repo detection, enumeration, creation; the picker's pull request tags (`PRs`, `prs.go`); `remotes.go`: remote name to owner/repo (`RemoteRepos`), used to tag remote picker rows |
 | `internal/gitenv/` | `IsolateForTest`: git isolation for test binaries |
 | `internal/initseed/` | `--init` seeding |
 | `internal/ollamacheck/` | pre-launch `ollama list` availability check, pinned to the registry's ollama address; `StubListForTest` is its seam (`fortest.go`) |

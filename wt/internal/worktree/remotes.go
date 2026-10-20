@@ -54,7 +54,8 @@ func repoFromURL(raw string) string {
 
 // RemoteRepos maps each remote's name to the owner/repo of its URL ("" when
 // the URL does not name one). It asks `git remote get-url`, which applies
-// insteadOf rewrites. Any git failure yields an empty map.
+// insteadOf rewrites. A failed `git remote` yields an empty map; a failed
+// get-url leaves just that remote out.
 func RemoteRepos(dir string) map[string]string {
 	repos := map[string]string{}
 	out, err := runGit(dir, "remote")
