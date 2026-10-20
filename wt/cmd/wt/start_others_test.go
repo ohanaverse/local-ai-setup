@@ -219,7 +219,9 @@ func TestDriveStartAsksAboutOtherProvidersModels(t *testing.T) {
 
 // TestDriveStartOthersPromptErrorRetriesNothing verifies a prompt that fails
 // (no terminal to open) ends the start with its error and no retry: a failed
-// question is not an answer.
+// question is not an answer. Retrying on it would load the model beside, or
+// stop, other providers' models the user was never able to answer about, and
+// would hide why nothing was asked (the error names --others).
 func TestDriveStartOthersPromptErrorRetriesNothing(t *testing.T) {
 	stubSignals(t)
 	stubStdinTTY(t, true)
@@ -363,7 +365,10 @@ func TestDriveStartWithoutTTYKeepsOthersAndWarnsOnce(t *testing.T) {
 
 // TestDriveStartOthersStopStopsOnlyStoppable pins --others=stop without a
 // TTY: the retry stops every resident wt can stop and nothing else (not the
-// mlx_lm_server pairing), without asking and without the warning.
+// mlx_lm_server pairing), without asking and without the warning. A wider
+// Stop list would have the engine try to stop a model wt has no way to stop,
+// or one the refusal never named; a question or a warning would hang or
+// clutter the script that passed the flag to answer it.
 func TestDriveStartOthersStopStopsOnlyStoppable(t *testing.T) {
 	stubSignals(t)
 	stubStdinTTY(t, false)
