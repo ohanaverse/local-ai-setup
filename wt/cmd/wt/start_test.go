@@ -760,3 +760,60 @@ func TestSettleStartSettlesUnderACancelledContext(t *testing.T) {
 		t.Errorf("settled %+v, want one call, under the caller's own (done) context", *calls)
 	}
 }
+
+// TestProfileStartPromptNamesTheOccupantsSessions pins the non-TUI replace
+// prompt of a slot profile's local-model start (startForLaunchOwed): an
+// occupant some wt sessions use is named with "(in use by N wt session(s))",
+// and one nobody uses is named bare. The count is what tells the user that
+// "y" cuts off a session in another terminal; a regression drops that
+// warning, or puts a count on a model nobody is using.
+func TestProfileStartPromptNamesTheOccupantsSessions(t *testing.T) {
+	cases := []struct {
+		name   string
+		counts map[string]int
+		want   string
+	}{
+		{"one occupant in use", map[string]int{"omlx/busy": 2},
+			"starting omlx/qwen3.8 will stop omlx/busy (in use by 2 wt session(s)), omlx/idle; continue?"},
+		{"no sessions", map[string]int{},
+			"starting omlx/qwen3.8 will stop omlx/busy, omlx/idle; continue?"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stubSignals(t)
+			stubStdinTTY(t, true)
+			oldCounts := sessionCounts
+			var asked []string
+			sessionCounts = func(ids []string) map[string]int {
+				asked = append(asked, ids...)
+				return c.counts
+			}
+			t.Cleanup(func() { sessionCounts = oldCounts })
+			var question string
+			oldConfirm := confirmReplace
+			confirmReplace = func(q string) (bool, error) { question = q; return false, nil }
+			t.Cleanup(func() { confirmReplace = oldConfirm })
+			occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{
+				localmodelsEntry("omlx/busy", "busy"), localmodelsEntry("omlx/idle", "idle"),
+			}}
+			replaces := stubLifecycleStart(t, []error{occ})
+
+			still, err := startForLaunchOwed(&config.Config{}, startTestRow(), false, true)
+			if err == nil {
+				t.Fatal("err = nil, want the declined prompt's cancellation")
+			}
+			if !still {
+				t.Error("stillOwed = false, want true: the declined refusal spent no restart")
+			}
+			if question != c.want {
+				t.Errorf("question = %q, want %q", question, c.want)
+			}
+			if strings.Join(asked, ",") != "omlx/busy,omlx/idle" {
+				t.Errorf("sessionCounts asked for %v, want the occupants", asked)
+			}
+			if len(*replaces) != 1 {
+				t.Errorf("engine calls = %v, want 1 (declined, no retry)", *replaces)
+			}
+		})
+	}
+}
