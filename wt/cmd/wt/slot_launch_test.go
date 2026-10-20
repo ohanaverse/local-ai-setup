@@ -195,6 +195,10 @@ type slotSeams struct {
 	probeErr    error
 	buildErr    error
 	cmd         *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
+	// ensured is every id handed to ensureSlotRoutes, in call order.
+	ensured []string
+	// launch is the profile buildSlotCmd was given, nil until it runs.
+	launch *profiles.SlotLaunch
 }
 
 // log is the recorded events joined with ";".
@@ -216,6 +220,7 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 			ids[i] = m.ID
 		}
 		s.events = append(s.events, "ensure:"+strings.Join(ids, ","))
+		s.ensured = append(s.ensured, ids...)
 		if s.ensureErrOn != nil {
 			if err := s.ensureErrOn(ids); err != nil {
 				return false, err
@@ -247,8 +252,9 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 		s.started = true
 		return s.startStill, s.startErr
 	}
-	buildSlotCmd = func(_ profiles.SlotLaunch, worktreePath string, _ bool, _ *config.Config, _ []string) (*exec.Cmd, error) {
+	buildSlotCmd = func(sl profiles.SlotLaunch, worktreePath string, _ bool, _ *config.Config, _ []string) (*exec.Cmd, error) {
 		s.events = append(s.events, "build")
+		s.launch = &sl
 		if s.buildErr != nil {
 			return nil, s.buildErr
 		}
@@ -544,7 +550,9 @@ var slotStateFiles = []string{"usage.jsonl", "rotation.state", "last-picked.stat
 // is still owed and never otherwise, and it is probed on every launch before
 // the command is built. Two restarts would cost the user 20 to 40 seconds; a
 // missing one would start Claude Code against a proxy that does not know the
-// slot's id.
+// slot's id. Each case also checks that the ids handed to the route writes
+// are exactly the distinct models the built payload's four slot variables
+// name: a slot model left out would be refused by the proxy mid-session.
 func TestLaunchSlotProfileSteps(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -598,6 +606,28 @@ func TestLaunchSlotProfileSteps(t *testing.T) {
 			}
 			if _, statErr := os.Stat(sentinel); statErr != nil {
 				t.Error("the agent command did not run")
+			}
+			// What was routed is what the agent is told to use: the ids
+			// handed to the route writes are the distinct values of the
+			// built payload's four slot variables, no more and no fewer.
+			if seams.launch == nil {
+				t.Fatal("the slot command was never built")
+			}
+			sc, berr := agents.BuildSlotCommand(*seams.launch, false, "http://localhost:4000", "sk-test-1234")
+			if berr != nil {
+				t.Fatalf("BuildSlotCommand() error = %v", berr)
+			}
+			var payload []string
+			for _, v := range slotVarsOf(t, slotSettingsOf(t, sc.Args)) {
+				payload = append(payload, v)
+			}
+			slices.Sort(payload)
+			payload = slices.Compact(payload)
+			ensured := slices.Clone(seams.ensured)
+			slices.Sort(ensured)
+			ensured = slices.Compact(ensured)
+			if !slices.Equal(ensured, payload) {
+				t.Errorf("ids routed = %v, payload slot ids = %v: want the same set", ensured, payload)
 			}
 		})
 	}
