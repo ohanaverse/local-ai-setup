@@ -48,6 +48,12 @@ type Entry struct {
 	Type   Type
 	Branch string // branch name; "(detached)" for detached worktrees
 	Path   string // worktree path; empty for bare branches
+
+	// RemoteRepo is the owner/repo of a remote-branch row's remote, and
+	// RemoteBranch the branch without its remote prefix. Both are empty for
+	// any other row and when the remote is unknown.
+	RemoteRepo   string
+	RemoteBranch string
 }
 
 // GroupKind identifies a logical group of picker rows.
@@ -285,13 +291,18 @@ func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 	}
 
 	var remoteEntries []Entry
+	remoteRepos := RemoteRepos(dir)
 	for _, r := range remotes {
 		short := r[strings.IndexByte(r, '/')+1:]
 		if localSet[short] {
 			continue
 		}
 		if !used[r] {
-			remoteEntries = append(remoteEntries, Entry{Type: TypeBranch, Branch: r})
+			e := Entry{Type: TypeBranch, Branch: r}
+			if name, branch, ok := SplitRemoteBranch(r, remoteRepos); ok {
+				e.RemoteRepo, e.RemoteBranch = remoteRepos[name], branch
+			}
+			remoteEntries = append(remoteEntries, e)
 		}
 	}
 
