@@ -4,6 +4,14 @@
 
 ### Added
 
+- A profile may set `config_defaults`, a table of the same shape as
+  `config_content` that is applied only where a value is absent (#402):
+  each leaf `.claude/settings.local.json` in the worktree does not already
+  have is written for the session and removed at exit, and a value the file
+  already has is never written or touched. A leaf `config_content` also sets
+  is `config_content`'s. Claude only (`config_defaults` is refused for any
+  other agent) and automatic profiles only; `.claude/settings.json` and
+  `~/.claude/settings.json` are not read.
 - `wt litellm restart` restarts the LiteLLM proxy the way `wt litellm sync`
   does after a route change: one SIGTERM, a wait of up to 3 minutes for a
   request in flight to finish, launchd starts it again, then a wait of up to
@@ -373,6 +381,15 @@
   session wrote stays, a value the session changed or deleted after the merge
   keeps the session's state, and a table the profile created is removed once
   it is empty. A backup left by an older wt still self-heals as before.
+- The claude local profile example no longer overrides your own
+  `permissions.defaultMode` (#402). Its `defaultMode = "default"` moved from
+  `config_content` to the new `config_defaults` table, so a mode already set
+  in the worktree's `.claude/settings.local.json` (`plan`, `acceptEdits`,
+  ...) is left as it is; the example still keeps a local session that sets
+  none out of auto mode (#393). When every default is already present the
+  file is not written at all, so its formatting, permissions and mtime
+  stay as you left them. Copy the change into your own
+  `profiles.toml` to get it.
 - A directory written after `--cwd` is refused (#392). `--cwd` takes no
   value, so `claude-wt --cwd ~/proj -- -p "task"` used to launch in the
   current directory, pass `~/proj` to claude as its first argument (which

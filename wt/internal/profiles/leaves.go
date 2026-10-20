@@ -13,8 +13,8 @@ import (
 // leafRec is one value a config_content merge wrote: its path from the
 // document root (one segment per object key, whatever characters it holds)
 // and a hash of the value written, never the value itself. An empty Hash
-// marks a legacy record, from a marker that listed top-level keys only:
-// restore it unconditionally.
+// marks a legacy record, from a marker that listed top-level keys only: it
+// has no value to compare against, so it is put back whatever it is now.
 type leafRec struct {
 	Path []string `json:"path"`
 	Hash string   `json:"hash,omitempty"`
@@ -74,6 +74,43 @@ func hashLeaf(v any) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// collectAbsentLeaves returns the leaves of defaults whose path is absent
+// from doc, each with the hash of the default's value. A leaf whose path
+// crosses a non-object in doc counts as present, as does one holding any
+// value, null included. It never changes doc.
+func collectAbsentLeaves(doc, defaults map[string]any) []leafRec {
+	return appendAbsent(nil, nil, doc, defaults)
+}
+
+func appendAbsent(recs []leafRec, prefix []string, doc, defaults map[string]any) []leafRec {
+	for k, v := range defaults {
+		path := append(append([]string(nil), prefix...), k)
+		cur, found := doc[k]
+		if sub, isMap := v.(map[string]any); isMap && len(sub) > 0 {
+			if !found {
+				recs = appendAbsent(recs, path, nil, sub)
+			} else if docSub, ok := cur.(map[string]any); ok {
+				recs = appendAbsent(recs, path, docSub, sub)
+			}
+			continue
+		}
+		if !found {
+			recs = append(recs, leafRec{Path: path, Hash: hashLeaf(v)})
+		}
+	}
+	return recs
+}
+
+// setLeaves writes each record's value from defaults into doc, creating
+// parent objects.
+func setLeaves(doc, defaults map[string]any, recs []leafRec) {
+	for _, r := range recs {
+		if v, ok := getPath(defaults, r.Path); ok {
+			setPath(doc, r.Path, v)
+		}
+	}
+}
+
 // getPath reads the value at path; ok is false when a segment is missing or
 // an intermediate value is not an object. A stored null is ok with v nil.
 func getPath(doc map[string]any, path []string) (v any, ok bool) {
@@ -102,7 +139,9 @@ func getPath(doc map[string]any, path []string) (v any, ok bool) {
 // session changed it); either way the session's state wins. Otherwise the
 // original value is set back, creating parent objects, or the leaf is
 // deleted when orig has no value there. A legacy record (empty Hash) skips
-// only the first check.
+// only the second check: its marker never held a value to compare, so it is
+// put back whatever it is now — but a leaf the session deleted is left
+// deleted, as for any other record.
 //
 // Then every ancestor of a record's path that is an empty object in cur is
 // settled by orig, deepest first: a non-object orig value there is set back

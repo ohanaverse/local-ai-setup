@@ -515,3 +515,29 @@ func TestProfileShowReservedPrefixIsARegistryModel(t *testing.T) {
 		t.Errorf("output = %q, want the automatic profile resolved for the registry model", out.String())
 	}
 }
+
+// TestProfileShowPrintsConfigDefaults verifies `wt profile show` prints the
+// resolved config_defaults table.
+func TestProfileShowPrintsConfigDefaults(t *testing.T) {
+	a := &app{
+		cfg: &config.Config{
+			Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+			Models:    []config.Model{{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}},
+		},
+		profiles: profiles.Store{Enabled: true, Profiles: []profiles.Profile{
+			{Agent: "claude", Match: "location", Location: "local", ConfigDefaults: map[string]any{
+				"permissions": map[string]any{"defaultMode": "default"},
+			}},
+		}},
+	}
+	var out bytes.Buffer
+	cmd := profileCmd(a)
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"show", "-A", "claude", "-M", "ollama/x"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute error = %v", err)
+	}
+	if !strings.Contains(out.String(), "config_defaults: map[permissions:map[defaultMode:default]]") {
+		t.Errorf("output = %q, want the config_defaults line", out.String())
+	}
+}

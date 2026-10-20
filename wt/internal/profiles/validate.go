@@ -79,6 +79,9 @@ func usedMechanisms(p Profile) []Mechanism {
 	if len(p.ConfigContent) > 0 {
 		out = append(out, MechanismConfigFile)
 	}
+	if len(p.ConfigDefaults) > 0 {
+		out = append(out, MechanismConfigDefaults)
+	}
 	if p.Wrapper != nil {
 		out = append(out, MechanismWrapper)
 	}

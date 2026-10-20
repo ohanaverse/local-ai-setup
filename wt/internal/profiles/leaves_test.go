@@ -266,3 +266,47 @@ func TestOlderWtCannotDecodeTheLeafMarker(t *testing.T) {
 		t.Errorf("an older wt decodes %s as key names %v, want a decode error (its whole-file fallback)", raw, keys)
 	}
 }
+
+func absentDefaults() map[string]any {
+	return map[string]any{"permissions": map[string]any{"defaultMode": "default"}}
+}
+
+func TestCollectAbsentLeavesSkipsExistingValues(t *testing.T) {
+	doc := map[string]any{"permissions": map[string]any{"defaultMode": "auto"}}
+	if got := collectAbsentLeaves(doc, absentDefaults()); len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+}
+
+func TestCollectAbsentLeavesSkipsAScalarAncestor(t *testing.T) {
+	doc := map[string]any{"permissions": "strict"}
+	if got := collectAbsentLeaves(doc, absentDefaults()); len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+}
+
+func TestCollectAbsentLeavesSkipsAnExistingNull(t *testing.T) {
+	doc := map[string]any{"permissions": map[string]any{"defaultMode": nil}}
+	if got := collectAbsentLeaves(doc, absentDefaults()); len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+}
+
+func TestCollectAbsentLeavesKeepsSiblingsOfAnExistingContainer(t *testing.T) {
+	doc := map[string]any{"permissions": map[string]any{"allow": []any{}}}
+	got := collectAbsentLeaves(doc, absentDefaults())
+	want := []leafRec{{Path: []string{"permissions", "defaultMode"}, Hash: hashLeaf("default")}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestSetLeavesCreatesParents(t *testing.T) {
+	doc := map[string]any{}
+	defaults := absentDefaults()
+	setLeaves(doc, defaults, collectAbsentLeaves(doc, defaults))
+	want := map[string]any{"permissions": map[string]any{"defaultMode": "default"}}
+	if !reflect.DeepEqual(doc, want) {
+		t.Fatalf("got %v, want %v", doc, want)
+	}
+}
