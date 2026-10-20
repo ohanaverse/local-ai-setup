@@ -282,14 +282,17 @@ claude-wt -W feat -M profile/mixed
 - A blocked pin: with `-W`, `--cwd` or outside a repository, wt exits
   non-zero with the reason. When the picker screens are showing, wt returns
   to the agent picker with the reason.
-- Slot profiles are hidden under `-T`/`-F`. Pinning one there gets
+- Slot profiles are hidden under `-T`/`-F`. Pinning one of the launching
+  agent's own profiles there gets
   `model "profile/<name>" is a slot profile, excluded by -T` (or `-F`, or
   `-T and -F`, naming the flags you set), whether or not the profile is
   blocked.
-- A profile pinned under another agent gets
-  `model "profile/<name>" is a slot profile for agent "claude", not "<agent>"`.
-- An unknown name, a profile `wt profile list` reports as skipped, or any
-  pin while `slot-profiles.toml` does not load gets
+- A profile of another agent gets
+  `model "profile/<name>" is a slot profile for agent "<its agent>", not "<agent>"`,
+  with or without `-T`/`-F`.
+- An unknown name, a profile `wt profile list` reports as skipped, any
+  pin while `slot-profiles.toml` does not load, or any pin while the
+  registry holds the reserved `profile/` prefix gets
   `model "profile/<name>" is not in the eligible list for agent "<agent>"`.
 
 Without `-M`, a launch that skips the picker never chooses a profile.

@@ -376,12 +376,13 @@
   `model "profile/<name>" is a slot profile, excluded by -T` (or `-F`, or
   `-T and -F`: the flags you set), also for a blocked profile, and for
   another agent's profile
-  `model "profile/<name>" is a slot profile for agent "claude", not "codex"`.
+  `model "profile/<name>" is a slot profile for agent "claude", not "codex"`
+  (the profile's own agent, then the launching one).
   Both read before as `model "profile/<name>" is not in the eligible list
   for agent "<agent>"`, as if the profile did not exist. That message stays
-  for an unknown name, a skipped profile or a `slot-profiles.toml` that does
-  not load. The picker's pin returns to the agent picker with the same
-  words.
+  for an unknown name, a skipped profile, a `slot-profiles.toml` that does
+  not load, or a registry that holds the reserved `profile/` prefix. The
+  picker's pin returns to the agent picker with the same words.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
   `.claude/settings.local.json` when the session appended to the array
