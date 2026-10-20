@@ -322,16 +322,20 @@ func (m *model) choiceFrame() listFrame {
 // the list's own help still names the keys, and the question is what the
 // choice is about.
 func (m *model) replaceFrames() []listFrame {
-	header := func() string {
-		var lines []string
-		for _, line := range strings.Split(tuilayout.WrapText(m.replace.header, m.width-2), "\n") {
-			lines = append(lines, "  "+line)
+	// Built once per call, not once per frame. A wrapped line keeps its own
+	// indent (an occupant's), which WrapText's word flow would drop.
+	var lines []string
+	for _, src := range strings.Split(m.replace.header, "\n") {
+		body := strings.TrimLeft(src, " ")
+		indent := src[:len(src)-len(body)]
+		for _, line := range strings.Split(tuilayout.WrapText(body, m.width-2-len(indent)), "\n") {
+			lines = append(lines, "  "+indent+line)
 		}
-		return clip(strings.Join(lines, "\n"), m.width)
 	}
+	header := clip(strings.Join(lines, "\n"), m.width)
 	return []listFrame{
-		func(listView string) string { return header() + "\n" + m.choiceFrame()(listView) },
-		func(listView string) string { return header() + "\n" + listView },
+		func(listView string) string { return header + "\n" + m.choiceFrame()(listView) },
+		func(listView string) string { return header + "\n" + listView },
 	}
 }
 

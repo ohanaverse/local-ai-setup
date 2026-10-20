@@ -1139,3 +1139,20 @@ func TestModelPickerNamesTheHighlightedModelsPrice(t *testing.T) {
 		t.Errorf("costNote of a subscription-only model = %q, want none", got)
 	}
 }
+
+// A wrapped occupant line keeps the indent the unwrapped ones have: the
+// word flow that wraps it would otherwise drop it (#412).
+func TestReplaceFramesKeepOccupantIndentWhenWrapped(t *testing.T) {
+	m := model{cfg: &config.Config{}, theme: themes.Default, phase: phaseReplaceConfirm, width: 30, height: 24}
+	m.replace = &replaceState{choices: newReplaceChoices(m.theme, 28, 20), header: "Starting a will stop:\n" +
+		"  omlx/Ornith-1.5-35B-A3B-6bit (in use by 2 wt session(s))\n  b (in use by 1 wt session(s))"}
+	out := m.replaceFrames()[1]("")
+	for _, line := range strings.Split(out, "\n")[1:] {
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		if !strings.HasPrefix(line, "    ") {
+			t.Errorf("occupant line %q lost its indent in:\n%s", line, out)
+		}
+	}
+}
