@@ -724,8 +724,9 @@ func TestPickerBlockedReasonReadsAProfileRowsOwnVerdict(t *testing.T) {
 // its local model itself, after the cloud routes are written. A blocked row
 // is an error with the row's reason. A profile of another agent, an unknown
 // name, and any profile under -T get the existing "not in the eligible list"
-// message. If a start row were started here, the proxy would restart twice;
-// if a blocked row came back as a pin, a broken profile would launch.
+// message, as does any profile under -F (a blocked one too: its reason is not
+// shown) and a claude profile pinned while the agent is codex. If a start row were started here, the proxy would restart
+// twice; if a blocked row came back as a pin, a broken profile would launch.
 func TestResolveModelSlotProfilePin(t *testing.T) {
 	checks := []profiles.SlotCheck{
 		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
@@ -736,25 +737,31 @@ func TestResolveModelSlotProfilePin(t *testing.T) {
 		name       string
 		agent      string
 		tags       string
+		family     string
 		pinned     string
 		wantAction catalog.Action // read only when wantErr is ""
 		wantErr    string         // "" means a *slotPin is expected
 	}{
-		{"launch row", "claude", "", "profile/cloud", catalog.ActionLaunch, ""},
-		{"start row is not started here", "claude", "", "profile/mixed", catalog.ActionStart, ""},
-		{"blocked row", "claude", "", "profile/broken", 0, "slot opus: openrouter/gone is not in the registry"},
-		{"another agent's profile", "pi", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "pi"`},
-		{"unknown profile", "claude", "", "profile/nope", 0, `model "profile/nope" is not in the eligible list for agent "claude"`},
-		{"hidden under -T", "claude", "code", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "claude"`},
+		{"launch row", "claude", "", "", "profile/cloud", catalog.ActionLaunch, ""},
+		{"start row is not started here", "claude", "", "", "profile/mixed", catalog.ActionStart, ""},
+		{"blocked row", "claude", "", "", "profile/broken", 0, "slot opus: openrouter/gone is not in the registry"},
+		{"another agent's profile", "pi", "", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "pi"`},
+		{"a claude profile pinned for codex", "codex", "", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "codex"`},
+		{"unknown profile", "claude", "", "", "profile/nope", 0, `model "profile/nope" is not in the eligible list for agent "claude"`},
+		{"hidden under -T", "claude", "code", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "claude"`},
+		{"hidden under -F", "claude", "", "a", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "claude"`},
+		{"a blocked profile hidden under -F", "claude", "", "a", "profile/broken", 0, `model "profile/broken" is not in the eligible list for agent "claude"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			started := stubStartDriver(t, nil)
 			stubSlotChecks(t, checks...)
 			cfg := slotFixtureConfig()
-			cfg.Agents = append(cfg.Agents, config.Agent{Name: "pi", SupportedProviders: []string{"openrouter", "omlx"}})
+			cfg.Agents = append(cfg.Agents,
+				config.Agent{Name: "pi", SupportedProviders: []string{"openrouter", "omlx"}},
+				config.Agent{Name: "codex", SupportedProviders: []string{"openrouter", "omlx"}})
 
-			m, _, err := resolveModel(tc.agent, cfg, tc.tags, "", tc.pinned)
+			m, _, err := resolveModel(tc.agent, cfg, tc.tags, tc.family, tc.pinned)
 
 			if m.ID != "" {
 				t.Errorf("model = %q, want none: a profile is not a model", m.ID)

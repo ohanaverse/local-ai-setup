@@ -1,0 +1,65 @@
+# The steps a slot-profile launch asks of the engine, one scenario per block.
+# Read by two tests, one per launch path, so the two paths are held to the
+# same list: TestSlotLaunchParity in cmd/wt (the -M profile/<name> pin,
+# launchSlotProfile) and TestSlotLaunchParity in internal/tui (the picker,
+# slot_flow.go). See docs/internals/launch-flow.md, "Slot-profile launch".
+#
+# Fields:
+#   scenario  a name for the subtest
+#   slots     slot=model pairs; LOCAL is the package fixture's local model
+#   local     none | running | idle (idle: the launch must start it)
+#   writes    which route write changes config.yaml: cloud (the cloud
+#             slots' write), local (the local model's write), or -
+#   steps     the normalized seam calls, in order:
+#             ensure:<ids>:owed=<restart owed going in>
+#             start:LOCAL:owed=<restart handed to the start>
+#             restart, wait (for a restart in flight), probe, build,
+#             apply (the slot applier), record (the launch recorded), run
+
+scenario: cloud only, every route in place
+slots: opus=openrouter/a haiku=openrouter/b
+local: none
+writes: -
+steps: ensure:openrouter/a,openrouter/b:owed=false wait probe build apply record run
+
+scenario: cloud only, a route was missing
+slots: opus=openrouter/a haiku=openrouter/b
+local: none
+writes: cloud
+steps: ensure:openrouter/a,openrouter/b:owed=false restart wait probe build apply record run
+
+scenario: running local model, every route in place
+slots: opus=openrouter/a haiku=LOCAL
+local: running
+writes: -
+steps: ensure:openrouter/a:owed=false ensure:LOCAL:owed=false wait probe build apply record run
+
+scenario: running local model, a cloud route was missing
+slots: opus=openrouter/a haiku=LOCAL
+local: running
+writes: cloud
+steps: ensure:openrouter/a:owed=false ensure:LOCAL:owed=true restart wait probe build apply record run
+
+scenario: running local model, its route was missing
+slots: opus=openrouter/a haiku=LOCAL
+local: running
+writes: local
+steps: ensure:openrouter/a:owed=false ensure:LOCAL:owed=false restart wait probe build apply record run
+
+scenario: idle local model, a cloud route was missing
+slots: opus=openrouter/a haiku=LOCAL
+local: idle
+writes: cloud
+steps: ensure:openrouter/a:owed=false start:LOCAL:owed=true ensure:LOCAL:owed=false wait probe build apply record run
+
+scenario: idle local model, every route in place
+slots: opus=openrouter/a haiku=LOCAL
+local: idle
+writes: -
+steps: ensure:openrouter/a:owed=false start:LOCAL:owed=false ensure:LOCAL:owed=false wait probe build apply record run
+
+scenario: idle local model, the start left its route unwritten
+slots: opus=openrouter/a haiku=LOCAL
+local: idle
+writes: local
+steps: ensure:openrouter/a:owed=false start:LOCAL:owed=false ensure:LOCAL:owed=false restart wait probe build apply record run

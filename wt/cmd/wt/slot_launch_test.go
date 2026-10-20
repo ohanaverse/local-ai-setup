@@ -195,6 +195,10 @@ type slotSeams struct {
 	probeErr    error
 	buildErr    error
 	cmd         *exec.Cmd // what buildSlotCmd returns; default exec.Command("true")
+	// ensured is every id handed to ensureSlotRoutes, in call order.
+	ensured []string
+	// launch is the profile buildSlotCmd was given, nil until it runs.
+	launch *profiles.SlotLaunch
 }
 
 // log is the recorded events joined with ";".
@@ -216,6 +220,7 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 			ids[i] = m.ID
 		}
 		s.events = append(s.events, "ensure:"+strings.Join(ids, ","))
+		s.ensured = append(s.ensured, ids...)
 		if s.ensureErrOn != nil {
 			if err := s.ensureErrOn(ids); err != nil {
 				return false, err
@@ -247,8 +252,9 @@ func stubSlotSeams(t *testing.T) *slotSeams {
 		s.started = true
 		return s.startStill, s.startErr
 	}
-	buildSlotCmd = func(_ profiles.SlotLaunch, worktreePath string, _ bool, _ *config.Config, _ []string) (*exec.Cmd, error) {
+	buildSlotCmd = func(sl profiles.SlotLaunch, worktreePath string, _ bool, _ *config.Config, _ []string) (*exec.Cmd, error) {
 		s.events = append(s.events, "build")
+		s.launch = &sl
 		if s.buildErr != nil {
 			return nil, s.buildErr
 		}
@@ -544,7 +550,9 @@ var slotStateFiles = []string{"usage.jsonl", "rotation.state", "last-picked.stat
 // is still owed and never otherwise, and it is probed on every launch before
 // the command is built. Two restarts would cost the user 20 to 40 seconds; a
 // missing one would start Claude Code against a proxy that does not know the
-// slot's id.
+// slot's id. Each case also checks that the ids handed to the route writes
+// are exactly the distinct models the built payload's four slot variables
+// name: a slot model left out would be refused by the proxy mid-session.
 func TestLaunchSlotProfileSteps(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -598,6 +606,28 @@ func TestLaunchSlotProfileSteps(t *testing.T) {
 			}
 			if _, statErr := os.Stat(sentinel); statErr != nil {
 				t.Error("the agent command did not run")
+			}
+			// What was routed is what the agent is told to use: the ids
+			// handed to the route writes are the distinct values of the
+			// built payload's four slot variables, no more and no fewer.
+			if seams.launch == nil {
+				t.Fatal("the slot command was never built")
+			}
+			sc, berr := agents.BuildSlotCommand(*seams.launch, false, "http://localhost:4000", "sk-test-1234")
+			if berr != nil {
+				t.Fatalf("BuildSlotCommand() error = %v", berr)
+			}
+			var payload []string
+			for _, v := range slotVarsOf(t, slotSettingsOf(t, sc.Args)) {
+				payload = append(payload, v)
+			}
+			slices.Sort(payload)
+			payload = slices.Compact(payload)
+			ensured := slices.Clone(seams.ensured)
+			slices.Sort(ensured)
+			ensured = slices.Compact(ensured)
+			if !slices.Equal(ensured, payload) {
+				t.Errorf("ids routed = %v, payload slot ids = %v: want the same set", ensured, payload)
 			}
 		})
 	}
@@ -976,9 +1006,12 @@ func restoreLaunchSlotChecks(t *testing.T) {
 
 // TestSlotWarnings verifies the warning lines of a launch: the load error;
 // one line per profile that has no usable name or agent, naming its position
-// in the file; and one line when the registry has a provider "profile" while
-// a usable profile exists. A profile that merely fails validation gets no
-// line here: it has a blocked row that carries its reason.
+// in the file; one line when the registry has a provider "profile" while
+// a usable profile exists; and one line per modelOverrides target of a
+// passing profile that is not one of its slot models (#412), the launch-time
+// channel that warning reaches both launch paths through. A profile that
+// merely fails validation gets no line here: it has a blocked row that
+// carries its reason.
 func TestSlotWarnings(t *testing.T) {
 	usable := slotFixtureCheck(0, "cloud", "opus", slotCloud())
 	blocked := slotFixtureCheck(1, "broken", "opus", slotCloud())
@@ -988,12 +1021,24 @@ func TestSlotWarnings(t *testing.T) {
 	reserved.Providers = append(reserved.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
 	prefixed := slotFixtureConfig()
 	prefixed.Models = append(prefixed.Models, config.Model{ID: "profile/mixed", ProviderID: "openrouter", ModelName: "mixed"})
+	overriding := slotFixtureCheck(3, "overriding", "opus", slotCloud())
+	overriding.Profile.ConfigContent = map[string]any{"modelOverrides": map[string]any{
+		"claude-opus-4-1": "openrouter/a", "claude-sonnet-4-6": "openrouter/z"}}
+	routedOnly := slotFixtureCheck(4, "routed-only", "opus", slotCloud())
+	routedOnly.Profile.ConfigContent = map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": "openrouter/b"}}
+	blockedOverriding := overriding
+	blockedOverriding.Err = errors.New("default is missing")
 	cases := []struct {
 		name string
 		a    *app
 		want []string
 	}{
 		{"nothing wrong", &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, blocked}}, nil},
+		{"a modelOverrides target that is not a slot model, once",
+			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, overriding, routedOnly}},
+			[]string{`wt: profile/overriding (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`}},
+		{"a blocked profile's modelOverrides says nothing more",
+			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{blockedOverriding}}, nil},
 		{"no file", &app{cfg: slotFixtureConfig()}, nil},
 		{"the file does not parse",
 			&app{cfg: slotFixtureConfig(), slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")},
