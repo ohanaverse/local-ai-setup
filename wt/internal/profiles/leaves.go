@@ -14,7 +14,8 @@ import (
 // document root (one segment per object key, whatever characters it holds)
 // and a hash of the value written, never the value itself. An empty Hash
 // marks a legacy record, from a marker that listed top-level keys only:
-// restore it unconditionally.
+// restore it without the hash comparison (a leaf the session deleted is
+// still not brought back).
 type leafRec struct {
 	Path []string `json:"path"`
 	Hash string   `json:"hash,omitempty"`
@@ -50,7 +51,9 @@ func appendLeaves(recs []leafRec, prefix []string, doc, content map[string]any) 
 
 // hashLeaf is the hex SHA-256 of v's JSON form. JSON is the form the
 // settings file holds, so a TOML int64 and the float64 read back from disk
-// hash alike.
+// hash alike. An integer above 2^53 does not survive the float64 round trip
+// through the settings file, so its hash will not match on restore (the
+// session's value is then kept).
 func hashLeaf(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -59,6 +62,43 @@ func hashLeaf(v any) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// collectAbsentLeaves returns the leaves of defaults whose path is absent
+// from doc, each with the hash of the default's value. A leaf whose path
+// crosses a non-object in doc counts as present, as does one holding any
+// value, null included. It never changes doc.
+func collectAbsentLeaves(doc, defaults map[string]any) []leafRec {
+	return appendAbsent(nil, nil, doc, defaults)
+}
+
+func appendAbsent(recs []leafRec, prefix []string, doc, defaults map[string]any) []leafRec {
+	for k, v := range defaults {
+		path := append(append([]string(nil), prefix...), k)
+		cur, found := doc[k]
+		if sub, isMap := v.(map[string]any); isMap && len(sub) > 0 {
+			if !found {
+				recs = appendAbsent(recs, path, nil, sub)
+			} else if docSub, ok := cur.(map[string]any); ok {
+				recs = appendAbsent(recs, path, docSub, sub)
+			}
+			continue
+		}
+		if !found {
+			recs = append(recs, leafRec{Path: path, Hash: hashLeaf(v)})
+		}
+	}
+	return recs
+}
+
+// setLeaves writes each record's value from defaults into doc, creating
+// parent objects.
+func setLeaves(doc, defaults map[string]any, recs []leafRec) {
+	for _, r := range recs {
+		if v, ok := getPath(defaults, r.Path); ok {
+			setPath(doc, r.Path, v)
+		}
+	}
 }
 
 // getPath reads the value at path; ok is false when a segment is missing or
@@ -88,8 +128,9 @@ func getPath(doc map[string]any, path []string) (v any, ok bool) {
 // replaced it) and when its hash no longer matches what the merge wrote (the
 // session changed it); either way the session's state wins. Otherwise the
 // original value is set back, creating parent objects, or the leaf is
-// deleted when orig has no value there. A legacy record (empty Hash) skips
-// only the first check.
+// deleted when orig has no value there. A legacy record (empty Hash) still
+// goes through the missing-leaf check and is exempt only from the hash
+// comparison.
 //
 // Then every ancestor of a record's path that is an empty object in cur is
 // settled by orig, deepest first: a non-object orig value there is set back
