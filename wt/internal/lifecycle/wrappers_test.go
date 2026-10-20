@@ -704,7 +704,8 @@ func TestStartWrapperRoutesDiscoveredModel(t *testing.T) {
 // provider's model first (#412). An mtplx stopped that way loses its route —
 // the server is down, so a request routed there would fail — while an ollama
 // model keeps its route, since a pulled ollama model is still served on
-// request (#179). Either way the stop's removal and the target's new route
+// request (#179). A stopped omlx model loses its own route alone: its
+// siblings in the pool are still loaded and still served. Either way the stop's removal and the target's new route
 // are published by one proxy restart: a bounce per stop would drop in-flight
 // requests once more for every model stopped.
 func TestStartWrapperStoppedOthersLoseTheirRoutesInOneBounce(t *testing.T) {
@@ -753,6 +754,42 @@ func TestStartWrapperStoppedOthersLoseTheirRoutesInOneBounce(t *testing.T) {
 		got := routedIDs(t, path)
 		if !slices.Contains(got, "ollama/b:1") || !slices.Contains(got, "mtplx/Y--Q35") {
 			t.Fatalf("routed = %v, want ollama/b:1 kept and mtplx/Y--Q35 added (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1", restarts())
+		}
+	})
+	t.Run("a stopped omlx model loses only its own route", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, `model_list:
+  - model_name: omlx/A
+    litellm_params: {model: openai/A, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: omlx/B
+    litellm_params: {model: openai/B, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`)
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama"})
+		swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls, family: "omlx"})
+		fp := &fakePool{loaded: map[string]bool{"A": true, "B": true}}
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
+		cfg.Providers = append(cfg.Providers, config.Provider{ID: "omlx", Location: config.LocationLocal, ModelDir: t.TempDir(), Auth: config.AuthConfig{Type: "none", BaseURL: fp.serve(t) + "/v1"}})
+		cfg.Models = append(cfg.Models,
+			config.Model{ID: "omlx/A", ProviderID: "omlx", ModelName: "A", Location: config.LocationLocal},
+			config.Model{ID: "omlx/B", ProviderID: "omlx", ModelName: "B", Location: config.LocationLocal})
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"omlx/A"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"omlx:stopModel:A", "ollama:start:a:1"}) {
+			t.Fatalf("backend calls = %v, want the omlx stop of A, then the start", calls)
+		}
+		got := routedIDs(t, path)
+		if slices.Contains(got, "omlx/A") || !slices.Contains(got, "omlx/B") || !slices.Contains(got, "ollama/a:1") {
+			t.Fatalf("routed = %v, want omlx/A gone, omlx/B kept and ollama/a:1 added (warn %q)", got, warn.String())
 		}
 		if restarts() != 1 {
 			t.Fatalf("restarts = %d, want 1", restarts())
