@@ -132,10 +132,14 @@ func TestOthersDialogListsOtherProvidersModels(t *testing.T) {
 // TestOthersDialogChoices pins the dialog's choices (#412): Cancel first and
 // under the cursor, then keep, then stop, whose description counts the models
 // it stops; with same-family occupants as well the two actions say they
-// replace. Stop is absent when nothing listed can be stopped (an mlx_lm_server
-// pairing, a family wt cannot read). A default on anything but Cancel stops
-// or loads models on a stray Enter; a stop choice over unstoppable models
-// promises what wt cannot do.
+// replace. Keep's description says what it does in each dialog: beside the
+// models listed, or, with same-family occupants, after replacing the ones
+// listed first, or, with no model listed at all (a family wt cannot read),
+// without stopping anything. Stop is absent when nothing listed can be
+// stopped (an mlx_lm_server pairing, a family wt cannot read). A default on
+// anything but Cancel stops or loads models on a stray Enter; a stop choice
+// over unstoppable models promises what wt cannot do; a keep that says it
+// loads beside models it is about to replace hides the replace.
 func TestOthersDialogChoices(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -148,13 +152,13 @@ func TestOthersDialogChoices(t *testing.T) {
 			[]string{"Return to the model screen", "Load omlx/qwen3.8 beside the models above", "Stop 2 model(s) of other providers first"}},
 		{"others and same family", othersRefusal([]string{"omlx/old"}, []lifecycle.Resident{mtplxOther}),
 			[]string{"Cancel", "Replace, keep the others", "Replace and stop the others"},
-			[]string{"Return to the model screen", "Load omlx/qwen3.8 beside the models above", "Stop 1 model(s) of other providers first"}},
+			[]string{"Return to the model screen", "Replace the models listed first, keep the other providers' models", "Stop 1 model(s) of other providers first"}},
 		{"nothing stoppable", othersRefusal(nil, []lifecycle.Resident{mlxOther}, "mtplx"),
 			[]string{"Cancel", "Start and keep them"},
 			[]string{"Return to the model screen", "Load omlx/qwen3.8 beside the models above"}},
 		{"only a family wt cannot read", othersRefusal(nil, nil, "mtplx"),
 			[]string{"Cancel", "Start and keep them"},
-			[]string{"Return to the model screen", "Load omlx/qwen3.8 beside the models above"}},
+			[]string{"Return to the model screen", "Load omlx/qwen3.8 without stopping anything"}},
 		{"same family only keeps its dialog", othersRefusal([]string{"omlx/old"}, nil),
 			[]string{"Cancel", "Replace and start"},
 			[]string{"Return to the model screen", "Stop the running model, then start this one"}},

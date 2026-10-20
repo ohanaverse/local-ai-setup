@@ -404,15 +404,23 @@ func buildReplaceChoices() []list.Item {
 // buildOthersChoices is the dialog's choices when other providers' models are
 // loaded (#412): Cancel first, the default; keep; and stop, only when
 // stoppable of the models shown can be stopped. With same-family occupants as
-// well (sameFamily) the two actions say they replace.
-func buildOthersChoices(id string, sameFamily bool, stoppable int) []list.Item {
+// well (sameFamily) the two actions say they replace. Keep's description
+// says what it does to the models listed: loads beside them, replaces the
+// will-stop ones first, or, with no model listed (othersListed false: only
+// families wt cannot read), stops nothing.
+func buildOthersChoices(id string, sameFamily, othersListed bool, stoppable int) []list.Item {
 	keep, stop := "Start and keep them", "Stop them, then start"
-	if sameFamily {
+	keepDesc := "Load " + id + " beside the models above"
+	switch {
+	case sameFamily:
 		keep, stop = "Replace, keep the others", "Replace and stop the others"
+		keepDesc = "Replace the models listed first, keep the other providers' models"
+	case !othersListed:
+		keepDesc = "Load " + id + " without stopping anything"
 	}
 	items := []list.Item{
 		choiceItem{choice: replaceCancelChoice, title: "Cancel", desc: "Return to the model screen"},
-		choiceItem{choice: othersKeepChoice, title: keep, desc: "Load " + id + " beside the models above"},
+		choiceItem{choice: othersKeepChoice, title: keep, desc: keepDesc},
 	}
 	if stoppable > 0 {
 		items = append(items, choiceItem{choice: othersStopChoice, title: stop, desc: fmt.Sprintf("Stop %d model(s) of other providers first", stoppable)})
@@ -785,7 +793,7 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		if othersAsked {
 			rs.allow = st.allow || sameFamily
 			rs.stop = stoppableIDs(occ.Others)
-			items = buildOthersChoices(st.item.model.ID, sameFamily, len(rs.stop))
+			items = buildOthersChoices(st.item.model.ID, sameFamily, len(occ.Others) > 0, len(rs.stop))
 		}
 	case errors.As(msg.err, &unk):
 		rs.header = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
