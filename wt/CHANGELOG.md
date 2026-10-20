@@ -371,6 +371,17 @@
 
 ### Fixed
 
+- `-M profile/<name>` now says why a slot profile it names cannot be pinned
+  (#412). Under `-T`/`-F` it prints
+  `model "profile/<name>" is a slot profile, excluded by -T` (or `-F`, or
+  `-T and -F`: the flags you set), also for a blocked profile, and for
+  another agent's profile
+  `model "profile/<name>" is a slot profile for agent "claude", not "codex"`.
+  Both read before as `model "profile/<name>" is not in the eligible list
+  for agent "<agent>"`, as if the profile did not exist. That message stays
+  for an unknown name, a skipped profile or a `slot-profiles.toml` that does
+  not load. The picker's pin returns to the agent picker with the same
+  words.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
   `.claude/settings.local.json` when the session appended to the array
