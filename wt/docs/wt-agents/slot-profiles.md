@@ -67,7 +67,11 @@ MAX_THINKING_TOKENS = "4096"
 
 The model ids above are illustrative. The same entry is the first profile
 of the contract fixture `docs/contracts/slot-profiles.sample.toml`, which a
-Go test reads, so this format and the parser cannot drift apart.
+Go test reads, so this format and the parser cannot drift apart. Its
+`modelOverrides` target is not one of `mixed`'s slots, so a launch of that
+example warns that wt does not route it
+([below](#a-modeloverrides-target-wt-does-not-route)); a target that is a
+slot model raises no warning.
 
 | Field | Rule |
 |---|---|
@@ -77,7 +81,7 @@ Go test reads, so this format and the parser cannot drift apart.
 | `default` | Required. A slot that `slots` fills, or `opusplan` for a profile that fills `opus` and `sonnet` ([opusplan](#opusplan)). wt passes it as `--model`, so the session starts on it |
 | `env` | Optional, string → string |
 | `args` | Optional string list |
-| `config_content` | Optional free-form table, merged into the agent's settings. `config_content.modelOverrides` is how a profile supplies Claude Code's `modelOverrides` setting; wt does not validate its keys. Checked on 2026-10-13: `modelOverrides` is honoured behind the proxy; an id it names is sent as the id it maps to. |
+| `config_content` | Optional free-form table, merged into the agent's settings. `config_content.modelOverrides` is how a profile supplies Claude Code's `modelOverrides` setting. It must be a table, or the profile is blocked; wt does not validate its keys, and a target that is not a string, or not one of the profile's slot models, is a warning ([below](#a-modeloverrides-target-wt-does-not-route)). Checked on 2026-10-13: `modelOverrides` is honoured behind the proxy; an id it names is sent as the id it maps to. |
 | `wrapper` | Optional `{binary, args_template}` |
 
 **Unfilled slots use the `default` slot's model.** The example fills three
@@ -163,6 +167,7 @@ Static reasons:
 | `mechanism "x" has no effect without "y" on the same profile` | The agent's driver requires field `y` whenever `x` is set, and the profile sets only `x`. No rule of this kind applies to Claude |
 | `env sets ANTHROPIC_BASE_URL, which wt sets for the launch` | A reserved key (also `config_content.env sets …`) |
 | `config_content.env must be a table` | `config_content.env` is a string, a number or an array. This is Claude's rule: Claude Code's settings take `env` as a table, and wt adds its own variables to it |
+| `config_content.modelOverrides must be a table` | `config_content.modelOverrides` is a string, a number, a boolean or an array. Claude's rule: Claude Code's `modelOverrides` maps model ids to model ids (#412) |
 | `config_content cannot be encoded as the --settings JSON` | A number in `config_content` is nan or inf, which the `--settings` payload cannot hold (the reason names what the value is). Also Claude's rule |
 | `wrapper args_template [...] has no "{{args}}" placeholder` | The agent's own arguments would be dropped |
 
@@ -213,6 +218,25 @@ Three problems produce no usable row, and a fourth loses part of the file:
 
 None of these affects a single-model launch or an automatic profile. Only
 the parse failure affects another profile.
+
+### A modelOverrides target wt does not route
+
+A launch makes sure the profile's slot models are routed: the distinct
+registry ids its slots name (the default's model among them). A
+`config_content.modelOverrides` target outside that set may be an id you
+route yourself, so wt warns and never blocks the row (#412). For each such
+target of a profile that passed validation, a launch prints before any
+picker opens, and again after a picker has closed, so a launch that opens
+no picker prints them once,
+
+```
+wt: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/x", which is not one of the profile's slot models, so wt does not make sure it is routed
+```
+
+and a target that is not a string gives
+`… config_content.modelOverrides["<key>"] is not a string: a target must be a model id`.
+`wt profile list` prints the same lines after `warning:`, and the profile
+stays `ok`. The keys are Claude Code's own model ids and are never judged.
 
 **Where the warning lines appear.** wt prints them to stderr once per launch
 of an agent that has slots, before any picker opens. The picker's screen
@@ -488,7 +512,9 @@ With no profile it prints `slot profiles: (none defined)`. After the
 profiles it prints one `warning:` line per unknown key
 (`warning: slot-profiles.toml: unknown key "profiles" — ignored`), also when
 there is no profile, and one when the `profile/` prefix is taken, since no
-profile it lists as `ok` has a row then. A file that does
+profile it lists as `ok` has a row then, and one per `modelOverrides`
+target a passing profile does not route
+([above](#a-modeloverrides-target-wt-does-not-route)). A file that does
 not parse is one line, `slot profiles: <error>`, and the command exits
 non-zero. `list` reports the static check only. A profile it calls `ok` can
 still be blocked by the registry or the proxy; `show` says.
