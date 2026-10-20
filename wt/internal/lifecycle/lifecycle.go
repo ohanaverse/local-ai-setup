@@ -503,10 +503,12 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 // loading the verified pidfile stop. Each stop's route removal is written at
 // once through onOccupantStopped and its restart deferred to Start's one
 // bounce, as a replaced occupant's is. An approved id that is no longer
-// loaded has nothing to stop; a resident wt cannot stop is never stopped; a
-// stoppable resident the user did not approve while approving others
-// appeared after the question, and is kept with a line saying so. The first
-// stop that fails ends the start: the target is not started.
+// loaded has nothing to stop; a resident wt cannot stop is never stopped, and
+// one the user approved (stoppable when asked, an omlx model loading again
+// by now) is kept with the kept-model line; a stoppable resident the user
+// did not approve while approving others appeared after the question, and is
+// kept with a line saying so. The first stop that fails ends the start: the
+// target is not started.
 func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, others []Resident, approved []string, report func(Stage)) error {
 	if len(approved) == 0 {
 		return nil
@@ -514,6 +516,12 @@ func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, othe
 	reported := false
 	for _, r := range others {
 		if !r.Stoppable {
+			// An approved model that wt can no longer stop (an omlx model
+			// loading again since the question) is kept and said so; one
+			// nobody approved stays as silent as a keep.
+			if slices.Contains(approved, r.Entry.ModelID) {
+				routePrintf(ctx, "wt: %s (%s) is also loaded; not stopped\n", r.Label(), r.Figure())
+			}
 			continue
 		}
 		if !slices.Contains(approved, r.Entry.ModelID) {
