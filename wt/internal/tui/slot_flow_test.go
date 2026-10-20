@@ -1249,3 +1249,115 @@ func TestSlotRestartOutputBecomesNotes(t *testing.T) {
 		t.Fatalf("events = %s, want a restart", got)
 	}
 }
+
+// TestProfileStartReplaceIsOnlyThePinnedRowsPermission pins that --replace
+// reaches a profile's local-model start only through the -M pin: with
+// allowReplace set, the start a profile row begins carries AllowReplace only
+// when that row is the pinned one; Enter on any other profile row starts
+// without it, so the replace dialog still asks. A regression either way
+// stops a model the user is using without asking (the permission leaks to
+// rows nobody pinned), or makes `-M profile/<name> --replace` stop at a
+// dialog it was told to skip.
+func TestProfileStartReplaceIsOnlyThePinnedRowsPermission(t *testing.T) {
+	cases := []struct {
+		name, pin string
+		want      bool
+	}{
+		{"another row pinned", "profile/cloud", false},
+		{"this row pinned", "profile/mixed", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+			m := slotFlowFixture(t, idleOmlxSnapshot(), cloudProfile(), mixedProfile())
+			stubSlotSeams(t)
+			m.allowReplace, m.pinnedModel = true, c.pin
+			preparing, cmd := enterProfileRow(t, m, "profile/mixed")
+			starting, _ := updateMsg(preparing, slotStageFrom(t, cmd)())
+			if starting.start != nil && starting.start.cancel != nil {
+				t.Cleanup(starting.start.cancel)
+			}
+			waitStartCalls(t, calls, 1)
+			if got := calls.at(0); got.opts.AllowReplace != c.want || got.target != omlxTarget {
+				t.Errorf("start = %+v, want AllowReplace=%v for the profile's local model", got, c.want)
+			}
+		})
+	}
+}
+
+// TestProfileStartRowWithNoLocalModelStartsNothing pins the guard between a
+// profile's first stage and the start flow: a re-resolved row that says
+// "start" but carries no profile local model aborts back to the picker with
+// "<id> has no local model to start" and starts nothing. Without the guard
+// the flow dereferences a nil local model (a crash with the alt screen up),
+// or starts a model the profile does not name.
+func TestProfileStartRowWithNoLocalModelStartsNothing(t *testing.T) {
+	rows := map[string]catalog.Row{
+		"a profile row with no local model": {
+			Model:   config.Model{ID: "profile/mixed"},
+			Status:  catalog.StatusOK,
+			Profile: &catalog.ProfileRow{Check: mixedProfile(), Verdict: catalog.ActionStart},
+		},
+		"a row that is no profile": {
+			Model:    config.Model{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8"},
+			Location: config.LocationLocal,
+			Status:   catalog.StatusOK,
+		},
+	}
+	for name, row := range rows {
+		t.Run(name, func(t *testing.T) {
+			if row.Action() != catalog.ActionStart {
+				t.Fatalf("fixture row action = %v, want a start row", row.Action())
+			}
+			calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+			m := slotFlowFixture(t, idleOmlxSnapshot(), mixedProfile())
+			stubSlotSeams(t)
+			preparing, _ := enterProfileRow(t, m, "profile/mixed")
+			if preparing.phase != phaseSlot || preparing.slot == nil {
+				t.Fatalf("phase = %v slot = %v, want the slot flow in flight", preparing.phase, preparing.slot)
+			}
+			back, _ := updateMsg(preparing, slotPreparedMsg{id: preparing.slot.id, res: slotResult{row: row}})
+			if back.phase != phaseModel || back.slot != nil || back.start != nil {
+				t.Fatalf("phase = %v slot = %v start = %v, want the picker with nothing in flight", back.phase, back.slot, back.start)
+			}
+			if want := row.Model.ID + " has no local model to start"; back.status != want {
+				t.Errorf("status = %q, want %q", back.status, want)
+			}
+			if n := calls.len(); n != 0 {
+				t.Errorf("startModel calls = %d, want 0", n)
+			}
+			assertNothingRecorded(t)
+		})
+	}
+}
+
+// TestProfileReplaceDialogNamesNoSessionCount documents current behavior,
+// pending a product decision (issue #412 item C): the TUI's replace dialog for
+// a profile's local-model start names the occupant but not how many wt
+// sessions use it, although the non-TUI prompt does
+// (TestProfileStartPromptNamesTheOccupantsSessions in cmd/wt). Here the
+// occupant has a live session and the dialog still says only its id. If the
+// TUI is changed to show the count, this test is the one to update.
+func TestProfileReplaceDialogNamesNoSessionCount(t *testing.T) {
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}
+	})
+	starting, _ := mixedStarting(t, false)
+	if err := newRefcountStore().Record(os.Getpid(), "omlx/old"); err != nil {
+		t.Fatal(err)
+	}
+	if n := newRefcountStore().Counts([]string{"omlx/old"})["omlx/old"]; n != 1 {
+		t.Fatalf("sessions on omlx/old = %d, want 1 for the fixture", n)
+	}
+	got, _ := updateMsg(starting, recvStart(t, starting))
+	if got.phase != phaseReplaceConfirm || got.replace == nil {
+		t.Fatalf("phase = %v, want the replace dialog", got.phase)
+	}
+	title := got.replace.choices.Title
+	if want := "Starting omlx/qwen3.8 will stop omlx/old"; title != want {
+		t.Errorf("dialog title = %q, want %q", title, want)
+	}
+	if strings.Contains(title, "in use by") || strings.Contains(got.View(), "in use by") {
+		t.Errorf("dialog = %q, want no session count (current behavior, #412 item C)", title)
+	}
+}
