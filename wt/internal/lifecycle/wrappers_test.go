@@ -698,3 +698,88 @@ func TestStartWrapperRoutesDiscoveredModel(t *testing.T) {
 		t.Fatalf("rows = %v, want the discovered id, marked (warn %q)", got, warn.String())
 	}
 }
+
+// TestStartWrapperStoppedOthersLoseTheirRoutesInOneBounce drives the real
+// Start and litellm.ApplyChange through a start that stops another
+// provider's model first (#412). An mtplx stopped that way loses its route —
+// the server is down, so a request routed there would fail — while an ollama
+// model keeps its route, since a pulled ollama model is still served on
+// request (#179). Either way the stop's removal and the target's new route
+// are published by one proxy restart: a bounce per stop would drop in-flight
+// requests once more for every model stopped.
+func TestStartWrapperStoppedOthersLoseTheirRoutesInOneBounce(t *testing.T) {
+	t.Run("a stopped mtplx loses its route", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the resident
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama"})
+		swapBackend(t, "mtplx", &fakeBackend{ten: Exclusive, calls: &calls, family: "mtplx"})
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, []string{"Y/Q27"}))
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"mtplx/Y--Q27"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"mtplx:stopModel:Y/Q27", "ollama:start:a:1"}) {
+			t.Fatalf("backend calls = %v, want the mtplx stop, then the start", calls)
+		}
+		if got := routedIDs(t, path); !slices.Equal(got, []string{"ollama/a:1"}) {
+			t.Fatalf("routed = %v, want only [ollama/a:1] (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1", restarts())
+		}
+	})
+	t.Run("a stopped ollama model keeps its route", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, `model_list:
+  - model_name: ollama/b:1
+    litellm_params: {model: ollama_chat/b:1, api_base: http://localhost:11434}
+`)
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama"})
+		swapBackend(t, "mtplx", &fakeBackend{ten: Exclusive, calls: &calls, family: "mtplx"})
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1", "b:1"}, []string{"b:1"}), openaiSrv(t, nil))
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"ollama/b:1"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"ollama:stopModel:b:1", "mtplx:start:Y/Q35"}) {
+			t.Fatalf("backend calls = %v, want the ollama stop, then the start", calls)
+		}
+		got := routedIDs(t, path)
+		if !slices.Contains(got, "ollama/b:1") || !slices.Contains(got, "mtplx/Y--Q35") {
+			t.Fatalf("routed = %v, want ollama/b:1 kept and mtplx/Y--Q35 added (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1", restarts())
+		}
+	})
+	t.Run("a start a failed stop ended still bounces once", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, staleSiblingYAML)
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama", stopErr: errors.New("ollama stop failed")})
+		swapBackend(t, "mtplx", &fakeBackend{ten: Exclusive, calls: &calls, family: "mtplx"})
+		swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls, family: "omlx"})
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, []string{"a:1"}), openaiSrv(t, []string{"Y/Q27"}))
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "omlx", ModelName: "T"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"mtplx/Y--Q27", "ollama/a:1"}}})
+		if err == nil || !strings.Contains(err.Error(), "stopping ollama/a:1 before starting T") {
+			t.Fatalf("Start = %v, want the failed ollama stop", err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"mtplx:stopModel:Y/Q27", "ollama:stopModel:a:1"}) {
+			t.Fatalf("backend calls = %v, want both stops and no start", calls)
+		}
+		if got := routedIDs(t, path); len(got) != 0 {
+			t.Fatalf("routed = %v, want the stopped mtplx's route gone (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1: the removal already written must reach the proxy", restarts())
+		}
+	})
+}

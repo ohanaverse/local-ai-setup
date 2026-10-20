@@ -175,6 +175,9 @@ type mtplxIdent struct {
 	// group — the one wt created at spawn, holding only the server and what
 	// it forked. A server wt has no record of is signalled alone.
 	group bool
+	// model is the --model-id the server was started with, "" when its
+	// command line names none: what a start warns is still loading.
+	model string
 }
 
 // notMtplxServer says why info is not this user's mtplx server on port that
@@ -220,7 +223,18 @@ func (e *env) loadingMtplx(cfg *config.Config) (mtplxIdent, Loading) {
 	if why := notMtplxServer(info, port, recorded); why != "" {
 		return mtplxIdent{}, Loading{Stray: fmt.Sprintf("the mtplx pidfile names pid %d, %s — left alone", pid, why)}
 	}
-	return mtplxIdent{pid: pid, start: info.start, group: recorded != "" && info.pgid == pid}, Loading{PID: pid}
+	return mtplxIdent{pid: pid, start: info.start, group: recorded != "" && info.pgid == pid, model: argAfter(info.argv, "--model-id")}, Loading{PID: pid}
+}
+
+// argAfter is the argument that follows flag in argv as a separate argument,
+// "" when argv has no such pair.
+func argAfter(argv []string, flag string) string {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == flag {
+			return argv[i+1]
+		}
+	}
+	return ""
 }
 
 // stopLoadingMtplx is StopLoading's injectable core. SIGTERM, a wait of the

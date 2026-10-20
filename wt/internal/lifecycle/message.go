@@ -9,6 +9,8 @@ import (
 // start screen and the non-TUI start driver so the two cannot drift.
 func StageLabel(s Stage) string {
 	switch s {
+	case StageStoppingOthers:
+		return "stopping other providers' models"
 	case StageStoppingOccupant:
 		return "stopping the running model"
 	case StageStarting:

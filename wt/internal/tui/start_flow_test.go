@@ -1766,3 +1766,27 @@ func TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching(t *testing.T
 		t.Errorf("asked about %+v, want %+v", asked, want)
 	}
 }
+
+// TestRunStartKeepsOtherProvidersModels pins what the picker's start answers
+// about other providers' models until its dialog exists (#412): every engine
+// call, the first and the retry after a confirmed replace, says Decided with
+// nothing to stop. Leaving the answer at its zero value would turn every
+// picker start beside another provider's model into a refusal the flow
+// cannot show; a Stop list would stop models the user was never asked about.
+func TestRunStartKeepsOtherProvidersModels(t *testing.T) {
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	target := lifecycle.Target{ProviderID: "omlx", ModelName: "T", ModelID: "omlx/T"}
+	for _, allow := range []bool{false, true} {
+		ch, _, _ := runStart(context.Background(), &config.Config{}, target, allow, false, 1)
+		for range ch {
+		}
+	}
+	if calls.len() != 2 {
+		t.Fatalf("startModel calls = %d, want 2", calls.len())
+	}
+	for i := 0; i < 2; i++ {
+		if o := calls.at(i).opts.Others; !o.Decided || len(o.Stop) != 0 {
+			t.Errorf("call %d: Others = %+v, want Decided with nothing to stop", i, o)
+		}
+	}
+}

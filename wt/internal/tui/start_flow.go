@@ -411,7 +411,9 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 			case <-ctx.Done():
 			}
 		}
-		err := start(ctx, cfg, t, lifecycle.Options{AllowReplace: allow, Progress: stage, Out: out, RestartOwed: restartOwed})
+		// Others: keep other providers' models, unasked, as every start did
+		// before #412; the picker does not ask the question yet.
+		err := start(ctx, cfg, t, lifecycle.Options{AllowReplace: allow, Progress: stage, Out: out, RestartOwed: restartOwed, Others: lifecycle.OthersAnswer{Decided: true}})
 		if pending() {
 			// Not through stage: a cancelled start has a done context, and
 			// the screen still has to say what it is waiting for.

@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -130,5 +131,149 @@ func TestOccupiedErrorNamesEveryOccupant(t *testing.T) {
 	err := &OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/A"}, {ModelID: "omlx/B"}}}
 	if !reflect.DeepEqual(err.IDs(), []string{"omlx/A", "omlx/B"}) || !containsFold(err.Error(), "omlx/A, omlx/B") {
 		t.Errorf("ids = %v, message = %q", err.IDs(), err.Error())
+	}
+}
+
+// residentIDs lists the residents' model ids, each with "!" when the resident
+// is not stoppable, for a table to compare in one go.
+func residentIDs(rs []Resident) []string {
+	var out []string
+	for _, r := range rs {
+		id := r.Entry.ModelID
+		if !r.Stoppable {
+			id += "!"
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// TestResidentOthers pins what a start warns about on the other provider
+// families (#412): every running model of another family, each family by its
+// own probe — an untrusted one is "cannot tell", never "nothing loaded"; one
+// that refused the connection holds nothing — and nothing at all when the
+// target is already running or already loading (that start asked). The
+// target's own family is the replace question's, never this one's, and
+// mlx_lm_server is listed but cannot be stopped. A miss here either starts a
+// model beside one the user never heard of, or offers to stop what wt cannot.
+func TestResidentOthers(t *testing.T) {
+	omlxT := Target{ProviderID: "omlx", ModelName: "T"}
+	mtplxT := Target{ProviderID: "mtplx", ModelName: "Org/New"}
+	ollamaT := Target{ProviderID: "ollama", ModelName: "b:2b"}
+	ol := running("ollama", "ollama/a", "a:1b")
+	mt := running("mtplx", "mtplx/m1", "Org/M1")
+	om := running("omlx", "omlx/A", "A")
+	om6 := running("omlx-6bit", "omlx-6bit/S", "S")
+	mlx := running("mlx_lm_server", "mlx_lm_server/p", "p")
+	pulled := localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/idle", ModelName: "idle:1b"}
+	loadingT := running("omlx", "omlx/T", "T")
+	loadingT.Loading = true
+	for _, tc := range []struct {
+		name        string
+		target      Target
+		snap        localmodels.Snapshot
+		want        []string
+		wantUnknown []string
+	}{
+		{"an omlx start sees each other family's running model", omlxT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{mlx, mt, ol, om6, pulled}},
+			[]string{"mlx_lm_server/p!", "mtplx/m1", "ollama/a"}, nil},
+		{"an mtplx start sees ollama and both omlx rows, not mtplx", mtplxT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{mt, ol, om, om6}},
+			[]string{"ollama/a", "omlx/A", "omlx-6bit/S"}, nil},
+		{"an ollama start sees omlx and mtplx, not ollama", ollamaT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{mt, ol, om}},
+			[]string{"mtplx/m1", "omlx/A"}, nil},
+		{"the target's own family is excluded", omlxT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{om, om6}}, nil, nil},
+		{"an untrusted family is unknown, never empty", omlxT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{mt, ol},
+				Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial, "ollama": localmodels.StatusOK, "omlx": localmodels.StatusPartial}},
+			[]string{"ollama/a"}, []string{"mtplx"}},
+		{"a Down family holds nothing", omlxT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{ol},
+				Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial, "ollama": localmodels.StatusOK},
+				Down:      map[string]bool{"mtplx": true}},
+			[]string{"ollama/a"}, nil},
+		{"an ambiguous mlx_lm_server is unknown", omlxT,
+			localmodels.Snapshot{Providers: map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusPartial},
+				Ambiguous: map[string]bool{"mlx_lm_server": true}},
+			nil, []string{"mlx_lm_server"}},
+		{"a target already running asks nothing", omlxT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/T", "T"), mt},
+				Providers: map[string]localmodels.Status{"ollama": localmodels.StatusPartial}},
+			nil, nil},
+		{"a target already loading asks nothing", omlxT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{loadingT, mt},
+				Providers: map[string]localmodels.Status{"ollama": localmodels.StatusPartial}},
+			nil, nil},
+	} {
+		others, unknown := residentOthers(tc.snap, localmodels.Family(tc.target.ProviderID), tc.target)
+		if got := residentIDs(others); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: residents = %v, want %v", tc.name, got, tc.want)
+		}
+		if !reflect.DeepEqual(unknown, tc.wantUnknown) {
+			t.Errorf("%s: unknown = %v, want %v", tc.name, unknown, tc.wantUnknown)
+		}
+	}
+}
+
+// TestResidentsFindAnMtplxStillLoading pins the one resident the snapshot
+// cannot show: an mtplx still loading refuses its port, so it reads Down, and
+// only wt's pidfile names it. It is listed as loading under its registry id
+// (from the server's --model-id), stoppable only through the pidfile stop
+// (PID set). A pidfile wt cannot check makes mtplx "cannot tell", and nothing
+// is read for an mtplx start (its own family) or when mtplx is not Down.
+// Missing it would start a model beside a ~30 GB load the user never saw.
+func TestResidentsFindAnMtplxStillLoading(t *testing.T) {
+	down := localmodels.Snapshot{
+		Entries:   []localmodels.Entry{{ProviderID: "mtplx", ModelID: "mtplx/org--m", ModelName: "org/m"}},
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
+		Down:      map[string]bool{"mtplx": true},
+	}
+	omlxT := Target{ProviderID: "omlx", ModelName: "T"}
+
+	_, e := loadingEnv(t, true)
+	others, unknown := e.residents(loadCfg(), down, "omlx", omlxT)
+	if len(others) != 1 || others[0].PID != 4242 || !others[0].Stoppable || others[0].Entry.ModelID != "mtplx/org--m" || len(unknown) != 0 {
+		t.Fatalf("residents = %+v unknown = %v, want mtplx/org--m loading as pid 4242", others, unknown)
+	}
+	if got := others[0].Label(); got != "mtplx/org--m (loading)" {
+		t.Errorf("label = %q, want mtplx/org--m (loading)", got)
+	}
+
+	if others, _ := e.residents(loadCfg(), down, "mtplx", Target{ProviderID: "mtplx", ModelName: "org/x"}); len(others) != 0 {
+		t.Errorf("an mtplx start: residents = %+v, want none (its own family)", others)
+	}
+	up := down
+	up.Down = nil
+	up.Providers = nil
+	if others, _ := e.residents(loadCfg(), up, "omlx", omlxT); len(others) != 0 {
+		t.Errorf("mtplx not Down: residents = %+v, want none (the probe answered)", others)
+	}
+
+	pt, e := loadingEnv(t, true)
+	pt.describe = errors.New("ps failed")
+	if others, unknown := e.residents(loadCfg(), down, "omlx", omlxT); len(others) != 0 || !reflect.DeepEqual(unknown, []string{"mtplx"}) {
+		t.Errorf("unreadable pidfile process: residents = %+v unknown = %v, want mtplx unknown", others, unknown)
+	}
+}
+
+// TestResidentFigure pins how a resident's memory is worded: what its server
+// says, formatted as `ollama list` does, "memory use unknown" when it says
+// nothing (never 0, never a guess), and a resident wt cannot stop says so.
+func TestResidentFigure(t *testing.T) {
+	for _, tc := range []struct {
+		r    Resident
+		want string
+	}{
+		{Resident{Entry: localmodels.Entry{ProviderID: "ollama", LoadedSize: 9_600_000_000}, Stoppable: true}, "9.6 GB loaded"},
+		{Resident{Entry: localmodels.Entry{ProviderID: "omlx-6bit", LoadedSize: 18_200_000_000}, Stoppable: true}, "18.2 GB resident (omlx estimate)"},
+		{Resident{Entry: localmodels.Entry{ProviderID: "mtplx"}, Stoppable: true}, "memory use unknown"},
+		{Resident{Entry: localmodels.Entry{ProviderID: "mlx_lm_server"}}, "memory use unknown (wt cannot stop it)"},
+	} {
+		if got := tc.r.Figure(); got != tc.want {
+			t.Errorf("Figure(%+v) = %q, want %q", tc.r.Entry, got, tc.want)
+		}
 	}
 }
