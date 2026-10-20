@@ -38,16 +38,21 @@ const (
 // safe to forward into selectedEntryMsg at launch time.
 //
 // prBranch is the head branch name the row's pull request is looked up under
-// (worktree.PRBranch: the remote stripped off a remote-tracking row), set by
-// buildList, which alone knows the row's group; pr is the pull request found
-// there, set by applyPRs once `gh pr list` has answered, nil until then and
-// for a branch with none. remote marks a remote-tracking row, the only kind
-// whose displayed name drops its first path segment (the remote).
+// (worktree.PRBranch for a worktree or local row; a remote-tracking row's
+// Entry.RemoteBranch, its name without the remote, "" when the remote is
+// unknown), set by buildList, which alone knows the row's group; repo is a
+// remote-tracking row's Entry.RemoteRepo, the owner/repo of its remote,
+// which must be the repository gh listed for the row to be tagged (#388).
+// pr is the pull request found, set by applyPRs once `gh pr list` has
+// answered, nil until then and for a branch with none. remote marks a
+// remote-tracking row, the only kind whose displayed name drops its first
+// path segment (the remote).
 type entryItem struct {
 	kind     entryKind
 	entry    worktree.Entry
 	label    string
 	prBranch string
+	repo     string
 	pr       *worktree.PR
 	remote   bool
 }
@@ -183,9 +188,17 @@ func applyPRs(l *list.Model, prs worktree.PRSet) {
 	}
 }
 
-// prFor is the pull request prs holds for ei's branch, nil for none.
+// prFor is the pull request prs holds for ei's branch, nil for none. A
+// remote-tracking row has one only when its remote is the repository gh
+// listed (prs.Repo, compared without case): a fork's branch of the same name
+// is another branch, and a remote whose repository is unknown — or a listing
+// that named none — is never guessed (#388). prsCurrent asks this too, so
+// the tags and the stale-filter check agree.
 func prFor(ei entryItem, prs worktree.PRSet) *worktree.PR {
 	if ei.prBranch == "" {
+		return nil
+	}
+	if ei.remote && (prs.Repo == "" || !strings.EqualFold(ei.repo, prs.Repo)) {
 		return nil
 	}
 	if pr, found := prs.ByBranch[ei.prBranch]; found {
@@ -271,7 +284,13 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 			if worktree.SkipInPicker(g.Kind, e, defaultBranch) {
 				continue
 			}
-			ei := entryItem{kind: kindEntry, entry: e, prBranch: worktree.PRBranch(g.Kind, e), remote: g.Kind == worktree.GroupRemoteBranches}
+			ei := entryItem{kind: kindEntry, entry: e, prBranch: worktree.PRBranch(g.Kind, e)}
+			if g.Kind == worktree.GroupRemoteBranches {
+				// A remote row is looked up under its branch as the remote
+				// knows it, split off by the remote's real name (which may
+				// hold a slash), and only in its own repository (prFor).
+				ei.remote, ei.prBranch, ei.repo = true, e.RemoteBranch, e.RemoteRepo
+			}
 			// Mark default-branch entries with (default). This applies to
 			// non-current worktrees on the default branch (a linked worktree
 			// created outside wt); bare default-branch rows are skipped above.

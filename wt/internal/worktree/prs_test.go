@@ -60,11 +60,11 @@ func TestParsePRsKeepsTheHighestNumberWhateverTheOrder(t *testing.T) {
 	}
 }
 
-// TestPRsFailureIsAnEmptyMap pins the silent fallback: gh missing, failing,
-// or printing something that is not the expected JSON leaves the picker with
-// no tags and no error to show. A regression would surface a gh error (or
+// TestPRsFailureIsAnEmptyLoadedSet pins the silent fallback: gh missing,
+// failing, or printing something that is not the expected JSON leaves the
+// picker with no tags and no error to show. A regression would surface a gh error (or
 // panic on a nil map) in a picker that worked fine before PR tags existed.
-func TestPRsFailureIsAnEmptyMap(t *testing.T) {
+func TestPRsFailureIsAnEmptyLoadedSet(t *testing.T) {
 	for name, fn := range map[string]func(string, string) ([]byte, error){
 		"gh fails": func(string, string) ([]byte, error) {
 			return nil, errors.New("exec: \"gh\": executable file not found in $PATH")
@@ -135,6 +135,8 @@ func TestMergePRsPrefersOpenThenTheHigherNumberInEitherOrder(t *testing.T) {
 	}
 }
 
+// ghFixture is gh-shaped `gh pr list --json` output, with a deliberately
+// mixed-case owner/repo so the lower-casing of Repo is exercised.
 const ghFixture = `[{"headRefName":"feat/eval-quant-tier-suite","headRepository":{"id":"R_kgDOUF9s9w","name":"local-ai-setup","nameWithOwner":"Ohanaverse/Local-AI-Setup"},"isCrossRepository":false,"isDraft":false,"number":404,"state":"MERGED","title":"feat(llmbench): eval-quant-tier suite"}]`
 
 // TestParsePRsReadsTheHeadRepoAsRepo pins that a listing's Repo is its PRs'

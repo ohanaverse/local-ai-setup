@@ -21,7 +21,8 @@ import (
 // prGroups is a picker with one row of each kind a PR can tag: the current
 // worktree, a second worktree, a local branch and a remote-only branch, plus
 // a branch with no PR. The worktree paths exist (buildList resolves them to
-// find the (current) row); the repository root is the first.
+// find the (current) row); the repository root is the first. The remote row's
+// remote is the repository prMap's listing came from (o/base).
 func prGroups(t *testing.T) (groups []worktree.EntryGroup, root string) {
 	t.Helper()
 	root = t.TempDir()
@@ -39,13 +40,13 @@ func prGroups(t *testing.T) (groups []worktree.EntryGroup, root string) {
 			{Type: worktree.TypeBranch, Branch: "no-pr"},
 		}},
 		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "origin/feat/remote"},
+			{Type: worktree.TypeBranch, Branch: "origin/feat/remote", RemoteRepo: "o/base", RemoteBranch: "feat/remote"},
 		}},
 	}, root
 }
 
 func prMap() worktree.PRSet {
-	return worktree.PRSet{ByBranch: map[string]worktree.PR{
+	return worktree.PRSet{Repo: "o/base", ByBranch: map[string]worktree.PR{
 		"fix/current":                {Number: 384, State: worktree.PRDraft, Title: "Current work"},
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop reports its outcome"},
 		"feat/local":                 {Number: 382, State: worktree.PRMerged, Title: "Local one"},
@@ -428,7 +429,7 @@ func TestPRListingsMergeInEitherOrder(t *testing.T) {
 }
 
 // TestLoadPRsCmdOutsideARepoIsEmpty pins the no-repository case: no gh runs
-// and the message carries an empty map, so the picker shows no tags.
+// and the message carries a loaded, empty set, so the picker shows no tags.
 func TestLoadPRsCmdOutsideARepoIsEmpty(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Cleanup(worktree.StubPRListForTest(func(string, string) ([]byte, error) {
@@ -490,5 +491,189 @@ func TestStaleFilterRunAfterPRsKeepsTheTags(t *testing.T) {
 		if ei := it.(entryItem); ei.pr == nil {
 			t.Errorf("row %q lost its tag to a stale filter run", ei.entry.Branch)
 		}
+	}
+}
+
+// forkGroups is a picker with the same branch name on two remotes: origin,
+// the repository gh lists (o/base), and keith, a fork (keith/fork).
+func forkGroups() []worktree.EntryGroup {
+	return []worktree.EntryGroup{{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+		{Type: worktree.TypeBranch, Branch: "origin/feat-x", RemoteRepo: "o/base", RemoteBranch: "feat-x"},
+		{Type: worktree.TypeBranch, Branch: "keith/feat-x", RemoteRepo: "keith/fork", RemoteBranch: "feat-x"},
+	}}}
+}
+
+// basePRs is o/base's listing: PR #4242 from its own feat-x.
+func basePRs() worktree.PRSet {
+	return worktree.PRSet{Repo: "o/base", ByBranch: map[string]worktree.PR{
+		"feat-x": {Number: 4242, State: worktree.PROpen, Title: "Base feat-x"},
+	}}
+}
+
+// TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR pins #388:
+// a remote-tracking row is tagged only when its remote is the repository gh
+// listed. origin/feat-x (o/base) gets o/base's PR for feat-x; keith/feat-x, a
+// fork's branch of the same name, does not. A regression shows the base
+// repository's PR on a fork branch it has nothing to do with.
+func TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR(t *testing.T) {
+	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
+	applyPRs(&l, basePRs())
+	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
+		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
+	}
+	if ei := rowByBranch(t, l.Items(), "keith/feat-x"); ei.pr != nil {
+		t.Errorf("keith/feat-x tagged %q with o/base's PR", ei.prTag())
+	}
+}
+
+// TestRemoteRowUnknownRemoteIsUntagged pins the cases where wt cannot tell
+// which repository a remote row belongs to — a remote it could not resolve
+// (no RemoteBranch either), a local-path remote (RemoteRepo empty), or a
+// listing that named no repository — as untagged, never guessed. A
+// regression tags a row from an unknown repository with the base's PR.
+func TestRemoteRowUnknownRemoteIsUntagged(t *testing.T) {
+	for name, tc := range map[string]struct {
+		entry worktree.Entry
+		prs   worktree.PRSet
+	}{
+		"unresolved remote": {
+			entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "weird/feat-x"},
+			prs:   basePRs(),
+		},
+		"local-path remote": {
+			entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "mirror/feat-x", RemoteBranch: "feat-x"},
+			prs:   basePRs(),
+		},
+		"listing names no repo": {
+			entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feat-x", RemoteRepo: "o/base", RemoteBranch: "feat-x"},
+			prs:   worktree.PRSet{ByBranch: basePRs().ByBranch},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := buildList(singleGroup(worktree.GroupRemoteBranches, tc.entry), "", "/repo", themes.Default, 80, 24)
+			applyPRs(&l, tc.prs)
+			if ei := rowByBranch(t, l.Items(), tc.entry.Branch); ei.pr != nil {
+				t.Errorf("%s tagged %q", tc.entry.Branch, ei.prTag())
+			}
+		})
+	}
+}
+
+// TestRemoteRowsStayUntaggedUntilThePRsArriveThenTag pins the arrival order
+// in the picker: before any listing (the zero PRSet) and after one that
+// failed (loaded, empty, no repo) no remote row is tagged; the listing that
+// names o/base tags origin's row and still not the fork's. A regression
+// either never tags a remote row once the repository is known, or tags the
+// fork's on the late listing.
+func TestRemoteRowsStayUntaggedUntilThePRsArriveThenTag(t *testing.T) {
+	m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+	got, _ := m.Update(entriesLoadedMsg{groups: forkGroups(), repoRoot: t.TempDir()})
+	m = got.(model)
+	untagged := func(when string) {
+		t.Helper()
+		for _, b := range []string{"origin/feat-x", "keith/feat-x"} {
+			if ei := rowByBranch(t, m.list.Items(), b); ei.pr != nil {
+				t.Errorf("%s: %s tagged %q", when, b, ei.prTag())
+			}
+		}
+	}
+	applyPRs(&m.list, worktree.PRSet{})
+	untagged("before any listing")
+
+	got, _ = m.Update(prsLoadedMsg{prs: worktree.PRSet{ByBranch: map[string]worktree.PR{}}})
+	m = got.(model)
+	untagged("after a failed listing")
+
+	got, _ = m.Update(prsLoadedMsg{prs: basePRs()})
+	m = got.(model)
+	if tag := rowByBranch(t, m.list.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
+		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
+	}
+	if ei := rowByBranch(t, m.list.Items(), "keith/feat-x"); ei.pr != nil {
+		t.Errorf("keith/feat-x tagged %q", ei.prTag())
+	}
+}
+
+// TestRemoteRepoMatchIgnoresCase pins that the remote's owner/repo and the
+// listing's compare without case: GitHub names are case-insensitive, so a
+// remote URL written Ohanaverse/Local-AI-Setup is the same repository gh
+// reports as ohanaverse/local-ai-setup. A regression drops the tag whenever
+// the two are spelled differently.
+func TestRemoteRepoMatchIgnoresCase(t *testing.T) {
+	groups := singleGroup(worktree.GroupRemoteBranches,
+		worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feat-x", RemoteRepo: "O/Base", RemoteBranch: "feat-x"})
+	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
+	applyPRs(&l, worktree.PRSet{Repo: "o/BASE", ByBranch: basePRs().ByBranch})
+	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
+		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
+	}
+}
+
+// TestForkRowKeepsItsDisplayTitle pins that the fix changes the tag, not the
+// name: keith/feat-x is still drawn as feat-x (its remote stripped), with the
+// PRs in or not. A regression shows the remote's name on fork rows or drops
+// the branch name.
+func TestForkRowKeepsItsDisplayTitle(t *testing.T) {
+	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
+	if got := rowByBranch(t, l.Items(), "keith/feat-x").Title(); got != "feat-x" {
+		t.Errorf("Title before the PRs = %q, want feat-x", got)
+	}
+	applyPRs(&l, basePRs())
+	if got := rowByBranch(t, l.Items(), "keith/feat-x").Title(); got != "feat-x" {
+		t.Errorf("Title after the PRs = %q, want feat-x", got)
+	}
+}
+
+// TestStaleFilterRunWithRemoteRowsKeepsTheTags is
+// TestStaleFilterRunAfterPRsKeepsTheTags over a base remote row and a fork's:
+// after the stale filter run, origin's row keeps its tag and the fork's
+// stays untagged. prsCurrent asks prFor, so the staleness check and the tags
+// agree; a regression where they disagree either strips origin's tag or
+// re-runs applyPRs on every filter keystroke forever.
+func TestStaleFilterRunWithRemoteRowsKeepsTheTags(t *testing.T) {
+	m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+	got, _ := m.Update(entriesLoadedMsg{groups: forkGroups(), repoRoot: t.TempDir()})
+	m = got.(model)
+	m.list.SetFilterState(list.Filtering)
+	m.list.FilterInput.SetValue("feat")
+	before := m.list
+	staleRun := before.SetItems(before.Items())
+
+	got, _ = m.Update(prsLoadedMsg{prs: basePRs()})
+	m = got.(model)
+	got, _ = m.Update(staleRun())
+	m = got.(model)
+
+	vis := m.list.VisibleItems()
+	if len(vis) != 2 {
+		t.Fatalf("visible = %v, want both remote rows", vis)
+	}
+	if tag := rowByBranch(t, vis, "origin/feat-x").prTag(); tag != "#4242 open" {
+		t.Errorf("origin/feat-x tag = %q after the stale run, want #4242 open", tag)
+	}
+	if ei := rowByBranch(t, vis, "keith/feat-x"); ei.pr != nil {
+		t.Errorf("keith/feat-x tagged %q after the stale run", ei.prTag())
+	}
+	if !prsCurrent(vis, m.prs) {
+		t.Error("prsCurrent = false on the rows applyPRs just tagged")
+	}
+}
+
+// TestFilterByPRNumberDoesNotMatchAnUntaggedRemoteRow pins the filter half
+// of #388: typing the base PR's number finds origin's row and not the fork's,
+// since an untagged row's filter value carries no number. A regression lists
+// the fork's branch under a PR it is not part of.
+func TestFilterByPRNumberDoesNotMatchAnUntaggedRemoteRow(t *testing.T) {
+	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
+	applyPRs(&l, basePRs())
+	l.SetFilterText("4242")
+	var visible []string
+	for _, it := range l.VisibleItems() {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry {
+			visible = append(visible, ei.entry.Branch)
+		}
+	}
+	if !reflect.DeepEqual(visible, []string{"origin/feat-x"}) {
+		t.Errorf("filter 4242 shows %v, want only origin/feat-x", visible)
 	}
 }

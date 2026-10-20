@@ -133,8 +133,8 @@ type model struct {
 
 	// prs is each branch's pull request, merged from the `gh pr list`
 	// listings a picker open runs (loadPRsCmd, one per
-	// worktree.PRListStates) as each answers; nil until the first does,
-	// empty when every one so far failed.
+	// worktree.PRListStates) as each answers; not Loaded() until the first
+	// does, empty when every one so far failed.
 	// Every build of the worktree list (the first, and the reload after a
 	// create) is tagged from it.
 	prs worktree.PRSet

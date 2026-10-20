@@ -225,7 +225,9 @@ func prState(state string, draft bool) PRState {
 // PRBranch is the head branch name a picker entry's PR is looked up under:
 // the branch itself for a worktree or local branch, and the branch without
 // its remote (origin/foo -> foo) for a remote-tracking branch. A detached
-// worktree has none.
+// worktree has none. The picker shows a remote row under this name, but
+// looks its PR up under Entry.RemoteBranch, split by the remote's real name,
+// and only when Entry.RemoteRepo is the listed repository (#388).
 func PRBranch(kind GroupKind, e Entry) string {
 	if e.Branch == "" || e.Branch == "(detached)" {
 		return ""

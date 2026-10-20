@@ -363,6 +363,17 @@
 
 ### Fixed
 
+- The worktree picker no longer tags a remote branch with another
+  repository's pull request (#388). A remote-tracking row such as
+  `keith/feat-x`, from a fork you push to, showed the base repository's PR
+  for its own `feat-x`, because the lookup went by branch name alone. A
+  remote row is now tagged only when its remote is the repository
+  `gh pr list` reports; rows from other remotes stay untagged (showing their
+  own repository's PRs is #387). Local branches and worktrees still match by
+  branch name. The host in a remote's URL is ignored when comparing, so an
+  Enterprise host with the same owner/repo matches; a remote that is a local
+  path or a `file://` URL never does. The row's name is unchanged
+  (`keith/feat-x` still shows `feat-x`).
 - A directory written after `--cwd` is refused (#392). `--cwd` takes no
   value, so `claude-wt --cwd ~/proj -- -p "task"` used to launch in the
   current directory, pass `~/proj` to claude as its first argument (which
