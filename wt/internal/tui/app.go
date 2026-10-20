@@ -319,6 +319,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.prs = worktree.MergePRs(m.prs, msg.prs)
 		if m.ready {
 			applyPRs(&m.list, m.prs)
+			if note := remoteTagsHidden(m.list.Items(), m.prs); note != "" {
+				return m, m.list.NewStatusMessage(note)
+			}
 		}
 		return m, nil
 	case selectedEntryMsg:

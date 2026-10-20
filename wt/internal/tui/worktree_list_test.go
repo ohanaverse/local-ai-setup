@@ -494,3 +494,31 @@ func TestSeparatorItemRendersLabel(t *testing.T) {
 		t.Errorf("Description = %q, want empty", got)
 	}
 }
+
+// remoteTagsHidden names why every remote row's tag is gone: the listing has
+// PRs, there are remote rows, and none is in the listed repository.
+func TestRemoteTagsHidden(t *testing.T) {
+	row := func(repo string) list.Item { return entryItem{kind: kindEntry, remote: true, repo: repo} }
+	prs := func(repo string) worktree.PRSet {
+		return worktree.PRSet{Repo: repo, ByBranch: map[string]worktree.PR{"x": {Number: 1}}}
+	}
+	cases := []struct {
+		name  string
+		items []list.Item
+		prs   worktree.PRSet
+		want  string // "" none; else a substring
+	}{
+		{"match", []list.Item{row("o/r")}, prs("o/r"), ""},
+		{"mismatch", []list.Item{row("old/name")}, prs("o/r"), "no remote is o/r"},
+		{"no repo from gh", []list.Item{row("o/r")}, prs(""), "named no repository"},
+		{"no PRs", []list.Item{row("old/name")}, worktree.PRSet{ByBranch: map[string]worktree.PR{}}, ""},
+		{"no remote rows", []list.Item{entryItem{kind: kindEntry}}, prs("o/r"), ""},
+		{"one matching of two", []list.Item{row("fork/r"), row("o/r")}, prs("o/r"), ""},
+	}
+	for _, c := range cases {
+		got := remoteTagsHidden(c.items, c.prs)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s: got %q, want containing %q", c.name, got, c.want)
+		}
+	}
+}

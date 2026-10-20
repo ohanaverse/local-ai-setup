@@ -118,3 +118,21 @@ func TestEnumerateLeavesAStaleRemoteRefUntagged(t *testing.T) {
 		t.Errorf("stale ref tagged %q/%q, want empty", e.RemoteRepo, e.RemoteBranch)
 	}
 }
+
+func TestRemoteReposListsEveryRemoteInOneCall(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	for _, args := range [][]string{
+		{"remote", "add", "a", "https://github.com/o/a.git"},
+		{"remote", "add", "b/c", "https://github.com/o/b.git"},
+		{"remote", "set-url", "--push", "a", "https://github.com/o/push-only.git"},
+	} {
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	want := map[string]string{"a": "o/a", "b/c": "o/b"}
+	if got := RemoteRepos(dir); !reflect.DeepEqual(got, want) {
+		t.Errorf("RemoteRepos = %v, want %v (the fetch URL, not the push URL)", got, want)
+	}
+}

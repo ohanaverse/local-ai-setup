@@ -96,8 +96,10 @@ func (e entryItem) baseTitle() string {
 	}
 	b := e.entry.Branch
 	if e.remote {
-		// origin/foo shows as foo, the name its PR is looked up under; a local
-		// fix/foo keeps its whole name.
+		// origin/foo shows as foo (everything after the first slash); a local
+		// fix/foo keeps its whole name. The PR lookup uses entry.RemoteBranch
+		// (split by the remote's real name), which differs from this display
+		// name for a remote whose own name holds a slash.
 		b = worktree.PRBranch(worktree.GroupRemoteBranches, e.entry)
 	}
 	if e.label != "" {
@@ -205,6 +207,35 @@ func prFor(ei entryItem, prs worktree.PRSet) *worktree.PR {
 		return &pr
 	}
 	return nil
+}
+
+// remoteTagsHidden is the notice for a listing that has pull requests while
+// no remote-tracking row sits in the repository gh listed, so prFor hides
+// every remote row's tag (a renamed or transferred repository, an old gh, a
+// remote reached by another path form). "" when nothing is hidden for that
+// reason.
+func remoteTagsHidden(items []list.Item, prs worktree.PRSet) string {
+	if len(prs.ByBranch) == 0 {
+		return ""
+	}
+	remotes := 0
+	for _, it := range items {
+		ei, ok := it.(entryItem)
+		if !ok || ei.kind != kindEntry || !ei.remote {
+			continue
+		}
+		remotes++
+		if prs.Repo != "" && strings.EqualFold(ei.repo, prs.Repo) {
+			return ""
+		}
+	}
+	if remotes == 0 {
+		return ""
+	}
+	if prs.Repo == "" {
+		return "PR tags hidden on remote branches: gh named no repository"
+	}
+	return "PR tags hidden on remote branches: no remote is " + printable(prs.Repo)
 }
 
 // prsCurrent reports whether every entry row in items carries the tag prs

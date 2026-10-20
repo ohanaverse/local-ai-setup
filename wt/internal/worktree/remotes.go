@@ -52,22 +52,26 @@ func repoFromURL(raw string) string {
 	return strings.ToLower(owner + "/" + repo)
 }
 
-// RemoteRepos maps each remote's name to the owner/repo of its URL ("" when
-// the URL does not name one). It asks `git remote get-url`, which applies
-// insteadOf rewrites. A failed `git remote` yields an empty map; a failed
-// get-url leaves just that remote out.
+// RemoteRepos maps each remote's name to the owner/repo of its fetch URL ("" when
+// the URL does not name one). It reads `git remote -v` once, which applies
+// insteadOf rewrites. A failed `git remote -v` yields an empty map.
 func RemoteRepos(dir string) map[string]string {
 	repos := map[string]string{}
-	out, err := runGit(dir, "remote")
+	out, err := runGit(dir, "remote", "-v")
 	if err != nil {
 		return repos
 	}
-	for _, name := range strings.Fields(string(out)) {
-		u, err := runGit(dir, "remote", "get-url", name)
-		if err != nil {
+	for _, line := range strings.Split(string(out), "\n") {
+		// name<TAB>url (fetch)
+		name, rest, ok := strings.Cut(line, "\t")
+		if !ok {
 			continue
 		}
-		repos[name] = repoFromURL(string(u))
+		u, ok := strings.CutSuffix(strings.TrimSpace(rest), " (fetch)")
+		if !ok {
+			continue
+		}
+		repos[name] = repoFromURL(u)
 	}
 	return repos
 }
