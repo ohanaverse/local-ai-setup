@@ -221,8 +221,8 @@ A launch makes sure the profile's slot models are routed: the distinct
 registry ids its slots name (the default's model among them). A
 `config_content.modelOverrides` target outside that set may be an id you
 route yourself, so wt warns and never blocks the row (#412). For each such
-target of a profile that passed validation, a launch on either path prints,
-before the picker and again after it,
+target of a profile that passed validation, a launch prints, once for a
+`-M` pin and before and again after the picker when one is shown,
 
 ```
 wt: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/x", which is not one of the profile's slot models, so wt does not make sure it is routed

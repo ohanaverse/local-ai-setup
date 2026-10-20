@@ -127,9 +127,9 @@ func TestSlotFixtureIsValidForTheRealClaudeDriver(t *testing.T) {
 // the real drivers over the profiles only the driver can refuse. If it
 // regresses, a claude profile with args, a reserved env key, an unknown slot,
 // a config_content.env or config_content.modelOverrides that is not a table
-// or a nan under config_content passes validation, and its launch drops the setting silently, overrides
-// the slot mapping or fails at the slot build after the picker offered it as
-// a launch row.
+// or a nan under config_content passes validation, and its launch drops the
+// setting silently, overrides the slot mapping or fails at the slot build
+// after the picker offered it as a launch row.
 func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 	const head = "[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\n"
 	for _, tc := range []struct {
