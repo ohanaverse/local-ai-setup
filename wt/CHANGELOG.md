@@ -381,6 +381,15 @@
   when the dialog opens, never includes the wt that is asking. Before, the
   dialog named the occupants only, so "Replace and start" gave no sign that
   it would cut off a session in another terminal.
+- A slot profile's `config_content.modelOverrides` is checked (#412). One
+  that is not a table (a string, a number, a boolean or an array) blocks the
+  row with `config_content.modelOverrides must be a table`, in the picker,
+  for a `-M profile/<name>` pin and in `wt profile list` and `show`; before,
+  it went into Claude Code's `--settings` as it was. A target that is not a
+  string, or not one of the profile's slot models (the ids a launch makes
+  sure are routed), is a warning naming the profile, the key and the target,
+  printed by a launch on either path and by `wt profile list`; it never
+  blocks the row. The keys are not checked.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
   `.claude/settings.local.json` when the session appended to the array

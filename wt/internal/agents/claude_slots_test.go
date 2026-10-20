@@ -265,6 +265,11 @@ func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 		{"env is a string", map[string]any{"env": "x"}, "config_content.env must be a table"},
 		{"env is an array", map[string]any{"env": []any{"A=1"}}, "config_content.env must be a table"},
 		{"env is a number", map[string]any{"env": int64(1)}, "config_content.env must be a table"},
+		{"modelOverrides is a table", map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": "openrouter/a"}}, ""},
+		{"modelOverrides is a string", map[string]any{"modelOverrides": "openrouter/a"}, "config_content.modelOverrides must be a table"},
+		{"modelOverrides is an array", map[string]any{"modelOverrides": []any{"openrouter/a"}}, "config_content.modelOverrides must be a table"},
+		{"modelOverrides is a number", map[string]any{"modelOverrides": int64(1)}, "config_content.modelOverrides must be a table"},
+		{"modelOverrides is a boolean", map[string]any{"modelOverrides": true}, "config_content.modelOverrides must be a table"},
 		// A nan where the --settings JSON is built holds nothing: without the
 		// rule, TOML's `nan` decodes and the build's encode fails at the
 		// launch, after the routes were written.
@@ -286,6 +291,48 @@ func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 			}
 			if msg(checkErr) != tc.want || msg(buildErr) != tc.want {
 				t.Errorf("CheckConfigContent = %q, BuildSlots = %q, want %q from both", msg(checkErr), msg(buildErr), tc.want)
+			}
+		})
+	}
+}
+
+// TestClaudeConfigContentWarnings pins what claude says, without blocking,
+// about a profile's config_content.modelOverrides: one line per target that
+// is not a string, and one per string target that is not one of the
+// profile's slot models, the only ids wt makes sure are routed at a launch.
+// Keys are never judged: they are Claude Code's model ids. A table whose
+// targets are all slot models, no table at all, and a modelOverrides that is
+// not a table (CheckConfigContent blocks that one) say nothing. Without the
+// warning, an override naming an id the proxy has no route for fails only
+// inside the session, with nothing from wt pointing at the profile.
+func TestClaudeConfigContentWarnings(t *testing.T) {
+	slotModels := []string{"openrouter/a", "openrouter/b"}
+	for _, tc := range []struct {
+		name string
+		cc   map[string]any
+		want []string
+	}{
+		{"no config_content", nil, nil},
+		{"no modelOverrides", map[string]any{"env": map[string]any{"A": "1"}}, nil},
+		{"every target is a slot model",
+			map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": "openrouter/a", "claude-sonnet-4-6": "openrouter/b"}}, nil},
+		{"modelOverrides is not a table", map[string]any{"modelOverrides": "openrouter/z"}, nil},
+		{"one target is not a slot model",
+			map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": "openrouter/a", "claude-sonnet-4-6": "openrouter/z"}},
+			[]string{`config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`}},
+		{"a target is not a string",
+			map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": int64(3)}},
+			[]string{`config_content.modelOverrides["claude-opus-4-1"] is not a string: a target must be a model id`}},
+		{"several, in key order",
+			map[string]any{"modelOverrides": map[string]any{"z-key": "openrouter/z", "a-key": []any{"openrouter/a"}}},
+			[]string{
+				`config_content.modelOverrides["a-key"] is not a string: a target must be a model id`,
+				`config_content.modelOverrides["z-key"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`,
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (claudeDriver{}).ConfigContentWarnings(tc.cc, slotModels); !slices.Equal(got, tc.want) {
+				t.Errorf("ConfigContentWarnings = %q\nwant %q", got, tc.want)
 			}
 		})
 	}
