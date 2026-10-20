@@ -315,6 +315,30 @@ func (m *model) choiceFrame() listFrame {
 	}
 }
 
+// replaceFrames are the replace confirmation's layouts: its question above
+// the choices, wrapped rather than clipped, since an occupant's session count
+// ends its line (#412), then the choice prompt's key hints. A terminal too
+// short for all of it loses the key hints before any line of the question:
+// the list's own help still names the keys, and the question is what the
+// choice is about.
+func (m *model) replaceFrames() []listFrame {
+	// Built once per call, not once per frame. A wrapped line keeps its own
+	// indent (an occupant's), which WrapText's word flow would drop.
+	var lines []string
+	for _, src := range strings.Split(m.replace.header, "\n") {
+		body := strings.TrimLeft(src, " ")
+		indent := src[:len(src)-len(body)]
+		for _, line := range strings.Split(tuilayout.WrapText(body, m.width-2-len(indent)), "\n") {
+			lines = append(lines, "  "+indent+line)
+		}
+	}
+	header := clip(strings.Join(lines, "\n"), m.width)
+	return []listFrame{
+		func(listView string) string { return header + "\n" + m.choiceFrame()(listView) },
+		func(listView string) string { return header + "\n" + listView },
+	}
+}
+
 // fitLists sizes the list of the screen that is showing to the room its frame
 // leaves. Update calls it after every message rather than at each place a
 // size could change, because those places are many and easy to miss: a window
@@ -334,7 +358,7 @@ func (m *model) fitLists() {
 			m.fitTo(&m.list, m.worktreeFrame())
 		}
 	case phaseReplaceConfirm:
-		m.fitTo(&m.replace.choices, m.choiceFrame())
+		m.fitTo(&m.replace.choices, m.replaceFrames()...)
 	case phaseAgent:
 		m.fitTo(&m.agentList, m.agentFrames()...)
 	case phaseOllamaWarn:

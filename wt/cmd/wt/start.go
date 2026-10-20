@@ -19,12 +19,9 @@ import (
 )
 
 // sessionCounts is the number of live wt sessions using each model id. A test
-// seam; production sweeps dead sessions first, as the stop picker does.
-var sessionCounts = func(ids []string) map[string]int {
-	store := refcount.NewStore()
-	_ = store.Sweep()
-	return store.Counts(ids)
-}
+// seam; production sweeps dead sessions first, as the stop picker does
+// (refcount.SessionCounts, which the picker's replace dialog reads too).
+var sessionCounts = refcount.SessionCounts
 
 // startModel is a test seam: production runs the non-TUI start driver. Tests
 // stub it so no test starts a real model process.

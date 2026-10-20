@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -371,6 +372,88 @@ MAX_THINKING_TOKENS = "4096"
 	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/table-env")
 	if err != nil || !strings.HasPrefix(out, "profile/table-env (claude): launch\n") || !strings.Contains(out, `"MAX_THINKING_TOKENS": "4096"`) {
 		t.Errorf("show table-env = (%q, %v), want a launch row whose settings carry the table", out, err)
+	}
+	if seams.log() != "" || started.called {
+		t.Errorf("the profile commands drove the engine: steps %q, start asked for: %v", seams.log(), started.called)
+	}
+}
+
+// TestProfileCommandsReportModelOverrides follows config_content.modelOverrides
+// through the real drivers into `wt profile list` and `wt profile show`
+// (#412): a modelOverrides that is not a table blocks the profile, listed
+// with the reason and shown blocked; a table whose target is not one of the
+// profile's slot models is listed ok with one warning line naming the
+// profile, the key and the target, and still shown as a launch row, its
+// override in the settings. A table whose targets are all slot models has no
+// warning. Without the block, a string modelOverrides reached Claude Code's
+// settings, which take an object; without the warning, an override to an
+// unrouted id failed only inside the session.
+func TestProfileCommandsReportModelOverrides(t *testing.T) {
+	const file = `
+[[profile]]
+name = "string-overrides"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+[profile.config_content]
+modelOverrides = "openrouter/a"
+
+[[profile]]
+name = "unrouted"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+[profile.config_content.modelOverrides]
+claude-sonnet-4-6 = "openrouter/b"
+
+[[profile]]
+name = "routed"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+haiku = "openrouter/b"
+[profile.config_content.modelOverrides]
+claude-sonnet-4-6 = "openrouter/b"
+`
+	store, err := profiles.ParseSlots([]byte(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newApp := func() *app {
+		return &app{cfg: slotFixtureConfig(), profiles: profiles.Store{Enabled: true},
+			slotChecks: profiles.ValidateSlots(store, agents.SlotDrivers())}
+	}
+	seams := stubSlotSeams(t)
+	started := stubStartDriver(t, nil)
+	const warning = `profile/unrouted (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/b", which is not one of the profile's slot models, so wt does not make sure it is routed`
+
+	out, err := runProfileCmd(t, newApp(), "list")
+	wantList := "(no profiles defined)\nslot profiles:\n" +
+		"  claude: profile/string-overrides error: config_content.modelOverrides must be a table\n" +
+		"  claude: profile/unrouted ok\n" +
+		"  claude: profile/routed ok\n" +
+		"  warning: " + warning + "\n"
+	if err != nil || out != wantList {
+		t.Errorf("list = (%q, %v)\nwant %q, nil", out, err, wantList)
+	}
+
+	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/string-overrides")
+	wantShow := "profile/string-overrides (claude): blocked\nreason: config_content.modelOverrides must be a table\n"
+	const wantErr = "profile/string-overrides is blocked: config_content.modelOverrides must be a table"
+	if out != wantShow || err == nil || err.Error() != wantErr {
+		t.Errorf("show string-overrides = (%q, %v)\nwant %q, %q", out, err, wantShow, wantErr)
+	}
+
+	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/unrouted")
+	if err != nil || !strings.HasPrefix(out, "profile/unrouted (claude): launch\n") || !strings.Contains(out, `"claude-sonnet-4-6": "openrouter/b"`) {
+		t.Errorf("show unrouted = (%q, %v), want a launch row whose settings carry the override", out, err)
+	}
+
+	if got, want := slotWarnings(newApp()), []string{"wt: " + warning}; !slices.Equal(got, want) {
+		t.Errorf("slotWarnings() = %q\nwant %q", got, want)
 	}
 	if seams.log() != "" || started.called {
 		t.Errorf("the profile commands drove the engine: steps %q, start asked for: %v", seams.log(), started.called)

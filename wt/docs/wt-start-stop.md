@@ -358,6 +358,13 @@ recently used when a load does not fit.
   for a start that would replace the mtplx model). If wt cannot size the pool
   (omlx's status endpoint refused, or its memory limit is off) it names every
   other loaded model.
+- The full-screen `wt` picker's replace dialog, shown when Enter on a model
+  that is not running would stop or unload others (a slot profile's local
+  model included), names them the same way, one per line under
+  `Starting <id> will stop:`: each one some wt session uses as
+  `<id> (in use by N wt session(s))`, one nobody uses by its id alone.
+  A line wider than the terminal wraps rather than being cut. The count is
+  taken when the dialog opens and does not include the wt that is asking.
 - The prediction is an estimate: omlx starts unloading below its ceiling
   (at 85% of it by default) and does not report where, so wt keeps 15% of
   the ceiling free when it predicts. If omlx unloads a model wt did not name, wt

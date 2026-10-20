@@ -388,6 +388,47 @@
 
 ### Fixed
 
+- The full-screen picker's replace dialog now says how many wt sessions use
+  each model it would stop (#412), as the `wt -M` and `wt start` prompt
+  always has: under `Starting <id> will stop:`, each occupant on a line of
+  its own as `<occupant> (in use by N wt session(s))`, wrapped rather than
+  cut at the terminal's edge, for an ordinary start row and a slot
+  profile's local model alike. A model nobody uses is named by its id
+  alone, and the count, taken
+  when the dialog opens, never includes the wt that is asking. Before, the
+  dialog named the occupants only, so "Replace and start" gave no sign that
+  it would cut off a session in another terminal.
+- `-M profile/<name>` now says why a slot profile it names cannot be pinned
+  (#412). Under `-T`/`-F` it prints
+  `model "profile/<name>" is a slot profile, excluded by -T` (or `-F`, or
+  `-T and -F`: the flags you set), also for a blocked profile, and for
+  another agent's profile
+  `model "profile/<name>" is a slot profile for agent "claude", not "codex"`
+  (the profile's own agent, then the launching one).
+  Both read before as `model "profile/<name>" is not in the eligible list
+  for agent "<agent>"`, as if the profile did not exist. That message stays
+  for an unknown name, a skipped profile, a `slot-profiles.toml` that does
+  not load, or a registry that holds the reserved `profile/` prefix. The
+  picker's pin returns to the agent picker with the same words.
+- A session launched from the picker now ends with the agent's exit status
+  (#412), as a launch without the picker always has: an agent that exits 3
+  makes wt exit 3, and one a signal killed makes it exit 255. Before, wt
+  exited 0 after any picker session. The post-exit steps (stop picker,
+  summary line) still run first, and nothing more is printed. This covers
+  slot-profile launches from the picker too. An agent that cannot be started
+  at all (the binary is missing or not executable) now prints `wt: <error>`
+  and exits 1 from the picker as well; before, it exited 0. So does a
+  profile that cannot be applied (a wrapper naming a missing binary): it
+  exits 1 from the picker, as it does without it.
+- A slot profile's `config_content.modelOverrides` is checked (#412). One
+  that is not a table (a string, a number, a boolean or an array) blocks the
+  row with `config_content.modelOverrides must be a table`, in the picker,
+  for a `-M profile/<name>` pin and in `wt profile list` and `show`; before,
+  it went into Claude Code's `--settings` as it was. A target that is not a
+  string, or not one of the profile's slot models (the ids a launch makes
+  sure are routed), is a warning naming the profile, the key and the target,
+  printed by a launch on either path and by `wt profile list`; it never
+  blocks the row. The keys are not checked.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
   `.claude/settings.local.json` when the session appended to the array

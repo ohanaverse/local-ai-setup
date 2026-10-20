@@ -312,6 +312,19 @@ last so the prompts cannot scroll it away:
 Both the survey and the stop picker therefore run **before** the summary
 line.
 
+**Exit status.** Once these steps have run, wt exits with the agent's own
+exit status — 3 when the agent exited 3, 255 when a signal killed it — on
+both paths, a launch from the picker included (#412), and prints nothing
+more about it. An agent that exited 0 leaves wt at 0. An agent binary that
+could not be started is printed after `wt:` and wt exits 1, on both paths.
+A launch that never starts the agent because a profile could not be applied
+takes the same path in the picker as outside it, and differs only by profile
+kind. A **single-model** launch prints `wt: <error>` once (from `main`, not
+from the launch goroutine) and exits 1, exactly as the non-TUI launch does. A
+**slot profile** prints `wt: <error>` and returns to the picker with
+`launch failed: <error>` on its status line — wt then exits with whatever the
+user does next (0 on quitting), since no agent status exists to report.
+
 - **Survey — currently switched off.** wt does not ask it (`survey.Enabled`
   is `false` since 2026-10-05, #136), so a session goes straight to the stop
   picker and there is no after-survey block. The code is kept and the survey
