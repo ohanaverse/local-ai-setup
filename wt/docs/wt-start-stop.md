@@ -6,6 +6,8 @@ Start or stop local models directly, without launching an agent.
 wt start                         # pick from every local model (needs a TTY)
 wt start ollama/qwen3.8:27b-mlx  # start one model, no TTY needed
 wt start <model> --replace       # replace or unload a running model without asking
+wt start <model> --others=stop   # stop other providers' loaded models first, without asking
+wt start <model> --others=keep   # keep them, without asking or warning
 wt stop                          # pick from running models (needs a TTY)
 wt stop ollama/qwen3.8:27b-mlx   # stop one model
 wt stop ollama                   # stop every running model of a provider
@@ -22,7 +24,9 @@ wt stop --all                    # stop every running local model, then the omlx
 - Idle model: started through the same driver as `wt -M` (progress on
   stderr, Ctrl+C cancels). If mtplx (one model per process) is
   occupied wt asks before replacing the running model; `--replace` skips the
-  question. omlx is different, see below.
+  question. omlx is different, see below. Models of other providers that
+  are loaded are listed and asked about separately, see
+  [Other providers' models](#other-providers-models-412).
   mtplx is served on the port of the mtplx provider's `base_url` in the
   registry. An `http` url for `localhost`, `127.0.0.1` or the unspecified address (`0.0.0.0`, `[::]`) that
   names no port (`http://127.0.0.1/v1`) means 8003: wt then looks for the
@@ -278,6 +282,57 @@ load: `mtplx is still loading (pid N) and is in use by 1 live wt session(s) (mtp
 (in `--all`'s question: `..., and mtplx is still loading (pid N); stop them all?`).
 If wt could not tell what the provider has loaded, the question says so:
 `omlx is in use by 1 live wt session(s) (omlx/c), and wt could not tell what it has loaded; stop anyway? [y/N]`.
+
+## Other providers' models (#412)
+
+Models of different providers share the machine's memory: an mtplx server, an
+ollama model ollama keeps in memory (what `ollama ps` lists) and the models
+in omlx's pool all hold RAM at once. A start of a model of one provider lists
+the loaded models of every **other** local provider (omlx and omlx-6bit are one
+provider here) and asks, every time, before it loads:
+
+```
+starting omlx/qwen3.6-27b-4bit loads it beside models of other providers:
+  mtplx/qwen3.8-35b — memory use unknown (in use by 1 wt session(s))
+  ollama/gemma4:12b — 9.6 GB loaded
+  cannot tell whether mlx_lm_server at http://127.0.0.1:8001 is serving a model
+stop them first, keep them and start, or cancel? [s/k/N]
+```
+
+(An illustrative example: the lines list whatever is loaded when you start.)
+
+- Each line is the model's id and the memory its server says it holds:
+  `9.6 GB loaded` (ollama), `18.2 GB resident (omlx estimate)`, or
+  `memory use unknown` (mtplx, and any server that does not say; never 0 and
+  never a guess), with its live wt session count when sessions use it. An
+  mtplx still loading reads `mtplx/<id> (loading)`. An mlx_lm_server pairing
+  reads `(wt cannot stop it)`: wt has no way to stop one. A provider whose
+  server answered but whose answer wt cannot read is a `cannot tell whether …`
+  line; one that refuses the connection holds nothing and is not listed.
+- `s` (or `stop`) stops every listed model wt can stop, then starts; `k` (or
+  `keep`) starts beside them; anything else, Enter and EOF included, cancels
+  with `cancelled — <ids> still loaded` and changes nothing. When nothing
+  listed can be stopped the question is `keep them and start, or cancel? [k/N]`.
+- A start that would also replace or unload a model of its own provider asks
+  that y/N first, then this question, then starts once with both answers.
+  `--replace` answers only the y/N: it never stops another provider's model.
+- `--others=stop` stops every listed model wt can stop and `--others=keep`
+  keeps them, both without asking. Any other value is a usage error. The
+  flag is read by `wt start`, `wt smoke`, a `wt -M` launch and a slot
+  profile's local model on the non-TUI path; the model picker still loads
+  beside them without asking.
+- **Without a TTY and without `--others`** wt never asks and never stops:
+  it keeps the models and prints one line to stderr,
+  `wt: warning: starting <id> beside <id> (<memory>), …; pass --others=stop to stop them, --others=keep to silence this`.
+- A stop goes through the same stop as `wt stop` (omlx unloads the model,
+  ollama runs `ollama stop` and waits, mtplx stops the server) and removes
+  the model's route (an ollama model keeps its route). A stop that fails ends
+  the start: `stopping <id> before starting <model>: …`, and nothing is
+  started. A model that was loaded after the question is kept, with
+  `wt: <id> (<memory>) is also loaded; not stopped`.
+- Nothing is asked when the model is already running or omlx is already
+  loading it, and a provider whose server was down when the start looked is
+  not listed even if it comes up during the start.
 
 ## omlx: a pool of loaded models
 

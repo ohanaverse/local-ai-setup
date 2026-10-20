@@ -4,6 +4,19 @@
 
 ### Added
 
+- A non-TUI local start (`wt start`, `wt smoke`, `wt -M`, a slot profile's
+  local model) that would load a model beside models of other providers
+  (an mtplx server, an ollama model still in memory, omlx's pool) lists
+  them, each with the memory its server says it holds (`9.6 GB loaded`,
+  `18.2 GB resident (omlx estimate)`, or `memory use unknown`) and its wt
+  sessions, and asks `stop them first, keep them and start, or cancel?
+  [s/k/N]` (#412). An mlx_lm_server pairing is listed but cannot be
+  stopped, and a provider wt cannot read is a `cannot tell whether …`
+  line. The new root flag `--others=keep|stop` answers without asking;
+  `--replace` still covers only the model's own provider and never stops
+  another's. Without a TTY and without `--others`, the start keeps them
+  and prints one warning line, so scripts and `wt smoke --json` neither
+  hang nor stop anything. The model picker's dialog is still to come.
 - A profile may set `config_defaults`, a table of the same shape as
   `config_content` that is applied only where a value is absent (#402):
   each leaf `.claude/settings.local.json` in the worktree does not already
