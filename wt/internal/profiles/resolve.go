@@ -12,16 +12,17 @@ import (
 // ResolvedProfile is the merged result of every profile matching one
 // agent/model launch, ready to apply.
 type ResolvedProfile struct {
-	Env           map[string]string
-	ExtraArgs     []string
-	ConfigContent map[string]any
-	Wrapper       *WrapperSpec
-	Sources       []string // "tier/value" strings naming every profile that contributed, for the confirm prompt
+	Env            map[string]string
+	ExtraArgs      []string
+	ConfigContent  map[string]any
+	ConfigDefaults map[string]any
+	Wrapper        *WrapperSpec
+	Sources        []string // "tier/value" strings naming every profile that contributed, for the confirm prompt
 }
 
 // Empty reports whether nothing would change about the launch.
 func (r ResolvedProfile) Empty() bool {
-	return len(r.Env) == 0 && len(r.ExtraArgs) == 0 && len(r.ConfigContent) == 0 && r.Wrapper == nil
+	return len(r.Env) == 0 && len(r.ExtraArgs) == 0 && len(r.ConfigContent) == 0 && len(r.ConfigDefaults) == 0 && r.Wrapper == nil
 }
 
 var tierRank = map[string]int{"location": 0, "provider": 1, "model": 2}
@@ -67,6 +68,13 @@ func Resolve(store Store, agent string, cfg *config.Config, m config.Model) Reso
 			}
 			substituted, _ := substituteAny(p.ConfigContent, m).(map[string]any)
 			mergeInto(out.ConfigContent, substituted)
+		}
+		if len(p.ConfigDefaults) > 0 {
+			if out.ConfigDefaults == nil {
+				out.ConfigDefaults = map[string]any{}
+			}
+			substituted, _ := substituteAny(p.ConfigDefaults, m).(map[string]any)
+			mergeInto(out.ConfigDefaults, substituted)
 		}
 		if len(p.Args) > 0 {
 			out.ExtraArgs = substituteAll(p.Args, m)

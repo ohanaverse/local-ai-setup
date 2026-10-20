@@ -20,6 +20,9 @@ const (
 	MechanismArgs       Mechanism = "args"
 	MechanismConfigFile Mechanism = "config_file"
 	MechanismWrapper    Mechanism = "wrapper"
+	// MechanismConfigDefaults is config_content applied only where a leaf
+	// is absent; only claude declares it.
+	MechanismConfigDefaults Mechanism = "config_defaults"
 )
 
 // ProfileCapable is implemented by agents.Driver values that accept
@@ -65,7 +68,10 @@ type Profile struct {
 	Env           map[string]string `toml:"env,omitempty"`
 	Args          []string          `toml:"args,omitempty"`
 	ConfigContent map[string]any    `toml:"config_content,omitempty"`
-	Wrapper       *WrapperSpec      `toml:"wrapper,omitempty"`
+	// ConfigDefaults has the shape of ConfigContent but is applied only
+	// where the user's own config leaves a key unset.
+	ConfigDefaults map[string]any `toml:"config_defaults,omitempty"`
+	Wrapper        *WrapperSpec   `toml:"wrapper,omitempty"`
 }
 
 // fileSchema is the raw on-disk shape; Enabled is a pointer so an absent

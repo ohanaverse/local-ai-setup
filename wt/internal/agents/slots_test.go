@@ -61,7 +61,7 @@ func TestSlotDriversAnswersFromTheRegisteredDrivers(t *testing.T) {
 	if got := d.ReservedEnv("codex"); got != nil {
 		t.Errorf("ReservedEnv(codex) = %v, want nil", got)
 	}
-	if got, want := d.Mechanisms("claude"), []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile}; !slices.Equal(got, want) {
+	if got, want := d.Mechanisms("claude"), []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile, profiles.MechanismConfigDefaults}; !slices.Equal(got, want) {
 		t.Errorf("Mechanisms(claude) = %v, want %v", got, want)
 	}
 	if got := d.Mechanisms("no-such-agent"); got != nil {

@@ -178,3 +178,55 @@ func TestMatchesTierRejectsEmptyProviderField(t *testing.T) {
 		t.Errorf("Resolve() = %+v, want Empty() (an empty Provider field must never match)", rp)
 	}
 }
+
+// TestResolveMergesConfigDefaultsPerLeafLaterTierWins pins that
+// config_defaults merges across tiers like config_content: per leaf, the
+// more specific tier wins and sibling leaves from both tiers survive.
+func TestResolveMergesConfigDefaultsPerLeafLaterTierWins(t *testing.T) {
+	store := Store{Enabled: true, Profiles: []Profile{
+		{Agent: "claude", Match: "location", Location: "local", ConfigDefaults: map[string]any{
+			"permissions": map[string]any{"defaultMode": "default", "other": "keep"},
+		}},
+		{Agent: "claude", Match: "model", Model: "ollama/qwen3.8:27b-mlx", ConfigDefaults: map[string]any{
+			"permissions": map[string]any{"defaultMode": "plan"},
+		}},
+	}}
+	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama", ModelName: "qwen3.8:27b-mlx"}
+	rp := Resolve(store, "claude", testCfg(), m)
+	perms, ok := rp.ConfigDefaults["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("ConfigDefaults[permissions] = %#v, want a map", rp.ConfigDefaults["permissions"])
+	}
+	if perms["defaultMode"] != "plan" {
+		t.Errorf("defaultMode = %v, want model-tier value plan", perms["defaultMode"])
+	}
+	if perms["other"] != "keep" {
+		t.Errorf("other = %v, want location-tier value keep", perms["other"])
+	}
+}
+
+// TestResolveSubstitutesModelNameInConfigDefaults pins {{model_name}}
+// substitution inside config_defaults, as in config_content.
+func TestResolveSubstitutesModelNameInConfigDefaults(t *testing.T) {
+	store := Store{Enabled: true, Profiles: []Profile{
+		{Agent: "claude", Match: "location", Location: "local", ConfigDefaults: map[string]any{
+			"model": "{{model_name}}",
+		}},
+	}}
+	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x-name"}
+	rp := Resolve(store, "claude", testCfg(), m)
+	if rp.ConfigDefaults["model"] != "x-name" {
+		t.Errorf("ConfigDefaults[model] = %v, want x-name", rp.ConfigDefaults["model"])
+	}
+}
+
+// TestResolvedProfileEmptyCountsConfigDefaults pins that a profile holding
+// only config_defaults is not Empty.
+func TestResolvedProfileEmptyCountsConfigDefaults(t *testing.T) {
+	if (ResolvedProfile{ConfigDefaults: map[string]any{"a": "b"}}).Empty() {
+		t.Error("Empty() = true with ConfigDefaults set, want false")
+	}
+	if !(ResolvedProfile{}).Empty() {
+		t.Error("Empty() = false for the zero value, want true")
+	}
+}

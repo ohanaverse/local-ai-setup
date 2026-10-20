@@ -91,9 +91,10 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 // ProfileMechanisms declares which profile mechanisms claude accepts:
 // env (the attribution-header/thinking-token tweaks, and any override of the
 // ANTHROPIC_DEFAULT_*_MODEL variables wt itself sets on a single-model
-// launch) and config_file (settings written to .claude/settings.local.json).
+// launch), config_file (settings written to .claude/settings.local.json), and
+// config_defaults (the same settings, applied only where a leaf is absent).
 func (claudeDriver) ProfileMechanisms() []profiles.Mechanism {
-	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile}
+	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile, profiles.MechanismConfigDefaults}
 }
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by

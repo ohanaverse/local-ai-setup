@@ -112,6 +112,9 @@ func profileCmd(a *app) *cobra.Command {
 			if len(rp.ConfigContent) > 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "config_content: %v\n", rp.ConfigContent)
 			}
+			if len(rp.ConfigDefaults) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "config_defaults: %v\n", rp.ConfigDefaults)
+			}
 			if rp.Wrapper != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "wrapper: %s %v\n", rp.Wrapper.Binary, rp.Wrapper.ArgsTemplate)
 			}
