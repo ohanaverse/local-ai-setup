@@ -148,7 +148,7 @@ func (e entryItem) Description() string {
 // matches are recomputed here, in the same Update, against the new filter
 // values, so the list is never drawn empty while they are recomputed and
 // typing a PR number before the tags arrived finds the row once they do.
-func applyPRs(l *list.Model, prs map[string]worktree.PR) {
+func applyPRs(l *list.Model, prs worktree.PRSet) {
 	selected, hadSelected := l.SelectedItem().(entryItem)
 	index := l.Index()
 
@@ -184,11 +184,11 @@ func applyPRs(l *list.Model, prs map[string]worktree.PR) {
 }
 
 // prFor is the pull request prs holds for ei's branch, nil for none.
-func prFor(ei entryItem, prs map[string]worktree.PR) *worktree.PR {
+func prFor(ei entryItem, prs worktree.PRSet) *worktree.PR {
 	if ei.prBranch == "" {
 		return nil
 	}
-	if pr, found := prs[ei.prBranch]; found {
+	if pr, found := prs.ByBranch[ei.prBranch]; found {
 		return &pr
 	}
 	return nil
@@ -197,7 +197,7 @@ func prFor(ei entryItem, prs map[string]worktree.PR) *worktree.PR {
 // prsCurrent reports whether every entry row in items carries the tag prs
 // gives it. A filter run that a keystroke started before the latest tags
 // arrived matched the items as they were then, and its rows fail this.
-func prsCurrent(items []list.Item, prs map[string]worktree.PR) bool {
+func prsCurrent(items []list.Item, prs worktree.PRSet) bool {
 	for _, it := range items {
 		ei, ok := it.(entryItem)
 		if !ok || ei.kind != kindEntry {

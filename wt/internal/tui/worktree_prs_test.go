@@ -44,8 +44,8 @@ func prGroups(t *testing.T) (groups []worktree.EntryGroup, root string) {
 	}, root
 }
 
-func prMap() map[string]worktree.PR {
-	return map[string]worktree.PR{
+func prMap() worktree.PRSet {
+	return worktree.PRSet{ByBranch: map[string]worktree.PR{
 		"fix/current":                {Number: 384, State: worktree.PRDraft, Title: "Current work"},
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop reports its outcome"},
 		"feat/local":                 {Number: 382, State: worktree.PRMerged, Title: "Local one"},
@@ -53,7 +53,7 @@ func prMap() map[string]worktree.PR {
 		// A PR on the remote's own name must not tag "origin/feat/remote"
 		// through the unstripped name.
 		"origin/feat/remote": {Number: 1, State: worktree.PROpen},
-	}
+	}}
 }
 
 // rowByBranch finds the entry row for branch among items.
@@ -165,10 +165,10 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 		{Type: worktree.TypeBranch, Branch: "fix/wt-ollama-stop-outcome"},
 		{Type: worktree.TypeBranch, Branch: long},
 	}}}
-	prs := map[string]worktree.PR{
+	prs := worktree.PRSet{ByBranch: map[string]worktree.PR{
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop"},
 		long:                         {Number: 12345, State: worktree.PRMerged, Title: "Long"},
-	}
+	}}
 	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
 	applyPRs(&l, prs)
 
@@ -197,7 +197,7 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 func TestPRTagDroppedWhenTooNarrow(t *testing.T) {
 	groups := singleGroup(worktree.GroupLocalBranches, worktree.Entry{Type: worktree.TypeBranch, Branch: "fix/some-branch"})
 	l := buildList(groups, "", "/repo", themes.Default, 20, 24)
-	applyPRs(&l, map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}})
+	applyPRs(&l, worktree.PRSet{ByBranch: map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}}})
 	line, _, _ := strings.Cut(renderRow(l, 1), "\n")
 	if strings.TrimSpace(line) != "fix/some-branch" {
 		t.Errorf("narrow title line = %q, want the branch alone", line)
@@ -336,7 +336,7 @@ func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 	if !ok {
 		t.Fatalf("loadPRsCmd returned %T", msg)
 	}
-	if got := msg.prs["fix/x"]; got.Number != 383 || got.State != worktree.PROpen {
+	if got := msg.prs.ByBranch["fix/x"]; got.Number != 383 || got.State != worktree.PROpen {
 		t.Errorf("prs[fix/x] = %+v, want #383 open", got)
 	}
 	want, _ := filepath.EvalSymlinks(repo)
@@ -391,15 +391,15 @@ func TestInitRunsEveryPRListing(t *testing.T) {
 // open tags when the every-state listing lands, or lets the late listing's
 // merged PR hide the branch's open one.
 func TestPRListingsMergeInEitherOrder(t *testing.T) {
-	open := map[string]worktree.PR{
+	open := worktree.PRSet{ByBranch: map[string]worktree.PR{
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop reports its outcome"},
 		"feat/local":                 {Number: 380, State: worktree.PROpen, Title: "Older open"},
-	}
-	all := map[string]worktree.PR{
+	}}
+	all := worktree.PRSet{ByBranch: map[string]worktree.PR{
 		"feat/local":  {Number: 382, State: worktree.PRMerged, Title: "Local one"},
 		"fix/current": {Number: 384, State: worktree.PRDraft, Title: "Current work"},
-	}
-	for name, order := range map[string][]map[string]worktree.PR{
+	}}
+	for name, order := range map[string][]worktree.PRSet{
 		"open first": {open, all},
 		"all first":  {all, open},
 	} {
@@ -407,7 +407,7 @@ func TestPRListingsMergeInEitherOrder(t *testing.T) {
 			m := pickerModel(t)
 			got, _ := m.Update(prsLoadedMsg{prs: order[0]})
 			m = got.(model)
-			for branch := range order[0] {
+			for branch := range order[0].ByBranch {
 				if branch == "fix/current" {
 					continue // the (current) row is found by label below
 				}
@@ -436,8 +436,8 @@ func TestLoadPRsCmdOutsideARepoIsEmpty(t *testing.T) {
 		return nil, nil
 	}))
 	msg := loadPRsCmd(worktree.PRListAll)().(prsLoadedMsg)
-	if msg.prs == nil || len(msg.prs) != 0 {
-		t.Errorf("prs = %#v, want an empty map", msg.prs)
+	if !msg.prs.Loaded() || len(msg.prs.ByBranch) != 0 {
+		t.Errorf("prs = %#v, want a loaded, empty set", msg.prs)
 	}
 }
 

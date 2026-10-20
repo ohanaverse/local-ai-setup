@@ -38,8 +38,8 @@ func TestParsePRsMapsEachBranchToItsLatestPR(t *testing.T) {
 		"feat/dropped": {Number: 379, State: PRClosed, Title: "Dropped"},
 		"fix/dup":      {Number: 50, State: PRDraft, Title: "Live"},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parsePRs =\n%#v\nwant\n%#v", got, want)
+	if !reflect.DeepEqual(got.ByBranch, want) {
+		t.Errorf("parsePRs =\n%#v\nwant\n%#v", got.ByBranch, want)
 	}
 }
 
@@ -55,8 +55,8 @@ func TestParsePRsKeepsTheHighestNumberWhateverTheOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["b"].Number != 12 || got["b"].State != PROpen {
-		t.Errorf("b = %+v, want #12 open", got["b"])
+	if got.ByBranch["b"].Number != 12 || got.ByBranch["b"].State != PROpen {
+		t.Errorf("b = %+v, want #12 open", got.ByBranch["b"])
 	}
 }
 
@@ -75,8 +75,8 @@ func TestPRsFailureIsAnEmptyMap(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Cleanup(StubPRListForTest(fn))
 			got := PRs("/repo", PRListAll)
-			if got == nil || len(got) != 0 {
-				t.Errorf("PRs = %#v, want an empty, non-nil map", got)
+			if !got.Loaded() || len(got.ByBranch) != 0 {
+				t.Errorf("PRs = %#v, want a loaded, empty set", got)
 			}
 		})
 	}
@@ -95,8 +95,8 @@ func TestPRsRunsInTheRepoDir(t *testing.T) {
 	if want := []string{"/repo open"}; !reflect.DeepEqual(calls, want) {
 		t.Errorf("calls = %v, want %v", calls, want)
 	}
-	if got["x"].Number != 5 {
-		t.Errorf("x = %+v, want #5", got["x"])
+	if got.ByBranch["x"].Number != 5 {
+		t.Errorf("x = %+v, want #5", got.ByBranch["x"])
 	}
 }
 
@@ -124,14 +124,56 @@ func TestMergePRsPrefersOpenThenTheHigherNumberInEitherOrder(t *testing.T) {
 		"b":   {Number: 10, State: PROpen},
 		"c":   {Number: 21, State: PROpen},
 	}
-	if got := MergePRs(open, all); !reflect.DeepEqual(got, want) {
-		t.Errorf("MergePRs(open, all) = %v, want %v", got, want)
+	if got := MergePRs(PRSet{ByBranch: open}, PRSet{ByBranch: all}).ByBranch; !reflect.DeepEqual(got, want) {
+		t.Errorf("MergePRs(PRSet{ByBranch: open}, PRSet{ByBranch: all}).ByBranch = %v, want %v", got, want)
 	}
-	if got := MergePRs(all, open); !reflect.DeepEqual(got, want) {
-		t.Errorf("MergePRs(all, open) = %v, want %v", got, want)
+	if got := MergePRs(PRSet{ByBranch: all}, PRSet{ByBranch: open}).ByBranch; !reflect.DeepEqual(got, want) {
+		t.Errorf("MergePRs(PRSet{ByBranch: all}, PRSet{ByBranch: open}).ByBranch = %v, want %v", got, want)
 	}
-	if got := MergePRs(nil, map[string]PR{}); got == nil || len(got) != 0 {
-		t.Errorf("MergePRs(nil, empty) = %#v, want an empty, non-nil map", got)
+	if got := MergePRs(PRSet{}, PRSet{ByBranch: map[string]PR{}}); !got.Loaded() || len(got.ByBranch) != 0 {
+		t.Errorf("MergePRs(zero, empty) = %#v, want a loaded, empty set", got)
+	}
+}
+
+const ghFixture = `[{"headRefName":"feat/eval-quant-tier-suite","headRepository":{"id":"R_kgDOUF9s9w","name":"local-ai-setup","nameWithOwner":"Ohanaverse/Local-AI-Setup"},"isCrossRepository":false,"isDraft":false,"number":404,"state":"MERGED","title":"feat(llmbench): eval-quant-tier suite"}]`
+
+// TestParsePRsReadsTheHeadRepoAsRepo pins that a listing's Repo is its PRs'
+// head repository, lower-cased: every kept PR is same-repo, so it is the
+// base repo the picker later matches remotes against.
+func TestParsePRsReadsTheHeadRepoAsRepo(t *testing.T) {
+	got, err := parsePRs([]byte(ghFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Repo != "ohanaverse/local-ai-setup" {
+		t.Errorf("Repo = %q, want ohanaverse/local-ai-setup", got.Repo)
+	}
+	if got.ByBranch["feat/eval-quant-tier-suite"].Number != 404 {
+		t.Errorf("ByBranch = %+v, want #404", got.ByBranch)
+	}
+}
+
+// TestParsePRsWithoutHeadRepositoryHasEmptyRepoButStillMapsBranches pins that
+// a PR with no headRepository (a deleted fork) costs the Repo, not the tag.
+func TestParsePRsWithoutHeadRepositoryHasEmptyRepoButStillMapsBranches(t *testing.T) {
+	got, err := parsePRs([]byte(`[{"number": 5, "state": "OPEN", "headRefName": "x"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Repo != "" || got.ByBranch["x"].Number != 5 {
+		t.Errorf("got %+v, want empty Repo and #5 under x", got)
+	}
+}
+
+// TestMergePRsKeepsTheFirstNonEmptyRepo pins that the joined set carries
+// whichever listing's Repo is non-empty, the first when both are.
+func TestMergePRsKeepsTheFirstNonEmptyRepo(t *testing.T) {
+	a, b := PRSet{Repo: "o/a"}, PRSet{Repo: "o/b"}
+	if got := MergePRs(a, b).Repo; got != "o/a" {
+		t.Errorf("MergePRs(a, b).Repo = %q, want o/a", got)
+	}
+	if got := MergePRs(PRSet{}, b).Repo; got != "o/b" {
+		t.Errorf("MergePRs(empty, b).Repo = %q, want o/b", got)
 	}
 }
 
