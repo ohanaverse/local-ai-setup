@@ -43,7 +43,8 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 //     the row's block reason. A pin absent from the rows →
 //     catalog.MissingReason when the pin is in the eligible list and the
 //     probe can say why it has no row (not on disk, a stopped mlx_lm_server
-//     pairing), else "not in the eligible list".
+//     pairing), else catalog.SlotPinReason for a slot profile hidden by
+//     -T/-F or held by another agent, else "not in the eligible list".
 //   - pinned names a slot profile ("profile/<name>") whose row is not
 //     blocked → a *slotPin carrying the row; nothing is started here.
 //   - no pin, empty launchable → error (pin-the-model wording when rows
@@ -95,6 +96,11 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 				if reason := catalog.MissingReason(cfg, &snap, pinned); reason != "" {
 					return config.Model{}, launchable, errors.New(reason)
 				}
+			}
+			// A slot profile the file holds says why it has no row: hidden
+			// by -T/-F, or another agent's (#412).
+			if reason := catalog.SlotPinReason(cfg, launchSlotChecks, agent, pinned, tags, family); reason != "" {
+				return config.Model{}, launchable, errors.New(reason)
 			}
 			return config.Model{}, launchable, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
 		}

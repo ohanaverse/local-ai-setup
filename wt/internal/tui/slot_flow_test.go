@@ -1193,22 +1193,42 @@ func TestPinOnProfileBeginsItsLaunch(t *testing.T) {
 }
 
 // TestPinOnUnusableProfileRoutesBackToTheAgentPicker pins the rejected pin:
-// a blocked profile returns to the agent picker with the row's reason, and a
-// profile that has no row for this agent gets the existing "not in the
-// eligible list" message. Either way the pin is cleared and nothing is
-// written or probed.
+// a blocked profile returns to the agent picker with the row's reason. A
+// profile with no row says why, in resolveModel's words (#412): the -T/-F
+// flags that hide it (a blocked one too, without its block reason), or the
+// agent it is for. An unknown name keeps the generic "not in the eligible
+// list" message. Either way the pin is cleared and nothing is written or
+// probed. Before #412 the status read as if the profile did not exist.
 func TestPinOnUnusableProfileRoutesBackToTheAgentPicker(t *testing.T) {
 	broken := slotCheckFor(0, "broken", "opus", map[string]string{"opus": "openrouter/gone"})
 	cases := []struct {
-		name, pin, status string
+		name, agent, tags, family, pin, status string
 	}{
-		{"a blocked profile", "profile/broken", "slot opus: openrouter/gone is not in the registry"},
-		{"a profile with no row", "profile/nope", `model "profile/nope" is not in the eligible list for agent "claude"`},
+		{"a blocked profile", "claude", "", "", "profile/broken", "slot opus: openrouter/gone is not in the registry"},
+		{"a profile with no row", "claude", "", "", "profile/nope", `model "profile/nope" is not in the eligible list for agent "claude"`},
+		{"hidden under -T", "claude", "code", "", "profile/cloud", `model "profile/cloud" is a slot profile, excluded by -T`},
+		{"hidden under -F", "claude", "", "a", "profile/cloud", `model "profile/cloud" is a slot profile, excluded by -F`},
+		{"hidden under -T and -F", "claude", "code", "a", "profile/cloud", `model "profile/cloud" is a slot profile, excluded by -T and -F`},
+		{"a blocked profile hidden under -F", "claude", "", "a", "profile/broken", `model "profile/broken" is a slot profile, excluded by -F`},
+		{"a claude profile pinned for codex", "codex", "", "", "profile/cloud", `model "profile/cloud" is a slot profile for agent "claude", not "codex"`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			stub := stubSlotSeams(t)
-			got, cmd := pinnedProfile(t, c.pin, false, broken, cloudProfile())
+			tempStateDir(t)
+			stubUsageStore(t)
+			stubRefcountStore(t)
+			stubRouteNotes(t)
+			stubInventory(t, idleOmlxSnapshot())
+			cfg := slotTestConfig()
+			cfg.Agents = append(cfg.Agents, config.Agent{Name: "codex", SupportedProviders: []string{"openrouter", "omlx"}})
+			m := model{cfg: cfg, agent: c.agent, pinnedModel: c.pin, activeTags: c.tags, activeFamily: c.family,
+				slotChecks: []profiles.SlotCheck{broken, cloudProfile()}, selectedPath: t.TempDir(), width: 80, height: 24}
+			models, err := cfg.EligibleModels(c.agent, c.tags, c.family)
+			if err != nil {
+				t.Fatalf("EligibleModels: %v", err)
+			}
+			got, cmd := m.enterModelPhase(c.agent, models, "code")
 			if got.phase != phaseAgent || got.slot != nil || cmd != nil {
 				t.Fatalf("phase = %v slot = %v cmd nil = %v, want the agent picker and no command", got.phase, got.slot, cmd == nil)
 			}

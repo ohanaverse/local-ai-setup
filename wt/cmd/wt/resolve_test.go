@@ -722,11 +722,13 @@ func TestPickerBlockedReasonReadsAProfileRowsOwnVerdict(t *testing.T) {
 // `-M profile/<name>` pin. A launch or start row comes back as a *slotPin
 // carrying the row, and nothing is started here: the profile launch starts
 // its local model itself, after the cloud routes are written. A blocked row
-// is an error with the row's reason. A profile of another agent, an unknown
-// name, and any profile under -T get the existing "not in the eligible list"
-// message, as does any profile under -F (a blocked one too: its reason is not
-// shown) and a claude profile pinned while the agent is codex. If a start row were started here, the proxy would restart
-// twice; if a blocked row came back as a pin, a broken profile would launch.
+// is an error with the row's reason. A profile of another agent says whose it
+// is, and a profile hidden by -T, -F or both names the flags that hide it (a
+// blocked one too, without its block reason): the generic "not in the
+// eligible list" message read as if the profile did not exist (#412). An
+// unknown name keeps that generic message. If a start row were started here,
+// the proxy would restart twice; if a blocked row came back as a pin, a broken
+// profile would launch.
 func TestResolveModelSlotProfilePin(t *testing.T) {
 	checks := []profiles.SlotCheck{
 		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
@@ -745,12 +747,15 @@ func TestResolveModelSlotProfilePin(t *testing.T) {
 		{"launch row", "claude", "", "", "profile/cloud", catalog.ActionLaunch, ""},
 		{"start row is not started here", "claude", "", "", "profile/mixed", catalog.ActionStart, ""},
 		{"blocked row", "claude", "", "", "profile/broken", 0, "slot opus: openrouter/gone is not in the registry"},
-		{"another agent's profile", "pi", "", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "pi"`},
-		{"a claude profile pinned for codex", "codex", "", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "codex"`},
+		{"another agent's profile", "pi", "", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile for agent "claude", not "pi"`},
+		{"a claude profile pinned for codex", "codex", "", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile for agent "claude", not "codex"`},
+		{"another agent's profile under -T", "codex", "code", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile for agent "claude", not "codex"`},
 		{"unknown profile", "claude", "", "", "profile/nope", 0, `model "profile/nope" is not in the eligible list for agent "claude"`},
-		{"hidden under -T", "claude", "code", "", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "claude"`},
-		{"hidden under -F", "claude", "", "a", "profile/cloud", 0, `model "profile/cloud" is not in the eligible list for agent "claude"`},
-		{"a blocked profile hidden under -F", "claude", "", "a", "profile/broken", 0, `model "profile/broken" is not in the eligible list for agent "claude"`},
+		{"unknown profile under -T", "claude", "code", "", "profile/nope", 0, `model "profile/nope" is not in the eligible list for agent "claude"`},
+		{"hidden under -T", "claude", "code", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile, excluded by -T`},
+		{"hidden under -F", "claude", "", "a", "profile/cloud", 0, `model "profile/cloud" is a slot profile, excluded by -F`},
+		{"hidden under -T and -F", "claude", "code", "a", "profile/cloud", 0, `model "profile/cloud" is a slot profile, excluded by -T and -F`},
+		{"a blocked profile hidden under -F", "claude", "", "a", "profile/broken", 0, `model "profile/broken" is a slot profile, excluded by -F`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -784,6 +789,70 @@ func TestResolveModelSlotProfilePin(t *testing.T) {
 				t.Errorf("pin row = %s with action %v, want %s with action %v", pin.row.Model.ID, pin.row.Action(), tc.pinned, tc.wantAction)
 			}
 		})
+	}
+}
+
+// TestResolveModelSlotPinFromAnUnusableFileKeepsTheGenericMessage verifies a
+// profile pin keeps the generic "not in the eligible list" message when wt
+// could not use the profile it names: slot-profiles.toml does not parse, or
+// the profile is skipped for a malformed name. It holds under -T and for
+// another agent too, where a usable profile would be named. The file is read
+// by newApp, as wt reads it. If the reasons of #412 were drawn from an
+// unusable file, a pin would blame -T/-F or the agent for a profile wt never
+// loaded, and the user would fix the wrong thing.
+func TestResolveModelSlotPinFromAnUnusableFileKeepsTheGenericMessage(t *testing.T) {
+	files := []struct{ name, body, pin string }{
+		{"a TOML typo", "[[profile]]\nname = \"mixed\nagent = \"claude\"\n", "profile/mixed"},
+		{"a malformed name",
+			"[[profile]]\nname = \"Bad_Name\"\nagent = \"claude\"\ndefault = \"opus\"\n\n[profile.slots]\nopus = \"openrouter/a\"\n",
+			"profile/Bad_Name"},
+	}
+	pins := []struct{ name, agent, tags, family string }{
+		{"no filter", "claude", "", ""},
+		{"under -T", "claude", "code", ""},
+		{"under -F", "claude", "", "a"},
+		{"for codex", "codex", "", ""},
+	}
+	for _, f := range files {
+		for _, p := range pins {
+			t.Run(f.name+" "+p.name, func(t *testing.T) {
+				restoreLaunchSlotChecks(t)
+				writeSlotProfilesTOML(t, f.body)
+				a, err := newApp()
+				if err != nil {
+					t.Fatalf("newApp() error = %v", err)
+				}
+				launchSlotChecks = a.slotChecks
+				cfg := slotFixtureConfig()
+				cfg.Agents = append(cfg.Agents, config.Agent{Name: "codex", SupportedProviders: []string{"openrouter", "omlx"}})
+
+				_, _, err = resolveModel(p.agent, cfg, p.tags, p.family, f.pin)
+
+				want := `model "` + f.pin + `" is not in the eligible list for agent "` + p.agent + `"`
+				if err == nil || err.Error() != want {
+					t.Errorf("err = %v, want %q", err, want)
+				}
+			})
+		}
+	}
+}
+
+// TestResolveModelSlotPinUnderAReservedPrefixKeepsTheGenericMessage verifies
+// a profile pin under -T/-F keeps the generic "not in the eligible list"
+// message while the registry holds the "profile/" prefix: then no profile has
+// a row, filter or not, so naming -T/-F as the cause (#412) would send the
+// user to drop a flag that changes nothing. slotWarnings already says what
+// holds the prefix.
+func TestResolveModelSlotPinUnderAReservedPrefixKeepsTheGenericMessage(t *testing.T) {
+	stubSlotChecks(t, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+	cfg := slotFixtureConfig()
+	cfg.Models = append(cfg.Models, config.Model{ID: "profile/x", ProviderID: "openrouter", ModelName: "x", Family: "x", Tags: []string{"code"}})
+
+	_, _, err := resolveModel("claude", cfg, "code", "", "profile/cloud")
+
+	want := `model "profile/cloud" is not in the eligible list for agent "claude"`
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
 	}
 }
 
