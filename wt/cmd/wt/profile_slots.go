@@ -36,7 +36,8 @@ func maskKey(key string) string {
 // profiles comes one "warning:" line per key of the file the schema does not
 // name, also when the file gave no profile, and one when the registry holds
 // the "profile/" prefix (slotReservedNote), since every profile listed as
-// "ok" is then without a row.
+// "ok" is then without a row, then one per driver warning about a passing
+// profile's config_content (slotContentNotes), which leaves it "ok".
 //
 // It reads nothing of profiles.toml. It returns a.slotLoadErr after printing
 // it.
@@ -64,6 +65,9 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 		fmt.Fprintf(w, "  warning: %s\n", slotUnknownKeyNote(key))
 	}
 	if note := slotReservedNote(a); note != "" {
+		fmt.Fprintf(w, "  warning: %s\n", note)
+	}
+	for _, note := range slotContentNotes(a) {
 		fmt.Fprintf(w, "  warning: %s\n", note)
 	}
 	return nil

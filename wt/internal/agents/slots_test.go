@@ -126,8 +126,8 @@ func TestSlotFixtureIsValidForTheRealClaudeDriver(t *testing.T) {
 // TestSlotDriversRejectsWhatClaudeDoesNotAllow runs static validation with
 // the real drivers over the profiles only the driver can refuse. If it
 // regresses, a claude profile with args, a reserved env key, an unknown slot,
-// a config_content.env that is not a table or a nan under config_content
-// passes validation, and its launch drops the setting silently, overrides
+// a config_content.env or config_content.modelOverrides that is not a table
+// or a nan under config_content passes validation, and its launch drops the setting silently, overrides
 // the slot mapping or fails at the slot build after the picker offered it as
 // a launch row.
 func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
@@ -147,6 +147,12 @@ func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 		{"config_content.env is a string",
 			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content]\nenv = \"x\"\n",
 			"config_content.env must be a table"},
+		{"config_content.modelOverrides is a string",
+			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content]\nmodelOverrides = \"ollama/a\"\n",
+			"config_content.modelOverrides must be a table"},
+		{"config_content.modelOverrides is an array",
+			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content]\nmodelOverrides = [\"ollama/a\"]\n",
+			"config_content.modelOverrides must be a table"},
 		{"config_content.env holds a nan",
 			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content.env]\nTHRESHOLD = nan\n",
 			"config_content cannot be encoded as the --settings JSON: json: unsupported value: NaN"},
@@ -461,5 +467,44 @@ func TestSlotDriversAcceptsAConfigContentEnvTable(t *testing.T) {
 	checks := profiles.ValidateSlots(store, SlotDrivers())
 	if len(checks) != 1 || !checks[0].Usable || checks[0].Err != nil {
 		t.Fatalf("checks = %+v, want one passing check", checks)
+	}
+}
+
+// TestSlotConfigWarningsThroughTheRealDrivers follows a claude profile whose
+// modelOverrides names an id it does not fill a slot with, from the file to
+// the warning: static validation passes it (the warning never blocks), and
+// SlotConfigWarnings says it once, naming the key and the target. The slot
+// models are every id the profile fills a slot with, the default's among
+// them, so a target that is one of them says nothing. A profile that failed
+// validation, one that is not Usable and an agent without the capability say
+// nothing either: the first two already carry their error. If the warning
+// blocked, a profile overriding to an id the user routes by hand could not
+// launch; if it were missing, the override would fail only inside the session.
+func TestSlotConfigWarningsThroughTheRealDrivers(t *testing.T) {
+	store, err := profiles.ParseSlots([]byte("[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\n" +
+		"[profile.slots]\nopus = \"ollama/a\"\nhaiku = \"ollama/b\"\n" +
+		"[profile.config_content.modelOverrides]\nclaude-opus-4-1 = \"ollama/a\"\nclaude-haiku-4-5 = \"ollama/b\"\nclaude-sonnet-4-6 = \"ollama/z\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := profiles.ValidateSlots(store, SlotDrivers())
+	if len(checks) != 1 || !checks[0].Usable || checks[0].Err != nil {
+		t.Fatalf("checks = %+v, want one passing check", checks)
+	}
+	want := []string{`config_content.modelOverrides["claude-sonnet-4-6"] targets "ollama/z", which is not one of the profile's slot models, so wt does not make sure it is routed`}
+	if got := SlotConfigWarnings(checks[0]); !slices.Equal(got, want) {
+		t.Errorf("SlotConfigWarnings = %q\nwant %q", got, want)
+	}
+
+	failed := checks[0]
+	failed.Err = errors.New("default is missing")
+	unusable := checks[0]
+	unusable.Usable = false
+	codex := checks[0]
+	codex.Profile.Agent = "codex"
+	for name, c := range map[string]profiles.SlotCheck{"failed": failed, "unusable": unusable, "codex": codex} {
+		if got := SlotConfigWarnings(c); got != nil {
+			t.Errorf("%s: SlotConfigWarnings = %q, want nil", name, got)
+		}
 	}
 }
