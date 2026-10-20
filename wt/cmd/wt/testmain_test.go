@@ -114,6 +114,11 @@ func TestMain(m *testing.M) {
 	// No test may read the developer's refcount file for session counts.
 	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	confirmStop = func(string) (bool, error) { return false, nil }
+	// The others prompt (#412) opens /dev/tty: no test may. Unstubbed it
+	// fails, which the start driver turns into a refused start.
+	chooseOthers = func(string, bool) (othersChoice, error) {
+		return othersCancel, errors.New("chooseOthers not stubbed in this test")
+	}
 	// `wt stats` seams: no test may resolve the developer's LiteLLM database
 	// or run psql against it. Unstubbed, a stats test sees "spend
 	// unavailable" (the degraded report) and never a query. Tests that
