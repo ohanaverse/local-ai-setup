@@ -244,3 +244,19 @@ func (s *StoreImpl) Live() map[string]int {
 	}
 	return out
 }
+
+// LiveCounts is the number of live wt sessions using each of ids in s: s is
+// swept of dead pids first, as the stop picker does, so a session that died
+// without releasing its line is not counted. A failed sweep counts what the
+// file holds.
+func LiveCounts(s Store, ids []string) map[string]int {
+	_ = s.Sweep()
+	return s.Counts(ids)
+}
+
+// SessionCounts is LiveCounts over the default store: what each replace
+// confirmation (the non-TUI prompt and the picker's dialog) names next to an
+// occupant some wt sessions use (#412).
+func SessionCounts(ids []string) map[string]int {
+	return LiveCounts(NewStore(), ids)
+}

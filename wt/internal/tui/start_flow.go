@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
@@ -322,9 +324,28 @@ func (r *startResult) get() (err error, done bool) {
 	return r.err, r.done
 }
 
+// sessionCounts is the number of live wt sessions using each model id, read
+// once when the replace dialog is built (#412). A test seam; production is
+// the non-TUI prompt's source, refcount.SessionCounts.
+var sessionCounts = refcount.SessionCounts
+
+// newReplaceChoices is the replace dialog's list of choices. The list's own
+// title is one line, cut at the terminal's edge, so the question is the
+// frame's header instead (replaceFrames), wrapped; the header takes the lines
+// the title and the item count took, so a short terminal still fits it.
+func newReplaceChoices(theme themes.Theme, width, height int) list.Model {
+	choices := list.New(buildReplaceChoices(), ThemedListDelegate(theme), width, height)
+	choices.SetShowTitle(false)
+	choices.SetShowStatusBar(false)
+	return choices
+}
+
 // replaceState is the replace-confirm dialog for the row that could not start.
 type replaceState struct {
-	item    *modelItem
+	item *modelItem
+	// header is the dialog's question, one line per occupant, built once
+	// with the dialog; replaceFrames wraps it to the terminal on each render.
+	header  string
 	choices list.Model
 }
 
@@ -646,12 +667,27 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	}
 	var occ *lifecycle.OccupiedError
 	var unk *lifecycle.OccupancyUnknownError
-	title := ""
+	header := ""
 	switch {
 	case errors.As(msg.err, &occ):
-		title = fmt.Sprintf("Starting %s will stop %s", st.item.model.ID, strings.Join(occ.IDs(), ", "))
+		// Each occupant some wt session uses is named with its count, in
+		// the non-TUI prompt's words (#412). The picker has recorded no
+		// session of its own yet (launchAndRecord comes after), so the
+		// count is other sessions only.
+		// One occupant per line: a count ends its line, so on one shared
+		// line it is what the terminal's edge would cut.
+		counts := sessionCounts(occ.IDs())
+		lines := []string{fmt.Sprintf("Starting %s will stop:", st.item.model.ID)}
+		for _, oid := range occ.IDs() {
+			name := oid
+			if n := counts[oid]; n > 0 {
+				name = fmt.Sprintf("%s (in use by %d wt session(s))", oid, n)
+			}
+			lines = append(lines, "  "+name)
+		}
+		header = strings.Join(lines, "\n")
 	case errors.As(msg.err, &unk):
-		title = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
+		header = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
 	default:
 		return back(lifecycle.StartErrorMessage(st.item.model.ID, msg.err))
 	}
@@ -659,9 +695,7 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	// printed nothing. If it has, the dialog has no status line for it: it
 	// goes where it can be read later.
 	m.recordRouteNotes(msg.out)
-	choices := list.New(buildReplaceChoices(), ThemedListDelegate(m.theme), m.width-2, m.height-2)
-	choices.Title = title
-	m.replace = &replaceState{item: st.item, choices: choices}
+	m.replace = &replaceState{item: st.item, header: header, choices: newReplaceChoices(m.theme, m.width-2, m.height-2)}
 	m.phase = phaseReplaceConfirm
 	return m, nil
 }

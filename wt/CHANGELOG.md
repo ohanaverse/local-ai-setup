@@ -371,6 +371,16 @@
 
 ### Fixed
 
+- The full-screen picker's replace dialog now says how many wt sessions use
+  each model it would stop (#412), as the `wt -M` and `wt start` prompt
+  always has: under `Starting <id> will stop:`, each occupant on a line of
+  its own as `<occupant> (in use by N wt session(s))`, wrapped rather than
+  cut at the terminal's edge, for an ordinary start row and a slot
+  profile's local model alike. A model nobody uses is named by its id
+  alone, and the count, taken
+  when the dialog opens, never includes the wt that is asking. Before, the
+  dialog named the occupants only, so "Replace and start" gave no sign that
+  it would cut off a session in another terminal.
 - `-M profile/<name>` now says why a slot profile it names cannot be pinned
   (#412). Under `-T`/`-F` it prints
   `model "profile/<name>" is a slot profile, excluded by -T` (or `-F`, or

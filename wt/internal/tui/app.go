@@ -715,7 +715,7 @@ func (m model) View() string {
 		if m.width <= 0 || m.height <= 0 {
 			return "replace confirm (waiting for window size)"
 		}
-		return m.choiceFrame()(m.replace.choices.View())
+		return drawnFrame(&m.replace.choices, m.height, m.replaceFrames()...)(m.replace.choices.View())
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
