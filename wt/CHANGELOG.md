@@ -17,10 +17,20 @@
   `--replace` still covers only the model's own provider and never stops
   another's. When stdin is not a terminal (scripts, CI) and `--others` is
   not given, the start keeps them and prints one warning line, so it
-  neither hangs nor stops anything. A launch that opens the picker screens
-  (`wt`, or `wt -M <id>` in a repository without `-W` or `--cwd`, `-A` or
-  not) does not ask yet and ignores `--others`; the picker's dialog is
-  still to come.
+  neither hangs nor stops anything. An omlx model of another provider that
+  is still loading is listed but never stopped: omlx refuses to unload a
+  model mid-load.
+- A start from the picker screens (Enter on a start row, a slot profile's
+  local model, or `wt -M <id>` that opens the picker) that would load a
+  model beside other providers' models asks in a dialog (#412): under
+  `Also loaded, by other providers:` one line per model with its memory
+  figure and wt sessions, and a `cannot tell whether …` line per provider wt
+  cannot read. The choices are `Cancel` (the default), `Start and keep them`
+  and `Stop them, then start` (absent when nothing listed can be stopped);
+  when the start would also replace a model of its own provider they read
+  `Replace, keep the others` and `Replace and stop the others`. esc and
+  ctrl+c stop nothing. `--others=keep|stop` now reaches the picker too and
+  answers for the `-M` pinned model only, as `--replace` does.
 - A profile may set `config_defaults`, a table of the same shape as
   `config_content` that is applied only where a value is absent (#402):
   each leaf `.claude/settings.local.json` in the worktree does not already
