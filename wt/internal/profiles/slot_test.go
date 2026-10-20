@@ -238,7 +238,8 @@ func TestSlotProfileID(t *testing.T) {
 }
 
 // TestFilledOrder checks the order a profile's slots are listed in: the
-// default first, then the rest in the driver's declared order. If it
+// slot the default rests on first (the default itself, or for an alias such
+// as opusplan, SlotCheck.DefaultSlot), then the rest in the driver's declared order. If it
 // regresses, the picker's slot line and `wt profile show` list the slots in
 // a random or misleading order, or show a slot the agent does not have.
 func TestFilledOrder(t *testing.T) {
@@ -247,7 +248,10 @@ func TestFilledOrder(t *testing.T) {
 		name     string
 		profile  SlotProfile
 		declared []string
-		want     []string
+		// defaultSlot is SlotCheck.DefaultSlot: the slot an alias default
+		// rests on. Empty means Profile.Default is the slot.
+		defaultSlot string
+		want        []string
 	}{
 		{
 			name:     "default first, the rest in declared order",
@@ -286,6 +290,13 @@ func TestFilledOrder(t *testing.T) {
 			want:     nil,
 		},
 		{
+			name:        "an opusplan default fills the slot it rests on first",
+			profile:     SlotProfile{Default: "opusplan", Slots: map[string]string{"opus": "a", "sonnet": "b", "haiku": "c"}},
+			declared:    declared,
+			defaultSlot: "sonnet",
+			want:        []string{"sonnet", "opus", "haiku"},
+		},
+		{
 			name:     "no declared slots",
 			profile:  SlotProfile{Default: "opus", Slots: map[string]string{"opus": "a"}},
 			declared: nil,
@@ -294,7 +305,7 @@ func TestFilledOrder(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.profile.FilledOrder(tc.declared)
+			got := SlotCheck{Profile: tc.profile, Declared: tc.declared, DefaultSlot: tc.defaultSlot}.FilledOrder()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("FilledOrder() = %v, want %v", got, tc.want)
 			}

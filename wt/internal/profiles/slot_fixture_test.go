@@ -66,7 +66,7 @@ func TestSlotProfilesFixtureMatchesTheParser(t *testing.T) {
 			t.Errorf("%s: Usable=%v Duplicate=%v Err=%v, want a passing profile", c.Label(), c.Usable, c.Duplicate, c.Err)
 		}
 	}
-	if got, want := checks[0].Profile.FilledOrder(checks[0].Declared), []string{"sonnet", "opus", "haiku"}; !reflect.DeepEqual(got, want) {
+	if got, want := checks[0].FilledOrder(), []string{"sonnet", "opus", "haiku"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("mixed: FilledOrder() = %v, want %v (the default, then the declared order)", got, want)
 	}
 	if got, want := checks[1].Label(), "profile/one-slot"; got != want {
