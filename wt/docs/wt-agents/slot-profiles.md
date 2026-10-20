@@ -67,7 +67,11 @@ MAX_THINKING_TOKENS = "4096"
 
 The model ids above are illustrative. The same entry is the first profile
 of the contract fixture `docs/contracts/slot-profiles.sample.toml`, which a
-Go test reads, so this format and the parser cannot drift apart.
+Go test reads, so this format and the parser cannot drift apart. Its
+`modelOverrides` target is not one of `mixed`'s slots, so a launch of that
+example warns that wt does not route it
+([below](#a-modeloverrides-target-wt-does-not-route)); a target that is a
+slot model raises no warning.
 
 | Field | Rule |
 |---|---|
@@ -221,8 +225,9 @@ A launch makes sure the profile's slot models are routed: the distinct
 registry ids its slots name (the default's model among them). A
 `config_content.modelOverrides` target outside that set may be an id you
 route yourself, so wt warns and never blocks the row (#412). For each such
-target of a profile that passed validation, a launch prints, once for a
-`-M` pin and before and again after the picker when one is shown,
+target of a profile that passed validation, a launch prints before any
+picker opens, and again after a picker has closed, so a launch that opens
+no picker prints them once,
 
 ```
 wt: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/x", which is not one of the profile's slot models, so wt does not make sure it is routed
