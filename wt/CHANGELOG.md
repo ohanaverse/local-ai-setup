@@ -371,6 +371,18 @@
 
 ### Fixed
 
+- `-M profile/<name>` now says why a slot profile it names cannot be pinned
+  (#412). Under `-T`/`-F` it prints
+  `model "profile/<name>" is a slot profile, excluded by -T` (or `-F`, or
+  `-T and -F`: the flags you set), also for a blocked profile, and for
+  another agent's profile
+  `model "profile/<name>" is a slot profile for agent "claude", not "codex"`
+  (the profile's own agent, then the launching one).
+  Both read before as `model "profile/<name>" is not in the eligible list
+  for agent "<agent>"`, as if the profile did not exist. That message stays
+  for an unknown name, a skipped profile, a `slot-profiles.toml` that does
+  not load, or a registry that holds the reserved `profile/` prefix. The
+  picker's pin returns to the agent picker with the same words.
 - A session launched from the picker now ends with the agent's exit status
   (#412), as a launch without the picker always has: an agent that exits 3
   makes wt exit 3, and one a signal killed makes it exit 255. Before, wt
