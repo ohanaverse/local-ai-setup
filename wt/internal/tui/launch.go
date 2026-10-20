@@ -17,6 +17,9 @@ import (
 
 // launchDoneMsg is emitted after the agent subprocess exits.
 type launchDoneMsg struct {
+	// err is what running the agent returned, or the profile error that
+	// kept it from starting. Run returns either one, so wt exits as
+	// runAgentCmd does (#412).
 	err error
 }
 
@@ -210,11 +213,8 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 				// value.
 				releaseSession()
 				pendingSummary = agents.Summary(agent, m, 0)
-				// The terminal is released here, so this reaches the
-				// user's real stderr. It is the only diagnostic: the
-				// Update handler never renders launchDoneMsg's error and
-				// Run() does not return it.
-				fmt.Fprintf(os.Stderr, "wt: %v\n", perr)
+				// Run() returns perr, so main prints it once, as it does
+				// for runAgentCmd's return.
 				return launchDoneMsg{err: perr}
 			}
 		}
