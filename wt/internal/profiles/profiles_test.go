@@ -98,3 +98,36 @@ func TestLoadMalformedTOMLReturnsError(t *testing.T) {
 		t.Fatal("Load() error = nil, want a parse error")
 	}
 }
+
+// TestLoadParsesConfigDefaultsTable verifies the config_defaults table
+// round-trips from profiles.toml into Profile.ConfigDefaults.
+func TestLoadParsesConfigDefaultsTable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	body := `
+[[profiles]]
+agent = "claude"
+match = "location"
+location = "local"
+
+[profiles.config_defaults.permissions]
+defaultMode = "default"
+`
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if len(store.Profiles) != 1 {
+		t.Fatalf("len(store.Profiles) = %d, want 1", len(store.Profiles))
+	}
+	perms, ok := store.Profiles[0].ConfigDefaults["permissions"].(map[string]any)
+	if !ok || perms["defaultMode"] != "default" {
+		t.Errorf("ConfigDefaults = %#v, want permissions.defaultMode = default", store.Profiles[0].ConfigDefaults)
+	}
+}

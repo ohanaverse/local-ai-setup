@@ -163,7 +163,7 @@ func TestClaudeNativeIgnoresGateway(t *testing.T) {
 // using any other mechanism for claude must fail Validate.
 func TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
 	mechs := claudeDriver{}.ProfileMechanisms()
-	want := map[profiles.Mechanism]bool{profiles.MechanismEnv: true, profiles.MechanismConfigFile: true}
+	want := map[profiles.Mechanism]bool{profiles.MechanismEnv: true, profiles.MechanismConfigFile: true, profiles.MechanismConfigDefaults: true}
 	if len(mechs) != len(want) {
 		t.Fatalf("ProfileMechanisms() = %v, want exactly %v", mechs, want)
 	}
@@ -200,5 +200,33 @@ func TestPiStateDir(t *testing.T) {
 	got = piDriver{}.StateDir("/tmp/wt-smoke-1")
 	if want := "/elsewhere/sessions/--tmp-wt-smoke-1--"; got != want {
 		t.Fatalf("StateDir with PI_CODING_AGENT_DIR = %q, want %q", got, want)
+	}
+}
+
+// TestValidateRejectsConfigDefaultsOnAgentsWithoutIt pins that only claude
+// declares config_defaults: codex and opencode reject it with the standard
+// unsupported-mechanism message, claude accepts it.
+func TestValidateRejectsConfigDefaultsOnAgentsWithoutIt(t *testing.T) {
+	mechs := func(agent string) []profiles.Mechanism {
+		d, ok := ByName(agent).(profiles.ProfileCapable)
+		if !ok {
+			return nil
+		}
+		return d.ProfileMechanisms()
+	}
+	for _, agent := range []string{"codex", "opencode", "pi"} {
+		store := profiles.Store{Profiles: []profiles.Profile{
+			{Agent: agent, Match: "location", Location: "local", ConfigDefaults: map[string]any{"a": "b"}},
+		}}
+		err := profiles.Validate(store, mechs, nil)
+		if err == nil || !strings.Contains(err.Error(), `agent does not support mechanism "config_defaults"`) {
+			t.Errorf("%s: Validate() = %v, want unsupported config_defaults", agent, err)
+		}
+	}
+	store := profiles.Store{Profiles: []profiles.Profile{
+		{Agent: "claude", Match: "location", Location: "local", ConfigDefaults: map[string]any{"a": "b"}},
+	}}
+	if err := profiles.Validate(store, mechs, nil); err != nil {
+		t.Errorf("claude: Validate() = %v, want nil", err)
 	}
 }
