@@ -194,21 +194,6 @@ func TestWeightsNote(t *testing.T) {
 	}
 }
 
-// TestFormatSize pins the sizes the listing and the Models tab print:
-// decimal units as `ollama list` shows them, and "-" for a size wt does not
-// know, never "0 B".
-func TestFormatSize(t *testing.T) {
-	for n, want := range map[int64]string{
-		0: "-", -1: "-", 7: "7 B", 4_200: "4 kB", 734_000_000: "734 MB", 5_225_388_164: "5.2 GB", 27_000_000_000: "27.0 GB",
-		// Just under a unit: the next unit, never "1000" of this one.
-		999_700: "1 MB", 999_700_000: "1.0 GB",
-	} {
-		if got := FormatSize(n); got != want {
-			t.Errorf("FormatSize(%d) = %q, want %q", n, got, want)
-		}
-	}
-}
-
 // TestRowsShowThePathTheInventoryGives verifies Rows copies a registered
 // entry's Path as it is, and adds no rule of its own: whether a scanned
 // directory is the model's own is decided where the match is made

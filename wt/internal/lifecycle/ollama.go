@@ -108,7 +108,7 @@ func (ollamaBackend) awaitUnload(ctx context.Context, e *env, cfg *config.Config
 			// the CLI's own exit decides.
 			return cliErr
 		}
-		if !slices.ContainsFunc(loaded, func(n string) bool { return SameModel("ollama", n, modelName) }) {
+		if !slices.ContainsFunc(loaded, func(m localmodels.OllamaModel) bool { return SameModel("ollama", m.Name, modelName) }) {
 			return nil
 		}
 		if cliErr != nil {
