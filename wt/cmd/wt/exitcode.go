@@ -11,7 +11,8 @@ import (
 // Every command exits 1 on an error; `wt cloud-sync` is the one whose codes
 // mean something to a caller (2 to 5 say why its ollama flow changed
 // nothing, 1 that a step failed in either flow), so it wraps its error in
-// this and main reads the code back with exitCodeOf. The message is what main
+// this and main reads the code back with exitCodeOf. A launch from the picker
+// uses it too, to exit with the agent's own status. The message is what main
 // prints after "wt:", unless quiet is set: then main prints nothing.
 type exitCodeError struct {
 	code  int

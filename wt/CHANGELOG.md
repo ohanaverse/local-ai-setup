@@ -376,7 +376,10 @@
   makes wt exit 3, and one a signal killed makes it exit 255. Before, wt
   exited 0 after any picker session. The post-exit steps (stop picker,
   summary line) still run first, and nothing more is printed. This covers
-  slot-profile launches from the picker too.
+  slot-profile launches from the picker too. An agent that cannot be started
+  at all (the binary is missing or not executable) now prints `wt: <error>`
+  and exits 1 from the picker as well; before, it exited 0. A profile that
+  cannot be applied still exits 0 from the picker.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
   `.claude/settings.local.json` when the session appended to the array
