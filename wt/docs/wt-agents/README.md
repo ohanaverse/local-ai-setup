@@ -312,6 +312,17 @@ last so the prompts cannot scroll it away:
 Both the survey and the stop picker therefore run **before** the summary
 line.
 
+**Exit status.** Once these steps have run, wt exits with the agent's own
+exit status — 3 when the agent exited 3, 255 when a signal killed it — on
+both paths, a launch from the picker included (#412), and prints nothing
+more about it. An agent that exited 0 leaves wt at 0. An agent binary that
+could not be started is printed after `wt:` and wt exits 1, on both paths.
+One exception on the picker: when a launch fails before the agent starts
+because a profile could not be applied, wt prints the error (`wt: …` for a
+single-model launch, `launch failed: …` in the picker for a slot profile)
+and does not exit 1 — a single-model launch quits with status 0, and a slot
+profile returns to the picker.
+
 - **Survey — currently switched off.** wt does not ask it (`survey.Enabled`
   is `false` since 2026-10-05, #136), so a session goes straight to the stop
   picker and there is no after-survey block. The code is kept and the survey
