@@ -338,7 +338,9 @@ stop them first, keep them and start, or cancel? [s/k/N]
   the model's route (an ollama model keeps its route). A stop that fails ends
   the start: `stopping <id> before starting <model>: …`, and nothing is
   started. A model that was loaded after the question is kept, with
-  `wt: <id> (<memory>) is also loaded; not stopped`.
+  `wt: <id> (<memory>) is also loaded; not stopped`, and so is a model you
+  chose to stop that wt can no longer stop by then (an omlx model that is
+  loading again), with the same line.
 - Nothing is asked when the model is already running or omlx is already
   loading it, and a provider whose server was down when the start looked is
   not listed even if it comes up during the start.
@@ -368,6 +370,11 @@ would also replace or unload a model of its own provider.)
   offered when nothing listed can be stopped. With `will stop` lines as well
   the two actions read **Replace, keep the others** and **Replace and stop
   the others**: either one also confirms the replace.
+- The stop choice is offered only while the dialog shows every model it
+  would stop. On a terminal too short for the whole list the dialog keeps
+  its first lines and ends them with
+  `… enlarge the terminal to stop them`, and offers only Cancel and keep;
+  enlarge the terminal and the stop choice comes back.
 - esc backs out like Cancel and ctrl+c quits wt; neither stops anything. A
   slot profile's cloud routes written before the dialog are published on
   every way out, as for the replace dialog.

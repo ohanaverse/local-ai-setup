@@ -26,7 +26,9 @@
   `Also loaded, by other providers:` one line per model with its memory
   figure and wt sessions, and a `cannot tell whether …` line per provider wt
   cannot read. The choices are `Cancel` (the default), `Start and keep them`
-  and `Stop them, then start` (absent when nothing listed can be stopped);
+  and `Stop them, then start` (absent when nothing listed can be stopped,
+  and while a terminal too short for the whole list hides some of the
+  models it would stop: the dialog then says to enlarge the terminal);
   when the start would also replace a model of its own provider they read
   `Replace, keep the others` and `Replace and stop the others`. esc and
   ctrl+c stop nothing. `--others=keep|stop` now reaches the picker too and
