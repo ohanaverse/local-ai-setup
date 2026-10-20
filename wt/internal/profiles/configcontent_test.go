@@ -1216,3 +1216,47 @@ func TestKeysMarkerHoldsNoWrittenValue(t *testing.T) {
 		t.Errorf(".keys = %s, holds the written value", raw)
 	}
 }
+
+// TestApplyConfigContentRefusesATargetHoldingNull pins the one JSON payload
+// a merge must refuse beside invalid JSON: a whole-file null decodes with
+// no error into a nil map, which mergeInto used to panic on ("assignment to
+// entry in nil map") — crashing wt at launch instead of degrading to an
+// unprofiled launch the way every other refusal does. Like any buildData
+// failure, the refusal must also leave the target untouched and no orphaned
+// backup behind for a later self-heal to restore over.
+func TestApplyConfigContentRefusesATargetHoldingNull(t *testing.T) {
+	worktree, target := claudeTarget(t, []byte(`null`))
+
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err == nil {
+		t.Fatal("ApplyConfigContent() error = nil, want an error (existing content is JSON null)")
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "null" {
+		t.Errorf("target = %s, want it left untouched", got)
+	}
+	if _, statErr := os.Stat(backupPresentPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupPresentPath exists after a buildData failure, want no orphaned backup (stat err = %v)", statErr)
+	}
+	if _, statErr := os.Stat(backupOwnerPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupOwnerPath exists after a buildData failure, want no orphaned owner marker (stat err = %v)", statErr)
+	}
+}
+
+// TestCleanupRestoresALeafPastFloat64sExactRange verifies cleanup reverts a
+// pinned integer past float64's exact range (2^53 and up) that the session
+// never touched: the marker's hash comes from the profile's int64 and the
+// restored file's from the float64 parsing that same JSON number gives, and
+// hashing the write-side form alone used to make those two disagree — the
+// leaf then read as changed by the session and the profile's own value
+// stayed after cleanup instead of the original coming back.
+func TestCleanupRestoresALeafPastFloat64sExactRange(t *testing.T) {
+	content := map[string]any{"reserved": int64(9007199254740993)} // 2^53 + 1
+	got := leafSession(t, []byte(`{"reserved":1}`), content, nil)
+	assertSameJSON(t, "restored content", "the original reserved of 1 back", got, []byte(`{"reserved":1}`))
+}

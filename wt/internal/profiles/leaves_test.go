@@ -55,6 +55,28 @@ func TestCollectLeavesTreatsArraysNullAndNumbersAsWholeValues(t *testing.T) {
 	}
 }
 
+// TestHashLeafHoldsForNumbersPastFloat64sExactRange verifies a written
+// leaf's hash equals the hash of what a read back from the file gives, even
+// for integers past float64's exact range (2^53 and up): the profile writes
+// an int64, the restored file parses the same JSON number into a float64
+// one unit away, and hashing the write-side form alone used to hash the two
+// differently — restore then read the profile's own untouched leaf as
+// changed by the session and left it un-restored.
+func TestHashLeafHoldsForNumbersPastFloat64sExactRange(t *testing.T) {
+	const big = int64(9007199254740993) // 2^53 + 1
+	b, err := json.Marshal(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back any
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if hashLeaf(big) != hashLeaf(back) {
+		t.Errorf("hashLeaf(int64 %s) != hashLeaf(what the file parses it back to)", b)
+	}
+}
+
 // TestCollectLeavesEmptyMapIsALeafOnlyWhenItWillBeWritten verifies {} is
 // recorded only where mergeInto writes it; merging {} into an existing
 // object is a no-op, and recording it would restore (delete) an object the
