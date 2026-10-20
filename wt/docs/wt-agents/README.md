@@ -312,6 +312,12 @@ last so the prompts cannot scroll it away:
 Both the survey and the stop picker therefore run **before** the summary
 line.
 
+**Exit status.** Once these steps have run, wt exits with the agent's own
+exit status — 3 when the agent exited 3, 255 when a signal killed it — on
+both paths, a launch from the picker included (#412), and prints nothing
+more about it. An agent that exited 0 leaves wt at 0. An error that kept
+the agent from running at all is printed after `wt:` and wt exits 1.
+
 - **Survey — currently switched off.** wt does not ask it (`survey.Enabled`
   is `false` since 2026-10-05, #136), so a session goes straight to the stop
   picker and there is no after-survey block. The code is kept and the survey

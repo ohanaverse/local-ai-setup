@@ -371,6 +371,12 @@
 
 ### Fixed
 
+- A session launched from the picker now ends with the agent's exit status
+  (#412), as a launch without the picker always has: an agent that exits 3
+  makes wt exit 3, and one a signal killed makes it exit 255. Before, wt
+  exited 0 after any picker session. The post-exit steps (stop picker,
+  summary line) still run first, and nothing more is printed. This covers
+  slot-profile launches from the picker too.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
   `.claude/settings.local.json` when the session appended to the array
