@@ -66,6 +66,8 @@ value.**
   not recorded.
 - Both restore call sites in `restoreIfBackedUpLocked` (absent and present branches) read the
   marker; both change.
+- An existing `settings.local.json` holding bare JSON `null` is treated as an empty object (it used
+  to panic); a test pins this.
 
 **Tests:** the issue's repro; the new-file case beside `configcontent_test.go:901`; a
 session-changed leaf kept (existing and new-file cases); a session-deleted leaf not resurrected;
@@ -82,7 +84,7 @@ fix the "restores both" wording near 169 and 196; fix the top-level wording in t
 
 Decided by the owner: **a new `config_defaults` table, same shape as `config_content`.**
 
-- Applied after `config_content` with a merge-if-absent helper in `merge.go`. A leaf that already
+- Applied after `config_content` with a merge-if-absent helper in `wt/internal/profiles/leaves.go` (`collectAbsentLeaves`, `setLeaves`). A leaf that already
   exists in the file is neither written nor recorded, so it is never reverted. A leaf that is absent
   is written and recorded, then restored like any other.
 - Move `permissions = { defaultMode = "default" }` in the claude local example to
@@ -104,15 +106,15 @@ Decided by the owner: **a new `config_defaults` table, same shape as `config_con
 
 Decided by the owner: **key by PR head repository, not an extra `gh repo view` call.**
 
-- `gh pr list --json` also returns `headRepository` and `headRepositoryOwner`. Key the PR map by
-  (owner/repo, head branch). Resolve each remote row's remote URL (via `git remote get-url`, which
+- `gh pr list --json` also returns `headRepository` and `headRepositoryOwner`. The PR map is
+  `PRSet{Repo, ByBranch}`; remote rows look up by `Entry.RemoteRepo`/`Entry.RemoteBranch`. Resolve each remote row's remote URL (via `git remote get-url`, which
   applies `insteadOf`) to owner/repo, normalized across https, ssh and scp-style URLs, `.git`
   stripped, case-insensitive. Tag a remote row only on a match; an unknown or removed remote leaves
   the row untagged (never a first-slash guess).
 - Rows from a second remote no longer show the base repo's PR. Local and worktree rows keep the
   name-only lookup (out of scope; documented).
-- Split `PRBranch` into a pure display-strip (used by `baseTitle`, `worktree_list.go:96`) and the
-  lookup key, so a fork row's title does not go empty.
+- `PRBranch` is not split: it stays the display rule (`baseTitle`, `worktree_list.go:96`) and the
+  local-row rule; remote rows use `Entry.RemoteBranch`, so a fork row's title does not go empty.
 - Thread the key through `applyPRs` **and** `prsCurrent` (the filter-staleness check at
   `app.go:641`) so the `#<num>` filter stays consistent. Remote rows stay untagged until the data
   arrives, never briefly mis-tagged.
@@ -134,3 +136,15 @@ where in `slot_test.go` the repointed test lives.
 - Do not read the user-level and project-level `settings.json` for "absent".
 - Leave local-branch rows on the name-only lookup in #388.
 - No separate builder-check subagent: the recon's skeptic pass already challenged each proposal.
+
+## Amendments after implementation (2026-10-20)
+
+- #401: the `.keys` marker is written when the claude leaf records are non-nil (an empty `[]` when
+  the merge wrote no leaf), so cleanup does not fall back to whole-file restore and lose grants.
+- #401: bare JSON `null` in an existing `settings.local.json` is an empty object, pinned by a test.
+- #402: the merge-if-absent helpers are in `wt/internal/profiles/leaves.go`; `merge.go` is untouched.
+- #388: `PRBranch` is not split; remote rows key on `Entry.RemoteBranch`/`Entry.RemoteRepo` and the
+  PR map is `PRSet{Repo, ByBranch}`.
+- #388: `RemoteRepos` gives an empty map when `git remote` fails and omits only a remote whose
+  `get-url` fails; `repoFromURL` returns "" for `file://` URLs and any URL with an empty host.
+- Commit trailers name the model that wrote each commit.

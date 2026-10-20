@@ -19,7 +19,7 @@
 - When the session changed a pinned leaf after the merge, restore keeps the session's value.
 - The `.keys` marker stores a SHA-256 hash of each written value, never the value (config values can hold env secrets).
 - No test may reach the developer's GitHub account or real config home: use `claudeTarget(t, ...)` (profiles) and the existing `StubPRListForTest` (worktree, tui).
-- Commit messages end with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`; PR bodies end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- Commit messages end with the Co-Authored-By line naming the model that wrote the commit; PR bodies end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Guides never embed live model state (`docs/guides/`); these changes touch `wt/docs/` only.
 
 ## Review Focus
@@ -132,7 +132,7 @@ After all records, prune ancestors of every touched path, deepest first. An ance
   - `TestSecondLaunchRefusedWhileFirstIsLiveWithLeafRecords` (reuse the owner/`pidAlive` stub pattern from `TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession`).
   - Also: the `.keys` file holds no written value: write `config_content = {env = {TOKEN = "s3cret"}}` and assert the raw `.keys` bytes do not contain `s3cret`.
 - [ ] **Step 2: Run** `cd wt && go test ./internal/profiles -run 'Cleanup|Restore|SelfHeal|Marker' -v`. Expected: the new tests FAIL (session `allow` lost, etc.).
-- [ ] **Step 3: Write the claude `buildData`.** It calls `collectLeaves(doc, rp.ConfigContent)` before `mergeInto`, and returns those records. `snapshotAndWrite` stores `encodeLeafRecs(recs)` in `.keys` when `len(recs) > 0`.
+- [ ] **Step 3: Write the claude `buildData`.** It calls `collectLeaves(doc, rp.ConfigContent)` before `mergeInto`, and returns those records. `snapshotAndWrite` stores `encodeLeafRecs(recs)` in `.keys` when the records are non-nil (an empty `[]` marker when the merge wrote no leaf): without a marker, cleanup falls back to whole-file restore and would lose the session's grants.
 - [ ] **Step 4: Implement `revertLeaves`** per the algorithm above, and rewrite `surgicalRestoreJSON` / `surgicalDeleteJSON` on top of it: both unmarshal current content (fall back with `ok=false` when it is not an object), call `revertLeaves` (`orig` nil for delete), and keep today's `MarshalIndent(..., "", "  ")` output; delete keeps returning `ok=false` when the root is empty.
 - [ ] **Step 5: Update both `.keys` reads** in `restoreIfBackedUpLocked` to `decodeLeafRecs`. A marker that fails to decode keeps today's fallthrough (whole-file restore or delete), which is also what an older wt does with the new format.
 - [ ] **Step 6: Run the whole package** `cd wt && go test ./internal/profiles -v 2>&1 | tail -40`. New tests PASS. Inspect each failing old test: change it only when it asserts the superseded "restore the whole top-level key / revert a hand-edited touched key" rule (candidates: `configcontent_test.go` near 236-263, 441, 511, 682, 854, 901), and say so in the commit message. Expected: PASS.
@@ -240,7 +240,7 @@ After all records, prune ancestors of every touched path, deepest first. An ance
 **Interfaces:**
 - Produces:
   - `func repoFromURL(url string) string`: `owner/repo`, lower-cased, `.git` stripped, from `https://host/o/r(.git)`, `ssh://git@host/o/r.git` and scp-style `git@host:o/r.git`; `""` when it cannot tell (a local path). The host is ignored (documented limit: an Enterprise host with the same owner/repo would match).
-  - `func RemoteRepos(dir string) map[string]string`: remote name to `repoFromURL(url)`, using `git remote` then `git remote get-url <name>` (which applies `insteadOf`); empty map on any git failure.
+  - `func RemoteRepos(dir string) map[string]string`: remote name to `repoFromURL(url)`, using `git remote` then `git remote get-url <name>` (which applies `insteadOf`); a failed `git remote` gives an empty map; a failed `get-url` leaves just that remote out. `repoFromURL` returns "" for `file://` URLs and any URL with an empty host.
   - `func SplitRemoteBranch(remoteBranch string, remotes map[string]string) (remote, branch string, ok bool)`: the longest remote name `r` in `remotes` with prefix `r + "/"` wins; `ok=false` when none does (no first-slash guess).
   - `Entry` gains `RemoteRepo string` (the row's remote's `owner/repo`, `""` when not a remote row or unknown) and `RemoteBranch string` (the branch without its remote, `""` when unknown). `Enumerate` fills both for every remote-branch entry from one `RemoteRepos` call.
   - `PRBranch` is unchanged and stays the display rule and the local-row rule.

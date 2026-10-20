@@ -238,7 +238,8 @@ func TestSlotProfileID(t *testing.T) {
 }
 
 // TestFilledOrder checks the order a profile's slots are listed in: the
-// default first, then the rest in the driver's declared order. If it
+// slot the default rests on first (the default itself, or for an alias such
+// as opusplan, SlotCheck.DefaultSlot), then the rest in the driver's declared order. If it
 // regresses, the picker's slot line and `wt profile show` list the slots in
 // a random or misleading order, or show a slot the agent does not have.
 func TestFilledOrder(t *testing.T) {

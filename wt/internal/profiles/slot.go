@@ -35,8 +35,8 @@ type SlotProfile struct {
 // ID is the profile's row id, SlotIDPrefix + Name.
 func (p SlotProfile) ID() string { return SlotIDPrefix + p.Name }
 
-// filledOrderFrom lists the slots p fills that are in declared: first
-// (when it is filled and declared) first, then the rest in declared's order.
+// filledOrderFrom lists the slots p fills that are in declared: `first`
+// (when it is filled and declared), then the rest in declared's order.
 // A slot p fills that the agent does not declare is left out.
 func (p SlotProfile) filledOrderFrom(declared []string, first string) []string {
 	filled := func(slot string) bool {
