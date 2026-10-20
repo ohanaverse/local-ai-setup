@@ -23,6 +23,11 @@ func repoFromURL(raw string) string {
 		if err != nil {
 			return ""
 		}
+		// A file:// remote is a local clone, like a plain path: its last
+		// two segments name a directory, not an owner/repo.
+		if u.Scheme == "file" || u.Host == "" {
+			return ""
+		}
 		path = u.Path
 	case strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "."):
 		return ""

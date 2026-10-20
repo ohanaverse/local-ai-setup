@@ -8,13 +8,15 @@ import (
 
 func TestRepoFromURLForms(t *testing.T) {
 	cases := map[string]string{
-		"https://github.com/Owner/Repo":       "owner/repo",
-		"https://github.com/owner/repo.git":   "owner/repo",
-		"ssh://git@github.com/owner/repo.git": "owner/repo",
-		"git@github.com:Owner/Repo.git":       "owner/repo",
-		"https://github.com/Owner/Repo.git/":  "owner/repo",
-		"/srv/repo.git":                       "",
-		"":                                    "",
+		"https://github.com/Owner/Repo":                        "owner/repo",
+		"https://github.com/owner/repo.git":                    "owner/repo",
+		"ssh://git@github.com/owner/repo.git":                  "owner/repo",
+		"git@github.com:Owner/Repo.git":                        "owner/repo",
+		"https://github.com/Owner/Repo.git/":                   "owner/repo",
+		"file:///Users/keith/github/Ohanaverse/local-ai-setup": "",
+		"file:///srv/repo.git":                                 "",
+		"/srv/repo.git":                                        "",
+		"":                                                     "",
 	}
 	for in, want := range cases {
 		if got := repoFromURL(in); got != want {
