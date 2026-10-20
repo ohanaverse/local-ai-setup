@@ -55,6 +55,28 @@ func TestCollectLeavesTreatsArraysNullAndNumbersAsWholeValues(t *testing.T) {
 	}
 }
 
+// TestHashLeafHoldsForNumbersPastFloat64sExactRange verifies a written
+// leaf's hash equals the hash of what a read back from the file gives, even
+// for integers past float64's exact range (2^53 and up): the profile writes
+// an int64, the restored file parses the same JSON number into a float64
+// one unit away, and hashing the write-side form alone used to hash the two
+// differently — restore then read the profile's own untouched leaf as
+// changed by the session and left it un-restored.
+func TestHashLeafHoldsForNumbersPastFloat64sExactRange(t *testing.T) {
+	const big = int64(9007199254740993) // 2^53 + 1
+	b, err := json.Marshal(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back any
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if hashLeaf(big) != hashLeaf(back) {
+		t.Errorf("hashLeaf(int64 %s) != hashLeaf(what the file parses it back to)", b)
+	}
+}
+
 // TestCollectLeavesEmptyMapIsALeafOnlyWhenItWillBeWritten verifies {} is
 // recorded only where mergeInto writes it; merging {} into an existing
 // object is a no-op, and recording it would restore (delete) an object the
@@ -203,12 +225,11 @@ func TestRevertLeavesKeysWithDotsSlashesAndEmptyNames(t *testing.T) {
 	}
 }
 
-// TestRevertLeavesLegacyRecordRestoresWithoutTheHashCheck verifies a
-// hashless record (an older wt's top-level key) restores the original value
-// even though the session changed it: an older marker carries no hash to
-// compare with, so it skips that check (a key the session deleted is still
-// not brought back).
-func TestRevertLeavesLegacyRecordRestoresWithoutTheHashCheck(t *testing.T) {
+// TestRevertLeavesLegacyRecordRestoresUnconditionally verifies a hashless
+// record (an older wt's top-level key) restores the original value even
+// though the session changed it: an older marker carries no hash to compare
+// with, so it keeps that wt's restore rule.
+func TestRevertLeavesLegacyRecordRestoresUnconditionally(t *testing.T) {
 	cur := map[string]any{"permissions": map[string]any{"defaultMode": "acceptEdits"}, "model": "s"}
 	orig := map[string]any{"permissions": map[string]any{"defaultMode": "plan"}}
 	revertLeaves(cur, orig, []leafRec{{Path: []string{"permissions"}}, {Path: []string{"env"}}})

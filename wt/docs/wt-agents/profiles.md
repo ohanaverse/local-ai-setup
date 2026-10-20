@@ -110,12 +110,12 @@ differs by agent:
   state, so a hand edit mid-session is kept whether or not the profile
   pins that value; wt keeps a hash of each value it wrote to tell, never
   the value itself. A file that didn't exist before is deleted at exit
-  only when nothing but the profile's own values was in it. When the file
-  is no longer a JSON object at exit, the whole file is still restored
-  from the snapshot, or deleted if it did not exist before, as wt always
-  did. `config_defaults` leaves are written
-  and restored the same way, and a value the file already had is never
-  written, so it is never restored either.
+  when nothing but the profile's own values was in it — or when what the
+  session left no longer parses as a JSON object, which the per-value
+  restore cannot act on.
+  `config_defaults` leaves are written and restored the same way, and a
+  value the file already had is never written, so it is never restored
+  either.
 - **codex's `agent-wt-profile.config.toml` is a dedicated, wt-owned global
   file** nothing else writes to, so it keeps a simple whole-file
   snapshot/replace/restore — don't hand-edit it while a profiled codex

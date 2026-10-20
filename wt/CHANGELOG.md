@@ -380,9 +380,7 @@
   of the value, never the value) and restores only those: a sibling the
   session wrote stays, a value the session changed or deleted after the merge
   keeps the session's state, and a table the profile created is removed once
-  it is empty. A backup left by an older wt still self-heals, but a
-  top-level key the session deleted is no longer brought back: the session's
-  state wins.
+  it is empty. A backup left by an older wt still self-heals as before.
 - The claude local profile example no longer overrides your own
   `permissions.defaultMode` (#402). Its `defaultMode = "default"` moved from
   `config_content` to the new `config_defaults` table, so a mode already set

@@ -14,8 +14,7 @@ import (
 // document root (one segment per object key, whatever characters it holds)
 // and a hash of the value written, never the value itself. An empty Hash
 // marks a legacy record, from a marker that listed top-level keys only:
-// restore it without the hash comparison (a leaf the session deleted is
-// still not brought back).
+// restore it unconditionally.
 type leafRec struct {
 	Path []string `json:"path"`
 	Hash string   `json:"hash,omitempty"`
@@ -49,13 +48,24 @@ func appendLeaves(recs []leafRec, prefix []string, doc, content map[string]any) 
 	return recs
 }
 
-// hashLeaf is the hex SHA-256 of v's JSON form. JSON is the form the
-// settings file holds, so a TOML int64 and the float64 read back from disk
-// hash alike. An integer above 2^53 does not survive the float64 round trip
-// through the settings file, so its hash will not match on restore (the
-// session's value is then kept).
+// hashLeaf is the hex SHA-256 of v's JSON form AS A READ-BACK FROM DISK:
+// v is marshaled, parsed back — the same read the restore will do, which
+// turns every JSON number into a float64 whatever Go type it was written
+// from — and marshaled again. Hashing the round-tripped form instead of v
+// itself is what makes a written leaf's hash match its restored form for
+// every number: an int64 past float64's exact range (2^53 and up, such as
+// a pinned reserved = 9007199254740993) marshals two different ways, and
+// a hash of the write-side form alone would read that untouched leaf as
+// changed by the session and leave the profile's own value un-restored.
 func hashLeaf(v any) string {
-	b, err := json.Marshal(v)
+	rt := v
+	if b, err := json.Marshal(v); err == nil {
+		var back any
+		if json.Unmarshal(b, &back) == nil {
+			rt = back
+		}
+	}
+	b, err := json.Marshal(rt)
 	if err != nil {
 		// Never an empty hash: that would read as a legacy record.
 		b = []byte("unmarshalable")
@@ -128,9 +138,8 @@ func getPath(doc map[string]any, path []string) (v any, ok bool) {
 // replaced it) and when its hash no longer matches what the merge wrote (the
 // session changed it); either way the session's state wins. Otherwise the
 // original value is set back, creating parent objects, or the leaf is
-// deleted when orig has no value there. A legacy record (empty Hash) still
-// goes through the missing-leaf check and is exempt only from the hash
-// comparison.
+// deleted when orig has no value there. A legacy record (empty Hash) skips
+// only the first check.
 //
 // Then every ancestor of a record's path that is an empty object in cur is
 // settled by orig, deepest first: a non-object orig value there is set back

@@ -120,8 +120,13 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 				if err := json.Unmarshal(existing, &doc); err != nil {
 					return nil, nil, fmt.Errorf("profile: existing %s is not valid JSON, refusing to merge config_content: %w", path, err)
 				}
-				if doc == nil { // a JSON null: nothing to keep, nothing to set into
-					doc = map[string]any{}
+				if doc == nil {
+					// A whole-file JSON null decodes with no error into a
+					// nil map, which mergeInto below would panic on
+					// ("assignment to entry in nil map") — crash the launch
+					// rather than degrade it. Refuse it like any other
+					// content the per-leaf merge cannot act on.
+					return nil, nil, fmt.Errorf("profile: existing %s is not a JSON object, refusing to merge config_content", path)
 				}
 			}
 			// Collected before the merge, which changes doc in place.
@@ -275,7 +280,10 @@ func readBackupOwner(target string) (pid int, ok bool) {
 // possible in that case.
 func surgicalRestoreJSON(originalSnapshot []byte, target string, recs []leafRec) (merged []byte, ok bool) {
 	var origDoc map[string]any
-	if err := json.Unmarshal(originalSnapshot, &origDoc); err != nil {
+	// origDoc == nil too: a whole-file null snapshot is not an object this
+	// can restore against, so it falls back to the whole-file restore like
+	// any other non-object content.
+	if err := json.Unmarshal(originalSnapshot, &origDoc); err != nil || origDoc == nil {
 		return nil, false
 	}
 	curDoc, ok := readJSONObject(target)
