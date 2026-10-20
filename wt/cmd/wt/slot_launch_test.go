@@ -1006,9 +1006,12 @@ func restoreLaunchSlotChecks(t *testing.T) {
 
 // TestSlotWarnings verifies the warning lines of a launch: the load error;
 // one line per profile that has no usable name or agent, naming its position
-// in the file; and one line when the registry has a provider "profile" while
-// a usable profile exists. A profile that merely fails validation gets no
-// line here: it has a blocked row that carries its reason.
+// in the file; one line when the registry has a provider "profile" while
+// a usable profile exists; and one line per modelOverrides target of a
+// passing profile that is not one of its slot models (#412), the launch-time
+// channel that warning reaches both launch paths through. A profile that
+// merely fails validation gets no line here: it has a blocked row that
+// carries its reason.
 func TestSlotWarnings(t *testing.T) {
 	usable := slotFixtureCheck(0, "cloud", "opus", slotCloud())
 	blocked := slotFixtureCheck(1, "broken", "opus", slotCloud())
@@ -1018,12 +1021,24 @@ func TestSlotWarnings(t *testing.T) {
 	reserved.Providers = append(reserved.Providers, config.Provider{ID: "profile", Location: config.LocationCloud})
 	prefixed := slotFixtureConfig()
 	prefixed.Models = append(prefixed.Models, config.Model{ID: "profile/mixed", ProviderID: "openrouter", ModelName: "mixed"})
+	overriding := slotFixtureCheck(3, "overriding", "opus", slotCloud())
+	overriding.Profile.ConfigContent = map[string]any{"modelOverrides": map[string]any{
+		"claude-opus-4-1": "openrouter/a", "claude-sonnet-4-6": "openrouter/z"}}
+	routedOnly := slotFixtureCheck(4, "routed-only", "opus", slotCloud())
+	routedOnly.Profile.ConfigContent = map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": "openrouter/b"}}
+	blockedOverriding := overriding
+	blockedOverriding.Err = errors.New("default is missing")
 	cases := []struct {
 		name string
 		a    *app
 		want []string
 	}{
 		{"nothing wrong", &app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, blocked}}, nil},
+		{"a modelOverrides target that is not a slot model, once",
+			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{usable, overriding, routedOnly}},
+			[]string{`wt: profile/overriding (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`}},
+		{"a blocked profile's modelOverrides says nothing more",
+			&app{cfg: slotFixtureConfig(), slotChecks: []profiles.SlotCheck{blockedOverriding}}, nil},
 		{"no file", &app{cfg: slotFixtureConfig()}, nil},
 		{"the file does not parse",
 			&app{cfg: slotFixtureConfig(), slotLoadErr: errors.New("parse slot-profiles.toml: toml: line 2: unexpected EOF")},

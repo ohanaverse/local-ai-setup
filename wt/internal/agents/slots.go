@@ -2,8 +2,10 @@ package agents
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -14,6 +16,34 @@ import (
 // driver: the flags that, passed after `--`, would replace the slot mapping.
 type SlotPassthroughRefuser interface {
 	RefusedSlotPassthrough() []string
+}
+
+// SlotConfigWarner is an optional capability of a slot-capable driver: what
+// a profile's config_content holds that the agent accepts but the user should
+// hear about. Unlike CheckConfigContent it never blocks a profile.
+// slotModels are the distinct registry ids the profile fills its slots with,
+// the ones a launch makes sure are routed.
+type SlotConfigWarner interface {
+	ConfigContentWarnings(cc map[string]any, slotModels []string) []string
+}
+
+// SlotConfigWarnings asks c's driver what to say about the profile's
+// config_content (SlotConfigWarner), with the profile's slot models. It says
+// nothing about a profile that is not Usable or failed validation: that one
+// already carries its error. nil also when the agent's driver has no such
+// capability.
+func SlotConfigWarnings(c profiles.SlotCheck) []string {
+	if !c.Usable || c.Err != nil || len(c.Profile.ConfigContent) == 0 {
+		return nil
+	}
+	w, ok := ByName(c.Profile.Agent).(SlotConfigWarner)
+	if !ok {
+		return nil
+	}
+	// The default's model is one of these: the default names a filled slot,
+	// or an alias whose slots must be filled.
+	models := slices.Sorted(maps.Values(c.Profile.Slots))
+	return w.ConfigContentWarnings(c.Profile.ConfigContent, slices.Compact(models))
 }
 
 // SlotsFor returns the agent's slot support. ok is false for an unknown

@@ -60,10 +60,11 @@ func slotUnknownKeyNote(key string) string {
 // the load error; one line per key the schema does not name (the file still
 // loaded, without what the key holds); one line per profile that is not
 // Usable (no usable name or agent, so it has no row and cannot be pinned);
-// and one line when the registry holds the "profile/" prefix (slotReservedNote)
-// while at least one profile is Usable, since no profile row is then built.
-// A Usable profile that fails validation gets no line: its blocked row
-// carries the reason.
+// one line when the registry holds the "profile/" prefix (slotReservedNote)
+// while at least one profile is Usable, since no profile row is then built;
+// and one line per thing a passing profile's driver warns about in its
+// config_content (slotContentNotes). A Usable profile that fails validation
+// gets no line: its blocked row carries the reason.
 func slotWarnings(a *app) []string {
 	var out []string
 	if a.slotLoadErr != nil {
@@ -79,6 +80,25 @@ func slotWarnings(a *app) []string {
 	}
 	if note := slotReservedNote(a); note != "" {
 		out = append(out, "wt: "+note)
+	}
+	for _, note := range slotContentNotes(a) {
+		out = append(out, "wt: "+note)
+	}
+	return out
+}
+
+// slotContentNotes are what the drivers say, without blocking, about the
+// config_content of each profile that passed validation
+// (agents.SlotConfigWarnings; claude's: a modelOverrides target that is not
+// one of the profile's slot models, #412), each naming the profile. A launch
+// prints them after "wt: ", and `wt profile list` after "warning: ". They are
+// read from the static checks only, so they cost a launch no probe.
+func slotContentNotes(a *app) []string {
+	var out []string
+	for _, c := range a.slotChecks {
+		for _, w := range agents.SlotConfigWarnings(c) {
+			out = append(out, fmt.Sprintf("%s (%s): %s", c.Label(), c.Profile.Agent, w))
+		}
 	}
 	return out
 }
