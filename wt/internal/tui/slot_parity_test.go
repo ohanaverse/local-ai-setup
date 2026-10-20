@@ -129,6 +129,8 @@ echo run >>"$log"`
 //
 // apply and record are seen from the run, by slotParityAgent, as on the pin:
 // the applier stub does what applySlotProfile does with a profile's args.
+// Each subtest has its own state dir (tempStateDir), so record is checked
+// per scenario, not carried over from one that ran before it.
 func TestSlotLaunchParity(t *testing.T) {
 	const localID = "omlx/qwen3.8"
 	for _, sc := range readSlotParityScenarios(t) {
@@ -147,6 +149,16 @@ func TestSlotLaunchParity(t *testing.T) {
 			check := slotCheckFor(0, "p", "opus", slots)
 			check.Profile.Args = []string{slotParityArg}
 			m := slotFlowFixture(t, snap, check)
+			// Each scenario launches against its own, empty state dir, set
+			// here rather than left to the fixture: record is the agent
+			// seeing last-picked.state, so a file left by an earlier
+			// scenario (or test) would report record for a scenario that
+			// skipped recording. The picker has read its marker by now, so
+			// the dir only has to be in place for the launch.
+			statePath := filepath.Join(tempStateDir(t), "last-picked.state")
+			if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+				t.Fatalf("%s before the launch: err = %v, want it absent, or record would be vacuous", statePath, err)
+			}
 
 			// stubSlotSeams saves and restores every seam; the recorders
 			// below replace its stubs for this test.
@@ -183,7 +195,7 @@ func TestSlotLaunchParity(t *testing.T) {
 			runLog := filepath.Join(t.TempDir(), "run.log")
 			buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
 				rec("build")
-				return slotParityAgent(runLog, filepath.Join(config.Dir(), "last-picked.state")), nil
+				return slotParityAgent(runLog, statePath), nil
 			}
 			stubSlotApplier(t, func(cmd *exec.Cmd, _ string, row catalog.Row) (func() error, error) {
 				profiles.ApplyEnvAndArgs(cmd, profiles.ResolvedProfile{ExtraArgs: row.Profile.Check.Profile.Args})
