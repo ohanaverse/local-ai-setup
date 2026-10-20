@@ -333,10 +333,20 @@ func (m *model) replaceFrames() []listFrame {
 		}
 	}
 	header := clip(strings.Join(lines, "\n"), m.width)
-	return []listFrame{
+	frames := []listFrame{
 		func(listView string) string { return header + "\n" + m.choiceFrame()(listView) },
 		func(listView string) string { return header + "\n" + listView },
 	}
+	// A question too tall to share the terminal with its choices (other
+	// providers' models, #412, on a short terminal) keeps its first lines
+	// and says that more follow, rather than pushing its top, and with it
+	// what the dialog is about, off the screen: the choices are what the
+	// screen cannot do without.
+	for k := len(lines) - 1; k >= 0; k-- {
+		cut := clip(strings.Join(append(lines[:k:k], "  …"), "\n"), m.width)
+		frames = append(frames, func(listView string) string { return cut + "\n" + listView })
+	}
+	return frames
 }
 
 // fitLists sizes the list of the screen that is showing to the room its frame

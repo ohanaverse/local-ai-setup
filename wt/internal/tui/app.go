@@ -15,6 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -82,6 +83,7 @@ type model struct {
 	prePath      string       // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
 	yolo         bool         // pass skip-permissions flag to the agent
 	allowReplace bool         // --replace mode: the -M start path may stop a running occupant without the dialog
+	othersMode   string       // --others: "keep" or "stop" answers the -M pinned row's question about other providers' models without the dialog (othersFor); "" asks
 	extraArgs    []string     // user passthrough args after --
 	initialAgent string       // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
 	pinnedModel  string       // model from --model flag; "" = no model pinned (model picker is shown)
@@ -106,7 +108,8 @@ type model struct {
 	// start-on-select flow (2026-09-20): Enter on a start row runs the model
 	// through the lifecycle engine with live progress; the replace-confirm
 	// dialog appears when Start reports the provider's single slot occupied
-	// (or unknowable) and AllowReplace was false.
+	// (or unknowable) and AllowReplace was false, or other providers' models
+	// loaded beside the model and the question about them unanswered (#412).
 	start    *startState   // in-flight start (phaseStarting); nil when idle
 	startRun int           // monotonically increasing run id; stale messages are dropped by id
 	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
@@ -545,7 +548,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					// rule.
 					// --replace is the -M pin's permission, not a blanket
 					// one: any other start row still gets the dialog.
-					return m.beginStart(highlighted, m.allowReplace && highlighted.model.ID == m.pinnedModel)
+					// So is --others.
+					pinned := highlighted.model.ID == m.pinnedModel
+					return m.beginStart(highlighted, m.allowReplace && pinned, m.othersFor(pinned))
 				}
 				if highlighted.blocked != "" {
 					m.status = highlighted.blocked
@@ -600,10 +605,14 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 						m.phase = phaseModel
 						return m, nil
 					case replaceProceedChoice:
-						if m.slot != nil {
-							return m.beginStartOwed(m.replace.item, true, m.slot.owed)
-						}
-						return m.beginStart(m.replace.item, true)
+						return m.retryStart(m.replace.item, true, m.replace.others)
+					case othersKeepChoice:
+						// #412: keep other providers' models; AllowReplace
+						// only for same-family occupants the dialog showed.
+						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: lifecycle.OthersAnswer{Decided: true}})
+					case othersStopChoice:
+						// Stop exactly the stoppable models the dialog showed.
+						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: m.replace.stop}})
 					}
 				}
 			case phaseNewWorktree:
@@ -974,7 +983,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 			if !ok {
 				return m, nil
 			}
-			return m.beginStart(pinned, m.allowReplace)
+			return m.beginStart(pinned, m.allowReplace, m.othersFor(true))
 		}
 		m.models.Select(idx)
 		return m.proceedToLaunch()
@@ -1384,13 +1393,14 @@ const loadingStatus = "loading worktrees..."
 // newRunModel builds the TUI's initial model from Run's arguments. It is split
 // out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
 // without starting a real tea.Program.
-func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
+func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
 	return model{
 		status:       loadingStatus,
 		cfg:          cfg,
 		theme:        theme,
 		yolo:         yolo,
 		allowReplace: allowReplace,
+		othersMode:   others,
 		initialAgent: agent,
 		pinnedModel:  pinned,
 		activeTags:   tags,
@@ -1419,7 +1429,10 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // flag value (comma-delimited; "" = no filter). extraArgs are the user's
 // passthrough args after --. theme is the active color theme, loaded by
 // cmd/wt. allowReplace grants the -M start path permission to stop a running
-// occupant without the replace dialog (it comes from --replace). prePath,
+// occupant without the replace dialog (it comes from --replace). others is
+// --others ("keep", "stop" or ""): the -M start path's answer about other
+// providers' models loaded beside the model it starts, in place of the
+// dialog, by --replace's pinned-row rule (#412). prePath,
 // when non-empty, is a pre-resolved worktree path
 // (-W/--cwd/outside-repo): the worktree picker is skipped and control starts
 // at the agent/command picker (or model phase when agent is pinned). When
@@ -1438,8 +1451,8 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles) error {
-	initial := withSlotProfiles(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), slots)
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles) error {
+	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.

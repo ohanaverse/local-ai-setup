@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -918,7 +919,7 @@ func TestReplaceFlagGrantsPermissionToPinnedRow(t *testing.T) {
 // allowReplace would silently disable --replace while every other test passed.
 func TestRunArgsReachModel(t *testing.T) {
 	for _, allow := range []bool{true, false} {
-		m := newRunModel(false, allow, "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil)
+		m := newRunModel(false, allow, "", "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil)
 		if m.allowReplace != allow {
 			t.Errorf("allowReplace=%v: model.allowReplace=%v", allow, m.allowReplace)
 		}
@@ -1854,26 +1855,26 @@ func TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching(t *testing.T
 	}
 }
 
-// TestRunStartKeepsOtherProvidersModels pins what the picker's start answers
-// about other providers' models until its dialog exists (#412): every engine
-// call, the first and the retry after a confirmed replace, says Decided with
-// nothing to stop. Leaving the answer at its zero value would turn every
-// picker start beside another provider's model into a refusal the flow
-// cannot show; a Stop list would stop models the user was never asked about.
-func TestRunStartKeepsOtherProvidersModels(t *testing.T) {
+// TestRunStartPassesTheOthersAnswer pins that runStart hands the engine the
+// answer about other providers' models it was given (#412), unchanged, beside
+// AllowReplace: the zero value asks, Decided keeps, Stop names what to stop.
+// A runStart that put its own answer in would load models beside, or stop,
+// models the dialog never showed.
+func TestRunStartPassesTheOthersAnswer(t *testing.T) {
 	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 	target := lifecycle.Target{ProviderID: "omlx", ModelName: "T", ModelID: "omlx/T"}
-	for _, allow := range []bool{false, true} {
-		ch, _, _ := runStart(context.Background(), &config.Config{}, target, allow, false, 1)
+	answers := []lifecycle.OthersAnswer{{}, {Decided: true}, {Decided: true, Stop: []string{"mtplx/m"}}}
+	for _, a := range answers {
+		ch, _, _ := runStart(context.Background(), &config.Config{}, target, true, a, false, 1)
 		for range ch {
 		}
 	}
-	if calls.len() != 2 {
-		t.Fatalf("startModel calls = %d, want 2", calls.len())
+	if calls.len() != len(answers) {
+		t.Fatalf("startModel calls = %d, want %d", calls.len(), len(answers))
 	}
-	for i := 0; i < 2; i++ {
-		if o := calls.at(i).opts.Others; !o.Decided || len(o.Stop) != 0 {
-			t.Errorf("call %d: Others = %+v, want Decided with nothing to stop", i, o)
+	for i, a := range answers {
+		if o := calls.at(i).opts; !reflect.DeepEqual(o.Others, a) || !o.AllowReplace {
+			t.Errorf("call %d: Others = %+v AllowReplace = %v, want %+v and true", i, o.Others, o.AllowReplace, a)
 		}
 	}
 }

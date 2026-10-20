@@ -27,7 +27,7 @@ func runPickerLaunch(t *testing.T, tuiErr error) (string, error) {
 	t.Chdir(dir)
 	writeConfiguredAgent(t, t.TempDir(), "pi", "ollama")
 	old := tuiRun
-	tuiRun = func(bool, bool, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
 		return tuiErr
 	}
 	t.Cleanup(func() { tuiRun = old })

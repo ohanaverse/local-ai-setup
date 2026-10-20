@@ -297,9 +297,10 @@ func (m model) handleSlotMsg(msg tea.Msg) (model, tea.Cmd) {
 			return m.abortSlot(msg.res.row.Model.ID + " has no local model to start")
 		}
 		local := p.Local.Model
-		// --replace is the -M pin's permission, as for a model row.
-		allow := m.allowReplace && m.slot.item.model.ID == m.pinnedModel
-		return m.beginStartOwed(&modelItem{model: local, line: local.ID}, allow, msg.res.owed)
+		// --replace is the -M pin's permission, as for a model row; so is
+		// --others.
+		pinned := m.slot.item.model.ID == m.pinnedModel
+		return m.beginStartOwed(&modelItem{model: local, line: local.ID}, m.allowReplace && pinned, m.othersFor(pinned), msg.res.owed)
 	case slotSettledMsg:
 		if !live(msg.id) {
 			return m, nil

@@ -136,7 +136,7 @@ func runLaunchPath(
 	// a picker is up, so a launch that went through the TUI says it again
 	// once the TUI has returned and the terminal is the user's.
 	runTUI := func() error {
-		err := tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
+		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
 		printSlotNotes()
 		// tui.Run returns the agent's run error after its post-exit flow;
 		// a non-zero exit becomes wt's own status, as on the non-TUI path,
@@ -509,11 +509,12 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
 	// --others is read by the start driver (othersMode), so `wt start`, `wt
 	// smoke`, and a -M pin or slot profile's local model launched without the
-	// picker screens (-W, --cwd, outside a repository) answer it; the TUI
-	// ignores it until its own dialog lands. Reset
+	// picker screens (-W, --cwd, outside a repository) answer it; a launch
+	// that opens the picker hands it to tui.Run, where it answers for the -M
+	// pinned row only, as --replace does. Reset
 	// here: the value is package state, and each rootCmd starts unanswered.
 	othersMode = ""
-	cmd.PersistentFlags().Var(&othersMode, "others", "When a local start loads a model beside other providers' models: keep them, or stop the ones wt can stop (default: ask; when stdin is not a terminal keep and warn). Read by wt start, wt smoke and a -M launch that skips the picker screens (-W, --cwd, outside a repository); a launch that opens the picker does not ask yet")
+	cmd.PersistentFlags().Var(&othersMode, "others", "When a local start loads a model beside other providers' models: keep them, or stop the ones wt can stop (default: ask; when stdin is not a terminal keep and warn). Read by wt start, wt smoke and a -M launch; in the picker it answers only for the -M pinned model, and any other start asks in a dialog")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
