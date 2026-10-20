@@ -218,6 +218,28 @@ func TestResidentOthers(t *testing.T) {
 	}
 }
 
+// TestResidentOthersLoadingOmlxIsNotStoppable pins that an omlx model of
+// another family that is still loading is listed but never offered a stop
+// (#412): omlx refuses to unload a model mid-load, so a stop answer would end
+// the start in a failed stop, with the target never started. Both prompts
+// read Stoppable, so the [s/k/N] question drops s and the picker's dialog
+// drops "Stop them, then start" when nothing else can be stopped. A loaded
+// omlx model, and a loading model of any other family, stays stoppable.
+func TestResidentOthersLoadingOmlxIsNotStoppable(t *testing.T) {
+	loading := running("omlx", "omlx/L", "L")
+	loading.Loading = true
+	loading6 := running("omlx-6bit", "omlx-6bit/S", "S")
+	loading6.Loading = true
+	loaded := running("omlx", "omlx/A", "A")
+	ol := running("ollama", "ollama/a", "a:1b")
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{loading, loading6, loaded, ol}}
+	target := Target{ProviderID: "mtplx", ModelName: "Org/New"}
+	others, _ := residentOthers(snap, "mtplx", target)
+	if got, want := residentIDs(others), []string{"omlx/L!", "omlx-6bit/S!", "omlx/A", "ollama/a"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("residents = %v, want %v (a loading omlx model listed, not stoppable)", got, want)
+	}
+}
+
 // TestResidentsFindAnMtplxStillLoading pins the one resident the snapshot
 // cannot show: an mtplx still loading refuses its port, so it reads Down, and
 // only wt's pidfile names it. It is listed as loading under its registry id

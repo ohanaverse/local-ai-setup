@@ -85,7 +85,8 @@ type OthersAnswer struct {
 
 // Resident is a model of another provider family that is loaded while a
 // start runs: it holds memory the target will share. Stoppable is false when
-// wt has no backend that can stop it (mlx_lm_server). PID is set for an mtplx
+// wt has no backend that can stop it (mlx_lm_server), or when it is an omlx
+// model still loading, which omlx refuses to unload. PID is set for an mtplx
 // still loading, known only by wt's pidfile: that one is stopped only through
 // the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
 type Resident struct {

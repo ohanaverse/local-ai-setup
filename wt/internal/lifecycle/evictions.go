@@ -153,7 +153,11 @@ func residentOthers(snap localmodels.Snapshot, family string, t Target) (others 
 		if !en.Running || f == "" || f == family || snap.Down[f] || untrusted[f] {
 			continue
 		}
-		others = append(others, Resident{Entry: en, Stoppable: CanStop(en.ProviderID)})
+		// omlx refuses to unload a model it is still loading, so a stop
+		// approved for one would only fail the start: it is listed, not
+		// offered a stop, by either prompt.
+		stoppable := CanStop(en.ProviderID) && !(f == "omlx" && en.Loading)
+		others = append(others, Resident{Entry: en, Stoppable: stoppable})
 	}
 	return others, unknown
 }
