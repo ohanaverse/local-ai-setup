@@ -375,3 +375,47 @@ func slotRows(in Input) []Row {
 	}
 	return rows
 }
+
+// SlotPinReason says why a "profile/<name>" pin found no row, when checks
+// hold a Usable profile of that name: an agent's own profile hidden by the
+// tags or family filter is "model "profile/<name>" is a slot profile,
+// excluded by -T and -F" (naming only the flags that are set), and one that
+// only another agent has is "... is a slot profile for agent "<that agent>",
+// not "<agent>"". A filter hides a blocked profile too, and its block reason
+// is not shown. "" when pin is not a profile id, no Usable profile has its
+// name (unknown, malformed, or the file did not load), the registry holds
+// the "profile/" prefix, or none of these explains the miss: the caller then
+// keeps its generic message.
+func SlotPinReason(cfg *config.Config, checks []profiles.SlotCheck, agent, pin, tags, family string) string {
+	name, ok := strings.CutPrefix(pin, profiles.SlotIDPrefix)
+	if !ok || SlotPrefixReserved(cfg) {
+		return ""
+	}
+	other := ""
+	for _, c := range checks {
+		if !c.Usable || c.Profile.Name != name {
+			continue
+		}
+		if c.Profile.Agent != agent {
+			if other == "" {
+				other = c.Profile.Agent
+			}
+			continue
+		}
+		var flags []string
+		if tags != "" {
+			flags = append(flags, "-T")
+		}
+		if family != "" {
+			flags = append(flags, "-F")
+		}
+		if len(flags) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("model %q is a slot profile, excluded by %s", pin, strings.Join(flags, " and "))
+	}
+	if other != "" {
+		return fmt.Sprintf("model %q is a slot profile for agent %q, not %q", pin, other, agent)
+	}
+	return ""
+}

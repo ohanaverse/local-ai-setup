@@ -359,3 +359,25 @@ func TestRecordAllKeepsOtherSessionsAndReleasesTogether(t *testing.T) {
 		t.Fatalf("Counts after Release = %v, want openrouter/a:0 omlx/c:1 (the other session's line stays)", got)
 	}
 }
+
+// TestLiveCountsSweepsDeadSessionsFirst verifies LiveCounts, the count both
+// replace confirmations (the non-TUI prompt and the picker's dialog) name
+// next to each occupant (#412), drops dead pids before it counts: a session
+// that crashed without releasing its line would otherwise be reported as
+// still using the model the user is about to stop.
+func TestLiveCountsSweepsDeadSessionsFirst(t *testing.T) {
+	dir := t.TempDir()
+	old := pidAlive
+	defer func() { pidAlive = old }()
+	pidAlive = func(pid int) bool { return pid != 999 }
+	seedRefcountFile(t, dir,
+		entry{Pid: 999, ModelID: "omlx/busy"},
+		entry{Pid: 111, ModelID: "omlx/busy"},
+		entry{Pid: 222, ModelID: "omlx/busy"},
+	)
+
+	got := LiveCounts(NewStoreAt(dir), []string{"omlx/busy", "omlx/idle"})
+	if got["omlx/busy"] != 2 || got["omlx/idle"] != 0 || len(got) != 2 {
+		t.Errorf("LiveCounts = %v, want omlx/busy 2 (the dead pid swept), omlx/idle 0", got)
+	}
+}
