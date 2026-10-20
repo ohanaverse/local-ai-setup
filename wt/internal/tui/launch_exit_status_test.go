@@ -64,19 +64,19 @@ func TestPickerLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 	}
 }
 
-// TestPickerProfileErrorStillReturnsNil pins what #412 left alone: a
-// profile that fails to apply before the agent starts is printed where it
-// happens and Run returns nil, as before; only an agent that ran passes its
-// status on.
-func TestPickerProfileErrorStillReturnsNil(t *testing.T) {
+// TestPickerProfileErrorIsReturned pins #412's last case: a profile that
+// fails to apply before the agent starts makes Run return that error, so wt
+// exits 1 as a launch without the picker does (runAgentCmd returns it).
+func TestPickerProfileErrorIsReturned(t *testing.T) {
 	keepPendingPostExit(t)
 	profileApplier = func(*exec.Cmd, string, config.Model) (func() error, error) {
 		return nil, errors.New("wrapper missing")
 	}
 	msg := runAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "shell", config.Model{})()
 	m, _ := updateMsg(model{cfg: testConfig()}, msg)
-	if err := runResult(m, nil); err != nil {
-		t.Fatalf("result = %v, want nil for a launch whose agent never ran", err)
+	err := runResult(m, nil)
+	if err == nil || err.Error() != "wrapper missing" {
+		t.Fatalf("result = %v, want the profile error", err)
 	}
 }
 

@@ -280,26 +280,11 @@ func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	cmd := exec.Command("touch", sentinel)
 	m := config.Model{ID: "ollama/x", ModelName: "x"}
 
-	// Capture stderr: the Update handler never renders launchDoneMsg's
-	// error and Run() does not return it, so this stderr line is the
-	// user's only diagnostic for a launch that never ran.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldStderr := os.Stderr
-	os.Stderr = w
 	msg := runAndWaitCmd(cmd, "pi", m)()
-	os.Stderr = oldStderr
-	_ = w.Close()
-	stderrOut, _ := io.ReadAll(r)
 
 	done, ok := msg.(launchDoneMsg)
 	if !ok || done.err == nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a launchDoneMsg carrying the profileApplier error", msg)
-	}
-	if !strings.Contains(string(stderrOut), "wt: wrapper not installed") {
-		t.Errorf("stderr = %q, want it to contain %q — a profileApplier error must be visible to the user", stderrOut, "wt: wrapper not installed")
 	}
 	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
 		t.Error("sentinel file exists — cmd.Run() executed despite the profileApplier error")

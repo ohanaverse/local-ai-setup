@@ -352,9 +352,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "agent exited: " + msg.err.Error()
 		}
-		if msg.ran {
-			m.agentErr = msg.err
-		}
+		m.agentErr = msg.err
 		return m, tea.Quit
 	case newWorktreeCreatedMsg:
 		m.creating = false

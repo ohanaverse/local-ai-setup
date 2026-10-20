@@ -378,8 +378,9 @@
   summary line) still run first, and nothing more is printed. This covers
   slot-profile launches from the picker too. An agent that cannot be started
   at all (the binary is missing or not executable) now prints `wt: <error>`
-  and exits 1 from the picker as well; before, it exited 0. A profile that
-  cannot be applied still exits 0 from the picker.
+  and exits 1 from the picker as well; before, it exited 0. So does a
+  profile that cannot be applied (a wrapper naming a missing binary): it
+  exits 1 from the picker, as it does without it.
 - A slot profile's `config_content.modelOverrides` is checked (#412). One
   that is not a table (a string, a number, a boolean or an array) blocks the
   row with `config_content.modelOverrides must be a table`, in the picker,

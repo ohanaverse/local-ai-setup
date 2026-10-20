@@ -433,7 +433,7 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		shown := config.Model{ID: row.Model.ID}
 		pendingSummary = agents.Summary(agent, shown, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}
-		return launchDoneMsg{err: runErr, ran: true}
+		return launchDoneMsg{err: runErr}
 	}
 }
 
