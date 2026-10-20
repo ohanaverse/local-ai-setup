@@ -18,6 +18,11 @@ import (
 // launchDoneMsg is emitted after the agent subprocess exits.
 type launchDoneMsg struct {
 	err error
+	// ran is true when err is what running the agent returned, so Run
+	// passes it on and wt exits as runAgentCmd does (#412). A profile that
+	// failed to apply leaves it false: that error was printed where it
+	// happened and nothing ran.
+	ran bool
 }
 
 // currentProgram holds the running tea.Program so runAndWaitCmd can
@@ -232,7 +237,7 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 		// in the TUI lifecycle where stdout reaches the user's terminal.
 		pendingSummary = agents.Summary(agent, m, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: m}
-		return launchDoneMsg{err: err}
+		return launchDoneMsg{err: err, ran: true}
 	}
 }
 
