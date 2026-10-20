@@ -315,13 +315,22 @@ stop them first, keep them and start, or cancel? [s/k/N]
   listed can be stopped the question is `keep them and start, or cancel? [k/N]`.
 - A start that would also replace or unload a model of its own provider asks
   that y/N first, then this question, then starts once with both answers.
+  When wt cannot tell what its own provider is serving, it asks
+  `cannot tell whether … is already serving a model; replace it with <id>?`
+  first and only then learns about the other providers, so that start asks
+  its two questions one after the other and checks up to three times.
   `--replace` answers only the y/N: it never stops another provider's model.
 - `--others=stop` stops every listed model wt can stop and `--others=keep`
-  keeps them, both without asking. Any other value is a usage error. The
-  flag is read by `wt start`, `wt smoke`, a `wt -M` launch and a slot
-  profile's local model on the non-TUI path; the model picker still loads
-  beside them without asking.
-- **Without a TTY and without `--others`** wt never asks and never stops:
+  keeps them, both without asking. Any other value is a usage error.
+- The question and `--others` apply today to `wt start`, `wt smoke`, and a
+  `wt -M` launch that skips wt's picker screens: with `-W <name>`, with
+  `--cwd`, or outside a git repository (a slot profile's local model
+  included). A launch that opens the picker screens (`wt`, or `wt -M <id>`
+  inside a repository without `-W` or `--cwd`, `-A` or not) starts the
+  model without asking and ignores `--others`, until the picker's own
+  dialog lands.
+- **When stdin is not a terminal (scripts, CI) and `--others` is not given**
+  wt never asks and never stops:
   it keeps the models and prints one line to stderr,
   `wt: warning: starting <id> beside <id> (<memory>), …; pass --others=stop to stop them, --others=keep to silence this`.
 - A stop goes through the same stop as `wt stop` (omlx unloads the model,

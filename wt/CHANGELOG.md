@@ -4,9 +4,10 @@
 
 ### Added
 
-- A non-TUI local start (`wt start`, `wt smoke`, `wt -M`, a slot profile's
-  local model) that would load a model beside models of other providers
-  (an mtplx server, an ollama model still in memory, omlx's pool) lists
+- A local start by `wt start`, `wt smoke`, or a `wt -M` launch that skips
+  wt's picker screens (`-W <name>`, `--cwd`, or outside a git repository; a
+  slot profile's local model included) that would load a model beside
+  models of other providers (an mtplx server, an ollama model still in memory, omlx's pool) lists
   them, each with the memory its server says it holds (`9.6 GB loaded`,
   `18.2 GB resident (omlx estimate)`, or `memory use unknown`) and its wt
   sessions, and asks `stop them first, keep them and start, or cancel?
@@ -14,9 +15,12 @@
   stopped, and a provider wt cannot read is a `cannot tell whether …`
   line. The new root flag `--others=keep|stop` answers without asking;
   `--replace` still covers only the model's own provider and never stops
-  another's. Without a TTY and without `--others`, the start keeps them
-  and prints one warning line, so scripts and `wt smoke --json` neither
-  hang nor stop anything. The model picker's dialog is still to come.
+  another's. When stdin is not a terminal (scripts, CI) and `--others` is
+  not given, the start keeps them and prints one warning line, so it
+  neither hangs nor stops anything. A launch that opens the picker screens
+  (`wt`, or `wt -M <id>` in a repository without `-W` or `--cwd`, `-A` or
+  not) does not ask yet and ignores `--others`; the picker's dialog is
+  still to come.
 - A profile may set `config_defaults`, a table of the same shape as
   `config_content` that is applied only where a value is absent (#402):
   each leaf `.claude/settings.local.json` in the worktree does not already
