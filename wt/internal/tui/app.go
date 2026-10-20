@@ -147,6 +147,11 @@ type model struct {
 	// fatal error — but it remains wired into Run() for any future
 	// genuinely-fatal condition.
 	fatalErr error
+
+	// agentErr is what running the launched agent returned (nil for an
+	// exit 0). Run() returns it once the post-exit flow has run, so cmd/wt
+	// exits with the agent's status as the non-TUI path does (#412).
+	agentErr error
 }
 
 // Init returns the initial command. When a worktree path was pre-resolved
@@ -347,6 +352,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "agent exited: " + msg.err.Error()
 		}
+		m.agentErr = msg.err
 		return m, tea.Quit
 	case newWorktreeCreatedMsg:
 		m.creating = false
@@ -1429,6 +1435,9 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // slots carries the slot profiles: the picker shows a row for each one that
 // names this agent, and a profile launch applies slots.Apply in place of
 // applyProfile.
+// When the launched agent's run failed, Run returns that error (an
+// *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
+// cmd/wt exits with the agent's status (#412).
 func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles) error {
 	initial := withSlotProfiles(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
@@ -1449,12 +1458,26 @@ func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs 
 	// never happened), so it goes above the summary and the survey.
 	flushRouteNotesAfterRun(finalModel, os.Stderr)
 	printPendingSummaryAndSurvey(cfg)
-	if err == nil {
-		if fm, ok := finalModel.(model); ok && fm.fatalErr != nil {
-			err = fm.fatalErr
-		}
+	return runResult(finalModel, err)
+}
+
+// runResult is what Run returns once the post-exit flow has run: the
+// program's own error, else the model's fatal error, else the error the
+// launched agent's run returned (an *exec.ExitError for a non-zero exit,
+// which cmd/wt turns into wt's own exit status, #412). It is extracted from
+// Run() so it is unit-testable without a real tea.Program/TTY.
+func runResult(final tea.Model, err error) error {
+	if err != nil {
+		return err
 	}
-	return err
+	fm, ok := final.(model)
+	if !ok {
+		return nil
+	}
+	if fm.fatalErr != nil {
+		return fm.fatalErr
+	}
+	return fm.agentErr
 }
 
 // flushRouteNotesAfterRun prints, once the alt screen is gone, whatever route

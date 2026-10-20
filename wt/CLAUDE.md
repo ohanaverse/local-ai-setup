@@ -60,6 +60,7 @@ After the launched subprocess exits, the TUI and non-TUI paths run the same fixe
 
 - `survey.ReleaseSession()` runs before the stop picker, so the model just used does not count as in use.
 - The summary line (`agents.Summary`) is the single formatter for both paths and never affects the exit code.
+- **wt exits with the agent's status on both paths, after the whole tail** (#412). Non-TUI: `os.Exit(ee.ExitCode())` in `runAgentCmd`/`runSlotAgentCmd`. TUI: `launchDoneMsg.err` (the run's error, or the profile error that kept the agent from starting) is kept on the model, `tui.Run` returns it (`runResult`), and `runTUI` turns an `*exec.ExitError` into a quiet `exitCodeError` (`agentExitStatus`; a signal is 255, what `os.Exit(-1)` gives) with cobra silenced, so `main` prints nothing more; a profile that fails to apply returns its plain error, which `main` prints once and exits 1, as `runAgentCmd`'s return does. Never `os.Exit` inside `internal/tui`.
 - A batch of stops costs one LiteLLM restart and one ollama wait: `lifecycle.BeginStops` sends every ollama stop, the batch's `Stop` finishes each model under one shared 3-minute bound (#379), then one `lifecycle.SettleRoutes` (#142). A model ollama accepted and still lists at the bound is `*lifecycle.StillFinishingError`: the stop loop prints it as still finishing and does not count it as failed; every other caller gets an error.
 - A slot-profile session has a shorter tail on both paths: release → stop picker → summary, with no survey and no price notice (`runSlotAgentCmd`; the `profile` branch of `printPendingSummaryAndSurvey`).
 
@@ -131,7 +132,7 @@ Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt
 | `cmd/wt/cloudsync.go` | `wt cloud-sync` — the command, the one confirmation, the one registry write both flows share, the route sync, the exit code; the openrouter flow's fetch |
 | `cmd/wt/cloudsync_catalog.go` | the ollama flow: plan, gate (mass removal, removal digest), then pulls and removals after the registry write |
 | `cmd/wt/cloudsync_ollama.go` | the ollama CLI for the ollama flow, through the `ollamaCLI` seam, pinned with `OLLAMA_HOST` to the registry's ollama origin |
-| `cmd/wt/exitcode.go` | `exitCodeError` / `exitCodeOf` — how one command exits with a status other than 1 |
+| `cmd/wt/exitcode.go` | `exitCodeError` / `exitCodeOf` — how one command exits with a status other than 1; `agentExitStatus` (a picker launch's agent status), `reportExit` |
 | `internal/config/` | config load/validate/save (agents + joined registry catalog), route resolution (`ResolveRoute`), migrations |
 | `internal/tomlw/` | ordered TOML document and an emitter that reproduces tomli-w's layout byte for byte; never use the stock `toml.Encoder` on the registry |
 | `internal/cloudsync/` | the pure core of `wt cloud-sync` (parsers, planners, `Apply`); no I/O, no clock: see [Cloud sync](#cloud-sync-wt-cloud-sync) |

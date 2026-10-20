@@ -383,6 +383,16 @@
   for an unknown name, a skipped profile, a `slot-profiles.toml` that does
   not load, or a registry that holds the reserved `profile/` prefix. The
   picker's pin returns to the agent picker with the same words.
+- A session launched from the picker now ends with the agent's exit status
+  (#412), as a launch without the picker always has: an agent that exits 3
+  makes wt exit 3, and one a signal killed makes it exit 255. Before, wt
+  exited 0 after any picker session. The post-exit steps (stop picker,
+  summary line) still run first, and nothing more is printed. This covers
+  slot-profile launches from the picker too. An agent that cannot be started
+  at all (the binary is missing or not executable) now prints `wt: <error>`
+  and exits 1 from the picker as well; before, it exited 0. So does a
+  profile that cannot be applied (a wrapper naming a missing binary): it
+  exits 1 from the picker, as it does without it.
 - A slot profile's `config_content.modelOverrides` is checked (#412). One
   that is not a table (a string, a number, a boolean or an array) blocks the
   row with `config_content.modelOverrides must be a table`, in the picker,
