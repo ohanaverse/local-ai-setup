@@ -67,11 +67,13 @@ const openCodeConfigEnvPrefix = "OPENCODE_CONFIG_CONTENT="
 // (e.g. persisting a user-approved "always allow" permission grant) — so
 // the write MERGES rp.ConfigContent into whatever is already there
 // (mirroring the opencode env-merge below) instead of replacing the whole
-// file, and cleanup restores only the specific top-level keys
-// config_content itself touched, leaving anything the agent wrote
-// elsewhere alone. codex's target is a dedicated, wt-owned global file
-// nothing else writes to, so it keeps the simpler whole-file
-// snapshot/replace/restore.
+// file, and cleanup restores only the leaves config_content itself wrote
+// (each value that is not a non-empty object, by its path from the root),
+// leaving anything the agent wrote elsewhere alone, a sibling under the same
+// object included; a leaf the session changed or deleted after the merge
+// keeps the session's state (#401). codex's target is a dedicated,
+// wt-owned global file nothing else writes to, so it keeps the simpler
+// whole-file snapshot/replace/restore.
 func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedProfile) (cleanup func() error, err error) {
 	noop := func() error { return nil }
 	if len(rp.ConfigContent) == 0 {
@@ -91,33 +93,42 @@ func ApplyConfigContent(cmd *exec.Cmd, agent, worktreePath string, rp ResolvedPr
 		return nil, fmt.Errorf("profile: agent %q has no config_content target", agent)
 	}
 
-	var buildData func(existing []byte, existed bool) (data []byte, touchedKeys []string, err error)
+	var buildData func(existing []byte, existed bool) (data []byte, recs []leafRec, err error)
 	if isTOML {
-		buildData = func(existing []byte, existed bool) ([]byte, []string, error) {
+		buildData = func(existing []byte, existed bool) ([]byte, []leafRec, error) {
 			var buf bytes.Buffer
 			if err := toml.NewEncoder(&buf).Encode(rp.ConfigContent); err != nil {
 				return nil, nil, fmt.Errorf("encode profile config_content: %w", err)
 			}
-			return buf.Bytes(), nil, nil // nil touchedKeys: codex's target is dedicated, whole-file restore is correct
+			return buf.Bytes(), nil, nil // nil recs: codex's target is dedicated, whole-file restore is correct
 		}
 	} else {
-		buildData = func(existing []byte, existed bool) ([]byte, []string, error) {
+		buildData = func(existing []byte, existed bool) ([]byte, []leafRec, error) {
 			doc := map[string]any{}
 			if existed {
 				if err := json.Unmarshal(existing, &doc); err != nil {
 					return nil, nil, fmt.Errorf("profile: existing %s is not valid JSON, refusing to merge config_content: %w", path, err)
 				}
+				if doc == nil {
+					// A whole-file JSON null decodes with no error into a
+					// nil map, which mergeInto below would panic on
+					// ("assignment to entry in nil map") — crash the launch
+					// rather than degrade it. Refuse it like any other
+					// content the per-leaf merge cannot act on.
+					return nil, nil, fmt.Errorf("profile: existing %s is not a JSON object, refusing to merge config_content", path)
+				}
 			}
+			// Collected before the merge, which changes doc in place.
+			// Never nil: a merge that writes no leaf (only {} into existing
+			// objects) still gets a marker, so cleanup keeps the session's
+			// writes instead of falling back to the whole-file snapshot.
+			recs := append([]leafRec{}, collectLeaves(doc, rp.ConfigContent)...)
 			mergeInto(doc, rp.ConfigContent)
 			data, err := json.MarshalIndent(doc, "", "  ")
 			if err != nil {
 				return nil, nil, fmt.Errorf("encode profile config_content: %w", err)
 			}
-			keys := make([]string, 0, len(rp.ConfigContent))
-			for k := range rp.ConfigContent {
-				keys = append(keys, k)
-			}
-			return data, keys, nil
+			return data, recs, nil
 		}
 	}
 
@@ -188,11 +199,14 @@ func backupAbsentPath(target string) string  { return backupKey(target) + ".abse
 // the file back exactly as it found it instead of guessing a mode.
 func backupModePath(target string) string { return backupKey(target) + ".mode" }
 
-// backupKeysPath holds the JSON-encoded list of top-level keys
-// config_content itself wrote into target, when target's write merged into
-// existing content (JSON targets only — see ApplyConfigContent). Its
-// presence at restore time is what selects the key-level surgical restore
-// over the legacy whole-file restore; a codex/TOML write never creates
+// backupKeysPath holds the leaf records (encodeLeafRecs: each leaf's path
+// and a hash of the value written, never the value) of what config_content
+// merged into target (JSON targets only — see ApplyConfigContent). A marker
+// from an older wt holds a list of top-level key names instead, which
+// decodeLeafRecs reads as hashless records. Its presence at restore time is
+// what selects the per-leaf surgical restore over the whole-file restore; a
+// marker that does not decode falls back to the whole-file restore (as an
+// older wt does with today's format), and a codex/TOML write never creates
 // this file, so codex is unaffected by this mechanism.
 func backupKeysPath(target string) string { return backupKey(target) + ".keys" }
 
@@ -231,33 +245,28 @@ func readBackupOwner(target string) (pid int, ok bool) {
 	return parsed, true
 }
 
-// surgicalRestoreJSON restores originalSnapshot's values for touchedKeys
-// into target's CURRENT on-disk content, leaving every other top-level key
-// in the current content untouched — so content the launched agent itself
-// wrote during the session (e.g. a permission grant) survives cleanup. ok
-// is false (caller falls back to the legacy whole-file restore) when
-// either originalSnapshot or target's current content isn't a JSON object,
-// since a safe key-level merge isn't possible in that case.
-func surgicalRestoreJSON(originalSnapshot []byte, target string, touchedKeys []string) (merged []byte, ok bool) {
+// surgicalRestoreJSON reverts each leaf recs names in target's CURRENT
+// on-disk content to originalSnapshot's value (revertLeaves), leaving every
+// other value in the current content untouched — so content the launched
+// agent itself wrote during the session (e.g. a permission grant beside a
+// pinned permissions.defaultMode) survives cleanup, and so does a leaf the
+// session changed or deleted after the merge. ok is false (caller falls
+// back to the whole-file restore) when either originalSnapshot or target's
+// current content isn't a JSON object, since a safe per-leaf merge isn't
+// possible in that case.
+func surgicalRestoreJSON(originalSnapshot []byte, target string, recs []leafRec) (merged []byte, ok bool) {
 	var origDoc map[string]any
-	if err := json.Unmarshal(originalSnapshot, &origDoc); err != nil {
+	// origDoc == nil too: a whole-file null snapshot is not an object this
+	// can restore against, so it falls back to the whole-file restore like
+	// any other non-object content.
+	if err := json.Unmarshal(originalSnapshot, &origDoc); err != nil || origDoc == nil {
 		return nil, false
 	}
-	current, err := os.ReadFile(target)
-	if err != nil {
+	curDoc, ok := readJSONObject(target)
+	if !ok {
 		return nil, false
 	}
-	var curDoc map[string]any
-	if err := json.Unmarshal(current, &curDoc); err != nil {
-		return nil, false
-	}
-	for _, k := range touchedKeys {
-		if v, has := origDoc[k]; has {
-			curDoc[k] = v
-		} else {
-			delete(curDoc, k)
-		}
-	}
+	revertLeaves(curDoc, origDoc, recs)
 	data, err := json.MarshalIndent(curDoc, "", "  ")
 	if err != nil {
 		return nil, false
@@ -265,27 +274,23 @@ func surgicalRestoreJSON(originalSnapshot []byte, target string, touchedKeys []s
 	return data, true
 }
 
-// surgicalDeleteJSON removes touchedKeys from target's CURRENT on-disk
-// content — used when config_content wrote into a JSON target that did
-// NOT exist before the write, so there is no original snapshot to restore
-// values from, only keys to remove. ok is false (caller falls back to
-// deleting the whole file, the pre-existing "didn't exist before"
-// semantics) when target's current content isn't a JSON object, or when
-// removing touchedKeys leaves nothing behind: an empty object left over
-// from a profile-only write (nothing else added) is exactly as pointless
-// a file as none at all.
-func surgicalDeleteJSON(target string, touchedKeys []string) (reduced []byte, ok bool) {
-	current, err := os.ReadFile(target)
-	if err != nil {
+// surgicalDeleteJSON removes the leaves recs names from target's CURRENT
+// on-disk content, with the objects the merge created for them once they
+// are empty (revertLeaves with no original) — used when config_content
+// wrote into a JSON target that did NOT exist before the write, so there
+// is no original snapshot to restore values from, only leaves to remove. A
+// leaf the session changed after the merge stays. ok is false (caller
+// falls back to deleting the whole file, the pre-existing "didn't exist
+// before" semantics) when target's current content isn't a JSON object, or
+// when removing the leaves leaves nothing behind: an empty object left over
+// from a profile-only write (nothing else added) is exactly as pointless a
+// file as none at all.
+func surgicalDeleteJSON(target string, recs []leafRec) (reduced []byte, ok bool) {
+	curDoc, ok := readJSONObject(target)
+	if !ok {
 		return nil, false
 	}
-	var curDoc map[string]any
-	if err := json.Unmarshal(current, &curDoc); err != nil {
-		return nil, false
-	}
-	for _, k := range touchedKeys {
-		delete(curDoc, k)
-	}
+	revertLeaves(curDoc, nil, recs)
 	if len(curDoc) == 0 {
 		return nil, false
 	}
@@ -294,6 +299,20 @@ func surgicalDeleteJSON(target string, touchedKeys []string) (reduced []byte, ok
 		return nil, false
 	}
 	return data, true
+}
+
+// readJSONObject reads target as a JSON object; ok is false when it cannot
+// be read or does not hold one (a JSON null included, which decodes to a nil
+// map nothing can be set in).
+func readJSONObject(target string) (doc map[string]any, ok bool) {
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(current, &doc); err != nil || doc == nil {
+		return nil, false
+	}
+	return doc, true
 }
 
 // withTargetLock serializes snapshotAndWrite/restoreIfBackedUp for target
@@ -323,9 +342,9 @@ func withTargetLock(target string, fn func() error) error {
 // restoreIfBackedUpLocked) unless it is still owned by a live sibling
 // process (in which case it refuses with an error, rather than writing on
 // top of a file a different running wt session still relies on), then
-// calls buildData to compute the bytes to write (plus the set of
-// top-level keys it touched — JSON targets only; nil for a whole-file
-// target like codex's) BEFORE writing any backup marker: a buildData
+// calls buildData to compute the bytes to write (plus the leaf records of
+// what it merged in — JSON targets only; nil for a whole-file target like
+// codex's) BEFORE writing any backup marker: a buildData
 // failure (e.g. existing content is not valid JSON) must leave nothing on
 // disk for a later launch's self-heal to mistake for an orphaned crash
 // backup and restore over whatever the user has since fixed the file to.
@@ -336,7 +355,7 @@ func withTargetLock(target string, fn func() error) error {
 // for the same target from another process waits instead of racing it.
 // buildData receives target's existing content (nil if it did not exist)
 // so a JSON target can merge rather than replace.
-func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing []byte, existed bool) (data []byte, touchedKeys []string, err error)) error {
+func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing []byte, existed bool) (data []byte, recs []leafRec, err error)) error {
 	return withTargetLock(target, func() error {
 		if _, live, err := restoreIfBackedUpLocked(target); err != nil {
 			return err
@@ -351,7 +370,7 @@ func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing [
 			return err
 		}
 
-		data, touchedKeys, berr := buildData(existing, existed)
+		data, recs, berr := buildData(existing, existed)
 		if berr != nil {
 			return berr
 		}
@@ -376,13 +395,15 @@ func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing [
 		if err := config.WriteFileAtomic(backupOwnerPath(target), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 			return err
 		}
-		// touchedKeys is recorded regardless of existed: a JSON target the
-		// agent creates fresh during the session (the common case for a
-		// worktree with no pre-existing settings.local.json) still needs
-		// key-level restore, not a wholesale delete of everything the
-		// agent wrote — see restoreIfBackedUpLocked's absent branch.
-		if len(touchedKeys) > 0 {
-			keysJSON, jerr := json.Marshal(touchedKeys)
+		// recs is recorded regardless of existed: a JSON target the agent
+		// creates fresh during the session (the common case for a worktree
+		// with no pre-existing settings.local.json) still needs per-leaf
+		// restore, not a wholesale delete of everything the agent wrote —
+		// see restoreIfBackedUpLocked's absent branch. A non-nil empty
+		// list is recorded too (a merge that wrote no leaf), so cleanup
+		// still keeps the session's writes.
+		if recs != nil {
+			keysJSON, jerr := encodeLeafRecs(recs)
 			if jerr != nil {
 				return jerr
 			}
@@ -476,18 +497,17 @@ func restoreIfBackedUpLocked(target string) (restored bool, live bool, err error
 	}
 
 	if absentPresent {
-		// touchedKeys (recorded even for a target that did not exist
-		// before — see snapshotAndWrite) lets a JSON target the agent
-		// wrote additional content into during the session keep that
-		// content: only the profile's own keys are stripped, not the
-		// whole file. Falls back to deleting the whole file (the original
-		// "didn't exist before" semantics) when there's no .keys marker,
-		// the current content isn't valid JSON, or nothing is left after
-		// stripping the profile's keys.
+		// The leaf records (recorded even for a target that did not exist
+		// before — see snapshotAndWrite) let a JSON target the agent wrote
+		// additional content into during the session keep that content:
+		// only the profile's own leaves are stripped, not the whole file.
+		// Falls back to deleting the whole file (the original "didn't
+		// exist before" semantics) when there's no .keys marker or it does
+		// not decode, the current content isn't valid JSON, or nothing is
+		// left after stripping the profile's leaves.
 		if keysRaw, kerr := os.ReadFile(backupKeysPath(target)); kerr == nil {
-			var touchedKeys []string
-			if json.Unmarshal(keysRaw, &touchedKeys) == nil {
-				if reduced, ok := surgicalDeleteJSON(target, touchedKeys); ok {
+			if recs, ok := decodeLeafRecs(keysRaw); ok {
+				if reduced, ok := surgicalDeleteJSON(target, recs); ok {
 					if werr := config.WriteFileAtomic(target, reduced, 0o644); werr != nil {
 						return false, false, werr
 					}
@@ -519,9 +539,8 @@ func restoreIfBackedUpLocked(target string) (restored bool, live bool, err error
 		}
 		finalData := data
 		if keysRaw, kerr := os.ReadFile(backupKeysPath(target)); kerr == nil {
-			var touchedKeys []string
-			if json.Unmarshal(keysRaw, &touchedKeys) == nil {
-				if mergedData, ok := surgicalRestoreJSON(data, target, touchedKeys); ok {
+			if recs, ok := decodeLeafRecs(keysRaw); ok {
+				if mergedData, ok := surgicalRestoreJSON(data, target, recs); ok {
 					finalData = mergedData
 				}
 			}
