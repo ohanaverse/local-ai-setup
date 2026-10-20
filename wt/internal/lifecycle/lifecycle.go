@@ -126,9 +126,10 @@ func (r Resident) Figure() string {
 // RestartStillOwed reports whether a Start that was given RestartOwed and
 // returned err left that restart unsettled: err is, or wraps, an
 // *OccupiedError (same-family occupants, other providers' residents, or both)
-// or an *OccupancyUnknownError, the two refusals that touch nothing. The caller then retries with RestartOwed set again, or calls
-// SettleRoutes when it gives up. Every other outcome of such a Start, nil
-// included, has started the one restart.
+// or an *OccupancyUnknownError, the two refusals that touch nothing. The
+// caller then retries with RestartOwed set again, or calls SettleRoutes when
+// it gives up. Every other outcome of such a Start, nil included, has started
+// the one restart.
 func RestartStillOwed(err error) bool {
 	var occupied *OccupiedError
 	var unknown *OccupancyUnknownError
@@ -428,7 +429,15 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if isRunning(snap, family, t) {
 		return nil
 	}
-	others, othersUnknown := e.residents(cfg, snap, family, t)
+	// Residents are read only when there is a question to ask or an approved
+	// stop to make: a Decided answer with nothing to stop (every caller
+	// today) would throw them away, and reading them can cost a pidfile read
+	// and a process-table lookup.
+	var others []Resident
+	var othersUnknown []string
+	if !opts.Others.Decided || len(opts.Others.Stop) > 0 {
+		others, othersUnknown = e.residents(cfg, snap, family, t)
+	}
 	victims, unknown := e.resolveEvictions(ctx, cfg, family, t, snap)
 	if unknown && !opts.AllowReplace {
 		origin := localmodels.FamilyOrigin(cfg, family)

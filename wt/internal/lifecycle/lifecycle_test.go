@@ -806,3 +806,42 @@ func TestStartStopsAnMtplxStillLoadingThroughItsPidfile(t *testing.T) {
 		t.Errorf("route hook = %v, want mtplx/org--m", *stopped)
 	}
 }
+
+// TestStartLooksForOthersOnlyWhenItHasAQuestionOrAStop pins that the other
+// providers' residents are computed only when the start can use them: to ask
+// (Others not Decided) or to stop what the user approved (Decided with Stop
+// ids). A Decided start with nothing to stop, what every caller passes today,
+// never reads them, so an mtplx that reads Down beside a pidfile costs it no
+// process-table lookup (a ps fork) on every start. Counted here by the
+// describe calls the pidfile check makes.
+func TestStartLooksForOthersOnlyWhenItHasAQuestionOrAStop(t *testing.T) {
+	for name, tc := range map[string]struct {
+		others    OthersAnswer
+		wantLooks bool
+	}{
+		"decided, nothing to stop": {OthersAnswer{Decided: true}, false},
+		"not decided":              {OthersAnswer{}, true},
+		"decided, stop ids":        {OthersAnswer{Decided: true, Stop: []string{"ollama/a"}}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pt, e := loadingEnv(t, true)
+			looks := 0
+			pt.onDescribe = func(*procTable) { looks++ }
+			var calls []string
+			fe := fakeEnvFamilies(localmodels.Snapshot{
+				Entries:   []localmodels.Entry{{ProviderID: "mtplx", ModelID: "mtplx/org--m", ModelName: "org/m"}},
+				Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
+				Down:      map[string]bool{"mtplx": true},
+			}, &calls)
+			e.inventory, e.backends = fe.inventory, fe.backends
+			var out strings.Builder
+			_ = start(withRouteOutput(context.Background(), &out), e, loadCfg(), Target{ProviderID: "omlx", ModelName: "T"}, Options{Others: tc.others})
+			if got := looks > 0; got != tc.wantLooks {
+				t.Errorf("process-table lookups = %d, want any: %v", looks, tc.wantLooks)
+			}
+			if len(pt.signals) != 0 {
+				t.Errorf("signals = %v, want none: the loading mtplx was never approved", pt.signals)
+			}
+		})
+	}
+}
