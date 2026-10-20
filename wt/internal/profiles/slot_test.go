@@ -247,7 +247,10 @@ func TestFilledOrder(t *testing.T) {
 		name     string
 		profile  SlotProfile
 		declared []string
-		want     []string
+		// defaultSlot is SlotCheck.DefaultSlot: the slot an alias default
+		// rests on. Empty means Profile.Default is the slot.
+		defaultSlot string
+		want        []string
 	}{
 		{
 			name:     "default first, the rest in declared order",
@@ -286,6 +289,13 @@ func TestFilledOrder(t *testing.T) {
 			want:     nil,
 		},
 		{
+			name:        "an opusplan default fills the slot it rests on first",
+			profile:     SlotProfile{Default: "opusplan", Slots: map[string]string{"opus": "a", "sonnet": "b", "haiku": "c"}},
+			declared:    declared,
+			defaultSlot: "sonnet",
+			want:        []string{"sonnet", "opus", "haiku"},
+		},
+		{
 			name:     "no declared slots",
 			profile:  SlotProfile{Default: "opus", Slots: map[string]string{"opus": "a"}},
 			declared: nil,
@@ -294,7 +304,7 @@ func TestFilledOrder(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.profile.FilledOrder(tc.declared)
+			got := SlotCheck{Profile: tc.profile, Declared: tc.declared, DefaultSlot: tc.defaultSlot}.FilledOrder()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("FilledOrder() = %v, want %v", got, tc.want)
 			}
