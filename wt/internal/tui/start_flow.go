@@ -362,8 +362,37 @@ type replaceState struct {
 	// which choosing either confirms.
 	allow bool
 	// stop are the ids of the other providers' models the dialog showed that
-	// wt can stop: exactly what "stop" approves.
+	// wt can stop: exactly what "stop" approves. The stop choice is offered
+	// only while the question shows in full (syncStopChoice).
 	stop []string
+	// What buildOthersChoices was given, kept so the choices can be rebuilt
+	// with or without stop as the terminal's size changes.
+	id                       string
+	sameFamily, othersListed bool
+}
+
+// syncStopChoice offers the stop choice only while the dialog shows its
+// question in full (whole): a stop approves every stoppable model listed, so
+// it is never offered while some of them are cut off the screen. Withdrawn
+// under the cursor, the cursor goes back to Cancel. A dialog with nothing to
+// stop is left alone.
+func (rs *replaceState) syncStopChoice(whole bool) bool {
+	if len(rs.stop) == 0 {
+		return false
+	}
+	stoppable := 0
+	if whole {
+		stoppable = len(rs.stop)
+	}
+	items := buildOthersChoices(rs.id, rs.sameFamily, rs.othersListed, stoppable)
+	if len(items) == len(rs.choices.Items()) {
+		return false
+	}
+	if rs.choices.Index() >= len(items) {
+		rs.choices.Select(0)
+	}
+	rs.choices.SetItems(items)
+	return true
 }
 
 type startStageMsg struct {
@@ -793,7 +822,8 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		if othersAsked {
 			rs.allow = st.allow || sameFamily
 			rs.stop = stoppableIDs(occ.Others)
-			items = buildOthersChoices(st.item.model.ID, sameFamily, len(occ.Others) > 0, len(rs.stop))
+			rs.id, rs.sameFamily, rs.othersListed = st.item.model.ID, sameFamily, len(occ.Others) > 0
+			items = buildOthersChoices(rs.id, rs.sameFamily, rs.othersListed, len(rs.stop))
 		}
 	case errors.As(msg.err, &unk):
 		rs.header = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -512,5 +513,156 @@ func TestProfileOthersFlagIsThePinnedProfilesAnswer(t *testing.T) {
 				t.Errorf("start = %+v, want Others %+v for the profile's local model", got, c.want)
 			}
 		})
+	}
+}
+
+// longOthersDialog is the others dialog as finishStart builds it for long ids
+// at width x height: a same-family occupant, three other providers' models
+// wt can stop (with session counts) and a family wt cannot read. The first
+// attempt is refused, every later one starts.
+func longOthersDialog(t *testing.T, width, height int) (model, *startCalls) {
+	t.Helper()
+	stubSessionCounts(t, map[string]int{"omlx/Ornith-1.5-35B-A3B-6bit": 2, "mtplx/mlx-community/Qwen3.8-35B-A3B-8bit": 1})
+	m := startFixture(t, "omlx", "omlx/Qwen3.6-35B-A3B-4bit", "Qwen3.6-35B-A3B-4bit")
+	m.width, m.height = width, height
+	calls := stubStartModel(t, func(call int, _ context.Context, _ lifecycle.Target, _ lifecycle.Options) error {
+		if call > 1 {
+			return nil
+		}
+		return &lifecycle.OccupiedError{
+			Occupants: []localmodels.Entry{{ModelID: "omlx/Ornith-1.5-35B-A3B-6bit"}},
+			Others: []lifecycle.Resident{
+				{Entry: localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/mlx-community/Qwen3.8-35B-A3B-8bit"}, Stoppable: true},
+				{Entry: localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/gemma4:27b-it-qat", LoadedSize: 18_200_000_000}, Stoppable: true},
+				{Entry: localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/qwen3-coder:30b-a3b-q4_K_M", LoadedSize: 19_000_000_000}, Stoppable: true},
+			},
+			OthersUnknown: []string{"mlx_lm_server"},
+		}
+	})
+	next, _ := enterStartRow(t, m, "omlx/Qwen3.6-35B-A3B-4bit")
+	next, _ = updateMsg(next, recvStart(t, next))
+	if next.phase != phaseReplaceConfirm {
+		t.Fatalf("phase = %v, want the others dialog", next.phase)
+	}
+	return resized(t, next, width, height), calls
+}
+
+// The long-ids dialog's question line and the stop choice's title.
+const (
+	longQuestion = "Starting omlx/Qwen3.6-35B-A3B-4bit will stop:"
+	longStop     = "Replace and stop the others"
+	enlargeNote  = "enlarge the terminal to stop them"
+)
+
+// TestOthersDialogOffersStopOnlyWhenEveryModelShows pins the dialog on a
+// short terminal (#412): when its question has to be cut ("…"), so some of
+// the models a stop would stop are not on the screen, the stop choice is not
+// offered — Cancel (first, under the cursor) and keep remain — and the cut
+// line says to enlarge the terminal; at 80x24 every model shows and stop is
+// offered. Offered under a cut question, one Enter stops models the user
+// never saw.
+func TestOthersDialogOffersStopOnlyWhenEveryModelShows(t *testing.T) {
+	cases := []struct {
+		name          string
+		width, height int
+		titles        []string
+		note          bool
+	}{
+		{"80x12, question cut", 80, 12, []string{"Cancel", "Replace, keep the others"}, true},
+		{"40x12, question cut", 40, 12, []string{"Cancel", "Replace, keep the others"}, true},
+		{"80x24, every model shows", 80, 24, []string{"Cancel", "Replace, keep the others", longStop}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, _ := longOthersDialog(t, c.width, c.height)
+			if titles := choiceTitles(got); !reflect.DeepEqual(titles, c.titles) {
+				t.Errorf("choices = %v, want %v", titles, c.titles)
+			}
+			if got.replace.choices.Index() != 0 {
+				t.Errorf("cursor on choice %d, want 0 (Cancel)", got.replace.choices.Index())
+			}
+			view := got.View()
+			if has := strings.Contains(strings.Join(strings.Fields(view), " "), enlargeNote); has != c.note {
+				t.Errorf("screen says %q: %v, want %v; screen:\n%s", enlargeNote, has, c.note, view)
+			}
+		})
+	}
+}
+
+// TestOthersDialogStopFollowsTheTerminalSize pins a resize while the dialog
+// is open (#412): shrinking the terminal until the question is cut withdraws
+// the stop choice, and with it the cursor if it was on stop (back to Cancel),
+// and enlarging it again brings stop back. Without the first, a stop chosen
+// at full size stays one Enter away after its models left the screen;
+// without the second, the user who enlarged the terminal as told still
+// cannot stop them.
+func TestOthersDialogStopFollowsTheTerminalSize(t *testing.T) {
+	got, calls := longOthersDialog(t, 80, 24)
+	got.replace.choices.Select(2)
+	small := resized(t, got, 80, 12)
+	if titles := choiceTitles(small); slices.Contains(titles, longStop) {
+		t.Fatalf("choices at 80x12 = %v, want no stop", titles)
+	}
+	if small.replace.choices.Index() != 0 {
+		t.Errorf("cursor on choice %d after stop was withdrawn, want 0 (Cancel)", small.replace.choices.Index())
+	}
+	large := resized(t, small, 80, 24)
+	if titles := choiceTitles(large); !slices.Contains(titles, longStop) {
+		t.Fatalf("choices back at 80x24 = %v, want stop again", titles)
+	}
+	next := chooseTitled(t, large, longStop)
+	waitStartCalls(t, calls, 2)
+	if next.phase != phaseStarting || len(calls.at(1).opts.Others.Stop) != 3 {
+		t.Errorf("phase = %v, retry Others = %+v, want the stop of the three models shown", next.phase, calls.at(1).opts.Others)
+	}
+}
+
+// TestOthersDialogCutStopCannotBeChosen pins every key path through the
+// dialog at a size whose question is cut (#412): moving the cursor as far
+// down as it goes (down, j, end, G, a page down) or typing a digit, then
+// Enter, never retries with a stop; the cursor's last choice is keep, so a
+// retry, when there is one, keeps them. A key that reached a withheld stop
+// would stop models the user cannot see.
+func TestOthersDialogCutStopCannotBeChosen(t *testing.T) {
+	paths := map[string][]tea.KeyMsg{
+		"down x5":   {{Type: tea.KeyDown}, {Type: tea.KeyDown}, {Type: tea.KeyDown}, {Type: tea.KeyDown}, {Type: tea.KeyDown}},
+		"j x5":      {{Type: tea.KeyRunes, Runes: []rune("j")}, {Type: tea.KeyRunes, Runes: []rune("j")}, {Type: tea.KeyRunes, Runes: []rune("j")}, {Type: tea.KeyRunes, Runes: []rune("j")}, {Type: tea.KeyRunes, Runes: []rune("j")}},
+		"end":       {{Type: tea.KeyEnd}},
+		"G":         {{Type: tea.KeyRunes, Runes: []rune("G")}},
+		"page down": {{Type: tea.KeyPgDown}, {Type: tea.KeyPgDown}},
+		"digit 3":   {{Type: tea.KeyRunes, Runes: []rune("3")}},
+	}
+	for name, keys := range paths {
+		t.Run(name, func(t *testing.T) {
+			got, calls := longOthersDialog(t, 80, 12)
+			for _, k := range keys {
+				got, _ = updateMsg(got, k)
+			}
+			next, _ := updateMsg(got, tea.KeyMsg{Type: tea.KeyEnter})
+			if next.start != nil && next.start.cancel != nil {
+				t.Cleanup(next.start.cancel)
+			}
+			if next.phase == phaseStarting {
+				waitStartCalls(t, calls, 2)
+			}
+			for i := 1; i < calls.len(); i++ {
+				if o := calls.at(i).opts.Others; len(o.Stop) != 0 {
+					t.Errorf("retry %d stops %v at a size that hides them", i, o.Stop)
+				}
+			}
+		})
+	}
+}
+
+// TestOthersDialogCutKeepsTheQuestion pins the sparest layout of a cut
+// dialog (#412): it keeps the question's first line and the line saying why
+// stop is missing, never a lone "…". A header cut to "…" leaves the user
+// choosing without knowing what the dialog asks.
+func TestOthersDialogCutKeepsTheQuestion(t *testing.T) {
+	got, _ := longOthersDialog(t, 80, 12)
+	frames := got.replaceFrames()
+	sparest := frames[len(frames)-1]("")
+	if !strings.Contains(sparest, longQuestion) || !strings.Contains(sparest, enlargeNote) {
+		t.Errorf("sparest frame = %q, want the question line and %q", sparest, enlargeNote)
 	}
 }

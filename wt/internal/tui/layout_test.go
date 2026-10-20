@@ -650,26 +650,8 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 			// The others dialog as finishStart builds it: long ids, a
 			// same-family occupant, several other providers' models with
 			// counts, and a family wt cannot read.
-			stubSessionCounts(t, map[string]int{"omlx/Ornith-1.5-35B-A3B-6bit": 2, "mtplx/mlx-community/Qwen3.8-35B-A3B-8bit": 1})
-			m := startFixture(t, "omlx", "omlx/Qwen3.6-35B-A3B-4bit", "Qwen3.6-35B-A3B-4bit")
-			m.width, m.height = width, height
-			stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
-				return &lifecycle.OccupiedError{
-					Occupants: []localmodels.Entry{{ModelID: "omlx/Ornith-1.5-35B-A3B-6bit"}},
-					Others: []lifecycle.Resident{
-						{Entry: localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/mlx-community/Qwen3.8-35B-A3B-8bit"}, Stoppable: true},
-						{Entry: localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/gemma4:27b-it-qat", LoadedSize: 18_200_000_000}, Stoppable: true},
-						{Entry: localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/qwen3-coder:30b-a3b-q4_K_M", LoadedSize: 19_000_000_000}, Stoppable: true},
-					},
-					OthersUnknown: []string{"mlx_lm_server"},
-				}
-			})
-			next, _ := enterStartRow(t, m, "omlx/Qwen3.6-35B-A3B-4bit")
-			next, _ = updateMsg(next, recvStart(t, next))
-			if next.phase != phaseReplaceConfirm {
-				t.Fatalf("phase = %v, want the others dialog", next.phase)
-			}
-			return next
+			m, _ := longOthersDialog(t, width, height)
+			return m
 		})},
 		{"routing", modelPhase(func(t *testing.T, width, height int) model {
 			m := rowsPicker(t, 2, width, height)
