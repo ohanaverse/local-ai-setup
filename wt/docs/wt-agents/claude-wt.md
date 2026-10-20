@@ -116,7 +116,9 @@ these variables under `config_content.env` (written to
 `.claude/settings.local.json`) is not decided by wt. Claude Code's own
 settings-over-environment rule decides, and wt does not test it.
 
-wt sets nothing else for the slots: no `modelOverrides`, no
+wt sets nothing else for the slots: no `modelOverrides` (a slot profile
+may set its own under `config_content`, a table checked as in
+[slot-profiles.md](slot-profiles.md#a-modeloverrides-target-wt-does-not-route)), no
 `CLAUDE_CODE_SUBAGENT_MODEL`, and it leaves every other inherited variable
 alone (`ANTHROPIC_SMALL_FAST_MODEL` included). The native launch gets none
 of the eight and keeps whatever your shell exports.
