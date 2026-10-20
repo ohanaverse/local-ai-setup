@@ -572,3 +572,72 @@ func TestSmokeWithoutTTYKeepsOthersAndWarns(t *testing.T) {
 		t.Errorf("calls = %+v, want a retry that keeps everything", *calls)
 	}
 }
+
+// TestDriveStartUnknownOccupancyReplacingLineWaitsForTheOthers pins when the
+// "replacing whatever <provider> is serving" line of a confirmed unknown
+// occupancy prints: once, when the engine goes ahead with the start, and
+// never when the others question that follows is cancelled. Printed before
+// the others answer, a cancel would leave the user told something was
+// replaced although wt replaced nothing.
+func TestDriveStartUnknownOccupancyReplacingLineWaitsForTheOthers(t *testing.T) {
+	for _, c := range []struct {
+		choice othersChoice
+		want   int
+	}{{othersCancel, 0}, {othersKeep, 1}} {
+		t.Run(c.choice.String(), func(t *testing.T) {
+			stubSignals(t)
+			stubStdinTTY(t, true)
+			stubOthersMode(t, "")
+			stubSessionCounts(t, nil)
+			oldConfirm := confirmReplace
+			confirmReplace = func(string) (bool, error) { return true, nil }
+			t.Cleanup(func() { confirmReplace = oldConfirm })
+			stubChooseOthers(t, c.choice, nil)
+			stderr := captureStderr(t)
+			old := lifecycleStart
+			lifecycleStart = func(_ context.Context, _ *config.Config, _ lifecycle.Target, opts lifecycle.Options) error {
+				switch {
+				case !opts.AllowReplace:
+					return &lifecycle.OccupancyUnknownError{ProviderID: "omlx", Origin: "http://localhost:8000"}
+				case !opts.Others.Decided:
+					return othersFixture()
+				}
+				opts.Progress(lifecycle.StageWarming)
+				return nil
+			}
+			t.Cleanup(func() { lifecycleStart = old })
+
+			err := startForLaunch(&config.Config{}, startTestRow(), false)
+			if (c.choice == othersCancel) != (err != nil) {
+				t.Fatalf("err = %v", err)
+			}
+			line := "wt: replacing whatever omlx is serving at http://localhost:8000\n"
+			if n := strings.Count(stderr.String(), line); n != c.want {
+				t.Errorf("stderr = %q, want the replacing line %d time(s)", stderr.String(), c.want)
+			}
+		})
+	}
+}
+
+// TestSlotStartRefusalOfAnsweredQuestionsLeavesRestartOwed pins that a
+// refusal asking only what was already answered (the engine cannot produce
+// one today; a future engine might) still reports the slot profile's restart
+// as owed: the refusal touched nothing, so the engine did not bounce the
+// proxy, and a false stillOwed would leave the profile's cloud routes
+// written but never published.
+func TestSlotStartRefusalOfAnsweredQuestionsLeavesRestartOwed(t *testing.T) {
+	stubSignals(t)
+	stubStdinTTY(t, true)
+	stubOthersMode(t, "keep")
+	captureStderr(t)
+	old := lifecycleStart
+	lifecycleStart = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
+	}
+	t.Cleanup(func() { lifecycleStart = old })
+
+	still, err := startForLaunchOwed(&config.Config{}, startTestRow(), true, true)
+	if err == nil || !still {
+		t.Errorf("still = %v err = %v, want an error with the restart still owed", still, err)
+	}
+}

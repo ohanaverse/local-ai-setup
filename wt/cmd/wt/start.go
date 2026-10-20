@@ -293,7 +293,23 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 	report := startProgress(id, done, began)
 
 	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
-	opts := lifecycle.Options{Progress: report, RestartOwed: restartOwed}
+	// replacing is the "replacing whatever <provider> is serving" line of a
+	// confirmed unknown occupancy. It prints on the engine's first progress
+	// stage, which the engine reports only once it is past every refusal and
+	// about to act: a refusal about other providers' models still follows
+	// the confirmation, and a cancel there replaces nothing.
+	var replacingMu sync.Mutex
+	replacing := ""
+	progress := func(s lifecycle.Stage) {
+		replacingMu.Lock()
+		if replacing != "" {
+			fmt.Fprint(osStderr, replacing)
+			replacing = ""
+		}
+		replacingMu.Unlock()
+		report(s)
+	}
+	opts := lifecycle.Options{Progress: progress, RestartOwed: restartOwed}
 	// --others=keep answers the others question before it is asked, so the
 	// engine never refuses for them. Every other mode starts undecided: the
 	// refusal lists what to ask about, warn about, or stop.
@@ -375,7 +391,10 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 		if !replaceAsked && !othersAsked {
 			// Not a refusal, or one that asks only what was already answered:
 			// a different failure — report it rather than prompting again.
-			return false, false, startFailure(id, err)
+			// The engine cannot refuse with every question answered today;
+			// if it ever does, that refusal touched nothing and did not spend
+			// the owed restart, so the caller still settles it.
+			return restartOwed && lifecycle.RestartStillOwed(err), false, startFailure(id, err)
 		}
 
 		if replaceAsked && unk != nil {
@@ -388,7 +407,9 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 					return restartOwed, false, fmt.Errorf("cancelled — %s may still be serving a model", unk.ProviderID)
 				}
 			}
-			fmt.Fprintf(osStderr, "wt: replacing whatever %s is serving at %s\n", unk.ProviderID, unk.Origin)
+			replacingMu.Lock()
+			replacing = fmt.Sprintf("wt: replacing whatever %s is serving at %s\n", unk.ProviderID, unk.Origin)
+			replacingMu.Unlock()
 			opts.AllowReplace = true
 			continue
 		}
