@@ -256,11 +256,11 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 // the TUI-side equivalent of the non-TUI runAgentCmd fix (plan item #5): a
 // pre-launch profileApplier error must skip cmd.Run() entirely, still
 // release the refcount entry already recorded by launchAndRecord before
-// runAndWaitCmd was returned, and still populate pendingSummary (duration
-// 0) and print the error to stderr (the TUI never surfaces
-// launchDoneMsg's error, so without it the user sees no diagnostic at all)
-// — but must NOT populate pendingSurveyState, since nothing ran and there
-// is no session to survey or offer a stop picker for.
+// runAndWaitCmd was returned, still populate pendingSummary (duration 0),
+// and come back as a launchDoneMsg carrying the error — not print it — so
+// Run returns it once and main reports it as `wt: <error>` with exit 1
+// (#412). It must NOT populate pendingSurveyState, since nothing ran and
+// there is no session to survey or offer a stop picker for.
 func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	oldApplier := profileApplier
 	t.Cleanup(func() { profileApplier = oldApplier })

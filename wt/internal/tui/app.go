@@ -936,6 +936,11 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 					return routeBack(reason)
 				}
 			}
+			// The same reason resolveModel gives a slot profile hidden by
+			// -T/-F or held by another agent (#412).
+			if reason := catalog.SlotPinReason(m.cfg, m.slotChecks, agent, m.pinnedModel, m.activeTags, m.activeFamily); reason != "" {
+				return routeBack(reason)
+			}
 			return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
 		}
 		it := tbl.items[idx]
