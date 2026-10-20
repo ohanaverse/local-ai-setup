@@ -13,8 +13,8 @@ import (
 // leafRec is one value a config_content merge wrote: its path from the
 // document root (one segment per object key, whatever characters it holds)
 // and a hash of the value written, never the value itself. An empty Hash
-// marks a legacy record, from a marker that listed top-level keys only:
-// restore it unconditionally.
+// marks a legacy record, from a marker that listed top-level keys only: it
+// has no value to compare against, so it is put back whatever it is now.
 type leafRec struct {
 	Path []string `json:"path"`
 	Hash string   `json:"hash,omitempty"`
@@ -139,7 +139,9 @@ func getPath(doc map[string]any, path []string) (v any, ok bool) {
 // session changed it); either way the session's state wins. Otherwise the
 // original value is set back, creating parent objects, or the leaf is
 // deleted when orig has no value there. A legacy record (empty Hash) skips
-// only the first check.
+// only the second check: its marker never held a value to compare, so it is
+// put back whatever it is now — but a leaf the session deleted is left
+// deleted, as for any other record.
 //
 // Then every ancestor of a record's path that is an empty object in cur is
 // settled by orig, deepest first: a non-object orig value there is set back

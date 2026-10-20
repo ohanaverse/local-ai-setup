@@ -1306,6 +1306,58 @@ func TestConfigDefaultsLeavesAnExistingValueAlone(t *testing.T) {
 	}
 }
 
+// TestConfigDefaultsAllPresentLeavesTheFileByteForByte pins that a
+// defaults-only profile whose every default the file already holds does not
+// touch the file at all. It is the most common defaults application, and
+// rewriting it would reformat the user's JSON, widen their 0600 settings
+// file to 0644 and bump its mtime on every launch — then cleanup would
+// rewrite it once more to put back bytes that never changed.
+func TestConfigDefaultsAllPresentLeavesTheFileByteForByte(t *testing.T) {
+	original := []byte("{\n\t\"permissions\": {\n\t\t\"defaultMode\": \"plan\"\n\t}\n}\n")
+	worktree, target := claudeTarget(t, original)
+	if err := os.Chmod(target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigDefaults: pinDefaultMode("default")})
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	assertUntouched := func(when string) {
+		t.Helper()
+		got, readErr := os.ReadFile(target)
+		if readErr != nil {
+			t.Fatalf("target unreadable %s: %v", when, readErr)
+		}
+		if string(got) != string(original) {
+			t.Errorf("target %s = %s, want it byte for byte as written", when, got)
+		}
+		info, statErr := os.Stat(target)
+		if statErr != nil {
+			t.Fatalf("target unstatable %s: %v", when, statErr)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("target mode %s = %04o, want the user's 0600 kept", when, perm)
+		}
+		if !info.ModTime().Equal(before.ModTime()) {
+			t.Errorf("target mtime %s changed (%v -> %v), want no write at all", when, before.ModTime(), info.ModTime())
+		}
+	}
+	assertUntouched("during the session")
+	if _, statErr := os.Stat(backupPresentPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupPresentPath exists after a no-op apply (stat err = %v), want no backup to restore", statErr)
+	}
+
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	assertUntouched("after cleanup")
+}
+
 // TestConfigDefaultsLeavesANonObjectPermissionsAlone verifies a default
 // whose path crosses a non-object counts as present: a "permissions" the
 // user set to a string is never replaced by the default's object.

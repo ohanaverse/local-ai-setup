@@ -386,7 +386,9 @@
   `config_content` to the new `config_defaults` table, so a mode already set
   in the worktree's `.claude/settings.local.json` (`plan`, `acceptEdits`,
   ...) is left as it is; the example still keeps a local session that sets
-  none out of auto mode (#393). Copy the change into your own
+  none out of auto mode (#393). When every default is already present the
+  file is not written at all, so its formatting, permissions and mtime
+  stay as you left them. Copy the change into your own
   `profiles.toml` to get it.
 - A directory written after `--cwd` is refused (#392). `--cwd` takes no
   value, so `claude-wt --cwd ~/proj -- -p "task"` used to launch in the

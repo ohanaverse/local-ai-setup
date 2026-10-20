@@ -399,6 +399,18 @@ func snapshotAndWrite(target string, perm os.FileMode, buildData func(existing [
 			return berr
 		}
 
+		// Nothing to change: leave the file exactly as the user has it.
+		// This is the common defaults-only apply, where every leaf the
+		// profile defaults is already present (buildData then returns
+		// the existing bytes). Rewriting would reformat the JSON, push
+		// the mode to perm (0644, widening a 0600 settings file) and
+		// touch the mtime for no reason — and a backup marker would
+		// make cleanup rewrite the file once more to restore bytes that
+		// never changed.
+		if existed && bytes.Equal(data, existing) {
+			return nil
+		}
+
 		if !existed {
 			if err := config.WriteFileAtomic(backupAbsentPath(target), []byte{}, 0o600); err != nil {
 				return err

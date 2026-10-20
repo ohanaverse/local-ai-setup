@@ -59,15 +59,18 @@ value.**
   only when the container ends up empty. The ancestor walk stops at the first non-object at any
   depth.
 - **Legacy marker.** `.keys` written by an older wt is a JSON array of top-level key names. The
-  reader detects it and restores unconditionally as before, so self-heal after a crash that
-  straddles an upgrade still works. Check what an older wt does with the new format (fail open to
-  whole-file restore, or fall back) and record the answer in the tests.
+  reader detects it and puts each key back by the original document, with no hash to compare
+  against (a leaf the session deleted stays deleted, as for a new record), so self-heal after a
+  crash that straddles an upgrade still works. Check what an older wt does with the new format (fail
+  open to whole-file restore, or fall back) and record the answer in the tests.
 - The empty-object leaf is stated by case: merging `{}` into an existing object is a no-op and is
   not recorded.
 - Both restore call sites in `restoreIfBackedUpLocked` (absent and present branches) read the
   marker; both change.
-- An existing `settings.local.json` holding bare JSON `null` is treated as an empty object (it used
-  to panic); a test pins this.
+- An existing `settings.local.json` holding bare JSON `null` is refused like invalid JSON, not
+  treated as an empty object: it is the one payload that decodes without an error into a nil map
+  (`mergeInto` used to panic on it), so the launch degrades to an unprofiled one. A test pins the
+  refusal and that the file is left untouched.
 
 **Tests:** the issue's repro; the new-file case beside `configcontent_test.go:901`; a
 session-changed leaf kept (existing and new-file cases); a session-deleted leaf not resurrected;
@@ -141,7 +144,8 @@ where in `slot_test.go` the repointed test lives.
 
 - #401: the `.keys` marker is written when the claude leaf records are non-nil (an empty `[]` when
   the merge wrote no leaf), so cleanup does not fall back to whole-file restore and lose grants.
-- #401: bare JSON `null` in an existing `settings.local.json` is an empty object, pinned by a test.
+- #401: bare JSON `null` in an existing `settings.local.json` is refused like invalid JSON (the one
+  payload that decodes cleanly into a nil map), pinned by a test, not treated as an empty object.
 - #402: the merge-if-absent helpers are in `wt/internal/profiles/leaves.go`; `merge.go` is untouched.
 - #388: `PRBranch` is not split; remote rows key on `Entry.RemoteBranch`/`Entry.RemoteRepo` and the
   PR map is `PRSet{Repo, ByBranch}`.

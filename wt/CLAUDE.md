@@ -251,8 +251,8 @@ Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driv
 
 Opt-in overlays from `~/.config/agent-wt/profiles.toml`, resolved per agent × model (`profiles.Resolve`) and applied on both launch paths (`applyProfileForLaunch`) and by `wt smoke` (`applyResolvedProfile`). Operator reference: [docs/wt-agents/profiles.md](docs/wt-agents/profiles.md).
 
-- Call the `config_content` cleanup explicitly after the run — `runAgentCmd`'s `os.Exit` skips defers.
-- Apply order is env/args → `config_content` → wrapper; load/validate/apply errors degrade to an unprofiled launch with a warning.
+- Call the `config_content` cleanup explicitly after the run — `runAgentCmd`'s `os.Exit` skips defers. `config_defaults` (claude only: the same table shape, applied after `config_content` and only where the file has no leaf) rides on that one call, its leaves recorded and restored the same way.
+- Apply order is env/args → `config_content` (with `config_defaults`) → wrapper; load/validate/apply errors degrade to an unprofiled launch with a warning.
 
 **Slot profiles** are a second kind, from the hand-written `~/.config/agent-wt/slot-profiles.toml` (wt never writes it): a named entry that maps an agent's model slots to registry models, shown as a picker row and pinned with `-M profile/<name>`. Claude is the only agent with slots (`profiles.SlotCapable`). A rule about what a profile may hold that belongs to one agent goes on that interface and is asked through `profiles.SlotDrivers` (claude's `config_content.env must be a table`: `CheckConfigContent`, one function shared with the slot build), never written into `internal/profiles` or `internal/catalog`, which do not import `internal/agents`. Operator reference: [docs/wt-agents/slot-profiles.md](docs/wt-agents/slot-profiles.md).
 
