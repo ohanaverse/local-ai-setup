@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
@@ -321,6 +322,11 @@ func (r *startResult) get() (err error, done bool) {
 	defer r.mu.Unlock()
 	return r.err, r.done
 }
+
+// sessionCounts is the number of live wt sessions using each model id, read
+// once when the replace dialog is built (#412). A test seam; production is
+// the non-TUI prompt's source, refcount.SessionCounts.
+var sessionCounts = refcount.SessionCounts
 
 // replaceState is the replace-confirm dialog for the row that could not start.
 type replaceState struct {
@@ -649,7 +655,19 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	title := ""
 	switch {
 	case errors.As(msg.err, &occ):
-		title = fmt.Sprintf("Starting %s will stop %s", st.item.model.ID, strings.Join(occ.IDs(), ", "))
+		// Each occupant some wt session uses is named with its count, in
+		// the non-TUI prompt's words (#412). The picker has recorded no
+		// session of its own yet (launchAndRecord comes after), so the
+		// count is other sessions only.
+		counts := sessionCounts(occ.IDs())
+		names := make([]string, len(occ.Occupants))
+		for i, oid := range occ.IDs() {
+			names[i] = oid
+			if n := counts[oid]; n > 0 {
+				names[i] = fmt.Sprintf("%s (in use by %d wt session(s))", oid, n)
+			}
+		}
+		title = fmt.Sprintf("Starting %s will stop %s", st.item.model.ID, strings.Join(names, ", "))
 	case errors.As(msg.err, &unk):
 		title = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
 	default:

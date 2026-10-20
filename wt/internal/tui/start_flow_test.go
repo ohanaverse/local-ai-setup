@@ -263,6 +263,60 @@ func TestOccupiedOpensReplaceConfirmWithCancelDefault(t *testing.T) {
 	}
 }
 
+// TestReplaceDialogNamesTheOccupantsSessions pins the replace dialog of an
+// ordinary start row (#412, decision 2): each occupant some wt sessions use
+// is named with "(in use by N wt session(s))", in the non-TUI prompt's words,
+// and one nobody uses is named bare. Without the count the picker hides that
+// "Replace and start" cuts off a session in another terminal, which the
+// non-TUI prompt has always said.
+func TestReplaceDialogNamesTheOccupantsSessions(t *testing.T) {
+	for _, c := range replaceCountCases {
+		t.Run(c.name, func(t *testing.T) {
+			asked := stubSessionCounts(t, c.counts)
+			m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+			stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+				return occupiedBy(c.occupants)
+			})
+			got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+			got, _ = updateMsg(got, recvStart(t, got))
+			assertReplaceCountTitle(t, got, asked, c.occupants, c.want)
+		})
+	}
+}
+
+// TestReplaceDialogCountsOtherSessionsOnly runs the dialog over the real
+// count source (the refcount file under the test's throwaway config
+// home): another live process using the occupant is counted, and the picker
+// has recorded no session of its own when the dialog is built (it records at
+// the launch after it), so the count never includes the wt that is choosing.
+// A picker that counted itself would warn about a session that does not
+// exist yet.
+func TestReplaceDialogCountsOtherSessionsOnly(t *testing.T) {
+	old := sessionCounts
+	sessionCounts = refcount.SessionCounts
+	t.Cleanup(func() { sessionCounts = old })
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	t.Cleanup(func() { _ = refcount.NewStore().Release(os.Getppid()) })
+	if err := refcount.NewStore().Record(os.Getppid(), "omlx/old"); err != nil {
+		t.Fatal(err)
+	}
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		return occupiedBy([]string{"omlx/old"})
+	})
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, recvStart(t, got))
+	if got.phase != phaseReplaceConfirm {
+		t.Fatalf("phase = %v, want the replace dialog", got.phase)
+	}
+	want := "Starting omlx/qwen3.8 will stop omlx/old (in use by 1 wt session(s))"
+	if title := got.replace.choices.Title; title != want {
+		t.Errorf("dialog title = %q, want %q", title, want)
+	}
+	if live := refcount.NewStore().Live(); len(live) != 1 || live["omlx/old"] != 1 {
+		t.Errorf("live sessions = %v, want only the other process's on omlx/old (the picker records nothing before it launches)", live)
+	}
+}
+
 // TestUnknownOccupancyOpensReplaceConfirm verifies an OccupancyUnknownError
 // opens the same dialog, with the title naming the provider and origin it
 // could not probe — the user must decide without a false claim of certainty.

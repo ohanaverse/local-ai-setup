@@ -86,6 +86,67 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 	return store
 }
 
+// stubSessionCounts swaps the sessionCounts seam for one that answers counts
+// (a missing id is 0) and records the ids it was asked about; the seam is
+// restored on cleanup.
+func stubSessionCounts(t *testing.T, counts map[string]int) *[]string {
+	t.Helper()
+	var asked []string
+	old := sessionCounts
+	sessionCounts = func(ids []string) map[string]int {
+		asked = append(asked, ids...)
+		return counts
+	}
+	t.Cleanup(func() { sessionCounts = old })
+	return &asked
+}
+
+// replaceCountCases are the occupants a start would stop and the sessions
+// using them, with the title the replace dialog must show: "(in use by N wt
+// session(s))" after each occupant someone uses, in the non-TUI prompt's
+// words, and nothing after one nobody uses.
+var replaceCountCases = []struct {
+	name      string
+	occupants []string
+	counts    map[string]int
+	want      string
+}{
+	{"one occupant, two sessions", []string{"omlx/old"}, map[string]int{"omlx/old": 2},
+		"Starting omlx/qwen3.8 will stop omlx/old (in use by 2 wt session(s))"},
+	{"two occupants, one in use", []string{"omlx/busy", "omlx/idle"}, map[string]int{"omlx/busy": 1},
+		"Starting omlx/qwen3.8 will stop omlx/busy (in use by 1 wt session(s)), omlx/idle"},
+	{"no sessions", []string{"omlx/old"}, map[string]int{},
+		"Starting omlx/qwen3.8 will stop omlx/old"},
+}
+
+// occupiedBy is the engine's refusal naming ids as the occupants.
+func occupiedBy(ids []string) *lifecycle.OccupiedError {
+	occ := &lifecycle.OccupiedError{}
+	for _, id := range ids {
+		occ.Occupants = append(occ.Occupants, localmodels.Entry{ModelID: id})
+	}
+	return occ
+}
+
+// assertReplaceCountTitle checks the dialog is up with want as its title,
+// that the counts were asked for the occupants, and that the count (or its
+// absence) is what the screen shows.
+func assertReplaceCountTitle(t *testing.T, got model, asked *[]string, occupants []string, want string) {
+	t.Helper()
+	if got.phase != phaseReplaceConfirm || got.replace == nil {
+		t.Fatalf("phase = %v, want the replace dialog", got.phase)
+	}
+	if title := got.replace.choices.Title; title != want {
+		t.Errorf("dialog title = %q, want %q", title, want)
+	}
+	if strings.Join(*asked, ",") != strings.Join(occupants, ",") {
+		t.Errorf("sessionCounts asked for %v, want the occupants %v", *asked, occupants)
+	}
+	if view := got.View(); strings.Contains(want, "in use by") != strings.Contains(view, "in use by") {
+		t.Errorf("screen and title disagree on the session count; title %q, screen:\n%s", want, view)
+	}
+}
+
 // TestMain stubs the live-provider inventory so no test in this package ever
 // probes the developer's real ollama/omlx/mtplx servers or reads their model
 // directories, and stubs startModel so no test can start a real model
@@ -143,6 +204,10 @@ func TestMain(m *testing.M) {
 	// stop the developer's running models.
 	releaseSession = func() {}
 	runStopPhase = func(*config.Config) {}
+	// The replace dialog's session counts (#412): unstubbed, a test that
+	// reaches the dialog would sweep and read the refcount file. Nobody is
+	// in a session unless a test says so (stubSessionCounts).
+	sessionCounts = func([]string) map[string]int { return map[string]int{} }
 	// The model picker's pre-launch ollama check (#317): unstubbed, Enter on
 	// a direct-route ollama model would run whatever `ollama` is on the
 	// developer's PATH, and the test's result would depend on what that

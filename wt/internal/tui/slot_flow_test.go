@@ -1331,33 +1331,26 @@ func TestProfileStartRowWithNoLocalModelStartsNothing(t *testing.T) {
 	}
 }
 
-// TestProfileReplaceDialogNamesNoSessionCount documents current behavior,
-// pending a product decision (issue #412 item C): the TUI's replace dialog for
-// a profile's local-model start names the occupant but not how many wt
-// sessions use it, although the non-TUI prompt does
-// (TestProfileStartPromptNamesTheOccupantsSessions in cmd/wt). Here the
-// occupant has a live session and the dialog still says only its id. If the
-// TUI is changed to show the count, this test is the one to update.
-func TestProfileReplaceDialogNamesNoSessionCount(t *testing.T) {
-	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
-		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}
-	})
-	starting, _ := mixedStarting(t, false)
-	if err := newRefcountStore().Record(os.Getpid(), "omlx/old"); err != nil {
-		t.Fatal(err)
-	}
-	if n := newRefcountStore().Counts([]string{"omlx/old"})["omlx/old"]; n != 1 {
-		t.Fatalf("sessions on omlx/old = %d, want 1 for the fixture", n)
-	}
-	got, _ := updateMsg(starting, recvStart(t, starting))
-	if got.phase != phaseReplaceConfirm || got.replace == nil {
-		t.Fatalf("phase = %v, want the replace dialog", got.phase)
-	}
-	title := got.replace.choices.Title
-	if want := "Starting omlx/qwen3.8 will stop omlx/old"; title != want {
-		t.Errorf("dialog title = %q, want %q", title, want)
-	}
-	if strings.Contains(title, "in use by") || strings.Contains(got.View(), "in use by") {
-		t.Errorf("dialog = %q, want no session count (current behavior, #412 item C)", title)
+// TestProfileReplaceDialogNamesTheOccupantsSessions pins the TUI's replace
+// dialog for a profile's local-model start (#412, decision 2): each occupant
+// some wt sessions use is named with "(in use by N wt session(s))", in the
+// words of the non-TUI prompt (TestProfileStartPromptNamesTheOccupantsSessions
+// in cmd/wt), and one nobody uses is named bare. The count is what tells the
+// user that "Replace and start" cuts off a session in another terminal; a
+// regression drops that warning, or puts a count on a model nobody uses.
+func TestProfileReplaceDialogNamesTheOccupantsSessions(t *testing.T) {
+	for _, c := range replaceCountCases {
+		t.Run(c.name, func(t *testing.T) {
+			asked := stubSessionCounts(t, c.counts)
+			stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+				return occupiedBy(c.occupants)
+			})
+			starting, _ := mixedStarting(t, false)
+			got, _ := updateMsg(starting, recvStart(t, starting))
+			assertReplaceCountTitle(t, got, asked, c.occupants, c.want)
+			if got.slot == nil {
+				t.Error("slot = nil, want the profile's flow kept behind the dialog")
+			}
+		})
 	}
 }
