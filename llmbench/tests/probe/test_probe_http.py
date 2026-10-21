@@ -87,6 +87,27 @@ def test_reasoning_field_is_accepted(fake_openai):
     assert result.reasoning_field == "reasoning"
 
 
+def test_a_think_block_in_the_content_is_reasoning(fake_openai):
+    result = probe_one(_target(fake_openai.base_url, "think-tags"), PROMPT, SAMPLING, timeout_s=5)
+    assert result.reasoning == "carry the 2"
+    assert result.reasoning_field == "content <think>"
+    assert result.answer == "391"
+
+
+def test_a_closing_tag_alone_ends_the_reasoning(fake_openai):
+    result = probe_one(
+        _target(fake_openai.base_url, "think-close-only"), PROMPT, SAMPLING, timeout_s=5
+    )
+    assert (result.reasoning, result.answer) == ("carry the 2", "391")
+
+
+def test_an_unclosed_think_block_is_all_reasoning(fake_openai):
+    result = probe_one(
+        _target(fake_openai.base_url, "think-unclosed"), PROMPT, SAMPLING, timeout_s=5
+    )
+    assert (result.reasoning, result.answer) == ("still thinking", "")
+
+
 def test_no_reasoning_field_reads_as_empty(fake_openai):
     result = probe_one(_target(fake_openai.base_url, "no-reasoning"), PROMPT, SAMPLING, timeout_s=5)
     assert result.answered

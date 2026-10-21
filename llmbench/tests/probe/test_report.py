@@ -165,7 +165,7 @@ def test_a_failed_write_leaves_the_previous_file_whole(tmp_path, monkeypatch):
     into place: a write that fails leaves the last good copy and no temp."""
     import pytest
 
-    import llmbench.probe.thinking as thinking
+    import llmbench._toml_io as toml_io
 
     out = tmp_path / "out"
     run = _run()
@@ -175,7 +175,7 @@ def test_a_failed_write_leaves_the_previous_file_whole(tmp_path, monkeypatch):
     def refuse(src, dst):
         raise OSError("disk full")
 
-    monkeypatch.setattr(thinking.os, "replace", refuse)
+    monkeypatch.setattr(toml_io.os, "replace", refuse)
     run.results = run.results[:1]
     with pytest.raises(OSError):
         write_outputs(run, out)

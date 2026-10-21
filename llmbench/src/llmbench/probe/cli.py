@@ -129,6 +129,13 @@ def thinking_cmd(
         prompts += [load_prompt_file(path) for path in prompt_file]
         if not prompts:
             raise ProbeError("no prompts: drop --no-builtin or pass --prompt-file")
+        ids = [p.id for p in prompts]
+        repeated = sorted({i for i in ids if ids.count(i) > 1})
+        if repeated:
+            raise ProbeError(
+                f"duplicate prompt id(s): {', '.join(repeated)} (a --prompt-file's id is "
+                "its file name without the extension; rename the file)"
+            )
         out_dir = out if out is not None else default_out_dir()
         prepare_out_dir(out_dir)
     except ProbeError as exc:
@@ -150,7 +157,12 @@ def thinking_cmd(
     def finished(result: ProbeResult) -> None:
         in_flight.clear()
         run.results.append(result)
-        write_outputs(run, out_dir)
+        try:
+            write_outputs(run, out_dir)
+        except OSError as exc:
+            # A full disk or a removed --out must not end a long run: the
+            # next result retries, and the progress line below still prints.
+            typer.echo(f"warning: could not write the report: {exc}", err=True)
         _progress(result)
 
     md_path, json_path = write_outputs(run, out_dir)

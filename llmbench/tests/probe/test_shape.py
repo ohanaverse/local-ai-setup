@@ -25,7 +25,9 @@ from llmbench.probe.thinking import (
         ("##\tTab", True),
         ("####### Seven is not a heading", False),
         ("#nospace", False),
-        ("  # indented", False),
+        ("  # two spaces", True),
+        ("   # three spaces", True),
+        ("    # four spaces is a code block", False),
         ("text # not at start", False),
     ],
 )
@@ -176,6 +178,28 @@ def test_an_unclosed_fence_counts_once_and_swallows_the_rest():
     )
 
 
+def test_a_fence_in_a_nested_list_item_closes_at_its_own_indent():
+    text = "\n".join(
+        [
+            "1. Step",
+            "   - nested",
+            "       ```bash",
+            "       echo hi",
+            "       ```",
+            "2. Next",
+            "## H",
+        ]
+    )
+    assert answer_shape(text) == AnswerShape(
+        headings=1, bullets=1, numbered=2, table_lines=0, code_fences=1
+    )
+
+
+def test_a_closing_fence_indented_four_more_than_the_opening_does_not_close():
+    text = "\n".join(["```", "code", "    ```", "# still code"])
+    assert answer_shape(text).headings == 0
+
+
 def test_two_blocks_count_two_fences():
     text = "```\na\n```\n\n~~~\nb\n~~~\n"
     assert answer_shape(text).code_fences == 2
@@ -183,3 +207,9 @@ def test_two_blocks_count_two_fences():
 
 def test_empty_answer_has_zero_shape():
     assert answer_shape("") == AnswerShape(0, 0, 0, 0, 0)
+
+
+def test_a_backtick_fence_with_a_backtick_in_its_info_string_is_not_a_fence():
+    assert not is_fence("``` a ``` inline code")
+    assert is_fence("~~~ a ``` tilde info may hold backticks")
+    assert is_fence("```python")

@@ -12,7 +12,6 @@ directory it is given (never the benchmark results dir or latest.toml).
 from __future__ import annotations
 
 import json
-import os
 import re
 import tempfile
 import time
@@ -24,6 +23,7 @@ from typing import Any
 
 import requests
 
+from llmbench._toml_io import atomic_write_text
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.benchmark.eval.category import load_category
 
@@ -141,7 +141,10 @@ def load_prompt_file(path: Path) -> Prompt:
     path = Path(path)
     if not path.is_file():
         raise ProbeError(f"prompt file not found: {path}")
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ProbeError(f"cannot read prompt file {path}: {exc}") from exc
     if not text.strip():
         raise ProbeError(f"prompt file is empty: {path}")
     return Prompt(id=path.stem, text=text, source=str(path))
@@ -154,14 +157,17 @@ def load_prompt_file(path: Path) -> Prompt:
 # markdown renderer shows them as code. A code fence counts once per block.
 # As in CommonMark, a block closes only on a bare run (no info string) of the
 # opening fence's character at least as long as the opening run, indented by
-# at most three spaces; a fence never closed hides every later line.
+# at most three spaces more than the opening line (a fence inside a nested list
+# item is itself indented); a fence never closed hides every later line.
 
-_HEADING_RE = re.compile(r"#{1,6}[ \t]")
+_HEADING_RE = re.compile(r" {0,3}#{1,6}[ \t]")
 _BULLET_RE = re.compile(r"\s*[-*+][ \t]")
 _NUMBERED_RE = re.compile(r"\s*\d+[.)][ \t]")
 _TABLE_RE = re.compile(r"\s*\|")
-_FENCE_RE = re.compile(r"\s*(`{3,}|~{3,})")
-_CLOSING_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
+# A backtick fence's info string may not hold a backtick (``` a ``` is inline
+# code, not a fence); a tilde fence's may.
+_FENCE_RE = re.compile(r"\s*(`{3,}(?=[^`]*$)|~{3,})")
+_CLOSING_FENCE_RE = re.compile(r"( *)(`{3,}|~{3,})[ \t]*")
 # A thematic break (`* * *`, `- - -`, `***`): three or more of one of -, *, _
 # with only spaces or tabs between. A horizontal rule, not a bullet.
 _THEMATIC_BREAK_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
@@ -198,21 +204,25 @@ class AnswerShape:
 
 def answer_shape(text: str) -> AnswerShape:
     counts = dict.fromkeys(("headings", "bullets", "numbered", "table_lines", "code_fences"), 0)
-    # The opening run (e.g. "````") of the block the line is in, or None.
+    # The opening run (e.g. "````") of the block the line is in, or None, and
+    # the indent of the line that opened it.
     open_fence: str | None = None
+    open_indent = 0
     for line in text.splitlines():
         if open_fence is not None:
             closing = _CLOSING_FENCE_RE.fullmatch(line)
             if (
                 closing is not None
-                and closing.group(1)[0] == open_fence[0]
-                and len(closing.group(1)) >= len(open_fence)
+                and len(closing.group(1)) <= open_indent + 3
+                and closing.group(2)[0] == open_fence[0]
+                and len(closing.group(2)) >= len(open_fence)
             ):
                 open_fence = None
             continue
         fence = _FENCE_RE.match(line)
         if fence is not None:
             open_fence = fence.group(1)
+            open_indent = len(line) - len(line.lstrip())
             counts["code_fences"] += 1
         elif is_heading(line):
             counts["headings"] += 1
@@ -296,10 +306,37 @@ def _int_or_none(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+# An engine without a reasoning parser leaves the thinking in the content as
+# `<think>...</think>`; a chat template that opens the block in the prompt
+# leaves only the closing tag; a reply cut off mid-thinking never closes it.
+_THINK_CLOSED_RE = re.compile(r"\s*(?:<think>)?(.*?)</think>", re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"\s*<think>(.*)", re.DOTALL)
+THINK_TAG_FIELD = "content <think>"
+
+
+def _split_think_block(result: ProbeResult) -> None:
+    """Move a leading `<think>` block out of the answer into the reasoning, so
+    an engine that does not parse it is not read as one that did not think."""
+    closed = _THINK_CLOSED_RE.match(result.answer)
+    if closed is not None:
+        result.reasoning, result.answer = (
+            closed.group(1).strip(),
+            result.answer[closed.end() :].lstrip(),
+        )
+    else:
+        opened = _THINK_OPEN_RE.fullmatch(result.answer)
+        if opened is None:
+            return
+        result.reasoning, result.answer = opened.group(1).strip(), ""
+    if result.reasoning:
+        result.reasoning_field = THINK_TAG_FIELD
+
+
 def _fill_from_completion(result: ProbeResult, data: Any, body: str) -> None:
     """Read one chat.completion body into `result`, or set its error. The
     error carries the head of `body`: a server that reports an error with
-    status 200 (`{"error": {...}}`) keeps its own message in the row."""
+    status 200 (`{"error": {...}}`) keeps its own message in the row. `body`
+    must already be redacted: the head is cut from it as it stands."""
     try:
         choice = data["choices"][0]
         message = choice["message"]
@@ -322,6 +359,8 @@ def _fill_from_completion(result: ProbeResult, data: Any, body: str) -> None:
             break
     content = message.get("content")
     result.answer = content if isinstance(content, str) else ""
+    if result.reasoning_field is None:
+        _split_think_block(result)
     finish = choice.get("finish_reason")
     result.finish_reason = finish if isinstance(finish, str) else None
     usage = data.get("usage") if isinstance(data, dict) else None
@@ -369,20 +408,18 @@ def probe_one(
             result.error = redact(f"request failed: {exc}", api_key)
         else:
             result.status = response.status_code
-            text = response.text
+            # Redact the whole body before cutting its head: a key that
+            # straddled the cut would otherwise leave its first characters.
+            text = redact(response.text, api_key)
             if response.status_code != 200:
-                result.error = redact(
-                    f"HTTP {response.status_code}: {text[:_ERROR_BODY_CHARS]}", api_key
-                )
+                result.error = f"HTTP {response.status_code}: {text[:_ERROR_BODY_CHARS]}"
             else:
                 try:
                     data = json.loads(text)
                 except json.JSONDecodeError:
-                    result.error = redact(f"non-JSON response: {text[:_ERROR_BODY_CHARS]}", api_key)
+                    result.error = f"non-JSON response: {text[:_ERROR_BODY_CHARS]}"
                 else:
                     _fill_from_completion(result, data, text)
-                    if result.error is not None:
-                        result.error = redact(result.error, api_key)
                     # A model never sees the header, but the key is never
                     # written: the text that reaches the report is redacted too.
                     result.reasoning = redact(result.reasoning, api_key)
@@ -435,8 +472,9 @@ READING_NOTE = "\n".join(
         "what thinking looks like, so compare rows within one model and one template only.",
         "- *Reasoning tokens* is shown only when the server reports "
         "`usage.completion_tokens_details.reasoning_tokens`; `—` means not reported, not zero. "
-        "*Reasoning chars* is the length of `reasoning_content` (or `reasoning`); 0 means the "
-        "reply carried no reasoning field.",
+        "*Reasoning chars* is the length of `reasoning_content` (or `reasoning`), else of a "
+        "leading `<think>` block in the content (taken out of the answer); 0 means the "
+        "reply carried neither.",
         "- The shape columns count lines of the answer outside fenced code blocks (a `# comment` "
         "inside a code block is not a heading); *code fences* counts each fenced block once. "
         "A fence that is never closed hides every later line, so an answer cut off inside a "
@@ -604,27 +642,14 @@ def prepare_out_dir(out_dir: Path) -> None:
         raise ProbeError(f"--out {out_dir} is not a writable directory: {exc}") from exc
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """A temp file in the same directory, renamed over `path`: a reader (or an
-    interrupt) never sees half a file."""
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-
-
 def write_outputs(run: ProbeRun, out_dir: Path) -> tuple[Path, Path]:
     """report.md and results.json for the results so far. Called after every
     finished request, so an interrupted run keeps what it completed."""
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "report.md"
     json_path = out_dir / "results.json"
-    _write_atomic(json_path, json.dumps(run_json(run), indent=2) + "\n")
-    _write_atomic(md_path, render_markdown(run))
+    atomic_write_text(json_path, json.dumps(run_json(run), indent=2) + "\n")
+    atomic_write_text(md_path, render_markdown(run))
     return md_path, json_path
 
 

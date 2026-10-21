@@ -60,7 +60,7 @@ Re-scores every judged category's items from their persisted `response.txt` — 
 
 ## Probing reasoning length across engines
 
-When one engine's answers come out a different shape from another's for the same model (issue #403), `llmbench probe thinking` sends the same prompts to each engine and puts the length and opening of each reply's reasoning (`reasoning_content` or `reasoning`) beside the answer's length and markdown shape. By default it sends two prompts: `What is 17*23? Answer briefly.` and the `planning` category's `flaky-test-suite` item, read from `benchmarks/tasks/eval/planning/items.toml`. `--prompt-file FILE` (repeatable) adds more; `--no-builtin` leaves the two out.
+When one engine's answers come out a different shape from another's for the same model (issue #403), `llmbench probe thinking` sends the same prompts to each engine and puts the length and opening of each reply's reasoning (`reasoning_content` or `reasoning`, else a leading `<think>` block in the content) beside the answer's length and markdown shape. By default it sends two prompts: `What is 17*23? Answer briefly.` and the `planning` category's `flaky-test-suite` item, read from `benchmarks/tasks/eval/planning/items.toml`. `--prompt-file FILE` (repeatable) adds more; `--no-builtin` leaves the two out.
 
 **It does not manage servers.** It sends chat completions to the URL each `--target` names, nothing else: it never starts, stops, isolates or warms a provider, and never reads the registry. Isolate each engine yourself first, and probe one engine at a time. Two 27B-class models resident at once is a memory problem on Apple Silicon, so isolate the next engine (which stops the last one) before probing it, and restore at the end:
 
@@ -110,7 +110,7 @@ Reading `report.md`: one table per prompt, one row per target, then the first 20
 ```
 
 - **Reasoning length is comparable only between engines that render the same chat template for the same model.** Check the templates match before reading a difference as the engine's.
-- `—` under *Reasoning tokens* means the engine did not report `usage.completion_tokens_details.reasoning_tokens`, not zero. *Reasoning chars* 0 means the reply carried no reasoning field.
+- `—` under *Reasoning tokens* means the engine did not report `usage.completion_tokens_details.reasoning_tokens`, not zero. *Reasoning chars* 0 means the reply carried neither a reasoning field nor a leading `<think>` block (a `<think>` block is taken out of the answer, so the shape columns count only the answer).
 - The shape columns count answer lines outside fenced code blocks; a `# comment` inside a code block is not a heading. *Code fences* counts each block once. A block that is never closed hides every line after it, so a truncated answer's low counts may be only that: check the *Finish* column for `length`.
 - Each cell is one sample at temperature 1.0: run the probe more than once before trusting a small difference.
 

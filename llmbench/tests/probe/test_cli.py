@@ -162,6 +162,30 @@ def test_usage_errors_exit_2_before_any_request(args, fragment, tmp_path, monkey
     assert not out.exists()
 
 
+def test_prompt_files_with_the_same_stem_are_a_usage_error(tmp_path):
+    a, b = tmp_path / "a" / "p.txt", tmp_path / "b" / "p.txt"
+    for f in (a, b):
+        f.parent.mkdir()
+        f.write_text("hi")
+    result = _invoke(
+        "--target", "a=http://x/v1,m", "--no-builtin",
+        "--prompt-file", str(a), "--prompt-file", str(b), "--out", str(tmp_path / "o"),
+    )  # fmt: skip
+    assert result.exit_code == 2, result.output
+    assert "duplicate prompt id" in result.output
+
+
+def test_a_prompt_file_that_is_not_utf8_is_a_usage_error(tmp_path):
+    bad = tmp_path / "bad.txt"
+    bad.write_bytes(b"\xff\xfe\x00bad")
+    result = _invoke(
+        "--target", "a=http://x/v1,m", "--no-builtin",
+        "--prompt-file", str(bad), "--out", str(tmp_path / "o"),
+    )  # fmt: skip
+    assert result.exit_code == 2, result.output
+    assert "cannot read prompt file" in result.output
+
+
 def test_missing_planning_category_is_a_usage_error(tmp_path):
     result = _invoke(
         "--target", "a=http://x/v1,m", "--root", str(tmp_path), "--out", str(tmp_path / "o")
@@ -255,6 +279,34 @@ def test_results_are_written_after_each_request(fake_openai, tmp_path, prompt_fi
     assert result.exit_code == 0, result.output
     assert seen_on_disk == [0, 1]
     assert [p.name for p in sorted(out.iterdir())] == ["report.md", "results.json"]
+
+
+def test_a_report_write_failure_mid_run_warns_and_the_run_goes_on(
+    fake_openai, tmp_path, prompt_file, monkeypatch
+):
+    import llmbench.probe.cli as probe_cli
+
+    real_write = probe_cli.write_outputs
+    calls = {"n": 0}
+
+    def flaky(run, out_dir):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the first request's write
+            raise OSError(28, "No space left on device")
+        return real_write(run, out_dir)
+
+    monkeypatch.setattr(probe_cli, "write_outputs", flaky)
+    result = _invoke(
+        "--target",
+        f"a={fake_openai.base_url},no-reasoning",
+        "--no-builtin",
+        "--prompt-file",
+        str(prompt_file),
+        "--out",
+        str(tmp_path / "out"),
+    )
+    assert result.exit_code == 0, result.output
+    assert "could not write the report" in result.output
 
 
 def test_an_interrupt_keeps_the_finished_requests_and_exits_130(

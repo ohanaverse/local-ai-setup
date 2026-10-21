@@ -57,6 +57,18 @@ REPLIES: dict[str, tuple[int, Any]] = {
             {"completion_tokens": 9},
         ),
     ),
+    "think-tags": (
+        200,
+        _completion({"role": "assistant", "content": "<think>\ncarry the 2\n</think>\n\n391"}),
+    ),
+    "think-close-only": (
+        200,
+        _completion({"role": "assistant", "content": "carry the 2</think>391"}),
+    ),
+    "think-unclosed": (
+        200,
+        _completion({"role": "assistant", "content": "<think>still thinking"}),
+    ),
     "no-reasoning": (200, _completion({"role": "assistant", "content": "391"})),
     "reasoning-tokens": (
         200,
