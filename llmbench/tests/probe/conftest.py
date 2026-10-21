@@ -175,3 +175,10 @@ def closed_port_url() -> str:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     return f"http://127.0.0.1:{port}/v1"
+
+
+@pytest.fixture(autouse=True)
+def _plain_typer_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI sets GITHUB_ACTIONS, which makes Typer force ANSI styling into
+    CliRunner output and split `--flag` names across escape codes."""
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", False)
