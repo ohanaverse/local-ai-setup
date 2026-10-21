@@ -10,6 +10,8 @@ package profiles
 // either side — including a src map colliding with a non-map dst value —
 // is whole-value replacement, matching TOML's own "last value wins"
 // semantics for scalars and lists.
+//
+// collectLeaves (leaves.go) mirrors this walk; TestCollectLeavesMatchesMergeInto fails when they drift.
 func mergeInto(dst, src map[string]any) {
 	for k, v := range src {
 		if srcMap, ok := v.(map[string]any); ok {
