@@ -83,10 +83,6 @@ func TestEnumerateFillsRemoteRepoAndBranchOnRemoteEntries(t *testing.T) {
 	if out, err := runGitCmd(dir, "remote", "set-url", "origin", "git@github.com:Keith/Fork.git"); err != nil {
 		t.Fatalf("set-url: %v\n%s", err, out)
 	}
-	// Enumerate fetches every remote, and origin now names a real GitHub
-	// repo: make any ssh the fetch starts fail at once so the test never
-	// reaches the developer's account or the network.
-	t.Setenv("GIT_SSH_COMMAND", "false")
 	groups, err := Enumerate(dir, dir)
 	if err != nil {
 		t.Fatal(err)

@@ -27,6 +27,16 @@ var repoVars = []string{
 // past when it looks for a repository.
 const ceilingVar = "GIT_CEILING_DIRECTORIES"
 
+// networkGuards are set so that no test reaches a git remote over ssh or
+// waits on a terminal: GIT_SSH_COMMAND=false makes every ssh transport fail
+// at once without running ssh (it outranks core.sshCommand and GIT_SSH), and
+// GIT_TERMINAL_PROMPT=0 makes git fail instead of asking for a username or
+// password on the terminal.
+var networkGuards = map[string]string{
+	"GIT_SSH_COMMAND":     "false",
+	"GIT_TERMINAL_PROMPT": "0",
+}
+
 // IsolateForTest is for a package's TestMain: for the rest of the process,
 // git finds a repository only where a test put one. Every package whose test
 // binary can run git calls it, whether a test runs git itself or reaches
@@ -48,6 +58,17 @@ const ceilingVar = "GIT_CEILING_DIRECTORIES"
 //     so a directory below one is in a repository only when a test ran
 //     `git init` there or in a parent it made itself.
 //
+// It also keeps git off the network where it can (#426): networkGuards sets
+// GIT_SSH_COMMAND=false, so a fixture remote with an ssh URL (git@host:...,
+// ssh://) fails at once instead of connecting with the developer's keys, and
+// GIT_TERMINAL_PROMPT=0, so git never waits on the terminal for credentials.
+// That is all it blocks. An https remote is still fetched, and a credential
+// helper configured in the developer's git config still runs for it; a
+// git:// remote still connects; url.insteadOf in that config can still turn
+// an ssh URL into an https one. A test that names a remote it must not reach
+// gives it a URL git cannot fetch over those either (a path that does not
+// exist, or a host under .invalid).
+//
 // The environment is changed with os.Setenv and os.Unsetenv and never
 // restored: the process is a test binary. A test that sets one of the
 // variables on purpose with t.Setenv has it for its own duration, and
@@ -63,6 +84,11 @@ func IsolateForTest() {
 	}
 	if err := os.Setenv(ceilingVar, strings.Join(tempRoots(), string(os.PathListSeparator))); err != nil {
 		panic(err)
+	}
+	for name, value := range networkGuards {
+		if err := os.Setenv(name, value); err != nil {
+			panic(err)
+		}
 	}
 }
 

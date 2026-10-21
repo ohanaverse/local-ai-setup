@@ -1,11 +1,13 @@
 package gitenv
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMain isolates git for this package's own tests, which build
@@ -149,5 +151,88 @@ func TestIsolateForTestStopsAtEveryTempRoot(t *testing.T) {
 				t.Errorf("git in %s found %q (found = %v); want the repository made there", own, top, found)
 			}
 		})
+	}
+}
+
+// TestIsolateForTestSetsTheNetworkGuards checks that IsolateForTest sets
+// GIT_SSH_COMMAND to "false" and GIT_TERMINAL_PROMPT to "0", over whatever the
+// developer's shell exported. Without them a test whose fixture names a real
+// ssh remote (worktree.Enumerate fetches every remote) reaches the network
+// with the developer's ssh keys, and one that hits a credential question
+// waits on the terminal for an answer nobody gives.
+func TestIsolateForTestSetsTheNetworkGuards(t *testing.T) {
+	want := map[string]string{"GIT_SSH_COMMAND": "false", "GIT_TERMINAL_PROMPT": "0"}
+	for name := range want {
+		t.Setenv(name, "from-the-shell")
+	}
+	t.Setenv(ceilingVar, os.Getenv(ceilingVar)) // IsolateForTest sets it again
+	IsolateForTest()
+
+	for name, want := range want {
+		if got, set := os.LookupEnv(name); !set || got != want {
+			t.Errorf("%s = %q (set = %v); want %q", name, got, set, want)
+		}
+	}
+}
+
+// TestIsolateForTestStopsGitStartingSSH checks what the GIT_SSH_COMMAND guard
+// is for: after IsolateForTest, a git command given an ssh URL fails at once
+// and never runs ssh. A fake ssh first on PATH records each run, and the
+// unguarded case shows git does run it for that URL, so the guarded case
+// passing is the guard's doing and not the URL's. The fake exits without
+// connecting, and the developer's global and system git config are switched
+// off for the test so no url.insteadOf rewrites the URL to https.
+func TestIsolateForTestStopsGitStartingSSH(t *testing.T) {
+	bin := t.TempDir()
+	ran := filepath.Join(t.TempDir(), "ssh-ran")
+	fakeSSH := "#!/bin/sh\necho \"$@\" >> " + ran + "\nexit 255\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(fakeSSH), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0") // GIT_CONFIG_KEY_n/VALUE_n pairs from the shell (core.sshCommand, url.insteadOf) are ignored
+	repo := t.TempDir()
+	gitInit(t, repo)
+
+	// lsRemote runs `git ls-remote` against an ssh URL on a host that cannot
+	// resolve, and reports whether it failed and whether the fake ssh ran.
+	lsRemote := func(t *testing.T) (failed, sshRan bool) {
+		t.Helper()
+		_ = os.Remove(ran)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		start := time.Now()
+		err := exec.CommandContext(ctx, "git", "-C", repo, "ls-remote", "git@wt-gitenv-test.invalid:x/y.git").Run()
+		if ctx.Err() != nil {
+			t.Fatalf("git ls-remote was still running after %v; it must fail at once", time.Since(start))
+		}
+		_, statErr := os.Stat(ran)
+		return err != nil, statErr == nil
+	}
+
+	t.Run("unguarded", func(t *testing.T) {
+		// A developer's own ssh selectors must not decide this control: git
+		// reads GIT_SSH_COMMAND, then GIT_SSH, before it looks at PATH.
+		for _, v := range []string{"GIT_SSH_COMMAND", "GIT_SSH"} {
+			t.Setenv(v, os.Getenv(v)) // registers the restore
+			if err := os.Unsetenv(v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, sshRan := lsRemote(t); !sshRan {
+			t.Fatal("without the guard git did not run the ssh on PATH; the guarded case proves nothing")
+		}
+	})
+
+	t.Setenv(ceilingVar, os.Getenv(ceilingVar)) // IsolateForTest sets it again
+	IsolateForTest()
+	failed, sshRan := lsRemote(t)
+	if !failed {
+		t.Error("git ls-remote of an ssh URL succeeded under IsolateForTest; want it to fail")
+	}
+	if sshRan {
+		t.Error("git ran ssh under IsolateForTest; GIT_SSH_COMMAND should have replaced it with false")
 	}
 }
