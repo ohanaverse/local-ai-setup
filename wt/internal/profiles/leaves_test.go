@@ -3,6 +3,8 @@ package profiles
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"reflect"
 	"sort"
 	"strings"
@@ -342,4 +344,248 @@ func TestSetLeavesCreatesParents(t *testing.T) {
 	if !reflect.DeepEqual(doc, want) {
 		t.Fatalf("got %v, want %v", doc, want)
 	}
+}
+
+// parityKeys is the generator's key alphabet: three names, so a doc and a
+// content drawn independently share keys at most levels and the
+// type-conflict and empty-object cases come up in most runs.
+var parityKeys = []string{"a", "b", "c"}
+
+// parityMaxDepth bounds a generated path's length.
+const parityMaxDepth = 3
+
+// genParityMap draws an object at path length depth (0: the root) holding
+// 0-3 keys of parityKeys. The keys are visited in alphabet order, never by
+// ranging over a map, so one seed always gives the same document.
+func genParityMap(rng *rand.Rand, depth int) map[string]any {
+	m := map[string]any{}
+	for _, k := range parityKeys {
+		if rng.Intn(3) == 0 {
+			continue
+		}
+		m[k] = genParityValue(rng, depth+1)
+	}
+	return m
+}
+
+// genParityValue draws a value at path length depth: a string, a number
+// (an int or a float64, as TOML and JSON give them), a bool, null, an array
+// (empty, of scalars, or holding an object), an empty object, or below
+// parityMaxDepth a nested object, which is drawn most often so collisions
+// between two objects (the recursive case) are common.
+func genParityValue(rng *rand.Rand, depth int) any {
+	n := 9
+	if depth >= parityMaxDepth {
+		n = 7 // no nested object at the deepest level
+	}
+	switch rng.Intn(n) {
+	case 0:
+		return []string{"x", "y"}[rng.Intn(2)]
+	case 1:
+		if rng.Intn(2) == 0 {
+			return rng.Intn(3)
+		}
+		return float64(rng.Intn(3)) + 0.5
+	case 2:
+		return rng.Intn(2) == 0
+	case 3:
+		return nil
+	case 4:
+		switch rng.Intn(3) {
+		case 0:
+			return []any{}
+		case 1:
+			return []any{"x", float64(1)}
+		default:
+			return []any{map[string]any{"a": "x"}}
+		}
+	case 5, 6:
+		return map[string]any{}
+	default:
+		return genParityMap(rng, depth)
+	}
+}
+
+// parityLeaves returns every leaf path of doc (a value that is not a
+// non-empty object) mapped to its value, keyed by the NUL-joined path.
+func parityLeaves(doc map[string]any) map[string][]string {
+	out := map[string][]string{}
+	var walk func(prefix []string, m map[string]any)
+	walk = func(prefix []string, m map[string]any) {
+		for k, v := range m {
+			p := append(append([]string(nil), prefix...), k)
+			if sub, ok := v.(map[string]any); ok && len(sub) > 0 {
+				walk(p, sub)
+				continue
+			}
+			out[strings.Join(p, "\x00")] = p
+		}
+	}
+	walk(nil, doc)
+	return out
+}
+
+// pathUnder reports whether p equals prefix or lies below it.
+func pathUnder(p, prefix []string) bool {
+	return len(p) >= len(prefix) && reflect.DeepEqual(p[:len(prefix)], prefix)
+}
+
+// sameMap reports whether a and b are the very same map object.
+func sameMap(a, b any) bool {
+	am, aok := a.(map[string]any)
+	bm, bok := b.(map[string]any)
+	return aok && bok && reflect.ValueOf(am).UnsafePointer() == reflect.ValueOf(bm).UnsafePointer()
+}
+
+// TestCollectLeavesMatchesMergeInto verifies collectLeaves records exactly
+// the leaves mergeInto writes, over a few hundred generated (doc, content)
+// pairs. They are two walks over the same pair (#411); restore trusts the
+// records to name what the merge wrote, so a change to one walk alone would
+// make cleanup leave a profile's value behind in the user's settings file
+// (a leaf written but not recorded) or delete or overwrite the user's own
+// value (a leaf recorded but not written). Three properties are checked
+// against the real merge, never against a second copy of the rule:
+//
+//  1. each record's path exists in the merged document and its value hashes
+//     to the record's Hash and Elems (the record describes what was written);
+//  2. completeness: every leaf path that differs between doc and the merged
+//     document, in either direction, is a recorded path or lies under one;
+//  3. soundness: every record names a leaf of content (not a non-empty
+//     object), and where that leaf is an object the merged document holds
+//     that very object — so {} merged into an existing object, which
+//     mergeInto leaves alone, cannot be recorded.
+//
+// The generator is seeded with a fixed value and walks keys in a fixed
+// order, so every run checks the same cases and a failure is the same
+// failure on every machine. The message names the case number and prints
+// doc, content and the offending path; rerun with
+// `go test ./internal/profiles -run TestCollectLeavesMatchesMergeInto -v`
+// and paste the printed doc and content into a table test to pin it.
+func TestCollectLeavesMatchesMergeInto(t *testing.T) {
+	const seed, cases = 411, 500
+	rng := rand.New(rand.NewSource(seed))
+	var typeConflicts, emptyOverMissing, emptyIntoObject, scalarOverObject int
+	for i := 0; i < cases; i++ {
+		doc := genParityMap(rng, 0)
+		content := genParityMap(rng, 0)
+		docJSON, _ := json.Marshal(doc)
+		contentJSON, _ := json.Marshal(content)
+		fail := func(path []string, format string, args ...any) {
+			t.Helper()
+			t.Errorf("case %d (seed %d): doc %s, content %s, path %q: %s",
+				i, seed, docJSON, contentJSON, path, fmt.Sprintf(format, args...))
+		}
+
+		recs := collectLeaves(doc, content)
+		merged := deepCopy(doc).(map[string]any)
+		src := deepCopy(content).(map[string]any)
+		mergeInto(merged, src)
+
+		seen := map[string]bool{}
+		for _, r := range recs {
+			key := strings.Join(r.Path, "\x00")
+			if seen[key] {
+				fail(r.Path, "recorded twice")
+			}
+			seen[key] = true
+
+			// (1) The record describes what the merge wrote.
+			got, ok := getPath(merged, r.Path)
+			if !ok {
+				fail(r.Path, "recorded but absent from the merged document %s", mustJSON(merged))
+				continue
+			}
+			if h := hashLeaf(got); h != r.Hash {
+				fail(r.Path, "recorded hash does not match the merged value %s", mustJSON(got))
+			}
+			if e := elemHashes(got); !reflect.DeepEqual(e, r.Elems) {
+				fail(r.Path, "recorded element hashes %v, merged value's are %v", r.Elems, e)
+			}
+
+			// (3) The record is a write the merge performed.
+			cv, ok := getPath(src, r.Path)
+			if !ok {
+				fail(r.Path, "recorded but content has no value there")
+				continue
+			}
+			if sub, isMap := cv.(map[string]any); isMap {
+				if len(sub) > 0 {
+					fail(r.Path, "recorded a non-empty object %s as one leaf", mustJSON(cv))
+				} else if !sameMap(got, cv) {
+					fail(r.Path, "recorded {} but the merge kept the existing object %s", mustJSON(got))
+				}
+			}
+		}
+
+		// (2) Every leaf the merge changed is covered by a record.
+		covered := func(p []string) bool {
+			for _, r := range recs {
+				if pathUnder(p, r.Path) {
+					return true
+				}
+			}
+			return false
+		}
+		for _, p := range parityLeaves(merged) {
+			mv, _ := getPath(merged, p)
+			dv, inDoc := getPath(doc, p)
+			if (!inDoc || !reflect.DeepEqual(dv, mv)) && !covered(p) {
+				fail(p, "merge wrote %s (doc had %s, present %v) but no record covers it",
+					mustJSON(mv), mustJSON(dv), inDoc)
+			}
+		}
+		for _, p := range parityLeaves(doc) {
+			dv, _ := getPath(doc, p)
+			mv, inMerged := getPath(merged, p)
+			if sub, isMap := mv.(map[string]any); inMerged && isMap && len(sub) > 0 {
+				continue // a leaf the merge grew into an object: its leaves are checked above
+			}
+			if (!inMerged || !reflect.DeepEqual(dv, mv)) && !covered(p) {
+				fail(p, "doc's %s became %s (present %v) but no record covers it",
+					mustJSON(dv), mustJSON(mv), inMerged)
+			}
+		}
+
+		// Tally the cases the walks can drift on, so a generator that stops
+		// producing them fails below instead of passing vacuously.
+		var tally func(d, c map[string]any)
+		tally = func(d, c map[string]any) {
+			for k, cv := range c {
+				dv, found := d[k]
+				dm, dIsMap := dv.(map[string]any)
+				cm, cIsMap := cv.(map[string]any)
+				switch {
+				case cIsMap && len(cm) == 0 && !found:
+					emptyOverMissing++
+				case cIsMap && len(cm) == 0 && dIsMap:
+					emptyIntoObject++
+				case cIsMap && found && !dIsMap:
+					typeConflicts++
+				case !cIsMap && dIsMap:
+					scalarOverObject++
+				case cIsMap && dIsMap:
+					tally(dm, cm)
+				}
+			}
+		}
+		tally(doc, content)
+	}
+	for name, n := range map[string]int{
+		"{} over a missing key":       emptyOverMissing,
+		"{} into an existing object":  emptyIntoObject,
+		"an object over a non-object": typeConflicts,
+		"a non-object over an object": scalarOverObject,
+	} {
+		if n < 20 {
+			t.Errorf("generator produced %q only %d times in %d cases; the property is not being exercised", name, n, cases)
+		}
+	}
+}
+
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%#v", v)
+	}
+	return string(b)
 }
