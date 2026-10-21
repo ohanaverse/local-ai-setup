@@ -3,9 +3,12 @@ package worktree
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
+	"maps"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -54,6 +57,12 @@ type Entry struct {
 	// any other row and when the remote is unknown.
 	RemoteRepo   string
 	RemoteBranch string
+
+	// TrackRepo is the owner/repo of the remote a worktree or local-branch
+	// row's branch pushes to, else the one it tracks (`git for-each-ref`'s
+	// push and upstream remote names). Empty for a remote-branch row, for a
+	// branch with neither, and when that remote names no repository.
+	TrackRepo string
 }
 
 // GroupKind identifies a logical group of picker rows.
@@ -138,24 +147,30 @@ func listWorktrees(dir, cwdRoot string) ([]Entry, error) {
 }
 
 // listBranches returns local and remote-tracking branch short names in one
-// git for-each-ref call. Remote entries skip the synthetic */HEAD ref.
-func listBranches(dir string) (local, remote []string, err error) {
+// git for-each-ref call, and for each local branch the remote it pushes to,
+// else the one it tracks (absent when it has neither). Remote entries skip
+// the synthetic */HEAD ref.
+func listBranches(dir string) (local, remote []string, trackRemote map[string]string, err error) {
 	// NUL-separated: git ref names can legally contain "|" (and most other
 	// punctuation), but never NUL, so %00 is the only delimiter guaranteed
 	// not to collide with a branch name.
-	out, err := runGit(dir, "for-each-ref", "--format=%(refname:short)%00%(refname)", "refs/heads", "refs/remotes/")
+	out, err := runGit(dir, "for-each-ref", "--format=%(refname:short)%00%(refname)%00%(push:remotename)%00%(upstream:remotename)", "refs/heads", "refs/remotes/")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	trackRemote = map[string]string{}
 	for _, line := range splitLines(out) {
-		parts := strings.SplitN(line, "\x00", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(line, "\x00", 4)
+		if len(parts) != 4 {
 			continue
 		}
 		short, full := parts[0], parts[1]
 		switch {
 		case strings.HasPrefix(full, "refs/heads/"):
 			local = append(local, short)
+			if r := cmp.Or(parts[2], parts[3]); r != "" {
+				trackRemote[short] = r
+			}
 		case strings.HasPrefix(full, "refs/remotes/"):
 			// The synthetic */HEAD symbolic ref shortens to the bare remote
 			// name (e.g. "origin"), so detect it via the full refname.
@@ -164,7 +179,7 @@ func listBranches(dir string) (local, remote []string, err error) {
 			}
 		}
 	}
-	return local, remote, nil
+	return local, remote, trackRemote, nil
 }
 
 // IsRepo reports whether dir is inside a git repository. It uses
@@ -269,29 +284,41 @@ func SkipInPicker(groupKind GroupKind, e Entry, defaultBranch string) bool {
 // checked out in a worktree are omitted from the bare-branch lists
 // so the picker never shows duplicates.
 func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
+	groups, _, err := EnumerateRepos(dir, cwdRoot)
+	return groups, err
+}
+
+// EnumerateRepos is Enumerate that also returns the owner/repo of every
+// remote (the RepoSet of RemoteRepos, read once for the whole enumeration).
+// The set is empty when err is not nil.
+func EnumerateRepos(dir, cwdRoot string) ([]EntryGroup, RepoSet, error) {
 	fetchRemotes(dir)
 
 	worktreeEntries, err := listWorktrees(dir, cwdRoot)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	used := inUse(worktreeEntries)
 
-	local, remotes, err := listBranches(dir)
+	local, remotes, trackRemote, err := listBranches(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	remoteRepos := RemoteRepos(dir)
+	trackRepo := func(branch string) string { return remoteRepos[trackRemote[branch]] }
+	for i := range worktreeEntries {
+		worktreeEntries[i].TrackRepo = trackRepo(worktreeEntries[i].Branch)
 	}
 	localSet := make(map[string]bool, len(local))
 	var localEntries []Entry
 	for _, b := range local {
 		localSet[b] = true
 		if !used[b] {
-			localEntries = append(localEntries, Entry{Type: TypeBranch, Branch: b})
+			localEntries = append(localEntries, Entry{Type: TypeBranch, Branch: b, TrackRepo: trackRepo(b)})
 		}
 	}
 
 	var remoteEntries []Entry
-	remoteRepos := RemoteRepos(dir)
 	for _, r := range remotes {
 		short := r[strings.IndexByte(r, '/')+1:]
 		if localSet[short] {
@@ -329,5 +356,5 @@ func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 		{Kind: GroupWorktrees, Entries: worktreeEntries},
 		{Kind: GroupLocalBranches, Entries: localEntries},
 		{Kind: GroupRemoteBranches, Entries: remoteEntries},
-	}, nil
+	}, NewRepoSet(slices.Collect(maps.Values(remoteRepos))...), nil
 }

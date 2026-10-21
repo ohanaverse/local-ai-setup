@@ -190,14 +190,15 @@ repository: with `origin` your fork and `upstream` the repository `gh`
 lists, `origin/feat-x` shows the PR you opened from your fork's `feat-x`,
 `upstream/feat-y` shows upstream's own PR from `feat-y`, and
 `upstream/feat-x` shows nothing (#387, #388). A local branch or worktree
-has no repository, so it shows a PR opened from a branch of its name in
-this repository or in a repository one of your remotes points at (your
-fork, when it is a remote), never a stranger's fork: someone's PR from
-their fork's `main` does not tag your `main`. Every remote counts as
-yours, a collaborator's fork you added as a remote to review their work
-included, so that fork's PR from its `main` does tag your `main`. When two of those
-repositories both have one (upstream's `feat-x` and your fork's), the open
-one wins, else the higher number. The host in a
+shows the PR opened from its own name in the repository it pushes to
+(its `pushRemote`) or, without one, tracks (its upstream's remote), and
+nothing from any other remote: upstream's later PR from a same-named
+branch, or a collaborator's fork you added as a remote to review their
+work, does not tag it. A branch that neither pushes nor tracks anywhere
+shows a PR opened from a branch of its name in this repository or in a
+repository one of your remotes points at, never a stranger's fork; if two
+of those repositories both have one, the open one wins, else the higher
+number. The host in a
 remote's URL is ignored, so an Enterprise host with the same owner/repo
 counts as that repository; a remote that is a local path or a `file://`
 URL, or one wt cannot find, is never tagged.

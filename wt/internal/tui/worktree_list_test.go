@@ -504,7 +504,12 @@ func TestSeparatorItemRendersLabel(t *testing.T) {
 // either drops every remote tag silently or nags in a fork workflow where
 // tags show.
 func TestRemoteTagsHidden(t *testing.T) {
-	row := func(repo string) list.Item { return entryItem{kind: kindEntry, remote: true, repo: repo} }
+	row := func(repo string) list.Item {
+		return entryItem{kind: kindEntry, remote: true, repo: repo, prBranch: "x"}
+	}
+	rowBranch := func(repo, branch string) list.Item {
+		return entryItem{kind: kindEntry, remote: true, repo: repo, prBranch: branch}
+	}
 	prs := func(base string) worktree.PRSet {
 		return worktree.PRSet{BaseRepo: base, ByHead: map[worktree.PRKey]worktree.PR{
 			{Repo: base, Branch: "x"}:      {Number: 1},
@@ -521,6 +526,8 @@ func TestRemoteTagsHidden(t *testing.T) {
 		{"match without case", []list.Item{row("O/R")}, prs("o/r"), ""},
 		{"mismatch", []list.Item{row("old/name")}, prs("o/r"), "no remote is o/r"},
 		{"a fork with PRs", []list.Item{row("Me/Fork")}, prs("o/r"), ""},
+		{"a fork with no PRs hides nothing", []list.Item{rowBranch("keith/repo", "unrelated")}, prs("o/r"), ""},
+		{"a remote branch with a PR elsewhere", []list.Item{rowBranch("old/name", "y")}, prs("o/r"), "no remote is o/r"},
 		{"no same-repo PR", []list.Item{row("old/name")}, prs(""), ""},
 		{"no PRs", []list.Item{row("old/name")}, worktree.PRSet{ByHead: map[worktree.PRKey]worktree.PR{}}, ""},
 		{"no remote rows", []list.Item{entryItem{kind: kindEntry}}, prs("o/r"), ""},

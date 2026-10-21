@@ -142,10 +142,11 @@ type model struct {
 	// create) is tagged from it.
 	prs worktree.PRSet
 	// ownRepos is the owner/repo of every remote the repository has
-	// (worktree.RemoteRepoSet), from the latest entry load: a local or
-	// worktree row is tagged only with a PR from one of them or from the
-	// listed repository itself (worktree.PRSet.ForBranch), never with a
-	// stranger's fork PR of the same branch name.
+	// (worktree.EnumerateRepos), from the latest entry load: a local or
+	// worktree row with no known push/tracking repository is tagged only with
+	// a PR from one of them or from the listed repository itself
+	// (worktree.PRSet.ForBranch), never with a stranger's fork PR of the same
+	// branch name.
 	ownRepos worktree.RepoSet
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
@@ -189,8 +190,12 @@ func (m model) Init() tea.Cmd {
 func loadPickerCmd() tea.Cmd {
 	return func() tea.Msg {
 		root, err := findRepoRoot()
-		// root is "" when the lookup failed, so no listing runs gh.
 		cmds := tea.BatchMsg{loadEntriesAtCmd(root, err)}
+		if err != nil {
+			// No repository: each listing answers an empty set without
+			// running gh (an empty root).
+			root = ""
+		}
 		for _, state := range worktree.PRListStates {
 			cmds = append(cmds, loadPRsCmd(root, state))
 		}
@@ -1330,9 +1335,9 @@ func loadEntriesAtCmd(root string, lookupErr error) tea.Cmd {
 		if lookupErr != nil {
 			return entriesLoadedMsg{err: lookupErr}
 		}
-		groups, err := worktree.Enumerate(root, root)
+		groups, own, err := worktree.EnumerateRepos(root, root)
 		defaultBranch := worktree.DefaultBranch(root)
-		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, ownRepos: worktree.RemoteRepoSet(root), err: err}
+		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, ownRepos: own, err: err}
 	}
 }
 
@@ -1345,7 +1350,7 @@ func loadEntriesAtCmd(root string, lookupErr error) tea.Cmd {
 func loadPRsCmd(root, state string) tea.Cmd {
 	return func() tea.Msg {
 		if root == "" {
-			return prsLoadedMsg{prs: worktree.PRSet{ByHead: map[worktree.PRKey]worktree.PR{}}}
+			return prsLoadedMsg{prs: worktree.EmptyPRSet()}
 		}
 		return prsLoadedMsg{prs: worktree.PRs(root, state)}
 	}

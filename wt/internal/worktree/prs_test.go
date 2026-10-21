@@ -73,7 +73,7 @@ func TestParsePRsDropsAForkPRWithNoHeadRepository(t *testing.T) {
 	if _, ok := got.ForRemote("", "x"); ok {
 		t.Error("ForRemote found a PR under an empty repository")
 	}
-	if pr, ok := got.ForBranch("x", nil); !ok || pr.Number != 5 {
+	if pr, ok := got.ForBranch("x", "", nil); !ok || pr.Number != 5 {
 		t.Errorf("ForBranch(x) = %+v, %v, want #5", pr, ok)
 	}
 }
@@ -272,13 +272,13 @@ func TestPRSetForBranchPicksOneAcrossRepositories(t *testing.T) {
 	own := NewRepoSet("o/base", "Me/Fork")
 	for branch, want := range map[string]int{"x": 12, "y": 21, "z": 5, "none": 0} {
 		for i := 0; i < 20; i++ { // map order varies between iterations
-			pr, ok := s.ForBranch(branch, own)
+			pr, ok := s.ForBranch(branch, "", own)
 			if got := map[bool]int{true: pr.Number}[ok]; got != want {
 				t.Fatalf("ForBranch(%q) = #%d (%v), want #%d", branch, pr.Number, ok, want)
 			}
 		}
 	}
-	if _, ok := s.ForBranch("", own); ok {
+	if _, ok := s.ForBranch("", "", own); ok {
 		t.Error("ForBranch(\"\") found a PR")
 	}
 }
@@ -316,7 +316,7 @@ func TestPRSetForBranchMatchesOnlyYourOwnRepositories(t *testing.T) {
 		{"no remotes: a stranger", nil, "main", 0},
 	}
 	for _, c := range cases {
-		pr, ok := s.ForBranch(c.branch, c.own)
+		pr, ok := s.ForBranch(c.branch, "", c.own)
 		if got := map[bool]int{true: pr.Number}[ok]; got != c.want {
 			t.Errorf("%s: ForBranch(%q) = #%d (%v), want #%d", c.name, c.branch, pr.Number, ok, c.want)
 		}
@@ -358,5 +358,49 @@ func TestPRBranchStripsTheRemote(t *testing.T) {
 		if got := PRBranch(c.kind, c.e); got != c.want {
 			t.Errorf("PRBranch(%v, %q) = %q, want %q", c.kind, c.e.Branch, got, c.want)
 		}
+	}
+}
+
+// TestPRSetForBranchUsesTheTrackedRepositoryAlone pins the first lookup of a
+// local row whose push/tracking repository is known: only a PR from that
+// repository tags it, so a collaborator's fork you added as a remote, or
+// upstream's older PR from a same-named branch, never shows on a branch you
+// push elsewhere. A regression tags your main with a collaborator's closed PR
+// from her main, or shows upstream's #40 on a branch whose PR is #12 on your
+// fork.
+func TestPRSetForBranchUsesTheTrackedRepositoryAlone(t *testing.T) {
+	s := PRSet{BaseRepo: "o/base", ByHead: map[PRKey]PR{
+		head("me/fork", "feat"):    {Number: 12, State: PRMerged},
+		head("o/base", "feat"):     {Number: 40, State: PRClosed},
+		head("alice/repo", "main"): {Number: 9, State: PRClosed},
+		head("", "same"):           {Number: 3, State: PROpen},
+	}}
+	own := NewRepoSet("o/base", "me/fork", "alice/repo")
+	cases := []struct {
+		name          string
+		branch, track string
+		want          int // 0: none
+	}{
+		{"tracked fork, not the later upstream PR", "feat", "Me/Fork", 12},
+		{"tracked upstream", "feat", "o/base", 40},
+		{"tracked repo with no PR: no fallback to a collaborator", "main", "me/fork", 0},
+		{"untracked: any of yours", "main", "", 9},
+		{"tracked listed repo: PR without a head repository", "same", "o/base", 3},
+		{"tracked other repo: PR without a head repository is not its", "same", "me/fork", 0},
+	}
+	for _, c := range cases {
+		pr, ok := s.ForBranch(c.branch, c.track, own)
+		if got := map[bool]int{true: pr.Number}[ok]; got != c.want {
+			t.Errorf("%s: ForBranch(%q, %q) = #%d (%v), want #%d", c.name, c.branch, c.track, pr.Number, ok, c.want)
+		}
+	}
+}
+
+// TestEmptyPRSetIsLoadedWithNoPRs pins the invariant a failed listing relies
+// on: it counts as answered, adds no tag, and merges away.
+func TestEmptyPRSetIsLoadedWithNoPRs(t *testing.T) {
+	s := EmptyPRSet()
+	if !s.Loaded() || len(s.ByHead) != 0 {
+		t.Errorf("EmptyPRSet = %#v, want loaded and empty", s)
 	}
 }

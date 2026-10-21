@@ -351,7 +351,7 @@ func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 	if !ok {
 		t.Fatalf("loadPRsCmd returned %T", msg)
 	}
-	if got, _ := msg.prs.ForBranch("fix/x", nil); got.Number != 383 || got.State != worktree.PROpen {
+	if got, _ := msg.prs.ForBranch("fix/x", "", nil); got.Number != 383 || got.State != worktree.PROpen {
 		t.Errorf("prs[fix/x] = %+v, want #383 open", got)
 	}
 	if !reflect.DeepEqual(dirs, []string{"/the/root"}) || !reflect.DeepEqual(states, []string{worktree.PRListOpen}) {
@@ -1111,5 +1111,31 @@ func TestFilterByPRNumberFindsAForkRow(t *testing.T) {
 	}
 	if !reflect.DeepEqual(visible, []string{"keith/feat-x"}) {
 		t.Errorf("filter #77 shows %v, want only keith/feat-x", visible)
+	}
+}
+
+// TestPRForUsesTheRowsTrackedRepository pins the local row's lookup in the
+// picker: a branch whose push/tracking repository is known shows that
+// repository's PR only. A regression tags your `main` with a collaborator's
+// closed PR from her fork's `main` once her fork is a remote, or shows
+// upstream's later PR on a branch you push to your fork.
+func TestPRForUsesTheRowsTrackedRepository(t *testing.T) {
+	prs := worktree.PRSet{BaseRepo: "o/base", ByHead: map[worktree.PRKey]worktree.PR{
+		{Repo: "me/fork", Branch: "feat"}:    {Number: 12, State: worktree.PRMerged},
+		{Repo: "o/base", Branch: "feat"}:     {Number: 40, State: worktree.PRClosed},
+		{Repo: "alice/repo", Branch: "main"}: {Number: 9, State: worktree.PRClosed},
+	}}
+	own := worktree.NewRepoSet("o/base", "me/fork", "alice/repo")
+	row := func(branch, track string) entryItem {
+		return entryItem{kind: kindEntry, prBranch: branch, entry: worktree.Entry{Branch: branch, TrackRepo: track}}
+	}
+	if pr := prFor(row("feat", "me/fork"), prs, own); pr == nil || pr.Number != 12 {
+		t.Errorf("feat pushed to the fork = %v, want #12", pr)
+	}
+	if pr := prFor(row("main", "o/base"), prs, own); pr != nil {
+		t.Errorf("main tracking upstream = #%d, want no tag (alice's PR is not its)", pr.Number)
+	}
+	if pr := prFor(row("main", ""), prs, own); pr == nil || pr.Number != 9 {
+		t.Errorf("main with no tracking = %v, want the any-of-yours fallback #9", pr)
 	}
 }

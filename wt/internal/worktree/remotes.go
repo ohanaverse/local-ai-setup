@@ -93,17 +93,6 @@ func NewRepoSet(repos ...string) RepoSet {
 // Has reports whether repo (compared without case) is in the set.
 func (s RepoSet) Has(repo string) bool { return repo != "" && s[strings.ToLower(repo)] }
 
-// RemoteRepoSet is the owner/repo of every remote of the repository at dir
-// whose URL names one (RemoteRepos); empty when it has none or
-// `git remote -v` fails.
-func RemoteRepoSet(dir string) RepoSet {
-	var repos []string
-	for _, r := range RemoteRepos(dir) {
-		repos = append(repos, r)
-	}
-	return NewRepoSet(repos...)
-}
-
 // SplitRemoteBranch splits a remote-tracking short name such as
 // "keith/feat/x" into its remote and branch. The longest remote name in
 // remotes that is followed by "/" wins, since remote names may contain

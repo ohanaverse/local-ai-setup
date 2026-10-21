@@ -134,35 +134,61 @@ func (s PRSet) ForRemote(repo, branch string) (PR, bool) {
 }
 
 // ForBranch is the PR for a local branch or worktree row, which has no
-// repository: branch is looked up under the head repositories known to be
-// yours — the listed repository (BaseRepo, and "" for a same-repository PR
-// gh gave no head repository for) and own, the repositories the
-// repository's remotes point at (RemoteRepoSet) — and never under a
-// stranger's fork, whose main or patch-1 would otherwise tag your branch of
-// the same name. Among those, one PR is chosen by preferPR (a live PR beats
+// head repository of its own. track is the owner/repo of the remote the
+// branch pushes to or tracks (Entry.TrackRepo, "" when unknown).
+//
+// A branch with a known track repository is looked up under that
+// repository alone, so another remote's PR from a same-named branch — a
+// collaborator's fork you added to review, or upstream's — never tags it,
+// and neither does a stale closed PR of that branch name elsewhere. (The
+// listed repository's same-repository PR that gh gave no head repository
+// for is kept under "" and counts as track's when track is BaseRepo.)
+//
+// A branch with no known track repository is looked up under the head
+// repositories known to be yours — the listed repository (BaseRepo, and ""),
+// and own, the repositories the repository's remotes point at — never a
+// stranger's fork. Among those one PR is chosen by preferPR (a live PR beats
 // a closed or merged one, then the higher number), so two repositories' PRs
 // from one branch name resolve the same way every time.
-func (s PRSet) ForBranch(branch string, own RepoSet) (PR, bool) {
+func (s PRSet) ForBranch(branch, track string, own RepoSet) (PR, bool) {
+	if branch == "" {
+		return PR{}, false
+	}
+	if track != "" {
+		track = strings.ToLower(track)
+		if pr, ok := s.ByHead[PRKey{Repo: track, Branch: branch}]; ok {
+			return pr, true
+		}
+		if track == s.BaseRepo {
+			pr, ok := s.ByHead[PRKey{Branch: branch}]
+			return pr, ok
+		}
+		return PR{}, false
+	}
 	var best PR
 	found := false
-	if branch == "" {
-		return best, false
+	repos := make([]string, 0, len(own)+2)
+	repos = append(repos, "", s.BaseRepo)
+	for r := range own {
+		repos = append(repos, r)
 	}
-	for k, pr := range s.ByHead {
-		if k.Branch != branch || !s.yours(k.Repo, own) {
-			continue
-		}
-		if !found || preferPR(pr, best) {
+	for _, r := range repos {
+		if pr, ok := s.ByHead[PRKey{Repo: r, Branch: branch}]; ok && (!found || preferPR(pr, best)) {
 			best, found = pr, true
 		}
 	}
 	return best, found
 }
 
-// yours reports whether a PR from head repository repo (lower-cased) may tag
-// a local row: one from the listed repository or from a repository in own.
-func (s PRSet) yours(repo string, own RepoSet) bool {
-	return repo == "" || repo == s.BaseRepo || own.Has(repo)
+// HasBranch reports whether any PR in the set has branch as its head
+// branch, whatever its head repository.
+func (s PRSet) HasBranch(branch string) bool {
+	for k := range s.ByHead {
+		if k.Branch == branch {
+			return true
+		}
+	}
+	return false
 }
 
 // HasHeadRepo reports whether any PR in the set was opened from repo
@@ -180,6 +206,10 @@ func (s PRSet) HasHeadRepo(repo string) bool {
 	return false
 }
 
+// EmptyPRSet is a loaded set with no pull requests: what a listing that
+// failed (or was never run) answers, so it adds no tags yet counts as in.
+func EmptyPRSet() PRSet { return PRSet{ByHead: map[PRKey]PR{}} }
+
 // PRs returns the pull requests to show for each head of the repository at
 // dir from one listing, `gh pr list --state state` (PRListOpen or
 // PRListAll), keyed by head repository and branch. Any failure — gh not
@@ -189,11 +219,11 @@ func (s PRSet) HasHeadRepo(repo string) bool {
 func PRs(dir, state string) PRSet {
 	out, err := listPRs(dir, state)
 	if err != nil {
-		return PRSet{ByHead: map[PRKey]PR{}}
+		return EmptyPRSet()
 	}
 	prs, err := parsePRs(out)
 	if err != nil {
-		return PRSet{ByHead: map[PRKey]PR{}}
+		return EmptyPRSet()
 	}
 	return prs
 }
