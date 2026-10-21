@@ -207,7 +207,11 @@ func TestParsePRsKeysByTheLowerCasedHeadRepoAndReadsTheBaseRepo(t *testing.T) {
 }
 
 // TestMergePRsKeepsTheFirstNonEmptyBaseRepo pins that the joined set carries
-// whichever listing's BaseRepo is non-empty, the first when both are.
+// whichever listing's BaseRepo is non-empty, the first when both are. The
+// open listing may hold only fork PRs (no BaseRepo) while the all-states one
+// names the repository, in either arrival order; a regression loses it, so
+// the picker's "no remote is …" notice names no repository (or the wrong
+// one), and a local row can lose the listed repository's own PRs.
 func TestMergePRsKeepsTheFirstNonEmptyBaseRepo(t *testing.T) {
 	a, b := PRSet{BaseRepo: "o/a"}, PRSet{BaseRepo: "o/b"}
 	if got := MergePRs(a, b).BaseRepo; got != "o/a" {

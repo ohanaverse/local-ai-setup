@@ -134,8 +134,8 @@ type model struct {
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
 
-	// prs is each branch's pull request, merged from the `gh pr list`
-	// listings a picker open runs (loadPRsCmd, one per
+	// prs is each head's (repository and branch) pull request, merged from
+	// the `gh pr list` listings a picker open runs (loadPRsCmd, one per
 	// worktree.PRListStates) as each answers; not Loaded() until the first
 	// does, empty when every one so far failed.
 	// Every build of the worktree list (the first, and the reload after a
