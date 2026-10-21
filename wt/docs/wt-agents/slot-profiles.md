@@ -231,7 +231,7 @@ picker opens, and again after a picker has closed, so a launch that opens
 no picker prints them once,
 
 ```
-wt: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/x", which is not one of the profile's slot models, so wt does not make sure it is routed
+wt: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "ollama/deepseek-v4-pro:cloud", which is not one of the profile's slot models, so wt does not make sure it is routed
 ```
 
 `wt profile list` prints the same lines after `warning:`, and the profile
