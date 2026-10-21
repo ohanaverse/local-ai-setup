@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from .benchmark.cli import benchmark_app
+from .probe.cli import probe_app
 from .providers.lifecycle.cli import provider_app
 
 app = typer.Typer(help="Benchmark local LLM models.")
@@ -12,3 +13,4 @@ app = typer.Typer(help="Benchmark local LLM models.")
 # eval) sit at the top level here.
 app.add_typer(benchmark_app)
 app.add_typer(provider_app, name="provider")
+app.add_typer(probe_app, name="probe")
