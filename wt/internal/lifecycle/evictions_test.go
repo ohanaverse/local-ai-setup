@@ -154,7 +154,9 @@ func residentIDs(rs []Resident) []string {
 // that refused the connection holds nothing — and nothing at all when the
 // target is already running or already loading (that start asked). The
 // target's own family is the replace question's, never this one's, and
-// mlx_lm_server is listed but cannot be stopped. A miss here either starts a
+// mlx_lm_server is listed but cannot be stopped, as is an omlx model still
+// loading (omlx refuses to unload one mid-load, and that stop would fail the
+// start). A miss here either starts a
 // model beside one the user never heard of, or offers to stop what wt cannot.
 func TestResidentOthers(t *testing.T) {
 	omlxT := Target{ProviderID: "omlx", ModelName: "T"}
@@ -168,6 +170,8 @@ func TestResidentOthers(t *testing.T) {
 	pulled := localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/idle", ModelName: "idle:1b"}
 	loadingT := running("omlx", "omlx/T", "T")
 	loadingT.Loading = true
+	loadingOm := running("omlx", "omlx/L", "L")
+	loadingOm.Loading = true
 	for _, tc := range []struct {
 		name        string
 		target      Target
@@ -195,6 +199,9 @@ func TestResidentOthers(t *testing.T) {
 				Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial, "ollama": localmodels.StatusOK},
 				Down:      map[string]bool{"mtplx": true}},
 			[]string{"ollama/a"}, nil},
+		{"an omlx model still loading is listed but is not stoppable", ollamaT,
+			localmodels.Snapshot{Entries: []localmodels.Entry{loadingOm, mt}},
+			[]string{"omlx/L!", "mtplx/m1"}, nil},
 		{"an ambiguous mlx_lm_server is unknown", omlxT,
 			localmodels.Snapshot{Providers: map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusPartial},
 				Ambiguous: map[string]bool{"mlx_lm_server": true}},

@@ -416,10 +416,7 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 			counts := sessionCounts(occ.IDs())
 			parts := make([]string, len(occ.Occupants))
 			for i, oid := range occ.IDs() {
-				parts[i] = oid
-				if n := counts[oid]; n > 0 {
-					parts[i] = fmt.Sprintf("%s (in use by %d wt session(s))", oid, n)
-				}
+				parts[i] = lifecycle.WithSessions(oid, counts[oid])
 			}
 			names = strings.Join(parts, ", ")
 			if !allowReplace {

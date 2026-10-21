@@ -333,6 +333,10 @@ stop them first, keep them and start, or cancel? [s/k/N]
   wt never asks and never stops:
   it keeps the models and prints one line to stderr,
   `wt: warning: starting <id> beside <id> (<memory>), …; pass --others=stop to stop them, --others=keep to silence this`.
+  When nothing it names can be stopped (an mlx_lm_server pairing, an omlx
+  model still loading, a provider wt cannot read), the advice is
+  `pass --others=keep to silence this` alone: `--others=stop` would stop
+  nothing.
 - A stop goes through the same stop as `wt stop` (omlx unloads the model,
   ollama runs `ollama stop` and waits, mtplx stops the server) and removes
   the model's route (an ollama model keeps its route). A stop that fails ends

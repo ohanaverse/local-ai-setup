@@ -123,11 +123,8 @@ func othersQuestion(cfg *config.Config, id string, occ *lifecycle.OccupiedError)
 	var b strings.Builder
 	fmt.Fprintf(&b, "starting %s loads it beside models of other providers:\n", id)
 	for _, r := range occ.Others {
-		fmt.Fprintf(&b, "  %s — %s", r.Label(), r.Figure())
-		if n := counts[r.Entry.ModelID]; n > 0 {
-			fmt.Fprintf(&b, " (in use by %d wt session(s))", n)
-		}
-		b.WriteString("\n")
+		line := fmt.Sprintf("%s — %s", r.Label(), r.Figure())
+		fmt.Fprintf(&b, "  %s\n", lifecycle.WithSessions(line, counts[r.Entry.ModelID]))
 	}
 	for _, f := range occ.OthersUnknown {
 		fmt.Fprintf(&b, "  cannot tell whether %s at %s is serving a model\n", f, localmodels.FamilyOrigin(cfg, f))
@@ -142,7 +139,10 @@ func othersQuestion(cfg *config.Config, id string, occ *lifecycle.OccupiedError)
 }
 
 // othersWarning is the one line a start without a TTY and without --others
-// prints when it keeps other providers' models.
+// prints when it keeps other providers' models. It offers --others=stop only
+// when something it names can be stopped: with every resident unstoppable (an
+// mlx_lm_server pairing) or unreadable, that flag would stop nothing, and a
+// script told to pass it would believe it had made room.
 func othersWarning(cfg *config.Config, id string, occ *lifecycle.OccupiedError) string {
 	var parts []string
 	for _, r := range occ.Others {
@@ -151,8 +151,11 @@ func othersWarning(cfg *config.Config, id string, occ *lifecycle.OccupiedError) 
 	for _, f := range occ.OthersUnknown {
 		parts = append(parts, fmt.Sprintf("whatever %s at %s is serving", f, localmodels.FamilyOrigin(cfg, f)))
 	}
-	return fmt.Sprintf("wt: warning: starting %s beside %s; pass --others=stop to stop them, --others=keep to silence this\n",
-		id, strings.Join(parts, ", "))
+	advice := "pass --others=keep to silence this"
+	if len(stoppableIDs(occ.Others)) > 0 {
+		advice = "pass --others=stop to stop them, --others=keep to silence this"
+	}
+	return fmt.Sprintf("wt: warning: starting %s beside %s; %s\n", id, strings.Join(parts, ", "), advice)
 }
 
 // othersCancelled is the error of a declined others question: what is still

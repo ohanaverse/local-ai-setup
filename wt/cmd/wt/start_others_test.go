@@ -363,6 +363,44 @@ func TestDriveStartWithoutTTYKeepsOthersAndWarnsOnce(t *testing.T) {
 	}
 }
 
+// TestDriveStartWithoutTTYAdvisesStopOnlyWhenSomethingIsStoppable pins the
+// advice half of that line (#412): a resident wt cannot stop (an mlx_lm_server
+// pairing, an omlx model still loading) or an unreadable provider is kept with
+// the line, but the line must not tell a script to pass --others=stop, which
+// would stop nothing and leave the script believing it had made room.
+func TestDriveStartWithoutTTYAdvisesStopOnlyWhenSomethingIsStoppable(t *testing.T) {
+	stubSignals(t)
+	stubStdinTTY(t, false)
+	stubOthersMode(t, "")
+	asked := stubChooseOthers(t, othersStop, nil)
+	stderr := captureStderr(t)
+	occ := &lifecycle.OccupiedError{
+		Others: []lifecycle.Resident{
+			{Entry: localmodels.Entry{ProviderID: "mlx_lm_server", ModelID: "mlx_lm_server/p", ModelName: "p"}},
+			{Entry: localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/loading", ModelName: "loading", Loading: true}},
+		},
+		OthersUnknown: []string{"mtplx"},
+	}
+	calls := stubOthersEngine(t, occ)
+
+	if err := startForLaunch(&config.Config{}, startTestRow(), false); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	want := "wt: warning: starting omlx/qwen3.8 beside mlx_lm_server/p (memory use unknown; wt cannot stop it), " +
+		"omlx/loading (loading) (memory use unknown; wt cannot stop it), " +
+		"whatever mtplx at http://localhost:8003 is serving; " +
+		"pass --others=keep to silence this\n"
+	if got := stderr.String(); got != want {
+		t.Errorf("stderr = %q, want exactly %q", got, want)
+	}
+	if len(*asked) != 0 {
+		t.Error("asked without a TTY")
+	}
+	if len(*calls) != 2 || !(*calls)[1].Others.Decided || len((*calls)[1].Others.Stop) != 0 {
+		t.Errorf("calls = %+v, want a retry that keeps everything", *calls)
+	}
+}
+
 // TestDriveStartOthersStopStopsOnlyStoppable pins --others=stop without a
 // TTY: the retry stops every resident wt can stop and nothing else (not the
 // mlx_lm_server pairing), without asking and without the warning. A wider

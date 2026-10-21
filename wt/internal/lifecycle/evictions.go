@@ -162,6 +162,14 @@ func residentOthers(snap localmodels.Snapshot, family string, t Target) (others 
 	return others, unknown
 }
 
+// loadingOmlx reports whether en is an omlx model still loading. omlx refuses
+// to unload one mid-load (omlxUnload says so, and points at `wt stop omlx`), so
+// wt cannot stop it: offering it to the user as stoppable would fail the start
+// it was asked to make room for. It is still listed — it holds memory already.
+func loadingOmlx(family string, en localmodels.Entry) bool {
+	return family == "omlx" && en.Loading
+}
+
 // residents is residentOthers plus an mtplx still loading: its port refuses,
 // so the snapshot reads mtplx Down, and only wt's pidfile shows it
 // (loadingMtplx). A pidfile wt cannot check makes mtplx unknown; one that
