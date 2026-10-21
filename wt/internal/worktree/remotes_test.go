@@ -62,6 +62,43 @@ func TestRemoteReposReadsEachRemoteURL(t *testing.T) {
 	}
 }
 
+// TestRemoteRepoSetMatchesEveryRemoteWithoutCase pins the set the picker
+// hands to a local row's PR lookup: a repository with no remotes, and a
+// directory that is not a repository, give an empty set that matches
+// nothing (never a panic), and every remote's owner/repo is in it, matched
+// without case. A regression either tags local rows from a repository that
+// is not yours or drops your fork's PR when its URL's case differs from gh's.
+func TestRemoteRepoSetMatchesEveryRemoteWithoutCase(t *testing.T) {
+	bare := t.TempDir()
+	gitInit(t, bare)
+	for name, dir := range map[string]string{"no remotes": bare, "not a repository": t.TempDir()} {
+		set := RemoteRepoSet(dir)
+		if len(set) != 0 || set.Has("o/base") || set.Has("") {
+			t.Errorf("%s: RemoteRepoSet = %v, want an empty set that matches nothing", name, set)
+		}
+	}
+
+	dir := t.TempDir()
+	gitInit(t, dir)
+	for _, args := range [][]string{
+		{"remote", "add", "origin", "https://github.com/Base/Repo.git"},
+		{"remote", "add", "fork", "git@github.com:me/Fork.git"},
+	} {
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	set := RemoteRepoSet(dir)
+	for _, repo := range []string{"base/repo", "BASE/REPO", "Me/Fork", "me/fork"} {
+		if !set.Has(repo) {
+			t.Errorf("RemoteRepoSet(%v).Has(%q) = false, want true", set, repo)
+		}
+	}
+	if set.Has("someone/else") || len(set) != 2 {
+		t.Errorf("RemoteRepoSet = %v, want exactly base/repo and me/fork", set)
+	}
+}
+
 func remoteEntry(groups []EntryGroup, branch string) (Entry, bool) {
 	for _, g := range groups {
 		if g.Kind != GroupRemoteBranches {
