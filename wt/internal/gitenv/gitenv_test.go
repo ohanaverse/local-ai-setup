@@ -192,6 +192,7 @@ func TestIsolateForTestStopsGitStartingSSH(t *testing.T) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0") // GIT_CONFIG_KEY_n/VALUE_n pairs from the shell (core.sshCommand, url.insteadOf) are ignored
 	repo := t.TempDir()
 	gitInit(t, repo)
 
