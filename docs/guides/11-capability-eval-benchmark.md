@@ -58,6 +58,44 @@ uv run llmbench eval judge --latest --root ../benchmarks/tasks/eval [--row <row-
 
 Re-scores every judged category's items from their persisted `response.txt` — no regeneration, no isolation. Coding has nothing to re-judge (EvalPlus's pass@1 is deterministic).
 
+## Probing reasoning length across engines
+
+When one engine's answers come out a different shape from another's for the same model (issue #403), `llmbench probe thinking` sends the same prompts to each engine and puts the length and opening of each reply's reasoning (`reasoning_content` or `reasoning`) beside the answer's length and markdown shape. By default it sends two prompts: `What is 17*23? Answer briefly.` and the `planning` category's `flaky-test-suite` item, read from `benchmarks/tasks/eval/planning/items.toml`. `--prompt-file FILE` (repeatable) adds more; `--no-builtin` leaves the two out.
+
+**It does not manage servers.** It sends chat completions to the URL each `--target` names, nothing else: it never starts, stops, isolates or warms a provider, and never reads the registry. Isolate each engine yourself first, and probe one engine at a time. Two 27B-class models resident at once is a memory problem on Apple Silicon, so isolate the next engine (which stops the last one) before probing it, and restore at the end:
+
+```bash
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
+uv run llmbench provider isolate omlx <omlx-model>
+uv run llmbench probe thinking \
+    --target omlx=http://localhost:8000/v1,<omlx-served-model-id> \
+    --out <results-dir>/omlx
+
+uv run llmbench provider isolate mtplx <mtplx-model>
+uv run llmbench probe thinking \
+    --target mtplx=http://localhost:8003/v1,<mtplx-served-model-id> \
+    --out <results-dir>/mtplx
+
+uv run llmbench provider restore --unload
+```
+
+- `--target` is `NAME=BASE_URL,MODEL_ID[,API_KEY_ENV]`. `API_KEY_ENV` is the *name* of an environment variable that holds the key, never the key; leave it out for a keyless server (omlx and mtplx answer inference without one). A named variable that is unset is an error before anything is sent. The key goes only into the `Authorization` header; it is never printed or written.
+- Sampling defaults to temperature 1.0, top_p 0.95 and top_k 20, as in the Qwen3.x `generation_config.json` and `eval-quant-tier.toml`. Override with `--temperature`, `--top-p`, `--top-k` (`0` leaves top_p or top_k out of the request) and `--max-tokens` (unset by default, so the engine's own cap applies, as in `eval run`). `--timeout` (900 s) bounds each request.
+- Results go to `--out`: `report.md` and `results.json` (full reasoning and answer text included). Without `--out` the probe makes a new directory under the system temp dir. It never writes to `~/.config/local-ai/benchmarks/` or `latest.toml`.
+- An engine that is down, times out, or answers non-200 or non-JSON gets an error row and the run goes on. Exit 0 when at least one target answered, 1 when none did, 2 on a usage error.
+
+Reading `report.md`: one table per prompt, one row per target, then the first 200 characters of each target's reasoning, to compare style. An illustrative row (not a real measurement):
+
+```text
+| Target | Status | Reasoning chars | Reasoning tokens | Answer chars | Completion tokens | Finish | Headings | Bullets | Numbered | Table lines | Code fences | Time (s) |
+| omlx   | 200    | 412             | —                | 3            | 120               | stop   | 0        | 0       | 0        | 0           | 0           | 4.2      |
+```
+
+- **Reasoning length is comparable only between engines that render the same chat template for the same model.** Check the templates match before reading a difference as the engine's.
+- `—` under *Reasoning tokens* means the engine did not report `usage.completion_tokens_details.reasoning_tokens`, not zero. *Reasoning chars* 0 means the reply carried no reasoning field.
+- The shape columns count answer lines outside fenced code blocks; a `# comment` inside a code block is not a heading. *Code fences* counts each block once.
+- Each cell is one sample at temperature 1.0: run the probe more than once before trusting a small difference.
+
 ## Gotchas
 
 - **`coding` needs `uv sync --extra eval`** — a plain `make install`/`uv sync` does not pull EvalPlus, since it executes model-generated code and only this one category needs it.
