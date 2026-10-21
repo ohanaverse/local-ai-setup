@@ -581,6 +581,50 @@ without the profile.
 In the picker the reason is the status line and you stay on the picker. With
 a pin and no picker, wt exits non-zero with it.
 
+## A local slot model and memory
+
+This section is advisory. wt does not check or enforce any of it.
+
+**What was seen, dated.** On 2026-10-14, Claude Code 2.1.299 ran through the
+LiteLLM proxy on a 64 GB Mac (#393). One mtplx build of a 27B model
+(`Qwen3.8-27B-MTPLX-Optimized-Quality`) served the `sonnet` and `haiku`
+slots of a profile. Claude Code's first request carries a prompt of about
+30k tokens, and prompts in the tests reached 41k. mtplx refused some of
+these requests with HTTP 507:
+
+```
+insufficient memory: the Mac ran out of memory it can hand out without compressing during this prefill
+```
+
+Refusals recurred across the profile test and follow-up runs of two-turn
+sessions; no per-run count is recorded here. Claude Code retried each
+refused request, and every turn finished, but slowly: a one-line reply took
+78 s on the `sonnet` slot and 163 s on `haiku`. In these tests omlx and
+ollama gave no 507s on the same task, and neither did a different mtplx
+build (a 35B-A3B model). These are observations from one machine and a few
+sessions, not a benchmark. A follow-up run on 2026-10-15 showed that mtplx's
+memory guard can refuse when the system's free memory is low even while
+mtplx's own engine is within its limit, so how much else the machine holds
+matters.
+
+**What to do.** For a slot Claude Code sends its full prompt to, prefer an
+omlx or ollama model unless you have measured the mtplx model on your own
+machine. This is a warning, not a rule: wt does not stop an mtplx slot,
+and in these tests every turn finished, only slowly. It is a preference,
+not a guarantee about omlx: in the same spike it rejected prompts of its
+own (400 `prefill_memory_exceeded`) while abandoned generations held its
+memory (#399).
+
+**How to check your own sessions.** Most refused requests leave no
+failure row in the spend logs (only a few did in the runs above), and
+`wt stats` has no failure column: it counts every logged request alike, so it does not
+show refusals either way. Look in the proxy's logs instead
+(`~/.litellm.err.log` and `~/.litellm.log`, see
+[litellm-troubleshooting.md](litellm-troubleshooting.md#debugging-playbook-what-actually-worked))
+for `insufficient memory`, and in the log of the mtplx server wt started,
+`/tmp/local-ai-setup-mtplx.log`, for its `memory guard` and `pressure_trim`
+lines. `wt litellm list` shows which local models the proxy routes.
+
 ## Limits
 
 - Claude Code only. Another agent gets slot profiles when its driver
