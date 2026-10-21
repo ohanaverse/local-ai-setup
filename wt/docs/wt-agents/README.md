@@ -182,15 +182,20 @@ before the path. Typing the number (`/383`) in the filter finds the row. The
 tags come from two `gh pr list` calls per picker open — open PRs, and PRs
 of every state, so an old open PR is never crowded out by newer merged ones —
 and appear as each answers (within five seconds), the open PRs' usually
-first; the picker does not wait for them. A branch with
-several PRs shows its open one, else the highest-numbered; PRs from forks
-are not shown. A local branch or worktree matches by its branch name. A
-remote branch is tagged only when its remote is the repository `gh pr list`
-reports, so `keith/feat-x` from a fork you push to stays untagged even when
-the base repository has a PR from its own `feat-x` (#388; tagging such rows
-with their own repository's PRs is #387). The host in a remote's URL is
-ignored when comparing, so an Enterprise host with the same owner/repo
-matches; a remote that is a local path or a `file://` URL never does.
+first; the picker does not wait for them. Each PR belongs to the
+repository and branch it was opened from, a fork's included, and a branch
+with several PRs shows its open one, else the highest-numbered. A remote
+branch shows the PR opened from that branch of its own remote's
+repository: with `origin` your fork and `upstream` the repository `gh`
+lists, `origin/feat-x` shows the PR you opened from your fork's `feat-x`,
+`upstream/feat-y` shows upstream's own PR from `feat-y`, and
+`upstream/feat-x` shows nothing (#387, #388). A local branch or worktree
+has no repository, so it shows a PR opened from a branch of its name in any
+repository; when two repositories both have one (your fork's `feat-x` and
+someone else's), the open one wins, else the higher number. The host in a
+remote's URL is ignored, so an Enterprise host with the same owner/repo
+counts as that repository; a remote that is a local path or a `file://`
+URL, or one wt cannot find, is never tagged.
 Without `gh`, outside a GitHub repository, or with `gh` not logged in, the
 picker simply shows no tags.
 

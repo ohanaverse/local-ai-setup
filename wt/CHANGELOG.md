@@ -400,6 +400,21 @@
 
 ### Fixed
 
+- The worktree picker shows pull request tags when `origin` is your own fork
+  (#387). `gh pr list` then lists the upstream repository, every PR you
+  opened from your fork's branches is cross-repository, and the picker
+  skipped those, so no row was tagged. Each PR now belongs to the
+  repository and branch it was opened from, a fork's included. A remote
+  branch shows the PR from its own remote's repository and branch:
+  `origin/feat-x` shows the PR you opened from your fork's `feat-x`,
+  `upstream/feat-y` shows upstream's own PR from `feat-y`, and
+  `upstream/feat-x` shows nothing. A local branch or worktree shows a PR
+  opened from a branch of its name in any repository; when two
+  repositories both have one, the open one wins, else the higher number. A
+  remote that is a local path, a `file://` URL or one wt cannot find is
+  still never tagged, and a PR from a deleted fork is not shown. The
+  `no remote is …` status line no longer appears when the listing's PRs
+  all come from forks.
 - A slot profile whose `config_content.modelOverrides` has a target that is
   not a string (a number, a boolean, an array or a table) is now blocked
   with `config_content.modelOverrides["<key>"] must be a model id string`
