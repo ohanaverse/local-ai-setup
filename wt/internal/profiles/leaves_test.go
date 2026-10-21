@@ -406,8 +406,9 @@ func genParityValue(rng *rand.Rand, depth int) any {
 	}
 }
 
-// parityLeaves returns every leaf path of doc (a value that is not a
-// non-empty object) mapped to its value, keyed by the NUL-joined path.
+// parityLeaves returns the path of every leaf of doc (a value that is not a
+// non-empty object), keyed by the NUL-joined path so it can be looked up and
+// compared; the value is read back through getPath where it is needed.
 func parityLeaves(doc map[string]any) map[string][]string {
 	out := map[string][]string{}
 	var walk func(prefix []string, m map[string]any)
@@ -465,13 +466,18 @@ func TestCollectLeavesMatchesMergeInto(t *testing.T) {
 	const seed, cases = 411, 500
 	rng := rand.New(rand.NewSource(seed))
 	var typeConflicts, emptyOverMissing, emptyIntoObject, scalarOverObject int
+	reported := 0
 	for i := 0; i < cases; i++ {
+		if reported > 0 {
+			break // one failing case is the counterexample; the rest is noise
+		}
 		doc := genParityMap(rng, 0)
 		content := genParityMap(rng, 0)
 		docJSON, _ := json.Marshal(doc)
 		contentJSON, _ := json.Marshal(content)
 		fail := func(path []string, format string, args ...any) {
 			t.Helper()
+			reported++
 			t.Errorf("case %d (seed %d): doc %s, content %s, path %q: %s",
 				i, seed, docJSON, contentJSON, path, fmt.Sprintf(format, args...))
 		}
@@ -570,6 +576,9 @@ func TestCollectLeavesMatchesMergeInto(t *testing.T) {
 		}
 		tally(doc, content)
 	}
+	if reported > 0 {
+		return // the run stopped at its first failing case, so the tallies are partial
+	}
 	for name, n := range map[string]int{
 		"{} over a missing key":       emptyOverMissing,
 		"{} into an existing object":  emptyIntoObject,
@@ -582,6 +591,8 @@ func TestCollectLeavesMatchesMergeInto(t *testing.T) {
 	}
 }
 
+// mustJSON renders v for a failure message, falling back to %#v if it cannot
+// be marshaled, so reporting a failure never fails itself.
 func mustJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
