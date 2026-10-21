@@ -1287,3 +1287,39 @@ func TestRunLaunchPathLaunchesAPinnedSlotProfile(t *testing.T) {
 		t.Errorf("blocked pin error = %v, want the row's reason", err)
 	}
 }
+
+// TestRunLaunchPathRefusesANonStringOverrideTarget follows a claude profile
+// whose config_content.modelOverrides has a number target, read from the file
+// by the real drivers, to a `-A claude -M profile/<name>` launch (#418): the
+// pin returns the block reason, the agent never runs, and no route is written
+// and no command built, so the target never reaches the --settings payload.
+// Before, the target only warned and the session started with
+// {"modelOverrides":{"claude-sonnet-4-6":5}}, which Claude Code cannot use.
+func TestRunLaunchPathRefusesANonStringOverrideTarget(t *testing.T) {
+	restoreLaunchSlotChecks(t)
+	_, worktree := slotLaunchEnv(t)
+	oldSweep := sweepRefcounts
+	sweepRefcounts = func() {}
+	t.Cleanup(func() { sweepRefcounts = oldSweep })
+	seams := stubSlotSeams(t)
+	sentinel := filepath.Join(t.TempDir(), "agent-ran")
+	seams.cmd = exec.Command("touch", sentinel)
+	store, err := profiles.ParseSlots([]byte("[[profile]]\nname = \"numbered\"\nagent = \"claude\"\ndefault = \"opus\"\n" +
+		"[profile.slots]\nopus = \"openrouter/a\"\n[profile.config_content.modelOverrides]\nclaude-sonnet-4-6 = 5\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{cfg: slotFixtureConfig(), slotChecks: profiles.ValidateSlots(store, agents.SlotDrivers())}
+
+	err = runLaunchPath(launchCobraCmd(), a, "claude", "profile/numbered", "", "", nil, worktree, "")
+	const want = `config_content.modelOverrides["claude-sonnet-4-6"] must be a model id string`
+	if err == nil || err.Error() != want {
+		t.Errorf("runLaunchPath() error = %v, want %q", err, want)
+	}
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Error("the agent ran for a profile with a non-string modelOverrides target")
+	}
+	if got := seams.log(); got != "" {
+		t.Errorf("the refused launch drove the engine: steps %q, want none", got)
+	}
+}

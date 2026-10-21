@@ -77,8 +77,10 @@ func writeSlotProfileList(w io.Writer, a *app) error {
 // the agent's catalog rows from one inventory probe, exactly as the picker
 // does, and looks the profile's row up with catalog.Find, so the verdict it
 // prints is the picker's. For a launch or a start row it prints each declared
-// slot with its registry id and provider-side name, then the command the
-// agent's slot build returns: the env it sets, the inherited variables it
+// slot with its registry id and provider-side name, then one "warning:" line
+// per thing the driver says about this profile's config_content
+// (slotContentNotesFor, the lines `wt profile list` prints), then the command
+// the agent's slot build returns: the env it sets, the inherited variables it
 // removes, the arguments, and the --settings payload.
 //
 // The slot build is given the masked key, never the real one, so the proxy
@@ -135,6 +137,12 @@ func showSlotProfile(w io.Writer, a *app, agent, id string) error {
 			line += " [default's model]"
 		}
 		fmt.Fprintln(w, line)
+	}
+	// What the driver says about this profile's config_content goes right
+	// under the slots: claude's notes name an override target that is not
+	// one of the slot models just listed (#419).
+	for _, note := range slotContentNotesFor(p.Check) {
+		fmt.Fprintf(w, "warning: %s\n", note)
 	}
 
 	sc, err := agents.BuildSlotCommand(p.Launch(), false, a.cfg.LitellmBaseURL(), maskKey(a.cfg.LitellmAPIKey()))

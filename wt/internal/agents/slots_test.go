@@ -126,10 +126,12 @@ func TestSlotFixtureIsValidForTheRealClaudeDriver(t *testing.T) {
 // TestSlotDriversRejectsWhatClaudeDoesNotAllow runs static validation with
 // the real drivers over the profiles only the driver can refuse. If it
 // regresses, a claude profile with args, a reserved env key, an unknown slot,
-// a config_content.env or config_content.modelOverrides that is not a table
-// or a nan under config_content passes validation, and its launch drops the
-// setting silently, overrides the slot mapping or fails at the slot build
-// after the picker offered it as a launch row.
+// a config_content.env or config_content.modelOverrides that is not a table,
+// a modelOverrides target that is not a string (#418) or a nan under
+// config_content passes validation, and its launch drops the setting
+// silently, overrides the slot mapping, sends Claude Code an override it
+// cannot use or fails at the slot build after the picker offered it as a
+// launch row.
 func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 	const head = "[[profile]]\nname = \"p\"\nagent = \"claude\"\ndefault = \"opus\"\n"
 	for _, tc := range []struct {
@@ -153,6 +155,12 @@ func TestSlotDriversRejectsWhatClaudeDoesNotAllow(t *testing.T) {
 		{"config_content.modelOverrides is an array",
 			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content]\nmodelOverrides = [\"ollama/a\"]\n",
 			"config_content.modelOverrides must be a table"},
+		{"a config_content.modelOverrides target is a number",
+			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content.modelOverrides]\nclaude-opus-4-1 = 5\n",
+			`config_content.modelOverrides["claude-opus-4-1"] must be a model id string`},
+		{"a config_content.modelOverrides target is a table",
+			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content.modelOverrides.claude-opus-4-1]\nid = \"ollama/a\"\n",
+			`config_content.modelOverrides["claude-opus-4-1"] must be a model id string`},
 		{"config_content.env holds a nan",
 			head + "[profile.slots]\nopus = \"ollama/a\"\n[profile.config_content.env]\nTHRESHOLD = nan\n",
 			"config_content cannot be encoded as the --settings JSON: json: unsupported value: NaN"},

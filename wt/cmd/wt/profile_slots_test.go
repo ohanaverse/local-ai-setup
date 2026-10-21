@@ -379,15 +379,21 @@ MAX_THINKING_TOKENS = "4096"
 }
 
 // TestProfileCommandsReportModelOverrides follows config_content.modelOverrides
-// through the real drivers into `wt profile list` and `wt profile show`
-// (#412): a modelOverrides that is not a table blocks the profile, listed
-// with the reason and shown blocked; a table whose target is not one of the
-// profile's slot models is listed ok with one warning line naming the
-// profile, the key and the target, and still shown as a launch row, its
-// override in the settings. A table whose targets are all slot models has no
-// warning. Without the block, a string modelOverrides reached Claude Code's
-// settings, which take an object; without the warning, an override to an
-// unrouted id failed only inside the session.
+// through the real drivers into `wt profile list`, `wt profile show` and a
+// launch's warnings (#412, #419): a modelOverrides that is not a table, or
+// one with a target that is not a string (#418), blocks the profile, listed
+// with the reason and shown blocked; a table whose targets
+// are not the profile's slot models is listed ok with one warning line per
+// target, naming the profile, the key and the target, and shown as a launch
+// row with the same lines, each once, right under its slot lines, its
+// overrides in the settings. A table whose targets are all slot models has no
+// warning, in either command, and a blocked profile is shown with its reason
+// alone even when its overrides would warn. Without the block, a string
+// modelOverrides reached Claude Code's settings, which take an object, and a
+// number target launched in the --settings as a mere warning; without
+// the warning, an override to an unrouted id failed only inside the session,
+// and `wt profile show`, the command a user runs to see what a launch would
+// send, said nothing about it (#419).
 func TestProfileCommandsReportModelOverrides(t *testing.T) {
 	const file = `
 [[profile]]
@@ -407,6 +413,7 @@ default = "opus"
 opus = "openrouter/a"
 [profile.config_content.modelOverrides]
 claude-sonnet-4-6 = "openrouter/b"
+claude-haiku-4-5 = "omlx/q"
 
 [[profile]]
 name = "routed"
@@ -417,6 +424,26 @@ opus = "openrouter/a"
 haiku = "openrouter/b"
 [profile.config_content.modelOverrides]
 claude-sonnet-4-6 = "openrouter/b"
+
+[[profile]]
+name = "blocked-unrouted"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+[profile.config_content]
+env = "x"
+[profile.config_content.modelOverrides]
+claude-sonnet-4-6 = "openrouter/b"
+
+[[profile]]
+name = "number-target"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+[profile.config_content.modelOverrides]
+claude-sonnet-4-6 = 5
 `
 	store, err := profiles.ParseSlots([]byte(file))
 	if err != nil {
@@ -428,31 +455,66 @@ claude-sonnet-4-6 = "openrouter/b"
 	}
 	seams := stubSlotSeams(t)
 	started := stubStartDriver(t, nil)
-	const warning = `profile/unrouted (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/b", which is not one of the profile's slot models, so wt does not make sure it is routed`
+	warnings := []string{
+		`profile/unrouted (claude): config_content.modelOverrides["claude-haiku-4-5"] targets "omlx/q", which is not one of the profile's slot models, so wt does not make sure it is routed`,
+		`profile/unrouted (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/b", which is not one of the profile's slot models, so wt does not make sure it is routed`,
+	}
 
 	out, err := runProfileCmd(t, newApp(), "list")
 	wantList := "(no profiles defined)\nslot profiles:\n" +
 		"  claude: profile/string-overrides error: config_content.modelOverrides must be a table\n" +
 		"  claude: profile/unrouted ok\n" +
 		"  claude: profile/routed ok\n" +
-		"  warning: " + warning + "\n"
+		"  claude: profile/blocked-unrouted error: config_content.env must be a table\n" +
+		"  claude: profile/number-target error: config_content.modelOverrides[\"claude-sonnet-4-6\"] must be a model id string\n" +
+		"  warning: " + warnings[0] + "\n" +
+		"  warning: " + warnings[1] + "\n"
 	if err != nil || out != wantList {
 		t.Errorf("list = (%q, %v)\nwant %q, nil", out, err, wantList)
 	}
 
-	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/string-overrides")
-	wantShow := "profile/string-overrides (claude): blocked\nreason: config_content.modelOverrides must be a table\n"
-	const wantErr = "profile/string-overrides is blocked: config_content.modelOverrides must be a table"
-	if out != wantShow || err == nil || err.Error() != wantErr {
-		t.Errorf("show string-overrides = (%q, %v)\nwant %q, %q", out, err, wantShow, wantErr)
+	for _, tc := range []struct{ name, reason string }{
+		{"string-overrides", "config_content.modelOverrides must be a table"},
+		{"blocked-unrouted", "config_content.env must be a table"},
+		{"number-target", `config_content.modelOverrides["claude-sonnet-4-6"] must be a model id string`},
+	} {
+		id := "profile/" + tc.name
+		out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", id)
+		wantShow := id + " (claude): blocked\nreason: " + tc.reason + "\n"
+		wantErr := id + " is blocked: " + tc.reason
+		if out != wantShow || err == nil || err.Error() != wantErr {
+			t.Errorf("show %s = (%q, %v)\nwant %q, %q", tc.name, out, err, wantShow, wantErr)
+		}
 	}
 
 	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/unrouted")
 	if err != nil || !strings.HasPrefix(out, "profile/unrouted (claude): launch\n") || !strings.Contains(out, `"claude-sonnet-4-6": "openrouter/b"`) {
 		t.Errorf("show unrouted = (%q, %v), want a launch row whose settings carry the override", out, err)
 	}
+	lines := strings.Split(out, "\n")
+	var got []string
+	first := -1
+	for i, line := range lines {
+		if note, ok := strings.CutPrefix(line, "warning: "); ok {
+			if first < 0 {
+				first = i
+			}
+			got = append(got, note)
+		}
+	}
+	if !slices.Equal(got, warnings) {
+		t.Errorf("show unrouted warning lines = %q\nwant %q\nin %q", got, warnings, out)
+	} else if !strings.HasPrefix(lines[first-1], "slot ") || !strings.HasPrefix(lines[first+len(got)], "env: ") {
+		t.Errorf("show unrouted: the warnings are not right under the slot lines:\n%s", out)
+	}
 
-	if got, want := slotWarnings(newApp()), []string{"wt: " + warning}; !slices.Equal(got, want) {
+	out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", "profile/routed")
+	if err != nil || !strings.HasPrefix(out, "profile/routed (claude): launch\n") || strings.Contains(out, "warning:") {
+		t.Errorf("show routed = (%q, %v), want a launch row with no warning", out, err)
+	}
+
+	want := []string{"wt: " + warnings[0], "wt: " + warnings[1]}
+	if got := slotWarnings(newApp()); !slices.Equal(got, want) {
 		t.Errorf("slotWarnings() = %q\nwant %q", got, want)
 	}
 	if seams.log() != "" || started.called {
