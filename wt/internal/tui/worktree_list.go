@@ -150,8 +150,8 @@ func (e entryItem) Description() string {
 }
 
 // applyPRs tags every entry row of l with its pull request from prs (prFor,
-// own the repository's remotes' repositories; a row with none loses any
-// tag it had) and keeps what the list holds: the highlighted row (by
+// with own the repositories the repository's remotes point at; a row with
+// none loses any tag it had) and keeps what the list holds: the highlighted row (by
 // identity, else by position), an applied filter and the query being typed.
 // With a filter in place, the matches are recomputed here, in the same
 // Update, against the new filter values, so the list is never drawn empty

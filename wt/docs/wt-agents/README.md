@@ -193,7 +193,9 @@ lists, `origin/feat-x` shows the PR you opened from your fork's `feat-x`,
 has no repository, so it shows a PR opened from a branch of its name in
 this repository or in a repository one of your remotes points at (your
 fork, when it is a remote), never a stranger's fork: someone's PR from
-their fork's `main` does not tag your `main`. When two of those
+their fork's `main` does not tag your `main`. Every remote counts as
+yours, a collaborator's fork you added as a remote to review their work
+included, so that fork's PR from its `main` does tag your `main`. When two of those
 repositories both have one (upstream's `feat-x` and your fork's), the open
 one wins, else the higher number. The host in a
 remote's URL is ignored, so an Enterprise host with the same owner/repo
