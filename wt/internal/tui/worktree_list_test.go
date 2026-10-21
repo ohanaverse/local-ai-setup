@@ -495,12 +495,26 @@ func TestSeparatorItemRendersLabel(t *testing.T) {
 	}
 }
 
-// remoteTagsHidden names why every remote row's tag is gone: the listing has
-// PRs, there are remote rows, and none is in the listed repository.
+// TestRemoteTagsHidden pins the notice for a listing whose remote tags all
+// went missing: the listing has PRs from its own branches (a BaseRepo),
+// there are remote rows, and no remote row is in the listed repository or
+// in any PR's head repository — a renamed or transferred repository. A row
+// from a fork that has PRs (#387) counts as found, and a listing with no
+// same-repository PR names no repository, so says nothing. A regression
+// either drops every remote tag silently or nags in a fork workflow where
+// tags show.
 func TestRemoteTagsHidden(t *testing.T) {
-	row := func(repo string) list.Item { return entryItem{kind: kindEntry, remote: true, repo: repo} }
-	prs := func(repo string) worktree.PRSet {
-		return worktree.PRSet{Repo: repo, ByBranch: map[string]worktree.PR{"x": {Number: 1}}}
+	row := func(repo string) list.Item {
+		return entryItem{kind: kindEntry, remote: true, repo: repo, prBranch: "x"}
+	}
+	rowBranch := func(repo, branch string) list.Item {
+		return entryItem{kind: kindEntry, remote: true, repo: repo, prBranch: branch}
+	}
+	prs := func(base string) worktree.PRSet {
+		return worktree.PRSet{BaseRepo: base, ByHead: map[worktree.PRKey]worktree.PR{
+			{Repo: base, Branch: "x"}:      {Number: 1},
+			{Repo: "me/fork", Branch: "y"}: {Number: 2},
+		}}
 	}
 	cases := []struct {
 		name  string
@@ -509,11 +523,15 @@ func TestRemoteTagsHidden(t *testing.T) {
 		want  string // "" none; else a substring
 	}{
 		{"match", []list.Item{row("o/r")}, prs("o/r"), ""},
+		{"match without case", []list.Item{row("O/R")}, prs("o/r"), ""},
 		{"mismatch", []list.Item{row("old/name")}, prs("o/r"), "no remote is o/r"},
-		{"no repo from gh", []list.Item{row("o/r")}, prs(""), "named no repository"},
-		{"no PRs", []list.Item{row("old/name")}, worktree.PRSet{ByBranch: map[string]worktree.PR{}}, ""},
+		{"a fork with PRs", []list.Item{row("Me/Fork")}, prs("o/r"), ""},
+		{"a fork with no PRs hides nothing", []list.Item{rowBranch("keith/repo", "unrelated")}, prs("o/r"), ""},
+		{"a remote branch with a PR elsewhere", []list.Item{rowBranch("old/name", "y")}, prs("o/r"), "no remote is o/r"},
+		{"no same-repo PR", []list.Item{row("old/name")}, prs(""), ""},
+		{"no PRs", []list.Item{row("old/name")}, worktree.PRSet{ByHead: map[worktree.PRKey]worktree.PR{}}, ""},
 		{"no remote rows", []list.Item{entryItem{kind: kindEntry}}, prs("o/r"), ""},
-		{"one matching of two", []list.Item{row("fork/r"), row("o/r")}, prs("o/r"), ""},
+		{"one matching of two", []list.Item{row("other/r"), row("o/r")}, prs("o/r"), ""},
 	}
 	for _, c := range cases {
 		got := remoteTagsHidden(c.items, c.prs)

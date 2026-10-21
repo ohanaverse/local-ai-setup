@@ -62,6 +62,88 @@ func TestRemoteReposReadsEachRemoteURL(t *testing.T) {
 	}
 }
 
+// TestEnumerateReposReturnsEveryRemoteWithoutCase pins the set the picker
+// hands to a local row's PR lookup, read in the same pass as the rows: a
+// repository with no remotes gives an empty set that matches nothing (never
+// a panic), and every remote's owner/repo is in it, matched without case. A
+// regression either tags local rows from a repository that is not yours or
+// drops your fork's PR when its URL's case differs from gh's.
+func TestEnumerateReposReturnsEveryRemoteWithoutCase(t *testing.T) {
+	bare := t.TempDir()
+	gitInit(t, bare)
+	_, set, err := EnumerateRepos(bare, bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set) != 0 || set.Has("o/base") || set.Has("") {
+		t.Errorf("no remotes: set = %v, want an empty set that matches nothing", set)
+	}
+
+	dir := t.TempDir()
+	gitInit(t, dir)
+	for _, args := range [][]string{
+		{"remote", "add", "origin", "https://github.com/Base/Repo.git"},
+		{"remote", "add", "fork", "git@github.com:me/Fork.git"},
+	} {
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	_, set, err = EnumerateRepos(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{"base/repo", "BASE/REPO", "Me/Fork", "me/fork"} {
+		if !set.Has(repo) {
+			t.Errorf("set %v .Has(%q) = false, want true", set, repo)
+		}
+	}
+	if set.Has("someone/else") || len(set) != 2 {
+		t.Errorf("set = %v, want exactly base/repo and me/fork", set)
+	}
+}
+
+// TestEnumerateReposTagsLocalRowsWithTheirPushRepository pins Entry.TrackRepo:
+// a branch pushes to its pushRemote, else tracks its upstream's remote, and a
+// branch with neither (or a remote naming no repository) has none. A
+// regression leaves the local-row PR lookup guessing among every remote.
+func TestEnumerateReposTagsLocalRowsWithTheirPushRepository(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	for _, args := range [][]string{
+		{"remote", "add", "origin", "https://github.com/base/repo.git"},
+		{"remote", "add", "fork", "git@github.com:me/fork.git"},
+		{"branch", "tracked"}, {"branch", "pushed"}, {"branch", "bare"},
+		{"update-ref", "refs/remotes/origin/tracked", "HEAD"},
+		{"config", "branch.tracked.remote", "origin"},
+		{"config", "branch.tracked.merge", "refs/heads/tracked"},
+		{"config", "branch.pushed.remote", "origin"},
+		{"config", "branch.pushed.merge", "refs/heads/pushed"},
+		{"config", "branch.pushed.pushRemote", "fork"},
+	} {
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	groups, _, err := EnumerateRepos(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, g := range groups {
+		if g.Kind != GroupRemoteBranches {
+			for _, e := range g.Entries {
+				got[e.Branch] = e.TrackRepo
+			}
+		}
+	}
+	for branch, want := range map[string]string{"tracked": "base/repo", "pushed": "me/fork", "bare": ""} {
+		if got[branch] != want {
+			t.Errorf("%s: TrackRepo = %q, want %q", branch, got[branch], want)
+		}
+	}
+}
+
 func remoteEntry(groups []EntryGroup, branch string) (Entry, bool) {
 	for _, g := range groups {
 		if g.Kind != GroupRemoteBranches {

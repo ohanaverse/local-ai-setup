@@ -400,6 +400,37 @@
 
 ### Fixed
 
+- A local branch or worktree in the picker now takes its pull request tag from
+  the repository it pushes to (its `pushRemote`) or tracks, and from no other
+  remote (#387). A collaborator's fork you added as a remote, or upstream's
+  closed PR from a same-named branch, no longer tags a branch that is
+  pushed elsewhere. A branch that neither pushes nor tracks anywhere keeps
+  the old rule. The `no remote is …` status line no longer appears for a fork
+  whose remotes have no PRs; it shows only when a remote row's branch has a
+  PR that no remote row can be tagged with. The picker also reads
+  `git remote -v` once per load instead of twice.
+
+- The worktree picker shows pull request tags when `origin` is your own fork
+  (#387). `gh pr list` then lists the upstream repository, every PR you
+  opened from your fork's branches is cross-repository, and the picker
+  skipped those, so no row was tagged. Each PR now belongs to the
+  repository and branch it was opened from, a fork's included. A remote
+  branch shows the PR from its own remote's repository and branch:
+  `origin/feat-x` shows the PR you opened from your fork's `feat-x`,
+  `upstream/feat-y` shows upstream's own PR from `feat-y`, and
+  `upstream/feat-x` shows nothing. A local branch or worktree shows a PR
+  opened from a branch of its name in this repository or in one of your
+  remotes' repositories (your fork, when it is a remote), never a
+  stranger's fork, so a stranger's PR from their fork's `main` does not tag
+  your `main`; a branch that pushes or tracks nowhere matches every
+  remote's repository, and when two of those repositories both have a PR,
+  the open one wins, else the higher number. A
+  remote that is a local path, a `file://` URL or one wt cannot find is
+  still never tagged, and a PR from a deleted fork is not shown. The
+  `no remote is …` status line no longer appears when the listing's PRs
+  all come from forks, or when a remote row's repository opened one of the
+  listing's PRs (your fork with a PR, after the base repository's remote
+  was renamed or transferred).
 - A slot profile whose `config_content.modelOverrides` has a target that is
   not a string (a number, a boolean, an array or a table) is now blocked
   with `config_content.modelOverrides["<key>"] must be a model id string`

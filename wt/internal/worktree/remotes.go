@@ -76,6 +76,23 @@ func RemoteRepos(dir string) map[string]string {
 	return repos
 }
 
+// RepoSet is a set of lower-cased owner/repo names.
+type RepoSet map[string]bool
+
+// NewRepoSet is the set of repos, each lower-cased; "" is left out.
+func NewRepoSet(repos ...string) RepoSet {
+	set := RepoSet{}
+	for _, r := range repos {
+		if r != "" {
+			set[strings.ToLower(r)] = true
+		}
+	}
+	return set
+}
+
+// Has reports whether repo (compared without case) is in the set.
+func (s RepoSet) Has(repo string) bool { return repo != "" && s[strings.ToLower(repo)] }
+
 // SplitRemoteBranch splits a remote-tracking short name such as
 // "keith/feat/x" into its remote and branch. The longest remote name in
 // remotes that is followed by "/" wins, since remote names may contain

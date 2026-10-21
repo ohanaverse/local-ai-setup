@@ -134,13 +134,20 @@ type model struct {
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
 
-	// prs is each branch's pull request, merged from the `gh pr list`
-	// listings a picker open runs (loadPRsCmd, one per
+	// prs is each head's (repository and branch) pull request, merged from
+	// the `gh pr list` listings a picker open runs (loadPRsCmd, one per
 	// worktree.PRListStates) as each answers; not Loaded() until the first
 	// does, empty when every one so far failed.
 	// Every build of the worktree list (the first, and the reload after a
 	// create) is tagged from it.
 	prs worktree.PRSet
+	// ownRepos is the owner/repo of every remote the repository has
+	// (worktree.EnumerateRepos), from the latest entry load: a local or
+	// worktree row with no known push/tracking repository is tagged only with
+	// a PR from one of them or from the listed repository itself
+	// (worktree.PRSet.ForBranch), never with a stranger's fork PR of the same
+	// branch name.
+	ownRepos worktree.RepoSet
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -168,15 +175,32 @@ func (m model) Init() tea.Cmd {
 			return selectedEntryMsg{entry: worktree.Entry{Path: m.prePath}}
 		}
 	}
-	// The pull request listing runs beside the enumeration, never before
-	// it: the picker shows as soon as the worktrees are in, and the tags
-	// appear as each listing answers (prsLoadedMsg) — the open PRs' usually
-	// first, every state's filled in after — whichever comes first.
-	cmds := []tea.Cmd{loadEntriesCmd()}
-	for _, state := range worktree.PRListStates {
-		cmds = append(cmds, loadPRsCmd(state))
+	return loadPickerCmd()
+}
+
+// loadPickerCmd is a picker open's first command: it resolves the repository
+// root once (#390) and answers with a batch that loads the entries and runs
+// each PR listing (worktree.PRListStates) in that root, each in its own
+// command. The listings run beside the enumeration, never before it: the
+// picker shows as soon as the worktrees are in, and the tags appear as each
+// listing answers (prsLoadedMsg) — the open PRs' usually first, every
+// state's filled in after — whichever comes first. Outside a repository the
+// entry load reports the lookup's error and each listing answers a loaded,
+// empty set without running gh.
+func loadPickerCmd() tea.Cmd {
+	return func() tea.Msg {
+		root, err := findRepoRoot()
+		cmds := tea.BatchMsg{loadEntriesAtCmd(root, err)}
+		if err != nil {
+			// No repository: each listing answers an empty set without
+			// running gh (an empty root).
+			root = ""
+		}
+		for _, state := range worktree.PRListStates {
+			cmds = append(cmds, loadPRsCmd(root, state))
+		}
+		return cmds
 	}
-	return tea.Batch(cmds...)
 }
 
 // isTyping reports whether the current phase is actively receiving character
@@ -283,9 +307,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// and tags the (current)/(default) markers on entryItem.
 		m.defaultBranch = msg.defaultBranch
 		m.repoRoot = msg.repoRoot
+		m.ownRepos = msg.ownRepos
 		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
 		if m.prs.Loaded() {
-			applyPRs(&m.list, m.prs)
+			applyPRs(&m.list, m.prs, m.ownRepos)
 		}
 		m.ready = true
 
@@ -319,14 +344,15 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m, nil
 	case prsLoadedMsg:
 		// One listing's pull requests arrived: merged with any listing
-		// already in (the higher-numbered PR per branch, so arrival order
-		// does not matter), kept for any later build of the list, and put
-		// on the list already on screen in place, so the cursor, the
-		// filter and the page stay where the user left them. A listing
+		// already in (one PR per head repository and branch, by
+		// worktree.MergePRs' rule, so arrival order does not matter),
+		// kept for any later build of the list, and put on the list
+		// already on screen in place, so the cursor, the filter and the
+		// page stay where the user left them. A listing
 		// that failed adds nothing: msg.prs is then empty.
 		m.prs = worktree.MergePRs(m.prs, msg.prs)
 		if m.ready {
-			applyPRs(&m.list, m.prs)
+			applyPRs(&m.list, m.prs, m.ownRepos)
 			if note := remoteTagsHidden(m.list.Items(), m.prs); note != "" {
 				return m, m.list.NewStatusMessage(note)
 			}
@@ -656,8 +682,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.list, cmd = m.list.Update(msg)
 		// A filter run a keystroke started before the latest tags arrived
 		// matched the items as they were then; its rows carry the old tags.
-		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs) {
-			applyPRs(&m.list, m.prs)
+		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos) {
+			applyPRs(&m.list, m.prs, m.ownRepos)
 		}
 		return m, cmd
 	}
@@ -1283,41 +1309,56 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	return m, runAndWaitCmd(cmd, m.agent, m.launchModel)
 }
 
-// loadEntriesCmd returns a command that enumerates worktrees/branches
-// and captures the repo root for the new-worktree prompt. The returned
-// message carries the three-group Enumerate shape, which the picker
-// (buildList) interleaves into sentinel → worktrees → locals →
-// separator → remotes.
+// findRepoRoot is the picker's `git rev-parse --show-toplevel`
+// (worktree.RepoRoot), a seam so a test can count the lookups a picker open
+// makes (#390).
+var findRepoRoot = worktree.RepoRoot
+
+// loadEntriesCmd returns a command that looks the repo root up afresh and
+// enumerates worktrees/branches there: the reload after a create, which runs
+// in whatever directory wt is in by then. A picker open goes through
+// loadPickerCmd instead, which shares one lookup with the PR listings.
 func loadEntriesCmd() tea.Cmd {
 	return func() tea.Msg {
-		root, err := worktree.RepoRoot()
-		if err != nil {
-			return entriesLoadedMsg{err: err}
-		}
-		groups, err := worktree.Enumerate(root, root)
-		defaultBranch := worktree.DefaultBranch(root)
-		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
+		root, err := findRepoRoot()
+		return loadEntriesAtCmd(root, err)()
 	}
 }
 
-// loadPRsCmd returns a command that runs one listing of the repository's
-// pull requests with gh (worktree.PRs with state: one call, five seconds at
-// most, every failure an empty set) for the worktree picker's tags. Each
-// listing runs beside loadEntriesCmd and the other listings and finds the
-// repository root itself, so the picker never waits for it.
-func loadPRsCmd(state string) tea.Cmd {
+// loadEntriesAtCmd returns a command that enumerates worktrees/branches in
+// root, the repo root findRepoRoot answered (lookupErr its error), and
+// captures it for the new-worktree prompt. The returned message carries the
+// three-group Enumerate shape, which the picker (buildList) interleaves into
+// sentinel → worktrees → locals → separator → remotes.
+func loadEntriesAtCmd(root string, lookupErr error) tea.Cmd {
 	return func() tea.Msg {
-		root, err := worktree.RepoRoot()
-		if err != nil {
-			return prsLoadedMsg{prs: worktree.PRSet{ByBranch: map[string]worktree.PR{}}}
+		if lookupErr != nil {
+			return entriesLoadedMsg{err: lookupErr}
+		}
+		groups, own, err := worktree.EnumerateRepos(root, root)
+		defaultBranch := worktree.DefaultBranch(root)
+		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, ownRepos: own, err: err}
+	}
+}
+
+// loadPRsCmd returns a command that runs one listing of the pull requests of
+// the repository at root with gh (worktree.PRs with state: one call, five
+// seconds at most, every failure an empty set) for the worktree picker's
+// tags. Each listing runs beside the entry load and the other listings, so
+// the picker never waits for it. An empty root (no repository) answers a
+// loaded, empty set without running gh.
+func loadPRsCmd(root, state string) tea.Cmd {
+	return func() tea.Msg {
+		if root == "" {
+			return prsLoadedMsg{prs: worktree.EmptyPRSet()}
 		}
 		return prsLoadedMsg{prs: worktree.PRs(root, state)}
 	}
 }
 
-// prsLoadedMsg carries one loadPRsCmd's answer: each branch's pull request
-// in that listing, keyed by head branch name, with the repo gh listed; loaded
-// but empty when the listing failed.
+// prsLoadedMsg carries one loadPRsCmd's answer: each head's pull request in
+// that listing, keyed by head repository and branch; loaded but empty when
+// the listing failed.
 type prsLoadedMsg struct {
 	prs worktree.PRSet
 }
@@ -1381,6 +1422,7 @@ type entriesLoadedMsg struct {
 	groups        []worktree.EntryGroup
 	defaultBranch string
 	repoRoot      string
+	ownRepos      worktree.RepoSet
 	err           error
 }
 

@@ -70,7 +70,7 @@ func TestListBranches(t *testing.T) {
 		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
 	}
 
-	local, _, err := listBranches(dir)
+	local, _, _, err := listBranches(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestListBranchesPipeInName(t *testing.T) {
 		t.Fatalf("git checkout -b weird|name: %v\n%s", err, out)
 	}
 
-	local, _, err := listBranches(dir)
+	local, _, _, err := listBranches(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
