@@ -189,11 +189,22 @@ func revertCase(t *testing.T, orig, content map[string]any, session func(map[str
 	return cur
 }
 
+// deepCopy copies maps and arrays recursively, so the copy shares no map or
+// array with v. Scalars are immutable and come back as they are. A copy that
+// shared an array would let an in-place write by the code under test change
+// the original the test compares against.
 func deepCopy(v any) any {
-	if m, ok := v.(map[string]any); ok {
-		out := map[string]any{}
-		for k, sub := range m {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, sub := range t {
 			out[k] = deepCopy(sub)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = deepCopy(e)
 		}
 		return out
 	}
@@ -407,10 +418,10 @@ func genParityValue(rng *rand.Rand, depth int) any {
 }
 
 // parityLeaves returns the path of every leaf of doc (a value that is not a
-// non-empty object), keyed by the NUL-joined path so it can be looked up and
-// compared; the value is read back through getPath where it is needed.
-func parityLeaves(doc map[string]any) map[string][]string {
-	out := map[string][]string{}
+// non-empty object); the value is read back through getPath where it is
+// needed.
+func parityLeaves(doc map[string]any) [][]string {
+	var out [][]string
 	var walk func(prefix []string, m map[string]any)
 	walk = func(prefix []string, m map[string]any) {
 		for k, v := range m {
@@ -419,7 +430,7 @@ func parityLeaves(doc map[string]any) map[string][]string {
 				walk(p, sub)
 				continue
 			}
-			out[strings.Join(p, "\x00")] = p
+			out = append(out, p)
 		}
 	}
 	walk(nil, doc)
@@ -473,18 +484,28 @@ func TestCollectLeavesMatchesMergeInto(t *testing.T) {
 		}
 		doc := genParityMap(rng, 0)
 		content := genParityMap(rng, 0)
-		docJSON, _ := json.Marshal(doc)
-		contentJSON, _ := json.Marshal(content)
+		// Snapshot both inputs before either walk runs: everything below is
+		// judged against what the generator drew, so a walk that wrote into
+		// its own input would otherwise move the baseline with it and hide the
+		// change.
+		docBefore := deepCopy(doc).(map[string]any)
+		contentBefore := deepCopy(content).(map[string]any)
 		fail := func(path []string, format string, args ...any) {
 			t.Helper()
 			reported++
 			t.Errorf("case %d (seed %d): doc %s, content %s, path %q: %s",
-				i, seed, docJSON, contentJSON, path, fmt.Sprintf(format, args...))
+				i, seed, mustJSON(docBefore), mustJSON(contentBefore), path, fmt.Sprintf(format, args...))
 		}
 
 		recs := collectLeaves(doc, content)
-		merged := deepCopy(doc).(map[string]any)
-		src := deepCopy(content).(map[string]any)
+		if !reflect.DeepEqual(doc, docBefore) {
+			fail(nil, "collectLeaves changed the document it was given")
+		}
+		if !reflect.DeepEqual(content, contentBefore) {
+			fail(nil, "collectLeaves changed the content it was given")
+		}
+		merged := deepCopy(docBefore).(map[string]any)
+		src := deepCopy(contentBefore).(map[string]any)
 		mergeInto(merged, src)
 
 		seen := map[string]bool{}
@@ -534,14 +555,14 @@ func TestCollectLeavesMatchesMergeInto(t *testing.T) {
 		}
 		for _, p := range parityLeaves(merged) {
 			mv, _ := getPath(merged, p)
-			dv, inDoc := getPath(doc, p)
+			dv, inDoc := getPath(docBefore, p)
 			if (!inDoc || !reflect.DeepEqual(dv, mv)) && !covered(p) {
 				fail(p, "merge wrote %s (doc had %s, present %v) but no record covers it",
 					mustJSON(mv), mustJSON(dv), inDoc)
 			}
 		}
-		for _, p := range parityLeaves(doc) {
-			dv, _ := getPath(doc, p)
+		for _, p := range parityLeaves(docBefore) {
+			dv, _ := getPath(docBefore, p)
 			mv, inMerged := getPath(merged, p)
 			if sub, isMap := mv.(map[string]any); inMerged && isMap && len(sub) > 0 {
 				continue // a leaf the merge grew into an object: its leaves are checked above
@@ -574,7 +595,7 @@ func TestCollectLeavesMatchesMergeInto(t *testing.T) {
 				}
 			}
 		}
-		tally(doc, content)
+		tally(docBefore, contentBefore)
 	}
 	if reported > 0 {
 		return // the run stopped at its first failing case, so the tallies are partial
