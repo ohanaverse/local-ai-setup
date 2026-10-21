@@ -58,6 +58,62 @@ uv run llmbench eval judge --latest --root ../benchmarks/tasks/eval [--row <row-
 
 Re-scores every judged category's items from their persisted `response.txt` — no regeneration, no isolation. Coding has nothing to re-judge (EvalPlus's pass@1 is deterministic).
 
+## Probing reasoning length across engines
+
+When one engine's answers come out a different shape from another's for the same model (issue #403), `llmbench probe thinking` sends the same prompts to each engine and puts the length and opening of each reply's reasoning (`reasoning_content` or `reasoning`, else a leading `<think>` block in the content) beside the answer's length and markdown shape. By default it sends two prompts: `What is 17*23? Answer briefly.` and the `planning` category's `flaky-test-suite` item, read from `benchmarks/tasks/eval/planning/items.toml`. `--prompt-file FILE` (repeatable) adds more; `--no-builtin` leaves the two out.
+
+**It does not manage servers.** It sends chat completions to the URL each `--target` names, nothing else: it never starts, stops, isolates or warms a provider, and never reads the registry. Isolate each engine yourself first, and probe one engine at a time. Two 27B-class models resident at once is a memory problem on Apple Silicon, so isolate the next engine (which stops the last one) before probing it, and restore at the end:
+
+```bash
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
+uv run llmbench provider isolate omlx <omlx-model-a>
+uv run llmbench probe thinking \
+    --target <name-a>=http://localhost:8000/v1,<omlx-model-a> \
+    --out <results-dir>/<name-a>
+
+uv run llmbench provider isolate omlx <omlx-model-b>
+uv run llmbench probe thinking \
+    --target <name-b>=http://localhost:8000/v1,<omlx-model-b> \
+    --out <results-dir>/<name-b>
+
+uv run llmbench provider isolate mtplx <mtplx-repo-id>
+uv run llmbench probe thinking \
+    --target mtplx=http://localhost:8003/v1,<mtplx-repo-id> \
+    --out <results-dir>/mtplx
+
+uv run llmbench provider restore --unload
+```
+
+`<omlx-model-…>` is the name omlx serves (its model directory's basename, as `direct_model` in a suite row) and `<mtplx-repo-id>` the repo id mtplx serves under; `wt model list` shows what your registry holds. Illustrative only, as of issue #403 (2026-10): the answer-shape difference there came from the omlx 8-bit build of Qwen3.8-27B and the short thinking from the 4-bit build, so that issue's run took both omlx builds and mtplx's Quality build, with the names `eval-quant-tier.toml` uses:
+
+```bash
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench (illustrative, issue #403)
+uv run llmbench provider isolate omlx Qwen3.8-27B-8bit
+uv run llmbench probe thinking --target omlx8=http://localhost:8000/v1,Qwen3.8-27B-8bit --out <results-dir>/omlx8
+uv run llmbench provider isolate omlx Qwen3.8-27B-4bit
+uv run llmbench probe thinking --target omlx4=http://localhost:8000/v1,Qwen3.8-27B-4bit --out <results-dir>/omlx4
+uv run llmbench provider isolate mtplx Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality
+uv run llmbench probe thinking --target mtplx=http://localhost:8003/v1,Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality --out <results-dir>/mtplx
+uv run llmbench provider restore --unload
+```
+
+- `--target` is `NAME=BASE_URL,MODEL_ID[,API_KEY_ENV]`. `API_KEY_ENV` is the *name* of an environment variable that holds the key, never the key; leave it out for a keyless server (mtplx, and an omlx configured to allow keyless inference, answer without one). A row with `HTTP 401` means the server wants a key: put it in an environment variable and pass that variable's NAME as `API_KEY_ENV` (never the key). A named variable that is unset is an error before anything is sent. The key goes only into the `Authorization` header; it is never printed or written.
+- Sampling defaults to temperature 1.0, top_p 0.95 and top_k 20, as in the Qwen3.x `generation_config.json` and `eval-quant-tier.toml`. Override with `--temperature`, `--top-p`, `--top-k` (`0` leaves top_p or top_k out of the request) and `--max-tokens` (unset by default, so the engine's own cap applies, as in `eval run`). `--timeout` (900 s) bounds the wait per connect and per read, not the whole request: a reply that arrives in pieces can take longer.
+- Results go to `--out`: `report.md` and `results.json` (full reasoning and answer text included). Without `--out` the probe makes a new directory under the system temp dir. It never writes to `~/.config/local-ai/benchmarks/` or `latest.toml`. The directory is created and checked before the first request (one it cannot write is a usage error), and both files are rewritten after every finished request, so Ctrl-C keeps what finished: the probe names the request it was waiting on and exits 130.
+- An engine that is down, times out, or answers non-200 or non-JSON gets an error row and the run goes on. Exit 0 when at least one target answered, 1 when none did, 2 on a usage error, 130 when interrupted.
+
+Reading `report.md`: one table per prompt, one row per target, then the first 200 characters of each target's reasoning, to compare style. An illustrative row (not a real measurement):
+
+```text
+| Target | Status | Reasoning chars | Reasoning tokens | Answer chars | Completion tokens | Finish | Headings | Bullets | Numbered | Table lines | Code fences | Time (s) |
+| omlx   | 200    | 412             | —                | 3            | 120               | stop   | 0        | 0       | 0        | 0           | 0           | 4.2      |
+```
+
+- **Reasoning length is comparable only between engines that render the same chat template for the same model.** Check the templates match before reading a difference as the engine's.
+- `—` under *Reasoning tokens* means the engine did not report `usage.completion_tokens_details.reasoning_tokens`, not zero. *Reasoning chars* 0 means the reply carried neither a reasoning field nor a leading `<think>` block (a `<think>` block is taken out of the answer, so the shape columns count only the answer).
+- The shape columns count answer lines outside fenced code blocks; a `# comment` inside a code block is not a heading. *Code fences* counts each block once. A block that is never closed hides every line after it, so a truncated answer's low counts may be only that: check the *Finish* column for `length`.
+- Each cell is one sample at temperature 1.0: run the probe more than once before trusting a small difference.
+
 ## Gotchas
 
 - **`coding` needs `uv sync --extra eval`** — a plain `make install`/`uv sync` does not pull EvalPlus, since it executes model-generated code and only this one category needs it.

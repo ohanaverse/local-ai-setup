@@ -14,6 +14,7 @@ CLI (`src/llmbench/main.py`):
 | `agent list-tasks\|list-suites\|run\|show\|judge` | Agentic coding benchmark (`benchmark/agent/cli.py`) |
 | `eval list-categories\|list-items\|run\|show\|judge` | Cross-category capability benchmark (`benchmark/eval/cli.py`) |
 | `provider isolate\|stop\|stop-all\|restore\|list` | Per-provider lifecycle (`providers/lifecycle/cli.py`) |
+| `probe thinking` | Same prompts to several running OpenAI-compatible servers; compares reasoning length/opening and answer shape (`probe/thinking.py`, `probe/cli.py`). Manages no provider, reads no registry, writes only `--out` (default: a new temp dir) |
 
 Run it from this directory (`uv run llmbench ...`) or from the repo root (`uv run --directory llmbench llmbench ...`). Either way the working directory is `llmbench/`, so relative path arguments (`--suite`, `--root`, `--results-dir`) resolve from here: `../benchmarks/suites/smoke.toml`. It is not installed globally.
 
@@ -74,7 +75,7 @@ Isolate/stop/stop-all/restore for local providers (ported from bash, issue #79).
 - **Autouse guards** in the same file: `subprocess.run` is wrapped so `launchctl`, `omlx`, `mtplx`, `ollama`, `wt` and `mlx_lm.*` never execute (everything else, such as git, runs for real); `urlopen` raises; `os.kill` is a no-op; the registry and the pointer file are redirected into `tmp_path`. `tests/providers/lifecycle/test_hermeticity.py` pins the allow-list.
 - **Backend tests patch the name as imported into the backend module** (`patch("llmbench.providers.lifecycle.backends.mtplx.subprocess.run")`, `...backends.mtplx.probe.wait_for_port_closed`, `...backends.mtplx._PROC`), never the origin module.
 - CLI tests use `typer.testing.CliRunner` against `llmbench.main.app` (`["run", ...]`, `["provider", ...]`) or a sub-app directly (`agent_app`, `eval_app`).
-- Tests mirror modules: `tests/benchmark/` (incl. `test_routes.py`, `test_judge_core.py`), `tests/benchmark/agent/` (plus `fixtures/`), `tests/benchmark/eval/` (plus `test_rejudge.py`), `tests/providers/lifecycle/`. `tests/benchmark/agent/fixtures/tasks/` holds task bundles whose files are named `test_*.py` on purpose; `collect_ignore` keeps pytest out of them.
+- Tests mirror modules: `tests/benchmark/` (incl. `test_routes.py`, `test_judge_core.py`), `tests/benchmark/agent/` (plus `fixtures/`), `tests/benchmark/eval/` (plus `test_rejudge.py`), `tests/providers/lifecycle/`, `tests/probe/` (its `conftest.py` holds a stdlib `http.server` fake OpenAI endpoint on a free localhost port; reuse it for any test that needs real HTTP, since `urlopen` is patched to raise). `tests/benchmark/agent/fixtures/tasks/` holds task bundles whose files are named `test_*.py` on purpose; `collect_ignore` keeps pytest out of them.
 - A failing assertion must never print a credential: compare a boolean (`found = key is not None`), not the value.
 - **Ruff B905 is enforced:** `zip()` needs explicit `strict=`. CI runs `ruff format --check` on `src/` and `tests/`; run `make format`.
 - **Run `make check` before calling any task done**: mypy flags things pytest cannot.
