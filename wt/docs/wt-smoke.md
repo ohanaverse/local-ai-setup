@@ -67,6 +67,11 @@ An idle pick, or one omlx is still loading, is started first through the
 shared start driver, honouring
 the root `--replace` flag when another model occupies an mtplx
 (one model per process) slot, or an omlx load would unload another model.
+Models of other providers loaded beside it are asked about on a TTY
+(`--others=stop|keep` answers without asking); when stdin is not a
+terminal (scripts, CI), `--json` or not, the start keeps them and prints
+one warning line to stderr (only stdin counts: `wt smoke <id> --json | jq`
+run from a terminal still asks on the terminal) — see [Other providers' models](wt-start-stop.md#other-providers-models-412).
 
 ## Tool-use permission
 

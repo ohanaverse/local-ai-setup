@@ -681,11 +681,7 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		counts := sessionCounts(occ.IDs())
 		lines := []string{fmt.Sprintf("Starting %s will stop:", st.item.model.ID)}
 		for _, oid := range occ.IDs() {
-			name := oid
-			if n := counts[oid]; n > 0 {
-				name = fmt.Sprintf("%s (in use by %d wt session(s))", oid, n)
-			}
-			lines = append(lines, "  "+name)
+			lines = append(lines, "  "+lifecycle.WithSessions(oid, counts[oid]))
 		}
 		header = strings.Join(lines, "\n")
 	case errors.As(msg.err, &unk):

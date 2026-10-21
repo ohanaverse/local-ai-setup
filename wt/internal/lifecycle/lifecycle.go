@@ -85,9 +85,11 @@ type OthersAnswer struct {
 
 // Resident is a model of another provider family that is loaded while a
 // start runs: it holds memory the target will share. Stoppable is false when
-// wt has no backend that can stop it (mlx_lm_server). PID is set for an mtplx
-// still loading, known only by wt's pidfile: that one is stopped only through
-// the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
+// wt has no backend that can stop it (mlx_lm_server), and for an omlx model
+// still loading, which omlx refuses to unload mid-load (omlxUnload): that
+// stop would fail the start it was meant to make room for. PID is set for an
+// mtplx still loading, known only by wt's pidfile: that one is stopped only
+// through the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
 type Resident struct {
 	Entry     localmodels.Entry
 	Stoppable bool
@@ -105,8 +107,9 @@ func (r Resident) Label() string {
 
 // Figure is the memory the resident holds as wt knows it: what its server
 // says (Entry.LoadedSize, printed with localmodels.FormatSize), else "memory
-// use unknown", never 0 and never a guess; with " (wt cannot stop it)" when
-// it is not Stoppable.
+// use unknown", never 0 and never a guess; with "; wt cannot stop it" when
+// it is not Stoppable (a clause, not a parenthesis: the warning line puts the
+// whole figure in parentheses).
 func (r Resident) Figure() string {
 	fig := "memory use unknown"
 	if r.Entry.LoadedSize > 0 {
@@ -118,7 +121,7 @@ func (r Resident) Figure() string {
 		}
 	}
 	if !r.Stoppable {
-		fig += " (wt cannot stop it)"
+		fig += "; wt cannot stop it"
 	}
 	return fig
 }

@@ -507,6 +507,13 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
+	// --others is read by the start driver (othersMode), so `wt start`, `wt
+	// smoke`, and a -M pin or slot profile's local model launched without the
+	// picker screens (-W, --cwd, outside a repository) answer it; the TUI
+	// ignores it until its own dialog lands. Reset
+	// here: the value is package state, and each rootCmd starts unanswered.
+	othersMode = ""
+	cmd.PersistentFlags().Var(&othersMode, "others", "When a local start loads a model beside other providers' models: keep them, or stop the ones wt can stop (default: ask; when stdin is not a terminal keep and warn). Read by wt start, wt smoke and a -M launch that skips the picker screens (-W, --cwd, outside a repository); a launch that opens the picker does not ask yet")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")

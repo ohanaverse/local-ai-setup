@@ -9,7 +9,8 @@ What each file of `cmd/wt` and each package under `internal/` holds, in full. [.
 | `cmd/wt/commands.go` | `rotate` subcommand (debug helper) |
 | `cmd/wt/commands_config.go` | `wt config` subcommand family; `runConfigEditor` opens the editor on a tab (bare `wt config`: Agents; bare `wt model`: Models) and runs the one route sync the Models tab owes |
 | `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch from live `catalog` rows; a `-M` pin on a start row starts it |
-| `cmd/wt/start.go` | `startForLaunch` — non-TUI start driver: stderr progress, Ctrl+C cancel, replace confirmation, `allowReplace`; `startForLaunchOwed` is the same driver for a caller that already owes a proxy restart (a slot-profile launch), and returns `started <id>; launch cancelled` for a Ctrl+C that lost to the start |
+| `cmd/wt/start.go` | `startForLaunch` — non-TUI start driver: stderr progress, Ctrl+C cancel, replace confirmation, `allowReplace`, the others question (`decideOthers`, #412); `startForLaunchOwed` is the same driver for a caller that already owes a proxy restart (a slot-profile launch), and returns `started <id>; launch cancelled` for a Ctrl+C that lost to the start |
+| `cmd/wt/start_others.go` | the others question of a non-TUI start (#412): `othersFlag`/`othersMode` (the root `--others=keep\|stop`), `othersQuestion` and `askChoice` (`[s/k/N]`, through the `chooseOthers` seam on `/dev/tty`), `othersWarning` (the one no-TTY line), `stoppableIDs` |
 | `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers; TTY seams and picker-TTY errors |
 | `cmd/wt/launch.go` | `buildFilteredCmd`, `launchFiltered` (`launchFilteredImpl`), `launchPassthroughImpl`, `runAgentCmd`; profile apply (`applyProfileForLaunch`, `applyResolvedProfile`) |
 | `cmd/wt/stats.go` | `wt stats` — read-only report: the survey table over `survey.jsonl`, then the usage table |

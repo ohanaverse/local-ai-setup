@@ -818,14 +818,15 @@ func TestProfileStartPromptNamesTheOccupantsSessions(t *testing.T) {
 	}
 }
 
-// TestDriveStartKeepsOtherProvidersModels pins what `wt start`, `wt smoke`,
-// a -M pin and a slot profile's local model answer about other providers'
-// models until their prompt exists (#412): every engine call, the first and
-// the retry after a replace, says Decided with nothing to stop. The zero value
-// would make each such start a refusal the driver cannot word; a Stop list
-// would stop models nobody was asked about.
+// TestDriveStartKeepsOtherProvidersModels pins what --others=keep answers
+// for `wt start`, `wt smoke`, a -M pin and a slot profile's local model
+// (#412): every engine call, the first and the retry after a replace, says
+// Decided with nothing to stop. An undecided call would ask a question the
+// flag already answered; a Stop list would stop models the user chose to
+// keep.
 func TestDriveStartKeepsOtherProvidersModels(t *testing.T) {
 	stubSignals(t)
+	stubOthersMode(t, "keep")
 	var got []lifecycle.OthersAnswer
 	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	old := lifecycleStart

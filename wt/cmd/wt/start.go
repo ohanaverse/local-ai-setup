@@ -232,7 +232,11 @@ func startProgress(id string, done <-chan struct{}, began time.Time) func(lifecy
 //
 // It never asks for permission to stop an occupant unless the pin needs it:
 // only an OccupiedError or an OccupancyUnknownError reaches the confirm path,
-// and only on the first attempt. Any other failure is returned as-is.
+// and each question is asked at most once. Any other failure is returned
+// as-is. Other providers' models loaded beside the target (#412) are the
+// others question: answered by --others (othersMode), else asked on the
+// terminal, else, without a TTY, kept with one warning line (decideOthers).
+// --replace answers only the same-family question.
 //
 // A Ctrl+C that came too late to stop the start is not an error here: the
 // model is running, which is what `wt start` reports.
@@ -243,13 +247,13 @@ func startForLaunch(cfg *config.Config, row catalog.Row, allowReplace bool) erro
 
 // startForLaunchOwed is startForLaunch for a caller that already owes a proxy
 // restart: a slot-profile launch that wrote a cloud slot's route before
-// starting its local model. restartOwed goes to both engine attempts as
+// starting its local model. restartOwed goes to every engine attempt as
 // lifecycle.Options.RestartOwed, so the start's own restart publishes that
 // route too.
 //
 // stillOwed is true only when restartOwed was true and the function returns
-// after a refusal it did not retry: the y/N prompt was declined, failed, or
-// was interrupted. The engine touched nothing then, so the caller settles the
+// after a refusal it did not retry: the y/N or the others prompt was
+// declined, failed, or was interrupted. The engine touched nothing then, so the caller settles the
 // restart (lifecycle.SettleRoutes). On every other return the engine has
 // started the one restart, or nothing was owed.
 //
@@ -286,9 +290,29 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 	report := startProgress(id, done, began)
 
 	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
-	// Others: keep other providers' models, unasked, as every start did
-	// before #412; the question is not asked here yet.
-	opts := lifecycle.Options{Progress: report, RestartOwed: restartOwed, Others: lifecycle.OthersAnswer{Decided: true}}
+	// replacing is the "replacing whatever <provider> is serving" line of a
+	// confirmed unknown occupancy. It prints on the engine's first progress
+	// stage, which the engine reports only once it is past every refusal and
+	// about to act: a refusal about other providers' models still follows
+	// the confirmation, and a cancel there replaces nothing.
+	var replacingMu sync.Mutex
+	replacing := ""
+	progress := func(s lifecycle.Stage) {
+		replacingMu.Lock()
+		if replacing != "" {
+			fmt.Fprint(osStderr, replacing)
+			replacing = ""
+		}
+		replacingMu.Unlock()
+		report(s)
+	}
+	opts := lifecycle.Options{Progress: progress, RestartOwed: restartOwed}
+	// --others=keep answers the others question before it is asked, so the
+	// engine never refuses for them. Every other mode starts undecided: the
+	// refusal lists what to ask about, warn about, or stop.
+	if othersMode == "keep" {
+		opts.Others = lifecycle.OthersAnswer{Decided: true}
+	}
 
 	// settled ends a start the engine reported done. ctx is done only when a
 	// signal arrived: the goroutine above calls stop() after ctx.Done(), and
@@ -300,89 +324,155 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 		return false, ctx.Err() != nil, nil
 	}
 
-	err = lifecycleStart(ctx, cfg, target, opts)
-	if err == nil {
-		// The agent launch follows immediately and routes through LiteLLM:
-		// settle the route hook's async proxy restart first.
-		return settled(settleStart(ctx, cfg, id, target))
-	}
-	if errors.Is(err, context.Canceled) {
-		return false, false, fmt.Errorf("cancelled before %s started: %w", id, err)
-	}
-
-	// ask races the prompt against ctx: the read on /dev/tty cannot be
-	// interrupted, and the signal handler swallows Ctrl+C, so without the race
-	// Ctrl+C at the y/N prompt would only cancel ctx and leave the read
+	// race runs a prompt against ctx: the read on /dev/tty cannot be
+	// interrupted, and the signal handler swallows Ctrl+C, so without the
+	// race Ctrl+C at a prompt would only cancel ctx and leave the read
 	// blocked until Enter. The abandoned read goroutine dies with the process.
-	ask := func(question string) (bool, error) {
+	race := func(prompt func() (any, error)) (any, error) {
 		type answer struct {
-			ok  bool
+			v   any
 			err error
 		}
 		ch := make(chan answer, 1)
 		go func() {
-			ok, aerr := askReplace(question)
-			ch <- answer{ok, aerr}
+			v, aerr := prompt()
+			ch <- answer{v, aerr}
 		}()
 		select {
 		case a := <-ch:
-			return a.ok, a.err
+			return a.v, a.err
 		case <-ctx.Done():
-			return false, fmt.Errorf("cancelled before %s started: %w", id, ctx.Err())
+			return nil, fmt.Errorf("cancelled before %s started: %w", id, ctx.Err())
 		}
+	}
+	ask := func(question string) (bool, error) {
+		v, err := race(func() (any, error) { return askReplace(question) })
+		ok, _ := v.(bool)
+		return ok, err
+	}
+	askOthers := func(question string, canStop bool) (othersChoice, error) {
+		v, err := race(func() (any, error) { return chooseOthers(question, canStop) })
+		c, _ := v.(othersChoice)
+		return c, err
 	}
 
-	var occ *lifecycle.OccupiedError
-	var unk *lifecycle.OccupancyUnknownError
-	switch {
-	case errors.As(err, &occ):
-		counts := sessionCounts(occ.IDs())
-		parts := make([]string, len(occ.Occupants))
-		for i, oid := range occ.IDs() {
-			parts[i] = oid
-			if n := counts[oid]; n > 0 {
-				parts[i] = fmt.Sprintf("%s (in use by %d wt session(s))", oid, n)
-			}
+	// Each pass answers at least one question the engine had not been given
+	// an answer to (the same-family replace, the others), and a refusal that
+	// asks only what was already answered is a failure, so this ends after at
+	// most three engine calls. A same-family OccupiedError and the others come
+	// in one refusal, answered together with one retry; an
+	// OccupancyUnknownError comes alone, before the engine reads the others.
+	for {
+		err = lifecycleStart(ctx, cfg, target, opts)
+		if err == nil {
+			// The agent launch follows immediately and routes through
+			// LiteLLM: settle the route hook's async proxy restart first (and,
+			// after a replace, the drop of the replaced occupant's route).
+			return settled(settleStart(ctx, cfg, id, target))
 		}
-		names := strings.Join(parts, ", ")
-		if !allowReplace {
-			ok, perr := ask(fmt.Sprintf("starting %s will stop %s; continue?", id, names))
-			if perr != nil {
-				return restartOwed, false, perr
-			}
-			if !ok {
-				return restartOwed, false, fmt.Errorf("cancelled — %s still running", names)
-			}
+		if errors.Is(err, context.Canceled) {
+			return false, false, fmt.Errorf("cancelled before %s started: %w", id, err)
 		}
-		fmt.Fprintf(osStderr, "wt: replacing %s\n", names)
-	case errors.As(err, &unk):
-		if !allowReplace {
-			ok, perr := ask(fmt.Sprintf("cannot tell whether %s at %s is already serving a model; replace it with %s?", unk.ProviderID, unk.Origin, id))
-			if perr != nil {
-				return restartOwed, false, perr
-			}
-			if !ok {
-				return restartOwed, false, fmt.Errorf("cancelled — %s may still be serving a model", unk.ProviderID)
-			}
-		}
-		fmt.Fprintf(osStderr, "wt: replacing whatever %s is serving at %s\n", unk.ProviderID, unk.Origin)
-	default:
-		return false, false, startFailure(id, err)
-	}
 
-	opts.AllowReplace = true
-	err = lifecycleStart(ctx, cfg, target, opts)
-	if err == nil {
-		// Same as the first attempt: the proxy must carry the new route (and
-		// have dropped the replaced occupant's) before the agent launches.
-		return settled(settleStart(ctx, cfg, id, target))
+		var occ *lifecycle.OccupiedError
+		var unk *lifecycle.OccupancyUnknownError
+		replaceAsked := false
+		othersAsked := false
+		switch {
+		case errors.As(err, &occ):
+			replaceAsked = len(occ.Occupants) > 0 && !opts.AllowReplace
+			othersAsked = (len(occ.Others) > 0 || len(occ.OthersUnknown) > 0) && !opts.Others.Decided
+		case errors.As(err, &unk):
+			replaceAsked = !opts.AllowReplace
+		}
+		if !replaceAsked && !othersAsked {
+			// Not a refusal, or one that asks only what was already answered:
+			// a different failure — report it rather than prompting again.
+			// The engine cannot refuse with every question answered today;
+			// if it ever does, that refusal touched nothing and did not spend
+			// the owed restart, so the caller still settles it.
+			return restartOwed && lifecycle.RestartStillOwed(err), false, startFailure(id, err)
+		}
+
+		if replaceAsked && unk != nil {
+			if !allowReplace {
+				ok, perr := ask(fmt.Sprintf("cannot tell whether %s at %s is already serving a model; replace it with %s?", unk.ProviderID, unk.Origin, id))
+				if perr != nil {
+					return restartOwed, false, perr
+				}
+				if !ok {
+					return restartOwed, false, fmt.Errorf("cancelled — %s may still be serving a model", unk.ProviderID)
+				}
+			}
+			replacingMu.Lock()
+			replacing = fmt.Sprintf("wt: replacing whatever %s is serving at %s\n", unk.ProviderID, unk.Origin)
+			replacingMu.Unlock()
+			opts.AllowReplace = true
+			continue
+		}
+
+		names := ""
+		if replaceAsked {
+			counts := sessionCounts(occ.IDs())
+			parts := make([]string, len(occ.Occupants))
+			for i, oid := range occ.IDs() {
+				parts[i] = lifecycle.WithSessions(oid, counts[oid])
+			}
+			names = strings.Join(parts, ", ")
+			if !allowReplace {
+				ok, perr := ask(fmt.Sprintf("starting %s will stop %s; continue?", id, names))
+				if perr != nil {
+					return restartOwed, false, perr
+				}
+				if !ok {
+					return restartOwed, false, fmt.Errorf("cancelled — %s still running", names)
+				}
+			}
+		}
+		if othersAsked {
+			answer, aerr := decideOthers(cfg, id, occ, askOthers)
+			if aerr != nil {
+				return restartOwed, false, aerr
+			}
+			opts.Others = answer
+		}
+		if replaceAsked {
+			// Said only once both answers are in: a cancel at the others
+			// question replaces nothing.
+			fmt.Fprintf(osStderr, "wt: replacing %s\n", names)
+			opts.AllowReplace = true
+		}
 	}
-	if errors.Is(err, context.Canceled) {
-		return false, false, fmt.Errorf("cancelled before %s started: %w", id, err)
+}
+
+// decideOthers answers a refusal about other providers' models (#412):
+// --others=stop stops every resident wt can stop, unasked; without a TTY and
+// without --others the start keeps them and prints one warning line, so a
+// script neither hangs nor stops a model; otherwise ask is put the question.
+// A cancel, or a prompt that failed, is the error the start returns.
+func decideOthers(cfg *config.Config, id string, occ *lifecycle.OccupiedError, ask func(string, bool) (othersChoice, error)) (lifecycle.OthersAnswer, error) {
+	switch othersMode {
+	case "stop":
+		return lifecycle.OthersAnswer{Decided: true, Stop: stoppableIDs(occ.Others)}, nil
+	case "keep":
+		return lifecycle.OthersAnswer{Decided: true}, nil
 	}
-	// Replace was already granted; anything that fails now is a different
-	// failure — report it rather than prompting again.
-	return false, false, startFailure(id, err)
+	if !stdinTTY() {
+		fmt.Fprint(osStderr, othersWarning(cfg, id, occ))
+		return lifecycle.OthersAnswer{Decided: true}, nil
+	}
+	question, canStop := othersQuestion(cfg, id, occ)
+	choice, err := ask(question, canStop)
+	if err != nil {
+		return lifecycle.OthersAnswer{}, err
+	}
+	switch choice {
+	case othersStop:
+		return lifecycle.OthersAnswer{Decided: true, Stop: stoppableIDs(occ.Others)}, nil
+	case othersKeep:
+		return lifecycle.OthersAnswer{Decided: true}, nil
+	}
+	return lifecycle.OthersAnswer{}, othersCancelled(occ)
 }
 
 // startError carries the shared one-line wording while keeping the engine's

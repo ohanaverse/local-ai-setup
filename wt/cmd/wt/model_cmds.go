@@ -709,7 +709,13 @@ func startCmd(a *app) *cobra.Command {
 			"On a provider that serves one model (mtplx), starting another replaces it.\n" +
 			"On omlx a model loads beside the ones already loaded; when it does not fit,\n" +
 			"omlx unloads the least recently used. wt asks before either; --replace skips\n" +
-			"the question.",
+			"the question.\n\n" +
+			"When other providers' models are loaded (an mtplx server beside an omlx start,\n" +
+			"an ollama model in memory), wt lists them with the memory each holds and asks\n" +
+			"whether to stop them first, keep them, or cancel. --others=stop stops every one\n" +
+			"wt can stop and --others=keep keeps them, without asking; --replace never stops\n" +
+			"them. When stdin is not a terminal and --others is not given, wt keeps them\n" +
+			"and prints one warning.",
 		Example: "  wt start ollama/qwen3.8:27b-mlx\n  wt start",
 		Args:    cobra.MaximumNArgs(1),
 		// A refused or failed start is not a usage mistake, and main prints
