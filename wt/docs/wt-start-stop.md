@@ -337,6 +337,14 @@ stop them first, keep them and start, or cancel? [s/k/N]
   model still loading, a provider wt cannot read), the advice is
   `pass --others=keep to silence this` alone: `--others=stop` would stop
   nothing.
+- wt decides whether it may ask from stdin alone, though it reads the answer
+  from the terminal: a redirected stdin is a script even with a terminal
+  attached, so `wt start <id> < answers.txt` asks neither this question nor
+  the replace question (it keeps the other models with the warning above, and
+  a start that would replace a model exits 1 naming `--replace`). A piped
+  answer can never stop a model and a script never waits on a question
+  nobody answers; a script proceeds with `--replace` and `--others=keep` or
+  `--others=stop` (#424).
 - A stop goes through the same stop as `wt stop` (omlx unloads the model,
   ollama runs `ollama stop` and waits, mtplx stops the server) and removes
   the model's route (an ollama model keeps its route). A stop that fails ends

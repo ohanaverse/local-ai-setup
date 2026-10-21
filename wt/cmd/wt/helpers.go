@@ -86,6 +86,16 @@ func removeGuard() error {
 // term.IsTerminal does a TIOCGWINSZ/TCGETS ioctl to confirm TTY-ness; a
 // plain os.FileInfo mode check would return true for /dev/null and other
 // character devices, which isn't strict enough.
+//
+// `wt start`'s two questions — the others question (decideOthers) and the
+// replace question (askReplace) — use it the same way on purpose (#424): stdin
+// is the "interactive invocation" signal, while the prompts themselves read
+// /dev/tty. A redirected stdin therefore means a script even when a terminal
+// is attached: `wt start x < answers.txt` asks neither question, keeps the
+// other providers' models with a warning, and fails closed on the replace
+// question naming --replace. A piped answer must never be able to stop a
+// model, and a script must never hang on a prompt nobody answers;
+// --replace and --others=keep|stop are how a script proceeds.
 func isStdinTTY() bool {
 	return term.IsTerminal(os.Stdin.Fd())
 }
