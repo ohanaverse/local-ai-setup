@@ -423,7 +423,9 @@ READING_NOTE = "\n".join(
         "*Reasoning chars* is the length of `reasoning_content` (or `reasoning`); 0 means the "
         "reply carried no reasoning field.",
         "- The shape columns count lines of the answer outside fenced code blocks (a `# comment` "
-        "inside a code block is not a heading); *code fences* counts each fenced block once.",
+        "inside a code block is not a heading); *code fences* counts each fenced block once. "
+        "A fence that is never closed hides every later line, so an answer cut off inside a "
+        "code block (*Finish* `length`) can show low counts for that reason alone.",
         "- Each cell is one sample at the sampling above. Repeat the run before reading much "
         "into a small difference.",
     ]

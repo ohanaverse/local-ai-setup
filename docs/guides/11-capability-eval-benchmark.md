@@ -93,7 +93,7 @@ Reading `report.md`: one table per prompt, one row per target, then the first 20
 
 - **Reasoning length is comparable only between engines that render the same chat template for the same model.** Check the templates match before reading a difference as the engine's.
 - `—` under *Reasoning tokens* means the engine did not report `usage.completion_tokens_details.reasoning_tokens`, not zero. *Reasoning chars* 0 means the reply carried no reasoning field.
-- The shape columns count answer lines outside fenced code blocks; a `# comment` inside a code block is not a heading. *Code fences* counts each block once.
+- The shape columns count answer lines outside fenced code blocks; a `# comment` inside a code block is not a heading. *Code fences* counts each block once. A block that is never closed hides every line after it, so a truncated answer's low counts may be only that: check the *Finish* column for `length`.
 - Each cell is one sample at temperature 1.0: run the probe more than once before trusting a small difference.
 
 ## Gotchas
