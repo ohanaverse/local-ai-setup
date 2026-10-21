@@ -212,9 +212,13 @@ func TestIsolateForTestStopsGitStartingSSH(t *testing.T) {
 	}
 
 	t.Run("unguarded", func(t *testing.T) {
-		t.Setenv("GIT_SSH_COMMAND", os.Getenv("GIT_SSH_COMMAND")) // registers the restore
-		if err := os.Unsetenv("GIT_SSH_COMMAND"); err != nil {
-			t.Fatal(err)
+		// A developer's own ssh selectors must not decide this control: git
+		// reads GIT_SSH_COMMAND, then GIT_SSH, before it looks at PATH.
+		for _, v := range []string{"GIT_SSH_COMMAND", "GIT_SSH"} {
+			t.Setenv(v, os.Getenv(v)) // registers the restore
+			if err := os.Unsetenv(v); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if _, sshRan := lsRemote(t); !sshRan {
 			t.Fatal("without the guard git did not run the ssh on PATH; the guarded case proves nothing")
