@@ -151,12 +151,19 @@ def load_prompt_file(path: Path) -> Prompt:
 # Lines inside a fenced code block are not counted as headings, bullets,
 # numbered items or table lines: they are code (`# comment`, `a | b`), and a
 # markdown renderer shows them as code. A code fence counts once per block.
+# As in CommonMark, a block closes only on a bare run (no info string) of the
+# opening fence's character at least as long as the opening run, indented by
+# at most three spaces; a fence never closed hides every later line.
 
 _HEADING_RE = re.compile(r"#{1,6}[ \t]")
 _BULLET_RE = re.compile(r"\s*[-*+][ \t]")
 _NUMBERED_RE = re.compile(r"\s*\d+[.)][ \t]")
 _TABLE_RE = re.compile(r"\s*\|")
-_FENCE_RE = re.compile(r"\s*(```|~~~)")
+_FENCE_RE = re.compile(r"\s*(`{3,}|~{3,})")
+_CLOSING_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
+# A thematic break (`* * *`, `- - -`, `***`): three or more of one of -, *, _
+# with only spaces or tabs between. A horizontal rule, not a bullet.
+_THEMATIC_BREAK_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
 
 
 def is_heading(line: str) -> bool:
@@ -164,7 +171,7 @@ def is_heading(line: str) -> bool:
 
 
 def is_bullet(line: str) -> bool:
-    return _BULLET_RE.match(line) is not None
+    return _BULLET_RE.match(line) is not None and _THEMATIC_BREAK_RE.fullmatch(line) is None
 
 
 def is_numbered(line: str) -> bool:
@@ -190,13 +197,19 @@ class AnswerShape:
 
 def answer_shape(text: str) -> AnswerShape:
     counts = dict.fromkeys(("headings", "bullets", "numbered", "table_lines", "code_fences"), 0)
+    # The opening run (e.g. "````") of the block the line is in, or None.
     open_fence: str | None = None
     for line in text.splitlines():
-        fence = _FENCE_RE.match(line)
         if open_fence is not None:
-            if fence is not None and fence.group(1) == open_fence:
+            closing = _CLOSING_FENCE_RE.fullmatch(line)
+            if (
+                closing is not None
+                and closing.group(1)[0] == open_fence[0]
+                and len(closing.group(1)) >= len(open_fence)
+            ):
                 open_fence = None
             continue
+        fence = _FENCE_RE.match(line)
         if fence is not None:
             open_fence = fence.group(1)
             counts["code_fences"] += 1

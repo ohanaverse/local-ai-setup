@@ -43,6 +43,11 @@ def test_is_heading(line, expected):
         ("\t\t* nested deeper", True),
         ("-nospace", False),
         ("---", False),
+        ("* * *", False),
+        ("- - -", False),
+        ("  _ _ _", False),
+        ("*  *  *  *", False),
+        ("- -", True),
         ("**bold** text", False),
         ("1. numbered is not a bullet", False),
     ],
@@ -136,6 +141,29 @@ def test_lines_inside_a_code_fence_are_not_counted():
 def test_a_fence_closes_only_on_its_own_character():
     """A ~~~ line inside a ``` block is code; the block runs to the next ```."""
     text = "\n".join(["```", "~~~", "# still code", "```", "# heading"])
+    assert answer_shape(text) == AnswerShape(
+        headings=1, bullets=0, numbered=0, table_lines=0, code_fences=1
+    )
+
+
+def test_a_fence_line_with_an_info_string_does_not_close_a_block():
+    """CommonMark: a closing fence carries no info string, so ```python inside
+    an open ``` block is code, and the block stays open."""
+    assert answer_shape("```\ncode\n```python\n# h\n- b\n") == AnswerShape(
+        headings=0, bullets=0, numbered=0, table_lines=0, code_fences=1
+    )
+
+
+def test_a_shorter_fence_does_not_close_a_longer_one():
+    """A block opened with four backticks is closed by four or more, not three."""
+    text = "\n".join(["````", "```", "# inner", "```", "````", "# outer"])
+    assert answer_shape(text) == AnswerShape(
+        headings=1, bullets=0, numbered=0, table_lines=0, code_fences=1
+    )
+
+
+def test_a_longer_bare_fence_closes_a_block():
+    text = "\n".join(["```", "# code", "   `````  ", "# heading"])
     assert answer_shape(text) == AnswerShape(
         headings=1, bullets=0, numbered=0, table_lines=0, code_fences=1
     )
