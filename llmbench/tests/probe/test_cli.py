@@ -187,3 +187,116 @@ def test_default_out_is_a_new_directory_under_the_temp_dir(
     assert (made / "report.md").is_file()
     assert (made / "results.json").is_file()
     assert not (Path.home() / ".config" / "local-ai").exists()
+
+
+@pytest.fixture
+def read_only_dir(tmp_path):
+    path = tmp_path / "ro"
+    path.mkdir()
+    path.chmod(0o500)
+    yield path
+    path.chmod(0o700)
+
+
+@pytest.mark.parametrize("kind", ["read-only dir", "under a read-only dir", "a file"])
+def test_an_unwritable_out_exits_2_before_any_request(
+    kind, fake_openai, tmp_path, read_only_dir, prompt_file
+):
+    if kind == "read-only dir":
+        out = read_only_dir
+    elif kind == "under a read-only dir":
+        out = read_only_dir / "sub"
+    else:
+        out = tmp_path / "a-file"
+        out.write_text("x", encoding="utf-8")
+    result = _invoke(
+        "--target",
+        f"a={fake_openai.base_url},no-reasoning",
+        "--no-builtin",
+        "--prompt-file",
+        str(prompt_file),
+        "--out",
+        str(out),
+    )
+    assert result.exit_code == 2, result.output
+    assert "--out" in result.output
+    assert fake_openai.requests == []
+
+
+def test_results_are_written_after_each_request(fake_openai, tmp_path, prompt_file, monkeypatch):
+    """After every finished request results.json and report.md already hold
+    it, so a run that dies later keeps what it finished."""
+    import llmbench.probe.thinking as thinking
+
+    out = tmp_path / "out"
+    seen_on_disk: list[int] = []
+    real_probe_one = thinking.probe_one
+
+    def probe_one_then_look(*args, **kwargs):
+        if (out / "results.json").exists():
+            doc = json.loads((out / "results.json").read_text(encoding="utf-8"))
+            seen_on_disk.append(len(doc["results"]))
+        else:
+            seen_on_disk.append(0)
+        return real_probe_one(*args, **kwargs)
+
+    monkeypatch.setattr(thinking, "probe_one", probe_one_then_look)
+    result = _invoke(
+        "--target",
+        f"a={fake_openai.base_url},no-reasoning",
+        "--target",
+        f"b={fake_openai.base_url},reasoning-field",
+        "--no-builtin",
+        "--prompt-file",
+        str(prompt_file),
+        "--out",
+        str(out),
+    )
+    assert result.exit_code == 0, result.output
+    assert seen_on_disk == [0, 1]
+    assert [p.name for p in sorted(out.iterdir())] == ["report.md", "results.json"]
+
+
+def test_an_interrupt_keeps_the_finished_requests_and_exits_130(
+    fake_openai, tmp_path, prompt_file, monkeypatch
+):
+    """Ctrl-C during the second request: the first request's row is on disk,
+    the in-flight (target, prompt) is named, and the exit is 130."""
+    import llmbench.probe.thinking as thinking
+
+    out = tmp_path / "out"
+    calls = []
+    real_probe_one = thinking.probe_one
+
+    def interrupted_on_second(*args, **kwargs):
+        calls.append(args[0].name)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return real_probe_one(*args, **kwargs)
+
+    monkeypatch.setattr(thinking, "probe_one", interrupted_on_second)
+    result = _invoke(
+        "--target",
+        f"a={fake_openai.base_url},no-reasoning",
+        "--target",
+        f"b={fake_openai.base_url},slow",
+        "--target",
+        f"c={fake_openai.base_url},no-reasoning",
+        "--no-builtin",
+        "--prompt-file",
+        str(prompt_file),
+        "--timeout",
+        "0.5",
+        "--out",
+        str(out),
+    )
+    assert result.exit_code == 130, result.output
+    assert calls == ["a", "b"]
+    assert "interrupted" in result.output
+    assert "b / custom" in result.output
+    doc = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert [(r["target"], r["prompt_id"], r["answered"]) for r in doc["results"]] == [
+        ("a", "custom", True)
+    ]
+    assert "## Prompt `custom`" in (out / "report.md").read_text(encoding="utf-8")
+    assert [p.name for p in sorted(out.iterdir())] == ["report.md", "results.json"]

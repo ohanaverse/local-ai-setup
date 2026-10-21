@@ -12,6 +12,7 @@ directory it is given (never the benchmark results dir or latest.toml).
 from __future__ import annotations
 
 import json
+import os
 import re
 import tempfile
 import time
@@ -396,13 +397,17 @@ def run_probe(
     sampling: Sampling,
     *,
     timeout_s: float,
+    on_start: Callable[[Target, Prompt], None] | None = None,
     on_result: Callable[[ProbeResult], None] | None = None,
 ) -> list[ProbeResult]:
     """Every prompt against every target, target by target (the owner isolates
-    one engine at a time). A failing target never stops the run."""
+    one engine at a time). A failing target never stops the run. `on_start`
+    is called before each request, `on_result` after it."""
     results: list[ProbeResult] = []
     for target, api_key in targets:
         for prompt in prompts:
+            if on_start is not None:
+                on_start(target, prompt)
             result = probe_one(target, prompt, sampling, api_key=api_key, timeout_s=timeout_s)
             results.append(result)
             if on_result is not None:
@@ -588,12 +593,38 @@ def run_json(run: ProbeRun) -> dict[str, Any]:
     }
 
 
+def prepare_out_dir(out_dir: Path) -> None:
+    """Create `out_dir` and prove a file can be written in it, before any
+    request is sent: a long run must not end on a directory it cannot use."""
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=out_dir, prefix=".probe-write-check-"):
+            pass
+    except OSError as exc:
+        raise ProbeError(f"--out {out_dir} is not a writable directory: {exc}") from exc
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """A temp file in the same directory, renamed over `path`: a reader (or an
+    interrupt) never sees half a file."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def write_outputs(run: ProbeRun, out_dir: Path) -> tuple[Path, Path]:
+    """report.md and results.json for the results so far. Called after every
+    finished request, so an interrupted run keeps what it completed."""
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "report.md"
     json_path = out_dir / "results.json"
-    md_path.write_text(render_markdown(run), encoding="utf-8")
-    json_path.write_text(json.dumps(run_json(run), indent=2) + "\n", encoding="utf-8")
+    _write_atomic(json_path, json.dumps(run_json(run), indent=2) + "\n")
+    _write_atomic(md_path, render_markdown(run))
     return md_path, json_path
 
 

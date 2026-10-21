@@ -158,3 +158,26 @@ def test_write_outputs_writes_both_files(tmp_path):
     assert json_path == out / "results.json"
     assert md_path.read_text(encoding="utf-8").startswith("# Thinking probe")
     assert json.loads(json_path.read_text(encoding="utf-8"))["results"][0]["target"] == "omlx"
+
+
+def test_a_failed_write_leaves_the_previous_file_whole(tmp_path, monkeypatch):
+    """Each file is written to a temp file in the same directory and renamed
+    into place: a write that fails leaves the last good copy and no temp."""
+    import pytest
+
+    import llmbench.probe.thinking as thinking
+
+    out = tmp_path / "out"
+    run = _run()
+    write_outputs(run, out)
+    before = (out / "results.json").read_text(encoding="utf-8")
+
+    def refuse(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(thinking.os, "replace", refuse)
+    run.results = run.results[:1]
+    with pytest.raises(OSError):
+        write_outputs(run, out)
+    assert (out / "results.json").read_text(encoding="utf-8") == before
+    assert sorted(p.name for p in out.iterdir()) == ["report.md", "results.json"]

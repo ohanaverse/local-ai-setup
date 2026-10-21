@@ -21,6 +21,7 @@ from llmbench.probe.thinking import (
     default_out_dir,
     load_prompt_file,
     parse_target,
+    prepare_out_dir,
     resolve_api_key,
     run_probe,
     write_outputs,
@@ -31,9 +32,11 @@ probe_app = typer.Typer(
     "They never start, stop, isolate or warm a provider."
 )
 
-# Usage errors (bad --target, unset key variable, no prompts) exit 2, before
-# any request; a run in which no target answered exits 1.
+# Usage errors (bad --target, unset key variable, no prompts, an --out that
+# cannot be written) exit 2, before any request; a run in which no target
+# answered exits 1; Ctrl-C exits 130 (128 + SIGINT) after writing what finished.
 _USAGE_EXIT = 2
+_INTERRUPTED_EXIT = 130
 
 
 def _usage_error(message: str) -> typer.Exit:
@@ -108,8 +111,10 @@ def thinking_cmd(
     (length, opening) and its answer (length, markdown shape).
 
     Start and isolate each server yourself first (`llmbench provider isolate
-    ...`); this command only sends chat completions. Exit 0 when at least one
-    target answered, 1 when none did, 2 on a usage error.
+    ...`); this command only sends chat completions. report.md and
+    results.json are rewritten after every finished request, so Ctrl-C keeps
+    what finished. Exit 0 when at least one target answered, 1 when none
+    did, 2 on a usage error, 130 when interrupted.
     """
     if not target:
         raise _usage_error(f"give at least one --target {TARGET_FORMAT}")
@@ -124,6 +129,8 @@ def thinking_cmd(
         prompts += [load_prompt_file(path) for path in prompt_file]
         if not prompts:
             raise ProbeError("no prompts: drop --no-builtin or pass --prompt-file")
+        out_dir = out if out is not None else default_out_dir()
+        prepare_out_dir(out_dir)
     except ProbeError as exc:
         raise _usage_error(str(exc)) from exc
 
@@ -135,8 +142,29 @@ def thinking_cmd(
         sampling=sampling,
         timeout_s=timeout,
     )
-    run.results = run_probe(keyed, prompts, sampling, timeout_s=timeout, on_result=_progress)
-    md_path, json_path = write_outputs(run, out if out is not None else default_out_dir())
+    in_flight: list[tuple[Target, Prompt]] = []
+
+    def started(t: Target, p: Prompt) -> None:
+        in_flight[:] = [(t, p)]
+
+    def finished(result: ProbeResult) -> None:
+        in_flight.clear()
+        run.results.append(result)
+        write_outputs(run, out_dir)
+        _progress(result)
+
+    md_path, json_path = write_outputs(run, out_dir)
+    try:
+        run_probe(keyed, prompts, sampling, timeout_s=timeout, on_start=started, on_result=finished)
+    except KeyboardInterrupt:
+        md_path, json_path = write_outputs(run, out_dir)
+        where = f" during {in_flight[0][0].name} / {in_flight[0][1].id}" if in_flight else ""
+        typer.echo(
+            f"interrupted{where}; {len(run.results)} finished request(s) kept in "
+            f"{md_path} and {json_path}",
+            err=True,
+        )
+        raise typer.Exit(_INTERRUPTED_EXIT) from None
     typer.echo(f"report: {md_path}")
     typer.echo(f"json:   {json_path}")
     if not any(r.answered for r in run.results):
