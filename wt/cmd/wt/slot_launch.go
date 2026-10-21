@@ -88,17 +88,28 @@ func slotWarnings(a *app) []string {
 }
 
 // slotContentNotes are what the drivers say, without blocking, about the
-// config_content of each profile that passed validation
-// (agents.SlotConfigWarnings; claude's: a modelOverrides target that is not
-// one of the profile's slot models, #412), each naming the profile. A launch
-// prints them after "wt: ", and `wt profile list` after "warning: ". They are
-// read from the static checks only, so they cost a launch no probe.
+// config_content of each profile that passed validation, in file order
+// (slotContentNotesFor). A launch prints them after "wt: ", and `wt profile
+// list` after "warning: ". They are read from the static checks only, so they
+// cost a launch no probe.
 func slotContentNotes(a *app) []string {
 	var out []string
 	for _, c := range a.slotChecks {
-		for _, w := range agents.SlotConfigWarnings(c) {
-			out = append(out, fmt.Sprintf("%s (%s): %s", c.Label(), c.Profile.Agent, w))
-		}
+		out = append(out, slotContentNotesFor(c)...)
+	}
+	return out
+}
+
+// slotContentNotesFor is what c's driver says, without blocking, about the
+// config_content of one profile that passed validation
+// (agents.SlotConfigWarnings; claude's: a modelOverrides target that is not
+// one of the profile's slot models, #412), each line naming the profile. nil
+// for a profile that failed validation. slotContentNotes and `wt profile
+// show` (#419) both word the notes here, so the two cannot drift.
+func slotContentNotesFor(c profiles.SlotCheck) []string {
+	var out []string
+	for _, w := range agents.SlotConfigWarnings(c) {
+		out = append(out, fmt.Sprintf("%s (%s): %s", c.Label(), c.Profile.Agent, w))
 	}
 	return out
 }

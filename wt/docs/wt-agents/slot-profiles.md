@@ -236,7 +236,9 @@ wt: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] t
 and a target that is not a string gives
 `… config_content.modelOverrides["<key>"] is not a string: a target must be a model id`.
 `wt profile list` prints the same lines after `warning:`, and the profile
-stays `ok`. The keys are Claude Code's own model ids and are never judged.
+stays `ok`; `wt profile show` prints the shown profile's own lines after
+`warning:`, under its slot lines (#419). The keys are Claude Code's own
+model ids and are never judged.
 
 **Where the warning lines appear.** wt prints them to stderr once per launch
 of an agent that has slots, before any picker opens. The picker's screen
@@ -530,6 +532,7 @@ slot fable: ollama/glm-5.3-flash:cloud (glm-5.3-flash:cloud) [default's model]
 slot opus: openrouter/z-ai/glm-5.3-flash (z-ai/glm-5.3-flash)
 slot sonnet*: ollama/glm-5.3-flash:cloud (glm-5.3-flash:cloud)
 slot haiku: omlx/mlx-community--Qwen3.8-27B-4bit (mlx-community--Qwen3.8-27B-4bit)
+warning: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "ollama/deepseek-v4-pro:cloud", which is not one of the profile's slot models, so wt does not make sure it is routed
 env: ANTHROPIC_BASE_URL=http://localhost:4000
 env: ANTHROPIC_AUTH_TOKEN=***1234
 env: ANTHROPIC_API_KEY=
@@ -541,8 +544,13 @@ settings:
   { …the payload shown above… }
 ```
 
-The proxy key is masked as `wt litellm status` masks it. A blocked profile
-prints `reason: …` and the command exits non-zero. An `opusplan` profile
+The proxy key is masked as `wt litellm status` masks it. Under the slot
+lines comes one `warning:` line per `modelOverrides` target of this profile
+that wt does not route, worded as `wt profile list` words it
+([above](#a-modeloverrides-target-wt-does-not-route)); they sit there, next
+to the slot models the targets are compared with and above the long
+settings payload, and the command still exits 0. A blocked profile prints
+`reason: …`, no warning line, and the command exits non-zero. An `opusplan` profile
 prints `default: opusplan — the opus slot in plan mode, the sonnet slot
 otherwise` under the first line and marks `sonnet*`.
 

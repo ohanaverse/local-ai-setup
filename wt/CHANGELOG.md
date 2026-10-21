@@ -400,6 +400,15 @@
 
 ### Fixed
 
+- `wt profile show -A claude -M profile/<name>` now prints the
+  `modelOverrides` warning that `wt profile list` and a launch print (#419):
+  one `warning: <profile> (claude): config_content.modelOverrides["<key>"]
+  targets "<id>", which is not one of the profile's slot models, so wt does
+  not make sure it is routed` line per such target of the shown profile,
+  under its slot lines, and the command still exits 0. Before, `show`
+  printed the profile's settings, the override included, with no sign that
+  wt does not route its target. A blocked profile still prints its reason
+  alone.
 - The full-screen picker's replace dialog now says how many wt sessions use
   each model it would stop (#412), as the `wt -M` and `wt start` prompt
   always has: under `Starting <id> will stop:`, each occupant on a line of
