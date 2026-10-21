@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 
 import pytest
+import typer.main
 from typer.testing import CliRunner
 
 from llmbench.main import app
+from llmbench.probe.cli import _PENALTY_CAVEAT
 
 runner = CliRunner()
 REPO_CATEGORIES = Path(__file__).resolve().parents[3] / "benchmarks" / "tasks" / "eval"
@@ -352,3 +354,184 @@ def test_an_interrupt_keeps_the_finished_requests_and_exits_130(
     ]
     assert "## Prompt `custom`" in (out / "report.md").read_text(encoding="utf-8")
     assert [p.name for p in sorted(out.iterdir())] == ["report.md", "results.json"]
+
+
+# --- sampling penalties (#403) ----------------------------------------------
+
+# The request body's keys when no penalty flag is given: the same set as
+# before the flags existed.
+DEFAULT_BODY_KEYS = {"model", "messages", "temperature", "top_p", "top_k", "stream"}
+
+
+def _penalty_run(fake_openai, tmp_path, prompt_file, *flags: str, model: str = "no-reasoning"):
+    out = tmp_path / "out"
+    result = _invoke(
+        "--target",
+        f"a={fake_openai.base_url},{model}",
+        "--no-builtin",
+        "--prompt-file",
+        str(prompt_file),
+        *flags,
+        "--out",
+        str(out),
+    )
+    return result, out
+
+
+def test_no_penalty_flag_leaves_the_request_body_unchanged(fake_openai, tmp_path, prompt_file):
+    result, _ = _penalty_run(fake_openai, tmp_path, prompt_file)
+    assert result.exit_code == 0, result.output
+    (request,) = fake_openai.requests
+    assert set(request["body"]) == DEFAULT_BODY_KEYS
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "field", "sent"),
+    [
+        ("--presence-penalty", "1.5", "presence_penalty", 1.5),
+        ("--presence-penalty", "-2.0", "presence_penalty", -2.0),
+        ("--presence-penalty", "0", "presence_penalty", 0.0),
+        ("--frequency-penalty", "2.0", "frequency_penalty", 2.0),
+        ("--repetition-penalty", "1.1", "repetition_penalty", 1.1),
+    ],
+)
+def test_each_penalty_flag_adds_exactly_its_field(
+    flag, value, field, sent, fake_openai, tmp_path, prompt_file
+):
+    result, _ = _penalty_run(fake_openai, tmp_path, prompt_file, flag, value)
+    assert result.exit_code == 0, result.output
+    (request,) = fake_openai.requests
+    body = request["body"]
+    assert set(body) == DEFAULT_BODY_KEYS | {field}
+    assert body[field] == sent
+
+
+def test_all_three_penalties_are_sent_together(fake_openai, tmp_path, prompt_file):
+    result, out = _penalty_run(
+        fake_openai,
+        tmp_path,
+        prompt_file,
+        "--presence-penalty",
+        "1.5",
+        "--frequency-penalty",
+        "0.5",
+        "--repetition-penalty",
+        "1.05",
+    )
+    assert result.exit_code == 0, result.output
+    (request,) = fake_openai.requests
+    body = request["body"]
+    assert set(body) == DEFAULT_BODY_KEYS | {
+        "presence_penalty",
+        "frequency_penalty",
+        "repetition_penalty",
+    }
+    assert (body["presence_penalty"], body["frequency_penalty"], body["repetition_penalty"]) == (
+        1.5,
+        0.5,
+        1.05,
+    )
+    sampling = json.loads((out / "results.json").read_text(encoding="utf-8"))["sampling"]
+    assert sampling["presence_penalty"] == 1.5
+    assert sampling["frequency_penalty"] == 0.5
+    assert sampling["repetition_penalty"] == 1.05
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "presence_penalty 1.5, frequency_penalty 0.5, repetition_penalty 1.05" in report, report
+
+
+@pytest.mark.parametrize(
+    ("args", "fragment"),
+    [
+        (["--presence-penalty", "2.5"], "--presence-penalty"),
+        (["--presence-penalty", "-2.01"], "--presence-penalty"),
+        (["--presence-penalty", "nan"], "--presence-penalty"),
+        (["--presence-penalty", "inf"], "--presence-penalty"),
+        (["--presence-penalty", "abc"], "--presence-penalty"),
+        (["--frequency-penalty", "3"], "--frequency-penalty"),
+        (["--frequency-penalty", "-inf"], "--frequency-penalty"),
+        (["--frequency-penalty", "NaN"], "--frequency-penalty"),
+        (["--repetition-penalty", "0"], "--repetition-penalty"),
+        (["--repetition-penalty", "-1"], "--repetition-penalty"),
+        (["--repetition-penalty", "nan"], "--repetition-penalty"),
+        (["--repetition-penalty", "infinity"], "--repetition-penalty"),
+        (["--repetition-penalty", "x1.1"], "--repetition-penalty"),
+    ],
+)
+def test_bad_penalty_values_exit_2_and_send_nothing(
+    args, fragment, fake_openai, tmp_path, prompt_file
+):
+    result, out = _penalty_run(fake_openai, tmp_path, prompt_file, *args)
+    assert result.exit_code == 2, result.output
+    assert fragment in result.output
+    assert fake_openai.requests == []
+    assert not out.exists()
+
+
+def test_a_server_that_rejects_a_penalty_is_an_error_row_and_the_run_goes_on(
+    fake_openai, tmp_path, prompt_file
+):
+    out = tmp_path / "out"
+    result = _invoke(
+        "--target",
+        f"strict={fake_openai.base_url},rejects-penalties",
+        "--target",
+        f"lenient={fake_openai.base_url},no-reasoning",
+        "--no-builtin",
+        "--prompt-file",
+        str(prompt_file),
+        "--presence-penalty",
+        "1.5",
+        "--out",
+        str(out),
+    )
+    assert result.exit_code == 0, result.output
+    assert len(fake_openai.requests) == 2
+    doc = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    strict, lenient = doc["results"]
+    assert strict["answered"] is False
+    assert strict["status"] == 400
+    assert strict["error"].startswith("HTTP 400:")
+    assert "Unrecognized request argument supplied: presence_penalty" in strict["error"]
+    assert lenient["answered"] is True
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "Unrecognized request argument supplied: presence_penalty" in report
+
+
+def test_the_report_and_json_record_only_the_penalties_sent(fake_openai, tmp_path, prompt_file):
+    result, out = _penalty_run(fake_openai, tmp_path, prompt_file, "--presence-penalty", "1.5")
+    assert result.exit_code == 0, result.output
+    report = (out / "report.md").read_text(encoding="utf-8")
+    (sampling_line,) = [line for line in report.splitlines() if line.startswith("- Sampling:")]
+    assert "presence_penalty 1.5" in sampling_line
+    assert "frequency_penalty" not in sampling_line
+    assert "repetition_penalty" not in sampling_line
+    sampling = json.loads((out / "results.json").read_text(encoding="utf-8"))["sampling"]
+    assert sampling == {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": None,
+        "presence_penalty": 1.5,
+    }
+
+
+def test_without_penalties_the_report_and_json_name_none(fake_openai, tmp_path, prompt_file):
+    result, out = _penalty_run(fake_openai, tmp_path, prompt_file)
+    assert result.exit_code == 0, result.output
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "penalty" not in report
+    sampling = json.loads((out / "results.json").read_text(encoding="utf-8"))["sampling"]
+    assert set(sampling) == {"temperature", "top_p", "top_k", "max_tokens"}
+
+
+def test_help_lists_the_penalty_flags_and_the_silent_ignore_caveat():
+    result = _invoke("--help")
+    assert result.exit_code == 0, result.output
+    for flag in ("--presence-penalty", "--frequency-penalty", "--repetition-penalty"):
+        assert flag in result.output
+    # Assert on the command's help text, not on how Rich wraps it in a box.
+    command = typer.main.get_command(app).commands["probe"].commands["thinking"]
+    assert command.help.count(_PENALTY_CAVEAT) == 1
+    assert all(_PENALTY_CAVEAT not in (p.help or "") for p in command.params)
+    assert "ignored silently" in _PENALTY_CAVEAT
+    assert "check your server" in _PENALTY_CAVEAT

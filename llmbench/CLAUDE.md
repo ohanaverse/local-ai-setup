@@ -14,7 +14,7 @@ CLI (`src/llmbench/main.py`):
 | `agent list-tasks\|list-suites\|run\|show\|judge` | Agentic coding benchmark (`benchmark/agent/cli.py`) |
 | `eval list-categories\|list-items\|run\|show\|judge` | Cross-category capability benchmark (`benchmark/eval/cli.py`) |
 | `provider isolate\|stop\|stop-all\|restore\|list` | Per-provider lifecycle (`providers/lifecycle/cli.py`) |
-| `probe thinking` | Same prompts to several running OpenAI-compatible servers; compares reasoning length/opening and answer shape (`probe/thinking.py`, `probe/cli.py`). Manages no provider, reads no registry, writes only `--out` (default: a new temp dir) |
+| `probe thinking` | Same prompts to several running OpenAI-compatible servers; compares reasoning length/opening and answer shape (`probe/thinking.py`, `probe/cli.py`). Optional `--presence-penalty`/`--frequency-penalty`/`--repetition-penalty` are sent only when given. Manages no provider, reads no registry, writes only `--out` (default: a new temp dir) |
 
 Run it from this directory (`uv run llmbench ...`) or from the repo root (`uv run --directory llmbench llmbench ...`). Either way the working directory is `llmbench/`, so relative path arguments (`--suite`, `--root`, `--results-dir`) resolve from here: `../benchmarks/suites/smoke.toml`. It is not installed globally.
 

@@ -101,6 +101,16 @@ uv run llmbench provider restore --unload
 - Sampling defaults to temperature 1.0, top_p 0.95 and top_k 20, as in the Qwen3.x `generation_config.json` and `eval-quant-tier.toml`. Override with `--temperature`, `--top-p`, `--top-k` (`0` leaves top_p or top_k out of the request) and `--max-tokens` (unset by default, so the engine's own cap applies, as in `eval run`). `--timeout` (900 s) bounds the wait per connect and per read, not the whole request: a reply that arrives in pieces can take longer.
 - Results go to `--out`: `report.md` and `results.json` (full reasoning and answer text included). Without `--out` the probe makes a new directory under the system temp dir. It never writes to `~/.config/local-ai/benchmarks/` or `latest.toml`. The directory is created and checked before the first request (one it cannot write is a usage error), and both files are rewritten after every finished request, so Ctrl-C keeps what finished: the probe names the request it was waiting on and exits 130.
 - An engine that is down, times out, or answers non-200 or non-JSON gets an error row and the run goes on. Exit 0 when at least one target answered, 1 when none did, 2 on a usage error, 130 when interrupted.
+- Sampling penalties are not sent unless you ask, so the server's own default applies: `--presence-penalty` and `--frequency-penalty` (each -2.0 to 2.0: OpenAI's range, checked by the probe itself, so a server that accepts more is still refused here) and `--repetition-penalty` (above 0; 1.0 means none, a vLLM/mlx-style extension). A value out of range, NaN or infinite is a usage error before anything is sent. The ones sent are named on the report's `Sampling:` line and in `results.json`'s `sampling` object. Servers differ in which of these fields they honor: one may ignore a field it does not support silently, another may reject it with a 400 (an error row carrying the server's message). The probe cannot tell an ignored field from an applied one, so check your server's docs or log.
+
+To see whether a penalty changes an engine's output, repeat the probe against the same target with different values, each into its own `--out` (illustrative; substitute your URL and model):
+
+```bash
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench (illustrative)
+for p in 0 1.5; do uv run llmbench probe thinking --target <name>=<base-url>,<model> --presence-penalty "$p" --out <results-dir>/<name>-presence-$p; done
+```
+
+A penalty that makes no difference to the output may mean the server ignored it, not that it has no effect.
 
 Reading `report.md`: one table per prompt, one row per target, then the first 200 characters of each target's reasoning, to compare style. An illustrative row (not a real measurement):
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,6 +45,36 @@ def _usage_error(message: str) -> typer.Exit:
     return typer.Exit(_USAGE_EXIT)
 
 
+# The command help carries this once, after the flag list: a server may drop a
+# field it does not know without a word, so a set penalty proves nothing alone.
+_PENALTY_CAVEAT = (
+    "Penalty flags: not sent unless set (the server's own default applies). Servers differ in which "
+    "penalty fields they honor: an unknown or unsupported field may be ignored silently "
+    "(no error) or rejected with a 400, and the probe cannot tell which. A result with a "
+    "penalty set means something only if changing the value changes the output, or the "
+    "server's log shows it was applied; check your server."
+)
+
+
+def _check_finite(flag: str, value: float | None) -> None:
+    if value is not None and not math.isfinite(value):
+        raise ProbeError(f"{flag} must be a finite number, not {value}")
+
+
+def _check_between(flag: str, value: float | None, low: float, high: float) -> None:
+    """Raise ProbeError when a set value is NaN, infinite or outside [low, high]."""
+    _check_finite(flag, value)
+    if value is not None and not low <= value <= high:
+        raise ProbeError(f"{flag} must be between {low:g} and {high:g}, not {value!r}")
+
+
+def _check_above(flag: str, value: float | None, low: float) -> None:
+    """Raise ProbeError when a set value is NaN, infinite or not above `low`."""
+    _check_finite(flag, value)
+    if value is not None and value <= low:
+        raise ProbeError(f"{flag} must be greater than {low:g}, not {value!r}")
+
+
 def _progress(result: ProbeResult) -> None:
     if result.answered:
         outcome = (
@@ -57,7 +88,22 @@ def _progress(result: ProbeResult) -> None:
     )
 
 
-@probe_app.command("thinking")
+_THINKING_HELP = (
+    """Send the same prompts to each target and compare its reasoning
+(length, opening) and its answer (length, markdown shape).
+
+Start and isolate each server yourself first (`llmbench provider isolate
+...`); this command only sends chat completions. report.md and
+results.json are rewritten after every finished request, so Ctrl-C keeps
+what finished. Exit 0 when at least one target answered, 1 when none
+did, 2 on a usage error, 130 when interrupted.
+
+"""
+    + _PENALTY_CAVEAT
+)
+
+
+@probe_app.command("thinking", help=_THINKING_HELP)
 def thinking_cmd(
     target: list[str] = typer.Option(  # noqa: B008
         [],
@@ -94,6 +140,24 @@ def thinking_cmd(
     max_tokens: int | None = typer.Option(
         None, "--max-tokens", help="max_tokens; unset leaves the server's cap (as eval does)."
     ),
+    presence_penalty: float | None = typer.Option(
+        None,
+        "--presence-penalty",
+        help="presence_penalty, -2.0 to 2.0 (the probe's own check, OpenAI's range): "
+        "penalizes a token that has appeared at all.",
+    ),
+    frequency_penalty: float | None = typer.Option(
+        None,
+        "--frequency-penalty",
+        help="frequency_penalty, -2.0 to 2.0 (the probe's own check, OpenAI's range): "
+        "penalizes a token by how often it has appeared.",
+    ),
+    repetition_penalty: float | None = typer.Option(
+        None,
+        "--repetition-penalty",
+        help="repetition_penalty, greater than 0 (a vLLM/mlx-style extension; 1.0 means "
+        "none): scales down a repeated token's score.",
+    ),
     timeout: float = typer.Option(
         900.0,
         "--timeout",
@@ -107,18 +171,12 @@ def thinking_cmd(
         "directory under the system temp dir.",
     ),
 ) -> None:
-    """Send the same prompts to each target and compare its reasoning
-    (length, opening) and its answer (length, markdown shape).
-
-    Start and isolate each server yourself first (`llmbench provider isolate
-    ...`); this command only sends chat completions. report.md and
-    results.json are rewritten after every finished request, so Ctrl-C keeps
-    what finished. Exit 0 when at least one target answered, 1 when none
-    did, 2 on a usage error, 130 when interrupted.
-    """
     if not target:
         raise _usage_error(f"give at least one --target {TARGET_FORMAT}")
     try:
+        _check_between("--presence-penalty", presence_penalty, -2.0, 2.0)
+        _check_between("--frequency-penalty", frequency_penalty, -2.0, 2.0)
+        _check_above("--repetition-penalty", repetition_penalty, 0.0)
         targets: list[Target] = [parse_target(spec) for spec in target]
         names = [t.name for t in targets]
         duplicates = sorted({n for n in names if names.count(n) > 1})
@@ -141,7 +199,15 @@ def thinking_cmd(
     except ProbeError as exc:
         raise _usage_error(str(exc)) from exc
 
-    sampling = Sampling(temperature=temperature, top_p=top_p, top_k=top_k, max_tokens=max_tokens)
+    sampling = Sampling(
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        max_tokens=max_tokens,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        repetition_penalty=repetition_penalty,
+    )
     run = ProbeRun(
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
         targets=targets,
