@@ -151,13 +151,41 @@ def test_unreachable_is_an_error_row(closed_port_url):
     assert "unreachable" in result.error
 
 
-def test_an_error_text_never_carries_the_key(fake_openai):
-    """A server that echoes the request back must not leak the key into a
-    report: every error text is redacted."""
+def test_redact_replaces_the_key_and_leaves_keyless_text_alone():
     from llmbench.probe.thinking import redact
 
     assert redact("Bearer s3cret rejected", "s3cret") == "Bearer *** rejected"
     assert redact("nothing here", None) == "nothing here"
+
+
+def test_an_error_text_never_carries_the_key(fake_openai, tmp_path):
+    """A server that echoes the Authorization header into a 500 body or a
+    non-JSON 200 body must not leak the key into an error text, report.md or
+    results.json: every error text is redacted."""
+    from llmbench.probe.thinking import ProbeRun, write_outputs
+
+    key = "sk-echo-not-a-real-key-91c2"
+    targets = [
+        _target(fake_openai.base_url, "echo-auth-500", "K"),
+        _target(fake_openai.base_url, "echo-auth-non-json", "K"),
+    ]
+    results = run_probe([(t, key) for t in targets], [PROMPT], SAMPLING, timeout_s=5)
+    # The server did echo it: the redacted marker is where the key was.
+    echoed = [r.error is not None and "Bearer ***" in r.error for r in results]
+    assert echoed == [True, True]
+    leaked = [key in (r.error or "") for r in results]
+    assert leaked == [False, False]
+    run = ProbeRun(
+        started_at="2026-10-21T00:00:00Z",
+        targets=targets,
+        prompts=[PROMPT],
+        sampling=SAMPLING,
+        timeout_s=5,
+        results=results,
+    )
+    md_path, json_path = write_outputs(run, tmp_path / "out")
+    leaked_files = [p.name for p in (md_path, json_path) if key in p.read_text(encoding="utf-8")]
+    assert leaked_files == []
 
 
 def test_run_probe_continues_past_failures(fake_openai, closed_port_url):

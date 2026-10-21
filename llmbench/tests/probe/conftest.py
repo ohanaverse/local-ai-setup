@@ -36,6 +36,11 @@ def _completion(message: dict[str, Any], usage: dict[str, Any] | None = None) ->
     return body
 
 
+# Wherever this marker appears in a reply, the fake server puts the value of
+# the request's Authorization header (empty when none was sent): a server that
+# echoes the request back, which the probe must never let into a report.
+ECHO_AUTH = "@@AUTHORIZATION@@"
+
 # model id -> (status, body). A str body is sent as-is (the non-JSON case).
 REPLIES: dict[str, tuple[int, Any]] = {
     "reasoning-content": (
@@ -63,6 +68,8 @@ REPLIES: dict[str, tuple[int, Any]] = {
     "server-error": (500, {"error": {"message": "boom"}}),
     "non-json": (200, "<html>not json</html>"),
     "no-choices": (200, {"object": "chat.completion", "choices": []}),
+    "echo-auth-500": (500, {"error": {"message": f"rejected header {ECHO_AUTH}"}}),
+    "echo-auth-non-json": (200, f"<html>you sent {ECHO_AUTH}</html>"),
 }
 
 
@@ -89,6 +96,7 @@ def _handler(fake: FakeServer, release: threading.Event) -> type[BaseHTTPRequest
             else:
                 status, reply = REPLIES.get(model, (404, {"error": f"unknown model {model}"}))
             payload = reply if isinstance(reply, str) else json.dumps(reply)
+            payload = payload.replace(ECHO_AUTH, self.headers.get("Authorization", ""))
             data = payload.encode()
             try:
                 self.send_response(status)
