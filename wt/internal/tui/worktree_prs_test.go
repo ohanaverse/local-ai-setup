@@ -46,7 +46,7 @@ func prGroups(t *testing.T) (groups []worktree.EntryGroup, root string) {
 }
 
 func prMap() worktree.PRSet {
-	return worktree.PRSet{Repo: "o/base", ByBranch: map[string]worktree.PR{
+	return prsIn("o/base", map[string]worktree.PR{
 		"fix/current":                {Number: 384, State: worktree.PRDraft, Title: "Current work"},
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop reports its outcome"},
 		"feat/local":                 {Number: 382, State: worktree.PRMerged, Title: "Local one"},
@@ -54,7 +54,27 @@ func prMap() worktree.PRSet {
 		// A PR on the remote's own name must not tag "origin/feat/remote"
 		// through the unstripped name.
 		"origin/feat/remote": {Number: 1, State: worktree.PROpen},
-	}}
+	})
+}
+
+// prsIn is a listing whose PRs were all opened from repo's branches, keyed
+// by branch name; repo is also the listing's BaseRepo.
+func prsIn(repo string, byBranch map[string]worktree.PR) worktree.PRSet {
+	s := worktree.PRSet{BaseRepo: repo, ByHead: map[worktree.PRKey]worktree.PR{}}
+	for b, pr := range byBranch {
+		s.ByHead[worktree.PRKey{Repo: repo, Branch: b}] = pr
+	}
+	return s
+}
+
+// withFork adds PRs opened from fork's branches to a copy of s (a fork's
+// PRs leave BaseRepo alone).
+func withFork(s worktree.PRSet, fork string, byBranch map[string]worktree.PR) worktree.PRSet {
+	out := worktree.MergePRs(s, worktree.PRSet{})
+	for b, pr := range byBranch {
+		out.ByHead[worktree.PRKey{Repo: fork, Branch: b}] = pr
+	}
+	return out
 }
 
 // rowByBranch finds the entry row for branch among items.
@@ -166,10 +186,10 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 		{Type: worktree.TypeBranch, Branch: "fix/wt-ollama-stop-outcome"},
 		{Type: worktree.TypeBranch, Branch: long},
 	}}}
-	prs := worktree.PRSet{ByBranch: map[string]worktree.PR{
+	prs := prsIn("o/base", map[string]worktree.PR{
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop"},
 		long:                         {Number: 12345, State: worktree.PRMerged, Title: "Long"},
-	}}
+	})
 	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
 	applyPRs(&l, prs)
 
@@ -198,7 +218,7 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 func TestPRTagDroppedWhenTooNarrow(t *testing.T) {
 	groups := singleGroup(worktree.GroupLocalBranches, worktree.Entry{Type: worktree.TypeBranch, Branch: "fix/some-branch"})
 	l := buildList(groups, "", "/repo", themes.Default, 20, 24)
-	applyPRs(&l, worktree.PRSet{ByBranch: map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}}})
+	applyPRs(&l, prsIn("o/base", map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}}))
 	line, _, _ := strings.Cut(renderRow(l, 1), "\n")
 	if strings.TrimSpace(line) != "fix/some-branch" {
 		t.Errorf("narrow title line = %q, want the branch alone", line)
@@ -304,7 +324,7 @@ func TestPRsBeforeEntriesTagTheFirstBuild(t *testing.T) {
 // status or list error.
 func TestFailedPRListingShowsNoTags(t *testing.T) {
 	m := pickerModel(t)
-	msg := loadPRsCmd(worktree.PRListAll)()
+	msg := loadPRsCmd("/repo", worktree.PRListAll)()
 	got, _ := m.Update(msg)
 	m = got.(model)
 	for _, it := range m.list.Items() {
@@ -318,62 +338,62 @@ func TestFailedPRListingShowsNoTags(t *testing.T) {
 }
 
 // TestLoadPRsCmdReturnsTheListing pins loadPRsCmd's plumbing: gh runs once,
-// for the listing asked for, in the repository root wt was started under
-// (here a fresh repository), and its JSON reaches the message as tags. No
-// real gh runs: the listing is stubbed.
+// for the listing asked for, in the repository root it is handed, and its
+// JSON reaches the message as tags. No real gh runs: the listing is stubbed.
 func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
-	repo := t.TempDir()
-	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	t.Chdir(repo)
 	var dirs, states []string
 	t.Cleanup(worktree.StubPRListForTest(func(dir, state string) ([]byte, error) {
 		dirs = append(dirs, dir)
 		states = append(states, state)
-		return []byte(`[{"number": 383, "state": "OPEN", "isDraft": false, "headRefName": "fix/x", "isCrossRepository": false, "title": "X"}]`), nil
+		return []byte(`[{"number": 383, "state": "OPEN", "isDraft": false, "headRefName": "fix/x", "isCrossRepository": false, "title": "X", "headRepository": {"nameWithOwner": "o/base"}}]`), nil
 	}))
-	msg, ok := loadPRsCmd(worktree.PRListOpen)().(prsLoadedMsg)
+	msg, ok := loadPRsCmd("/the/root", worktree.PRListOpen)().(prsLoadedMsg)
 	if !ok {
 		t.Fatalf("loadPRsCmd returned %T", msg)
 	}
-	if got := msg.prs.ByBranch["fix/x"]; got.Number != 383 || got.State != worktree.PROpen {
+	if got, _ := msg.prs.ForBranch("fix/x"); got.Number != 383 || got.State != worktree.PROpen {
 		t.Errorf("prs[fix/x] = %+v, want #383 open", got)
 	}
-	want, _ := filepath.EvalSymlinks(repo)
-	if len(dirs) != 1 || states[0] != worktree.PRListOpen {
-		t.Fatalf("gh ran for %v, want once for %q", states, worktree.PRListOpen)
+	if !reflect.DeepEqual(dirs, []string{"/the/root"}) || !reflect.DeepEqual(states, []string{worktree.PRListOpen}) {
+		t.Errorf("gh ran in %v for %v, want once in /the/root for %q", dirs, states, worktree.PRListOpen)
 	}
-	if got, _ := filepath.EvalSymlinks(dirs[0]); got != want {
-		t.Errorf("gh ran in %q, want the repository root %q", dirs[0], want)
+}
+
+// initBatch runs Init's command (the one root lookup) and returns the
+// commands it fans out to: the entry load, then one per PR listing.
+func initBatch(t *testing.T) tea.BatchMsg {
+	t.Helper()
+	batch, ok := model{}.Init()().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("Init's command did not answer with a batch")
 	}
+	if len(batch) != 1+len(worktree.PRListStates) {
+		t.Fatalf("Init batched %d commands, want 1 + %d listings", len(batch), len(worktree.PRListStates))
+	}
+	return batch
 }
 
 // TestInitRunsEveryPRListing pins that a picker open asks for each listing
 // in worktree.PRListStates, each in its own command, so the open PRs' tags
-// are not held back behind the longer every-state listing. A regression to
-// one listing loses either old open PRs or merged and closed tags.
+// are not held back behind the longer every-state listing, and that every
+// listing runs in the repository root Init found. A regression to one
+// listing loses either old open PRs or merged and closed tags.
 func TestInitRunsEveryPRListing(t *testing.T) {
 	var mu sync.Mutex
-	var states []string
-	t.Cleanup(worktree.StubPRListForTest(func(_, state string) ([]byte, error) {
+	var states, dirs []string
+	t.Cleanup(worktree.StubPRListForTest(func(dir, state string) ([]byte, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		states = append(states, state)
+		dirs = append(dirs, dir)
 		return nil, errors.New("stubbed")
 	}))
-	t.Chdir(t.TempDir())
+	repo := t.TempDir()
+	t.Chdir(repo)
 	if out, err := exec.Command("git", "init", "-q", ".").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-	batch, ok := model{}.Init()().(tea.BatchMsg)
-	if !ok {
-		t.Fatal("Init did not return a batch")
-	}
-	// The batch is the entry load followed by one command per listing.
-	if len(batch) != 1+len(worktree.PRListStates) {
-		t.Fatalf("Init batched %d commands, want 1 + %d listings", len(batch), len(worktree.PRListStates))
-	}
+	batch := initBatch(t)
 	for _, cmd := range batch[1:] {
 		if _, ok := cmd().(prsLoadedMsg); !ok {
 			t.Error("a listing command did not answer with prsLoadedMsg")
@@ -383,23 +403,66 @@ func TestInitRunsEveryPRListing(t *testing.T) {
 	if want := []string{worktree.PRListAll, worktree.PRListOpen}; !reflect.DeepEqual(states, want) {
 		t.Errorf("listings run = %v, want %v", states, want)
 	}
+	want, _ := filepath.EvalSymlinks(repo)
+	for _, d := range dirs {
+		if got, _ := filepath.EvalSymlinks(d); got != want {
+			t.Errorf("gh ran in %q, want the repository root %q", d, want)
+		}
+	}
+}
+
+// TestPickerOpenResolvesTheRepoRootOnce pins #390: one picker open runs one
+// `git rev-parse --show-toplevel` (findRepoRoot), and the entry load and
+// both PR listings share its answer; the reload after a create still looks
+// the root up afresh (loadEntriesCmd), since the directory may have changed.
+// A regression runs the lookup once per command again — three git processes
+// on every picker open.
+func TestPickerOpenResolvesTheRepoRootOnce(t *testing.T) {
+	var mu sync.Mutex
+	lookups := 0
+	old := findRepoRoot
+	t.Cleanup(func() { findRepoRoot = old })
+	findRepoRoot = func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		lookups++
+		return "", errors.New("not a git repository")
+	}
+	for _, cmd := range initBatch(t) {
+		cmd()
+	}
+	if lookups != 1 {
+		t.Errorf("one picker open ran %d root lookups, want 1", lookups)
+	}
+	lookups = 0
+	loadEntriesCmd()()
+	if lookups != 1 {
+		t.Errorf("the reload ran %d root lookups, want its own 1", lookups)
+	}
 }
 
 // TestPRListingsMergeInEitherOrder pins the progressive tags: the first
-// listing to answer tags the rows at once, the second adds its branches
-// without dropping the first's, and a branch in both keeps its open PR over
-// a newer merged one whichever arrived first. A regression either wipes the
-// open tags when the every-state listing lands, or lets the late listing's
-// merged PR hide the branch's open one.
+// listing to answer tags the rows at once, the second adds its heads
+// without dropping the first's, a head in both keeps its open PR over a
+// newer merged one whichever arrived first, and a fork's PRs for a branch
+// name never reach the base remote's row of that name (#387). A regression
+// either wipes the open tags when the every-state listing lands, lets the
+// late listing's merged PR hide the branch's open one, or shows a fork's PR
+// on the base repository's remote branch.
 func TestPRListingsMergeInEitherOrder(t *testing.T) {
-	open := worktree.PRSet{ByBranch: map[string]worktree.PR{
+	open := withFork(prsIn("o/base", map[string]worktree.PR{
 		"fix/wt-ollama-stop-outcome": {Number: 383, State: worktree.PROpen, Title: "Stop reports its outcome"},
 		"feat/local":                 {Number: 380, State: worktree.PROpen, Title: "Older open"},
-	}}
-	all := worktree.PRSet{ByBranch: map[string]worktree.PR{
+	}), "me/fork", map[string]worktree.PR{
+		"feat/remote": {Number: 390, State: worktree.PROpen, Title: "Fork's remote"},
+	})
+	all := withFork(prsIn("o/base", map[string]worktree.PR{
 		"feat/local":  {Number: 382, State: worktree.PRMerged, Title: "Local one"},
 		"fix/current": {Number: 384, State: worktree.PRDraft, Title: "Current work"},
-	}}
+		"feat/remote": {Number: 381, State: worktree.PRClosed, Title: "Remote one"},
+	}), "me/fork", map[string]worktree.PR{
+		"feat/remote": {Number: 391, State: worktree.PRMerged, Title: "Fork's later one"},
+	})
 	for name, order := range map[string][]worktree.PRSet{
 		"open first": {open, all},
 		"all first":  {all, open},
@@ -408,8 +471,9 @@ func TestPRListingsMergeInEitherOrder(t *testing.T) {
 			m := pickerModel(t)
 			got, _ := m.Update(prsLoadedMsg{prs: order[0]})
 			m = got.(model)
-			for branch := range order[0].ByBranch {
-				if branch == "fix/current" {
+			for k := range order[0].ByHead {
+				branch := k.Branch
+				if branch == "fix/current" || branch == "feat/remote" {
 					continue // the (current) row is found by label below
 				}
 				if rowByBranch(t, m.list.Items(), branch).pr == nil {
@@ -424,21 +488,34 @@ func TestPRListingsMergeInEitherOrder(t *testing.T) {
 			if tag := rowByBranch(t, m.list.Items(), "feat/local").prTag(); tag != "#380 open" {
 				t.Errorf("feat/local tag = %q, want #380 open (open beats a newer merged PR)", tag)
 			}
+			// origin/feat/remote is o/base's: its own closed #381, never
+			// the fork's open #390 or merged #391 for the same branch name.
+			if tag := rowByBranch(t, m.list.Items(), "origin/feat/remote").prTag(); tag != "#381 closed" {
+				t.Errorf("origin/feat/remote tag = %q, want #381 closed", tag)
+			}
 		})
 	}
 }
 
-// TestLoadPRsCmdOutsideARepoIsEmpty pins the no-repository case: no gh runs
-// and the message carries a loaded, empty set, so the picker shows no tags.
+// TestLoadPRsCmdOutsideARepoIsEmpty pins the no-repository case: a picker
+// opened outside a repository runs no gh, and each listing's message
+// carries a loaded, empty set — never an error — so the picker shows no
+// tags; loadPRsCmd handed no root does the same.
 func TestLoadPRsCmdOutsideARepoIsEmpty(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Cleanup(worktree.StubPRListForTest(func(string, string) ([]byte, error) {
 		t.Error("gh ran outside a repository")
 		return nil, nil
 	}))
-	msg := loadPRsCmd(worktree.PRListAll)().(prsLoadedMsg)
-	if !msg.prs.Loaded() || len(msg.prs.ByBranch) != 0 {
-		t.Errorf("prs = %#v, want a loaded, empty set", msg.prs)
+	for _, cmd := range initBatch(t)[1:] {
+		msg := cmd().(prsLoadedMsg)
+		if !msg.prs.Loaded() || len(msg.prs.ByHead) != 0 {
+			t.Errorf("prs = %#v, want a loaded, empty set", msg.prs)
+		}
+	}
+	msg := loadPRsCmd("", worktree.PRListAll)().(prsLoadedMsg)
+	if !msg.prs.Loaded() || len(msg.prs.ByHead) != 0 {
+		t.Errorf("loadPRsCmd(\"\") prs = %#v, want a loaded, empty set", msg.prs)
 	}
 }
 
@@ -505,16 +582,19 @@ func forkGroups() []worktree.EntryGroup {
 
 // basePRs is o/base's listing: PR #4242 from its own feat-x.
 func basePRs() worktree.PRSet {
-	return worktree.PRSet{Repo: "o/base", ByBranch: map[string]worktree.PR{
+	return prsIn("o/base", map[string]worktree.PR{
 		"feat-x": {Number: 4242, State: worktree.PROpen, Title: "Base feat-x"},
-	}}
+	})
 }
 
-// TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR pins #388:
-// a remote-tracking row is tagged only when its remote is the repository gh
-// listed. origin/feat-x (o/base) gets o/base's PR for feat-x; keith/feat-x, a
-// fork's branch of the same name, does not. A regression shows the base
-// repository's PR on a fork branch it has nothing to do with.
+// TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR pins #388 in
+// its #387 form: a remote-tracking row is tagged only with a PR whose head is
+// its own remote's repository and branch. origin/feat-x (o/base) gets
+// o/base's PR for feat-x; keith/feat-x, a fork's branch of the same name,
+// does not, and once the listing has a PR from keith/fork's feat-x, that is
+// the fork row's tag while origin's keeps its own. A regression shows the
+// base repository's PR on a fork branch it has nothing to do with, or the
+// other way round.
 func TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR(t *testing.T) {
 	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
 	applyPRs(&l, basePRs())
@@ -524,13 +604,24 @@ func TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR(t *testing.T)
 	if ei := rowByBranch(t, l.Items(), "keith/feat-x"); ei.pr != nil {
 		t.Errorf("keith/feat-x tagged %q with o/base's PR", ei.prTag())
 	}
+	applyPRs(&l, withFork(basePRs(), "keith/fork", map[string]worktree.PR{
+		"feat-x": {Number: 77, State: worktree.PRMerged, Title: "Fork feat-x"},
+	}))
+	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
+		t.Errorf("origin/feat-x tag = %q with the fork's PR listed, want #4242 open", tag)
+	}
+	if tag := rowByBranch(t, l.Items(), "keith/feat-x").prTag(); tag != "#77 merged" {
+		t.Errorf("keith/feat-x tag = %q, want its own #77 merged", tag)
+	}
 }
 
 // TestRemoteRowUnknownRemoteIsUntagged pins the cases where wt cannot tell
 // which repository a remote row belongs to — a remote it could not resolve
-// (no RemoteBranch either), a local-path remote (RemoteRepo empty), or a
-// listing that named no repository — as untagged, never guessed. A
-// regression tags a row from an unknown repository with the base's PR.
+// (no RemoteBranch either), a local-path remote (RemoteRepo empty) — or
+// where no PR's head is the row's repository and branch (a PR gh gave no
+// head repository for, another repository's PR), as untagged, never
+// guessed. A regression tags a row from an unknown repository with some
+// repository's PR of the same branch name.
 func TestRemoteRowUnknownRemoteIsUntagged(t *testing.T) {
 	for name, tc := range map[string]struct {
 		entry worktree.Entry
@@ -544,9 +635,13 @@ func TestRemoteRowUnknownRemoteIsUntagged(t *testing.T) {
 			entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "mirror/feat-x", RemoteBranch: "feat-x"},
 			prs:   basePRs(),
 		},
-		"listing names no repo": {
+		"PR with no head repo": {
 			entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feat-x", RemoteRepo: "o/base", RemoteBranch: "feat-x"},
-			prs:   worktree.PRSet{ByBranch: basePRs().ByBranch},
+			prs:   prsIn("", map[string]worktree.PR{"feat-x": {Number: 4242, State: worktree.PROpen}}),
+		},
+		"another repo's PR": {
+			entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "mine/feat-x", RemoteRepo: "me/fork", RemoteBranch: "feat-x"},
+			prs:   basePRs(),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -580,7 +675,7 @@ func TestRemoteRowsStayUntaggedUntilThePRsArriveThenTag(t *testing.T) {
 	applyPRs(&m.list, worktree.PRSet{})
 	untagged("before any listing")
 
-	got, _ = m.Update(prsLoadedMsg{prs: worktree.PRSet{ByBranch: map[string]worktree.PR{}}})
+	got, _ = m.Update(prsLoadedMsg{prs: worktree.PRSet{ByHead: map[worktree.PRKey]worktree.PR{}}})
 	m = got.(model)
 	untagged("after a failed listing")
 
@@ -594,16 +689,17 @@ func TestRemoteRowsStayUntaggedUntilThePRsArriveThenTag(t *testing.T) {
 	}
 }
 
-// TestRemoteRepoMatchIgnoresCase pins that the remote's owner/repo and the
-// listing's compare without case: GitHub names are case-insensitive, so a
-// remote URL written Ohanaverse/Local-AI-Setup is the same repository gh
-// reports as ohanaverse/local-ai-setup. A regression drops the tag whenever
-// the two are spelled differently.
+// TestRemoteRepoMatchIgnoresCase pins that the remote's owner/repo and a
+// PR's head repository compare without case: GitHub names are
+// case-insensitive, so a remote URL written O/Base is the same repository gh
+// reports as o/BASE. A regression drops the tag whenever the two are spelled
+// differently.
 func TestRemoteRepoMatchIgnoresCase(t *testing.T) {
 	groups := singleGroup(worktree.GroupRemoteBranches,
 		worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feat-x", RemoteRepo: "O/Base", RemoteBranch: "feat-x"})
 	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
-	applyPRs(&l, worktree.PRSet{Repo: "o/BASE", ByBranch: basePRs().ByBranch})
+	stubPRList(t, `[{"number": 4242, "state": "OPEN", "headRefName": "feat-x", "isCrossRepository": false, "headRepository": {"nameWithOwner": "o/BASE"}}]`)
+	applyPRs(&l, worktree.PRs("/repo", worktree.PRListAll))
 	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
 		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
 	}
@@ -675,5 +771,115 @@ func TestFilterByPRNumberDoesNotMatchAnUntaggedRemoteRow(t *testing.T) {
 	}
 	if !reflect.DeepEqual(visible, []string{"origin/feat-x"}) {
 		t.Errorf("filter 4242 shows %v, want only origin/feat-x", visible)
+	}
+}
+
+// TestForkWorkflowTagsEachRemoteRowFromItsOwnRepository pins #387 end to
+// end, from git's remotes through Enumerate, the parsed gh listing and the
+// picker's lookup: origin is your fork (me/fork) with PR #7 from its feat-x
+// into upstream, and upstream (org/up) has its own PR #9 from feat-y.
+// origin/feat-x shows #7 and upstream/feat-y #9; upstream/feat-x, the same
+// branch name in the other repository, shows nothing, and so do a remote
+// that is a local path and a remote-tracking ref whose remote is gone. A
+// regression shows no tags at all when origin is a fork (every PR is
+// cross-repository), or puts a fork's PR on upstream's branch of the same
+// name.
+func TestForkWorkflowTagsEachRemoteRowFromItsOwnRepository(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@t")
+	git("config", "user.name", "t")
+	git("commit", "-q", "--allow-empty", "-m", "init")
+	// Enumerate fetches every remote first: ssh fails at once under
+	// gitenv's GIT_SSH_COMMAND=false (and .invalid resolves nowhere), and
+	// the mirror path does not exist, so no fetch reaches anything.
+	git("remote", "add", "origin", "git@github.invalid:Me/Fork.git")
+	git("remote", "add", "upstream", "git@github.invalid:org/up.git")
+	git("remote", "add", "mirror", filepath.Join(repo, "no-such-mirror.git"))
+	for _, ref := range []string{"origin/feat-x", "upstream/feat-y", "upstream/feat-x", "mirror/feat-x", "gone/feat-x"} {
+		git("update-ref", "refs/remotes/"+ref, "HEAD")
+	}
+	stubPRList(t, `[
+		{"number": 7, "state": "OPEN", "headRefName": "feat-x", "isCrossRepository": true, "title": "Fork work", "headRepository": {"nameWithOwner": "me/fork"}},
+		{"number": 9, "state": "OPEN", "headRefName": "feat-y", "isCrossRepository": false, "title": "Upstream work", "headRepository": {"nameWithOwner": "org/up"}}
+	]`)
+	groups, err := worktree.Enumerate(repo, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := buildList(groups, "main", repo, themes.Default, 80, 24)
+	applyPRs(&l, worktree.PRs(repo, worktree.PRListAll))
+	for branch, want := range map[string]string{
+		"origin/feat-x":   "#7 open",
+		"upstream/feat-y": "#9 open",
+		"upstream/feat-x": "",
+		"mirror/feat-x":   "",
+		"gone/feat-x":     "",
+	} {
+		if got := rowByBranch(t, l.Items(), branch).prTag(); got != want {
+			t.Errorf("%s tag = %q, want %q", branch, got, want)
+		}
+	}
+}
+
+// TestLocalRowPicksOnePRAcrossRepositories pins the local half of #387: a
+// local branch or worktree has no repository, so its name is looked up under
+// every head repository and one PR shown — a live PR over a closed or merged
+// one, then the higher number. A regression shows a merged PR from one
+// repository over another's open PR for the same branch name, or leaves a
+// branch you push only to your fork untagged.
+func TestLocalRowPicksOnePRAcrossRepositories(t *testing.T) {
+	groups, root := prGroups(t)
+	prs := withFork(prsIn("o/base", map[string]worktree.PR{
+		"feat/local":                 {Number: 90, State: worktree.PRMerged, Title: "Base, merged"},
+		"fix/wt-ollama-stop-outcome": {Number: 20, State: worktree.PROpen, Title: "Base, open"},
+	}), "me/fork", map[string]worktree.PR{
+		"feat/local":                 {Number: 12, State: worktree.PROpen, Title: "Fork, open"},
+		"fix/wt-ollama-stop-outcome": {Number: 21, State: worktree.PRDraft, Title: "Fork, draft"},
+		"no-pr":                      {Number: 5, State: worktree.PRClosed, Title: "Fork only"},
+	})
+	l := buildList(groups, "", root, themes.Default, 80, 24)
+	applyPRs(&l, prs)
+	for branch, want := range map[string]string{
+		"feat/local":                 "#12 open",  // live beats merged
+		"fix/wt-ollama-stop-outcome": "#21 draft", // two live: the higher number
+		"no-pr":                      "#5 closed", // only the fork has one
+		"fix/current":                "",
+	} {
+		if got := rowByBranch(t, l.Items(), branch).prTag(); got != want {
+			t.Errorf("%s tag = %q, want %q", branch, got, want)
+		}
+	}
+	if !prsCurrent(l.Items(), prs) {
+		t.Error("prsCurrent = false on the rows applyPRs just tagged")
+	}
+}
+
+// TestFilterByPRNumberFindsAForkRow pins the filter for a row tagged from its
+// fork's own PR (#387): typing the fork PR's number finds the fork's row and
+// not the base remote's row of the same branch name. A regression leaves the
+// fork's PR unsearchable or lists the base row under it.
+func TestFilterByPRNumberFindsAForkRow(t *testing.T) {
+	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
+	applyPRs(&l, withFork(basePRs(), "keith/fork", map[string]worktree.PR{
+		"feat-x": {Number: 77, State: worktree.PROpen, Title: "Fork feat-x"},
+	}))
+	l.SetFilterText("#77")
+	var visible []string
+	for _, it := range l.VisibleItems() {
+		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry {
+			visible = append(visible, ei.entry.Branch)
+		}
+	}
+	if !reflect.DeepEqual(visible, []string{"keith/feat-x"}) {
+		t.Errorf("filter #77 shows %v, want only keith/feat-x", visible)
 	}
 }

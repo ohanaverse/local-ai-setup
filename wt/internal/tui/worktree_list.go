@@ -41,8 +41,9 @@ const (
 // (worktree.PRBranch for a worktree or local row; a remote-tracking row's
 // Entry.RemoteBranch, its name without the remote, "" when the remote is
 // unknown), set by buildList, which alone knows the row's group; repo is a
-// remote-tracking row's Entry.RemoteRepo, the owner/repo of its remote,
-// which must be the repository gh listed for the row to be tagged (#388).
+// remote-tracking row's Entry.RemoteRepo, the owner/repo of its remote: the
+// row is tagged only with a PR whose head is that repository and prBranch
+// (#388, #387).
 // pr is the pull request found, set by applyPRs once `gh pr list` has
 // answered, nil until then and for a branch with none. remote marks a
 // remote-tracking row, the only kind whose displayed name drops its first
@@ -190,32 +191,41 @@ func applyPRs(l *list.Model, prs worktree.PRSet) {
 	}
 }
 
-// prFor is the pull request prs holds for ei's branch, nil for none. A
-// remote-tracking row has one only when its remote is the repository gh
-// listed (prs.Repo, compared without case): a fork's branch of the same name
-// is another branch, and a remote whose repository is unknown — or a listing
-// that named none — is never guessed (#388). prsCurrent asks this too, so
-// the tags and the stale-filter check agree.
+// prFor is the pull request prs holds for ei, nil for none. A
+// remote-tracking row has the PR whose head is its own remote's repository
+// and branch (worktree.PRSet.ForRemote, compared without case): your fork's
+// branch shows the PR you opened from it, upstream's branch upstream's own,
+// and a remote whose repository is unknown is never guessed (#388, #387). A
+// worktree or local row has no repository, so its branch name is looked up
+// under every head repository and one PR chosen (worktree.PRSet.ForBranch:
+// live over closed or merged, then the higher number). prsCurrent asks this
+// too, so the tags and the stale-filter check agree.
 func prFor(ei entryItem, prs worktree.PRSet) *worktree.PR {
 	if ei.prBranch == "" {
 		return nil
 	}
-	if ei.remote && (prs.Repo == "" || !strings.EqualFold(ei.repo, prs.Repo)) {
+	var pr worktree.PR
+	var found bool
+	if ei.remote {
+		pr, found = prs.ForRemote(ei.repo, ei.prBranch)
+	} else {
+		pr, found = prs.ForBranch(ei.prBranch)
+	}
+	if !found {
 		return nil
 	}
-	if pr, found := prs.ByBranch[ei.prBranch]; found {
-		return &pr
-	}
-	return nil
+	return &pr
 }
 
-// remoteTagsHidden is the notice for a listing that has pull requests while
-// no remote-tracking row sits in the repository gh listed, so prFor hides
-// every remote row's tag (a renamed or transferred repository, an old gh, a
-// remote reached by another path form). "" when nothing is hidden for that
-// reason.
+// remoteTagsHidden is the notice for a listing that has pull requests from
+// the listed repository's own branches (prs.BaseRepo) while no
+// remote-tracking row sits in that repository or in any PR's head
+// repository, so no remote row can be tagged (a renamed or transferred
+// repository, a remote reached by another path form). A listing whose PRs
+// all come from forks names no repository and says nothing. "" when nothing
+// is hidden for that reason.
 func remoteTagsHidden(items []list.Item, prs worktree.PRSet) string {
-	if len(prs.ByBranch) == 0 {
+	if len(prs.ByHead) == 0 || prs.BaseRepo == "" {
 		return ""
 	}
 	remotes := 0
@@ -225,17 +235,14 @@ func remoteTagsHidden(items []list.Item, prs worktree.PRSet) string {
 			continue
 		}
 		remotes++
-		if prs.Repo != "" && strings.EqualFold(ei.repo, prs.Repo) {
+		if strings.EqualFold(ei.repo, prs.BaseRepo) || prs.HasHeadRepo(ei.repo) {
 			return ""
 		}
 	}
 	if remotes == 0 {
 		return ""
 	}
-	if prs.Repo == "" {
-		return "PR tags hidden on remote branches: gh named no repository"
-	}
-	return "PR tags hidden on remote branches: no remote is " + printable(prs.Repo)
+	return "PR tags hidden on remote branches: no remote is " + printable(prs.BaseRepo)
 }
 
 // prsCurrent reports whether every entry row in items carries the tag prs
