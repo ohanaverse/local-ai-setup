@@ -600,9 +600,10 @@ It happened four times in the profile test and seven times in a follow-up
 run of two-turn sessions. Claude Code retried each refused request, and
 every turn finished, but slowly: a one-line reply took 78 s on the `sonnet`
 slot and 163 s on `haiku`. In these tests omlx and ollama gave no 507s on the
-same task, and neither did a different mtplx build (a 35B-A3B model). These are counts from one machine and a few sessions, not a
-benchmark. In a follow-up run on 2026-10-15 (11 more refusals, with mtplx's
-`sustained` profile), mtplx's guard refused when the system's free memory
+same task, and neither did a different mtplx build (a 35B-A3B model). These
+are counts from one machine and a few sessions, not a benchmark. In a
+follow-up run on 2026-10-15 (11 more refusals, with mtplx's `sustained`
+profile), mtplx's guard refused when the system's free memory
 fell below its floor while mtplx's own engine was still under its budget,
 so how much else the machine holds matters.
 
