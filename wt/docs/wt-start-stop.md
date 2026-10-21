@@ -306,7 +306,10 @@ stop them first, keep them and start, or cancel? [s/k/N]
   `memory use unknown` (mtplx, and any server that does not say; never 0 and
   never a guess), with its live wt session count when sessions use it. An
   mtplx still loading reads `mtplx/<id> (loading)`. An mlx_lm_server pairing's
-  figure ends `; wt cannot stop it`: wt has no way to stop one. A provider whose
+  figure ends `; wt cannot stop it`: wt has no way to stop one, and neither
+  has an omlx model still loading: omlx will not unload one mid-load, so wt
+  lists it (it holds memory already) with that same clause and never offers
+  to stop it. A provider whose
   server answered but whose answer wt cannot read is a `cannot tell whether …`
   line; one that refuses the connection holds nothing and is not listed.
 - `s` (or `stop`) stops every listed model wt can stop, then starts; `k` (or
@@ -333,6 +336,10 @@ stop them first, keep them and start, or cancel? [s/k/N]
   wt never asks and never stops:
   it keeps the models and prints one line to stderr,
   `wt: warning: starting <id> beside <id> (<memory>), …; pass --others=stop to stop them, --others=keep to silence this`.
+  When nothing it names can be stopped (an mlx_lm_server pairing, an omlx
+  model still loading, a provider wt cannot read), the advice is
+  `pass --others=keep to silence this` alone: `--others=stop` would stop
+  nothing.
 - A stop goes through the same stop as `wt stop` (omlx unloads the model,
   ollama runs `ollama stop` and waits, mtplx stops the server) and removes
   the model's route (an ollama model keeps its route). A stop that fails ends
