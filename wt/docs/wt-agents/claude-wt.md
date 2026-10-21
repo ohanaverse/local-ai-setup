@@ -138,6 +138,12 @@ holding `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot. It writes no
 settings file. The file format, the picker row and every failure are in
 [slot-profiles.md](slot-profiles.md).
 
+A dated observation (2026-10-14, #393) applies to any launch that gives
+Claude Code a local mtplx model, slot profile or not: on a 64 GB machine
+mtplx refused some of Claude Code's 30–41k-token requests with HTTP 507
+`insufficient memory`, and the retries made turns slow. See
+[A local slot model and memory](slot-profiles.md#a-local-slot-model-and-memory).
+
 ## Sessions
 
 `wt` leaves sessions to Claude Code: every launch starts fresh, and `wt` never looks one up, prompts about one, or adds a resume flag. To continue a conversation, pass claude's own flags after `--`; `wt` hands them over unchanged on every launch path, the picker included.
