@@ -936,6 +936,91 @@ func TestLocalRowsShowNoStrangersForkPR(t *testing.T) {
 	}
 }
 
+// strangerAndForkPRs is a listing of o/base with your fork's PR #7 from
+// me/fork's feat-x and a stranger's PRs from someone/else's main and patch-1,
+// over a picker of the (current) main row and local patch-1 and feat-x.
+func strangerAndForkPRs(t *testing.T) (groups []worktree.EntryGroup, root string, prs worktree.PRSet) {
+	t.Helper()
+	root = t.TempDir()
+	groups = []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: root},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "patch-1"},
+			{Type: worktree.TypeBranch, Branch: "feat-x"},
+		}},
+	}
+	prs = withFork(withFork(prsIn("o/base", nil), "someone/else", map[string]worktree.PR{
+		"main":    {Number: 9, State: worktree.PROpen, Title: "Stranger's main"},
+		"patch-1": {Number: 8, State: worktree.PROpen, Title: "Stranger's patch"},
+	}), "me/fork", map[string]worktree.PR{
+		"feat-x": {Number: 7, State: worktree.PROpen, Title: "My fork"},
+	})
+	return groups, root, prs
+}
+
+// assertForkTags checks feat-x shows want and main and patch-1 show nothing.
+func assertForkTags(t *testing.T, m model, want string) {
+	t.Helper()
+	cases := map[string]string{"main": "", "patch-1": "", "feat-x": want}
+	for branch, w := range cases {
+		if got := rowByBranch(t, m.list.Items(), branch).prTag(); got != w {
+			t.Errorf("%s tag = %q, want %q", branch, got, w)
+		}
+	}
+}
+
+// TestForkPRsBeforeEntriesTagWithYourRemotes pins the arrival order where gh
+// answers before the enumeration: the list the entries build is tagged with
+// the entry load's own repositories, so your local feat-x shows the PR you
+// opened from your fork (me/fork, a remote) and a stranger's PRs from their
+// fork's main and patch-1 tag nothing. A regression (the build tagging
+// without ownRepos) silently drops your fork's tag whenever gh is faster
+// than the fetch.
+func TestForkPRsBeforeEntriesTagWithYourRemotes(t *testing.T) {
+	groups, root, prs := strangerAndForkPRs(t)
+	m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+	got, _ := m.Update(prsLoadedMsg{prs: prs})
+	m = got.(model)
+	got, _ = m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: root, ownRepos: worktree.NewRepoSet("o/base", "me/fork")})
+	m = got.(model)
+	assertForkTags(t, m, "#7 open")
+}
+
+// TestReloadAfterCreateKeepsTheForkTag pins the entry reload that follows a
+// worktree create (loadEntriesCmd/loadEntriesAtCmd, a second
+// entriesLoadedMsg over PRs already loaded): with your fork still among the
+// remotes, feat-x keeps #7 and the strangers' PRs stay off main and patch-1;
+// a reload whose remotes no longer include the fork drops the tag, because
+// each load's set replaces the last one, never merges into it. A regression
+// loses your fork's tag on every local branch right after you create a
+// worktree.
+func TestReloadAfterCreateKeepsTheForkTag(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reloadOwn worktree.RepoSet
+		want      string
+	}{
+		"fork still a remote": {reloadOwn: worktree.NewRepoSet("o/base", "me/fork"), want: "#7 open"},
+		"no remotes":          {reloadOwn: nil, want: ""},
+		"empty set":           {reloadOwn: worktree.NewRepoSet(), want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			groups, root, prs := strangerAndForkPRs(t)
+			m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+			got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: root, ownRepos: worktree.NewRepoSet("o/base", "me/fork")})
+			m = got.(model)
+			got, _ = m.Update(prsLoadedMsg{prs: prs})
+			m = got.(model)
+			assertForkTags(t, m, "#7 open")
+
+			got, _ = m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: root, ownRepos: tc.reloadOwn})
+			m = got.(model)
+			assertForkTags(t, m, tc.want)
+		})
+	}
+}
+
 // TestStaleFilterRunKeepsAForkTagOnALocalRow is
 // TestStaleFilterRunAfterPRsKeepsTheTags for a local row tagged from your
 // fork (a remote): the staleness check must ask with the same remotes the
