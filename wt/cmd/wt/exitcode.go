@@ -48,9 +48,11 @@ func agentExitStatus(err error) error {
 // why its ollama flow changed nothing, and a picker launch passes on its
 // agent's status.
 func reportExit(err error, w io.Writer) int {
-	var coded *exitCodeError
-	if !errors.As(err, &coded) || !coded.quiet {
-		fmt.Fprintln(w, "wt:", err)
+	if err != nil {
+		var coded *exitCodeError
+		if !errors.As(err, &coded) || !coded.quiet {
+			fmt.Fprintln(w, "wt:", err)
+		}
 	}
 	return exitCodeOf(err)
 }
