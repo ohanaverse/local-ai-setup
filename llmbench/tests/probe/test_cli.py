@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 
 import pytest
+import typer.main
 from typer.testing import CliRunner
 
 from llmbench.main import app
+from llmbench.probe.cli import _PENALTY_CAVEAT
 
 runner = CliRunner()
 REPO_CATEGORIES = Path(__file__).resolve().parents[3] / "benchmarks" / "tasks" / "eval"
@@ -527,8 +529,9 @@ def test_help_lists_the_penalty_flags_and_the_silent_ignore_caveat():
     assert result.exit_code == 0, result.output
     for flag in ("--presence-penalty", "--frequency-penalty", "--repetition-penalty"):
         assert flag in result.output
-    # Rich wraps the help inside a box: drop its borders and rejoin the words.
-    text = " ".join(result.output.replace("│", " ").split())
-    assert "ignored silently" in text
-    assert "not sent" in text
-    assert "check your server" in text
+    # Assert on the command's help text, not on how Rich wraps it in a box.
+    command = typer.main.get_command(app).commands["probe"].commands["thinking"]
+    assert command.help.count(_PENALTY_CAVEAT) == 1
+    assert all(_PENALTY_CAVEAT not in (p.help or "") for p in command.params)
+    assert "ignored silently" in _PENALTY_CAVEAT
+    assert "check your server" in _PENALTY_CAVEAT

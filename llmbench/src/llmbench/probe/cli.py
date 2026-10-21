@@ -45,10 +45,10 @@ def _usage_error(message: str) -> typer.Exit:
     return typer.Exit(_USAGE_EXIT)
 
 
-# Every penalty flag's help ends with this: a server may drop a field it does
-# not know without a word, so a set penalty proves nothing on its own.
+# The command help carries this once, after the flag list: a server may drop a
+# field it does not know without a word, so a set penalty proves nothing alone.
 _PENALTY_CAVEAT = (
-    " Default: not sent (the server's own default applies). Servers differ in which "
+    "Penalty flags: not sent unless set (the server's own default applies). Servers differ in which "
     "penalty fields they honor: an unknown or unsupported field may be ignored silently "
     "(no error) or rejected with a 400, and the probe cannot tell which. A result with a "
     "penalty set means something only if changing the value changes the output, or the "
@@ -56,17 +56,23 @@ _PENALTY_CAVEAT = (
 )
 
 
-def _check_penalty(flag: str, value: float | None, *, low: float, high: float | None) -> None:
-    """Raise ProbeError naming `flag` when a set value is NaN, infinite or out
-    of range: [low, high] inclusive, or above `low` when `high` is None."""
-    if value is None:
-        return
-    if not math.isfinite(value):
+def _check_finite(flag: str, value: float | None) -> None:
+    if value is not None and not math.isfinite(value):
         raise ProbeError(f"{flag} must be a finite number, not {value}")
-    if high is None and value <= low:
-        raise ProbeError(f"{flag} must be greater than {low:g}, not {value:g}")
-    if high is not None and not low <= value <= high:
-        raise ProbeError(f"{flag} must be between {low:g} and {high:g}, not {value:g}")
+
+
+def _check_between(flag: str, value: float | None, low: float, high: float) -> None:
+    """Raise ProbeError when a set value is NaN, infinite or outside [low, high]."""
+    _check_finite(flag, value)
+    if value is not None and not low <= value <= high:
+        raise ProbeError(f"{flag} must be between {low:g} and {high:g}, not {value!r}")
+
+
+def _check_above(flag: str, value: float | None, low: float) -> None:
+    """Raise ProbeError when a set value is NaN, infinite or not above `low`."""
+    _check_finite(flag, value)
+    if value is not None and value <= low:
+        raise ProbeError(f"{flag} must be greater than {low:g}, not {value!r}")
 
 
 def _progress(result: ProbeResult) -> None:
@@ -82,7 +88,22 @@ def _progress(result: ProbeResult) -> None:
     )
 
 
-@probe_app.command("thinking")
+_THINKING_HELP = (
+    """Send the same prompts to each target and compare its reasoning
+(length, opening) and its answer (length, markdown shape).
+
+Start and isolate each server yourself first (`llmbench provider isolate
+...`); this command only sends chat completions. report.md and
+results.json are rewritten after every finished request, so Ctrl-C keeps
+what finished. Exit 0 when at least one target answered, 1 when none
+did, 2 on a usage error, 130 when interrupted.
+
+"""
+    + _PENALTY_CAVEAT
+)
+
+
+@probe_app.command("thinking", help=_THINKING_HELP)
 def thinking_cmd(
     target: list[str] = typer.Option(  # noqa: B008
         [],
@@ -122,20 +143,20 @@ def thinking_cmd(
     presence_penalty: float | None = typer.Option(
         None,
         "--presence-penalty",
-        help="presence_penalty, -2.0 to 2.0 (OpenAI's range): penalizes a token that has "
-        "appeared at all." + _PENALTY_CAVEAT,
+        help="presence_penalty, -2.0 to 2.0 (the probe's own check, OpenAI's range): "
+        "penalizes a token that has appeared at all.",
     ),
     frequency_penalty: float | None = typer.Option(
         None,
         "--frequency-penalty",
-        help="frequency_penalty, -2.0 to 2.0 (OpenAI's range): penalizes a token by how "
-        "often it has appeared." + _PENALTY_CAVEAT,
+        help="frequency_penalty, -2.0 to 2.0 (the probe's own check, OpenAI's range): "
+        "penalizes a token by how often it has appeared.",
     ),
     repetition_penalty: float | None = typer.Option(
         None,
         "--repetition-penalty",
         help="repetition_penalty, greater than 0 (a vLLM/mlx-style extension; 1.0 means "
-        "none): scales down a repeated token's score." + _PENALTY_CAVEAT,
+        "none): scales down a repeated token's score.",
     ),
     timeout: float = typer.Option(
         900.0,
@@ -150,21 +171,12 @@ def thinking_cmd(
         "directory under the system temp dir.",
     ),
 ) -> None:
-    """Send the same prompts to each target and compare its reasoning
-    (length, opening) and its answer (length, markdown shape).
-
-    Start and isolate each server yourself first (`llmbench provider isolate
-    ...`); this command only sends chat completions. report.md and
-    results.json are rewritten after every finished request, so Ctrl-C keeps
-    what finished. Exit 0 when at least one target answered, 1 when none
-    did, 2 on a usage error, 130 when interrupted.
-    """
     if not target:
         raise _usage_error(f"give at least one --target {TARGET_FORMAT}")
     try:
-        _check_penalty("--presence-penalty", presence_penalty, low=-2.0, high=2.0)
-        _check_penalty("--frequency-penalty", frequency_penalty, low=-2.0, high=2.0)
-        _check_penalty("--repetition-penalty", repetition_penalty, low=0.0, high=None)
+        _check_between("--presence-penalty", presence_penalty, -2.0, 2.0)
+        _check_between("--frequency-penalty", frequency_penalty, -2.0, 2.0)
+        _check_above("--repetition-penalty", repetition_penalty, 0.0)
         targets: list[Target] = [parse_target(spec) for spec in target]
         names = [t.name for t in targets]
         duplicates = sorted({n for n in names if names.count(n) > 1})

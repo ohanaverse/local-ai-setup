@@ -241,6 +241,11 @@ REASONING_HEAD_CHARS = 200
 _ERROR_BODY_CHARS = 300
 
 
+# The sampling penalties, by request field name, in the order they are sent
+# and reported. Each is a `Sampling` attribute of the same name.
+PENALTY_FIELDS = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+
+
 @dataclass(frozen=True)
 class Sampling:
     """What the request body carries beside the prompt. A top_p or top_k of 0
@@ -260,11 +265,7 @@ class Sampling:
 
     def penalties(self) -> dict[str, float]:
         """The penalties that are set, by request field name, in a fixed order."""
-        named = {
-            "presence_penalty": self.presence_penalty,
-            "frequency_penalty": self.frequency_penalty,
-            "repetition_penalty": self.repetition_penalty,
-        }
+        named = {name: getattr(self, name) for name in PENALTY_FIELDS}
         return {name: value for name, value in named.items() if value is not None}
 
     def body_fields(self) -> dict[str, float | int]:
@@ -640,7 +641,7 @@ def _result_json(result: ProbeResult) -> dict[str, Any]:
 def _sampling_json(sampling: Sampling) -> dict[str, Any]:
     """The sampling as sent: an unset penalty is absent, not null."""
     doc = asdict(sampling)
-    for name in ("presence_penalty", "frequency_penalty", "repetition_penalty"):
+    for name in PENALTY_FIELDS:
         if doc[name] is None:
             del doc[name]
     return doc
