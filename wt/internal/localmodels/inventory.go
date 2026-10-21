@@ -119,6 +119,11 @@ type Entry struct {
 	// carries it: ollama's /api/tags. 0 means not known, never "empty": no
 	// directory is walked to fill it.
 	Size int64
+	// LoadedSize is the memory, in bytes, the server says the loaded model
+	// holds: ollama's /api/ps size, or omlx's pool estimate when its status
+	// reading answered (Pool.SizesKnown). 0 means not known, or not loaded:
+	// mtplx and mlx_lm_server report no figure, and none is guessed.
+	LoadedSize int64
 }
 
 // Snapshot is one inventory round. Providers is keyed by provider family
@@ -213,7 +218,8 @@ type source struct {
 	loaded     []string          // names serving right now
 	dir        string            // the model directory that was scanned (omlx, mtplx)
 	paths      map[string]string // artifact -> its directory (omlx, mtplx)
-	sizes      map[string]int64  // artifact -> bytes (ollama)
+	sizes      map[string]int64  // artifact -> bytes on disk (ollama)
+	inMemory   map[string]int64  // loaded name -> bytes in memory (ollama's /api/ps)
 	registered int               // local registry models in this family
 	down       bool              // the server refused the connection (nothing listening)
 	probeErr   error             // the probe failure, for a caller that shows the reason
@@ -320,6 +326,30 @@ func (s *source) isLoading(name string) bool {
 	return ok && m.Loading && !m.Loaded
 }
 
+// loadedSize is the memory the server says the loaded model name denotes
+// holds (Entry.LoadedSize): ollama's /api/ps size for the loaded name that
+// matches it, omlx's pool estimate when the status reading answered
+// (Pool.SizesKnown). 0 for every other family and every other reading: the
+// figure is unknown, and none is guessed.
+func (s *source) loadedSize(name string) int64 {
+	switch s.family {
+	case "ollama":
+		for _, l := range s.loaded {
+			if OllamaNameMatches(l, name) {
+				return s.inMemory[l]
+			}
+		}
+	case "omlx":
+		if s.pool == nil || !s.pool.SizesKnown {
+			return 0
+		}
+		if m, ok := s.pool.Find(name); ok {
+			return m.Size
+		}
+	}
+	return 0
+}
+
 // familyProviderIDs lists the registry provider ids that belong to a family.
 func familyProviderIDs(family string) []string { return familyIDs[family] }
 
@@ -424,7 +454,11 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 		// Same endpoint construction as the lifecycle re-probe's OllamaLoaded,
 		// so the two always describe the same server.
 		if loaded, err := OllamaLoaded(context.Background(), client, origin); err == nil {
-			s.loaded = loaded
+			s.inMemory = map[string]int64{}
+			for _, m := range loaded {
+				s.loaded = append(s.loaded, m.Name)
+				s.inMemory[m.Name] = m.Size
+			}
 		} else {
 			s.status = StatusPartial
 			// /api/tags answered above, so a refused /api/ps means the daemon
@@ -586,6 +620,9 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 			}
 			e.Running = src.isRunning(name)
 			e.Loading = e.Running && src.isLoading(name)
+			if e.Running {
+				e.LoadedSize = src.loadedSize(name)
+			}
 		}
 		snap.Entries = append(snap.Entries, e)
 	}
@@ -620,6 +657,10 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				continue
 			}
 			running := src.isRunning(a)
+			var loadedSize int64
+			if running {
+				loadedSize = src.loadedSize(a)
+			}
 			snap.Entries = append(snap.Entries, Entry{
 				ProviderID:    familyProviderID(cfg, f),
 				Artifact:      a,
@@ -630,6 +671,7 @@ func inventory(cfg *config.Config, client *http.Client) Snapshot {
 				ArtifactKnown: true,
 				Path:          src.paths[a],
 				Size:          src.sizes[a],
+				LoadedSize:    loadedSize,
 			})
 		}
 	}

@@ -13,17 +13,19 @@ import (
 	"strings"
 )
 
-// ollamaModel is one entry of an ollama {"models":[...]} response.
-type ollamaModel struct {
+// OllamaModel is one entry of an ollama {"models":[...]} response. Size is
+// that answer's own "size": bytes on disk in /api/tags, bytes the loaded model
+// holds in memory in /api/ps; 0 when absent.
+type OllamaModel struct {
 	Name string
-	Size int64 // bytes on disk, as /api/tags reports it; 0 when absent
+	Size int64
 }
 
 // ollamaModels returns the local models in an ollama {"models":[...]}
 // response (/api/tags: pulled models; /api/ps: loaded models). Entries with a
 // non-empty remote_host are ollama.com cloud models, not local ones, and are
 // skipped.
-func ollamaModels(ctx context.Context, client *http.Client, url string) ([]ollamaModel, error) {
+func ollamaModels(ctx context.Context, client *http.Client, url string) ([]OllamaModel, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -46,10 +48,10 @@ func ollamaModels(ctx context.Context, client *http.Client, url string) ([]ollam
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", url, err)
 	}
-	models := make([]ollamaModel, 0, len(body.Models))
+	models := make([]OllamaModel, 0, len(body.Models))
 	for _, m := range body.Models {
 		if m.Name != "" && m.RemoteHost == "" {
-			models = append(models, ollamaModel{Name: m.Name, Size: m.Size})
+			models = append(models, OllamaModel{Name: m.Name, Size: m.Size})
 		}
 	}
 	return models, nil
@@ -69,12 +71,12 @@ func ollamaModelNames(ctx context.Context, client *http.Client, url string) ([]s
 }
 
 // OllamaLoaded returns the local models ollama has loaded right now (its
-// /api/ps), with the same parsing inventory uses. An error means the daemon
-// gave no usable answer, so an empty list must not be read as "none loaded".
-// The request honors ctx, so a cancelled caller aborts the probe instead of
-// waiting out the client timeout.
-func OllamaLoaded(ctx context.Context, client *http.Client, origin string) ([]string, error) {
-	return ollamaModelNames(ctx, client, origin+"/api/ps")
+// /api/ps), each with the bytes it holds in memory, with the same parsing
+// inventory uses. An error means the daemon gave no usable answer, so an empty
+// list must not be read as "none loaded". The request honors ctx, so a
+// cancelled caller aborts the probe instead of waiting out the client timeout.
+func OllamaLoaded(ctx context.Context, client *http.Client, origin string) ([]OllamaModel, error) {
+	return ollamaModels(ctx, client, origin+"/api/ps")
 }
 
 // scanModelDirs lists the subdirectories of dir (symlinks to directories

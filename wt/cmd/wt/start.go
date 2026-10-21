@@ -286,7 +286,9 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 	report := startProgress(id, done, began)
 
 	target := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
-	opts := lifecycle.Options{Progress: report, RestartOwed: restartOwed}
+	// Others: keep other providers' models, unasked, as every start did
+	// before #412; the question is not asked here yet.
+	opts := lifecycle.Options{Progress: report, RestartOwed: restartOwed, Others: lifecycle.OthersAnswer{Decided: true}}
 
 	// settled ends a start the engine reported done. ctx is done only when a
 	// signal arrived: the goroutine above calls stop() after ctx.Done(), and

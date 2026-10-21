@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"sort"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -125,4 +126,74 @@ func poolVictims(pool *localmodels.Pool, t Target, others []localmodels.Entry) [
 		}
 	}
 	return victims
+}
+
+// residentOthers lists what a start of t would load beside on the other
+// provider families (#412): every running entry whose family is not the
+// target's, and the families whose probe cannot be trusted, which are
+// reported as unknown and never read as empty. A family whose server refused
+// the connection (Down) holds nothing. It returns nothing when the target is
+// already running (the start is a no-op) or is itself loading: the start that
+// began that load already asked. An mtplx still loading is not in the
+// snapshot (its port refuses); env.residents adds it.
+func residentOthers(snap localmodels.Snapshot, family string, t Target) (others []Resident, unknown []string) {
+	if isRunning(snap, family, t) || isLoading(snap, family, t) {
+		return nil, nil
+	}
+	untrusted := map[string]bool{}
+	for f := range snap.Providers {
+		if f != family && f != "" && !snap.Down[f] && !ProbeTrusted(snap, f) {
+			untrusted[f] = true
+			unknown = append(unknown, f)
+		}
+	}
+	sort.Strings(unknown)
+	for _, en := range snap.Entries {
+		f := localmodels.Family(en.ProviderID)
+		if !en.Running || f == "" || f == family || snap.Down[f] || untrusted[f] {
+			continue
+		}
+		others = append(others, Resident{Entry: en, Stoppable: CanStop(en.ProviderID)})
+	}
+	return others, unknown
+}
+
+// residents is residentOthers plus an mtplx still loading: its port refuses,
+// so the snapshot reads mtplx Down, and only wt's pidfile shows it
+// (loadingMtplx). A pidfile wt cannot check makes mtplx unknown; one that
+// names nothing wt can verify is left out, as the stop picker leaves it.
+func (e *env) residents(cfg *config.Config, snap localmodels.Snapshot, family string, t Target) ([]Resident, []string) {
+	others, unknown := residentOthers(snap, family, t)
+	if family == "mtplx" || !snap.Down["mtplx"] || isRunning(snap, family, t) || isLoading(snap, family, t) {
+		return others, unknown
+	}
+	id, l := e.loadingMtplx(cfg)
+	switch {
+	case l.Err != nil:
+		unknown = append(unknown, "mtplx")
+		sort.Strings(unknown)
+	case l.PID > 0:
+		others = append(others, Resident{Entry: loadingMtplxEntry(snap, id.model), Stoppable: true, PID: l.PID})
+	}
+	return others, unknown
+}
+
+// loadingMtplxEntry is the entry of the model an mtplx still loading is
+// serving (model, its --model-id): the snapshot's own entry for it, so the
+// resident carries the registry id the picker shows, else a discovered one.
+// An mtplx whose command line named no model is the provider alone.
+func loadingMtplxEntry(snap localmodels.Snapshot, model string) localmodels.Entry {
+	if model != "" {
+		for _, en := range snap.Entries {
+			if localmodels.Family(en.ProviderID) == "mtplx" && SameModel("mtplx", en.ModelName, model) {
+				en.Running, en.Loading = true, true
+				return en
+			}
+		}
+	}
+	en := localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx", ModelName: model, Running: true, Loading: true}
+	if model != "" {
+		en.ModelID = config.DiscoveredModelID("mtplx", model)
+	}
+	return en
 }

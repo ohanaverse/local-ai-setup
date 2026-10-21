@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,6 +22,16 @@ type fakeBackend struct {
 	calls    *[]string
 	stopErr  error
 	startErr error
+	// family, when set, prefixes each recorded call ("mtplx:stopModel:x"), so
+	// one calls slice shared by several families' fakes says which was asked.
+	family string
+}
+
+func (f *fakeBackend) record(call string) {
+	if f.family != "" {
+		call = f.family + ":" + call
+	}
+	*f.calls = append(*f.calls, call)
 }
 
 func (f *fakeBackend) tenancy() Tenancy {
@@ -34,15 +45,15 @@ func (f *fakeBackend) tenancy() Tenancy {
 }
 
 func (f *fakeBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {
-	*f.calls = append(*f.calls, "stop")
+	f.record("stop")
 	return f.stopErr
 }
 func (f *fakeBackend) stopModel(ctx context.Context, e *env, cfg *config.Config, modelName string) error {
-	*f.calls = append(*f.calls, "stopModel:"+modelName)
+	f.record("stopModel:" + modelName)
 	return f.stopErr
 }
 func (f *fakeBackend) start(ctx context.Context, e *env, cfg *config.Config, t Target, report func(Stage)) error {
-	*f.calls = append(*f.calls, "start:"+t.ModelName)
+	f.record("start:" + t.ModelName)
 	report(StageStarting)
 	return f.startErr
 }
@@ -52,6 +63,21 @@ func fakeEnv(snap localmodels.Snapshot, single bool, calls *[]string) *env {
 	e.inventory = func(*config.Config) localmodels.Snapshot { return snap }
 	fb := &fakeBackend{single: single, calls: calls}
 	e.backends = map[string]backend{"omlx": fb, "mtplx": fb, "ollama": &fakeBackend{single: false, calls: calls}}
+	return e
+}
+
+// fakeEnvFamilies is fakeEnv with one fake backend per family, each with the
+// family's real tenancy and recording its calls under its family's name. fakeEnv
+// gives omlx and mtplx one shared fake, which cannot tell a stop of another
+// family's model from a stop of the target's own.
+func fakeEnvFamilies(snap localmodels.Snapshot, calls *[]string) *env {
+	e := testEnv()
+	e.inventory = func(*config.Config) localmodels.Snapshot { return snap }
+	e.backends = map[string]backend{
+		"ollama": &fakeBackend{ten: Shared, calls: calls, family: "ollama"},
+		"omlx":   &fakeBackend{ten: Pool, calls: calls, family: "omlx"},
+		"mtplx":  &fakeBackend{ten: Exclusive, calls: calls, family: "mtplx"},
+	}
 	return e
 }
 
@@ -550,5 +576,272 @@ func TestTenancyOfEachFamily(t *testing.T) {
 		if got := TenancyOf(id); got != want {
 			t.Errorf("TenancyOf(%q) = %v, want %v", id, got, want)
 		}
+	}
+}
+
+// othersSnap is an omlx start's view with a model loaded on each other
+// family: mtplx (no figure), ollama (9.6 GB in memory) and mlx_lm_server
+// (which wt cannot stop), plus an ollama family-mate that is only pulled.
+func othersSnap() localmodels.Snapshot {
+	ol := running("ollama", "ollama/a", "a:1b")
+	ol.LoadedSize = 9_600_000_000
+	return localmodels.Snapshot{Entries: []localmodels.Entry{
+		running("mlx_lm_server", "mlx_lm_server/p", "p"),
+		running("mtplx", "mtplx/m1", "Org/M1"),
+		ol,
+		{ProviderID: "ollama", ModelID: "ollama/idle", ModelName: "idle:1b"},
+	}}
+}
+
+// recordStopped makes e's route hook record every model a start stopped and
+// report a restart owed, the way the production hook does after a removal.
+func recordStopped(e *env) *[]string {
+	stopped := &[]string{}
+	e.onOccupantStopped = func(_ context.Context, _ *config.Config, occ localmodels.Entry) bool {
+		*stopped = append(*stopped, occ.ModelID)
+		return true
+	}
+	return stopped
+}
+
+// TestStartAsksAboutOtherProvidersFirst pins the fail-safe zero value of
+// Options.Others (#412): a start that finds models of other providers loaded,
+// or a family it cannot read, refuses with one *OccupiedError listing them
+// and touches nothing — no backend call, no route write — and the caller's
+// owed proxy restart stays owed (RestartStillOwed). A caller that forgot to
+// answer would otherwise stop or load beside models the user never heard of.
+func TestStartAsksAboutOtherProvidersFirst(t *testing.T) {
+	var calls []string
+	snap := othersSnap()
+	snap.Providers = map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusPartial, "omlx": localmodels.StatusOK}
+	snap.Entries = snap.Entries[1:] // mlx_lm_server is untrusted, so it has no entry
+	e := fakeEnvFamilies(snap, &calls)
+	stopped := recordStopped(e)
+	err := start(context.Background(), e, &config.Config{}, Target{ProviderID: "omlx", ModelName: "T"}, Options{RestartOwed: true})
+	var occ *OccupiedError
+	if !errors.As(err, &occ) {
+		t.Fatalf("err = %v, want *OccupiedError", err)
+	}
+	if len(occ.Occupants) != 0 || !reflect.DeepEqual(residentIDs(occ.Others), []string{"mtplx/m1", "ollama/a"}) || !reflect.DeepEqual(occ.OthersUnknown, []string{"mlx_lm_server"}) {
+		t.Errorf("refusal = %+v, want no occupants, others [mtplx/m1 ollama/a], unknown [mlx_lm_server]", occ)
+	}
+	if msg := occ.Error(); strings.Contains(msg, "would stop") || !strings.Contains(msg, "other providers (mtplx/m1, ollama/a)") || !strings.Contains(msg, "cannot tell whether mlx_lm_server") {
+		t.Errorf("message = %q, want it worded for other providers' models only", msg)
+	}
+	if !RestartStillOwed(err) {
+		t.Error("RestartStillOwed = false for a refusal that touched nothing: the caller's owed restart would be lost")
+	}
+	if len(calls) != 0 || len(*stopped) != 0 || e.restartOwed {
+		t.Errorf("calls = %v, stopped = %v, restartOwed = %v, want nothing touched", calls, *stopped, e.restartOwed)
+	}
+}
+
+// TestStartKeepingOthersIsTodaysStart pins what every caller passes until the
+// prompts land (Decided with no Stop): with other providers' models loaded
+// and a family wt cannot read, the start goes ahead exactly as before — the
+// one backend start, the same stages, nothing stopped and not one line
+// printed. Anything more would change `wt start`, `wt smoke` and the picker
+// before the user is ever asked.
+func TestStartKeepingOthersIsTodaysStart(t *testing.T) {
+	var calls []string
+	snap := othersSnap()
+	snap.Providers = map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusPartial}
+	e := fakeEnvFamilies(snap, &calls)
+	stopped := recordStopped(e)
+	var out strings.Builder
+	var stages []Stage
+	err := start(withRouteOutput(context.Background(), &out), e, &config.Config{}, Target{ProviderID: "omlx", ModelName: "T"},
+		Options{Others: OthersAnswer{Decided: true}, Progress: func(s Stage) { stages = append(stages, s) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []string{"omlx:start:T"}) || len(*stopped) != 0 {
+		t.Errorf("calls = %v, stopped = %v, want the one start", calls, *stopped)
+	}
+	if !reflect.DeepEqual(stages, []Stage{StageStarting}) || out.Len() != 0 {
+		t.Errorf("stages = %v, output = %q, want only the backend's stage and no output", stages, out.String())
+	}
+}
+
+// TestStartStopsApprovedOthersFirst pins the order a confirmed stop takes:
+// each approved model of another provider is stopped through its own
+// backend's stopModel, and its route hook runs, before the target's own
+// family is touched (the replace) and before the backend start, so the memory
+// is free when the load begins. mlx_lm_server, which wt cannot stop, is
+// skipped even when named. Starting first would load beside the very model
+// the user asked to stop.
+func TestStartStopsApprovedOthersFirst(t *testing.T) {
+	var calls []string
+	snap := othersSnap()
+	snap.Entries = append(snap.Entries, running("omlx", "omlx/old", "Old"))
+	e := fakeEnvFamilies(snap, &calls)
+	e.backends["omlx"] = &fakeBackend{single: true, calls: &calls, family: "omlx"} // an occupant to replace
+	stopped := recordStopped(e)
+	var stages []Stage
+	err := start(context.Background(), e, &config.Config{}, Target{ProviderID: "omlx", ModelName: "T"}, Options{
+		AllowReplace: true,
+		Others:       OthersAnswer{Decided: true, Stop: []string{"mlx_lm_server/p", "mtplx/m1", "ollama/a"}},
+		Progress:     func(s Stage) { stages = append(stages, s) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"mtplx:stopModel:Org/M1", "ollama:stopModel:a:1b", "omlx:stop", "omlx:start:T"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Errorf("calls = %v, want %v", calls, want)
+	}
+	if !reflect.DeepEqual(*stopped, []string{"mtplx/m1", "ollama/a", "omlx/old"}) || !e.restartOwed {
+		t.Errorf("route hook = %v (restartOwed %v), want the two others then the occupant, with a restart owed", *stopped, e.restartOwed)
+	}
+	if !reflect.DeepEqual(stages, []Stage{StageStoppingOthers, StageStoppingOccupant, StageStarting}) {
+		t.Errorf("stages = %v", stages)
+	}
+}
+
+// TestStartRefusesOccupantsAndOthersAsOne pins the one refusal: a start that
+// would both replace a model of its own family and load beside another
+// provider's asks both questions in one *OccupiedError, so the caller asks
+// once and retries once, and an answer to one half does not skip the other.
+func TestStartRefusesOccupantsAndOthersAsOne(t *testing.T) {
+	var calls []string
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("mtplx", "mtplx/old", "Org/Old"), running("ollama", "ollama/a", "a:1b")}}
+	e := fakeEnvFamilies(snap, &calls)
+	target := Target{ProviderID: "mtplx", ModelName: "Org/New"}
+
+	var occ *OccupiedError
+	err := start(context.Background(), e, &config.Config{}, target, Options{})
+	if !errors.As(err, &occ) || !reflect.DeepEqual(occ.IDs(), []string{"mtplx/old"}) || !reflect.DeepEqual(residentIDs(occ.Others), []string{"ollama/a"}) {
+		t.Fatalf("err = %v, want one refusal naming mtplx/old and ollama/a", err)
+	}
+	if msg := occ.Error(); !strings.Contains(msg, "would stop mtplx/old") || !strings.Contains(msg, "ollama/a") {
+		t.Errorf("message = %q, want both halves", msg)
+	}
+	err = start(context.Background(), e, &config.Config{}, target, Options{AllowReplace: true})
+	if !errors.As(err, &occ) || len(occ.Occupants) != 0 || len(occ.Others) != 1 {
+		t.Errorf("replace granted, others unanswered: err = %v, want a refusal about ollama/a alone", err)
+	}
+	err = start(context.Background(), e, &config.Config{}, target, Options{Others: OthersAnswer{Decided: true}})
+	if !errors.As(err, &occ) || len(occ.Occupants) != 1 || len(occ.Others) != 0 {
+		t.Errorf("others answered, replace not granted: err = %v, want a refusal about mtplx/old alone", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("calls = %v, want none: every attempt was refused", calls)
+	}
+}
+
+// TestStartActsOnlyOnWhatIsStillLoaded pins the answer meeting a later
+// snapshot: an approved id that is no longer loaded is skipped (no stop of a
+// model that is gone), and a model that appeared after the user answered is
+// kept, with a line saying so — the user never agreed to stop it.
+func TestStartActsOnlyOnWhatIsStillLoaded(t *testing.T) {
+	var calls []string
+	e := fakeEnvFamilies(othersSnap(), &calls)
+	var out strings.Builder
+	err := start(withRouteOutput(context.Background(), &out), e, &config.Config{}, Target{ProviderID: "omlx", ModelName: "T"},
+		Options{Others: OthersAnswer{Decided: true, Stop: []string{"ollama/gone", "mtplx/m1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []string{"mtplx:stopModel:Org/M1", "omlx:start:T"}) {
+		t.Errorf("calls = %v, want only mtplx/m1 stopped, then the start", calls)
+	}
+	if got := out.String(); got != "wt: ollama/a (9.6 GB loaded) is also loaded; not stopped\n" {
+		t.Errorf("output = %q, want the one kept-model line for ollama/a", got)
+	}
+}
+
+// TestStartFailedOtherStopStartsNothing pins the failure mode: a stop of
+// another provider's model that fails (ollama's strict still-finishing error
+// included) ends the start with an error naming that model and the target,
+// and the target is not started. The stop that already happened keeps its
+// route removal and leaves the restart owed, which Start settles on its way
+// out. Starting anyway would load beside a model the user wanted gone.
+func TestStartFailedOtherStopStartsNothing(t *testing.T) {
+	var calls []string
+	e := fakeEnvFamilies(othersSnap(), &calls)
+	e.backends["ollama"].(*fakeBackend).stopErr = &StillFinishingError{Model: "a:1b"}
+	stopped := recordStopped(e)
+	err := start(context.Background(), e, &config.Config{}, Target{ProviderID: "omlx", ModelName: "T"},
+		Options{Others: OthersAnswer{Decided: true, Stop: []string{"mtplx/m1", "ollama/a"}}})
+	var still *StillFinishingError
+	if err == nil || !strings.Contains(err.Error(), "stopping ollama/a before starting T") || !errors.As(err, &still) {
+		t.Fatalf("err = %v, want the failed stop of ollama/a, wrapped", err)
+	}
+	if RestartStillOwed(err) {
+		t.Error("RestartStillOwed = true after a stop happened: the caller would restart a second time")
+	}
+	if !reflect.DeepEqual(calls, []string{"mtplx:stopModel:Org/M1", "ollama:stopModel:a:1b"}) {
+		t.Errorf("calls = %v, want both stops and no start", calls)
+	}
+	if !reflect.DeepEqual(*stopped, []string{"mtplx/m1"}) || !e.restartOwed {
+		t.Errorf("route hook = %v (restartOwed %v), want mtplx/m1's removal kept and its restart owed", *stopped, e.restartOwed)
+	}
+}
+
+// TestStartStopsAnMtplxStillLoadingThroughItsPidfile pins Q5 of #412: an
+// approved mtplx that is still loading has no port to stop it through, so it
+// is stopped only by the verified pidfile stop (SIGTERM to the server wt
+// identified), never by `mtplx stop` or a bare pid, and its routes go with it
+// before the target starts.
+func TestStartStopsAnMtplxStillLoadingThroughItsPidfile(t *testing.T) {
+	pt, e := loadingEnv(t, false)
+	pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) { delete(pt.procs, 4242) }
+	var calls []string
+	fe := fakeEnvFamilies(localmodels.Snapshot{
+		Entries:   []localmodels.Entry{{ProviderID: "mtplx", ModelID: "mtplx/org--m", ModelName: "org/m"}},
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
+		Down:      map[string]bool{"mtplx": true},
+	}, &calls)
+	e.inventory, e.backends = fe.inventory, fe.backends
+	stopped := recordStopped(e)
+	err := start(context.Background(), e, loadCfg(), Target{ProviderID: "omlx", ModelName: "T"},
+		Options{Others: OthersAnswer{Decided: true, Stop: []string{"mtplx/org--m"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(pt.signals, []string{"4242:15"}) || !reflect.DeepEqual(calls, []string{"omlx:start:T"}) {
+		t.Errorf("signals = %v, calls = %v, want SIGTERM to pid 4242 and then the start, no backend stop", pt.signals, calls)
+	}
+	if !reflect.DeepEqual(*stopped, []string{"mtplx/org--m"}) {
+		t.Errorf("route hook = %v, want mtplx/org--m", *stopped)
+	}
+}
+
+// TestStartLooksForOthersOnlyWhenItHasAQuestionOrAStop pins that the other
+// providers' residents are computed only when the start can use them: to ask
+// (Others not Decided) or to stop what the user approved (Decided with Stop
+// ids). A Decided start with nothing to stop, what every caller passes today,
+// never reads them, so an mtplx that reads Down beside a pidfile costs it no
+// process-table lookup (a ps fork) on every start. Counted here by the
+// describe calls the pidfile check makes.
+func TestStartLooksForOthersOnlyWhenItHasAQuestionOrAStop(t *testing.T) {
+	for name, tc := range map[string]struct {
+		others    OthersAnswer
+		wantLooks bool
+	}{
+		"decided, nothing to stop": {OthersAnswer{Decided: true}, false},
+		"not decided":              {OthersAnswer{}, true},
+		"decided, stop ids":        {OthersAnswer{Decided: true, Stop: []string{"ollama/a"}}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pt, e := loadingEnv(t, true)
+			looks := 0
+			pt.onDescribe = func(*procTable) { looks++ }
+			var calls []string
+			fe := fakeEnvFamilies(localmodels.Snapshot{
+				Entries:   []localmodels.Entry{{ProviderID: "mtplx", ModelID: "mtplx/org--m", ModelName: "org/m"}},
+				Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial},
+				Down:      map[string]bool{"mtplx": true},
+			}, &calls)
+			e.inventory, e.backends = fe.inventory, fe.backends
+			var out strings.Builder
+			_ = start(withRouteOutput(context.Background(), &out), e, loadCfg(), Target{ProviderID: "omlx", ModelName: "T"}, Options{Others: tc.others})
+			if got := looks > 0; got != tc.wantLooks {
+				t.Errorf("process-table lookups = %d, want any: %v", looks, tc.wantLooks)
+			}
+			if len(pt.signals) != 0 {
+				t.Errorf("signals = %v, want none: the loading mtplx was never approved", pt.signals)
+			}
+		})
 	}
 }

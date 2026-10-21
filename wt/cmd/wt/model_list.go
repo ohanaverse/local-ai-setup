@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/spf13/cobra"
 )
@@ -177,7 +178,7 @@ func fitModelList(rows []modeladmin.Row, width int) (cols []plainColumn, cells [
 		// like the id, neither may carry a control sequence to the terminal.
 		full[i] = []string{
 			visibleID(r.ID), dash(visibleID(r.Family)), dash(r.Location), string(r.Status), r.Running,
-			modeladmin.FormatSize(r.Size), dash(visibleID(r.Path)),
+			localmodels.FormatSize(r.Size), dash(visibleID(r.Path)),
 		}
 	}
 	take := func(keep int) {

@@ -1,10 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"testing"
 )
+
+// TestReportExitNil guards the one path where reportExit is reachable with a
+// nil error today: it must not panic or print, and it returns the same code
+// exitCodeOf would (1, since nil carries no code).
+func TestReportExitNil(t *testing.T) {
+	var buf bytes.Buffer
+	if got := reportExit(nil, &buf); got != 1 {
+		t.Errorf("reportExit(nil) = %d, want 1", got)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("reportExit(nil) printed %q, want nothing", buf.String())
+	}
+}
 
 // TestExitCodeOf pins the mapping main uses: the code a cloud-sync error
 // carries, however deeply wrapped, and 1 for every other error — so no other

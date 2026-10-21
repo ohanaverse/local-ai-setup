@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeladmin"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -207,7 +208,7 @@ func buildModelsList(theme themes.Theme, rows []modeladmin.Row) (list.Model, *tu
 	famW, idW, stW := len("FAMILY"), len("MODEL"), len("STATUS")
 	sizes := make([]string, len(rows))
 	for i, r := range rows {
-		sizes[i] = modeladmin.FormatSize(r.Size)
+		sizes[i] = localmodels.FormatSize(r.Size)
 		famW = tuilayout.MaxRunes(famW, dash(r.Family))
 		idW = tuilayout.MaxRunes(idW, r.ID)
 		stW = tuilayout.MaxRunes(stW, string(r.Status))

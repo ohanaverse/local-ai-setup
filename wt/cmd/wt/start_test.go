@@ -817,3 +817,36 @@ func TestProfileStartPromptNamesTheOccupantsSessions(t *testing.T) {
 		})
 	}
 }
+
+// TestDriveStartKeepsOtherProvidersModels pins what `wt start`, `wt smoke`,
+// a -M pin and a slot profile's local model answer about other providers'
+// models until their prompt exists (#412): every engine call, the first and
+// the retry after a replace, says Decided with nothing to stop. The zero value
+// would make each such start a refusal the driver cannot word; a Stop list
+// would stop models nobody was asked about.
+func TestDriveStartKeepsOtherProvidersModels(t *testing.T) {
+	stubSignals(t)
+	var got []lifecycle.OthersAnswer
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
+	old := lifecycleStart
+	lifecycleStart = func(_ context.Context, _ *config.Config, _ lifecycle.Target, opts lifecycle.Options) error {
+		got = append(got, opts.Others)
+		if len(got) == 1 {
+			return occ
+		}
+		return nil
+	}
+	t.Cleanup(func() { lifecycleStart = old })
+
+	if err := startForLaunch(&config.Config{}, startTestRow(), true); err != nil {
+		t.Fatalf("startForLaunch() error = %v, want nil", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("engine calls = %d, want 2", len(got))
+	}
+	for i, o := range got {
+		if !o.Decided || len(o.Stop) != 0 {
+			t.Errorf("call %d: Others = %+v, want Decided with nothing to stop", i, o)
+		}
+	}
+}

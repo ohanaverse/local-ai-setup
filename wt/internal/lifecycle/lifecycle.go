@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -25,6 +26,9 @@ type Target struct{ ProviderID, ModelName, ModelID string }
 type Stage string
 
 const (
+	// StageStoppingOthers covers the stops of other providers' models the
+	// caller approved (Options.Others), made before anything else.
+	StageStoppingOthers   Stage = "stopping-others"
 	StageStoppingOccupant Stage = "stopping-occupant"
 	StageStarting         Stage = "starting"
 	StageWaiting          Stage = "waiting-for-model"
@@ -60,24 +64,90 @@ type Options struct {
 	// *OccupiedError and an *OccupancyUnknownError, leave the restart with
 	// the caller.
 	RestartOwed bool
+	// Others is the caller's answer about the models of other provider
+	// families loaded beside the target (residents, #412). Its zero value
+	// means "not asked yet": a start that finds any such model, or a family
+	// it cannot read, refuses with an *OccupiedError that lists them, and
+	// touches nothing. See OthersAnswer.
+	Others OthersAnswer
+}
+
+// OthersAnswer is what the user decided about the models of other provider
+// families loaded beside the target. Decided false is the question not yet
+// asked. Decided with an empty Stop keeps them all and starts. Stop lists the
+// model ids (Resident.Entry.ModelID) the user saw and approved stopping; the
+// start stops each of them that is still loaded and stoppable before it does
+// anything else, and keeps every other. Cancel is the caller not retrying.
+type OthersAnswer struct {
+	Decided bool
+	Stop    []string
+}
+
+// Resident is a model of another provider family that is loaded while a
+// start runs: it holds memory the target will share. Stoppable is false when
+// wt has no backend that can stop it (mlx_lm_server). PID is set for an mtplx
+// still loading, known only by wt's pidfile: that one is stopped only through
+// the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
+type Resident struct {
+	Entry     localmodels.Entry
+	Stoppable bool
+	PID       int
+}
+
+// Label is the resident's id as a line names it: the model id, with
+// " (loading)" for a model that is still loading.
+func (r Resident) Label() string {
+	if r.Entry.Loading || r.PID > 0 {
+		return r.Entry.ModelID + " (loading)"
+	}
+	return r.Entry.ModelID
+}
+
+// Figure is the memory the resident holds as wt knows it: what its server
+// says (Entry.LoadedSize, printed with localmodels.FormatSize), else "memory
+// use unknown", never 0 and never a guess; with " (wt cannot stop it)" when
+// it is not Stoppable.
+func (r Resident) Figure() string {
+	fig := "memory use unknown"
+	if r.Entry.LoadedSize > 0 {
+		switch localmodels.Family(r.Entry.ProviderID) {
+		case "omlx":
+			fig = localmodels.FormatSize(r.Entry.LoadedSize) + " resident (omlx estimate)"
+		default:
+			fig = localmodels.FormatSize(r.Entry.LoadedSize) + " loaded"
+		}
+	}
+	if !r.Stoppable {
+		fig += " (wt cannot stop it)"
+	}
+	return fig
 }
 
 // RestartStillOwed reports whether a Start that was given RestartOwed and
 // returned err left that restart unsettled: err is, or wraps, an
-// *OccupiedError or an *OccupancyUnknownError, the two refusals that touch
-// nothing. The caller then retries with RestartOwed set again, or calls
-// SettleRoutes when it gives up. Every other outcome of such a Start, nil
-// included, has started the one restart.
+// *OccupiedError (same-family occupants, other providers' residents, or both)
+// or an *OccupancyUnknownError, the two refusals that touch nothing. The
+// caller then retries with RestartOwed set again, or calls SettleRoutes when
+// it gives up. Every other outcome of such a Start, nil included, has started
+// the one restart.
 func RestartStillOwed(err error) bool {
 	var occupied *OccupiedError
 	var unknown *OccupancyUnknownError
 	return errors.As(err, &occupied) || errors.As(err, &unknown)
 }
 
-// OccupiedError means starting the target would displace running models and
-// AllowReplace was false. Nothing was touched. An Exclusive server has exactly
-// one occupant; a Pool can have several.
-type OccupiedError struct{ Occupants []localmodels.Entry }
+// OccupiedError means the start needs an answer before it touches anything,
+// and nothing was touched. Occupants are the target's own family's models it
+// would displace while AllowReplace was false: an Exclusive server has
+// exactly one occupant, a Pool can have several. Others are the other
+// provider families' models loaded beside it, and OthersUnknown the families
+// whose probe could not say what they hold, while Options.Others was not
+// Decided. Either half may be empty.
+type OccupiedError struct {
+	Occupants     []localmodels.Entry
+	Others        []Resident
+	OthersUnknown []string
+}
 
 // IDs lists the occupants' model ids, in the order they would go.
 func (e *OccupiedError) IDs() []string {
@@ -89,7 +159,25 @@ func (e *OccupiedError) IDs() []string {
 }
 
 func (e *OccupiedError) Error() string {
-	return fmt.Sprintf("starting this model would stop %s — confirm to replace", strings.Join(e.IDs(), ", "))
+	var parts []string
+	if len(e.Occupants) > 0 {
+		parts = append(parts, fmt.Sprintf("starting this model would stop %s — confirm to replace", strings.Join(e.IDs(), ", ")))
+	}
+	if len(e.Others) > 0 || len(e.OthersUnknown) > 0 {
+		msg := "starting this model loads it beside models of other providers"
+		if len(e.Others) > 0 {
+			labels := make([]string, len(e.Others))
+			for i, r := range e.Others {
+				labels[i] = r.Label()
+			}
+			msg += " (" + strings.Join(labels, ", ") + ")"
+		}
+		if len(e.OthersUnknown) > 0 {
+			msg += "; cannot tell whether " + strings.Join(e.OthersUnknown, " or ") + " is serving a model"
+		}
+		parts = append(parts, msg+" — confirm to keep or stop them")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // DaemonDownError means the provider's daemon is not answering.
@@ -341,13 +429,36 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if isRunning(snap, family, t) {
 		return nil
 	}
+	// Residents are read only when there is a question to ask or an approved
+	// stop to make: a Decided answer with nothing to stop (every caller
+	// today) would throw them away, and reading them can cost a pidfile read
+	// and a process-table lookup.
+	var others []Resident
+	var othersUnknown []string
+	if !opts.Others.Decided || len(opts.Others.Stop) > 0 {
+		others, othersUnknown = e.residents(cfg, snap, family, t)
+	}
 	victims, unknown := e.resolveEvictions(ctx, cfg, family, t, snap)
 	if unknown && !opts.AllowReplace {
 		origin := localmodels.FamilyOrigin(cfg, family)
 		return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
 	}
-	if len(victims) > 0 && !opts.AllowReplace {
-		return &OccupiedError{Occupants: victims}
+	askReplace := len(victims) > 0 && !opts.AllowReplace
+	askOthers := !opts.Others.Decided && (len(others) > 0 || len(othersUnknown) > 0)
+	if askReplace || askOthers {
+		occ := &OccupiedError{}
+		if askReplace {
+			occ.Occupants = victims
+		}
+		if askOthers {
+			occ.Others, occ.OthersUnknown = others, othersUnknown
+		}
+		return occ
+	}
+	// Other providers' models go first, so their memory is free before
+	// anything of the target's own family moves.
+	if err := e.stopOthers(ctx, cfg, t, others, opts.Others.Stop, report); err != nil {
+		return err
 	}
 	if b.tenancy() == Exclusive && len(victims) > 0 {
 		occ := victims[0]
@@ -382,6 +493,51 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	err := b.start(ctx, e, cfg, t, report)
 	e.reconcilePool(ctx, cfg, before, planned)
 	return err
+}
+
+// stopOthers stops the residents of other provider families whose ids the
+// user approved (OthersAnswer.Stop), in the snapshot's order, each through
+// the stop the stop loop uses: its backend's stopModel, or for an mtplx still
+// loading the verified pidfile stop. Each stop's route removal is written at
+// once through onOccupantStopped and its restart deferred to Start's one
+// bounce, as a replaced occupant's is. An approved id that is no longer
+// loaded has nothing to stop; a resident wt cannot stop is never stopped; a
+// stoppable resident the user did not approve while approving others
+// appeared after the question, and is kept with a line saying so. The first
+// stop that fails ends the start: the target is not started.
+func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, others []Resident, approved []string, report func(Stage)) error {
+	if len(approved) == 0 {
+		return nil
+	}
+	reported := false
+	for _, r := range others {
+		if !r.Stoppable {
+			continue
+		}
+		if !slices.Contains(approved, r.Entry.ModelID) {
+			routePrintf(ctx, "wt: %s (%s) is also loaded; not stopped\n", r.Label(), r.Figure())
+			continue
+		}
+		if !reported {
+			report(StageStoppingOthers)
+			reported = true
+		}
+		var err error
+		if r.PID > 0 {
+			err = e.stopLoadingMtplx(ctx, cfg, r.PID)
+		} else if b := e.backends[localmodels.Family(r.Entry.ProviderID)]; b == nil {
+			err = &UnsupportedError{ProviderID: r.Entry.ProviderID}
+		} else {
+			err = b.stopModel(ctx, e, cfg, r.Entry.ModelName)
+		}
+		if err != nil {
+			return fmt.Errorf("stopping %s before starting %s: %w", r.Entry.ModelID, t.ModelName, err)
+		}
+		if e.onOccupantStopped != nil && e.onOccupantStopped(ctx, cfg, r.Entry) {
+			e.restartOwed = true
+		}
+	}
+	return nil
 }
 
 // reconcilePool finds the models a pool load unloaded — those of before that
