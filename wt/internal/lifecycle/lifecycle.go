@@ -85,15 +85,26 @@ type OthersAnswer struct {
 
 // Resident is a model of another provider family that is loaded while a
 // start runs: it holds memory the target will share. Stoppable is false when
-// wt has no backend that can stop it (mlx_lm_server), and for an omlx model
-// still loading, which omlx refuses to unload mid-load (omlxUnload): that
-// stop would fail the start it was meant to make room for. PID is set for an
-// mtplx still loading, known only by wt's pidfile: that one is stopped only
-// through the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
+// wt has no backend that can stop it (mlx_lm_server), or when it is an omlx
+// model still loading, which omlx refuses to unload. PID is set for an mtplx
+// still loading, known only by wt's pidfile: that one is stopped only through
+// the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
 type Resident struct {
 	Entry     localmodels.Entry
 	Stoppable bool
 	PID       int
+}
+
+// StoppableIDs are the model ids of the residents wt can stop, in the
+// engine's order: what a stop answer approves.
+func StoppableIDs(others []Resident) []string {
+	var ids []string
+	for _, r := range others {
+		if r.Stoppable {
+			ids = append(ids, r.Entry.ModelID)
+		}
+	}
+	return ids
 }
 
 // Label is the resident's id as a line names it: the model id, with
@@ -504,10 +515,12 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 // loading the verified pidfile stop. Each stop's route removal is written at
 // once through onOccupantStopped and its restart deferred to Start's one
 // bounce, as a replaced occupant's is. An approved id that is no longer
-// loaded has nothing to stop; a resident wt cannot stop is never stopped; a
-// stoppable resident the user did not approve while approving others
-// appeared after the question, and is kept with a line saying so. The first
-// stop that fails ends the start: the target is not started.
+// loaded has nothing to stop; a resident wt cannot stop is never stopped, and
+// one the user approved (stoppable when asked, an omlx model loading again
+// by now) is kept with the kept-model line; a stoppable resident the user
+// did not approve while approving others appeared after the question, and is
+// kept with a line saying so. The first stop that fails ends the start: the
+// target is not started.
 func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, others []Resident, approved []string, report func(Stage)) error {
 	if len(approved) == 0 {
 		return nil
@@ -515,6 +528,12 @@ func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, othe
 	reported := false
 	for _, r := range others {
 		if !r.Stoppable {
+			// An approved model that wt can no longer stop (an omlx model
+			// loading again since the question) is kept and said so; one
+			// nobody approved stays as silent as a keep.
+			if slices.Contains(approved, r.Entry.ModelID) {
+				routePrintf(ctx, "wt: %s (%s) is also loaded; not stopped\n", r.Label(), r.Figure())
+			}
 			continue
 		}
 		if !slices.Contains(approved, r.Entry.ModelID) {

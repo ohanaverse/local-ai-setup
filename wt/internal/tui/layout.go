@@ -333,10 +333,39 @@ func (m *model) replaceFrames() []listFrame {
 		}
 	}
 	header := clip(strings.Join(lines, "\n"), m.width)
-	return []listFrame{
+	frames := []listFrame{
 		func(listView string) string { return header + "\n" + m.choiceFrame()(listView) },
 		func(listView string) string { return header + "\n" + listView },
 	}
+	// A question too tall to share the terminal with its choices (other
+	// providers' models, #412, on a short terminal) keeps its first lines
+	// and says that more follow, rather than pushing its top, and with it
+	// what the dialog is about, off the screen: the choices are what the
+	// screen cannot do without. Its first line, the question itself, always
+	// stays. A cut question withholds the stop choice (syncStopChoice), so
+	// in a dialog that has one the cut line says why.
+	more := "  …"
+	if len(m.replace.stop) > 0 {
+		more = "  … " + enlargeToStop
+	}
+	for k := len(lines) - 1; k >= 1; k-- {
+		cut := clip(strings.Join(append(lines[:k:k], more), "\n"), m.width)
+		frames = append(frames, func(listView string) string { return cut + "\n" + listView })
+	}
+	return frames
+}
+
+// enlargeToStop ends the cut line of a dialog whose stop choice the cut
+// withheld.
+const enlargeToStop = "enlarge the terminal to stop them"
+
+// replaceHeaderWhole reports whether the replace dialog, at its list's
+// height, is drawn in one of the two frames that show the question in full
+// (replaceFrames' first two; every later one is cut). FitTo gave the list
+// the room of the first frame that fits, so a full frame fits exactly when
+// it leaves the list that room.
+func (m *model) replaceHeaderWhole(frames []listFrame) bool {
+	return m.height-(lipgloss.Height(frames[1](""))-1) >= m.replace.choices.Height()
 }
 
 // fitLists sizes the list of the screen that is showing to the room its frame
@@ -358,7 +387,12 @@ func (m *model) fitLists() {
 			m.fitTo(&m.list, m.worktreeFrame())
 		}
 	case phaseReplaceConfirm:
-		m.fitTo(&m.replace.choices, m.replaceFrames()...)
+		frames := m.replaceFrames()
+		m.fitTo(&m.replace.choices, frames...)
+		if m.replace.syncStopChoice(m.replaceHeaderWhole(frames)) {
+			// The list holds another number of choices: size it again.
+			m.fitTo(&m.replace.choices, frames...)
+		}
 	case phaseAgent:
 		m.fitTo(&m.agentList, m.agentFrames()...)
 	case phaseOllamaWarn:

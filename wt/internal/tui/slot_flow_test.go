@@ -82,7 +82,7 @@ func TestWithSlotProfilesCarriesChecksAndApplier(t *testing.T) {
 	}
 	checks := []profiles.SlotCheck{{Index: 0, Usable: true, Profile: profiles.SlotProfile{Name: "cloud", Agent: "claude"}}}
 
-	m := withSlotProfiles(newRunModel(false, false, "claude", "", "", "", nil, themes.Default, ".", &config.Config{}), SlotProfiles{Checks: checks, Apply: apply})
+	m := withSlotProfiles(newRunModel(false, false, "", "claude", "", "", "", nil, themes.Default, ".", &config.Config{}), SlotProfiles{Checks: checks, Apply: apply})
 
 	if len(m.slotChecks) != 1 || m.slotChecks[0].Profile.Name != "cloud" {
 		t.Fatalf("slotChecks = %+v, want the one check handed in", m.slotChecks)

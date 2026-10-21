@@ -453,7 +453,7 @@ func driveStart(cfg *config.Config, row catalog.Row, allowReplace, restartOwed b
 func decideOthers(cfg *config.Config, id string, occ *lifecycle.OccupiedError, ask func(string, bool) (othersChoice, error)) (lifecycle.OthersAnswer, error) {
 	switch othersMode {
 	case "stop":
-		return lifecycle.OthersAnswer{Decided: true, Stop: stoppableIDs(occ.Others)}, nil
+		return lifecycle.OthersAnswer{Decided: true, Stop: lifecycle.StoppableIDs(occ.Others)}, nil
 	case "keep":
 		return lifecycle.OthersAnswer{Decided: true}, nil
 	}
@@ -468,7 +468,7 @@ func decideOthers(cfg *config.Config, id string, occ *lifecycle.OccupiedError, a
 	}
 	switch choice {
 	case othersStop:
-		return lifecycle.OthersAnswer{Decided: true, Stop: stoppableIDs(occ.Others)}, nil
+		return lifecycle.OthersAnswer{Decided: true, Stop: lifecycle.StoppableIDs(occ.Others)}, nil
 	case othersKeep:
 		return lifecycle.OthersAnswer{Decided: true}, nil
 	}

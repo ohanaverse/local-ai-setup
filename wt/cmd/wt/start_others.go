@@ -95,18 +95,6 @@ func askChoice(r io.Reader, canStop bool) (othersChoice, error) {
 	return othersCancel, nil
 }
 
-// stoppableIDs are the model ids of the residents wt can stop, in the
-// engine's order: what a stop answer approves.
-func stoppableIDs(others []lifecycle.Resident) []string {
-	var ids []string
-	for _, r := range others {
-		if r.Stoppable {
-			ids = append(ids, r.Entry.ModelID)
-		}
-	}
-	return ids
-}
-
 // othersQuestion is the others prompt for a start of id: one line per
 // resident with its figure and, when wt sessions use it, how many; one line
 // per family wt cannot read; then the choice, without s when nothing listed
@@ -129,7 +117,7 @@ func othersQuestion(cfg *config.Config, id string, occ *lifecycle.OccupiedError)
 	for _, f := range occ.OthersUnknown {
 		fmt.Fprintf(&b, "  cannot tell whether %s at %s is serving a model\n", f, localmodels.FamilyOrigin(cfg, f))
 	}
-	canStop := len(stoppableIDs(occ.Others)) > 0
+	canStop := len(lifecycle.StoppableIDs(occ.Others)) > 0
 	if canStop {
 		b.WriteString("stop them first, keep them and start, or cancel? [s/k/N]")
 	} else {
@@ -152,7 +140,7 @@ func othersWarning(cfg *config.Config, id string, occ *lifecycle.OccupiedError) 
 		parts = append(parts, fmt.Sprintf("whatever %s at %s is serving", f, localmodels.FamilyOrigin(cfg, f)))
 	}
 	advice := "pass --others=keep to silence this"
-	if len(stoppableIDs(occ.Others)) > 0 {
+	if len(lifecycle.StoppableIDs(occ.Others)) > 0 {
 		advice = "pass --others=stop to stop them, --others=keep to silence this"
 	}
 	return fmt.Sprintf("wt: warning: starting %s beside %s; %s\n", id, strings.Join(parts, ", "), advice)

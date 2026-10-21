@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
@@ -266,8 +267,13 @@ func (m model) routingView() string {
 // startState is the in-flight start: which row, the current stage, when it
 // began, how to cancel it, and the channel carrying its messages.
 type startState struct {
-	id         int
-	item       *modelItem
+	id   int
+	item *modelItem
+	// allow and others are what this attempt was given (AllowReplace and the
+	// others plan), so a refusal's dialog knows which questions are still
+	// open and what its retry carries.
+	allow      bool
+	others     othersPlan
 	stage      lifecycle.Stage
 	began      time.Time
 	cancel     context.CancelFunc
@@ -333,8 +339,8 @@ var sessionCounts = refcount.SessionCounts
 // title is one line, cut at the terminal's edge, so the question is the
 // frame's header instead (replaceFrames), wrapped; the header takes the lines
 // the title and the item count took, so a short terminal still fits it.
-func newReplaceChoices(theme themes.Theme, width, height int) list.Model {
-	choices := list.New(buildReplaceChoices(), ThemedListDelegate(theme), width, height)
+func newReplaceChoices(theme themes.Theme, width, height int, items []list.Item) list.Model {
+	choices := list.New(items, ThemedListDelegate(theme), width, height)
 	choices.SetShowTitle(false)
 	choices.SetShowStatusBar(false)
 	return choices
@@ -343,10 +349,50 @@ func newReplaceChoices(theme themes.Theme, width, height int) list.Model {
 // replaceState is the replace-confirm dialog for the row that could not start.
 type replaceState struct {
 	item *modelItem
-	// header is the dialog's question, one line per occupant, built once
-	// with the dialog; replaceFrames wraps it to the terminal on each render.
+	// header is the dialog's question, one line per occupant and per other
+	// provider's model, built once with the dialog; replaceFrames wraps it to
+	// the terminal on each render.
 	header  string
 	choices list.Model
+	// others is the plan "Replace and start" retries with: the refused
+	// attempt's own, or the stop --others=stop gave (#412).
+	others othersPlan
+	// allow is the AllowReplace "keep" and "stop" retry with: the refused
+	// attempt's own, or true when the dialog showed same-family occupants,
+	// which choosing either confirms.
+	allow bool
+	// stop are the ids of the other providers' models the dialog showed that
+	// wt can stop: exactly what "stop" approves. The stop choice is offered
+	// only while the question shows in full (syncStopChoice).
+	stop []string
+	// What buildOthersChoices was given, kept so the choices can be rebuilt
+	// with or without stop as the terminal's size changes.
+	id                       string
+	sameFamily, othersListed bool
+}
+
+// syncStopChoice offers the stop choice only while the dialog shows its
+// question in full (whole): a stop approves every stoppable model listed, so
+// it is never offered while some of them are cut off the screen. Withdrawn
+// under the cursor, the cursor goes back to Cancel. A dialog with nothing to
+// stop is left alone.
+func (rs *replaceState) syncStopChoice(whole bool) bool {
+	if len(rs.stop) == 0 {
+		return false
+	}
+	stoppable := 0
+	if whole {
+		stoppable = len(rs.stop)
+	}
+	items := buildOthersChoices(rs.id, rs.sameFamily, rs.othersListed, stoppable)
+	if len(items) == len(rs.choices.Items()) {
+		return false
+	}
+	if rs.choices.Index() >= len(items) {
+		rs.choices.Select(0)
+	}
+	rs.choices.SetItems(items)
+	return true
 }
 
 type startStageMsg struct {
@@ -373,6 +419,8 @@ type replaceChoice int
 const (
 	replaceCancelChoice replaceChoice = iota // first: the default cursor position
 	replaceProceedChoice
+	othersKeepChoice // start and keep other providers' models (#412)
+	othersStopChoice // stop the ones wt can stop, then start
 )
 
 func buildReplaceChoices() []list.Item {
@@ -382,8 +430,48 @@ func buildReplaceChoices() []list.Item {
 	}
 }
 
+// buildOthersChoices is the dialog's choices when other providers' models are
+// loaded (#412): Cancel first, the default; keep; and stop, only when
+// stoppable of the models shown can be stopped. With same-family occupants as
+// well (sameFamily) the two actions say they replace. Keep's description
+// says what it does to the models listed: loads beside them, replaces the
+// will-stop ones first, or, with no model listed (othersListed false: only
+// families wt cannot read), stops nothing.
+func buildOthersChoices(id string, sameFamily, othersListed bool, stoppable int) []list.Item {
+	keep, stop := "Start and keep them", "Stop them, then start"
+	keepDesc := "Load " + id + " beside the models above"
+	switch {
+	case sameFamily:
+		keep, stop = "Replace, keep the others", "Replace and stop the others"
+		keepDesc = "Replace the models listed first, keep the other providers' models"
+	case !othersListed:
+		keepDesc = "Load " + id + " without stopping anything"
+	}
+	items := []list.Item{
+		choiceItem{choice: replaceCancelChoice, title: "Cancel", desc: "Return to the model screen"},
+		choiceItem{choice: othersKeepChoice, title: keep, desc: keepDesc},
+	}
+	if stoppable > 0 {
+		items = append(items, choiceItem{choice: othersStopChoice, title: stop, desc: fmt.Sprintf("Stop %d model(s) of other providers first", stoppable)})
+	}
+	return items
+}
+
+// retryStart starts the refused row again with the answers the user gave:
+// a profile launch's start carries the restart it still owes.
+func (m model) retryStart(it *modelItem, allow bool, others othersPlan) (model, tea.Cmd) {
+	if m.slot != nil {
+		return m.beginStartOwed(it, allow, others, m.slot.owed)
+	}
+	return m.beginStart(it, allow, others)
+}
+
 // runStart runs the engine in a goroutine and streams its stages, then its
-// result, on the returned channel (closed after the result). What the engine
+// result, on the returned channel (closed after the result). allow and
+// others are the attempt's answers (Options.AllowReplace, Options.Others),
+// passed as given: a first attempt leaves others unanswered unless --others
+// answered it for the pinned row (othersFor), so the engine's refusal lists
+// other providers' models for the dialog (#412). What the engine
 // prints is collected in the returned startOutput (#275), and the result is
 // also kept in the returned startResult.
 //
@@ -419,7 +507,7 @@ func buildReplaceChoices() []list.Item {
 //
 // The seams are read HERE, on the caller's goroutine, so a test seam swap
 // never races the goroutine's late first read.
-func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow, restartOwed bool, id int) (<-chan tea.Msg, *startOutput, *startResult) {
+func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow bool, others lifecycle.OthersAnswer, restartOwed bool, id int) (<-chan tea.Msg, *startOutput, *startResult) {
 	ch := make(chan tea.Msg, 16)
 	start, wait, pending, settle := startModel, waitPendingRoutes, routesPending, settleStart
 	out := &startOutput{}
@@ -432,9 +520,7 @@ func runStart(ctx context.Context, cfg *config.Config, t lifecycle.Target, allow
 			case <-ctx.Done():
 			}
 		}
-		// Others: keep other providers' models, unasked, as every start did
-		// before #412; the picker does not ask the question yet.
-		err := start(ctx, cfg, t, lifecycle.Options{AllowReplace: allow, Progress: stage, Out: out, RestartOwed: restartOwed, Others: lifecycle.OthersAnswer{Decided: true}})
+		err := start(ctx, cfg, t, lifecycle.Options{AllowReplace: allow, Progress: stage, Out: out, RestartOwed: restartOwed, Others: others})
 		if pending() {
 			// Not through stage: a cancelled start has a done context, and
 			// the screen still has to say what it is waiting for.
@@ -467,22 +553,50 @@ func startTick(id int) tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return startTickMsg{id: id} })
 }
 
+// othersPlan is how one start attempt answers the question about other
+// providers' models loaded beside the model it starts (#412).
+type othersPlan struct {
+	// answer is what the engine is given (Options.Others); its zero value
+	// asks, so the engine refuses with what is loaded and the dialog asks.
+	answer lifecycle.OthersAnswer
+	// stopAll is --others=stop for the pinned row: the engine's refusal is
+	// answered, without the dialog, by stopping every resident it listed
+	// that wt can stop, as the non-TUI start does (decideOthers).
+	stopAll bool
+}
+
+// othersFor is a first attempt's plan. --others answers it only for the -M
+// pinned row (pinned), by --replace's rule: keep on the first attempt, stop
+// once the engine has said what is loaded. Every other start asks.
+func (m model) othersFor(pinned bool) othersPlan {
+	if !pinned {
+		return othersPlan{}
+	}
+	switch m.othersMode {
+	case "keep":
+		return othersPlan{answer: lifecycle.OthersAnswer{Decided: true}}
+	case "stop":
+		return othersPlan{stopAll: true}
+	}
+	return othersPlan{}
+}
+
 // beginStart starts it through the engine and enters phaseStarting.
-func (m model) beginStart(it *modelItem, allowReplace bool) (model, tea.Cmd) {
-	return m.beginStartOwed(it, allowReplace, false)
+func (m model) beginStart(it *modelItem, allowReplace bool, others othersPlan) (model, tea.Cmd) {
+	return m.beginStartOwed(it, allowReplace, others, false)
 }
 
 // beginStartOwed is beginStart for a caller that already owes a proxy
 // restart: a profile launch whose cloud-route write changed config.yaml. The
 // engine's one restart then publishes that write too (Options.RestartOwed).
-func (m model) beginStartOwed(it *modelItem, allowReplace, restartOwed bool) (model, tea.Cmd) {
+func (m model) beginStartOwed(it *modelItem, allowReplace bool, others othersPlan, restartOwed bool) (model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.startRun++
 	// Any refresh still in flight predates this start; finishStart issues its own.
 	m.refreshGen++
 	id := m.startRun
-	ch, out, result := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, restartOwed, id)
-	m.start = &startState{id: id, item: it, began: time.Now(), cancel: cancel, ch: ch, out: out, result: result}
+	ch, out, result := runStart(ctx, m.cfg, lifecycle.Target{ProviderID: it.model.ProviderID, ModelName: it.model.ModelName, ModelID: it.model.ID}, allowReplace, others.answer, restartOwed, id)
+	m.start = &startState{id: id, item: it, allow: allowReplace, others: others, began: time.Now(), cancel: cancel, ch: ch, out: out, result: result}
 	m.phase = phaseStarting
 	m.status = ""
 	return m, tea.Batch(waitForStart(ch), startTick(id))
@@ -600,8 +714,10 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		if m.slot != nil {
 			// This start belonged to a profile launch, which ends here. The
 			// engine settled the owed restart on every error but a refusal;
-			// a refusal can only reach this way out under a cancel. The
-			// picker follows, so what the restart prints is kept (settleOut).
+			// a refusal reaches this way out under a cancel, or when it asks
+			// only what was already answered (the !sameFamily && !othersAsked
+			// case below). The picker
+			// follows, so what the restart prints is kept (settleOut).
 			if m.slot.owed && lifecycle.RestartStillOwed(msg.err) {
 				settleRoutesNow(context.Background(), settleOut, m.cfg)
 			}
@@ -669,23 +785,38 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	}
 	var occ *lifecycle.OccupiedError
 	var unk *lifecycle.OccupancyUnknownError
-	header := ""
+	rs := &replaceState{item: st.item, others: st.others, allow: st.allow}
+	items := buildReplaceChoices()
 	switch {
 	case errors.As(msg.err, &occ):
-		// Each occupant some wt session uses is named with its count, in
-		// the non-TUI prompt's words (#412). The picker has recorded no
-		// session of its own yet (launchAndRecord comes after), so the
-		// count is other sessions only.
-		// One occupant per line: a count ends its line, so on one shared
-		// line it is what the terminal's edge would cut.
-		counts := sessionCounts(occ.IDs())
-		lines := []string{fmt.Sprintf("Starting %s will stop:", st.item.model.ID)}
-		for _, oid := range occ.IDs() {
-			lines = append(lines, "  "+lifecycle.WithSessions(oid, counts[oid]))
+		// The engine lists occupants only while AllowReplace is false, and
+		// other providers' models only while the others question is open.
+		sameFamily := len(occ.Occupants) > 0
+		othersAsked := (len(occ.Others) > 0 || len(occ.OthersUnknown) > 0) && !st.others.answer.Decided
+		if othersAsked && st.others.stopAll {
+			// --others=stop answers for the pinned row, as the non-TUI start
+			// does (decideOthers): every resident wt can stop.
+			rs.others = othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: lifecycle.StoppableIDs(occ.Others)}}
+			othersAsked = false
+			if !sameFamily {
+				m.recordRouteNotes(msg.out)
+				return m.retryStart(st.item, st.allow, rs.others)
+			}
 		}
-		header = strings.Join(lines, "\n")
+		if !sameFamily && !othersAsked {
+			// A refusal that asks only what was answered: report it rather
+			// than ask again.
+			return back(lifecycle.StartErrorMessage(st.item.model.ID, msg.err))
+		}
+		rs.header = refusalHeader(m.cfg, st.item.model.ID, occ, sameFamily, othersAsked)
+		if othersAsked {
+			rs.allow = st.allow || sameFamily
+			rs.stop = lifecycle.StoppableIDs(occ.Others)
+			rs.id, rs.sameFamily, rs.othersListed = st.item.model.ID, sameFamily, len(occ.Others) > 0
+			items = buildOthersChoices(rs.id, rs.sameFamily, rs.othersListed, len(rs.stop))
+		}
 	case errors.As(msg.err, &unk):
-		header = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
+		rs.header = fmt.Sprintf("Cannot tell whether %s at %s is already serving a model", unk.ProviderID, unk.Origin)
 	default:
 		return back(lifecycle.StartErrorMessage(st.item.model.ID, msg.err))
 	}
@@ -693,9 +824,49 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 	// printed nothing. If it has, the dialog has no status line for it: it
 	// goes where it can be read later.
 	m.recordRouteNotes(msg.out)
-	m.replace = &replaceState{item: st.item, header: header, choices: newReplaceChoices(m.theme, m.width-2, m.height-2)}
+	rs.choices = newReplaceChoices(m.theme, m.width-2, m.height-2, items)
+	m.replace = rs
 	m.phase = phaseReplaceConfirm
 	return m, nil
+}
+
+// refusalHeader is the dialog's question for an *OccupiedError: the
+// same-family occupants the start would stop (sameFamily), then the other
+// providers' models it would load beside (othersAsked, #412), each with the
+// memory it holds as wt knows it, and a line per family wt cannot read. Each
+// model some wt session uses is named with its count, in the non-TUI
+// prompt's words; the counts are read once, here. The picker has recorded no
+// session of its own yet (launchAndRecord comes after), so a count is other
+// sessions only. One model per line: a count ends its line, so on one shared
+// line it is what the terminal's edge would cut.
+func refusalHeader(cfg *config.Config, id string, occ *lifecycle.OccupiedError, sameFamily, othersAsked bool) string {
+	ids := occ.IDs()
+	if othersAsked {
+		for _, r := range occ.Others {
+			ids = append(ids, r.Entry.ModelID)
+		}
+	}
+	counts := map[string]int{}
+	if len(ids) > 0 {
+		counts = sessionCounts(ids)
+	}
+	var lines []string
+	if sameFamily {
+		lines = append(lines, fmt.Sprintf("Starting %s will stop:", id))
+		for _, oid := range occ.IDs() {
+			lines = append(lines, "  "+lifecycle.WithSessions(oid, counts[oid]))
+		}
+	}
+	if othersAsked {
+		lines = append(lines, "Also loaded, by other providers:")
+		for _, r := range occ.Others {
+			lines = append(lines, "  "+lifecycle.WithSessions(r.Label()+" — "+r.Figure(), counts[r.Entry.ModelID]))
+		}
+		for _, f := range occ.OthersUnknown {
+			lines = append(lines, fmt.Sprintf("  cannot tell whether %s at %s is serving a model", f, localmodels.FamilyOrigin(cfg, f)))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m model) startingView() string {

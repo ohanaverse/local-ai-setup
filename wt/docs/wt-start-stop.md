@@ -306,10 +306,9 @@ stop them first, keep them and start, or cancel? [s/k/N]
   `memory use unknown` (mtplx, and any server that does not say; never 0 and
   never a guess), with its live wt session count when sessions use it. An
   mtplx still loading reads `mtplx/<id> (loading)`. An mlx_lm_server pairing's
-  figure ends `; wt cannot stop it`: wt has no way to stop one, and neither
-  has an omlx model still loading: omlx will not unload one mid-load, so wt
-  lists it (it holds memory already) with that same clause and never offers
-  to stop it. A provider whose
+  figure ends `; wt cannot stop it`: wt has no way to stop one. So does an
+  omlx model still loading (`omlx/<id> (loading)`): omlx refuses to unload a
+  model mid-load, so it is listed and never stopped. A provider whose
   server answered but whose answer wt cannot read is a `cannot tell whether …`
   line; one that refuses the connection holds nothing and is not listed.
 - `s` (or `stop`) stops every listed model wt can stop, then starts; `k` (or
@@ -325,13 +324,11 @@ stop them first, keep them and start, or cancel? [s/k/N]
   `--replace` answers only the y/N: it never stops another provider's model.
 - `--others=stop` stops every listed model wt can stop and `--others=keep`
   keeps them, both without asking. Any other value is a usage error.
-- The question and `--others` apply today to `wt start`, `wt smoke`, and a
+- The question and `--others` apply to `wt start`, `wt smoke`, and a
   `wt -M` launch that skips wt's picker screens: with `-W <name>`, with
   `--cwd`, or outside a git repository (a slot profile's local model
-  included). A launch that opens the picker screens (`wt`, or `wt -M <id>`
-  inside a repository without `-W` or `--cwd`, `-A` or not) starts the
-  model without asking and ignores `--others`, until the picker's own
-  dialog lands.
+  included). A start from the picker screens asks in a dialog instead (see
+  below).
 - **When stdin is not a terminal (scripts, CI) and `--others` is not given**
   wt never asks and never stops:
   it keeps the models and prints one line to stderr,
@@ -345,10 +342,51 @@ stop them first, keep them and start, or cancel? [s/k/N]
   the model's route (an ollama model keeps its route). A stop that fails ends
   the start: `stopping <id> before starting <model>: …`, and nothing is
   started. A model that was loaded after the question is kept, with
-  `wt: <id> (<memory>) is also loaded; not stopped`.
+  `wt: <id> (<memory>) is also loaded; not stopped`, and so is a model you
+  chose to stop that wt can no longer stop by then (an omlx model that is
+  loading again), with the same line.
 - Nothing is asked when the model is already running or omlx is already
   loading it, and a provider whose server was down when the start looked is
   not listed even if it comes up during the start.
+
+### In the picker
+
+A start from wt's picker screens (Enter on a start row, a slot profile whose
+local model has to start, or `wt -M <id>` inside a repository without `-W` or
+`--cwd`) asks the same question in a dialog:
+
+```
+Starting omlx/qwen3.6-27b-4bit will stop:
+  omlx/other-4bit (in use by 1 wt session(s))
+Also loaded, by other providers:
+  mtplx/qwen3.8-35b — memory use unknown (in use by 1 wt session(s))
+  ollama/gemma4:12b — 9.6 GB loaded
+  cannot tell whether mlx_lm_server at http://127.0.0.1:8001 is serving a model
+```
+
+(An illustrative example. The `will stop` lines appear only when the start
+would also replace or unload a model of its own provider.)
+
+- The choices are **Cancel** (the default: back to the model screen,
+  nothing stopped), **Start and keep them** (load the model beside the ones
+  listed) and **Stop them, then start** (`Stop <n> model(s) of other
+  providers first`: every listed model wt can stop). The stop choice is not
+  offered when nothing listed can be stopped. With `will stop` lines as well
+  the two actions read **Replace, keep the others** and **Replace and stop
+  the others**: either one also confirms the replace.
+- The stop choice is offered only while the dialog shows every model it
+  would stop. On a terminal too short for the whole list the dialog keeps
+  its first lines and ends them with
+  `… enlarge the terminal to stop them`, and offers only Cancel and keep;
+  enlarge the terminal and the stop choice comes back.
+- esc backs out like Cancel and ctrl+c quits wt; neither stops anything. A
+  slot profile's cloud routes written before the dialog are published on
+  every way out, as for the replace dialog.
+- `--others=keep|stop` answers the question for the `-M` pinned model only,
+  as `--replace` does: never for a row you choose in the picker, which still
+  gets the dialog. `--others=stop` does not answer the replace question: a
+  pin that would also replace a model of its own provider without
+  `--replace` still asks that, then stops the others it was told to.
 
 ## omlx: a pool of loaded models
 

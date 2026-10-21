@@ -641,9 +641,16 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		})},
 		{"replace confirm", modelPhase(func(t *testing.T, width, height int) model {
 			m := model{cfg: &config.Config{}, theme: themes.Default, phase: phaseReplaceConfirm, width: width, height: height}
-			m.replace = &replaceState{choices: newReplaceChoices(m.theme, 78, 22), header: "Starting omlx/Qwen3.6-35B-A3B-4bit will stop:\n" +
+			m.replace = &replaceState{choices: newReplaceChoices(m.theme, 78, 22, buildReplaceChoices()), header: "Starting omlx/Qwen3.6-35B-A3B-4bit will stop:\n" +
 				"  omlx/Ornith-1.5-35B-A3B-6bit (in use by 2 wt session(s))\n" +
 				"  omlx/gemma-4-27b-it-qat-4bit (in use by 1 wt session(s))"}
+			return m
+		})},
+		{"others confirm", modelPhase(func(t *testing.T, width, height int) model {
+			// The others dialog as finishStart builds it: long ids, a
+			// same-family occupant, several other providers' models with
+			// counts, and a family wt cannot read.
+			m, _ := longOthersDialog(t, width, height)
 			return m
 		})},
 		{"routing", modelPhase(func(t *testing.T, width, height int) model {
@@ -835,7 +842,7 @@ func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
 	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
 		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
 	}}}
-	fresh := newRunModel(false, false, "", "", "", "", nil, themes.Theme{}, "", &config.Config{})
+	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", &config.Config{})
 	fresh.width, fresh.height = 80, 24
 	if !strings.Contains(fresh.View(), "loading worktrees") {
 		t.Fatalf("before the load the view is %q, want the loading placeholder", fresh.View())
@@ -1144,7 +1151,7 @@ func TestModelPickerNamesTheHighlightedModelsPrice(t *testing.T) {
 // word flow that wraps it would otherwise drop it (#412).
 func TestReplaceFramesKeepOccupantIndentWhenWrapped(t *testing.T) {
 	m := model{cfg: &config.Config{}, theme: themes.Default, phase: phaseReplaceConfirm, width: 30, height: 24}
-	m.replace = &replaceState{choices: newReplaceChoices(m.theme, 28, 20), header: "Starting a will stop:\n" +
+	m.replace = &replaceState{choices: newReplaceChoices(m.theme, 28, 20, buildReplaceChoices()), header: "Starting a will stop:\n" +
 		"  omlx/Ornith-1.5-35B-A3B-6bit (in use by 2 wt session(s))\n  b (in use by 1 wt session(s))"}
 	out := m.replaceFrames()[1]("")
 	for _, line := range strings.Split(out, "\n")[1:] {

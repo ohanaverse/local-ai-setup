@@ -750,6 +750,38 @@ func TestStartActsOnlyOnWhatIsStillLoaded(t *testing.T) {
 	}
 }
 
+// TestStartSaysWhyAnApprovedModelIsKept pins an approved model that wt can no
+// longer stop when the answer is carried out: an omlx model of another
+// provider that was loaded when the user approved its stop and is loading
+// again at the retry (omlx refuses to unload a model mid-load). It is kept,
+// with the kept-model line, and the start goes ahead; an unstoppable model
+// the user did not approve (an mlx_lm_server pairing) stays silent, as a keep
+// does. Kept silently, the user would believe the model they chose to stop
+// was stopped and its memory free.
+func TestStartSaysWhyAnApprovedModelIsKept(t *testing.T) {
+	var calls []string
+	loading := running("omlx", "omlx/L", "L")
+	loading.Loading = true
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{
+		running("mlx_lm_server", "mlx_lm_server/p", "p"),
+		loading,
+		running("ollama", "ollama/a", "a:1b"),
+	}}
+	e := fakeEnvFamilies(snap, &calls)
+	var out strings.Builder
+	err := start(withRouteOutput(context.Background(), &out), e, &config.Config{}, Target{ProviderID: "mtplx", ModelName: "Org/New"},
+		Options{Others: OthersAnswer{Decided: true, Stop: []string{"omlx/L", "ollama/a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []string{"ollama:stopModel:a:1b", "mtplx:start:Org/New"}) {
+		t.Errorf("calls = %v, want only ollama/a stopped, then the start", calls)
+	}
+	if got, want := out.String(), "wt: omlx/L (loading) (memory use unknown; wt cannot stop it) is also loaded; not stopped\n"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
 // TestStartFailedOtherStopStartsNothing pins the failure mode: a stop of
 // another provider's model that fails (ollama's strict still-finishing error
 // included) ends the start with an error naming that model and the target,
