@@ -211,3 +211,54 @@ def test_run_probe_continues_past_failures(fake_openai, closed_port_url):
     ]
     assert seen == results
     assert [r.answered for r in results] == [False, False, False, False, True, True]
+
+
+def test_reasoning_and_answer_never_carry_the_key(fake_openai, tmp_path):
+    """A model cannot see the header, but the key is never written: the
+    reasoning and answer text are redacted before they are stored."""
+    from llmbench.probe.thinking import ProbeRun, write_outputs
+
+    key = "sk-echo-not-a-real-key-5b7e"
+    target = _target(fake_openai.base_url, "echo-auth-completion", "K")
+    result = probe_one(target, PROMPT, SAMPLING, api_key=key, timeout_s=5)
+    assert result.answered
+    redacted = ["Bearer ***" in result.reasoning, "Bearer ***" in result.answer]
+    assert redacted == [True, True]
+    leaked = [key in result.reasoning, key in result.answer]
+    assert leaked == [False, False]
+    run = ProbeRun(
+        started_at="2026-10-21T00:00:00Z",
+        targets=[target],
+        prompts=[PROMPT],
+        sampling=SAMPLING,
+        timeout_s=5,
+        results=[result],
+    )
+    md_path, json_path = write_outputs(run, tmp_path / "out")
+    leaked_files = [p.name for p in (md_path, json_path) if key in p.read_text(encoding="utf-8")]
+    assert leaked_files == []
+
+
+def test_a_200_error_body_without_choices_keeps_the_servers_message(fake_openai):
+    result = probe_one(
+        _target(fake_openai.base_url, "error-with-200"), PROMPT, SAMPLING, timeout_s=5
+    )
+    assert result.status == 200
+    assert not result.answered
+    assert result.error is not None
+    assert "unexpected response shape" in result.error
+    assert "model not loaded" in result.error
+
+
+def test_a_200_error_body_is_redacted(fake_openai):
+    key = "sk-echo-not-a-real-key-0d44"
+    result = probe_one(
+        _target(fake_openai.base_url, "echo-auth-error-with-200", "K"),
+        PROMPT,
+        SAMPLING,
+        api_key=key,
+        timeout_s=5,
+    )
+    assert result.error is not None
+    shown = ["Bearer ***" in result.error, key in result.error]
+    assert shown == [True, False]

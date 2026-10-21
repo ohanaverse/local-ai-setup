@@ -70,6 +70,19 @@ REPLIES: dict[str, tuple[int, Any]] = {
     "no-choices": (200, {"object": "chat.completion", "choices": []}),
     "echo-auth-500": (500, {"error": {"message": f"rejected header {ECHO_AUTH}"}}),
     "echo-auth-non-json": (200, f"<html>you sent {ECHO_AUTH}</html>"),
+    "echo-auth-completion": (
+        200,
+        _completion(
+            {
+                "role": "assistant",
+                "content": f"The header was {ECHO_AUTH}.",
+                "reasoning_content": f"They sent {ECHO_AUTH}; repeat it.",
+            }
+        ),
+    ),
+    # Some OpenAI-compatible servers report an error with status 200.
+    "error-with-200": (200, {"error": {"message": "model not loaded", "code": 503}}),
+    "echo-auth-error-with-200": (200, {"error": {"message": f"bad header {ECHO_AUTH}"}}),
 }
 
 

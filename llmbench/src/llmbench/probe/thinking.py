@@ -295,15 +295,19 @@ def _int_or_none(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _fill_from_completion(result: ProbeResult, data: Any) -> None:
-    """Read one chat.completion body into `result`, or set its error."""
+def _fill_from_completion(result: ProbeResult, data: Any, body: str) -> None:
+    """Read one chat.completion body into `result`, or set its error. The
+    error carries the head of `body`: a server that reports an error with
+    status 200 (`{"error": {...}}`) keeps its own message in the row."""
     try:
         choice = data["choices"][0]
         message = choice["message"]
         if not isinstance(message, dict):
             raise TypeError("message is not an object")
     except (KeyError, IndexError, TypeError) as exc:
-        result.error = f"unexpected response shape ({type(exc).__name__}: {exc})"
+        result.error = (
+            f"unexpected response shape ({type(exc).__name__}: {exc}): {body[:_ERROR_BODY_CHARS]}"
+        )
         return
     # The message's own field first, then the same names on the choice (some
     # servers put it there).
@@ -373,9 +377,13 @@ def probe_one(
                 except json.JSONDecodeError:
                     result.error = redact(f"non-JSON response: {text[:_ERROR_BODY_CHARS]}", api_key)
                 else:
-                    _fill_from_completion(result, data)
+                    _fill_from_completion(result, data, text)
                     if result.error is not None:
                         result.error = redact(result.error, api_key)
+                    # A model never sees the header, but the key is never
+                    # written: the text that reaches the report is redacted too.
+                    result.reasoning = redact(result.reasoning, api_key)
+                    result.answer = redact(result.answer, api_key)
     result.elapsed_s = time.monotonic() - started
     return result
 
