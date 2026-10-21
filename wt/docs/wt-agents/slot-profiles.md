@@ -81,7 +81,7 @@ slot model raises no warning.
 | `default` | Required. A slot that `slots` fills, or `opusplan` for a profile that fills `opus` and `sonnet` ([opusplan](#opusplan)). wt passes it as `--model`, so the session starts on it |
 | `env` | Optional, string → string |
 | `args` | Optional string list |
-| `config_content` | Optional free-form table, merged into the agent's settings. `config_content.modelOverrides` is how a profile supplies Claude Code's `modelOverrides` setting. It must be a table, or the profile is blocked; wt does not validate its keys, and a target that is not a string, or not one of the profile's slot models, is a warning ([below](#a-modeloverrides-target-wt-does-not-route)). Checked on 2026-10-13: `modelOverrides` is honoured behind the proxy; an id it names is sent as the id it maps to. |
+| `config_content` | Optional free-form table, merged into the agent's settings. `config_content.modelOverrides` is how a profile supplies Claude Code's `modelOverrides` setting. It must be a table whose every target is a string, or the profile is blocked; wt does not validate its keys, and a target that is not one of the profile's slot models is a warning ([below](#a-modeloverrides-target-wt-does-not-route)). Checked on 2026-10-13: `modelOverrides` is honoured behind the proxy; an id it names is sent as the id it maps to. |
 | `wrapper` | Optional `{binary, args_template}` |
 
 **Unfilled slots use the `default` slot's model.** The example fills three
@@ -168,6 +168,7 @@ Static reasons:
 | `env sets ANTHROPIC_BASE_URL, which wt sets for the launch` | A reserved key (also `config_content.env sets …`) |
 | `config_content.env must be a table` | `config_content.env` is a string, a number or an array. This is Claude's rule: Claude Code's settings take `env` as a table, and wt adds its own variables to it |
 | `config_content.modelOverrides must be a table` | `config_content.modelOverrides` is a string, a number, a boolean or an array. Claude's rule: Claude Code's `modelOverrides` maps model ids to model ids (#412) |
+| `config_content.modelOverrides["<key>"] must be a model id string` | A `modelOverrides` target is a number, a boolean, an array or a table; the first such key in key order is named, its value is not shown. Claude's rule (#418); an empty string is a string and only warns |
 | `config_content cannot be encoded as the --settings JSON` | A number in `config_content` is nan or inf, which the `--settings` payload cannot hold (the reason names what the value is). Also Claude's rule |
 | `wrapper args_template [...] has no "{{args}}" placeholder` | The agent's own arguments would be dropped |
 
@@ -233,8 +234,6 @@ no picker prints them once,
 wt: profile/mixed (claude): config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/x", which is not one of the profile's slot models, so wt does not make sure it is routed
 ```
 
-and a target that is not a string gives
-`… config_content.modelOverrides["<key>"] is not a string: a target must be a model id`.
 `wt profile list` prints the same lines after `warning:`, and the profile
 stays `ok`; `wt profile show` prints the shown profile's own lines after
 `warning:`, under its slot lines (#419). The keys are Claude Code's own

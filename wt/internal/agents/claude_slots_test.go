@@ -249,10 +249,15 @@ func TestClaudeBuildSlotsErrors(t *testing.T) {
 
 // TestClaudeCheckConfigContentIsTheBuildsRule pins that static validation
 // and the slot build refuse the same config_content with the same words:
-// whatever CheckConfigContent refuses, BuildSlots refuses with that message,
-// and whatever it passes, the build accepts. Two copies of the rule could
-// drift, and then the picker would offer a row whose launch fails, or block
-// one that would have launched.
+// whatever CheckConfigContent refuses, BuildSlots and BuildSlotCommand refuse
+// with that message, and whatever it passes, the build accepts. Two copies of
+// the rule could drift, and then the picker would offer a row whose launch
+// fails, or block one that would have launched. A modelOverrides target that
+// is not a string (a number, a float, a boolean, an array or a table) is
+// refused, naming the first such key in key order and never echoing the
+// value (#418): Claude Code cannot use it, and before it only warned, so the
+// profile launched with that target in its --settings. An empty string is a
+// string and passes; ConfigContentWarnings warns about it.
 func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -270,6 +275,20 @@ func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 		{"modelOverrides is an array", map[string]any{"modelOverrides": []any{"openrouter/a"}}, "config_content.modelOverrides must be a table"},
 		{"modelOverrides is a number", map[string]any{"modelOverrides": int64(1)}, "config_content.modelOverrides must be a table"},
 		{"modelOverrides is a boolean", map[string]any{"modelOverrides": true}, "config_content.modelOverrides must be a table"},
+		{"a target is an integer", map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": int64(5)}},
+			`config_content.modelOverrides["claude-opus-4-1"] must be a model id string`},
+		{"a target is a float", map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": 1.5}},
+			`config_content.modelOverrides["claude-opus-4-1"] must be a model id string`},
+		{"a target is a boolean", map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": true}},
+			`config_content.modelOverrides["claude-opus-4-1"] must be a model id string`},
+		{"a target is an array", map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": []any{"openrouter/a"}}},
+			`config_content.modelOverrides["claude-opus-4-1"] must be a model id string`},
+		{"a target is a table", map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": map[string]any{"id": "openrouter/a"}}},
+			`config_content.modelOverrides["claude-opus-4-1"] must be a model id string`},
+		{"the first non-string target in key order",
+			map[string]any{"modelOverrides": map[string]any{"z-key": int64(1), "a-key": "openrouter/a", "m-key": true}},
+			`config_content.modelOverrides["m-key"] must be a model id string`},
+		{"an empty-string target", map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": ""}}, ""},
 		// A nan where the --settings JSON is built holds nothing: without the
 		// rule, TOML's `nan` decodes and the build's encode fails at the
 		// launch, after the routes were written.
@@ -283,14 +302,15 @@ func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 			in := slotTestInput(false)
 			in.ConfigContent = tc.cc
 			_, buildErr := claudeDriver{}.BuildSlots(in)
+			_, cmdErr := BuildSlotCommand(in.SlotLaunch, false, in.ProxyOrigin, in.ProxyKey)
 			msg := func(err error) string {
 				if err == nil {
 					return ""
 				}
 				return err.Error()
 			}
-			if msg(checkErr) != tc.want || msg(buildErr) != tc.want {
-				t.Errorf("CheckConfigContent = %q, BuildSlots = %q, want %q from both", msg(checkErr), msg(buildErr), tc.want)
+			if msg(checkErr) != tc.want || msg(buildErr) != tc.want || msg(cmdErr) != tc.want {
+				t.Errorf("CheckConfigContent = %q, BuildSlots = %q, BuildSlotCommand = %q, want %q from all three", msg(checkErr), msg(buildErr), msg(cmdErr), tc.want)
 			}
 		})
 	}
@@ -298,13 +318,14 @@ func TestClaudeCheckConfigContentIsTheBuildsRule(t *testing.T) {
 
 // TestClaudeConfigContentWarnings pins what claude says, without blocking,
 // about a profile's config_content.modelOverrides: one line per target that
-// is not a string, and one per string target that is not one of the
-// profile's slot models, the only ids wt makes sure are routed at a launch.
-// Keys are never judged: they are Claude Code's model ids. A table whose
-// targets are all slot models, no table at all, and a modelOverrides that is
-// not a table (CheckConfigContent blocks that one) say nothing. Without the
-// warning, an override naming an id the proxy has no route for fails only
-// inside the session, with nothing from wt pointing at the profile.
+// is not one of the profile's slot models, the only ids wt makes sure are
+// routed at a launch, in key order; an empty string is such a target. Keys
+// are never judged: they are Claude Code's model ids. A table whose targets
+// are all slot models, no table at all, a modelOverrides that is not a table
+// and one with a target that is not a string (CheckConfigContent blocks those
+// two, #418) say nothing. Without the warning, an override naming an id the
+// proxy has no route for fails only inside the session, with nothing from wt
+// pointing at the profile.
 func TestClaudeConfigContentWarnings(t *testing.T) {
 	slotModels := []string{"openrouter/a", "openrouter/b"}
 	for _, tc := range []struct {
@@ -320,13 +341,15 @@ func TestClaudeConfigContentWarnings(t *testing.T) {
 		{"one target is not a slot model",
 			map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": "openrouter/a", "claude-sonnet-4-6": "openrouter/z"}},
 			[]string{`config_content.modelOverrides["claude-sonnet-4-6"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`}},
-		{"a target is not a string",
-			map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": int64(3)}},
-			[]string{`config_content.modelOverrides["claude-opus-4-1"] is not a string: a target must be a model id`}},
+		{"a target is not a string, which blocks instead",
+			map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": int64(3), "claude-sonnet-4-6": "openrouter/z"}}, nil},
+		{"an empty-string target",
+			map[string]any{"modelOverrides": map[string]any{"claude-opus-4-1": ""}},
+			[]string{`config_content.modelOverrides["claude-opus-4-1"] targets "", which is not one of the profile's slot models, so wt does not make sure it is routed`}},
 		{"several, in key order",
-			map[string]any{"modelOverrides": map[string]any{"z-key": "openrouter/z", "a-key": []any{"openrouter/a"}}},
+			map[string]any{"modelOverrides": map[string]any{"z-key": "openrouter/z", "a-key": "openrouter/y", "m-key": "openrouter/a"}},
 			[]string{
-				`config_content.modelOverrides["a-key"] is not a string: a target must be a model id`,
+				`config_content.modelOverrides["a-key"] targets "openrouter/y", which is not one of the profile's slot models, so wt does not make sure it is routed`,
 				`config_content.modelOverrides["z-key"] targets "openrouter/z", which is not one of the profile's slot models, so wt does not make sure it is routed`,
 			}},
 	} {

@@ -66,8 +66,9 @@ func (claudeDriver) ReservedEnvKeys() []string {
 }
 
 // CheckConfigContent is claude's static rule for a profile's config_content:
-// an env key and a modelOverrides key, when present, are tables, and the
-// content can be encoded as the --settings JSON. They are claudeConfigEnv's,
+// an env key and a modelOverrides key, when present, are tables, every
+// modelOverrides target is a string, and the content can be encoded as the
+// --settings JSON. They are claudeConfigEnv's,
 // claudeModelOverrides' and claudeEncodable's rules, the ones the slot build
 // applies, so validation and the build cannot disagree.
 func (claudeDriver) CheckConfigContent(cc map[string]any) error {
@@ -81,9 +82,12 @@ func (claudeDriver) CheckConfigContent(cc map[string]any) error {
 }
 
 // claudeModelOverrides returns the modelOverrides table of a profile's
-// config_content, nil when it has none. One that is not a table is an error:
-// Claude Code's modelOverrides setting maps model ids to model ids (#412).
-// Its keys are Claude Code's ids, which wt cannot know, and are not judged.
+// config_content, nil when it has none. Claude Code's modelOverrides setting
+// maps model ids to model ids (#412), so one that is not a table is an error,
+// and so is a target that is not a string (#418): the first such key in key
+// order is named, its value never echoed. Its keys are Claude Code's ids,
+// which wt cannot know, and are not judged; an empty-string target is a
+// string, and ConfigContentWarnings warns about it.
 func claudeModelOverrides(cc map[string]any) (map[string]any, error) {
 	raw, ok := cc["modelOverrides"]
 	if !ok {
@@ -93,16 +97,21 @@ func claudeModelOverrides(cc map[string]any) (map[string]any, error) {
 	if !ok {
 		return nil, errors.New("config_content.modelOverrides must be a table")
 	}
+	for _, key := range slices.Sorted(maps.Keys(table)) {
+		if _, ok := table[key].(string); !ok {
+			return nil, fmt.Errorf("config_content.modelOverrides[%q] must be a model id string", key)
+		}
+	}
 	return table, nil
 }
 
 // ConfigContentWarnings is what claude says, without blocking, about a
 // profile's config_content.modelOverrides (#412): one line per target that
-// is not a string, and one per target that is not one of slotModels, in key
-// order. wt makes sure only the slot models are routed at a launch; an
-// override may still name an id the user routes another way, so it is a
-// warning. A modelOverrides that is not a table says nothing here:
-// CheckConfigContent blocks it.
+// is not one of slotModels, in key order. wt makes sure only the slot models
+// are routed at a launch; an override may still name an id the user routes
+// another way, so it is a warning. A modelOverrides that is not a table, or
+// that has a target that is not a string, says nothing here:
+// CheckConfigContent blocks it (claudeModelOverrides, #418).
 func (claudeDriver) ConfigContentWarnings(cc map[string]any, slotModels []string) []string {
 	table, err := claudeModelOverrides(cc)
 	if err != nil {
@@ -110,11 +119,9 @@ func (claudeDriver) ConfigContentWarnings(cc map[string]any, slotModels []string
 	}
 	var out []string
 	for _, key := range slices.Sorted(maps.Keys(table)) {
-		target, ok := table[key].(string)
-		switch {
-		case !ok:
-			out = append(out, fmt.Sprintf("config_content.modelOverrides[%q] is not a string: a target must be a model id", key))
-		case !slices.Contains(slotModels, target):
+		// claudeModelOverrides refused a target that is not a string, so ok
+		// is always true here.
+		if target, ok := table[key].(string); ok && !slices.Contains(slotModels, target) {
 			out = append(out, fmt.Sprintf("config_content.modelOverrides[%q] targets %q, which is not one of the profile's slot models, so wt does not make sure it is routed", key, target))
 		}
 	}
@@ -232,8 +239,8 @@ func claudeSlotSettings(in profiles.SlotBuildInput) (string, error) {
 	for k, v := range table {
 		env[k] = v
 	}
-	// The same for a modelOverrides that is not a table
-	// (claudeModelOverrides).
+	// The same for a modelOverrides that is not a table, or has a target
+	// that is not a string (claudeModelOverrides).
 	if _, err := claudeModelOverrides(in.ConfigContent); err != nil {
 		return "", err
 	}

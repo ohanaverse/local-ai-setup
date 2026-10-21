@@ -380,15 +380,17 @@ MAX_THINKING_TOKENS = "4096"
 
 // TestProfileCommandsReportModelOverrides follows config_content.modelOverrides
 // through the real drivers into `wt profile list`, `wt profile show` and a
-// launch's warnings (#412, #419): a modelOverrides that is not a table blocks
-// the profile, listed with the reason and shown blocked; a table whose targets
+// launch's warnings (#412, #419): a modelOverrides that is not a table, or
+// one with a target that is not a string (#418), blocks the profile, listed
+// with the reason and shown blocked; a table whose targets
 // are not the profile's slot models is listed ok with one warning line per
 // target, naming the profile, the key and the target, and shown as a launch
 // row with the same lines, each once, right under its slot lines, its
 // overrides in the settings. A table whose targets are all slot models has no
 // warning, in either command, and a blocked profile is shown with its reason
 // alone even when its overrides would warn. Without the block, a string
-// modelOverrides reached Claude Code's settings, which take an object; without
+// modelOverrides reached Claude Code's settings, which take an object, and a
+// number target launched in the --settings as a mere warning; without
 // the warning, an override to an unrouted id failed only inside the session,
 // and `wt profile show`, the command a user runs to see what a launch would
 // send, said nothing about it (#419).
@@ -433,6 +435,15 @@ opus = "openrouter/a"
 env = "x"
 [profile.config_content.modelOverrides]
 claude-sonnet-4-6 = "openrouter/b"
+
+[[profile]]
+name = "number-target"
+agent = "claude"
+default = "opus"
+[profile.slots]
+opus = "openrouter/a"
+[profile.config_content.modelOverrides]
+claude-sonnet-4-6 = 5
 `
 	store, err := profiles.ParseSlots([]byte(file))
 	if err != nil {
@@ -455,6 +466,7 @@ claude-sonnet-4-6 = "openrouter/b"
 		"  claude: profile/unrouted ok\n" +
 		"  claude: profile/routed ok\n" +
 		"  claude: profile/blocked-unrouted error: config_content.env must be a table\n" +
+		"  claude: profile/number-target error: config_content.modelOverrides[\"claude-sonnet-4-6\"] must be a model id string\n" +
 		"  warning: " + warnings[0] + "\n" +
 		"  warning: " + warnings[1] + "\n"
 	if err != nil || out != wantList {
@@ -464,6 +476,7 @@ claude-sonnet-4-6 = "openrouter/b"
 	for _, tc := range []struct{ name, reason string }{
 		{"string-overrides", "config_content.modelOverrides must be a table"},
 		{"blocked-unrouted", "config_content.env must be a table"},
+		{"number-target", `config_content.modelOverrides["claude-sonnet-4-6"] must be a model id string`},
 	} {
 		id := "profile/" + tc.name
 		out, err = runProfileCmd(t, newApp(), "show", "-A", "claude", "-M", id)

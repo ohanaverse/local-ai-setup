@@ -400,6 +400,15 @@
 
 ### Fixed
 
+- A slot profile whose `config_content.modelOverrides` has a target that is
+  not a string (a number, a boolean, an array or a table) is now blocked
+  with `config_content.modelOverrides["<key>"] must be a model id string`
+  (#418), naming the first such key and never its value: in the picker, for
+  a `-M profile/<name>` pin, and in `wt profile list` and `show`. Before, it
+  was only a warning and the profile launched, so Claude Code received an
+  override it cannot use in its `--settings`, and on the picker path the
+  warning printed only after the session. An empty-string target is still a
+  string and still only warns.
 - `wt profile show -A claude -M profile/<name>` now prints the
   `modelOverrides` warning that `wt profile list` and a launch print (#419):
   one `warning: <profile> (claude): config_content.modelOverrides["<key>"]
@@ -446,9 +455,10 @@
   row with `config_content.modelOverrides must be a table`, in the picker,
   for a `-M profile/<name>` pin and in `wt profile list` and `show`; before,
   it went into Claude Code's `--settings` as it was. A target that is not a
-  string, or not one of the profile's slot models (the ids a launch makes
-  sure are routed), is a warning naming the profile, the key and the target,
-  printed by a launch on either path and by `wt profile list`; it never
+  string blocks the row too (#418, under Fixed). A target that is not one of
+  the profile's slot models (the ids a launch makes sure are routed) is a
+  warning naming the profile, the key and the target, printed by a launch on
+  either path, by `wt profile list` and by `wt profile show` (#419); it never
   blocks the row. The keys are not checked.
 - A claude profile that pins an array in `config_content` (such as
   `permissions.allow`) no longer leaves its elements in
