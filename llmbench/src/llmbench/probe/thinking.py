@@ -251,6 +251,21 @@ class Sampling:
     top_p: float | None
     top_k: int | None
     max_tokens: int | None = None
+    # Sent only when set (0.0 is a value, so it is sent); None leaves the
+    # server's own default. Servers differ in which they honor, and one may
+    # ignore an unknown field without a word.
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+
+    def penalties(self) -> dict[str, float]:
+        """The penalties that are set, by request field name, in a fixed order."""
+        named = {
+            "presence_penalty": self.presence_penalty,
+            "frequency_penalty": self.frequency_penalty,
+            "repetition_penalty": self.repetition_penalty,
+        }
+        return {name: value for name, value in named.items() if value is not None}
 
     def body_fields(self) -> dict[str, float | int]:
         fields: dict[str, float | int] = {"temperature": self.temperature}
@@ -260,6 +275,7 @@ class Sampling:
             fields["top_k"] = self.top_k
         if self.max_tokens:
             fields["max_tokens"] = self.max_tokens
+        fields.update(self.penalties())
         return fields
 
 
@@ -563,6 +579,7 @@ def _sampling_line(sampling: Sampling) -> str:
     parts.append(
         f"max_tokens {sampling.max_tokens}" if sampling.max_tokens else "max_tokens not sent"
     )
+    parts += [f"{name} {value}" for name, value in sampling.penalties().items()]
     return ", ".join(parts)
 
 
@@ -620,10 +637,19 @@ def _result_json(result: ProbeResult) -> dict[str, Any]:
     return doc
 
 
+def _sampling_json(sampling: Sampling) -> dict[str, Any]:
+    """The sampling as sent: an unset penalty is absent, not null."""
+    doc = asdict(sampling)
+    for name in ("presence_penalty", "frequency_penalty", "repetition_penalty"):
+        if doc[name] is None:
+            del doc[name]
+    return doc
+
+
 def run_json(run: ProbeRun) -> dict[str, Any]:
     return {
         "started_at": run.started_at,
-        "sampling": asdict(run.sampling),
+        "sampling": _sampling_json(run.sampling),
         "timeout_s": run.timeout_s,
         "targets": [asdict(t) for t in run.targets],
         "prompts": [{"id": p.id, "source": p.source, "text": p.text} for p in run.prompts],

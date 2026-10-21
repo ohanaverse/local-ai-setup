@@ -99,6 +99,13 @@ REPLIES: dict[str, tuple[int, Any]] = {
 }
 
 
+# The sampling penalties a strict server may refuse. The "rejects-penalties"
+# model answers 400 with an OpenAI-style message when the request carries any
+# of them, and answers like "no-reasoning" when it carries none.
+PENALTY_FIELDS = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+REJECTED_FIELD_MESSAGE = "Unrecognized request argument supplied: {field}"
+
+
 @dataclass
 class FakeServer:
     base_url: str
@@ -119,6 +126,13 @@ def _handler(fake: FakeServer, release: threading.Event) -> type[BaseHTTPRequest
             if model == "slow":
                 release.wait(SLOW_REPLY_S)
                 status, reply = REPLIES["no-reasoning"]
+            elif model == "rejects-penalties":
+                sent = [f for f in PENALTY_FIELDS if f in body]
+                if sent:
+                    message = REJECTED_FIELD_MESSAGE.format(field=sent[0])
+                    status, reply = 400, {"error": {"message": message}}
+                else:
+                    status, reply = REPLIES["no-reasoning"]
             else:
                 status, reply = REPLIES.get(model, (404, {"error": f"unknown model {model}"}))
             payload = reply if isinstance(reply, str) else json.dumps(reply)

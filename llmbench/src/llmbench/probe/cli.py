@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,30 @@ _INTERRUPTED_EXIT = 130
 def _usage_error(message: str) -> typer.Exit:
     typer.echo(f"error: {message}", err=True)
     return typer.Exit(_USAGE_EXIT)
+
+
+# Every penalty flag's help ends with this: a server may drop a field it does
+# not know without a word, so a set penalty proves nothing on its own.
+_PENALTY_CAVEAT = (
+    " Default: not sent (the server's own default applies). Servers differ in which "
+    "penalty fields they honor: an unknown or unsupported field may be ignored silently "
+    "(no error) or rejected with a 400, and the probe cannot tell which. A result with a "
+    "penalty set means something only if changing the value changes the output, or the "
+    "server's log shows it was applied; check your server."
+)
+
+
+def _check_penalty(flag: str, value: float | None, *, low: float, high: float | None) -> None:
+    """Raise ProbeError naming `flag` when a set value is NaN, infinite or out
+    of range: [low, high] inclusive, or above `low` when `high` is None."""
+    if value is None:
+        return
+    if not math.isfinite(value):
+        raise ProbeError(f"{flag} must be a finite number, not {value}")
+    if high is None and value <= low:
+        raise ProbeError(f"{flag} must be greater than {low:g}, not {value:g}")
+    if high is not None and not low <= value <= high:
+        raise ProbeError(f"{flag} must be between {low:g} and {high:g}, not {value:g}")
 
 
 def _progress(result: ProbeResult) -> None:
@@ -94,6 +119,24 @@ def thinking_cmd(
     max_tokens: int | None = typer.Option(
         None, "--max-tokens", help="max_tokens; unset leaves the server's cap (as eval does)."
     ),
+    presence_penalty: float | None = typer.Option(
+        None,
+        "--presence-penalty",
+        help="presence_penalty, -2.0 to 2.0 (OpenAI's range): penalizes a token that has "
+        "appeared at all." + _PENALTY_CAVEAT,
+    ),
+    frequency_penalty: float | None = typer.Option(
+        None,
+        "--frequency-penalty",
+        help="frequency_penalty, -2.0 to 2.0 (OpenAI's range): penalizes a token by how "
+        "often it has appeared." + _PENALTY_CAVEAT,
+    ),
+    repetition_penalty: float | None = typer.Option(
+        None,
+        "--repetition-penalty",
+        help="repetition_penalty, greater than 0 (a vLLM/mlx-style extension; 1.0 means "
+        "none): divides a repeated token's score." + _PENALTY_CAVEAT,
+    ),
     timeout: float = typer.Option(
         900.0,
         "--timeout",
@@ -119,6 +162,9 @@ def thinking_cmd(
     if not target:
         raise _usage_error(f"give at least one --target {TARGET_FORMAT}")
     try:
+        _check_penalty("--presence-penalty", presence_penalty, low=-2.0, high=2.0)
+        _check_penalty("--frequency-penalty", frequency_penalty, low=-2.0, high=2.0)
+        _check_penalty("--repetition-penalty", repetition_penalty, low=0.0, high=None)
         targets: list[Target] = [parse_target(spec) for spec in target]
         names = [t.name for t in targets]
         duplicates = sorted({n for n in names if names.count(n) > 1})
@@ -141,7 +187,15 @@ def thinking_cmd(
     except ProbeError as exc:
         raise _usage_error(str(exc)) from exc
 
-    sampling = Sampling(temperature=temperature, top_p=top_p, top_k=top_k, max_tokens=max_tokens)
+    sampling = Sampling(
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        max_tokens=max_tokens,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        repetition_penalty=repetition_penalty,
+    )
     run = ProbeRun(
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
         targets=targets,
