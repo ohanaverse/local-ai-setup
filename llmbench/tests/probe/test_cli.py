@@ -531,3 +531,4 @@ def test_help_lists_the_penalty_flags_and_the_silent_ignore_caveat():
     text = " ".join(result.output.replace("│", " ").split())
     assert "ignored silently" in text
     assert "not sent" in text
+    assert "check your server" in text

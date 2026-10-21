@@ -135,7 +135,7 @@ def thinking_cmd(
         None,
         "--repetition-penalty",
         help="repetition_penalty, greater than 0 (a vLLM/mlx-style extension; 1.0 means "
-        "none): divides a repeated token's score." + _PENALTY_CAVEAT,
+        "none): scales down a repeated token's score." + _PENALTY_CAVEAT,
     ),
     timeout: float = typer.Option(
         900.0,
