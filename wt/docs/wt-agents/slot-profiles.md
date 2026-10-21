@@ -608,12 +608,13 @@ budget, so how much else the machine holds matters.
 
 **What to do.** For a slot Claude Code sends its full prompt to, prefer an
 omlx or ollama model unless you have measured the mtplx model on your own
-machine. Nothing stops an mtplx slot; the cost is slow turns, not failed
-ones.
+machine. This is a warning, not a rule: wt does not stop an mtplx slot,
+and in these tests every turn finished, only slowly.
 
-**How to check your own sessions.** A refused request that Claude Code
-retried leaves no failure in the spend logs, which record the retry that
-succeeded, so `wt stats` does not show it. Look in the proxy's logs instead
+**How to check your own sessions.** Most refused requests leave no
+failure row in the spend logs (2 of 11 did in one run), and `wt stats` has
+no failure column: it counts every logged request alike, so it does not
+show refusals either way. Look in the proxy's logs instead
 (`~/.litellm.err.log` and `~/.litellm.log`, see
 [litellm-troubleshooting.md](litellm-troubleshooting.md#debugging-playbook-what-actually-worked))
 for `insufficient memory`, and in the log of the mtplx server wt started,
