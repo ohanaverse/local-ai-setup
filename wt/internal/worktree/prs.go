@@ -111,8 +111,9 @@ type PRKey struct {
 // PRSet is one listing's (or the join of several) pull requests: ByHead is
 // the PR to show for each head (repository, branch), and BaseRepo the
 // lower-cased owner/repo gh listed, read off a same-repository PR's head
-// ("" when the listing had none). BaseRepo never decides a tag; the picker
-// reads it only for its "no remote is …" notice.
+// ("" when the listing had none). BaseRepo decides no remote row's tag: it
+// marks the listed repository's PRs as yours for a local row (ForBranch),
+// and the picker names it in its "no remote is …" notice.
 type PRSet struct {
 	BaseRepo string
 	ByHead   map[PRKey]PR
@@ -133,18 +134,22 @@ func (s PRSet) ForRemote(repo, branch string) (PR, bool) {
 }
 
 // ForBranch is the PR for a local branch or worktree row, which has no
-// repository: branch is looked up under every head repository, and one PR is
-// chosen by preferPR (a live PR beats a closed or merged one, then the
-// higher number), so two repositories' PRs from one branch name resolve the
-// same way every time.
-func (s PRSet) ForBranch(branch string) (PR, bool) {
+// repository: branch is looked up under the head repositories known to be
+// yours — the listed repository (BaseRepo, and "" for a same-repository PR
+// gh gave no head repository for) and own, the repositories the
+// repository's remotes point at (RemoteRepoSet) — and never under a
+// stranger's fork, whose main or patch-1 would otherwise tag your branch of
+// the same name. Among those, one PR is chosen by preferPR (a live PR beats
+// a closed or merged one, then the higher number), so two repositories' PRs
+// from one branch name resolve the same way every time.
+func (s PRSet) ForBranch(branch string, own RepoSet) (PR, bool) {
 	var best PR
 	found := false
 	if branch == "" {
 		return best, false
 	}
 	for k, pr := range s.ByHead {
-		if k.Branch != branch {
+		if k.Branch != branch || !s.yours(k.Repo, own) {
 			continue
 		}
 		if !found || preferPR(pr, best) {
@@ -152,6 +157,12 @@ func (s PRSet) ForBranch(branch string) (PR, bool) {
 		}
 	}
 	return best, found
+}
+
+// yours reports whether a PR from head repository repo (lower-cased) may tag
+// a local row: one from the listed repository or from a repository in own.
+func (s PRSet) yours(repo string, own RepoSet) bool {
+	return repo == "" || repo == s.BaseRepo || own.Has(repo)
 }
 
 // HasHeadRepo reports whether any PR in the set was opened from repo
@@ -240,8 +251,9 @@ func (s PRState) live() bool { return s == PROpen || s == PRDraft }
 // parsePRs maps gh's JSON to one PR per head (repository, branch), a head
 // with several PRs keeping the one preferPR picks. A PR from a fork
 // (isCrossRepository) is kept under its own head repository (#387), so it
-// tags only that fork's remote rows and, by branch name, local rows; a fork
-// PR whose head repository is gone (null: the fork was deleted) is dropped.
+// tags only that fork's remote rows and, by branch name, local rows while
+// the fork is one of the repository's remotes (ForBranch); a fork PR whose
+// head repository is gone (null: the fork was deleted) is dropped.
 // A same-repository PR with no head repository is kept under "", which only
 // a local row's lookup reaches. An element with no head branch or no number
 // is skipped. BaseRepo is the first same-repository PR's head repository.

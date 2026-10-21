@@ -190,9 +190,12 @@ repository: with `origin` your fork and `upstream` the repository `gh`
 lists, `origin/feat-x` shows the PR you opened from your fork's `feat-x`,
 `upstream/feat-y` shows upstream's own PR from `feat-y`, and
 `upstream/feat-x` shows nothing (#387, #388). A local branch or worktree
-has no repository, so it shows a PR opened from a branch of its name in any
-repository; when two repositories both have one (your fork's `feat-x` and
-someone else's), the open one wins, else the higher number. The host in a
+has no repository, so it shows a PR opened from a branch of its name in
+this repository or in a repository one of your remotes points at (your
+fork, when it is a remote), never a stranger's fork: someone's PR from
+their fork's `main` does not tag your `main`. When two of those
+repositories both have one (upstream's `feat-x` and your fork's), the open
+one wins, else the higher number. The host in a
 remote's URL is ignored, so an Enterprise host with the same owner/repo
 counts as that repository; a remote that is a local path or a `file://`
 URL, or one wt cannot find, is never tagged.

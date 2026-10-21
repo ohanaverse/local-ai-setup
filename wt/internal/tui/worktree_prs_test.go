@@ -97,7 +97,7 @@ func rowByBranch(t *testing.T, items []list.Item, branch string) entryItem {
 func TestApplyPRsTagsEveryKindOfRow(t *testing.T) {
 	groups, root := prGroups(t)
 	l := buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prMap())
+	applyPRs(&l, prMap(), nil)
 	items := l.Items()
 	// Only a remote row drops its remote; a local fix/foo keeps its whole
 	// name, the name its PR was opened from.
@@ -153,7 +153,7 @@ func TestPRRowDescriptionAndFilterValue(t *testing.T) {
 func TestFilterByPRNumberFindsTheRow(t *testing.T) {
 	groups, root := prGroups(t)
 	l := buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prMap())
+	applyPRs(&l, prMap(), nil)
 	l.SetFilterText("383")
 	found := false
 	for _, it := range l.VisibleItems() {
@@ -191,7 +191,7 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 		long:                         {Number: 12345, State: worktree.PRMerged, Title: "Long"},
 	})
 	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
-	applyPRs(&l, prs)
+	applyPRs(&l, prs, nil)
 
 	short := renderRow(l, 1)
 	first, second, _ := strings.Cut(short, "\n")
@@ -218,7 +218,7 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 func TestPRTagDroppedWhenTooNarrow(t *testing.T) {
 	groups := singleGroup(worktree.GroupLocalBranches, worktree.Entry{Type: worktree.TypeBranch, Branch: "fix/some-branch"})
 	l := buildList(groups, "", "/repo", themes.Default, 20, 24)
-	applyPRs(&l, prsIn("o/base", map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}}))
+	applyPRs(&l, prsIn("o/base", map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}}), nil)
 	line, _, _ := strings.Cut(renderRow(l, 1), "\n")
 	if strings.TrimSpace(line) != "fix/some-branch" {
 		t.Errorf("narrow title line = %q, want the branch alone", line)
@@ -351,7 +351,7 @@ func TestLoadPRsCmdReturnsTheListing(t *testing.T) {
 	if !ok {
 		t.Fatalf("loadPRsCmd returned %T", msg)
 	}
-	if got, _ := msg.prs.ForBranch("fix/x"); got.Number != 383 || got.State != worktree.PROpen {
+	if got, _ := msg.prs.ForBranch("fix/x", nil); got.Number != 383 || got.State != worktree.PROpen {
 		t.Errorf("prs[fix/x] = %+v, want #383 open", got)
 	}
 	if !reflect.DeepEqual(dirs, []string{"/the/root"}) || !reflect.DeepEqual(states, []string{worktree.PRListOpen}) {
@@ -597,7 +597,7 @@ func basePRs() worktree.PRSet {
 // other way round.
 func TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR(t *testing.T) {
 	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
-	applyPRs(&l, basePRs())
+	applyPRs(&l, basePRs(), nil)
 	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
 		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
 	}
@@ -606,7 +606,7 @@ func TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR(t *testing.T)
 	}
 	applyPRs(&l, withFork(basePRs(), "keith/fork", map[string]worktree.PR{
 		"feat-x": {Number: 77, State: worktree.PRMerged, Title: "Fork feat-x"},
-	}))
+	}), nil)
 	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
 		t.Errorf("origin/feat-x tag = %q with the fork's PR listed, want #4242 open", tag)
 	}
@@ -646,7 +646,7 @@ func TestRemoteRowUnknownRemoteIsUntagged(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := buildList(singleGroup(worktree.GroupRemoteBranches, tc.entry), "", "/repo", themes.Default, 80, 24)
-			applyPRs(&l, tc.prs)
+			applyPRs(&l, tc.prs, nil)
 			if ei := rowByBranch(t, l.Items(), tc.entry.Branch); ei.pr != nil {
 				t.Errorf("%s tagged %q", tc.entry.Branch, ei.prTag())
 			}
@@ -672,7 +672,7 @@ func TestRemoteRowsStayUntaggedUntilThePRsArriveThenTag(t *testing.T) {
 			}
 		}
 	}
-	applyPRs(&m.list, worktree.PRSet{})
+	applyPRs(&m.list, worktree.PRSet{}, nil)
 	untagged("before any listing")
 
 	got, _ = m.Update(prsLoadedMsg{prs: worktree.PRSet{ByHead: map[worktree.PRKey]worktree.PR{}}})
@@ -699,7 +699,7 @@ func TestRemoteRepoMatchIgnoresCase(t *testing.T) {
 		worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feat-x", RemoteRepo: "O/Base", RemoteBranch: "feat-x"})
 	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
 	stubPRList(t, `[{"number": 4242, "state": "OPEN", "headRefName": "feat-x", "isCrossRepository": false, "headRepository": {"nameWithOwner": "o/BASE"}}]`)
-	applyPRs(&l, worktree.PRs("/repo", worktree.PRListAll))
+	applyPRs(&l, worktree.PRs("/repo", worktree.PRListAll), nil)
 	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
 		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
 	}
@@ -714,7 +714,7 @@ func TestForkRowKeepsItsDisplayTitle(t *testing.T) {
 	if got := rowByBranch(t, l.Items(), "keith/feat-x").Title(); got != "feat-x" {
 		t.Errorf("Title before the PRs = %q, want feat-x", got)
 	}
-	applyPRs(&l, basePRs())
+	applyPRs(&l, basePRs(), nil)
 	if got := rowByBranch(t, l.Items(), "keith/feat-x").Title(); got != "feat-x" {
 		t.Errorf("Title after the PRs = %q, want feat-x", got)
 	}
@@ -750,7 +750,7 @@ func TestStaleFilterRunWithRemoteRowsKeepsTheTags(t *testing.T) {
 	if ei := rowByBranch(t, vis, "keith/feat-x"); ei.pr != nil {
 		t.Errorf("keith/feat-x tagged %q after the stale run", ei.prTag())
 	}
-	if !prsCurrent(vis, m.prs) {
+	if !prsCurrent(vis, m.prs, nil) {
 		t.Error("prsCurrent = false on the rows applyPRs just tagged")
 	}
 }
@@ -761,7 +761,7 @@ func TestStaleFilterRunWithRemoteRowsKeepsTheTags(t *testing.T) {
 // the fork's branch under a PR it is not part of.
 func TestFilterByPRNumberDoesNotMatchAnUntaggedRemoteRow(t *testing.T) {
 	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
-	applyPRs(&l, basePRs())
+	applyPRs(&l, basePRs(), nil)
 	l.SetFilterText("4242")
 	var visible []string
 	for _, it := range l.VisibleItems() {
@@ -816,7 +816,7 @@ func TestForkWorkflowTagsEachRemoteRowFromItsOwnRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := buildList(groups, "main", repo, themes.Default, 80, 24)
-	applyPRs(&l, worktree.PRs(repo, worktree.PRListAll))
+	applyPRs(&l, worktree.PRs(repo, worktree.PRListAll), nil)
 	for branch, want := range map[string]string{
 		"origin/feat-x":   "#7 open",
 		"upstream/feat-y": "#9 open",
@@ -832,10 +832,11 @@ func TestForkWorkflowTagsEachRemoteRowFromItsOwnRepository(t *testing.T) {
 
 // TestLocalRowPicksOnePRAcrossRepositories pins the local half of #387: a
 // local branch or worktree has no repository, so its name is looked up under
-// every head repository and one PR shown — a live PR over a closed or merged
-// one, then the higher number. A regression shows a merged PR from one
-// repository over another's open PR for the same branch name, or leaves a
-// branch you push only to your fork untagged.
+// every head repository that is yours (the listed repository and your fork,
+// a remote) and one PR shown — a live PR over a closed or merged one, then
+// the higher number. A regression shows a merged PR from one repository over
+// another's open PR for the same branch name, or leaves a branch you push
+// only to your fork untagged.
 func TestLocalRowPicksOnePRAcrossRepositories(t *testing.T) {
 	groups, root := prGroups(t)
 	prs := withFork(prsIn("o/base", map[string]worktree.PR{
@@ -846,8 +847,9 @@ func TestLocalRowPicksOnePRAcrossRepositories(t *testing.T) {
 		"fix/wt-ollama-stop-outcome": {Number: 21, State: worktree.PRDraft, Title: "Fork, draft"},
 		"no-pr":                      {Number: 5, State: worktree.PRClosed, Title: "Fork only"},
 	})
+	own := worktree.NewRepoSet("o/base", "me/fork")
 	l := buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prs)
+	applyPRs(&l, prs, own)
 	for branch, want := range map[string]string{
 		"feat/local":                 "#12 open",  // live beats merged
 		"fix/wt-ollama-stop-outcome": "#21 draft", // two live: the higher number
@@ -858,8 +860,151 @@ func TestLocalRowPicksOnePRAcrossRepositories(t *testing.T) {
 			t.Errorf("%s tag = %q, want %q", branch, got, want)
 		}
 	}
-	if !prsCurrent(l.Items(), prs) {
+	if !prsCurrent(l.Items(), prs, own) {
 		t.Error("prsCurrent = false on the rows applyPRs just tagged")
+	}
+}
+
+// TestLocalRowsShowNoStrangersForkPR pins whose PRs tag a local or worktree
+// row in the picker: the listed repository's and those of a repository one
+// of your remotes points at (the entry load's ownRepos), never a stranger's
+// fork. A stranger's PR from their fork's main must not tag the (current)
+// main row, nor one from their patch-1 your patch-1, nor a stranger's newer
+// PR from feat-x outrank your fork's; your fork's PR tags your branch only
+// while the fork is a remote, and with no remotes only the listed
+// repository's PRs tag. Remote rows keep their own lookup: origin/release
+// shows the listed repository's PR from release. A regression puts
+// strangers' PRs on your branches on any public repository.
+func TestLocalRowsShowNoStrangersForkPR(t *testing.T) {
+	root := t.TempDir()
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeCurrent, Branch: "main", Path: root},
+		}},
+		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "patch-1"},
+			{Type: worktree.TypeBranch, Branch: "feat-x"},
+			{Type: worktree.TypeBranch, Branch: "feat-y"},
+		}},
+		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "origin/release", RemoteRepo: "o/base", RemoteBranch: "release"},
+		}},
+	}
+	prs := withFork(withFork(withFork(prsIn("o/base", map[string]worktree.PR{
+		"release": {Number: 4, State: worktree.PROpen, Title: "Release"},
+		"feat-y":  {Number: 6, State: worktree.PROpen, Title: "Base feat-y"},
+	}), "stranger/base", map[string]worktree.PR{
+		"main":    {Number: 9, State: worktree.PROpen, Title: "Stranger's main"},
+		"patch-1": {Number: 8, State: worktree.PROpen, Title: "Stranger's patch"},
+	}), "other/fork", map[string]worktree.PR{
+		"feat-x": {Number: 10, State: worktree.PROpen, Title: "Another stranger"},
+	}), "me/fork", map[string]worktree.PR{
+		"feat-x": {Number: 7, State: worktree.PROpen, Title: "My fork"},
+	})
+	for name, tc := range map[string]struct {
+		own  worktree.RepoSet
+		want map[string]string
+	}{
+		"your fork is a remote": {
+			own:  worktree.NewRepoSet("o/base", "me/fork"),
+			want: map[string]string{"main": "", "patch-1": "", "feat-x": "#7 open", "feat-y": "#6 open", "origin/release": "#4 open"},
+		},
+		"your fork is not a remote": {
+			own:  worktree.NewRepoSet("o/base"),
+			want: map[string]string{"main": "", "patch-1": "", "feat-x": "", "feat-y": "#6 open", "origin/release": "#4 open"},
+		},
+		"no remotes": {
+			own:  nil,
+			want: map[string]string{"main": "", "patch-1": "", "feat-x": "", "feat-y": "#6 open", "origin/release": "#4 open"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+			got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: root, ownRepos: tc.own})
+			m = got.(model)
+			got, _ = m.Update(prsLoadedMsg{prs: prs})
+			m = got.(model)
+			for branch, want := range tc.want {
+				if got := rowByBranch(t, m.list.Items(), branch).prTag(); got != want {
+					t.Errorf("%s tag = %q, want %q", branch, got, want)
+				}
+			}
+			if !prsCurrent(m.list.Items(), m.prs, m.ownRepos) {
+				t.Error("prsCurrent = false on the rows applyPRs just tagged")
+			}
+		})
+	}
+}
+
+// TestStaleFilterRunKeepsAForkTagOnALocalRow is
+// TestStaleFilterRunAfterPRsKeepsTheTags for a local row tagged from your
+// fork (a remote): the staleness check must ask with the same remotes the
+// tags were applied with, or the stale run's untagged feat-x reads as
+// current and the row loses your fork's PR until the next keystroke.
+func TestStaleFilterRunKeepsAForkTagOnALocalRow(t *testing.T) {
+	m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+	groups := singleGroup(worktree.GroupLocalBranches, worktree.Entry{Type: worktree.TypeBranch, Branch: "feat-x"})
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, repoRoot: t.TempDir(), ownRepos: worktree.NewRepoSet("o/base", "me/fork")})
+	m = got.(model)
+	m.list.SetFilterState(list.Filtering)
+	m.list.FilterInput.SetValue("feat")
+	before := m.list
+	staleRun := before.SetItems(before.Items())
+
+	got, _ = m.Update(prsLoadedMsg{prs: withFork(prsIn("o/base", map[string]worktree.PR{"other": {Number: 1, State: worktree.PROpen}}), "me/fork", map[string]worktree.PR{
+		"feat-x": {Number: 7, State: worktree.PROpen, Title: "My fork"},
+	})})
+	m = got.(model)
+	got, _ = m.Update(staleRun())
+	m = got.(model)
+
+	if tag := rowByBranch(t, m.list.VisibleItems(), "feat-x").prTag(); tag != "#7 open" {
+		t.Errorf("feat-x tag = %q after the stale run, want #7 open", tag)
+	}
+}
+
+// TestForkWorkflowTagsYourLocalBranchFromYourFork pins the local-row rule
+// end to end, from git's remotes through the entry load, the parsed gh
+// listing and the picker: origin is your fork (Me/Fork), so your local
+// feat-x shows the PR you opened from it (#7), while a stranger's PRs from
+// their fork's main and patch-1 tag neither the (current) main row nor your
+// patch-1. A regression either drops your fork's tag from your branch (the
+// remotes never reach the lookup) or shows strangers' PRs on your branches.
+func TestForkWorkflowTagsYourLocalBranchFromYourFork(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@t")
+	git("config", "user.name", "t")
+	git("commit", "-q", "--allow-empty", "-m", "init")
+	git("branch", "feat-x")
+	git("branch", "patch-1")
+	// The entry load fetches every remote first: ssh fails at once under
+	// gitenv's GIT_SSH_COMMAND=false, and .invalid resolves nowhere.
+	git("remote", "add", "origin", "git@github.invalid:Me/Fork.git")
+	git("remote", "add", "upstream", "git@github.invalid:org/up.git")
+	stubPRList(t, `[
+		{"number": 7, "state": "OPEN", "headRefName": "feat-x", "isCrossRepository": true, "title": "Fork work", "headRepository": {"nameWithOwner": "me/fork"}},
+		{"number": 9, "state": "OPEN", "headRefName": "feat-y", "isCrossRepository": false, "title": "Upstream work", "headRepository": {"nameWithOwner": "org/up"}},
+		{"number": 11, "state": "OPEN", "headRefName": "main", "isCrossRepository": true, "title": "Stranger main", "headRepository": {"nameWithOwner": "stranger/up"}},
+		{"number": 12, "state": "OPEN", "headRefName": "patch-1", "isCrossRepository": true, "title": "Stranger patch", "headRepository": {"nameWithOwner": "stranger/up"}}
+	]`)
+	m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+	got, _ := m.Update(loadEntriesAtCmd(repo, nil)())
+	m = got.(model)
+	got, _ = m.Update(loadPRsCmd(repo, worktree.PRListAll)())
+	m = got.(model)
+	for branch, want := range map[string]string{"main": "", "feat-x": "#7 open", "patch-1": ""} {
+		if got := rowByBranch(t, m.list.Items(), branch).prTag(); got != want {
+			t.Errorf("%s tag = %q, want %q", branch, got, want)
+		}
 	}
 }
 
@@ -871,7 +1016,7 @@ func TestFilterByPRNumberFindsAForkRow(t *testing.T) {
 	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
 	applyPRs(&l, withFork(basePRs(), "keith/fork", map[string]worktree.PR{
 		"feat-x": {Number: 77, State: worktree.PROpen, Title: "Fork feat-x"},
-	}))
+	}), nil)
 	l.SetFilterText("#77")
 	var visible []string
 	for _, it := range l.VisibleItems() {

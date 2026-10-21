@@ -141,6 +141,12 @@ type model struct {
 	// Every build of the worktree list (the first, and the reload after a
 	// create) is tagged from it.
 	prs worktree.PRSet
+	// ownRepos is the owner/repo of every remote the repository has
+	// (worktree.RemoteRepoSet), from the latest entry load: a local or
+	// worktree row is tagged only with a PR from one of them or from the
+	// listed repository itself (worktree.PRSet.ForBranch), never with a
+	// stranger's fork PR of the same branch name.
+	ownRepos worktree.RepoSet
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -296,9 +302,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// and tags the (current)/(default) markers on entryItem.
 		m.defaultBranch = msg.defaultBranch
 		m.repoRoot = msg.repoRoot
+		m.ownRepos = msg.ownRepos
 		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
 		if m.prs.Loaded() {
-			applyPRs(&m.list, m.prs)
+			applyPRs(&m.list, m.prs, m.ownRepos)
 		}
 		m.ready = true
 
@@ -340,7 +347,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// that failed adds nothing: msg.prs is then empty.
 		m.prs = worktree.MergePRs(m.prs, msg.prs)
 		if m.ready {
-			applyPRs(&m.list, m.prs)
+			applyPRs(&m.list, m.prs, m.ownRepos)
 			if note := remoteTagsHidden(m.list.Items(), m.prs); note != "" {
 				return m, m.list.NewStatusMessage(note)
 			}
@@ -670,8 +677,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.list, cmd = m.list.Update(msg)
 		// A filter run a keystroke started before the latest tags arrived
 		// matched the items as they were then; its rows carry the old tags.
-		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs) {
-			applyPRs(&m.list, m.prs)
+		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos) {
+			applyPRs(&m.list, m.prs, m.ownRepos)
 		}
 		return m, cmd
 	}
@@ -1325,7 +1332,7 @@ func loadEntriesAtCmd(root string, lookupErr error) tea.Cmd {
 		}
 		groups, err := worktree.Enumerate(root, root)
 		defaultBranch := worktree.DefaultBranch(root)
-		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
+		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, ownRepos: worktree.RemoteRepoSet(root), err: err}
 	}
 }
 
@@ -1410,6 +1417,7 @@ type entriesLoadedMsg struct {
 	groups        []worktree.EntryGroup
 	defaultBranch string
 	repoRoot      string
+	ownRepos      worktree.RepoSet
 	err           error
 }
 

@@ -409,12 +409,17 @@
   `origin/feat-x` shows the PR you opened from your fork's `feat-x`,
   `upstream/feat-y` shows upstream's own PR from `feat-y`, and
   `upstream/feat-x` shows nothing. A local branch or worktree shows a PR
-  opened from a branch of its name in any repository; when two
-  repositories both have one, the open one wins, else the higher number. A
+  opened from a branch of its name in this repository or in one of your
+  remotes' repositories (your fork, when it is a remote), never a
+  stranger's fork, so a stranger's PR from their fork's `main` does not tag
+  your `main`; when two of those repositories both have one, the open one
+  wins, else the higher number. A
   remote that is a local path, a `file://` URL or one wt cannot find is
   still never tagged, and a PR from a deleted fork is not shown. The
   `no remote is …` status line no longer appears when the listing's PRs
-  all come from forks.
+  all come from forks, or when a remote row's repository opened one of the
+  listing's PRs (your fork with a PR, after the base repository's remote
+  was renamed or transferred).
 - A slot profile whose `config_content.modelOverrides` has a target that is
   not a string (a number, a boolean, an array or a table) is now blocked
   with `config_content.modelOverrides["<key>"] must be a model id string`

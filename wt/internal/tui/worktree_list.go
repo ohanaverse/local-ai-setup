@@ -149,14 +149,15 @@ func (e entryItem) Description() string {
 	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
-// applyPRs tags every entry row of l with its branch's pull request from
-// prs (a row whose branch has none loses any tag it had) and keeps what the
-// list holds: the highlighted row (by identity, else by position), an
-// applied filter and the query being typed. With a filter in place, the
-// matches are recomputed here, in the same Update, against the new filter
-// values, so the list is never drawn empty while they are recomputed and
-// typing a PR number before the tags arrived finds the row once they do.
-func applyPRs(l *list.Model, prs worktree.PRSet) {
+// applyPRs tags every entry row of l with its pull request from prs (prFor,
+// own the repository's remotes' repositories; a row with none loses any
+// tag it had) and keeps what the list holds: the highlighted row (by
+// identity, else by position), an applied filter and the query being typed.
+// With a filter in place, the matches are recomputed here, in the same
+// Update, against the new filter values, so the list is never drawn empty
+// while they are recomputed and typing a PR number before the tags arrived
+// finds the row once they do.
+func applyPRs(l *list.Model, prs worktree.PRSet, own worktree.RepoSet) {
 	selected, hadSelected := l.SelectedItem().(entryItem)
 	index := l.Index()
 
@@ -164,7 +165,7 @@ func applyPRs(l *list.Model, prs worktree.PRSet) {
 	next := make([]list.Item, len(items))
 	for i, it := range items {
 		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry {
-			ei.pr = prFor(ei, prs)
+			ei.pr = prFor(ei, prs, own)
 			it = ei
 		}
 		next[i] = it
@@ -197,10 +198,12 @@ func applyPRs(l *list.Model, prs worktree.PRSet) {
 // branch shows the PR you opened from it, upstream's branch upstream's own,
 // and a remote whose repository is unknown is never guessed (#388, #387). A
 // worktree or local row has no repository, so its branch name is looked up
-// under every head repository and one PR chosen (worktree.PRSet.ForBranch:
-// live over closed or merged, then the higher number). prsCurrent asks this
-// too, so the tags and the stale-filter check agree.
-func prFor(ei entryItem, prs worktree.PRSet) *worktree.PR {
+// under the listed repository and own, the repository's remotes'
+// repositories, and one PR chosen (worktree.PRSet.ForBranch: live over
+// closed or merged, then the higher number); a stranger's fork PR never
+// tags it. prsCurrent asks this with the same own, so the tags and the
+// stale-filter check agree.
+func prFor(ei entryItem, prs worktree.PRSet, own worktree.RepoSet) *worktree.PR {
 	if ei.prBranch == "" {
 		return nil
 	}
@@ -209,7 +212,7 @@ func prFor(ei entryItem, prs worktree.PRSet) *worktree.PR {
 	if ei.remote {
 		pr, found = prs.ForRemote(ei.repo, ei.prBranch)
 	} else {
-		pr, found = prs.ForBranch(ei.prBranch)
+		pr, found = prs.ForBranch(ei.prBranch, own)
 	}
 	if !found {
 		return nil
@@ -248,13 +251,13 @@ func remoteTagsHidden(items []list.Item, prs worktree.PRSet) string {
 // prsCurrent reports whether every entry row in items carries the tag prs
 // gives it. A filter run that a keystroke started before the latest tags
 // arrived matched the items as they were then, and its rows fail this.
-func prsCurrent(items []list.Item, prs worktree.PRSet) bool {
+func prsCurrent(items []list.Item, prs worktree.PRSet, own worktree.RepoSet) bool {
 	for _, it := range items {
 		ei, ok := it.(entryItem)
 		if !ok || ei.kind != kindEntry {
 			continue
 		}
-		want := prFor(ei, prs)
+		want := prFor(ei, prs, own)
 		if (want == nil) != (ei.pr == nil) || (want != nil && *want != *ei.pr) {
 			return false
 		}

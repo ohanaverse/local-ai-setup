@@ -73,7 +73,7 @@ func TestParsePRsDropsAForkPRWithNoHeadRepository(t *testing.T) {
 	if _, ok := got.ForRemote("", "x"); ok {
 		t.Error("ForRemote found a PR under an empty repository")
 	}
-	if pr, ok := got.ForBranch("x"); !ok || pr.Number != 5 {
+	if pr, ok := got.ForBranch("x", nil); !ok || pr.Number != 5 {
 		t.Errorf("ForBranch(x) = %+v, %v, want #5", pr, ok)
 	}
 }
@@ -249,31 +249,78 @@ func TestPRSetForRemoteLooksUpItsOwnRepository(t *testing.T) {
 	}
 }
 
-// TestPRSetForBranchPicksOneAcrossRepositories pins the local row's lookup
-// (#387): a local branch or worktree has no repository, so its name is
-// looked up under every head repository and one PR is chosen by the same
-// rule as within a head — a live PR beats a closed or merged one, then the
-// higher number. A regression shows a fork's merged PR over another
+// TestPRSetForBranchPicksOneAcrossRepositories pins the local row's
+// tie-break (#387): a local branch or worktree has no repository, so its
+// name is looked up under every head repository that is yours (here the
+// listed repository and your fork, a remote) and one PR is chosen by the
+// same rule as within a head — a live PR beats a closed or merged one, then
+// the higher number. A regression shows a fork's merged PR over another
 // repository's open one for the same branch name, or a tag that flips
 // between picker opens with Go's map order.
 func TestPRSetForBranchPicksOneAcrossRepositories(t *testing.T) {
-	s := PRSet{ByHead: map[PRKey]PR{
+	s := PRSet{BaseRepo: "o/base", ByHead: map[PRKey]PR{
 		head("o/base", "x"):  {Number: 90, State: PRMerged},
 		head("me/fork", "x"): {Number: 12, State: PROpen},
 		head("o/base", "y"):  {Number: 20, State: PROpen},
 		head("me/fork", "y"): {Number: 21, State: PRDraft},
 		head("me/fork", "z"): {Number: 5, State: PRClosed},
 	}}
+	own := NewRepoSet("o/base", "Me/Fork")
 	for branch, want := range map[string]int{"x": 12, "y": 21, "z": 5, "none": 0} {
 		for i := 0; i < 20; i++ { // map order varies between iterations
-			pr, ok := s.ForBranch(branch)
+			pr, ok := s.ForBranch(branch, own)
 			if got := map[bool]int{true: pr.Number}[ok]; got != want {
 				t.Fatalf("ForBranch(%q) = #%d (%v), want #%d", branch, pr.Number, ok, want)
 			}
 		}
 	}
-	if _, ok := s.ForBranch(""); ok {
+	if _, ok := s.ForBranch("", own); ok {
 		t.Error("ForBranch(\"\") found a PR")
+	}
+}
+
+// TestPRSetForBranchMatchesOnlyYourOwnRepositories pins whose PRs a local
+// or worktree row can show: those from the listed repository (BaseRepo, or
+// a same-repository PR gh gave no head repository for) and from a
+// repository one of your remotes points at, never a stranger's fork. On a
+// public repository strangers open PRs from their fork's main or patch-1
+// all the time; a regression tags your (current) main row, or any local
+// branch, with a stranger's PR that has nothing to do with it, while your
+// own fork's PR (a remote) must still tag your branch.
+func TestPRSetForBranchMatchesOnlyYourOwnRepositories(t *testing.T) {
+	s := PRSet{BaseRepo: "o/base", ByHead: map[PRKey]PR{
+		head("stranger/base", "main"):    {Number: 9, State: PROpen},
+		head("stranger/base", "patch-1"): {Number: 8, State: PROpen},
+		head("me/fork", "feat-x"):        {Number: 7, State: PROpen},
+		head("o/base", "feat-y"):         {Number: 6, State: PROpen},
+		head("", "feat-z"):               {Number: 5, State: PROpen},
+	}}
+	cases := []struct {
+		name   string
+		own    RepoSet
+		branch string
+		want   int // 0: none
+	}{
+		{"a stranger's fork main", NewRepoSet("o/base", "me/fork"), "main", 0},
+		{"a stranger's patch-1", NewRepoSet("o/base", "me/fork"), "patch-1", 0},
+		{"your fork, a remote", NewRepoSet("o/base", "me/fork"), "feat-x", 7},
+		{"your fork, not a remote", NewRepoSet("o/base"), "feat-x", 0},
+		{"the listed repository", NewRepoSet("me/fork"), "feat-y", 6},
+		{"no remotes: same-repository PR", nil, "feat-y", 6},
+		{"no remotes: no head repository", nil, "feat-z", 5},
+		{"no remotes: a fork", nil, "feat-x", 0},
+		{"no remotes: a stranger", nil, "main", 0},
+	}
+	for _, c := range cases {
+		pr, ok := s.ForBranch(c.branch, c.own)
+		if got := map[bool]int{true: pr.Number}[ok]; got != c.want {
+			t.Errorf("%s: ForBranch(%q) = #%d (%v), want #%d", c.name, c.branch, pr.Number, ok, c.want)
+		}
+	}
+	// A remote row's lookup is unchanged: the stranger's own fork row (were
+	// it a remote) still finds its PR by its own repository and branch.
+	if pr, ok := s.ForRemote("stranger/base", "main"); !ok || pr.Number != 9 {
+		t.Errorf("ForRemote(stranger/base, main) = #%d (%v), want #9", pr.Number, ok)
 	}
 }
 
