@@ -80,7 +80,7 @@ uv run llmbench provider restore --unload
 ```
 
 - `--target` is `NAME=BASE_URL,MODEL_ID[,API_KEY_ENV]`. `API_KEY_ENV` is the *name* of an environment variable that holds the key, never the key; leave it out for a keyless server (omlx and mtplx answer inference without one). A named variable that is unset is an error before anything is sent. The key goes only into the `Authorization` header; it is never printed or written.
-- Sampling defaults to temperature 1.0, top_p 0.95 and top_k 20, as in the Qwen3.x `generation_config.json` and `eval-quant-tier.toml`. Override with `--temperature`, `--top-p`, `--top-k` (`0` leaves top_p or top_k out of the request) and `--max-tokens` (unset by default, so the engine's own cap applies, as in `eval run`). `--timeout` (900 s) bounds each request.
+- Sampling defaults to temperature 1.0, top_p 0.95 and top_k 20, as in the Qwen3.x `generation_config.json` and `eval-quant-tier.toml`. Override with `--temperature`, `--top-p`, `--top-k` (`0` leaves top_p or top_k out of the request) and `--max-tokens` (unset by default, so the engine's own cap applies, as in `eval run`). `--timeout` (900 s) bounds the wait per connect and per read, not the whole request: a reply that arrives in pieces can take longer.
 - Results go to `--out`: `report.md` and `results.json` (full reasoning and answer text included). Without `--out` the probe makes a new directory under the system temp dir. It never writes to `~/.config/local-ai/benchmarks/` or `latest.toml`.
 - An engine that is down, times out, or answers non-200 or non-JSON gets an error row and the run goes on. Exit 0 when at least one target answered, 1 when none did, 2 on a usage error.
 

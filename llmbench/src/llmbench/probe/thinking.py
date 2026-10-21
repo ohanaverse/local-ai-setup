@@ -357,6 +357,8 @@ def probe_one(
     with requests.Session() as session:
         session.trust_env = False
         try:
+            # requests' timeout bounds the connect and each socket read, not
+            # the whole request: a reply that arrives in pieces can take longer.
             response = session.post(url, json=body, headers=headers, timeout=timeout_s)
         except requests.Timeout:
             result.error = f"timed out after {timeout_s:g}s"
@@ -527,7 +529,7 @@ def render_markdown(run: ProbeRun) -> str:
         "",
         f"- Started: {run.started_at}",
         f"- Sampling: {_sampling_line(run.sampling)}",
-        f"- Timeout per request: {run.timeout_s:g}s",
+        f"- Timeout per connect and per read: {run.timeout_s:g}s",
         "",
         "| Target | Base URL | Model | Key variable |",
         "|---|---|---|---|",

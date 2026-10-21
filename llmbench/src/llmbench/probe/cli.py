@@ -92,7 +92,10 @@ def thinking_cmd(
         None, "--max-tokens", help="max_tokens; unset leaves the server's cap (as eval does)."
     ),
     timeout: float = typer.Option(
-        900.0, "--timeout", help="Seconds to wait for each reply (thinking can take minutes)."
+        900.0,
+        "--timeout",
+        help="Seconds to wait, per connect and per read (thinking can take minutes); a "
+        "reply that arrives in pieces can take longer in all.",
     ),
     out: Path | None = typer.Option(  # noqa: B008
         None,
