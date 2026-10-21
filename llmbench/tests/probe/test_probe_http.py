@@ -262,3 +262,25 @@ def test_a_200_error_body_is_redacted(fake_openai):
     assert result.error is not None
     shown = ["Bearer ***" in result.error, key in result.error]
     assert shown == [True, False]
+
+
+def test_a_multi_line_error_body_stays_one_bullet_in_the_report(fake_openai):
+    from llmbench.probe.thinking import ProbeRun, render_markdown
+
+    target = _target(fake_openai.base_url, "multiline-500")
+    results = run_probe([(target, None)], [PROMPT], SAMPLING, timeout_s=5)
+    assert results[0].error is not None
+    assert "\n" in results[0].error  # the row keeps the body as sent
+    run = ProbeRun(
+        started_at="2026-10-21T00:00:00Z",
+        targets=[target],
+        prompts=[PROMPT],
+        sampling=SAMPLING,
+        timeout_s=5,
+        results=results,
+    )
+    markdown = render_markdown(run)
+    errors = markdown.split("### Errors\n\n", 1)[1].rstrip("\n").split("\n")
+    assert errors == [
+        "- **multiline-500**: HTTP 500: Traceback (most recent call last): File x # Boom - detail"
+    ]

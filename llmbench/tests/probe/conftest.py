@@ -80,6 +80,7 @@ REPLIES: dict[str, tuple[int, Any]] = {
             }
         ),
     ),
+    "multiline-500": (500, "Traceback (most recent call last):\n  File x\n\n# Boom\n- detail"),
     # Some OpenAI-compatible servers report an error with status 200.
     "error-with-200": (200, {"error": {"message": "model not loaded", "code": 503}}),
     "echo-auth-error-with-200": (200, {"error": {"message": f"bad header {ECHO_AUTH}"}}),

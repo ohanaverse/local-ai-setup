@@ -463,6 +463,12 @@ def _cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+def _one_line(text: str) -> str:
+    """Every run of whitespace, newlines included, as one space: an error body
+    with line breaks stays inside its markdown list item."""
+    return " ".join(text.split())
+
+
 def _status_cell(result: ProbeResult) -> str:
     if result.answered:
         return str(result.status)
@@ -553,7 +559,7 @@ def render_markdown(run: ProbeRun) -> str:
         failed = [r for r in rows if not r.answered]
         if failed:
             lines += ["", "### Errors", ""]
-            lines += [f"- **{r.target}**: {r.error}" for r in failed]
+            lines += [f"- **{r.target}**: {_one_line(r.error or 'error')}" for r in failed]
     return "\n".join(lines) + "\n"
 
 
