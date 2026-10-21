@@ -860,23 +860,17 @@ func refusalHeader(cfg *config.Config, id string, occ *lifecycle.OccupiedError, 
 	if len(ids) > 0 {
 		counts = sessionCounts(ids)
 	}
-	inUse := func(oid string) string {
-		if n := counts[oid]; n > 0 {
-			return fmt.Sprintf(" (in use by %d wt session(s))", n)
-		}
-		return ""
-	}
 	var lines []string
 	if sameFamily {
 		lines = append(lines, fmt.Sprintf("Starting %s will stop:", id))
 		for _, oid := range occ.IDs() {
-			lines = append(lines, "  "+oid+inUse(oid))
+			lines = append(lines, "  "+lifecycle.WithSessions(oid, counts[oid]))
 		}
 	}
 	if othersAsked {
 		lines = append(lines, "Also loaded, by other providers:")
 		for _, r := range occ.Others {
-			lines = append(lines, "  "+r.Label()+" — "+r.Figure()+inUse(r.Entry.ModelID))
+			lines = append(lines, "  "+lifecycle.WithSessions(r.Label()+" — "+r.Figure(), counts[r.Entry.ModelID]))
 		}
 		for _, f := range occ.OthersUnknown {
 			lines = append(lines, fmt.Sprintf("  cannot tell whether %s at %s is serving a model", f, localmodels.FamilyOrigin(cfg, f)))
