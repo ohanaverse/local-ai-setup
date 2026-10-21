@@ -95,6 +95,18 @@ type Resident struct {
 	PID       int
 }
 
+// StoppableIDs are the model ids of the residents wt can stop, in the
+// engine's order: what a stop answer approves.
+func StoppableIDs(others []Resident) []string {
+	var ids []string
+	for _, r := range others {
+		if r.Stoppable {
+			ids = append(ids, r.Entry.ModelID)
+		}
+	}
+	return ids
+}
+
 // Label is the resident's id as a line names it: the model id, with
 // " (loading)" for a model that is still loading.
 func (r Resident) Label() string {

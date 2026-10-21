@@ -457,18 +457,6 @@ func buildOthersChoices(id string, sameFamily, othersListed bool, stoppable int)
 	return items
 }
 
-// stoppableIDs are the model ids of the residents wt can stop, in the
-// engine's order: what a stop answer approves.
-func stoppableIDs(others []lifecycle.Resident) []string {
-	var ids []string
-	for _, r := range others {
-		if r.Stoppable {
-			ids = append(ids, r.Entry.ModelID)
-		}
-	}
-	return ids
-}
-
 // retryStart starts the refused row again with the answers the user gave:
 // a profile launch's start carries the restart it still owes.
 func (m model) retryStart(it *modelItem, allow bool, others othersPlan) (model, tea.Cmd) {
@@ -726,8 +714,10 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		if m.slot != nil {
 			// This start belonged to a profile launch, which ends here. The
 			// engine settled the owed restart on every error but a refusal;
-			// a refusal can only reach this way out under a cancel. The
-			// picker follows, so what the restart prints is kept (settleOut).
+			// a refusal reaches this way out under a cancel, or when it asks
+			// only what was already answered (the !sameFamily && !othersAsked
+			// case below). The picker
+			// follows, so what the restart prints is kept (settleOut).
 			if m.slot.owed && lifecycle.RestartStillOwed(msg.err) {
 				settleRoutesNow(context.Background(), settleOut, m.cfg)
 			}
@@ -806,7 +796,7 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		if othersAsked && st.others.stopAll {
 			// --others=stop answers for the pinned row, as the non-TUI start
 			// does (decideOthers): every resident wt can stop.
-			rs.others = othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: stoppableIDs(occ.Others)}}
+			rs.others = othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: lifecycle.StoppableIDs(occ.Others)}}
 			othersAsked = false
 			if !sameFamily {
 				m.recordRouteNotes(msg.out)
@@ -821,7 +811,7 @@ func (m model) finishStart(msg startDoneMsg) (model, tea.Cmd) {
 		rs.header = refusalHeader(m.cfg, st.item.model.ID, occ, sameFamily, othersAsked)
 		if othersAsked {
 			rs.allow = st.allow || sameFamily
-			rs.stop = stoppableIDs(occ.Others)
+			rs.stop = lifecycle.StoppableIDs(occ.Others)
 			rs.id, rs.sameFamily, rs.othersListed = st.item.model.ID, sameFamily, len(occ.Others) > 0
 			items = buildOthersChoices(rs.id, rs.sameFamily, rs.othersListed, len(rs.stop))
 		}
