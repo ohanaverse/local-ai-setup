@@ -66,20 +66,38 @@ When one engine's answers come out a different shape from another's for the same
 
 ```bash
 # from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
-uv run llmbench provider isolate omlx <omlx-model>
+uv run llmbench provider isolate omlx <omlx-model-a>
 uv run llmbench probe thinking \
-    --target omlx=http://localhost:8000/v1,<omlx-served-model-id> \
-    --out <results-dir>/omlx
+    --target <name-a>=http://localhost:8000/v1,<omlx-model-a> \
+    --out <results-dir>/<name-a>
 
-uv run llmbench provider isolate mtplx <mtplx-model>
+uv run llmbench provider isolate omlx <omlx-model-b>
 uv run llmbench probe thinking \
-    --target mtplx=http://localhost:8003/v1,<mtplx-served-model-id> \
+    --target <name-b>=http://localhost:8000/v1,<omlx-model-b> \
+    --out <results-dir>/<name-b>
+
+uv run llmbench provider isolate mtplx <mtplx-repo-id>
+uv run llmbench probe thinking \
+    --target mtplx=http://localhost:8003/v1,<mtplx-repo-id> \
     --out <results-dir>/mtplx
 
 uv run llmbench provider restore --unload
 ```
 
-- `--target` is `NAME=BASE_URL,MODEL_ID[,API_KEY_ENV]`. `API_KEY_ENV` is the *name* of an environment variable that holds the key, never the key; leave it out for a keyless server (omlx and mtplx answer inference without one). A named variable that is unset is an error before anything is sent. The key goes only into the `Authorization` header; it is never printed or written.
+`<omlx-model-…>` is the name omlx serves (its model directory's basename, as `direct_model` in a suite row) and `<mtplx-repo-id>` the repo id mtplx serves under; `wt model list` shows what your registry holds. Illustrative only, as of issue #403 (2026-10): the answer-shape difference there came from the omlx 8-bit build of Qwen3.8-27B and the short thinking from the 4-bit build, so that issue's run took both omlx builds and mtplx's Quality build, with the names `eval-quant-tier.toml` uses:
+
+```bash
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench (illustrative, issue #403)
+uv run llmbench provider isolate omlx Qwen3.8-27B-8bit
+uv run llmbench probe thinking --target omlx8=http://localhost:8000/v1,Qwen3.8-27B-8bit --out <results-dir>/omlx8
+uv run llmbench provider isolate omlx Qwen3.8-27B-4bit
+uv run llmbench probe thinking --target omlx4=http://localhost:8000/v1,Qwen3.8-27B-4bit --out <results-dir>/omlx4
+uv run llmbench provider isolate mtplx Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality
+uv run llmbench probe thinking --target mtplx=http://localhost:8003/v1,Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality --out <results-dir>/mtplx
+uv run llmbench provider restore --unload
+```
+
+- `--target` is `NAME=BASE_URL,MODEL_ID[,API_KEY_ENV]`. `API_KEY_ENV` is the *name* of an environment variable that holds the key, never the key; leave it out for a keyless server (mtplx, and an omlx configured to allow keyless inference, answer without one). A row with `HTTP 401` means the server wants a key: put it in an environment variable and pass that variable's NAME as `API_KEY_ENV` (never the key). A named variable that is unset is an error before anything is sent. The key goes only into the `Authorization` header; it is never printed or written.
 - Sampling defaults to temperature 1.0, top_p 0.95 and top_k 20, as in the Qwen3.x `generation_config.json` and `eval-quant-tier.toml`. Override with `--temperature`, `--top-p`, `--top-k` (`0` leaves top_p or top_k out of the request) and `--max-tokens` (unset by default, so the engine's own cap applies, as in `eval run`). `--timeout` (900 s) bounds the wait per connect and per read, not the whole request: a reply that arrives in pieces can take longer.
 - Results go to `--out`: `report.md` and `results.json` (full reasoning and answer text included). Without `--out` the probe makes a new directory under the system temp dir. It never writes to `~/.config/local-ai/benchmarks/` or `latest.toml`. The directory is created and checked before the first request (one it cannot write is a usage error), and both files are rewritten after every finished request, so Ctrl-C keeps what finished: the probe names the request it was waiting on and exits 130.
 - An engine that is down, times out, or answers non-200 or non-JSON gets an error row and the run goes on. Exit 0 when at least one target answered, 1 when none did, 2 on a usage error, 130 when interrupted.
