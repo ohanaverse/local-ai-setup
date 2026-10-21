@@ -596,16 +596,16 @@ these requests with HTTP 507:
 insufficient memory: the Mac ran out of memory it can hand out without compressing during this prefill
 ```
 
-It happened four times in the profile test and seven times in a follow-up
-run of two-turn sessions. Claude Code retried each refused request, and
-every turn finished, but slowly: a one-line reply took 78 s on the `sonnet`
-slot and 163 s on `haiku`. In these tests omlx and ollama gave no 507s on the
-same task, and neither did a different mtplx build (a 35B-A3B model). These
-are counts from one machine and a few sessions, not a benchmark. In a
-follow-up run on 2026-10-15 (11 more refusals, with mtplx's `sustained`
-profile), mtplx's guard refused when the system's free memory
-fell below its floor while mtplx's own engine was still under its budget,
-so how much else the machine holds matters.
+Refusals recurred across the profile test and follow-up runs of two-turn
+sessions; no per-run count is recorded here. Claude Code retried each
+refused request, and every turn finished, but slowly: a one-line reply took
+78 s on the `sonnet` slot and 163 s on `haiku`. In these tests omlx and
+ollama gave no 507s on the same task, and neither did a different mtplx
+build (a 35B-A3B model). These are observations from one machine and a few
+sessions, not a benchmark. A follow-up run on 2026-10-15 showed that mtplx's
+memory guard can refuse when the system's free memory is low even while
+mtplx's own engine is within its limit, so how much else the machine holds
+matters.
 
 **What to do.** For a slot Claude Code sends its full prompt to, prefer an
 omlx or ollama model unless you have measured the mtplx model on your own
@@ -616,8 +616,8 @@ own (400 `prefill_memory_exceeded`) while abandoned generations held its
 memory (#399).
 
 **How to check your own sessions.** Most refused requests leave no
-failure row in the spend logs (2 of 11 did in one run), and `wt stats` has
-no failure column: it counts every logged request alike, so it does not
+failure row in the spend logs (only a few did in the runs above), and
+`wt stats` has no failure column: it counts every logged request alike, so it does not
 show refusals either way. Look in the proxy's logs instead
 (`~/.litellm.err.log` and `~/.litellm.log`, see
 [litellm-troubleshooting.md](litellm-troubleshooting.md#debugging-playbook-what-actually-worked))
