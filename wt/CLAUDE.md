@@ -57,7 +57,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 
 ## Session survey (Go)
 
-**The survey is switched off** (`survey.Enabled = false`, #136); the code is kept and tested, and `wt stats` and the SURVEY column still report stored answers. Keep `drainTTYInput` after the last question. [Details](docs/internals/launch-flow.md#session-survey-go).
+**The survey is switched off** (`survey.Enabled = false`, #136); the code is kept and tested, and `wt stats` still reports stored answers. Keep `drainTTYInput` after the last question. [Details](docs/internals/launch-flow.md#session-survey-go).
 
 ## Docs
 
@@ -229,7 +229,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - **A start prints into the flow, not onto the screen** (#275) and cannot be cancelled from the routing stage on (`pastCancel`).
 - **A slot-profile launch waits behind `phaseSlot`**; `flushRouteNotesAfterRun` settles any restart still owed on every way out.
 - **A model table is priced once, when built** (`modelrows.go`): read `tableRow.price()`/`timePriced()`, never `Model.Cost`'s flat fields or a clock.
-- **TIER is display only**, never sorted or routed on; a missing or unparseable `tiers.toml` is `-`, never an error.
+- **TIER's score orders the picker's model rows** (descending, within the running-local and other bands) but is never routed on; a missing or unparseable `tiers.toml` is `-` and unscored, never an error.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
 > **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted.

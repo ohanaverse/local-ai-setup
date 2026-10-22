@@ -616,8 +616,7 @@ stand-in `ollama` first on `PATH`.
 ## The price the picker shows
 
 `cost.time_prices` rows are what the sync stores; the model picker is what
-reads them. For every model, the picker's COST column and its cost sort use
-the price **in force at the moment the picker opens**:
+reads them. For every model, the picker's COST column uses the price **in force at the moment the picker opens**:
 
 - The rows are tried in file order. The first row with a window that holds
   the current instant supplies each price it sets; a price it does not set
@@ -640,7 +639,7 @@ the price **in force at the moment the picker opens**:
   beside it is the one in force now and will change. The mark and its
   heading take room. The mark makes the COST column one character wider, so
   a table with a time-priced model in it can show one usage column fewer
-  (1D, 7D, 30D or SURVEY) than the same table without one, at the one
+  (1D, 7D or 30D) than the same table without one, at the one
   width where that column only just fitted. And where COST is the last
   column the terminal has room for, the longer heading needs three columns
   more than `COST` does, so at those three widths such a table has no COST

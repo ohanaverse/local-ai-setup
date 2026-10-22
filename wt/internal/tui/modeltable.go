@@ -11,7 +11,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
@@ -36,24 +35,23 @@ const (
 	col1D
 	col7D
 	col30D
-	colSurvey
 )
 
 // colDropOrder is the order in which columns are given up when the table is
-// wider than its list (tuilayout.Columns.DropOrder): the survey segment
-// first, then usage from the longest window to the shortest, cost, the tier,
-// location and family. The tier outlasts usage and cost because it is the
-// guidance for choosing a model and costs four or five columns; the mode line
-// still names a highlighted row's price and tier when their columns are gone.
+// wider than its list (tuilayout.Columns.DropOrder): usage from the longest
+// window to the shortest first, then cost, the tier, location and family. The
+// tier outlasts usage and cost because it is the guidance for choosing a
+// model and costs four or five columns; the mode line still names a
+// highlighted row's price and tier when their columns are gone.
 // MODEL, STATUS and RUNNING are not in it: they say what a row is and whether
 // Enter launches or starts it, so they are never dropped.
-var colDropOrder = []int{colSurvey, col30D, col7D, col1D, colCost, colTier, colLoc, colFamily}
+var colDropOrder = []int{col30D, col7D, col1D, colCost, colTier, colLoc, colFamily}
 
 // unratedDropOrder is colDropOrder for a table in which no row has a tier or
 // a score (no tiers.toml, or none of its models in it): TIER is a column of
 // dashes there, so it goes first and never costs a column that says
 // something.
-var unratedDropOrder = []int{colTier, colSurvey, col30D, col7D, col1D, colCost, colLoc, colFamily}
+var unratedDropOrder = []int{colTier, col30D, col7D, col1D, colCost, colLoc, colFamily}
 
 const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by modelItem.Title()
 
@@ -64,7 +62,7 @@ const rowPrefixWidth = 4 // ref column (2) + rotation marker (2), composed by mo
 // column is already that wide (a marked cell with three prices is one column
 // wider), so it never widens a row. The table is still not as narrow as one
 // with no marked row: the mark's one column can cost a usage column (1D, 7D,
-// 30D, SURVEY) at the one list width where that column only just fitted,
+// 30D) at the one list width where that column only just fitted,
 // and where COST is the last column drawn the long heading must also clear
 // the list's title bar (tuilayout.TitleRoom), so COST itself is given up at
 // three widths where a plain table shows it. The mode line names the
@@ -245,9 +243,9 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 		[]string{
 			padRunes("FAMILY", famW), padRunes("MODEL", idW), padRunes("TIER", wT), padRunes("LOC", 5), padRunes("STATUS", wS),
 			padRunes("RUNNING", 7), padRunes(costHead, costW),
-			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30), "SURVEY",
+			padRunes("1D", w1), padRunes("7D", w7), padRunes("30D", w30),
 		},
-		[]int{famW, idW, wT, 5, wS, 7, costW, w1, w7, w30, len("SURVEY")},
+		[]int{famW, idW, wT, 5, wS, 7, costW, w1, w7, w30},
 		rowPrefixWidth, dropOrder,
 	)
 	header := cols.Header()
@@ -262,15 +260,12 @@ func renderTable(rows []tableRow, cfg *config.Config, agent string, refs map[str
 			loc = "-"
 		}
 		// The last padded column would leave trailing spaces; Columns.Line
-		// trims them, so they stay only when the survey segment follows (and
-		// keeps it column-aligned).
+		// trims them.
 		cells := []string{
 			padRunes(fam[i], famW), padRunes(r.Model.ID, idW), padRunes(tier[i], wT), padRunes(loc, 5), padRunes(string(r.Status), wS),
 			padRunes(runningText(r.Row), 7), padRunes(cost[i], costW),
 			padRunes(c1[i], w1), padRunes(c7[i], w7), padRunes(c30[i], w30),
-			survey.FormatPickerSegment(r.stats),
 		}
-		cols.Widths[colSurvey] = maxRunes(cols.Widths[colSurvey], cells[colSurvey])
 		it := &modelItem{model: r.Model, line: cols.Line(cells), cells: cells, cols: cols, marked: lastID != "" && r.Model.ID == lastID, ref: refs[r.Model.ID], cost: costNote(r), tier: r.tier.Notes()}
 		switch r.Action() {
 		case catalog.ActionBlock:

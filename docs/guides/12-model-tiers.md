@@ -287,8 +287,8 @@ a sample the modeltiers tests pin):
   after its name.
 - On a narrow terminal TIER is dropped after the usage columns and COST, and
   before LOC and FAMILY. When no model in the table has a tier or a score
-  (no file yet), TIER is all dashes and is dropped first. The column is advisory: it does not change the sort
-  or which row Enter picks.
+  (no file yet), TIER is all dashes and is dropped first. The column is advisory: the score orders the
+  picker's model rows (higher first; models with no score last), but no route depends on it.
 - wt reads the file at `MODELTIERS_OUT` when it is set, exactly as
   `modeltiers run` writes it, so a scratch run (step 6) shows in a picker
   started with the same variable.
@@ -622,7 +622,7 @@ MODELTIERS_OUT="$SCRATCH/tiers.toml" uv run --directory modeltiers modeltiers sh
 
 ## Gotchas
 
-- **Only the wt picker reads the file,** and only to show it (the TIER column and the line under the table). No route, sort or default choice depends on a tier.
+- **Only the wt picker reads the file,** and only to show it (the TIER column and the line under the table). The score orders the picker's model rows, so it also sets the default row; no route depends on a tier, and a missing file just leaves every model unscored.
 - **A tier is a capability band, not a price or a speed.** Cost is a column in the wt picker beside it. No keyless source gives measured speed.
 - **Two rows of one model can differ.** The context gate uses the context the row's own host serves. Two hosts of one key can therefore end in different tiers.
 - **A local row's context is unknown,** so the context gate is skipped for it and the entry says so in a note.

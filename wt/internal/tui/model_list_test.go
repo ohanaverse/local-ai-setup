@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
@@ -216,49 +215,24 @@ func TestBuildTableMarksLastLaunchedRow(t *testing.T) {
 	}
 }
 
-// TestBuildTableAppendsSurveySegment verifies the survey stats segment is
-// the last cell on the line, after the 1D/7D/30D usage counts, so it never
-// shifts any existing column. (Tags are no longer rendered, so the old
-// "after [tags]" check is replaced by "after the usage cells".)
-func TestBuildTableAppendsSurveySegment(t *testing.T) {
+// TestBuildTableHasNoSurveyColumn verifies the picker's table no longer draws
+// the survey stats: the header has no SURVEY heading and the usage counts are
+// the last cells on a row, so no trailing segment follows them.
+func TestBuildTableHasNoSurveyColumn(t *testing.T) {
 	store := &mockStore{counts: map[string]usage.UsageCounts{}}
 	models := []config.Model{
 		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal, Tags: []string{"code"}},
 	}
-	stats := map[string]survey.Stats{
-		"ollama/gemma4:9b": {Answered: 12, Worked: 11, Failed: 1, RatedQuality: 10, QualitySum: 42, RatedSpeed: 10, SpeedSum: 39},
+	tbl := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
+	if strings.Contains(tbl.header, "SURVEY") {
+		t.Errorf("header = %q, want no SURVEY heading", tbl.header)
 	}
-	items := buildTable(tableInput{models: models, usage: store, stats: stats}, refcount.NewStoreAt(t.TempDir()), "").items
-	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1", len(items))
+	if len(tbl.items) != 1 {
+		t.Fatalf("got %d items, want 1", len(tbl.items))
 	}
-	line := items[0].line
-	wantSeg := "✓92% q4.2 s3.9 n12"
-	if !strings.HasSuffix(line, wantSeg) {
-		t.Fatalf("line = %q, want it to end with %q", line, wantSeg)
-	}
-	fields := strings.Fields(line)
-	if got := strings.Join(fields[len(fields)-7:len(fields)-4], " "); got != "0 0 0" {
-		t.Fatalf("line = %q, want the 1D/7D/30D cells %q immediately before the survey segment, got %q", line, "0 0 0", got)
-	}
-}
-
-// TestBuildTableOmitsSurveySegmentWhenNoAnswered verifies a model with zero
-// answered surveys renders no segment at all — existing lines (models never
-// surveyed) stay byte-identical whether stats is nil or an explicit
-// zero-value entry.
-func TestBuildTableOmitsSurveySegmentWhenNoAnswered(t *testing.T) {
-	store := &mockStore{counts: map[string]usage.UsageCounts{}}
-	models := []config.Model{
-		{ID: "ollama/gemma4:9b", ProviderID: "ollama", Family: "gemma4", Location: config.LocationLocal},
-	}
-	withoutStats := buildTable(tableInput{models: models, usage: store}, refcount.NewStoreAt(t.TempDir()), "").items
-	withZeroStats := buildTable(tableInput{models: models, usage: store, stats: map[string]survey.Stats{"ollama/gemma4:9b": {}}}, refcount.NewStoreAt(t.TempDir()), "").items
-	if withoutStats[0].line != withZeroStats[0].line {
-		t.Fatalf("nil stats map produced %q, zero-value stats entry produced %q, want identical", withoutStats[0].line, withZeroStats[0].line)
-	}
-	if strings.Contains(withoutStats[0].line, "✓") || strings.Contains(withoutStats[0].line, "⚠") {
-		t.Errorf("line = %q, want no survey segment when Answered == 0", withoutStats[0].line)
+	fields := strings.Fields(tbl.items[0].line)
+	if got := strings.Join(fields[len(fields)-3:], " "); got != "0 0 0" {
+		t.Fatalf("line = %q, want it to end with the 1D/7D/30D cells %q, got %q", tbl.items[0].line, "0 0 0", got)
 	}
 }
 

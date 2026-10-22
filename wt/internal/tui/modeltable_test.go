@@ -32,7 +32,7 @@ func tableTestRows() []tableRow {
 func TestRenderTableHeaderAndCells(t *testing.T) {
 	tbl := renderTable(tableTestRows(), nil, "", nil, "")
 	last := -1
-	for _, h := range []string{"FAMILY", "MODEL", "LOC", "STATUS", "RUNNING", "COST", "1D", "7D", "30D", "SURVEY"} {
+	for _, h := range []string{"FAMILY", "MODEL", "LOC", "STATUS", "RUNNING", "COST", "1D", "7D", "30D"} {
 		i := strings.Index(tbl.header, h)
 		if i <= last {
 			t.Fatalf("header %q: column %q out of order or missing", tbl.header, h)
@@ -78,20 +78,6 @@ func TestRenderTableColumnsAlign(t *testing.T) {
 	}
 	if got := string(line(3)[col("STATUS") : col("STATUS")+7]); got != "unknown" {
 		t.Errorf("STATUS cell = %q", got)
-	}
-}
-
-// TestRenderTableSurveySegmentTrailing verifies the survey segment is appended
-// last and omitted when nothing is answered, so it never shifts a column.
-func TestRenderTableSurveySegmentTrailing(t *testing.T) {
-	rows := tableTestRows()
-	rows[0].stats.Answered, rows[0].stats.Worked = 5, 4
-	tbl := renderTable(rows, nil, "", nil, "")
-	if !strings.Contains(tbl.items[0].line, "n5") {
-		t.Errorf("survey segment missing: %q", tbl.items[0].line)
-	}
-	if strings.Contains(tbl.items[1].line, "n0") || strings.HasSuffix(tbl.items[1].line, " ") {
-		t.Errorf("no-answer row has stray segment/trailing space: %q", tbl.items[1].line)
 	}
 }
 
