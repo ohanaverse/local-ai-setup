@@ -76,7 +76,7 @@ func TestEnumerateReposReturnsEveryRemoteWithoutCase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(set) != 0 {
-		t.Errorf("no remotes: set = %v, want an empty set that matches nothing", set)
+		t.Errorf("no remotes: set = %v, want an empty set", set)
 	}
 
 	dir := t.TempDir()
