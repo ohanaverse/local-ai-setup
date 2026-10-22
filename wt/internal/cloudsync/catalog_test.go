@@ -805,3 +805,23 @@ func TestCatalogPlanFormatShowsManualLines(t *testing.T) {
 		t.Errorf("a plan with no manual entries prints a manual section:\n%s", plain)
 	}
 }
+
+// TestPlanManualEntryWithNoCatalogNameUnderAnUnpublishedTagIsNotDuplicated
+// pins the realistic hand-added case: `wt model add ollama beam:cloud` leaves
+// no catalog_name, and when the page later lists beam under a different
+// published tag the sync must not add a second row for the same model beside
+// the kept one (two routed rows for one model, the kept one never matching).
+// It keeps the entry, warns, and adds and graduates nothing.
+func TestPlanManualEntryWithNoCatalogNameUnderAnUnpublishedTagIsNotDuplicated(t *testing.T) {
+	entries := []Entry{cloudEntry("beam:cloud", manual)}
+	pulled := []string{"beam:cloud", "beam:120b-cloud"}
+	plan := PlanCatalog(entries, catalogOf(cm("beam")), pulled, map[string]string{"beam": "beam:120b-cloud"})
+	wantIDs(t, "additions", additionIDs(plan))
+	wantIDs(t, "pulls", pullIDs(plan))
+	wantIDs(t, "removals", plan.Removals)
+	wantIDs(t, "graduations", plan.Graduations)
+	wantIDs(t, "stray tags", plan.StrayTags)
+	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "ollama/beam:cloud") {
+		t.Errorf("warnings = %v, want one naming the manual entry", plan.Warnings)
+	}
+}

@@ -380,6 +380,18 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 			// tag below.
 			retagged, entry = entry, nil
 		}
+		if entry == nil && retagged == nil && tag != "" {
+			// A hand-added entry has no catalog_name, so findEntry cannot
+			// pair it with a page model published under another tag: find
+			// it by name stem, or the sync would add a second row for the
+			// same model beside it.
+			for i := range entries {
+				if e := &entries[i]; e.Manual() && isOllamaCloud(*e) && e.ModelName != tag && stem(e.ModelName) == stem(cm.Name) {
+					retagged = e
+					break
+				}
+			}
+		}
 		if retagged != nil && retagged.Manual() {
 			// A hand-added entry is never replaced: keep it as it is, with
 			// both tags counted as listed so neither becomes a stray, and

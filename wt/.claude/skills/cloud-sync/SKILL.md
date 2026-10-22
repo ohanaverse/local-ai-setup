@@ -194,7 +194,8 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    - Exit 5: go back to step 1 and show the user the new plan. Never reuse
      the old digest, and never retry with a digest the user did not see
      next to its plan.
-   - Exit 4: go back to the user. Add `--force` only if they confirm the
+   - Exit 4 (a flow's mass removal; the stderr line names the flow and the
+     `<n> of <m>`): go back to the user. Add `--force` only if they confirm the
      removals are real. `--force` does not replace the digest.
    - With exit 2 to 5 the `openrouter:` flow may still have been applied in the
      same run. Read its lines before telling the user that nothing changed.

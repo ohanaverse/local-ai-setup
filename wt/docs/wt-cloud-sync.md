@@ -370,17 +370,17 @@ finished (exit 0). This is never an error, however the flow was asked for.
    fetched; for ollama, on a row its plan re-prices, removes or copies
    a re-tagged entry from.
 2. **Prints both plans.** `--dry-run` stops here.
-3. **Applies the ollama flow's gates** ([Removals need approval](#removals-need-approval)).
-   A gated ollama plan is dropped; the openrouter plan goes on.
+3. **Applies each flow's removal gates** ([Removals need approval](#removals-need-approval)).
+   A gated plan is dropped; the other flow's plan goes on.
 4. **Asks one question** on the terminal, `Apply these changes? [y/N]`,
    covering every plan still pending. Only `y` or `yes` applies; anything
    else prints `<flow>: not applied (declined)` for each pending flow, which
    then counts as finished (exit 0, unless another flow failed or step 3
-   refused the ollama flow). Input piped to the command can never approve.
+   refused a flow). Input piped to the command can never approve.
    `--yes` skips the question; with no terminal and no `--yes` the run stops
    (`<flow>: error: not applied: there is no terminal to confirm on — rerun
    with --yes to apply without asking` for each pending flow; exit 1, or
-   the ollama flow's 4 or 5 if step 3 refused it). A plan with nothing to apply
+   the 4 or 5 of a flow step 3 refused). A plan with nothing to apply
    is not asked about.
 5. **Writes `registry.toml` once**, for both flows. Under the file's lock
    each plan is made again from the file as it then is, and a plan that no
@@ -479,7 +479,10 @@ Otherwise the next sync lists them under `Registry removals`, where you can
 decline.
 
 A manual ollama entry whose tag is not the one ollama publishes for its
-name is kept as it is and not graduated; the plan warns about it.
+name (`beam:cloud` against a published `beam:120b-cloud`) is kept as it is,
+not graduated and not duplicated by an added row; the plan warns about it.
+wt does not pull the tag of a kept manual entry: pulling a model that is off
+the page is yours to do, as it is when you add a local model.
 
 ## Flags
 
@@ -579,7 +582,10 @@ number of ollama cloud entries before the run. When the plan re-tags an
 entry, `<n>` is smaller than the count in its `Registry removals` heading,
 which counts every removal line, and the exit-4 line says so: `<n> of <m>
 ollama cloud entries would be removed (re-tagged entries are not counted)
-— …`.
+— …`. For the openrouter flow the line reads `<n> of <m>
+OpenRouter-priced models would be removed — check OpenRouter's list is
+complete, then re-run with --force. Nothing was changed by the openrouter
+flow.`, where `<m>` leaves out models added by hand.
 
 **Exit 5** — two causes, told apart by the last line:
 
