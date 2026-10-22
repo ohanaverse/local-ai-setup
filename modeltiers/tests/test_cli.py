@@ -384,6 +384,24 @@ def test_a_successful_write_prunes_to_four_good_and_two_bad(
     assert snapshots.good_snapshots(tmp_path / "cache", "arena")[0].fetched_at == T0
 
 
+def test_a_prune_failure_after_the_write_is_a_warning_not_a_failed_run(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    out: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def broken(cache: Path, source: str) -> list[Path]:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(snapshots, "prune", broken)
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    assert out.exists()
+    err = capsys.readouterr().err
+    assert "warning: could not prune old snapshots: denied" in err
+    assert "ERROR" not in err
+
+
 def test_dry_run_and_offline_prune_nothing(
     specs: SourceSpecs, good_answers: Answers, tmp_path: Path
 ) -> None:

@@ -238,8 +238,13 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
     else:
         output.write_document(out, document)
         if not args.offline:
-            for result in sources.results():
-                snapshots.prune(cache, result.name)
+            # tiers.toml is already on disk: a failed cleanup must not reach
+            # main's "tiers.toml was not written" line.
+            try:
+                for result in sources.results():
+                    snapshots.prune(cache, result.name)
+            except OSError as exc:
+                _warn(f"could not prune old snapshots: {exc}")
         print(f"wrote {out}")
     return EXIT_STALE if any(r.fallback for r in sources.results()) else EXIT_OK
 
