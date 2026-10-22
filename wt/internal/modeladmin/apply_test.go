@@ -988,3 +988,22 @@ tags = []
 		}
 	}
 }
+
+// TestEditSourceJudgesTheLocationTheSameEditSets pins that --source is checked
+// against the row as the patch leaves it: marking a local ollama model manual
+// in the same edit that makes it cloud is allowed, and the reverse (making a
+// manual cloud model local in one edit with --source) is refused, so the
+// covered-only rule cannot be dodged or tripped by flag order.
+func TestEditSourceJudgesTheLocationTheSameEditSets(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry)
+	if _, err := Edit("ollama/gemma4:9b", Fields{Location: ptr("cloud"), Source: ptr("manual")}); err != nil {
+		t.Fatalf("--location cloud --source manual on a local model: %v", err)
+	}
+	if !strings.Contains(sliceRow(read(t, path), "ollama/gemma4:9b"), `source = "manual"`) {
+		t.Errorf("source not set:\n%s", read(t, path))
+	}
+	var fe *FieldError
+	if _, err := Edit("ollama/gemma4:9b", Fields{Location: ptr("local"), Source: ptr("curated")}); !errors.As(err, &fe) || fe.Field != FieldSource {
+		t.Errorf("--location local --source curated: err = %v, want a FieldError on %q", err, FieldSource)
+	}
+}

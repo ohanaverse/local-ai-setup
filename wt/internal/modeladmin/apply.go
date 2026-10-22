@@ -395,8 +395,18 @@ func Edit(id string, f Fields) (changed bool, err error) {
 			return err
 		}
 		providerID = tableString(m, "provider_id")
-		if _, ok := set["source"]; ok && !cloudsync.CoveredBySync(providerID, tableString(m, "location"), tableString(m, "model_name")) {
-			return fieldErr(FieldSource, "--source is for models cloud-sync covers (openrouter, or ollama cloud); %s is not one", id)
+		if _, ok := set["source"]; ok {
+			// Judge the row as the patch leaves it: --location cloud
+			// --source manual on a local-tagged ollama row is one edit.
+			location := tableString(m, "location")
+			if v, given := set["location"].(string); given {
+				location = v
+			} else if slices.Contains(unset, "location") {
+				location = ""
+			}
+			if !cloudsync.CoveredBySync(providerID, location, tableString(m, "model_name")) {
+				return fieldErr(FieldSource, "--source is for models cloud-sync covers (openrouter, or ollama cloud); %s is not one", id)
+			}
 		}
 		cost := tomlw.NewTable()
 		if t, ok := mustGet(m, "cost").(*tomlw.Table); ok {
