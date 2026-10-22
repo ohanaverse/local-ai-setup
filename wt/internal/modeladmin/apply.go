@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
@@ -97,6 +98,14 @@ func planAdd(req AddRequest) (addPlan, error) {
 	period, _ := set["cost.subscription_period"].(string)
 	if err := checkSubscription(hasPrice, period); err != nil {
 		return addPlan{}, err
+	}
+	location := ""
+	if req.Location != nil {
+		location = strings.TrimSpace(*req.Location)
+	}
+	if cloudsync.CoveredBySync(req.ProviderID, location, req.ModelName) {
+		// Hand-added: cloud-sync keeps it until its source lists it.
+		set["source"] = string(config.SourceManual)
 	}
 	if _, ok := set["tags"]; !ok {
 		set["tags"] = []string{} // every row has the key
@@ -380,6 +389,9 @@ func Edit(id string, f Fields) (changed bool, err error) {
 			return err
 		}
 		providerID = tableString(m, "provider_id")
+		if _, ok := set["source"]; ok && !cloudsync.CoveredBySync(providerID, tableString(m, "location"), tableString(m, "model_name")) {
+			return fieldErr(FieldSource, "--source is for models cloud-sync covers (openrouter, or ollama cloud); %s is not one", id)
+		}
 		cost := tomlw.NewTable()
 		if t, ok := mustGet(m, "cost").(*tomlw.Table); ok {
 			cost = t

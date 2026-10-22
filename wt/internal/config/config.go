@@ -34,6 +34,9 @@ type Source string
 const (
 	SourceCurated    Source = "curated"
 	SourceDiscovered Source = "discovered"
+	// SourceManual marks a cloud model added by hand that wt cloud-sync keeps
+	// until the source it mirrors lists it (then the sync sets SourceCurated).
+	SourceManual Source = "manual"
 )
 
 // OllamaBaseURL is the base address of the local Ollama gateway. Agent
@@ -551,7 +554,7 @@ type Model struct {
 	ModelName  string    `toml:"model_name"`  // provider-specific name, e.g. "gemma4:9b"
 	Location   Location  `toml:"location,omitempty"`
 	Tags       []string  `toml:"tags"`             // e.g. ["code", "design"]
-	Source     Source    `toml:"source,omitempty"` // curated or discovered
+	Source     Source    `toml:"source,omitempty"` // curated, discovered or manual
 	Cost       ModelCost `toml:"cost,omitempty"`
 	// ModelInfo is the registry's free-form `[models.model_info]` table.
 	// LiteLLM rows merge it over the derived pricing keys, so hand-written

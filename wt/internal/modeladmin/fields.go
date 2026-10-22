@@ -25,6 +25,7 @@ const (
 	FieldSubscriptionPrice  = "subscription-price"
 	FieldSubscriptionPeriod = "subscription-period"
 	FieldDraft              = "draft"
+	FieldSource             = "source"
 )
 
 // FieldError is a value the user gave that cannot be used. Field names the
@@ -52,12 +53,13 @@ type Fields struct {
 	OutputPrice        *string
 	SubscriptionPrice  *string
 	SubscriptionPeriod *string // month or year
+	Source             *string // manual or curated; edit only (add sets manual itself)
 }
 
 // Empty reports whether no field was given.
 func (f Fields) Empty() bool {
 	return f.Family == nil && f.Tags == nil && f.Location == nil && f.InputPrice == nil && f.CachePrice == nil &&
-		f.OutputPrice == nil && f.SubscriptionPrice == nil && f.SubscriptionPeriod == nil
+		f.OutputPrice == nil && f.SubscriptionPrice == nil && f.SubscriptionPeriod == nil && f.Source == nil
 }
 
 // priceKeys maps each price field to its key in the model row.
@@ -132,6 +134,14 @@ func (f Fields) patch() (set map[string]any, unset []string, err error) {
 			set["cost.subscription_period"] = period
 		default:
 			return nil, nil, fieldErr(FieldSubscriptionPeriod, "subscription period must be month or year, got %q", period)
+		}
+	}
+	if f.Source != nil {
+		switch src := strings.TrimSpace(*f.Source); src {
+		case string(config.SourceManual), string(config.SourceCurated):
+			set["source"] = src
+		default:
+			return nil, nil, fieldErr(FieldSource, "source must be manual or curated, got %q", src)
 		}
 	}
 	return set, unset, nil

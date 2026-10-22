@@ -229,7 +229,7 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 	if err != nil || out != "added model: openrouter/qwen\n" {
 		t.Fatalf("add = %q, %v", out, err)
 	}
-	if got := mustRead(t, registry); !strings.Contains(got, "id = \"openrouter/qwen\"\nfamily = \"qwen3.8\"\nprovider_id = \"openrouter\"\nmodel_name = \"qwen/qwen3.8-27b\"\ntags = [\n    \"code\",\n    \"design\",\n]\n\n[models.cost]\ninput_price_per_million = 0.5\noutput_price_per_million = 2.0\n") {
+	if got := mustRead(t, registry); !strings.Contains(got, "id = \"openrouter/qwen\"\nfamily = \"qwen3.8\"\nprovider_id = \"openrouter\"\nmodel_name = \"qwen/qwen3.8-27b\"\nsource = \"manual\"\ntags = [\n    \"code\",\n    \"design\",\n]\n\n[models.cost]\ninput_price_per_million = 0.5\noutput_price_per_million = 2.0\n") {
 		t.Errorf("the added row is not as asked:\n%s", got)
 	}
 
@@ -237,7 +237,7 @@ func TestModelCommandsThroughTheCommandLine(t *testing.T) {
 	if err != nil || out != "updated model: openrouter/qwen\n" {
 		t.Fatalf("edit = %q, %v", out, err)
 	}
-	if got := mustRead(t, registry); !strings.Contains(got, "model_name = \"qwen/qwen3.8-27b\"\ntags = []\n\n[models.cost]\ninput_price_per_million = 0.5\noutput_price_per_million = 2.5\n") {
+	if got := mustRead(t, registry); !strings.Contains(got, "model_name = \"qwen/qwen3.8-27b\"\nsource = \"manual\"\ntags = []\n\n[models.cost]\ninput_price_per_million = 0.5\noutput_price_per_million = 2.5\n") {
 		t.Errorf("the edit did not change exactly the two fields:\n%s", got)
 	}
 	if out, err = runWT(t, "model", "edit", "openrouter/qwen", "--output-price", "2.5"); err != nil || out != "no change: openrouter/qwen\n" {
@@ -753,5 +753,24 @@ func TestModelEditAndRmOfAPairing(t *testing.T) {
 	}
 	if strings.Contains(mustRead(t, registry), id) {
 		t.Error("the pairing is still in the registry")
+	}
+}
+
+// TestModelEditSourceFlag runs `wt model edit --source manual` on an
+// openrouter row and checks the registry holds the mark, and that `wt model
+// add` has no --source flag (add sets manual itself). The flag is how a user
+// protects a model added before cloud-sync learned the mark; offering it on
+// add too would let a sync-owned row be created already curated by hand.
+func TestModelEditSourceFlag(t *testing.T) {
+	registry := modelHome(t, dupWriteRegistry)
+	stubRouteSync(t, "")
+	if _, err := runWT(t, "model", "edit", "openrouter/a--b", "--source", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, registry); !strings.Contains(got, `source = "manual"`) {
+		t.Errorf("registry has no source = \"manual\":\n%s", got)
+	}
+	if _, err := runWT(t, "model", "add", "openrouter", "x/y", "--family", "f", "--source", "manual"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("model add --source: err = %v, want an unknown-flag error", err)
 	}
 }
