@@ -213,7 +213,7 @@ func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncO
 		res.ollamaCode = 4
 		return false
 	}
-	if digest := c.plan.RemovalDigest(); o.yes && digest != "" && o.approve != digest {
+	if digest := c.plan.RemovalDigest(); o.yes && digest != "" && !slices.Contains(approvedDigests(o.approve), digest) {
 		reason := "the plan deletes models"
 		if o.approve != "" {
 			reason = "the removals are not the ones digest " + o.approve + " approved"

@@ -289,12 +289,10 @@ func TestCloudSyncCommandRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--only", "openrouter", "--force"}, "--force is for the ollama flow, which --only openrouter leaves out"},
 		// The message names the flows --only selected, not the spelling it
 		// was given: it is meant to be read back and re-run.
-		{[]string{"--only", " openrouter ", "--force"}, "--force is for the ollama flow, which --only openrouter leaves out"},
+		{[]string{"--only", " openrouter ", "--html", "x.html"}, "--html is for the ollama flow, which --only openrouter leaves out"},
 		{[]string{"--only", "openrouter", "--html", "x.html"}, "--html is for the ollama flow, which --only openrouter leaves out"},
-		{[]string{"--only", "openrouter", "--approve-removals", "abc"}, "--approve-removals is for the ollama flow, which --only openrouter leaves out"},
 		{[]string{"--only", "routes"}, `--only: unknown flow "routes" (valid: openrouter, ollama)`},
 		{[]string{"--only", "", "--dry-run"}, `--only: no flow named (valid: openrouter, ollama)`},
 		{[]string{"--only=", "--dry-run"}, `--only: no flow named (valid: openrouter, ollama)`},

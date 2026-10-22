@@ -80,10 +80,24 @@ func promptCloudSync(question string) (bool, error) {
 type cloudSyncOpts struct {
 	openrouter, ollama bool
 	dryRun, yes        bool
-	// Ollama flow only.
+	// force and approve gate the removals of both flows; htmlFile is the
+	// ollama flow's alone.
 	force    bool
 	htmlFile string
 	approve  string
+}
+
+// approvedDigests reads --approve-removals: a comma list of removal digests,
+// spaces and empty elements ignored. A flow's removals apply under its own
+// digest, so one --yes run can name both.
+func approvedDigests(flag string) []string {
+	var out []string
+	for _, d := range strings.Split(flag, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // selectFlows reads --only: a comma list of flow names, and every flow when
@@ -133,7 +147,7 @@ func cloudSyncCmd(a *app) *cobra.Command {
 		Long: "Bring registry.toml up to date with what two public services publish. Two\n" +
 			"independent flows, both run unless --only picks one:\n\n" +
 			"  openrouter  OpenRouter's per-token prices, for the models of the openrouter\n" +
-			"              provider\n" +
+			"              provider; models OpenRouter no longer lists are removed\n" +
 			"  ollama      https://ollama.com/pricing, mirrored: prices (off-peak included),\n" +
 			"              new cloud models added and pulled, models the page no longer\n" +
 			"              lists removed from the registry and from ollama\n\n" +
@@ -142,8 +156,10 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			"--yes skips it), the registry is written once, the ollama flow's pulls and\n" +
 			"removals run, and the LiteLLM routes are synced once if a price, the set of\n" +
 			"models or a pulled tag changed.\n\n" +
-			"--yes never deletes on its own: an ollama plan that removes anything is\n" +
-			"applied only with --approve-removals and the digest a dry run printed.\n" +
+			"--yes never deletes on its own: a plan that removes anything (either flow)\n" +
+			"is applied only with --approve-removals and the digest a dry run printed;\n" +
+			"name both, comma-separated, when both flows remove. A model added with\n" +
+			"`wt model add` is marked manual and kept until its source lists it.\n" +
 			"Local models are never touched.\n\n" +
 			"A flow whose service the registry does not use is skipped, never an error,\n" +
 			"however it was asked for: with no OpenRouter-priced model the openrouter flow\n" +
@@ -157,12 +173,13 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			"     daemon\n" +
 			"  3  ollama changed nothing: the pricing page changed shape (its HTML is\n" +
 			"     saved, and the path printed)\n" +
-			"  4  ollama changed nothing: it would remove more than half the ollama\n" +
-			"     cloud entries, and --force was not given\n" +
-			"  5  ollama changed nothing: its removals were not approved, or the\n" +
-			"     registry changed after its plan was printed\n" +
-			"2 to 5 are about the ollama flow only and win over 1; the openrouter flow may\n" +
-			"have been applied in the same run.",
+			"  4  a flow changed nothing: it would remove more than half its entries,\n" +
+			"     and --force was not given\n" +
+			"  5  a flow changed nothing: its removals were not approved, or (ollama)\n" +
+			"     the registry changed after its plan was printed\n" +
+			"2 to 5 name a flow that changed nothing and win over 1 (the ollama flow's\n" +
+			"over the openrouter flow's); the other flow may have been applied in the\n" +
+			"same run.",
 		Example: "  wt cloud-sync --dry-run\n" +
 			"  wt cloud-sync --yes --approve-removals 0bcc560b956e\n" +
 			"  wt cloud-sync --only openrouter --yes",
@@ -176,9 +193,8 @@ func cloudSyncCmd(a *app) *cobra.Command {
 				return err
 			}
 			// An ollama-flow flag with the ollama flow left out would be ignored
-			// in silence, and an ignored --force or digest is a gate the
-			// user believes was passed.
-			for _, flag := range []string{"html", "approve-removals", "force"} {
+			// in silence. (--approve-removals and --force gate both flows.)
+			for _, flag := range []string{"html"} {
 				if cmd.Flags().Changed(flag) && !o.ollama {
 					// The flows --only selected, not the spelling it was
 					// given: this line is meant to be read back and re-run.
@@ -198,8 +214,8 @@ func cloudSyncCmd(a *app) *cobra.Command {
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "Print the plans and change nothing")
 	cmd.Flags().BoolVar(&o.yes, "yes", false, "Apply without asking (removals still need --approve-removals)")
 	cmd.Flags().StringVar(&o.htmlFile, "html", "", "ollama: parse this saved pricing page instead of fetching it (cloud tags are still looked up on ollama.com/library)")
-	cmd.Flags().StringVar(&o.approve, "approve-removals", "", "ollama, with --yes: the removal digest a reviewed --dry-run printed")
-	cmd.Flags().BoolVar(&o.force, "force", false, "ollama: apply even if more than half the ollama cloud entries would be removed")
+	cmd.Flags().StringVar(&o.approve, "approve-removals", "", "with --yes: the removal digest(s) a reviewed --dry-run printed, comma-separated when both flows remove")
+	cmd.Flags().BoolVar(&o.force, "force", false, "apply even if more than half a flow's entries would be removed")
 	return cmd
 }
 
@@ -213,6 +229,9 @@ type cloudSyncOutcome struct {
 	// ollamaCodeMeaning's: exit 5 is also a plan that was approved and then
 	// found changed under the registry lock.
 	ollamaWhy string
+	// openrouterCode is 4 or 5 when the openrouter flow changed nothing
+	// because its removals were refused, else 0.
+	openrouterCode int
 }
 
 var ollamaCodeMeaning = map[int]string{
@@ -232,6 +251,8 @@ func (r *cloudSyncOutcome) err() error {
 			why = ollamaCodeMeaning[r.ollamaCode]
 		}
 		return &exitCodeError{code: r.ollamaCode, err: fmt.Errorf("cloud-sync: the ollama flow changed nothing: %s", why)}
+	case r.openrouterCode != 0:
+		return &exitCodeError{code: r.openrouterCode, err: fmt.Errorf("cloud-sync: the openrouter flow changed nothing: %s", ollamaCodeMeaning[r.openrouterCode])}
 	case r.failed:
 		return &exitCodeError{code: 1, err: errors.New("cloud-sync: a step failed; see the error lines above")}
 	}
@@ -288,7 +309,11 @@ func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.
 	run := &openRouterRun{api: api, plan: cloudsync.PlanPrices(entries, api)}
 	run.printed = run.plan.Format()
 	prefixLines(out, "openrouter", run.printed)
-	if run.plan.Candidates > 0 && len(run.plan.Matched) == 0 {
+	if run.plan.Withheld != "" {
+		// Not part of run.printed: it explains an absence from the plan.
+		fmt.Fprintln(out, run.plan.Withheld)
+	}
+	if run.plan.Candidates > 0 && len(run.plan.Matched) == 0 && len(run.plan.Removals) == 0 {
 		// Not part of run.printed: it is advice, not the plan. With nothing
 		// matched nothing is stamped, so the stale-pricing notice (which
 		// names this command) is not cleared by running it again. Each
@@ -297,6 +322,30 @@ func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.
 			"the warnings above say why for each model")
 	}
 	return run
+}
+
+// openrouterGate decides whether a printed OpenRouter plan may be applied,
+// as ollamaGate does for the ollama flow: not a mass removal without
+// --force, and under --yes not a plan that removes anything without the
+// digest of a reviewed dry run. It reports false, with the reason printed
+// and res.openrouterCode set, when it may not.
+func openrouterGate(errOut io.Writer, r *openRouterRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
+	if r.plan.MassRemoval() && !o.force {
+		fmt.Fprintf(errOut, "openrouter: error: %d of %d OpenRouter-priced models would be removed — check OpenRouter's list is complete, then re-run with --force. Nothing was changed by the openrouter flow.\n",
+			r.plan.EntriesGone(), r.plan.RemovableCandidates)
+		res.openrouterCode = 4
+		return false
+	}
+	if digest := r.plan.RemovalDigest(); o.yes && digest != "" && !slices.Contains(approvedDigests(o.approve), digest) {
+		reason := "the plan removes models"
+		if o.approve != "" {
+			reason = "the removals are not the ones digest " + o.approve + " approved"
+		}
+		fmt.Fprintf(errOut, "openrouter: error: %s — review a --dry-run, then re-run with `--yes --approve-removals %s`. Nothing was changed by the openrouter flow.\n", reason, digest)
+		res.openrouterCode = 5
+		return false
+	}
+	return true
 }
 
 // cloudSyncApplied is what the registry write did. The apply function
@@ -339,12 +388,17 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 	if o.ollama {
 		ollama = planOllamaFlow(ctx, out, errOut, cfg, o, doc, &res)
 	}
+	if openrouter != nil && ollama != nil {
+		if or, ol := openrouter.plan.RemovalDigest(), ollama.plan.RemovalDigest(); or != "" && ol != "" {
+			fmt.Fprintf(out, "removals: approve both with --yes --approve-removals %s,%s\n", or, ol)
+		}
+	}
 	if o.dryRun {
 		return res.err()
 	}
 
 	// What is left to apply. A plan with nothing in it is not asked about.
-	if openrouter != nil && !openrouter.plan.HasWork() {
+	if openrouter != nil && (!openrouter.plan.HasWork() || !openrouterGate(errOut, openrouter, o, &res)) {
 		openrouter = nil
 	}
 	if ollama != nil && (!ollama.plan.HasWork() || !ollamaGate(errOut, ollama, o, &res)) {
@@ -410,7 +464,14 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 			fmt.Fprintln(errOut, "openrouter: error: the registry changed after the plan was printed; no price was changed — run it again")
 			res.failed = true
 		} else {
-			fmt.Fprintf(out, "openrouter: refreshed %d model(s); %d price(s) changed\n", applied.openrouter.Stamped, applied.openrouter.Changed)
+			fmt.Fprintf(out, "openrouter: refreshed %d model(s); %d price(s) changed", applied.openrouter.Stamped, applied.openrouter.Changed)
+			if applied.openrouter.Graduated > 0 {
+				fmt.Fprintf(out, "; graduated %d manual model(s) to curated", applied.openrouter.Graduated)
+			}
+			if applied.openrouter.Removed > 0 {
+				fmt.Fprintf(out, "; removed %d", applied.openrouter.Removed)
+			}
+			fmt.Fprintln(out)
 		}
 	}
 	if ollama != nil {
@@ -433,7 +494,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 	// interrupted after its registry write and before its sync, and the
 	// registry alone no longer shows that the routes are behind.
 	ollamaWork := len(applied.ollama.Pulls)+len(applied.ollama.Removes) > 0
-	if applied.openrouter.Changed > 0 || applied.ollama.Changed() || ollamaWork {
+	if applied.openrouter.Changed > 0 || applied.openrouter.Removed > 0 || applied.ollama.Changed() || ollamaWork {
 		var routes, routeErrs bytes.Buffer
 		warning := syncRoutesAfterWrite(&routes, &routeErrs)
 		if routes.Len() > 0 {
