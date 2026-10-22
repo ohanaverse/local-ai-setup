@@ -577,3 +577,39 @@ tags = []
 		t.Errorf("source = %q, want curated", got)
 	}
 }
+
+// TestPricesApplyRemovesAndGraduates applies an OpenRouter plan with a
+// vanished model and a manual one now listed: the first row is gone, the
+// second is curated, and the counts say so.
+func TestPricesApplyRemovesAndGraduates(t *testing.T) {
+	path := scratchRegistry(t, openrouterProviderRow+`[[models]]
+id = "openrouter/vendor--gone"
+family = "x"
+provider_id = "openrouter"
+model_name = "vendor/gone"
+tags = []
+
+[[models]]
+id = "openrouter/vendor--now"
+family = "x"
+provider_id = "openrouter"
+model_name = "vendor/now"
+source = "manual"
+tags = []
+`)
+	api := healthyList("vendor/now")
+	done, _, err := applyPrices(api, applyNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := modelRows(t, path)
+	if _, ok := rows["openrouter/vendor--gone"]; ok {
+		t.Error("the vanished model is still in the registry")
+	}
+	if got := str(rows["openrouter/vendor--now"], "source"); got != "curated" {
+		t.Errorf("source = %q, want curated", got)
+	}
+	if done.Removed != 1 || done.Graduated != 1 {
+		t.Errorf("applied = %+v", done)
+	}
+}

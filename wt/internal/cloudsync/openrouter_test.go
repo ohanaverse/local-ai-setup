@@ -308,3 +308,169 @@ func TestTheTwoFlowsNeverShareAModel(t *testing.T) {
 		}
 	}
 }
+
+// healthyList is an OpenRouter list long enough that its absences are read
+// as removals, plus the given ids.
+func healthyList(ids ...string) map[string]APIPrice {
+	api := map[string]APIPrice{}
+	for i := 0; i < MinListedForRemovals; i++ {
+		api["pad/model-"+string(rune('a'+i))] = APIPrice{Input: f(1), Output: f(2)}
+	}
+	for _, id := range ids {
+		api[id] = APIPrice{Input: f(1), Output: f(2)}
+	}
+	return api
+}
+
+func manualOR(name string) Entry {
+	e := orEntry(name, nil)
+	e.Source = "manual"
+	return e
+}
+
+// TestPlanPricesRemovesAModelOpenRouterNoLongerLists pins the new removal: a
+// registry model whose id is absent from a healthy OpenRouter list is a
+// removal, not just the "No OpenRouter match" warning it used to get.
+func TestPlanPricesRemovesAModelOpenRouterNoLongerLists(t *testing.T) {
+	plan := PlanPrices([]Entry{orEntry("gone", nil), orEntry("here", nil)}, healthyList("vendor/here"))
+	wantIDs(t, "removals", plan.Removals, "openrouter/gone")
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "No OpenRouter match") {
+			t.Errorf("warning %q for a removal", w)
+		}
+	}
+	if plan.RemovableCandidates != 2 || !plan.HasWork() {
+		t.Errorf("RemovableCandidates = %d, HasWork = %v", plan.RemovableCandidates, plan.HasWork())
+	}
+}
+
+// TestPlanPricesNeverRemovesAListedModelWithoutAUsablePrice pins that a model
+// OpenRouter lists but whose price cannot be used (-1 "varies", no pricing,
+// time-of-day it cannot read) still exists: it keeps its warning and is
+// never a removal. Only absence from the list removes.
+func TestPlanPricesNeverRemovesAListedModelWithoutAUsablePrice(t *testing.T) {
+	api := apiOf(t, `{"data": [
+		{"id": "vendor/varies", "pricing": {"prompt": "-1", "completion": "-1"}},
+		{"id": "vendor/nopricing", "pricing": {}}
+	]}`)
+	for id, p := range healthyList() {
+		api[id] = p
+	}
+	plan := PlanPrices([]Entry{orEntry("varies", nil), orEntry("nopricing", nil)}, api)
+	wantIDs(t, "removals", plan.Removals)
+	if len(plan.Warnings) != 2 {
+		t.Errorf("warnings = %v, want one per unusable model", plan.Warnings)
+	}
+}
+
+// TestPlanPricesWithholdsRemovalsOnATinyList pins the outage rule: an empty
+// list, or one shorter than MinListedForRemovals, plans no removals and says
+// why, and the old "No OpenRouter match" warning remains. A truncated or
+// failed response must never read as "every model is gone".
+func TestPlanPricesWithholdsRemovalsOnATinyList(t *testing.T) {
+	for _, api := range []map[string]APIPrice{{}, {"vendor/other": {Input: f(1)}}} {
+		plan := PlanPrices([]Entry{orEntry("gone", nil)}, api)
+		wantIDs(t, "removals", plan.Removals)
+		if plan.Withheld == "" || !strings.Contains(plan.Withheld, "no removals") {
+			t.Errorf("Withheld = %q, want a reason", plan.Withheld)
+		}
+		if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "No OpenRouter match for openrouter/gone") {
+			t.Errorf("warnings = %v, want the old no-match warning", plan.Warnings)
+		}
+	}
+	short := healthyList()
+	delete(short, "pad/model-a")
+	if plan := PlanPrices([]Entry{orEntry("gone", nil)}, short); len(plan.Removals) != 0 || plan.Withheld == "" {
+		t.Errorf("a list one short of the floor planned removals %v (Withheld %q)", plan.Removals, plan.Withheld)
+	}
+}
+
+// TestPlanPricesKeepsAManualModelOffTheList pins the protection of a
+// hand-added OpenRouter model: absent from the list it is kept and reported,
+// not removed, and it is not a removable candidate for the mass-removal
+// count.
+func TestPlanPricesKeepsAManualModelOffTheList(t *testing.T) {
+	plan := PlanPrices([]Entry{manualOR("mine"), orEntry("gone", nil)}, healthyList())
+	wantIDs(t, "removals", plan.Removals, "openrouter/gone")
+	wantIDs(t, "kept", plan.Kept, "openrouter/mine")
+	if plan.RemovableCandidates != 1 {
+		t.Errorf("RemovableCandidates = %d, want 1", plan.RemovableCandidates)
+	}
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "openrouter/mine") {
+			t.Errorf("warning %q for a kept manual model", w)
+		}
+	}
+}
+
+// TestPlanPricesGraduatesAManualModelOnTheList pins that presence on the
+// list, whatever the price, graduates a manual model: a free model (price 0)
+// or one OpenRouter cannot price is on the list, and the user's rule is that
+// a model never goes back once listed.
+func TestPlanPricesGraduatesAManualModelOnTheList(t *testing.T) {
+	api := healthyList("vendor/free")
+	api["vendor/free"] = APIPrice{Input: f(0), Output: f(0)}
+	api["vendor/odd"] = APIPrice{Skipped: []string{"prompt"}}
+	plan := PlanPrices([]Entry{manualOR("free"), manualOR("odd")}, api)
+	wantIDs(t, "graduations", plan.Graduations, "openrouter/free", "openrouter/odd")
+	wantIDs(t, "kept", plan.Kept)
+	if len(plan.Matched) != 1 {
+		t.Errorf("matched = %d, want only the free model re-priced", len(plan.Matched))
+	}
+}
+
+// TestPricePlanMassRemoval pins the guard's threshold: more than half of the
+// removable OpenRouter models going is refused, half is not.
+func TestPricePlanMassRemoval(t *testing.T) {
+	two := &PricePlan{Removals: []string{"a", "b"}, RemovableCandidates: 3}
+	one := &PricePlan{Removals: []string{"a"}, RemovableCandidates: 3}
+	if !two.MassRemoval() || two.EntriesGone() != 2 {
+		t.Errorf("2 of 3: MassRemoval = %v, EntriesGone = %d", two.MassRemoval(), two.EntriesGone())
+	}
+	if one.MassRemoval() {
+		t.Error("1 of 3 flagged as a mass removal")
+	}
+}
+
+// TestPricePlanRemovalDigestIsStable pins the digest as the shared format
+// over the sorted removals: the same ids in any order give one value, and a
+// plan with none gives "". A digest approved on a dry run must approve the
+// same removals later.
+func TestPricePlanRemovalDigestIsStable(t *testing.T) {
+	a := &PricePlan{Removals: []string{"openrouter/b", "openrouter/a"}}
+	b := &PricePlan{Removals: []string{"openrouter/a", "openrouter/b"}}
+	if a.RemovalDigest() != b.RemovalDigest() || len(a.RemovalDigest()) != 12 {
+		t.Errorf("digests %q %q", a.RemovalDigest(), b.RemovalDigest())
+	}
+	if want := digestOf([]string{"openrouter/a", "openrouter/b"}); a.RemovalDigest() != want {
+		t.Errorf("digest = %q, want digestOf(sorted ids) = %q", a.RemovalDigest(), want)
+	}
+	if (&PricePlan{}).RemovalDigest() != "" {
+		t.Error("an empty plan has a digest")
+	}
+}
+
+// TestPricePlanFormatRemovalsSection pins the plan's text for removals,
+// graduations and kept models, and that none of the sections appears when
+// empty (TestPricePlanFormat holds the unchanged text).
+func TestPricePlanFormatRemovalsSection(t *testing.T) {
+	plan := PlanPrices([]Entry{orEntry("gone", nil), manualOR("mine"), manualOR("now")}, healthyList("vendor/now"))
+	got := plan.Format()
+	d := plan.RemovalDigest()
+	for _, want := range []string{
+		"Registry removals — not on openrouter.ai/api/v1/models (1):\n  openrouter/gone",
+		"Removal digest: " + d + " (apply non-interactively with `--yes --approve-removals " + d + "`)",
+		"Graduated (manual -> curated) (1):\n  openrouter/now",
+		"Kept (manual, not on openrouter.ai) (1):\n  openrouter/mine",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Format() lacks %q:\n%s", want, got)
+		}
+	}
+	plain := PlanPrices([]Entry{orEntry("here", nil)}, healthyList("vendor/here")).Format()
+	for _, no := range []string{"Registry removals", "Graduated", "Kept", "Removal digest"} {
+		if strings.Contains(plain, no) {
+			t.Errorf("a plan with none prints %q:\n%s", no, plain)
+		}
+	}
+}

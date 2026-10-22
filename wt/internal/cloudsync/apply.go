@@ -190,6 +190,9 @@ type PricesApplied struct {
 	// matched one. Changed counts those whose price moved, which is when
 	// LiteLLM's routes need a sync.
 	Stamped, Changed int
+	// Removed counts vanished models taken out of the registry; Graduated
+	// counts manual models set to curated.
+	Removed, Graduated int
 }
 
 // Apply writes the plan's prices to doc and stamps every matched model with
@@ -213,6 +216,18 @@ func (p *PricePlan) Apply(doc *config.RegistryDoc, now time.Time) (PricesApplied
 		if m.Changed {
 			done.Changed++
 		}
+	}
+	for _, id := range p.Graduations {
+		if err := doc.PatchModel(id, map[string]any{"source": "curated"}, nil); err != nil {
+			return PricesApplied{}, err
+		}
+		done.Graduated++
+	}
+	for _, id := range p.Removals {
+		if _, err := doc.RemoveModel(id); err != nil {
+			return PricesApplied{}, err
+		}
+		done.Removed++
 	}
 	return done, nil
 }

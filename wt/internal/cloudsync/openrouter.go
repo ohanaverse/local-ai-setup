@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -164,11 +165,50 @@ type PricePlan struct {
 	Candidates int
 	Matched    []PriceChange
 	Warnings   []string
+	// RemovableCandidates counts the OpenRouter-priced models that are not
+	// manual: the denominator of the mass-removal guard.
+	RemovableCandidates int
+	// Removals are the ids of registry models absent from OpenRouter's list.
+	// Only absence removes: a model listed with no usable price still exists.
+	Removals []string
+	// Kept are manual models absent from the list; Graduations are manual
+	// models on it (Apply sets their source to curated).
+	Kept, Graduations []string
+	// Withheld says why no removal was planned when the list looked like an
+	// outage (fewer than MinListedForRemovals models); "" otherwise. It is
+	// not part of Format: the command prints it.
+	Withheld string
+}
+
+// MinListedForRemovals is the fewest models an OpenRouter list may hold for
+// its absences to be read as removals. OpenRouter lists hundreds; a shorter
+// list is a truncated or failed response, and treating it as complete would
+// remove every model.
+const MinListedForRemovals = 20
+
+// EntriesGone is how many models the plan removes: the number the
+// mass-removal guard weighs and its refusal prints.
+func (p *PricePlan) EntriesGone() int { return len(p.Removals) }
+
+// MassRemoval reports whether more than half the removable OpenRouter models
+// would go, which is more likely a short or odd list than a catalog that
+// shrank.
+func (p *PricePlan) MassRemoval() bool { return p.EntriesGone()*2 > p.RemovableCandidates }
+
+// RemovalDigest fingerprints the removals (the shared digest format over the
+// sorted ids), or "" when there are none. `--yes` applies them only under
+// the digest a reviewed dry run printed.
+func (p *PricePlan) RemovalDigest() string {
+	items := slices.Clone(p.Removals)
+	sort.Strings(items)
+	return digestOf(items)
 }
 
 // HasWork reports whether applying the plan would write anything. A matched
 // model whose price is unchanged still gets its stamp.
-func (p *PricePlan) HasWork() bool { return len(p.Matched) > 0 }
+func (p *PricePlan) HasWork() bool {
+	return len(p.Matched)+len(p.Removals)+len(p.Graduations) > 0
+}
 
 // PlanPrices matches the registry's OpenRouter-priced models to api on
 // model_name. Input and output prices are always overwritten: they are what
@@ -189,10 +229,25 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 			continue
 		}
 		plan.Candidates++
+		if !e.Manual() {
+			plan.RemovableCandidates++
+		}
 		price, ok := api[e.ModelName]
 		if !ok {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s)", e.ID, e.ModelName))
+			switch {
+			case e.Manual():
+				plan.Kept = append(plan.Kept, e.ID)
+			case len(api) < MinListedForRemovals:
+				plan.Withheld = fmt.Sprintf("openrouter: OpenRouter's list has %d models (fewer than %d), so no removals are planned", len(api), MinListedForRemovals)
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s)", e.ID, e.ModelName))
+			default:
+				plan.Removals = append(plan.Removals, e.ID)
+			}
 			continue
+		}
+		if e.Manual() {
+			// Listed is enough, whatever the price.
+			plan.Graduations = append(plan.Graduations, e.ID)
 		}
 		if price.Unusable != "" {
 			// Its top-level price is that of the window in force now. Stored,
@@ -246,6 +301,26 @@ func (p *PricePlan) Format() string {
 	lines = append(lines, fmt.Sprintf("Price updates (%d):", len(changed)))
 	lines = append(lines, changed...)
 	lines = append(lines, fmt.Sprintf("Unchanged prices: %d", unchanged))
+	if len(p.Removals) > 0 {
+		lines = append(lines, fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)))
+		for _, id := range p.Removals {
+			lines = append(lines, "  "+id)
+		}
+		d := p.RemovalDigest()
+		lines = append(lines, fmt.Sprintf("Removal digest: %s (apply non-interactively with `--yes --approve-removals %s`)", d, d))
+	}
+	if len(p.Graduations) > 0 {
+		lines = append(lines, fmt.Sprintf("Graduated (manual -> curated) (%d):", len(p.Graduations)))
+		for _, id := range p.Graduations {
+			lines = append(lines, "  "+id)
+		}
+	}
+	if len(p.Kept) > 0 {
+		lines = append(lines, fmt.Sprintf("Kept (manual, not on openrouter.ai) (%d):", len(p.Kept)))
+		for _, id := range p.Kept {
+			lines = append(lines, "  "+id)
+		}
+	}
 	for _, w := range p.Warnings {
 		lines = append(lines, "warning: "+w)
 	}
