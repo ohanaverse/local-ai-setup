@@ -45,8 +45,16 @@ fetched for, changed or warned about, whatever its name is.
   stored, and the price for larger prompts is not stored anywhere.
 - Every matched model is stamped (`pricing_updated_at`), whether or not its
   price moved.
-- A model OpenRouter does not list (`warning: No OpenRouter match for …`),
-  lists with no price (`warning: No pricing data for …`), or lists with a
+- **A model OpenRouter no longer lists is removed from the registry**, after
+  approval ([Removals need approval](#removals-need-approval)); its route
+  follows through the route sync. Only absence from the list removes: a
+  model OpenRouter lists but cannot price (below) still exists. A list with
+  fewer than 20 models is read as an outage, not as "every model is gone":
+  no removal is planned, the old `warning: No OpenRouter match for …` stays,
+  and the run says `openrouter: OpenRouter's list has N models (fewer than
+  20), so no removals are planned`. A model added by hand is
+  [kept](#models-you-add-by-hand) instead.
+- A model OpenRouter lists with no price (`warning: No pricing data for …`), or lists with a
   price that is negative or not a number (`warning: Could not use
   OpenRouter's pricing for …`; OpenRouter gives `-1` for a price that
   varies) is left exactly as it is, and is not stamped. So is a model whose
@@ -436,8 +444,42 @@ included. `--yes` has nobody reading, so it never deletes on its own.
   does not replace the digest. A dry run of such a plan still exits 0; the
   refusal is the apply's.
 
-Either refusal means the ollama flow changes nothing at all: no price
-update, no addition, no pull.
+Either refusal means the flow changes nothing at all: no price
+update, no addition, no pull. The other flow is not held up.
+
+The openrouter flow works the same way. Its plan ends with its own
+`Registry removals` section and `Removal digest:` line, and a plan that would
+remove more than half the OpenRouter-priced models (models added by hand do
+not count) is refused unless `--force` is given. When both flows remove
+something, the plans end with a line that names both digests
+(`removals: approve both with --yes --approve-removals <openrouter>,<ollama>`);
+`--approve-removals` takes a comma-separated list, and each flow looks for its
+own digest in it. Naming only one applies that flow and refuses the other.
+
+## Models you add by hand
+
+A model that is free, or new, may not be on the source a flow mirrors: an
+ollama cloud model missing from ollama.com/pricing (for example
+`ollama.com/library/beam`), an OpenRouter model not listed. `wt model add`
+marks such a cloud model `source = "manual"` (any `openrouter` model, any
+ollama model with `--location cloud` or a cloud tag), and for as long as it
+is manual `cloud-sync`:
+
+- never removes it, never re-tags it and never hands its tag to `ollama rm`;
+- prints it as `Kept (manual, not on …)` when the source does not list it,
+  and leaves it out of the mass-removal count;
+- when the source does list it, prices it as it would any model and sets its
+  source to `curated` (`Graduated (manual -> curated)`). From then on it is
+  an ordinary synced model and is removed, after approval, if it later
+  disappears. Wt assumes a free model that has been priced does not go back.
+
+For models already in the registry (added before this), mark them first:
+`wt model edit <id> --source manual` (see [wt-model.md](wt-model.md)).
+Otherwise the next sync lists them under `Registry removals`, where you can
+decline.
+
+A manual ollama entry whose tag is not the one ollama publishes for its
+name is kept as it is and not graduated; the plan warns about it.
 
 ## Flags
 
@@ -446,17 +488,16 @@ update, no addition, no pull.
 | `--only <flows>` | Run only these flows: a comma list of `openrouter`, `ollama`. Default: both |
 | `--dry-run` | Print the plans and change nothing |
 | `--yes` | Apply without asking. Removals still need `--approve-removals` |
-| `--approve-removals <digest>` | ollama, with `--yes`: the removal digest a reviewed `--dry-run` printed |
-| `--force` | ollama: apply even if more than half the ollama cloud entries would be removed |
+| `--approve-removals <digests>` | with `--yes`: the removal digest(s) a reviewed `--dry-run` printed, comma-separated when both flows remove |
+| `--force` | apply even if more than half a flow's entries would be removed |
 | `--html <file>` | ollama: parse this saved pricing page instead of fetching it |
 
 - `--html` is not an offline mode: cloud tags are still looked up on
   ollama.com/library, and `ollama list` is still run.
 - Usage errors (exit 1, nothing fetched): `--only` with an empty value
   (`--only: no flow named (valid: openrouter, ollama)`) or an unknown name; and
-  `--html`, `--approve-removals` or `--force` together with `--only openrouter`
-  (`--force is for the ollama flow, which --only openrouter leaves out`). An
-  ignored `--force` or digest would be a gate you believe was passed.
+  `--html` together with `--only openrouter` (`--html is for the ollama flow,
+  which --only openrouter leaves out`).
 
 ## Exit status
 
@@ -466,15 +507,17 @@ update, no addition, no pull.
 | 1 | A step failed in either flow, or a usage error |
 | 2 | ollama changed nothing: an input could not be read |
 | 3 | ollama changed nothing: the pricing page changed shape |
-| 4 | ollama changed nothing: mass removal refused |
-| 5 | ollama changed nothing: removals not approved, or the registry changed after the plan was printed |
+| 4 | a flow changed nothing: mass removal refused |
+| 5 | a flow changed nothing: removals not approved, or (ollama) the registry changed after the plan was printed |
 
-Codes 2 to 5 describe the ollama flow only, and win over 1. The openrouter flow
-may have been applied, or have failed, in the same run; its lines say which.
+Codes 2 and 3 are the ollama flow's alone; 4 and 5 are either flow's (the
+stderr line names it), and all four win over 1 (the ollama flow's over the
+openrouter flow's). The other flow may have been applied, or have failed, in
+the same run; its lines say which.
 Every other wt command exits 1 on any error.
 
 The last line on stderr gives the reason: `wt: cloud-sync: the ollama flow
-changed nothing: <why>` for 2 to 5, and `wt: cloud-sync: a step failed; see
+changed nothing: <why>` (or `the openrouter flow`) for 2 to 5, and `wt: cloud-sync: a step failed; see
 the error lines above` for 1.
 
 **Exit 1** — each cause has its own `error:` line:

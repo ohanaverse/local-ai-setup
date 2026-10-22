@@ -4,6 +4,22 @@
 
 ### Added
 
+- `wt cloud-sync` now removes OpenRouter models that OpenRouter no longer
+  lists, after the same approval ollama's removals need: the prompt, or
+  `--yes` with `--approve-removals <digest>` from a dry run
+  (`--approve-removals` takes both flows' digests, comma-separated, and
+  `--force` lifts the mass-removal refusal for either flow; exit 4 and 5 now
+  name the flow). A model listed without a usable price is not removed, and
+  a list of fewer than 20 models plans no removals.
+- A cloud model you add with `wt model add` (any OpenRouter model, an ollama
+  cloud model such as one missing from ollama.com/pricing) is marked
+  `source = "manual"`: `wt cloud-sync` keeps it, and never `ollama rm`s its
+  tag, until the pricing page or OpenRouter's list includes it, then prices
+  it and sets it to `curated`. `wt model edit <id> --source manual|curated`
+  changes the mark. **Migration:** a cloud model you added by hand before
+  this change is not marked; run `wt model edit <id> --source manual` on it
+  before the next `wt cloud-sync`, or decline it in the removal list.
+
 - A local start by `wt start`, `wt smoke`, or a `wt -M` launch that skips
   wt's picker screens (`-W <name>`, `--cwd`, or outside a git repository; a
   slot profile's local model included) that would load a model beside

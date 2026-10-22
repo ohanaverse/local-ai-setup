@@ -151,15 +151,23 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      removing the model is their decision. Do not suggest the provider key
      `openrouter_priced`: wt no longer reads it.
    - Note the line `ollama: Removal digest: <digest> (apply
-     non-interactively with …)` if there is one. No such line means the
-     ollama plan deletes nothing.
+     non-interactively with …)` and the line `openrouter: Removal digest:
+     <digest> …`, if there are any. No such line means that flow's plan
+     deletes nothing. When both flows delete, a `removals: approve both with
+     --yes --approve-removals <a>,<b>` line gives the two together.
+   - `Kept (manual, …)` lines are models the user added by hand and the
+     sync is leaving alone; `Graduated (manual -> curated)` lines are
+     ones the source now lists. Neither needs a decision. A model the user
+     says they added by hand and sees under `Registry removals` is one to
+     protect: `wt model edit <id> --source manual`, then a new dry run.
    - A non-zero exit here is 1, 2 or 3 from the table below (a dry run never
      exits 4 or 5). Nothing was changed.
 2. **Ask.** Get the user's go-ahead for the whole of both plans. List every
    registry removal and every `ollama rm` by name and get an explicit yes to
-   those in particular. A dry run does not flag a mass removal (more than
-   half the ollama cloud entries, re-tagged ones not counted); the apply
-   does. Estimate it: the `Registry removals` lines without `(re-tagged as
+   those in particular. The OpenRouter removals are models OpenRouter no
+   longer lists. A dry run does not flag a mass removal (more than half the
+   flow's entries, re-tagged ollama ones not counted, manual ones left
+   out); the apply does. Estimate it: the `Registry removals` lines without `(re-tagged as
    …)`, against the counts of `Price updates`, `Unchanged prices` and
    `Registry removals` added together. If that looks like more than half,
    say so now: the apply refuses it without `--force` (exit 4, whose line
@@ -168,15 +176,16 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    counted)` when the plan has any), and that many removals usually means
    the page parsed wrong, not that the catalog shrank.
 3. **Apply:** `wt cloud-sync --yes --approve-removals <digest>`, with the
-   digest from step 1. Leave `--approve-removals` out if the dry run printed
-   no digest. Your shell has no terminal, so the command's one question
+   digest from step 1 (`<a>,<b>` when both flows delete). Leave
+   `--approve-removals` out if the dry run printed no digest. Your shell has no terminal, so the command's one question
    cannot be answered: without `--yes` it stops with `error: not applied:
    there is no terminal to confirm on — rerun with --yes to apply without
    asking` (exit 1).
    - Success reads `openrouter: refreshed N model(s); N price(s) changed`
      (a time-priced model whose rows were added, replaced or removed counts
      as a price changed, also when its own price did not move),
-     `ollama: updated N, added N and removed N model(s)`, then one
+     `ollama: updated N, added N and removed N model(s)` (an openrouter removal
+     adds `; removed N` to its line), then one
      `ollama: pulled <tag>` or `ollama: removed <tag>` per tag. Report
      those to the user.
    - `ollama: daemon at <address>` names the daemon the pulls and removals
@@ -197,16 +206,16 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
    change, and change it with `wt model edit <id> --family <name>`, which
    syncs the routes itself. Not a hand edit.
 
-To run one flow: `--only openrouter` or `--only ollama`. An ollama-flow flag
-(`--html`, `--approve-removals`, `--force`) together with `--only openrouter`
-is a usage error, and so is `--only ""`.
+To run one flow: `--only openrouter` or `--only ollama`. `--html` with
+`--only openrouter` is a usage error, and so is `--only ""`.
 
 ## Exit codes
 
 The last line on stderr says which: `wt: cloud-sync: the ollama flow
-changed nothing: <why>` for 2 to 5, `wt: cloud-sync: a step failed; see the
-error lines above` for 1. Codes 2 to 5 are about the ollama flow only, and
-win over 1: with 2 to 5, also read the `openrouter:` lines for an `error:`.
+changed nothing: <why>` for 2 to 5 (`the openrouter flow` when it is
+that flow's 4 or 5), `wt: cloud-sync: a step failed; see the error lines
+above` for 1. Codes 2 to 5 name a flow that changed nothing and win over 1:
+read the other flow's lines too, it may have been applied.
 
 | Code | Meaning | Do |
 |---|---|---|
@@ -214,8 +223,8 @@ win over 1: with 2 to 5, also read the `openrouter:` lines for an `error:`.
 | 1 | A step failed in either flow; see "Exit 1" below. Also a usage error, and a registry that is missing or cannot be read | Read every `error:` line, then the matching entry below |
 | 2 | ollama changed nothing: an input could not be read; see "Exit 2" below | Fix the cause the `ollama: error:` line names, then step 1 |
 | 3 | ollama changed nothing: the pricing page changed shape. Its HTML is saved and the path printed | "Repairing the parser" below |
-| 4 | ollama changed nothing: the plan removes more than half the ollama cloud entries and `--force` was not given | Ask the user; `--force` only on their confirmation |
-| 5 | ollama changed nothing: under `--yes` the plan deletes and no digest, or another plan's, was given (`…: removals not approved`); or the registry changed after the plan was printed (`…: the registry changed after the plan was printed`) | Step 1 again; get the user's yes for the new plan; use its digest |
+| 4 | a flow changed nothing: its plan removes more than half its entries and `--force` was not given | Ask the user; `--force` only on their confirmation |
+| 5 | a flow changed nothing: under `--yes` its plan deletes and no digest, or another plan's, was given (`…: removals not approved`); or (ollama) the registry changed after the plan was printed (`…: the registry changed after the plan was printed`) | Step 1 again; get the user's yes for the new plan; use its digest |
 
 ### Exit 1
 

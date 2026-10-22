@@ -9,7 +9,7 @@ wt model                   # the Models tab of `wt config` (needs a terminal)
 wt model list [--json]     # every registry model, and every local model found on this machine
 wt model init [--json]     # create the registry if it is missing; add the default provider rows
 wt model add <provider> <name> --family F [--tags a,b] [--location local|cloud] [price flags] [--id ID]
-wt model edit <id> [--family F] [--tags a,b] [--location local|cloud] [price flags]
+wt model edit <id> [--family F] [--tags a,b] [--location local|cloud] [--source manual|curated] [price flags]
 wt model rm <id>... [--yes]
 wt model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing
 ```
@@ -111,6 +111,11 @@ or after adding it; `wt model list` shows what is on disk and unregistered as
 | `--subscription-price`, `--subscription-period month\|year` | a subscription price needs a period |
 | `--id` | the id, instead of the derived one: `<provider>/<name>`, with no spaces |
 
+A cloud model that `wt cloud-sync` covers (any `openrouter` model, an ollama
+model with `--location cloud` or a cloud tag) is written with `source =
+"manual"`: cloud-sync keeps it even if the source it mirrors does not list it,
+and sets it to `curated` once it does ([wt-cloud-sync.md](wt-cloud-sync.md#models-you-add-by-hand)).
+
 The id is derived: for a local provider it is the id wt already lists the
 model under when it finds it unregistered (`ollama/qwen3:8b`,
 `omlx/<directory>`, `mtplx/<org>/<name>`; an `omlx-6bit` model is `omlx/…`), so
@@ -198,7 +203,11 @@ Changes the fields named by the flags, and nothing else in the row: every
 other key (off-peak prices, `model_info`, `fetch`, keys wt does not know) is
 kept as it is. A flag left out leaves its field alone; an empty value clears
 it (`--tags ""`, `--input-price ""`), and an empty `--location` makes the
-model inherit its provider's. No flag at all is a usage error. It does not
+model inherit its provider's. `--source manual|curated` sets the row's
+source; it is for models `wt cloud-sync` covers (an `openrouter` model, an
+ollama cloud model) and is refused for any other. Use `--source manual` on a
+cloud model you added by hand before cloud-sync knew the mark, so the next sync
+does not offer to remove it. No flag at all is a usage error. It does not
 change `pricing_updated_at`. When nothing changes it says `no change` and
 syncs nothing.
 
