@@ -1426,3 +1426,34 @@ func TestValidateReportsEveryMistypedLocation(t *testing.T) {
 		t.Errorf("a mistyped provider with no models: err = %v, want it reported", err)
 	}
 }
+
+// TestLoad_ManualSourceIsAccepted verifies a registry model marked
+// source = "manual" (a model added by hand that cloud-sync keeps until its
+// source lists it) loads and is read as SourceManual. A loader that refused
+// the value would take the whole registry down for a hand-added model.
+func TestLoad_ManualSourceIsAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	must(t, filepath.Join(tmp, "agent-wt", "config.toml"), "")
+	writeRegistry(t, tmp, `
+[[providers]]
+id = "ollama"
+name = "Ollama"
+auth = { type = "none", base_url = "http://localhost:11434" }
+
+[[models]]
+id = "ollama/beam:cloud"
+family = "beam"
+provider_id = "ollama"
+model_name = "beam:cloud"
+location = "cloud"
+source = "manual"
+tags = []
+`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Models[0].Source; got != SourceManual {
+		t.Errorf("Source = %q, want %q", got, SourceManual)
+	}
+}

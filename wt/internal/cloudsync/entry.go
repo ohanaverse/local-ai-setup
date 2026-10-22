@@ -1,6 +1,9 @@
 package cloudsync
 
-import "github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
+import (
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
+)
 
 // Entry is what the planners read of one registry model row. It is built
 // from the row as written, not from config.Model: the planners need keys
@@ -11,8 +14,29 @@ type Entry struct {
 	// CatalogName is the page name an earlier sync recorded on the row, so a
 	// model stays matched after its tag is renamed. "" when there is none.
 	CatalogName string
+	// Source is the row's source key: "curated", "discovered", "manual" or
+	// "" when absent.
+	Source string
 	// Cost is nil when the row has no cost table.
 	Cost *Cost
+}
+
+// Manual reports whether the row was added by hand and has not yet been seen
+// on the source its flow mirrors: such a row is never a removal candidate.
+func (e Entry) Manual() bool { return e.Source == string(config.SourceManual) }
+
+// CoveredBySync reports whether a sync flow can address a model of this
+// provider, location and name: any openrouter model, and an ollama model
+// that is cloud (location "cloud" or a cloud tag). Only such a model can be
+// marked manual.
+func CoveredBySync(providerID, location, modelName string) bool {
+	switch providerID {
+	case config.OpenRouterProvider:
+		return true
+	case ollamaProvider:
+		return location == "cloud" || IsCloudTag(modelName)
+	}
+	return false
 }
 
 // Cost is a row's cost table as the planners read it. A nil price is a key
@@ -44,7 +68,7 @@ func Entries(rows []*tomlw.Table) []Entry {
 		e := Entry{
 			ID: id, Family: str(row, "family"), ProviderID: str(row, "provider_id"),
 			ModelName: str(row, "model_name"), Location: str(row, "location"),
-			CatalogName: str(row, CatalogNameKey),
+			CatalogName: str(row, CatalogNameKey), Source: str(row, "source"),
 		}
 		if v, ok := row.Get("cost"); ok {
 			if t, isTable := v.(*tomlw.Table); isTable {

@@ -183,6 +183,7 @@ id = "openrouter/qwen--qwen3.8-27b"
 family = "qwen-next"
 provider_id = "openrouter"
 model_name = "qwen/qwen3.8-27b"
+source = "manual"
 tags = [
     "code",
     "design",

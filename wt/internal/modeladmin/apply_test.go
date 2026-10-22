@@ -148,6 +148,7 @@ id = "openrouter/qwen--qwen3.8-27b"
 family = "qwen3.8"
 provider_id = "openrouter"
 model_name = "qwen/qwen3.8-27b"
+source = "manual"
 tags = [
     "code",
     "design",
@@ -872,5 +873,87 @@ repo = "org/D"
 	req.ID = ""
 	if _, err := Add(req, config.SeedEnv{}); !errors.As(err, &fe) || !strings.Contains(fe.Msg, `model "mlx_lm_server/second" already registers this pairing`) {
 		t.Errorf("a second add of the pairing: err = %v, want it refused as registered", err)
+	}
+}
+
+// TestAddCloudModelIsManual verifies an add of a model a cloud-sync flow
+// covers (any openrouter model, an ollama cloud tag) is written with
+// source = "manual", so cloud-sync keeps it until its source lists it, and
+// that a local model gets no source key. Without the mark, the next sync
+// would delete a free model added by hand.
+func TestAddCloudModelIsManual(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry)
+	for _, req := range []AddRequest{
+		{ProviderID: "openrouter", ModelName: "vendor/free", Fields: Fields{Family: ptr("f")}},
+		{ProviderID: "ollama", ModelName: "beam:cloud", Fields: Fields{Family: ptr("beam")}},
+		{ProviderID: "ollama", ModelName: "other", Fields: Fields{Family: ptr("o"), Location: ptr("cloud")}},
+		{ProviderID: "ollama", ModelName: "qwen3:8b", Fields: Fields{Family: ptr("qwen3")}},
+	} {
+		if _, err := Add(req, config.SeedEnv{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := read(t, path)
+	for _, id := range []string{"openrouter/vendor--free", "ollama/beam:cloud", "ollama/other"} {
+		if !strings.Contains(got, "id = \""+id+"\"\nfamily") || !strings.Contains(sliceRow(got, id), `source = "manual"`) {
+			t.Errorf("row %s has no source = \"manual\":\n%s", id, sliceRow(got, id))
+		}
+	}
+	if strings.Contains(sliceRow(got, "ollama/qwen3:8b"), "source") {
+		t.Errorf("a local model must get no source key:\n%s", sliceRow(got, "ollama/qwen3:8b"))
+	}
+}
+
+// sliceRow is the text of the [[models]] row with the given id.
+func sliceRow(registry, id string) string {
+	i := strings.Index(registry, "id = \""+id+"\"")
+	if i < 0 {
+		return ""
+	}
+	rest := registry[i:]
+	if j := strings.Index(rest[1:], "[[models]]"); j >= 0 {
+		rest = rest[:j+1]
+	}
+	return rest
+}
+
+// TestEditSourceManualAndCuratedOnCoveredOnly verifies --source moves a
+// cloud-sync-covered model between manual and curated, refuses any other
+// value, and refuses a model no sync covers. A manual mark on a local model
+// would promise protection from a sync that never looks at it.
+func TestEditSourceManualAndCuratedOnCoveredOnly(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry+`
+[[models]]
+id = "openrouter/vendor--m"
+family = "f"
+provider_id = "openrouter"
+model_name = "vendor/m"
+source = "curated"
+tags = []
+`)
+	if _, err := Edit("openrouter/vendor--m", Fields{Source: ptr("manual")}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sliceRow(read(t, path), "openrouter/vendor--m"), `source = "manual"`) {
+		t.Errorf("source not set to manual:\n%s", read(t, path))
+	}
+	if _, err := Edit("openrouter/vendor--m", Fields{Source: ptr("curated")}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sliceRow(read(t, path), "openrouter/vendor--m"), `source = "curated"`) {
+		t.Errorf("source not set back to curated")
+	}
+	for _, bad := range []string{"discovered", "bogus"} {
+		var fe *FieldError
+		if _, err := Edit("openrouter/vendor--m", Fields{Source: ptr(bad)}); !errors.As(err, &fe) || fe.Field != FieldSource {
+			t.Errorf("Edit source %q: err = %v, want a FieldError on %q", bad, err, FieldSource)
+		}
+	}
+	for _, v := range []string{"manual", "curated"} {
+		var fe *FieldError
+		_, err := Edit("ollama/gemma4:9b", Fields{Source: ptr(v)})
+		if !errors.As(err, &fe) || fe.Field != FieldSource || !strings.Contains(err.Error(), "cloud-sync covers") {
+			t.Errorf("Edit local model source %q: err = %v, want a FieldError saying cloud-sync does not cover it", v, err)
+		}
 	}
 }

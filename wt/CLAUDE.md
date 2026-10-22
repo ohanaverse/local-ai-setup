@@ -198,7 +198,7 @@ Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row dire
 
 - **`ParsePricing` is the only code that knows the pricing page's HTML**; anything that stops looking like a price table is a `*ParseError`, never a short catalog (it would plan removing every ollama cloud entry).
 - **The plan's text is the plan** (`CatalogPlan.Format`/`PricePlan.Format`): deterministic, no clock, compared with the re-plan under the registry lock; `Apply` methods are pure and write only the shown diff.
-- **Exit codes 2 to 5 are the ollama flow's and win over 1** (each: it changed nothing). A flow whose provider the registry does not use is skipped (exit 0); cloud-sync never seeds a provider row.
+- **Exit codes 2 to 5 name a flow that changed nothing and win over 1** (2 and 3 are ollama's; 4 and 5 either flow's). **`source = "manual"` keeps a hand-added cloud model through a sync until its source lists it** (`wt model add` sets it, `wt model edit --source` marks older entries); a vanished OpenRouter model is removed only after approval. A flow whose provider the registry does not use is skipped (exit 0); cloud-sync never seeds a provider row.
 
 Read [docs/internals/cloud-sync.md](docs/internals/cloud-sync.md) before changing a planner or parser, either `Format`, `cost.time_prices` rows, the removal digest, the registry write, an exit code, or how the ollama CLI is run.
 

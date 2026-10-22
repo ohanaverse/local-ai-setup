@@ -240,12 +240,17 @@ func modelEditCmd(_ *app) *cobra.Command {
 		SilenceUsage: true,
 	}
 	fields := modelFieldFlags(c)
+	c.Flags().String(modeladmin.FieldSource, "", "manual or curated: manual keeps a cloud model through wt cloud-sync until its source lists it")
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		f := fields()
+		if cmd.Flags().Changed(modeladmin.FieldSource) {
+			src, _ := cmd.Flags().GetString(modeladmin.FieldSource)
+			f.Source = &src
+		}
 		if f.Empty() {
 			// A usage mistake, unlike every other failure here: show the flags.
 			cmd.SilenceUsage = false
-			return errors.New("nothing to change: pass at least one of --family, --tags, --location or a price flag")
+			return errors.New("nothing to change: pass at least one of --family, --tags, --location, --source or a price flag")
 		}
 		return runModelEdit(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], f)
 	}
