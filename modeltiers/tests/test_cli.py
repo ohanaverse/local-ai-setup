@@ -89,6 +89,11 @@ MTPLX_WARNING = (
 )
 
 
+def failed(code: int, reason: str) -> str:
+    """The last thing a failed `run` prints, on stderr."""
+    return f"\nERROR: modeltiers run FAILED (exit {code}): {reason}; tiers.toml was not written.\n"
+
+
 def first_report(out: Path, last: str) -> str:
     """What `run` prints over the golden fixtures when no file exists yet."""
     return (
@@ -324,7 +329,7 @@ def test_a_source_with_no_good_snapshot_exits_1_and_names_it(
     assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.endswith("modeltiers: no usable data and no good snapshot for: epoch\n")
+    assert captured.err.endswith(failed(1, "no usable data and no good snapshot for: epoch"))
     assert not out.exists()
 
 
@@ -348,7 +353,7 @@ def test_offline_with_an_empty_cache_exits_1(
 ) -> None:
     assert cli.main([*DRY, "--offline"], deps=_deps(specs, {})[0]) == 1
     assert capsys.readouterr().err.endswith(
-        "modeltiers: no usable data and no good snapshot for: modelsdev, openrouter, arena, epoch\n"
+        failed(1, "no usable data and no good snapshot for: modelsdev, openrouter, arena, epoch")
     )
 
 
@@ -379,6 +384,24 @@ def test_a_successful_write_prunes_to_four_good_and_two_bad(
     assert snapshots.good_snapshots(tmp_path / "cache", "arena")[0].fetched_at == T0
 
 
+def test_a_prune_failure_after_the_write_is_a_warning_not_a_failed_run(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    out: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def broken(cache: Path, source: str) -> list[Path]:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(snapshots, "prune", broken)
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    assert out.exists()
+    err = capsys.readouterr().err
+    assert "warning: could not prune old snapshots: denied" in err
+    assert "ERROR" not in err
+
+
 def test_dry_run_and_offline_prune_nothing(
     specs: SourceSpecs, good_answers: Answers, tmp_path: Path
 ) -> None:
@@ -406,8 +429,8 @@ def test_an_inventory_error_exits_1_before_any_fetch(
 
     deps, fetcher = _deps(specs, good_answers, run_wt=no_wt)
     assert cli.main(["run", "--dry-run"], deps=deps) == 1
-    assert capsys.readouterr().err == (
-        "modeltiers: wt is not on PATH; install it or pass --inventory FILE\n"
+    assert capsys.readouterr().err == failed(
+        1, "wt is not on PATH; install it or pass --inventory FILE"
     )
     assert fetcher.calls == []
 
@@ -436,7 +459,7 @@ def test_an_unwritable_cache_exits_1_with_a_message(
     code = cli.main(["run", "--inventory", str(INVENTORY)], deps=_deps(specs, good_answers)[0])
     assert code == 1
     err = capsys.readouterr().err
-    assert "modeltiers: [Errno 20]" in err
+    assert "FAILED (exit 1): [Errno 20]" in err
     assert "Traceback" not in err
 
 
@@ -469,7 +492,7 @@ def test_an_invalid_aliases_file_exits_1_before_wt_and_before_any_fetch(
     assert cli.main(["run", "--dry-run"], deps=deps) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "modeltiers: aliases.toml: [[ignore]] #1: an ignore needs a reason\n"
+    assert captured.err == failed(1, "aliases.toml: [[ignore]] #1: an ignore needs a reason")
     assert fetcher.calls == []
 
 
@@ -482,8 +505,8 @@ def test_an_invalid_contracts_file_exits_1_before_wt_and_before_any_fetch(
     assert cli.main(["run"], deps=deps) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == (
-        "modeltiers: contracts.toml: exactly one signal must carry marathon_ci_lower; found none\n"
+    assert captured.err == failed(
+        1, "contracts.toml: exactly one signal must carry marathon_ci_lower; found none"
     )
     assert fetcher.calls == []
 
@@ -502,8 +525,11 @@ def test_an_unanchored_alias_exits_1_once_models_dev_is_parsed(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.endswith(
-        "modeltiers: aliases.toml: [[alias]] #1 (google/gemini-4-argon): canonical is not a "
-        "models.dev key and the entry lists no openrouter, arena or epoch id\n"
+        failed(
+            1,
+            "aliases.toml: [[alias]] #1 (google/gemini-4-argon): canonical is not a "
+            "models.dev key and the entry lists no openrouter, arena or epoch id",
+        )
     )
     assert fetch.MODELSDEV_URL in fetcher.calls
 
@@ -565,10 +591,11 @@ def test_a_redirected_registry_is_refused_before_any_fetch(
     assert cli.main(RUN, deps=deps) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == (
-        "modeltiers: the inventory came from /home/owner/.config/local-ai/registry.toml, "
+    assert captured.err == failed(
+        1,
+        "the inventory came from /home/owner/.config/local-ai/registry.toml, "
         f"which is not {default / 'registry.toml'}; refusing to replace "
-        f"{default / 'tiers.toml'} from it. Set MODELTIERS_OUT to write somewhere else\n"
+        f"{default / 'tiers.toml'} from it. Set MODELTIERS_OUT to write somewhere else",
     )
     assert fetcher.calls == []
     assert not default.exists()
@@ -662,7 +689,11 @@ def test_a_failed_sentinel_writes_nothing_and_exits_3(
     assert "changes" not in captured.out
     assert "wrote" not in captured.out
     assert captured.err.endswith(
-        "modeltiers: a sentinel moved; nothing written. If the move is real, edit contracts.toml\n"
+        failed(
+            3,
+            "a sentinel moved. If the move is real, edit contracts.toml "
+            "(guide 12, step 5, or the sentinel-failure skill)",
+        )
     )
     assert _arena(tmp_path / "cache") == (8, 3)  # and nothing pruned
 
@@ -701,8 +732,11 @@ def test_1_takes_precedence_over_3(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.endswith(
-        "modeltiers: contracts.toml: [[sentinels]] #5 (anthropic/claude-fable-9): "
-        "not a canonical key in this run's models.dev data or in aliases.toml\n"
+        failed(
+            1,
+            "contracts.toml: [[sentinels]] #5 (anthropic/claude-fable-9): "
+            "not a canonical key in this run's models.dev data or in aliases.toml",
+        )
     )
     # Every source was downloaded: the error came with the drifted data in hand.
     assert fetch.OPENROUTER_URL in fetcher.calls
@@ -980,3 +1014,50 @@ def test_explain_an_unmapped_row_and_a_name_that_matches_nothing(
         "modeltiers: no model or canonical key 'ollama/absent:cloud' in the file generated "
         "2026-10-12T15:58:00Z\n"
     )
+
+
+# --- a failed run says so, last --------------------------------------------------
+
+
+def test_a_failed_run_ends_on_a_blank_line_and_one_capitalised_error_line(
+    specs: SourceSpecs, good_answers: Answers, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Whatever stops `run`, the last line on stderr says that it failed and
+    that nothing was written, after a blank line, even when warnings came first."""
+    drifted = scaled_openrouter(good_answers[fetch.OPENROUTER_URL][0], 1.3)
+    deps, _ = _deps(specs, {**good_answers, fetch.OPENROUTER_URL: [drifted]})
+    assert cli.main(RUN, deps=deps) == 3
+    lines = capsys.readouterr().err.split("\n")
+    assert lines[-1] == ""
+    assert lines[-2].startswith("ERROR: modeltiers run FAILED (exit 3): ")
+    assert lines[-2].endswith("; tiers.toml was not written.")
+    assert lines[-3] == ""
+    assert "warning: " in lines[0]  # the warnings stay above it
+
+
+def test_a_run_that_did_not_fail_prints_no_error_line(
+    specs: SourceSpecs, good_answers: Answers, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    assert "ERROR" not in capsys.readouterr().err
+
+
+def test_the_stale_exit_is_a_warning_not_a_failure(
+    specs: SourceSpecs, good_answers: Answers, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deps, _ = _deps(specs, good_answers)
+    assert cli.main(RUN, deps=deps) == 0  # fills the snapshots
+    capsys.readouterr()
+    down = {url: [FetchError("down")] * 2 for url in good_answers}
+    stale, _ = _deps(specs, down)
+    assert cli.main([*RUN, "--dry-run"], deps=stale) == 2
+    assert "ERROR" not in capsys.readouterr().err
+
+
+def test_the_other_commands_keep_their_plain_message(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["show"], deps=_reader_deps(T0)) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("modeltiers: cannot read ")
+    assert "ERROR" not in err

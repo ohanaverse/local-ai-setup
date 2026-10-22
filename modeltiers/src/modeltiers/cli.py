@@ -65,6 +65,17 @@ def _warn(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
 
 
+def _run_failed(code: int, reason: str) -> None:
+    """The last thing a failed `run` prints: a blank line, then one line that
+    says in capitals that it failed and that `tiers.toml` was not written, so
+    it is not mistaken for one more note among the report's lines."""
+    print(
+        f"\nERROR: modeltiers run FAILED (exit {code}): {reason.rstrip('.')}; "
+        "tiers.toml was not written.",
+        file=sys.stderr,
+    )
+
+
 def _source_line(result: SourceResult[ModelsDev] | SourceResult[ScoreRecords]) -> str:
     return (
         f"{result.name}: {result.status}, {result.records} records, "
@@ -206,10 +217,10 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
     ):
         print(line)
     if not assignment.sentinels_ok:
-        print(
-            f"modeltiers: a sentinel moved; nothing written. If the move is real, "
-            f"edit {contracts.origin}",
-            file=sys.stderr,
+        _run_failed(
+            EXIT_SENTINEL,
+            f"a sentinel moved. If the move is real, edit {contracts.origin} "
+            "(guide 12, step 5, or the sentinel-failure skill)",
         )
         return EXIT_SENTINEL
     out = paths.output_path()
@@ -227,8 +238,13 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
     else:
         output.write_document(out, document)
         if not args.offline:
-            for result in sources.results():
-                snapshots.prune(cache, result.name)
+            # tiers.toml is already on disk: a failed cleanup must not reach
+            # main's "tiers.toml was not written" line.
+            try:
+                for result in sources.results():
+                    snapshots.prune(cache, result.name)
+            except OSError as exc:
+                _warn(f"could not prune old snapshots: {exc}")
         print(f"wrote {out}")
     return EXIT_STALE if any(r.fallback for r in sources.results()) else EXIT_OK
 
@@ -323,5 +339,8 @@ def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     # or non-directory MODELTIERS_CACHE (or a full disk) is a user-facing
     # condition like any other, not a traceback.
     except (ModelTiersError, OSError) as exc:
-        print(f"modeltiers: {exc}", file=sys.stderr)
+        if args.command == "run":
+            _run_failed(EXIT_ERROR, str(exc))
+        else:
+            print(f"modeltiers: {exc}", file=sys.stderr)
         return EXIT_ERROR
