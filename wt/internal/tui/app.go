@@ -191,11 +191,8 @@ func loadPickerCmd() tea.Cmd {
 	return func() tea.Msg {
 		root, err := findRepoRoot()
 		cmds := tea.BatchMsg{loadEntriesAtCmd(root, err)}
-		if err != nil {
-			// No repository: each listing answers an empty set without
-			// running gh (an empty root).
-			root = ""
-		}
+		// No repository: root is "" and each listing answers an empty set
+		// without running gh.
 		for _, state := range worktree.PRListStates {
 			cmds = append(cmds, loadPRsCmd(root, state))
 		}

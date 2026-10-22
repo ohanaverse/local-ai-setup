@@ -90,9 +90,6 @@ func NewRepoSet(repos ...string) RepoSet {
 	return set
 }
 
-// Has reports whether repo (compared without case) is in the set.
-func (s RepoSet) Has(repo string) bool { return repo != "" && s[strings.ToLower(repo)] }
-
 // SplitRemoteBranch splits a remote-tracking short name such as
 // "keith/feat/x" into its remote and branch. The longest remote name in
 // remotes that is followed by "/" wins, since remote names may contain
