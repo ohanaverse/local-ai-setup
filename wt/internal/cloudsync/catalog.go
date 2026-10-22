@@ -138,6 +138,20 @@ func stem(tag string) string {
 	return name
 }
 
+// sameVariant reports whether a hand-added tag can be the model the page calls
+// name. A page name with a size or variant ("gpt-oss:120b") is a different
+// model from a tag with another one ("gpt-oss:20b-cloud"): sharing a stem is
+// not enough. A page name without one cannot tell, so any tag of the stem fits.
+func sameVariant(tag, name string) bool {
+	_, want, hasVariant := strings.Cut(name, ":")
+	if !hasVariant {
+		return true
+	}
+	_, have, _ := strings.Cut(tag, ":")
+	trim := func(v string) string { return strings.TrimSuffix(strings.TrimSuffix(v, "-cloud"), "cloud") }
+	return trim(have) == trim(want) || trim(have) == ""
+}
+
 // findEntry returns the entry for page model name whose cloud tag is tag
 // ("": unknown), or nil. An entry already under the tag wins over one
 // carrying the catalog name, so an entry an earlier sync added under a
@@ -386,7 +400,7 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 			// it by name stem, or the sync would add a second row for the
 			// same model beside it.
 			for i := range entries {
-				if e := &entries[i]; e.Manual() && isOllamaCloud(*e) && e.ModelName != tag && stem(e.ModelName) == stem(cm.Name) {
+				if e := &entries[i]; e.Manual() && isOllamaCloud(*e) && e.ModelName != tag && stem(e.ModelName) == stem(cm.Name) && sameVariant(e.ModelName, cm.Name) {
 					retagged = e
 					break
 				}
@@ -417,7 +431,7 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 		}
 		if entry != nil {
 			matched[entry.ID] = true
-			if entry.Manual() && tag != "" {
+			if entry.Manual() && tag != "" && !slices.Contains(plan.Graduations, entry.ID) {
 				plan.Graduations = append(plan.Graduations, entry.ID)
 			}
 			// Both: the entry's tag and the canonical pulled tag are listed.

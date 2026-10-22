@@ -474,3 +474,15 @@ func TestPricePlanFormatRemovalsSection(t *testing.T) {
 		}
 	}
 }
+
+// TestPlanPricesKeepsAVariantOfAListedModel pins that a routing suffix the
+// list does not carry as an id (`:nitro`) is not read as the model vanishing:
+// the bare id is listed, so the row is kept with a warning.
+func TestPlanPricesKeepsAVariantOfAListedModel(t *testing.T) {
+	e := orEntry("here:nitro", nil)
+	plan := PlanPrices([]Entry{e}, healthyList("vendor/here"))
+	wantIDs(t, "removals", plan.Removals)
+	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "kept") {
+		t.Errorf("warnings = %q, want one saying the row is kept", plan.Warnings)
+	}
+}

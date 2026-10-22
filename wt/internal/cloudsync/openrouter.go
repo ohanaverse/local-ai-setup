@@ -240,6 +240,10 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 			case len(api) < MinListedForRemovals:
 				plan.Withheld = fmt.Sprintf("openrouter: OpenRouter's list has %d models (fewer than %d), so no removals are planned", len(api), MinListedForRemovals)
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s)", e.ID, e.ModelName))
+			case suffixedListedModel(e.ModelName, api):
+				// A routing variant (`:nitro`, `:floor`) or alias of a model the
+				// list carries under its bare id: still served, so not removed.
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is kept", e.ID, e.ModelName))
 			default:
 				plan.Removals = append(plan.Removals, e.ID)
 			}
@@ -282,6 +286,17 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 		})
 	}
 	return plan
+}
+
+// suffixedListedModel reports whether name is a listed id plus a `:variant`
+// routing suffix that the list does not carry as an id of its own.
+func suffixedListedModel(name string, api map[string]APIPrice) bool {
+	base, _, found := strings.Cut(name, ":")
+	if !found {
+		return false
+	}
+	_, ok := api[base]
+	return ok
 }
 
 // Format prints the plan: each changed model as `id: old -> new`, then how

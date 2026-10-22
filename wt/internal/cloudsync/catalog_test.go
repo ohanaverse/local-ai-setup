@@ -825,3 +825,22 @@ func TestPlanManualEntryWithNoCatalogNameUnderAnUnpublishedTagIsNotDuplicated(t 
 		t.Errorf("warnings = %v, want one naming the manual entry", plan.Warnings)
 	}
 }
+
+// TestPlanManualEntryOfAnotherSizeDoesNotHideAPageModel pins that a hand-added
+// entry sharing only the name stem with a page model of another size is not
+// taken for it: the page model is still added.
+func TestPlanManualEntryOfAnotherSizeDoesNotHideAPageModel(t *testing.T) {
+	entries := []Entry{cloudEntry("beam:20b-cloud", manual)}
+	plan := PlanCatalog(entries, catalogOf(cm("beam:120b")), nil, map[string]string{"beam:120b": "beam:120b-cloud"})
+	if len(plan.Additions) != 1 || plan.Additions[0].ModelName != "beam:120b-cloud" {
+		t.Errorf("additions = %v, want beam:120b-cloud added", plan.Additions)
+	}
+	wantIDs(t, "removals", plan.Removals)
+}
+
+// TestPlanGraduatesAManualEntryOnce pins that two page models resolving to the
+// same manual entry list it once.
+func TestPlanGraduatesAManualEntryOnce(t *testing.T) {
+	plan := PlanCatalog([]Entry{cloudEntry("beam:cloud", manual)}, catalogOf(cm("beam"), cm("beam")), nil, nil)
+	wantIDs(t, "graduations", plan.Graduations, "ollama/beam:cloud")
+}

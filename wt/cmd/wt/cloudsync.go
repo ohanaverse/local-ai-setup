@@ -194,12 +194,10 @@ func cloudSyncCmd(a *app) *cobra.Command {
 			}
 			// An ollama-flow flag with the ollama flow left out would be ignored
 			// in silence. (--approve-removals and --force gate both flows.)
-			for _, flag := range []string{"html"} {
-				if cmd.Flags().Changed(flag) && !o.ollama {
-					// The flows --only selected, not the spelling it was
-					// given: this line is meant to be read back and re-run.
-					return fmt.Errorf("--%s is for the ollama flow, which --only %s leaves out", flag, strings.Join(selectedFlows(o), ", "))
-				}
+			if cmd.Flags().Changed("html") && !o.ollama {
+				// The flows --only selected, not the spelling it was
+				// given: this line is meant to be read back and re-run.
+				return fmt.Errorf("--html is for the ollama flow, which --only %s leaves out", strings.Join(selectedFlows(o), ", "))
 			}
 			// Only a config that could not be loaded stops this: a.cfg is
 			// then an empty default, and a sync planned against it would
