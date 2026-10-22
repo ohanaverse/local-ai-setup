@@ -507,6 +507,10 @@ EOF
 grep -l 'showing last 8KiB' "$D"/*.jsonl
 ```
 
+The local record can also be snapshotted and rendered into a full-context
+transcript with `03_capture_claude_code.sh` + `build_cc_transcript.py` —
+see [CLAUDE.md](CLAUDE.md) in this directory.
+
 Caveats: entries are a **tree** (`uuid`/`parentUuid`), so walk parents from a
 leaf for the live conversation; `subagents/` holds sub-agent turns, not the main
 thread; and the file stem is the session id for a main file but the *agent* id
