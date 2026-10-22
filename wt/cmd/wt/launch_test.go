@@ -5,22 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -28,99 +28,12 @@ import (
 // clear error rather than a nil command. Without this the launch path could
 // dereference a nil driver.
 func TestBuildLaunchUnknownAgent(t *testing.T) {
-	_, err := buildLaunch("not-an-agent", config.Model{}, "/tmp", false, nil, nil, nil)
+	_, err := agents.BuildLaunchCmd("not-an-agent", config.Model{}, "/tmp", false, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
 	if !strings.Contains(err.Error(), "unknown agent") {
 		t.Errorf("error = %q, want 'unknown agent'", err.Error())
-	}
-}
-
-// TestBuildLaunchClaudeResume asserts that a claude launch with a session
-// appends --resume <id>. This is the non-TUI resume wiring that the bash
-// claude-wt wrapper used to do. The model is a provider-hosted (non-native)
-// model: native models must never resume (see TestBuildLaunchNativeSkipsResume).
-func TestBuildLaunchClaudeResume(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--resume abc-123") {
-		t.Errorf("args = %q, want --resume abc-123", got)
-	}
-}
-
-// TestBuildLaunchNativeSkipsResume asserts that a native model (e.g.
-// claude/native) never appends --resume, even when a session is supplied.
-// Native models launch with no model override, so resuming a session would
-// restore the session's stored model and silently override the user's
-// "native" choice — the exact bug where selecting claude/native launched
-// claude with a prior session's kimi-k2.7-code:cloud model.
-func TestBuildLaunchNativeSkipsResume(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "claude/native", ModelName: "native", Native: true}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, nil, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, native model must not resume", got)
-	}
-}
-
-// TestBuildLaunchOpenCodeResume asserts that an opencode launch with a session
-// appends --session <id>.
-func TestBuildLaunchOpenCodeResume(t *testing.T) {
-	if _, err := exec.LookPath("opencode"); err != nil {
-		t.Skip("opencode not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := buildLaunch("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--session proj-123.json") {
-		t.Errorf("args = %q, want --session proj-123.json", got)
-	}
-}
-
-// TestBuildLaunchNoSessionOmitsResume asserts that a nil session injects no
-// resume/session flag on a non-native model. This is the "start fresh" path
-// — and the test deliberately uses a non-native model so it exercises only
-// the sess==nil short-circuit. Native-model behavior is pinned separately:
-// TestBuildLaunchNativeSkipsResume covers native+session, and
-// TestBuildLaunchCmdNativeSkipsResume in the agents package pins the
-// defense-in-depth `!m.Native` guard directly.
-func TestBuildLaunchNoSessionOmitsResume(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := buildLaunch("claude", config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"}, "/tmp/repo", false, nil, cfg, nil)
-	if err != nil {
-		t.Fatalf("buildLaunch: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, should not contain resume/session flags", got)
 	}
 }
 
@@ -134,23 +47,17 @@ func TestInitUsesAgentFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seed(claude): %v", err)
 	}
-	found := false
-	for _, name := range res.Created {
-		if name == "CLAUDE.md" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(res.Created, "CLAUDE.md") {
 		t.Fatalf("expected CLAUDE.md created, got %v", res.Created)
 	}
 }
 
-// buildLaunch must invoke the pi driver's SyncModels before building the
-// command, so a rotation-selected model is present in models.json by the time
-// the _launch check runs. Without the sync, pi would fall back to its default.
-// The sync runs before LookPath, so it is observable even when pi is not
-// installed (the "not installed" error is tolerated).
+// The launch build (agents.BuildLaunchCmd) must invoke the pi driver's
+// SyncModels before building the command, so a rotation-selected model is
+// present in models.json by the time the _launch check runs. Without the
+// sync, pi would fall back to its default. The sync runs before LookPath, so
+// it is observable even when pi is not installed (the "not installed" error
+// is tolerated).
 func TestBuildLaunchSyncsPi(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -169,9 +76,9 @@ func TestBuildLaunchSyncsPi(t *testing.T) {
 		},
 	}
 	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
-	cmd, err := buildLaunch("pi", m, "/tmp", false, nil, cfg, nil)
+	cmd, err := agents.BuildLaunchCmd("pi", m, "/tmp", false, cfg, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
-		t.Fatalf("buildLaunch: %v", err)
+		t.Fatalf("BuildLaunchCmd: %v", err)
 	}
 	// The sync must have added the model to models.json regardless of whether
 	// pi is installed (the sync runs before LookPath).
@@ -207,7 +114,6 @@ func TestLaunchUsesResolveModel(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
 	// Two models, no -M → resolveModel errors with "multiple models match".
 	// Any ambiguous eligible list errors so callers can route through
@@ -259,7 +165,6 @@ func TestBuildFilteredCmdCommandAgentUsesWorktree(t *testing.T) {
 func TestLaunchFilteredCommandAgentRunsInWorktree(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Recorder script: write its real CWD (via pwd) to an output file passed
@@ -316,22 +221,15 @@ func TestRunAgentCmdPrintsSummary(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
-	w.Close()
-	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "wt: claude · claude/sonnet ·") {
-		t.Errorf("stdout = %q, want summary line", string(out))
+	if !strings.Contains(out, "wt: claude · claude/sonnet ·") {
+		t.Errorf("stdout = %q, want summary line", out)
 	}
 }
 
@@ -351,29 +249,22 @@ func TestRunAgentCmdLeadingNewlineBeforeSummary(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
-	w.Close()
-	out, _ := io.ReadAll(r)
 	// The summary line must be preceded by a newline so the user's
 	// prior output (which may lack a trailing newline) doesn't glue
 	// to it. Find the summary and check the byte immediately before.
-	idx := strings.Index(string(out), "wt: claude · claude/sonnet ·")
+	idx := strings.Index(out, "wt: claude · claude/sonnet ·")
 	if idx <= 0 {
-		t.Fatalf("stdout = %q, want summary line", string(out))
+		t.Fatalf("stdout = %q, want summary line", out)
 	}
 	if out[idx-1] != '\n' {
-		t.Errorf("stdout[%d-1] = %q, want '\\n' before summary line. Full output: %q", idx, out[idx-1], string(out))
+		t.Errorf("stdout[%d-1] = %q, want '\\n' before summary line. Full output: %q", idx, out[idx-1], out)
 	}
 }
 
@@ -392,25 +283,18 @@ func TestRunAgentCmdSurveyNoopWithoutTTY(t *testing.T) {
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil); err != nil {
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd: %v", err)
 	}
-	w.Close()
-	out, _ := io.ReadAll(r)
-	if strings.Contains(string(out), "survey ·") {
-		t.Errorf("stdout = %q, should not contain survey prompts when stdin is not a TTY", string(out))
+	if strings.Contains(out, "survey ·") {
+		t.Errorf("stdout = %q, should not contain survey prompts when stdin is not a TTY", out)
 	}
-	if !strings.Contains(string(out), "wt: claude · claude/sonnet ·") {
-		t.Errorf("stdout = %q, want the summary line", string(out))
+	if !strings.Contains(out, "wt: claude · claude/sonnet ·") {
+		t.Errorf("stdout = %q, want the summary line", out)
 	}
 }
 
@@ -438,17 +322,11 @@ func TestOllamaUnavailableErrorIncludesPullHint(t *testing.T) {
 func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Install a fake claude binary so launchFiltered can execute without
 	// requiring the real CLI on PATH.
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -465,7 +343,6 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 		},
 	}
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	cfg.ExposeAllForTest()
 
 	// The model must be launchable under live-truth semantics: the stubbed
 	// probe reports it registered and serving, so the row is a launch row
@@ -484,6 +361,89 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 	}
 }
 
+// stubOllamaList makes the pre-launch ollama check see an installed ollama
+// whose daemon lists names, for the duration of a test, and returns where
+// the origin of each `ollama list` it would have run is recorded.
+func stubOllamaList(t *testing.T, names ...string) *[]string {
+	t.Helper()
+	var origins []string
+	t.Cleanup(ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+		origins = append(origins, origin)
+		return names, true, nil
+	}))
+	return &origins
+}
+
+// directOllamaLaunch launches claude on a running ollama model whose route is
+// direct (LiteLLM off), with the ollama provider row at baseURL, and returns
+// launchFiltered's error. The agent is a script that exits 0.
+func directOllamaLaunch(t *testing.T, baseURL string) error {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	fakeAgentOnPath(t, "claude")
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal,
+			Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat},
+			Auth:      config.AuthConfig{Type: "none", BaseURL: baseURL}}},
+		Models: []config.Model{{ID: "ollama/gemma4:9b", ProviderID: "ollama", ModelName: "gemma4:9b", Tags: []string{"code"}}},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/gemma4:9b", Artifact: "gemma4:9b", ModelName: "gemma4:9b", Registered: true, Running: true},
+		},
+	})
+	return launchFiltered("claude", t.TempDir(), cfg, false, "", "", "", false, nil, nil, nil)
+}
+
+// TestLaunchFilteredOllamaCheckAsksTheRegistrysDaemon pins the non-TUI
+// launch's ollama check on a direct route: it asks the daemon the registry's
+// ollama provider row names, launches when that daemon lists the model, and
+// refuses with the `ollama pull` hint when it does not. Before #317 the
+// check ran whatever `ollama` was on PATH against the shell's OLLAMA_HOST,
+// and no test in this package reached it.
+func TestLaunchFilteredOllamaCheckAsksTheRegistrysDaemon(t *testing.T) {
+	origins := stubOllamaList(t, "gemma4:9b")
+	if err := directOllamaLaunch(t, "http://127.0.0.1:9/v1"); err != nil {
+		t.Fatalf("launch of a model the daemon lists: %v", err)
+	}
+	if len(*origins) != 1 || (*origins)[0] != "http://127.0.0.1:9" {
+		t.Errorf("ollama list was pinned to %v, want [http://127.0.0.1:9]", *origins)
+	}
+
+	stubOllamaList(t, "some-other-model")
+	err := directOllamaLaunch(t, "http://127.0.0.1:9/v1")
+	if err == nil || !strings.Contains(err.Error(), "ollama pull gemma4:9b") {
+		t.Errorf("launch of a model the daemon does not list: err = %v, want the `ollama pull` hint", err)
+	}
+}
+
+// TestLaunchFilteredOllamaCheckCannotTell pins the launch that is refused
+// because the check could not answer, with the reason in the error: the
+// registry's ollama row names no daemon (no command is run, since ollama
+// would fall back to its default daemon), and TestMain's default, which is
+// what keeps an unstubbed test from running the developer's ollama.
+func TestLaunchFilteredOllamaCheckCannotTell(t *testing.T) {
+	t.Run("base_url names no daemon", func(t *testing.T) {
+		origins := stubOllamaList(t, "gemma4:9b")
+		err := directOllamaLaunch(t, "/v1")
+		if err == nil || !strings.Contains(err.Error(), `ollama check failed: ollama row's base_url must be http://host:port, not ""`) {
+			t.Errorf("err = %v, want a failed check naming the base_url", err)
+		}
+		if len(*origins) != 0 {
+			t.Errorf("ollama list was run against %v; want no command", *origins)
+		}
+	})
+	t.Run("unstubbed", func(t *testing.T) {
+		err := directOllamaLaunch(t, "http://127.0.0.1:9/v1")
+		if err == nil || !strings.Contains(err.Error(), "ollamacheck list not stubbed in this test") {
+			t.Errorf("err = %v, want a not-stubbed failure", err)
+		}
+	})
+}
+
 // TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm verifies that
 // the pre-launch ollama-availability gate consults the per-model resolved
 // route, not the raw litellm on/off toggle: codex speaks only
@@ -495,15 +455,9 @@ func TestLaunchFilteredSkipsOllamaCheckInLitellm(t *testing.T) {
 func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	codexBin := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "codex")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -522,7 +476,6 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 	// Toggle is off, but a URL+key are configured — codex must still force
 	// litellm via the protocol mismatch, not the toggle.
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
-	cfg.ExposeAllForTest()
 
 	// The model must be launchable under live-truth semantics: the stubbed
 	// probe reports it registered and serving, so the row is a launch row
@@ -543,7 +496,7 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 
 // TestLaunchFilteredUsesEligibleAndSlot verifies that the non-TUI launch path
 // (a) calls cfg.EligibleModels to resolve the model list, (b) consults the
-// global rotation via rotation.Last/rotation.Next (no per-slot state) to
+// global rotation via rotation.Last/rotation.NextFromEligible (no per-slot state) to
 // pick the next-to-use model when no -M pin is supplied, and (c) honors the
 // -M pin without consulting rotation. Rotation is global, not per
 // agent+tag+family, so the eligible list is the sole source of truth for
@@ -552,7 +505,6 @@ func TestLaunchFilteredSkipsOllamaCheckWhenProtocolForcesLitellm(t *testing.T) {
 func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -567,7 +519,6 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
 	// Two eligible models, no -M → resolveModel errors with "multiple models
 	// match". The defaultModel fallback is gone, so any ambiguous eligible
@@ -601,17 +552,11 @@ func TestLaunchFilteredUsesEligibleAndSlot(t *testing.T) {
 func TestLaunchFilteredRotationAdvances(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	// Install a fake claude binary so launchFiltered can execute without
 	// requiring the real CLI on PATH.
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -627,7 +572,6 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
 	want := []string{"claude/a", "claude/b", "claude/c"}
 	statePath := filepath.Join(dir, "agent-wt", "rotation.state")
@@ -648,23 +592,16 @@ func TestLaunchFilteredRotationAdvances(t *testing.T) {
 // TestLaunchFilteredRotationRespectsTagFilter verifies that the rotation
 // fallback in launchFiltered (triggered when resolveModel's "multiple
 // models match" error fires) stays scoped to the -T filter instead of
-// walking the full agent-eligible list. Before this fix, rotation.Next
-// ignored tags/family and could select+record a model the user's -T
-// filter explicitly excluded — a regression from the pre-PR
-// EligibleModels(agent, tags, family)-scoped rotation, flagged in PR #82
-// review.
+// walking the full agent-eligible list: rotation.NextFromEligible is
+// handed the -T-filtered list, so the model it selects and
+// rotation.RecordFor records is never one the user's -T filter
+// explicitly excluded.
 func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	// Global model order interleaves a code-tagged model right after the
 	// last-launched design-tagged model, so a fallback that ignores the
@@ -682,9 +619,8 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
-	if err := rotation.New().Record("claude/design-a"); err != nil {
+	if err := rotation.New().RecordFor("", "claude/design-a"); err != nil {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 
@@ -704,21 +640,15 @@ func TestLaunchFilteredRotationRespectsTagFilter(t *testing.T) {
 
 // TestLaunchFilteredRecordsRefcount verifies the non-TUI launch path
 // records a live-session refcount entry (this process's pid + the launched
-// model) at the same commit point as rotation.Record, so the picker's "in
+// model) at the same commit point as rotation.RecordFor, so the picker's "in
 // use" column can see a launch made through -W/--cwd/outside-repo, not
 // just the TUI.
 func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -732,7 +662,6 @@ func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
@@ -751,15 +680,9 @@ func TestLaunchFilteredRecordsRefcount(t *testing.T) {
 func TestLaunchFilteredRecordsUsageForAgent(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
-	binDir := t.TempDir()
-	claudeBin := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeAgentOnPath(t, "claude")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -773,7 +696,6 @@ func TestLaunchFilteredRecordsUsageForAgent(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"claude"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
 	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
 		t.Fatalf("launchFiltered: %v", err)
@@ -802,7 +724,6 @@ func TestCommandAgentDoesNotRecordRefcount(t *testing.T) {
 	}
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	worktree := t.TempDir()
 
 	cfg := &config.Config{
@@ -829,12 +750,12 @@ func TestCommandAgentDoesNotRecordRefcount(t *testing.T) {
 // Note: a symmetric "no warning when -A is an agent" test is not added
 // here — exercising that branch through launchFiltered requires running
 // the actual agent binary, which hangs in the test environment. The
-// warning's only write site is the `if pinnedSupplied && IsCommand(agent)`
-// branch at launch.go:74-76; the inverse is locked by code review.
+// warning's only write site is the `if pinnedSupplied` check in the
+// command-agent branch of launchFilteredImpl; the inverse is locked by code
+// review.
 func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	cfg := &config.Config{
 		DefaultTag: "code",
@@ -844,27 +765,15 @@ func TestLaunchFilteredWarnWhenModelPassedToCommand(t *testing.T) {
 	}
 
 	// Capture stderr.
-	oldStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	os.Stderr = w
-	defer func() { os.Stderr = oldStderr }()
-
+	//
 	// launchFiltered with -A shell -M claude/opus. The actual exec may
 	// fail (no TTY, no args), but the stderr note is printed before the
 	// exec, so it lands in our pipe regardless of the outcome.
-	_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil, nil, nil)
-
-	// Close the writer to flush the pipe and read.
-	_ = w.Close()
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(r); err != nil {
-		t.Fatalf("read pipe: %v", err)
-	}
-	if !strings.Contains(buf.String(), `wt: -M ignored for command "shell"`) {
-		t.Errorf("stderr = %q; want it to contain %q", buf.String(), `wt: -M ignored for command "shell"`)
+	out := captureFile(t, &os.Stderr, func() {
+		_ = launchFiltered("shell", ".", cfg, false, "", "", "claude/opus", true, nil, nil, nil)
+	})
+	if !strings.Contains(out, `wt: -M ignored for command "shell"`) {
+		t.Errorf("stderr = %q; want it to contain %q", out, `wt: -M ignored for command "shell"`)
 	}
 }
 
@@ -882,7 +791,7 @@ func TestRunAgentCmdInvokesPriceNotice(t *testing.T) {
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
 	called := false
-	emitPriceNotice = func() { called = true }
+	emitPriceNotice = func(*config.Config) { called = true }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {
@@ -912,33 +821,24 @@ func TestRunAgentCmdNoticePrintedWithSummary(t *testing.T) {
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
 	var order []string
-	emitPriceNotice = func() { order = append(order, "notice") }
+	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skip("`true` not available")
 	}
 
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-
 	cmd := exec.Command(truePath)
-	if err := runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil); err != nil {
-		w.Close()
-		os.Stdout = old
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+	})
+	if err != nil {
 		t.Fatalf("runAgentCmd() error: %v", err)
 	}
-	w.Close()
-	os.Stdout = old
-	out, _ := io.ReadAll(r)
 
 	// Summary must be present.
-	if !strings.Contains(string(out), "wt: claude ·") {
-		t.Errorf("stdout missing summary line: %q", string(out))
+	if !strings.Contains(out, "wt: claude ·") {
+		t.Errorf("stdout missing summary line: %q", out)
 	}
 	// The notice seam was invoked after the summary.
 	if len(order) == 0 {
@@ -955,7 +855,7 @@ func TestRunAgentCmdSkipsPriceNoticeForCommandAgent(t *testing.T) {
 	t.Cleanup(func() { emitPriceNotice = prevNotice })
 
 	called := false
-	emitPriceNotice = func() { called = true }
+	emitPriceNotice = func(*config.Config) { called = true }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {
@@ -998,26 +898,19 @@ func TestRunAgentCmdPostExitOrder(t *testing.T) {
 		// output next to the real summary line.
 		fmt.Fprint(os.Stdout, "PICKER-MARKER\n")
 	}
-	emitPriceNotice = func() { order = append(order, "notice") }
+	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
 
 	truePath, err := exec.LookPath("true")
 	if err != nil {
 		t.Skip("`true` not available")
 	}
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	runErr := runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
-	w.Close()
-	os.Stdout = old
+	var runErr error
+	s := captureFile(t, &os.Stdout, func() {
+		runErr = runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+	})
 	if runErr != nil {
 		t.Fatalf("runAgentCmd: %v", runErr)
 	}
-	out, _ := io.ReadAll(r)
-	s := string(out)
 	if !strings.Contains(s, "wt: claude · ollama/qwen3.8 ·") {
 		t.Errorf("stdout = %q, want the summary line", s)
 	}
@@ -1077,11 +970,6 @@ func TestRunAgentCmdNativeModelSkipsStopPicker(t *testing.T) {
 // runAgentCmd itself (not just the internal/profiles unit tests) so a
 // wiring mistake in launch.go is caught here.
 func TestRunAgentCmdAppliesConfirmedProfile(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 [[profiles]]
 agent = "claude"
@@ -1089,9 +977,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return true, nil }
 	t.Cleanup(func() { confirmProfile = oldConfirm })
@@ -1102,13 +988,7 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
-	found := false
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
 		t.Errorf("cmd.Env = %v, want WT_TEST_PROFILE_APPLIED=1", cmd.Env)
 	}
 }
@@ -1118,11 +998,6 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 // of the prompt must actually skip application, not just skip the prompt
 // text.
 func TestRunAgentCmdSkipsProfileWhenDeclined(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 [[profiles]]
 agent = "claude"
@@ -1130,9 +1005,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return false, nil }
 	t.Cleanup(func() { confirmProfile = oldConfirm })
@@ -1143,10 +1016,8 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	if err := runAgentCmd(cmd, "claude", m, cfg, nil); err != nil {
 		t.Fatalf("runAgentCmd() error = %v", err)
 	}
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			t.Errorf("cmd.Env = %v, profile was declined but applied anyway", cmd.Env)
-		}
+	if slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+		t.Errorf("cmd.Env = %v, profile was declined but applied anyway", cmd.Env)
 	}
 }
 
@@ -1155,11 +1026,6 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 // must not even be called) and no application, even when a profile would
 // otherwise match.
 func TestRunAgentCmdGlobalOffSkipsPromptAndApplication(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 enabled = false
 
@@ -1169,9 +1035,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	promptCalled := false
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { promptCalled = true; return true, nil }
@@ -1220,14 +1084,7 @@ func TestRunAgentCmdSkipsProfileForCommandAndNativeModels(t *testing.T) {
 // normally — a user's typo in a hand-edited file must never block an
 // agent launch.
 func TestRunAgentCmdMalformedProfilesTomlDegradesGracefully(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte("not [ valid"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, "not [ valid")
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) {
 		t.Fatal("confirmProfile called despite a malformed profiles.toml")
@@ -1272,18 +1129,10 @@ func TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary(t *testing.T) {
 	sentinel := filepath.Join(sentinelDir, "should-not-exist")
 	cmd := exec.Command("touch", sentinel)
 
-	r, w, perr := os.Pipe()
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	oldStdout := os.Stdout
-	os.Stdout = w
-
-	err := runAgentCmd(cmd, "pi", m, cfg, pp)
-
-	w.Close()
-	os.Stdout = oldStdout
-	out, _ := io.ReadAll(r)
+	var err error
+	out := captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(cmd, "pi", m, cfg, pp)
+	})
 
 	if err == nil {
 		t.Fatal("runAgentCmd() error = nil, want the wrapper-not-installed error")
@@ -1297,7 +1146,7 @@ func TestRunAgentCmdProfileApplyErrorReleasesAndPrintsSummary(t *testing.T) {
 	if !released {
 		t.Error("releaseSession() was not called on a pre-launch profile apply error")
 	}
-	if !strings.Contains(string(out), "wt: pi · ollama/x") {
+	if !strings.Contains(out, "wt: pi · ollama/x") {
 		t.Errorf("stdout = %q, want the summary line printed", out)
 	}
 }
@@ -1332,11 +1181,6 @@ func TestPromptProfileNoTTYDefaultsToApply(t *testing.T) {
 // PR-review finding that the original code returned the error and hard-
 // failed the whole launch.
 func TestApplyProfileForLaunchDegradesOnConfirmError(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	body := `
 [[profiles]]
 agent = "claude"
@@ -1344,9 +1188,7 @@ match = "location"
 location = "local"
 env = { WT_TEST_PROFILE_APPLIED = "1" }
 `
-	if err := os.WriteFile(filepath.Join(dir, "agent-wt", "profiles.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeProfilesTOML(t, body)
 	oldConfirm := confirmProfile
 	confirmProfile = func(profiles.ResolvedProfile) (bool, error) { return false, errors.New("tty write failed") }
 	t.Cleanup(func() { confirmProfile = oldConfirm })
@@ -1362,10 +1204,8 @@ env = { WT_TEST_PROFILE_APPLIED = "1" }
 	if cerr := cleanup(); cerr != nil {
 		t.Errorf("cleanup() error = %v, want nil (noop)", cerr)
 	}
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			t.Errorf("cmd.Env = %v, profile env applied despite a confirmProfile error", cmd.Env)
-		}
+	if slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
+		t.Errorf("cmd.Env = %v, profile env applied despite a confirmProfile error", cmd.Env)
 	}
 }
 
@@ -1400,13 +1240,7 @@ func TestApplyProfileForLaunchUsesPrecomputedStoreWithoutReloading(t *testing.T)
 	}
 	t.Cleanup(func() { cleanup() })
 
-	found := false
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PRECOMPUTED=1" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Env, "WT_TEST_PRECOMPUTED=1") {
 		t.Errorf("cmd.Env = %v, want the precomputed store's profile applied", cmd.Env)
 	}
 }
@@ -1606,10 +1440,8 @@ func TestApplyResolvedProfileEnvArgsRevertedWhenConfigContentFails(t *testing.T)
 	}
 	t.Cleanup(func() { _ = cleanup() })
 
-	for _, e := range cmd.Env {
-		if e == "X=1" {
-			t.Errorf("cmd.Env = %v, contains profile Env \"X=1\" despite config_content failure — launch is half-profiled", cmd.Env)
-		}
+	if slices.Contains(cmd.Env, "X=1") {
+		t.Errorf("cmd.Env = %v, contains profile Env \"X=1\" despite config_content failure — launch is half-profiled", cmd.Env)
 	}
 	if strings.Join(cmd.Args, "|") != strings.Join(origArgs, "|") {
 		t.Errorf("cmd.Args = %v, want unchanged %v (ExtraArgs must be reverted when config_content fails)", cmd.Args, origArgs)
@@ -1755,23 +1587,18 @@ func TestApplyProfileForLaunchSelfHealPrintsNotice(t *testing.T) {
 	cmd := exec.Command("true")
 	cmd.Dir = worktree
 
-	oldStderr := os.Stderr
-	r, w, perr := os.Pipe()
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	os.Stderr = w
-	cleanup, err := applyProfileForLaunch(cmd, "claude", m, cfg, nil)
-	w.Close()
-	os.Stderr = oldStderr
+	var cleanup func() error
+	var err error
+	out := captureFile(t, &os.Stderr, func() {
+		cleanup, err = applyProfileForLaunch(cmd, "claude", m, cfg, nil)
+	})
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v", err)
 	}
 	defer func() { _ = cleanup() }()
 
-	out, _ := io.ReadAll(r)
-	if !strings.Contains(string(out), "wt: restored a leftover profile-managed file from a previous session: "+target) {
-		t.Errorf("stderr = %q, want the self-heal notice naming %q", string(out), target)
+	if !strings.Contains(out, "wt: restored a leftover profile-managed file from a previous session: "+target) {
+		t.Errorf("stderr = %q, want the self-heal notice naming %q", out, target)
 	}
 }
 
@@ -1789,23 +1616,320 @@ func TestApplyProfileForLaunchSelfHealSkipsSilentlyOnTargetError(t *testing.T) {
 	m := config.Model{ID: "ollama/x", ProviderID: "ollama", ModelName: "x"}
 	cmd := exec.Command("true")
 
-	oldStderr := os.Stderr
-	r, w, perr := os.Pipe()
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	os.Stderr = w
-	cleanup, err := applyProfileForLaunch(cmd, "codex", m, cfg, nil)
-	w.Close()
-	os.Stderr = oldStderr
+	var cleanup func() error
+	var err error
+	out := captureFile(t, &os.Stderr, func() {
+		cleanup, err = applyProfileForLaunch(cmd, "codex", m, cfg, nil)
+	})
 	if err != nil {
 		t.Fatalf("applyProfileForLaunch() error = %v, want nil (a self-heal ConfigFileTarget error must never fail the launch)", err)
 	}
 	if cerr := cleanup(); cerr != nil {
 		t.Errorf("cleanup() error = %v, want nil", cerr)
 	}
-	out, _ := io.ReadAll(r)
-	if strings.Contains(string(out), "restored a leftover") {
-		t.Errorf("stderr = %q, want no self-heal notice when the target couldn't even be resolved", string(out))
+	if strings.Contains(out, "restored a leftover") {
+		t.Errorf("stderr = %q, want no self-heal notice when the target couldn't even be resolved", out)
+	}
+}
+
+// TestLaunchFilteredEnsuresRouteForRunningLocalModel pins #192: a running
+// local model launched through LiteLLM has its route checked, and the proxy
+// waited for, before the agent runs. Such a model may never have been started
+// by wt, so no start hook wrote its route.
+func TestLaunchFilteredEnsuresRouteForRunningLocalModel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+	fakeAgentOnPath(t, "claude")
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+		Models: []config.Model{
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/remote-only-model", Artifact: "remote-only-model", ModelName: "remote-only-model", Registered: true, Running: true},
+		},
+	})
+	events := stubEnsureRoute(t)
+
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	if got := strings.Join(*events, ","); got != "ensure:ollama/remote-only-model,wait" {
+		t.Fatalf("events = %q, want ensure:ollama/remote-only-model,wait", got)
+	}
+}
+
+// TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm pins that the
+// launch-time route check (#192) is gated on the per-model resolved route,
+// not on the routing toggle. codex speaks only openai-responses, which the
+// ollama provider does not serve, so ResolveRoute forces LiteLLM with the
+// toggle off — the one case where route.Litellm and cfg.IsLitellm()
+// disagree. The agent dials the proxy, so the model's route must be checked
+// and the proxy waited for; a gate on the toggle would skip both.
+func TestLaunchFilteredEnsuresRouteWhenProtocolForcesLitellm(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+	fakeAgentOnPath(t, "codex")
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		// No Protocols set: EffectiveProtocols defaults to openai-chat only,
+		// which codex's openai-responses never overlaps.
+		Providers: []config.Provider{{ID: "ollama", Location: config.LocationLocal}},
+		Models: []config.Model{
+			{ID: "ollama/remote-only-model", ProviderID: "ollama", ModelName: "remote-only-model", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "codex", SupportedProviders: []string{"ollama"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: false, URL: "http://localhost:4000", APIKey: "sk-litellm"})
+	if cfg.IsLitellm() {
+		t.Fatal("fixture: the routing toggle must be off")
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "ollama", ModelID: "ollama/remote-only-model", Artifact: "remote-only-model", ModelName: "remote-only-model", Registered: true, Running: true},
+		},
+	})
+	events := stubEnsureRoute(t)
+
+	if err := launchFiltered("codex", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered with protocol-forced litellm: %v", err)
+	}
+	if got := strings.Join(*events, ","); got != "ensure:ollama/remote-only-model,wait" {
+		t.Fatalf("events = %q, want ensure:ollama/remote-only-model,wait", got)
+	}
+}
+
+// TestLaunchFilteredSkipsEnsureOnDirectRoute pins that a launch dialing the
+// provider directly never touches config.yaml: the route it would write is
+// not on this launch's path. The provider speaks claude's wire protocol and
+// has a base_url, so with LiteLLM off the route resolves direct.
+func TestLaunchFilteredSkipsEnsureOnDirectRoute(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	worktree := t.TempDir()
+	fakeAgentOnPath(t, "claude")
+
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx/m", ProviderID: "omlx", ModelName: "m", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"omlx"}}},
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/m", Artifact: "m", ModelName: "m", Registered: true, Running: true, ArtifactKnown: true},
+		},
+	})
+	events := stubEnsureRoute(t)
+
+	// The launch must succeed: an error here would mean it never reached the
+	// point where the check would run, and the assertion below would pass
+	// without proving anything.
+	if err := launchFiltered("claude", worktree, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered on a direct route: %v", err)
+	}
+	if len(*events) != 0 {
+		t.Fatalf("events = %v, want none on a direct route", *events)
+	}
+}
+
+// relativeArgFixture is the report behind the relative-argument note: the
+// command is typed in <repo>/wt, the agent starts in <repo>, and the argument
+// "../../other" names a sibling project from the first and nothing from the
+// second. It installs a fake `claude` that exits 0, points the shell-directory
+// seam at <repo>/wt, and captures the notes.
+func relativeArgFixture(t *testing.T) (launch, other string, notes *bytes.Buffer) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other = filepath.Join(root, "other")
+	launch = filepath.Join(root, "repo")
+	shell := filepath.Join(launch, "wt")
+	for _, d := range []string{other, shell} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fakeAgentOnPath(t, "claude")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	notes = &bytes.Buffer{}
+	oldDir, oldOut := shellDir, osStderr
+	shellDir = func() (string, error) { return shell, nil }
+	osStderr = notes
+	t.Cleanup(func() { shellDir, osStderr = oldDir, oldOut })
+	return launch, other, notes
+}
+
+// TestLaunchNotesARelativePassthroughPath pins the note on the model-launch
+// path: an argument after `--` that exists from the directory the command was
+// typed in but not from the worktree the agent starts in is named, with the
+// absolute path to pass instead, before the agent runs. The argument itself
+// is handed over unchanged.
+func TestLaunchNotesARelativePassthroughPath(t *testing.T) {
+	launch, other, notes := relativeArgFixture(t)
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}}},
+		Models:     []config.Model{{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true, Tags: []string{"code"}}},
+		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
+	}
+	if err := launchFiltered("claude", launch, cfg, false, "", "", "", false, []string{"../../other", "--verbose"}, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	got := notes.String()
+	for _, want := range []string{`wt: note: "../../other" is a relative path`, "claude starts in " + launch, other} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notes %q lack %q", got, want)
+		}
+	}
+	if n := strings.Count(got, "wt: note:"); n != 1 {
+		t.Errorf("notes = %q, want exactly one (the flag is not a path)", got)
+	}
+}
+
+// TestPassthroughLaunchNotesARelativePath pins the same note for an agent
+// with no config entry, which launches through launchPassthrough.
+func TestPassthroughLaunchNotesARelativePath(t *testing.T) {
+	launch, other, notes := relativeArgFixture(t)
+	if err := launchPassthrough("claude", launch, false, []string{"../../other"}, &config.Config{}, nil); err != nil {
+		t.Fatalf("launchPassthrough: %v", err)
+	}
+	if got := notes.String(); !strings.Contains(got, `"../../other" is a relative path`) || !strings.Contains(got, other) {
+		t.Fatalf("notes = %q, want the relative-path note naming %s", got, other)
+	}
+}
+
+// TestLaunchStaysQuietWithoutAMistakenPath pins that an ordinary launch
+// prints no note: no passthrough arguments, or ones that name nothing from
+// the shell's directory.
+func TestLaunchStaysQuietWithoutAMistakenPath(t *testing.T) {
+	launch, _, notes := relativeArgFixture(t)
+	for _, args := range [][]string{nil, {"run", "say hi"}, {"--verbose"}} {
+		if err := launchPassthrough("claude", launch, false, args, &config.Config{}, nil); err != nil {
+			t.Fatalf("launchPassthrough %v: %v", args, err)
+		}
+	}
+	if notes.Len() != 0 {
+		t.Fatalf("notes = %q, want none", notes.String())
+	}
+}
+
+// agentSessionFixture sets up what used to make wt resume by itself: a fake
+// `claude` that records its arguments, a HOME holding a prior claude session
+// for the launch directory, and a non-native model on a direct route. It
+// returns the launch directory, the config, and a reader for the arguments
+// the agent was started with.
+func agentSessionFixture(t *testing.T) (launch string, cfg *config.Config, args func() []string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch = filepath.Join(root, "repo")
+	home := filepath.Join(root, "home")
+	argv := filepath.Join(root, "argv")
+	binDir := filepath.Join(root, "bin")
+	projects := claudeStateDir(t, home, launch)
+	for _, d := range []string{launch, binDir, projects} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The prior session wt used to find: the newest .jsonl in the project dir.
+	if err := os.WriteFile(filepath.Join(projects, "0000aaaa-prior-session.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + argv + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
+	oldDir := shellDir
+	shellDir = func() (string, error) { return launch, nil }
+	t.Cleanup(func() { shellDir = oldDir })
+
+	cfg = &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "omlx", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m", Tags: []string{"code"}}},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"omlx"}}},
+	}
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/m", Artifact: "m", ModelName: "m", Registered: true, Running: true, ArtifactKnown: true},
+		},
+	})
+	return launch, cfg, func() []string {
+		t.Helper()
+		b, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatalf("the agent was not run: %v", err)
+		}
+		return strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	}
+}
+
+// TestLaunchLeavesSessionsToTheAgent pins that wt never resumes a session by
+// itself (#198, #204). It used to look up the newest session recorded for the
+// launch directory and add the agent's resume flag without being asked, so a
+// one-shot run appended to the user's last conversation — whichever session
+// was newest, including one another process was still using — and an opencode
+// launch failed when the resumed session had stored a different model. Whether
+// to continue a conversation is the agent's business: wt starts it fresh.
+func TestLaunchLeavesSessionsToTheAgent(t *testing.T) {
+	launch, cfg, args := agentSessionFixture(t)
+	if err := launchFiltered("claude", launch, cfg, false, "", "", "", false, nil, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	got := args()
+	for _, a := range got {
+		if a == "--resume" || a == "--continue" || a == "--session" || strings.Contains(a, "prior-session") {
+			t.Fatalf("agent started with %q: wt resumed a session nobody asked for (args %v)", a, got)
+		}
+	}
+}
+
+// TestLaunchPassesTheUsersResumeFlagsThrough pins the other half: resuming is
+// done with the agent's own flags after `--`, and wt hands them over
+// unchanged and in order — after its own flags, so a yolo launch still works.
+func TestLaunchPassesTheUsersResumeFlagsThrough(t *testing.T) {
+	launch, cfg, args := agentSessionFixture(t)
+	extra := []string{"--resume", "1234abcd-chosen-by-the-user", "--fork-session"}
+	if err := launchFiltered("claude", launch, cfg, true, "", "", "", false, extra, nil, nil); err != nil {
+		t.Fatalf("launchFiltered: %v", err)
+	}
+	got := args()
+	if n := len(got); n < len(extra) || !slices.Equal(got[n-len(extra):], extra) {
+		t.Fatalf("args = %v, want them to end with the user's %v", got, extra)
+	}
+	if n := strings.Count(strings.Join(got, " "), "--resume"); n != 1 {
+		t.Fatalf("args = %v, want exactly the one --resume the user passed", got)
+	}
+	if !slices.Contains(got, "--dangerously-skip-permissions") {
+		t.Errorf("args = %v, want the yolo flag kept alongside the passthrough", got)
 	}
 }

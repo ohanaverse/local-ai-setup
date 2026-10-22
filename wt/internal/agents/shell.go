@@ -6,8 +6,8 @@ import (
 
 // shellDriver launches a shell command (or interactive bash) in the selected
 // worktree. It is the Go equivalent of the legacy bash shell-wt wrapper.
-// Unlike other agents, shell has no model rotation, no yolo flag, and no
-// session resume. The user's passthrough args (after --) are exec'd
+// Unlike other agents, shell has no model rotation and no yolo flag.
+// The user's passthrough args (after --) are exec'd
 // directly as argv (no shell involved), so metacharacters like `|`/`>`/`&&`
 // are never interpreted; use `shell-wt -- bash -lc 'cmd1 | cmd2'` for
 // pipelines. With no args, an interactive bash shell opens.

@@ -69,6 +69,7 @@ func TestBuildEntryCloudRow(t *testing.T) {
 			"cache_creation_input_token_cost": 0.5 / 1_000_000,
 			"cache_read_input_token_cost":     0.5 / 1_000_000,
 			"supports_vision":                 true,
+			"wt_managed":                      true,
 		},
 	}
 	if got := decode(t, node); !reflect.DeepEqual(got, want) {
@@ -108,6 +109,47 @@ func TestBuildEntryLocalRows(t *testing.T) {
 	}
 }
 
+// TestBuildEntryOpenAICompatAPIBaseEndsInV1 pins issue #168: LiteLLM's
+// openai/ provider appends only /chat/completions to api_base, so an
+// OpenAI-compatible local server's row must dial <origin>/v1 whichever form
+// the registry stores (the seeded omlx base_url is the bare origin). Ollama's
+// ollama_chat/ rows keep the bare origin. The origin is the one wt's own
+// probes use (config.Provider.Origin, #348): an mtplx base_url on this machine
+// that names no port routes to the port `wt start` serves mtplx on, or the
+// proxy would be sent to port 80 for a model wt has just started on 8003;
+// every other url with no port is written as it is.
+func TestBuildEntryOpenAICompatAPIBaseEndsInV1(t *testing.T) {
+	cases := []struct {
+		provider, baseURL, want string
+	}{
+		{"omlx", "http://localhost:8000", "http://localhost:8000/v1"},
+		{"omlx", "http://localhost:8000/", "http://localhost:8000/v1"},
+		{"omlx", "http://localhost:8000/v1", "http://localhost:8000/v1"},
+		{"omlx", "http://localhost:8000/v1/", "http://localhost:8000/v1"},
+		{"omlx-6bit", "http://localhost:8000", "http://localhost:8000/v1"},
+		{"mlx_lm_server", "http://localhost:8001", "http://localhost:8001/v1"},
+		{"mtplx", "http://127.0.0.1:8003", "http://127.0.0.1:8003/v1"},
+		{"mtplx", "http://127.0.0.1/v1", "http://127.0.0.1:8003/v1"},
+		{"mtplx", "http://localhost", "http://localhost:8003/v1"},
+		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example/v1"},
+		{"omlx", "http://localhost/v1", "http://localhost/v1"},
+		{"mlx_lm_server", "http://localhost", "http://localhost/v1"},
+		{"ollama", "http://localhost:11434/", "http://localhost:11434/"},
+	}
+	for _, c := range cases {
+		p := config.Provider{ID: c.provider, Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: c.baseURL}}
+		m := config.Model{ID: c.provider + "/m", ProviderID: c.provider, ModelName: "org/m", Location: config.LocationLocal}
+		node, err := BuildEntry(m, p)
+		if err != nil {
+			t.Fatalf("%s %q: BuildEntry: %v", c.provider, c.baseURL, err)
+		}
+		params := decode(t, node)["litellm_params"].(map[string]any)
+		if params["api_base"] != c.want {
+			t.Errorf("%s %q: api_base = %v, want %q", c.provider, c.baseURL, params["api_base"], c.want)
+		}
+	}
+}
+
 // TestBuildEntryRejectsUnmappedProvider guards the "no LiteLLM mapping"
 // invariant: a provider missing from the policy table must error, never
 // produce a half-built row.
@@ -121,7 +163,7 @@ func TestBuildEntryRejectsUnmappedProvider(t *testing.T) {
 // TestBuildEntryUnencodableModelInfoReturnsError pins that a model_info value
 // yaml.Node.Encode cannot marshal (a hand-edited registry.toml decoded into a
 // weird shape) surfaces as a per-model error from BuildEntry instead of
-// panicking and crashing the whole wt process on expose/unexpose/sync/start.
+// panicking and crashing the whole wt process on sync/start.
 func TestBuildEntryUnencodableModelInfoReturnsError(t *testing.T) {
 	cfg := testConfig()
 	m := cfg.Models[2] // openrouter/x/y
@@ -201,5 +243,80 @@ func TestOmlx6bitHasAPolicy(t *testing.T) {
 	cfg := &config.Config{Providers: []config.Provider{p}, Models: []config.Model{m}}
 	if locals := LocalModels(cfg); len(locals) != 1 || locals[0].ID != "omlx-6bit/Six" {
 		t.Errorf("LocalModels = %v, want the omlx-6bit model (sync must manage it)", locals)
+	}
+}
+
+// TestBuildEntryStampsMarker pins #179's ownership marker: every row wt
+// builds carries model_info.wt_managed: true, which is what lets sync delete
+// its own stale rows while never touching hand-written ones.
+func TestBuildEntryStampsMarker(t *testing.T) {
+	cfg := testConfig()
+	for _, id := range []string{"ollama/gemma:9b", "openrouter/x/y"} {
+		m := cfg.Models[config.IndexModelByID(cfg.Models, id)]
+		n, err := BuildEntry(m, *cfg.ProviderByID(m.ProviderID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !IsManaged(n) {
+			t.Errorf("%s: row not marked wt_managed: %v", id, decode(t, n))
+		}
+	}
+}
+
+// TestBuildEntryMarkerWins pins that a registry model_info cannot disown a
+// wt row: wt_managed: false in model_info is overridden, or sync would treat
+// its own route as hand-written and strand it forever.
+func TestBuildEntryMarkerWins(t *testing.T) {
+	cfg := testConfig()
+	m := cfg.Models[config.IndexModelByID(cfg.Models, "openrouter/x/y")]
+	m.ModelInfo = map[string]any{ManagedKey: false}
+	n, err := BuildEntry(m, *cfg.ProviderByID(m.ProviderID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsManaged(n) {
+		t.Fatalf("model_info override disowned the row: %v", decode(t, n))
+	}
+}
+
+// TestBuildEntrySecretRefEmptyIsAnError pins that a non-empty secret_ref
+// resolving to "" (an env-name or os.environ/ ref whose variable is unset in
+// this shell) is a BuildEntry error, not an `api_key: ""` row. Sync rebuilds
+// every cloud row, so writing the empty key would replace every working key
+// and fail every cloud route with an auth error.
+func TestBuildEntrySecretRefEmptyIsAnError(t *testing.T) {
+	t.Setenv("WT_TEST_UNSET_KEY", "")
+	cfg := testConfig()
+	for _, ref := range []string{"WT_TEST_UNSET_KEY", "os.environ/WT_TEST_UNSET_KEY"} {
+		p := cfg.Providers[2] // openrouter
+		p.Auth.SecretRef = ref
+		if _, err := BuildEntry(cfg.Models[2], p); err == nil || !strings.Contains(err.Error(), "WT_TEST_UNSET_KEY") {
+			t.Errorf("ref %q: BuildEntry error = %v, want one naming the empty ref", ref, err)
+		}
+	}
+}
+
+// TestPricingInfoReadsOnlyTheFlatPrices pins what a route's model_info is
+// priced from: the cost table's flat prices, never a cost.time_prices row.
+// `wt cloud-sync` stores a model's time-of-day schedule as such rows (#322)
+// and its dearest level as the flat price, so the route carries that level
+// whenever the sync ran, and a sync that changes only the rows leaves
+// config.yaml as it was (no proxy restart).
+func TestPricingInfoReadsOnlyTheFlatPrices(t *testing.T) {
+	in, cache, out, cheap := 1.32, 0.044, 3.96, 0.66
+	flat := config.ModelCost{InputPricePerMillion: &in, CachePricePerMillion: &cache, OutputPricePerMillion: &out}
+	withRow := flat
+	withRow.TimePrices = []config.TimePrice{{
+		Label: "openrouter", Timezone: "UTC", InputPricePerMillion: &cheap, CachePricePerMillion: &cheap, OutputPricePerMillion: &cheap,
+		Windows: []config.CostWindow{{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}, Start: "00:00", End: "24:00"}},
+	}}
+	want := []kv{
+		{"input_cost_per_token", in / 1e6}, {"output_cost_per_token", out / 1e6},
+		{"cache_creation_input_token_cost", cache / 1e6}, {"cache_read_input_token_cost", cache / 1e6},
+	}
+	for name, c := range map[string]config.ModelCost{"flat": flat, "with a row": withRow} {
+		if got := pricingInfo(c); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: pricingInfo = %v, want %v", name, got, want)
+		}
 	}
 }

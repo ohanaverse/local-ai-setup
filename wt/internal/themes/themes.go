@@ -169,10 +169,6 @@ func Get(name string) (Theme, bool) {
 // Production code uses config.Dir() (XDG_CONFIG_HOME-aware).
 var dirFunc = config.Dir
 
-// dir is the internal accessor for the configured directory path. Tests
-// override dirFunc; production code never touches it directly.
-func dir() string { return dirFunc() }
-
 // DirFuncForTest returns the current directory function. Test-only helper
 // for callers outside this package that need to override the dirFunc seam.
 func DirFuncForTest() func() string { return dirFunc }

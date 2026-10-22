@@ -42,5 +42,5 @@ func passthroughModel() config.Model {
 // syncs against zero models — a no-op that does not create its models.json
 // when the file does not already exist and LiteLLM routing is off.
 func BuildPassthroughCmd(agent, worktreePath string, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	return BuildLaunchCmd(agent, passthroughModel(), worktreePath, yolo, nil, nil, extraArgs)
+	return BuildLaunchCmd(agent, passthroughModel(), worktreePath, yolo, nil, extraArgs)
 }

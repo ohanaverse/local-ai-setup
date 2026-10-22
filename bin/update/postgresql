@@ -1,0 +1,104 @@
+#!/bin/bash
+# update/postgresql — upgrade postgresql@16 and restart its brew service.
+#
+# Why the versioned formula is left alone: `postgresql@16` only ever moves
+# within major version 16, and that is deliberate — a Homebrew data directory
+# is only readable by the major version that created it, so a jump to 17 is a
+# manual `pg_upgrade` with the service stopped, not something an "update my
+# tools" script may do silently. If brew ever offers a newer major, take it by
+# hand (guide 08 §2 has the recovery steps).
+#
+# LiteLLM keeps its spend logs and admin state in this server: DATABASE_URL in
+# ~/Library/LaunchAgents/local.litellm.proxy.plist and
+# general_settings.database_url in ~/.config/litellm/config.yaml both point at
+# postgresql://keith@localhost:5432/litellm. A restart costs the proxy its open
+# connections, which its pool re-establishes; a sweep runs update/litellm after
+# this script anyway, so the proxy is bounced last.
+#
+# Usage: update/postgresql [--no-restart] [--restart] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/postgresql [--no-restart] [--restart] [--dry-run] [--check]
+
+Upgrade the postgresql@16 Homebrew formula and, if anything was upgraded,
+restart its brew service.
+
+  --no-restart  upgrade but leave the server alone
+  --restart     restart the server even when nothing was upgraded
+  --dry-run     print the commands without running them
+  --check       report the installed version and whether brew sees an update
+EOF
+}
+
+update_init postgresql "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --no-restart) NO_RESTART=1 ;;
+        --restart) FORCE_RESTART=1 ;;
+        *)
+            printf 'update/postgresql: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+require_cmd brew
+
+FORMULA=postgresql@16
+prefix=$(brew --prefix "$FORMULA" 2> /dev/null || true)
+if [ ! -x "$prefix/bin/postgres" ]; then
+    update_finish not-installed "no $FORMULA in the brew prefix (brew install $FORMULA)"
+fi
+
+installed_raw=$("$prefix/bin/postgres" --version 2> /dev/null || echo unknown)
+installed_version=$(printf '%s\n' "$installed_raw" | sed -n 's/^postgres (PostgreSQL) \([^ ]*\).*/\1/p')
+installed_version=${installed_version:-$installed_raw}
+update_note "installed: PostgreSQL $installed_version"
+
+outdated=$(brew_outdated "$FORMULA")
+
+if [ "$UPDATE_CHECK" -eq 1 ]; then
+    if [ -n "$outdated" ]; then
+        update_finish stale "$installed_version installed; brew has $outdated"
+    fi
+    update_finish current "$installed_version"
+fi
+
+brew_upgrade "$FORMULA"
+
+if dry_run_stop; then
+    brew_dry_run_finish "$FORMULA" "$outdated" "$installed_version"
+fi
+
+new_raw=$("$prefix/bin/postgres" --version 2> /dev/null || echo unknown)
+new_version=$(printf '%s\n' "$new_raw" | sed -n 's/^postgres (PostgreSQL) \([^ ]*\).*/\1/p')
+new_version=${new_version:-$new_raw}
+update_note "installed: PostgreSQL $new_version"
+
+restarted=""
+if [ -n "${NO_RESTART:-}" ]; then
+    update_note "restart skipped (--no-restart)"
+elif ! brew_restart_due "$outdated" "$installed_version" "$new_version"; then
+    update_note "nothing was upgraded, so the running server was left alone (--restart bounces it anyway)"
+else
+    brew_restart "$FORMULA"
+    restarted="brew services restarted $FORMULA"
+    # pg_isready prints its own verdict ("... accepting connections" or why
+    # not), so passing that line through beats re-testing it here — but poll for
+    # it, because brew returns before the server is listening.
+    if wait_for_cmd "$RESTART_WAIT" "$prefix/bin/pg_isready"; then
+        update_note "$CMD_OUTPUT"
+    else
+        update_note "$CMD_OUTPUT"
+        update_fail "$FORMULA $new_version is not accepting connections ${RESTART_WAIT}s after its restart; check the brew service log"
+    fi
+fi
+
+finish_after_upgrade "$installed_version" "$new_version" brew "$(brew_outdated "$FORMULA")" "$restarted"

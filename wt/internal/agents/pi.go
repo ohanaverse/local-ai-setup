@@ -2,6 +2,9 @@ package agents
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -19,14 +22,17 @@ func (piDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAI
 // SyncModels adds any non-native models from cfg that are missing from pi's
 // models.json, so rotation-selected models are always available to pi.
 // target is the model this launch is about to use (see Syncer's doc
-// comment) — syncDirectProviders uses it to decide which provider's
-// secret_ref failure, if any, should actually fail this launch.
-func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
+// comment): it is synced too even when cfg does not hold it (a discovered
+// local model has no registry entry), and syncDirectProviders uses it to
+// decide which provider's secret_ref failure, if any, should actually fail
+// this launch. r is target's resolved route — the same one Build gets — so
+// the entry is written where Build will look for it (see syncModels).
+func (piDriver) SyncModels(cfg *config.Config, target config.Model, r Route) error {
 	path, err := piModelsPath()
 	if err != nil {
 		return err
 	}
-	return syncModels(cfg, path, target)
+	return syncModels(cfg, path, target, r)
 }
 
 // Build passes --model only when the target model is present in pi's
@@ -37,7 +43,11 @@ func (piDriver) SyncModels(cfg *config.Config, target config.Model) error {
 // --model on the first slash, so a registry id under the "ollama" provider
 // could never be addressed and its bare form would be sent upstream (400 at
 // the gateway). When the entry is missing, Build falls back to pi's default
-// model and surfaces a warning.
+// model, surfaces a warning and sets ModelFallback (which wt smoke turns into
+// a FAIL). SyncModels writes the launch target's entry first, so this is left
+// for a direct route with no models.json yet (the sync creates the file only
+// for a LiteLLM route), a user-disabled entry (_launch: false), a provider
+// with no usable base_url/secret, or an unreadable models.json.
 func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	lc := LaunchCmd{Bin: "pi"}
 	if m.Native {
@@ -46,20 +56,19 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	path, err := piModelsPath()
 	if err != nil {
 		lc.Warn = fmt.Sprintf("pi: cannot locate models.json (%v), using default model", err)
+		lc.ModelFallback = true
 		return lc
 	}
-	modelArg := r.ProviderID + "/" + r.ModelRef
 	providerID := r.ProviderID
-	launchID := r.ModelRef
 	if r.Litellm {
-		modelArg = piLitellmProviderID + "/" + r.ModelRef
 		providerID = piLitellmProviderID
-		launchID = r.ModelRef
 	}
-	if isLaunchable(providerID, launchID, path) {
+	modelArg := providerID + "/" + r.ModelRef
+	if isLaunchable(providerID, r.ModelRef, path) {
 		lc.Args = append(lc.Args, "--model", modelArg)
 	} else {
 		lc.Warn = fmt.Sprintf("pi: model %q not configured for pi, using default model", modelArg)
+		lc.ModelFallback = true
 	}
 	return lc
 }
@@ -81,6 +90,24 @@ func (piDriver) RequiredMechanism(m profiles.Mechanism) (profiles.Mechanism, boo
 		return profiles.MechanismWrapper, true
 	}
 	return "", false
+}
+
+// piSessionDirChars are what pi's session manager turns into a dash when it
+// names a working directory's session directory.
+var piSessionDirChars = strings.NewReplacer("/", "-", `\`, "-", ":", "-")
+
+// StateDir is pi's session directory for a working directory:
+// <agent dir>/sessions/--<path>--, the agent dir being PI_CODING_AGENT_DIR or
+// ~/.pi/agent.
+func (piDriver) StateDir(path string) string {
+	agentDir := os.Getenv("PI_CODING_AGENT_DIR")
+	if agentDir == "" {
+		agentDir = filepath.Join(os.Getenv("HOME"), ".pi", "agent")
+	}
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) {
+		path = path[1:]
+	}
+	return filepath.Join(agentDir, "sessions", "--"+piSessionDirChars.Replace(path)+"--")
 }
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by

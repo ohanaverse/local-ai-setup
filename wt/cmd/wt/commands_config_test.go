@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -22,7 +23,7 @@ import (
 //
 // We point themes' dirFunc at the tmp dir and set XDG_CONFIG_HOME to tmp so
 // config.Load reads a minimal config.toml (agents + default tag) and a
-// modelman-owned registry.toml (empty providers/models) from the temp dir.
+// registry.toml (empty providers/models) from the temp dir.
 // The seam is restored via t.Cleanup.
 func newTestApp(t *testing.T) (*app, string) {
 	t.Helper()
@@ -31,7 +32,6 @@ func newTestApp(t *testing.T) (*app, string) {
 	themes.SetDirFuncForTest(func() string { return tmp })
 	t.Cleanup(func() { themes.SetDirFuncForTest(origDirFunc) })
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func newTestApp(t *testing.T) (*app, string) {
 		[]byte("default_tag = \"code\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Load fail-closes without modelman-owned registry.toml.
+	// Load fail-closes without a registry.toml.
 	regDir := filepath.Join(tmp, "local-ai")
 	if err := os.MkdirAll(regDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -56,17 +56,33 @@ func newTestApp(t *testing.T) (*app, string) {
 	return a, tmp
 }
 
+// editorCall records one run of the config editor.
+type editorCall struct {
+	called bool
+	cfg    *config.Config
+	cfgErr error
+	opts   configeditor.Options
+}
+
+// stubConfigEditor replaces the editor (which needs a terminal) with one that
+// records how it was opened and returns res and err.
+func stubConfigEditor(t *testing.T, res configeditor.Result, err error) *editorCall {
+	t.Helper()
+	call := &editorCall{}
+	old := configeditorRun
+	configeditorRun = func(_ themes.Theme, cfg *config.Config, cfgErr error, o configeditor.Options) (configeditor.Result, error) {
+		*call = editorCall{called: true, cfg: cfg, cfgErr: cfgErr, opts: o}
+		return res, err
+	}
+	t.Cleanup(func() { configeditorRun = old })
+	return call
+}
+
 // TestConfigCmd_NoSubcommand_LaunchesEditor: wt config with no args now
 // launches the config editor TUI. We stub configeditorRun to avoid the
 // TTY requirement in tests.
 func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
-	called := false
-	old := configeditorRun
-	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
-		called = true
-		return nil
-	}
-	defer func() { configeditorRun = old }()
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
 
 	a, _ := newTestApp(t)
 	cmd := configCmd(a)
@@ -76,8 +92,11 @@ func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !called {
+	if !call.called {
 		t.Fatal("expected configeditorRun to be called")
+	}
+	if call.opts.StartTab != configeditor.TabAgents {
+		t.Errorf("wt config opened on tab %d, want the Agents tab", call.opts.StartTab)
 	}
 }
 
@@ -85,15 +104,7 @@ func TestConfigCmd_NoSubcommand_LaunchesEditor(t *testing.T) {
 // launches the repair TUI even when the loaded config has a validation
 // error. Without this, a broken config.toml would be a dead end.
 func TestConfigCmd_InvalidConfig_LaunchesEditor(t *testing.T) {
-	var passedCfg *config.Config
-	var passedErr error
-	old := configeditorRun
-	configeditorRun = func(theme themes.Theme, cfg *config.Config, cfgErr error) error {
-		passedCfg = cfg
-		passedErr = cfgErr
-		return nil
-	}
-	defer func() { configeditorRun = old }()
+	call := stubConfigEditor(t, configeditor.Result{}, nil)
 
 	a, _ := newTestApp(t)
 	a.cfgErr = fmt.Errorf("validation failed")
@@ -104,10 +115,10 @@ func TestConfigCmd_InvalidConfig_LaunchesEditor(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if passedCfg == nil {
+	if call.cfg == nil {
 		t.Fatal("expected configeditorRun to receive the config")
 	}
-	if passedErr == nil {
+	if call.cfgErr == nil {
 		t.Fatal("expected configeditorRun to receive the validation error")
 	}
 }
@@ -268,7 +279,7 @@ func TestConfigThemeList_PrintsAllThemes(t *testing.T) {
 // themes.toml, then runs `wt config theme` and confirms solarized shows
 // up as active.
 func TestConfigTheme_ShowsActive_WithNonDefault(t *testing.T) {
-	a, tmp := newTestApp(t)
+	_, tmp := newTestApp(t)
 	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"),
 		[]byte("theme = \"solarized\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -278,7 +289,6 @@ func TestConfigTheme_ShowsActive_WithNonDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newApp() error = %v", err)
 	}
-	_ = a // unused after second newApp()
 	var out bytes.Buffer
 	cmd := configCmd(a2)
 	cmd.SetArgs([]string{"theme"})

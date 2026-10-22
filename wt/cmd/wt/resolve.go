@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
@@ -10,7 +11,7 @@ import (
 )
 
 // probeInventory is a test seam: production probes the live local-model
-// inventory. cmd/wt's TestMain stubs it to an empty snapshot so no test dials
+// inventory. cmd/wt's TestMain stubs it to localmodels.OnDiskSnapshotForTest so no test dials
 // the developer's real ollama/omlx/mtplx servers, and tests that need a
 // verdict stub it with their own snapshot.
 var probeInventory = localmodels.Inventory
@@ -28,7 +29,7 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 
 // resolveModel computes the single model to launch for a non-TUI flow and
 // returns the LAUNCHABLE list (cloud models plus local models already
-// running, minus discovered rows the picker refuses) so callers do not
+// running, minus Unmapped cloud rows the picker refuses) so callers do not
 // recompute it and rotation can never land on a local model that is not up.
 // agent is the resolved agent name (from -A; main routes unpinned launches
 // through the agent picker, so launchFiltered never sees an empty agent).
@@ -39,10 +40,16 @@ var errCommandAgent = fmt.Errorf("agent is a command")
 //   - command agent → errCommandAgent, nil launchable
 //   - pinned != "" → the pin's row decides: launch → return it; start →
 //     start it through startForLaunch, then return it; block → error carrying
-//     the row's block reason. A pin absent from the rows → "not in the
-//     eligible list".
+//     the row's block reason. A pin absent from the rows →
+//     catalog.MissingReason when the pin is in the eligible list and the
+//     probe can say why it has no row (not on disk, a stopped mlx_lm_server
+//     pairing), else catalog.SlotPinReason for a slot profile hidden by
+//     -T/-F or held by another agent, else "not in the eligible list".
+//   - pinned names a slot profile ("profile/<name>") whose row is not
+//     blocked → a *slotPin carrying the row; nothing is started here.
 //   - no pin, empty launchable → error (pin-the-model wording when rows
-//     existed, generic "no models match" when none did)
+//     existed; catalog.NoRowsReason when models were eligible but none has a
+//     row; generic "no models match" when nothing was eligible)
 //   - no pin, one launchable → return it
 //   - no pin, several launchable → "multiple models match"
 //
@@ -70,6 +77,10 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 		// hideDiscovered), so rotation can never land on a model the
 		// filter cannot describe.
 		HideDiscovered: tags != "" || family != "",
+		// Slot profiles are pin targets only: launchableModels leaves their
+		// rows out, so neither the single-model auto-launch nor rotation can
+		// return one. nil outside runLaunchPath.
+		SlotProfiles: launchSlotChecks,
 	})
 	launchable := launchableModels(cfg, agent, rows)
 
@@ -78,22 +89,45 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	if pinned != "" {
 		row, ok := catalog.Find(rows, pinned)
 		if !ok {
+			// MissingReason only for a pin the agent could use: one outside
+			// the eligible list (unsupported provider, filtered by -T/-F)
+			// would be told to pull, then refused as ineligible after.
+			if config.IndexModelByID(eligible, pinned) >= 0 {
+				if reason := catalog.MissingReason(cfg, &snap, pinned); reason != "" {
+					return config.Model{}, launchable, errors.New(reason)
+				}
+			}
+			// A slot profile the file holds says why it has no row: hidden
+			// by -T/-F, or another agent's (#412).
+			if reason := catalog.SlotPinReason(cfg, launchSlotChecks, agent, pinned, tags, family); reason != "" {
+				return config.Model{}, launchable, errors.New(reason)
+			}
 			return config.Model{}, launchable, fmt.Errorf("model %q is not in the eligible list for agent %q", pinned, agent)
 		}
 		// The picker's route switch decides a row's fate wherever it appears —
-		// launch, start, or block — not just on the start path: a discovered
-		// model the table shows as unselectable must refuse a pin too, and it
-		// must do so BEFORE startModel runs, which under --replace may stop a
-		// running occupant for a launch that then fails at ResolveRoute.
+		// launch, start, or block — not just on the start path: a row the
+		// table shows as unselectable (an Unmapped cloud model routed through
+		// the proxy, or a start row whose route cannot resolve) must refuse a
+		// pin too, and it must do so BEFORE startModel runs, which under
+		// --replace may stop a running occupant for a launch that then fails
+		// at ResolveRoute.
 		if reason := pickerBlockedReason(cfg, agent, row); reason != "" {
 			return config.Model{}, launchable, fmt.Errorf("%s", reason)
+		}
+		// A slot profile is its own launch unit: nothing is started here.
+		// The caller runs launchSlotProfile, which writes the cloud slots'
+		// routes first and then starts the local model, so one proxy restart
+		// publishes both. A blocked profile never reaches this line: the
+		// check above returned its reason.
+		if row.IsProfile() {
+			return config.Model{}, launchable, &slotPin{row: row}
 		}
 		switch row.Action() {
 		case catalog.ActionLaunch:
 			return row.Model, launchable, nil
 		case catalog.ActionStart:
 			if err := startModel(cfg, row, allowReplace); err != nil {
-				return config.Model{}, launchable, err
+				return config.Model{}, launchable, asStartError(err)
 			}
 			return row.Model, launchable, nil
 		}
@@ -101,7 +135,21 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 	}
 
 	if len(launchable) == 0 {
-		if len(rows) == 0 {
+		// Profile rows are pin targets only. Without a pin the wording below
+		// is chosen from the model rows alone, so it is what it was before
+		// slot profiles existed.
+		modelRows := 0
+		for _, r := range rows {
+			if !r.IsProfile() {
+				modelRows++
+			}
+		}
+		if modelRows == 0 && len(eligible) > 0 {
+			// Every eligible model is a local one with no row (#179 Phase B):
+			// the filters matched, the models just are not on disk or running.
+			return config.Model{}, nil, errors.New(catalog.NoRowsReason(agent))
+		}
+		if modelRows == 0 {
 			return config.Model{}, nil, fmt.Errorf("no models match agent %q with tags %q and family %q", agent, tags, family)
 		}
 		// Models matched; none is usable without starting one. Say which
@@ -116,17 +164,23 @@ func resolveModel(agent string, cfg *config.Config, tags, family, pinned string)
 
 // pickerBlockedReason mirrors renderTable's route decoration for a single
 // row and returns the reason the picker refuses it, or "" when the row is
-// usable. The switch order matches renderTable's exactly: the discovered
-// case wins over the route-error case, and a launch row with an unresolvable
-// route stays usable (the picker leaves it selectable and reports the error
-// on Enter). The discovered refusal is catalog.Row.RefusedByRoute, the one
-// rule the table and `wt smoke` also call; keeping this next to resolveModel
-// is what lets the non-TUI path make the same decisions the table displays.
+// usable. The switch order matches renderTable's exactly: the route refusal
+// (an Unmapped cloud row) wins over the route-error case, and a launch row
+// with an unresolvable route stays usable (the picker leaves it selectable
+// and reports the error on Enter). The refusal is catalog.Row.RefusedByRoute,
+// the one rule the table and `wt smoke` also call; keeping this next to
+// resolveModel is what lets the non-TUI path make the same decisions the
+// table displays.
 func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) string {
+	// A slot-profile row has no route of its own: its Model is the row id
+	// only, and its verdict is resolved validation's (catalog.ResolveSlotProfile).
+	if row.IsProfile() {
+		return row.BlockReason()
+	}
 	route, err := cfg.ResolveRoute(row.Model, agents.ProtocolsFor(agent))
 	switch {
 	case row.RefusedByRoute(route, err):
-		return "discovered model " + row.Model.ID + " is not in LiteLLM — turn LiteLLM routing off (wt litellm off) to use it"
+		return row.RouteRefusal(route, err)
 	case err != nil && row.Action() == catalog.ActionStart:
 		return row.Model.ID + " cannot be launched: " + err.Error()
 	}
@@ -134,19 +188,26 @@ func pickerBlockedReason(cfg *config.Config, agent string, row catalog.Row) stri
 }
 
 // launchableModels narrows rows to the models a launch can use right now:
-// cloud rows plus local rows the probe reports as running — minus discovered
-// rows the picker would refuse (a discovered model routed through LiteLLM is
-// unselectable there, so rotation must never pick it either). A start row is
+// cloud rows plus local rows the probe reports as running — minus Unmapped
+// cloud rows the picker would refuse (unselectable there, so rotation must
+// never pick them either). A running discovered row is launchable (#179
+// Phase B: it is routed), but rotation itself only walks registry models, so
+// it is never rotated into. A start row is
 // deliberately excluded — rotation and auto-resolution must never start a
 // server, only a -M pin may. A launch row whose route errors stays in: the
 // picker keeps such rows selectable too and reports the failure on Enter.
 func launchableModels(cfg *config.Config, agent string, rows []catalog.Row) []config.Model {
 	var out []config.Model
 	for _, r := range rows {
+		// A slot profile is reached by a -M pin only: it is never rotated
+		// into and never the single launchable model.
+		if r.IsProfile() {
+			continue
+		}
 		if r.Action() != catalog.ActionLaunch {
 			continue
 		}
-		if r.Discovered && pickerBlockedReason(cfg, agent, r) != "" {
+		if r.Unmapped && pickerBlockedReason(cfg, agent, r) != "" {
 			continue
 		}
 		out = append(out, r.Model)
@@ -157,7 +218,7 @@ func launchableModels(cfg *config.Config, agent string, rows []catalog.Row) []co
 // resolveModelFromEligible resolves the single model to launch from a
 // precomputed launchable list, applying the ambiguity rule without
 // recomputing anything. Callers that already hold the slice
-// (launchFilteredImpl, resolveModelForLaunch) use this to avoid a second
+// (launchFilteredImpl, runLaunchPath) use this to avoid a second
 // EligibleModels call. The list must be non-empty; the empty case is handled
 // by resolveModel before this is called.
 //

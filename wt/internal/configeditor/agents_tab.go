@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -88,5 +89,17 @@ func buildAgentsList(theme themes.Theme, width, height int, cfg *config.Config) 
 	l := list.New(items, tui.ThemedListDelegate(theme), width, height)
 	l.Title = "Agents"
 	l.SetShowStatusBar(false)
+	// q and esc are the list's own quit keys, and its quit goes round the
+	// editor's: esc on this list used to end wt without the unsaved-changes
+	// prompt. The editor handles q (quit); esc only clears a filter. The two
+	// keys the list does not know about are added to its help in their place.
+	l.DisableQuitKeybindings()
+	// q first: the help line of a 40-column terminal ends after it.
+	extra := []key.Binding{
+		key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+		key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "models")),
+	}
+	l.AdditionalShortHelpKeys = func() []key.Binding { return extra }
+	l.AdditionalFullHelpKeys = func() []key.Binding { return extra }
 	return l
 }

@@ -1,19 +1,22 @@
 // wt smoke — given a model, finds every agent currently eligible for it
 // and runs a one-shot prompt through each via wt's real in-process launch
-// machinery (agents.BuildLaunchCmd), reporting PASS/FAIL/SKIP. Distinct
+// machinery (agents.BuildLaunchCmdInfo), reporting PASS/FAIL/SKIP. Distinct
 // from `make test-agents` (agents-smoke.sh's hand-curated regression
 // matrix): this command answers "is this model healthy across wt right
 // now" for whichever model you point it at.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
@@ -35,7 +38,7 @@ var smokeExit = os.Exit
 // pickModelTUI is a test seam wrapping tui.PickStartModel: production dials the
 // real TUI, which needs a TTY; tests stub it to avoid one. The route-skipping
 // picker is deliberate — smoke.Candidates already applied each agent's own
-// route rules, and the agent-less route check in tui.PickModel could block a
+// route rules, and the agent-less route check the picker otherwise runs could block a
 // row that an agent's forced-through-LiteLLM route accepts.
 var pickModelTUI = tui.PickStartModel
 
@@ -55,13 +58,24 @@ func smokeCmd(a *app) *cobra.Command {
 			"prompt through each, using wt's real launch machinery. Reports\n" +
 			"PASS/FAIL/SKIP per agent with enough detail to diagnose a failure\n" +
 			"without re-running anything by hand.\n\n" +
+			"Each agent runs with its permission checks off, in a fresh temporary git\n" +
+			"repository that is removed afterwards; pass --cwd to run in the current\n" +
+			"directory instead.\n\n" +
 			"With no model-id, shows the full model picker (requires a TTY). A local\n" +
 			"model that isn't running is started first; on exit, offers to stop\n" +
 			"running local models.",
 		Args: cobra.MaximumNArgs(1),
+		// main prints the one error line; cobra's own print made a failed
+		// start's message, log tail included, come out twice (#344).
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
+				// An interrupt is not a usage mistake: no flag summary after it.
+				// Neither is a start that failed or was refused, and with
+				// cobra's "Error:" line gone the summary would stand alone
+				// above main's one line.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err)
 				return err
 			}
 			if anyFail {
@@ -81,12 +95,22 @@ func smokeCmd(a *app) *cobra.Command {
 	return cmd
 }
 
+// errSmokeInterrupted is what runSmoke returns for a run Ctrl+C cut short.
+var errSmokeInterrupted = errors.New("interrupted")
+
+// smokeSignalCtx is a test seam over signal.NotifyContext, as startSignalCtx
+// is for the start step: the context the rows run under, cancelled by Ctrl+C
+// or SIGTERM.
+var smokeSignalCtx = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
 // runSmoke resolves the target, starts it if idle, runs every selected agent
 // and prints the report. It returns whether any row FAILed rather than exiting,
 // so the deferred stop flow runs before the caller sets the exit code.
 func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err error) {
 	if a.cfgErr != nil {
-		return false, fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+		return false, configError(a.cfgErr)
 	}
 
 	var modelID string
@@ -118,15 +142,24 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 	timeout = smokeTimeout(a.cfg, m, timeout)
 	jsonOut, _ := cmd.Flags().GetBool("json")
-	cwd, err := os.Getwd()
-	if err != nil {
-		return false, err
+	// --cwd is the root command's persistent flag; here it opts a run back
+	// into the caller's directory. The default is a fresh temporary git
+	// repository per row (#193): every row runs its agent with permission
+	// checks off, and a model's stray tool call must not land in a real repo.
+	inPlace, _ := cmd.Flags().GetBool("cwd")
+	cwd := ""
+	if inPlace {
+		if cwd, err = os.Getwd(); err != nil {
+			return false, err
+		}
 	}
 
 	if t.Start() {
 		replace, _ := cmd.Flags().GetBool("replace")
 		if err := startModel(a.cfg, t.Row, replace); err != nil {
-			return false, err
+			// Marked, text unchanged, so the command can tell a start that
+			// failed or was refused from a usage mistake.
+			return false, asStartError(err)
 		}
 		// The rows below fire a one-shot prompt through the LiteLLM proxy at
 		// once, so the route hook's async restart has to have landed first: a
@@ -136,13 +169,38 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		// wait belongs to the code about to USE the proxy, and costs nothing
 		// when nothing is pending.
 		waitPendingRoutes()
+	} else {
+		// Already running, so no start hook ran: a model started outside wt
+		// has no route yet, and every row below would FAIL against the proxy
+		// with "Invalid model name". Writes that one route if it is missing
+		// and removes nothing. A cloud target takes this branch too, and
+		// gets its route back the same way if config.yaml lost it.
+		ensureRouteBeforeLaunch(a.cfg, m)
 	}
+	stderr := cmd.ErrOrStderr()
+	// Every row's directory, swept once more when the run ends: a row removes
+	// its own directory at once, but a background hook an agent leaves behind
+	// can write into it afterwards and bring it back. Registered before the
+	// stop flow so that it runs after it — the time the stop picker takes is
+	// time a late writer has had to finish. A directory that cannot be removed
+	// is named, since it holds whatever an unsupervised agent wrote.
+	var rowDirs []string
+	defer func() {
+		for _, d := range smoke.SweepRowDirs(rowDirs) {
+			fmt.Fprintf(stderr, "wt: could not remove the smoke directory %s\n", d)
+		}
+	}()
 	// Registered only once the start step succeeded: a failed start returns its
-	// error without an interactive stop picker burying it.
-	defer smokeStopFlow(a.cfg, jsonOut)
+	// error without an interactive stop picker burying it. An interrupted run
+	// skips it too — Ctrl+C means leave now.
+	interrupted := false
+	defer func() {
+		if !interrupted {
+			smokeStopFlow(a.cfg, jsonOut)
+		}
+	}()
 
 	runID := smoke.NewRunID()
-	stderr := cmd.ErrOrStderr()
 
 	// Reuse newApp()'s already-loaded profiles.toml state instead of
 	// loading and re-validating the file a second time. If profiles.toml
@@ -153,11 +211,16 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	store, loadErr, validateErr := pp.store, pp.loadErr, pp.validateErr
 	if loadErr != nil {
 		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", loadErr)
-		store = profiles.Store{}
 	}
 	if validateErr != nil {
 		fmt.Fprintf(stderr, "wt: profiles.toml: %v (profiles disabled for smoke)\n", validateErr)
 	}
+
+	// Ctrl+C or SIGTERM cancels ctx instead of killing wt: the running row's
+	// agent is killed with its process group, its directory is removed, and
+	// the rows that ran are still reported.
+	ctx, stopSignals := smokeSignalCtx()
+	defer stopSignals()
 
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
 	for _, agentName := range agentsToRun {
@@ -182,15 +245,46 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 			}
 		}
 
-		r := smoke.RunRow(a.cfg, agentName, m, prompt, sentinel, timeout, cwd, pa)
+		// The row's directory is made only once the agent is known to run:
+		// a row whose agent is not installed never pays for it or the sweep.
+		rowDir, removeRowDir := smoke.FixedDir(cwd), func() {}
+		if !inPlace {
+			// One directory per row, so one agent's leftovers cannot reach
+			// the next agent's run. A directory that cannot be created fails
+			// its own row (RunRow reports the error): the rows that have
+			// already run are still reported.
+			rowDir = func() (string, error) {
+				dir, remove, err := smoke.NewRowDir()
+				if err != nil {
+					return "", err
+				}
+				removeRowDir = remove
+				// What the agent records about this directory in its own
+				// state (claude's project entry, pi's sessions) goes with it.
+				rowDirs = append(append(rowDirs, dir), smoke.AgentStateDirs(agentName, dir)...)
+				return dir, nil
+			}
+		}
+		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
+		removeRowDir()
 		logSmokeResult(stderr, r)
 		rows = append(rows, r)
+		if ctx.Err() != nil {
+			interrupted = true
+			break
+		}
 	}
+	// Restore the default handler: a second Ctrl+C during the report, the
+	// sweep or the stop picker kills wt.
+	stopSignals()
 
 	if jsonOut {
 		anyFail, err = printSmokeJSON(cmd.OutOrStdout(), runID, m.ID, rows)
 	} else {
 		anyFail, err = printSmokeHuman(cmd.OutOrStdout(), runID, m.ID, rows)
+	}
+	if interrupted && err == nil {
+		err = errSmokeInterrupted
 	}
 	return anyFail, err
 }
@@ -205,7 +299,7 @@ const (
 
 // smokeTimeout returns the explicit timeout when set (non-zero), otherwise the
 // default for the model's location. A model whose location cannot be resolved
-// is treated as non-local, matching Config.IsExposed.
+// is treated as non-local, matching Config.InCatalog.
 func smokeTimeout(cfg *config.Config, m config.Model, explicit time.Duration) time.Duration {
 	if explicit != 0 {
 		return explicit
@@ -242,7 +336,7 @@ func (t smokeTarget) Start() bool { return t.Row.Action() == catalog.ActionStart
 // resolveSmokeModel resolves the model to test from smoke.Candidates (launch
 // rows plus startable idle local models): the pinned id if given (with a
 // message distinguishing "unknown" from "exists but cannot be tested"), or an
-// interactive pick via the shared picker (tui.PickModel), unfiltered by agent
+// interactive pick via the shared picker (tui.PickStartModel), unfiltered by agent
 // since the eligible agents are determined from the chosen model. The target
 // carries its eligible agents so no second inventory round is needed.
 func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (smokeTarget, error) {
@@ -253,19 +347,25 @@ func resolveSmokeModel(cfg *config.Config, theme themes.Theme, modelID string) (
 				return smokeTarget{Row: c.Row, Agents: c.Agents}, nil
 			}
 		}
-		// A blocked local row (not on disk, no start backend) is not a candidate,
-		// so name its real reason as `wt start` does rather than guessing.
-		if row, ok := catalog.Find(localRows(cfg), modelID); ok && row.Action() == catalog.ActionBlock {
-			return smokeTarget{}, errors.New(row.BlockReason())
+		// A registry local model with no row (not on disk, or a stopped
+		// mlx_lm_server pairing) or a blocked local row is not a candidate, so
+		// name its real reason as `wt start` does rather than guessing.
+		rows, snap := localRowsSnap(cfg)
+		if row, ok := catalog.Find(rows, modelID); ok {
+			if row.Action() == catalog.ActionBlock {
+				return smokeTarget{}, errors.New(row.BlockReason())
+			}
+		} else if reason := catalog.MissingReason(cfg, &snap, modelID); reason != "" {
+			return smokeTarget{}, errors.New(reason)
 		}
 		if config.IndexModelByID(cfg.Models, modelID) >= 0 {
 			return smokeTarget{}, fmt.Errorf(
-				"model %q cannot be smoke-tested right now (not exposed, not on disk, or no agent supports it — check `wt litellm status`; a local model must exist on disk)", modelID)
+				"model %q cannot be smoke-tested right now (not in the catalog, not on disk, or no agent supports it — check `wt litellm status`; a local model must exist on disk)", modelID)
 		}
 		return smokeTarget{}, fmt.Errorf("unknown model %q", modelID)
 	}
 	if len(cands) == 0 {
-		return smokeTarget{}, fmt.Errorf("no models are available for any agent — expose a cloud model or pull a local one")
+		return smokeTarget{}, fmt.Errorf("no models are available for any agent — add a cloud model to the registry or pull a local one")
 	}
 	if !stdinTTY() {
 		return smokeTarget{}, fmt.Errorf("wt smoke needs a TTY to list models; pass a model id directly (wt smoke <provider>/<name>)")

@@ -1,90 +1,16 @@
 package agents
 
 import (
+	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
-
-func gitInit(t *testing.T, dir string) {
-	t.Helper()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "t@t"},
-		{"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "init"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-		}
-	}
-}
-
-// TestOpenCodeLatestSession asserts opencodeDriver finds the newest .json
-// session file under the project-id directory.
-func TestOpenCodeLatestSession(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	repo := t.TempDir()
-	gitInit(t, repo)
-	id, err := session.OpenCodeProjectID(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dir := filepath.Join(home, ".local", "share", "opencode", "storage", "session", id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := filepath.Join(dir, "old.json")
-	new := filepath.Join(dir, "new.json")
-	if err := os.WriteFile(old, []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(new, []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldInfo, _ := os.Stat(old)
-	os.Chtimes(new, oldInfo.ModTime(), oldInfo.ModTime().Add(time.Second))
-
-	d := opencodeDriver{}
-	s, err := d.LatestSession(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s == nil || s.ID != "new.json" {
-		t.Fatalf("expected newest opencode session id \"new.json\", got %+v", s)
-	}
-}
-
-// TestOpenCodeLatestSessionNoDir asserts opencodeDriver returns nil when no
-// session directory exists, without returning an error.
-func TestOpenCodeLatestSessionNoDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	repo := t.TempDir()
-	gitInit(t, repo)
-
-	d := opencodeDriver{}
-	s, err := d.LatestSession(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s != nil {
-		t.Fatalf("expected nil session, got %+v", s)
-	}
-}
 
 // TestOpenCodeBuildLitellm asserts that in gateway mode opencode routes
 // through a wt-declared @ai-sdk/openai-compatible provider pointed at the
@@ -97,8 +23,7 @@ func TestOpenCodeLatestSessionNoDir(t *testing.T) {
 // gpt-5-nano) does not query the proxy with nonexistent model names.
 func TestOpenCodeBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := opencodeDriver{}.Build(m, false, routeFor(m, gw))
+	lc := opencodeDriver{}.Build(m, false, litellmRoute(m))
 	content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
 	if !strings.Contains(content, `"model":"`+opencodeGatewayProviderID+`/ollama/qwen3.8:27b-mlx"`) {
 		t.Errorf("config content = %s, want model %s/ollama/qwen3.8:27b-mlx", content, opencodeGatewayProviderID)
@@ -131,6 +56,35 @@ func envValue(t *testing.T, env []string, key string) string {
 	}
 	t.Fatalf("env %s not found in %v", key, env)
 	return ""
+}
+
+// opencodeConfigDoc is the part of opencode's inline JSON config the tests
+// read.
+type opencodeConfigDoc struct {
+	Model      string `json:"model"`
+	SmallModel string `json:"small_model"`
+	Provider   map[string]struct {
+		NPM     string `json:"npm"`
+		Options struct {
+			BaseURL string `json:"baseURL"`
+			APIKey  string `json:"apiKey"`
+		} `json:"options"`
+		Models map[string]struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	} `json:"provider"`
+}
+
+// parseOpenCodeConfig decodes the OPENCODE_CONFIG_CONTENT entry of env,
+// failing the test when the entry is absent or is not valid JSON.
+func parseOpenCodeConfig(t *testing.T, env []string) opencodeConfigDoc {
+	t.Helper()
+	content := envValue(t, env, "OPENCODE_CONFIG_CONTENT")
+	var parsed opencodeConfigDoc
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
+	}
+	return parsed
 }
 
 // OpenCode was the one driver whose Build ignored the Native model bit —
@@ -166,5 +120,50 @@ func TestOpenCodeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
 		if !want[m] {
 			t.Errorf("unexpected mechanism %q", m)
 		}
+	}
+}
+
+// TestOpenCodeYoloFlagIsAuto pins opencode's skip-permissions flag to the
+// literal "--auto=true". opencode 1.18 has no "--dangerously-skip-permissions"
+// (passing it printed the usage and exited 1, failing `wt --yolo -A opencode`
+// and every opencode `wt smoke` row). The "=true" is load-bearing: "--auto" is
+// declared per command, so a bare "--auto" in front of a subcommand
+// ("opencode --auto run <prompt>") is parsed as taking "run" as its value and
+// the run command is never reached. With its value attached the flag cannot
+// swallow what follows, so Build can emit it leading for every argv form.
+func TestOpenCodeYoloFlagIsAuto(t *testing.T) {
+	d := opencodeDriver{}
+	if got := d.YoloFlag(); got != "--auto=true" {
+		t.Errorf("YoloFlag() = %q, want --auto=true", got)
+	}
+	m := config.Model{ID: "ollama/x", ModelName: "x", ProviderID: "ollama"}
+	for _, model := range []config.Model{m, {Native: true, ModelName: "native"}} {
+		lc := d.Build(model, true, directRoute(model))
+		if !slices.Equal(lc.Args, []string{"--auto=true"}) {
+			t.Errorf("yolo args (native=%v) = %v, want [--auto=true]", model.Native, lc.Args)
+		}
+		if lc := d.Build(model, false, directRoute(model)); len(lc.Args) != 0 {
+			t.Errorf("non-yolo args (native=%v) = %v, want none", model.Native, lc.Args)
+		}
+	}
+}
+
+// TestOpenCodeYoloPassthroughSubcommand pins the argv of a yolo launch whose
+// passthrough args start with a subcommand (`wt --yolo -A opencode -- run
+// "do X"`): the flag must carry its own value, so opencode still resolves
+// "run". With a bare "--auto" there, opencode printed its root help instead
+// of running the prompt.
+func TestOpenCodeYoloPassthroughSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd, err := BuildLaunchCmd("opencode", config.Model{Native: true, ModelName: "native"}, t.TempDir(), true, nil, []string{"run", "do X"})
+	if err != nil {
+		t.Fatalf("BuildLaunchCmd: %v", err)
+	}
+	if got := cmd.Args[1:]; !slices.Equal(got, []string{"--auto=true", "run", "do X"}) {
+		t.Errorf("args = %v, want [--auto=true run \"do X\"]", got)
 	}
 }

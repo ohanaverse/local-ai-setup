@@ -9,31 +9,27 @@ description: Steps to add a new AI agent driver to the wt launcher (internal/age
 2. Add a shim `bin/<name>-wt`: `exec wt --agent <name> "$@"`.
 3. Add a doc to `docs/wt-agents/`.
 
-No Makefile changes needed: `make install` copies `bin/*` by glob and
-`make uninstall` removes `$(BINDIR)/*-wt`, so the new shim is picked up (and
-removed) automatically. The smoke-test loop in `make test` also globs, but
-note the config-validation tests in `internal/config` enumerate agents by
-name — check `config_test.go` if the agent needs a `[[agents]]` entry.
+`make install` copies `bin/*` by glob and `make uninstall` removes
+`$(BINDIR)/*-wt`, so the new shim is picked up (and removed) automatically.
+The smoke-test loop in `make test` iterates a hard-coded launcher list: add
+`<name>-wt` to it in `wt/Makefile`. The config-validation tests in
+`internal/config` enumerate agents by name — check `config_test.go` if the
+agent needs a `[[agents]]` entry.
 
 ## Driver implementation details
-
-Migrated verbatim from `wt/CLAUDE.md` (2026-09-11 doctor cleanup). NOTE: this
-describes registering via `internal/agents/catalog.go`'s `AddEntry()`/
-`MustAdd()`, which doesn't match the `register("<name>", ...)` call above —
-reconcile which is current before relying on either.
 
 1. Create `internal/agents/<name>.go` implementing the `Driver` interface:
    - `Build(m config.Model, yolo bool, r Route) LaunchCmd` — dial from the resolved `Route` (base origin, API key, model ref); never hardcode a provider endpoint
    - `YoloFlag() string`
    - `Protocols() []Protocol` (the `ProtocolDeclarer` capability) — the wire protocols the agent speaks; this drives route resolution
-2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `Resumer`
-3. Register in `internal/agents/catalog.go` via `AddEntry()` or `MustAdd()`
+2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `StateDirer` (if the agent keeps per-working-directory state, so `wt smoke` can remove it for its temporary directories)
+3. Register from the driver file's own `init()` with `register("<name>", func() Driver { return <name>Driver{} })` (`register` is defined in `internal/agents/agents.go`)
 4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
-5. Update the driver table in `wt/CLAUDE.md`
+5. Add the agent to the protocol table and the capability table in `wt/docs/internals/agents.md`, and to the Protocols bullet under "Agents (Go)" in `wt/CLAUDE.md`
 
 **Key gotchas:**
 - The model ref comes from `Route.ModelRef` — `ResolveRoute` already picked `m.ID` (litellm/forced) or `m.ModelName` (direct); don't re-derive it
 - If the agent's protocol is served by no local provider (empty intersection in `ResolveRoute`), it always routes through LiteLLM and wt prints the forced-LiteLLM stderr notice — codex is the current example
-- If implementing `Resumer`, add session path logic to `internal/session`
+- Don't add session handling: wt never resumes a session (there is no `Resumer` capability and no `internal/session` package). The user continues a conversation with the agent's own flags after `--`, which `BuildLaunchCmd` appends unchanged
 - Test both routing modes (direct/litellm) if the agent will route through LiteLLM
 - **`Build` must start with `if m.Native { return <bare LaunchCmd> }`.** Every existing driver (claude, codex, copilot, pi, opencode) does this so the unconfigured-agent passthrough sentinel (`config.Model{Native: true, ModelName: "native"}`, issue #147) launches the bare binary with no `--model`/gateway env. Forgetting it emits provider env vars pointing at an empty base URL instead of a plain command — write a `Test<Name>NativeBypass` test (see `opencode_test.go`'s `TestOpenCodeNativeBypass`) to pin it.

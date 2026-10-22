@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -95,7 +96,7 @@ func TestSetRowAddsAndReplacesPreservingComments(t *testing.T) {
 }
 
 // TestSetRowPreservesUserManagedParams pins the presence-based rule: when a
-// row is re-exposed, a user-set additional_drop_params list (an extended list
+// row is re-routed, a user-set additional_drop_params list (an extended list
 // or a deliberate empty one) and use_chat_completions_api must not be reset to
 // defaults, or a deliberate opt-out would silently flip back on every start.
 func TestSetRowPreservesUserManagedParams(t *testing.T) {
@@ -120,7 +121,7 @@ func TestSetRowPreservesUserManagedParams(t *testing.T) {
 // model_name appears more than once leaves exactly one row (in the first
 // row's position). LiteLLM load-balances across same-named rows, so a
 // surviving stale duplicate would keep sending half the requests to the old
-// backend after an expose.
+// backend after a re-route.
 func TestSetRowCollapsesDuplicateRows(t *testing.T) {
 	// The extra row must sit inside model_list, so splice it before general_settings.
 	dup := strings.Replace(baseConfig, "general_settings:", `  - model_name: ollama/old:1
@@ -218,7 +219,7 @@ litellm_settings:
 // gpt-oss:20b) that translation can produce a value ollama's sampler rejects
 // ("penalty_repeat must be finite and greater than 0") even when the caller
 // sent 0 — copilot CLI always sends both params, so every copilot request
-// against an affected model 500s. Without this, a fresh expose of any such
+// against an affected model 500s. Without this, a fresh route of any such
 // model silently reintroduces the crash.
 func TestEnsureSettingsDropsFrequencyAndPresencePenaltyOnFreshOllamaChatRows(t *testing.T) {
 	f, _ := Open(writeConfig(t, `model_list:
@@ -400,9 +401,9 @@ func TestOpenRefusesMultiDocument(t *testing.T) {
 		t.Fatalf("Open(multi-doc) err = %v, want ErrInvalid", err)
 	}
 	n := 0
-	res, err := Apply(testConfig(), nil, []string{"a/b"}, Options{Path: p, Restart: func() []string { n++; return nil }})
+	res, err := ApplyChange(testConfig(), Change{Remove: []string{"a/b"}}, Options{Path: p, Restart: func() []string { n++; return nil }})
 	if !errors.Is(err, ErrInvalid) || res.Changed || n != 0 {
-		t.Fatalf("Apply err=%v changed=%v restarts=%d", err, res.Changed, n)
+		t.Fatalf("ApplyChange err=%v changed=%v restarts=%d", err, res.Changed, n)
 	}
 	if got, _ := os.ReadFile(p); string(got) != body {
 		t.Fatalf("multi-doc file modified:\n%s", got)
@@ -472,6 +473,41 @@ func TestIsLoopbackHandlesSchemelessHost(t *testing.T) {
 		n := &yaml.Node{Kind: yaml.ScalarNode, Value: c.value}
 		if got := isLoopback(n); got != c.want {
 			t.Errorf("isLoopback(%q) = %v, want %v", c.value, got, c.want)
+		}
+	}
+}
+
+// TestIsLoopbackReadsAHostAsProviderOriginDoes pins that the route settings
+// and config.Provider.Origin share one reading of "this machine" (#348).
+// Origin takes an mtplx base_url on 0.0.0.0 or "localhost." for the server wt
+// starts and routes it to port 8003. With a narrower list of its own here,
+// that route was written without use_chat_completions_api, and codex's
+// /v1/responses call went straight to a server that has only
+// /v1/chat/completions: a 404, then 429s from the router's cooldown.
+func TestIsLoopbackReadsAHostAsProviderOriginDoes(t *testing.T) {
+	for _, base := range []string{
+		"http://127.0.0.1/v1", "http://localhost", "http://LOCALHOST", "http://localhost./v1",
+		"http://0.0.0.0/v1", "http://[::]/v1",
+	} {
+		p := config.Provider{ID: "mtplx", Auth: config.AuthConfig{Type: "none", BaseURL: base}}
+		apiBase := p.Origin() + "/v1"
+		if !strings.Contains(apiBase, ":8003/") {
+			t.Fatalf("%q: api_base = %q, want the port wt serves mtplx on (the case this test is about)", base, apiBase)
+		}
+		if !isLoopback(&yaml.Node{Kind: yaml.ScalarNode, Value: apiBase}) {
+			t.Errorf("isLoopback(%q) = false for a base_url Origin takes for this machine (%q)", apiBase, base)
+		}
+	}
+	// This machine, though not an address wt serves mtplx on: a server the
+	// user runs there is still a local one.
+	for _, apiBase := range []string{"http://[::1]:8003/v1", "http://127.0.0.2:8003/v1"} {
+		if !isLoopback(&yaml.Node{Kind: yaml.ScalarNode, Value: apiBase}) {
+			t.Errorf("isLoopback(%q) = false, want true: this machine", apiBase)
+		}
+	}
+	for _, apiBase := range []string{"http://10.0.0.5:8003/v1", "https://mtplx.example/v1", "http://localhost.example:8003/v1"} {
+		if isLoopback(&yaml.Node{Kind: yaml.ScalarNode, Value: apiBase}) {
+			t.Errorf("isLoopback(%q) = true, want false: not this machine", apiBase)
 		}
 	}
 }
@@ -546,9 +582,108 @@ func TestSaveFollowsSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range g.RoutedIDs() {
-		if id == "keep/me" {
-			t.Fatal("target file was not updated")
+	if slices.Contains(g.RoutedIDs(), "keep/me") {
+		t.Fatal("target file was not updated")
+	}
+}
+
+// TestRowsReportsManaged pins Rows(): file order, and Managed only for rows
+// whose model_info carries wt_managed: true — a hand-written row (no marker,
+// or a non-bool value) is never reported as wt's.
+func TestRowsReportsManaged(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: hand/alias
+    litellm_params: {model: openrouter/x}
+  - model_name: ollama/a:1
+    litellm_params: {model: ollama_chat/a:1}
+    model_info: {wt_managed: true}
+  - model_name: odd/one
+    litellm_params: {model: openai/x}
+    model_info: {wt_managed: "yes"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RowInfo{{"hand/alias", false}, {"ollama/a:1", true}, {"odd/one", false}}
+	if got := f.Rows(); !slices.Equal(got, want) {
+		t.Fatalf("Rows() = %v, want %v", got, want)
+	}
+}
+
+// TestRowsToleratesNonSequenceModelList pins that a hand-edited
+// `model_list: nope` (a scalar, not a list) leaves the row readers empty
+// instead of panicking or fabricating a row: `wt litellm list` and `sync` must
+// not crash on a config a user can trivially mistype, and no phantom row may be
+// classified as wt's.
+func TestRowsToleratesNonSequenceModelList(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: nope\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Rows(); len(got) != 0 {
+		t.Fatalf("Rows() = %v, want none for a non-sequence model_list", got)
+	}
+	if got := f.row("x"); got != nil {
+		t.Fatalf("row(%q) = %v, want nil", "x", got)
+	}
+	if got := f.RoutedIDs(); len(got) != 0 {
+		t.Fatalf("RoutedIDs() = %v, want none", got)
+	}
+	// Nothing named x exists, so there is no row to classify — and the guard
+	// must not have invented one.
+	if IsManaged(f.row("x")) {
+		t.Fatal("IsManaged(nil) = true, want false")
+	}
+}
+
+// TestIsManagedToleratesScalarModelInfo pins that a hand-edited row whose
+// model_info is a scalar (`model_info: legacy`) reads as hand-written rather
+// than panicking: one mistyped key must not crash every `wt litellm` command on
+// that file, and the row must not be misclassified as wt's.
+func TestIsManagedToleratesScalarModelInfo(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: a/b
+    litellm_params: {model: x}
+    model_info: legacy
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := f.row("a/b")
+	if row == nil {
+		t.Fatal("row a/b not found")
+	}
+	if IsManaged(row) {
+		t.Fatal("scalar model_info was read as wt-managed")
+	}
+	if got := f.Rows(); !slices.Equal(got, []RowInfo{{"a/b", false}}) {
+		t.Fatalf("Rows() = %v, want the row reported as hand-written", got)
+	}
+}
+
+// TestIsManagedRequiresStrictBool pins that only a literal `wt_managed: true`
+// marks a row as wt's: the string "yes" and the integer 1 that a hand-edited
+// file might use must read as hand-written, or sync could remove a route the
+// user wrote themselves.
+func TestIsManagedRequiresStrictBool(t *testing.T) {
+	f, err := Open(writeConfig(t, `model_list:
+  - model_name: str/yes
+    litellm_params: {model: x}
+    model_info: {wt_managed: "yes"}
+  - model_name: int/one
+    litellm_params: {model: x}
+    model_info: {wt_managed: 1}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := f.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("Rows() = %v, want both rows", rows)
+	}
+	for _, r := range rows {
+		if r.Managed {
+			t.Errorf("%s: Managed = true, want false for a non-bool wt_managed", r.ID)
 		}
 	}
 }

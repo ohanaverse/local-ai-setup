@@ -1,6 +1,6 @@
-// Package lifecycle starts local models (ollama, omlx, mtplx): the Go port of
-// modelman's start/stop/warmup lifecycle. It never writes modelman-owned state
-// and never replaces a running model without being told to (Options.AllowReplace).
+// Package lifecycle is the start/stop/warmup lifecycle of local models
+// (ollama, omlx, mtplx). It never replaces a running model without being told
+// to (Options.AllowReplace).
 package lifecycle
 
 import (
@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -27,7 +28,8 @@ type env struct {
 	backends    map[string]backend // keyed by provider family
 
 	// onOccupantStopped fires the moment a replace has stopped the running
-	// occupant, before the new model is started. Production drops the
+	// occupant, before the new model is started — and, on a Pool, once per
+	// model a load evicted (reconcilePool). Production drops the
 	// occupant's LiteLLM route there: if the new model then fails to load,
 	// Start returns the error and no route hook runs, so the stopped occupant
 	// would otherwise keep its model_list row until the next `wt litellm
@@ -40,12 +42,30 @@ type env struct {
 
 	mtplxProc pidProcess // pidfile + log used for the spawned mtplx server
 
+	// The process table and the signal, for the one stop that has no port to
+	// go through: an mtplx that is still loading (mtplx_loading.go).
+	describe func(pid int) (info procInfo, found bool, err error)
+	signal   func(pid int, sig syscall.Signal) error
+
 	pollInterval   time.Duration
 	warmupTimeout  time.Duration // ollama/omlx warmup budget
 	loadTimeout    time.Duration // wait for a spawned server to list the model
 	stopTimeout    time.Duration // wait for a port to close after a stop
+	stopGrace      time.Duration // SIGTERM-to-SIGKILL wait for a loading mtplx (`mtplx stop`'s --grace-seconds)
 	portUpTimeout  time.Duration // wait for a daemon to answer after `start`
 	prebindTimeout time.Duration // wait for a port to free before spawning
+
+	// ollamaUnloadTimeout bounds the wait for a model to leave /api/ps after
+	// an `ollama stop` that exited 0. ollama accepts a stop of a model with a
+	// request in flight and unloads it once the request ends: 6 to 20 seconds
+	// after an agent's last request, 55 seconds behind a 1,500-word generation
+	// queued behind another request; the bound is that with margin. The wait
+	// re-probes every pollInterval, ollamaUnloadTimeout/pollInterval times at
+	// most. A batch of stops shares one such bound (StopBatch).
+	ollamaUnloadTimeout time.Duration
+	// stopNoticeAfter is how long a stop waits for an unload before it says
+	// so (StopNotice): a line that sits open longer than this looks hung.
+	stopNoticeAfter time.Duration
 }
 
 func defaultEnv() *env {
@@ -58,13 +78,19 @@ func defaultEnv() *env {
 		inventory:         localmodels.Inventory,
 		backends:          maps.Clone(backendsByFamily),
 		onOccupantStopped: routeAfterOccupantStopped,
-		mtplxProc:         pidProcess{name: "mtplx", pidfile: "/tmp/local-ai-setup-mtplx.pid", logfile: "/tmp/local-ai-setup-mtplx.log"},
+		mtplxProc:         mtplxProcess(),
+		describe:          describeProc,
+		signal:            signalProc,
 		pollInterval:      time.Second,
 		warmupTimeout:     600 * time.Second,
 		loadTimeout:       300 * time.Second,
 		stopTimeout:       6 * time.Second,
+		stopGrace:         10 * time.Second,
 		portUpTimeout:     90 * time.Second,
 		prebindTimeout:    10 * time.Second,
+
+		ollamaUnloadTimeout: 3 * time.Minute,
+		stopNoticeAfter:     2 * time.Second,
 	}
 }
 

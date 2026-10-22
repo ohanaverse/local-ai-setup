@@ -13,7 +13,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 	"github.com/spf13/cobra"
@@ -64,31 +63,6 @@ func needsModelPicker(agent, pinned string) bool {
 	return agent == "" || (pinned == "" && !agents.IsCommand(agent))
 }
 
-// resolveModelForLaunch wraps resolveModel with a "resolved" boolean so
-// callers can short-circuit on a single resolvable model (auto-launch)
-// without conflating "model is empty" with "error". A resolved return value
-// (true, model, launchable, nil) means launchFiltered would have a unique model
-// to use. A non-resolved return (false, zero, _, _) means the caller should
-// fall through to the picker. err is non-nil only when resolveModel itself
-// failed; the auto-launch path treats any error as "not resolved".
-//
-// The list returned is the LAUNCHABLE list (cloud models plus local models
-// already running — see resolveModel), not the raw eligible list, so the
-// caller can hand it to launchFiltered without recomputing it (the
-// auto-launch path would otherwise call EligibleModels twice: once here and
-// once inside launchFiltered) and rotation can never land on a local model
-// that is not up.
-func resolveModelForLaunch(agent string, cfg *config.Config, tags, family, pinned string) (bool, config.Model, []config.Model, error) {
-	m, eligible, err := resolveModel(agent, cfg, tags, family, pinned)
-	if err != nil {
-		return false, config.Model{}, eligible, err
-	}
-	if m.ID == "" {
-		return false, config.Model{}, eligible, nil
-	}
-	return true, m, eligible, nil
-}
-
 func main() {
 	err := rootCmd().Execute()
 	// Never exit while an async LiteLLM proxy restart a route write kicked off
@@ -99,18 +73,19 @@ func main() {
 	// wt smoke's failure exit) wait for the same thing themselves.
 	lifecycle.WaitPendingRoutes()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "wt:", err)
-		os.Exit(1)
+		os.Exit(reportExit(err, os.Stderr))
 	}
 }
 
 // runLaunchPath installs the guard when inside a git repo and either
 // auto-launches or routes to the picker/TUI. launchPath is the resolved
-// worktree path for -W, the repo root for --cwd, "." for outside-a-repo
+// worktree path for -W, the current directory for --cwd, "." for outside-a-repo
 // passthrough, and "" when the worktree picker should be shown. root is the
-// repo root that owns launchPath ("" when not inside a git repo, or when the
-// worktree picker will resolve it); it gates the guard install. Callers pass
-// the root they already resolved so no git subprocess is spawned twice.
+// repo root that owns launchPath ("" when not inside a git repo — --cwd
+// included — or when the worktree picker will resolve it); it gates the guard
+// install and nothing else, which is why a launch that has a directory needs
+// no repository. Callers pass the root they already resolved so no git
+// subprocess is spawned twice.
 //
 // Callers must install the guard themselves when launchPath == "" (the TUI
 // branch), because the repo root is not known until the user selects a
@@ -129,19 +104,58 @@ func runLaunchPath(
 	// keep other concurrent sessions' counts accurate. Best-effort.
 	sweepRefcounts()
 
-	// Install the guard once when inside any git repo.
-	if root != "" {
-		maybeInstallGuard()
-	}
-
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
 	// applies local-model launch profiles exactly like the non-TUI path
 	// does, via the same applyProfileForLaunch — internal/tui cannot call
 	// it directly (import-cycle/package-boundary reasons documented on
 	// tui.ProfileApplier), so it is handed in as a closure instead.
+	// A slot-profile launch never reaches applyProfile. The TUI is handed
+	// the loaded slot profiles and applySlotProfile, the fail-closed applier
+	// the non-TUI path calls directly, as tui.SlotProfiles.
 	applyProfile := func(cmd *exec.Cmd, agentName string, m config.Model) (func() error, error) {
 		return applyProfileForLaunch(cmd, agentName, m, a.cfg, a.profileState())
+	}
+
+	// Slot profiles are pin targets for resolveModel during this run. What is
+	// wrong with slot-profiles.toml is said here, before any picker opens,
+	// and only for a launch that could use a profile: no agent chosen yet, or
+	// an agent whose driver has slots.
+	launchSlotChecks = a.slotChecks
+	var slotNotes []string
+	if _, ok := agents.SlotsFor(agent); agent == "" || ok {
+		slotNotes = slotWarnings(a)
+	}
+	printSlotNotes := func() {
+		for _, line := range slotNotes {
+			fmt.Fprintln(os.Stderr, line)
+		}
+	}
+	printSlotNotes()
+	// The TUI's alternate screen covers what was just printed for as long as
+	// a picker is up, so a launch that went through the TUI says it again
+	// once the TUI has returned and the terminal is the user's.
+	runTUI := func() error {
+		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
+		printSlotNotes()
+		// tui.Run returns the agent's run error after its post-exit flow;
+		// a non-zero exit becomes wt's own status, as on the non-TUI path,
+		// and like runAgentCmd's os.Exit it prints nothing: no cobra
+		// "Error:" line or usage block, no main "wt:" line (#412). Any
+		// other error is main's one "wt:" line: cobra's "Error:" copy and
+		// usage block would only repeat it, as printOnce spares a failed
+		// start.
+		err = agentExitStatus(err)
+		if err != nil {
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+		}
+		return err
+	}
+
+	// Install the guard once when inside any git repo.
+	if root != "" {
+		maybeInstallGuard()
 	}
 
 	// launchPath == "" means the worktree picker should be shown; the launch
@@ -149,7 +163,7 @@ func runLaunchPath(
 	// short-circuit to launchFiltered here — a pinned agent or command must
 	// still pick a worktree.
 	if launchPath == "" {
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile)
+		return runTUI()
 	}
 
 	pinnedSupplied := cmd.Flags().Changed("model")
@@ -170,17 +184,65 @@ func runLaunchPath(
 	}
 
 	if needsModelPicker(agent, pinned) {
-		resolved, _, eligible, err := resolveModelForLaunch(agent, a.cfg, tags, family, pinned)
-		if err == nil && resolved {
-			return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState())
+		// A single resolvable model launches without the picker. An error or
+		// an empty model with a nil error falls through to the picker. The
+		// list is resolveModel's launchable list, handed to launchFiltered so
+		// it is not computed a second time.
+		m, eligible, err := resolveModel(agent, a.cfg, tags, family, pinned)
+		if err == nil && m.ID != "" {
+			return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState()))
 		}
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
 		}
-		return tuiRun(yolo(cmd), allowReplace, agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile)
+		return runTUI()
 	}
 
-	return launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState())
+	return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))
+}
+
+// printOnce leaves the error of a launch whose -M pin could not be started
+// to main, which prints every error after "wt:". cobra prints it as well, as
+// "Error: …", and a failed start's message carries the server's log tail, so
+// it came out twice in full (#344). Only that error is taken from cobra here:
+// the root command's other errors are printed as they were. `wt start` and
+// `wt smoke` silence cobra for the whole command instead (SilenceErrors), as
+// `wt cloud-sync` does.
+//
+// cobra's usage block goes with it: the root command prints one after every
+// error, and a start that failed or was refused is not a usage mistake. Left
+// in, it stood between the start's progress lines and main's one line, with
+// no "Error:" above it any more to say why it was there.
+func printOnce(cmd *cobra.Command, err error) error {
+	if isStartError(err) {
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+	}
+	return err
+}
+
+// refuseCwdValue is #392's guard for the first word before any `--` of a
+// --cwd launch: a word that names an existing directory was meant as
+// --cwd's value, which the flag does not take, and is refused. A command
+// agent's first word is the program to run, and a bare name that resolves
+// on PATH runs that program whatever the current directory holds
+// (`shell-wt --cwd wt model list` beside a `wt/` directory), so it is
+// passed on. The current directory itself gets its own advice: there is
+// nothing to cd into.
+func refuseCwdValue(agent, word string) error {
+	fi, err := os.Stat(word)
+	if err != nil || !fi.IsDir() {
+		return nil
+	}
+	if agents.IsCommand(agent) && !strings.ContainsRune(word, os.PathSeparator) {
+		if _, err := exec.LookPath(word); err == nil {
+			return nil
+		}
+	}
+	if here, err := os.Stat("."); err == nil && os.SameFile(fi, here) {
+		return fmt.Errorf("--cwd takes no value: %q is a directory, the current one; drop it, or pass it to the agent after --", word)
+	}
+	return fmt.Errorf("--cwd takes no value: %q is a directory; cd into it and run --cwd there, or pass it to the agent after --", word)
 }
 
 func rootCmd() *cobra.Command {
@@ -200,16 +262,19 @@ func rootCmd() *cobra.Command {
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 		Example: "  wt                          # interactive TUI\n" +
 			"  wt -W my-feature -A claude   # create worktree and launch\n" +
-			"  wt --cwd --agent codex       # launch in current repo root\n" +
+			"  wt --cwd --agent codex       # launch in the current directory\n" +
+			"  wt -A claude -- --verbose    # pass arguments to the agent (a relative path is\n" +
+			"                               # resolved from the directory the agent starts in)\n" +
 			"  wt --init                    # seed agent instruction files\n" +
 			"  wt start [model]             # start a local model (picker when omitted)\n" +
 			"  wt stop [model|provider]     # stop a local model or provider (picker when omitted)\n" +
-			"  wt smoke [model]             # smoke-test every agent that supports a model",
+			"  wt smoke [model]             # smoke-test every agent that supports a model\n" +
+			"  wt cloud-sync --dry-run      # plan a refresh of cloud prices and the ollama catalog",
 		// ArbitraryArgs overrides cobra's default legacyArgs validator, which
 		// rejects any leading positional arg that isn't a registered
-		// subcommand name (models/agents/rotate). Without this, passthrough
-		// commands given without `--` (e.g. `shell-wt ls -la`) fail with
-		// "unknown command \"ls\" for \"wt\"" even though Find() would never
+		// subcommand name (config, start, rotate, …). Without this, passthrough
+		// commands given without `--` (e.g. `shell-wt npm test`) fail with
+		// "unknown command \"npm\" for \"wt\"" even though Find() would never
 		// have routed them to a subcommand anyway.
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -222,19 +287,43 @@ func rootCmd() *cobra.Command {
 				return fmt.Errorf("-w is removed; use -W or --worktree")
 			}
 
-			// Reject removed subcommands. `cobra.ArbitraryArgs` (set below)
-			// is load-bearing for shell-wt passthrough (`shell-wt ls -la` →
-			// `wt --agent shell ls -la`), so it swallows the first positional
+			// Reject removed subcommands. `cobra.ArbitraryArgs` (set above)
+			// is load-bearing for shell-wt passthrough (`shell-wt npm test` →
+			// `wt --agent shell npm test`), so it swallows the first positional
 			// without complaining. Without this guard, `wt models -A claude`
-			// silently creates a worktree named "models" and launches claude
-			// there — a footgun for users with stale muscle-memory invocations.
+			// hands the word "models" to claude as its first argument — a
+			// footgun for users with stale muscle-memory invocations.
 			// Keep this list in sync with removed subcommand names.
-			if len(args) > 0 {
+			//
+			// Only a word typed before any `--` is refused. ArgsLenAtDash is
+			// the number of positionals before the `--`: 0 means the first
+			// positional came after it, where the user has said outright
+			// that it is a passthrough command (`shell-wt -- models`), and
+			// it is passed through whatever its name. -1 (no `--`) and 1 or
+			// more (`wt models -- x`) leave the word where a subcommand
+			// would stand.
+			firstBeforeDash := len(args) > 0 && cmd.ArgsLenAtDash() != 0
+			if firstBeforeDash {
 				switch args[0] {
 				case "models":
 					return fmt.Errorf("wt models is removed; use `wt config` to view models")
 				case "agents":
 					return fmt.Errorf("wt agents is removed; use `wt config` to view agents")
+				}
+			}
+
+			// --cwd takes no value (#392). `--cwd <dir>` leaves <dir> as
+			// the first positional, which ArbitraryArgs passes on: claude
+			// read it as the prompt, ran in the shell's directory, and wt
+			// exited 0. A first word before any `--` that names an existing
+			// directory is that mistake, so it is refused before anything
+			// starts. Only the first word: `shell-wt --cwd ls proj` names a
+			// directory as the command's own argument. After `--` the user
+			// has said the word is the agent's, and it is passed on.
+			cwd, _ := cmd.Flags().GetBool("cwd")
+			if cwd && firstBeforeDash {
+				if err := refuseCwdValue(agentFlag, args[0]); err != nil {
+					return err
 				}
 			}
 
@@ -287,32 +376,6 @@ func rootCmd() *cobra.Command {
 				return nil
 			}
 
-			if agent, _ := cmd.Flags().GetString("debug-session"); agent != "" {
-				root, err := worktree.RepoRoot()
-				if err != nil {
-					return fmt.Errorf("not in a git repo: %w", err)
-				}
-				d := agents.ByName(agent)
-				if d == nil {
-					return fmt.Errorf("unknown agent: %s", agent)
-				}
-				r, ok := d.(agents.Resumer)
-				if !ok {
-					fmt.Printf("%s: no resume support\n", agent)
-					return nil
-				}
-				s, err := r.LatestSession(root)
-				if err != nil {
-					return err
-				}
-				if s == nil {
-					fmt.Println("(no sessions)")
-					return nil
-				}
-				fmt.Printf("resume %s (last %s)\n", s.ID, session.RelativeTime(s.MTime))
-				return nil
-			}
-
 			if debug, _ := cmd.Flags().GetBool("debug-worktrees"); debug {
 				root, err := worktree.RepoRoot()
 				if err != nil {
@@ -337,10 +400,9 @@ func rootCmd() *cobra.Command {
 			// agent/command picker when no agent was provided.
 			agent := agentFlag
 
-			// Read the new filter flags (-M/-T/-F). They are plumbed through
-			// to launchFiltered even when empty so that the legacy
-			// defaultModel-based path is replaced uniformly. The TUI fallback
-			// below forwards them to tui.Run for the model picker.
+			// Read the filter flags (-M/-T/-F). They are plumbed through to
+			// launchFiltered even when empty. The TUI fallback below forwards
+			// them to tui.Run for the model picker.
 			tags := mustGetString(cmd, "tags")
 			family := mustGetString(cmd, "family")
 			pinned := mustGetString(cmd, "model")
@@ -350,20 +412,20 @@ func rootCmd() *cobra.Command {
 
 			// Launch paths require a valid config. The `wt config` subcommand
 			// bypasses this so it can repair a broken config.toml. A missing
-			// modelman registry is tolerated for every agent (issue #147): a
+			// registry is tolerated for every agent (issue #147): a
 			// command agent has no model layer, and a model-driven agent with
 			// no config.toml entry falls back to a bare passthrough launch
 			// (see agents.IsConfigured and runLaunchPath, below). Anything
 			// else — a config.toml/registry.toml that exists but does not
 			// parse — still fails closed with the repair hint.
 			if a.cfgErr != nil && !errors.Is(a.cfgErr, config.ErrRegistryMissing) {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.cfgErr)
+				return configError(a.cfgErr)
 			}
 
 			// Fast-fail on unknown agent names. Without this, a typo'd -A surfaces
 			// as "pass -M <model> to launch without it" — a hint aimed at the picker
-			// path, not the actual problem. This mirrors the pre-PR launchFiltered
-			// fast-fail: the agent picker is only useful for known agents.
+			// path, not the actual problem. The agent picker is only useful for
+			// known agents.
 			if agent != "" && agents.ByName(agent) == nil {
 				return fmt.Errorf("unknown agent %q (known: %s)", agent, strings.Join(agents.Names(), ", "))
 			}
@@ -391,13 +453,35 @@ func rootCmd() *cobra.Command {
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
 
-			// --cwd: launch in the current repo root.
-			if cwd, _ := cmd.Flags().GetBool("cwd"); cwd {
+			// --cwd: launch in the current directory — the one launch that
+			// does not move to a checkout's root, so a relative path after
+			// `--` means the same thing to the agent as it did to the user.
+			// The agent starts here too, so a `-- --continue` finds the
+			// sessions of this directory.
+			//
+			// It needs no repository. The one thing a --cwd launch takes
+			// from git is the checkout root, and that root only says
+			// whether to install the main guard (runLaunchPath): rotation,
+			// usage and refcount state are keyed by model, agent and pid,
+			// never by a repository or a branch (claude's config_content
+			// backup is keyed by the absolute settings path, so it cannot
+			// collide either). So a
+			// directory with no checkout root — outside any repository,
+			// or with no git to ask — launches with root "", like the
+			// outside-a-repo launch below: no guard, everything else the
+			// same. Only -W (above) and the worktree picker (below) need
+			// a repository: -W says so, and the picker is never reached
+			// outside one.
+			if cwd {
 				root, err := worktree.RepoRoot()
 				if err != nil {
-					return fmt.Errorf("not in a git repo: %w", err)
+					root = ""
 				}
-				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
+				wd, err := os.Getwd()
+				if err != nil {
+					return err
+				}
+				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, wd, root)
 			}
 
 			// Outside a git repo: pure passthrough to the agent. With no agent
@@ -423,9 +507,17 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
+	// --others is read by the start driver (othersMode), so `wt start`, `wt
+	// smoke`, and a -M pin or slot profile's local model launched without the
+	// picker screens (-W, --cwd, outside a repository) answer it; a launch
+	// that opens the picker hands it to tui.Run, where it answers for the -M
+	// pinned row only, as --replace does. Reset
+	// here: the value is package state, and each rootCmd starts unanswered.
+	othersMode = ""
+	cmd.PersistentFlags().Var(&othersMode, "others", "When a local start loads a model beside other providers' models: keep them, or stop the ones wt can stop (default: ask; when stdin is not a terminal keep and warn). Read by wt start, wt smoke and a -M launch; in the picker it answers only for the -M pinned model, and any other start asks in a dialog")
 	cmd.PersistentFlags().StringP("tags", "T", "", "Comma-delimited tags to filter models (OR within flag)")
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
-	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current repo root, no picker")
+	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
@@ -437,15 +529,14 @@ func rootCmd() *cobra.Command {
 
 	// Test-only flags.
 	cmd.Flags().Bool("debug-worktrees", false, "List worktrees and branches (test helper)")
-	cmd.Flags().String("debug-session", "", "Print newest session for an agent (claude|opencode) (test helper)")
 
 	// Seed agent instruction files and exit (no agent binary required).
 	cmd.Flags().Bool("init", false, "Seed agent instruction files and exit")
 
-	// Guard management flags (legacy parity).
+	// Guard management flags.
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), litellmCmd(a), profileCmd(a))
+	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), servedCmd(a), warmCmd(a), litellmCmd(a), profileCmd(a), modelCmd(a), cloudSyncCmd(a))
 	return cmd
 }

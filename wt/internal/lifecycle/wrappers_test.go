@@ -15,44 +15,26 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
-// This file drives the PUBLIC wrappers (Start, Stop, StopModel) end to end
-// against the REAL litellm.Apply on a temp config.yaml, with fake provider
-// backends and httptest provider servers so the real localmodels.Inventory
-// runs. Everything else in the package tests routeAfterStart/routeAfterStop
-// directly, which leaves the wiring — "does Start actually call the hook?" —
-// unpinned: re-ordering Start to return before the hook, or dropping the hook
-// from StopModel, would keep that suite green.
+// This file drives the PUBLIC wrappers (Start, Stop, BeginStops +
+// StopBatch.Stop + SettleRoutes) end to end against the REAL
+// litellm.ApplyChange on a temp config.yaml, with fake provider backends and
+// httptest provider servers so the real localmodels.Inventory runs. Everything
+// else in the package tests routeAfterStart/routeAfterStop directly, which
+// leaves the wiring — "does Start actually call the hook?" — unpinned:
+// re-ordering Start to return before the hook, or dropping the route removal
+// from StopBatch.Stop (the stop loop's only stop path), would keep that suite
+// green.
 
-// wrapBackend is a provider backend that records its calls and can be told to
-// fail, so a wrapper test can drive start/stop without a real provider.
-type wrapBackend struct {
-	single   bool
-	startErr error
-	stopErr  error
-	calls    *[]string
-}
-
-func (b wrapBackend) singleModel() bool { return b.single }
-
-func (b wrapBackend) stop(context.Context, *env, *config.Config) error {
-	*b.calls = append(*b.calls, "stop")
-	return b.stopErr
-}
-
-func (b wrapBackend) stopModel(_ context.Context, _ *env, _ *config.Config, name string) error {
-	*b.calls = append(*b.calls, "stopModel:"+name)
-	return b.stopErr
-}
-
-func (b wrapBackend) start(_ context.Context, _ *env, _ *config.Config, t Target, _ func(Stage)) error {
-	*b.calls = append(*b.calls, "start:"+t.ModelName)
-	return b.startErr
+// stopAlone stops one model the way the stop loop does, as a batch of one.
+func stopAlone(ctx context.Context, cfg *config.Config, en localmodels.Entry) (bool, error) {
+	return BeginStops(ctx, cfg, []localmodels.Entry{en}).Stop(ctx, en)
 }
 
 // swapBackend installs b as family's backend for one test. defaultEnv clones
-// backendsByFamily, and SingleModel reads it directly, so this is the single
+// backendsByFamily, and TenancyOf reads it directly, so this is the single
 // switch that makes the public wrappers run against a fake provider.
 func swapBackend(t *testing.T, family string, b backend) {
 	t.Helper()
@@ -67,7 +49,7 @@ func swapBackend(t *testing.T, family string, b backend) {
 	})
 }
 
-// realRoutes points the route hook at the REAL litellm.Apply over a temp
+// realRoutes points the route hook at the REAL litellm.ApplyChange over a temp
 // config.yaml and a harmless restart command (the package TestMain hard-fails
 // applyRoutes by default). It returns the config path, a restart counter and
 // the captured warning stream.
@@ -88,11 +70,17 @@ func realRoutes(t *testing.T, yaml string) (cfgPath string, restarts func() int,
 	t.Setenv("WT_LITELLM_RESTART_CMD", "printf x >> "+marks)
 	var buf strings.Builder
 	oa, ow, op, ww := applyRoutes, waitProxy, probeProxy, routesWarn
-	applyRoutes = litellm.Apply
+	applyRoutes = litellm.ApplyChange
 	waitProxy = func(context.Context, string, time.Duration) error { return nil }
 	probeProxy = func(context.Context, string, time.Duration) bool { return false }
 	routesWarn = &buf
-	t.Cleanup(func() { applyRoutes, waitProxy, probeProxy, routesWarn = oa, ow, op, ww })
+	// As in stubRoutes: the remembered restart outcome is cleared going in and
+	// after this test's last restart has finished.
+	setLastRestartErr(nil)
+	t.Cleanup(func() {
+		applyRoutes, waitProxy, probeProxy, routesWarn = oa, ow, op, ww
+		setLastRestartErr(nil)
+	})
 	// Registered last, so it runs FIRST: settle any in-flight restart before
 	// the seams, WT_LITELLM_* env and the temp dir are torn down under it.
 	t.Cleanup(WaitPendingRoutes)
@@ -181,14 +169,14 @@ litellm_settings:
 `
 
 // TestStartWrapperAddsRouteOnSuccess drives the real public Start with a fake
-// backend and the real litellm.Apply: a successful start must leave the
+// backend and the real litellm.ApplyChange: a successful start must leave the
 // model's row in config.yaml and bounce the proxy once. Without this, Start
 // could return before its route hook and every routeAfterStart test would
 // still pass while started models had no route — the bug this phase fixes.
 func TestStartWrapperAddsRouteOnSuccess(t *testing.T) {
 	path, restarts, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
@@ -216,7 +204,7 @@ func TestStartWrapperFailedStartLeavesConfigUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls, startErr: errors.New("out of memory")})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err == nil {
@@ -244,7 +232,7 @@ func TestStartWrapperFailedStartLeavesConfigUntouched(t *testing.T) {
 func TestStartWrapperAlreadyRunningStillFixesStaleRoutes(t *testing.T) {
 	path, restarts, warn := realRoutes(t, staleSiblingYAML)
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q35"}))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{}); err != nil {
@@ -262,12 +250,14 @@ func TestStartWrapperAlreadyRunningStillFixesStaleRoutes(t *testing.T) {
 	}
 }
 
-// TestStopModelWrapperRemovesRoutes pins stop symmetry through the real
-// StopModel: a single-model provider goes down as a whole, so every one of its
-// models loses its route, while an ollama stop removes only the one model —
-// and an unrelated cloud row is never touched. Removing too much would break
-// models the user never stopped; too little leaves dead routes.
-func TestStopModelWrapperRemovesRoutes(t *testing.T) {
+// TestStopRouteRemovalSymmetry pins stop's route effect through the real
+// deferred stop and its settle: a single-model provider goes down as a whole,
+// so every one of its models loses its route, while an ollama stop only
+// unloads the model and leaves every route in place, owing no restart (a
+// pulled ollama model is still served on request — #179) — and an unrelated
+// cloud row is never touched. Removing too much would break models the user
+// never stopped; too little leaves dead routes.
+func TestStopRouteRemovalSymmetry(t *testing.T) {
 	const full = `model_list:
   - model_name: ollama/a:1
     litellm_params: {model: ollama_chat/a:1, api_base: http://localhost:11434}
@@ -282,32 +272,39 @@ func TestStopModelWrapperRemovesRoutes(t *testing.T) {
 `
 	path, restarts, warn := realRoutes(t, full)
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
 
-	if err := StopModel(context.Background(), cfg, "ollama", "a:1"); err != nil {
-		t.Fatalf("StopModel(ollama): %v", err)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ollamaA := localmodels.Entry{ProviderID: "ollama", ModelID: "ollama/a:1", ModelName: "a:1"}
+	mtplxY := localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"}
+	b := BeginStops(context.Background(), cfg, []localmodels.Entry{ollamaA, mtplxY})
+	if owed, err := b.Stop(context.Background(), ollamaA); err != nil || owed {
+		t.Fatalf("Stop(ollama) = (%v, %v), want (false, nil): stop leaves an ollama route in place", owed, err)
 	}
 	WaitPendingRoutes()
-	want := []string{"ollama/b:1", "mtplx/Y--Q35", "mtplx/Y--Q27", "openrouter/z"}
-	if got := routedIDs(t, path); !slices.Equal(got, want) {
-		t.Fatalf("after ollama stop routed = %v, want %v (warn %q)", got, want, warn.String())
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatalf("ollama stop rewrote config.yaml:\n%s", after)
 	}
 
-	if err := StopModel(context.Background(), cfg, "mtplx", "Y/Q35"); err != nil {
-		t.Fatalf("StopModel(mtplx): %v", err)
+	if owed, err := b.Stop(context.Background(), mtplxY); err != nil || !owed {
+		t.Fatalf("Stop(mtplx) = (%v, %v), want (true, nil)", owed, err)
 	}
+	SettleRoutes(context.Background(), cfg)
 	WaitPendingRoutes()
-	want = []string{"ollama/b:1", "openrouter/z"}
+	want := []string{"ollama/a:1", "ollama/b:1", "openrouter/z"}
 	if got := routedIDs(t, path); !slices.Equal(got, want) {
 		t.Fatalf("after mtplx stop routed = %v, want %v (warn %q)", got, want, warn.String())
 	}
 	if !slices.Equal(calls, []string{"stopModel:a:1", "stopModel:Y/Q35"}) {
 		t.Fatalf("backend calls = %v", calls)
 	}
-	if restarts() != 2 {
-		t.Fatalf("restarts = %d, want 2 (one per stop)", restarts())
+	if restarts() != 1 {
+		t.Fatalf("restarts = %d, want 1 (only the mtplx stop owed one)", restarts())
 	}
 }
 
@@ -318,7 +315,7 @@ func TestStopModelWrapperRemovesRoutes(t *testing.T) {
 func TestStartWrapperIsIdempotent(t *testing.T) {
 	path, restarts, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, []string{"a:1"}), openaiSrv(t, nil))
 
 	for i := range 3 {
@@ -344,7 +341,7 @@ func TestStartWrapperIsIdempotent(t *testing.T) {
 func TestStartWrapperReplaceThenFailDropsOccupantRoute(t *testing.T) {
 	path, _, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the occupant
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
 	err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true})
@@ -368,7 +365,7 @@ func TestStartWrapperReplaceThenFailDropsOccupantRoute(t *testing.T) {
 func TestStartWrapperReportsRoutingStage(t *testing.T) {
 	path, _, _ := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1", "b:1"}, nil), openaiSrv(t, nil))
 
 	var stages []Stage
@@ -394,7 +391,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 	}
 
 	stages = nil
-	swapBackend(t, "ollama", wrapBackend{calls: &calls, startErr: errors.New("boom")})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls, startErr: errors.New("boom")})
 	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "b:1"}, Options{Progress: report}); err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
@@ -406,7 +403,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 
 // TestStartWrapperRestartSurvivesCancelledCaller is the end-to-end half of
 // TestRouteRestartSurvivesCallerCancelAfterReturn: it drives the real public
-// Start with the real litellm.Apply AND the real RestartContext (counting
+// Start with the real litellm.ApplyChange AND the real RestartContext (counting
 // actual restart-command executions, not stubbed ones) against a caller whose
 // context is already cancelled.
 //
@@ -418,7 +415,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
 	path, restarts, warn := realRoutes(t, "model_list: []\n")
 	var calls []string
-	swapBackend(t, "ollama", wrapBackend{calls: &calls})
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -438,21 +435,26 @@ func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
 	}
 }
 
-// TestStopModelWrapperRemovesOmlx6bitSibling verifies a stop on the omlx
-// family drops the omlx-6bit variant's route too: one physical oMLX server
-// serves both quantizations, so stopping either takes both down. Before
-// omlx-6bit had a LiteLLM policy its rows were invisible to the family sweep
-// and survived as dead routes.
-func TestStopModelWrapperRemovesOmlx6bitSibling(t *testing.T) {
+// TestStopRemovesOmlx6bitSibling verifies `wt stop omlx` — the public Stop of
+// the provider, through the real litellm.ApplyChange — drops the omlx-6bit
+// variant's route too: one physical oMLX server serves both quantizations, so
+// halting the service takes both down. Before omlx-6bit had a LiteLLM policy
+// its rows were invisible to the family sweep and survived as dead routes.
+//
+// The fake backend has omlx's own tenancy (Pool), so the rule under test is
+// the real one, routeRemoveFamily. A stop of one omlx MODEL is a different
+// rule and removes that model's ids only
+// (TestStopBatchOnPoolKeepsSiblingRoutes).
+func TestStopRemovesOmlx6bitSibling(t *testing.T) {
 	const both = `model_list:
   - model_name: omlx/Four
     litellm_params: {model: openai/Four, api_base: http://localhost:8000/v1, api_key: not-needed}
   - model_name: omlx-6bit/Six
     litellm_params: {model: openai/Six, api_base: http://localhost:8000/v1, api_key: not-needed}
 `
-	path, _, warn := realRoutes(t, both)
+	path, restarts, warn := realRoutes(t, both)
 	var calls []string
-	swapBackend(t, "omlx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls})
 	srv := openaiSrv(t, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{
@@ -465,12 +467,18 @@ func TestStopModelWrapperRemovesOmlx6bitSibling(t *testing.T) {
 		},
 	}
 
-	if err := StopModel(context.Background(), cfg, "omlx", "Four"); err != nil {
-		t.Fatalf("StopModel: %v", err)
+	if err := Stop(context.Background(), cfg, "omlx"); err != nil {
+		t.Fatalf("Stop(omlx): %v", err)
 	}
 	WaitPendingRoutes()
+	if !slices.Equal(calls, []string{"stop"}) {
+		t.Fatalf("backend calls = %v, want one provider stop", calls)
+	}
 	if got := routedIDs(t, path); len(got) != 0 {
 		t.Fatalf("routed = %v, want none: one oMLX server serves both variants (warn %q)", got, warn.String())
+	}
+	if restarts() != 1 {
+		t.Fatalf("restarts = %d, want 1", restarts())
 	}
 }
 
@@ -482,7 +490,7 @@ func TestStopModelWrapperRemovesOmlx6bitSibling(t *testing.T) {
 func TestStartWrapperReplaceBouncesProxyOnce(t *testing.T) {
 	path, restarts, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the occupant
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err != nil {
@@ -505,7 +513,7 @@ func TestStartWrapperReplaceBouncesProxyOnce(t *testing.T) {
 func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
 	_, restarts, _ := realRoutes(t, staleSiblingYAML)
 	var calls []string
-	swapBackend(t, "mtplx", wrapBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
 	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err == nil {
@@ -515,4 +523,300 @@ func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
 	if restarts() != 1 {
 		t.Fatalf("restarts = %d after replace-then-fail, want 1", restarts())
 	}
+}
+
+// TestStopBatchRestartsOnce pins issue #142: a multi-select stop
+// writes every route removal with StopBatch.Stop (no restart each), then
+// SettleRoutes bounces the proxy exactly once. One restart per stop meant N
+// overlapping `launchctl kickstart -k`s, each killing the proxy the previous
+// one had just brought up and dropping in-flight requests every time.
+func TestStopBatchRestartsOnce(t *testing.T) {
+	const full = `model_list:
+  - model_name: ollama/a:1
+    litellm_params: {model: ollama_chat/a:1, api_base: http://localhost:11434}
+  - model_name: ollama/b:1
+    litellm_params: {model: ollama_chat/b:1, api_base: http://localhost:11434}
+  - model_name: mtplx/Y--Q35
+    litellm_params: {model: openai/Y/Q35, api_base: http://localhost:8003/v1, api_key: not-needed}
+  - model_name: openrouter/z
+    litellm_params: {model: openrouter/z}
+`
+	path, restarts, warn := realRoutes(t, full)
+	var calls []string
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+
+	entries := []localmodels.Entry{
+		{ProviderID: "ollama", ModelID: "ollama/a:1", ModelName: "a:1"},
+		{ProviderID: "ollama", ModelID: "ollama/b:1", ModelName: "b:1"},
+		{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"},
+	}
+	b := BeginStops(context.Background(), cfg, entries)
+	owed := false
+	for _, en := range entries {
+		o, err := b.Stop(context.Background(), en)
+		if err != nil {
+			t.Fatalf("Stop(%s %s): %v", en.ProviderID, en.ModelName, err)
+		}
+		owed = owed || o
+	}
+	WaitPendingRoutes()
+	if !owed {
+		t.Fatal("removals changed config.yaml, so a restart must be owed")
+	}
+	if restarts() != 0 {
+		t.Fatalf("restarts before settle = %d, want 0", restarts())
+	}
+	// The ollama stops only unloaded their models; their routes stay (#179).
+	if got, want := routedIDs(t, path), []string{"ollama/a:1", "ollama/b:1", "openrouter/z"}; !slices.Equal(got, want) {
+		t.Fatalf("routed = %v, want %v (warn %q)", got, want, warn.String())
+	}
+	SettleRoutes(context.Background(), cfg)
+	WaitPendingRoutes()
+	if restarts() != 1 {
+		t.Fatalf("restarts after settle = %d, want 1", restarts())
+	}
+}
+
+// TestStopBatchNothingRoutedOwesNothing pins that a stop whose model
+// had no route leaves no restart owed, so the batch skips the bounce entirely
+// — a stop of an unrouted model must not cost a proxy restart.
+func TestStopBatchNothingRoutedOwesNothing(t *testing.T) {
+	_, restarts, _ := realRoutes(t, "model_list:\n  - model_name: openrouter/z\n    litellm_params: {model: openrouter/z}\n")
+	var calls []string
+	// mtplx, not ollama: an ollama stop never writes routes at all (#179), so
+	// it could not exercise the "write changed nothing" path this pins.
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+	// The first write may still change the file: every write ensures
+	// LiteLLM's launcher-required litellm_settings keys, which this minimal
+	// fixture lacks. Only the second write sees a file in normal form.
+	mtplxY := localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"}
+	if _, err := stopAlone(context.Background(), cfg, mtplxY); err != nil {
+		t.Fatalf("first stop: %v", err)
+	}
+	owed, err := stopAlone(context.Background(), cfg, mtplxY)
+	if err != nil || owed {
+		t.Fatalf("Stop = (%v, %v), want (false, nil)", owed, err)
+	}
+	WaitPendingRoutes()
+	if restarts() != 0 {
+		t.Fatalf("restarts = %d, want 0", restarts())
+	}
+}
+
+// TestStopBatchFailedStopWritesNothing pins that a failed provider
+// stop leaves the route alone and owes no restart: the model is still
+// serving, so removing its route would strand it.
+func TestStopBatchFailedStopWritesNothing(t *testing.T) {
+	// mtplx, not ollama: an ollama stop keeps its route even on success (#179),
+	// so only a single-model stop shows the failure path holding back a removal.
+	const full = "model_list:\n  - model_name: mtplx/Y--Q35\n    litellm_params: {model: openai/Y/Q35, api_base: http://localhost:8003/v1, api_key: not-needed}\n"
+	path, _, _ := realRoutes(t, full)
+	var calls []string
+	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, stopErr: errors.New("boom")})
+	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, nil))
+	owed, err := stopAlone(context.Background(), cfg, localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Y--Q35", ModelName: "Y/Q35"})
+	if err == nil || owed {
+		t.Fatalf("Stop = (%v, %v), want (false, error)", owed, err)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"mtplx/Y--Q35"}) {
+		t.Fatalf("routed = %v, want the route kept", got)
+	}
+}
+
+// TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten drives a provider stop
+// through the real litellm.ApplyChange (#179 Phase B): `wt stop omlx-6bit`
+// halts the one oMLX server, so every marked route of the omlx family goes —
+// the 6-bit model's own row and a discovered sibling's "omlx/<artifact>" row
+// the registry never named — while an unmarked hand-written row that merely
+// shares the family prefix survives, as do other families' rows.
+//
+// It is a provider stop, with a fake backend of omlx's own tenancy (Pool): the
+// family sweep is what halting the service does. Stopping one omlx model
+// unloads that model and leaves its siblings' routes alone.
+func TestStopRemovesDiscoveredFamilyRoutesKeepsHandWritten(t *testing.T) {
+	const rows = `model_list:
+  - model_name: omlx-6bit/Six
+    litellm_params: {model: openai/Six, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: omlx/stray-model
+    litellm_params: {model: openai/stray-model, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: omlx/my-hand-row
+    litellm_params: {model: openai/my-hand-row, api_base: http://localhost:8000/v1, api_key: not-needed}
+  - model_name: mtplx/org/other
+    litellm_params: {model: openai/org/other, api_base: http://localhost:8003/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`
+	path, _, warn := realRoutes(t, rows)
+	var calls []string
+	swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls})
+	srv := openaiSrv(t, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "omlx-6bit", Location: config.LocationLocal, ModelDir: t.TempDir(), Auth: config.AuthConfig{Type: "none", BaseURL: srv + "/v1"}},
+		},
+		Models: []config.Model{
+			{ID: "omlx-6bit/Six", ProviderID: "omlx-6bit", ModelName: "Six", Location: config.LocationLocal},
+		},
+	}
+
+	if err := Stop(context.Background(), cfg, "omlx-6bit"); err != nil {
+		t.Fatalf("Stop(omlx-6bit): %v", err)
+	}
+	WaitPendingRoutes()
+	if !slices.Equal(calls, []string{"stop"}) {
+		t.Fatalf("backend calls = %v, want one provider stop", calls)
+	}
+	if got := routedIDs(t, path); !slices.Equal(got, []string{"omlx/my-hand-row", "mtplx/org/other"}) {
+		t.Fatalf("routed = %v, want only the hand-written omlx row and the mtplx row (warn %q)", got, warn.String())
+	}
+}
+
+// TestStartWrapperRoutesDiscoveredModel drives the real public Start for a
+// pulled ollama model with no registry overlay through the real
+// litellm.ApplyChange: the route lands under its discovered id, marked as
+// wt's, so a LiteLLM-forced agent can reach it (#179 Phase B). Before, the
+// hook warned "not in the registry" and wrote nothing.
+func TestStartWrapperRoutesDiscoveredModel(t *testing.T) {
+	path, _, warn := realRoutes(t, "model_list: []\n")
+	var calls []string
+	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
+	cfg := wrapCfg(t, ollamaSrv(t, []string{"llama3.2:3b"}, nil), openaiSrv(t, nil))
+
+	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "llama3.2:3b"}, Options{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	WaitPendingRoutes()
+	f, err := litellm.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Rows(); !slices.Equal(got, []litellm.RowInfo{{ID: "ollama/llama3.2:3b", Managed: true}}) {
+		t.Fatalf("rows = %v, want the discovered id, marked (warn %q)", got, warn.String())
+	}
+}
+
+// TestStartWrapperStoppedOthersLoseTheirRoutesInOneBounce drives the real
+// Start and litellm.ApplyChange through a start that stops another
+// provider's model first (#412). An mtplx stopped that way loses its route —
+// the server is down, so a request routed there would fail — while an ollama
+// model keeps its route, since a pulled ollama model is still served on
+// request (#179). A stopped omlx model loses its own route alone: its
+// siblings in the pool are still loaded and still served. Either way the stop's removal and the target's new route
+// are published by one proxy restart: a bounce per stop would drop in-flight
+// requests once more for every model stopped.
+func TestStartWrapperStoppedOthersLoseTheirRoutesInOneBounce(t *testing.T) {
+	t.Run("a stopped mtplx loses its route", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, staleSiblingYAML) // routes mtplx/Y--Q27, the resident
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama"})
+		swapBackend(t, "mtplx", &fakeBackend{ten: Exclusive, calls: &calls, family: "mtplx"})
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, []string{"Y/Q27"}))
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"mtplx/Y--Q27"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"mtplx:stopModel:Y/Q27", "ollama:start:a:1"}) {
+			t.Fatalf("backend calls = %v, want the mtplx stop, then the start", calls)
+		}
+		if got := routedIDs(t, path); !slices.Equal(got, []string{"ollama/a:1"}) {
+			t.Fatalf("routed = %v, want only [ollama/a:1] (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1", restarts())
+		}
+	})
+	t.Run("a stopped ollama model keeps its route", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, `model_list:
+  - model_name: ollama/b:1
+    litellm_params: {model: ollama_chat/b:1, api_base: http://localhost:11434}
+`)
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama"})
+		swapBackend(t, "mtplx", &fakeBackend{ten: Exclusive, calls: &calls, family: "mtplx"})
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1", "b:1"}, []string{"b:1"}), openaiSrv(t, nil))
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"ollama/b:1"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"ollama:stopModel:b:1", "mtplx:start:Y/Q35"}) {
+			t.Fatalf("backend calls = %v, want the ollama stop, then the start", calls)
+		}
+		got := routedIDs(t, path)
+		if !slices.Contains(got, "ollama/b:1") || !slices.Contains(got, "mtplx/Y--Q35") {
+			t.Fatalf("routed = %v, want ollama/b:1 kept and mtplx/Y--Q35 added (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1", restarts())
+		}
+	})
+	t.Run("a stopped omlx model loses only its own route", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, `model_list:
+  - model_name: omlx/A
+    litellm_params: {model: openai/A, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+  - model_name: omlx/B
+    litellm_params: {model: openai/B, api_base: http://localhost:8000/v1, api_key: not-needed}
+    model_info: {wt_managed: true}
+`)
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama"})
+		swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls, family: "omlx"})
+		fp := &fakePool{loaded: map[string]bool{"A": true, "B": true}}
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
+		cfg.Providers = append(cfg.Providers, config.Provider{ID: "omlx", Location: config.LocationLocal, ModelDir: t.TempDir(), Auth: config.AuthConfig{Type: "none", BaseURL: fp.serve(t) + "/v1"}})
+		cfg.Models = append(cfg.Models,
+			config.Model{ID: "omlx/A", ProviderID: "omlx", ModelName: "A", Location: config.LocationLocal},
+			config.Model{ID: "omlx/B", ProviderID: "omlx", ModelName: "B", Location: config.LocationLocal})
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"omlx/A"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"omlx:stopModel:A", "ollama:start:a:1"}) {
+			t.Fatalf("backend calls = %v, want the omlx stop of A, then the start", calls)
+		}
+		got := routedIDs(t, path)
+		if slices.Contains(got, "omlx/A") || !slices.Contains(got, "omlx/B") || !slices.Contains(got, "ollama/a:1") {
+			t.Fatalf("routed = %v, want omlx/A gone, omlx/B kept and ollama/a:1 added (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1", restarts())
+		}
+	})
+	t.Run("a start a failed stop ended still bounces once", func(t *testing.T) {
+		path, restarts, warn := realRoutes(t, staleSiblingYAML)
+		var calls []string
+		swapBackend(t, "ollama", &fakeBackend{ten: Shared, calls: &calls, family: "ollama", stopErr: errors.New("ollama stop failed")})
+		swapBackend(t, "mtplx", &fakeBackend{ten: Exclusive, calls: &calls, family: "mtplx"})
+		swapBackend(t, "omlx", &fakeBackend{ten: Pool, calls: &calls, family: "omlx"})
+		cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, []string{"a:1"}), openaiSrv(t, []string{"Y/Q27"}))
+
+		err := Start(context.Background(), cfg, Target{ProviderID: "omlx", ModelName: "T"},
+			Options{Others: OthersAnswer{Decided: true, Stop: []string{"mtplx/Y--Q27", "ollama/a:1"}}})
+		if err == nil || !strings.Contains(err.Error(), "stopping ollama/a:1 before starting T") {
+			t.Fatalf("Start = %v, want the failed ollama stop", err)
+		}
+		WaitPendingRoutes()
+		if !slices.Equal(calls, []string{"mtplx:stopModel:Y/Q27", "ollama:stopModel:a:1"}) {
+			t.Fatalf("backend calls = %v, want both stops and no start", calls)
+		}
+		if got := routedIDs(t, path); len(got) != 0 {
+			t.Fatalf("routed = %v, want the stopped mtplx's route gone (warn %q)", got, warn.String())
+		}
+		if restarts() != 1 {
+			t.Fatalf("restarts = %d, want 1: the removal already written must reach the proxy", restarts())
+		}
+	})
 }

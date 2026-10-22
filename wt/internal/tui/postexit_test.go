@@ -39,7 +39,7 @@ func TestPostExitOrder(t *testing.T) {
 		// output next to the real summary line.
 		fmt.Fprint(os.Stdout, "PICKER-MARKER\n")
 	}
-	emitPriceNotice = func() { order = append(order, "notice") }
+	emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -67,45 +67,39 @@ func TestPostExitOrder(t *testing.T) {
 	}
 }
 
-// TestPostExitCommandAgentSkipsStopPhase verifies a command agent (shell,
-// m.ID == "") launched no model, so the stop picker never runs after it.
-func TestPostExitCommandAgentSkipsStopPhase(t *testing.T) {
-	prevSummary, prevSurvey := pendingSummary, pendingSurveyState
-	prevRun, prevStop := runSurvey, runStopPhase
-	t.Cleanup(func() {
-		pendingSummary, pendingSurveyState = prevSummary, prevSurvey
-		runSurvey, runStopPhase = prevRun, prevStop
-	})
-	pendingSummary = ""
-	pendingSurveyState = pendingSurvey{agent: "shell", m: config.Model{}}
-	runSurvey = func(string, config.Model) string { return "" }
-	called := false
-	runStopPhase = func(*config.Config) { called = true }
-
-	printPendingSummaryAndSurvey(&config.Config{})
-	if called {
-		t.Error("stop phase ran for a command agent")
+// TestPostExitSkipsStopPhaseWithoutALocalModel verifies the stop picker never
+// runs after a session that had no local model behind it.
+func TestPostExitSkipsStopPhaseWithoutALocalModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		state pendingSurvey
+	}{
+		// A command agent (shell, m.ID == "") launched no model, so the stop
+		// picker never runs after it.
+		{"command agent", pendingSurvey{agent: "shell", m: config.Model{}}},
+		// A native model (which runs no local server) never offers to stop
+		// models after the session: the picker would list unrelated idle models
+		// the session had nothing to do with.
+		{"native model", pendingSurvey{agent: "claude", m: config.Model{ID: "claude/native", Native: true}}},
 	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prevSummary, prevSurvey := pendingSummary, pendingSurveyState
+			prevRun, prevStop := runSurvey, runStopPhase
+			t.Cleanup(func() {
+				pendingSummary, pendingSurveyState = prevSummary, prevSurvey
+				runSurvey, runStopPhase = prevRun, prevStop
+			})
+			pendingSummary = ""
+			pendingSurveyState = tc.state
+			runSurvey = func(string, config.Model) string { return "" }
+			called := false
+			runStopPhase = func(*config.Config) { called = true }
 
-// TestPostExitNativeModelSkipsStopPhase verifies a native model (which runs no
-// local server) never offers to stop models after the session: the picker would
-// list unrelated idle models the session had nothing to do with.
-func TestPostExitNativeModelSkipsStopPhase(t *testing.T) {
-	prevSummary, prevSurvey := pendingSummary, pendingSurveyState
-	prevRun, prevStop := runSurvey, runStopPhase
-	t.Cleanup(func() {
-		pendingSummary, pendingSurveyState = prevSummary, prevSurvey
-		runSurvey, runStopPhase = prevRun, prevStop
-	})
-	pendingSummary = ""
-	pendingSurveyState = pendingSurvey{agent: "claude", m: config.Model{ID: "claude/native", Native: true}}
-	runSurvey = func(string, config.Model) string { return "" }
-	called := false
-	runStopPhase = func(*config.Config) { called = true }
-
-	printPendingSummaryAndSurvey(&config.Config{})
-	if called {
-		t.Error("stop phase ran for a native model")
+			printPendingSummaryAndSurvey(&config.Config{})
+			if called {
+				t.Errorf("stop phase ran for a %s", tc.name)
+			}
+		})
 	}
 }

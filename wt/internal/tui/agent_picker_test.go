@@ -1,16 +1,13 @@
 package tui
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -121,11 +118,10 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 	// real rotation.state without it).
 	tempStateDir(t)
 	stubUsageStore(t)
-	t.Cleanup(stubInstalled("claude"))
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers: []config.Provider{
-			{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
+			{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}},
 		},
 		Models: []config.Model{
 			// Two code models in the gemma4 family.
@@ -141,25 +137,11 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
 	// Build a model in phaseAgent (where phaseAgent Enter fires).
 	// The picker list is built from buildAgentList so Enter advances
 	// to phaseModel via the same production code path.
-	m := model{
-		cfg:    cfg,
-		phase:  phaseAgent,
-		width:  80,
-		height: 24,
-	}
-	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	// Select the "claude" row so the Enter handler picks the right agent.
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	m := buildModelInPhaseAgent(t, cfg)
 	m.activeTags = "code,design"
 	m.activeFamily = "gemma4"
 
@@ -199,25 +181,28 @@ func TestPhaseModelHonorsFilters(t *testing.T) {
 // singleModelConfig returns a config where the claude agent has exactly
 // one eligible code model. Used by the single-model picker-skip tests
 // below; mirrors the catalog-narrowing shape of TestPhaseModelHonorsFilters
-// but with one item, so EligibleModels returns a 1-element slice.
+// but with one item, so EligibleModels returns a 1-element slice. The model
+// is an ollama cloud model (location=cloud on the local ollama provider) so
+// its row is a launch row — a lone start row never triggers the picker-skip
+// shortcut.
 func singleModelConfig() *config.Config {
 	cfg := &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models: []config.Model{
-			{ID: "ollama/gemma4:9b", ModelName: "gemma4:9b", ProviderID: "ollama", Family: "gemma4", Tags: []string{"code"}},
+			{ID: "ollama/gemma4:cloud", ModelName: "gemma4:cloud", ProviderID: "ollama", Family: "gemma4", Location: config.LocationCloud, Tags: []string{"code"}},
 		},
 		Agents: []config.Agent{
 			{Name: "claude", SupportedProviders: []string{"ollama"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 	return cfg
 }
 
 // buildModelInPhaseAgent constructs a model in phaseAgent with the agent
-// row pre-selected. Mirrors the setup in TestPhaseModelHonorsFilters so
-// the production phaseAgent Enter handler fires against the same shape.
+// row pre-selected. It is the setup TestPhaseModelHonorsFilters and the
+// single-model tests share, so the production phaseAgent Enter handler
+// fires against the same shape.
 func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 	t.Helper()
 	t.Cleanup(stubInstalled("claude"))
@@ -228,13 +213,20 @@ func buildModelInPhaseAgent(t *testing.T, cfg *config.Config) model {
 		height: 24,
 	}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
+	selectAgentRow(&m, "claude")
+	return m
+}
+
+// selectAgentRow puts the agent picker's cursor on the named agent row (never
+// a command row), so the Enter handler picks that agent. It does nothing when
+// no such row exists.
+func selectAgentRow(m *model, name string) {
 	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "claude" {
+		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == name {
 			m.agentList.Select(i)
 			break
 		}
 	}
-	return m
 }
 
 // TestPhaseAgentEnterSkipsPickerWhenSingleModel asserts that when the
@@ -255,42 +247,10 @@ func TestPhaseAgentEnterSkipsPickerWhenSingleModel(t *testing.T) {
 	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := gotModel.(model)
 	if nm.phase == phaseModel {
-		t.Fatalf("phase = phaseModel; want picker-skip (phaseResume or launch cmd)")
+		t.Fatalf("phase = phaseModel; want the picker skipped and the launch command returned")
 	}
 	if cmd == nil {
 		t.Fatal("expected launch cmd from single-model skip; got nil")
-	}
-}
-
-// TestPhaseAgentEnterSingleModelShowsResumePrompt asserts that when the
-// eligible list is one model AND a prior claude session exists, the skip
-// path goes to phaseResume (the resume prompt still applies — skipping
-// the picker doesn't bypass the user's choice between resume/fresh).
-func TestPhaseAgentEnterSingleModelShowsResumePrompt(t *testing.T) {
-	tempStateDir(t)
-	stubUsageStore(t)
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	repo := t.TempDir()
-	slug := session.Slug(repo)
-	sessDir := filepath.Join(homeDir, ".claude", "projects", slug)
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessDir, "session.jsonl"), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
-
-	m := buildModelInPhaseAgent(t, singleModelConfig())
-	m.selectedPath = repo
-
-	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	nm := gotModel.(model)
-	if nm.phase != phaseResume {
-		t.Fatalf("phase = %v, want phaseResume (skip must still run session check)", nm.phase)
-	}
-	if cmd != nil {
-		t.Errorf("expected no cmd while showing resume prompt, got %v", cmd)
 	}
 }
 
@@ -376,12 +336,7 @@ func TestPhaseAgentEnterBlocksUnconfiguredAgent(t *testing.T) {
 
 	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "opencode" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, "opencode")
 
 	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := gotModel.(model)
@@ -411,12 +366,7 @@ func TestPhaseAgentEnterBlocksUninstalledAgent(t *testing.T) {
 
 	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == "definitely-not-installed" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, "definitely-not-installed")
 
 	gotModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := gotModel.(model)
@@ -462,7 +412,7 @@ func TestBuildAgentListAdapter(t *testing.T) {
 // An agent with no config.toml entry but a real binary on PATH is marked
 // passthrough (launchable directly, no model) rather than blocked with a
 // "not configured" issue — the fix for issue #147 (a fresh machine with no
-// modelman/wt configuration must still be able to launch a real agent).
+// wt configuration must still be able to launch a real agent).
 func TestBuildAgentListMarksInstalledUnconfiguredAsPassthrough(t *testing.T) {
 	cfg := &config.Config{
 		Agents: []config.Agent{
@@ -536,12 +486,7 @@ func TestPhaseAgentEnterLaunchesPassthroughForUnconfiguredAgent(t *testing.T) {
 
 	m := model{cfg: cfg, phase: phaseAgent, width: 80, height: 24, selectedPath: "/tmp/repo"}
 	m.agentList = list.New(buildAgentList(cfg), list.NewDefaultDelegate(), 78, 22)
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && ai.name == "opencode" {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, "opencode")
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if gotAgent != "opencode" {

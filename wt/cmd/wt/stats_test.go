@@ -3,13 +3,20 @@
 // (rather than through survey.Record) so timestamps can be placed at
 // precise offsets from "now" without reaching into the survey package's
 // internal now() seam.
+//
+// These tests read stdout only. Each discards stderr, where `wt stats`
+// writes its notes (here TestMain's "querySpend not stubbed"), so a run
+// does not print them to the terminal; stats_usage_test.go checks the
+// notes.
 package main
 
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -41,20 +48,30 @@ func seedSurveyEvents(t *testing.T, tmp string, events []survey.Event) {
 	}
 }
 
-// TestStatsCmdEmptyStorePrintsMessage verifies `wt stats` never errors on
-// a fresh install (no survey.jsonl yet) — it reports "no survey data"
-// instead.
-func TestStatsCmdEmptyStorePrintsMessage(t *testing.T) {
-	a, _ := newTestApp(t)
+// statsOut runs `wt stats` with args and returns its stdout; stderr is
+// discarded. The arguments are always a non-nil slice, because cobra reads a
+// nil one as "use os.Args[1:]", the test binary's own command line.
+func statsOut(t *testing.T, a *app, args ...string) string {
+	t.Helper()
 	cmd := statsCmd(a)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{})
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(append([]string{}, args...))
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if strings.TrimSpace(out.String()) != "no survey data" {
-		t.Fatalf("output = %q, want \"no survey data\"", out.String())
+	return out.String()
+}
+
+// TestStatsCmdEmptyStorePrintsMessage verifies `wt stats` never errors on
+// a fresh install (no survey.jsonl, no usage.jsonl, no spend) — it reports
+// "no survey data" and "no usage data", one per table, instead.
+func TestStatsCmdEmptyStorePrintsMessage(t *testing.T) {
+	a, _ := newTestApp(t)
+	out := statsOut(t, a)
+	if out != "no survey data\n\nno usage data\n" {
+		t.Fatalf("output = %q, want \"no survey data\", a blank line, \"no usage data\"", out)
 	}
 }
 
@@ -69,14 +86,7 @@ func TestStatsCmdReportsAllAgentAndComboRows(t *testing.T) {
 		{Agent: "codex", ModelID: "ollama/gemma4:9b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(false)},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	got := out.String()
+	got := statsOut(t, a)
 	if !strings.Contains(got, "(all)") {
 		t.Errorf("output = %q, want a (all) aggregate row", got)
 	}
@@ -97,26 +107,14 @@ func TestStatsCmdWindowFilter(t *testing.T) {
 		{Agent: "claude", ModelID: "old-model", Timestamp: now.Add(-10 * 24 * time.Hour), Worked: boolPtr(true)},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--window", "1d"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if strings.TrimSpace(out.String()) != "no survey data" {
-		t.Errorf("output = %q, want \"no survey data\" (10-day-old event excluded from 1d window)", out.String())
+	out := statsOut(t, a, "--window", "1d")
+	if !strings.HasPrefix(out, "no survey data\n") {
+		t.Errorf("output = %q, want \"no survey data\" first (10-day-old event excluded from 1d window)", out)
 	}
 
-	cmd30 := statsCmd(a)
-	var out30 bytes.Buffer
-	cmd30.SetOut(&out30)
-	cmd30.SetArgs([]string{"--window", "30d"})
-	if err := cmd30.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(out30.String(), "old-model") {
-		t.Errorf("30d output = %q, want old-model included", out30.String())
+	out30 := statsOut(t, a, "--window", "30d")
+	if !strings.Contains(out30, "old-model") {
+		t.Errorf("30d output = %q, want old-model included", out30)
 	}
 }
 
@@ -130,26 +128,14 @@ func TestStatsCmdModelAndAgentFilters(t *testing.T) {
 		{Agent: "codex", ModelID: "model-b", Timestamp: now.Add(-1 * time.Hour), Worked: boolPtr(true)},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--model", "model-a"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(out.String(), "model-a") || strings.Contains(out.String(), "model-b") {
-		t.Errorf("output = %q, want only model-a rows", out.String())
+	out := statsOut(t, a, "--model", "model-a")
+	if !strings.Contains(out, "model-a") || strings.Contains(out, "model-b") {
+		t.Errorf("output = %q, want only model-a rows", out)
 	}
 
-	cmd2 := statsCmd(a)
-	var out2 bytes.Buffer
-	cmd2.SetOut(&out2)
-	cmd2.SetArgs([]string{"--agent", "codex"})
-	if err := cmd2.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(out2.String(), "codex") || strings.Contains(out2.String(), "claude") {
-		t.Errorf("output = %q, want only codex rows", out2.String())
+	out2 := statsOut(t, a, "--agent", "codex")
+	if !strings.Contains(out2, "codex") || strings.Contains(out2, "claude") {
+		t.Errorf("output = %q, want only codex rows", out2)
 	}
 }
 
@@ -159,6 +145,7 @@ func TestStatsCmdInvalidWindow(t *testing.T) {
 	a, _ := newTestApp(t)
 	cmd := statsCmd(a)
 	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--window", "5d"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected an error for an invalid --window value")
@@ -183,15 +170,8 @@ func TestStatsCmdExcludesEmptyRows(t *testing.T) {
 		{Agent: "copilot", ModelID: "model-empty", Timestamp: now.Add(-48 * time.Hour), Skipped: true},
 	})
 
-	cmd := statsCmd(a)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--window", "1d"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
+	got := statsOut(t, a, "--window", "1d")
 
-	got := out.String()
 	if !strings.Contains(got, "model-data") {
 		t.Errorf("output = %q, want model-data included", got)
 	}
@@ -228,8 +208,7 @@ func TestStatsRowsSortsAgentsWithAllFirst(t *testing.T) {
 		survey.NewStore().Events(),
 		survey.Window30d,
 		now,
-		"", // no model filter
-		"", // no agent filter
+		statsFilter{}, // no filters
 	)
 
 	// Verify we have both aggregate and combo rows
@@ -289,6 +268,73 @@ func TestStatsRowsSortsAgentsWithAllFirst(t *testing.T) {
 		} else if prev.ModelID > curr.ModelID {
 			t.Errorf("combo rows with same agent not sorted by model id: %s before %s (agent=%s)",
 				prev.ModelID, curr.ModelID, prev.Agent)
+		}
+	}
+}
+
+// TestStatsRowsLeaveOutSurveyAnswersDatedAfterTheInstant verifies the survey
+// half ends where the usage half does: an answer dated exactly at the
+// report's instant is counted, one dated after it is not, in the aggregate
+// rows and the combo rows alike. Launches after the instant are already left
+// out (#287); without the same bound here a clock that was wrong when an
+// answer was written gives `wt stats` a survey row for a model the usage
+// table, measured from the same as_of, shows no launch of.
+func TestStatsRowsLeaveOutSurveyAnswersDatedAfterTheInstant(t *testing.T) {
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	rows := buildStatsRows([]survey.Event{
+		{Agent: "claude", ModelID: "m/past", Timestamp: asOf.Add(-time.Hour), Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "m/past", Timestamp: asOf.Add(time.Hour), Worked: boolPtr(false)},
+		{Agent: "claude", ModelID: "m/at", Timestamp: asOf, Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "m/future", Timestamp: asOf.Add(time.Second), Worked: boolPtr(true)},
+		{Agent: "claude", ModelID: "m/future", Timestamp: asOf.Add(40 * 24 * time.Hour), Skipped: true},
+	}, survey.Window30d, asOf, statsFilter{})
+
+	got := map[string]survey.Stats{}
+	for _, r := range rows {
+		if r.ModelID == "m/future" {
+			t.Errorf("row %+v: want no m/future row (every answer is dated after the instant)", r)
+		}
+		got[r.Agent+" "+r.ModelID] = r.Stats
+	}
+	one := survey.Stats{Answered: 1, Worked: 1}
+	for _, key := range []string{
+		statsAllAgents + " m/past", "claude m/past", // the later, failed answer is not counted
+		statsAllAgents + " m/at", "claude m/at", // the window includes its end
+	} {
+		if got[key] != one {
+			t.Errorf("row %q = %+v, want %+v", key, got[key], one)
+		}
+	}
+	if len(rows) != 4 {
+		t.Errorf("buildStatsRows returned %d rows, want 4: %+v", len(rows), rows)
+	}
+}
+
+// TestStatsRowsSurveyWindowIsOpenAtItsStartAndClosedAtItsEnd pins the survey
+// half of `wt stats` to the window the usage half uses, (as_of - window,
+// as_of] (#298): an answer dated exactly one window before the instant is
+// left out, one a nanosecond younger is counted, and one dated exactly at the
+// instant is counted. The three tables of one report are read side by side
+// against one as_of; a survey row for a model whose launch that same instant
+// is not counted would look like an answer about a session that never ran.
+func TestStatsRowsSurveyWindowIsOpenAtItsStartAndClosedAtItsEnd(t *testing.T) {
+	asOf := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	for _, window := range []time.Duration{survey.Window1d, survey.Window7d, survey.Window30d} {
+		rows := buildStatsRows([]survey.Event{
+			{Agent: "claude", ModelID: "m/on-the-edge", Timestamp: asOf.Add(-window), Worked: boolPtr(true)},
+			{Agent: "claude", ModelID: "m/inside", Timestamp: asOf.Add(-window + time.Nanosecond), Worked: boolPtr(true)},
+			{Agent: "claude", ModelID: "m/at", Timestamp: asOf, Worked: boolPtr(true)},
+			{Agent: "claude", ModelID: "m/after", Timestamp: asOf.Add(time.Nanosecond), Worked: boolPtr(true)},
+		}, window, asOf, statsFilter{})
+
+		var got []string
+		for _, r := range rows {
+			if r.Aggregate {
+				got = append(got, r.ModelID)
+			}
+		}
+		if want := []string{"m/at", "m/inside"}; !slices.Equal(got, want) {
+			t.Errorf("window %s: models with a survey row = %v, want %v", window, got, want)
 		}
 	}
 }

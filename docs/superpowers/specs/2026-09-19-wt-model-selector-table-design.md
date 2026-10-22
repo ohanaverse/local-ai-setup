@@ -153,3 +153,26 @@ comment. Cases:
 
 Update `wt/CLAUDE.md` (TUI/model-picker sections, package table) when
 implemented.
+
+## Amendments
+
+Decisions made after implementation that refine or override the text above:
+
+- **Native models sort first (#172, 2026-10-01).** Supersedes the "Two groups"
+  wording in `### Sort`. A native model (`auth.type = "native"` — the agent's
+  own subscription) carries no per-token price, so plain cost-ascending ranked
+  it as "no cost data" and sank it below every priced cloud model. That
+  inverted this section's stated purpose for exactly the one row the user
+  already pays for, so native rows are now hoisted ahead of every other row.
+  The two groups still decide the order *within* the native and non-native
+  halves; they are no longer a top-level partition on their own.
+- **Native-first is also the default selection.** The pickers that never call
+  `Select` (`newPickModel`, used by `wt smoke` and `wt start`) highlight index
+  0, and `enterModelPhase`'s no-rotation fallback takes the first actionable
+  row — so with a native model present, a bare Enter picks it. This is a
+  deliberate, user-visible consequence of #172 rather than an accident of the
+  comparator, and is documented in `wt/CHANGELOG.md` and
+  `docs/guides/06-wt-agents-and-models.md`. Pinned by
+  `TestPickStartModelDefaultsToNativeRow` and
+  `TestEnterModelPhaseNoRotationDefaultsToNativeRow`; the native tie-break
+  coverage lives in `TestSortRowsNativeTieBreak`.

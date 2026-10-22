@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
@@ -12,12 +14,7 @@ import (
 // runningCell reports whether a rendered row line shows the RUNNING column's
 // "run" flag (fields are checked whole so "run" cannot match another cell).
 func runningCell(line string) bool {
-	for _, f := range strings.Fields(line) {
-		if f == "run" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Fields(line), "run")
 }
 
 // TestRefreshTableReprobesAndKeepsCursor verifies refreshTable re-runs the
@@ -26,9 +23,10 @@ func runningCell(line string) bool {
 // no longer running; a table that still showed it as running would lie.
 func TestRefreshTableReprobesAndKeepsCursor(t *testing.T) {
 	// Arrange: a cfg with an omlx provider and two local models omlx/a and
-	// omlx/b (the fixture shape of TestEnterModelPhaseAllLocalNoneRunningShows
-	// BlockedRows); the FIRST probe reports omlx/a running, later probes report
-	// nothing running. The probe count is tracked in the stub closure.
+	// omlx/b (the fixture shape of
+	// TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows); the FIRST probe
+	// reports omlx/a running, later probes report nothing running. The probe
+	// count is tracked in the stub closure.
 	cfg := &config.Config{
 		DefaultTag: "code",
 		Providers:  []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
@@ -38,7 +36,6 @@ func TestRefreshTableReprobesAndKeepsCursor(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	probes := 0
 	old := runInventory
@@ -46,10 +43,14 @@ func TestRefreshTableReprobesAndKeepsCursor(t *testing.T) {
 		probes++
 		if probes == 1 {
 			return localmodels.Snapshot{Entries: []localmodels.Entry{
-				{ProviderID: "omlx", Artifact: "a", ModelID: "omlx/a", Registered: true, Running: true},
+				{ProviderID: "omlx", Artifact: "a", ModelID: "omlx/a", Registered: true, Running: true, ArtifactKnown: true},
+				{ProviderID: "omlx", Artifact: "b", ModelID: "omlx/b", Registered: true, ArtifactKnown: true},
 			}}
 		}
-		return localmodels.Snapshot{}
+		return localmodels.Snapshot{Entries: []localmodels.Entry{
+			{ProviderID: "omlx", Artifact: "a", ModelID: "omlx/a", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", Artifact: "b", ModelID: "omlx/b", Registered: true, ArtifactKnown: true},
+		}}
 	}
 	t.Cleanup(func() { runInventory = old })
 
@@ -104,7 +105,6 @@ func refreshTestCfg() *config.Config {
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 	return cfg
 }
 
@@ -262,5 +262,35 @@ func TestStaleTableRefreshIsDropped(t *testing.T) {
 
 	if indexOfID(next.(model), "other/stale") >= 0 {
 		t.Errorf("stale refresh replaced the table: %v", itemIDs(next.(model)))
+	}
+}
+
+// TestRefreshTableWithNoRowsRoutesBack verifies a refresh whose re-probe
+// leaves no row at all (the only listed model went off disk between the first
+// probe and the one after a failed start) routes back to the agent picker
+// with a reason. Since #179 Phase B a model that is neither on disk nor
+// running has no row, so without this the user is stranded on a "No items."
+// picker whose Enter does nothing.
+func TestRefreshTableWithNoRowsRoutesBack(t *testing.T) {
+	stubInventory(t, refreshTestSnapshot())
+	got := flowEnter(t, model{cfg: refreshTestCfg(), agent: "pi", width: 80, height: 24}, "pi")
+	if got.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel before the refresh", got.phase)
+	}
+	// Later probes confirm neither model is on disk.
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", ModelID: "omlx/qwen-a", Registered: true, ArtifactKnown: true},
+		{ProviderID: "omlx", ModelID: "omlx/qwen-b", Registered: true, ArtifactKnown: true},
+	}})
+
+	got, cmd := got.refreshTable()
+	next, _ := got.Update(cmd())
+	after := next.(model)
+
+	if after.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (no empty table)", after.phase)
+	}
+	if want := catalog.NoRowsReason("pi"); after.status != want {
+		t.Errorf("status = %q, want %q", after.status, want)
 	}
 }

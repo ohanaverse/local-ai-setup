@@ -21,6 +21,21 @@ func gitInit(t *testing.T, dir string) {
 	}
 }
 
+// inRepo makes a throwaway git repository, changes into it, and returns its
+// path. When the test ends the working directory is restored to a neutral
+// temp dir, never to the package directory inside the real checkout.
+func inRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitInit(t, dir)
+	neutral := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(neutral) })
+	return dir
+}
+
 // CommonDir must return the absolute hooks directory inside a normal git repo
 // so callers know where to read and write pre-commit hooks.
 func TestCommonDir(t *testing.T) {
@@ -53,10 +68,7 @@ func TestCommonDir(t *testing.T) {
 // This is the baseline state for a fresh repo before the guard is ever
 // installed.
 func TestCheckNotInstalled(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir()) // restore to a neutral dir
+	inRepo(t)
 
 	status := Check()
 	if status != NotInstalled {
@@ -67,10 +79,7 @@ func TestCheckNotInstalled(t *testing.T) {
 // Check must report Installed when the pre-commit hook contains our marker.
 // This is the signal the launcher uses to skip redundant installs.
 func TestCheckInstalled(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	inRepo(t)
 
 	if _, err := Install(); err != nil {
 		t.Fatalf("Install() error = %v", err)
@@ -85,10 +94,7 @@ func TestCheckInstalled(t *testing.T) {
 // Check must report NotInstalled when a pre-commit hook exists but was not
 // created by wt. We must never touch foreign hooks.
 func TestCheckForeignHook(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	dir := inRepo(t)
 
 	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
 	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\necho foreign\n"), 0o755); err != nil {
@@ -104,10 +110,7 @@ func TestCheckForeignHook(t *testing.T) {
 // Install must create a pre-commit hook when none exists and return changed
 // true. Without this, the guard is never written to disk.
 func TestInstallCreatesHook(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	dir := inRepo(t)
 
 	changed, err := Install()
 	if err != nil {
@@ -130,10 +133,7 @@ func TestInstallCreatesHook(t *testing.T) {
 // Install must be idempotent: a second call returns changed false so the
 // launcher avoids redundant disk writes and misleading user output.
 func TestInstallIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	inRepo(t)
 
 	first, err := Install()
 	if err != nil {
@@ -156,10 +156,7 @@ func TestInstallIdempotent(t *testing.T) {
 // guard block. Losing the user's original hook would break their existing
 // pre-commit workflows.
 func TestInstallPreservesForeignHook(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	dir := inRepo(t)
 
 	foreign := "#!/bin/sh\necho 'original hook'\n"
 	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
@@ -188,10 +185,7 @@ func TestInstallPreservesForeignHook(t *testing.T) {
 // no previous foreign hook to restore. Leaving a stale guard behind would
 // continue blocking commits after the user asked to remove it.
 func TestUninstallRemovesHook(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	dir := inRepo(t)
 
 	if _, err := Install(); err != nil {
 		t.Fatalf("Install() error = %v", err)
@@ -215,10 +209,7 @@ func TestUninstallRemovesHook(t *testing.T) {
 // This ensures the user’s existing pre-commit checks survive a temporary
 // wt guard installation.
 func TestUninstallRestoresForeignHook(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	dir := inRepo(t)
 
 	foreign := "#!/bin/sh\necho 'original hook'\n"
 	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
@@ -248,10 +239,7 @@ func TestUninstallRestoresForeignHook(t *testing.T) {
 // Uninstall must be a no-op when the hook does not contain our marker. We
 // must never delete a pre-commit hook we did not create.
 func TestUninstallLeavesForeignHookAlone(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	dir := inRepo(t)
 
 	foreign := "#!/bin/sh\necho 'foreign'\n"
 	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
@@ -275,10 +263,7 @@ func TestUninstallLeavesForeignHookAlone(t *testing.T) {
 // Uninstall must succeed silently when no pre-commit hook exists at all.
 // Running --no-guard on a repo that never had the guard should not error.
 func TestUninstallNoHook(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-	os.Chdir(dir)
-	defer os.Chdir(t.TempDir())
+	inRepo(t)
 
 	if err := Uninstall(); err != nil {
 		t.Fatalf("Uninstall() error = %v", err)

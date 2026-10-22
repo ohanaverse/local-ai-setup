@@ -1,24 +1,26 @@
 package tui
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 // TestLaunchAgentUnknownAgent asserts that asking for an unregistered agent
 // returns a clear error. Without this guard the TUI could try to exec a
 // nil driver.
 func TestLaunchAgentUnknownAgent(t *testing.T) {
-	_, err := launchAgent("not-an-agent", config.Model{}, "/tmp", false, nil, nil, nil)
+	_, err := launchAgent("not-an-agent", config.Model{}, "/tmp", false, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -27,52 +29,15 @@ func TestLaunchAgentUnknownAgent(t *testing.T) {
 	}
 }
 
-// TestLaunchAgentClaudeResumeAppendsFlag asserts that a claude launch with
-// a session appends --resume <id> to the command args. This is the resume
-// wiring that the bash wrappers do for claude.
-func TestLaunchAgentClaudeResumeAppendsFlag(t *testing.T) {
-	requireBinary(t, "claude")
+// TestLaunchAgentNeverAddsAResumeFlag pins that the picker's launch starts
+// the agent fresh: wt adds no resume or session flag of its own. Continuing a
+// conversation is done with the agent's own flags after `--`.
+func TestLaunchAgentNeverAddsAResumeFlag(t *testing.T) {
+	stubFakeBinary(t, "claude")
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}},
 	}
-	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet", ProviderID: "claude"}, "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("launchAgent: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--resume abc-123") {
-		t.Errorf("args = %q, want --resume abc-123", got)
-	}
-}
-
-// TestLaunchAgentOpenCodeResumeAppendsFlag asserts that an opencode launch
-// with a session appends --session <id> to the command args.
-func TestLaunchAgentOpenCodeResumeAppendsFlag(t *testing.T) {
-	requireBinary(t, "opencode")
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := launchAgent("opencode", config.Model{ID: "ollama/gemma4:9b"}, "/tmp/repo", false,
-		&session.Session{ID: "proj-123.json", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("launchAgent: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--session proj-123.json") {
-		t.Errorf("args = %q, want --session proj-123.json", got)
-	}
-}
-
-// TestLaunchAgentWithoutSessionOmitsResumeFlag asserts that when no session
-// is passed, no resume/session flag is injected. This is the "start fresh"
-// path.
-func TestLaunchAgentWithoutSessionOmitsResumeFlag(t *testing.T) {
-	requireBinary(t, "claude")
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "claude", Auth: config.AuthConfig{Type: "native"}}},
-	}
-	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet", ProviderID: "claude"}, "/tmp/repo", false, nil, cfg, nil)
+	cmd, err := launchAgent("claude", config.Model{ID: "claude-sonnet", ProviderID: "claude"}, "/tmp/repo", false, cfg, nil)
 	if err != nil {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -234,7 +199,7 @@ func TestLaunchAgentSyncsPi(t *testing.T) {
 		},
 	}
 	m := config.Model{ID: "ollama/deepseek-v4-pro:cloud", ModelName: "deepseek-v4-pro:cloud", ProviderID: "ollama"}
-	cmd, err := launchAgent("pi", m, "/tmp", false, nil, cfg, nil)
+	cmd, err := launchAgent("pi", m, "/tmp", false, cfg, nil)
 	if err != nil && !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("launchAgent: %v", err)
 	}
@@ -279,13 +244,7 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 	if gotAgent != "claude" || gotModel.ID != "ollama/x" {
 		t.Errorf("profileApplier called with (%q, %+v), want (claude, {ID: ollama/x})", gotAgent, gotModel)
 	}
-	found := false
-	for _, e := range cmd.Env {
-		if e == "WT_TEST_PROFILE_APPLIED=1" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(cmd.Env, "WT_TEST_PROFILE_APPLIED=1") {
 		t.Error("profileApplier's cmd.Env mutation did not survive into cmd.Run()")
 	}
 	if !cleanupCalled {
@@ -297,11 +256,11 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 // the TUI-side equivalent of the non-TUI runAgentCmd fix (plan item #5): a
 // pre-launch profileApplier error must skip cmd.Run() entirely, still
 // release the refcount entry already recorded by launchAndRecord before
-// runAndWaitCmd was returned, and still populate pendingSummary (duration
-// 0) and print the error to stderr (the TUI never surfaces
-// launchDoneMsg's error, so without it the user sees no diagnostic at all)
-// — but must NOT populate pendingSurveyState, since nothing ran and there
-// is no session to survey or offer a stop picker for.
+// runAndWaitCmd was returned, still populate pendingSummary (duration 0),
+// and come back as a launchDoneMsg carrying the error — not print it — so
+// Run returns it once and main reports it as `wt: <error>` with exit 1
+// (#412). It must NOT populate pendingSurveyState, since nothing ran and
+// there is no session to survey or offer a stop picker for.
 func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	oldApplier := profileApplier
 	t.Cleanup(func() { profileApplier = oldApplier })
@@ -321,26 +280,11 @@ func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	cmd := exec.Command("touch", sentinel)
 	m := config.Model{ID: "ollama/x", ModelName: "x"}
 
-	// Capture stderr: the Update handler never renders launchDoneMsg's
-	// error and Run() does not return it, so this stderr line is the
-	// user's only diagnostic for a launch that never ran.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldStderr := os.Stderr
-	os.Stderr = w
 	msg := runAndWaitCmd(cmd, "pi", m)()
-	os.Stderr = oldStderr
-	_ = w.Close()
-	stderrOut, _ := io.ReadAll(r)
 
 	done, ok := msg.(launchDoneMsg)
 	if !ok || done.err == nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a launchDoneMsg carrying the profileApplier error", msg)
-	}
-	if !strings.Contains(string(stderrOut), "wt: wrapper not installed") {
-		t.Errorf("stderr = %q, want it to contain %q — a profileApplier error must be visible to the user", stderrOut, "wt: wrapper not installed")
 	}
 	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
 		t.Error("sentinel file exists — cmd.Run() executed despite the profileApplier error")
@@ -370,5 +314,159 @@ func TestRunAndWaitCmdNilProfileApplierIsNoop(t *testing.T) {
 	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a successful launchDoneMsg", msg)
+	}
+}
+
+// relativeArgTUIFixture mirrors the report behind the relative-argument note:
+// the command is typed in <repo>/wt, the agent starts in <repo>, and
+// "../../other" names a sibling project only from the first. It installs a
+// fake `claude`, points the shell-directory seam at <repo>/wt, and clears the
+// pending notes.
+func relativeArgTUIFixture(t *testing.T) (launch, other string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other = filepath.Join(root, "other")
+	launch = filepath.Join(root, "repo")
+	shell := filepath.Join(launch, "wt")
+	for _, d := range []string{other, shell} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldDir, oldNotes := shellDir, pendingRouteNotes
+	shellDir = func() (string, error) { return shell, nil }
+	pendingRouteNotes = ""
+	t.Cleanup(func() { shellDir, pendingRouteNotes = oldDir, oldNotes })
+	return launch, other
+}
+
+// TestLaunchAgentQueuesTheRelativePathNote pins the picker's half of the
+// relative-argument note. The picker owns the terminal while it builds the
+// launch, so a note printed then would be lost under the alt screen; it is
+// queued with the other pending notes and printed when the terminal is
+// released, above the agent's own output. The argument is passed on
+// unchanged.
+func TestLaunchAgentQueuesTheRelativePathNote(t *testing.T) {
+	launch, other := relativeArgTUIFixture(t)
+	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
+	cmd, err := launchAgent("claude", native, launch, false, nil, []string{"../../other", "--verbose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cmd.Args, "../../other") {
+		t.Errorf("args = %v, want the relative argument passed through unchanged", cmd.Args)
+	}
+	for _, want := range []string{`wt: note: "../../other" is a relative path`, "claude starts in " + launch, other} {
+		if !strings.Contains(pendingRouteNotes, want) {
+			t.Errorf("pending notes %q lack %q", pendingRouteNotes, want)
+		}
+	}
+	if n := strings.Count(pendingRouteNotes, "wt: note:"); n != 1 {
+		t.Errorf("pending notes = %q, want exactly one", pendingRouteNotes)
+	}
+	// A launch that failed and is retried builds the command again; the note
+	// must not pile up.
+	if _, err := launchAgent("claude", native, launch, false, nil, []string{"../../other", "--verbose"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(pendingRouteNotes, "wt: note:"); n != 1 {
+		t.Errorf("after a second build pending notes = %q, want still one", pendingRouteNotes)
+	}
+	var printed bytes.Buffer
+	flushRouteNotes(&printed)
+	if !strings.Contains(printed.String(), other) || pendingRouteNotes != "" {
+		t.Errorf("flushed %q, left %q; want the note printed once and the queue empty", printed.String(), pendingRouteNotes)
+	}
+}
+
+// TestPassthroughLaunchQueuesTheRelativePathNote pins the same for an agent
+// with no config entry, which the picker launches through launchPassthrough.
+func TestPassthroughLaunchQueuesTheRelativePathNote(t *testing.T) {
+	launch, other := relativeArgTUIFixture(t)
+	m := model{selectedPath: launch, extraArgs: []string{"../../other"}}
+	if got, _ := m.launchPassthrough("claude"); strings.Contains(got.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch built", got.status)
+	}
+	if !strings.Contains(pendingRouteNotes, `"../../other" is a relative path`) || !strings.Contains(pendingRouteNotes, other) {
+		t.Fatalf("pending notes = %q, want the relative-path note naming %s", pendingRouteNotes, other)
+	}
+}
+
+// TestLaunchAgentQueuesNothingWithoutAMistakenPath pins that an ordinary
+// picker launch leaves the queue empty.
+func TestLaunchAgentQueuesNothingWithoutAMistakenPath(t *testing.T) {
+	launch, _ := relativeArgTUIFixture(t)
+	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
+	for _, args := range [][]string{nil, {"run", "say hi"}, {"--verbose"}} {
+		if _, err := launchAgent("claude", native, launch, false, nil, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pendingRouteNotes != "" {
+		t.Fatalf("pending notes = %q, want none", pendingRouteNotes)
+	}
+}
+
+// TestPickerLaunchesStraightThroughAPriorSession pins that the picker no
+// longer stops to ask about an earlier session (#198, #204). It used to look
+// one up for the worktree and show a "Resume previous session?" prompt; wt
+// now leaves sessions to the agent, so Enter on a model launches it — here
+// with a prior claude session on disk for the directory, which is what used
+// to raise the prompt — and the launch carries no resume flag.
+func TestPickerLaunchesStraightThroughAPriorSession(t *testing.T) {
+	stubFakeBinary(t, "claude")
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, home := filepath.Join(root, "repo"), filepath.Join(root, "home")
+	t.Setenv("HOME", home)
+	sd, ok := agents.ByName("claude").(agents.StateDirer)
+	if !ok {
+		t.Fatal("the claude driver no longer reports a state directory")
+	}
+	projects := sd.StateDir(launch)
+	for _, d := range []string{launch, projects} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(projects, "0000aaaa-prior-session.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
+	m := model{cfg: &config.Config{}, phase: phaseModel, agent: "claude", tag: "code", selectedPath: launch, width: 80, height: 24, models: singleModelList(native)}
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next := got.(model)
+
+	if cmd == nil {
+		t.Fatalf("no launch command: phase = %v status = %q", next.phase, next.status)
+	}
+	if next.phase != phaseModel || strings.Contains(next.status, "launch failed") {
+		t.Fatalf("phase = %v status = %q, want the launch to go straight ahead", next.phase, next.status)
+	}
+	if view := next.View(); strings.Contains(view, "Resume") {
+		t.Fatalf("the picker still shows a resume prompt:\n%s", view)
+	}
+	built, err := launchAgent("claude", native, launch, false, &config.Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range built.Args {
+		if a == "--resume" || a == "--continue" || strings.Contains(a, "prior-session") {
+			t.Fatalf("launch args %v carry a resume flag wt added", built.Args)
+		}
 	}
 }

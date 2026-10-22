@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -28,22 +29,55 @@ var (
 	// ErrInvalid: config.yaml exists but is not a YAML mapping, or its
 	// model_list is not a list. wt refuses to write such a file.
 	ErrInvalid = errors.New("LiteLLM config is invalid")
+	// ErrRegistryRedirected: the environment redirected the registry but
+	// nothing named config.yaml. No route write or dry run goes ahead (see
+	// checkRegistryPairing).
+	ErrRegistryRedirected = errors.New("LiteLLM routes not touched")
 )
 
 // DefaultPath resolves config.yaml lazily so env overrides work in tests:
 // WT_LITELLM_CONFIG, then legacy MODELMAN_LITELLM_CONFIG, then
 // ~/.config/litellm/config.yaml.
 func DefaultPath() string {
-	for _, k := range []string{"WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG"} {
-		if v := os.Getenv(k); v != "" {
-			if exp, err := config.ExpandHome(v); err == nil {
-				return exp
-			}
-			return v
-		}
+	if p, ok := namedPath(); ok {
+		return p
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "litellm", "config.yaml")
+}
+
+// namedPath is the config.yaml the environment names, if it names one.
+func namedPath() (string, bool) {
+	for _, k := range []string{"WT_LITELLM_CONFIG", "MODELMAN_LITELLM_CONFIG"} {
+		if v := os.Getenv(k); v != "" {
+			if exp, err := config.ExpandHome(v); err == nil {
+				return exp, true
+			}
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// checkRegistryPairing refuses the one combination no caller means: a
+// registry the environment redirected (config.RegistryRedirected) with a
+// config.yaml nobody named. The two paths resolve independently — the
+// registry follows WT_REGISTRY, MODELMAN_REGISTRY and XDG_CONFIG_HOME,
+// config.yaml only WT_LITELLM_CONFIG (or its alias) — so redirecting the
+// registry alone reconciles the developer's real proxy config against a
+// scratch registry: every marked route that registry lacks is removed and the
+// live proxy restarted. Naming config.yaml (the environment, or Options.Path)
+// says which proxy config the registry belongs to and is always honored, the
+// default file included.
+func checkRegistryPairing(o Options) error {
+	if o.Path != "" {
+		return nil
+	}
+	if _, ok := namedPath(); ok || !config.RegistryRedirected() {
+		return nil
+	}
+	return fmt.Errorf("%w: the registry is %s but config.yaml is the default %s — set WT_LITELLM_CONFIG to the config.yaml that registry belongs to",
+		ErrRegistryRedirected, config.RegistryPath(), DefaultPath())
 }
 
 // enforcedSettings are value-enforced under litellm_settings on every write.
@@ -52,10 +86,17 @@ var enforcedSettings = []string{
 	"use_chat_completions_url_for_anthropic_messages",
 }
 
-// preservedParamKeys survive a row replacement when the new row lacks them:
-// they are presence-based (an existing value of any kind marks the row
-// user-managed).
-var preservedParamKeys = []string{"additional_drop_params", "use_chat_completions_api"}
+// wtParamKeys are the litellm_params keys wt itself derives from the registry
+// and provider policy (entry.go's BuildEntry): model unconditionally, api_base
+// only when the provider supplies a base URL, and api_key from whichever the
+// policy names — its secret ref (resolving the provider's credential) or its
+// literal key. A row replacement never carries these over from the old row:
+// the registry and provider policy own them, and a change there must reach
+// config.yaml. Every other key on the old row is user-authored (a hand-written
+// timeout, rate limit, ...) and is carried over when the new row lacks it — the
+// presence-based keys additional_drop_params and use_chat_completions_api
+// (EnsureSettings writes them only when absent) fall out of this rule.
+var wtParamKeys = map[string]bool{"model": true, "api_base": true, "api_key": true}
 
 // droppedOllamaChatParams are dropped by default on every fresh ollama_chat/
 // deployment via additional_drop_params: reasoning_effort crashes litellm's
@@ -68,8 +109,6 @@ var preservedParamKeys = []string{"additional_drop_params", "use_chat_completion
 // so any client-supplied value for these three is silently ignored for
 // every ollama_chat/ model, including ones that would have handled it fine.
 var droppedOllamaChatParams = []string{"reasoning_effort", "frequency_penalty", "presence_penalty"}
-
-var loopbackHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 
 // File is an open, editable LiteLLM config.yaml.
 type File struct {
@@ -190,38 +229,150 @@ func rowName(row *yaml.Node) string {
 	return ""
 }
 
-// modelList returns the model_list sequence, creating it when absent or null.
-// A non-list value is ErrInvalid: never edit what we do not understand.
-func (f *File) modelList() (*yaml.Node, error) {
-	ml := mapGet(f.root(), "model_list")
-	switch {
-	case ml == nil || isNull(ml):
-		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-		mapSet(f.root(), "model_list", seq)
-		return seq, nil
-	case ml.Kind != yaml.SequenceNode:
-		return nil, fmt.Errorf("%w: model_list is not a list in %s", ErrInvalid, f.path)
-	}
-	return ml, nil
+// ManagedKey is the model_info key wt stamps on every row it writes (#179).
+// Sync removes only rows wt owns; the marker is how a row says so.
+const ManagedKey = "wt_managed"
+
+// IsManaged reports whether row carries wt's ownership marker
+// (model_info.wt_managed: true; any other value counts as hand-written).
+func IsManaged(row *yaml.Node) bool {
+	return isTrue(mapGet(mapGet(row, "model_info"), ManagedKey))
 }
 
-// RoutedIDs returns every model_list row's model_name, in file order.
-func (f *File) RoutedIDs() []string {
+// RowInfo is one model_list row's name and whether wt's marker is on it.
+type RowInfo struct {
+	ID      string
+	Managed bool
+}
+
+// modelListSeq returns the model_list sequence, or nil when the key is absent,
+// null, or its value is not a sequence. It never mutates: modelList is the only
+// accessor allowed to create the key, and a read-only caller that created it
+// would flip File.Changed, making a no-op sync write config.yaml and restart
+// the proxy.
+func (f *File) modelListSeq() *yaml.Node {
 	ml := mapGet(f.root(), "model_list")
 	if ml == nil || ml.Kind != yaml.SequenceNode {
 		return nil
 	}
-	var ids []string
+	return ml
+}
+
+// Rows returns every named model_list mapping row, in file order.
+func (f *File) Rows() []RowInfo {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	var out []RowInfo
 	for _, row := range ml.Content {
-		if id := rowName(row); id != "" {
-			ids = append(ids, id)
+		if id := rowName(row); row.Kind == yaml.MappingNode && id != "" {
+			out = append(out, RowInfo{ID: id, Managed: IsManaged(row)})
 		}
+	}
+	return out
+}
+
+// hasUnmarkedRow reports whether any mapping row named id lacks wt's marker:
+// a hand-written row of that name, which a discovered route never replaces.
+func (f *File) hasUnmarkedRow(id string) bool {
+	for _, r := range f.Rows() {
+		if r.ID == id && !r.Managed {
+			return true
+		}
+	}
+	return false
+}
+
+// row returns the first mapping row named id, or nil.
+func (f *File) row(id string) *yaml.Node {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	for _, r := range ml.Content {
+		if r.Kind == yaml.MappingNode && rowName(r) == id {
+			return r
+		}
+	}
+	return nil
+}
+
+// carryUserParams copies the user-authored litellm_params keys — anything wt
+// does not itself set (see wtParamKeys) — from old into row when row lacks
+// them: what SetRow does on replace, factored out so sync can compare a
+// rebuilt row with the one on disk exactly as SetRow would write it. Adoption
+// and rewrites therefore keep hand-written params (a timeout, say) instead of
+// silently dropping them.
+func carryUserParams(old, row *yaml.Node) {
+	oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
+	if oldParams == nil || newParams == nil {
+		return
+	}
+	if oldParams.Kind != yaml.MappingNode || newParams.Kind != yaml.MappingNode {
+		// A hand-edited litellm_params that is not a mapping ([foo, bar], say)
+		// has no key/value pairs to read: pairing off its Content would invent
+		// param names from its elements. Leave the row to be rewritten from the
+		// registry rather than derive one from a node we cannot interpret.
+		return
+	}
+	for i := 0; i+1 < len(oldParams.Content); i += 2 {
+		k := oldParams.Content[i]
+		if k.Kind != yaml.ScalarNode {
+			// A complex key (? {weird: key}: 1) is a mapping node whose Value
+			// is "": carried as-is it would inject a nameless param.
+			continue
+		}
+		if wtParamKeys[k.Value] {
+			continue
+		}
+		if v := oldParams.Content[i+1]; mapGet(newParams, k.Value) == nil {
+			mapSet(newParams, k.Value, v)
+		}
+	}
+}
+
+// checkModelList reports a model_list whose value is present but is not a
+// sequence. An explicit null reads as absent, the same shape modelList creates,
+// so a bare "model_list:" is accepted here exactly as there. It never creates
+// the key: unlike modelList it is safe to call from a read-only path such as a
+// dry run, where creating it would flip File.Changed and make a no-op sync
+// write config.yaml and restart the proxy.
+func (f *File) checkModelList() error {
+	ml := mapGet(f.root(), "model_list")
+	if ml != nil && !isNull(ml) && ml.Kind != yaml.SequenceNode {
+		return fmt.Errorf("%w: model_list is not a list in %s", ErrInvalid, f.path)
+	}
+	return nil
+}
+
+// modelList returns the model_list sequence, creating it when absent or null.
+// A non-list value is ErrInvalid: never edit what we do not understand.
+func (f *File) modelList() (*yaml.Node, error) {
+	if err := f.checkModelList(); err != nil {
+		return nil, err
+	}
+	if ml := f.modelListSeq(); ml != nil {
+		return ml, nil
+	}
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	mapSet(f.root(), "model_list", seq)
+	return seq, nil
+}
+
+// RoutedIDs returns every model_list row's model_name, in file order — the
+// ids of Rows, kept for tests that only compare names.
+func (f *File) RoutedIDs() []string {
+	var ids []string
+	for _, r := range f.Rows() {
+		ids = append(ids, r.ID)
 	}
 	return ids
 }
 
 // SetRow adds the row keyed by id, or replaces the existing one in place,
-// carrying over any user-managed presence-based params the new row lacks.
+// carrying over the old row's user-authored params the new row lacks
+// (wtParamKeys — model/api_base/api_key — are wt's and never carried).
 // LiteLLM load-balances across rows sharing a model_name, so a hand-edited
 // file with duplicates would keep routing to the stale copies: the first
 // mapping row is replaced and every later duplicate is dropped (RemoveRow
@@ -241,14 +392,7 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 		if first >= 0 {
 			continue // duplicate of a row already replaced
 		}
-		oldParams, newParams := mapGet(old, "litellm_params"), mapGet(row, "litellm_params")
-		if oldParams != nil && newParams != nil {
-			for _, k := range preservedParamKeys {
-				if v := mapGet(oldParams, k); v != nil && mapGet(newParams, k) == nil {
-					mapSet(newParams, k, v)
-				}
-			}
-		}
+		carryUserParams(old, row)
 		row.HeadComment, row.LineComment, row.FootComment = old.HeadComment, old.LineComment, old.FootComment
 		first = len(kept)
 		kept = append(kept, row)
@@ -260,21 +404,33 @@ func (f *File) SetRow(id string, row *yaml.Node) error {
 	return nil
 }
 
-// RemoveRow deletes the row keyed by id (no-op when absent). Rows that are
+// RemoveRow deletes the rows keyed by id (no-op when absent). Rows that are
 // not mappings are never ours and are left in place.
-func (f *File) RemoveRow(id string) {
-	ml := mapGet(f.root(), "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
-		return
+func (f *File) RemoveRow(id string) bool {
+	return f.removeRows(id, func(*yaml.Node) bool { return true })
+}
+
+// RemoveMarkedRows deletes the rows keyed by id that carry wt's marker,
+// leaving any unmarked (hand-written) row of the same name in place.
+func (f *File) RemoveMarkedRows(id string) bool {
+	return f.removeRows(id, IsManaged)
+}
+
+func (f *File) removeRows(id string, drop func(*yaml.Node) bool) (removed bool) {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return false
 	}
 	kept := ml.Content[:0]
 	for _, row := range ml.Content {
-		if row.Kind == yaml.MappingNode && rowName(row) == id {
+		if row.Kind == yaml.MappingNode && rowName(row) == id && drop(row) {
+			removed = true
 			continue
 		}
 		kept = append(kept, row)
 	}
 	ml.Content = kept
+	return removed
 }
 
 func isLoopback(n *yaml.Node) bool {
@@ -295,7 +451,211 @@ func isLoopback(n *yaml.Node) bool {
 			return false
 		}
 	}
-	return loopbackHosts[strings.ToLower(u.Hostname())]
+	// config.IsLoopbackHost, the reading config.Provider.Origin goes by: a
+	// row whose api_base wt wrote for a local server is a local row here too.
+	return config.IsLoopbackHost(u.Hostname())
+}
+
+// mergeDepth bounds how many "<<" merges mergedGet follows from one mapping. A
+// real config nests one or two; the bound only keeps an anchor that merges
+// itself from recursing without end.
+const mergeDepth = 8
+
+// mergedGet is mapGet that also looks through the mapping's YAML merge keys
+// ("<<: *defaults", or a list of them), nearest first: a key the mapping names
+// itself wins, then each merged mapping in order. That is the value the YAML
+// loader LiteLLM reads config.yaml with hands it, so a key supplied by a merge
+// is present as far as the proxy is concerned even though the row does not
+// spell it.
+func mergedGet(m *yaml.Node, key string) *yaml.Node {
+	return mergedGetDepth(m, key, mergeDepth)
+}
+
+func mergedGetDepth(m *yaml.Node, key string, depth int) *yaml.Node {
+	if v := mapGet(m, key); v != nil || m == nil || m.Kind != yaml.MappingNode || depth == 0 {
+		return v
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if k := m.Content[i]; k.Kind != yaml.ScalarNode || k.Tag != "!!merge" {
+			continue
+		}
+		sources := []*yaml.Node{m.Content[i+1]}
+		if sources[0].Kind == yaml.SequenceNode {
+			sources = sources[0].Content
+		}
+		for _, s := range sources {
+			if s.Kind == yaml.AliasNode {
+				s = s.Alias
+			}
+			if v := mergedGetDepth(s, key, depth-1); v != nil {
+				return v
+			}
+		}
+	}
+	return nil
+}
+
+// EnsureOllamaAPIBase gives every ollama row with no api_base the address
+// base, and returns the names of the rows it changed (#202), each once. A row
+// is an ollama one when its model has the "ollama/" or "ollama_chat/" prefix,
+// and has no api_base when the key is absent, null or empty. Both are read
+// through YAML merge keys (mergedGet): a row that takes its api_base from
+// "<<: *defaults" names an address, and writing one beside the merge would
+// override it.
+//
+// It exists because of what LiteLLM does with such a row: at proxy startup,
+// for each model that names ollama and has no api_base, it runs `ollama serve`
+// itself. On a machine where ollama is already running, that second server
+// binds 127.0.0.1:11434 beside the first one's wildcard socket, and from then
+// on a client reaches one or the other depending on whether "localhost"
+// resolved to IPv4 or IPv6. A model gets loaded in both; wt stops it in the
+// one it can see and reports success while the other copy stays resident.
+//
+// So this repairs hand-written rows too — the one field, and only when it is
+// empty: a row that names an address of its own is the user's choice and is
+// never touched, and a repaired row stays unmarked, still the user's. base is
+// OllamaAPIBase's answer, which is never empty; given "", nothing is changed.
+// A row with no model_name is repaired like any other and named by rowLabel.
+// An empty value that carries a YAML anchor (`api_base: &base ""`) is the one
+// exception to the repair: see the note at the write.
+func (f *File) EnsureOllamaAPIBase(base string) []string {
+	ml := f.modelListSeq()
+	if base == "" || ml == nil {
+		return nil
+	}
+	var names []string
+	for _, row := range ml.Content {
+		p := mapGet(row, "litellm_params")
+		if p == nil || p.Kind != yaml.MappingNode {
+			continue
+		}
+		model := mergedGet(p, "model")
+		if model == nil || model.Kind != yaml.ScalarNode {
+			continue
+		}
+		if !strings.HasPrefix(model.Value, "ollama/") && !strings.HasPrefix(model.Value, "ollama_chat/") {
+			continue
+		}
+		if b := mergedGet(p, "api_base"); b != nil && !isNull(b) && !(b.Kind == yaml.ScalarNode && strings.TrimSpace(b.Value) == "") {
+			continue
+		}
+		// The row's own empty value may carry an anchor that other rows
+		// alias. Replacing the node would drop the anchor and leave those
+		// aliases pointing at nothing — a file that no longer parses — and
+		// keeping it would hand the ollama address to every row that
+		// aliases it. Left as written; a null one is in the sync's warnings.
+		if own := mapGet(p, "api_base"); own != nil && own.Anchor != "" {
+			continue
+		}
+		mapSet(p, "api_base", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: base})
+		// Two rows may share a model_name; the report names it once, as
+		// planSync does for a removal.
+		if name := rowLabel(row, model.Value); !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// rowLabel is what a report calls a row: its model_name, or — for a row that
+// has none — a label saying so and naming its model. "" would print as
+// ": api_base set" and reach `sync --json` as an empty id (#206); the bare
+// model value would be mistaken for the row of that name.
+func rowLabel(row *yaml.Node, model string) string {
+	if name := rowName(row); name != "" {
+		return name
+	}
+	return "(no model_name: " + model + ")"
+}
+
+// ollamaServeWarnings names every row LiteLLM starts its own `ollama serve`
+// for at proxy startup, in LiteLLM's own terms (proxy_server.py): the word
+// "ollama" anywhere in litellm_params.model and an api_base that is None —
+// absent or null, read through merge keys as LiteLLM's loader resolves them;
+// an empty string is not None. Called after EnsureOllamaAPIBase, what is left
+// is the rows that repair does not reach: ones whose model is not an ollama/
+// or ollama_chat/ one (openai/ollama-proxy), which wt cannot give an address
+// because the ollama one would be wrong for them (#206). Sync reports these;
+// it never changes them.
+//
+// An api_base written `os.environ/VAR` is resolved by LiteLLM before that
+// test, and an unset variable resolves to None (#211) — so the row is the
+// same trigger, though it looks as if it names an address. env says whether
+// VAR is set for the proxy (ProxyEnv: the LaunchAgent's environment, not
+// wt's). Such a row is reported, naming the variable and where wt looked, and
+// never rewritten, an ollama/ row included: a variable may point at another
+// server on purpose, and the ollama address written over it would hide that.
+//
+// A whole value spelled as a YAML alias — `litellm_params: *params`,
+// `model: *model` or `api_base: *base` — is resolved the same way LiteLLM's
+// loader resolves it, so aliasing cannot hide a row from the scan.
+func (f *File) ollamaServeWarnings(env ProxyEnv) []string {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	var out []string
+	for _, row := range ml.Content {
+		p := aliasValue(mapGet(row, "litellm_params"))
+		if p == nil || p.Kind != yaml.MappingNode {
+			continue
+		}
+		model := aliasValue(mergedGet(p, "model"))
+		if model == nil || model.Kind != yaml.ScalarNode || !strings.Contains(model.Value, "ollama") {
+			continue
+		}
+		b := aliasValue(mergedGet(p, "api_base"))
+		if b == nil || isNull(b) {
+			out = append(out, fmt.Sprintf(`row %q (model %s) has no api_base: LiteLLM starts its own "ollama serve" for it at proxy startup; give the row an api_base`, rowLabel(row, model.Value), model.Value))
+			continue
+		}
+		if b.Kind == yaml.ScalarNode && strings.HasPrefix(b.Value, "os.environ/") {
+			// The variable LiteLLM looks up is the value with every
+			// "os.environ/" dropped, not only the leading one (get_secret:
+			// secret_name.replace("os.environ/", "")).
+			name := strings.ReplaceAll(b.Value, "os.environ/", "")
+			switch {
+			case name != "" && env.IsSet(name):
+				// Set for the proxy: the row names an address.
+			case strings.TrimSpace(name) == "":
+				// The prefix with no variable after it, or only spaces. No
+				// variable is named "" and LiteLLM gets None, so it is the
+				// same trigger — but there is no name to report as unset, and
+				// the sentence for a named variable would print three holes
+				// (#218).
+				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base os.environ/ with no variable name: LiteLLM resolves that to None and starts its own "ollama serve" for it at proxy startup; give the row an address or spell os.environ/<VAR>`,
+					rowLabel(row, model.Value), model.Value))
+			default:
+				out = append(out, fmt.Sprintf(`row %q (model %s) has api_base %s, and %s is not set in %s: LiteLLM starts its own "ollama serve" for it at proxy startup; set %s for the proxy or give the row an address`,
+					rowLabel(row, model.Value), model.Value, b.Value, name, env.Source, name))
+			}
+		}
+	}
+	return out
+}
+
+// rowDigests maps each model_name to the encoded text of its rows, in order.
+// Two digests taken around a write say which names' rows it changed, which
+// File.Changed — a whole-document comparison — cannot. applyPlanned takes them
+// only when the plan adds a row, the only outcome Written is set on.
+func (f *File) rowDigests() map[string]string {
+	ml := f.modelListSeq()
+	if ml == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, row := range ml.Content {
+		if row.Kind != yaml.MappingNode {
+			continue
+		}
+		b, err := yaml.Marshal(row)
+		if err != nil {
+			// Unencodable rows cannot be compared; Save refuses the document.
+			b = []byte("unencodable")
+		}
+		out[rowName(row)] += string(b) + "\x00"
+	}
+	return out
 }
 
 // EnsureSettings applies the launcher-required LiteLLM settings: two
@@ -316,8 +676,8 @@ func (f *File) EnsureSettings() {
 			}
 		}
 	}
-	ml := mapGet(root, "model_list")
-	if ml == nil || ml.Kind != yaml.SequenceNode {
+	ml := f.modelListSeq()
+	if ml == nil {
 		return
 	}
 	for _, row := range ml.Content {

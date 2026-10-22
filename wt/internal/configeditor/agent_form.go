@@ -22,7 +22,6 @@ func newTextInput(value, placeholder string) textinput.Model {
 // enterAgentForm transitions the model into the agent edit/add form.
 func enterAgentForm(m *model, ag config.Agent, isNew bool) {
 	m.phase = phaseForm
-	m.formKind = formAgent
 	m.formIsNew = isNew
 	m.formError = ""
 	m.formCursor = 0
@@ -49,13 +48,12 @@ func (m *model) refreshAgentInstalled() {
 }
 
 // handleAgentFormUpdate processes keys in the agent form.
-func (m model) handleAgentFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) handleAgentFormUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyEsc:
 			m.phase = phaseList
-			m.formKind = formNone
 			return m, nil
 		case tea.KeyCtrlS:
 			return m.saveAgentForm()
@@ -104,7 +102,7 @@ func (m *model) focusAgentField() {
 }
 
 // saveAgentForm validates and applies the agent form to cfg.
-func (m model) saveAgentForm() (tea.Model, tea.Cmd) {
+func (m *model) saveAgentForm() (tea.Model, tea.Cmd) {
 	updated := m.agEdit
 	updated.Name = strings.TrimSpace(m.agName.Value())
 	updated.SupportedProviders = config.ParseFilterList(m.agProvidersInput.Value())
@@ -130,13 +128,12 @@ func (m model) saveAgentForm() (tea.Model, tea.Cmd) {
 
 	m.dirty = true
 	m.phase = phaseList
-	m.formKind = formNone
 	m.list = buildAgentsList(m.theme, m.width-2, m.height-4, m.cfg)
 	return m, nil
 }
 
 // agentFormView renders the agent add/edit form.
-func (m model) agentFormView() string {
+func (m *model) agentFormView() string {
 	installedStr := "✗ not installed"
 	if m.agInstalled {
 		installedStr = "✓ installed"

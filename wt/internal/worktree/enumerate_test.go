@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -69,17 +70,11 @@ func TestListBranches(t *testing.T) {
 		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
 	}
 
-	local, _, err := listBranches(dir)
+	local, _, _, err := listBranches(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, b := range local {
-		if b == "feature" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(local, "feature") {
 		t.Fatalf("expected feature branch, got %v", local)
 	}
 }
@@ -98,17 +93,11 @@ func TestListBranchesPipeInName(t *testing.T) {
 		t.Fatalf("git checkout -b weird|name: %v\n%s", err, out)
 	}
 
-	local, _, err := listBranches(dir)
+	local, _, _, err := listBranches(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, b := range local {
-		if b == "weird|name" {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(local, "weird|name") {
 		t.Fatalf("expected weird|name branch, got %v", local)
 	}
 }
@@ -127,16 +116,8 @@ func TestEnumerateFindsBranch(t *testing.T) {
 	}
 
 	// Switch back to main/master so feature is not in use.
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout main/master: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 
 	groups, err := Enumerate(dir, dir)
@@ -259,16 +240,8 @@ func TestEnumerateWorktreeAndBranch(t *testing.T) {
 
 	// Switch back to default before adding worktree (can't add a branch
 	// that's already checked out in the current worktree).
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout main/master: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 
 	wtDir := filepath.Join(dir, ".worktrees", "feature")
@@ -276,19 +249,6 @@ func TestEnumerateWorktreeAndBranch(t *testing.T) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v\n%s", err, out)
-	}
-
-	// Switch back to default so feature is checked out in the worktree.
-	defaultBranch = "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout main/master: %v", err)
-		}
 	}
 
 	groups, err := Enumerate(dir, dir)
@@ -336,14 +296,7 @@ func TestRepoRoot(t *testing.T) {
 	wantStr := strings.TrimSpace(string(want))
 
 	// RepoRoot uses the current working directory, so run from sub.
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWD)
-	if err := os.Chdir(sub); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(sub)
 
 	got, err := RepoRoot()
 	if err != nil {
@@ -358,15 +311,7 @@ func TestRepoRoot(t *testing.T) {
 // error instead of showing an empty list.
 func TestRepoRootNotARepo(t *testing.T) {
 	dir := t.TempDir()
-
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWD)
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(dir)
 
 	if _, err := RepoRoot(); err == nil {
 		t.Fatal("expected error outside repo, got nil")
@@ -460,16 +405,8 @@ func TestEnumerateRemoteBranchShadowedByLocal(t *testing.T) {
 	}
 
 	// Switch back to default.
-	defaultBranch := "main"
-	cmd = exec.Command("git", "checkout", defaultBranch)
-	cmd.Dir = dir
-	if _, err := cmd.CombinedOutput(); err != nil {
-		defaultBranch = "master"
-		cmd = exec.Command("git", "checkout", defaultBranch)
-		cmd.Dir = dir
-		if _, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout: %v", err)
-		}
+	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
+		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 
 	// Fetch so origin/feature is known.
@@ -632,18 +569,7 @@ func setupTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	for _, args := range [][]string{
-		{"init", "-b", "main"},
-		{"config", "user.email", "t@t"},
-		{"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "init"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-		}
-	}
+	gitInit(t, dir)
 
 	// Set up a bare remote so origin/HEAD can resolve and DefaultBranch returns "main".
 	remoteDir := filepath.Join(dir, "remote.git")
@@ -678,9 +604,9 @@ func setupTestRepo(t *testing.T) string {
 // pins cmd.Dir to dir. Without this, every git invocation defaults to
 // the test binary's working directory — which is the repo root when
 // `go test` is run from a worktree, and any subsequent `git remote add
-// origin` will collide with the parent repo's existing origin. The
-// first setupTestRepo loop did set cmd.Dir directly, but the later
-// commands omitted it and silently ran in the wrong repo, which only
+// origin` will collide with the parent repo's existing origin. gitInit
+// sets cmd.Dir on its own commands, but setupTestRepo's later commands
+// once omitted it and silently ran in the wrong repo, which only
 // surfaced when the test ran inside the worktree where `origin` is
 // already configured.
 func runGitCmd(dir string, args ...string) ([]byte, error) {
@@ -697,18 +623,7 @@ func setupTestRepoWithManyBranches(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	for _, args := range [][]string{
-		{"init", "-b", "main"},
-		{"config", "user.email", "t@t"},
-		{"config", "user.name", "t"},
-		{"commit", "--allow-empty", "-m", "init"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
-		}
-	}
+	gitInit(t, dir)
 
 	// Set up the bare remote and point origin/HEAD at main so the default
 	// branch resolves to "main" (matching the brief's expectation).

@@ -1,0 +1,65 @@
+version = "fixture-1"
+
+[tiers.quick]
+code = "Q"
+context_min = 32000
+
+[tiers.standard]
+code = "S"
+context_min = 128000
+
+[tiers.deep]
+code = "D"
+context_min = 200000
+
+[tiers.marathon]
+code = "M"
+context_min = 400000
+
+[signals.intelligence_index]
+source = "openrouter"
+max_vote = "deep"
+floors = { quick = 10.6, standard = 33.0, deep = 49.0 }
+
+[signals.arena_agent]
+source = "arena"
+max_vote = "deep"
+floors = { quick = -0.090, standard = -0.029, deep = 0.056 }
+marathon_ci_lower = 0.097
+
+[signals.eci]
+source = "epoch"
+max_vote = "deep"
+floors = { quick = 137.1, standard = 150.7, deep = 160.6 }
+
+[sources.modelsdev]
+attribution = "models.dev (https://models.dev), MIT"
+
+[sources.openrouter]
+attribution = "Source: Artificial Analysis (artificialanalysis.ai) via OpenRouter (openrouter.ai/rankings)."
+
+[sources.arena]
+attribution = "Arena (arena.ai), dataset lmarena-ai/leaderboard-dataset, CC BY 4.0"
+
+[sources.epoch]
+attribution = "Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks, CC BY 4.0"
+
+[[sentinels]]
+canonical = "anthropic/claude-opus-5-5"
+tier = "marathon"
+votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
+
+[[sentinels]]
+canonical = "anthropic/claude-fable-5"
+tier = "deep"
+votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
+
+[[sentinels]]
+canonical = "zhipuai/glm-5.3"
+tier = "standard"
+votes = { intelligence_index = "standard", arena_agent = "standard", eci = "standard" }
+
+[[sentinels]]
+canonical = "minimax/minimax-m3"
+tier = "quick"
+votes = { arena_agent = "quick", eci = "quick" }

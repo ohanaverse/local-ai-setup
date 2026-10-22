@@ -28,7 +28,6 @@ different schema version). Used only to decode the current user's own
 local Antigravity conversation data - not to reproduce or redistribute
 Google's source.
 """
-import pickle
 import re
 import sys
 from pathlib import Path
@@ -178,9 +177,7 @@ def closure(by_name, root, stubs):
             return
         seen.add(name)
         if name in stubs:
-            for dep_name in ():  # stubs declare no further dependencies
-                visit(dep_name)
-            order.append((name, stubs[name]))
+            order.append((name, stubs[name]))  # stubs declare no further dependencies
             return
         if name not in by_name:
             missing.add(name)

@@ -5,8 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 )
 
 // TestResolveModel covers the non-TUI model resolution path used after
@@ -30,7 +33,6 @@ func TestResolveModel(t *testing.T) {
 			{Name: "pi", SupportedProviders: []string{"claude", "ollama"}},
 		},
 	}
-	cfg.ExposeAllForTest()
 
 	// resolveModel errors on an ambiguous LAUNCHABLE list rather than
 	// falling back to any single model. launch.go calls resolveModel and
@@ -92,7 +94,6 @@ func TestResolveModelReturnsLaunchable(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	m, launchable, err := resolveModel("claude", cfg, "", "", "")
 	if err == nil {
@@ -124,7 +125,6 @@ func TestResolveModelRunningLocalModelIsLaunchable(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	m, _, err := resolveModel("pi", cfg, "", "", "")
 	if err != nil || m.ID != "omlx/qwen3.8" {
@@ -138,7 +138,7 @@ func TestResolveModelRunningLocalModelIsLaunchable(t *testing.T) {
 // TestResolveModelPinOnIdleLocalStartsIt verifies -M pinning a configured
 // local model that is not running starts it through the driver and returns
 // the model, so `wt -A pi -M omlx/qwen3.8` works without a separate
-// `modelman start`. It must NOT pass replace: a plain pin never opts into
+// `wt start`. It must NOT pass replace: a plain pin never opts into
 // stopping a running model.
 func TestResolveModelPinOnIdleLocalStartsIt(t *testing.T) {
 	allowReplace = false
@@ -156,7 +156,6 @@ func TestResolveModelPinOnIdleLocalStartsIt(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	m, _, err := resolveModel("pi", cfg, "", "", "omlx/qwen3.8")
 	if err != nil || m.ID != "omlx/qwen3.8" {
@@ -192,7 +191,6 @@ func TestResolveModelPinOnDiscoveredLocalStartsIt(t *testing.T) {
 		Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mtplx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	m, _, err := resolveModel("pi", cfg, "", "", disc)
 	if err != nil || m.ID != disc {
@@ -220,7 +218,6 @@ func TestResolveModelPinOnAbsentLocalReportsReason(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	_, launchable, err := resolveModel("pi", cfg, "", "", "omlx/gone")
 	if err == nil || !strings.Contains(err.Error(), "not on disk") {
@@ -238,9 +235,10 @@ func TestResolveModelPinOnAbsentLocalReportsReason(t *testing.T) {
 }
 
 // TestResolveModelPinOnNoEngineProviderReportsReason verifies pinning a local
-// model whose provider wt cannot start (mlx_lm_server) reports the
-// `modelman start` hint instead of silently doing nothing — the user needs to
-// know which tool owns that provider's lifecycle.
+// model whose provider wt cannot start (mlx_lm_server) reports the llmbench
+// command that starts the pairing, with the target and the draft the registry
+// row records, instead of silently doing nothing — the user needs to know
+// which tool owns that provider's lifecycle.
 func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusOK},
@@ -250,14 +248,14 @@ func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
 	})
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
-		Models:    []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Tags: []string{"code"}}},
-		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mlx_lm_server"}}},
+		Models: []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p", Tags: []string{"code"},
+			Fetch: config.ModelArtifact{Repo: "org/target"}, Draft: config.ModelArtifact{Repo: "org/draft"}}},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"mlx_lm_server"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	_, _, err := resolveModel("pi", cfg, "", "", "mlx_lm_server/p")
-	if err == nil || !strings.Contains(err.Error(), "modelman start mlx_lm_server/p") {
-		t.Errorf("err = %v, want the modelman start hint", err)
+	if err == nil || !strings.Contains(err.Error(), "`llmbench provider isolate --solo mlx_lm_server org/target --draft org/draft`") || strings.Contains(err.Error(), "modelman") {
+		t.Errorf("err = %v, want the llmbench command for this pairing", err)
 	}
 }
 
@@ -269,14 +267,13 @@ func TestResolveModelPinOnNoEngineProviderReportsReason(t *testing.T) {
 func TestResolveModelAllLocalGivesPinMessage(t *testing.T) {
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true}},
+		Entries:   []localmodels.Entry{{ProviderID: "omlx", ModelID: "omlx/qwen3.8", ModelName: "qwen3.8", Artifact: "qwen3.8", Registered: true, ArtifactKnown: true}},
 	})
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
 		Models:    []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	_, launchable, err := resolveModel("pi", cfg, "", "", "")
 	if err == nil {
@@ -304,6 +301,7 @@ func TestResolveModelFiltersHideDiscoveredRows(t *testing.T) {
 		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
 			{ProviderID: "mtplx", ModelID: disc, Artifact: "stray", ModelName: "stray", Running: true},
+			{ProviderID: "mtplx", ModelID: "mtplx/registered", Artifact: "registered", ModelName: "registered", Registered: true, ArtifactKnown: true},
 		},
 	})
 	cfg := &config.Config{
@@ -311,7 +309,6 @@ func TestResolveModelFiltersHideDiscoveredRows(t *testing.T) {
 		Models:    []config.Model{{ID: "mtplx/registered", ProviderID: "mtplx", ModelName: "registered", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"mtplx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	m, launchable, err := resolveModel("pi", cfg, "code", "", "")
 	if err == nil {
@@ -325,37 +322,35 @@ func TestResolveModelFiltersHideDiscoveredRows(t *testing.T) {
 	}
 }
 
-// TestResolveModelPinOnDiscoveredUnderLitellmRefuses verifies the non-TUI pin
-// path applies the same route guard the picker does: a discovered start row
-// under LiteLLM routing is refused with the picker's wording and starts
-// nothing, so the two paths cannot disagree about the same pin.
-func TestResolveModelPinOnDiscoveredUnderLitellmRefuses(t *testing.T) {
+// TestResolveModelPinOnDiscoveredForcedThroughLitellm pins #179 Phase B's
+// end of the "not in LiteLLM" refusal: codex speaks only openai-responses, so
+// its route to omlx is forced through the proxy, and a -M pin on a discovered
+// model now starts it (idle) or launches it (running) instead of being
+// refused — wt routes a discovered model under its discovered id as soon as
+// it runs. Before, the only way to use one from codex was to register it.
+func TestResolveModelPinOnDiscoveredForcedThroughLitellm(t *testing.T) {
 	disc := config.DiscoveredModelID("omlx", "extra")
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "omlx", ModelID: disc, Artifact: "extra", ModelName: "extra"},
-		},
-	})
-	calls := stubStartDriver(t, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+		Agents:    []config.Agent{{Name: "codex", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
-
-	_, _, err := resolveModel("pi", cfg, "", "", disc)
-	if err == nil || !strings.Contains(err.Error(), "not in LiteLLM") {
-		t.Errorf("err = %v, want the picker's not-in-LiteLLM wording", err)
-	}
-	// Advice must name a command that changes the state wt reads (wt owns
-	// routing now; `modelman litellm off` would not).
-	if err != nil && (!strings.Contains(err.Error(), "wt litellm off") || strings.Contains(err.Error(), "modelman litellm")) {
-		t.Errorf("hint = %v, want `wt litellm off`", err)
-	}
-	if calls.called {
-		t.Error("a route-blocked pin must not reach the start driver")
+	// Routing off but configured: codex's protocol forces LiteLLM anyway.
+	cfg.SetLitellmForTest(config.LitellmState{URL: "http://localhost:4000", APIKey: "sk-test"})
+	for _, running := range []bool{false, true} {
+		stubProbeInventory(t, localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+			Entries: []localmodels.Entry{
+				{ProviderID: "omlx", ModelID: disc, Artifact: "extra", ModelName: "extra", ArtifactKnown: true, Running: running},
+			},
+		})
+		calls := stubStartDriver(t, nil)
+		m, _, err := resolveModel("codex", cfg, "", "", disc)
+		if err != nil || m.ID != disc {
+			t.Fatalf("running=%v: resolveModel = (%q, %v), want the discovered model", running, m.ID, err)
+		}
+		if calls.called == running {
+			t.Errorf("running=%v: start driver called = %v, want a start only for the idle model", running, calls.called)
+		}
 	}
 }
 
@@ -376,7 +371,6 @@ func TestResolveModelPinOnUnresolvableRouteRefuses(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "claude", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 	// No SetLitellmForTest: the claude driver speaks only Anthropic, omlx
 	// only OpenAI chat, so ResolveRoute forces LiteLLM and finds it
 	// unconfigured — the same error renderTable blocks the row on.
@@ -393,66 +387,38 @@ func TestResolveModelPinOnUnresolvableRouteRefuses(t *testing.T) {
 	}
 }
 
-// TestResolveModelPinOnRunningDiscoveredUnderLitellmRefuses extends the pin
-// parity guard to the row the start-row-only guard missed: a RUNNING
-// discovered row is a launch row, and modeltable.go's route switch blocks it
-// before the action matters — so a -M pin on it must refuse here too instead
-// of launching straight into a route the proxy cannot serve.
-func TestResolveModelPinOnRunningDiscoveredUnderLitellmRefuses(t *testing.T) {
+// TestResolveModelDiscoveredUnderLitellmNeverRotatedInto verifies the no-pin
+// path under LiteLLM routing (#179 Phase B): a running discovered model is
+// now launchable — it is routed, so the picker no longer refuses it — but
+// rotation still never lands on it: with a running registry model beside it,
+// resolveModel reports the ambiguity and the rotation fallback picks the
+// registry model, because rotation walks the registry's order.
+func TestResolveModelDiscoveredUnderLitellmNeverRotatedInto(t *testing.T) {
 	disc := config.DiscoveredModelID("omlx", "extra")
 	stubProbeInventory(t, localmodels.Snapshot{
 		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
 		Entries: []localmodels.Entry{
-			{ProviderID: "omlx", ModelID: disc, Artifact: "extra", ModelName: "extra", Running: true},
+			{ProviderID: "omlx", ModelID: "omlx/reg", Artifact: "reg", ModelName: "reg", Registered: true, ArtifactKnown: true, Running: true},
+			{ProviderID: "omlx", ModelID: disc, Artifact: "extra", ModelName: "extra", ArtifactKnown: true, Running: true},
 		},
 	})
 	calls := stubStartDriver(t, nil)
 	cfg := &config.Config{
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+		Models:    []config.Model{{ID: "omlx/reg", ProviderID: "omlx", ModelName: "reg", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 
-	_, _, err := resolveModel("pi", cfg, "", "", disc)
-	if err == nil || !strings.Contains(err.Error(), "not in LiteLLM") {
-		t.Errorf("err = %v, want the picker's not-in-LiteLLM wording", err)
+	_, launchable, err := resolveModel("pi", cfg, "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "multiple models match") {
+		t.Fatalf("err = %v, want the multiple-models ambiguity", err)
 	}
-	if calls.called {
-		t.Error("a route-blocked pin must not reach the launch path or the start driver")
+	if len(launchable) != 2 {
+		t.Fatalf("launchable = %v, want the registry and the discovered model", launchable)
 	}
-}
-
-// TestResolveModelRotationSkipsDiscoveredUnderLitellm verifies the same rule
-// on the no-pin path: a discovered running model under LiteLLM routing is
-// unselectable in the picker, so rotation must never land on it either — the
-// launchable list comes back empty and resolveModel reports the
-// pin-the-model wording instead of silently launching through a dead route.
-func TestResolveModelRotationSkipsDiscoveredUnderLitellm(t *testing.T) {
-	disc := config.DiscoveredModelID("omlx", "extra")
-	stubProbeInventory(t, localmodels.Snapshot{
-		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
-		Entries: []localmodels.Entry{
-			{ProviderID: "omlx", ModelID: disc, Artifact: "extra", ModelName: "extra", Running: true},
-		},
-	})
-	calls := stubStartDriver(t, nil)
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
-		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
-	}
-	cfg.ExposeAllForTest()
-	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
-
-	m, launchable, err := resolveModel("pi", cfg, "", "", "")
-	if err == nil || !strings.Contains(err.Error(), "no cloud or running local model") {
-		t.Errorf("err = %v, want the no-launchable-model wording", err)
-	}
-	if m.ID != "" {
-		t.Errorf("model = %q, want zero", m.ID)
-	}
-	if len(launchable) != 0 {
-		t.Errorf("launchable = %d models, want 0 (rotation must never pick a discovered model the picker refuses)", len(launchable))
+	if next, ok := rotation.NewAt(t.TempDir()).NextFromEligible(launchable, cfg); !ok || next.ID != "omlx/reg" {
+		t.Errorf("rotation picked (%q, %v), want the registry model", next.ID, ok)
 	}
 	if calls.called {
 		t.Error("rotation must not start anything")
@@ -476,7 +442,6 @@ func TestResolveModelPinOnRunningDiscoveredLaunches(t *testing.T) {
 		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 	// No SetLitellmForTest: LiteLLM routing is off, so the route dials omlx
 	// directly through BaseURL and the picker leaves the row selectable.
 
@@ -513,7 +478,6 @@ func TestResolveModelStartFailurePropagates(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	m, launchable, err := resolveModel("pi", cfg, "", "", "omlx/q")
 	if !errors.Is(err, boom) {
@@ -548,7 +512,6 @@ func TestResolveModelReplaceFlagReachesDriver(t *testing.T) {
 		Models:    []config.Model{{ID: "omlx/q", ProviderID: "omlx", ModelName: "q", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	allowReplace = true
 	t.Cleanup(func() { allowReplace = false })
@@ -571,10 +534,384 @@ func TestResolveModelNoMatchKeepsGenericMessage(t *testing.T) {
 		Models:    []config.Model{{ID: "ollama/code", ProviderID: "ollama", Tags: []string{"code"}}},
 		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"ollama"}}},
 	}
-	cfg.ExposeAllForTest()
 
 	_, _, err := resolveModel("pi", cfg, "design", "", "") // -T filter matches nothing
 	if err == nil || !strings.Contains(err.Error(), "no models match") {
 		t.Errorf("err = %v, want the generic no-models-match error", err)
+	}
+}
+
+// offDiskResolveFixture is a pi agent over two omlx models in different
+// families, with the probe confirming omlx/gone is missing from disk and
+// omlx/here on disk — the setup for the zero-rows and filtered-pin cases.
+func offDiskResolveFixture(t *testing.T) *config.Config {
+	t.Helper()
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/gone", ModelName: "gone", Registered: true, ArtifactKnown: true},
+			{ProviderID: "omlx", ModelID: "omlx/here", ModelName: "here", Artifact: "here", Registered: true, ArtifactKnown: true},
+		},
+	})
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}},
+		Models: []config.Model{
+			{ID: "omlx/gone", ProviderID: "omlx", ModelName: "gone", Family: "a", Tags: []string{"code"}},
+			{ID: "omlx/here", ProviderID: "omlx", ModelName: "here", Family: "b", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	return cfg
+}
+
+// TestResolveModelAllOffDiskNamesTheCause verifies an unpinned launch whose
+// eligible list is non-empty but builds zero rows (every eligible model is a
+// local one confirmed not on disk) returns catalog.NoRowsReason — not the
+// generic "no models match ... tags/family" wording, which would send the
+// operator hunting for a -T/-F problem that is not there.
+func TestResolveModelAllOffDiskNamesTheCause(t *testing.T) {
+	cfg := offDiskResolveFixture(t)
+
+	_, _, err := resolveModel("pi", cfg, "", "a", "")
+	if err == nil || err.Error() != catalog.NoRowsReason("pi") {
+		t.Errorf("err = %v, want %q", err, catalog.NoRowsReason("pi"))
+	}
+}
+
+// TestResolveModelPinFilteredOutIsNotToldToPull verifies a -M pin that -F
+// removed from the eligible list is refused as "not in the eligible list"
+// even though it is also not on disk: the pull hint would be a lie, because
+// after pulling the same pin would still be ineligible.
+func TestResolveModelPinFilteredOutIsNotToldToPull(t *testing.T) {
+	cfg := offDiskResolveFixture(t)
+
+	_, _, err := resolveModel("pi", cfg, "", "b", "omlx/gone")
+	if err == nil || !strings.Contains(err.Error(), "not in the eligible list") || strings.Contains(err.Error(), "not on disk") {
+		t.Errorf("err = %v, want the eligibility wording, not the pull hint", err)
+	}
+}
+
+// TestResolveModelSoleRunningDiscoveredAutoResolves pins a Phase B ruling
+// (#179): when the only launchable row is a running discovered model, a
+// launch with no -M resolves to it — under LiteLLM routing as in direct mode,
+// now that it is routed. The spec restricts rotation (which never lands on a
+// discovered row), not this single-launchable-row shortcut; this test makes
+// that a decision rather than an accident.
+func TestResolveModelSoleRunningDiscoveredAutoResolves(t *testing.T) {
+	disc := config.DiscoveredModelID("omlx", "extra")
+	stubProbeInventory(t, localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: disc, Artifact: "extra", ModelName: "extra", ArtifactKnown: true, Running: true},
+		},
+	})
+	calls := stubStartDriver(t, nil)
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}}},
+		Agents:    []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
+	}
+	for _, enabled := range []bool{false, true} {
+		cfg.SetLitellmForTest(config.LitellmState{Enabled: enabled, URL: "http://localhost:4000", APIKey: "sk-test"})
+		m, launchable, err := resolveModel("pi", cfg, "", "", "")
+		if err != nil || m.ID != disc || len(launchable) != 1 {
+			t.Errorf("litellm enabled=%v: resolveModel = (%q, %d launchable, %v), want the discovered model", enabled, m.ID, len(launchable), err)
+		}
+	}
+	if calls.called {
+		t.Error("a launch row must not reach the start driver")
+	}
+}
+
+// slotGuardRows builds the catalog rows for agent "claude" with three slot
+// profiles opted in: "cloud" (every slot a cloud model, a launch row), "idle"
+// (its one local model is on disk and not running, a start row) and "broken"
+// (a slot names a model the registry does not have, a blocked row). It
+// returns the config and the rows.
+func slotGuardRows(t *testing.T) (*config.Config, []catalog.Row) {
+	t.Helper()
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{ID: "openrouter", Location: config.LocationCloud},
+			{ID: "omlx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:8000"}},
+		},
+		Models: []config.Model{
+			{ID: "openrouter/a", ProviderID: "openrouter", ModelName: "a", Tags: []string{"code"}},
+			{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"openrouter", "omlx"}}},
+	}
+	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
+	check := func(index int, name string, slots map[string]string) profiles.SlotCheck {
+		return profiles.SlotCheck{
+			Index:    index,
+			Profile:  profiles.SlotProfile{Name: name, Agent: "claude", Default: "opus", Slots: slots},
+			Usable:   true,
+			Declared: []string{"fable", "opus", "sonnet", "haiku"},
+		}
+	}
+	snap := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Artifact: "qwen3.8", ModelName: "qwen3.8", Registered: true, ArtifactKnown: true},
+		},
+	}
+	eligible, err := cfg.EligibleModels("claude", "", "")
+	if err != nil {
+		t.Fatalf("EligibleModels: %v", err)
+	}
+	rows := catalog.Build(catalog.Input{
+		Config: cfg, Agent: "claude", Models: eligible, Inventory: &snap,
+		SlotProfiles: []profiles.SlotCheck{
+			check(0, "cloud", map[string]string{"opus": "openrouter/a"}),
+			check(1, "idle", map[string]string{"opus": "omlx/qwen3.8"}),
+			check(2, "broken", map[string]string{"opus": "openrouter/gone"}),
+		},
+	})
+	return cfg, rows
+}
+
+// TestLaunchableModelsExcludesProfileRows verifies a slot profile's row is
+// never in the launchable list, whatever its verdict. Rotation and the
+// single-launchable auto-launch read that list, and a profile row's model is
+// only an id: returned from it, a bare `wt -W x -A claude` would try to
+// launch "profile/cloud" as a model and fail with "unknown provider".
+func TestLaunchableModelsExcludesProfileRows(t *testing.T) {
+	cfg, rows := slotGuardRows(t)
+	if row, ok := catalog.Find(rows, "profile/cloud"); !ok || row.Action() != catalog.ActionLaunch {
+		t.Fatalf("fixture: profile/cloud found = %t action = %v, want a launch row", ok, row.Action())
+	}
+
+	var got []string
+	for _, m := range launchableModels(cfg, "claude", rows) {
+		got = append(got, m.ID)
+	}
+
+	if strings.Join(got, ",") != "openrouter/a" {
+		t.Errorf("launchable = %v, want the one cloud model and no profile", got)
+	}
+}
+
+// TestPickerBlockedReasonReadsAProfileRowsOwnVerdict verifies the non-TUI
+// path judges a profile row by resolved validation and never asks
+// ResolveRoute about it. A profile row has no provider, so the route lookup
+// fails with "unknown provider": a start profile would be refused with that
+// text instead of starting its local model, and a blocked profile would lose
+// its real reason.
+func TestPickerBlockedReasonReadsAProfileRowsOwnVerdict(t *testing.T) {
+	cfg, rows := slotGuardRows(t)
+	for _, c := range []struct {
+		id     string
+		action catalog.Action
+		want   string
+	}{
+		{"profile/cloud", catalog.ActionLaunch, ""},
+		{"profile/idle", catalog.ActionStart, ""},
+		{"profile/broken", catalog.ActionBlock, "slot opus: openrouter/gone is not in the registry"},
+	} {
+		row, ok := catalog.Find(rows, c.id)
+		if !ok || row.Action() != c.action {
+			t.Fatalf("fixture: %s found = %t action = %v, want action %v", c.id, ok, row.Action(), c.action)
+		}
+		if got := pickerBlockedReason(cfg, "claude", row); got != c.want {
+			t.Errorf("pickerBlockedReason(%s) = %q, want %q", c.id, got, c.want)
+		}
+	}
+}
+
+// TestResolveModelSlotProfilePin verifies what resolveModel does with a
+// `-M profile/<name>` pin. A launch or start row comes back as a *slotPin
+// carrying the row, and nothing is started here: the profile launch starts
+// its local model itself, after the cloud routes are written. A blocked row
+// is an error with the row's reason. A profile of another agent says whose it
+// is, and a profile hidden by -T, -F or both names the flags that hide it (a
+// blocked one too, without its block reason): the generic "not in the
+// eligible list" message read as if the profile did not exist (#412). An
+// unknown name keeps that generic message. If a start row were started here,
+// the proxy would restart twice; if a blocked row came back as a pin, a broken
+// profile would launch.
+func TestResolveModelSlotProfilePin(t *testing.T) {
+	checks := []profiles.SlotCheck{
+		slotFixtureCheck(0, "cloud", "opus", slotCloud()),
+		slotFixtureCheck(1, "mixed", "opus", slotMixed()),
+		slotFixtureCheck(2, "broken", "opus", map[string]string{"opus": "openrouter/gone"}),
+	}
+	cases := []struct {
+		name       string
+		agent      string
+		tags       string
+		family     string
+		pinned     string
+		wantAction catalog.Action // read only when wantErr is ""
+		wantErr    string         // "" means a *slotPin is expected
+	}{
+		{"launch row", "claude", "", "", "profile/cloud", catalog.ActionLaunch, ""},
+		{"start row is not started here", "claude", "", "", "profile/mixed", catalog.ActionStart, ""},
+		{"blocked row", "claude", "", "", "profile/broken", 0, "slot opus: openrouter/gone is not in the registry"},
+		{"another agent's profile", "pi", "", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile for agent "claude", not "pi"`},
+		{"a claude profile pinned for codex", "codex", "", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile for agent "claude", not "codex"`},
+		{"another agent's profile under -T", "codex", "code", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile for agent "claude", not "codex"`},
+		{"unknown profile", "claude", "", "", "profile/nope", 0, `model "profile/nope" is not in the eligible list for agent "claude"`},
+		{"unknown profile under -T", "claude", "code", "", "profile/nope", 0, `model "profile/nope" is not in the eligible list for agent "claude"`},
+		{"hidden under -T", "claude", "code", "", "profile/cloud", 0, `model "profile/cloud" is a slot profile, excluded by -T`},
+		{"hidden under -F", "claude", "", "a", "profile/cloud", 0, `model "profile/cloud" is a slot profile, excluded by -F`},
+		{"hidden under -T and -F", "claude", "code", "a", "profile/cloud", 0, `model "profile/cloud" is a slot profile, excluded by -T and -F`},
+		{"a blocked profile hidden under -F", "claude", "", "a", "profile/broken", 0, `model "profile/broken" is a slot profile, excluded by -F`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			started := stubStartDriver(t, nil)
+			stubSlotChecks(t, checks...)
+			cfg := slotFixtureConfig()
+			cfg.Agents = append(cfg.Agents,
+				config.Agent{Name: "pi", SupportedProviders: []string{"openrouter", "omlx"}},
+				config.Agent{Name: "codex", SupportedProviders: []string{"openrouter", "omlx"}})
+
+			m, _, err := resolveModel(tc.agent, cfg, tc.tags, tc.family, tc.pinned)
+
+			if m.ID != "" {
+				t.Errorf("model = %q, want none: a profile is not a model", m.ID)
+			}
+			if started.called {
+				t.Error("resolveModel started a model for a profile pin")
+			}
+			var pin *slotPin
+			isPin := errors.As(err, &pin)
+			if tc.wantErr != "" {
+				if isPin || err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if !isPin {
+				t.Fatalf("err = %v, want a *slotPin", err)
+			}
+			if pin.row.Model.ID != tc.pinned || pin.row.Action() != tc.wantAction {
+				t.Errorf("pin row = %s with action %v, want %s with action %v", pin.row.Model.ID, pin.row.Action(), tc.pinned, tc.wantAction)
+			}
+		})
+	}
+}
+
+// TestResolveModelSlotPinFromAnUnusableFileKeepsTheGenericMessage verifies a
+// profile pin keeps the generic "not in the eligible list" message when wt
+// could not use the profile it names: slot-profiles.toml does not parse, or
+// the profile is skipped for a malformed name. It holds under -T and for
+// another agent too, where a usable profile would be named. The file is read
+// by newApp, as wt reads it. If the reasons of #412 were drawn from an
+// unusable file, a pin would blame -T/-F or the agent for a profile wt never
+// loaded, and the user would fix the wrong thing.
+func TestResolveModelSlotPinFromAnUnusableFileKeepsTheGenericMessage(t *testing.T) {
+	files := []struct{ name, body, pin string }{
+		{"a TOML typo", "[[profile]]\nname = \"mixed\nagent = \"claude\"\n", "profile/mixed"},
+		{"a malformed name",
+			"[[profile]]\nname = \"Bad_Name\"\nagent = \"claude\"\ndefault = \"opus\"\n\n[profile.slots]\nopus = \"openrouter/a\"\n",
+			"profile/Bad_Name"},
+	}
+	pins := []struct{ name, agent, tags, family string }{
+		{"no filter", "claude", "", ""},
+		{"under -T", "claude", "code", ""},
+		{"under -F", "claude", "", "a"},
+		{"for codex", "codex", "", ""},
+	}
+	for _, f := range files {
+		for _, p := range pins {
+			t.Run(f.name+" "+p.name, func(t *testing.T) {
+				restoreLaunchSlotChecks(t)
+				writeSlotProfilesTOML(t, f.body)
+				a, err := newApp()
+				if err != nil {
+					t.Fatalf("newApp() error = %v", err)
+				}
+				launchSlotChecks = a.slotChecks
+				cfg := slotFixtureConfig()
+				cfg.Agents = append(cfg.Agents, config.Agent{Name: "codex", SupportedProviders: []string{"openrouter", "omlx"}})
+
+				_, _, err = resolveModel(p.agent, cfg, p.tags, p.family, f.pin)
+
+				want := `model "` + f.pin + `" is not in the eligible list for agent "` + p.agent + `"`
+				if err == nil || err.Error() != want {
+					t.Errorf("err = %v, want %q", err, want)
+				}
+			})
+		}
+	}
+}
+
+// TestResolveModelSlotPinUnderAReservedPrefixKeepsTheGenericMessage verifies
+// a profile pin under -T/-F keeps the generic "not in the eligible list"
+// message while the registry holds the "profile/" prefix: then no profile has
+// a row, filter or not, so naming -T/-F as the cause (#412) would send the
+// user to drop a flag that changes nothing. slotWarnings already says what
+// holds the prefix.
+func TestResolveModelSlotPinUnderAReservedPrefixKeepsTheGenericMessage(t *testing.T) {
+	stubSlotChecks(t, slotFixtureCheck(0, "cloud", "opus", slotCloud()))
+	cfg := slotFixtureConfig()
+	cfg.Models = append(cfg.Models, config.Model{ID: "profile/x", ProviderID: "openrouter", ModelName: "x", Family: "x", Tags: []string{"code"}})
+
+	_, _, err := resolveModel("claude", cfg, "code", "", "profile/cloud")
+
+	want := `model "profile/cloud" is not in the eligible list for agent "claude"`
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
+	}
+}
+
+// TestResolveModelWithoutAPinIgnoresSlotProfiles verifies the non-TUI path
+// with no -M is what it was before slot profiles existed: the same model, the
+// same launchable list and the same error text with and without loaded
+// profiles. A profile row must never be auto-launched, rotated to, or change
+// the wording that tells the user why nothing can launch.
+func TestResolveModelWithoutAPinIgnoresSlotProfiles(t *testing.T) {
+	missing := localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK},
+		Entries: []localmodels.Entry{
+			{ProviderID: "omlx", ModelID: "omlx/q", ModelName: "q", Registered: true, ArtifactKnown: true},
+		},
+	}
+	cases := []struct {
+		name   string
+		models func([]config.Model) []config.Model
+		snap   *localmodels.Snapshot
+		slots  map[string]string
+		want   string // a substring of the outcome, to prove the case is the one named
+	}{
+		{"several launchable models", func(ms []config.Model) []config.Model { return ms }, nil, slotCloud(), "multiple models match"},
+		{"one launchable model", func(ms []config.Model) []config.Model { return ms[:1] }, nil, map[string]string{"opus": "openrouter/a"}, "openrouter/a|openrouter/a|"},
+		{"no eligible model has a row", func(ms []config.Model) []config.Model { return ms[2:] }, &missing, map[string]string{"opus": "omlx/q"}, catalog.NoRowsReason("claude")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.snap != nil {
+				stubProbeInventory(t, *tc.snap)
+			}
+			cfg := slotFixtureConfig()
+			cfg.Models = tc.models(cfg.Models)
+			outcome := func() string {
+				m, launchable, err := resolveModel("claude", cfg, "", "", "")
+				ids := make([]string, len(launchable))
+				for i, l := range launchable {
+					ids[i] = l.ID
+				}
+				msg := ""
+				if err != nil {
+					msg = err.Error()
+				}
+				return m.ID + "|" + strings.Join(ids, ",") + "|" + msg
+			}
+			old := launchSlotChecks
+			t.Cleanup(func() { launchSlotChecks = old })
+
+			launchSlotChecks = nil
+			before := outcome()
+			launchSlotChecks = []profiles.SlotCheck{slotFixtureCheck(0, "p", "opus", tc.slots)}
+			after := outcome()
+
+			if !strings.Contains(before, tc.want) {
+				t.Fatalf("outcome without profiles = %q, want it to contain %q", before, tc.want)
+			}
+			if after != before {
+				t.Errorf("outcome with a profile loaded = %q, want %q (unchanged)", after, before)
+			}
+		})
 	}
 }

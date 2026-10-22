@@ -12,13 +12,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// legacyPaths returns the paths to the legacy models.conf and state directory.
-func legacyPaths() (modelsConf, stateDir string) {
-	dir := Dir()
-	return filepath.Join(dir, "models.conf"), dir
-}
-
-// parseBashArray extracts the quoted tokens from `NAME=( "a" "b" ... )`.
+// bashArrayRe matches a bash array assignment `NAME=( "a" "b" ... )`,
+// capturing the name and the text between the parentheses.
 var bashArrayRe = regexp.MustCompile(`([A-Z_]+)=\(([^)]*)\)`)
 
 // quotedRe matches a double-quoted token.
@@ -46,14 +41,6 @@ func stripComments(s string) string {
 	return strings.Join(out, "\n")
 }
 
-func parseBashArray(line string) (name string, vals []string) {
-	m := bashArrayRe.FindStringSubmatch(line)
-	if m == nil {
-		return "", nil
-	}
-	return m[1], extractQuoted(m[2])
-}
-
 // Migrate converts a legacy models.conf into the new TOML Config, if the new
 // config does not already exist. Returns whether if performed a migration.
 func Migrate() (bool, error) {
@@ -63,8 +50,7 @@ func Migrate() (bool, error) {
 		return false, err
 	}
 
-	legacyFile, _ := legacyPaths()
-	data, err := os.ReadFile(legacyFile)
+	data, err := os.ReadFile(filepath.Join(Dir(), "models.conf"))
 	if os.IsNotExist(err) {
 		return false, nil // nothing to migrate
 	}
@@ -93,7 +79,7 @@ func Migrate() (bool, error) {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "PROVIDER_OLLAMA_BASE_URL=") {
-			raw := trimQuotes(line[len("PROVIDER_OLLAMA_BASE_URL="):])
+			raw := strings.Trim(line[len("PROVIDER_OLLAMA_BASE_URL="):], `"`)
 			if raw != "" {
 				cfg.Providers[0].Auth.BaseURL = raw
 			}
@@ -188,10 +174,10 @@ func Migrate() (bool, error) {
 }
 
 // saveFull writes the complete cfg — including Providers/Models — to the
-// config path. Only the legacy models.conf migration uses it: the
-// provider/model sections it seeds must survive on disk so `modelman
-// migrate` can import them into registry.toml. Regular saves use Save,
-// which persists wt-owned fields only.
+// config path. Only the legacy models.conf migration uses it. The
+// provider/model sections it seeds stay on disk; nothing reads them back
+// (the registry is registry.toml). Regular saves use Save, which persists
+// wt-owned fields only.
 func saveFull(cfg *Config) error {
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
@@ -312,10 +298,6 @@ func displayName(agent string) string {
 	}
 }
 
-func trimQuotes(s string) string {
-	return strings.Trim(s, `"`)
-}
-
 // noNativeAgents lists agents that, after the native-provider alignment, have
 // no native provider: they only support ollama. The legacy migration skips
 // creating a native provider for these agents (in case a legacy models.conf
@@ -339,6 +321,28 @@ var noNativeAgents = map[string]bool{
 // exists in cfg, so subsequent calls are no-ops. The boolean return is true
 // iff any fixup actually changed cfg.
 func migrateConfigSchema(cfg *Config) (bool, error) {
+	changed := migrateAgentRefs(cfg)
+
+	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
+	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
+	// [litellm] table (managed with `wt litellm ...`). The decoded Config
+	// simply has no Gateway field, so re-saving drops the block; this
+	// fixup only detects its presence to point the user at the new
+	// control surface. Self-extinguishing: after the triggered Save, the
+	// block is gone and the probe no longer matches.
+	if dropLegacyGateway(Path()) {
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// migrateAgentRefs is the part of migrateConfigSchema that rewrites
+// cfg.Agents (fixups 1 to 3), with no file access and no output. Registry
+// seeding calls it on its own read of config.toml to learn which providers
+// the agents will name once Load has migrated the file. Reports whether it
+// changed cfg.
+func migrateAgentRefs(cfg *Config) bool {
 	changed := false
 
 	// ── Fixup 1: rename "google" → "agy" in agent references ────────
@@ -372,18 +376,7 @@ func migrateConfigSchema(cfg *Config) (bool, error) {
 		changed = true
 	}
 
-	// ── Fixup 4: notice + drop wt's legacy [gateway] block ───────────
-	// GatewayConfig was deleted (Task 9): LiteLLM routing is now a wt-owned
-	// [litellm] table (managed with `wt litellm ...`). The decoded Config
-	// simply has no Gateway field, so re-saving drops the block; this
-	// fixup only detects its presence to point the user at the new
-	// control surface. Self-extinguishing: after the triggered Save, the
-	// block is gone and the probe no longer matches.
-	if dropLegacyGateway(Path()) {
-		changed = true
-	}
-
-	return changed, nil
+	return changed
 }
 
 // dropLegacyGateway detects a config.toml still carrying [gateway] (from

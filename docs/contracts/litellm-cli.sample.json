@@ -1,14 +1,37 @@
 {
-  "_comment": "Shared fixture for cross-language contract tests of `wt litellm ... --json`. Read by wt/cmd/wt/litellm_test.go (Go) and modelman/tests/contracts/test_litellm_cli_fixture.py (Python). A schema change on either side fails both CI jobs in the same PR.",
-  "change": {
+  "_comment": "Fixture for the shapes `wt litellm ... --json` prints. Read by wt/cmd/wt/litellm_test.go.",
+  "list": {
+    "routed": ["ollama/gemma:9b", "openrouter/x/y"],
+    "rows": [
+      {"id": "ollama/gemma:9b", "managed": true},
+      {"id": "openrouter/x/y", "managed": false}
+    ]
+  },
+  "sync": {
     "outcomes": [
-      {"id": "ollama/gemma:9b", "action": "exposed"},
-      {"id": "claude/sonnet", "error": "provider \"claude\" is native and cannot be exposed through LiteLLM"}
+      {"id": "openrouter/old", "action": "unrouted"},
+      {"id": "openrouter/x", "action": "rewritten"},
+      {"id": "openrouter/adopt", "action": "adopted"},
+      {"id": "openrouter/new", "action": "routed"},
+      {"id": "ollama/llama3.2:3b", "action": "routed"},
+      {"id": "ollama/mine", "action": "api_base set"},
+      {"id": "openrouter/bad", "error": "model \"openrouter/bad\": empty model_name"}
     ],
     "changed": true,
     "warnings": ["failed to restart LiteLLM proxy (exit status 1); restart it manually: launchctl kickstart -k gui/$(id -u)/local.litellm.proxy"]
   },
-  "list": {"routed": ["ollama/gemma:9b", "openrouter/x/y"]},
+  "sync_dry_run": {
+    "dry_run": true,
+    "plan": {
+      "add": ["openrouter/x/y", "ollama/llama3.2:3b"],
+      "adopt": ["ollama/gemma:9b"],
+      "rewrite": [],
+      "remove": ["openrouter/old"],
+      "repair": ["ollama/mine"],
+      "errors": [{"id": "ghost/m", "error": "unknown provider \"ghost\""}]
+    },
+    "warnings": []
+  },
   "providers": {"providers": {"ollama": {"cloud": false}, "openrouter": {"cloud": true}}},
   "status": {"enabled": true, "url": "http://localhost:4000", "api_key_set": true}
 }

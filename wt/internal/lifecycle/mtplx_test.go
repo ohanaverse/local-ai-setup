@@ -28,15 +28,19 @@ func TestMain(m *testing.M) {
 		helperMtplx()
 		return
 	}
+	// No test may read the real mtplx pidfile or signal a process it did not
+	// start: the production env's process seams fail and its pidfile is
+	// nowhere (TestProcessSeamsFailClosedHere).
+	IsolateProcessesForTest()
 	// No test may reach the real config.yaml or proxy through the public wrappers.
-	applyRoutes = func(*config.Config, []string, []string, litellm.Options) (litellm.Result, error) {
+	applyRoutes = func(*config.Config, litellm.Change, litellm.Options) (litellm.Result, error) {
 		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
 	}
 	probeProxy = func(context.Context, string, time.Duration) bool { return false }
 	os.Exit(m.Run())
 }
 
-// helperMtplx is the fake `mtplx serve` process (see file comment).
+// helperMtplx is the fake `mtplx serve` process.
 func helperMtplx() {
 	args := os.Args[1:]
 	opt := map[string]string{}
@@ -64,7 +68,14 @@ func helperMtplx() {
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
 	})
-	l, err := net.Listen("tcp", opt["host"]+":"+opt["port"])
+	addr := opt["host"] + ":" + opt["port"]
+	// A test of the port wt serves mtplx on by default must not bind it: the
+	// helper then listens here, and the test's transport stands it on the
+	// port it was told (servedAt).
+	if a := os.Getenv("LIFECYCLE_HELPER_LISTEN"); a != "" {
+		addr = a
+	}
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -114,13 +125,14 @@ func pidGone(pid int) bool {
 }
 
 // TestMtplxStartSpawnsWaitsWarms verifies the full happy path: the exact serve
-// argv (identical to modelman's), a pidfile and log at the configured paths,
-// stages starting -> waiting-for-model -> warming, and a server that answers.
-// Matching modelman's argv/pidfile keeps the two tools interoperable.
+// argv, a pidfile and log at the configured paths, stages starting ->
+// waiting-for-model -> warming, and a server that answers. llmbench's mtplx
+// backend serves with the same argv and tracks the same pidfile, so either
+// tool can stop or find the server the other started.
 func TestMtplxStartSpawnsWaitsWarms(t *testing.T) {
 	e, cfg, port, argvFile := mtplxEnv(t, "serve", 0)
 	var stages []Stage
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{"mtplx", "Org/Model"}, func(s Stage) { stages = append(stages, s) })
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(s Stage) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -149,7 +161,7 @@ func TestMtplxCancelTearsDownSpawnedProcess(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "serve", 5000) // never listens within the test
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(500 * time.Millisecond); cancel() }()
-	err := mtplxBackend{}.start(ctx, e, cfg, Target{"mtplx", "Org/Model"}, func(Stage) {})
+	err := mtplxBackend{}.start(ctx, e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -169,7 +181,7 @@ func TestMtplxCancelTearsDownSpawnedProcess(t *testing.T) {
 func TestMtplxProcessDiesDuringLoad(t *testing.T) {
 	e, cfg, _, _ := mtplxEnv(t, "die", 0)
 	start := time.Now()
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{"mtplx", "Org/Model"}, func(Stage) {})
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.Contains(err.Error(), "exited") {
 		t.Errorf("die: err = %v, want an 'exited' error", err)
 	}
@@ -178,7 +190,7 @@ func TestMtplxProcessDiesDuringLoad(t *testing.T) {
 	}
 
 	e2, cfg2, _, _ := mtplxEnv(t, "die-now", 0)
-	err = mtplxBackend{}.start(context.Background(), e2, cfg2, Target{"mtplx", "Org/Model"}, func(Stage) {})
+	err = mtplxBackend{}.start(context.Background(), e2, cfg2, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.Contains(err.Error(), "exited immediately") {
 		t.Errorf("die-now: err = %v, want 'exited immediately'", err)
 	}
@@ -191,14 +203,14 @@ func TestMtplxMissingBinaryAndPortBusy(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "serve", 0)
 	e.lookPath = func(string) (string, error) { return "", errors.New("nope") }
 	var bm *BinaryMissingError
-	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{"mtplx", "m"}, func(Stage) {}); !errors.As(err, &bm) {
+	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {}); !errors.As(err, &bm) {
 		t.Errorf("err = %v, want *BinaryMissingError", err)
 	}
 
 	busy := httptest.NewServer(http.NotFoundHandler())
 	defer busy.Close()
 	e.lookPath = func(string) (string, error) { return os.Args[0], nil }
-	err := (mtplxBackend{}).start(context.Background(), e, provCfg("mtplx", busy.URL), Target{"mtplx", "m"}, func(Stage) {})
+	err := (mtplxBackend{}).start(context.Background(), e, provCfg("mtplx", busy.URL), Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {})
 	var pb *PortBusyError
 	if !errors.As(err, &pb) {
 		t.Errorf("err = %v, want *PortBusyError", err)
@@ -209,9 +221,9 @@ func TestMtplxMissingBinaryAndPortBusy(t *testing.T) {
 }
 
 // TestMtplxStopRunsMtplxStopAndConfirmsPortClosed verifies replacement stop
-// runs `mtplx stop --port N --grace-seconds 10` (modelman's command) and only
-// succeeds once the port really closed; a stop that leaves the port open
-// surfaces the command's own error text.
+// runs `mtplx stop --port N --grace-seconds 10` (the command llmbench's mtplx
+// backend runs too) and only succeeds once the port really closed; a stop
+// that leaves the port open surfaces the command's own error text.
 func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 	srv, addr := serveFree(t, chatHandler())
 	_, portStr, _ := net.SplitHostPort(addr)
@@ -243,14 +255,26 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 }
 
 // TestDefaultEnvRegistersMtplx verifies the production env wires mtplx as a
-// single-model backend with modelman's pidfile and log paths.
+// single-model backend with the pidfile and log paths llmbench's mtplx
+// backend uses (MTPLX_PIDFILE and MTPLX_LOG in its backends/mtplx.py). With
+// two paths, a server one tool started would be invisible to the other.
 func TestDefaultEnvRegistersMtplx(t *testing.T) {
+	t.Setenv(mtplxPidfileEnv, "") // TestMain points it away from the real files
 	e := defaultEnv()
-	if e.backends["mtplx"] == nil || !e.backends["mtplx"].singleModel() {
+	if e.backends["mtplx"] == nil || e.backends["mtplx"].tenancy() != Exclusive {
 		t.Fatal("mtplx backend missing or not single-model")
 	}
 	if e.mtplxProc.pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.mtplxProc.logfile != "/tmp/local-ai-setup-mtplx.log" {
-		t.Errorf("mtplxProc = %+v, want modelman's paths", e.mtplxProc)
+		t.Errorf("mtplxProc = %+v, want the paths llmbench's mtplx backend uses", e.mtplxProc)
+	}
+	if got := e.mtplxProc.startfile(); got != "/tmp/local-ai-setup-mtplx.pid.wt" {
+		t.Errorf("start record = %q, want it beside the pidfile, which stays a bare pid for llmbench", got)
+	}
+	// WT_MTPLX_PIDFILE moves all three, so a run against scratch state never
+	// touches the real ones.
+	t.Setenv(mtplxPidfileEnv, "/scratch/m.pid")
+	if p := defaultEnv().mtplxProc; p.pidfile != "/scratch/m.pid" || p.logfile != "/scratch/m.log" || p.startfile() != "/scratch/m.pid.wt" {
+		t.Errorf("mtplxProc under %s = %+v, want the pidfile it names and the log beside it", mtplxPidfileEnv, p)
 	}
 }
 
@@ -258,9 +282,9 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 // and the URL it is polled at come from one resolution. When they diverge the
 // spawn succeeds and the wait then times out for the full load budget before
 // killing the server it just started. The registry host is one the fallback
-// cannot produce, so this passes only through the portless resolution path: if
-// that path (and defaultPortFor) went away, the fallback's localhost origin
-// would show up here instead of the registry's host and fail the test.
+// cannot produce, so this passes only through the registry's own url: if a
+// url with no port stopped resolving, the fallback's localhost origin would
+// show up here instead of the registry's host and fail the test.
 func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
 	cfg := provCfg("mtplx", "http://127.0.0.1") // registry value with no port
 	origin, modelsURL, port := mtplxEndpoint(cfg)
@@ -277,7 +301,7 @@ func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
 
 // TestLogTailReadsOnlyTheTail verifies logTail returns up to the last max bytes
 // of a log, and nothing when the file is missing. The mtplx log is append-only
-// and shared with modelman, so it grows across every start; a failed start must
+// and shared with llmbench, so it grows across every start; a failed start must
 // not depend on the whole file fitting in memory to show a 512-byte tail. The
 // boundary cases below pin the behaviour at the edges: max == size must return
 // all N bytes (at equality the `>`-vs-`>=` choice is behaviourally identical, so
@@ -323,11 +347,102 @@ func TestLogTailReadsOnlyTheTail(t *testing.T) {
 	}
 }
 
+// TestLogTailLinesBeginsAtALineStart verifies the tail shown to a user starts
+// at the beginning of a line (#344): a cut at a byte count landed mid-word,
+// so a failed start's message began "stained MTP runtime". The partial first
+// line is dropped; a cut that already falls on a line start loses nothing; a
+// log that fits is whole; and a tail with no newline at all — one long line —
+// is still returned, since dropping it would show nothing. The same holds for
+// a tail whose only newline is its last byte: a last line longer than max, or
+// a run of "\r" progress redraws before the server's last words. And for a
+// long last line with only blank lines after it: those are all a failed start
+// would be left to show, and it trims them to an empty "log tail:".
+func TestLogTailLinesBeginsAtALineStart(t *testing.T) {
+	dir := t.TempDir()
+	p := pidProcess{name: "mtplx", logfile: filepath.Join(dir, "mtplx.log")}
+	for name, tc := range map[string]struct {
+		log  string
+		max  int
+		want string
+	}{
+		"cut mid-line":            {"could not load the sustained MTP runtime\nfatal: out of memory\n", 40, "fatal: out of memory\n"},
+		"cut on a line start":     {"first\nsecond\nthird\n", 13, "second\nthird\n"},
+		"cut just after the line": {"first\nsecond\nthird\n", 12, "third\n"},
+		"log fits":                {"first\nsecond\n", 512, "first\nsecond\n"},
+		"log is exactly max":      {"first\nsecond\n", 13, "first\nsecond\n"},
+		"one long line":           {strings.Repeat("x", 100), 10, strings.Repeat("x", 10)},
+		"long last line":          {"first\n" + strings.Repeat("x", 100) + "\n", 10, strings.Repeat("x", 9) + "\n"},
+		"long line, then a blank": {"first\n" + strings.Repeat("x", 100) + "\n\n", 10, strings.Repeat("x", 8) + "\n\n"},
+		"redraws, then one line":  {"first\n" + strings.Repeat("10%\r", 20) + "boom\n", 10, "\r10%\rboom\n"},
+		"empty log":               {"", 512, ""},
+		"nothing asked for":       {"first\n", 0, ""},
+	} {
+		if err := os.WriteFile(p.logfile, []byte(tc.log), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.logTailLines(tc.max); got != tc.want {
+			t.Errorf("%s: logTailLines(%d) = %q, want %q", name, tc.max, got, tc.want)
+		}
+	}
+	if got := (pidProcess{logfile: filepath.Join(dir, "missing.log")}).logTailLines(512); got != "" {
+		t.Errorf("unreadable log: logTailLines = %q, want empty", got)
+	}
+}
+
+// TestLogTailLinesReadsOnlyTheTail verifies the line-start tail keeps
+// logTail's bound: the log is append-only and shared with llmbench, so it
+// grows without limit, and a failed start must read one byte more than it
+// shows, not the file.
+func TestLogTailLinesReadsOnlyTheTail(t *testing.T) {
+	dir := t.TempDir()
+	p := pidProcess{name: "mtplx", logfile: filepath.Join(dir, "mtplx.log")}
+	content := append(bytes.Repeat([]byte("A"), 1<<20), []byte("\nlast line\n")...)
+	if err := os.WriteFile(p.logfile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.logTailLines(512); got != "last line\n" {
+		t.Errorf("logTailLines(512) = %d bytes %q, want the last line alone", len(got), got)
+	}
+}
+
+// TestMtplxFailedStartShowsWholeLogLines verifies the failed start itself
+// uses the line-start tail: with more than 512 bytes of log before the
+// server's last words, the error carries those lines and no fragment of the
+// line the cut fell in.
+func TestMtplxFailedStartShowsWholeLogLines(t *testing.T) {
+	e, cfg, _, _ := mtplxEnv(t, "die", 0)
+	if err := os.WriteFile(e.mtplxProc.logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	if err == nil || !strings.HasSuffix(err.Error(), "; log tail: boom") {
+		t.Errorf("err = %v, want the log tail to be the server's last line alone", err)
+	}
+}
+
+// TestSpawnExitedImmediatelyShowsWholeLogLines is the same for a process that
+// dies inside spawn's own 200ms watch: its "exited immediately" message
+// carries the line-start tail too.
+func TestSpawnExitedImmediatelyShowsWholeLogLines(t *testing.T) {
+	e, cfg, _, _ := mtplxEnv(t, "die-now", 0)
+	if err := os.WriteFile(e.mtplxProc.logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\nfatal: out of memory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "exited immediately") {
+		t.Fatalf("err = %v, want 'exited immediately'", err)
+	}
+	_, tail, _ := strings.Cut(err.Error(), "; log tail: ")
+	if !strings.HasPrefix(tail, "fatal: out of memory\n") {
+		t.Errorf("log tail = %q, want it to begin at a line start", tail)
+	}
+}
+
 // TestLogTailClampsWhatArrivedAfterTheSizeWasSampled pins the clamp: the one
 // guarantee that exists to make logTail's "at most max bytes" promise true even
 // when more bytes arrive between sampling the size and reading. It matters
 // because a failed start reads this tail to explain itself, and the log is
-// shared with modelman and appended by a live subprocess — so "more arrived
+// shared with llmbench and appended by a live subprocess — so "more arrived
 // after the stat" is reachable exactly when the tail is read.
 //
 // A regular file cannot reach the clamp: when the file is longer than max the
@@ -400,5 +515,31 @@ func TestLogTailClampsWhatArrivedAfterTheSizeWasSampled(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("logTail(0) over a FIFO = %d bytes, want empty: the clamp must never hand back everything it read", len(got))
+	}
+}
+
+// TestMtplxStopNeverReportsAServerItLeftUp pins what `wt stop mtplx` and `wt
+// stop --all` rely on when they halt an mtplx whose probe they could not
+// read (#308): the stop is an error whenever the port still answers
+// afterwards — `mtplx stop` exited 0 (a stale pidfile, or a server it does
+// not own), or the mtplx binary is missing — so the command cannot print
+// "done" and exit 0 over a server that is still up.
+func TestMtplxStopNeverReportsAServerItLeftUp(t *testing.T) {
+	_, addr := serveFree(t, chatHandler())
+	_, portStr, _ := net.SplitHostPort(addr)
+	cfg := provCfg("mtplx", "http://"+addr+"/v1")
+	e := testEnv()
+	e.stopTimeout = 60 * time.Millisecond
+	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
+	e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte("no server to stop"), nil }
+	err := (mtplxBackend{}).stop(context.Background(), e, cfg)
+	if err == nil || !strings.Contains(err.Error(), "mtplx still listening on port "+portStr) {
+		t.Errorf("exit 0, port open: err = %v, want still-listening", err)
+	}
+
+	e.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	var missing *BinaryMissingError
+	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); !errors.As(err, &missing) {
+		t.Errorf("no binary: err = %v, want *BinaryMissingError", err)
 	}
 }

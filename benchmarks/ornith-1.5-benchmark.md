@@ -1,12 +1,12 @@
-# Ornith-1.5 Benchmark — Comparing the Four 35B Variants
+# Ornith-1.5 Benchmark — Comparing the Three 35B Variants
 
-**Status**: Reference doc for benchmarking the four Ornith-1.5-35B-A3B variants on this machine. Tracks setup, the benchmark script, results, and the gotchas encountered.
+**Status**: Reference doc for benchmarking the three Ornith-1.5-35B-A3B variants on this machine. Tracks setup, the benchmark script, results, and the gotchas encountered.
 
 ---
 
 ## Why This Exists
 
-The Ornith-1.5-35B-A3B model (a 35B MoE with 3B active parameters) is downloaded in four variants across three local runtimes:
+The Ornith-1.5-35B-A3B model (a 35B MoE with 3B active parameters) is downloaded in three variants across two local runtimes:
 
 | Backend | Model | Quantization | Size |
 |---|---|---|---|
@@ -25,7 +25,7 @@ These are *different quantizations and runtimes* of the same model. Benchmarking
 
 ## The Isolation Problem
 
-The three local backends share Apple Silicon's GPU and unified memory. Running all of them with models loaded simultaneously means ~80 GB of contention for four ~20-29 GB models, plus thermal throttling. **The benchmark runs each variant in isolation**: before each test, all local models are unloaded (Ollama) or fully stopped (oMLX).
+The three local backends share Apple Silicon's GPU and unified memory. Running all of them with models loaded simultaneously means ~70 GB of contention for three ~20-28 GB models, plus thermal throttling. **The benchmark runs each variant in isolation**: before each test, all local models are unloaded (Ollama) or fully stopped (oMLX).
 
 | Backend | "Stop" mechanism | What's left running |
 |---|---|---|
@@ -38,23 +38,24 @@ The three local backends share Apple Silicon's GPU and unified memory. Running a
 
 ## The Script
 
-**Location**: `~/.local/bin/ornith-1.5-benchmark` (also in `benchmarks/`)
+**Location**: `benchmarks/ornith-1.5-benchmark` in this repo. It is not installed on PATH; run it by path (`./ornith-1.5-benchmark` from `benchmarks/`). It sources `lib/benchmark-common.sh` relative to its own location, so the working directory does not matter.
 
 **Usage**:
 ```bash
-ornith-1.5-benchmark               # default: 200 max_tokens
-ornith-1.5-benchmark 100           # custom max_tokens
-ornith-1.5-benchmark-multi 3       # 3 passes with cool-down
+./ornith-1.5-benchmark               # default: 200 max_tokens
+./ornith-1.5-benchmark 100           # custom max_tokens
+./ornith-1.5-benchmark-multi 3       # 3 passes with cool-down
 ```
 
 **What it does**:
-1. Ensures all services are up
-2. For each of the three variants (ollama, omlx 4-bit, omlx 6-bit):
-   - Stops all local services
-   - Loads only the one being tested (warmup with a short "hi" request)
-   - Runs the same prompt twice: once direct, once through LiteLLM
+1. Brings ollama, oMLX and LiteLLM up (`llmbench provider restore`)
+2. Direct rows — for each of the three variants (ollama, omlx 4-bit, omlx 6-bit):
+   - Stops the other local services
+   - Loads only the one being tested (`llmbench provider isolate`, warmup with a short "hi" request)
+   - Runs the prompt against the backend directly
    - Measures TTFT, total time, tokens, throughput
-3. Restores all local services
+3. LiteLLM rows — isolates each variant again and runs the same prompt through LiteLLM
+4. Restores all local services
 
 **Output**: Markdown file in `/tmp/ornith-1.5-benchmark-<timestamp>.md`
 
@@ -137,14 +138,13 @@ Captured 2026-08-26 with **3 passes at `max_tokens=200`** (20s cool-down between
 ## Re-running the Benchmark
 
 ```bash
-# Make sure all services are up
-llm-restart
+# from: benchmarks/ (the script brings the local services up itself)
 
 # Single 200-token pass
-ornith-1.5-benchmark 200
+./ornith-1.5-benchmark 200
 
 # Multiple passes for stability
-ornith-1.5-benchmark-multi 3 200 20
+./ornith-1.5-benchmark-multi 3 200 20
 ```
 
 Results are timestamped in `/tmp/ornith-1.5-benchmark-<timestamp>.md`. The latest run:
@@ -159,5 +159,5 @@ ls -t /tmp/ornith-1.5-benchmark-*.md | head -1
 
 - **qwen3.8 benchmark**: [`qwen3.8-benchmark.md`](./qwen3.8-benchmark.md) — the original benchmark this mirrors.
 - **Main setup doc**: [`../docs/Local AI Setup 2026-08-25.md`](../docs/archive/Local%20AI%20Setup%202026-08-25.md)
-- **Service management**: `~/.local/bin/llm-restart`
-- **LiteLLM config**: `~/.config/litellm/config.yaml` — includes the four Ornith entries.
+- **Service management**: `uv run --directory llmbench llmbench provider restore` (from the repo root)
+- **LiteLLM config**: `~/.config/litellm/config.yaml` — the routes wt manages (an Ornith row exists while its model is pulled or running); read them with `wt litellm list`.

@@ -16,6 +16,46 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// claudeTarget sets up a claude config_content target for one test: a
+// throwaway XDG_CONFIG_HOME (so backups land in the test's own directory) and
+// a worktree whose .claude/settings.local.json is the target. A non-nil
+// content is written there as the pre-existing file; nil leaves the target,
+// and the worktree, absent.
+func claudeTarget(t *testing.T, content []byte) (worktree, target string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	worktree = filepath.Join(dir, "worktree")
+	target = filepath.Join(worktree, ".claude", "settings.local.json")
+	if content != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return worktree, target
+}
+
+// assertSameJSON fails the test unless got and want hold the same JSON
+// document. The comparison is semantic, not byte for byte, because a restore
+// re-marshals the file. what names got in the failure and wantNote says what
+// want stands for.
+func assertSameJSON(t *testing.T, what, wantNote string, got, want []byte) {
+	t.Helper()
+	var gotDoc, wantDoc map[string]any
+	if err := json.Unmarshal(got, &gotDoc); err != nil {
+		t.Fatalf("%s is not valid JSON: %v (%s)", what, err, got)
+	}
+	if err := json.Unmarshal(want, &wantDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, wantDoc) {
+		t.Errorf("%s = %v, want %v (%s)", what, gotDoc, wantDoc, wantNote)
+	}
+}
+
 // TestConfigFileTargetClaudeIsWorktreeScoped verifies claude's target is
 // inside the launch's own worktree (.claude/settings.local.json), never
 // the global ~/.claude/settings.json — the whole point of the
@@ -48,23 +88,13 @@ func TestConfigFileTargetClaudeResolvesRelativeWorktreePathToAbsolute(t *testing
 	dirA := t.TempDir()
 	dirB := t.TempDir()
 
-	origWD, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(origWD) })
-
-	if err := os.Chdir(dirA); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(dirA)
 	pathA, _, _, err := ConfigFileTarget("claude", ".")
 	if err != nil {
 		t.Fatalf("ConfigFileTarget(claude, \".\") in dirA: %v", err)
 	}
 
-	if err := os.Chdir(dirB); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(dirB)
 	pathB, _, _, err := ConfigFileTarget("claude", ".")
 	if err != nil {
 		t.Fatalf("ConfigFileTarget(claude, \".\") in dirB: %v", err)
@@ -144,17 +174,8 @@ func TestConfigFileTargetCodexHomeDirErrorPropagates(t *testing.T) {
 // semantically here; see
 // TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession for why.
 func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"env":{"MY_OWN_SETTING":"keep-me"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"MAX_THINKING_TOKENS": "4096"}}}
@@ -181,16 +202,7 @@ func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(restored, &gotDoc); err != nil {
-		t.Fatalf("restored content is not valid JSON: %v (%s)", err, restored)
-	}
-	if err := json.Unmarshal(original, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("restored content = %v, want %v (same keys/values as the pre-launch original)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "restored content", "same keys/values as the pre-launch original", restored, original)
 }
 
 // TestApplyConfigContentDeletesFileThatDidNotExistBefore verifies that
@@ -198,10 +210,7 @@ func TestApplyConfigContentWritesAndBacksUpExistingFile(t *testing.T) {
 // leaving the wt-written file behind — the "restore, or delete if none
 // existed" half of the design.
 func TestApplyConfigContentDeletesFileThatDidNotExistBefore(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	worktree, target := claudeTarget(t, nil)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -227,17 +236,8 @@ func TestApplyConfigContentDeletesFileThatDidNotExistBefore(t *testing.T) {
 // new content — so a hand-edited file is never permanently lost to an
 // unclean exit.
 func TestApplyConfigContentSelfHealsOrphanedBackup(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, handEdited)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -260,16 +260,7 @@ func TestApplyConfigContentSelfHealsOrphanedBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(got, &gotDoc); err != nil {
-		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("self-healed content = %v, want %v (the original hand-edited content)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "self-healed content", "the original hand-edited content", got, handEdited)
 }
 
 // TestApplyConfigContentCodexWritesValidTOMLAndAppendsProfileFlag verifies
@@ -378,7 +369,7 @@ func TestApplyConfigContentCodexProfileFlagOnlyAppendedAfterSuccessfulWrite(t *t
 
 // TestMergeOpenCodeEnvUsesLastEntryNotFirst is the regression lock for
 // Important finding #3: mergeOpenCodeEnv must merge into the LAST
-// OPENCODE_CONFIG_CONTENT entry in cmd.Env, not the first. Command()
+// OPENCODE_CONFIG_CONTENT entry in cmd.Env, not the first. BuildLaunchCmd
 // (internal/agents) builds cmd.Env as os.Environ() (inherited parent env)
 // followed by the driver's own entries; if the parent process already
 // exports OPENCODE_CONFIG_CONTENT (e.g. wt launched from inside an
@@ -426,17 +417,8 @@ func TestMergeOpenCodeEnvUsesLastEntryNotFirst(t *testing.T) {
 // backup left behind by a session that never called its cleanup (kill -9)
 // is restored, and the restored flag reports true.
 func TestSelfHealRestoresOrphanedBackup(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, handEdited)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -456,16 +438,7 @@ func TestSelfHealRestoresOrphanedBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(got, &gotDoc); err != nil {
-		t.Fatalf("self-healed content is not valid JSON: %v (%s)", err, got)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("self-healed content = %v, want %v (the original hand-edited content)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "self-healed content", "the original hand-edited content", got, handEdited)
 }
 
 // TestSelfHealNoopWithoutBackup verifies SelfHeal is safe to call
@@ -535,16 +508,7 @@ func TestRestoreIfBackedUpReturnsTrueWhenCleanupFailsAfterSuccessfulRestore(t *t
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	var gotDoc, wantDoc map[string]any
-	if err := json.Unmarshal(got, &gotDoc); err != nil {
-		t.Fatalf("restored content is not valid JSON: %v (%s)", err, got)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("target content = %v, want %v (the restored hand-edited content)", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "target content", "the restored hand-edited content", got, handEdited)
 }
 
 // TestApplyConfigContentOpenCodeMergesIntoEnv verifies opencode's
@@ -716,17 +680,8 @@ func TestWithTargetLockSerializesConcurrentAccess(t *testing.T) {
 // that key while still reverting the profile's own "env" key to its
 // pre-launch value.
 func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"env":{"MY_OWN_SETTING":"keep-me"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"MAX_THINKING_TOKENS": "4096"}}}
@@ -781,17 +736,8 @@ func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSession(t *testing.T
 // second session's write must refuse instead of clobbering the first
 // session's still-in-use file.
 func TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 
 	cmd1 := exec.Command("claude")
 	rp1 := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -835,17 +781,8 @@ func TestApplyConfigContentRefusesWhenTargetOwnedByLiveSession(t *testing.T) {
 // agent) also respects the live-owner guard: it must never restore a
 // backup a different, still-running wt process still owns.
 func TestSelfHealSkipsBackupOwnedByLiveProcess(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	original := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, original)
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
 	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
@@ -887,17 +824,8 @@ func TestSelfHealSkipsBackupOwnedByLiveProcess(t *testing.T) {
 // alive (the owning wt process was killed, e.g. `kill -9`), the backup is
 // still treated as orphaned and restored, exactly as before this fix.
 func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	handEdited := []byte(`{"hooks":{"my-own":"thing"}}`)
-	if err := os.WriteFile(target, handEdited, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, handEdited)
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
 	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err != nil {
@@ -919,20 +847,11 @@ func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
 	if !restored {
 		t.Fatal("restoreIfBackedUp() restored = false, want true (owner pid is dead — orphaned backup)")
 	}
-	var gotDoc, wantDoc map[string]any
 	gotBytes, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(gotBytes, &gotDoc); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(handEdited, &wantDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, wantDoc) {
-		t.Errorf("self-healed content = %v, want %v", gotDoc, wantDoc)
-	}
+	assertSameJSON(t, "self-healed content", "the original hand-edited content", gotBytes, handEdited)
 }
 
 // TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails is the
@@ -946,17 +865,8 @@ func TestRestoreIfBackedUpStillHealsWhenOwnerIsDead(t *testing.T) {
 // backup marker is written, so a failed write leaves nothing behind to
 // self-heal over.
 func TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	invalidJSON := []byte(`{ not valid json`)
-	if err := os.WriteFile(target, invalidJSON, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree, target := claudeTarget(t, invalidJSON)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -989,10 +899,7 @@ func TestSnapshotAndWriteLeavesNoOrphanedBackupWhenBuildDataFails(t *testing.T) 
 // already fixed this for a target that DID exist beforehand, but the
 // "did not exist" branch still discarded everything unconditionally.
 func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSessionWhenTargetDidNotExistBefore(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
-	worktree := filepath.Join(dir, "worktree")
-	target := filepath.Join(worktree, ".claude", "settings.local.json")
+	worktree, target := claudeTarget(t, nil)
 
 	cmd := exec.Command("claude")
 	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
@@ -1025,4 +932,564 @@ func TestApplyConfigContentCleanupPreservesKeysWrittenDuringSessionWhenTargetDid
 	if _, has := doc["env"]; has {
 		t.Errorf("restored content = %s, want the profile's own env key removed (target did not exist before)", got)
 	}
+}
+
+// leafSession runs one claude config_content session against a fresh
+// target: original is the pre-existing file (nil: none), content the
+// profile's config_content, and session, when non-nil, edits the merged
+// document on disk the way the launched agent would mid-session. It returns
+// the target after cleanup, or nil when cleanup deleted it.
+func leafSession(t *testing.T, original []byte, content map[string]any, session func(doc map[string]any)) []byte {
+	t.Helper()
+	worktree, target := claudeTarget(t, original)
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: content})
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	if session != nil {
+		written, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(written, &doc); err != nil {
+			t.Fatalf("written file is not valid JSON: %v (%s)", err, written)
+		}
+		session(doc)
+		edited, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, edited, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// addAllow is the session's "always allow" grant: Claude Code saving
+// permissions.allow beside whatever permissions already holds.
+func addAllow(doc map[string]any) {
+	perms, _ := doc["permissions"].(map[string]any)
+	if perms == nil {
+		perms = map[string]any{}
+		doc["permissions"] = perms
+	}
+	perms["allow"] = []any{"Bash(ls)"}
+}
+
+func pinDefaultMode(mode string) map[string]any {
+	return map[string]any{"permissions": map[string]any{"defaultMode": mode}}
+}
+
+// TestCleanupKeepsSessionPermissionsAllowBesideThePinnedDefaultMode is the
+// repro of #401: a profile that pins permissions.defaultMode used to make
+// cleanup put the whole permissions object back, dropping the
+// permissions.allow grant Claude Code saved mid-session. Restore is per
+// leaf now, so only defaultMode goes back.
+func TestCleanupKeepsSessionPermissionsAllowBesideThePinnedDefaultMode(t *testing.T) {
+	got := leafSession(t, []byte(`{"permissions":{"defaultMode":"plan"}}`), pinDefaultMode("default"), addAllow)
+	assertSameJSON(t, "restored content", "the session's allow kept, defaultMode restored",
+		got, []byte(`{"permissions":{"allow":["Bash(ls)"],"defaultMode":"plan"}}`))
+}
+
+// TestCleanupKeepsSessionPermissionsAllowWhenTargetDidNotExistBefore is the
+// new-file half of #401: with no settings.local.json before the launch, the
+// pinned defaultMode is removed and the session's grant stays, rather than
+// the whole permissions key (or file) going.
+func TestCleanupKeepsSessionPermissionsAllowWhenTargetDidNotExistBefore(t *testing.T) {
+	got := leafSession(t, nil, pinDefaultMode("default"), addAllow)
+	if got == nil {
+		t.Fatal("target was deleted, losing the session's permissions.allow")
+	}
+	assertSameJSON(t, "restored content", "the session's allow kept, defaultMode gone",
+		got, []byte(`{"permissions":{"allow":["Bash(ls)"]}}`))
+}
+
+// TestCleanupKeepsAValueTheSessionChangedAfterTheMerge pins the owner's
+// rule for #401: a leaf the profile wrote and the session then changed
+// keeps the session's value, since the user chose it mid-session.
+func TestCleanupKeepsAValueTheSessionChangedAfterTheMerge(t *testing.T) {
+	change := func(doc map[string]any) {
+		doc["permissions"].(map[string]any)["defaultMode"] = "acceptEdits"
+	}
+	for name, original := range map[string][]byte{
+		"existing file": []byte(`{"permissions":{"defaultMode":"plan"}}`),
+		"new file":      nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := leafSession(t, original, pinDefaultMode("default"), change)
+			assertSameJSON(t, "restored content", "the session's acceptEdits kept",
+				got, []byte(`{"permissions":{"defaultMode":"acceptEdits"}}`))
+		})
+	}
+}
+
+// TestCleanupDoesNotResurrectALeafTheSessionDeleted verifies a profile leaf
+// the session removed stays removed: putting the original back would undo
+// the user's own mid-session edit.
+func TestCleanupDoesNotResurrectALeafTheSessionDeleted(t *testing.T) {
+	got := leafSession(t, []byte(`{"permissions":{"defaultMode":"plan","allow":["X"]}}`), pinDefaultMode("default"),
+		func(doc map[string]any) { delete(doc["permissions"].(map[string]any), "defaultMode") })
+	assertSameJSON(t, "restored content", "defaultMode stays deleted",
+		got, []byte(`{"permissions":{"allow":["X"]}}`))
+}
+
+// TestCleanupPrunesAContainerTheProfileCreatedAndRemovesTheFileWhenNothingIsLeft
+// verifies a profile-only write into a file that did not exist leaves
+// nothing behind: the permissions object the merge created is pruned once
+// its leaf is gone, and the empty file is deleted.
+func TestCleanupPrunesAContainerTheProfileCreatedAndRemovesTheFileWhenNothingIsLeft(t *testing.T) {
+	if got := leafSession(t, nil, pinDefaultMode("default"), nil); got != nil {
+		t.Errorf("target = %s after cleanup, want it deleted", got)
+	}
+}
+
+// TestCleanupKeepsAnEmptyContainerTheOriginalHad verifies pruning stops at
+// what the original held: an empty permissions object that was there
+// before the launch is still there after it.
+func TestCleanupKeepsAnEmptyContainerTheOriginalHad(t *testing.T) {
+	got := leafSession(t, []byte(`{"permissions":{}}`), pinDefaultMode("default"), nil)
+	assertSameJSON(t, "restored content", "the original empty permissions", got, []byte(`{"permissions":{}}`))
+}
+
+// TestRestoreTypeConflictKeepsSessionSiblingAndRestoresScalar covers an
+// original that held a non-object where the profile writes an object: the
+// merge replaces it. The profile's leaf is removed, a session sibling under
+// the replaced key is kept, and the original scalar comes back only once
+// nothing is left there.
+func TestRestoreTypeConflictKeepsSessionSiblingAndRestoresScalar(t *testing.T) {
+	original := []byte(`{"permissions":"legacy"}`)
+	t.Run("session sibling", func(t *testing.T) {
+		got := leafSession(t, original, pinDefaultMode("default"), addAllow)
+		assertSameJSON(t, "restored content", "the session's allow, no defaultMode",
+			got, []byte(`{"permissions":{"allow":["Bash(ls)"]}}`))
+	})
+	t.Run("no session sibling", func(t *testing.T) {
+		got := leafSession(t, original, pinDefaultMode("default"), nil)
+		assertSameJSON(t, "restored content", "the original scalar", got, original)
+	})
+}
+
+// TestCleanupArrayKeepsOnlyTheSessionsAppends verifies an array the profile
+// pinned is restored element-wise: a session that appended to it keeps its
+// own element, the profile's element goes, and the original's comes back, so
+// the profile's value never leaks into later launches.
+func TestCleanupArrayKeepsOnlyTheSessionsAppends(t *testing.T) {
+	content := map[string]any{"permissions": map[string]any{"allow": []any{"A"}}}
+	got := leafSession(t, []byte(`{"permissions":{"allow":["X"]}}`), content, func(doc map[string]any) {
+		perms := doc["permissions"].(map[string]any)
+		perms["allow"] = append(perms["allow"].([]any), "B")
+	})
+	assertSameJSON(t, "restored content", "the original element plus the session's append",
+		got, []byte(`{"permissions":{"allow":["X","B"]}}`))
+}
+
+// TestCleanupHandlesNullLeaf verifies a null the profile wrote is a leaf
+// distinct from an absent one: with no original value it is deleted, and an
+// original null stays null.
+func TestCleanupHandlesNullLeaf(t *testing.T) {
+	content := map[string]any{"statusLine": nil}
+	t.Run("absent original", func(t *testing.T) {
+		got := leafSession(t, []byte(`{"model":"x"}`), content, nil)
+		assertSameJSON(t, "restored content", "statusLine deleted", got, []byte(`{"model":"x"}`))
+	})
+	t.Run("null original", func(t *testing.T) {
+		got := leafSession(t, []byte(`{"model":"x","statusLine":null}`), content, nil)
+		assertSameJSON(t, "restored content", "statusLine still null", got, []byte(`{"model":"x","statusLine":null}`))
+	})
+}
+
+// TestCleanupKeepsSessionContentWhenTheProfileWroteNothingNew verifies a
+// profile whose config_content changes nothing (an empty table merged into
+// an existing object, which records no leaf) still restores surgically:
+// falling back to the whole-file snapshot would drop the session's grant.
+func TestCleanupKeepsSessionContentWhenTheProfileWroteNothingNew(t *testing.T) {
+	content := map[string]any{"permissions": map[string]any{}}
+	got := leafSession(t, []byte(`{"permissions":{"defaultMode":"plan"}}`), content, addAllow)
+	assertSameJSON(t, "restored content", "the session's allow kept",
+		got, []byte(`{"permissions":{"allow":["Bash(ls)"],"defaultMode":"plan"}}`))
+}
+
+// TestSelfHealRestoresLegacyKeysMarker verifies a backup an older wt left
+// behind (a .keys marker listing top-level key names) still self-heals
+// after an upgrade: the named key is restored from the snapshot whole, as
+// that wt would have, and a key the session wrote elsewhere is kept.
+func TestSelfHealRestoresLegacyKeysMarker(t *testing.T) {
+	_, target := claudeTarget(t, []byte(`{"permissions":{"defaultMode":"default"},"model":"session"}`))
+	if err := os.MkdirAll(backupDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupPresentPath(target), []byte(`{"permissions":{"defaultMode":"plan","allow":["X"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupKeysPath(target), []byte(`["permissions"]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := SelfHeal(target)
+	if err != nil {
+		t.Fatalf("SelfHeal() error = %v", err)
+	}
+	if !restored {
+		t.Fatal("SelfHeal() restored = false, want true (orphaned legacy backup)")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameJSON(t, "self-healed content", "permissions from the snapshot, the session's model kept",
+		got, []byte(`{"permissions":{"defaultMode":"plan","allow":["X"]},"model":"session"}`))
+	if _, err := os.Stat(backupKeysPath(target)); !os.IsNotExist(err) {
+		t.Errorf("legacy .keys marker left behind after self-heal (stat err = %v)", err)
+	}
+}
+
+// TestSecondLaunchRefusedWhileFirstIsLiveWithLeafRecords verifies the
+// live-owner guard still holds with the leaf-record marker: a second
+// launch on a target a live session owns is refused, and neither the
+// target nor the first session's backup and records are touched.
+func TestSecondLaunchRefusedWhileFirstIsLiveWithLeafRecords(t *testing.T) {
+	worktree, target := claudeTarget(t, []byte(`{"permissions":{"defaultMode":"plan"}}`))
+	if _, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: pinDefaultMode("default")}); err != nil {
+		t.Fatalf("session A ApplyConfigContent() error = %v", err)
+	}
+	keysA, err := os.ReadFile(backupKeysPath(target))
+	if err != nil {
+		t.Fatalf("session A wrote no .keys marker: %v", err)
+	}
+	if recs, ok := decodeLeafRecs(keysA); !ok || len(recs) != 1 || recs[0].Hash == "" {
+		t.Fatalf(".keys = %s, want one leaf record with a hash", keysA)
+	}
+
+	fakeOwnerPid := os.Getpid() + 999983
+	if err := os.WriteFile(backupOwnerPath(target), []byte(strconv.Itoa(fakeOwnerPid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origPidAlive := pidAlive
+	pidAlive = func(pid int) bool { return pid == fakeOwnerPid }
+	t.Cleanup(func() { pidAlive = origPidAlive })
+	contentA, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: pinDefaultMode("acceptEdits")}); err == nil {
+		t.Fatal("session B ApplyConfigContent() error = nil, want an error (target owned by a live session)")
+	}
+	if got, _ := os.ReadFile(target); string(got) != string(contentA) {
+		t.Errorf("target = %s, want session A's untouched %s", got, contentA)
+	}
+	if got, _ := os.ReadFile(backupKeysPath(target)); string(got) != string(keysA) {
+		t.Errorf(".keys = %s, want session A's untouched %s", got, keysA)
+	}
+	if _, err := os.Stat(backupPresentPath(target)); err != nil {
+		t.Errorf("session A's backup was removed by session B's refused attempt: %v", err)
+	}
+}
+
+// TestKeysMarkerHoldsNoWrittenValue verifies the .keys marker records a
+// hash of each value written, never the value: config_content may carry a
+// secret in env, and the marker must not copy it into a second file.
+func TestKeysMarkerHoldsNoWrittenValue(t *testing.T) {
+	worktree, target := claudeTarget(t, nil)
+	content := map[string]any{"env": map[string]any{"TOKEN": "s3cret"}}
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigContent: content})
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	defer cleanup()
+	raw, err := os.ReadFile(backupKeysPath(target))
+	if err != nil {
+		t.Fatalf("no .keys marker written: %v", err)
+	}
+	if strings.Contains(string(raw), "s3cret") {
+		t.Errorf(".keys = %s, holds the written value", raw)
+	}
+}
+
+// defaultsSession runs one claude session with rp against a fresh target:
+// original is the pre-existing file (nil: none), and session, when non-nil,
+// edits the document on disk the way the launched agent would mid-session.
+// It returns the target as the session saw it and after cleanup (nil when
+// cleanup deleted it).
+func defaultsSession(t *testing.T, original []byte, rp ResolvedProfile, session func(doc map[string]any)) (during, after []byte) {
+	t.Helper()
+	worktree, target := claudeTarget(t, original)
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, rp)
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	during, err = os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("target unreadable during the session: %v", err)
+	}
+	if session != nil {
+		var doc map[string]any
+		if err := json.Unmarshal(during, &doc); err != nil {
+			t.Fatalf("written file is not valid JSON: %v (%s)", err, during)
+		}
+		session(doc)
+		edited, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, edited, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	after, err = os.ReadFile(target)
+	if os.IsNotExist(err) {
+		return during, nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return during, after
+}
+
+// TestConfigDefaultsWritesAnAbsentLeafAndRestoresIt verifies a
+// config_defaults leaf the user's settings.local.json does not have is
+// written for the session and removed at cleanup, while a grant the session
+// saved beside it survives. Without it the claude local profile could not
+// keep auto mode off for a worktree that never chose a mode (#402).
+func TestConfigDefaultsWritesAnAbsentLeafAndRestoresIt(t *testing.T) {
+	rp := ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}
+	for name, tc := range map[string]struct{ original, want []byte }{
+		"existing file": {[]byte(`{"model":"x"}`), []byte(`{"model":"x","permissions":{"allow":["Bash(ls)"]}}`)},
+		"new file":      {nil, []byte(`{"permissions":{"allow":["Bash(ls)"]}}`)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			during, after := defaultsSession(t, tc.original, rp, addAllow)
+			var doc map[string]any
+			if err := json.Unmarshal(during, &doc); err != nil {
+				t.Fatal(err)
+			}
+			if mode, _ := getPath(doc, []string{"permissions", "defaultMode"}); mode != "default" {
+				t.Errorf("during the session = %s, want permissions.defaultMode = \"default\"", during)
+			}
+			if after == nil {
+				t.Fatal("target deleted at cleanup, losing the session's permissions.allow")
+			}
+			assertSameJSON(t, "restored content", "defaultMode gone, the session's allow kept", after, tc.want)
+		})
+	}
+}
+
+// TestConfigDefaultsLeavesAnExistingValueAlone is the repro of #402: the
+// claude local profile pinned permissions.defaultMode over the user's own
+// value. As a default it now leaves any value the file already has alone:
+// the file is not rewritten during the session, and cleanup changes nothing.
+func TestConfigDefaultsLeavesAnExistingValueAlone(t *testing.T) {
+	rp := ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}
+	for _, mode := range []string{"plan", "default", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			original := []byte(`{"permissions":{"defaultMode":"` + mode + `"}}`)
+			during, after := defaultsSession(t, original, rp, nil)
+			if string(during) != string(original) {
+				t.Errorf("during the session = %s, want the untouched %s", during, original)
+			}
+			assertSameJSON(t, "restored content", "the user's own defaultMode", after, original)
+		})
+	}
+}
+
+// TestConfigDefaultsAllPresentLeavesTheFileByteForByte pins that a
+// defaults-only profile whose every default the file already holds does not
+// touch the file at all. It is the most common defaults application, and
+// rewriting it would reformat the user's JSON, widen their 0600 settings
+// file to 0644 and bump its mtime on every launch — then cleanup would
+// rewrite it once more to put back bytes that never changed.
+func TestConfigDefaultsAllPresentLeavesTheFileByteForByte(t *testing.T) {
+	original := []byte("{\n\t\"permissions\": {\n\t\t\"defaultMode\": \"plan\"\n\t}\n}\n")
+	worktree, target := claudeTarget(t, original)
+	if err := os.Chmod(target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, ResolvedProfile{ConfigDefaults: pinDefaultMode("default")})
+	if err != nil {
+		t.Fatalf("ApplyConfigContent() error = %v", err)
+	}
+	assertUntouched := func(when string) {
+		t.Helper()
+		got, readErr := os.ReadFile(target)
+		if readErr != nil {
+			t.Fatalf("target unreadable %s: %v", when, readErr)
+		}
+		if string(got) != string(original) {
+			t.Errorf("target %s = %s, want it byte for byte as written", when, got)
+		}
+		info, statErr := os.Stat(target)
+		if statErr != nil {
+			t.Fatalf("target unstatable %s: %v", when, statErr)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("target mode %s = %04o, want the user's 0600 kept", when, perm)
+		}
+		if !info.ModTime().Equal(before.ModTime()) {
+			t.Errorf("target mtime %s changed (%v -> %v), want no write at all", when, before.ModTime(), info.ModTime())
+		}
+	}
+	assertUntouched("during the session")
+	if _, statErr := os.Stat(backupPresentPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupPresentPath exists after a no-op apply (stat err = %v), want no backup to restore", statErr)
+	}
+
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup() error = %v", err)
+	}
+	assertUntouched("after cleanup")
+}
+
+// TestConfigDefaultsLeavesANonObjectPermissionsAlone verifies a default
+// whose path crosses a non-object counts as present: a "permissions" the
+// user set to a string is never replaced by the default's object.
+func TestConfigDefaultsLeavesANonObjectPermissionsAlone(t *testing.T) {
+	original := []byte(`{"permissions":"x"}`)
+	during, after := defaultsSession(t, original, ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}, nil)
+	if string(during) != string(original) {
+		t.Errorf("during the session = %s, want the untouched %s", during, original)
+	}
+	assertSameJSON(t, "restored content", "the original non-object permissions", after, original)
+}
+
+// TestConfigContentStillOverridesWhileConfigDefaultsDoNot verifies the two
+// tables of one profile keep their own rules: config_content overwrites an
+// existing value for the session, config_defaults does not, and cleanup puts
+// the original back either way.
+func TestConfigContentStillOverridesWhileConfigDefaultsDoNot(t *testing.T) {
+	original := []byte(`{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"1"},"permissions":{"defaultMode":"plan"}}`)
+	rp := ResolvedProfile{
+		ConfigContent:  map[string]any{"env": map[string]any{"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}},
+		ConfigDefaults: pinDefaultMode("default"),
+	}
+	during, after := defaultsSession(t, original, rp, nil)
+	assertSameJSON(t, "during the session", "config_content's header, the user's defaultMode",
+		during, []byte(`{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0"},"permissions":{"defaultMode":"plan"}}`))
+	assertSameJSON(t, "restored content", "the original", after, original)
+}
+
+// TestApplyConfigContentRejectsConfigDefaultsForCodexAndOpenCode verifies
+// config_defaults is refused, with nothing written, for the agents it is not
+// implemented for: Validate already rejects it, and applying it as
+// config_content instead would override the user's values, the bug it
+// exists to avoid.
+func TestApplyConfigContentRejectsConfigDefaultsForCodexAndOpenCode(t *testing.T) {
+	rp := ResolvedProfile{
+		ConfigContent:  map[string]any{"model_reasoning_effort": "high"},
+		ConfigDefaults: map[string]any{"approval_policy": "never"},
+	}
+	t.Run("codex", func(t *testing.T) {
+		dir := t.TempDir()
+		home := filepath.Join(dir, "home")
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+		cmd := exec.Command("codex")
+		_, err := ApplyConfigContent(cmd, "codex", "/tmp/some-worktree", rp)
+		if err == nil || err.Error() != `profile: agent "codex" does not take config_defaults` {
+			t.Fatalf("ApplyConfigContent() error = %v, want the config_defaults refusal", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(home, ".codex", "agent-wt-profile.config.toml")); !os.IsNotExist(statErr) {
+			t.Errorf("codex profile file written despite the refusal (stat err = %v)", statErr)
+		}
+		if len(cmd.Args) != 1 {
+			t.Errorf("cmd.Args = %v, want no --profile appended", cmd.Args)
+		}
+	})
+	t.Run("opencode", func(t *testing.T) {
+		cmd := exec.Command("opencode")
+		cmd.Env = []string{openCodeConfigEnvPrefix + `{}`}
+		_, err := ApplyConfigContent(cmd, "opencode", "/tmp/some-worktree", rp)
+		if err == nil || err.Error() != `profile: agent "opencode" does not take config_defaults` {
+			t.Fatalf("ApplyConfigContent() error = %v, want the config_defaults refusal", err)
+		}
+		if cmd.Env[0] != openCodeConfigEnvPrefix+`{}` {
+			t.Errorf("cmd.Env = %v, want OPENCODE_CONFIG_CONTENT untouched", cmd.Env)
+		}
+	})
+}
+
+// TestConfigDefaultsRefusesATargetHoldingNull verifies a config_defaults
+// launch goes through the same JSON-null refusal as config_content, before
+// any default is applied: the launch is refused with the not-a-JSON-object
+// error, the file still holds null and no backup is left behind.
+func TestConfigDefaultsRefusesATargetHoldingNull(t *testing.T) {
+	worktree, target := claudeTarget(t, []byte(`null`))
+	rp := ResolvedProfile{ConfigDefaults: pinDefaultMode("default")}
+	_, err := ApplyConfigContent(exec.Command("claude"), "claude", worktree, rp)
+	if err == nil || !strings.Contains(err.Error(), "is not a JSON object, refusing to merge config_content") {
+		t.Fatalf("ApplyConfigContent() error = %v, want the not-a-JSON-object refusal", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "null" {
+		t.Errorf("target = %s, want it left untouched", got)
+	}
+	if _, statErr := os.Stat(backupPresentPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupPresentPath exists after the refusal (stat err = %v)", statErr)
+	}
+}
+
+// TestApplyConfigContentRefusesATargetHoldingNull pins the one JSON payload
+// a merge must refuse beside invalid JSON: a whole-file null decodes with
+// no error into a nil map, which mergeInto used to panic on ("assignment to
+// entry in nil map") — crashing wt at launch instead of degrading to an
+// unprofiled launch the way every other refusal does. Like any buildData
+// failure, the refusal must also leave the target untouched and no orphaned
+// backup behind for a later self-heal to restore over.
+func TestApplyConfigContentRefusesATargetHoldingNull(t *testing.T) {
+	worktree, target := claudeTarget(t, []byte(`null`))
+
+	cmd := exec.Command("claude")
+	rp := ResolvedProfile{ConfigContent: map[string]any{"env": map[string]any{"X": "1"}}}
+	if _, err := ApplyConfigContent(cmd, "claude", worktree, rp); err == nil {
+		t.Fatal("ApplyConfigContent() error = nil, want an error (existing content is JSON null)")
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "null" {
+		t.Errorf("target = %s, want it left untouched", got)
+	}
+	if _, statErr := os.Stat(backupPresentPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupPresentPath exists after a buildData failure, want no orphaned backup (stat err = %v)", statErr)
+	}
+	if _, statErr := os.Stat(backupOwnerPath(target)); !os.IsNotExist(statErr) {
+		t.Errorf("backupOwnerPath exists after a buildData failure, want no orphaned owner marker (stat err = %v)", statErr)
+	}
+}
+
+// TestCleanupRestoresALeafPastFloat64sExactRange verifies cleanup reverts a
+// pinned integer past float64's exact range (2^53 and up) that the session
+// never touched: the marker's hash comes from the profile's int64 and the
+// restored file's from the float64 parsing that same JSON number gives, and
+// hashing the write-side form alone used to make those two disagree — the
+// leaf then read as changed by the session and the profile's own value
+// stayed after cleanup instead of the original coming back.
+func TestCleanupRestoresALeafPastFloat64sExactRange(t *testing.T) {
+	content := map[string]any{"reserved": int64(9007199254740993)} // 2^53 + 1
+	got := leafSession(t, []byte(`{"reserved":1}`), content, nil)
+	assertSameJSON(t, "restored content", "the original reserved of 1 back", got, []byte(`{"reserved":1}`))
 }

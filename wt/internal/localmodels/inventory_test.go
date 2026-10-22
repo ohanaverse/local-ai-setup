@@ -8,7 +8,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -62,12 +64,23 @@ func localProvider(id, baseURL, modelDir string) config.Provider {
 	return config.Provider{ID: id, Location: config.LocationLocal, ModelDir: modelDir, Auth: config.AuthConfig{Type: "none", BaseURL: baseURL}}
 }
 
+// mkdirs creates bare directories: mtplx's flat model layout. An omlx model
+// needs a config.json too (mkOmlxModels).
 func mkdirs(t *testing.T, root string, names ...string) {
 	t.Helper()
 	for _, n := range names {
 		if err := os.Mkdir(filepath.Join(root, n), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// mkOmlxModels creates omlx model directories under root: each a directory
+// holding a config.json, which is what omlx takes for a model.
+func mkOmlxModels(t *testing.T, root string, names ...string) {
+	t.Helper()
+	if err := MakeOmlxModelsForTest(root, names...); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -82,7 +95,7 @@ func byModelID(s Snapshot, id string) (Entry, bool) {
 
 // TestInventoryOllamaDiscoveredAndRunning verifies pulled-but-unregistered
 // ollama models are listed with DiscoveredModelID ids, and that RUNNING comes
-// from /api/ps (loaded set) — not from anything modelman flags.
+// from /api/ps (loaded set) — not from any stored flag.
 func TestInventoryOllamaDiscoveredAndRunning(t *testing.T) {
 	srv := ollamaServer(t, []string{"gemma4:9b", "qwen3:8b"}, []string{"qwen3:8b"})
 	cfg := &config.Config{Providers: []config.Provider{localProvider("ollama", srv.URL, "")}}
@@ -113,7 +126,7 @@ func TestInventoryDefaultModelDirViaExportedInventory(t *testing.T) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mkdirs(t, root, "Qwen3.8-27B-4bit")
+	mkOmlxModels(t, root, "Qwen3.8-27B-4bit")
 	srv := modelsServer(t, "Qwen3.8-27B-4bit")
 	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx", srv.URL, "")}}
 
@@ -131,7 +144,7 @@ func TestInventoryDefaultModelDirViaExportedInventory(t *testing.T) {
 // so usage/survey history stays keyed on the registry id (sub-project 1).
 func TestInventoryRegisteredMatchKeepsRegistryID(t *testing.T) {
 	root := t.TempDir()
-	mkdirs(t, root, "Qwen3.8-27B-4bit", "Qwen3.8-27B-8bit")
+	mkOmlxModels(t, root, "Qwen3.8-27B-4bit", "Qwen3.8-27B-8bit")
 	srv := modelsServer(t, "Qwen3.8-27B-4bit")
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("omlx", srv.URL, root)},
@@ -239,7 +252,7 @@ func TestInventoryProviderDownDoesNotFailOthers(t *testing.T) {
 	deadURL := dead.URL
 	dead.Close()
 	root := t.TempDir()
-	mkdirs(t, root, "Qwen3.8-27B-4bit")
+	mkOmlxModels(t, root, "Qwen3.8-27B-4bit")
 	up := modelsServer(t)
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("ollama", deadURL, ""), localProvider("omlx", up.URL, root)},
@@ -263,7 +276,7 @@ func TestInventoryProviderDownDoesNotFailOthers(t *testing.T) {
 // one physical server).
 func TestInventoryOmlx6bitRowSharesServerAndDirs(t *testing.T) {
 	root := t.TempDir()
-	mkdirs(t, root, "Ornith-1.5-35B-A3B-MLX-6bit")
+	mkOmlxModels(t, root, "Ornith-1.5-35B-A3B-MLX-6bit")
 	srv := modelsServer(t, "Ornith-1.5-35B-A3B-MLX-6bit")
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("omlx", srv.URL, root), localProvider("omlx-6bit", srv.URL, "")},
@@ -275,9 +288,12 @@ func TestInventoryOmlx6bitRowSharesServerAndDirs(t *testing.T) {
 	}
 }
 
-// TestInventoryMlxLMServerRunningNoDiscovery verifies mlx_lm_server is
-// "unsupported" for discovery (a target+draft pairing is not discoverable) yet a
-// registered row reads running when the server serves anything.
+// TestInventoryMlxLMServerRunningNoDiscovery verifies an answering
+// mlx_lm_server is StatusOK (its running state is trustworthy, so `wt litellm
+// sync` routes the serving pairing) and a registered row reads running when the
+// server serves anything, while ArtifactKnown stays false: a target+draft
+// pairing cannot be enumerated, and a true would let the picker read an empty
+// artifact as "not on disk".
 func TestInventoryMlxLMServerRunningNoDiscovery(t *testing.T) {
 	srv := modelsServer(t, "/some/target/path")
 	cfg := &config.Config{
@@ -285,11 +301,131 @@ func TestInventoryMlxLMServerRunningNoDiscovery(t *testing.T) {
 		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
 	}
 	snap := inventory(cfg, testClient)
-	if snap.Providers["mlx_lm_server"] != StatusUnsupported {
-		t.Errorf("status = %q", snap.Providers["mlx_lm_server"])
+	if snap.Providers["mlx_lm_server"] != StatusOK || snap.Down["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v, want ok and not down", snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"])
 	}
-	if len(snap.Entries) != 1 || !snap.Entries[0].Running {
-		t.Errorf("entries = %+v", snap.Entries)
+	if len(snap.Entries) != 1 || !snap.Entries[0].Running || snap.Entries[0].ArtifactKnown {
+		t.Errorf("entries = %+v, want one running entry with ArtifactKnown false", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerUnmatchedPairingsArePartial pins the ambiguous
+// mlx_lm_server case: the server answered, two or more pairings are registered
+// with the TUI's "<target>+draft-<draft>" names, and /v1/models lists only HF
+// repo ids / resolved paths, so no pairing can name-match. wt cannot tell which
+// pairing is serving, so the family is Partial (routes left alone) and marked
+// Ambiguous for the warning. Reporting OK there made every sync silently remove
+// the serving pairing's route.
+func TestInventoryMlxLMServerUnmatchedPairingsArePartial(t *testing.T) {
+	srv := modelsServer(t, "mlx-community/Qwen3.8-27B-4bit", "mlx-community/Qwen3.8-0.6B-4bit", "/Users/x/models/q")
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-0.6B-4bit"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "mlx-community/Qwen3.8-27B-4bit+draft-mlx-community/Qwen3.8-1.7B-4bit"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || snap.Down["mlx_lm_server"] || !snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v ambiguous = %v, want partial, not down, ambiguous",
+			snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	for _, e := range snap.Entries {
+		if e.Running {
+			t.Errorf("entry %s reads running; no pairing matched", e.ModelID)
+		}
+	}
+}
+
+// TestInventoryMlxLMServerEmptyAnswerWithSeveralPairingsIsAmbiguous pins the
+// other half of the ambiguity rule: an empty /v1/models body is no more
+// attributable to a registered pairing than a non-empty one, so it must not be
+// the one shape that lets sync prune. A real mlx_lm_server lists its loaded
+// pairing, so an empty answer means either a foreign listener on that port or a
+// server that has not finished loading — in both cases reporting OK let every
+// sync remove the route of every registered pairing, silently, since only a
+// non-OK family gets the "routes left unchanged" warning.
+func TestInventoryMlxLMServerEmptyAnswerWithSeveralPairingsIsAmbiguous(t *testing.T) {
+	srv := modelsServer(t) // answers {"data":[]}
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || !snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q ambiguous = %v, want partial and ambiguous",
+			snap.Providers["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	if snap.Down["mlx_lm_server"] {
+		t.Errorf("an answering server is not down")
+	}
+}
+
+// TestInventoryMlxLMServerMatchedPairingIsOK verifies that with several
+// registered pairings, a served id that name-matches one of them keeps the
+// family OK with exactly that pairing running — the ambiguity rule must not
+// demote a server whose pairing wt can identify.
+func TestInventoryMlxLMServerMatchedPairingIsOK(t *testing.T) {
+	srv := modelsServer(t, "pair-a")
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", srv.URL, "")},
+		Models: []config.Model{
+			{ID: "mlx_lm_server/a", ProviderID: "mlx_lm_server", ModelName: "pair-a"},
+			{ID: "mlx_lm_server/b", ProviderID: "mlx_lm_server", ModelName: "pair-b"},
+		},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusOK || snap.Ambiguous["mlx_lm_server"] {
+		t.Errorf("status = %q ambiguous = %v, want ok", snap.Providers["mlx_lm_server"], snap.Ambiguous["mlx_lm_server"])
+	}
+	if a, _ := byModelID(snap, "mlx_lm_server/a"); !a.Running {
+		t.Errorf("pair-a not running: %+v", snap.Entries)
+	}
+	if b, _ := byModelID(snap, "mlx_lm_server/b"); b.Running {
+		t.Errorf("pair-b running: %+v", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerRefusedIsDown verifies a stopped mlx_lm_server (its
+// port refuses the connection) marks the family Down with nothing running.
+// Down is what lets `wt litellm sync` remove the stale route of a stopped
+// pairing; without it the route would keep pointing at a dead :8001.
+func TestInventoryMlxLMServerRefusedIsDown(t *testing.T) {
+	gone := modelsServer(t, "x")
+	goneURL := gone.URL
+	gone.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", goneURL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
+	}
+	snap := inventory(cfg, testClient)
+	if !snap.Down["mlx_lm_server"] {
+		t.Errorf("Down = %v, want mlx_lm_server down (connection refused)", snap.Down)
+	}
+	if len(snap.Entries) != 1 || snap.Entries[0].Running || snap.Entries[0].ArtifactKnown {
+		t.Errorf("entries = %+v, want one non-running entry with ArtifactKnown false", snap.Entries)
+	}
+}
+
+// TestInventoryMlxLMServerBadAnswerIsPartial verifies an mlx_lm_server that
+// answers /v1/models unusably (here a 500) is StatusPartial and NOT Down: the
+// server is listening, so its running state is unknown, and sync must leave its
+// routes alone rather than remove a route that may be serving.
+func TestInventoryMlxLMServerBadAnswerIsPartial(t *testing.T) {
+	erroring := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer erroring.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", erroring.URL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/x", ProviderID: "mlx_lm_server", ModelName: "x"}},
+	}
+	snap := inventory(cfg, testClient)
+	if snap.Providers["mlx_lm_server"] != StatusPartial || snap.Down["mlx_lm_server"] {
+		t.Errorf("status = %q down = %v, want partial and not down", snap.Providers["mlx_lm_server"], snap.Down["mlx_lm_server"])
 	}
 }
 
@@ -415,15 +551,24 @@ func TestInventoryOllamaPsFailureIsPartial(t *testing.T) {
 
 // TestInventoryOmlx6bitOnlyStillScansDir verifies a registry with only
 // an omlx-6bit row still scans the omlx model dir (same physical server): the
-// row's own model_dir is honoured and discovered dirs appear.
+// row's own model_dir is honoured and discovered dirs appear — and the
+// discovered entry carries the omlx-6bit provider id (the only provider row
+// the registry defines) under its family-prefixed id, since
+// config.ResolveRoute and litellm.prepareModel both reject a provider id the
+// registry does not define. A discovered route named after the bare family
+// would be unroutable on this registry.
 func TestInventoryOmlx6bitOnlyStillScansDir(t *testing.T) {
 	root := t.TempDir()
-	mkdirs(t, root, "Some-Model-6bit")
+	mkOmlxModels(t, root, "Some-Model-6bit")
 	srv := modelsServer(t)
 	cfg := &config.Config{Providers: []config.Provider{localProvider("omlx-6bit", srv.URL, root)}}
 	snap := inventory(cfg, testClient)
-	if _, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Some-Model-6bit")); !ok {
-		t.Errorf("entries = %+v, want discovered Some-Model-6bit", snap.Entries)
+	disc, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Some-Model-6bit"))
+	if !ok {
+		t.Fatalf("entries = %+v, want discovered Some-Model-6bit", snap.Entries)
+	}
+	if disc.ProviderID != "omlx-6bit" {
+		t.Errorf("discovered ProviderID = %q, want the registry's omlx-6bit provider id", disc.ProviderID)
 	}
 }
 
@@ -505,6 +650,21 @@ func TestFamilyExported(t *testing.T) {
 	}
 }
 
+// TestRoutesFollowArtifact pins that only ollama's routes follow "pulled"
+// rather than "loaded": ollama lazy-loads a pulled model on request, so its
+// route is servable whether or not it is loaded. Widening this to a
+// single-model family would route a model nobody is serving (requests would
+// fail); narrowing it away from ollama would drop routes every time ollama
+// unloads an idle model.
+func TestRoutesFollowArtifact(t *testing.T) {
+	cases := map[string]bool{"ollama": true, "omlx": false, "omlx-6bit": false, "mtplx": false, "mlx_lm_server": false, "llamacpp": false, "": false}
+	for id, want := range cases {
+		if got := RoutesFollowArtifact(Family(id)); got != want {
+			t.Errorf("RoutesFollowArtifact(Family(%q)) = %v, want %v", id, got, want)
+		}
+	}
+}
+
 // TestInventoryOmlxProbeFailureIsPartial verifies an unanswerable /v1/models
 // leaves the omlx family StatusPartial rather than StatusOK-with-no-models.
 // The lifecycle engine reads that status to decide whether Running can be
@@ -512,7 +672,7 @@ func TestFamilyExported(t *testing.T) {
 // replace the model that daemon is serving.
 func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
 	dir := t.TempDir()
-	mkdirs(t, dir, "some-model")
+	mkOmlxModels(t, dir, "some-model")
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusInternalServerError)
 	}))
@@ -538,7 +698,7 @@ func TestInventoryOmlxProbeFailureIsPartial(t *testing.T) {
 // conflating "erroring" with "not running" would delete a live route.
 func TestInventoryDownOnlyForRefusedConnections(t *testing.T) {
 	dir := t.TempDir()
-	mkdirs(t, dir, "some-model")
+	mkOmlxModels(t, dir, "some-model")
 	gone := modelsServer(t)
 	goneURL := gone.URL
 	gone.Close()
@@ -568,9 +728,8 @@ func TestInventoryDownOnlyForRefusedConnections(t *testing.T) {
 // loaded", which must start normally without a confirmation prompt.
 func TestInventoryOmlxEmptyAnswerIsOK(t *testing.T) {
 	dir := t.TempDir()
-	mkdirs(t, dir, "some-model")
+	mkOmlxModels(t, dir, "some-model")
 	up := modelsServer(t) // answers {"data":[]}
-	defer up.Close()
 	cfg := &config.Config{
 		Providers: []config.Provider{localProvider("omlx", up.URL, dir)},
 		Models:    []config.Model{{ID: "omlx/some-model", ProviderID: "omlx", ModelName: "some-model"}},
@@ -613,5 +772,153 @@ func TestFamilyOriginPortAgreesWithOrigin(t *testing.T) {
 	// The registry-free default still resolves to the family default.
 	if origin, port, err = FamilyOriginPort(&config.Config{}, "omlx"); err != nil || port != 8000 {
 		t.Errorf("default omlx: origin=%q port=%d err=%v, want 8000 and no error", origin, port, err)
+	}
+}
+
+// TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot pins that
+// FamilyOriginPort cannot be the way a second reading of a provider's address
+// comes back (#348). For a family wt hands no port to, a url with no port has
+// no port to return: it is an error, not the family's usual port put on an
+// origin the probes, the start and the route do not use. A url that names its
+// port, and the default with no registry row, are FamilyOrigin's own origin.
+func TestFamilyOriginPortNeverNamesAnAddressFamilyOriginDoesNot(t *testing.T) {
+	for _, id := range []string{"omlx", "omlx-6bit", "ollama", "mlx_lm_server"} {
+		family := Family(id)
+		bare := &config.Config{Providers: []config.Provider{localProvider(id, "http://127.0.0.1/v1", "")}}
+		if origin, port, err := FamilyOriginPort(bare, family); err == nil {
+			probe := FamilyOrigin(bare, family)
+			t.Errorf("%s with no port: FamilyOriginPort = %q, %d; want an error (FamilyOrigin is %q)", id, origin, port, probe)
+		}
+		for _, cfg := range []*config.Config{
+			{},
+			{Providers: []config.Provider{localProvider(id, "http://127.0.0.1:9123/v1", "")}},
+		} {
+			probe := FamilyOrigin(cfg, family)
+			origin, port, err := FamilyOriginPort(cfg, family)
+			if err != nil || origin != probe || !strings.HasSuffix(origin, ":"+strconv.Itoa(port)) {
+				t.Errorf("%s: FamilyOriginPort = %q, %d, %v; want FamilyOrigin's %q and its port", id, origin, port, err, probe)
+			}
+		}
+	}
+}
+
+// TestFamilyOriginIsWhereAStartServesMtplx pins #348 at the helpers: for an
+// mtplx base_url that names no port, the origin every probe uses
+// (FamilyOrigin) is the origin a start spawns and polls (FamilyOriginPort),
+// on the port wt serves mtplx on. FamilyOrigin used to read such a url as
+// written — port 80 — so the start polled 8003 and succeeded, and the
+// inventory, the occupant check and the check after the start all asked a
+// port nothing listens on. Families wt hands no port to keep the url as it
+// is written: there the start and the probes already asked the same address.
+func TestFamilyOriginIsWhereAStartServesMtplx(t *testing.T) {
+	for _, base := range []string{"http://127.0.0.1/v1", "http://localhost", "http://0.0.0.0/v1", "http://localhost./v1", "http://127.0.0.1:9123/v1"} {
+		cfg := &config.Config{Providers: []config.Provider{localProvider("mtplx", base, "")}}
+		probe := FamilyOrigin(cfg, "mtplx")
+		start, port, err := FamilyOriginPort(cfg, "mtplx")
+		if err != nil {
+			t.Fatalf("%q: FamilyOriginPort: %v", base, err)
+		}
+		u, perr := url.Parse(probe)
+		if perr != nil || probe != start || u.Port() != strconv.Itoa(port) {
+			t.Errorf("%q: probe origin %q, start origin %q on port %d; want one origin that names that port", base, probe, start, port)
+		}
+		// The origin is the registry row's, not the default's: it keeps
+		// the host the row names.
+		if b, berr := url.Parse(base); berr != nil || perr != nil || u.Hostname() != b.Hostname() {
+			t.Errorf("%q: probe origin %q; want the host the registry row names", base, probe)
+		}
+	}
+	if got := FamilyOrigin(&config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1/v1", "")}}, "mtplx"); got != "http://127.0.0.1:"+strconv.Itoa(config.MtplxPort) {
+		t.Errorf("FamilyOrigin = %q, want the port wt serves mtplx on (%d)", got, config.MtplxPort)
+	}
+	if got := FamilyOrigin(&config.Config{}, "mtplx"); got != "http://localhost:"+strconv.Itoa(config.MtplxPort) {
+		t.Errorf("default mtplx origin = %q, want config.MtplxPort (%d): the two are one port", got, config.MtplxPort)
+	}
+	// As written: another host or https (not a server wt started), and the
+	// families whose port is not wt's to choose.
+	for _, c := range []struct{ id, base, want string }{
+		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example"},
+		{"mtplx", "http://10.0.0.5/v1", "http://10.0.0.5"},
+		{"mtplx", "http://mybox/v1", "http://mybox"},
+		{"mtplx", "http://[::1]/v1", "http://[::1]"},
+		{"omlx", "http://127.0.0.1/v1", "http://127.0.0.1"},
+		{"ollama", "http://127.0.0.1", "http://127.0.0.1"},
+		{"mlx_lm_server", "http://localhost/v1", "http://localhost"},
+	} {
+		cfg := &config.Config{Providers: []config.Provider{localProvider(c.id, c.base, "")}}
+		if got := FamilyOrigin(cfg, Family(c.id)); got != c.want {
+			t.Errorf("%s %q: FamilyOrigin = %q, want %q (as written)", c.id, c.base, got, c.want)
+		}
+		// No port on the probes' origin is no port for a start either: a
+		// second reading that added one is what #348 was.
+		if origin, port, err := FamilyOriginPort(cfg, Family(c.id)); err == nil {
+			t.Errorf("%s %q: FamilyOriginPort = %q, %d; want an error, FamilyOrigin names no port", c.id, c.base, origin, port)
+		}
+	}
+}
+
+// onlyHost is an HTTP client that reaches srv when asked for host and gets a
+// refused connection for anything else, so a test can stand a server on a
+// fixed port (mtplx's default) without binding it or dialling whatever does.
+func onlyHost(t *testing.T, host string, srv *httptest.Server) *http.Client {
+	t.Helper()
+	to, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{Timeout: 2 * time.Second, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != host {
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+		}
+		fwd := r.Clone(r.Context())
+		fwd.URL.Host = to.Host
+		return http.DefaultTransport.RoundTrip(fwd)
+	})}
+}
+
+// TestInventorySeesAnMtplxOnThePortWtServesItOn verifies the inventory and
+// `wt served` find an mtplx the registry gives no port for where `wt start`
+// put it (#348). Asking port 80 instead, the picker listed a serving model as
+// not running and offered to start it again, `wt stop` had nothing to stop,
+// and a route sync read the refused connection as a server that is down and
+// removed the family's routes.
+func TestInventorySeesAnMtplxOnThePortWtServesItOn(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "Y--Q35")
+	client := onlyHost(t, "127.0.0.1:"+strconv.Itoa(config.MtplxPort), modelsServer(t, "Y/Q35"))
+	cfg := &config.Config{Providers: []config.Provider{localProvider("mtplx", "http://127.0.0.1/v1", root)}}
+
+	snap := inventory(cfg, client)
+	if e, ok := byModelID(snap, "mtplx/Y/Q35"); !ok || !e.Running || snap.Down["mtplx"] {
+		t.Errorf("entry = %+v ok=%v down=%v, want the model running on a family that is up", e, ok, snap.Down["mtplx"])
+	}
+	if ids, err := ServedIDs(cfg, client, "mtplx"); err != nil || !slices.Equal(ids, []string{"Y/Q35"}) {
+		t.Errorf("ServedIDs = %v, %v; want [Y/Q35]", ids, err)
+	}
+}
+
+// TestInventoryFindsAnOmlxModelInsideAnOrganizationFolder pins the bug found
+// on a real machine: a model at <model dir>/mlx-community/Qwen3.6-35B-A3B-6bit
+// is served by omlx as Qwen3.6-35B-A3B-6bit, but wt listed the organization
+// folder as a model ("omlx/mlx-community") and never saw the real one, so it
+// could be neither started nor stopped through wt. The nested model must come
+// out under its own name, running when omlx reports it loaded.
+func TestInventoryFindsAnOmlxModelInsideAnOrganizationFolder(t *testing.T) {
+	dir := t.TempDir()
+	mkOmlxModels(t, dir, "mlx-community/Qwen3.6-35B-A3B-6bit", "Flat-4bit")
+	srv := &fakeOmlx{
+		listed: []string{"Qwen3.6-35B-A3B-6bit", "Flat-4bit"},
+		pool:   map[string]bool{"Qwen3.6-35B-A3B-6bit": true, "Flat-4bit": false},
+	}
+	snap := inventory(&config.Config{Providers: []config.Provider{localProvider("omlx", srv.serve(t), dir)}}, testClient)
+	e, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Qwen3.6-35B-A3B-6bit"))
+	if !ok || !e.Running || e.Artifact != "Qwen3.6-35B-A3B-6bit" {
+		t.Errorf("nested model = %+v ok=%v, want a running entry named after the model directory; entries = %+v", e, ok, snap.Entries)
+	}
+	if _, ok := byModelID(snap, config.DiscoveredModelID("omlx", "mlx-community")); ok {
+		t.Errorf("the organization folder is listed as a model: %+v", snap.Entries)
+	}
+	if f, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Flat-4bit")); !ok || f.Running {
+		t.Errorf("flat model = %+v ok=%v, want listed and not running", f, ok)
 	}
 }

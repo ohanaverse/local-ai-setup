@@ -24,6 +24,11 @@ The litellm plist's redacted keys — re-fill each from the live plist or a
 secret store at restore time: `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`,
 `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL`.
 
+The "Source on host" column records where each file lived on 2026-09-07, so the
+omlx row keeps that day's `homebrew.mxcl.omlx` name. Homebrew now labels its
+services `sh.brew.<name>`, i.e. the live file today is
+`~/Library/LaunchAgents/sh.brew.omlx.plist`.
+
 ## llama.cpp — RETIRED 2026-09-07
 
 State at retirement: the LaunchAgent was loaded but crash-looping (exit 1)
@@ -31,22 +36,43 @@ because its pinned GGUF had been deleted:
 `~/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_M.gguf`
 (~90k "failed to load model" lines in `~/.llamacpp.err.log`). Removed on the
 host: both plists, both log files, and the Homebrew formula. Disabled in the
-repo: the `llamacpp` entries in the benchmark scripts, `SUPPORTED_PROVIDER_IDS`
-(`modelman/src/modelman/benchmark/isolation.py`), `DEFAULT_PROVIDER_IDS`
-(`modelman/src/modelman/registry.py`), and the two litellm rows. **Kept:** the
-provider implementation `modelman/src/modelman/providers/llamacpp.py` (marked
-UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
-`modelman/src/modelman/providers/lifecycle/backends/llamacpp.py` — present in
-`BACKENDS` but excluded from `SUPPORTED_PROVIDER_IDS`, with
-`restore_action = "skip"` (so `modelman provider restore` never touches it).
+repo on that day: the `llamacpp` entries in the benchmark scripts,
+`SUPPORTED_PROVIDER_IDS`, `DEFAULT_PROVIDER_IDS`
+(`llmbench/src/llmbench/registry.py`; wt's `defaultProviderIDs` in
+`wt/internal/config/registry_seed.go` never listed it), and the two litellm
+rows.
 
-> **Update (issue #79):** the bash isolation helpers this section originally
+**Removed from the repo** in the modelman retirement (Step 6): modelman's
+`providers/llamacpp.py` with modelman itself, and llmbench's
+`backends/llamacpp.py` (the `LlamaCppBackend`, with its test). Both are in git
+history, but in two commits one apart — the backend outlived modelman by one
+commit, so the parent of each is a different SHA (the earlier one is the only
+commit that has both files):
+
+- the commit that deleted `modelman/`
+  (`git log --diff-filter=D --format=%H -1 -- modelman/pyproject.toml`); its
+  parent has both files
+- the commit that deleted the backend
+  (`git log --diff-filter=D --format=%H -1 -- llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py`);
+  its parent no longer has modelman's copy
+
+What that changes on a machine: `llmbench provider list` has no `llamacpp`
+row, `llmbench provider isolate llamacpp` and `llmbench provider stop llamacpp`
+say `unknown provider: llamacpp` and stop nothing, and
+`LLM_ISOLATE_LLAMACPP_MODEL` is read by nothing.
+`llmbench provider stop-all --keep llamacpp` exits 1 with
+`unknown provider for --keep: llamacpp` and stops nothing; it used to be
+accepted. `llmbench provider stop-all`
+(and the teardown `isolate` runs first) no longer unloads the LaunchAgent; if
+the plist is installed, `launchctl unload` it by hand:
+`launchctl unload ~/Library/LaunchAgents/local.llamacpp.server.plist`.
+
+> **History (issue #79):** the bash isolation helpers this section originally
 > pointed at (`bin/llm-isolate-provider`'s `llamacpp` case branch,
 > `bin/llm-restore-providers`' `restart_launchd` line) were deleted when
-> provider isolation was ported to Python. The re-enable steps below are
-> updated for the current architecture — re-enabling llamacpp no longer means
-> uncommenting bash, it means flipping two settings in
-> `backends/__init__.py` (see step 7).
+> provider isolation was ported to Python. The Python backend that replaced
+> them is the one removed above, so re-enabling llamacpp starts with restoring
+> that module from git history (see step 7).
 
 ### To re-enable llama.cpp
 
@@ -69,33 +95,59 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
    `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`.
 6. Re-add the registry block from
    [`artifacts/registry/llamacpp-provider.toml`](artifacts/registry/llamacpp-provider.toml)
-   to `~/.config/local-ai/registry.toml` (with modelman not running).
-7. Re-enable the code wiring (each was removed 2026-09-07 — see git history
-   of this repo for the exact diffs):
-   - `llamacpp` back in `DEFAULT_PROVIDER_IDS` (`modelman/src/modelman/registry.py`)
-   - `"llamacpp"` back into `SUPPORTED_PROVIDER_IDS`
-     (`modelman/src/modelman/providers/lifecycle/backends/__init__.py`) — this
-     is the one place both `modelman provider isolate llamacpp` and
-     `modelman benchmark` check isolability from (`modelman.benchmark.
-     isolation.SUPPORTED_PROVIDER_IDS` just re-exports it)
+   to `~/.config/local-ai/registry.toml`.
+7. Re-enable the code wiring (see git history of this repo for the exact
+   diffs):
+   - restore `llmbench/src/llmbench/providers/lifecycle/backends/llamacpp.py`
+     and its test
+     (`llmbench/tests/providers/lifecycle/backends/test_llamacpp.py`) from git
+     history: `git show <that commit>^:<path> > <path>`, with the commit the
+     second `git log` command above prints
+   - register it in
+     `llmbench/src/llmbench/providers/lifecycle/backends/__init__.py`
+     (`from .llamacpp import LLAMACPP`, `BACKENDS[LLAMACPP.id] = LLAMACPP`);
+     `SUPPORTED_PROVIDER_IDS` is derived from `BACKENDS`, so that also makes
+     it isolable and stoppable by name. The restored module sets
+     `respects_solo`, an attribute `Backend` no longer has and nothing reads:
+     delete that line
+   - restore `LLAMACPP_PLIST` in
+     `llmbench/src/llmbench/providers/lifecycle/launchd.py` and its entry in
+     `llmbench/tests/test_conftest_guards.py`
+   - set the backend's `restore_action` to `"restart"` (it was `"skip"` when
+     removed) so `llmbench provider restore` restarts the LaunchAgent again
+   - add its id to the literal lists the tests keep
+     (`tests/benchmark/test_isolation.py`, `tests/test_main.py`) and to
+     `DEFAULT_PROVIDER_IDS` (`llmbench/src/llmbench/registry.py`) if the
+     benchmarks should treat its models as local targets
+   - correct the tests that pin the retired state, which fail once the
+     backend is registered again. In
+     `llmbench/tests/providers/lifecycle/test_orchestrate.py`: drop `llamacpp`
+     from the ids of `test_stop_rejects_an_id_no_backend_has`, delete
+     `test_isolate_rejects_the_retired_llamacpp_id`, and patch
+     `BACKENDS["llamacpp"].restore` in every test that calls
+     `orchestrate.restore()` (the two that assert `result.ok is True` fail
+     without it; the others pass only after the restore's wait times out).
+     In the restored `test_llamacpp.py`: delete
+     `test_llamacpp_registered_in_backends_but_not_supported_ids` and
+     `test_llamacpp_does_not_respect_solo`, and update the two tests that
+     rely on `restore_action == "skip"` (`test_llamacpp_is_never_restored`,
+     `test_restore_no_ops_while_restore_action_is_skip`)
+   - add `llamacpp` to `defaultProviderIDs` in
+     `wt/internal/config/registry_seed.go` if wt should seed its row. wt has
+     no lifecycle backend for it and never had: `wt start` cannot start it
    - `llama_cpp` entries back in `benchmarks/qwen3.8-benchmark` and
-     `benchmarks/ornith-1.5-benchmark` (`DIRECT_URLS`, `DIRECT_MODELS`,
-     `LITELLM_MODELS`, `ISOLATE_ID`, `display_key`,
-     `ensure_all_local_started`, backend loops — issue #79 rewrote these
-     scripts to call `modelman provider isolate`/`restore` via `uv run`
-     instead of shelling out to `bin/llm-isolate-provider`/`bin/llm-
-     restore-providers`, but `ISOLATE_ID` and `DIRECT_MODELS` still exist,
-     now holding the `modelman provider` CLI's provider ids; see
-     `benchmarks/lib/benchmark-common.sh`)
-   - flip `LlamaCppBackend.restore_action` from `"skip"` to `"restart"`
-     (`modelman/src/modelman/providers/lifecycle/backends/llamacpp.py`) so
-     `modelman provider restore` restarts the LaunchAgent again. This is a
-     one-field change on purpose: `LlamaCppBackend.restore()` is already
-     implemented and tested (health probe → `launchctl load -w` → wait for
-     port 8080, raising if it never answers), and is gated on
-     `restore_action == "restart"`, so flipping the field is all that is
-     needed — no method to write.
-   - remove the UNUSED marker from `modelman/src/modelman/providers/llamacpp.py`
+     `benchmarks/ornith-1.5-benchmark`: the `DIRECT_URLS`, `DIRECT_MODELS`,
+     `LITELLM_MODELS` and `ISOLATE_ID` maps (`ISOLATE_ID` and `DIRECT_MODELS`
+     hold the `llmbench provider` CLI's provider ids — see
+     `benchmarks/lib/benchmark-common.sh`), and the two explicit
+     `for backend in …` loop lists in each script, which do not pick up new
+     map keys on their own. ornith-1.5-benchmark additionally needs a
+     `llama_cpp` branch in its `display_key()` case; qwen3.8-benchmark labels
+     rows with `display_name="$backend"` inline and needs no display change.
+     Nothing to change in `ensure_all_local_started` — it just runs
+     `llmbench provider restore` (`benchmarks/lib/benchmark-common.sh`), which
+     covers llama.cpp again once the backend is registered with
+     `restore_action="restart"` above
    - drop the retirement notes from `docs/guides/` and root `CLAUDE.md`
 
 ## LiteLLM — active
@@ -103,9 +155,9 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
 - Proxy: `litellm --config ~/.config/litellm/config.yaml --port 4000`, kept
   alive by `~/Library/LaunchAgents/local.litellm.proxy.plist` (artifact:
   redacted copy — see inventory for the five keys to re-fill).
-- `model_list`: wt (`wt litellm`) writes the routes for exposed ids; the hand-managed rows are the 3
-  omlx variants, the `openrouter/qwen/qwen3.8-*` set, and `ollama/q8` /
-  `ollama/o35`. (The 2 llama.cpp rows were retired — kept in
+- `model_list`: wt (`wt litellm sync`) writes the routes for every configured cloud model and the
+  running (or, for ollama, pulled) local models, each marked `model_info.wt_managed: true`; any other
+  row is hand-managed — `wt litellm list` marks those `(hand-written)`. (The 2 llama.cpp rows were retired — kept in
   [`artifacts/litellm/llamacpp-model-rows.yaml`](artifacts/litellm/llamacpp-model-rows.yaml).)
 - Setup/deep-dive: [01-initial-setup.md](../guides/01-initial-setup.md),
   [04-litellm-config.md](../guides/04-litellm-config.md).
@@ -115,8 +167,10 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
 ## oMLX — active
 
 - Server on `:8000` (`omlx start` / `omlx stop`), kept alive by
-  `~/Library/LaunchAgents/homebrew.mxcl.omlx.plist` (installed by Homebrew;
-  artifact: verbatim copy).
+  `~/Library/LaunchAgents/sh.brew.omlx.plist` (installed by Homebrew). The
+  artifact in the inventory above is a verbatim copy from 2026-09-07, when the
+  same service was labelled `homebrew.mxcl.omlx` — current Homebrew labels
+  services `sh.brew.<name>`.
 - Serves both the 4-bit and 6-bit MLX variants from one service — warmup
   must name the exact variant.
 - Setup: [01-initial-setup.md](../guides/01-initial-setup.md),
@@ -127,9 +181,9 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
 - Not a LaunchAgent — a plain backgrounded `mlx_lm.server --draft-model`
   subprocess, pidfile-managed (`/tmp/local-ai-setup-mlx-lm-server.pid`, log
   at `/tmp/local-ai-setup-mlx-lm-server.log`) by
-  `modelman/src/modelman/providers/lifecycle/pidproc.py`'s generic
+  `llmbench/src/llmbench/providers/lifecycle/pidproc.py`'s generic
   pidfile-tracked-process helper (`PidfileProcess`), used by
-  `modelman/src/modelman/providers/lifecycle/backends/mlx_lm_server.py`
+  `llmbench/src/llmbench/providers/lifecycle/backends/mlx_lm_server.py`
   (formerly `bin/lib/mlx-lm-server.sh`, deleted — issue #79). One behavior
   change from the bash version: the old script truncated the log file on
   every start (`>"$MLX_LM_SERVER_LOG"`); `PidfileProcess.start()` opens it
@@ -140,23 +194,24 @@ UNUSED in its module docstring) and the fully-ported `LlamaCppBackend` in
   of sweeping many pairings per benchmark session — so there is nothing to
   restore from a plist here, only the code wiring below.
 - Registry: `[[providers]] id = "mlx_lm_server"` with
-  `auth.base_url = "http://localhost:8001/v1"` (`_DEFAULT_PROVIDER_TEMPLATES`
-  in `modelman/src/modelman/registry.py`); one variant = one target+draft
+  `auth.base_url = "http://localhost:8001/v1"` (`defaultProviderRow` in
+  `wt/internal/config/registry_seed.go`); one variant = one target+draft
   pairing (`ModelEntry.fetch` = target, `ModelEntry.draft` = draft).
-- Code wiring: `DEFAULT_PROVIDER_IDS` (`registry.py`), `SUPPORTED_PROVIDER_IDS`
-  (`modelman/src/modelman/providers/lifecycle/backends/__init__.py`,
-  re-exported by `modelman/src/modelman/benchmark/isolation.py`),
-  the provider→LiteLLM mapping table (`wt/internal/litellm/policy.go`; modelman reads it via `wt litellm providers`), the
+- Code wiring: `defaultProviderIDs` (`wt/internal/config/registry_seed.go`)
+  and `DEFAULT_PROVIDER_IDS` (`llmbench/src/llmbench/registry.py`), `SUPPORTED_PROVIDER_IDS`
+  (`llmbench/src/llmbench/providers/lifecycle/backends/__init__.py`,
+  re-exported by `llmbench/src/llmbench/benchmark/isolation.py`),
+  the provider→LiteLLM mapping table (`wt/internal/litellm/policy.go`), the
   `MlxLmServerBackend` class in
-  `modelman/src/modelman/providers/lifecycle/backends/mlx_lm_server.py`,
+  `llmbench/src/llmbench/providers/lifecycle/backends/mlx_lm_server.py`,
   and its unconditional stop inside `orchestrate.restore()` (this provider
   is never part of the standing baseline, so restoring the *others* is not
   enough — it must always be stopped too).
 - **Local-path artifact ownership (shared with the `omlx` provider's
   `local_path` support):** a directory produced by `bin/mlx-quantize` or
-  hand-run `mlx_lm.convert`/`dwq` is user-produced, not something modelman
-  downloaded. `OMLXProvider`/`MLXLMServerProvider` never `rmtree` a
-  `local_path`-sourced entry's artifact on delete or ready-off — registry/
-  state bookkeeping still runs, only the filesystem removal is skipped.
+  hand-run `mlx_lm.convert`/`dwq` is user-produced. wt never deletes weights:
+  `wt model rm <id>`, or `d` on its row in the Models tab of `wt config`,
+  removes the registry entry, prints where the weights are and touches no
+  file on disk.
   Cleanup of an abandoned experiment is a manual `rm -rf`.
 - Guide: [10-mlx-lm-quantization.md](../guides/10-mlx-lm-quantization.md).

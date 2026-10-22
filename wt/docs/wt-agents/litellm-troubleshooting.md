@@ -63,8 +63,9 @@ wire-level truth before believing its error text:
    its retry-exhausted banner; `codex exec -c 'model_providers.…' …` with
    `RUST_LOG=debug` shows the request path, but the real status text is on the
    **server** side (litellm logs). Do not read "high demand" as throttling.
-5. **`wt --cwd` avoids worktree churn** for launch tests; use a throwaway
-   `-W <name>` when session-resume lookup must not find a prior session.
+5. **`wt --cwd` avoids worktree churn** for launch tests. Every launch
+   starts the agent fresh (`wt` never resumes a session), so a test needs no
+   throwaway worktree to avoid an earlier conversation.
 
 ## Per-driver lessons
 
@@ -279,8 +280,9 @@ satisfies `EnsureSettings`'s "has this key at all" guard and is left exactly
 as-is on every future write — it will keep crashing under copilot until one
 of:
 
-- `wt litellm unexpose <id> && wt litellm expose <id>` (drops and re-adds
-  the row fresh, picking up the wider default), or
+- deleting that row from `config.yaml` by hand and running `wt litellm sync`
+  (which re-adds it fresh, picking up the wider default, as long as the
+  model is a cloud model or a running local one), or
 - a hand edit of that row's `additional_drop_params` to add
   `frequency_penalty`/`presence_penalty`, then restart the proxy
   (`wt litellm sync`, or the `launchctl kickstart` fallback in the Ops
@@ -336,7 +338,7 @@ different failure mode (404 on a route the backend never implements, vs. a
 crash on a request the backend does receive).
 
 **Fix (shipped in modelman, applied & verified 2026-09-16; since 2026-09-21 the equivalent enforcement lives in wt's `internal/litellm`):**
-`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py`
+`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` (deleted with modelman; the enforcement is `wt/internal/litellm`)
 value-enforces `litellm_settings.use_chat_completions_url_for_anthropic_messages: true`
 in `~/.config/litellm/config.yaml` on every write, alongside `drop_params`.
 This is litellm's own documented escape hatch
@@ -372,10 +374,11 @@ playbook above (`ERROR: Reconnecting... 1/5` / `exceeded retry limit, last
 status: 429`).
 
 **Fix (shipped in modelman, applied & verified 2026-09-16; since 2026-09-21 the equivalent enforcement lives in wt's `internal/litellm`):**
-`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` adds
+`ensure_litellm_settings()` in `modelman/src/modelman/litellm.py` (deleted with modelman; the enforcement is `wt/internal/litellm`) adds
 `litellm_params.use_chat_completions_api: true` (presence-based, like
 `additional_drop_params`) to every model_list row whose `litellm_params.model`
-starts with `openai/`. This is LiteLLM's own per-deployment escape hatch
+starts with `openai/` and whose `api_base` is a loopback address; an
+`openai/` row pointing at a remote endpoint is left untouched. This is LiteLLM's own per-deployment escape hatch
 (`litellm/types/router.py`'s `LiteLLM_Params.use_chat_completions_api`,
 consumed in `litellm/responses/main.py`) that bridges a Responses API call
 into a chat/completions call before dispatch — unlike
@@ -384,7 +387,7 @@ single deployment, not global, so it applies cleanly to mtplx/omlx/
 mlx_lm_server without touching a hypothetical future deployment that *does*
 serve `/v1/responses` natively (that row would just carry an explicit
 `use_chat_completions_api: false`, which wt's `internal/litellm` (formerly modelman's
-`set_exposed`/`ensure_litellm_settings`, removed 2026-09-21) preserves on re-expose). Verified via a direct `/v1/responses` curl probe
+`set_exposed`/`ensure_litellm_settings`, removed 2026-09-21) preserves when it rewrites the row). Verified via a direct `/v1/responses` curl probe
 against mtplx (200, was 404→429) and `wt smoke <model> --only codex` (green).
 
 ### agy / shell
@@ -398,7 +401,7 @@ wt.
 - The proxy loads `~/.config/litellm/config.yaml` **only at startup** — after
   editing it, restart the proxy (locally: `kill <pid>` +
   `nohup litellm --config ~/.config/litellm/config.yaml --port 4000
-  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt litellm expose|unexpose|sync` restart the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
+  >> ~/.litellm.log 2>> ~/.litellm.err.log &`. `wt litellm sync` restarts the proxy for you (`WT_LITELLM_RESTART_CMD`, else launchctl kickstart) — see
   [README · LiteLLM proxy lifecycle](README.md#litellm-proxy-lifecycle)).
 - The litellm key for probes lives in `[litellm].api_key`
   (wt's `~/.config/agent-wt/config.toml`; `wt litellm status --json` shows only `api_key_set`) and is also in pi's models.json.

@@ -6,6 +6,14 @@ from the same agent × model location/provider/id `wt` already computes
 `docs/superpowers/specs/2026-09-24-wt-agent-profiles-design.md` (monorepo
 root) for the full design; this page is the operator-facing reference.
 
+This page covers **automatic profiles**: unnamed entries wt applies to a
+single-model launch that matches them. A **slot profile** is a different
+kind: a named entry you pick in the model picker, which assigns a registry
+model to each of Claude Code's model slots. Slot profiles have their own
+file and page: [slot-profiles.md](slot-profiles.md). `wt profile list` and
+`wt profile show` report both kinds; `wt profile on|off|status` and
+everything else on this page are about automatic profiles only.
+
 **Nothing is enabled out of the box.** `~/.config/agent-wt/profiles.toml`
 starts absent (equivalent to `enabled = true`, zero profiles) — the
 example config below is a worked, verified local-model starting point,
@@ -28,10 +36,23 @@ wt profile on / wt profile off        # global kill switch
 
 | Agent | Mechanisms | Notes |
 |---|---|---|
-| claude | env, config_file | config_file → `<worktree>/.claude/settings.local.json`, never your global `~/.claude/settings.json` |
+| claude | env, config_file, config_defaults | config_file and config_defaults → `<worktree>/.claude/settings.local.json`, never your global `~/.claude/settings.json` |
 | pi | wrapper, env | swaps the launched binary (e.g. `little-coder`) around pi's own argv; env lands on the launched wrapper process, which reads `LITTLE_CODER_*` |
 | codex | env, args, config_file | config_file → `~/.codex/agent-wt-profile.config.toml` (`--profile agent-wt-profile`); codex has no project-scoped profile mechanism, so this one file is global and wt-owned |
 | opencode | env, config_file | config_file merges into the `OPENCODE_CONFIG_CONTENT` env payload wt already sets — no file at all |
+
+**`config_defaults`** (claude only) has the same shape as `config_content`
+but writes a value only where `<worktree>/.claude/settings.local.json`
+does not already have one: every leaf the file already holds, whatever its
+value, is left alone, and a leaf whose path crosses a value that is not a
+table (`permissions = "x"`) counts as present. It is applied after
+`config_content`, so a leaf both set is `config_content`'s. "Absent" means
+absent from that one file: `.claude/settings.json` and
+`~/.claude/settings.json` are never read, so a value set there is still
+overridden for the session. A leaf it writes is restored at exit like a
+`config_content` leaf (see "File safety"). A later tier's value wins per
+leaf, as for `config_content`. Slot profiles do not take it: in
+`slot-profiles.toml` it is reported as an unknown key.
 
 A profile using a mechanism its agent doesn't declare fails at startup with
 a clear error (`wt -A <agent> ...` still launches, unprofiled — see
@@ -77,13 +98,24 @@ differs by agent:
   wt-exclusive file — Claude Code itself writes to it during the session
   (e.g. persisting a user-approved "always allow" permission grant) — so
   the write merges `config_content` into whatever is already there, and
-  cleanup restores only the specific top-level keys `config_content`
-  itself touched (or removes them, if the file didn't exist before the
-  write), leaving anything the agent wrote to OTHER keys during the
-  session untouched. Hand-editing a key the profile does NOT touch is
-  therefore safe even mid-session; hand-editing a key it DOES touch will
-  be reverted to its pre-launch value (or removed, if it didn't exist
-  before) when the session ends.
+  cleanup works per leaf: each value the profile wrote (anything that is
+  not a non-empty table, found by its path, such as
+  `permissions.defaultMode`) is put back to its pre-launch value, or
+  removed if it didn't exist before, and a table the merge created for it
+  is removed once it is empty. Everything else in the file stays as the
+  session left it, a sibling under the same table included — a
+  `permissions.allow` grant Claude Code saves beside a pinned
+  `permissions.defaultMode` survives the session (#401). A leaf the
+  session changed or deleted after the merge also keeps the session's
+  state, so a hand edit mid-session is kept whether or not the profile
+  pins that value; wt keeps a hash of each value it wrote to tell, never
+  the value itself. A file that didn't exist before is deleted at exit
+  when nothing but the profile's own values was in it — or when what the
+  session left no longer parses as a JSON object, which the per-value
+  restore cannot act on.
+  `config_defaults` leaves are written and restored the same way, and a
+  value the file already had is never written, so it is never restored
+  either.
 - **codex's `agent-wt-profile.config.toml` is a dedicated, wt-owned global
   file** nothing else writes to, so it keeps a simple whole-file
   snapshot/replace/restore — don't hand-edit it while a profiled codex
@@ -149,13 +181,18 @@ env = { LITTLE_CODER_PERMISSION_MODE = "accept-all" }
 # reports a shell env var does not stick for it, and a per-request attribution
 # header invalidates the local KV cache (~90% slower). It goes through
 # <worktree>/.claude/settings.local.json via config_content, which wt merges
-# and restores.
+# and restores value by value.
 [[profiles]]
 agent = "claude"
 match = "location"
 location = "local"
 env = { MAX_THINKING_TOKENS = "4096", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" } }
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 also starts Claude Code in auto
+# mode, whose classifier sends the local model a ~31k-token request on every
+# tool turn (#393); defaultMode = "default" keeps local sessions out of it.
+# A default, not an override: a defaultMode already in settings.local.json wins.
+config_defaults = { permissions = { defaultMode = "default" } }
 
 # codex: args are appended AFTER wt's driver args and any user passthrough, and
 # codex's repeated -c form is last-wins — so these values also win over a user's
@@ -182,7 +219,7 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
 | pi | `wrapper` | runs `little-coder` instead of bare `pi`, splicing wt's own `--model …` argv into `{{args}}` |
 | pi | `env` | sets `LITTLE_CODER_PERMISSION_MODE=accept-all` on the wrapper process (little-coder), skipping its shell whitelist |
 | claude | `env` | caps thinking at 4096 tokens; suppresses nonessential background traffic |
-| claude | `config_file` | merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`, then restores it |
+| claude | `config_file` + `config_defaults` | `config_content` merges `CLAUDE_CODE_ATTRIBUTION_HEADER=0` into `<worktree>/.claude/settings.local.json`; `config_defaults` adds `permissions.defaultMode = "default"` only when that file has no `defaultMode`. At exit the header is put back and a `defaultMode` wt added is removed; one the file already had is never touched. What the session saved beside them stays (see the `permissions` cost under "Why these values") |
 | codex | `args` | caps `model_reasoning_effort` at `low`; truncates tool output at 12000 tokens |
 | opencode | `config_file` | merges `compaction { auto = true, prune = false, reserved = 10000 }` into the `OPENCODE_CONFIG_CONTENT` payload (no file written) |
 
@@ -205,12 +242,25 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
   spec-approved trade-off —
   `docs/superpowers/specs/2026-09-25-pi-local-accept-all-design.md`,
   monorepo root).
-- **claude — thinking + attribution.** `MAX_THINKING_TOKENS=4096` stops a
+- **claude — thinking, attribution + permission mode.** `MAX_THINKING_TOKENS=4096` stops a
   small model from over-deliberating instead of acting;
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` keeps background requests
   off an endpoint that cannot use them. The attribution header is the one
   setting the optimization doc says must live in Claude Code's settings
   rather than the process environment, hence the `config_file` split.
+  `permissions.defaultMode = "default"` goes to the same file, as a
+  `config_defaults` entry:
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also starts Claude Code in
+  auto mode (seen on 2.1.300), and auto mode's classifier then sends the
+  local model a non-streamed ~31k-token request on every turn that uses a
+  tool, which made turns 2–5x slower and added prefill memory pressure
+  (#393). Setting the default mode keeps the traffic setting without it.
+  Because it is a default, a `permissions.defaultMode` in
+  `.claude/settings.local.json` wins; one set in `.claude/settings.json` or
+  `~/.claude/settings.json` is still overridden for the session, and an
+  existing `auto` brings back the classifier slowdown (#393). An "always
+  allow" grant Claude Code saves under `permissions.allow` during the
+  session is kept (see "File safety" above).
 - **codex — reasoning effort + output cap.** `model_reasoning_effort="low"`
   is codex's thinking-budget knob; `tool_output_token_limit=12000` is its
   built-in read-guard, capping runaway file reads before they flood a
@@ -245,19 +295,28 @@ the same entry matches an `ollama`, `omlx`, or `mtplx` model.
   rejects. Use `["{{args}}"]`. A missing wrapper binary is the one fatal
   profile error — a requested wrapper must actually run — so `little-coder`
   must be on `PATH`.
-- **The claude `ANTHROPIC_DEFAULT_*_MODEL` mapping cannot use
-  `{{model_name}}`.** With LiteLLM on, a launch routes through the proxy
-  using the full registry id (`ollama/qwen3.8:27b-mlx`); that is what
-  `wt/internal/litellm` writes as the proxy's `model_name`. The only value
-  placeholder `internal/profiles` substitutes is `{{model_name}}` =
-  `m.ModelName` (`qwen3.8:27b-mlx`), which the proxy does not know. The
-  mapping is therefore omitted above. To route claude's tier defaults to
-  a local model, add a `match = "model"` profile per model with the
-  literal registry id, or turn LiteLLM off (`wt litellm off`) so the
-  provider-side `{{model_name}}` is what's dialled — that only yields
-  direct mode if the provider speaks claude's protocol; a provider with
-  no Anthropic support still force-routes through LiteLLM. There is no
-  `{{model_ref}}`/`{{model_id}}` placeholder yet.
+- **wt maps claude's model slots itself; a profile's `env` can still
+  override one.** On every single-model launch that is not native, wt sets
+  `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for all four slots (`fable`, `opus`,
+  `sonnet`, `haiku`) to the reference it passes as `--model`, and
+  `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` to the model's provider-side name
+  (see [claude-wt.md](claude-wt.md#model-slots-on-a-single-model-launch)).
+  A profile does not need to set them. One that does keeps working: a value
+  an applied profile sets in `env` for one of these eight variables wins
+  over wt's, and the others keep wt's values. A value exported in your shell
+  never reaches claude; wt replaces it. A value has to be what the endpoint
+  routes: the registry id through LiteLLM, the provider-side name on a
+  direct route. The only placeholder here, `{{model_name}}`, is the
+  provider-side name, so through LiteLLM write the registry id out. To give
+  each slot its own model, use a slot profile, which names a registry model
+  per slot: see [slot-profiles.md](slot-profiles.md).
+  A profile that overrides one `ANTHROPIC_DEFAULT_<SLOT>_MODEL` should set
+  the matching `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` too. Otherwise wt's
+  label for that slot still names the session model, and Claude Code's
+  `/model` list shows the wrong name. This rule is for a profile's `env`. A
+  profile that sets one of these variables under `config_content.env`
+  (written to `.claude/settings.local.json`) is not decided by wt. Claude
+  Code's own settings-over-environment rule decides, and wt does not test it.
 - **The claude attribution header belongs in `config_content`, not
   `env`.** A shell environment variable does not stick for
   `CLAUDE_CODE_ATTRIBUTION_HEADER`; it has to be set in Claude Code's
@@ -284,10 +343,11 @@ model picker) that resolves a non-empty profile asks before applying it —
 default **yes** on a bare Enter. A non-interactive launch (no controlling
 terminal: scripts, CI) applies automatically with no prompt.
 
-**`wt smoke` does NOT apply profiles today.** It builds its launch
-commands directly via `agents.BuildLaunchCmd` and never goes through
-`runAgentCmd` — the only choke point profile resolution is wired into — so
-a smoke-tested agent always launches unprofiled, regardless of
-profiles.toml. This is a known gap, not a feature; wiring `wt smoke`
-through the same profile resolution is a natural follow-up but isn't done
-yet.
+**`wt smoke` applies profiles too.** For each agent × model row it
+resolves the profile from the same already-loaded profiles.toml state and
+applies it via `applyResolvedProfile` — the same function a real launch
+uses (`cmd/wt/smoke.go`) — so smoke and a real launch can't drift on
+apply/rollback semantics. It never prompts. If profiles.toml fails to load
+or validate, smoke warns on stderr and runs unprofiled; `wt profile off`
+disables it for smoke as well. A profile whose wrapper binary is missing
+fails that smoke row.

@@ -1,0 +1,10 @@
+{
+ "rows": [
+  {"row_idx": 0, "row": {"model_name": "Claude Opus 5.5 (High)", "organization": "anthropic", "score": 0.14331280058415052, "score_ci_lower": 0.12150663912969831, "score_ci_upper": 0.16511896203860274, "rank": 1, "category": "overall"}, "truncated_cells": []},
+  {"row_idx": 1, "row": {"model_name": "GLM 5.3 (Max)", "organization": "zai", "score": 0.02147446416824893, "score_ci_lower": 0.014306504009895325, "score_ci_upper": 0.028642424326602536, "rank": 24, "category": "overall"}, "truncated_cells": []},
+  {"row_idx": 2, "row": {"model_name": "Qwen3.8 Max", "organization": "alibaba", "score": 0.023467932612357068, "score_ci_lower": 0.017532412700631165, "score_ci_upper": 0.02940345252408297, "rank": 23, "category": "overall"}, "truncated_cells": []}
+ ],
+ "num_rows_total": 6,
+ "num_rows_per_page": 100,
+ "partial": false
+}

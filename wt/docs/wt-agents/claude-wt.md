@@ -35,7 +35,8 @@ Claude Code uses OAuth, with state stored in `~/.claude.json`. The internals of 
 Claude Code picks a model from `--model <name>` or, absent that, from `~/.claude/settings.json`'s default. `claude-wt` handles two cases:
 
 - **`claude/native`** — passes no `--model` flag and clears any inherited `ANTHROPIC_*` env vars, so Claude Code uses its native subscription (the model configured in `~/.claude/settings.json`).
-- **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)).
+- **`claude/<alias>`** (`claude/opus`, `claude/opusplan`, …) — the native subscription too, with `--model <alias>`. Add one with `wt model add claude <alias> --family claude`. `claude/opusplan` runs Opus in plan mode and Sonnet otherwise (checked on 2026-10-14, #391), so outside plan mode it works on Sonnet where a bare `claude/native` launch works on your account's default model.
+- **Ollama-routed models** — passes `--model <name>` and points Claude Code at the local Ollama gateway via `ANTHROPIC_*` env vars (see [Cloud models via Ollama](#cloud-models-via-ollama)). It also maps all four of Claude Code's model slots to that model (see [Model slots on a single-model launch](#model-slots-on-a-single-model-launch)).
 
 For Ollama-routed models, the launcher passes the **bare** provider-specific name (`config.Model.ModelName`), not the registry key (`config.Model.ID`, which is `provider/model` form). Using the registry key here would forward `ollama/<model>` to the Ollama gateway, which would not recognize the prefixed id.
 
@@ -49,7 +50,7 @@ ANTHROPIC_API_KEY=""
 ANTHROPIC_BASE_URL="http://localhost:11434"
 ```
 
-The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`). This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
+The values shown are for the default ollama provider row. The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row), and `ANTHROPIC_AUTH_TOKEN` is that provider's resolved `secret_ref`, falling back to the placeholder `ollama` when the provider has no key. This allows Claude Code to use Ollama-hosted models that follow the `:cloud` naming convention.
 
 ### LiteLLM routing
 
@@ -65,9 +66,96 @@ The `--model` value is the full registry model id (e.g. `ollama/qwen3.8:27b-mlx`
 
 claude only speaks the `anthropic` wire protocol, so a provider that doesn't serve it (e.g. openrouter, `openai-chat` only) forces LiteLLM routing regardless of the on/off setting — wt prints a one-line stderr notice when that happens.
 
-## Session resume
+### Model slots on a single-model launch
 
-`wt` detects a previous Claude Code session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--resume <id>` automatically. Sessions are stored under `~/.claude/projects/<slug>/*.jsonl`, where `<slug>` is the worktree path with non-alphanumeric chars replaced by `-`.
+Claude Code has four model slots (`fable`, `opus`, `sonnet`, `haiku`) and
+uses them unasked: background requests go to the `haiku` slot, and a built-in
+subagent may be defined with a slot alias. An unmapped slot resolves to an
+Anthropic id such as `claude-haiku-5-5`, which another endpoint rejects with
+`Invalid model name`; Claude Code then falls back to the session model.
+
+So on every single-model launch where wt points Claude Code at another
+endpoint (a direct provider or the LiteLLM proxy; never `claude/native` or
+another native model), wt sets eight more variables in the process
+environment, shown here for a launch of `ollama/qwen3.8:27b-mlx` through
+LiteLLM (an example id):
+
+```bash
+ANTHROPIC_DEFAULT_FABLE_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_FABLE_MODEL_NAME="qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_OPUS_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_SONNET_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_HAIKU_MODEL="ollama/qwen3.8:27b-mlx"
+ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="qwen3.8:27b-mlx"
+```
+
+- Each `ANTHROPIC_DEFAULT_<SLOT>_MODEL` is exactly the value of `--model`:
+  the registry id through LiteLLM, the bare provider-side name on a direct
+  route.
+- Each `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` is the model's provider-side
+  name, the label Claude Code's `/model` picker shows for the slot.
+
+Precedence, lowest first:
+
+1. A value for one of the eight exported in your shell. wt removes it from
+   the environment it hands to claude, so it never takes effect.
+2. wt's value.
+3. A value an applied [automatic profile](profiles.md) sets in its `env`.
+   It wins for that variable, and the other seven keep wt's values. This
+   holds for a launch from the command line and from the picker.
+
+A profile that overrides one `ANTHROPIC_DEFAULT_<SLOT>_MODEL` should set the
+matching `ANTHROPIC_DEFAULT_<SLOT>_MODEL_NAME` too. Otherwise wt's label for
+that slot still names the session model, and Claude Code's `/model` list
+shows the wrong name.
+
+This precedence rule is for a profile's `env`. A profile that sets one of
+these variables under `config_content.env` (written to
+`.claude/settings.local.json`) is not decided by wt. Claude Code's own
+settings-over-environment rule decides, and wt does not test it.
+
+wt sets nothing else for the slots: no `modelOverrides` (a slot profile
+may set its own under `config_content`, a table checked as in
+[slot-profiles.md](slot-profiles.md#a-modeloverrides-target-wt-does-not-route)), no
+`CLAUDE_CODE_SUBAGENT_MODEL`, and it leaves every other inherited variable
+alone (`ANTHROPIC_SMALL_FAST_MODEL` included). The native launch gets none
+of the eight and keeps whatever your shell exports.
+
+### Slot profiles
+
+A single-model launch sends all four slots to the one model it names. A slot
+profile gives each slot (`fable`, `opus`, `sonnet`, `haiku`) its own
+registry model in one launch, through the LiteLLM proxy:
+
+```bash
+claude-wt -M profile/<name>     # or pick the profile/<name> row in the model picker
+```
+
+wt then passes `--model <default slot>` (`--model opusplan` for an [opusplan](slot-profiles.md#opusplan) profile) and one inline `--settings` JSON
+holding `ANTHROPIC_DEFAULT_<SLOT>_MODEL` for every slot. It writes no
+settings file. The file format, the picker row and every failure are in
+[slot-profiles.md](slot-profiles.md).
+
+A dated observation (2026-10-14, #393) concerns a launch that gives
+Claude Code a local mtplx model through the LiteLLM proxy, slot profile or
+not (a direct launch to mtplx was not tested): on a 64 GB machine
+mtplx refused some of Claude Code's 30–41k-token requests with HTTP 507
+`insufficient memory`, and the retries made turns slow. See
+[A local slot model and memory](slot-profiles.md#a-local-slot-model-and-memory).
+
+## Sessions
+
+`wt` leaves sessions to Claude Code: every launch starts fresh, and `wt` never looks one up, prompts about one, or adds a resume flag. To continue a conversation, pass claude's own flags after `--`; `wt` hands them over unchanged on every launch path, the picker included.
+
+| Continue the latest | A specific session | Fork it |
+|---|---|---|
+| `claude-wt -- --continue` | `claude-wt -- --resume <id>` | `claude-wt -- --continue --fork-session` |
+
+`--continue` means the most recent conversation in the current directory, and `wt` starts claude in the worktree (or, with `--cwd`, the directory the command was typed in), so it finds the sessions for that directory. Claude Code keeps them under `~/.claude/projects/<slug>/`, where `<slug>` is that directory's path with non-alphanumeric chars replaced by `-`.
+
+`wt` used to resume the newest session by itself. That appended a one-shot run (`-- -p "..."`) to whichever conversation was newest, including one another process was using (#204), and — for opencode — failed a launch whose resumed session had stored a different model (#198). Whether a resumed session's stored model overrides the chosen one is claude's behaviour; `wt` does not guard against it.
 
 ## Agent init
 

@@ -6,14 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -38,7 +36,7 @@ func tempStateDir(t *testing.T) string {
 // launched model ID. Tests use this to simulate prior launches.
 func seedState(t *testing.T, dir, modelID string) {
 	t.Helper()
-	if err := rotation.NewAt(dir).Record(modelID); err != nil {
+	if err := rotation.NewAt(dir).RecordFor("", modelID); err != nil {
 		t.Fatalf("seed rotation state: %v", err)
 	}
 }
@@ -159,12 +157,7 @@ func drivePhaseAgentEnter(t *testing.T, m model, agentName string) model {
 	if m.phase != phaseAgent {
 		t.Fatalf("after selectedEntryMsg: phase = %v, want phaseAgent", m.phase)
 	}
-	for i, it := range m.agentList.Items() {
-		if ai, ok := it.(agentItem); ok && !ai.command && ai.name == agentName {
-			m.agentList.Select(i)
-			break
-		}
-	}
+	selectAgentRow(&m, agentName)
 	got, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	return got.(model)
 }
@@ -251,7 +244,7 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 		DefaultTag: "code",
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-		// No models — ModelsForAgentAndTag returns an empty list.
+		// No models — cfg.EligibleModels returns an empty list.
 	}
 	m := model{cfg: cfg, initialAgent: "claude", width: 80, height: 24}
 	// Load the worktree list first so m.ready is true; the pinned-path
@@ -308,7 +301,10 @@ func TestModelScreenMKeyIsNoOp(t *testing.T) {
 func TestViewModelPhase(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:9b")
-	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	// Sized through Update, as the terminal does it: View draws the frame the
+	// list was sized for and measures nothing itself (layout.go), so a list
+	// still at its construction size gets the frame that leaves that much.
+	m := resized(t, phaseModelWithList(t, testConfig(), "claude", "code"), 80, 24)
 	view := m.View()
 	for _, want := range []string{"agent", "claude", "tag", "code", "ollama/gemma4:9b", "[↑/↓] navigate", "[enter] launch or start"} {
 		if !strings.Contains(view, want) {
@@ -334,84 +330,6 @@ func TestEnterInModelPhaseLaunchesWithoutSession(t *testing.T) {
 	}
 }
 
-// TestEnterInModelPhaseShowsResumePrompt asserts that when a session exists,
-// Enter moves to phaseResume instead of launching immediately.
-func TestEnterInModelPhaseShowsResumePrompt(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	repo := t.TempDir()
-	slug := session.Slug(repo)
-	sessDir := filepath.Join(homeDir, ".claude", "projects", slug)
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessDir, "session.jsonl"), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
-
-	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
-		selectedPath: repo, models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel := got.(model)
-	if gotModel.phase != phaseResume {
-		t.Errorf("phase = %v, want phaseResume", gotModel.phase)
-	}
-	if cmd != nil {
-		t.Errorf("expected no cmd while showing resume prompt, got %v", cmd)
-	}
-}
-
-// TestEnterInModelPhaseNativeSkipsResume asserts that a native model (e.g.
-// claude/native) launches immediately even when a prior session exists,
-// never showing the resume prompt. Native models launch with no model
-// override, so resuming a session would restore the session's stored model
-// and silently override the user's "native" choice — the exact bug where
-// selecting claude/native launched claude with a prior session's
-// kimi-k2.7-code:cloud model.
-func TestEnterInModelPhaseNativeSkipsResume(t *testing.T) {
-	requireBinary(t, "claude")
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	repo := t.TempDir()
-	slug := session.Slug(repo)
-	sessDir := filepath.Join(homeDir, ".claude", "projects", slug)
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessDir, "session.jsonl"), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write session: %v", err)
-	}
-
-	m := model{cfg: testConfig(), phase: phaseModel, agent: "claude", tag: "code",
-		selectedPath: repo, models: singleModelList(config.Model{ID: "claude/native", ModelName: "native", Native: true})}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel := got.(model)
-	if gotModel.phase == phaseResume {
-		t.Errorf("phase = %v, native model must not show the resume prompt", gotModel.phase)
-	}
-	if cmd == nil {
-		t.Errorf("expected a launch cmd for native model, got nil")
-	}
-}
-
-// TestResumePromptCancelReturnsToModel asserts selecting Cancel in the
-// resume prompt returns to the model phase without launching.
-func TestResumePromptCancelReturnsToModel(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
-		resume: resumeModel{choices: list.New(buildResumeChoices(nil), list.NewDefaultDelegate(), 80, 24)}}
-	// Move selection to Cancel (index 1).
-	m.resume.choices.CursorDown()
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel := got.(model)
-	if gotModel.phase != phaseModel {
-		t.Errorf("phase = %v, want phaseModel", gotModel.phase)
-	}
-	if cmd != nil {
-		t.Errorf("expected no cmd for cancel, got %v", cmd)
-	}
-}
-
 // TestLaunchDoneMsgRecordsError asserts that when the agent subprocess
 // exits with an error, the model stores the error so it can be surfaced.
 func TestLaunchDoneMsgRecordsError(t *testing.T) {
@@ -426,114 +344,6 @@ func TestLaunchDoneMsgRecordsError(t *testing.T) {
 	_ = got.(model)
 	if cmd == nil {
 		t.Errorf("cmd for launchDoneMsg = nil, want non-nil")
-	}
-}
-
-// TestEscInResumePromptReturnsToModel asserts esc from the resume prompt
-// returns to the model phase, not quitting the TUI.
-func TestEscInResumePromptReturnsToModel(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code"}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	gotModel := got.(model)
-	if gotModel.phase != phaseModel {
-		t.Errorf("phase = %v, want phaseModel", gotModel.phase)
-	}
-	if cmd != nil {
-		t.Errorf("expected nil cmd for esc in resume prompt, got %v", cmd)
-	}
-}
-
-// TestWindowSizeResizesResumePrompt asserts a WindowSizeMsg resizes the
-// resume prompt list so it renders at the current terminal dimensions.
-func TestWindowSizeResizesResumePrompt(t *testing.T) {
-	m := model{phase: phaseResume, resume: resumeModel{choices: list.New(buildResumeChoices(nil), list.NewDefaultDelegate(), 10, 10)}}
-	got, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	gotModel := got.(model)
-	if gotModel.width != 80 || gotModel.height != 24 {
-		t.Errorf("dimensions = (%d, %d), want (80, 24)", gotModel.width, gotModel.height)
-	}
-}
-
-// TestResumePromptResumeChoiceLaunchesWithSession asserts selecting the
-// resume choice builds a launch batch carrying the session resume flag.
-// Resume is no longer the cursor default (Start fresh is); the test steps
-// down twice to reach the Resume row.
-func TestResumePromptResumeChoiceLaunchesWithSession(t *testing.T) {
-	requireBinary(t, "claude")
-	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
-		launchModel: config.Model{ID: "ollama/gemma4:9b"},
-		resume: resumeModel{
-			session: &session.Session{ID: "abc-123"},
-			choices: list.New(buildResumeChoices(&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 80, 24),
-		}}
-	// Step past Start fresh and Cancel to reach Resume (now at index 2).
-	m.resume.choices.CursorDown()
-	m.resume.choices.CursorDown()
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel := got.(model)
-	if gotModel.status != "" {
-		t.Errorf("status = %q, want empty", gotModel.status)
-	}
-	if cmd == nil {
-		t.Fatal("expected launch command batch, got nil")
-	}
-}
-
-// TestResumePromptStartFreshLaunchesWithoutSession asserts the default
-// Start fresh choice (now at index 0 in buildResumeChoices) builds a
-// launch batch without a session. The previous shape of this test stepped
-// down to Start fresh from the resume-at-index-0 layout; the cursor
-// defaulting change made Start fresh the natural cursor position so
-// stepping is no longer required.
-func TestResumePromptStartFreshLaunchesWithoutSession(t *testing.T) {
-	requireBinary(t, "claude")
-	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		selectedPath: t.TempDir(), models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
-		launchModel: config.Model{ID: "ollama/gemma4:9b"},
-		resume: resumeModel{
-			session: &session.Session{ID: "abc-123"},
-			choices: list.New(buildResumeChoices(&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 80, 24),
-		}}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel := got.(model)
-	if gotModel.status != "" {
-		t.Errorf("status = %q, want empty", gotModel.status)
-	}
-	if cmd == nil {
-		t.Fatal("expected launch command batch, got nil")
-	}
-}
-
-// TestViewResumePhase asserts the resume prompt View includes the list title
-// and navigation hint. This confirms the screen is coherent.
-func TestViewResumePhase(t *testing.T) {
-	m := model{phase: phaseResume, width: 80, height: 24, resume: resumeModel{
-		choices: list.New(buildResumeChoices(
-			&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 78, 22),
-	}}
-	m.resume.choices.Title = "Resume previous session?"
-	view := m.View()
-	for _, want := range []string{"Resume previous session?", "Resume abc-123", "[enter] choose"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("View missing %q in:\n%s", want, view)
-		}
-	}
-}
-
-// TestResumePromptListNavigates asserts arrow keys update the resume prompt
-// selection. Without this the user cannot choose Cancel or Start fresh.
-func TestResumePromptListNavigates(t *testing.T) {
-	m := model{phase: phaseResume, width: 80, height: 24, resume: resumeModel{
-		choices: list.New(buildResumeChoices(&session.Session{ID: "abc-123"}), list.NewDefaultDelegate(), 78, 22),
-	}}
-	if m.resume.choices.Index() != 0 {
-		t.Fatalf("initial index = %d, want 0", m.resume.choices.Index())
-	}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	gotModel := got.(model)
-	if gotModel.resume.choices.Index() != 1 {
-		t.Errorf("index after down = %d, want 1", gotModel.resume.choices.Index())
 	}
 }
 
@@ -579,69 +389,6 @@ func TestUnknownAgentLaunchShowsError(t *testing.T) {
 	}
 }
 
-// TestSessionCheckErrorShowsStatus asserts that if session.LatestForAgent
-// returns an error, the TUI surfaces it in status instead of crashing.
-func TestSessionCheckErrorShowsStatus(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseModel, agent: "opencode", tag: "code",
-		selectedPath: "/nonexistent/path/that/cannot/be/git", models: singleModelList(config.Model{ID: "ollama/gemma4:9b"})}
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel := got.(model)
-	if cmd != nil {
-		t.Errorf("expected nil cmd on session check error, got %v", cmd)
-	}
-	if !strings.Contains(gotModel.status, "session check failed") {
-		t.Errorf("status = %q, want 'session check failed'", gotModel.status)
-	}
-}
-
-// TestResumePromptCancelDoesNotMutateModel asserts that canceling the resume
-// prompt preserves the current agent and model.
-func TestResumePromptCancelDoesNotMutateModel(t *testing.T) {
-	m := model{cfg: testConfig(), phase: phaseResume, agent: "claude", tag: "code",
-		models: singleModelList(config.Model{ID: "ollama/gemma4:9b"}),
-		resume: resumeModel{choices: list.New(buildResumeChoices(nil), list.NewDefaultDelegate(), 80, 24)}}
-	m.resume.choices.CursorDown() // Cancel
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel := got.(model)
-	if gotModel.agent != "claude" || gotModel.tag != "code" {
-		t.Errorf("model mutated on cancel: agent=%q tag=%q", gotModel.agent, gotModel.tag)
-	}
-}
-
-// TestResumeDefaultIsStartFresh asserts that the resume prompt puts
-// "Start fresh" at index 0 so it lands under the bubbles/list cursor by
-// default. The user opted into a fresh session by the launch flow's
-// default; Resume is offered but opt-in.
-func TestResumeDefaultIsStartFresh(t *testing.T) {
-	sess := &session.Session{ID: "abc-123", MTime: time.Now()}
-	items := buildResumeChoices(sess)
-	if len(items) == 0 {
-		t.Fatal("expected resume items")
-	}
-	item := items[0].(choiceItem)
-	if item.choice != freshChoice {
-		t.Errorf("first choice = %v, want freshChoice (Start fresh is the cursor default)", item.choice)
-	}
-
-	// The Resume row is still offered but at a non-default position; assert
-	// the relative-time title still describes the session so the user can
-	// see how stale it is.
-	var resume choiceItem
-	for _, it := range items {
-		ci := it.(choiceItem)
-		if ci.choice == resumeChoice {
-			resume = ci
-			break
-		}
-	}
-	if resume.choice != resumeChoice {
-		t.Fatalf("no resumeChoice row in items: %+v", items)
-	}
-	if !strings.Contains(resume.desc, "ago") && !strings.Contains(resume.desc, "just now") {
-		t.Errorf("resume desc = %q, want relative time", resume.desc)
-	}
-}
-
 // TestSelectedEntryMsgPositionsCursorAtNextToUse asserts the cursor lands
 // on the rotation's next-to-use model, not necessarily index 0. PR 2
 // split the picker into a phaseAgent step followed by a phaseModel step,
@@ -671,7 +418,7 @@ func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 func TestPhaseModelWithListBuildsAndPositionsCursor(t *testing.T) {
 	dir := tempStateDir(t)
 	// State file: rotation.state holding a single model-id-per-line
-	// ("ollama/gemma4:9b\n"). Last() reads that line and FindAfter
+	// ("ollama/gemma4:9b\n"). Last() reads that line and NextFromEligible
 	// returns the next model (gemma4:14b). The cursor lands on gemma4:14b.
 	seedState(t, dir, "ollama/gemma4:9b")
 	cfg := testConfig()
@@ -800,11 +547,18 @@ func TestPhaseModelEnterStaysInApp(t *testing.T) {
 	// shift the cursor and make this test order-dependent.
 	tempStateDir(t)
 	m := phaseModelWithList(t, testConfig(), "claude", "code")
+	// Enter runs the ollama check on the highlighted model; the daemon lists
+	// nothing, so the picker's own handler answers with the "not available"
+	// warning and no launch follows.
+	stubOllamaList(t)
 	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if _, ok := got.(model); !ok {
-		t.Errorf("Update(Enter) returned %T, want model", got)
+	gm, ok := got.(model)
+	if !ok {
+		t.Fatalf("Update(Enter) returned %T, want model", got)
 	}
-	_ = cmd
+	if gm.phase != phaseOllamaWarn || cmd != nil {
+		t.Errorf("after Enter: phase = %d, command = %v; want the ollama warning (%d) and no command", gm.phase, cmd != nil, phaseOllamaWarn)
+	}
 }
 
 // TestNoRKeyInModelPhase asserts pressing 'r' in phaseModel is a
@@ -921,8 +675,8 @@ func TestSelectedEntryLastDiscoveredIDFallsBackToFirstRow(t *testing.T) {
 // the end of the list forever. PR 3b: the picker now sources
 // models from cfg.EligibleModels without an implicit tag filter,
 // so all 3 testConfig models (2 code + 1 design) are in the
-// snapshot; wrapping past gemma4:14b (index 2) lands on
-// gemma4:design (index 3). Index 0 is the leading family divider.
+// snapshot; wrapping past gemma4:14b (index 1) lands on
+// gemma4:design (index 2).
 func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 	dir := tempStateDir(t)
 	seedState(t, dir, "ollama/gemma4:14b")
@@ -952,11 +706,11 @@ func TestSelectedEntryLastLastInListWrapsToZero(t *testing.T) {
 // TestEnterInModelPhaseDoesNotRecordBeforeLaunch asserts that pressing Enter
 // alone does NOT write rotation state. Recording must happen only when the
 // launch actually commits (launchAndRecord), so a launch that never runs —
-// here the ollama availability warning fires, since the test model has no
-// ModelName so no ollama model matches — must not advance the rotation.
+// here the ollama availability warning fires, since the stubbed daemon lists
+// no model — must not advance the rotation.
 // This is the regression guard for the "rotation advances on cancelled
-// launches" bug: without it, a user who cancels the ollama warning (or a
-// resume prompt, or hits an ollama-check error) would silently skip a model
+// launches" bug: without it, a user who cancels the ollama warning (or hits
+// an ollama-check error) would silently skip a model
 // on the next picker entry despite never launching anything.
 func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 	dir := tempStateDir(t)
@@ -969,7 +723,11 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 		t.Fatalf("precondition: cursor = %d, want 0", m.models.Index())
 	}
 
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	stubOllamaList(t)
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if phase := got.(model).phase; phase != phaseOllamaWarn {
+		t.Fatalf("precondition: phase = %d, want the ollama warning", phase)
+	}
 
 	// The launch did not commit (the ollama warning gates it), so no
 	// rotation state must have been written.
@@ -981,9 +739,9 @@ func TestEnterInModelPhaseDoesNotRecordBeforeLaunch(t *testing.T) {
 }
 
 // TestLaunchAndRecordWritesLast asserts that launchAndRecord —
-// the single commit point reached only after the ollama check and
-// resume prompt are satisfied — writes the launched model's ID
-// via rotation.Record to the global rotation state file. This is
+// the single commit point reached only after the ollama check is
+// satisfied — writes the launched model's ID
+// via rotation.RecordFor to the global rotation state file. This is
 // the positive counterpart to
 // TestEnterInModelPhaseDoesNotRecordBeforeLaunch: the rotation
 // advances exactly when a launch commits, no sooner. It also asserts the
@@ -1102,10 +860,9 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 // added a phaseAgent step before phaseModel, so each picker entry now
 // drives the worktree pick and the phaseAgent Enter to reach phaseModel.
 func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
-	dir := tempStateDir(t)
 	// No prior state. Picker entry 1 lands on the first model row
 	// at index 0.
-	_ = dir
+	tempStateDir(t)
 
 	m := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m = drivePhaseAgentEnter(t, m, "claude")
@@ -1211,32 +968,33 @@ func TestPinnedModelWithoutAgentValidatesAfterAgentPick(t *testing.T) {
 
 // buildTestConfigWithModels returns a minimal config with claude supporting
 // the ollama provider and the supplied models. Tests that exercise the
-// litellm_exposed filter use this helper so the fixture exposes exactly the
-// models the test intends.
+// catalog filter use this helper so the fixture exposes exactly the models
+// the test intends.
 func buildTestConfigWithModels(models ...config.Model) *config.Config {
 	return &config.Config{
 		DefaultTag: "code",
-		Providers:  []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
+		Providers:  []config.Provider{{ID: "ollama", Location: config.LocationLocal, Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
 		Models:     models,
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"ollama"}}},
 	}
 }
 
-// TestEligibleModelsHidesUnexposed asserts that cfg.EligibleModels only
-// returns non-native models marked litellm_exposed. Without the exposure
-// gate, non-native models would leak into the picker even when they are not
-// routable through the LiteLLM gateway.
-func TestEligibleModelsHidesUnexposed(t *testing.T) {
+// TestEligibleModelsIncludesUnflagged asserts that cfg.EligibleModels returns
+// every model whose provider resolves — no stored flag gates catalog
+// membership (#179: configured means exposed); a model nothing has marked
+// ready is listed too. Before #179 an unflagged model was hidden from
+// the picker; a regression would again make configured models invisible
+// until someone flagged them.
+func TestEligibleModelsIncludesUnflagged(t *testing.T) {
 	cfg := buildTestConfigWithModels(
-		config.Model{ID: "ollama/exposed", ModelName: "exposed", ProviderID: "ollama", Tags: []string{"code"}},
-		config.Model{ID: "ollama/hidden", ModelName: "hidden", ProviderID: "ollama", Tags: []string{"code"}},
+		config.Model{ID: "ollama/flagged", ModelName: "flagged", ProviderID: "ollama", Tags: []string{"code"}},
+		config.Model{ID: "ollama/unflagged", ModelName: "unflagged", ProviderID: "ollama", Tags: []string{"code"}},
 	)
-	cfg.SetExposedForTest(map[string]config.ExposureEntry{"ollama/exposed": {Exposed: true, Ready: true}})
 	models, err := cfg.EligibleModels("claude", "code", "")
 	if err != nil {
 		t.Fatalf("EligibleModels: %v", err)
 	}
-	if len(models) != 1 || models[0].ID != "ollama/exposed" {
-		t.Fatalf("expected only exposed model, got %v", models)
+	if len(models) != 2 || models[0].ID != "ollama/flagged" || models[1].ID != "ollama/unflagged" {
+		t.Fatalf("expected both configured models, got %v", models)
 	}
 }

@@ -9,6 +9,8 @@ import (
 // start screen and the non-TUI start driver so the two cannot drift.
 func StageLabel(s Stage) string {
 	switch s {
+	case StageStoppingOthers:
+		return "stopping other providers' models"
 	case StageStoppingOccupant:
 		return "stopping the running model"
 	case StageStarting:
@@ -26,20 +28,40 @@ func StageLabel(s Stage) string {
 // StartErrorMessage is the one-line message for a failed start, shared by the
 // TUI's picker status line and the non-TUI driver's stderr. A down daemon
 // names the provider and origin (the user has to start an app or service);
-// the binary and port errors are already actionable as written; everything
+// the binary, port and mtplx address errors are already actionable as
+// written; a server
+// that was stopped again after it started (*StoppedError) did not fail to
+// start, and is worded as not running; everything
 // else is prefixed with the model id so an unattributed engine error is still
-// traceable to the row it came from. The replace-confirmation errors
-// (OccupiedError, OccupancyUnknownError) are deliberately unmapped — callers
+// traceable to the row it came from; *NoRoomError and *KeyRefusedError fall
+// through to that wording too, their own text saying what holds the memory or
+// which key to set. The replace-confirmation errors (OccupiedError,
+// OccupancyUnknownError) are deliberately unmapped — callers
 // handle those interactively, not as a failure line.
 func StartErrorMessage(id string, err error) string {
 	var down *DaemonDownError
 	var bin *BinaryMissingError
 	var busy *PortBusyError
+	var stopped *StoppedError
+	var addr *MtplxAddressError
 	switch {
 	case errors.As(err, &down):
 		return fmt.Sprintf("%s is not answering at %s — start it first", down.Provider, down.Origin)
-	case errors.As(err, &bin), errors.As(err, &busy):
+	case errors.As(err, &bin), errors.As(err, &busy), errors.As(err, &addr):
 		return err.Error()
+	case errors.As(err, &stopped):
+		return fmt.Sprintf("%s is not running: %v", id, stopped)
 	}
 	return fmt.Sprintf("failed to start %s: %v", id, err)
+}
+
+// WithSessions is a prompt line about one model with the number of live wt
+// sessions using it: s alone when none does, else s and the count in
+// parentheses. Shared by the TUI's dialog and the non-TUI driver's prompts,
+// which the docs promise name an occupant the same way (#412).
+func WithSessions(s string, sessions int) string {
+	if sessions <= 0 {
+		return s
+	}
+	return fmt.Sprintf("%s (in use by %d wt session(s))", s, sessions)
 }

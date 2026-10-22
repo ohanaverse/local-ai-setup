@@ -12,8 +12,8 @@ import (
 
 // loadConfigFile reads and decodes config.toml directly (bypassing Load's
 // registry join) so migration tests can assert the raw migration output — the
-// providers/models Migrate seeds are for `modelman migrate` to import, not
-// for wt's Load to read.
+// providers/models Migrate seeds stay in config.toml and Load never returns
+// them: the catalog it joins in comes from registry.toml.
 func loadConfigFile(t *testing.T, dir string) *Config {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "agent-wt", "config.toml"))
@@ -25,34 +25,6 @@ func loadConfigFile(t *testing.T, dir string) *Config {
 		t.Fatal(err)
 	}
 	return &cfg
-}
-
-// parseBashArray extracts the array name and quoted values from a single-line
-// bash array assignment. This is the core parser for the legacy format.
-func TestParseBashArray(t *testing.T) {
-	name, vals := parseBashArray(`CODE_MODELS=("native:copilot" "deepseek-v4-pro:cloud")`)
-	if name != "CODE_MODELS" {
-		t.Fatalf("name = %q, want CODE_MODELS", name)
-	}
-	if len(vals) != 2 || vals[0] != "native:copilot" || vals[1] != "deepseek-v4-pro:cloud" {
-		t.Fatalf("vals = %v, want the two models", vals)
-	}
-}
-
-// parseBashArray must return empty for non-array lines (comments, scalar
-// assignments, blank lines) so the caller can skip them safely.
-func TestParseBashArray_NonArray(t *testing.T) {
-	for _, line := range []string{
-		`DEFAULT_MODEL="kimi-k2.6:cloud"`,
-		`# a comment`,
-		``,
-		`PROVIDER_OLLAMA_BASE_URL="http://localhost:11434"`,
-	} {
-		name, vals := parseBashArray(line)
-		if name != "" || vals != nil {
-			t.Errorf("parseBashArray(%q) = (%q, %v), want empty", line, name, vals)
-		}
-	}
 }
 
 // stripComments removes bash comments so commented-out model entries (e.g.
@@ -148,7 +120,6 @@ func TestMergeTags(t *testing.T) {
 func TestMigrate_EndToEnd(t *testing.T) {
 	tmp := t.TempDir()
 	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
 
 	legacy := `# comment
 CODE_MODELS=(
@@ -162,9 +133,8 @@ DESIGN_MODELS=(
 )
 PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 `
-	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
+	must(t, filepath.Join(cfgDir, "models.conf"), legacy)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -179,8 +149,8 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 		t.Fatalf("config.toml not written: %v", err)
 	}
 
-	// Read the migrated config.toml directly (providers/models are for
-	// modelman to import; wt's Load joins them from registry.toml).
+	// Read the migrated config.toml directly: Load would return
+	// registry.toml's providers/models, not the ones Migrate seeded here.
 	cfg := loadConfigFile(t, tmp)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -248,7 +218,6 @@ PROVIDER_OLLAMA_BASE_URL="http://localhost:9999"
 func TestMigrate_NoLegacyFile(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -263,17 +232,14 @@ func TestMigrate_NoLegacyFile(t *testing.T) {
 // duplicating agy provider/model when a legacy config includes native:agy.
 func TestMigrate_AgySeedingIsIdempotent(t *testing.T) {
 	tmp := t.TempDir()
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
 
 	legacy := `CODE_MODELS=(
 	  "native:agy"
 	  "native:google"
 	)
 	`
-	os.WriteFile(filepath.Join(cfgDir, "models.conf"), []byte(legacy), 0644)
+	must(t, filepath.Join(tmp, "agent-wt", "models.conf"), legacy)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	migrated, err := Migrate()
 	if err != nil {
@@ -333,7 +299,6 @@ func TestMigrateConfigSchema(t *testing.T) {
 	cfgDir := filepath.Join(tmp, "agent-wt")
 	os.MkdirAll(cfgDir, 0755)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("MODELMAN_REGISTRY", "")
 
 	writeCfg := func(t *testing.T, body string) {
 		t.Helper()

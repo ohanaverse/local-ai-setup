@@ -3,17 +3,27 @@ package tui
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // compactModelList builds a 78x22 list.Model from buildTable rows for models
@@ -24,14 +34,21 @@ import (
 func compactModelList(t *testing.T, models []config.Model) list.Model {
 	t.Helper()
 	tbl := buildTable(tableInput{models: models, usage: newUsageStore()}, newRefcountStore(), "")
+	return tableList(tbl, 78, 22)
+}
+
+// tableList is the production picker's list over tbl at the given size:
+// ThemedListDelegate at ShowDescription=false and Spacing 0, the header as the
+// list title via styleTableTitle, and no status bar.
+func tableList(tbl modelTable, width, height int) list.Model {
 	delegate := ThemedListDelegate(themes.Default)
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0)
-	listItems := make([]list.Item, len(tbl.items))
+	items := make([]list.Item, len(tbl.items))
 	for i, it := range tbl.items {
-		listItems[i] = it
+		items[i] = it
 	}
-	ml := list.New(listItems, delegate, 78, 22)
+	ml := list.New(items, delegate, width, height)
 	ml.Title = tbl.header
 	styleTableTitle(&ml, themes.Default)
 	ml.SetShowStatusBar(false)
@@ -43,7 +60,7 @@ func compactModelList(t *testing.T, models []config.Model) list.Model {
 // developer's real ~/.config/agent-wt/usage.jsonl — whose event counts feed
 // the picker's 1d/7d/30d columns and the 7d-usage tie-break, making displayed
 // counts and row order depend on host state. Returns the stubbed store so a test can seed events via
-// Record; the seam is restored on cleanup.
+// RecordFor; the seam is restored on cleanup.
 func stubUsageStore(t *testing.T) usage.Store {
 	t.Helper()
 	store := usage.NewStoreAt(t.TempDir())
@@ -69,21 +86,167 @@ func stubRefcountStore(t *testing.T) refcount.Store {
 	return store
 }
 
+// stubSessionCounts swaps the sessionCounts seam for one that answers counts
+// (a missing id is 0) and records the ids it was asked about; the seam is
+// restored on cleanup.
+func stubSessionCounts(t *testing.T, counts map[string]int) *[]string {
+	t.Helper()
+	var asked []string
+	old := sessionCounts
+	sessionCounts = func(ids []string) map[string]int {
+		asked = append(asked, ids...)
+		return counts
+	}
+	t.Cleanup(func() { sessionCounts = old })
+	return &asked
+}
+
+// replaceCountCases are the occupants a start would stop and the sessions
+// using them, with the header the replace dialog must show: one occupant per
+// line, "(in use by N wt session(s))" after each one someone uses, in the
+// non-TUI prompt's words, and nothing after one nobody uses.
+var replaceCountCases = []struct {
+	name      string
+	occupants []string
+	counts    map[string]int
+	want      string
+}{
+	{"one occupant, two sessions", []string{"omlx/old"}, map[string]int{"omlx/old": 2},
+		"Starting omlx/qwen3.8 will stop:\n  omlx/old (in use by 2 wt session(s))"},
+	{"two occupants, one in use", []string{"omlx/busy", "omlx/idle"}, map[string]int{"omlx/busy": 1},
+		"Starting omlx/qwen3.8 will stop:\n  omlx/busy (in use by 1 wt session(s))\n  omlx/idle"},
+	{"no sessions", []string{"omlx/old"}, map[string]int{},
+		"Starting omlx/qwen3.8 will stop:\n  omlx/old"},
+}
+
+// occupiedBy is the engine's refusal naming ids as the occupants.
+func occupiedBy(ids []string) *lifecycle.OccupiedError {
+	occ := &lifecycle.OccupiedError{}
+	for _, id := range ids {
+		occ.Occupants = append(occ.Occupants, localmodels.Entry{ModelID: id})
+	}
+	return occ
+}
+
+// assertReplaceCountTitle checks the dialog is up with want as its header,
+// that the counts were asked for the occupants, and that every line of the
+// header, each occupant's count with it, is on screen in full.
+func assertReplaceCountTitle(t *testing.T, got model, asked *[]string, occupants []string, want string) {
+	t.Helper()
+	if got.phase != phaseReplaceConfirm || got.replace == nil {
+		t.Fatalf("phase = %v, want the replace dialog", got.phase)
+	}
+	if header := got.replace.header; header != want {
+		t.Errorf("dialog header = %q, want %q", header, want)
+	}
+	if strings.Join(*asked, ",") != strings.Join(occupants, ",") {
+		t.Errorf("sessionCounts asked for %v, want the occupants %v", *asked, occupants)
+	}
+	view := got.View()
+	for _, line := range strings.Split(want, "\n") {
+		if !strings.Contains(view, strings.TrimSpace(line)) {
+			t.Errorf("screen lacks %q; screen:\n%s", strings.TrimSpace(line), view)
+		}
+	}
+}
+
 // TestMain stubs the live-provider inventory so no test in this package ever
 // probes the developer's real ollama/omlx/mtplx servers or reads their model
 // directories, and stubs startModel so no test can start a real model
 // process. Tests that need local rows call stubInventory; tests that exercise
 // the start flow call stubStartModel.
 func TestMain(m *testing.M) {
-	runInventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	// No test may read or write the developer's real config directory —
+	// config.IsolateConfigHomeForTest carries the full rationale. A test that
+	// sets its own XDG_CONFIG_HOME still wins.
+	_, rmConfigHome := config.IsolateConfigHomeForTest()
+	// No test may find a git repository it did not make: the worktree tests
+	// build theirs in temp directories — gitenv.IsolateForTest carries the
+	// full rationale.
+	gitenv.IsolateForTest()
+	// No model table may read the developer's tiers.toml (or the one a
+	// MODELTIERS_OUT in their shell names): every TIER cell is "-" unless a
+	// test names a file of its own (tiers.IsolateForTest).
+	tiers.IsolateForTest()
+	runInventory = localmodels.OnDiskSnapshotForTest
 	startModel = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
 		return errors.New("startModel not stubbed in this test")
+	}
+	// What follows a start the engine reported done (#343, #349) waits for
+	// the proxy, probes the provider's server and may remove a route. Tests
+	// that assert on it swap it themselves (stubSettleStart).
+	settleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error { return nil }
+	// The launch-time route check (#192): unstubbed, a test that launches a
+	// running local model through LiteLLM would rewrite the developer's real
+	// config.yaml and restart their proxy. Both forms are stubbed — the
+	// non-blocking first attempt reports "done, nothing changed", which is the
+	// launch-in-this-same-Update path.
+	tryEnsureModelRoute = func(io.Writer, *config.Config, config.Model) (bool, bool) { return false, true }
+	ensureModelRoute = func(io.Writer, *config.Config, config.Model) bool { return false }
+	// The start flow asks whether a proxy restart is in flight before it
+	// waits for one; no test may read the engine's real answer.
+	routesPending = func() bool { return false }
+	// The slot-profile launch: unstubbed, Enter on a profile row would
+	// rewrite the developer's real config.yaml, restart their proxy and look
+	// the agent binary up. Each seam fails closed; tests that reach the flow
+	// call stubSlotSeams.
+	ensureSlotRoutes = func(context.Context, io.Writer, *config.Config, []config.Model, bool) (bool, error) {
+		return false, errors.New("ensureSlotRoutes not stubbed in this test")
+	}
+	restartProxyNow = func(context.Context, io.Writer, *config.Config) error {
+		return errors.New("restartProxyNow not stubbed in this test")
+	}
+	probeProxyNow = func(context.Context, *config.Config) error {
+		return errors.New("probeProxyNow not stubbed in this test")
+	}
+	settleRoutesNow = func(context.Context, io.Writer, *config.Config) {}
+	buildSlotCmd = func(profiles.SlotLaunch, string, bool, *config.Config, []string) (*exec.Cmd, error) {
+		return nil, errors.New("buildSlotCmd not stubbed in this test")
 	}
 	// Post-exit seams: no test may rewrite the real refcount file or offer to
 	// stop the developer's running models.
 	releaseSession = func() {}
 	runStopPhase = func(*config.Config) {}
-	os.Exit(m.Run())
+	// The replace dialog's session counts (#412): unstubbed, a test that
+	// reaches the dialog would sweep and read the refcount file. Nobody is
+	// in a session unless a test says so (stubSessionCounts).
+	sessionCounts = func([]string) map[string]int { return map[string]int{} }
+	// The model picker's pre-launch ollama check (#317): unstubbed, Enter on
+	// a direct-route ollama model would run whatever `ollama` is on the
+	// developer's PATH, and the test's result would depend on what that
+	// daemon has pulled. Tests that reach the check call stubOllamaList.
+	ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+		return nil, true, errors.New("ollamacheck list not stubbed in this test (ollama list at " + origin + ")")
+	})
+	// The worktree picker's pull request tags (loadPRsCmd): unstubbed, a
+	// test that runs Init's commands would run the developer's gh against
+	// GitHub. Tests that want tags call stubPRList.
+	worktree.StubPRListForTest(func(string, string) ([]byte, error) {
+		return nil, errors.New("gh pr list not stubbed in this test")
+	})
+	code := m.Run()
+	rmConfigHome()
+	os.Exit(code)
+}
+
+// stubPRList makes the worktree picker's `gh pr list` answer with the JSON
+// data for the duration of a test.
+func stubPRList(t *testing.T, data string) {
+	t.Helper()
+	t.Cleanup(worktree.StubPRListForTest(func(string, string) ([]byte, error) { return []byte(data), nil }))
+}
+
+// stubOllamaList makes the picker's pre-launch ollama check see an installed
+// ollama whose daemon lists names, for the duration of a test, and returns
+// where the origin of each `ollama list` it would have run is recorded.
+func stubOllamaList(t *testing.T, names ...string) *[]string {
+	t.Helper()
+	var origins []string
+	t.Cleanup(ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
+		origins = append(origins, origin)
+		return names, true, nil
+	}))
+	return &origins
 }
 
 // stubInventory makes both enterModelPhase and newPickModel see snap (via the
@@ -138,4 +301,161 @@ func selectedModelID(m model) string {
 		return ""
 	}
 	return it.model.ID
+}
+
+// routeStub is what stubEnsureRoute hands a test: the knobs that script the
+// launch-time route check and the record of what the flow did with it.
+type routeStub struct {
+	// changed is what the stubbed check reports: true (the default) means "the
+	// route was missing and was written", so the proxy restarts.
+	changed bool
+	// busy makes the non-blocking first attempt (tryEnsureModelRoute) report
+	// that it got nowhere — a config.yaml lock another wt holds. The flow then
+	// owes a retry through the blocking form, which is what a test sees as a
+	// second "ensure:<id>" event before the wait.
+	busy bool
+	// ensureOutput is written by the stubbed check into the writer the flow
+	// handed it, the way lifecycle prints the "updated" line during the
+	// synchronous write; waitOutput is written into that same writer by the
+	// stubbed waitPendingRoutes, the way the check's async restart prints its
+	// warnings until the wait returns.
+	ensureOutput, waitOutput string
+	// events is each check as "ensure:<model id>" and each wait for the proxy
+	// as "wait", in order.
+	events []string
+	// waitEntered and waitRelease, when set, make the stubbed wait block the
+	// way a real proxy restart does: it closes waitEntered once it is inside
+	// and returns only when waitRelease is closed. Tests that run the routing
+	// command on its own goroutine use them to hold the restart open.
+	waitEntered, waitRelease chan struct{}
+
+	// outs is the writer each check was handed, in call order: one entry per
+	// "ensure:" event. The flow must hand the retry the first attempt's
+	// writer, or half of the check's output ends up somewhere nobody reads.
+	outs []io.Writer
+}
+
+// stubProxyWait replaces the wait a start makes for the proxy restart on both
+// ways out of the engine: waitPendingRoutes, which is the wait after a start
+// that failed (and the launch-time route check's), and settleStart, which is
+// the wait after one that succeeded. The stand-in for the second is
+// lifecycle.SettleStart's first step in front of a server that is still
+// there: it waits and returns nil. Both are restored on cleanup.
+func stubProxyWait(t *testing.T, wait func()) {
+	t.Helper()
+	oldWait, oldSettle := waitPendingRoutes, settleStart
+	waitPendingRoutes = wait
+	settleStart = func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
+		wait()
+		return nil
+	}
+	t.Cleanup(func() { waitPendingRoutes, settleStart = oldWait, oldSettle })
+}
+
+// stubEnsureRoute swaps the three launch-time route check seams
+// (tryEnsureModelRoute, ensureModelRoute, waitPendingRoutes) for recording
+// fakes scripted by the returned routeStub. The wait fake also stands in for
+// the wait of a start that succeeded (stubProxyWait), so a start's wait is a
+// "wait" event whichever way the engine returned. Nothing real is touched: no
+// config.yaml and no proxy. All three seams are restored on cleanup. The two
+// check fakes take no lock: a test either runs the routing command itself, on
+// the test goroutine, or (with waitEntered/waitRelease) reads the stub only
+// after every goroutine that settles the check has finished — settle is
+// once-only, so they still run on one goroutine at a time. The wait fake does
+// take one: a start waits for the proxy on its own goroutine (runStart), so
+// two waits can be recorded at once.
+//
+// Both forms of the check record the same "ensure:<id>" event: they are one
+// check, once blocking and once not, and a test asserting on the flow reads
+// better when it says "the check ran" either way. A retry therefore shows up as
+// the event twice (s.busy), which is the only way the blocking form is reached
+// from the launch flow at all.
+func stubEnsureRoute(t *testing.T) *routeStub {
+	t.Helper()
+	s := &routeStub{changed: true}
+	oldTry, oldEnsure := tryEnsureModelRoute, ensureModelRoute
+	// write prints to the writer the latest check was handed; a wait that no
+	// check preceded (finishStart's) has none and prints nothing.
+	write := func(text string) {
+		if len(s.outs) > 0 && s.outs[len(s.outs)-1] != nil && text != "" {
+			_, _ = io.WriteString(s.outs[len(s.outs)-1], text)
+		}
+	}
+	tryEnsureModelRoute = func(out io.Writer, _ *config.Config, m config.Model) (bool, bool) {
+		s.events = append(s.events, "ensure:"+m.ID)
+		s.outs = append(s.outs, out)
+		if s.busy {
+			// The lock was held: nothing written, nothing known, nothing said.
+			return false, false
+		}
+		write(s.ensureOutput)
+		return s.changed, true
+	}
+	ensureModelRoute = func(out io.Writer, _ *config.Config, m config.Model) bool {
+		s.events = append(s.events, "ensure:"+m.ID)
+		s.outs = append(s.outs, out)
+		write(s.ensureOutput)
+		return s.changed
+	}
+	var waitMu sync.Mutex
+	stubProxyWait(t, func() {
+		waitMu.Lock()
+		defer waitMu.Unlock()
+		s.events = append(s.events, "wait")
+		if s.waitEntered != nil {
+			close(s.waitEntered)
+			<-s.waitRelease
+		}
+		write(s.waitOutput)
+	})
+	t.Cleanup(func() {
+		tryEnsureModelRoute, ensureModelRoute = oldTry, oldEnsure
+	})
+	return s
+}
+
+// stubRouteNotes clears pendingRouteNotes for one test and restores it after,
+// so a test asserting on the captured route output neither sees another test's
+// lines nor leaves its own behind.
+func stubRouteNotes(t *testing.T) {
+	t.Helper()
+	old := pendingRouteNotes
+	pendingRouteNotes = ""
+	t.Cleanup(func() { pendingRouteNotes = old })
+}
+
+// routeDoneFrom runs the routing command out of the batch checkLaunchRoute
+// returned and returns its routeDoneMsg. The batch also holds the one-second
+// elapsed-time tick, which is left unrun: only the first command is the check.
+func routeDoneFrom(t *testing.T, cmd tea.Cmd) routeDoneMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("no command: the routing phase must return the wait as a command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("command = %T (%d), want a batch of the routing command and its tick", batch, len(batch))
+	}
+	done, ok := batch[0]().(routeDoneMsg)
+	if !ok {
+		t.Fatalf("first batched command returned %T, want routeDoneMsg", done)
+	}
+	return done
+}
+
+// TestConfigHomeIsNotTheDevelopersOwn pins TestMain's throwaway config home:
+// everything wt keeps under its config directory — rotation.state, usage.jsonl,
+// refcount.jsonl, profile backups and locks — resolves into a temp directory
+// for this package's tests, never ~/.config. Without it a test that launches a
+// stub agent rewrites the developer's real rotation state on every run.
+func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	for _, pair := range [][2]string{{"config.Dir()", config.Dir()}, {"config.RegistryPath()", config.RegistryPath()}} {
+		if strings.HasPrefix(pair[1], filepath.Join(home, ".config")) || !strings.Contains(pair[1], "wt-test-config-") {
+			t.Errorf("%s = %s, want a path under this package's throwaway config home", pair[0], pair[1])
+		}
+	}
 }

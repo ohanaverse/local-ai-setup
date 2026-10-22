@@ -1,16 +1,12 @@
 package agents
 
 import (
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 func assertEnv(t *testing.T, env []string, key, want string) {
@@ -49,54 +45,6 @@ func argsFlagValue(args []string, flag string) (string, bool) {
 	return "", false
 }
 
-// TestClaudeLatestSession asserts claudeDriver finds the newest .jsonl
-// session file under ~/.claude/projects/<slug> and strips the extension.
-func TestClaudeLatestSession(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	worktree := "/some/worktree/path"
-	dir := filepath.Join(home, ".claude", "projects", session.Slug(worktree))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := filepath.Join(dir, "old.jsonl")
-	new := filepath.Join(dir, "new.jsonl")
-	if err := os.WriteFile(old, []byte("a"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(new, []byte("b"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldInfo, _ := os.Stat(old)
-	os.Chtimes(new, oldInfo.ModTime(), oldInfo.ModTime().Add(time.Second))
-
-	d := claudeDriver{}
-	s, err := d.LatestSession(worktree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s == nil || s.ID != "new" {
-		t.Fatalf("expected newest claude session id \"new\", got %+v", s)
-	}
-}
-
-// TestClaudeLatestSessionNoDir asserts claudeDriver returns nil when no
-// session directory exists, without returning an error.
-func TestClaudeLatestSessionNoDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	d := claudeDriver{}
-	s, err := d.LatestSession("/nonexistent/worktree")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s != nil {
-		t.Fatalf("expected nil session, got %+v", s)
-	}
-}
-
 // TestClaudeSeeder asserts claudeDriver returns the CLAUDE.md pointer.
 func TestClaudeSeeder(t *testing.T) {
 	var d Driver = claudeDriver{}
@@ -117,8 +65,7 @@ func TestClaudeSeeder(t *testing.T) {
 // gateway with the registry model id and gateway credentials.
 func TestClaudeBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := claudeDriver{}.Build(m, false, routeFor(m, gw))
+	lc := claudeDriver{}.Build(m, false, litellmRoute(m))
 	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
 	assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
@@ -135,8 +82,7 @@ func TestClaudeBuildLitellm(t *testing.T) {
 // permission-skip flag is requested: the yolo flag precedes --model in args.
 func TestClaudeBuildLitellmYolo(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := claudeDriver{}.Build(m, true, routeFor(m, gw))
+	lc := claudeDriver{}.Build(m, true, litellmRoute(m))
 	assertEnv(t, lc.Env, "ANTHROPIC_BASE_URL", "http://localhost:4000")
 	assertEnv(t, lc.Env, "ANTHROPIC_AUTH_TOKEN", "sk-litellm")
 	assertEnv(t, lc.Env, "ANTHROPIC_API_KEY", "")
@@ -191,8 +137,7 @@ func TestClaudeNativeIgnoresGateway(t *testing.T) {
 		ProviderID: "anthropic",
 		Native:     true,
 	}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := claudeDriver{}.Build(m, false, routeFor(m, gw))
+	lc := claudeDriver{}.Build(m, false, litellmRoute(m))
 
 	wantClear := []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
 	for _, key := range wantClear {
@@ -211,14 +156,15 @@ func TestClaudeNativeIgnoresGateway(t *testing.T) {
 	}
 }
 
-// TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms verifies
-// claude's ProfileMechanisms matches the Phase-1 design (env for the
-// attribution header/thinking cap, config_content for the
-// ANTHROPIC_DEFAULT_*_MODEL mapping via settings.local.json) — a profile
-// using any other mechanism for claude must fail Validate.
-func TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
+// TestClaudeDriverDeclaresEnvConfigFileAndConfigDefaultsProfileMechanisms
+// verifies claude's ProfileMechanisms is exactly env (the thinking cap and
+// overrides of the slot variables wt sets itself), config_file
+// (config_content for settings.local.json) and config_defaults (values
+// written there only where absent, #402) — a profile using a mechanism
+// outside these three for claude must fail Validate.
+func TestClaudeDriverDeclaresEnvConfigFileAndConfigDefaultsProfileMechanisms(t *testing.T) {
 	mechs := claudeDriver{}.ProfileMechanisms()
-	want := map[profiles.Mechanism]bool{profiles.MechanismEnv: true, profiles.MechanismConfigFile: true}
+	want := map[profiles.Mechanism]bool{profiles.MechanismEnv: true, profiles.MechanismConfigFile: true, profiles.MechanismConfigDefaults: true}
 	if len(mechs) != len(want) {
 		t.Fatalf("ProfileMechanisms() = %v, want exactly %v", mechs, want)
 	}
@@ -226,5 +172,62 @@ func TestClaudeDriverDeclaresEnvAndConfigFileProfileMechanisms(t *testing.T) {
 		if !want[m] {
 			t.Errorf("unexpected mechanism %q", m)
 		}
+	}
+}
+
+// TestClaudeStateDir pins where claude keeps a working directory's project
+// state: ~/.claude/projects/<slug>, every character outside [a-zA-Z0-9-]
+// (an underscore included) turned into a dash.
+func TestClaudeStateDir(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	got := claudeDriver{}.StateDir("/private/var/x_y/T/wt-smoke-1")
+	if want := "/h/.claude/projects/-private-var-x-y-T-wt-smoke-1"; got != want {
+		t.Fatalf("StateDir = %q, want %q", got, want)
+	}
+}
+
+// TestPiStateDir pins where pi keeps a working directory's sessions:
+// <agent dir>/sessions/--<path>--, the leading slash dropped and only "/",
+// "\" and ":" turned into dashes (an underscore survives), with
+// PI_CODING_AGENT_DIR overriding ~/.pi/agent.
+func TestPiStateDir(t *testing.T) {
+	t.Setenv("HOME", "/h")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	got := piDriver{}.StateDir("/private/var/x_y/T/wt-smoke-1")
+	if want := "/h/.pi/agent/sessions/--private-var-x_y-T-wt-smoke-1--"; got != want {
+		t.Fatalf("StateDir = %q, want %q", got, want)
+	}
+	t.Setenv("PI_CODING_AGENT_DIR", "/elsewhere")
+	got = piDriver{}.StateDir("/tmp/wt-smoke-1")
+	if want := "/elsewhere/sessions/--tmp-wt-smoke-1--"; got != want {
+		t.Fatalf("StateDir with PI_CODING_AGENT_DIR = %q, want %q", got, want)
+	}
+}
+
+// TestValidateRejectsConfigDefaultsOnAgentsWithoutIt pins that only claude
+// declares config_defaults: codex and opencode reject it with the standard
+// unsupported-mechanism message, claude accepts it.
+func TestValidateRejectsConfigDefaultsOnAgentsWithoutIt(t *testing.T) {
+	mechs := func(agent string) []profiles.Mechanism {
+		d, ok := ByName(agent).(profiles.ProfileCapable)
+		if !ok {
+			return nil
+		}
+		return d.ProfileMechanisms()
+	}
+	for _, agent := range []string{"codex", "opencode", "pi"} {
+		store := profiles.Store{Profiles: []profiles.Profile{
+			{Agent: agent, Match: "location", Location: "local", ConfigDefaults: map[string]any{"a": "b"}},
+		}}
+		err := profiles.Validate(store, mechs, nil)
+		if err == nil || !strings.Contains(err.Error(), `agent does not support mechanism "config_defaults"`) {
+			t.Errorf("%s: Validate() = %v, want unsupported config_defaults", agent, err)
+		}
+	}
+	store := profiles.Store{Profiles: []profiles.Profile{
+		{Agent: "claude", Match: "location", Location: "local", ConfigDefaults: map[string]any{"a": "b"}},
+	}}
+	if err := profiles.Validate(store, mechs, nil); err != nil {
+		t.Errorf("claude: Validate() = %v, want nil", err)
 	}
 }

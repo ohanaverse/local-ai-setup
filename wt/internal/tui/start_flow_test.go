@@ -1,8 +1,14 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -10,9 +16,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -68,7 +78,6 @@ func startCfg(provider, id, name string) *config.Config {
 		},
 		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"claude", provider}}},
 	}
-	cfg.ExposeAllForTest()
 	cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
 	return cfg
 }
@@ -168,7 +177,7 @@ func updateMsg(m model, msg tea.Msg) (model, tea.Cmd) {
 // AllowReplace false, streams the engine's stage into the state, and on
 // success proceeds straight to launch — bypassing the ollama availability
 // check (the model just loaded). This is the core of the start-on-select
-// flow: without it Enter would show the old modelman hint again.
+// flow: without it Enter would only show a hint to start the model by hand.
 func TestEnterOnStartRowBeginsStart(t *testing.T) {
 	requireBinary(t, "claude")
 	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
@@ -191,7 +200,7 @@ func TestEnterOnStartRowBeginsStart(t *testing.T) {
 		t.Fatalf("startModel calls = %d, want 1", calls.len())
 	}
 	c := calls.at(0)
-	if c.target != (lifecycle.Target{ProviderID: "ollama", ModelName: "gemma4:9b"}) {
+	if c.target != (lifecycle.Target{ProviderID: "ollama", ModelName: "gemma4:9b", ModelID: "ollama/gemma4:9b"}) {
 		t.Errorf("target = %+v, want ollama/gemma4:9b pair", c.target)
 	}
 	if c.opts.AllowReplace {
@@ -225,7 +234,7 @@ func TestEnterOnStartRowBeginsStart(t *testing.T) {
 func TestOccupiedOpensReplaceConfirmWithCancelDefault(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 	})
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
@@ -235,8 +244,8 @@ func TestOccupiedOpensReplaceConfirmWithCancelDefault(t *testing.T) {
 	if got.phase != phaseReplaceConfirm {
 		t.Fatalf("phase = %v, want phaseReplaceConfirm", got.phase)
 	}
-	if !strings.Contains(got.replace.choices.Title, "omlx/old") {
-		t.Errorf("dialog title %q must name the occupant", got.replace.choices.Title)
+	if !strings.Contains(got.replace.header, "omlx/old") {
+		t.Errorf("dialog header %q must name the occupant", got.replace.header)
 	}
 	items := got.replace.choices.Items()
 	if len(items) != 2 {
@@ -256,6 +265,92 @@ func TestOccupiedOpensReplaceConfirmWithCancelDefault(t *testing.T) {
 	}
 }
 
+// TestReplaceDialogNamesTheOccupantsSessions pins the replace dialog of an
+// ordinary start row (#412, decision 2): each occupant some wt sessions use
+// is named with "(in use by N wt session(s))", in the non-TUI prompt's words,
+// and one nobody uses is named bare. Without the count the picker hides that
+// "Replace and start" cuts off a session in another terminal, which the
+// non-TUI prompt has always said.
+func TestReplaceDialogNamesTheOccupantsSessions(t *testing.T) {
+	for _, c := range replaceCountCases {
+		t.Run(c.name, func(t *testing.T) {
+			asked := stubSessionCounts(t, c.counts)
+			m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+			stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+				return occupiedBy(c.occupants)
+			})
+			got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+			got, _ = updateMsg(got, recvStart(t, got))
+			assertReplaceCountTitle(t, got, asked, c.occupants, c.want)
+		})
+	}
+}
+
+// TestReplaceDialogShowsEveryCountAt80Columns builds the dialog for real
+// model ids on a standard 80x24 terminal (#412): every occupant's full
+// "<id> (in use by N wt session(s))" must be on screen, on one line. The
+// count is the end of a long line, so a dialog that puts every occupant on
+// its title line loses exactly the warning to the terminal's edge, and later
+// occupants with it.
+func TestReplaceDialogShowsEveryCountAt80Columns(t *testing.T) {
+	occupants := []string{"omlx/Ornith-1.5-35B-A3B-6bit", "omlx/Qwen3-Coder-30B-A3B-Instruct-4bit", "omlx/gemma-4-27b-it-qat-4bit"}
+	stubSessionCounts(t, map[string]int{occupants[0]: 1, occupants[1]: 2, occupants[2]: 3})
+	m := startFixture(t, "omlx", "omlx/Qwen3.6-35B-A3B-4bit", "Qwen3.6-35B-A3B-4bit")
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		return occupiedBy(occupants)
+	})
+	got, _ := enterStartRow(t, m, "omlx/Qwen3.6-35B-A3B-4bit")
+	got, _ = updateMsg(got, recvStart(t, got))
+	if got.phase != phaseReplaceConfirm {
+		t.Fatalf("phase = %v, want the replace dialog", got.phase)
+	}
+	view := got.View()
+	for i, oid := range occupants {
+		want := fmt.Sprintf("%s (in use by %d wt session(s))", oid, i+1)
+		if !strings.Contains(view, want) {
+			t.Errorf("screen lacks %q in full; screen:\n%s", want, view)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Errorf("line %q is %d columns, wider than the terminal", line, w)
+		}
+	}
+}
+
+// TestReplaceDialogCountsOtherSessionsOnly runs the dialog over the real
+// count source (the refcount file under the test's throwaway config
+// home): another live process using the occupant is counted, and the picker
+// has recorded no session of its own when the dialog is built (it records at
+// the launch after it), so the count never includes the wt that is choosing.
+// A picker that counted itself would warn about a session that does not
+// exist yet.
+func TestReplaceDialogCountsOtherSessionsOnly(t *testing.T) {
+	old := sessionCounts
+	sessionCounts = refcount.SessionCounts
+	t.Cleanup(func() { sessionCounts = old })
+	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
+	t.Cleanup(func() { _ = refcount.NewStore().Release(os.Getppid()) })
+	if err := refcount.NewStore().Record(os.Getppid(), "omlx/old"); err != nil {
+		t.Fatal(err)
+	}
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error {
+		return occupiedBy([]string{"omlx/old"})
+	})
+	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
+	got, _ = updateMsg(got, recvStart(t, got))
+	if got.phase != phaseReplaceConfirm {
+		t.Fatalf("phase = %v, want the replace dialog", got.phase)
+	}
+	want := "Starting omlx/qwen3.8 will stop:\n  omlx/old (in use by 1 wt session(s))"
+	if header := got.replace.header; header != want {
+		t.Errorf("dialog header = %q, want %q", header, want)
+	}
+	if live := refcount.NewStore().Live(); len(live) != 1 || live["omlx/old"] != 1 {
+		t.Errorf("live sessions = %v, want only the other process's on omlx/old (the picker records nothing before it launches)", live)
+	}
+}
+
 // TestUnknownOccupancyOpensReplaceConfirm verifies an OccupancyUnknownError
 // opens the same dialog, with the title naming the provider and origin it
 // could not probe — the user must decide without a false claim of certainty.
@@ -272,8 +367,8 @@ func TestUnknownOccupancyOpensReplaceConfirm(t *testing.T) {
 	if got.phase != phaseReplaceConfirm {
 		t.Fatalf("phase = %v, want phaseReplaceConfirm", got.phase)
 	}
-	if !strings.Contains(got.replace.choices.Title, "omlx") || !strings.Contains(got.replace.choices.Title, "http://localhost:8000") {
-		t.Errorf("dialog title %q must mention the provider and origin", got.replace.choices.Title)
+	if !strings.Contains(got.replace.header, "omlx") || !strings.Contains(got.replace.header, "http://localhost:8000") {
+		t.Errorf("dialog header %q must mention the provider and origin", got.replace.header)
 	}
 }
 
@@ -283,7 +378,7 @@ func TestUnknownOccupancyOpensReplaceConfirm(t *testing.T) {
 func TestReplaceConfirmProceedReissuesStartWithAllowReplace(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 	})
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
@@ -303,7 +398,7 @@ func TestReplaceConfirmProceedReissuesStartWithAllowReplace(t *testing.T) {
 		t.Error("second call must have AllowReplace == true")
 	}
 	c := calls.at(1)
-	if c.target != (lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8"}) {
+	if c.target != (lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", ModelID: "omlx/qwen3.8"}) {
 		t.Errorf("second target = %+v, want the same row", c.target)
 	}
 }
@@ -314,7 +409,7 @@ func TestReplaceConfirmProceedReissuesStartWithAllowReplace(t *testing.T) {
 func TestReplaceConfirmCancelDoesNotStart(t *testing.T) {
 	m := startFixture(t, "omlx", "omlx/qwen3.8", "qwen3.8")
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+		return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 	})
 
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
@@ -454,7 +549,7 @@ func TestStartFailureRefreshesTable(t *testing.T) {
 
 	stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
 		if confirm {
-			return &lifecycle.OccupiedError{Occupant: localmodels.Entry{ModelID: "omlx/old"}}
+			return &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodels.Entry{ModelID: "omlx/old"}}}
 		}
 		return errors.New("boom")
 	})
@@ -627,15 +722,6 @@ func TestStartingViewShowsStageAndElapsed(t *testing.T) {
 	}
 }
 
-// e2eStubStartModel is a startModel fake for end-to-end tests: it records the
-// call and reports a successful start.
-func e2eStubStartModel(t *testing.T) *startCalls {
-	t.Helper()
-	return stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		return nil
-	})
-}
-
 // TestEndToEndNonRunningOmlxRowStartsThenLaunches drives the real path —
 // stubbed inventory to enterModelPhase to Enter to the (stubbed) engine — to
 // verify a non-running omlx row is a start row (start == true, no hint), that
@@ -647,7 +733,7 @@ func TestEndToEndNonRunningOmlxRowStartsThenLaunches(t *testing.T) {
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true},
 	}})
-	calls := e2eStubStartModel(t)
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 
 	got := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
 	idx := indexOfID(got, "omlx/qwen3.8")
@@ -688,7 +774,7 @@ func TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold(t *testing.T) {
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "ollama", Artifact: "gemma4:9b", ModelID: "ollama/gemma4:9b", Registered: true, ArtifactKnown: true},
 	}})
-	calls := e2eStubStartModel(t)
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
 
 	got := flowEnter(t, model{cfg: startCfg("ollama", "ollama/gemma4:9b", "gemma4:9b"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
 	idx := indexOfID(got, "ollama/gemma4:9b")
@@ -712,46 +798,22 @@ func TestEndToEndPulledOllamaRowStartsInsteadOfLaunchingCold(t *testing.T) {
 	}
 }
 
-// TestEndToEndAbsentRowIsBlocked verifies an absent omlx row carries the
-// "not on disk" hint, is not a start row, and Enter shows the status without
-// calling the engine — starting a model that is not there would just wait
-// out the warmup timeout.
-func TestEndToEndAbsentRowIsBlocked(t *testing.T) {
+// TestEndToEndAbsentRowIsHidden verifies a registered omlx model the probe
+// confirmed is not on disk gets no picker row at all (#179 Phase B: local rows
+// come only from the inventory), so it can neither be started nor selected —
+// starting a model that is not there would just wait out the warmup timeout.
+func TestEndToEndAbsentRowIsHidden(t *testing.T) {
 	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
 		{ProviderID: "omlx", ModelID: "omlx/qwen3.8", Registered: true, ArtifactKnown: true},
 	}})
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
-		t.Error("startModel must not be called for an absent row")
+		t.Error("startModel must not be called for an absent model")
 		return errors.New("must not start")
 	})
 
 	got := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
-	idx := indexOfID(got, "omlx/qwen3.8")
-	if idx < 0 {
-		t.Fatalf("no omlx row in %v", itemIDs(got))
-	}
-	it := got.models.Items()[idx].(*modelItem)
-	if it.start {
-		t.Error("absent row must not be a start row")
-	}
-	if !strings.Contains(it.blocked, "not on disk") {
-		t.Errorf("blocked = %q, want the not-on-disk reason", it.blocked)
-	}
-
-	got.models.Select(idx)
-	next, _ := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got = next.(model)
-	if got.phase != phaseModel {
-		t.Errorf("phase = %v, want phaseModel (stays on the picker)", got.phase)
-	}
-	if !strings.Contains(got.status, "not on disk") {
-		t.Errorf("status = %q, want the not-on-disk reason", got.status)
-	}
-	// A blocked row never begins a start, so there is no call to wait for:
-	// asserting the state a start would have produced makes "no start was
-	// begun" a property of the picker rather than of timing.
-	if got.start != nil {
-		t.Error("a blocked row must not leave a start in flight")
+	if idx := indexOfID(got, "omlx/qwen3.8"); idx >= 0 {
+		t.Fatalf("absent omlx/qwen3.8 has a row at %d in %v, want none", idx, itemIDs(got))
 	}
 	if calls.len() != 0 {
 		t.Errorf("startModel calls = %d, want 0", calls.len())
@@ -769,7 +831,6 @@ func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
 		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	local.ExposeAllForTest()
 	calls := stubStartModel(t, func(call int, ctx context.Context, target lifecycle.Target, opts lifecycle.Options) error {
 		t.Error("enterModelPhase must not auto-start a lone start row")
 		return errors.New("no auto-start")
@@ -790,7 +851,7 @@ func TestSingleRowShortcutDoesNotFireForStartRow(t *testing.T) {
 	if len(items) != 1 || !items[0].(*modelItem).start {
 		t.Errorf("row start = %v (items = %d), want a single start row", items[0].(*modelItem).start, len(items))
 	}
-	// As in TestEndToEndAbsentRowIsBlocked: a start that never began cannot be
+	// As in TestEndToEndAbsentRowIsHidden: a start that never began cannot be
 	// waited for, so assert the absent start state as well as the count.
 	if got.start != nil {
 		t.Error("the shortcut must not leave a start in flight")
@@ -858,7 +919,7 @@ func TestReplaceFlagGrantsPermissionToPinnedRow(t *testing.T) {
 // allowReplace would silently disable --replace while every other test passed.
 func TestRunArgsReachModel(t *testing.T) {
 	for _, allow := range []bool{true, false} {
-		m := newRunModel(false, allow, "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil)
+		m := newRunModel(false, allow, "", "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil)
 		if m.allowReplace != allow {
 			t.Errorf("allowReplace=%v: model.allowReplace=%v", allow, m.allowReplace)
 		}
@@ -886,9 +947,7 @@ func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	oldWait := waitPendingRoutes
-	waitPendingRoutes = func() { close(entered); <-release }
-	t.Cleanup(func() { waitPendingRoutes = oldWait })
+	stubProxyWait(t, func() { close(entered); <-release })
 
 	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
 	// A model value is far too large for a channel element, so the result is
@@ -900,7 +959,11 @@ func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
 		next, _ = updateMsg(got, recvStart(t, got))
 	}()
 
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start flow never waited for the proxy restart")
+	}
 	select {
 	case <-done:
 		t.Fatal("the start flow launched while the proxy restart was still pending")
@@ -917,5 +980,901 @@ func TestSuccessfulStartWaitsForPendingRoutesBeforeLaunching(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the start flow never proceeded after the routes settled")
+	}
+}
+
+// launchRowFixture is the model picker over modelTestConfig with omlx/qwen3.8
+// running, the cursor on id, and the agent swapped for one no driver knows so
+// that Enter runs proceedToLaunch and then fails the launch observably.
+func launchRowFixture(t *testing.T, id string) model {
+	t.Helper()
+	stubInventory(t, runningOmlxSnapshot())
+	m := flowEnter(t, model{cfg: modelTestConfig(), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	idx := indexOfID(m, id)
+	if idx < 0 {
+		t.Fatalf("no row %s in %v", id, itemIDs(m))
+	}
+	m.models.Select(idx)
+	m.agent = "not-a-real-agent"
+	return m
+}
+
+// routeUpdatedLine is the one line lifecycle prints when the launch-time check
+// wrote a route; the tests script the stub to "print" it.
+const routeUpdatedLine = "wt: LiteLLM route for omlx/qwen3.8 updated\n"
+
+// routeWaitingLine is what Run() prints before it waits for a proxy restart
+// the user quit out of.
+const routeWaitingLine = "wt: waiting for the LiteLLM proxy restart…\n"
+
+// TestLaunchOfRunningLocalRowEnsuresRoute pins #192 for the picker: Enter on
+// a local row that is already running checks its LiteLLM route — such a model
+// may never have been started by wt, so no start hook wrote its route — and,
+// when the check had to write it, shows the routing phase instead of
+// launching. The wait for the proxy restart must NOT have run by the time
+// Update returns: that wait on the update goroutine is the 10–20 s frozen
+// picker this phase exists to remove.
+func TestLaunchOfRunningLocalRowEnsuresRoute(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stubRouteNotes(t)
+
+	next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if next.phase != phaseRouting {
+		t.Fatalf("phase = %v, want phaseRouting while the proxy restarts", next.phase)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q, want only ensure:omlx/qwen3.8 — the wait belongs to the command, not the update goroutine", got)
+	}
+	if strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q: the launch was attempted before the proxy restart finished", next.status)
+	}
+	if cmd == nil {
+		t.Fatal("no command returned: nothing would ever end the routing phase")
+	}
+	if next.routing == nil || next.routing.modelID != "omlx/qwen3.8" {
+		t.Fatalf("routing = %+v, want the in-flight check for omlx/qwen3.8", next.routing)
+	}
+}
+
+// TestLaunchRouteCheckYieldsTheLockInsteadOfWaiting pins the picker's half of
+// #192's freeze fix. When the check cannot take the config.yaml lock at once —
+// another wt is mid-write — the update goroutine hands the whole thing to the
+// routing command instead of waiting for it, so the screen keeps repainting and
+// ctrl+c still works; the command retries the check with the lock wait it is
+// allowed to pay there, then waits for the restart that retry may start. The
+// retry is what shows up as a second "ensure:" event, and the routing screen is
+// entered even though whether the proxy will restart is not yet known.
+func TestLaunchRouteCheckYieldsTheLockInsteadOfWaiting(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.busy = true
+	stubRouteNotes(t)
+
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if routing.phase != phaseRouting {
+		t.Fatalf("phase = %v, want phaseRouting", routing.phase)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q, want only the non-blocking attempt: no wait, and no retry yet", got)
+	}
+	if cmd == nil {
+		t.Fatal("no command returned: nothing would retry the check or end the routing phase")
+	}
+
+	next, _ := updateMsg(routing, routeDoneFrom(t, cmd))
+
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want the check retried once behind the screen, then the wait", got)
+	}
+	if next.phase == phaseRouting || next.routing != nil {
+		t.Fatalf("phase = %v routing = %+v, want the routing phase left behind", next.phase, next.routing)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted after the retry", next.status)
+	}
+	// One buffer for the whole check: what the retry prints has to reach the
+	// notes the first attempt's would have.
+	if len(stub.outs) != 2 || stub.outs[0] == nil || stub.outs[0] != stub.outs[1] {
+		t.Fatalf("writers handed to the check = %v, want the retry given the first attempt's", stub.outs)
+	}
+}
+
+// TestRoutingCommandWaitsThenLaunches pins the second half: the command waits
+// for the proxy, and only its message launches the agent. Launching without
+// that wait hands the agent a proxy that is mid-restart (refused connection)
+// or still serving the old route table ("Invalid model name"). It also pins
+// that the check's output is read only after the wait, so the restart's own
+// warnings — printed until then — are in the notes the message carries.
+func TestRoutingCommandWaitsThenLaunches(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stubRouteNotes(t)
+
+	stub.ensureOutput, stub.waitOutput = routeUpdatedLine, "wt: LiteLLM proxy did not come back\n"
+
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	done := routeDoneFrom(t, cmd)
+	next, _ := updateMsg(routing, done)
+
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want ensure:omlx/qwen3.8,wait", got)
+	}
+	if want := routeUpdatedLine + "wt: LiteLLM proxy did not come back\n"; done.notes != want {
+		t.Fatalf("notes = %q, want %q: the buffer was read before the restart had finished printing", done.notes, want)
+	}
+	if next.phase == phaseRouting || next.routing != nil {
+		t.Fatalf("phase = %v routing = %+v, want the routing phase left behind", next.phase, next.routing)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted after the wait", next.status)
+	}
+}
+
+// TestLaunchWithRouteAlreadyPresentLaunchesAtOnce pins the common case: the
+// route is already in config.yaml, nothing restarts, and the launch happens in
+// the same Update as today — no routing screen for even a frame and no wait.
+// A regression here would add a screen flash, or a needless wait, to every
+// launch of a running local model.
+func TestLaunchWithRouteAlreadyPresentLaunchesAtOnce(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.changed = false
+	stubRouteNotes(t)
+
+	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if next.phase == phaseRouting || next.routing != nil {
+		t.Fatalf("phase = %v routing = %+v, want no routing phase when nothing changed", next.phase, next.routing)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q, want ensure:omlx/qwen3.8 and no wait: this write started no restart", got)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted in the same Update", next.status)
+	}
+}
+
+// TestLaunchWithRouteAlreadyPresentWaitsForARestartInFlight: the route is in
+// place, but a restart started earlier in the session (a profile dropped on
+// the replace dialog settles one) is still in flight. The proxy refuses
+// connections while it drains, for up to three minutes, so the launch goes
+// behind the routing screen and its command waits for that restart, as the
+// CLI's ensureRouteBeforeLaunch does.
+func TestLaunchWithRouteAlreadyPresentWaitsForARestartInFlight(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.changed = false
+	stubRouteNotes(t)
+	oldPending := routesPending
+	routesPending = func() bool { return true }
+	t.Cleanup(func() { routesPending = oldPending })
+
+	next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if next.phase != phaseRouting || next.routing == nil {
+		t.Fatalf("phase = %v routing = %+v, want phaseRouting while an earlier restart is in flight", next.phase, next.routing)
+	}
+	if strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q: the launch was attempted before the restart in flight finished", next.status)
+	}
+	if cmd == nil {
+		t.Fatal("no command returned: nothing would ever end the routing phase")
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q, want only ensure:omlx/qwen3.8 — the wait belongs to the command", got)
+	}
+	if notes := next.routing.settle(); notes != "" {
+		t.Fatalf("notes = %q, want none", notes)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want the check once and then the wait, with no second check", got)
+	}
+}
+
+// TestRouteCheckOutputIsKept pins that what the route check prints is not
+// lost under the alt screen: the captured text lands in pendingRouteNotes, to
+// be printed on the real terminal once it is released. Both paths are covered
+// — a changed route, whose output arrives with the routing command's message,
+// and an unchanged one that still warned — plus a two-line capture, where the
+// notes keep both lines. The launch that follows is made to fail (the
+// fixture's unknown agent), which is also the one case where the user stays on
+// a picker screen: its status is the failure, and the notes are still kept.
+func TestRouteCheckOutputIsKept(t *testing.T) {
+	const restartWarning = "wt: LiteLLM proxy did not come back\n"
+	const writeWarning = "wt: LiteLLM route not updated: boom\n"
+	for _, tc := range []struct {
+		name                     string
+		changed                  bool
+		ensureOutput, waitOutput string
+	}{
+		{name: "changed", changed: true, ensureOutput: routeUpdatedLine},
+		{name: "changed, restart warned", changed: true, ensureOutput: routeUpdatedLine, waitOutput: restartWarning},
+		{name: "unchanged, write warned", changed: false, ensureOutput: writeWarning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := launchRowFixture(t, "omlx/qwen3.8")
+			stub := stubEnsureRoute(t)
+			stub.changed, stub.ensureOutput, stub.waitOutput = tc.changed, tc.ensureOutput, tc.waitOutput
+			stubRouteNotes(t)
+
+			next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+			if tc.changed {
+				next, _ = updateMsg(next, routeDoneFrom(t, cmd))
+			}
+
+			if want := tc.ensureOutput + tc.waitOutput; pendingRouteNotes != want {
+				t.Fatalf("pendingRouteNotes = %q, want %q", pendingRouteNotes, want)
+			}
+			if !strings.Contains(next.status, "launch failed") {
+				t.Fatalf("status = %q, want the launch to have been attempted after the check", next.status)
+			}
+		})
+	}
+}
+
+// TestRouteCheckSilentLeavesNoNotes pins the quiet case: a check that printed
+// nothing adds nothing to the notes, so an ordinary launch prints nothing
+// extra on the terminal.
+func TestRouteCheckSilentLeavesNoNotes(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.changed = false
+	stubRouteNotes(t)
+
+	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if pendingRouteNotes != "" {
+		t.Fatalf("pendingRouteNotes = %q, want empty for a silent check", pendingRouteNotes)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted", next.status)
+	}
+}
+
+// routingFixture is a model sitting in phaseRouting for omlx/qwen3.8: Enter
+// was pressed on the running row and the check reported a change. It returns
+// the model, the pending command and the stub.
+func routingFixture(t *testing.T) (model, tea.Cmd, *routeStub) {
+	t.Helper()
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stubRouteNotes(t)
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if routing.phase != phaseRouting {
+		t.Fatalf("phase = %v, want phaseRouting", routing.phase)
+	}
+	return routing, cmd, stub
+}
+
+// TestRoutingPhaseIgnoresKeysExceptCtrlC pins the keyboard while the proxy
+// restarts. The route is already written and the restart cannot be cancelled,
+// so Enter, esc, q and a movement key must do nothing — esc and q would
+// otherwise quit wt or pop back to a picker whose launch is about to happen,
+// and a movement key would wrap the cursor under the routing screen. ctrl+c is
+// the one way out, so a restart that hangs cannot trap the user.
+func TestRoutingPhaseIgnoresKeysExceptCtrlC(t *testing.T) {
+	m, _, stub := routingFixture(t)
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyEsc},
+		{Type: tea.KeyRunes, Runes: []rune("q")},
+		{Type: tea.KeyRunes, Runes: []rune("k")},
+		{Type: tea.KeyUp},
+		{Type: tea.KeyDown},
+	} {
+		next, cmd := updateMsg(m, key)
+		if cmd != nil {
+			t.Errorf("key %q returned a command, want it ignored", key.String())
+		}
+		if next.phase != phaseRouting || next.routing != m.routing || next.status != m.status ||
+			selectedModelID(next) != selectedModelID(m) || next.launchModel.ID != m.launchModel.ID {
+			t.Errorf("key %q changed the model: phase = %v status = %q cursor = %s", key.String(), next.phase, next.status, selectedModelID(next))
+		}
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8" {
+		t.Fatalf("events = %q: a key during routing ran the check or the wait again", got)
+	}
+
+	next, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c returned no command, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("ctrl+c command returned %T, want tea.QuitMsg", cmd())
+	}
+	if next.routing == nil {
+		t.Fatal("ctrl+c dropped the in-flight check: Run() could no longer collect its output")
+	}
+}
+
+// TestStaleRouteDoneMsgIsDropped pins that only the in-flight check's own
+// message launches. A message with another run id, or one arriving when no
+// check is in flight, must change nothing: acting on it would launch an agent
+// from a screen where the user never pressed Enter.
+func TestStaleRouteDoneMsgIsDropped(t *testing.T) {
+	m, _, _ := routingFixture(t)
+
+	next, cmd := updateMsg(m, routeDoneMsg{id: m.routing.id + 1, notes: routeUpdatedLine})
+	if cmd != nil || next.phase != phaseRouting || next.routing != m.routing || next.status != "" || pendingRouteNotes != "" {
+		t.Fatalf("a routeDoneMsg with another id was acted on: phase = %v status = %q notes = %q", next.phase, next.status, pendingRouteNotes)
+	}
+
+	// Outside phaseRouting: the picker, with no check in flight, and again
+	// with a routing state left over but another phase on screen.
+	picker := launchRowFixture(t, "omlx/qwen3.8")
+	for name, idle := range map[string]model{
+		"no check in flight": picker,
+		"another phase":      func() model { p := m; p.phase = phaseModel; return p }(),
+	} {
+		next, cmd = updateMsg(idle, routeDoneMsg{id: 1, notes: routeUpdatedLine})
+		if cmd != nil || next.phase != phaseModel || next.status != "" || pendingRouteNotes != "" {
+			t.Fatalf("%s: a routeDoneMsg outside phaseRouting was acted on: phase = %v status = %q notes = %q", name, next.phase, next.status, pendingRouteNotes)
+		}
+	}
+}
+
+// TestRouteTickRearmsOnlyForTheInFlightCheck pins the elapsed-time redraw: the
+// tick re-arms itself while its check is in flight, so the screen keeps
+// counting, and stops once the check is over or superseded — a tick that kept
+// re-arming would redraw forever behind the agent.
+func TestRouteTickRearmsOnlyForTheInFlightCheck(t *testing.T) {
+	m, _, _ := routingFixture(t)
+
+	if _, cmd := updateMsg(m, routeTickMsg{id: m.routing.id}); cmd == nil {
+		t.Fatal("the in-flight check's tick did not re-arm: elapsed time would freeze")
+	}
+	if _, cmd := updateMsg(m, routeTickMsg{id: m.routing.id + 1}); cmd != nil {
+		t.Fatal("a tick with another id re-armed")
+	}
+	done := m
+	done.routing, done.phase = nil, phaseModel
+	if _, cmd := updateMsg(done, routeTickMsg{id: m.routing.id}); cmd != nil {
+		t.Fatal("a tick re-armed after the check finished")
+	}
+}
+
+// TestRoutingViewNamesTheModelAndOffersNoCancel pins the routing screen's
+// text: it says what is happening and to which model, and it must not
+// advertise esc or a cancel that does not exist — the write is done and the
+// restart cannot be called off, so such a hint would be a lie.
+func TestRoutingViewNamesTheModelAndOffersNoCancel(t *testing.T) {
+	m, _, _ := routingFixture(t)
+
+	view := m.View()
+
+	for _, want := range []string{"Updating the LiteLLM route for omlx/qwen3.8", "restarting the proxy", "[ctrl+c] quit wt"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view = %q, want it to contain %q", view, want)
+		}
+	}
+	lower := strings.ToLower(view)
+	for _, banned := range []string{"esc", "cancel"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("view = %q, must not mention %q", view, banned)
+		}
+	}
+
+	m.width, m.height = 0, 0
+	if got := m.View(); !strings.Contains(got, "waiting for window size") {
+		t.Errorf("view before a window size = %q, want the same guard the other phases have", got)
+	}
+}
+
+// TestQuitDuringRoutingStillFlushesTheNotes pins the ctrl+c exit: the check's
+// message is never handled, so Run() has to settle the check itself — wait for
+// the restart and print what the check collected. Without it the "updated"
+// line and any restart warning are dropped with the buffer they were written
+// to, and wt exits under a restart that is still in flight.
+func TestQuitDuringRoutingStillFlushesTheNotes(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.ensureOutput, stub.waitOutput = routeUpdatedLine, "wt: LiteLLM proxy did not come back\n"
+	stubRouteNotes(t)
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	final, _ := updateMsg(routing, tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	var out bytes.Buffer
+	flushRouteNotesAfterRun(final, &out)
+
+	notes := routeUpdatedLine + "wt: LiteLLM proxy did not come back\n"
+	// The restart was still ahead, so the wait is announced before the notes.
+	if want := routeWaitingLine + notes; out.String() != want {
+		t.Fatalf("printed = %q, want %q", out.String(), want)
+	}
+	// The command may still finish afterwards (it ran concurrently with the
+	// quit): it must get the same text without waiting again.
+	if done := routeDoneFrom(t, cmd); done.notes != notes {
+		t.Fatalf("late routing command notes = %q, want %q", done.notes, notes)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want one wait in total", got)
+	}
+	if pendingRouteNotes != "" {
+		t.Fatalf("pendingRouteNotes = %q, want cleared after the flush", pendingRouteNotes)
+	}
+}
+
+// TestRouteDoneAfterCtrlCDoesNotLaunch pins the quit race: tea.Quit's QuitMsg
+// comes back through the message channel, so the check's routeDoneMsg can be
+// handled after ctrl+c and before the program stops. It must not launch — the
+// user quit, and a launch would also record rotation and a refcount entry for
+// a session that never happened, and have runAndWaitCmd print the notes while
+// Run() flushes them too. The agent here is one that WOULD launch, so a
+// dropped guard shows up as a launch command and written state. The notes are
+// still printed, exactly once, by the after-run flush — with no "waiting" line,
+// because the command had already finished the wait.
+func TestRouteDoneAfterCtrlCDoesNotLaunch(t *testing.T) {
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	t.Cleanup(agents.RegisterTest("wt-stub", func() agents.Driver { return stubDriver{path: truePath} }))
+	m.agent = "wt-stub"
+	stub := stubEnsureRoute(t)
+	stub.ensureOutput = routeUpdatedLine
+	stubRouteNotes(t)
+
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	quitting, _ := updateMsg(routing, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if routing.routing.quitting {
+		t.Fatal("ctrl+c wrote through to the model Update was given")
+	}
+	done := routeDoneFrom(t, cmd) // the restart finishes in the gap before QuitMsg
+	final, launch := updateMsg(quitting, done)
+
+	if launch != nil {
+		t.Fatal("a routeDoneMsg after ctrl+c returned a command: the agent would launch after the user quit")
+	}
+	if final.phase != phaseRouting || final.routing == nil {
+		t.Fatalf("phase = %v routing = %+v, want the quitting check left for Run() to settle", final.phase, final.routing)
+	}
+	if last, ok := rotation.New().Last(); ok || last != "" {
+		t.Fatalf("rotation recorded %q for a launch that must not happen", last)
+	}
+	if counts := refcount.NewStore().Counts([]string{"omlx/qwen3.8"}); counts["omlx/qwen3.8"] != 0 {
+		t.Fatalf("refcount = %v for a launch that must not happen", counts)
+	}
+	if pendingRouteNotes != "" {
+		t.Fatalf("pendingRouteNotes = %q: the dropped message recorded its notes, so they would print twice", pendingRouteNotes)
+	}
+	if _, tick := updateMsg(quitting, routeTickMsg{id: quitting.routing.id}); tick != nil {
+		t.Fatal("the tick re-armed for a check the user quit out of")
+	}
+
+	var out bytes.Buffer
+	flushRouteNotesAfterRun(final, &out)
+
+	if out.String() != routeUpdatedLine {
+		t.Fatalf("printed = %q, want the notes once and no waiting line (the wait was over)", out.String())
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want one wait", got)
+	}
+}
+
+// signalWriter is a mutex-guarded buffer that closes first on its first
+// write, so a test can wait for a goroutine to have printed something.
+type signalWriter struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	once  sync.Once
+	first chan struct{}
+}
+
+func (w *signalWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.buf.Write(p)
+	w.once.Do(func() { close(w.first) })
+	return n, err
+}
+
+func (w *signalWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// TestQuitDuringRoutingSettlesAcrossGoroutines runs the path the other tests
+// only simulate: the routing command on its own goroutine, blocked in the
+// proxy wait, while Run()'s after-run flush settles the same check from
+// another. This is what really happens on ctrl+c, and it is the only test in
+// which -race can see the two sides. The wait is announced while it is still
+// blocked, the notes are printed exactly once, the wait and the restore each
+// ran once, and both callers got the same text.
+func TestQuitDuringRoutingSettlesAcrossGoroutines(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.ensureOutput, stub.waitOutput = routeUpdatedLine, "wt: LiteLLM proxy did not come back\n"
+	stub.waitEntered, stub.waitRelease = make(chan struct{}), make(chan struct{})
+	stubRouteNotes(t)
+	routing, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	final, _ := updateMsg(routing, tea.KeyMsg{Type: tea.KeyCtrlC})
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("command = %T, want the routing batch", batch)
+	}
+
+	timeout := time.After(10 * time.Second)
+	await := func(ch <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-timeout:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+
+	// The routing command, as the tea runtime runs it: on its own goroutine.
+	cmdDone := make(chan struct{})
+	var done tea.Msg
+	go func() {
+		defer close(cmdDone)
+		done = batch[0]()
+	}()
+	await(stub.waitEntered, "the routing command to reach the proxy wait")
+
+	// Run()'s flush, concurrently, while the restart is still in flight.
+	out := &signalWriter{first: make(chan struct{})}
+	flushDone := make(chan struct{})
+	go func() {
+		defer close(flushDone)
+		flushRouteNotesAfterRun(final, out)
+	}()
+	await(out.first, "the flush to announce the wait")
+	select {
+	case <-flushDone:
+		t.Fatal("the flush returned while the proxy restart was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(stub.waitRelease)
+	await(cmdDone, "the routing command")
+	await(flushDone, "the flush")
+
+	notes := routeUpdatedLine + "wt: LiteLLM proxy did not come back\n"
+	if got := out.String(); got != routeWaitingLine+notes {
+		t.Fatalf("printed = %q, want the waiting line and then the notes exactly once", got)
+	}
+	if msg, ok := done.(routeDoneMsg); !ok || msg.notes != notes {
+		t.Fatalf("routing command returned %#v, want the same notes", done)
+	}
+	if got := strings.Join(stub.events, ","); got != "ensure:omlx/qwen3.8,wait" {
+		t.Fatalf("events = %q, want exactly one wait", got)
+	}
+}
+
+// TestLaunchAttemptStartsWithAClearStatus pins that nothing an earlier screen
+// left in the status line follows the user into a launch. The routing screen
+// is the place to see it: it is entered by the same Update that begins the
+// attempt, before anything else can overwrite the status.
+func TestLaunchAttemptStartsWithAClearStatus(t *testing.T) {
+	m := launchRowFixture(t, "omlx/qwen3.8")
+	stub := stubEnsureRoute(t)
+	stub.changed = true
+	stubRouteNotes(t)
+	m.status = "ollama/other: not on disk — ollama pull other"
+
+	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if next.phase != phaseRouting {
+		t.Fatalf("phase = %v, want the routing screen", next.phase)
+	}
+	if next.status != "" {
+		t.Fatalf("status = %q, want the earlier screen's text cleared when the launch began", next.status)
+	}
+}
+
+// TestRouteDoneSizesTheModelList pins that a window size arriving during the
+// routing phase reaches the picker's list when the phase ends. The model list
+// is fitted only while its own phase is showing, so without a fit at the end
+// of routing a failed launch after it shows a picker laid out for the old size
+// — or for no size at all, when a -M pin built the list before the terminal
+// reported one. The expected size is the picker's own, not the bare window's:
+// 120 columns minus the two columns of padding the picker puts on each side
+// of the table, and 50 lines minus the six the picker prints around the table
+// (top and bottom margin, agent, tag, the mode line, the key hints) and the
+// two the "launch failed" status takes.
+func TestRouteDoneSizesTheModelList(t *testing.T) {
+	m, cmd, _ := routingFixture(t)
+
+	resized, _ := updateMsg(m, tea.WindowSizeMsg{Width: 120, Height: 50})
+	if resized.phase != phaseRouting {
+		t.Fatalf("phase = %v, want a resize to leave the routing phase alone", resized.phase)
+	}
+	next, _ := updateMsg(resized, routeDoneFrom(t, cmd))
+
+	if next.phase != phaseModel || !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("phase = %v status = %q, want the picker after the failed launch", next.phase, next.status)
+	}
+	if w, h := next.models.Width(), next.models.Height(); w != 116 || h != 42 {
+		t.Fatalf("model list = %dx%d, want 116x42 (120 columns minus four of padding; 50 lines minus six of chrome and two of status)", w, h)
+	}
+	for i, line := range strings.Split(next.View(), "\n") {
+		if got := lipgloss.Width(line); got > 120 {
+			t.Fatalf("picker line %d is %d columns, want at most the terminal's 120", i, got)
+		}
+	}
+	if got := lipgloss.Height(next.View()); got != 50 {
+		t.Fatalf("picker view is %d lines, want exactly the terminal's 50", got)
+	}
+}
+
+// TestFlushRouteNotesAfterRunPrintsWhatIsLeft pins Run()'s flush for a launch
+// that never happened (the user backed out at the resume prompt, or quit from
+// the picker): notes recorded by a finished check are printed once the alt
+// screen is gone, exactly once — and with no "waiting" line, since no check is
+// in flight and there is nothing to wait for.
+func TestFlushRouteNotesAfterRunPrintsWhatIsLeft(t *testing.T) {
+	stubRouteNotes(t)
+	pendingRouteNotes = routeUpdatedLine
+
+	var out bytes.Buffer
+	flushRouteNotesAfterRun(model{}, &out)
+	flushRouteNotesAfterRun(nil, &out) // p.Run() can fail and return no model
+
+	if out.String() != routeUpdatedLine {
+		t.Fatalf("printed = %q, want the pending line once", out.String())
+	}
+}
+
+// TestFlushRouteNotesEndsWithNewline pins that the flush always ends the line,
+// so the agent's first output never continues a route warning.
+func TestFlushRouteNotesEndsWithNewline(t *testing.T) {
+	stubRouteNotes(t)
+	pendingRouteNotes = "wt: LiteLLM route not updated: boom"
+
+	var out bytes.Buffer
+	flushRouteNotes(&out)
+	flushRouteNotes(&out) // nothing pending: prints nothing
+
+	if out.String() != "wt: LiteLLM route not updated: boom\n" {
+		t.Fatalf("printed = %q", out.String())
+	}
+}
+
+// TestRunAndWaitCmdPrintsRouteNotesAboveTheAgent pins where the captured route
+// output goes on a launch: to stderr once the terminal is released, before the
+// agent prints anything, and only once. Printed any later it would be buried
+// in or after the agent's session; not at all, and a failed proxy restart
+// would be invisible from the picker.
+func TestRunAndWaitCmdPrintsRouteNotesAboveTheAgent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh differs on windows")
+	}
+	stubRouteNotes(t)
+	prevSummary, prevSurvey := pendingSummary, pendingSurveyState
+	t.Cleanup(func() { pendingSummary, pendingSurveyState = prevSummary, prevSurvey })
+	pendingRouteNotes = routeUpdatedLine
+
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registered before the swap, so even a panic inside runAndWaitCmd cannot
+	// leave the test process's stderr pointing at a closed pipe.
+	t.Cleanup(func() { os.Stderr = old })
+	os.Stderr = w
+	msg := runAndWaitCmd(exec.Command("sh", "-c", "echo agent-output >&2"), "shell", config.Model{})()
+	w.Close()
+	os.Stderr = old
+	out, _ := io.ReadAll(r)
+
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+		t.Fatalf("msg = %#v, want a clean launchDoneMsg", msg)
+	}
+	if want := routeUpdatedLine + "agent-output\n"; string(out) != want {
+		t.Fatalf("stderr = %q, want %q", string(out), want)
+	}
+	if pendingRouteNotes != "" {
+		t.Fatalf("pendingRouteNotes = %q, want cleared so Run() does not print it again", pendingRouteNotes)
+	}
+}
+
+// TestLaunchOfNativeRowSkipsEnsureRoute pins that a model that does not go
+// through LiteLLM (a native one never does) leaves config.yaml alone: no
+// check and no routing phase.
+func TestLaunchOfNativeRowSkipsEnsureRoute(t *testing.T) {
+	m := launchRowFixture(t, "claude/opus")
+	stub := stubEnsureRoute(t)
+
+	next, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(stub.events) != 0 {
+		t.Fatalf("events = %v, want none for a native model", stub.events)
+	}
+	if next.phase == phaseRouting {
+		t.Fatalf("phase = %v, want no routing phase", next.phase)
+	}
+	// Without this the test would pass on an Enter that never reached
+	// proceedToLaunch at all.
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted", next.status)
+	}
+}
+
+// startThenLaunch is a start from the picker that succeeds, on a model whose
+// launch goes through LiteLLM, up to the Update that handles its result. The
+// agent is one no driver knows, so a launch that is attempted fails visibly.
+func startThenLaunch(t *testing.T, startOutput string) model {
+	t.Helper()
+	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+	m.cfg.SetLitellmForTest(config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-test"})
+	stubStartModel(t, printingStart(nil, startOutput))
+	m.agent = "not-a-real-agent"
+	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+	next, _ := updateMsg(got, recvStart(t, got))
+	return next
+}
+
+// TestLaunchAfterStartChecksTheRouteLikeAnyLaunch pins that a row wt just
+// started gets the launch-time route check every other launch gets (#275).
+// It used to be skipped, on the ground that the start had written the route:
+// but a start whose route write failed still succeeds, and the agent was then
+// launched into "Invalid model name" with nothing having tried again. With
+// the route in place the check changes nothing and the launch follows in the
+// same Update, with no routing screen.
+func TestLaunchAfterStartChecksTheRouteLikeAnyLaunch(t *testing.T) {
+	stub := stubEnsureRoute(t)
+	stub.changed = false
+	stubRouteNotes(t)
+	next := startThenLaunch(t, "")
+
+	if joined := strings.Join(stub.events, ","); joined != "wait,ensure:ollama/gemma4:9b" {
+		t.Fatalf("events = %q, want the start's wait and then the route check", joined)
+	}
+	if next.phase == phaseRouting {
+		t.Fatalf("phase = %v, want no routing phase: the route was there", next.phase)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted", next.status)
+	}
+}
+
+// TestLaunchAfterStartWritesTheRouteTheStartCouldNot is the case the check is
+// for: the start succeeded and printed that it could not write the route (a
+// config.yaml lock another wt held, say). The check writes it, the routing
+// screen covers the proxy restart, and the launch follows — onto a route
+// that exists. The start's line is still in the notes for the terminal.
+func TestLaunchAfterStartWritesTheRouteTheStartCouldNot(t *testing.T) {
+	const line = "wt: LiteLLM route for ollama/gemma4:9b not updated: config.yaml is locked by another wt\n"
+	stub := stubEnsureRoute(t) // changed: the route was missing and is written now
+	stubRouteNotes(t)
+	routing := startThenLaunch(t, line)
+
+	if routing.phase != phaseRouting || routing.routing == nil || routing.routing.modelID != "ollama/gemma4:9b" {
+		t.Fatalf("phase = %v routing = %+v, want the routing screen for the started model", routing.phase, routing.routing)
+	}
+	if strings.Contains(routing.status, "launch failed") {
+		t.Fatalf("status = %q: the launch was attempted before the route was there", routing.status)
+	}
+	next, _ := updateMsg(routing, routeDoneMsg{id: routing.routing.id, notes: routing.routing.settle()})
+	if joined := strings.Join(stub.events, ","); joined != "wait,ensure:ollama/gemma4:9b,wait" {
+		t.Fatalf("events = %q, want the start's wait, the check, and the wait for the restart the check began", joined)
+	}
+	if !strings.HasPrefix(pendingRouteNotes, line) {
+		t.Errorf("route notes = %q, want them to begin with the start's line", pendingRouteNotes)
+	}
+	if !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("status = %q, want the launch to have been attempted after the route was written", next.status)
+	}
+}
+
+// TestLaunchAfterStartStillLaunchesWhenTheRouteCannotBeWritten pins what the
+// check does not do: refuse. A route that cannot be written the second time
+// either (a config.yaml wt may not write) leaves the launch to go ahead, as
+// it does for every launch (#192), with both attempts' lines in the notes
+// that are printed above the agent's output — which is where the user finds
+// why the agent says "Invalid model name".
+func TestLaunchAfterStartStillLaunchesWhenTheRouteCannotBeWritten(t *testing.T) {
+	const line = "wt: LiteLLM route for ollama/gemma4:9b not updated: open /scratch/config.yaml: permission denied\n"
+	stub := stubEnsureRoute(t)
+	stub.changed, stub.ensureOutput = false, line
+	stubRouteNotes(t)
+	next := startThenLaunch(t, line)
+
+	if pendingRouteNotes != line+line {
+		t.Errorf("route notes = %q, want the start's line and the check's", pendingRouteNotes)
+	}
+	if next.phase == phaseRouting || !strings.Contains(next.status, "launch failed") {
+		t.Fatalf("phase = %v status = %q, want the launch attempted", next.phase, next.status)
+	}
+}
+
+// TestEnterOnALoadingRowJoinsTheLoad drives #259 through the real picker: the
+// inventory reports the model mid-load, and Enter on its row must run the
+// start flow (whose engine waits for the load) instead of launching the agent
+// on a model that cannot answer yet. The row is not marked by hand: it is a
+// start row because the catalog says a loading row is.
+func TestEnterOnALoadingRowJoinsTheLoad(t *testing.T) {
+	stubInventory(t, localmodels.Snapshot{Entries: []localmodels.Entry{
+		{ProviderID: "omlx", Artifact: "qwen3.8", ModelID: "omlx/qwen3.8", Registered: true, Running: true, Loading: true},
+	}})
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	m := flowEnter(t, model{cfg: startCfg("omlx", "omlx/qwen3.8", "qwen3.8"), agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}, "claude")
+	idx := indexOfID(m, "omlx/qwen3.8")
+	if idx < 0 {
+		t.Fatalf("no row for the loading model in %v", itemIDs(m))
+	}
+	m.models.Select(idx)
+	got, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.phase != phaseStarting {
+		t.Fatalf("phase = %v, want phaseStarting: Enter on a loading row must start, not launch", got.phase)
+	}
+	waitStartCalls(t, calls, 1)
+	if id := calls.at(0).target.ModelID; id != "omlx/qwen3.8" {
+		t.Errorf("started %q, want omlx/qwen3.8", id)
+	}
+}
+
+// TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching pins the
+// TUI half of #343: the engine reports the model started, and by the end of
+// the proxy wait another terminal has stopped it. The flow must come back to
+// the picker with the shared one-line message and launch nothing — an agent
+// handed that model would only meet a dead port. The wait, the check and the
+// wait for the check's own route removal are one call into the engine
+// (lifecycle.SettleStart, #349, whose tests pin their order); the flow makes
+// it once, about the row's own target, and waits for the proxy nowhere else.
+func TestStartWhoseServerIsGoneReturnsToThePickerInsteadOfLaunching(t *testing.T) {
+	m := startFixture(t, "ollama", "ollama/gemma4:9b", "gemma4:9b")
+	stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	m.agent = "not-a-real-agent" // a launch, if one were attempted, fails observably
+
+	// Written by the start's goroutine only, and read once its result has
+	// been received.
+	var order []string
+	var asked lifecycle.Target
+	gone := &lifecycle.StoppedError{Why: "ollama no longer answers at http://127.0.0.1:11434"}
+	oldWait, oldSettle := waitPendingRoutes, settleStart
+	waitPendingRoutes = func() { order = append(order, "wait") }
+	settleStart = func(_ context.Context, _ io.Writer, _ *config.Config, target lifecycle.Target) error {
+		order = append(order, "settle")
+		asked = target
+		return gone
+	}
+	t.Cleanup(func() { waitPendingRoutes, settleStart = oldWait, oldSettle })
+
+	got, _ := enterStartRow(t, m, "ollama/gemma4:9b")
+	next, _ := updateMsg(got, recvStart(t, got))
+	if next.phase != phaseModel {
+		t.Errorf("phase = %v, want the model picker", next.phase)
+	}
+	if want := lifecycle.StartErrorMessage("ollama/gemma4:9b", gone); next.status != want {
+		t.Errorf("status = %q, want %q", next.status, want)
+	}
+	if strings.Join(order, ",") != "settle" {
+		t.Errorf("order = %v, want the start settled once and no wait of the flow's own", order)
+	}
+	if want := (lifecycle.Target{ProviderID: "ollama", ModelName: "gemma4:9b", ModelID: "ollama/gemma4:9b"}); asked != want {
+		t.Errorf("asked about %+v, want %+v", asked, want)
+	}
+}
+
+// TestRunStartPassesTheOthersAnswer pins that runStart hands the engine the
+// answer about other providers' models it was given (#412), unchanged, beside
+// AllowReplace: the zero value asks, Decided keeps, Stop names what to stop.
+// A runStart that put its own answer in would load models beside, or stop,
+// models the dialog never showed.
+func TestRunStartPassesTheOthersAnswer(t *testing.T) {
+	calls := stubStartModel(t, func(int, context.Context, lifecycle.Target, lifecycle.Options) error { return nil })
+	target := lifecycle.Target{ProviderID: "omlx", ModelName: "T", ModelID: "omlx/T"}
+	answers := []lifecycle.OthersAnswer{{}, {Decided: true}, {Decided: true, Stop: []string{"mtplx/m"}}}
+	for _, a := range answers {
+		ch, _, _ := runStart(context.Background(), &config.Config{}, target, true, a, false, 1)
+		for range ch {
+		}
+	}
+	if calls.len() != len(answers) {
+		t.Fatalf("startModel calls = %d, want %d", calls.len(), len(answers))
+	}
+	for i, a := range answers {
+		if o := calls.at(i).opts; !reflect.DeepEqual(o.Others, a) || !o.AllowReplace {
+			t.Errorf("call %d: Others = %+v AllowReplace = %v, want %+v and true", i, o.Others, o.AllowReplace, a)
+		}
 	}
 }

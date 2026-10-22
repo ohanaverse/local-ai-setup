@@ -6,12 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
 
 // pidProcess is a pidfile-tracked background process: wt spawns it, records its
-// pid where modelman also records it, and keeps the log.
+// pid where llmbench also records it, and keeps the log.
 type pidProcess struct{ name, pidfile, logfile string }
 
 // spawned is a live child started by pidProcess.spawn.
@@ -51,7 +52,7 @@ func (p pidProcess) spawn(bin string, args []string) (*spawned, error) {
 	select {
 	case <-sp.done:
 		msg := fmt.Sprintf("%s exited immediately (%v)", p.name, sp.waitErr)
-		if tail := p.logTail(512); tail != "" {
+		if tail := p.logTailLines(512); tail != "" {
 			msg += "; log tail: " + tail
 		}
 		_ = os.Remove(p.pidfile)
@@ -71,7 +72,8 @@ func (s *spawned) exited() (bool, error) {
 	}
 }
 
-// kill stops the process (SIGTERM, then SIGKILL after 5s) and removes the pidfile.
+// kill stops the process (SIGTERM, then SIGKILL after 5s) and removes the
+// pidfile and the start record beside it.
 func (s *spawned) kill() {
 	_ = s.cmd.Process.Signal(syscall.SIGTERM)
 	select {
@@ -81,11 +83,12 @@ func (s *spawned) kill() {
 		<-s.done
 	}
 	_ = os.Remove(s.p.pidfile)
+	_ = os.Remove(s.p.startfile())
 }
 
 // logTail returns up to the last max bytes of the log ("" when unreadable). It
 // seeks from the end instead of reading the file: the log is append-only and
-// shared with modelman, so it grows without bound, and a failed start must not
+// shared with llmbench, so it grows without bound, and a failed start must not
 // read all of it to show a 512-byte tail. The value it returns is then clamped to
 // at most max bytes, because the subprocess may append between the stat and the
 // read — without the clamp the returned string can exceed max and the guarantee
@@ -113,4 +116,25 @@ func (p pidProcess) logTail(max int) string {
 		b = b[len(b)-max:]
 	}
 	return string(b)
+}
+
+// logTailLines is logTail for showing to a user: the tail begins at the start
+// of a line. A cut at a byte count lands mid-word ("stained MTP runtime"), so
+// one byte more than max is read and everything up to the first newline is
+// dropped — the byte before the tail says whether the cut already fell on a
+// line start, in which case nothing of the tail is lost. A log that fits in
+// max is returned whole, and a tail with nothing to read after its first
+// newline — no newline at all, only the one that ends a last line longer than
+// max, or that one and blank lines after it — is one long line, returned as
+// cut: its end is still worth more than nothing, and blank lines alone are
+// nothing — a failed start trims the tail and would show "log tail:" empty.
+func (p pidProcess) logTailLines(max int) string {
+	tail := p.logTail(max + 1)
+	if len(tail) <= max {
+		return tail
+	}
+	if i := strings.IndexByte(tail, '\n'); i >= 0 && strings.TrimSpace(tail[i+1:]) != "" {
+		return tail[i+1:]
+	}
+	return tail[1:]
 }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,12 +32,7 @@ func itemIDs(got model) []string {
 }
 
 func indexOfID(got model, id string) int {
-	for i, x := range itemIDs(got) {
-		if x == id {
-			return i
-		}
-	}
-	return -1
+	return slices.Index(itemIDs(got), id)
 }
 
 // TestEnterModelPhaseShowsNonRunningAndDiscoveredRows verifies the picker now
@@ -106,7 +102,6 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 		Models:     []config.Model{{ID: "claude/opus", ProviderID: "claude", ModelName: "opus", Family: "opus", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "claude", SupportedProviders: []string{"claude"}}},
 	}
-	cfg.ExposeAllForTest()
 	m := model{cfg: cfg, agent: "claude", selectedPath: t.TempDir(), width: 80, height: 24}
 	_, cmd := func() (model, tea.Cmd) {
 		tempStateDir(t)
@@ -126,7 +121,6 @@ func TestEnterModelPhaseSingleRowShortcut(t *testing.T) {
 		Models:     []config.Model{{ID: "omlx/qwen3.8", ProviderID: "omlx", ModelName: "qwen3.8", Family: "qwen3.8", Tags: []string{"code"}}},
 		Agents:     []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	local.ExposeAllForTest()
 	got := flowEnter(t, model{cfg: local, width: 80, height: 24}, "pi")
 	if got.phase != phaseModel || len(got.models.Items()) != 1 {
 		t.Errorf("phase = %v items = %d, want phaseModel with 1 blocked row", got.phase, len(got.models.Items()))
@@ -147,7 +141,6 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 		},
 		Agents: []config.Agent{{Name: "pi", SupportedProviders: []string{"omlx"}}},
 	}
-	local.ExposeAllForTest()
 	got := flowEnter(t, model{cfg: local, width: 80, height: 24}, "pi")
 	if got.phase != phaseModel {
 		t.Fatalf("phase = %v, want phaseModel (no route back)", got.phase)
@@ -164,7 +157,66 @@ func TestEnterModelPhaseAllLocalNoneRunningShowsStartableRows(t *testing.T) {
 	}
 }
 
+// TestEnterModelPhaseNoRotationDefaultsToNativeRow pins the disclosed
+// consequence of #172 in the main TUI: the no-rotation fallback selects the
+// first actionable row, and native-first makes that the native row, so a
+// bare wt opened for an agent with a native model starts highlighted on the
+// agent's own subscription model. Rotation state normally decides the cursor;
+// this is the fresh-install / stale-state path, and a sort change moves it
+// silently, so it is asserted rather than assumed.
+func TestEnterModelPhaseNoRotationDefaultsToNativeRow(t *testing.T) {
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers: []config.Provider{
+			{ID: "claude", Location: config.LocationCloud, Auth: config.AuthConfig{Type: "native"}},
+			{ID: "openrouter", Location: config.LocationCloud},
+		},
+		Models: []config.Model{
+			// Deliberately cheaper than nothing: cost alone must not put it
+			// ahead of the native row.
+			{ID: "openrouter/cheap", ProviderID: "openrouter", ModelName: "cheap", Family: "cheap", Tags: []string{"code"},
+				Cost: config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}},
+			{ID: "claude/native", ProviderID: "claude", ModelName: "native", Family: "claude", Native: true, Tags: []string{"code"}},
+		},
+		Agents: []config.Agent{{Name: "claude", SupportedProviders: []string{"claude", "openrouter"}}},
+	}
+	got := flowEnter(t, model{cfg: cfg, width: 80, height: 24}, "claude")
+
+	if got.phase != phaseModel {
+		t.Fatalf("phase = %v, want phaseModel", got.phase)
+	}
+	if id := selectedModelID(got); id != "claude/native" {
+		t.Errorf("cursor on %q (index %d), want claude/native — native-first must be the default selection too", id, got.models.Index())
+	}
+}
+
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// assertHeaderAlignsWithRow checks, in a rendered list view, that the header's
+// FAMILY and MODEL columns start at the same rune offset as the family and
+// model id cells of the first row showing id.
+func assertHeaderAlignsWithRow(t *testing.T, view, id, family string) {
+	t.Helper()
+	var header, row string
+	for _, ln := range strings.Split(ansiRE.ReplaceAllString(view, ""), "\n") {
+		if strings.Contains(ln, "FAMILY") && header == "" {
+			header = ln
+		}
+		if strings.Contains(ln, id) && row == "" {
+			row = ln
+		}
+	}
+	if header == "" || row == "" {
+		t.Fatalf("header/row not found in view:\n%s", view)
+	}
+	off := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
+	if off(header, "MODEL") != off(row, id) {
+		t.Errorf("MODEL offset %d != row id offset %d\n%q\n%q", off(header, "MODEL"), off(row, id), header, row)
+	}
+	if off(header, "FAMILY") != off(row, family) {
+		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, family), header, row)
+	}
+}
 
 // TestModelPickerViewHeaderAlignsWithRows renders the real list view and
 // checks the header's FAMILY and MODEL columns start at the same rune offset
@@ -173,23 +225,5 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func TestModelPickerViewHeaderAlignsWithRows(t *testing.T) {
 	got := flowEnter(t, model{cfg: modelTestConfig(), width: 80, height: 24}, "claude")
 	first := got.models.Items()[0].(*modelItem)
-	var header, row string
-	for _, ln := range strings.Split(ansiRE.ReplaceAllString(got.models.View(), ""), "\n") {
-		if strings.Contains(ln, "FAMILY") && header == "" {
-			header = ln
-		}
-		if strings.Contains(ln, first.model.ID) && row == "" {
-			row = ln
-		}
-	}
-	if header == "" || row == "" {
-		t.Fatalf("header/row not found in view:\n%s", got.models.View())
-	}
-	off := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
-	if off(header, "MODEL") != off(row, first.model.ID) {
-		t.Errorf("MODEL offset %d != row id offset %d\n%q\n%q", off(header, "MODEL"), off(row, first.model.ID), header, row)
-	}
-	if off(header, "FAMILY") != off(row, first.model.Family) {
-		t.Errorf("FAMILY offset %d != row family offset %d\n%q\n%q", off(header, "FAMILY"), off(row, first.model.Family), header, row)
-	}
+	assertHeaderAlignsWithRow(t, got.models.View(), first.model.ID, first.model.Family)
 }

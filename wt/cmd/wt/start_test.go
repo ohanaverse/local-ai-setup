@@ -78,7 +78,7 @@ func TestStartForLaunchSucceedsWithoutReplace(t *testing.T) {
 // running model the user was never told about.
 func TestStartForLaunchRetriesOccupiedOnlyWithReplace(t *testing.T) {
 	stubSignals(t)
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ, nil})
 
 	if err := startForLaunch(&config.Config{}, startTestRow(), true); err != nil {
@@ -95,14 +95,12 @@ func TestStartForLaunchRetriesOccupiedOnlyWithReplace(t *testing.T) {
 // there is nobody to ask.
 func TestStartForLaunchNonInteractiveOccupiedRefuses(t *testing.T) {
 	stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return false }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, false)
 	asked := false
 	oldConfirm := confirmReplace
 	confirmReplace = func(string) (bool, error) { asked = true; return true, nil }
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ})
 
 	err := startForLaunch(&config.Config{}, startTestRow(), false)
@@ -125,9 +123,7 @@ func TestStartForLaunchNonInteractiveOccupiedRefuses(t *testing.T) {
 // to No precisely so an accidental Enter cannot stop a model.
 func TestStartForLaunchTTYDeclineKeepsRunningModel(t *testing.T) {
 	stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 	oldConfirm := confirmReplace
 	confirmReplace = func(q string) (bool, error) {
 		if !strings.Contains(q, "omlx/other") {
@@ -136,7 +132,7 @@ func TestStartForLaunchTTYDeclineKeepsRunningModel(t *testing.T) {
 		return false, nil
 	}
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ})
 
 	err := startForLaunch(&config.Config{}, startTestRow(), false)
@@ -153,13 +149,11 @@ func TestStartForLaunchTTYDeclineKeepsRunningModel(t *testing.T) {
 // while the non-interactive one cannot.
 func TestStartForLaunchTTYConfirmReplaces(t *testing.T) {
 	stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 	oldConfirm := confirmReplace
 	confirmReplace = func(string) (bool, error) { return true, nil }
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ, nil})
 
 	if err := startForLaunch(&config.Config{}, startTestRow(), false); err != nil {
@@ -228,13 +222,7 @@ func TestStartForLaunchCancelIsReported(t *testing.T) {
 // line per stage, naming the model, the stage phrase and an elapsed time. A
 // silent start would leave the user staring at nothing during a long warmup.
 func TestStartProgressReportsEachStage(t *testing.T) {
-	oldOut := osStderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	osStderr = w
-	t.Cleanup(func() { osStderr = oldOut })
+	r, w := pipeStderr(t)
 
 	done := make(chan struct{})
 	report := startProgress("omlx/qwen3.8", done, time.Now().Add(-12*time.Second))
@@ -263,13 +251,7 @@ func TestStartProgressReportsEachStage(t *testing.T) {
 // still prints that stage every interval, so a multi-minute warmup does not
 // look like a hang.
 func TestStartProgressRepeatsWhileWarming(t *testing.T) {
-	oldOut := osStderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	osStderr = w
-	t.Cleanup(func() { osStderr = oldOut })
+	r, w := pipeStderr(t)
 	oldInterval := startProgressInterval
 	startProgressInterval = 5 * time.Millisecond
 	t.Cleanup(func() { startProgressInterval = oldInterval })
@@ -290,6 +272,91 @@ func TestStartProgressRepeatsWhileWarming(t *testing.T) {
 	_ = w.Close()
 	if !found {
 		t.Fatal("heartbeat did not repeat the warming stage within the deadline")
+	}
+}
+
+// TestEnsureRouteBeforeLaunchAnnouncesTheProxyWait pins #192's CLI half. A route
+// write restarts the proxy, and waiting for that restart used to be a total
+// silence between the check's one-line "updated" notice and the agent taking the
+// terminal — 10-20s of a wt that looks hung, on a path a user runs by hand and
+// cannot tell from a dead process. The line names the wait and repeats with
+// elapsed time, as the engine's own progress line does; a run that waits must
+// show it started waiting and that it is still going.
+func TestEnsureRouteBeforeLaunchAnnouncesTheProxyWait(t *testing.T) {
+	r, w := pipeStderr(t)
+	oldInterval := routeWaitInterval
+	routeWaitInterval = 5 * time.Millisecond
+	t.Cleanup(func() { routeWaitInterval = oldInterval })
+
+	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
+	ensureModelRoute = func(*config.Config, config.Model) bool { return true }
+	entered, release := make(chan struct{}), make(chan struct{})
+	waitPendingRoutes = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes = oldEnsure, oldWait })
+
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		ensureRouteBeforeLaunch(&config.Config{}, config.Model{ID: "ollama/x"})
+	}()
+	<-entered
+
+	// One needle for both checks below, so the repeat test cannot watch for a
+	// line the first one did not require.
+	const waitLine = "wt: waiting for the LiteLLM proxy to pick up the route ("
+
+	// The first line has to be out before the wait is entered, not after it
+	// returns: a line that only appears once the wait is over announces nothing.
+	out := readSome(t, r)
+	if !strings.Contains(out, waitLine) {
+		t.Fatalf("output = %q, want the wait announced before it is entered", out)
+	}
+	// And it repeats, so a wait long enough to be a real restart does not go
+	// quiet again after the first line. Each read blocks for up to 50ms, so the
+	// second line's arrival is what ends this loop; reaching the deadline
+	// instead is a failure, not a slow pass.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(out, waitLine) < 2 {
+		out += readSome(t, r)
+	}
+	close(release)
+	<-exited
+	_ = w.Close()
+
+	if got := strings.Count(out, waitLine); got < 2 {
+		t.Fatalf("output = %q, want the wait announced again while it is still running (%d lines)", out, got)
+	}
+}
+
+// TestEnsureRouteBeforeLaunchStaysQuietWhenNothingChanged verifies the other
+// half of the same choice: the common launch — a running model whose route is
+// already in config.yaml — must stay silent. restartIfChanged bounces the proxy
+// only on a write, so the check's return value is exactly the signal; printing
+// the wait line unconditionally would put a line about a restart that is not
+// happening in front of every such launch.
+func TestEnsureRouteBeforeLaunchStaysQuietWhenNothingChanged(t *testing.T) {
+	r, w := pipeStderr(t)
+
+	oldEnsure, oldWait := ensureModelRoute, waitPendingRoutes
+	ensureModelRoute = func(*config.Config, config.Model) bool { return false }
+	waited := false
+	waitPendingRoutes = func() { waited = true }
+	t.Cleanup(func() { ensureModelRoute, waitPendingRoutes = oldEnsure, oldWait })
+
+	ensureRouteBeforeLaunch(&config.Config{}, config.Model{ID: "ollama/x"})
+	_ = w.Close()
+
+	buf, _ := io.ReadAll(r)
+	if got := string(buf); got != "" {
+		t.Errorf("output = %q, want none: nothing changed, so no restart is coming", got)
+	}
+	// The wait is still called — every path about to use the proxy settles the
+	// route hook first — it simply has nothing to wait for.
+	if !waited {
+		t.Error("waitPendingRoutes was not called: the proxy hand-off invariant was dropped, not just the line")
 	}
 }
 
@@ -326,6 +393,20 @@ func localmodelsEntry(id, name string) localmodels.Entry {
 	return localmodels.Entry{ModelID: id, ModelName: name, Artifact: name, Registered: true}
 }
 
+// pipeStderr points osStderr at a pipe until the test ends and returns both
+// ends: the test closes w and reads r itself.
+func pipeStderr(t *testing.T) (r, w *os.File) {
+	t.Helper()
+	oldOut := osStderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	osStderr = w
+	t.Cleanup(func() { osStderr = oldOut })
+	return r, w
+}
+
 // readSome drains everything readable from r without blocking, so the
 // heartbeat test can poll for output while the ticker is still running.
 func readSome(t *testing.T, r *os.File) string {
@@ -344,9 +425,7 @@ func readSome(t *testing.T, r *os.File) string {
 // ctx race the user would have to press Enter and then Ctrl+C a second time.
 func TestStartForLaunchCtrlCAbortsReplacePrompt(t *testing.T) {
 	cancel := stubSignals(t)
-	oldTTY := stdinTTY
-	stdinTTY = func() bool { return true }
-	t.Cleanup(func() { stdinTTY = oldTTY })
+	stubStdinTTY(t, true)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	oldConfirm := confirmReplace
@@ -356,7 +435,7 @@ func TestStartForLaunchCtrlCAbortsReplacePrompt(t *testing.T) {
 		return false, nil
 	}
 	t.Cleanup(func() { confirmReplace = oldConfirm })
-	occ := &lifecycle.OccupiedError{Occupant: localmodelsEntry("omlx/other", "other")}
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
 	replaces := stubLifecycleStart(t, []error{occ})
 
 	err := startForLaunch(&config.Config{}, startTestRow(), false)
@@ -406,39 +485,107 @@ func TestStartForLaunchGenericFailureUsesSharedWording(t *testing.T) {
 	}
 }
 
-// stubWaitRoutes replaces the route-settling seam with a recorder. The
-// returned entered channel is closed when the wait begins; the wait does not
-// return until release is closed, so a test can observe what the caller does
-// (or refuses to do) while a proxy restart is still in flight.
-func stubWaitRoutes(t *testing.T, log *[]string, mu *sync.Mutex) (entered chan struct{}, release func()) {
+// stubSettleStart replaces what follows a start the engine reported done
+// (lifecycleSettleStart: the proxy wait, the check, the wait after a route
+// removal) with a recorder that appends "settle" to log, records the target
+// and the writer it was handed, and returns err. The returned entered channel
+// is closed when the first call begins; no call returns until release is
+// called, so a test can observe what the caller does (or refuses to do) while
+// a proxy restart is still in flight.
+func stubSettleStart(t *testing.T, log *[]string, mu *sync.Mutex, err error) (entered chan struct{}, release func(), calls *[]settleCall) {
 	t.Helper()
 	entered = make(chan struct{})
 	ch := make(chan struct{})
 	// Closed at most once, whether the test releases the wait itself or the
 	// cleanup has to unblock an abandoned caller after a failed assertion.
 	release = sync.OnceFunc(func() { close(ch) })
-	old := waitPendingRoutes
-	waitPendingRoutes = func() {
+	enter := sync.OnceFunc(func() { close(entered) })
+	calls = &[]settleCall{}
+	old := lifecycleSettleStart
+	lifecycleSettleStart = func(ctx context.Context, out io.Writer, _ *config.Config, target lifecycle.Target) error {
 		mu.Lock()
-		*log = append(*log, "wait")
+		*log = append(*log, "settle")
+		*calls = append(*calls, settleCall{target: target, out: out, ctxErr: ctx.Err()})
 		mu.Unlock()
-		close(entered)
+		enter()
 		<-ch
+		return err
 	}
-	t.Cleanup(func() { waitPendingRoutes = old; release() })
-	return entered, release
+	t.Cleanup(func() { lifecycleSettleStart = old; release() })
+	return entered, release, calls
 }
 
-// TestStartForLaunchWaitsForPendingRoutesBeforeReturning pins the ordering the
+// settleCall is one call stubSettleStart recorded.
+type settleCall struct {
+	target lifecycle.Target
+	out    io.Writer
+	ctxErr error
+}
+
+// TestCtrlCThatLostToTheStartCancelsOnlyTheLaunch pins what a Ctrl+C does when
+// it arrives too late to stop the start: at the routing stage, or as the load
+// finished. The engine returns nil then, and the settle drops cancellation on
+// purpose, so nothing but the signal context remembers the key. A slot-profile
+// launch (startForLaunchOwed) must end with "started <id>; launch cancelled",
+// the TUI's wording for the same key, after the settle ran: otherwise Claude
+// Code starts, and the launch is recorded, after the user cancelled.
+// startForLaunch is also `wt start`'s and `wt smoke`'s driver, where a model
+// that started is the success the command reports, so it still returns nil.
+func TestCtrlCThatLostToTheStartCancelsOnlyTheLaunch(t *testing.T) {
+	arrange := func(t *testing.T) *[]string {
+		t.Helper()
+		cancel := stubSignals(t)
+		old := lifecycleStart
+		lifecycleStart = func(context.Context, *config.Config, lifecycle.Target, lifecycle.Options) error {
+			cancel() // the Ctrl+C that lost
+			return nil
+		}
+		t.Cleanup(func() { lifecycleStart = old })
+		var mu sync.Mutex
+		log := &[]string{}
+		_, release, _ := stubSettleStart(t, log, &mu, nil)
+		release()
+		return log
+	}
+
+	t.Run("a slot-profile launch is cancelled", func(t *testing.T) {
+		log := arrange(t)
+		still, err := startForLaunchOwed(&config.Config{}, startTestRow(), false, true)
+		if err == nil || err.Error() != "started omlx/qwen3.8; launch cancelled" {
+			t.Fatalf("err = %v, want \"started omlx/qwen3.8; launch cancelled\"", err)
+		}
+		if still {
+			t.Error("stillOwed = true, want false: the engine made the one restart")
+		}
+		if len(*log) != 1 {
+			t.Errorf("settle calls = %v, want one: the started model's route and proxy restart are still settled", *log)
+		}
+	})
+
+	t.Run("wt start's driver still reports the start", func(t *testing.T) {
+		log := arrange(t)
+		if err := startForLaunch(&config.Config{}, startTestRow(), false); err != nil {
+			t.Fatalf("startForLaunch() error = %v, want nil: the model is running", err)
+		}
+		if len(*log) != 1 {
+			t.Errorf("settle calls = %v, want one", *log)
+		}
+	})
+}
+
+// TestStartForLaunchSettlesTheStartBeforeReturning pins the ordering the
 // agent launch depends on: the LiteLLM proxy restart the route hook kicks off
 // runs asynchronously, and startForLaunch's caller hands the model straight to
 // an agent that dials it THROUGH the proxy. Returning early would let that
 // agent meet a mid-restart proxy (connection refused) or the route table from
 // before the model existed. The wait must also come AFTER the engine start, so
-// it settles this start's own route write rather than some earlier one.
+// it settles this start's own route write rather than some earlier one. The
+// wait is lifecycle.SettleStart's first step since #349;
 // lifecycle.WaitPendingRoutes really blocking until the restart finishes is
-// pinned separately by TestWaitPendingRoutesBlocksUntilTheRestartFinishes.
-func TestStartForLaunchWaitsForPendingRoutesBeforeReturning(t *testing.T) {
+// pinned separately by TestWaitPendingRoutesBlocksUntilTheRestartFinishes, and
+// SettleStart waiting before it checks by
+// TestSettleStartWaitsForTheProxyBeforeItChecks.
+func TestStartForLaunchSettlesTheStartBeforeReturning(t *testing.T) {
 	stubSignals(t)
 	var mu sync.Mutex
 	var order []string
@@ -450,7 +597,7 @@ func TestStartForLaunchWaitsForPendingRoutesBeforeReturning(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { lifecycleStart = oldStart })
-	entered, release := stubWaitRoutes(t, &order, &mu)
+	entered, release, _ := stubSettleStart(t, &order, &mu, nil)
 
 	done := make(chan error, 1)
 	go func() { done <- startForLaunch(&config.Config{}, startTestRow(), false) }()
@@ -472,8 +619,8 @@ func TestStartForLaunchWaitsForPendingRoutesBeforeReturning(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(order) != 2 || order[0] != "start" || order[1] != "wait" {
-		t.Errorf("order = %v, want [start wait]", order)
+	if len(order) != 2 || order[0] != "start" || order[1] != "settle" {
+		t.Errorf("order = %v, want [start settle]", order)
 	}
 }
 
@@ -489,11 +636,218 @@ func TestStartForLaunchDoesNotWaitWhenTheStartFailed(t *testing.T) {
 	old := waitPendingRoutes
 	waitPendingRoutes = func() { waited++ }
 	t.Cleanup(func() { waitPendingRoutes = old })
+	var mu sync.Mutex
+	var order []string
+	_, release, _ := stubSettleStart(t, &order, &mu, nil)
+	release()
 
 	if err := startForLaunch(&config.Config{}, startTestRow(), false); err == nil {
 		t.Fatal("startForLaunch() error = nil, want the engine's failure")
 	}
-	if waited != 0 {
-		t.Errorf("waited for pending routes %d times after a failed start, want 0", waited)
+	if waited != 0 || len(order) != 0 {
+		t.Errorf("after a failed start: waited for pending routes %d times, settled %v; want neither", waited, order)
+	}
+}
+
+// TestStartForLaunchHandsTheEngineTheRowsModelID pins the CLI half of #195:
+// the start hook writes a model's route under Target.ModelID, the id the row
+// shows. A discovered artifact whose name resembles a registry model's
+// ("org/name" beside "name") has its own id, and a Target without it falls
+// back to a lenient name match that routes the registry model instead — an id
+// the user never picked. The TUI's constructor is pinned in start_flow_test;
+// every other stub of lifecycleStart here discards the Target.
+func TestStartForLaunchHandsTheEngineTheRowsModelID(t *testing.T) {
+	stubSignals(t)
+	var got lifecycle.Target
+	old := lifecycleStart
+	lifecycleStart = func(_ context.Context, _ *config.Config, target lifecycle.Target, _ lifecycle.Options) error {
+		got = target
+		return nil
+	}
+	t.Cleanup(func() { lifecycleStart = old })
+
+	row := startTestRow()
+	if err := startForLaunch(&config.Config{}, row, false); err != nil {
+		t.Fatal(err)
+	}
+	want := lifecycle.Target{ProviderID: row.Model.ProviderID, ModelName: row.Model.ModelName, ModelID: row.Model.ID}
+	if got != want || got.ModelID == "" {
+		t.Fatalf("target = %+v, want %+v with the row's id", got, want)
+	}
+}
+
+// TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait pins #343: the
+// engine reports the model started, another terminal stops it while this one
+// waits for the LiteLLM proxy, and the driver must then fail — with the shared
+// one-line wording and the engine's typed error still on the chain — instead
+// of returning nil, which `wt start` prints as "is running" and a launch hands
+// to an agent. The wait and the check after it are one call into the engine
+// (lifecycle.SettleStart, #349, whose own tests pin their order); the driver
+// makes it once, about the row's own target, with no writer of its own, so
+// what the check prints stays on stderr. Both ways into a successful start
+// are covered: the first attempt and the one after a replace.
+func TestStartForLaunchFailsWhenTheServerIsGoneAfterTheRouteWait(t *testing.T) {
+	gone := &lifecycle.StoppedError{Why: "omlx no longer has it loaded"}
+	for name, outcomes := range map[string][]error{
+		"first attempt": {nil},
+		"after replace": {&lifecycle.OccupiedError{Occupants: []localmodels.Entry{{ModelID: "omlx/old"}}}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubSignals(t)
+			stubLifecycleStart(t, outcomes)
+			var mu sync.Mutex
+			var order []string
+			_, release, calls := stubSettleStart(t, &order, &mu, gone)
+			release()
+			old := osStderr
+			osStderr = io.Discard
+			t.Cleanup(func() { osStderr = old })
+
+			err := startForLaunch(&config.Config{}, startTestRow(), true)
+			var stopped *lifecycle.StoppedError
+			if !errors.As(err, &stopped) {
+				t.Fatalf("startForLaunch() = %v, want the *StoppedError on the chain", err)
+			}
+			if want := lifecycle.StartErrorMessage("omlx/qwen3.8", gone); err.Error() != want || !strings.HasPrefix(want, "omlx/qwen3.8 is not running") {
+				t.Errorf("error = %q, want the shared wording %q", err, want)
+			}
+			want := lifecycle.Target{ProviderID: "omlx", ModelName: "qwen3.8", ModelID: "omlx/qwen3.8"}
+			if len(*calls) != 1 || (*calls)[0].target != want || (*calls)[0].out != nil {
+				t.Errorf("settled %+v, want %+v once, with no writer", *calls, want)
+			}
+		})
+	}
+}
+
+// TestStartForLaunchDoesNotCheckAStartThatFailed verifies the check is the
+// success path's alone: a failed start has no server to ask about, and a
+// probe there could remove the route of a model the failure never touched.
+func TestStartForLaunchDoesNotCheckAStartThatFailed(t *testing.T) {
+	stubSignals(t)
+	stubLifecycleStart(t, []error{errors.New("omlx: boom")})
+	var mu sync.Mutex
+	var order []string
+	_, release, _ := stubSettleStart(t, &order, &mu, nil)
+	release()
+	if err := startForLaunch(&config.Config{}, startTestRow(), false); err == nil {
+		t.Fatal("startForLaunch() error = nil, want the engine's failure")
+	}
+	if len(order) != 0 {
+		t.Errorf("order = %v, want no check after a failed start", order)
+	}
+}
+
+// TestSettleStartSettlesUnderACancelledContext verifies Ctrl+C during the
+// proxy wait does not cut the driver's part short: a done context is no
+// reason to skip the call, or the model would be reported as running with
+// nothing having asked. The context is handed over as it is; that the check
+// then runs detached from its cancellation (the ollama probe reads its
+// context, and one that was cancelled settles nothing) is the engine's, pinned
+// by lifecycle's TestSettleStartChecksUnderACancelledContext.
+func TestSettleStartSettlesUnderACancelledContext(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	_, release, calls := stubSettleStart(t, &order, &mu, &lifecycle.StoppedError{Why: "ollama no longer answers"})
+	release()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := settleStart(ctx, &config.Config{}, "ollama/x", lifecycle.Target{ProviderID: "ollama", ModelName: "x"})
+	var stopped *lifecycle.StoppedError
+	if !errors.As(err, &stopped) {
+		t.Fatalf("settleStart = %v, want the *StoppedError on its chain", err)
+	}
+	if len(*calls) != 1 || (*calls)[0].ctxErr == nil {
+		t.Errorf("settled %+v, want one call, under the caller's own (done) context", *calls)
+	}
+}
+
+// TestProfileStartPromptNamesTheOccupantsSessions pins the non-TUI replace
+// prompt of a slot profile's local-model start (startForLaunchOwed): an
+// occupant some wt sessions use is named with "(in use by N wt session(s))",
+// and one nobody uses is named bare. The count is what tells the user that
+// "y" cuts off a session in another terminal; a regression drops that
+// warning, or puts a count on a model nobody is using.
+func TestProfileStartPromptNamesTheOccupantsSessions(t *testing.T) {
+	cases := []struct {
+		name   string
+		counts map[string]int
+		want   string
+	}{
+		{"one occupant in use", map[string]int{"omlx/busy": 2},
+			"starting omlx/qwen3.8 will stop omlx/busy (in use by 2 wt session(s)), omlx/idle; continue?"},
+		{"no sessions", map[string]int{},
+			"starting omlx/qwen3.8 will stop omlx/busy, omlx/idle; continue?"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stubSignals(t)
+			stubStdinTTY(t, true)
+			oldCounts := sessionCounts
+			var asked []string
+			sessionCounts = func(ids []string) map[string]int {
+				asked = append(asked, ids...)
+				return c.counts
+			}
+			t.Cleanup(func() { sessionCounts = oldCounts })
+			var question string
+			oldConfirm := confirmReplace
+			confirmReplace = func(q string) (bool, error) { question = q; return false, nil }
+			t.Cleanup(func() { confirmReplace = oldConfirm })
+			occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{
+				localmodelsEntry("omlx/busy", "busy"), localmodelsEntry("omlx/idle", "idle"),
+			}}
+			replaces := stubLifecycleStart(t, []error{occ})
+
+			still, err := startForLaunchOwed(&config.Config{}, startTestRow(), false, true)
+			if err == nil {
+				t.Fatal("err = nil, want the declined prompt's cancellation")
+			}
+			if !still {
+				t.Error("stillOwed = false, want true: the declined refusal spent no restart")
+			}
+			if question != c.want {
+				t.Errorf("question = %q, want %q", question, c.want)
+			}
+			if strings.Join(asked, ",") != "omlx/busy,omlx/idle" {
+				t.Errorf("sessionCounts asked for %v, want the occupants", asked)
+			}
+			if len(*replaces) != 1 {
+				t.Errorf("engine calls = %v, want 1 (declined, no retry)", *replaces)
+			}
+		})
+	}
+}
+
+// TestDriveStartKeepsOtherProvidersModels pins what --others=keep answers
+// for `wt start`, `wt smoke`, a -M pin and a slot profile's local model
+// (#412): every engine call, the first and the retry after a replace, says
+// Decided with nothing to stop. An undecided call would ask a question the
+// flag already answered; a Stop list would stop models the user chose to
+// keep.
+func TestDriveStartKeepsOtherProvidersModels(t *testing.T) {
+	stubSignals(t)
+	stubOthersMode(t, "keep")
+	var got []lifecycle.OthersAnswer
+	occ := &lifecycle.OccupiedError{Occupants: []localmodels.Entry{localmodelsEntry("omlx/other", "other")}}
+	old := lifecycleStart
+	lifecycleStart = func(_ context.Context, _ *config.Config, _ lifecycle.Target, opts lifecycle.Options) error {
+		got = append(got, opts.Others)
+		if len(got) == 1 {
+			return occ
+		}
+		return nil
+	}
+	t.Cleanup(func() { lifecycleStart = old })
+
+	if err := startForLaunch(&config.Config{}, startTestRow(), true); err != nil {
+		t.Fatalf("startForLaunch() error = %v, want nil", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("engine calls = %d, want 2", len(got))
+	}
+	for i, o := range got {
+		if !o.Decided || len(o.Stop) != 0 {
+			t.Errorf("call %d: Others = %+v, want Decided with nothing to stop", i, o)
+		}
 	}
 }

@@ -10,19 +10,18 @@ import (
 // TestDelete_Agent_SucceedsAfterConfirm verifies that pressing 'd' then
 // 'y' removes the selected agent row and marks the config dirty.
 func TestDelete_Agent_SucceedsAfterConfirm(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{
 			{Name: "claude"},
 			{Name: "codex"},
 		},
-	}
+	}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
-	enterDelete(&m, "claude")
+	enterDelete(m, "claude")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseList {
 		t.Fatalf("expected phaseList after confirm, got %d", m2.phase)
 	}
@@ -40,16 +39,15 @@ func TestDelete_Agent_SucceedsAfterConfirm(t *testing.T) {
 // TestDelete_Cancel_PreservesRow verifies that pressing 'n' on the delete
 // prompt returns to the list without removing anything.
 func TestDelete_Cancel_PreservesRow(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{{Name: "claude"}},
-	}
+	}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
-	enterDelete(&m, "claude")
+	enterDelete(m, "claude")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseList {
 		t.Fatalf("expected phaseList after cancel, got %d", m2.phase)
 	}
@@ -62,23 +60,22 @@ func TestDelete_Cancel_PreservesRow(t *testing.T) {
 // on a sorted list targets the highlighted item, not the item matching the
 // slice index in cfg.
 func TestDelete_Key_TargetsSelectedItemInSortedList(t *testing.T) {
-	m := newModel(testTheme(), &config.Config{}, nil)
 	// Config has zeta first, alpha second.
-	m.cfg = &config.Config{
+	m := newModel(testTheme(), &config.Config{
 		Agents: []config.Agent{
 			{Name: "zeta"},
 			{Name: "alpha"},
 		},
-	}
+	}, nil)
 	m.ready = true
 	m.list = buildAgentsList(testTheme(), 80, 24, m.cfg)
 
 	// List is sorted by name (commands first, then alphabetical), so among
 	// the configured agents "alpha" sorts before "zeta". Select "alpha" and
 	// press 'd' to target it, NOT "zeta" (which is cfg.Agents[0]).
-	selectAgentItem(&m, "alpha")
+	selectAgentItem(m, "alpha")
 	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	m2 := got.(model)
+	m2 := got.(*model)
 	if m2.phase != phaseDelete {
 		t.Fatalf("expected phaseDelete, got %d", m2.phase)
 	}
@@ -88,7 +85,7 @@ func TestDelete_Key_TargetsSelectedItemInSortedList(t *testing.T) {
 
 	// Confirm delete.
 	got2, _ := m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	m3 := got2.(model)
+	m3 := got2.(*model)
 	if len(m3.cfg.Agents) != 1 || m3.cfg.Agents[0].Name != "zeta" {
 		t.Fatalf("expected only zeta remaining, got %v", m3.cfg.Agents)
 	}

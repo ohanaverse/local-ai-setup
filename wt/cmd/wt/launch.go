@@ -17,17 +17,16 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
-// emitPriceNotice is a seam for tests: production prints modelman's
-// stale-pricing notice (issue #69) after the summary; tests swap it to
-// observe whether the call was made without touching the real modelman.toml.
+// emitPriceNotice is a seam for tests: production prints the stale-pricing
+// notice (issue #69, agents.PrintPriceNotice) after the summary; tests swap
+// it to observe whether the call was made.
 var emitPriceNotice = realEmitPriceNotice
 
-func realEmitPriceNotice() {
-	agents.PrintPriceNotice()
+func realEmitPriceNotice(cfg *config.Config) {
+	agents.PrintPriceNotice(cfg)
 }
 
 // releaseSession is a seam for tests: production releases this wt process's own
@@ -104,37 +103,6 @@ func askYesNoDefault(r io.Reader, def bool) (bool, error) {
 	}
 }
 
-// buildLaunch constructs the agent command for the given model and worktree,
-// appending passthrough args and a resume flag when a prior session exists.
-// It is a thin wrapper around agents.BuildLaunchCmd so tests can assert the
-// command shape without exec'ing an agent.
-func buildLaunch(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
-}
-
-// buildCommandForModel performs session lookup and builds the exec.Cmd for a
-// model-driven agent. It is extracted so tests can assert command shape without
-// exec'ing an agent.
-func buildCommandForModel(agent string, m config.Model, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	// Native models launch fresh: resuming a session would restore the
-	// session's stored model, overriding the user's "native" choice. Skip
-	// the session lookup so no --resume/--session flag is ever appended.
-	var sess *session.Session
-	if !m.Native {
-		if r, ok := agents.ByName(agent).(agents.Resumer); ok {
-			sess, _ = r.LatestSession(worktreePath)
-		}
-	}
-	return buildLaunch(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
-}
-
-// buildCommandForCommand builds the exec.Cmd for a command-like agent (e.g.
-// shell). It runs in the requested worktree; the -M warning lives in
-// launchFiltered where the pinnedSupplied signal is available.
-func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo bool, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, nil, cfg, extraArgs)
-}
-
 // buildFilteredCmd is the build-only core of launchFiltered: it resolves the
 // model (or detects a command agent) and constructs the launch command for
 // worktreePath without running it. It is extracted so tests can assert the
@@ -146,18 +114,39 @@ func buildCommandForCommand(agent, worktreePath string, cfg *config.Config, yolo
 func buildFilteredCmd(agent, worktreePath string, cfg *config.Config, yolo bool, tags, family, pinned string, extraArgs []string) (config.Model, *exec.Cmd, error) {
 	m, _, err := resolveModel(agent, cfg, tags, family, pinned)
 	if errors.Is(err, errCommandAgent) {
-		cmd, berr := buildCommandForCommand(agent, worktreePath, cfg, yolo, extraArgs)
+		cmd, berr := agents.BuildLaunchCmd(agent, config.Model{}, worktreePath, yolo, cfg, extraArgs)
 		return config.Model{}, cmd, berr
 	}
 	if err != nil {
 		return config.Model{}, nil, err
 	}
-	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)
+	cmd, berr := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
 	return m, cmd, berr
 }
 
+// shellDir is a test seam over os.Getwd: the directory the user typed the
+// command in, which is what they meant a relative passthrough path against.
+var shellDir = os.Getwd
+
+// runLaunch is the one way a built agent command is run: it prints the
+// pre-launch notes (to osStderr, the seam the start progress already uses),
+// then hands off to runAgentCmd. The note it carries today
+// is agents.RelativeArgNotes — a passthrough argument that names a file from
+// the directory the command was typed in, but not from the worktree the agent
+// starts in, would otherwise fail (or open the wrong file) with nothing to
+// connect it to where wt started the agent. Every launch site goes through
+// here so none can run an agent without it.
+func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string) error {
+	if wd, err := shellDir(); err == nil {
+		for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
+			fmt.Fprintln(osStderr, note)
+		}
+	}
+	return runAgentCmd(cmd, agent, m, cfg, pp)
+}
+
 // launchFiltered is the wired-up launch path used by main.go for every
-// non-TUI launch (-w, --cwd, and outside-a-repo passthrough). It resolves
+// non-TUI launch (-W, --cwd, and outside-a-repo passthrough). It resolves
 // the eligible model list (via cfg.EligibleModels), resolves the -M pin
 // against all rows (a start row is started before this point), and
 // otherwise advances through the eligible list using the per-slot
@@ -186,14 +175,14 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		if pinnedSupplied {
 			fmt.Fprintf(os.Stderr, "wt: -M ignored for command %q\n", agent)
 		}
-		// buildFilteredCmd dispatches command agents to buildCommandForCommand
-		// with the real worktreePath (not "."), so shell-wt -W foo runs in the
-		// worktree. runAgentCmd then wires stdio and execs it.
+		// buildFilteredCmd gives command agents the real worktreePath (not
+		// "."), so shell-wt -W foo runs in the worktree. runAgentCmd then
+		// wires stdio and execs it.
 		_, cmd, err := buildFilteredCmd(agent, worktreePath, cfg, yolo, "", "", "", extraArgs)
 		if err != nil {
 			return err
 		}
-		return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
+		return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs)
 	}
 
 	// Resolve the model. If the caller precomputed the eligible list, reuse
@@ -211,6 +200,13 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	} else {
 		m, err = resolveModelFromEligible(agent, eligible)
 	}
+	// A -M pin of a slot profile is its own launch unit: none of the
+	// single-model steps below (the ollama check, the route check, rotation,
+	// the automatic profile) apply to it.
+	var pin *slotPin
+	if errors.As(err, &pin) {
+		return launchSlotProfile(agent, worktreePath, cfg, yolo, pin.row, extraArgs)
+	}
 	if err != nil {
 		// When multiple models are eligible and no pin was supplied, rotate
 		// through the global model list to the next model supported by agent.
@@ -227,21 +223,22 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 	}
 
 	// Fail fast if the selected ollama model is not available locally.
-	// This runs before session lookup and full command construction so we
-	// don't waste work on a model we can't launch. The check is skipped when
+	// This runs before full command construction so we don't waste work on a
+	// model we can't launch. The check is skipped when
 	// this agent×model pairing will actually route through LiteLLM (any
 	// upstream may serve the model) and when the model is not served by
-	// ollama at all — ollamacheck only probes the local ollama daemon. Uses
+	// ollama at all — ollamacheck only asks the ollama daemon the registry
+	// names. Uses
 	// the per-model resolved route rather than the raw cfg.IsLitellm()
 	// toggle: a protocol mismatch (e.g. codex+ollama) forces LiteLLM even
 	// when the toggle is off, and the toggle-only check spuriously blocked
 	// that case on an unready-locally ollama model that would launch fine
 	// once forced through the proxy. Route resolution errors are ignored
-	// here — buildCommandForModel resolves the same route again and
+	// here — agents.BuildLaunchCmd resolves the same route again and
 	// surfaces the error properly.
 	route, _ := cfg.ResolveRoute(m, agents.ProtocolsFor(agent))
 	if !route.Litellm && ollamacheck.IsOllamaModel(m) {
-		ok, oerr := ollamacheck.Check(m)
+		ok, oerr := ollamacheck.Check(cfg, m)
 		if oerr != nil {
 			// Print the summary before returning so the user sees the same
 			// post-run line on pre-launch config errors as on a real exit.
@@ -255,17 +252,27 @@ func launchFilteredImpl(agent, worktreePath string, cfg *config.Config, yolo boo
 		}
 	}
 
-	cmd, berr := buildCommandForModel(agent, m, worktreePath, cfg, yolo, extraArgs)
+	cmd, berr := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
 	if berr != nil {
 		return berr
 	}
+	// The agent is about to dial m through the proxy. A local model here is
+	// running (the launchable list holds no other kind, and a pin was started
+	// above if it was idle), but wt may not be what started it, so its route
+	// may not exist. Only a launch that goes through LiteLLM needs the route;
+	// a direct launch leaves config.yaml alone.
+	if route.Litellm {
+		ensureRouteBeforeLaunch(cfg, m)
+	}
 	if rerr := rotation.New().RecordFor(agent, m.ID); rerr != nil {
-		fmt.Fprintf(os.Stderr, "note: rotation state not saved: %v\n", rerr)
+		// RecordFor names the file that failed: rotation.state, or
+		// last-picked.state, a write of its own.
+		fmt.Fprintf(os.Stderr, "note: %v\n", rerr)
 	}
 	if rerr := refcount.NewStore().Record(os.Getpid(), m.ID); rerr != nil {
 		fmt.Fprintf(os.Stderr, "note: refcount state not saved: %v\n", rerr)
 	}
-	return runAgentCmd(cmd, agent, m, cfg, pp)
+	return runLaunch(cmd, agent, m, cfg, pp, extraArgs)
 }
 
 // launchPassthrough builds and runs the bare-agent command for an
@@ -284,7 +291,7 @@ func launchPassthroughImpl(agent, worktreePath string, yolo bool, extraArgs []st
 	if err != nil {
 		return err
 	}
-	return runAgentCmd(cmd, agent, config.Model{}, cfg, pp)
+	return runLaunch(cmd, agent, config.Model{}, cfg, pp, extraArgs)
 }
 
 // selfHealAgentConfigContentTarget checks agent's config_content file
@@ -344,28 +351,24 @@ func applyProfileForLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *con
 		return noop, nil
 	}
 
+	// A load error wins over a validation error, and a store that failed to
+	// load is not validated.
 	var store profiles.Store
+	var perr error
 	if pp != nil {
-		if pp.loadErr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.loadErr)
-			return noop, nil
+		store, perr = pp.store, pp.loadErr
+		if perr == nil {
+			perr = pp.validateErr
 		}
-		if pp.validateErr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", pp.validateErr)
-			return noop, nil
-		}
-		store = pp.store
 	} else {
-		var loadErr error
-		store, loadErr = loadProfileStore()
-		if loadErr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", loadErr)
-			return noop, nil
+		store, perr = loadProfileStore()
+		if perr == nil {
+			perr = profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism)
 		}
-		if verr := profiles.Validate(store, agentProfileMechanisms, agentRequiredMechanism); verr != nil {
-			fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", verr)
-			return noop, nil
-		}
+	}
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "wt: profiles.toml: %v (profiles disabled for this launch)\n", perr)
+		return noop, nil
 	}
 	if !store.Enabled {
 		return noop, nil
@@ -531,7 +534,7 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	// The reminder is meaningless for command agents (no priced model) —
 	// same convention survey.PromptRun already uses.
 	if m.ID != "" {
-		emitPriceNotice()
+		emitPriceNotice(cfg)
 	}
 	if err != nil {
 		var ee *exec.ExitError

@@ -98,39 +98,46 @@ func (s *StoreImpl) Record(pid int, modelID string) error {
 	})
 }
 
+// RecordAll appends one live-session entry per distinct, non-empty id of
+// modelIDs for pid, in one locked write. A slot-profile session uses several
+// models at once, and each of them must read as in use for as long as the
+// session lives; one write means another wt process never sees half of them.
+// With nothing to record it writes nothing. It is not part of the Store
+// interface: its callers hold the concrete type.
+func (s *StoreImpl) RecordAll(pid int, modelIDs []string) error {
+	var lines []byte
+	seen := make(map[string]bool, len(modelIDs))
+	for _, id := range modelIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		line, err := json.Marshal(entry{Pid: pid, ModelID: id})
+		if err != nil {
+			return err
+		}
+		lines = append(lines, line...)
+		lines = append(lines, '\n')
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return s.withLock(func() error {
+		existing, err := os.ReadFile(s.path())
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return config.WriteFileAtomic(s.path(), append(existing, lines...), 0o600)
+	})
+}
+
 // Sweep drops every entry whose pid is no longer alive and rewrites the
 // state file. Called once at the top of every launch (runLaunchPath) so
 // counts stay accurate after a crashed or killed wt session. A corrupt line
 // is dropped along with dead entries — Sweep favors a clean file over
 // surfacing a parse error, since callers treat it as best-effort.
 func (s *StoreImpl) Sweep() error {
-	return s.withLock(func() error {
-		data, err := os.ReadFile(s.path())
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		var out []byte
-		scanner := bufio.NewScanner(bytes.NewReader(data))
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			var e entry
-			if err := json.Unmarshal(line, &e); err != nil {
-				continue
-			}
-			if !pidAlive(e.Pid) {
-				continue
-			}
-			out = append(out, line...)
-			out = append(out, '\n')
-		}
-		if err := scanner.Err(); err != nil {
-			return err
-		}
-		return config.WriteFileAtomic(s.path(), out, 0o600)
-	})
+	return s.rewrite(func(e entry) bool { return !pidAlive(e.Pid) }, false)
 }
 
 // Release drops every entry recorded for pid. A wt session calls it once its
@@ -140,6 +147,14 @@ func (s *StoreImpl) Sweep() error {
 // (a command agent never records one), is a no-op that leaves the file
 // untouched; corrupt lines are dropped only when an entry is actually removed.
 func (s *StoreImpl) Release(pid int) error {
+	return s.rewrite(func(e entry) bool { return e.Pid == pid }, true)
+}
+
+// rewrite rewrites the state file, under the lock, without the entries drop
+// accepts and without the lines that do not parse. A missing file is left
+// missing. With onlyIfDropped, a pass in which drop accepted no entry writes
+// nothing, so the file keeps its corrupt lines too.
+func (s *StoreImpl) rewrite(drop func(entry) bool, onlyIfDropped bool) error {
 	return s.withLock(func() error {
 		data, err := os.ReadFile(s.path())
 		if err != nil {
@@ -149,7 +164,7 @@ func (s *StoreImpl) Release(pid int) error {
 			return err
 		}
 		var out []byte
-		removed := false
+		dropped := false
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -157,8 +172,8 @@ func (s *StoreImpl) Release(pid int) error {
 			if err := json.Unmarshal(line, &e); err != nil {
 				continue
 			}
-			if e.Pid == pid {
-				removed = true
+			if drop(e) {
+				dropped = true
 				continue
 			}
 			out = append(out, line...)
@@ -167,7 +182,7 @@ func (s *StoreImpl) Release(pid int) error {
 		if err := scanner.Err(); err != nil {
 			return err
 		}
-		if !removed {
+		if onlyIfDropped && !dropped {
 			return nil
 		}
 		return config.WriteFileAtomic(s.path(), out, 0o600)
@@ -204,4 +219,44 @@ func (s *StoreImpl) Counts(modelIDs []string) map[string]int {
 		out[e.ModelID]++
 	}
 	return out
+}
+
+// Live returns the live-session count of every model id in the state file,
+// whatever the id: a session launched on a discovered model carries an id no
+// registry lists, so a caller that must not miss one (the family-wide in-use
+// count `wt stop` asks about before halting a provider) cannot name its ids
+// up front as Counts requires. Like Counts it is a pure read; sweep first.
+func (s *StoreImpl) Live() map[string]int {
+	out := map[string]int{}
+	f, err := os.Open(s.path())
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var e entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil || e.ModelID == "" {
+			continue
+		}
+		out[e.ModelID]++
+	}
+	return out
+}
+
+// LiveCounts is the number of live wt sessions using each of ids in s: s is
+// swept of dead pids first, as the stop picker does, so a session that died
+// without releasing its line is not counted. A failed sweep counts what the
+// file holds.
+func LiveCounts(s Store, ids []string) map[string]int {
+	_ = s.Sweep()
+	return s.Counts(ids)
+}
+
+// SessionCounts is LiveCounts over the default store: what each replace
+// confirmation (the non-TUI prompt and the picker's dialog) names next to an
+// occupant some wt sessions use (#412).
+func SessionCounts(ids []string) map[string]int {
+	return LiveCounts(NewStore(), ids)
 }

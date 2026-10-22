@@ -133,7 +133,7 @@ echo "## OpenRouter (cloud, always live):"
 # Restore all local services so system is back to normal
 echo ""
 echo "  [cleanup] restoring all local services..."
-"${MODELMAN_PROVIDER[@]}" restore
+"${LLMBENCH_PROVIDER[@]}" restore
 
 echo ""
 echo "Testing OpenRouter models (direct + via LiteLLM)..."

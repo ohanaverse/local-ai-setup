@@ -24,6 +24,16 @@ func withTempDir(t *testing.T) string {
 	return tmp
 }
 
+// writeThemesFile writes contents as themes.toml in dir and returns its path.
+func writeThemesFile(t *testing.T, dir, contents string) string {
+	t.Helper()
+	path := filepath.Join(dir, "themes.toml")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // TestLoad_MissingFile: themes.toml doesn't exist → (Default, false, nil).
 // The "no user choice" path. This is the normal first-launch state.
 func TestLoad_MissingFile(t *testing.T) {
@@ -44,9 +54,7 @@ func TestLoad_MissingFile(t *testing.T) {
 // nil). TOML permits empty files; treat as "no choice."
 func TestLoad_EmptyFile(t *testing.T) {
 	tmp := withTempDir(t)
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, "")
 	theme, set, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v, want nil", err)
@@ -63,9 +71,7 @@ func TestLoad_EmptyFile(t *testing.T) {
 // The happy path.
 func TestLoad_ValidTheme(t *testing.T) {
 	tmp := withTempDir(t)
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte("theme = \"solarized\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, "theme = \"solarized\"\n")
 	theme, set, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -83,9 +89,7 @@ func TestLoad_ValidTheme(t *testing.T) {
 // surface it instead of silently falling back.
 func TestLoad_UnknownTheme(t *testing.T) {
 	tmp := withTempDir(t)
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte("theme = \"foo\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, "theme = \"foo\"\n")
 	_, _, err := Load()
 	if err == nil {
 		t.Fatal("Load() error = nil, want non-nil")
@@ -103,9 +107,7 @@ func TestLoad_UnknownTheme(t *testing.T) {
 // TestLoad_EmptyThemeValue: theme = "" → error. Empty isn't valid.
 func TestLoad_EmptyThemeValue(t *testing.T) {
 	tmp := withTempDir(t)
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte("theme = \"\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, "theme = \"\"\n")
 	_, _, err := Load()
 	if err == nil {
 		t.Fatal("Load() error = nil, want non-nil for empty theme value")
@@ -120,9 +122,7 @@ func TestLoad_EmptyThemeValue(t *testing.T) {
 func TestLoad_DuplicateThemeKey(t *testing.T) {
 	tmp := withTempDir(t)
 	contents := "theme = \"solarized\"\ntheme = \"mono\"\n"
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, contents)
 	_, _, err := Load()
 	if err == nil {
 		t.Fatal("Load() error = nil, want non-nil for duplicate theme key")
@@ -142,9 +142,7 @@ func TestLoad_MalformedTOML(t *testing.T) {
 		"theme = \"solarized", // unclosed quote
 	} {
 		t.Run(garbage, func(t *testing.T) {
-			if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte(garbage), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			writeThemesFile(t, tmp, garbage)
 			_, _, err := Load()
 			if err == nil {
 				t.Errorf("Load() error = nil for %q, want non-nil", garbage)
@@ -161,9 +159,7 @@ func TestLoad_MalformedTOML(t *testing.T) {
 func TestLoad_UnknownKeysIgnored(t *testing.T) {
 	tmp := withTempDir(t)
 	contents := "# user comment\ntheme = \"solarized\"\nunknown_future_field = 42\n"
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, contents)
 	theme, _, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v, want nil", err)
@@ -177,9 +173,7 @@ func TestLoad_UnknownKeysIgnored(t *testing.T) {
 // loader must accept any case since users edit themes.toml by hand.
 func TestLoad_CaseInsensitiveThemeName(t *testing.T) {
 	tmp := withTempDir(t)
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte("theme = \"SOLARIZED\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, "theme = \"SOLARIZED\"\n")
 	theme, _, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -196,10 +190,7 @@ func TestLoad_PermissionDenied(t *testing.T) {
 		t.Skip("running as root, chmod doesn't restrict access")
 	}
 	tmp := withTempDir(t)
-	path := filepath.Join(tmp, "themes.toml")
-	if err := os.WriteFile(path, []byte("theme = \"solarized\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := writeThemesFile(t, tmp, "theme = \"solarized\"\n")
 	if err := os.Chmod(path, 0o000); err != nil {
 		t.Fatal(err)
 	}
@@ -218,9 +209,7 @@ func TestLoad_PermissionDenied(t *testing.T) {
 func TestSave_AtomicWrite(t *testing.T) {
 	tmp := withTempDir(t)
 	// Pre-existing content
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte("theme = \"default\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, "theme = \"default\"\n")
 	if err := Save("solarized"); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -240,9 +229,7 @@ func TestSave_AtomicWrite(t *testing.T) {
 func TestSave_UnknownName_DoesNotWrite(t *testing.T) {
 	tmp := withTempDir(t)
 	original := "theme = \"solarized\"\n"
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte(original), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, original)
 	err := Save("nonexistent")
 	if err == nil {
 		t.Fatal("Save(\"nonexistent\") error = nil, want non-nil")
@@ -260,9 +247,7 @@ func TestSave_UnknownName_DoesNotWrite(t *testing.T) {
 // Load returns (Default, false, nil).
 func TestUnset_RemovesFile(t *testing.T) {
 	tmp := withTempDir(t)
-	if err := os.WriteFile(filepath.Join(tmp, "themes.toml"), []byte("theme = \"solarized\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeThemesFile(t, tmp, "theme = \"solarized\"\n")
 	if err := Unset(); err != nil {
 		t.Fatalf("Unset() error = %v", err)
 	}

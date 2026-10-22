@@ -1,0 +1,437 @@
+import subprocess
+from unittest.mock import patch
+
+import pytest
+
+from llmbench.providers.lifecycle.backends import BACKENDS
+from llmbench.providers.lifecycle.backends.base import StillFinishing
+from llmbench.providers.lifecycle.backends.ollama import (
+    DEFAULT_MODEL,
+    ENV_VAR,
+    OLLAMA,
+    OLLAMA_CHAT_URL,
+    OLLAMA_HEALTH_URL,
+    UNLOAD_INTERVAL,
+    UNLOAD_TRIES,
+    OllamaBackend,
+    _loaded_model_names,
+)
+from llmbench.providers.lifecycle.envelope import LifecycleError
+from llmbench.providers.lifecycle.launchd import OLLAMA_LABEL
+
+
+def test_ollama_registered_in_backends_registry():
+    """The bottom-of-module `OLLAMA = OllamaBackend()` singleton must be the
+    same object registered under "ollama" in BACKENDS — a copy-paste bug
+    that registers a fresh instance would silently diverge from the one
+    imported elsewhere."""
+    assert BACKENDS["ollama"] is OLLAMA
+
+
+# --- resolve() / model precedence -------------------------------------------
+
+
+def test_resolve_uses_explicit_model_when_given(monkeypatch):
+    """An explicit model argument must win over both the env var and the
+    default — matches bash's positional-arg-not-applicable-to-ollama case,
+    but the Python resolve() still supports it via the base precedence."""
+    monkeypatch.setenv(ENV_VAR, "env-model")
+    plan = OLLAMA.resolve("explicit-model", ())
+    assert plan.model == "explicit-model"
+    assert plan.direct_url == OLLAMA_CHAT_URL
+
+
+def test_resolve_env_var_wins_over_default(monkeypatch):
+    """With no explicit model, LLM_ISOLATE_OLLAMA_MODEL must win over the
+    baked-in default — this is how bash's `OLLAMA_MODEL="${LLM_ISOLATE_OLLAMA_MODEL:-ornith-1.5:35b}"`
+    behaves."""
+    monkeypatch.setenv(ENV_VAR, "env-model")
+    plan = OLLAMA.resolve(None, ())
+    assert plan.model == "env-model"
+
+
+def test_resolve_falls_back_to_default_model(monkeypatch):
+    """With neither an explicit model nor the env var set, resolve() must
+    use the hardcoded default "ornith-1.5:35b", matching bash's fallback."""
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    plan = OLLAMA.resolve(None, ())
+    assert plan.model == DEFAULT_MODEL
+
+
+# --- _loaded_model_names() ---------------------------------------------------
+
+
+def test_loaded_model_names_parses_multiline_output_dropping_header():
+    """`ollama ps` output has a header row (NAME/ID/SIZE/...) that must be
+    dropped, and only the first whitespace-separated field of each
+    remaining line is the model name — this is the Python port of
+    `tail -n +2 | awk 'NF {print $1}'`."""
+    stdout = (
+        "NAME                    ID              SIZE      PROCESSOR    UNTIL\n"
+        "ornith-1.5:35b          abc123          20 GB     100% GPU     4 minutes\n"
+        "qwen3.8:latest          def456          8 GB      100% GPU     3 minutes\n"
+    )
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.shutil.which",
+            return_value="/usr/bin/ollama",
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout=stdout)
+        names = _loaded_model_names()
+    assert names == ["ornith-1.5:35b", "qwen3.8:latest"]
+
+
+def test_loaded_model_names_returns_empty_when_ollama_missing_from_path():
+    """No `ollama` binary on PATH must return [] without attempting to run
+    a command — a down/missing daemon has nothing loaded."""
+    with (
+        patch("llmbench.providers.lifecycle.backends.ollama.shutil.which", return_value=None),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+    ):
+        assert _loaded_model_names() == []
+    mock_run.assert_not_called()
+
+
+def test_loaded_model_names_returns_empty_on_nonzero_exit():
+    """A non-zero `ollama ps` exit (e.g. daemon down) must read as "nothing
+    loaded", not raise."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.shutil.which",
+            return_value="/usr/bin/ollama",
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = subprocess.CompletedProcess([], 1, stdout="")
+        assert _loaded_model_names() == []
+
+
+def test_loaded_model_names_returns_empty_on_oserror():
+    """An OSError running `ollama ps` (e.g. race where the binary vanished
+    after the PATH check) must also come back as [] rather than raise."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.shutil.which",
+            return_value="/usr/bin/ollama",
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.subprocess.run",
+            side_effect=OSError("boom"),
+        ),
+    ):
+        assert _loaded_model_names() == []
+
+
+# --- start() ------------------------------------------------------------
+
+
+def test_start_kickstarts_when_health_probe_fails():
+    """bash's start_ollama() only kickstarts the launchd service when the
+    one-shot 2s health probe fails — a stale/wedged daemon should not be
+    bounced just because it's slow to answer once."""
+    plan = OLLAMA.resolve("m", ())
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.urllib.request.urlopen",
+            side_effect=OSError("connection refused"),
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.launchd.kickstart") as mock_kickstart,
+    ):
+        OllamaBackend().start(plan)
+    mock_kickstart.assert_called_once_with(OLLAMA_LABEL)
+
+
+def test_start_does_not_kickstart_when_health_probe_succeeds():
+    """When the daemon already answers within 2s, bash's `curl ... ||
+    launchctl kickstart` short-circuits and never kickstarts — a healthy
+    daemon must not be needlessly restarted."""
+    plan = OLLAMA.resolve("m", ())
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.urllib.request.urlopen"
+        ) as mock_urlopen,
+        patch("llmbench.providers.lifecycle.backends.ollama.launchd.kickstart") as mock_kickstart,
+    ):
+        mock_urlopen.return_value.__enter__ = lambda self: self
+        mock_urlopen.return_value.__exit__ = lambda *a: None
+        OllamaBackend().start(plan)
+    mock_kickstart.assert_not_called()
+
+
+def test_start_does_not_warm():
+    """warm() is orchestrate.isolate()'s job (called once after
+    start()+wait_ready() for every backend) — start() calling it too would
+    warm the model twice per isolate(). Regression test for that bug."""
+    plan = OLLAMA.resolve("m", ())
+    with (
+        patch("llmbench.providers.lifecycle.backends.ollama.urllib.request.urlopen"),
+        patch("llmbench.providers.lifecycle.backends.base.warmup") as mock_warmup,
+    ):
+        OllamaBackend().start(plan)
+    mock_warmup.assert_not_called()
+
+
+# --- stop_and_wait() ------------------------------------------------------
+
+
+def test_stop_and_wait_stops_every_loaded_model_and_returns_none_on_clean_stop():
+    """A model other than the default may be loaded (`wt start`,
+    `ollama run`), so stop_and_wait() must stop EVERY model `ollama ps`
+    reports loaded, not just DEFAULT_MODEL — this is the whole reason bash
+    reads `ollama ps` live instead of stopping a baked-in name."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["m1", "m2"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert result is None
+    stop_calls = [c.args[0] for c in mock_run.call_args_list]
+    assert stop_calls == [["ollama", "stop", "m1"], ["ollama", "stop", "m2"]]
+    mock_sleep.assert_not_called()
+
+
+def test_stop_and_wait_outlasts_a_model_finishing_a_request_in_flight():
+    """`ollama stop` exits 0 at once and the model stays listed until the
+    request it is serving ends: 6 to 20 seconds as observed, and 55 behind a
+    long generation. stop_and_wait() must sit that out and report a clean
+    stop, or the isolation goes on with the model still generating."""
+    polls_while_listed = 56  # the first poll, then one per second for 55s
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["busy"]] + [["busy"]] * polls_while_listed + [[]],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run"),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert result is None
+    waited = sum(c.args[0] for c in mock_sleep.call_args_list)
+    assert waited == pytest.approx(polls_while_listed * UNLOAD_INTERVAL)
+    assert waited >= 55
+
+
+def test_stop_and_wait_polls_once_more_after_the_last_sleep():
+    """The model may unload during the final interval, so the wait ends on a
+    poll, not on a sleep."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["busy"]] + [["busy"]] * UNLOAD_TRIES + [[]],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run"),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert result is None
+    assert mock_sleep.call_count == UNLOAD_TRIES
+
+
+def test_stop_and_wait_returns_warning_when_models_still_loaded_after_retries():
+    """If a model is still loaded after the whole wait, stop_and_wait() must
+    return a warning string (not raise) — matching bash's
+    `wait_for_ollama_unloaded 5 || echo "ollama still has models loaded"`,
+    which warns rather than fails the whole isolation. The warning says how
+    long the wait was."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            return_value=["stuck-model"],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert result == "ollama still has models loaded after waiting 180s"
+    assert mock_sleep.call_count == UNLOAD_TRIES
+    mock_run.assert_called_once_with(
+        ["ollama", "stop", "stuck-model"], capture_output=True, check=False
+    )
+
+
+def test_stop_and_wait_accepted_stop_still_finishing_is_its_own_warning():
+    """`ollama stop` exited 0 for the model (ollama accepted the stop) and
+    `ollama ps` still lists it after the whole wait: ollama is finishing a
+    request and unloads the model when that ends. That is told apart from a
+    failed stop (a StillFinishing warning, #379, as wt's
+    StillFinishingError), and it is still a warning, never None: the model is
+    loaded, so an isolation is not isolated yet."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            return_value=["busy"],
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        result = OllamaBackend().stop_and_wait()
+    assert isinstance(result, StillFinishing)
+    assert result == (
+        "ollama is still finishing a request on busy after waiting 180s; "
+        "it unloads it when that ends"
+    )
+    assert mock_sleep.call_count == UNLOAD_TRIES
+
+
+def test_stop_and_wait_refused_stop_is_not_still_finishing():
+    """A model whose `ollama stop` exited non-zero, or one loaded after the
+    stops were sent, is not something ollama agreed to unload: still listed
+    after the wait, it is the plain failure warning, never StillFinishing."""
+    for loaded, rcs in ((["busy", "refused"], [0, 1]), (["busy", "late"], [0])):
+        with (
+            patch(
+                "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+                side_effect=[loaded[: len(rcs)]] + [loaded] * (UNLOAD_TRIES + 1),
+            ),
+            patch(
+                "llmbench.providers.lifecycle.backends.ollama.subprocess.run",
+                side_effect=[subprocess.CompletedProcess([], rc) for rc in rcs],
+            ),
+            patch("llmbench.providers.lifecycle.backends.ollama.time.sleep"),
+        ):
+            result = OllamaBackend().stop_and_wait()
+        assert result == "ollama still has models loaded after waiting 180s", loaded
+        assert not isinstance(result, StillFinishing), loaded
+
+
+# --- restore() ------------------------------------------------------------
+
+
+# --- replace_own_occupant() -----------------------------------------------
+
+
+def test_replace_own_occupant_unloads_every_other_model_and_keeps_the_target():
+    """Isolating ollama for a second model in one sweep must unload the first:
+    without it, ollama keeps the previous model for its keep-alive (5 min)
+    and two models share RAM, which is what isolation exists to prevent.
+    The target itself is never stopped: re-isolating the loaded model pays
+    only warmup."""
+    plan = OLLAMA.resolve("next", ())
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["prev", "next", "other"], ["next"]],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+    ):
+        OllamaBackend().replace_own_occupant(plan)
+    stop_calls = [c.args[0] for c in mock_run.call_args_list]
+    assert stop_calls == [["ollama", "stop", "prev"], ["ollama", "stop", "other"]]
+    mock_sleep.assert_not_called()
+
+
+def test_replace_own_occupant_is_a_no_op_when_nothing_else_is_loaded():
+    plan = OLLAMA.resolve("next", ())
+    for loaded in ([], ["next"]):
+        with (
+            patch(
+                "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+                return_value=loaded,
+            ),
+            patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+            patch("llmbench.providers.lifecycle.backends.ollama.time.sleep") as mock_sleep,
+        ):
+            OllamaBackend().replace_own_occupant(plan)
+        mock_run.assert_not_called()
+        mock_sleep.assert_not_called()
+
+
+def test_replace_own_occupant_raises_when_another_model_stays_loaded():
+    """A model still loaded after the whole wait raises, as the contract
+    asks: a solo isolate surfaces the real cause instead of a later
+    generic failure."""
+    plan = OLLAMA.resolve("next", ())
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            return_value=["prev", "next"],
+        ),
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep"),
+        pytest.raises(LifecycleError, match="still finishing a request on prev"),
+    ):
+        OllamaBackend().replace_own_occupant(plan)
+
+
+def test_restore_no_ops_when_already_up():
+    """restore() must not touch launchd at all when ollama already answers
+    its health check — a no-op restart would be pointless churn."""
+    with (
+        patch("llmbench.providers.lifecycle.backends.base.urllib.request.urlopen") as mock_urlopen,
+        patch("llmbench.providers.lifecycle.backends.ollama.launchd.kickstart") as mock_kickstart,
+        patch("llmbench.providers.lifecycle.backends.base.wait_for_port_open") as mock_wait,
+    ):
+        mock_urlopen.return_value.__enter__ = lambda self: self
+        mock_urlopen.return_value.__exit__ = lambda *a: None
+        OllamaBackend().restore()
+    mock_kickstart.assert_not_called()
+    mock_wait.assert_not_called()
+
+
+def test_restore_kickstarts_and_waits_when_down():
+    """When the health probe fails, restore() must kickstart the launchd
+    service and then poll for it to come back up, matching bash's
+    `wait_for()` fallback path."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.base.urllib.request.urlopen",
+            side_effect=OSError("refused"),
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.launchd.kickstart") as mock_kickstart,
+        patch(
+            "llmbench.providers.lifecycle.backends.base.wait_for_port_open",
+            return_value=True,
+        ) as mock_wait,
+    ):
+        OllamaBackend().restore()
+    mock_kickstart.assert_called_once_with(OLLAMA_LABEL)
+    mock_wait.assert_called_once()
+    assert mock_wait.call_args.args[0] == OLLAMA_HEALTH_URL
+
+
+def test_restore_raises_lifecycle_error_when_it_never_comes_back():
+    """If the service never answers within RESTORE_WAIT_TIMEOUT after a
+    kickstart, restore() must raise LifecycleError with a message naming
+    the health URL — matching bash's `wait_for()` failure message shape."""
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.base.urllib.request.urlopen",
+            side_effect=OSError("refused"),
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.launchd.kickstart"),
+        patch(
+            "llmbench.providers.lifecycle.backends.base.wait_for_port_open",
+            return_value=False,
+        ),
+        pytest.raises(LifecycleError, match="ollama did not come back up"),
+    ):
+        OllamaBackend().restore()
+
+
+def test_unload_models_stops_every_loaded_model():
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
+            side_effect=[["a", "b"], []],
+        ),
+        patch("llmbench.providers.lifecycle.backends.ollama.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.ollama.time.sleep"),
+    ):
+        assert OllamaBackend().unload_models() is None
+    assert [c.args[0] for c in mock_run.call_args_list] == [
+        ["ollama", "stop", "a"],
+        ["ollama", "stop", "b"],
+    ]

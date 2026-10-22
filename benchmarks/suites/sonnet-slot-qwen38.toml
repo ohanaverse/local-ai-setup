@@ -1,0 +1,37 @@
+# Can ollama Qwen3.8-27B fill Claude Code's sonnet slot? One real coding
+# task (day31-drift), 3 passes per row, against Sonnet 5 and the profile's
+# current sonnet-slot model.
+name = "sonnet slot: qwen3.8 ollama"
+task = "benchmarks/tasks/day31-drift"
+passes = 3
+cooldown_s = 20
+agent_timeout_s = 600
+
+[judge]
+model = "openrouter/anthropic/claude-opus-5"
+thinking = "low"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "openrouter"
+
+[routes.direct.ollama]
+base_url = "http://localhost:11434/v1"
+api = "openai-completions"
+
+[[rows]]
+models   = ["ollama/qwen3.8:27b-mlx"]
+thinking = ["off", "high"]
+routes   = ["direct"]
+
+[[rows]]
+label    = "sonnet-5-high"
+model    = "openrouter/anthropic--claude-sonnet-5"
+thinking = "high"
+route    = "litellm"
+
+[[rows]]
+label    = "glm-5.3-flash-off"
+model    = "ollama/glm-5.3-flash:cloud"
+thinking = "off"
+route    = "litellm"

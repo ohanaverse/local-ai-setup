@@ -1,6 +1,6 @@
 // wt litellm — the primitives that manage LiteLLM's config.yaml and the proxy.
-// wt owns this since the 2026-09-21 ownership move; modelman shells out to
-// these commands (see docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md).
+// wt owns this since the 2026-09-21 ownership move: nothing else writes
+// config.yaml (see docs/superpowers/specs/2026-09-21-wt-litellm-ownership-design.md).
 package main
 
 import (
@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -16,13 +17,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/spf13/cobra"
 )
-
-// litellmFlags carries the change subcommands' flags.
-type litellmFlags struct {
-	JSON          bool
-	DryRun        bool
-	SkipReadyGate bool
-}
 
 type litellmOutcomeJSON struct {
 	ID     string `json:"id"`
@@ -34,7 +28,6 @@ type litellmResultJSON struct {
 	Outcomes []litellmOutcomeJSON `json:"outcomes"`
 	Changed  bool                 `json:"changed"`
 	Warnings []string             `json:"warnings"`
-	DryRun   bool                 `json:"dry_run,omitempty"`
 }
 
 var errLitellmIDFailed = errors.New("one or more models could not be applied")
@@ -42,9 +35,9 @@ var errLitellmIDFailed = errors.New("one or more models could not be applied")
 // reportLitellm prints a Result (text or JSON) and returns errLitellmIDFailed
 // when any id was rejected, so the process exits 1 while the per-id detail is
 // still printed for callers that parse it.
-func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun bool) error {
+func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON bool) error {
 	failed := false
-	doc := litellmResultJSON{Outcomes: []litellmOutcomeJSON{}, Changed: res.Changed, Warnings: append([]string{}, res.Warnings...), DryRun: dryRun}
+	doc := litellmResultJSON{Outcomes: []litellmOutcomeJSON{}, Changed: res.Changed, Warnings: append([]string{}, res.Warnings...)}
 	for _, o := range res.Outcomes {
 		j := litellmOutcomeJSON{ID: o.ID, Action: o.Action}
 		if o.Err != nil {
@@ -58,12 +51,9 @@ func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun boo
 		}
 	} else {
 		for _, j := range doc.Outcomes {
-			switch {
-			case j.Error != "":
+			if j.Error != "" {
 				fmt.Fprintf(errOut, "%s: %s\n", j.ID, j.Error)
-			case dryRun:
-				fmt.Fprintf(out, "%s: would %s\n", j.ID, j.Action)
-			default:
+			} else {
 				fmt.Fprintf(out, "%s: %s\n", j.ID, j.Action)
 			}
 		}
@@ -77,38 +67,169 @@ func reportLitellm(out, errOut io.Writer, res litellm.Result, asJSON, dryRun boo
 	return nil
 }
 
-func runLitellmChange(out, errOut io.Writer, cfg *config.Config, expose bool, ids []string, fl litellmFlags) error {
-	for _, id := range ids {
-		if strings.TrimSpace(id) == "" {
-			return errors.New("blank model id: refusing to touch config.yaml")
+type syncPlanJSON struct {
+	DryRun bool `json:"dry_run"`
+	Plan   struct {
+		Add     []string             `json:"add"`
+		Adopt   []string             `json:"adopt"`
+		Rewrite []string             `json:"rewrite"`
+		Remove  []string             `json:"remove"`
+		Repair  []string             `json:"repair"`
+		Errors  []litellmOutcomeJSON `json:"errors"`
+	} `json:"plan"`
+	Warnings []string `json:"warnings"`
+}
+
+// reportSyncPlan prints a dry-run plan plus the probe warnings the real sync
+// would report, in both renderings; exit status 1 when any desired id could
+// not be built, like a real sync.
+func reportSyncPlan(out, errOut io.Writer, plan litellm.SyncPlan, warnings []string, asJSON bool) error {
+	doc := syncPlanJSON{DryRun: true, Warnings: append([]string{}, warnings...)}
+	doc.Plan.Add = append([]string{}, plan.Add...)
+	doc.Plan.Adopt = append([]string{}, plan.Adopt...)
+	doc.Plan.Rewrite = append([]string{}, plan.Rewrite...)
+	doc.Plan.Remove = append([]string{}, plan.Remove...)
+	doc.Plan.Repair = append([]string{}, plan.Repair...)
+	doc.Plan.Errors = []litellmOutcomeJSON{}
+	for _, e := range plan.Errors {
+		doc.Plan.Errors = append(doc.Plan.Errors, litellmOutcomeJSON{ID: e.ID, Error: e.Err.Error()})
+	}
+	if asJSON {
+		if err := json.NewEncoder(out).Encode(doc); err != nil {
+			return err
+		}
+	} else {
+		for _, id := range plan.Add {
+			verb := "route"
+			switch {
+			case slices.Contains(plan.Adopt, id):
+				verb = "adopt"
+			case slices.Contains(plan.Rewrite, id):
+				verb = "rewrite"
+			}
+			fmt.Fprintf(out, "%s: would %s\n", id, verb)
+		}
+		for _, id := range plan.Remove {
+			fmt.Fprintf(out, "%s: would unroute\n", id)
+		}
+		for _, id := range plan.Repair {
+			fmt.Fprintf(out, "%s: would set api_base\n", id)
+		}
+		for _, e := range doc.Plan.Errors {
+			fmt.Fprintf(errOut, "%s: %s\n", e.ID, e.Error)
+		}
+		for _, w := range doc.Warnings {
+			fmt.Fprintf(errOut, "warning: %s\n", w)
 		}
 	}
-	o := litellm.Options{SkipReadyGate: fl.SkipReadyGate}
-	var res litellm.Result
-	var err error
-	switch {
-	case expose && fl.DryRun:
-		res.Outcomes = litellm.Check(cfg, ids, fl.SkipReadyGate)
-	case expose:
-		res, err = litellm.Apply(cfg, ids, nil, o)
-	default:
-		res, err = litellm.Apply(cfg, nil, ids, o)
+	if len(plan.Errors) > 0 {
+		return errLitellmIDFailed
 	}
+	return nil
+}
+
+func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON, dryRun bool) error {
+	snap := probeInventory(cfg)
+	// The local models to route: running ones, plus pulled ollama models,
+	// registered or discovered (desiredLocalModels). That set is
+	// untrustworthy for a family whose probe did not fully succeed; leave its
+	// routes — discovered ones included — exactly as they are. The exception
+	// is a server that refused the connection: nothing is listening, so
+	// nothing is running, and its routes are stale and must go (the case a
+	// provider stopped outside wt leaves behind).
+	desired := desiredLocalModels(cfg, snap)
+	untouched, probeWarns := syncUntouchedAndWarnings(cfg, snap, routedIDSet())
+	probeWarns = append(probeWarns, missingProviderWarnings(cfg, probeWarns)...)
+	o := litellm.Options{
+		Untouched:         untouched,
+		UntouchedFamilies: untrustedFamilies(cfg, snap),
+		// The probe above predates the config.yaml lock; a start that lands
+		// in between must not lose its route, so removals are re-verified
+		// under the lock.
+		Recheck: func() []string { return desiredLocalIDs(cfg, probeInventory(cfg)) },
+	}
+	if dryRun {
+		plan, err := litellm.PlanSync(cfg, desired, o)
+		if err != nil {
+			return err
+		}
+		// Same order as the real sync: what the write would leave behind,
+		// then the probe warnings.
+		return reportSyncPlan(out, errOut, plan, append(slices.Clone(plan.Warnings), probeWarns...), asJSON)
+	}
+	res, err := litellm.Sync(cfg, desired, o)
 	if err != nil {
 		return err
 	}
-	return reportLitellm(out, errOut, res, fl.JSON, expose && fl.DryRun)
+	res.Warnings = append(res.Warnings, probeWarns...)
+	return reportLitellm(out, errOut, res, asJSON)
 }
 
-func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) error {
-	snap := probeInventory(cfg)
-	running := runningIDs(snap)
-	// Running is untrustworthy for a family whose probe did not fully
-	// succeed; leave its models' routes exactly as they are. The exception is
-	// a server that refused the connection: nothing is listening, so nothing
-	// is running, and its routes are stale and must go (the case a provider
-	// stopped outside wt leaves behind).
-	var untouched []string
+// missingProviderWarnings names every provider id a registry model references
+// that has no [[providers]] row, with the models that reference it. Such a
+// noProviderEntryReason is gapReason's sentence for a family whose models
+// name a provider with no row. missingProviderWarnings looks for it in the
+// probe warnings to leave out a line that would say the same gap twice, so
+// the two must be one text: this constant is the only copy.
+const noProviderEntryReason = "the registry has models for it but no provider entry"
+
+// model is a registry gap (litellm.RegistryGap): sync neither routes it nor
+// removes a route it already has, and before this warning it could do so
+// without a word — the user saw a model in the registry, no route for it,
+// and no reason. One line per provider, in registry order. A provider whose
+// family already has the "no provider entry" probe warning in said is left
+// out: that line names the same gap.
+func missingProviderWarnings(cfg *config.Config, said []string) []string {
+	models := map[string][]string{}
+	var order []string
+	for _, m := range cfg.Models {
+		if m.Native || cfg.ProviderByID(m.ProviderID) != nil {
+			continue
+		}
+		if _, seen := models[m.ProviderID]; !seen {
+			order = append(order, m.ProviderID)
+		}
+		models[m.ProviderID] = append(models[m.ProviderID], m.ID)
+	}
+	var warnings []string
+	for _, id := range order {
+		covered := fmt.Sprintf("provider %q could not be probed (%s)", localmodels.Family(id), noProviderEntryReason)
+		if slices.ContainsFunc(said, func(w string) bool { return strings.HasPrefix(w, covered) }) {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("provider %q has no [[providers]] row in %s, so wt cannot route %s; add the row (`wt model init` adds the default ones) or fix the provider_id",
+			id, config.RegistryPath(), strings.Join(models[id], ", ")))
+	}
+	return warnings
+}
+
+// syncUntouchedAndWarnings derives both sync modes' view of the provider
+// probes: the ids whose routes must not move (families the probe could not
+// vouch for), and the warnings the run reports. One helper for the real sync
+// and the dry run, so the two always report the same warnings — the dry run
+// used to differ from the real run's output, promising a clean run that then
+// arrived degraded.
+//
+// A family whose server REFUSED the connection gets no untouched entries
+// (nothing is listening, so nothing is running and its local routes are
+// stale). It gets a warning only when that matters: a local route of the
+// family is in config.yaml (routed holds its ids; an id on more than one
+// registry row is not counted, see below) and is about to go, or the
+// family serves registry cloud models, which sync still routes though they
+// dial the same refused daemon — a failure that must be reported, not
+// swallowed. A stopped provider with neither is the everyday case and stays
+// silent.
+//
+// routed maps every model_name in config.yaml to whether a row of that name
+// carries wt's marker. A family sync freezes through UntouchedFamilies
+// (untrustedFamilies) that has no registry local model — only discovered
+// routes (#179 Phase B) — gets the same "probe did not succeed" warning when
+// config.yaml holds a marked row of the family, so its frozen routes are
+// never left unchanged silently. A marked row of one of the family's registry
+// gap models counts the same way (RowFamily cannot place it). A family frozen
+// without a probe (a registry data gap, gapFamily) is warned about in its own
+// words: it has no status.
+func syncUntouchedAndWarnings(cfg *config.Config, snap localmodels.Snapshot, routed map[string]bool) (untouched, warnings []string) {
 	skipped := map[string]bool{}
 	for _, m := range litellm.LocalModels(cfg) {
 		fam := localmodels.Family(m.ProviderID)
@@ -123,15 +244,38 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 			skipped[fam] = true
 		}
 	}
-	res, err := litellm.Sync(cfg, running, litellm.Options{
-		Untouched: untouched,
-		// The probe above predates the config.yaml lock; a start that lands
-		// in between must not lose its route, so removals are re-verified
-		// under the lock.
-		Recheck: func() []string { return runningIDs(probeInventory(cfg)) },
-	})
-	if err != nil {
-		return err
+	// managedRow reports whether config.yaml holds a marked row that
+	// litellm.RowFamily places in family f: a registry local model's route, or
+	// a discovered model's, which no registry model stands for.
+	managedRow := func(f string) bool {
+		for id, managed := range routed {
+			if managed && litellm.RowFamily(cfg, id) == f {
+				return true
+			}
+		}
+		return false
+	}
+	// gapRow reports whether config.yaml holds a marked row of a registry
+	// model of family f that sync keeps for a data gap (litellm.RegistryGap).
+	// RowFamily answers "" for such a model — its location does not resolve
+	// to "local" — so managedRow never sees it, yet it is the row a mistyped
+	// or missing provider location leaves behind: without this a family whose
+	// only routes are its registry models' was frozen with no warning (#195).
+	gapRow := func(f string) bool {
+		for _, m := range cfg.Models {
+			if routed[m.ID] && localmodels.Family(m.ProviderID) == f && litellm.RegistryGap(cfg, m) {
+				return true
+			}
+		}
+		return false
+	}
+	// Every untrusted family with a registry local model is in skipped
+	// already; the rest are frozen only for their discovered rows and the
+	// rows of their gap models.
+	for _, f := range untrustedFamilies(cfg, snap) {
+		if !skipped[f] && (managedRow(f) || gapRow(f)) {
+			skipped[f] = true
+		}
 	}
 	fams := make([]string, 0, len(skipped))
 	for f := range skipped {
@@ -139,27 +283,252 @@ func runLitellmSync(out, errOut io.Writer, cfg *config.Config, asJSON bool) erro
 	}
 	sort.Strings(fams)
 	for _, f := range fams {
-		st := snap.Providers[f]
-		if st == localmodels.StatusUnsupported {
-			// Discovery is unsupported by design (mlx_lm_server); the probe
-			// did not fail, so "did not succeed" would misread as an error.
-			res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q has no model discovery (status %q); its model routes were left unchanged", f, st))
+		if snap.Ambiguous[f] {
+			// The probe answered; it is the served model that cannot be
+			// tied to one registered pairing, not a probe failure. Worded for
+			// both shapes (a foreign id, and an empty list): "is serving"
+			// would be a lie in the second.
+			warnings = append(warnings, fmt.Sprintf("provider %q answered, but wt cannot tell which of its registered models it is serving (status %q); its model routes were left unchanged", f, snap.Providers[f]))
 			continue
 		}
-		res.Warnings = append(res.Warnings, fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, st))
+		if _, probed := snap.Providers[f]; !probed {
+			if reason := gapReason(cfg, f); reason != "" {
+				// Never probed, so there is no status to report: the registry
+				// names the family but cannot say it is local. The reason says
+				// which of the registry's gaps it is, so the user repairs the
+				// right thing.
+				warnings = append(warnings, fmt.Sprintf("provider %q could not be probed (%s); its model routes were left unchanged", f, reason))
+				continue
+			}
+		}
+		line := fmt.Sprintf("provider %q probe did not succeed (status %q); its model routes were left unchanged", f, snap.Providers[f])
+		if err := snap.ProbeFailures[f]; err != nil {
+			// The status alone cannot say what to repair: the probe error's
+			// text can — omlx's "set auth.secret_ref on the registry's omlx
+			// provider" hint lives in the error alone, so surface it here.
+			line = fmt.Sprintf("provider %q probe did not succeed (status %q): %v; its model routes were left unchanged", f, snap.Providers[f], err)
+		}
+		warnings = append(warnings, line)
 	}
-	return reportLitellm(out, errOut, res, asJSON, false)
-}
-
-// runningIDs lists the registered model ids a probe found running.
-func runningIDs(snap localmodels.Snapshot) []string {
-	var running []string
-	for _, e := range snap.Entries {
-		if e.Running && e.Registered {
-			running = append(running, e.ModelID)
+	downs := make([]string, 0, len(snap.Down))
+	for f := range snap.Down {
+		if snap.Down[f] {
+			downs = append(downs, f)
 		}
 	}
-	return running
+	sort.Strings(downs)
+	inFamily := func(f string, ms []config.Model, keep func(config.Model) bool) bool {
+		return slices.ContainsFunc(ms, func(m config.Model) bool { return localmodels.Family(m.ProviderID) == f && keep(m) })
+	}
+	// The `local` half is decided by id — a routed id that a local row of the
+	// family holds, or a marked row litellm.RowFamily places in it (by the
+	// id's first row) — so an id on more than one registry row decides
+	// nothing: its route may be another row's (a cloud row's, which sync goes
+	// on routing) or left alone as ambiguous, and "treated as stale" would
+	// then follow a sync that removed nothing. The cost is the other way
+	// round: when every row of a duplicated id is stopped, its route is
+	// removed (the outcome line says so) without this sentence.
+	rowsPerID := map[string]int{}
+	for _, m := range cfg.Models {
+		rowsPerID[m.ID]++
+	}
+	oneRow := func(id string) bool { return rowsPerID[id] < 2 }
+	for _, f := range downs {
+		local := inFamily(f, litellm.LocalModels(cfg), func(m config.Model) bool { _, ok := routed[m.ID]; return ok && oneRow(m.ID) })
+		for id, managed := range routed {
+			local = local || (managed && oneRow(id) && litellm.RowFamily(cfg, id) == f)
+		}
+		cloud := inFamily(f, litellm.CloudModels(cfg), func(config.Model) bool { return true })
+		if !local && !cloud {
+			continue
+		}
+		msg := fmt.Sprintf("provider %q refused the probe connection: nothing is listening there", f)
+		if local {
+			msg += ", so its local routes are treated as stale"
+		}
+		if cloud {
+			msg += "; its cloud models stay routed but fail until it is back up"
+		}
+		warnings = append(warnings, msg)
+	}
+	return untouched, warnings
+}
+
+// routedIDSet maps every model_name id in config.yaml to whether a row of
+// that name carries wt's marker, for the probe warnings. An unreadable file
+// yields an empty map: sync itself then refuses the file with the real error.
+func routedIDSet() map[string]bool {
+	out := map[string]bool{}
+	f, err := litellm.Open(litellm.DefaultPath())
+	if err != nil {
+		return out
+	}
+	for _, r := range f.Rows() {
+		out[r.ID] = out[r.ID] || r.Managed
+	}
+	return out
+}
+
+// desiredLocalIDs lists the local model ids sync should route — registered
+// or discovered (#179 Phase B): every entry a probe found running, plus every
+// entry of a family whose routes follow its artifact (ollama) that the probe
+// saw pulled, loaded or not — ollama serves a pulled model on request (#179).
+// Pulled counts only when the family's probe is fully OK: a partial probe
+// (e.g. /api/ps refused after /api/tags answered — the daemon died) cannot
+// vouch that anything is serving. An unknown artifact (ArtifactKnown false)
+// never counts as pulled. The real sync, its dry run and the under-lock
+// Recheck all call this one function so they cannot drift.
+func desiredLocalIDs(cfg *config.Config, snap localmodels.Snapshot) []string {
+	var desired []string
+	for _, e := range desiredLocalEntries(cfg, snap) {
+		desired = append(desired, e.ModelID)
+	}
+	return desired
+}
+
+// desiredLocalEntries is desiredLocalIDs' rule, returning the entries.
+//
+// A discovered entry whose id is a registry id is dropped: the registry model
+// owns that id and is desired only by its own (Registered) entry. Otherwise an
+// unregistered pulled artifact "foo" would make the registry model
+// "ollama/foo" — which serves some other model_name, not pulled — desired, and
+// sync would route the id to a model that is not on disk.
+func desiredLocalEntries(cfg *config.Config, snap localmodels.Snapshot) []localmodels.Entry {
+	var desired []localmodels.Entry
+	for _, e := range snap.Entries {
+		if !e.Registered && config.IndexModelByID(cfg.Models, e.ModelID) >= 0 {
+			continue
+		}
+		fam := localmodels.Family(e.ProviderID)
+		pulled := e.ArtifactKnown && e.Artifact != "" &&
+			localmodels.RoutesFollowArtifact(fam) &&
+			snap.Providers[fam] == localmodels.StatusOK
+		if e.Running || pulled {
+			desired = append(desired, e)
+		}
+	}
+	return desired
+}
+
+// desiredLocalModels maps desiredLocalIDs' entries to the models Sync
+// routes: a registered entry's registry overlay, else a DiscoveredModel under
+// the entry's discovered id.
+func desiredLocalModels(cfg *config.Config, snap localmodels.Snapshot) []config.Model {
+	var out []config.Model
+	for _, e := range desiredLocalEntries(cfg, snap) {
+		if m, ok := registryRowOf(cfg, e); ok {
+			out = append(out, m)
+			continue
+		}
+		out = append(out, litellm.DiscoveredModel(e.ProviderID, e.Artifact))
+	}
+	return out
+}
+
+// registryRowOf is the registry row a registered inventory entry stands for:
+// the row with the entry's model id under the entry's own provider. The
+// provider is part of the lookup because sync runs on a registry that fails
+// validation, and two rows under one id is such a registry: by id alone
+// (config.IndexModelByID, the first row) a model running under the second
+// provider was routed with the first provider's row, and the id's route could
+// name a server that was not serving it. Of two rows with one id AND one
+// provider, the one with the entry's model_name is taken, else the first.
+// When both rows of an id are handed to Sync it routes neither and warns
+// (litellm.SyncPlan.Warnings).
+func registryRowOf(cfg *config.Config, e localmodels.Entry) (config.Model, bool) {
+	if !e.Registered {
+		return config.Model{}, false
+	}
+	found := -1
+	for i, m := range cfg.Models {
+		if m.ID != e.ModelID || m.ProviderID != e.ProviderID {
+			continue
+		}
+		if m.ModelName == e.ModelName {
+			return m, true
+		}
+		if found < 0 {
+			found = i
+		}
+	}
+	if found < 0 {
+		return config.Model{}, false
+	}
+	return cfg.Models[found], true
+}
+
+// untrustedFamilies lists the local provider families whose routes sync must
+// leave exactly as they are: every family whose probe RAN and came back
+// neither OK nor Down (refused), plus every family that could not be probed
+// because of a registry data gap (gapFamily). A family with no key in
+// snap.Providers was never probed — the inventory probes a family only when
+// the registry has a local provider row or a local model for it. When the
+// registry does not reference the family unresolvably either, nothing about
+// it is in doubt and it is not frozen: no later probe could ever vouch for
+// it, and its leftover marked rows would otherwise be kept (and warned
+// about) forever. Unlike syncUntouchedAndWarnings' per-id list, a family
+// covers the rows of discovered models too, which carry no registry id.
+func untrustedFamilies(cfg *config.Config, snap localmodels.Snapshot) []string {
+	var fams []string
+	for _, f := range localmodels.Families() {
+		status, probed := snap.Providers[f]
+		if !probed {
+			if gapFamily(cfg, f) {
+				fams = append(fams, f)
+			}
+			continue
+		}
+		if status != localmodels.StatusOK && !snap.Down[f] {
+			fams = append(fams, f)
+		}
+	}
+	return fams
+}
+
+// gapFamily reports whether the registry references family f unresolvably:
+// a provider row of the family with no location or one that is neither
+// "local" nor "cloud", or a model of the family that litellm.RegistryGap
+// drops (its provider is missing, or its location resolves to neither). The
+// inventory skips such a family — not because it is unused,
+// but because the registry cannot say it is local — so its server may well
+// be serving, and its routes stay frozen like the gap models' own rows.
+// A family the registry references only as explicitly non-local is no gap.
+func gapFamily(cfg *config.Config, f string) bool { return gapReason(cfg, f) != "" }
+
+// gapReason is gapFamily's finding in words, or "" when the registry
+// references family f resolvably. It names the gap the user has to repair: a
+// provider entry with no location, one whose location is neither "local" nor
+// "cloud" (a typo such as "Local" — the inventory probes only an exact
+// "local", so such a family went unprobed and, before #195, unfrozen), models
+// of the family with no provider entry at all, or a model whose own location
+// override is neither. A provider entry's own problem is reported before a
+// model's, since fixing the entry fixes every model that inherits its
+// location.
+func gapReason(cfg *config.Config, f string) string {
+	for _, p := range cfg.Providers {
+		if localmodels.Family(p.ID) != f {
+			continue
+		}
+		switch {
+		case p.Location == "":
+			return "its registry entry has no location"
+		case !p.Location.Valid():
+			return fmt.Sprintf(`its registry entry has location %q; expected "local" or "cloud"`, string(p.Location))
+		}
+	}
+	for _, m := range cfg.Models {
+		if localmodels.Family(m.ProviderID) != f || !litellm.RegistryGap(cfg, m) {
+			continue
+		}
+		if cfg.ProviderByID(m.ProviderID) == nil {
+			return noProviderEntryReason
+		}
+		// The model's provider entry is of this family, so the loop above
+		// found its location to be "local" or "cloud": what is left is the
+		// model's own location override.
+		return fmt.Sprintf(`model %q has location %q; expected "local" or "cloud"`, m.ID, string(m.Location))
+	}
+	return ""
 }
 
 func runLitellmList(out io.Writer, asJSON bool) error {
@@ -167,15 +536,28 @@ func runLitellmList(out io.Writer, asJSON bool) error {
 	if err != nil {
 		return err
 	}
-	ids := f.RoutedIDs()
-	if ids == nil {
-		ids = []string{}
+	rows := f.Rows()
+	ids := make([]string, 0, len(rows))
+	type rowJSON struct {
+		ID      string `json:"id"`
+		Managed bool   `json:"managed"`
+	}
+	jrows := make([]rowJSON, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+		jrows = append(jrows, rowJSON{r.ID, r.Managed})
 	}
 	if asJSON {
-		return json.NewEncoder(out).Encode(map[string][]string{"routed": ids})
+		return json.NewEncoder(out).Encode(map[string]any{"routed": ids, "rows": jrows})
 	}
-	for _, id := range ids {
-		fmt.Fprintln(out, id)
+	// A wt row prints as its bare id, as list always has, so `grep -x <id>`
+	// keeps working; only a hand-written row carries a marker.
+	for _, r := range rows {
+		if r.Managed {
+			fmt.Fprintln(out, r.ID)
+		} else {
+			fmt.Fprintf(out, "%s\t(hand-written)\n", r.ID)
+		}
 	}
 	return nil
 }
@@ -210,13 +592,7 @@ func runLitellmStatus(out io.Writer, cfg *config.Config, asJSON bool) error {
 	if cfg.IsLitellm() {
 		mode = "on"
 	}
-	key := "(unset)"
-	if k := cfg.LitellmAPIKey(); k != "" {
-		key = "***"
-		if len(k) > 4 { // a short key's last-4 would be the whole secret
-			key += k[len(k)-4:]
-		}
-	}
+	key := maskKey(cfg.LitellmAPIKey())
 	url := cfg.LitellmBaseURL()
 	if url == "" {
 		url = "(unset)"
@@ -263,37 +639,18 @@ func litellmCmd(a *app) *cobra.Command {
 		Use:   "litellm",
 		Short: "Manage LiteLLM routes and routing state for registry models",
 	}
-	change := func(use, short string, expose bool) *cobra.Command {
-		var fl litellmFlags
-		cc := &cobra.Command{
-			Use: use, Short: short, Args: cobra.MinimumNArgs(1), SilenceUsage: true,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				// Gate on a load failure only (cfg would be an empty default);
-				// registry validation gaps are reported per id by litellm.Apply.
-				if a.loadErr != nil {
-					return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
-				}
-				return runLitellmChange(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, expose, args, fl)
-			},
-		}
-		cc.Flags().BoolVar(&fl.JSON, "json", false, "machine-readable output")
-		if expose {
-			cc.Flags().BoolVar(&fl.DryRun, "dry-run", false, "validate only; change nothing")
-			cc.Flags().BoolVar(&fl.SkipReadyGate, "skip-ready-gate", false, "caller already verified readiness (used by modelman)")
-		}
-		return cc
-	}
-	var syncJSON, listJSON, provJSON bool
+	var syncJSON, listJSON, provJSON, syncDryRun bool
 	syncC := &cobra.Command{
-		Use: "sync", Short: "Make local-model routes match the running models", Args: cobra.NoArgs, SilenceUsage: true,
+		Use: "sync", Short: "Make LiteLLM routes match the registry's cloud models and the running (or pulled ollama) local models", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if a.loadErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
+				return configError(a.loadErr)
 			}
-			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON)
+			return runLitellmSync(cmd.OutOrStdout(), cmd.ErrOrStderr(), a.cfg, syncJSON, syncDryRun)
 		},
 	}
 	syncC.Flags().BoolVar(&syncJSON, "json", false, "machine-readable output")
+	syncC.Flags().BoolVar(&syncDryRun, "dry-run", false, "print the route plan and the probe warnings the real sync would report; change nothing (does not report litellm_settings fixes)")
 	listC := &cobra.Command{
 		Use: "list", Short: "List routed model ids from config.yaml", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error { return runLitellmList(cmd.OutOrStdout(), listJSON) },
@@ -311,7 +668,7 @@ func litellmCmd(a *app) *cobra.Command {
 			// user out. A genuine load failure leaves a default cfg that Save
 			// would write over config.toml.
 			if a.loadErr != nil {
-				return fmt.Errorf("config error: %w (run `wt config` to repair)", a.loadErr)
+				return configError(a.loadErr)
 			}
 			return run(cmd)
 		}
@@ -353,10 +710,71 @@ func litellmCmd(a *app) *cobra.Command {
 	}
 	setC.Flags().StringVar(&setURL, "url", "", "LiteLLM proxy base URL")
 	setC.Flags().StringVar(&setKey, "api-key", "", "LiteLLM proxy API key")
+	restartC := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the LiteLLM proxy, letting a request in flight finish, and wait for it to answer",
+		Long: "Restart the LiteLLM proxy the way `wt litellm sync` does after a route change.\n\n" +
+			"With WT_LITELLM_RESTART_CMD set, that command is run as given. Otherwise wt sends the\n" +
+			"proxy's process one SIGTERM, waits up to 3 minutes for a request in flight to finish,\n" +
+			"and has launchd start it again; `launchctl kickstart -k` would kill that request after\n" +
+			"5 seconds. It then waits up to 30 seconds for the proxy at the [litellm] url to answer.\n" +
+			"A restart that fails, or a proxy that does not answer again, exits 1.",
+		Args: cobra.NoArgs, SilenceUsage: true,
+		// No config gate: the restart reads only the [litellm] url, and a
+		// config.toml that does not load leaves it empty, so the restart is
+		// made and not waited for.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runLitellmRestart(cmd.OutOrStdout(), a.cfg)
+		},
+	}
 	c.AddCommand(
-		change("expose <model-id>...", "Add LiteLLM routes and restart the proxy once", true),
-		change("unexpose <model-id>...", "Remove LiteLLM routes and restart the proxy once", false),
-		syncC, listC, provC, statusC, onC, offC, setC,
+		syncC, listC, provC, statusC, onC, offC, setC, restartC,
+		removedLitellmCmd("expose"), removedLitellmCmd("unexpose"),
 	)
 	return c
+}
+
+// removedCmdAnnotation marks a hidden stub that only reports a removed
+// command; its value names the issue that removed it.
+const removedCmdAnnotation = "wt-removed"
+
+// removedLitellmCmd is a hidden stub for a subcommand #179 removed. Without
+// it cobra prints the parent's help and exits 0 for the unknown name, so a
+// script running `wt litellm expose X && ...` would "succeed" having written
+// nothing. Flag parsing is off so legacy flags (--json, --dry-run,
+// --skip-ready-gate) reach the same pointer to sync instead of "unknown flag".
+// The removedCmdAnnotation marks the Hidden as deliberate for
+// TestNoWtCommandIsHidden.
+func removedLitellmCmd(name string) *cobra.Command {
+	return &cobra.Command{
+		Use: name, Hidden: true, DisableFlagParsing: true, SilenceUsage: true,
+		Annotations: map[string]string{removedCmdAnnotation: "#179"},
+		RunE: func(*cobra.Command, []string) error {
+			// Mirrors sync's own wording: a pulled ollama model is routed
+			// whether or not it is loaded, so "running" alone understates
+			// what sync does.
+			return fmt.Errorf("`wt litellm %s` was removed (#179): configured cloud models and running (or pulled ollama) local models are routed automatically — run `wt litellm sync`", name)
+		},
+	}
+}
+
+// runLitellmRestart is `wt litellm restart`: litellm.RestartAndAwait on the
+// [litellm] url, waiting for the proxy to answer even if it was down before. Its notices (a request in flight being waited for, or cut
+// off at the bound) go to os.Stderr as they happen (litellm.RestartNotice's
+// default); any warning it returns is the command's error, so a script that
+// restarts the proxy learns it failed.
+func runLitellmRestart(out io.Writer, cfg *config.Config) error {
+	url := ""
+	if cfg != nil {
+		url = cfg.LitellmBaseURL()
+	}
+	if warnings := litellm.RestartAndAwait(url); len(warnings) > 0 {
+		return fmt.Errorf("LiteLLM proxy restart: %s", strings.Join(warnings, "; "))
+	}
+	if url == "" {
+		fmt.Fprintln(out, "restarted the LiteLLM proxy (no [litellm] url, so it was not waited for)")
+		return nil
+	}
+	fmt.Fprintf(out, "restarted the LiteLLM proxy at %s\n", url)
+	return nil
 }

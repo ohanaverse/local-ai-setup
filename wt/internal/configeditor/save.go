@@ -10,18 +10,30 @@ type saveMsg struct {
 	err error
 }
 
-// saveCmd writes cfg to disk and returns a saveMsg. It is a package-level
-// var so tests can override it to inject failures.
+// saveCmd persists the editor's own fields (Agents, DefaultTag) and returns
+// a saveMsg. It is a package-level var so tests can override it to inject
+// failures.
+//
+// It goes through PatchSave rather than a whole-file Save: cfg is the
+// snapshot the editor loaded when it opened, which may be stale by the time
+// the user saves (a `wt litellm on|off|set` run in the meantime — issue
+// #143). PatchSave re-reads config.toml fresh under the lock and only
+// overwrites the fields the editor owns, so a concurrent [litellm] change
+// survives.
 var saveCmd = func(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
-		return saveMsg{err: config.Save(cfg)}
+		err := cfg.PatchSave(func(fresh *config.Config) {
+			fresh.Agents = cfg.Agents
+			fresh.DefaultTag = cfg.DefaultTag
+		})
+		return saveMsg{err: err}
 	}
 }
 
 // handleSave validates the in-memory config and dispatches an async save.
 // It ignores additional save requests while one is already in flight to
 // prevent concurrent writes to the same temporary file.
-func (m model) handleSave() (tea.Model, tea.Cmd) {
+func (m *model) handleSave() (tea.Model, tea.Cmd) {
 	if !m.dirty {
 		return m, nil
 	}
@@ -30,6 +42,15 @@ func (m model) handleSave() (tea.Model, tea.Cmd) {
 	}
 	if err := m.cfg.ValidateAll(); err != nil {
 		m.status = "validation: " + err.Error()
+		// A provider or model row is registry.toml's, which this editor does
+		// not write: say where the repair is, as the load status does.
+		// ValidateAll joins all errors; RegistryFixHint looks through the
+		// whole join, so the hint is correct even when a config.toml error
+		// appears first in it (e.g., empty default_tag + missing model_name).
+		if hint := config.RegistryFixHint(err); hint != "" {
+			m.status += " (" + hint + ")"
+		}
+		m.showQuitSaveFailure()
 		return m, nil
 	}
 	m.saving = true

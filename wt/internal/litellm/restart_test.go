@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// TestRestartCommandPrecedence pins env precedence (WT_ over legacy
-// MODELMAN_, then the launchctl fallback) so an existing modelman user's
-// exported restart command keeps working after the move.
+// TestRestartCommandPrecedence pins env precedence (WT_LITELLM_RESTART_CMD
+// over its permanent alias MODELMAN_LITELLM_RESTART_CMD, then the launchctl
+// fallback), so a shell profile that still exports the older name keeps
+// restarting the proxy the way its owner chose.
 func TestRestartCommandPrecedence(t *testing.T) {
 	t.Setenv("WT_LITELLM_RESTART_CMD", "")
 	t.Setenv("MODELMAN_LITELLM_RESTART_CMD", "")
@@ -38,11 +39,11 @@ func TestRestartNeverFails(t *testing.T) {
 	t.Cleanup(func() { runShell = orig })
 	var ran string
 	runShell = func(_ context.Context, cmd string) error { ran = cmd; return nil }
-	if w := Restart(); len(w) != 0 || ran != "mycmd" {
+	if w := RestartContext(context.Background()); len(w) != 0 || ran != "mycmd" {
 		t.Fatalf("ok restart: warnings=%v ran=%q", w, ran)
 	}
 	runShell = func(context.Context, string) error { return context.DeadlineExceeded }
-	w := Restart()
+	w := RestartContext(context.Background())
 	if len(w) != 1 || !strings.Contains(w[0], "restart it manually") {
 		t.Fatalf("failed restart warnings = %v", w)
 	}
@@ -74,8 +75,7 @@ func TestWaitReady(t *testing.T) {
 }
 
 // TestListeningHitsLivenessPath pins the shared health request: it dials
-// /health/liveliness (once, even with a trailing slash on the base URL), and
-// honors a cancelled caller ctx by reporting nothing listening.
+// /health/liveliness (once, even with a trailing slash on the base URL).
 func TestListeningHitsLivenessPath(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health/liveliness" {

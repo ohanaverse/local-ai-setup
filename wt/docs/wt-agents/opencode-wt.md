@@ -47,20 +47,20 @@ The `opencode-wt` launcher does not manage credentials — it relies on the user
 
 ## Model selection
 
-OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects ollama models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable:
+OpenCode requires the `provider/model` form in its config (e.g., `anthropic/claude-sonnet-4-5`). `opencode-wt` selects non-native models by generating inline JSON via the `OPENCODE_CONFIG_CONTENT` environment variable. The JSON declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) and points `model` and `small_model` at it. On a direct route (shown for the default ollama provider row):
 ```json
-{"model":"ollama/<model>","provider":{"ollama":{"options":{"baseURL":"http://localhost:11434/v1","apiKey":""},"models":{"<model>":{"name":"<model>"}}}}}
+{"model":"agent-wt/<model>","small_model":"agent-wt/<model>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:11434/v1","apiKey":""},"models":{"<model>":{"name":"<model>"}}}}}
 ```
 
-OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher constructs the literal `ollama/` prefix from the **bare** provider-specific name (`config.Model.ModelName`), not from `config.Model.ID`. Using `m.ID` here would produce `ollama/ollama/<model>` (a double prefix) because the registry already prefixes IDs with the provider id. This is the symmetric trap to the one in `claude-wt`/`codex-wt`/`copilot-wt`, where the launcher must NOT add a prefix.
+OpenCode is the one agent whose CLI uniquely requires the `provider/model` form, so the launcher prefixes its own provider id, `agent-wt/`, to the model name. On a direct route that name is the **bare** provider-specific name (`config.Model.ModelName`), not `config.Model.ID`: the registry id already carries the registry provider id (`ollama/<model>`), which the provider's endpoint would not recognize. OpenCode splits a model ref on the first slash, so `agent-wt/<model>` selects the wt provider and the rest reaches the endpoint verbatim.
 
-The base URL is the `config.OllamaBaseURL` constant (`http://localhost:11434`) with a `/v1` suffix. `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.ollama.options.baseURL`).
+The base URL is the origin of the model's registry provider address (`auth.base_url` in `registry.toml` with a trailing `/v1` dropped; `http://localhost:11434` for the default ollama row) with a `/v1` suffix, and `apiKey` is that provider's resolved `secret_ref` (empty when it has none). `OPENCODE_CONFIG_CONTENT` is OpenCode's highest-precedence layer and overrides any conflicting key in `~/.config/opencode/opencode.json` (e.g. `model`, `provider.agent-wt.options.baseURL`).
 
-The builtin `ollama` provider resolves model ids against OpenCode's own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. The explicit `models` map registers the bare name so OpenCode accepts it; this is the same catalog-bypass the LiteLLM route uses (below), just on the builtin provider instead of a custom one.
+OpenCode's builtin providers resolve model ids against its own catalog (models.dev), so a registry model absent from that catalog — every local/cloud model wt launches — is rejected with `ProviderModelNotFoundError`. A custom provider with an explicit `models` map registers the bare name so OpenCode accepts it. The LiteLLM route (below) uses the same `agent-wt` provider; only the base URL, key and model id differ.
 
 ### LiteLLM routing
 
-When LiteLLM routing is enabled (`wt litellm status`), the inline config declares a **custom provider** (`agent-wt`, `npm: "@ai-sdk/openai-compatible"` — chat-completions wire) pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
+When LiteLLM routing is enabled (`wt litellm status`), the same `agent-wt` provider is pointed at the proxy's `/v1`, with the full registry id declared in the provider's `models` map and `small_model` pinned to the same proxy model:
 
 ```json
 {"model":"agent-wt/ollama/<model-id>","small_model":"agent-wt/ollama/<model-id>","provider":{"agent-wt":{"npm":"@ai-sdk/openai-compatible","name":"Agent WT Gateway","options":{"baseURL":"http://localhost:4000/v1","apiKey":"<litellm.api_key>"},"models":{"ollama/<model-id>":{"name":"<bare-name>"}}}}}
@@ -68,9 +68,21 @@ When LiteLLM routing is enabled (`wt litellm status`), the inline config declare
 
 The builtin `openai` provider is not usable for LiteLLM-routed models: opencode validates model ids against its own catalog ("Model not found"), and the models.dev openai path speaks the responses API, whose bridged stream opencode cannot map ("text part … not found"). opencode splits a model ref on the first slash, so `agent-wt/<id>` selects the wt provider while the registry id stays verbatim inside it. Explicit `models` + `small_model` are required: catalog-unknown ids are rejected, and opencode's default background model (`gpt-5-nano`) otherwise hits the proxy with a name it does not expose. Full rationale: [litellm-troubleshooting.md](litellm-troubleshooting.md).
 
-## Session resume
+## Permissions (`--yolo`)
 
-`wt` detects a previous OpenCode session (via `internal/session`) and, in the TUI, prompts to **Resume** or **Start fresh**; **Start fresh** is the cursor default so Enter launches a new session unless Resume is highlighted. The non-TUI launch path appends `--session <id>` automatically. Sessions are detected by git commit hash (OpenCode's project ID), not path-based slug.
+`wt --yolo -A opencode` launches `opencode --auto=true`. opencode describes `--auto` as "auto-approve permissions that are not explicitly denied": it is **not** an unconditional skip — a permission your opencode config sets to `deny` stays denied, and only what would otherwise prompt is approved. (opencode 1.18 has no `--dangerously-skip-permissions`; passing it prints the usage text and exits 1.)
+
+wt attaches the value (`=true`) because `--auto` is declared per opencode command: bare and directly in front of a subcommand, it swallows it — `opencode --auto run …` never reaches `run` and instead starts the TUI with `run` as the project directory. `--auto=true` cannot take the next argument, so the flag leads every form: the interactive launch (`opencode --auto=true [<passthrough args>]`), a passthrough subcommand (`wt --yolo -A opencode -- run "<prompt>"` → `opencode --auto=true run "<prompt>"`), and `wt smoke`'s one-shot (`opencode --auto=true run <prompt>`).
+
+## Sessions
+
+`wt` leaves sessions to OpenCode: every launch starts fresh, and `wt` never looks one up, prompts about one, or adds a resume flag. To continue a conversation, pass opencode's own flags after `--`; `wt` hands them over unchanged on every launch path, the picker included.
+
+| Continue the latest | A specific session | Fork it |
+|---|---|---|
+| `opencode-wt -- --continue` | `opencode-wt -- --session <id>` | `opencode-wt -- --continue --fork` |
+
+`wt` used to resume the newest session by itself. That made a launch fail when the resumed session had stored a different model (#198), and appended a one-shot run to whichever conversation was newest, including one another process was using (#204). Whether a resumed session's stored model overrides the chosen one is opencode's behaviour; `wt` does not guard against it.
 
 ## Agent init
 
@@ -82,4 +94,4 @@ OpenCode reads `AGENTS.md` natively and also has its own `/init` command for pro
 
 ## Verified on this machine
 
-Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode); session-resume and project-id behavior were verified against the binary's `--help` output and `git rev-list` output on this repo. The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.
+Verified on this machine, 2026-09-02 — opencode v1.17.7 at `~/.opencode/bin/opencode`. Statements above are sourced from the [OpenCode docs](https://opencode.ai/docs) and the [Ollama integration guide](https://docs.ollama.com/integrations/opencode). The direct-mode `models` map (catalog bypass) was verified end-to-end with `scripts/agents-smoke.sh --only opencode` in both direct and litellm modes.

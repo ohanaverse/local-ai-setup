@@ -3,11 +3,10 @@ package agents
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 func init() {
@@ -26,15 +25,20 @@ func (claudeDriver) InstructionPointers() []InstructionPointer {
 	}
 }
 
-func (claudeDriver) ResumeFlag() string { return "--resume" }
-
-func (claudeDriver) LatestSession(path string) (*session.Session, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".claude", "projects", session.Slug(path))
-	return session.LatestByExt(dir, ".jsonl", func(f os.FileInfo) string {
-		return strings.TrimSuffix(f.Name(), ".jsonl")
-	})
+// StateDir is claude's per-project directory (transcripts and memory).
+func (claudeDriver) StateDir(path string) string {
+	return filepath.Join(os.Getenv("HOME"), ".claude", "projects", claudeProjectSlug(path))
 }
 
+// claudeNonSlug matches every character claude replaces when it names a
+// project directory after a working directory.
+var claudeNonSlug = regexp.MustCompile(`[^a-zA-Z0-9-]`)
+
+// claudeProjectSlug converts an absolute path to claude's project directory
+// name: every character outside [a-zA-Z0-9-] becomes '-'.
+func claudeProjectSlug(path string) string {
+	return claudeNonSlug.ReplaceAllString(path, "-")
+}
 func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	args := []string{}
 	if yolo {
@@ -72,14 +76,25 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 		"ANTHROPIC_BASE_URL="+r.BaseOrigin,
 	)
 	lc.Args = append(lc.Args, "--model", r.ModelRef)
+	// Every model slot is mapped to the same reference --model carries, so a
+	// request Claude Code makes on a tier of its own choosing reaches this
+	// model instead of an Anthropic id the endpoint rejects. The inherited
+	// values are cleared so the command holds one entry per variable: an
+	// applied automatic profile appends its env after this (see
+	// profiles.ApplyEnvAndArgs), and the last entry wins, so a profile that
+	// sets one of these still overrides wt's value.
+	lc.ClearEnv = claudeSlotKeys()
+	lc.Env = append(lc.Env, claudeSingleModelSlotEnv(r.ModelRef, m)...)
 	return lc
 }
 
 // ProfileMechanisms declares which profile mechanisms claude accepts:
-// env (the attribution-header/thinking-token tweaks) and config_file
-// (the ANTHROPIC_DEFAULT_*_MODEL mapping via .claude/settings.local.json).
+// env (the attribution-header/thinking-token tweaks, and any override of the
+// ANTHROPIC_DEFAULT_*_MODEL variables wt itself sets on a single-model
+// launch), config_file (settings written to .claude/settings.local.json), and
+// config_defaults (the same settings, applied only where a leaf is absent).
 func (claudeDriver) ProfileMechanisms() []profiles.Mechanism {
-	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile}
+	return []profiles.Mechanism{profiles.MechanismEnv, profiles.MechanismConfigFile, profiles.MechanismConfigDefaults}
 }
 
 // OneShotArgs runs a single prompt non-interactively and exits — used by

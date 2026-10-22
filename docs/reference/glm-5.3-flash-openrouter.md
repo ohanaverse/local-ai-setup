@@ -50,13 +50,15 @@ supports_function_calling = true
 supports_vision = true
 ```
 
-**2. `~/.config/local-ai/modelman.toml`** — Model state tracking
+**2. No state file** — routing is derived
 
-Exposure (the `exposed` flag; legacy name `litellm_exposed`) is set by
-`modelman expose` or the TUI `x` toggle, which delegate the `config.yaml` write
-to `wt litellm expose`; the TUI `l` key is the separate LiteLLM *routing*
-on/off toggle (`wt litellm on|off`). See guide 04 for the workflow. No TOML to copy here —
-the state file is machine state, not a config to hand-edit.
+Routing (not a stored flag) is what decides whether a local model appears in
+the proxy's `model_list`: wt derives it from `registry.toml` plus live probes,
+so a cloud model is routed whenever it is configured, with no toggle to flip
+(#179). `wt litellm list` is the answer to "is it routed?"; there is no
+hand-write command any more (`wt litellm expose`/`unexpose` went with the flag),
+and `wt litellm on|off` is the separate LiteLLM *routing* on/off toggle. See guide 04 for the workflow. No TOML to copy here:
+wt stores no per-model state (`wt model list` shows what is on disk and running).
 
 **3. `~/.config/litellm/config.yaml`** — LiteLLM proxy configuration
 ```yaml
@@ -112,12 +114,13 @@ wt -A pi -M openrouter/z-ai/glm-5.3-flash
 wt --cwd -A pi -M openrouter/z-ai/glm-5.3-flash -- -p "Your prompt"
 ```
 
-### Via modelman TUI
+### Check that it is registered and routed
+
+Ask the files and wt:
 
 ```bash
-cd ~/github/ohanaverse/local-ai-setup/modelman
-uv run modelman
-# Model appears in list with EXPOSED flag
+grep -n -A6 'id = "openrouter/z-ai/glm-5.3-flash"' ~/.config/local-ai/registry.toml   # its [[models]] block
+wt litellm list | grep glm-5.3-flash                                                   # its route
 ```
 
 ## Model Characteristics
@@ -271,8 +274,8 @@ cd ~/github/ohanaverse/local-ai-setup
 # Check model is in registry
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/local-ai/registry.toml
 
-# Check model is exposed
-grep "openrouter/z-ai/glm-5.3-flash" ~/.config/local-ai/modelman.toml
+# Check model is routed (nothing stores routing state)
+wt litellm list | grep "openrouter/z-ai/glm-5.3-flash"
 
 # Check LiteLLM config
 grep "openrouter/z-ai/glm-5.3-flash" ~/.config/litellm/config.yaml
@@ -342,7 +345,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 ## Related Documentation
 
 - [02-providers-and-models.md](../guides/02-providers-and-models.md) — Provider configuration overview
-- [04-litellm-config.md](../guides/04-litellm-config.md) — LiteLLM exposure and management
+- [04-litellm-config.md](../guides/04-litellm-config.md) — LiteLLM routing (`wt litellm sync`) and management
 - [06-wt-agents-and-models.md](../guides/06-wt-agents-and-models.md) — wt agent model selection
 - [OpenRouter GLM-5.3-Flash page](https://openrouter.ai/z-ai/glm-5.3-flash) — Pricing and benchmarks
 
@@ -365,7 +368,7 @@ grep -A 2 'name = "pi"' ~/.config/agent-wt/config.toml
 | Agent | Ollama Variant | OpenRouter (direct) | OpenRouter (litellm) | Notes |
 |-------|---------------|--------------------|--------------------|-------|
 | claude | ✅ PASS | ✅ PASS (forced proxy) | ✅ PASS | claude speaks anthropic only — direct mode routes through the proxy via protocol negotiation (2026-09-10 cutover) |
-| codex | ✅ PASS | ❌ FAIL | ❌ FAIL | Model catalog doesn't recognize GLM-5.3-Flash (routing works — forced through the proxy in both modes) |
+| codex | ✅ PASS | ✅ PASS | ✅ PASS | codex warns that the model's metadata is missing and falls back to defaults, then answers (see Known Limitations #2); forced through the proxy in both modes |
 | copilot | ✅ PASS | ✅ PASS | ✅ PASS | direct mode dials openrouter.ai directly (per-provider direct routing) |
 | opencode | ✅ PASS | ❌ FAIL | ❌ FAIL | ollama-only provider list (see Known Limitations #3) |
 | pi | ✅ PASS | ✅ PASS | ✅ PASS | direct mode dials openrouter.ai directly (per-provider direct routing) |
@@ -389,9 +392,14 @@ passes in both modes; its stale xfail mark was removed from the matrix.
 wt --cwd -A claude -M openrouter/z-ai/glm-5.3-flash -- -p "What is 2+2?"
 ```
 
-**2. Codex: Model Catalog Recognition**
+**2. Codex: Model Catalog Recognition** (no longer a failure, 2026-10-04)
 
-Codex (OpenAI's agent) doesn't recognize `openrouter/z-ai/glm-5.3-flash` in its model catalog. This requires a Codex update or model override configuration.
+Codex (OpenAI's agent) doesn't recognize `openrouter/z-ai/glm-5.3-flash` in its
+model catalog. It used to fail the row; codex v0.159.3 instead warns ("Model
+metadata ... not found. Defaulting to fallback metadata; this can degrade
+performance") and answers. The row passes in both modes with a real reply, and
+its stale xfail mark was removed from the matrix. The fallback metadata is
+still a caveat for real use.
 
 **3. Opencode: Model Eligibility**
 
@@ -406,13 +414,13 @@ step 4).
 For GLM-5.3-Flash via OpenRouter:
 
 1. **Automated tests:** Use copilot and pi agents in litellm mode (both pass)
-2. **Manual testing:** claude via OpenRouter works with natural prompts in litellm mode (the FAIL is specific to the smoke test's echo-exactly prompt); codex and opencode need the provider-list/catalog fixes above first
+2. **Manual testing:** claude via OpenRouter works in both modes; codex works with its fallback-metadata warning; opencode needs the provider-list fix above first
 3. **Document limitations:** Note which agents have compatibility issues
 
 ### Success Criteria
 
 - ✅ Model configured in registry
-- ✅ Model exposed through LiteLLM
+- ✅ Model routed through LiteLLM
 - ✅ Model available in wt picker
 - ✅ At least 2 agents pass automated smoke tests (copilot, pi)
 - ✅ Manual testing confirms model works with all agents

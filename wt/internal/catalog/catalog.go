@@ -7,10 +7,13 @@ package catalog
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // Status is a row's presence state.
@@ -18,7 +21,6 @@ type Status string
 
 const (
 	StatusOK      Status = "ok"      // on disk (local) or simply available (cloud)
-	StatusAbsent  Status = "absent"  // the provider answered and does not have this model
 	StatusUnknown Status = "unknown" // local model whose presence the probe could not determine
 	StatusNew     Status = "new"     // discovered, unregistered
 )
@@ -27,34 +29,56 @@ const (
 type Action int
 
 const (
-	ActionLaunch Action = iota // cloud row, or a local model already running
+	ActionLaunch Action = iota // cloud row, or a local model that is running and loaded
 	ActionStart                // a local model wt can start (its provider has a lifecycle backend)
 	ActionBlock                // cannot proceed; BlockReason says why
 )
 
 // Row is one model-selector row before rendering.
 type Row struct {
-	Model      config.Model
-	Location   config.Location
-	Status     Status
-	Exposed    bool
-	Running    bool
+	Model    config.Model
+	Location config.Location
+	Status   Status
+	Running  bool
+	// Loading: the model is mid-load on omlx (localmodels.Entry.Loading,
+	// #259). Running is true too; Ready is what says it can take a request.
+	Loading    bool
 	Discovered bool
+	// Unmapped marks a cloud row whose provider has no LiteLLM mapping: it
+	// is in the catalog (every configured model is, #179) but sync never
+	// routes it, so a launch through the proxy would fail with "Invalid
+	// model name". RefusedByRoute refuses it there; direct, it launches.
+	Unmapped bool
+	// Profile is set on a slot-profile row and nil on every model row. A
+	// profile row's Model holds the row id ("profile/<name>") and nothing
+	// else, so code that reads another Model field, resolves a route or
+	// starts the model must test Profile first.
+	Profile *ProfileRow
 }
 
 // Input gathers everything Build needs. Models is the caller's eligible list
-// (exposed cloud + every configured local model, already filtered by
+// (every catalog model the agent supports, already filtered by
 // agent/-T/-F); Inventory is nil when no local probe ran, in which case no
 // local row is assessed at all: locals read as not running with status ok.
-// When Inventory is set, a local row's status is ok, absent (the probe
-// answered and found no artifact), unknown (it could not tell), or new
-// (discovered, unregistered).
+// When Inventory is set, local rows come only from it (#179 Phase B): a
+// registry local model gets a row only when its inventory entry is running,
+// on disk, or of a family whose discovery failed (status unknown — a flaky
+// probe must not hide a pulled model); a model confirmed missing from disk,
+// a non-running mlx_lm_server pairing, and a model with no inventory entry
+// get none. A local row's status is ok, unknown, or new (discovered,
+// unregistered). HideDiscovered drops discovered rows; callers set it
+// whenever -T/-F is active, since a discovered row has no family or tags a
+// filter could match.
 type Input struct {
 	Config         *config.Config
 	Agent          string
 	Models         []config.Model
 	Inventory      *localmodels.Snapshot
 	HideDiscovered bool
+	// SlotProfiles opts in to slot-profile rows: the statically validated
+	// profiles (profiles.ValidateSlots). nil means no profile rows. Only the
+	// agent picker and the -M pin set it; `wt start` and `wt smoke` never do.
+	SlotProfiles []profiles.SlotCheck
 }
 
 // Build turns Input into rows.
@@ -88,27 +112,26 @@ func Build(in Input) []Row {
 		}
 		r := Row{Model: m, Location: loc, Status: StatusOK}
 		if de, isDisc := discByID[m.ID]; isDisc && m.Source == config.SourceDiscovered && loc == config.LocationLocal {
-			r.Status, r.Running, r.Discovered = StatusNew, de.Running, true
+			r.Status, r.Running, r.Loading, r.Discovered = StatusNew, de.Running, de.Loading, true
 		} else if loc == config.LocationLocal && in.Inventory != nil {
 			e, ok := byID[m.ID]
-			switch {
-			case !ok:
-				// No registered entry: the probe skipped this model (an
-				// unresolvable location) or its family has no probe at all.
-				// Nothing was discovered about it, so presence is unknown.
+			if !ok || !listed(e) {
+				// The hidden registry id still shadows a discovered entry
+				// spelling the same id (provider/artifact): surfacing that
+				// artifact under a registry id would let rotation, usage and
+				// profiles — all keyed by id — resolve it to the registry
+				// model, whose model_name is a different, missing artifact.
+				seen[m.ID] = true
+				continue
+			}
+			r.Running, r.Loading = e.Running, e.Loading
+			if !e.Running && !e.ArtifactKnown {
 				r.Status = StatusUnknown
-			case e.Running:
-				// Serving right now, so nothing about the row is missing.
-				// Checked before the artifact tests because a running
-				// mlx_lm_server row never has a resolved artifact.
-				r.Running = true
-			case !e.ArtifactKnown:
-				r.Status = StatusUnknown
-			case e.Artifact == "":
-				r.Status = StatusAbsent
 			}
 		}
-		r.Exposed = m.Native || (in.Config != nil && in.Config.ExposedFlag(m.ID))
+		if _, ok := litellm.PolicyFor(m.ProviderID); !ok && !m.Native && loc == config.LocationCloud {
+			r.Unmapped = true
+		}
 		rows = append(rows, r)
 		seen[m.ID] = true
 	}
@@ -125,12 +148,119 @@ func Build(in Input) []Row {
 					ID: e.ModelID, ProviderID: e.ProviderID, ModelName: e.Artifact,
 					Location: config.LocationLocal, Source: config.SourceDiscovered,
 				},
-				Location: config.LocationLocal, Status: StatusNew, Running: e.Running, Discovered: true,
+				Location: config.LocationLocal, Status: StatusNew, Running: e.Running, Loading: e.Loading, Discovered: true,
 			})
 			seen[e.ModelID] = true
 		}
 	}
-	return rows
+	return append(rows, slotRows(in)...)
+}
+
+// listed reports whether a registered inventory entry gets a row: it is
+// serving, or its artifact is on disk, or discovery could not tell (unknown,
+// not missing) — except for a running-only family (localmodels.RunningOnly:
+// mlx_lm_server), whose models can never be discovered, so only a serving one
+// is listed.
+func listed(e localmodels.Entry) bool {
+	switch {
+	case e.Running, e.Artifact != "":
+		return true
+	case !e.ArtifactKnown:
+		return !localmodels.RunningOnly(e.ProviderID)
+	}
+	return false
+}
+
+// PairingStartCommand is the command that starts an mlx_lm_server
+// target+draft pairing beside the other local models: wt has no engine for
+// one, llmbench does. --solo is what keeps the other providers running. An
+// empty target or draft (a row with no fetch or draft table) is spelled as a
+// placeholder, so the hint still shows the command's shape. A side a shell
+// would split or expand — a local path with a space in it — is quoted, so
+// the line can be pasted; a repo id and an ordinary path are printed bare.
+func PairingStartCommand(target, draft string) string {
+	side := func(s, placeholder string) string {
+		if s == "" {
+			return placeholder
+		}
+		return shellArg(s)
+	}
+	return "llmbench provider isolate --solo mlx_lm_server " + side(target, "<target>") + " --draft " + side(draft, "<draft>")
+}
+
+// shellArg spells s as one word of a POSIX shell command line. A word made
+// only of characters no shell treats specially is returned as it is.
+// Anything else is single-quoted, with a leading "~/" left outside the
+// quotes so the shell still expands it.
+func shellArg(s string) string {
+	plain := func(r rune) bool {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r)
+	}
+	home, rest := "", s
+	if strings.HasPrefix(s, "~/") {
+		home, rest = "~/", s[2:]
+	}
+	if s == "~" || !strings.ContainsFunc(rest, func(r rune) bool { return !plain(r) }) {
+		return s
+	}
+	return home + "'" + strings.ReplaceAll(rest, "'", `'\''`) + "'"
+}
+
+// notRunning is the one wording for a local model that is not running and
+// that wt cannot start: an mlx_lm_server pairing gets the command that
+// starts it; any other provider with no lifecycle engine in wt is named, and
+// left to its own tool.
+func notRunning(m config.Model) string {
+	if localmodels.RunningOnly(m.ProviderID) {
+		return fmt.Sprintf("local model %q is not running, and wt cannot start an mlx_lm_server pairing — start it with `%s`",
+			m.ID, PairingStartCommand(m.Fetch.Target(), m.Draft.Target()))
+	}
+	return fmt.Sprintf("local model %q is not running, and wt cannot start provider %q — start it with that provider's own tool", m.ID, m.ProviderID)
+}
+
+// MissingReason is the message for a pin of a registry local model that has
+// no row (#179 Phase B: local rows come only from the inventory): "<id> is
+// not on disk" when the probe confirmed its artifact is missing, or the
+// command that starts it for a non-running model of a running-only family
+// (localmodels.RunningOnly: an mlx_lm_server pairing), which wt can neither
+// discover nor start. cfg is where the pairing's target and draft are read
+// from (nil is allowed). It is "" for any id the snapshot cannot vouch for — a
+// model with a row, an unknown artifact, a discovered or unknown id, or a nil
+// snapshot (no probe ran) — so the caller keeps its own wording. `wt start`,
+// `wt smoke` and `wt -M` (both paths) consult it only when catalog.Find
+// misses; `wt -M` additionally only for a pin in the agent's eligible list, so
+// a pin the agent cannot use at all is never told to pull.
+func MissingReason(cfg *config.Config, snap *localmodels.Snapshot, id string) string {
+	if snap == nil {
+		return ""
+	}
+	for _, e := range snap.Entries {
+		if !e.Registered || e.ModelID != id || e.Running {
+			continue
+		}
+		switch {
+		case localmodels.RunningOnly(e.ProviderID):
+			m := config.Model{ID: id, ProviderID: e.ProviderID}
+			if cfg != nil {
+				if i := config.IndexModelByID(cfg.Models, id); i >= 0 {
+					m = cfg.Models[i]
+				}
+			}
+			return notRunning(m)
+		case e.ArtifactKnown && e.Artifact == "":
+			return fmt.Sprintf("%s is not on disk — pull or download it first", id)
+		}
+	}
+	return ""
+}
+
+// NoRowsReason is the message for an agent whose eligible list is non-empty
+// but builds zero rows: every eligible model is a registry local model with no
+// row (confirmed not on disk, a stopped mlx_lm_server pairing, or no inventory
+// entry). `wt` (non-TUI) and the TUI picker share it so both name the real
+// cause instead of a -T/-F mismatch; pinning one with -M gets MissingReason.
+func NoRowsReason(agent string) string {
+	return fmt.Sprintf("no matching model for agent %q is in the cloud, running, or on disk — registry local models that are neither on disk nor running are hidden (pull or download one, or pin it with -M to see why)", agent)
 }
 
 // Find returns the row for id, discovered rows included — a -M pin names a
@@ -144,47 +274,59 @@ func Find(rows []Row, id string) (Row, bool) {
 	return Row{}, false
 }
 
-// startable reports whether wt has a lifecycle backend for the provider
-// family. It delegates to lifecycle.Startable — the single source of truth —
-// so adding a backend there updates every picker with no second edit here.
-func startable(providerID string) bool { return lifecycle.Startable(providerID) }
+// Ready reports whether the row's model can take a request now: running, and
+// not still loading. A cloud row is never Running, so it is never Ready; its
+// launch does not depend on this.
+func (r Row) Ready() bool { return r.Running && !r.Loading }
 
-// Action reports what selecting r does. A non-running local row is startable
-// when its provider has a lifecycle backend and the model is not known to be
-// missing from disk.
+// Action reports what selecting r does. A local row that is not Ready is
+// startable when its provider has a lifecycle backend (lifecycle.Startable,
+// the single source of truth, so a new backend needs no edit here; a model
+// missing from disk has no row at all). That includes a model omlx is still
+// loading (#259): starting it joins the load in progress and returns once the
+// model is loaded, where launching it would hand an agent a model that cannot
+// answer yet.
 func (r Row) Action() Action {
-	if r.Location != config.LocationLocal || r.Running {
+	if r.Profile != nil {
+		return r.Profile.Verdict
+	}
+	if r.Location != config.LocationLocal || r.Ready() {
 		return ActionLaunch
 	}
-	if !startable(r.Model.ProviderID) {
-		return ActionBlock
-	}
-	if r.Status == StatusAbsent {
+	if !lifecycle.Startable(r.Model.ProviderID) {
 		return ActionBlock
 	}
 	return ActionStart
 }
 
 // BlockReason is the status line for an ActionBlock row ("" otherwise): a
-// model missing from disk needs pulling; a provider wt cannot start needs
-// modelman.
+// local model that is not running, on a provider wt has no engine to start.
 func (r Row) BlockReason() string {
+	if r.Profile != nil {
+		return r.Profile.Reason
+	}
 	if r.Action() != ActionBlock {
 		return ""
 	}
-	if startable(r.Model.ProviderID) {
-		return fmt.Sprintf("%s is not on disk — pull or download it first", r.Model.ID)
-	}
-	return fmt.Sprintf("local model %q is not running — start it with `modelman start %s`", r.Model.ID, r.Model.ID)
+	return notRunning(r.Model)
 }
 
 // RefusedByRoute reports whether the row must be refused because of how it
-// routes: a discovered model — one wt found on disk, absent from the LiteLLM
-// gateway's model_list — cannot be launched through the proxy. It is false
-// when the route failed to resolve (a launch row with a route error stays
-// selectable and reports the error on Enter). The picker table, the non-TUI
-// -M pin and `wt smoke` all decide through this one rule; each keeps its own
-// wording.
+// routes: an Unmapped cloud model has no LiteLLM route, so it cannot be
+// launched through the proxy. A discovered local model is never refused
+// (#179 Phase B): wt routes it under its discovered id once it is running. It
+// is false when the route failed to resolve (a launch row with a route error
+// stays selectable and reports the error on Enter). The picker table, the
+// non-TUI -M pin and `wt smoke` all decide through this one rule, and
+// RouteRefusal gives them its one wording.
 func (r Row) RefusedByRoute(route config.Route, routeErr error) bool {
-	return r.Discovered && routeErr == nil && (route.Litellm || route.Forced)
+	return r.Unmapped && routeErr == nil && (route.Litellm || route.Forced)
+}
+
+// RouteRefusal is RefusedByRoute's reason, or "" when the row is not refused.
+func (r Row) RouteRefusal(route config.Route, routeErr error) string {
+	if !r.RefusedByRoute(route, routeErr) {
+		return ""
+	}
+	return fmt.Sprintf("cloud model %s is not in LiteLLM (provider %q has no LiteLLM mapping) — turn LiteLLM routing off (wt litellm off) to use it", r.Model.ID, r.Model.ProviderID)
 }

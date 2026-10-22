@@ -1,20 +1,22 @@
 # wt
 
-Launch AI coding agent CLIs in git worktrees with model rotation and session resume.
+Launch AI coding agent CLIs in git worktrees with model rotation.
 
 The `wt` binary is a Go TUI tool that picks a worktree or branch, rotates models by tag, and launches the selected agent. The `bin/*-wt` shims are thin wrappers (`claude-wt` → `wt --agent claude`, `shell-wt` → `wt --agent shell`). See `docs/superpowers/specs/` for design docs.
 
 ## Supported agents
 
-| Launcher | Agent | Model rotation | Session resume |
-|---|---|---|---|
-| `claude-wt` | Claude Code | Yes | Yes |
-| `codex-wt` | OpenAI Codex CLI | Yes | No |
-| `copilot-wt` | GitHub Copilot CLI | Yes | No |
-| `opencode-wt` | OpenCode | Yes | Yes |
-| `pi-wt` | pi-coding-agent | Yes | No |
-| `agy-wt` | Antigravity CLI | No | No |
-| `shell-wt` | Shell command | No | No |
+| Launcher | Agent | Model rotation |
+|---|---|---|
+| `claude-wt` | Claude Code | Yes |
+| `codex-wt` | OpenAI Codex CLI | Yes |
+| `copilot-wt` | GitHub Copilot CLI | Yes |
+| `opencode-wt` | OpenCode | Yes |
+| `pi-wt` | pi-coding-agent | Yes |
+| `agy-wt` | Antigravity CLI | No |
+| `shell-wt` | Shell command | No |
+
+`wt` does not resume sessions for any agent — see [Sessions are the agent's own](#sessions-are-the-agents-own).
 
 ## Installation
 
@@ -41,7 +43,7 @@ claude-wt
 # Work on a specific branch directly (skip TUI)
 claude-wt -W my-feature
 
-# Run in the current directory (no picker)
+# Run in the current directory (no worktree picker; works outside a git repo too)
 claude-wt --cwd
 
 # Seed agent instruction files in a new repo
@@ -57,8 +59,10 @@ claude-wt --yolo
 |-----|--------|
 | `enter` | Select worktree → agent+model screen → launch (and advance rotation) |
 | `up` / `down` (or `j` / `k`) | Move the model cursor |
-| `d` | Toggle between code and design tag groups |
+| `n` | New worktree (in the worktree picker) |
 | `q` / `esc` | Quit / go back |
+
+Tag groups are chosen on the command line with `-T <tags>`; no key switches them.
 
 ## Flags
 
@@ -66,8 +70,8 @@ All launchers support:
 
 | Flag | Description |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip TUI |
-| `--cwd` | Launch in the current repo root; skips the TUI picker. A prior resume-capable session still auto-resumes. |
+| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip the worktree picker |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |
@@ -81,17 +85,17 @@ Model rotation happens inside the TUI — there are no `--code`/`--design`/`--na
 
 The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag.
 
-Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`, owned by `modelman` and seeded with `modelman migrate`. `wt` loads that file read-only and joins it in memory with `config.toml`; `wt config` never writes providers or models.
+Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`. `wt model init` creates that file and adds the default provider rows; models are listed, added, edited and removed with `wt model list|add|edit|rm`, or on the Models tab of `wt config` (`wt model`) — see `docs/wt-model.md`. `wt` joins the registry in memory with `config.toml`; nothing writes providers or models into `config.toml`.
 
 See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
 
 ### Migration from legacy `models.conf`
 
-On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, so that a subsequent `modelman migrate` can import them into `registry.toml`; `wt` itself only ever reads Providers/Models back out of the registry.
+On first run, `wt` migrates the legacy bash `~/.config/agent-wt/models.conf` into `config.toml` automatically (parsing `CODE_MODELS`/`DESIGN_MODELS` bash arrays, creating `Provider`/`Agent` entries for each `native:X` model, merging models in both code and design rotations). It runs only once — skipped if `config.toml` already exists — and writes the full legacy shape, including Providers/Models, which nothing reads back (the sections are inert); `wt` itself reads Providers/Models back out of the registry, and writes that file through `wt model init`, `wt model add|edit|rm`, the Models tab of `wt config` and `wt cloud-sync`.
 
 ## User preferences (`wt config`)
 
-The `wt config` family manages user-level preferences (separate from `config.toml`, which holds the agent/model registry). The first shipped subcommand is `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
+Bare `wt config` opens an interactive editor with two tabs: Agents (the agents in `config.toml`) and Models (the models in `registry.toml`; `wt model` opens the editor on this tab). Its subcommands are `wt config path`, which prints the config directory, and `wt config theme` — four built-in color palettes with dark/light variants, stored in `~/.config/agent-wt/themes.toml`.
 
 ```bash
 wt config theme              # show the active theme + available names
@@ -111,7 +115,8 @@ Works for `claude-wt`, `codex-wt`, `copilot-wt`, `opencode-wt`, and `pi-wt`.
 
 The `internal/rotation` package implements tag-based model rotation. Any tag can be a rotation group, not just `code` and `design`. Rotation is implicit: every picker entry lands the cursor on the model after the one most recently launched, and pressing Enter records the launch. There is no `r` key — the user navigates with up/down and the rotation advances as a side effect of launching.
 
-- State is persisted to `~/.config/agent-wt/rotation.state` (single global slot: the last-launched model ID)
+- State is persisted to `~/.config/agent-wt/rotation.state` (single global slot: the model ID of the last single-model launch)
+- `~/.config/agent-wt/last-picked.state` holds the row the picker's `> ` marker sits on. Every launch writes it, a slot-profile launch included, which leaves `rotation.state` alone
 - Legacy per-tag `rotation-<tag>.state` files are one-shot migration inputs; they are merged into the global slot on first run and then deleted
 - The `wt rotate <tag>` subcommand prints the model after the last-launched one (read-only debug helper)
 
@@ -121,7 +126,7 @@ wt rotate code    # print the model after the last launch within the "code" tag 
 
 ### Ollama availability check
 
-Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`. In the TUI, if the model is missing, you can proceed anyway or cancel. (The "skip to next model" choice was removed when the `r` key was removed; use `up`/`down` to pick a different model.) In non-TUI mode (`-w` or `--cwd`), a missing model causes an error with a pull suggestion.
+Before launching with an Ollama model, `wt` verifies the model is locally available via `ollama list`, asked of the ollama address in `registry.toml` (not the shell's `OLLAMA_HOST`). In the TUI, if the model is missing, you can proceed anyway or cancel; use `up`/`down` to pick a different model. When the launch runs without the TUI (`-W`/`--worktree` or `--cwd`, with `-A` and a model that resolves without the picker), a missing model causes an error with a pull suggestion.
 
 ## Copilot-specific: Ollama passthrough
 
@@ -134,7 +139,7 @@ COPILOT_PROVIDER_WIRE_API=completions
 COPILOT_MODEL=<model-name>
 ```
 
-The base URL comes from the ollama provider config in `config.toml`, defaulting to `http://localhost:11434`. `WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md).
+The base URL is the resolved route's origin plus `/v1`. On a direct route that origin is the ollama provider row's `auth.base_url` in `registry.toml` (a row with no `base_url` is an error, not a default); when the launch goes through LiteLLM it is the `[litellm]` url, and `COPILOT_MODEL` is the registry id. `WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md).
 
 ## Main guard
 
@@ -144,9 +149,18 @@ Launchers auto-install a `block-main-commit` pre-commit hook on every invocation
 - `WT_SKIP_MAIN_BLOCK=1` env var (CI/automation)
 - `<launcher> --no-guard` (removes the hook)
 
-## Session resume (`claude-wt`, `opencode-wt`)
+## Sessions are the agent's own
 
-When a prior Claude Code or OpenCode session exists for the worktree path, the launcher resumes it. In the TUI flow this is an interactive prompt; in the non-TUI launch paths (`--cwd`, `-W`) the resume flag is appended automatically with no prompt. Native-provider models always launch fresh in both flows — resuming would restore the session's stored model over the native choice.
+`wt` never resumes a session: every launch starts the agent fresh, with no lookup, no prompt and no resume flag. To continue a conversation, pass the agent's own flags after `--`; `wt` hands them over unchanged on every launch path, the picker included.
+
+| | Continue the latest | A specific session | Fork it |
+|---|---|---|---|
+| claude | `claude-wt -- --continue` | `claude-wt -- --resume <id>` | `claude-wt -- --continue --fork-session` |
+| opencode | `opencode-wt -- --continue` | `opencode-wt -- --session <id>` | `opencode-wt -- --continue --fork` |
+
+claude's `--continue` means the most recent conversation in the current directory, and `wt` starts the agent in the worktree (or, with `--cwd`, the directory the command was typed in), so it finds the sessions for that directory.
+
+`wt` used to resume the newest session by itself. That appended a one-shot run (`-- -p "..."`) to whichever conversation was newest, including one another process was using (#204), and made an opencode launch fail when the resumed session had stored a different model (#198). Whether a resumed session's stored model overrides the chosen one is the agent's behaviour; `wt` does not guard against it, and native models are not special-cased.
 
 ## Post-run summary line
 
@@ -175,18 +189,17 @@ go vet ./...       # Vet
 | Path | Purpose |
 |---|---|
 | `cmd/wt/main.go` | CLI entry point (cobra): thin wiring, exit-code handling, subcommand registration |
-| `cmd/wt/app.go` | Shared dependency struct: loads and validates config once, discovers live models |
+| `cmd/wt/app.go` | Shared dependency struct: loads and validates config, the active theme and `profiles.toml` once (no model discovery) |
 | `cmd/wt/commands.go` | Subcommand constructors: `rotate` (debug helper) |
-| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `defaultAgent`, `defaultModel`, `renderTable` |
-| `cmd/wt/launch.go` | Non-TUI launch helpers: `launch`, `buildLaunch`, `launchDirect` |
-| `internal/config/` | Config loading, model registry types (joined from modelman's `registry.toml`), validation, secrets, legacy migration |
+| `cmd/wt/helpers.go` | Centralized helpers: `mustGetString`, `yolo`, `borderStyle`, `renderTable`, guard helpers (`checkGuardStatus`, `removeGuard`), `isStdinTTY`, `configError`, `pickerNeedsTTYError` |
+| `cmd/wt/launch.go` | Non-TUI launch helpers: `buildFilteredCmd`, `launchFiltered`, `launchPassthroughImpl`, `runAgentCmd` |
+| `internal/config/` | Config loading, model registry types (joined from `registry.toml`), validation, secrets, legacy migration |
 | `internal/rotation/` | Tag-based model rotation with snapshot-based model set and persistent state |
 | `internal/agents/` | Agent driver abstraction — builds per-agent launch commands |
 | `internal/guard/` | Main guard — installs/removes `block-main-commit` pre-commit hook |
 | `internal/worktree/` | Git worktree and branch enumeration (picker data source) and creation (EnsureForName/EnsureForBranch) |
 | `internal/initseed/` | `--init` seeding: AGENTS.md + agent pointer files, skip-if-exists |
-| `internal/session/` | Session resume detection: claude slug dirs, opencode project-id, mtime ranking |
-| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch/resume prompt |
+| `internal/tui/` | Bubble Tea app shell + worktree picker + agent/model screen + model browser + launch |
 | `internal/ollamacheck/` | Ollama model availability check before launch |
 | `docs/superpowers/specs/` | Design specs |
 | `docs/superpowers/plans/` | Implementation plans |
@@ -216,6 +229,6 @@ make clean        # Remove build artifacts
 ## Architecture
 
 - `bin/*-wt` — thin shims that `exec wt --agent <name>`
-- `cmd/wt/` — unified Go tool: cobra CLI, Bubble Tea TUI, model registry, rotation, guard, init seeding, session resume
+- `cmd/wt/` — unified Go tool: cobra CLI, Bubble Tea TUI, model registry, rotation, guard, init seeding
 
 See `CLAUDE.md` for the full architecture documentation.

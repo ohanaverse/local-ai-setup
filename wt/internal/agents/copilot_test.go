@@ -31,8 +31,7 @@ func TestCopilotSeeder(t *testing.T) {
 // with the correct provider environment variables.
 func TestCopilotBuildLitellm(t *testing.T) {
 	m := config.Model{ID: "ollama/qwen3.8:27b-mlx", ModelName: "qwen3.8:27b-mlx", ProviderID: "ollama"}
-	gw := config.LitellmState{Enabled: true, URL: "http://localhost:4000", APIKey: "sk-litellm"}
-	lc := copilotDriver{}.Build(m, false, routeFor(m, gw))
+	lc := copilotDriver{}.Build(m, false, litellmRoute(m))
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_BASE_URL", "http://localhost:4000/v1")
 	assertEnv(t, lc.Env, "COPILOT_PROVIDER_API_KEY", "sk-litellm")
 	assertEnv(t, lc.Env, "COPILOT_MODEL", "ollama/qwen3.8:27b-mlx")

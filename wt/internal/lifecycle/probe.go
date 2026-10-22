@@ -127,7 +127,10 @@ func (e *env) waitForModel(ctx context.Context, modelsURL, model string, proc pr
 
 // warmup forces model into memory: poll healthURL for liveness, then POST a
 // 1-token chat completion to chatURL and require the chat.completion marker.
-func (e *env) warmup(ctx context.Context, chatURL, model, healthURL string, timeout time.Duration) error {
+// key, when there is one, goes with the chat request as a Bearer token; a
+// server that answers 401 or 403 ends the warmup at once with a
+// *KeyRefusedError (#256), since no amount of polling changes that answer.
+func (e *env) warmup(ctx context.Context, chatURL, model, healthURL, key string, timeout time.Duration) error {
 	payload, _ := json.Marshal(map[string]any{
 		"model":       model,
 		"messages":    []map[string]string{{"role": "user", "content": "hi"}},
@@ -148,9 +151,12 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL string, time
 			}
 			continue
 		}
-		ok, reason := e.tryChat(ctx, chatURL, payload)
+		ok, refused, reason := e.tryChat(ctx, chatURL, key, payload)
 		if ok {
 			return nil
+		}
+		if refused {
+			return &KeyRefusedError{URL: chatURL, KeySent: key != "", Detail: reason}
 		}
 		lastReason = reason
 		if err := e.sleep(ctx, e.pollInterval); err != nil {
@@ -166,33 +172,39 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL string, time
 	return fmt.Errorf("failed to warm up model %s at %s: %s", model, chatURL, lastReason)
 }
 
-func (e *env) tryChat(ctx context.Context, chatURL string, payload []byte) (ok bool, reason string) {
+// tryChat sends one warmup request. refused is true when the server answered
+// 401 or 403: the request was understood and will be turned away every time.
+func (e *env) tryChat(ctx context.Context, chatURL, key string, payload []byte) (ok, refused bool, reason string) {
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(payload))
 	if err != nil {
-		return false, err.Error()
+		return false, false, err.Error()
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := e.chatClient.Do(req)
 	if err != nil {
-		return false, err.Error()
+		return false, false, err.Error()
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, "reading response: " + err.Error()
+		return false, false, "reading response: " + err.Error()
 	}
 	// A non-2xx answer is not a warmup, even when its body echoes a
 	// chat.completion marker: the ported probe raises HTTPError here and
 	// retries. Accepting it reports a model as resident that is not.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateForError(body))
+		refused = resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden
+		return false, refused, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateForError(body))
 	}
 	if !chatCompletionMarker.Match(body) {
-		return false, "response missing chat.completion marker: " + truncateForError(body)
+		return false, false, "response missing chat.completion marker: " + truncateForError(body)
 	}
-	return true, ""
+	return true, false, ""
 }
 
 // truncateForError bounds a server response body embedded in an error
@@ -239,7 +251,7 @@ func trimTrailingPartialRune(s string) string {
 	return s
 }
 
-// liveServed asks a single-model provider's server directly what it is serving,
+// liveServed asks a provider's server directly what it is serving,
 // and reports whether that answer can be trusted.
 //
 // known is false only when the server failed to give a usable answer — it
@@ -250,12 +262,14 @@ func trimTrailingPartialRune(s string) string {
 // refuses every cold start or permits the silent replacement this exists to
 // prevent.
 func (e *env) liveServed(ctx context.Context, cfg *config.Config, family string) (ids []string, known bool) {
-	origin, _ := localmodels.FamilyOrigin(cfg, family)
+	origin := localmodels.FamilyOrigin(cfg, family)
 	modelsURL := origin + "/v1/models"
 	responded, timedOut := e.probe(ctx, modelsURL, e.prebindTimeout)
 	switch {
 	case responded:
-		ids, err := localmodels.FetchModelIDsErr(e.probeClient, modelsURL)
+		// The same question the inventory asks, so the two agree: for omlx,
+		// the models it has loaded, not every model it lists (#201).
+		ids, err := localmodels.ServedIDs(cfg, e.probeClient, family)
 		if err != nil {
 			return nil, false
 		}

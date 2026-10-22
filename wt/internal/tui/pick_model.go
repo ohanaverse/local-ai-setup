@@ -11,7 +11,7 @@ import (
 // pickModel is a minimal standalone Bubble Tea program that shows the same
 // selector table buildTable produces for the main TUI's agent flow, for
 // callers (e.g. wt smoke) that need a one-off model pick without the full
-// worktree->agent->model->resume->launch state machine. Unlike that flow, the
+// worktree->agent->model->launch state machine. Unlike that flow, the
 // list here is never scoped to a single agent, so its survey segment is
 // always empty (agent-specific) and undiscovered models are hidden (wt smoke
 // only shows the models it passes in). A per-row exception marker can still
@@ -28,6 +28,33 @@ type pickModel struct {
 	// notice is a one-line message under the list, set when Enter hits a
 	// blocked row and cleared on the next key.
 	notice string
+	// width and height are the terminal's: the list is sized to what the
+	// picker's frame leaves of them after every message (fit), and the frame
+	// clips the notice to the width.
+	width, height int
+}
+
+// frame is the picker's layout (layout.go): the list, and the notice under it
+// when there is one. View renders through it and fit measures it, so a line
+// added here is counted in the list's height; one added to View instead would
+// push the table's header off the top of the screen.
+func (m pickModel) frame() listFrame {
+	return func(listView string) string {
+		if m.notice != "" {
+			return listView + "\n" + clip(m.notice, m.width)
+		}
+		return listView
+	}
+}
+
+// fit sizes the list to the room the frame leaves, as the agent flow's fitLists
+// does for its screens. Before the terminal has reported a usable size the list
+// keeps the size it was built with: bubbles is never given a zero width.
+func (m *pickModel) fit() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+	fitTo(&m.list, m.width, m.height, m.frame())
 }
 
 // newPickModel builds the picker's list from models via the same buildTable
@@ -71,10 +98,21 @@ func (m pickModel) Init() tea.Cmd { return nil }
 // TestQDoesNotQuitWhileFilteringModelList's fix for the main TUI), Esc and
 // Ctrl+C always cancel, and Enter selects the highlighted row unless it's
 // committing a filter query instead.
+//
+// The list is fitted after every message, not only a resize: the notice
+// appearing or being cleared and `?` expanding the help each change the room
+// the list has, and a list sized one message late is a header pushed off the
+// screen (see fitLists).
 func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	next.fit()
+	return next, cmd
+}
+
+func (m pickModel) update(msg tea.Msg) (pickModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.list.SetSize(msg.Width-2, msg.Height-2)
+		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case tea.KeyMsg:
 		m.notice = ""
@@ -112,30 +150,24 @@ func (m pickModel) View() string {
 	if m.quitting {
 		return ""
 	}
-	v := m.list.View()
-	if m.notice != "" {
-		v += "\n" + m.notice
-	}
-	return v
+	return m.frame()(m.list.View())
 }
 
-// PickModel runs a standalone Bubble Tea program showing the selector
+// PickStartModel runs a standalone Bubble Tea program showing the selector
 // table — the same columns the wt agent flow's model picker uses — and returns the user's selection. ok is false when the user
 // canceled (Esc/q/Ctrl+C) rather than selecting a model. Unlike the agent
 // flow's picker, models is never filtered down to one agent's eligible set;
 // callers scoped to "any agent that can run this model" (e.g. wt smoke)
 // pass their own unfiltered union list. models may include start and blocked
 // rows (wt start); blocked rows are shown but not selectable.
-func PickModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
-	return runPick(newPickModel(cfg, models, theme, false))
-}
-
-// PickStartModel is PickModel for callers that do not launch an agent from the
+//
+// It is for callers that do not launch an agent from the
 // pick: `wt start` (starting is not launching) and `wt smoke` (its candidates
 // were already route-checked per agent), so the launch-route rules (a
-// discovered model not in LiteLLM, a route that fails to resolve) do not block
+// cloud model not in LiteLLM, a route that fails to resolve) do not block
 // or decorate rows.
-// Rows that cannot start at all (not on disk, no start backend) stay blocked.
+// Rows that cannot start at all (no start backend) stay blocked; a model that
+// is not on disk has no row to block.
 func PickStartModel(cfg *config.Config, models []config.Model, theme themes.Theme) (config.Model, bool, error) {
 	return runPick(newPickModel(cfg, models, theme, true))
 }

@@ -1,8 +1,12 @@
-.PHONY: lint lint-shell check-links test-all install
+.PHONY: lint lint-shell check-links test-all install update-tools
 
 SHELL_SCRIPTS := \
 	bin/lib/mlx-lm-resolve.sh \
+	bin/lib/update-common.sh \
 	bin/mlx-quantize \
+	bin/check-config-dirs-untouched \
+	bin/update/* \
+	bin/update-tools \
 	benchmarks/qwen3.8-benchmark \
 	benchmarks/qwen3.8-benchmark-multi \
 	benchmarks/ornith-1.5-benchmark \
@@ -32,9 +36,14 @@ check-links:
 
 # Aggregate local verification across all monorepo components (mirrors CI).
 test-all: lint
-	cd modelman && uv sync && make check && make test
+	cd llmbench && uv sync && make check && make test
+	cd modeltiers && uv sync && make check && make test
 	cd wt && go build ./... && go vet ./... && go test -count=1 ./...
 
-install: ## Install all monorepo components (wt + modelman).
+install: ## Install all monorepo components (wt + llmbench + modeltiers).
 	cd wt && make install
-	cd modelman && make install
+	cd llmbench && make install
+	cd modeltiers && make install
+
+update-tools: ## Update every tool the wt stack runs (see bin/update-tools)
+	@bin/update-tools $(ARGS)

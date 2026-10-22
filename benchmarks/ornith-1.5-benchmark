@@ -120,7 +120,7 @@ done
 
 echo ""
 echo "  [cleanup] restoring all local services..."
-"${MODELMAN_PROVIDER[@]}" restore
+"${LLMBENCH_PROVIDER[@]}" restore
 
 echo ""
 echo "Results saved to: $OUTFILE"

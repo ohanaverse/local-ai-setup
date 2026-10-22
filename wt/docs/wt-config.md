@@ -2,17 +2,24 @@
 
 User-level preferences for the `wt` launcher.
 
-- **`wt config`** (no subcommand) — interactive TUI for viewing and editing
-  agents in `config.toml`
+- **`wt config`** (no subcommand) — interactive TUI with two tabs: the agents
+  in `config.toml`, and the models in `registry.toml`
 - **`wt config theme`** — color theme management
 - **`wt config path`** — print the config directory
 
 ## Config viewer (`wt config`)
 
-Launching `wt config` with no subcommand opens a full-screen TUI that
-lets you browse and edit the **Agents** section of `config.toml`.
-Providers and models live in modelman-owned `registry.toml` and are
-read-only from `wt`.
+Launching `wt config` with no subcommand opens a full-screen TUI with two
+tabs, named on its first line; `Tab` switches between them.
+
+- **Agents** — the agents in `config.toml`. Edits are held in memory and
+  saved with `Ctrl+S`, from this tab. The sections below describe it.
+- **Models** — the models in `registry.toml`: every registry model and every
+  local model found on this machine. `n` adds a model, `Enter` edits the
+  selected one (or registers a `new` row) in a form, and `d` removes it.
+  Each change is written at once, and the LiteLLM routes are synced once
+  when you quit. `wt model` opens the editor on this tab; its keys, columns
+  and form are in [`wt-model.md`](wt-model.md).
 
 ### Agent list
 
@@ -72,6 +79,16 @@ are unsaved changes, a prompt appears:
 - `n` — discard changes and quit
 - `c` or `Esc` — return to the list
 
+If that save fails (validation, or the write itself), the editor does not
+quit: the prompt goes and the Agents tab is shown, with the reason on its
+status line, whichever tab `q` was typed on.
+
+The prompt is about agent edits only: a change made on the Models tab is
+already in `registry.toml` when it is made.
+
+`Esc` on either tab's list does not quit: it clears a filter (`/`) and does
+nothing else. Only `q` and `Ctrl+C` leave the editor.
+
 ## Where settings live
 
 All `wt config` settings live in `~/.config/agent-wt/` (or
@@ -81,15 +98,16 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 > **LiteLLM routing is not a `wt config` setting.** Whether agents route
 > through the LiteLLM proxy or dial providers directly is wt-owned but managed by
 > subcommands, not the editor: `wt litellm status` / `on` / `off` / `set`
-> control the `[litellm]` table in `config.toml`. (modelman.toml's `[litellm]`
-> is only a legacy fallback copied in once.) There is no routing surface in
-> the editor.
+> control the `[litellm]` table in `config.toml`. There is no routing surface
+> in the editor.
 
 ```
 ~/.config/agent-wt/
 ├── config.toml          # main agent registry (existing)
 ├── themes.toml          # active theme (this feature)
-├── rotation.state       # single global last-launched model
+├── rotation.state       # the last single-model launch: the rotation position
+├── last-picked.state    # the row launched last, model or slot profile: the picker's marker
+├── slot-profiles.toml   # hand-written slot profiles; wt reads it and never writes it
 └── ...                  # future subcommands land here
 ```
 
@@ -102,10 +120,10 @@ wt config path
 ## Themes
 
 The `wt config theme` family manages the active color theme. Themes apply
-to every TUI picker (worktree list, agent+command list, model list, session
-resume prompt, ollama availability warning), CLI tables, and the `wt config theme list` output.
+to every TUI picker (worktree list, agent+command list, model list,
+ollama availability warning), CLI tables, and the `wt config theme list` output.
 The TUI threads the active theme through every `list.Model` via
-`internal/tui/delegate.go`'s `themedListDelegate` — replacing the
+`internal/tui/delegate.go`'s `ThemedListDelegate` — replacing the
 hardcoded `list.NewDefaultDelegate` so no picker silently bypasses the
 theme.
 

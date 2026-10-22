@@ -2,35 +2,32 @@ package agents
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 func init() { register("opencode", func() Driver { return opencodeDriver{} }) }
 
 type opencodeDriver struct{}
 
-func (opencodeDriver) YoloFlag() string { return "--dangerously-skip-permissions" }
+// YoloFlag is opencode's "--auto" ("auto-approve permissions that are not
+// explicitly denied"), spelled with its value attached. Not an unconditional
+// skip — a permission the user's opencode config sets to "deny" stays denied.
+// (opencode 1.18 has no "--dangerously-skip-permissions"; passing it is a
+// usage error, exit 1.)
+//
+// The "=true" is load-bearing. The flag is declared per command, not
+// globally, so opencode's parser only knows it is a boolean once the command
+// is resolved: a bare "--auto" in front of a subcommand ("opencode --auto run
+// <prompt>") takes "run" as the flag's VALUE and lands in the default (TUI)
+// command. "--auto=true" cannot swallow the next argument, so Build emits it
+// leading for every argv form — the interactive launch, wt smoke's one-shot
+// ("opencode --auto=true run <prompt>") and a passthrough subcommand
+// ("wt --yolo -A opencode -- run <prompt>").
+func (opencodeDriver) YoloFlag() string { return "--auto=true" }
 
 func (opencodeDriver) Protocols() []Protocol { return []Protocol{config.ProtocolOpenAIChat} }
-
-func (opencodeDriver) ResumeFlag() string { return "--session" }
-
-func (opencodeDriver) LatestSession(path string) (*session.Session, error) {
-	projectID, err := session.OpenCodeProjectID(path)
-	if err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode",
-		"storage", "session", projectID)
-	return session.LatestByExt(dir, ".json", func(f os.FileInfo) string {
-		return f.Name()
-	})
-}
 
 // OpenCode routes through a wt-declared custom provider
 // (@ai-sdk/openai-compatible, chat completions wire) in both gateway and

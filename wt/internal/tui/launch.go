@@ -2,18 +2,24 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
 // launchDoneMsg is emitted after the agent subprocess exits.
 type launchDoneMsg struct {
+	// err is what running the agent returned, or the profile error that
+	// kept it from starting. Run returns either one, so wt exits as
+	// runAgentCmd does (#412).
 	err error
 }
 
@@ -29,12 +35,47 @@ var currentProgram *tea.Program
 // capture-then-emit pattern is required. Reset by Run() before launch.
 var pendingSummary string
 
+// pendingRouteNotes holds the lines wt has for the user that arise while the
+// alt screen is up, where stderr is not reliably visible. Two things feed it:
+// what the launch-time LiteLLM route check printed (#192) —
+// `wt: LiteLLM route for <id> updated` and any route warning, collected in the
+// check's own buffer (checkLaunchRoute) — and the pre-launch notes about the
+// command being built (queueLaunchNotes). It follows pendingSummary's
+// capture-then-emit pattern with two emit points: runAndWaitCmd prints it the
+// moment it releases the terminal, above the agent's own output, and Run()
+// prints whatever is left after p.Run() returns (the user quit, or the launch
+// never happened). Appended to by recordRouteNotes; reset by Run() before
+// launch.
+var pendingRouteNotes string
+
+// flushRouteNotes prints pendingRouteNotes to w and clears it, so the lines
+// are shown exactly once. Callers pass os.Stderr at a point where it is the
+// real terminal; it takes a writer so tests can read what was printed.
+//
+// What a settling restart has printed so far (settleOut) goes out with them:
+// both emit points are where the terminal is real.
+func flushRouteNotes(w io.Writer) {
+	notes := pendingRouteNotes + settleOut.take()
+	pendingRouteNotes = ""
+	if notes == "" {
+		return
+	}
+	// The captured lines end in a newline; guard anyway so the agent's first
+	// line of output never continues one of ours.
+	if !strings.HasSuffix(notes, "\n") {
+		notes += "\n"
+	}
+	fmt.Fprint(w, notes)
+}
+
 // pendingSurvey holds the agent/model to survey once the alt-screen tears
 // down, mirroring pendingSummary's capture-then-emit pattern (printing
 // here would land inside the discarded alt-screen buffer).
 type pendingSurvey struct {
 	agent string
 	m     config.Model
+	// profile marks a slot-profile session: no survey and no price notice.
+	profile bool
 }
 
 // pendingSurveyState is populated by runAndWaitCmd next to pendingSummary.
@@ -63,12 +104,69 @@ type ProfileApplier func(cmd *exec.Cmd, agent string, m config.Model) (cleanup f
 // graceful-degradation posture for a missing/disabled profiles.toml.
 var profileApplier ProfileApplier
 
-// launchAgent builds the command for agent/model in worktreePath, optionally
-// appending passthrough args and a resume flag for claude or opencode. It
-// delegates to agents.BuildLaunchCmd so the launch construction logic lives
-// in one place.
-func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
-	return agents.BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)
+// SlotProfileApplier applies a slot profile's args and wrapper to cmd. It
+// fails closed: an error aborts the launch. cmd/wt hands in applySlotProfile.
+// It is a second closure beside ProfileApplier for the same reason that one
+// exists: this package cannot import cmd/wt.
+type SlotProfileApplier func(cmd *exec.Cmd, agent string, row catalog.Row) (cleanup func() error, err error)
+
+// SlotProfiles is what Run needs for slot profiles: the statically validated
+// profiles (the picker builds their rows) and the applier of a profile launch.
+type SlotProfiles struct {
+	Checks []profiles.SlotCheck
+	Apply  SlotProfileApplier
+}
+
+// slotApplier is set by Run from SlotProfiles.Apply. nil means no applier:
+// a profile launch then aborts with "no slot-profile applier". It is never a
+// no-op, unlike a nil profileApplier: a slot profile that cannot be fully
+// applied must not launch.
+var slotApplier SlotProfileApplier
+
+// withSlotProfiles is how Run's slot argument reaches the TUI: the checks go
+// on the model, the applier into its seam. It is split out of Run so a test
+// can pin it without a real tea.Program.
+func withSlotProfiles(m model, s SlotProfiles) model {
+	slotApplier = s.Apply
+	m.slotChecks = s.Checks
+	return m
+}
+
+// launchAgent builds the command for agent/model in worktreePath, appending
+// any passthrough args unchanged, and queues the pre-launch notes about the
+// built command. It never adds a resume flag: sessions are the agent's to
+// manage (see agents.BuildLaunchCmd). It delegates to agents.BuildLaunchCmd
+// so the launch construction logic lives in one place.
+func launchAgent(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	cmd, err := agents.BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)
+	if err == nil {
+		queueLaunchNotes(agent, cmd, extraArgs)
+	}
+	return cmd, err
+}
+
+// shellDir is a test seam over os.Getwd: the directory the user typed the
+// command in, which is what they meant a relative passthrough path against.
+var shellDir = os.Getwd
+
+// queueLaunchNotes adds the pre-launch notes for a built command to
+// pendingRouteNotes. Today that is agents.RelativeArgNotes: a passthrough
+// argument naming a file from the directory wt was run in, but not from the
+// worktree the agent starts in. The non-TUI path prints these straight to
+// stderr; here the picker still owns the terminal, so they wait for
+// runAndWaitCmd to release it and are printed above the agent's own output.
+func queueLaunchNotes(agent string, cmd *exec.Cmd, extraArgs []string) {
+	wd, err := shellDir()
+	if err != nil {
+		return
+	}
+	for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
+		// A launch that failed and was retried builds its command again;
+		// the note is about the arguments, so say it once.
+		if line := note + "\n"; !strings.Contains(pendingRouteNotes, line) {
+			pendingRouteNotes += line
+		}
+	}
 }
 
 // buildPassthrough is a test seam wrapping agents.BuildPassthroughCmd,
@@ -93,6 +191,11 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 				}
 			}()
 		}
+		// The terminal is the user's again: print what the route check said
+		// before the profile prompt or the agent prints anything, so the
+		// lines sit above the agent's own output instead of being lost with
+		// the alt screen.
+		flushRouteNotes(os.Stderr)
 		var profileCleanup func() error
 		if profileApplier != nil {
 			var perr error
@@ -110,11 +213,8 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 				// value.
 				releaseSession()
 				pendingSummary = agents.Summary(agent, m, 0)
-				// The terminal is released here, so this reaches the
-				// user's real stderr. It is the only diagnostic: the
-				// Update handler never renders launchDoneMsg's error and
-				// Run() does not return it.
-				fmt.Fprintf(os.Stderr, "wt: %v\n", perr)
+				// Run() returns perr, so main prints it once, as it does
+				// for runAgentCmd's return.
 				return launchDoneMsg{err: perr}
 			}
 		}
@@ -136,17 +236,8 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 	}
 }
 
-// resumeOption identifies a choice in the resume prompt.
-type resumeOption int
-
-const (
-	resumeChoice resumeOption = iota
-	freshChoice
-	cancelChoice
-)
-
-// choiceItem adapts a prompt choice to list.Item. The three prompt screens
-// (resume, guard, ollama) share this single type; each keeps its own named
+// choiceItem adapts a prompt choice to list.Item. The prompt screens
+// (ollama, replace) share this single type; each keeps its own named
 // choice enum, stored in the any-typed choice field.
 type choiceItem struct {
 	choice any
@@ -157,25 +248,6 @@ type choiceItem struct {
 func (c choiceItem) FilterValue() string { return c.title }
 func (c choiceItem) Title() string       { return c.title }
 func (c choiceItem) Description() string { return c.desc }
-
-// buildResumeChoices creates the resume prompt list items. The first item is
-// the default cursor position for bubbles/list, so Start fresh is placed at
-// index 0 to match the user's "default to start fresh" preference — Resume is
-// offered but opt-in, and Cancel backs out without launching.
-func buildResumeChoices(sess *session.Session) []list.Item {
-	items := []list.Item{
-		choiceItem{choice: freshChoice, title: "Start fresh", desc: "Launch without resuming a session"},
-		choiceItem{choice: cancelChoice, title: "Cancel", desc: "Return to agent+model screen"},
-	}
-	if sess != nil {
-		items = append(items, choiceItem{
-			choice: resumeChoice,
-			title:  fmt.Sprintf("Resume %s", sess.ID),
-			desc:   session.RelativeTime(sess.MTime),
-		})
-	}
-	return items
-}
 
 // ollamaChoice identifies a choice in the ollama availability prompt.
 type ollamaChoice int

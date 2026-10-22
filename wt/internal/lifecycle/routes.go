@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -16,15 +18,66 @@ import (
 
 // Seams: production talks to the real config.yaml, proxy and stderr.
 var (
-	applyRoutes            = litellm.Apply
+	applyRoutes            = litellm.ApplyChange
 	restartProxy           = litellm.RestartContext
 	waitProxy              = litellm.WaitReady
 	probeProxy             = litellm.Listening
 	routesWarn   io.Writer = os.Stderr
 )
 
+// routesOutMu serialises every write this file makes. A route operation prints
+// from two goroutines — the caller's, and the asynchronous proxy restart it may
+// have started (bounceProxyAsync) — and both can be printing to one writer: the
+// "updated" line and a restart warning of the same check are the usual pair.
+// routePrintf holds it for the whole write, so no writer, routesWarn or a
+// caller's own, is ever written by two goroutines at once.
+var routesOutMu sync.Mutex
+
+// routeOutKey is the context key of a route operation's own writer.
+type routeOutKey struct{}
+
+// withRouteOutput returns a context whose route operation prints to w instead
+// of routesWarn. A nil w returns ctx unchanged: the output goes to stderr.
+//
+// The writer rides on the context because that is the one thing an operation
+// hands to everything it starts: bounceProxyAsync detaches the restart from the
+// caller's cancellation with context.WithoutCancel, which keeps the context's
+// values, so the restart's warnings follow the operation that caused them to
+// the same writer. A writer installed process-wide for the length of a check
+// (what this replaced, #192 review) cannot do that: it also catches whatever an
+// unrelated operation's restart prints while it is installed, and reports it as
+// this check's.
+func withRouteOutput(ctx context.Context, w io.Writer) context.Context {
+	if w == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, routeOutKey{}, w)
+}
+
+// routePrintf is the single way this file prints: the "updated" line and every
+// route warning. It writes to the operation's own writer when ctx carries one
+// (withRouteOutput) and to routesWarn otherwise, under routesOutMu.
+func routePrintf(ctx context.Context, format string, args ...any) {
+	routesOutMu.Lock()
+	defer routesOutMu.Unlock()
+	w := routesWarn
+	if own, ok := ctx.Value(routeOutKey{}).(io.Writer); ok {
+		w = own
+	}
+	fmt.Fprintf(w, format, args...)
+}
+
 // routeWG tracks the in-flight async proxy restarts applyAndReport started.
 var routeWG sync.WaitGroup
+
+// routesInFlight counts the same restarts, for RoutesPending: a WaitGroup
+// cannot be asked whether it would block.
+var routesInFlight atomic.Int32
+
+// RoutesPending reports whether a proxy restart is in flight, that is,
+// whether WaitPendingRoutes would wait. It is for a caller that is about to
+// wait and wants to say so on screen first; it decides nothing.
+func RoutesPending() bool { return routesInFlight.Load() > 0 }
 
 // WaitPendingRoutes blocks until every async proxy restart started by
 // applyAndReport has finished. It has two distinct callers:
@@ -38,30 +91,52 @@ var routeWG sync.WaitGroup
 //     off: an agent launched after a local-model start talks to that model
 //     THROUGH LiteLLM, so proceeding while the restart is still in flight can
 //     meet a refused connection or the pre-restart route table (the model just
-//     started not yet listed). The launch paths — cmd/wt's startForLaunch, the
-//     TUI start flow before proceedToLaunch, wt smoke before its one-shot
+//     started not yet listed). The launch paths — cmd/wt's startForLaunch and
+//     ensureRouteBeforeLaunch, the TUI start flow and the picker's routing
+//     phase (checkLaunchRoute) before the launch, wt smoke before its one-shot
 //     prompt — therefore wait here rather than only at process exit.
 func WaitPendingRoutes() {
 	routeWG.Wait()
 }
 
+// lastRestart is the outcome of the most recent proxy restart attempt this
+// process made: nil when it restarted and (where it was waited for) answered,
+// else why it did not. Both restart paths record it, bounceProxyAsync and
+// RestartProxy, and only ProbeProxy reads it. It starts nil: a process that
+// has restarted nothing has no failed restart.
+//
+// It exists because bounceProxyAsync only prints a failure. A start that was
+// given Options.RestartOwed settles the caller's owed restart through it, so
+// without this a slot-profile launch whose restart command failed would go
+// on: the old proxy is still up, answers the liveness probe, and knows none
+// of the routes written since.
+var lastRestart struct {
+	sync.Mutex
+	err error
+}
+
+// setLastRestartErr records the outcome of a restart attempt (nil: it worked).
+func setLastRestartErr(err error) {
+	lastRestart.Lock()
+	defer lastRestart.Unlock()
+	lastRestart.err = err
+}
+
+// lastRestartErr is the recorded outcome of the most recent restart attempt.
+func lastRestartErr() error {
+	lastRestart.Lock()
+	defer lastRestart.Unlock()
+	return lastRestart.err
+}
+
 const (
-	// proxyReadyTimeout bounds the wait for the proxy after a route change.
-	proxyReadyTimeout = 30 * time.Second
-	// settleTimeout bounds the SYNCHRONOUS half of bounceRoutes: the
-	// config.yaml write, whose lock wait takes the context bounceRoutes hands
-	// to litellm.Options.Ctx. Without it a contended flock (another wt, or
-	// modelman, holding <config>.lock) blocks this cleanup path forever.
-	// It deliberately does NOT bound the proxy restart: applyAndReport's
-	// goroutine derives context.WithoutCancel(ctx) for itself, which strips
-	// this deadline along with cancellation, so bounceRoutes' defer cancel()
-	// cannot cut the restart short.
-	settleTimeout = 15 * time.Second
-	// proxyAliveTimeout bounds the single probe taken just before a restart.
-	// Short on purpose: it is paid on every restart. It only has to
-	// tell "nothing there" (refused: no wait) from "something there" (any
-	// other outcome, even a timeout: wait for it after the restart).
-	proxyAliveTimeout = 1500 * time.Millisecond
+	// proxyReadyTimeout bounds the wait for the proxy after a route change;
+	// litellm's own, so this package and `wt litellm sync` wait as long.
+	proxyReadyTimeout = litellm.ProxyReadyTimeout
+	// ensureRouteLockTimeout bounds the config.yaml lock wait of a launch-time
+	// route check. A launch must not hang behind another wt process holding
+	// the lock; giving up only costs the check, and the launch proceeds.
+	ensureRouteLockTimeout = 10 * time.Second
 )
 
 // restartMode says who bounces the proxy after a route write.
@@ -73,104 +148,383 @@ const (
 	restartForced                       // bounce (and wait) even if this write changed nothing
 )
 
-// routeAfterStart adds the started model's LiteLLM route. A single-model
-// provider (omlx, mtplx) can serve only one model, so starting one replaced
-// whatever ran before: its siblings' routes are removed in the same write.
-// restartOwed means an earlier deferred write (the replaced occupant's route
-// removal) has not been followed by a restart yet; this call's bounce settles
-// it, so a replace costs one proxy restart, not two.
-// It never fails the caller — a missing route is a warning, not a failed start.
+// routeAfterStart adds the started model's LiteLLM route: its registry
+// overlay's id when one matches, else its discovered id (#179 Phase B — the
+// id the catalog, -M and usage use). An Exclusive provider (mtplx) can serve
+// only one model, so starting one replaced whatever ran before: every other
+// route of its family — discovered siblings included — is removed in the
+// same write. A Pool start (omlx) adds its model and clears nothing: its
+// loaded siblings keep their routes, and a model omlx evicted to make room
+// already lost its own (reconcilePool). restartOwed means an earlier deferred
+// write (a replaced occupant's or an evicted model's route removal) has not
+// been followed by a restart yet; this call's bounce settles it, so a replace
+// costs one proxy restart, not two. It never fails the caller — a missing
+// route is a warning, not a failed start.
 func routeAfterStart(ctx context.Context, cfg *config.Config, t Target, restartOwed bool) {
 	mode := restartIfChanged
 	if restartOwed {
 		mode = restartForced
 	}
-	m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName)
-	if !ok {
-		fmt.Fprintf(routesWarn, "wt: %s/%s is not in the registry; no LiteLLM route added (register it with modelman)\n", t.ProviderID, t.ModelName)
-		if restartOwed {
-			// No route to add, but the occupant's removal is still unsettled.
-			bounceRoutes(ctx, cfg)
-		}
-		return
+	applyAndReport(ctx, cfg, StartRouteChange(cfg, t), mode)
+}
+
+// StartRouteChange is the route change routeAfterStart writes for a started
+// target: the model to route (registry overlay, else discovered — routeModel
+// says how a target's id and name choose it) and, for an Exclusive provider,
+// its family to clear. A Pool start adds its model and clears nothing: clearing
+// the family there is what made sync and the start hook undo each other with
+// two models loaded (#213). It is exported so the id the
+// start hook writes can be pinned against the id `wt litellm sync` desires
+// for the same model (cmd/wt) — if the two derivations drift, every sync
+// after a start removes the hook's route and adds its own.
+func StartRouteChange(cfg *config.Config, t Target) litellm.Change {
+	ch := litellm.Change{Add: []config.Model{routeModel(cfg, t)}}
+	if TenancyOf(t.ProviderID) == Exclusive {
+		ch.RemoveFamilies = []string{localmodels.Family(t.ProviderID)}
 	}
-	var remove []string
-	if SingleModel(t.ProviderID) {
-		for _, id := range familyModelIDs(cfg, t.ProviderID) {
-			if id != m.ID {
-				remove = append(remove, id)
-			}
+	return ch
+}
+
+// routeModel is the model a target's route is written for. A target that
+// carries its row's id is resolved by that id alone: the registry model with
+// exactly that id, else the discovered model. ModelFor's lenient name match is
+// skipped on purpose — an artifact whose name merely resembles a registry
+// model's ("org/name" beside "name") has its own discovered id, and matching
+// it to the registry model would route an id the picker never showed (#195).
+// Only a target with no id falls back to ModelFor.
+func routeModel(cfg *config.Config, t Target) config.Model {
+	if t.ModelID != "" {
+		if i := config.IndexModelByID(cfg.Models, t.ModelID); i >= 0 {
+			return cfg.Models[i]
 		}
+		return litellm.DiscoveredModel(t.ProviderID, t.ModelName)
 	}
-	applyAndReport(ctx, cfg, []string{m.ID}, remove, mode)
-}
-
-// routeAfterStop removes the stopped model's route. Stopping a single-model
-// provider's model takes the whole provider down, so every one of its models
-// loses its route. modelName may be "" for a provider-wide stop.
-func routeAfterStop(ctx context.Context, cfg *config.Config, providerID, modelName string) {
-	routeRemove(ctx, cfg, providerID, modelName, restartIfChanged)
-}
-
-func routeRemove(ctx context.Context, cfg *config.Config, providerID, modelName string, mode restartMode) bool {
-	var remove []string
-	switch {
-	case SingleModel(providerID):
-		remove = familyModelIDs(cfg, providerID)
-	default:
-		m, ok := litellm.ModelFor(cfg, providerID, modelName)
-		if !ok {
-			return false
-		}
-		remove = []string{m.ID}
+	if m, ok := litellm.ModelFor(cfg, t.ProviderID, t.ModelName); ok {
+		return m
 	}
-	return applyAndReport(ctx, cfg, nil, remove, mode)
+	return litellm.DiscoveredModel(t.ProviderID, t.ModelName)
 }
 
-// routeAfterOccupantStopped removes the route of the occupant a replace just
-// stopped. It is the env hook defaultEnv wires in (env.go): the start that
-// follows may still fail, and a failed Start runs no success hook at all, so
-// the removal has to be written at the moment the occupant went down. It only
-// writes: the proxy restart is deferred to Start's single settling bounce
-// (routeAfterStart on success, bounceRoutes on failure). It reports whether a
-// restart is now owed.
-func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ localmodels.Entry) bool {
-	return routeRemove(ctx, cfg, occ.ProviderID, occ.ModelName, restartDeferred)
-}
-
-// bounceRoutes restarts the proxy (and waits for it) to settle deferred route
-// writes when the start that followed them failed or found nothing to route.
-// It runs on a context detached from ctx, and still needs to even though
-// applyAndReport's async restart detaches again for itself: the common trigger
-// is the user's Ctrl+C, and applyAndReport's SYNCHRONOUS half — the config.yaml
-// write — takes this ctx as litellm.Options.Ctx. An already-cancelled one makes
-// WithLock fail instantly on any lock contention, so the route removal this
-// exists to settle would never be written at all. Detaching twice is harmless.
+// EnsureRoute writes t's LiteLLM route when it is missing (#192). It is for a
+// model that is already running but that wt did not start — an omlx or mtplx
+// server started by hand, an ollama model pulled since the last sync — which
+// has no route until something writes one, so an agent launched on it gets
+// "Invalid model name" from the proxy.
 //
-// The detached context is bounded by settleTimeout, which bounds exactly one
-// thing: that synchronous config.yaml write's lock wait. The defer cancel()
-// fires as soon as bounceRoutes returns — before the async restart has even
-// begun — but the restart does not run on this context: applyAndReport's
-// goroutine derives its own context.WithoutCancel(ctx), which strips both the
-// cancellation and the deadline. Deleting the wrapper (as the async change
-// first did) leaves the lock wait unbounded on this cleanup path.
-func bounceRoutes(ctx context.Context, cfg *config.Config) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
-	defer cancel()
-	applyAndReport(ctx, cfg, nil, nil, restartForced)
+// It routes the model the start hook would (StartRouteChange's Add), so the
+// two cannot name a model's route differently — and it removes nothing. The
+// start hook also clears an Exclusive provider's family, which is safe there
+// because Start has just stopped or refused any occupant. The ensure has no
+// such guard, so a clear here could delete the route of a model that is still
+// serving and bounce the proxy on every alternating launch.
+// Stale sibling routes are left to the next start, stop or sync.
+//
+// Unlike Start it never starts or stops anything: a caller holding a stale
+// probe gets at worst a route for a model that has since stopped, which the
+// next sync or start removes.
+//
+// It never fails the caller: a failed write is a warning (applyAndReport) and
+// a missing config.yaml is silent. It reports whether config.yaml changed, and
+// says so in one line when it did. The proxy restart that a change triggers is
+// asynchronous — a caller about to use the proxy owes WaitPendingRoutes().
+func EnsureRoute(ctx context.Context, cfg *config.Config, t Target) bool {
+	return ensureChange(ctx, cfg, litellm.Change{Add: StartRouteChange(cfg, t).Add})
 }
 
-// familyModelIDs lists the LiteLLM-managed local model ids whose provider
-// shares providerID's family (omlx and omlx-6bit are one physical server).
-func familyModelIDs(cfg *config.Config, providerID string) []string {
-	fam := localmodels.Family(providerID)
-	var ids []string
-	for _, m := range litellm.LocalModels(cfg) {
-		if localmodels.Family(m.ProviderID) == fam {
-			ids = append(ids, m.ID)
+// ensureChange is EnsureRoute's body for a change already built: it writes it,
+// reports whether config.yaml changed, and says so in one line when it did
+// (reportEnsured). One change builder serving every launch-time check is what
+// keeps a model from being routed under one id by one caller and another id by
+// the next.
+func ensureChange(ctx context.Context, cfg *config.Config, ch litellm.Change) bool {
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, false)
+	if err != nil {
+		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
+	}
+	reportEnsured(ctx, w, ch.Add[0].ID)
+	return w.changed
+}
+
+// routeWrite is what one route write did: whether config.yaml changed, the ids
+// whose own row was added or differs from the one on disk, whether a line
+// about this write has already been printed, and the ids whose row the write
+// left unbuilt at the caller's request (missing, #253).
+type routeWrite struct {
+	changed bool
+	rows    []string
+	said    bool
+	missing []string
+}
+
+// reportEnsured prints the one line a launch-time check owes for a write that
+// changed config.yaml. A write also repairs other rows' api_base and enforces
+// settings, so "changed" does not mean id's route changed (#206): "route for
+// <id> updated" is printed only when id's own row was written. Otherwise the
+// line that explains the write is the one applyReported already printed (the
+// repaired row's "api_base set", or why id's row could not be built) — and
+// when there is none, as for an enforced setting, the write is named as what
+// it was, because the caller is about to wait for a proxy restart and that
+// wait must not come unexplained.
+func reportEnsured(ctx context.Context, w routeWrite, id string) {
+	switch {
+	case !w.changed:
+	case slices.Contains(w.rows, id):
+		routePrintf(ctx, "wt: LiteLLM route for %s updated\n", id)
+	case !w.said:
+		routePrintf(ctx, "wt: LiteLLM config.yaml updated\n")
+	}
+}
+
+// modelRouteChange is the route change a launch row's model needs, and whether
+// the launch-time check applies to it at all. A local model is routed as the
+// start hook would route it: the row's id travels with it, so StartRouteChange
+// resolves the model by id (see routeModel). A cloud model is routed when sync
+// would route it (litellm.CloudModels), from its registry entry, so the row is
+// the one sync writes. Sync is still what keeps cloud routes current; this is
+// the repair for a config.yaml that lost them, which would otherwise answer
+// every cloud launch with "Invalid model name" until someone ran
+// `wt litellm sync`. So the cloud change is AddMissingOnly: a row that is
+// there is sync's, and is neither rebuilt nor compared. Rebuilding it on every
+// launch would resolve the provider's secret_ref each time — a warning per
+// launch in a shell that does not hold the key, though the route works, and a
+// rewritten api_key plus a proxy restart in a shell that holds a different
+// one. Anything else — a native model, a cloud model that is not in the
+// registry, a model whose location cannot be resolved — is not wt's to route.
+func modelRouteChange(cfg *config.Config, m config.Model) (litellm.Change, bool) {
+	loc, err := cfg.ResolveLocation(m)
+	if err != nil {
+		return litellm.Change{}, false
+	}
+	if loc == config.LocationLocal {
+		t := Target{ProviderID: m.ProviderID, ModelName: m.ModelName, ModelID: m.ID}
+		return litellm.Change{Add: StartRouteChange(cfg, t).Add}, true
+	}
+	for _, c := range litellm.CloudModels(cfg) {
+		if c.ID == m.ID {
+			return litellm.Change{Add: []config.Model{c}, AddMissingOnly: true}, true
 		}
+	}
+	return litellm.Change{}, false
+}
+
+// Routable reports whether wt writes a LiteLLM route for m at launch: the
+// predicate of modelRouteChange, which EnsureModelRoute skips a model on and
+// EnsureModelRoutes fails on (ErrNotRoutable). It is exported so a slot
+// profile's resolved validation (internal/catalog) blocks the row by the
+// same rule its route write would fail by, instead of a copy of it. It
+// writes and probes nothing.
+func Routable(cfg *config.Config, m config.Model) bool {
+	_, ok := modelRouteChange(cfg, m)
+	return ok
+}
+
+// EnsureModelRoute is EnsureRoute for a launch row's model, the form the
+// launch paths call. It skips a model that is not wt's to route
+// (modelRouteChange) and bounds the config.yaml lock wait so a launch cannot
+// hang behind another wt process. The caller must only pass a local model the
+// probe reported running; a cloud model needs no probe.
+func EnsureModelRoute(cfg *config.Config, m config.Model) bool {
+	return EnsureModelRouteTo(nil, cfg, m)
+}
+
+// EnsureModelRouteTo is EnsureModelRoute with everything the check prints sent
+// to out instead of stderr: the "updated" line, every warning, and the
+// warnings of the asynchronous proxy restart the check may start. It exists
+// for a caller that owns the terminal — the TUI picker runs under Bubble Tea's
+// alt screen, where a line written to stderr is not reliably visible and is
+// gone once the agent takes the terminal, so the picker collects this output
+// and prints it itself when the terminal is released.
+//
+// Only this check's output goes to out. Another route operation in flight —
+// the restart a failed replace is still settling, say — keeps printing where
+// it always did, so a caller can report what it collected as this model's.
+//
+// out is written under a mutex, never concurrently, so a plain bytes.Buffer
+// will do. The restart's warnings are written by a goroutine that outlives
+// this call: out is safe to read only once WaitPendingRoutes() has returned,
+// and is never written after that. A nil out means stderr.
+func EnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) bool {
+	ch, ok := modelRouteChange(cfg, m)
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(withRouteOutput(context.Background(), out), ensureRouteLockTimeout)
+	defer cancel()
+	return ensureChange(ctx, cfg, ch)
+}
+
+// TryEnsureModelRouteTo is EnsureModelRouteTo for a caller that cannot stop
+// what it is doing — the TUI picker, whose update goroutine is also the one that
+// repaints the screen and answers keys. EnsureModelRouteTo bounds its lock wait
+// at ensureRouteLockTimeout (10s), which is a long time for a goroutine that
+// cannot redraw: the picker would freeze, ctrl+c included, and it would do so
+// *before* its routing phase had been entered, so the one screen built to cover
+// a route wait would be the one thing the wait prevented (#192 review).
+//
+// So this form never waits — not for the lock, and not for a row build. It
+// attempts the config.yaml lock exactly once: WithLock runs its first flock
+// before it consults a deadline, and the already-cancelled context below is what
+// a contended lock hits, so a free lock is still taken and a held one returns at
+// once rather than polling (lockPollInterval) up to a deadline. And it asks the
+// write to defer a missing cloud row's build (Options.DeferMissingAdd), which is
+// the one other wait this path could pay: resolving a provider's exec:
+// secret_ref runs its helper synchronously (#253).
+//
+// done reports whether the check finished at all: changed says whether
+// config.yaml was written, and is only meaningful when done is true. done ==
+// false means the check got nowhere and the caller owes a retry through
+// EnsureModelRouteTo, where waiting is affordable, before it uses the proxy.
+// Two things get it there: the lock was not free — most often another wt holds
+// it mid-write, but any failure to read or write config.yaml lands here too —
+// or the model is a registry cloud model whose row is missing, so building it
+// could run the provider's exec: secret_ref helper, synchronously and for up to
+// execSecretTimeout (#253). That build is deferred rather than paid here, the
+// same way a contended lock is, because this goroutine is also the one that
+// repaints the picker and answers its keys. Neither of those is written yet, so
+// a retry is owed and no line is printed about it — a contended lock and a
+// deferred build are both "not established", not failures. The one failure that
+// is final is litellm.ErrRegistryRedirected — no wait changes a refusal — so it
+// is reported at once and done is true. What it does print goes to out, on
+// EnsureModelRouteTo's terms.
+func TryEnsureModelRouteTo(out io.Writer, cfg *config.Config, m config.Model) (changed, done bool) {
+	ch, ok := modelRouteChange(cfg, m)
+	if !ok {
+		return false, true // not wt's to route: nothing to retry, nothing to say
+	}
+	ctx, cancel := context.WithCancel(withRouteOutput(context.Background(), out))
+	cancel()
+	w, err := applyReported(ctx, cfg, ch, restartIfChanged, true)
+	if err != nil {
+		// A refused pairing is an answer, not a held lock: the retry would
+		// take the lock only to be refused again, behind a routing screen with
+		// nothing to wait for. Reported here, as the retry would have.
+		if errors.Is(err, litellm.ErrRegistryRedirected) {
+			routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
+			return false, true
+		}
+		return false, false
+	}
+	if len(w.missing) > 0 {
+		// The row is missing and its build may run the provider's exec: secret_ref
+		// helper, synchronously and for up to execSecretTimeout (#253): a wait
+		// this goroutine cannot pay. The write deferred it — and with it
+		// everything else it would have written (litellm.Options.DeferMissingAdd),
+		// so nothing was saved, nothing restarted and there is nothing to
+		// report. The caller owes the retry: this check has got no further than
+		// a held lock would have.
+		return false, false
+	}
+	reportEnsured(ctx, w, ch.Add[0].ID)
+	return w.changed, true
+}
+
+// routeAfterStop removes the routes of a provider that was stopped as a whole
+// (see routeRemoveFamily).
+func routeAfterStop(ctx context.Context, cfg *config.Config, providerID string) {
+	routeRemoveFamily(ctx, cfg, providerID, restartIfChanged)
+}
+
+// routeRemoveFamily writes the removal for a provider that was stopped as a
+// whole (lifecycle.Stop): on an Exclusive or Pool server every route of the
+// family goes, since the server is down. For a family whose routes follow its
+// artifacts (ollama) it writes nothing: a pulled model is still served on
+// request (#179).
+func routeRemoveFamily(ctx context.Context, cfg *config.Config, providerID string, mode restartMode) bool {
+	family := localmodels.Family(providerID)
+	if localmodels.RoutesFollowArtifact(family) {
+		return false
+	}
+	if ten := TenancyOf(providerID); ten != Exclusive && ten != Pool {
+		return false
+	}
+	return applyAndReport(ctx, cfg, litellm.Change{RemoveFamilies: []string{family}}, mode)
+}
+
+// routeRemoveModel writes the removal for one model that stopped serving and
+// reports whether config.yaml changed. On an Exclusive server the model was
+// the provider, so the family goes; on a Pool only that model's ids go, and
+// its loaded siblings keep their routes (#213).
+func routeRemoveModel(ctx context.Context, cfg *config.Config, en localmodels.Entry, mode restartMode) bool {
+	if TenancyOf(en.ProviderID) != Pool {
+		return routeRemoveFamily(ctx, cfg, en.ProviderID, mode)
+	}
+	return applyAndReport(ctx, cfg, litellm.Change{Remove: poolRouteIDs(cfg, en)}, mode)
+}
+
+// poolRouteIDs lists the ids a pool model can be routed under: the id of every
+// registry model that names it, under any provider id of the entry's family —
+// omlx and omlx-6bit are one server, so a row under each can name the same
+// directory and both are routed while it is loaded — plus the entry's own id.
+// The discovered id is the fallback, used only when none of those gave an id.
+// An entry built by the occupancy re-probe carries the server's raw id as
+// ModelID, which is no route id, so ModelID is used only when it differs from
+// the name.
+//
+// An entry with an id of its own is matched by name exactly: ModelFor's lenient
+// match would let an artifact that merely resembles a registry model's
+// ("org/name" beside "name", #195) pull in that other model's row, removing the
+// route of a sibling omlx still has loaded — whose sessions then get "Invalid
+// model name" — and leaving this model's own row behind. That is the same rule
+// routeModel follows for the write. Only an entry with no id of its own (the
+// raw served name the occupancy re-probe carries) falls back to ModelFor.
+func poolRouteIDs(cfg *config.Config, en localmodels.Entry) []string {
+	var ids []string
+	add := func(id string) {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	own := en.ModelID != "" && en.ModelID != en.ModelName
+	if own {
+		add(en.ModelID)
+	}
+	for _, providerID := range localmodels.FamilyProviderIDs(localmodels.Family(en.ProviderID)) {
+		if own {
+			for _, m := range cfg.Models {
+				if m.ProviderID == providerID && m.ModelName == en.ModelName {
+					add(m.ID)
+				}
+			}
+			continue
+		}
+		if m, ok := litellm.ModelFor(cfg, providerID, en.ModelName); ok {
+			add(m.ID)
+		}
+	}
+	if len(ids) == 0 {
+		add(litellm.DiscoveredModel(en.ProviderID, en.ModelName).ID)
 	}
 	return ids
+}
+
+// routeAfterOccupantStopped removes the route of a model a start displaced: an
+// Exclusive server's stopped occupant, or a model a Pool load evicted. It is
+// the env hook defaultEnv wires in (env.go): the start may still fail, and a
+// failed Start runs no success hook at all, so the removal has to be written
+// at the moment the model went away. It only writes: the proxy restart is
+// deferred to Start's single settling bounce (routeAfterStart on success,
+// bounceRoutes on failure). It reports whether a restart is now owed.
+func routeAfterOccupantStopped(ctx context.Context, cfg *config.Config, occ localmodels.Entry) bool {
+	return routeRemoveModel(ctx, cfg, occ, restartDeferred)
+}
+
+// bounceRoutes settles route writes a deferred write already made — when the
+// start that followed them failed, or when a batch of
+// stops wrote its removals and owed the bounce (StopBatch.Stop/SettleRoutes).
+// It restarts the proxy and waits for it; it writes nothing.
+//
+// That is deliberate. The removals are already in config.yaml — every caller
+// reaches here only after a deferred write succeeded, which is exactly what
+// restartOwed means — so re-entering applyAndReport with an empty change would
+// buy a second locked read and parse of the file it had just written: the one
+// cost the batching change added to a single-model stop, even though it is the
+// batch case (N removals, one bounce) that the change exists for (#142). It
+// also means the settle
+// has no config.yaml write whose lock wait needs bounding: the restart is
+// asynchronous and detached (bounceProxyAsync), so a contended flock cannot
+// hang this path.
+func bounceRoutes(ctx context.Context, cfg *config.Config) {
+	bounceProxyAsync(ctx, cfg)
 }
 
 // applyAndReport writes the route change and reports whether config.yaml
@@ -190,47 +544,108 @@ func familyModelIDs(cfg *config.Config, providerID string) []string {
 // for itself where it needs the proxy ready: the launch paths wait explicitly
 // (see WaitPendingRoutes) because the agent they hand off to dials the model
 // through the proxy.
-func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []string, mode restartMode) bool {
-	res, err := applyRoutes(cfg, add, remove, litellm.Options{
-		SkipReadyGate: true,
-		// The restart is always deferred here: applyAndReport itself decides
-		// whether to restart, and runs that restart asynchronously, below.
-		// ForceRestart is deliberately not passed — Apply restarts on it even
+func applyAndReport(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode) bool {
+	w, err := applyReported(ctx, cfg, ch, mode, false)
+	if err != nil {
+		routePrintf(ctx, "wt: LiteLLM route not updated: %v\n", err)
+	}
+	return w.changed
+}
+
+// applyReported is applyAndReport without the not-updated line: it returns
+// what the write did (routeWrite) and the failure instead of printing it, so a caller bound by its own deadline can
+// tell "the config.yaml lock is held" from "the write failed" and decide where
+// to say so. A contended lock is not a warning — TryEnsureModelRouteTo hands it
+// to a retry that can afford to wait (see EnsureModelRoute), and only that
+// retry, or applyAndReport, reports.
+//
+// deferMissing is litellm.Options.DeferMissingAdd: a caller that cannot afford
+// a cloud row's exec: secret_ref helper (the picker's update goroutine, #253)
+// sets it, and reads what the write left unbuilt off routeWrite.missing. Every
+// other caller leaves it false — this write is where the row gets built.
+//
+// Everything else is applyAndReport's: ErrMissing is silent (no config.yaml =
+// LiteLLM not set up), a restartForced mode settles the earlier deferred write
+// even when this one failed (or the proxy keeps serving the dead occupant's
+// route), and the restart itself runs asynchronously.
+func applyReported(ctx context.Context, cfg *config.Config, ch litellm.Change, mode restartMode, deferMissing bool) (routeWrite, error) {
+	res, err := applyRoutes(cfg, ch, litellm.Options{
+		// The restart is always deferred here: the caller decides whether to
+		// restart, and runs that restart asynchronously, below.
+		// ForceRestart is deliberately not passed — ApplyChange restarts on it even
 		// with NoRestart set, which would put the bounce back on this path.
 		NoRestart: true,
 		// The caller's ctx bounds the config.yaml lock wait too, so a
-		// contended lock cannot outlive a caller that set a deadline —
-		// bounceRoutes passes a settleTimeout-bounded context for exactly
-		// this reason.
+		// contended lock cannot outlive a caller that set a deadline.
 		Ctx: ctx,
+		// Only the caller knows whether it can pay a row build here; nothing
+		// sets this but the launch-time check's non-blocking form.
+		DeferMissingAdd: deferMissing,
 	})
 	if err != nil {
-		if !errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
-			fmt.Fprintf(routesWarn, "wt: LiteLLM route not updated: %v\n", err)
+		// This write failed, but restartForced means an earlier deferred
+		// write (the replaced occupant's route removal) is already in
+		// config.yaml and still owes its restart: settle it, or the proxy
+		// keeps serving the dead occupant's route.
+		if mode == restartForced {
+			bounceProxyAsync(ctx, cfg)
 		}
-		return false
+		if errors.Is(err, litellm.ErrMissing) { // no config.yaml = LiteLLM not set up
+			return routeWrite{}, nil
+		}
+		return routeWrite{}, err
 	}
+	w := routeWrite{changed: res.Changed, missing: res.Missing}
 	for _, o := range res.Outcomes {
-		if o.Err != nil {
-			fmt.Fprintf(routesWarn, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
+		if o.Written {
+			w.rows = append(w.rows, o.ID)
+		}
+		switch {
+		case o.Err != nil:
+			w.said = true
+			routePrintf(ctx, "wt: LiteLLM route for %s not updated: %v\n", o.ID, o.Err)
+		case o.Action == litellm.ActionAPIBaseSet:
+			w.said = true
+			// Any write repairs an ollama row with no api_base (#202), and the
+			// row can be one the user wrote by hand that this start, stop or
+			// launch never named. `wt litellm sync` prints it; a write made
+			// here must not change such a row without saying so.
+			routePrintf(ctx, "wt: LiteLLM route for %s: api_base set\n", o.ID)
 		}
 	}
-	// res.Warnings is only ever populated by Apply's restart hook, which
+	// res.Warnings is only ever populated by ApplyChange's restart hook, which
 	// NoRestart disables; the restart's own warnings are reported below.
 	restart := (res.Changed && mode != restartDeferred) || mode == restartForced
-	if !restart {
-		return res.Changed
+	if restart {
+		bounceProxyAsync(ctx, cfg)
 	}
+	return w, nil
+}
+
+// bounceProxyAsync restarts the LiteLLM proxy — and, when one was listening,
+// waits for it to come back — asynchronously, on a goroutine tracked by routeWG
+// / WaitPendingRoutes. It is the restart half shared by every path that decides
+// to bounce: applyAndReport after a route write changed the file (or a forced
+// mode asked for a bounce anyway), and bounceRoutes to settle writes an earlier
+// deferred call already made.
+//
+// It returns nothing and fails no caller: a failed restart command or a
+// readiness timeout is printed. The outcome is also remembered (lastRestart),
+// which is how ProbeProxy fails a slot-profile launch after it.
+func bounceProxyAsync(ctx context.Context, cfg *config.Config) {
 	url := cfg.LitellmBaseURL()
 	routeWG.Add(1)
+	routesInFlight.Add(1)
 	go func() {
 		defer routeWG.Done()
+		defer routesInFlight.Add(-1)
 		// Detached from ctx: every real caller cancels its own ctx via a
 		// scoped defer cancel() the instant its (now async) call returns —
 		// which happens before this restart even starts. A caller's normal
 		// completion is not a signal to abandon the restart; only litellm's
-		// own per-call timeouts (RestartContext's ~30s, Listening's and
-		// WaitReady's own bounds) need to cap this goroutine's lifetime.
+		// own bounds (RestartContext's: three minutes for a request in flight
+		// to finish, plus 30s per launchctl command; Listening's and
+		// WaitReady's) need to cap this goroutine's lifetime.
 		// WaitPendingRoutes() is where a caller (a process about to exit, or
 		// a launch path about to use the proxy) rejoins this goroutine.
 		//
@@ -238,29 +653,50 @@ func applyAndReport(ctx context.Context, cfg *config.Config, add, remove []strin
 		// fires the moment this goroutine returns, and it would still inherit
 		// the caller's post-return cancellation regardless.
 		//
-		// The proxy is probed once, lazily, just before the restart
-		// (Listening: only a refused connection counts as down, so a slow
-		// proxy is still waited for). Waiting for readiness afterwards is
-		// only meaningful when a proxy was actually serving: a configured URL
-		// with nothing listening (routing may even be switched off) used to
-		// cost every start and stop the full proxyReadyTimeout. Writes that
-		// never restart (deferred, or nothing changed) never reach this
-		// goroutine, so they pay no probe at all. The restart itself stays
-		// best-effort either way.
-		bgCtx := context.WithoutCancel(ctx)
-		wasUp := url != "" && probeProxy(bgCtx, url, proxyAliveTimeout)
+		// The probe before the restart, the restart and the readiness wait
+		// are litellm.Bounce.Run, the sequence `wt litellm sync` runs too,
+		// here over this package's seams. The proxy is probed once, lazily,
+		// just before the restart (Listening: only a refused connection
+		// counts as down, so a slow proxy is still waited for). Waiting for
+		// readiness afterwards is only meaningful when a proxy was actually
+		// serving: a configured URL with nothing listening (routing may even
+		// be switched off) used to cost every start and stop the full
+		// proxyReadyTimeout. Writes that never restart (deferred, or nothing
+		// changed) never reach this goroutine, so they pay no probe at all.
+		// The restart itself stays best-effort either way.
+		//
+		// The restart's own notices (the proxy is finishing a request in
+		// flight; one was cut off) follow this operation's writer like the
+		// warnings below (withRestartNotice).
+		bgCtx := withRestartNotice(context.WithoutCancel(ctx))
+		// The restart's warnings are printed as soon as it returns, before
+		// the readiness wait (up to proxyReadyTimeout), not after it.
+		restartPrinting := func(ctx context.Context) []string {
+			warnings := restartProxy(ctx)
+			for _, w := range warnings {
+				routePrintf(ctx, "wt: %s\n", w)
+			}
+			return warnings
+		}
+		b := litellm.Bounce{Restart: restartPrinting, Listening: probeProxy, WaitReady: waitProxy}
+		warnings, waitErr := b.Run(bgCtx, url)
 		// Warnings are always surfaced: bgCtx cannot be cancelled by the
 		// caller, so there is no longer a "the user pressed Ctrl+C, a failed
 		// restart is expected" case to stay quiet about — suppressing them on
 		// that theory is exactly what hid this path failing silently.
-		for _, w := range restartProxy(bgCtx) {
-			fmt.Fprintf(routesWarn, "wt: %s\n", w)
-		}
-		if wasUp {
-			if err := waitProxy(bgCtx, url, proxyReadyTimeout); err != nil {
-				fmt.Fprintf(routesWarn, "wt: %v\n", err)
+		//
+		// What is printed is also remembered (lastRestart), for ProbeProxy:
+		// the restart command's warnings when it gave any, else the failed
+		// readiness wait, else nil, which clears an earlier failure. That a
+		// request was cut off at the drain bound is a notice, not a warning:
+		// that restart was made.
+		failed := restartFailure(warnings)
+		if waitErr != nil {
+			routePrintf(bgCtx, "wt: %v\n", waitErr)
+			if failed == nil {
+				failed = waitErr
 			}
 		}
+		setLastRestartErr(failed)
 	}()
-	return res.Changed
 }

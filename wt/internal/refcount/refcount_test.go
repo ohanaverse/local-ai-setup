@@ -52,6 +52,23 @@ func TestCountsIgnoresUnrequestedModels(t *testing.T) {
 	}
 }
 
+// TestCountsCountsARequestedEmptyID verifies Counts counts the entries of
+// whatever id it is asked for, the empty one included: Record accepts an
+// empty model id, and Counts reads the file with its own scan, where Live
+// skips such an entry. Building Counts on Live would answer 0 here.
+func TestCountsCountsARequestedEmptyID(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	if err := store.Record(111, ""); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if got := store.Counts([]string{""}); len(got) != 1 || got[""] != 1 {
+		t.Fatalf("Counts = %v, want the one empty-id entry counted", got)
+	}
+	if got := store.Live(); len(got) != 0 {
+		t.Fatalf("Live = %v, want the empty-id entry skipped", got)
+	}
+}
+
 // TestCountsMultipleSessionsSameModel verifies two different pids recorded
 // against the same model both count — this is what lets a second concurrent
 // wt session show "2" instead of clobbering the first session's entry.
@@ -149,7 +166,7 @@ func TestPidAliveDefaultDetectsCurrentProcess(t *testing.T) {
 }
 
 // TestRecordLockFileCreated verifies Record creates the sidecar lock file
-// in the same directory as refcount.jsonl, mirroring usage.Record's
+// in the same directory as refcount.jsonl, mirroring usage.RecordFor's
 // concurrency contract.
 func TestRecordLockFileCreated(t *testing.T) {
 	dir := t.TempDir()
@@ -222,5 +239,145 @@ func seedRefcountFile(t *testing.T, dir string, entries ...entry) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "refcount.jsonl"), data, 0o600); err != nil {
 		t.Fatalf("seed refcount file: %v", err)
+	}
+}
+
+// TestLiveReportsEveryRecordedModel verifies Live counts the sessions of every
+// model id in the state file without being told the ids, an id no registry
+// lists included, and drops the entries Sweep finds dead. `wt stop omlx` asks
+// before halting a service live sessions use; a session on a discovered model
+// has an id Counts' caller cannot name, and it would be halted unasked.
+func TestLiveReportsEveryRecordedModel(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	if got := store.Live(); len(got) != 0 {
+		t.Fatalf("Live with no state file = %v, want empty", got)
+	}
+	for pid, id := range map[int]string{111: "omlx/registered", 112: "omlx/Discovered-4bit", 113: "omlx/registered", 999: "mtplx/dead"} {
+		if err := store.Record(pid, id); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	old := pidAlive
+	defer func() { pidAlive = old }()
+	pidAlive = func(pid int) bool { return pid != 999 }
+	if err := store.Sweep(); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	got := store.Live()
+	if len(got) != 2 || got["omlx/registered"] != 2 || got["omlx/Discovered-4bit"] != 1 {
+		t.Fatalf("Live = %v, want omlx/registered:2 omlx/Discovered-4bit:1 and no swept entry", got)
+	}
+}
+
+// readEntries decodes every line of dir/refcount.jsonl, in file order. A
+// missing file is no entries.
+func readEntries(t *testing.T, dir string) []entry {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "refcount.jsonl"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read refcount file: %v", err)
+	}
+	var out []entry
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		var e entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			t.Fatalf("refcount line %q: %v", scanner.Text(), err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// TestRecordAll verifies a slot-profile session is recorded as one line per
+// distinct model it uses. A model that fills three slots must count as one
+// session, not three: the picker's in-use column and the question `wt stop`
+// asks before halting a server both count lines.
+func TestRecordAll(t *testing.T) {
+	tests := []struct {
+		name string
+		ids  []string
+		want []string
+	}{
+		{name: "one line per model", ids: []string{"openrouter/a", "ollama/b:cloud", "omlx/c"}, want: []string{"openrouter/a", "ollama/b:cloud", "omlx/c"}},
+		{name: "a model in several slots is recorded once", ids: []string{"omlx/c", "openrouter/a", "omlx/c", "omlx/c"}, want: []string{"omlx/c", "openrouter/a"}},
+		{name: "an empty id is skipped", ids: []string{"", "openrouter/a"}, want: []string{"openrouter/a"}},
+		{name: "nothing to record", ids: nil, want: nil},
+		{name: "only empty ids", ids: []string{"", ""}, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store := NewStoreAt(dir)
+			if err := store.RecordAll(4242, tt.ids); err != nil {
+				t.Fatalf("RecordAll: %v", err)
+			}
+			got := readEntries(t, dir)
+			if len(got) != len(tt.want) {
+				t.Fatalf("entries = %v, want one per id of %v", got, tt.want)
+			}
+			for i, e := range got {
+				if e.Pid != 4242 || e.ModelID != tt.want[i] {
+					t.Errorf("entry %d = %+v, want pid 4242 model %q", i, e, tt.want[i])
+				}
+			}
+			if len(tt.want) == 0 {
+				if _, err := os.Stat(filepath.Join(dir, "refcount.jsonl")); !os.IsNotExist(err) {
+					t.Errorf("refcount.jsonl exists with nothing recorded (stat err = %v)", err)
+				}
+			}
+		})
+	}
+}
+
+// TestRecordAllKeepsOtherSessionsAndReleasesTogether verifies RecordAll
+// appends beside another session's entry, each of its models then counts that
+// session, and one Release drops every line of the pid. If a line outlived
+// the session, the stop picker would never again offer that model.
+func TestRecordAllKeepsOtherSessionsAndReleasesTogether(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStoreAt(dir)
+	if err := store.Record(111, "omlx/c"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := store.RecordAll(222, []string{"openrouter/a", "omlx/c"}); err != nil {
+		t.Fatalf("RecordAll: %v", err)
+	}
+	got := store.Counts([]string{"openrouter/a", "omlx/c"})
+	if got["openrouter/a"] != 1 || got["omlx/c"] != 2 {
+		t.Fatalf("Counts = %v, want openrouter/a:1 omlx/c:2", got)
+	}
+
+	if err := store.Release(222); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	got = store.Counts([]string{"openrouter/a", "omlx/c"})
+	if got["openrouter/a"] != 0 || got["omlx/c"] != 1 {
+		t.Fatalf("Counts after Release = %v, want openrouter/a:0 omlx/c:1 (the other session's line stays)", got)
+	}
+}
+
+// TestLiveCountsSweepsDeadSessionsFirst verifies LiveCounts, the count both
+// replace confirmations (the non-TUI prompt and the picker's dialog) name
+// next to each occupant (#412), drops dead pids before it counts: a session
+// that crashed without releasing its line would otherwise be reported as
+// still using the model the user is about to stop.
+func TestLiveCountsSweepsDeadSessionsFirst(t *testing.T) {
+	dir := t.TempDir()
+	old := pidAlive
+	defer func() { pidAlive = old }()
+	pidAlive = func(pid int) bool { return pid != 999 }
+	seedRefcountFile(t, dir,
+		entry{Pid: 999, ModelID: "omlx/busy"},
+		entry{Pid: 111, ModelID: "omlx/busy"},
+		entry{Pid: 222, ModelID: "omlx/busy"},
+	)
+
+	got := LiveCounts(NewStoreAt(dir), []string{"omlx/busy", "omlx/idle"})
+	if got["omlx/busy"] != 2 || got["omlx/idle"] != 0 || len(got) != 2 {
+		t.Errorf("LiveCounts = %v, want omlx/busy 2 (the dead pid swept), omlx/idle 0", got)
 	}
 }

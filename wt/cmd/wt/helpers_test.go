@@ -1,16 +1,64 @@
 package main
 
 import (
-	"bytes"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
+// expectDirectLaunch is for a test that runs the root command and expects it
+// to reach a launch the test has stubbed (launchFiltered, launchPassthrough)
+// without the TUI. It replaces the two seams such a test would otherwise
+// leave real with stubs that fail it:
+//
+//   - tuiRun, which opens /dev/tty: a hang in a developer's terminal, where
+//     there is one to open;
+//   - maybeInstallGuard, which appends the commit hook to whatever repository
+//     git finds from the working directory.
+//
+// Both are reached when the launch decision goes another way than the test
+// expects. TestMain (gitenv.IsolateForTest) already keeps a bare temp
+// directory from being taken for a repository; these stubs turn any other
+// wrong turn into a failure that names it. Both are restored on cleanup. A
+// test that launches inside a repository it built expects the guard: it
+// calls expectDirectLaunchInRepo instead. A test that means to reach the TUI
+// does not call either; it stubs tuiRun itself.
+func expectDirectLaunch(t *testing.T) {
+	t.Helper()
+	oldTUI, oldGuard := tuiRun, maybeInstallGuard
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
+		t.Error("tuiRun was called: the command went to the TUI instead of the launch this test stubs")
+		return errors.New("tuiRun reached in a test that expects a direct launch")
+	}
+	maybeInstallGuard = func() {
+		t.Error("maybeInstallGuard was called: the command took the working directory for a git repository")
+	}
+	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
+}
+
+// expectDirectLaunchInRepo is expectDirectLaunch for a test that runs the
+// root command inside a repository its test built (initTestRepo): --cwd and
+// -W launch through the guard there, so maybeInstallGuard is a no-op rather
+// than a failure, while tuiRun still fails the test.
+func expectDirectLaunchInRepo(t *testing.T) {
+	t.Helper()
+	expectDirectLaunch(t)
+	maybeInstallGuard = func() {}
+}
+
+// gitInit makes dir a git repository with a committer identity of its own.
+// TestMain (gitenv.IsolateForTest) is what makes `git init <dir>` create it
+// in dir whatever the environment the tests were started from.
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
 	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
@@ -24,7 +72,7 @@ func gitInit(t *testing.T, dir string) {
 	}
 }
 
-// writeEmptyRegistry writes a minimal modelman-owned registry.toml (no
+// writeEmptyRegistry writes a minimal registry.toml (no
 // providers/models) under $home/.config/local-ai/ so config.Load succeeds.
 // wt fail-closes without this file; tests that exercise the launch path need
 // it even when they don't care about specific models.
@@ -41,17 +89,16 @@ func writeEmptyRegistry(t *testing.T, home string) {
 	}
 }
 
-// withCleanConfigEnv sets XDG_CONFIG_HOME to a fixture path and clears any
-// inherited MODELMAN_REGISTRY so RegistryPath() cannot short-circuit on the
-// developer's shell environment. All tests that exercise the launch path must
-// call this before touching config.Load or RegistryPath() — otherwise a stray
-// `export MODELMAN_REGISTRY=...` in the dev's env makes the test read their
-// real registry instead of the temp fixture.
+// withCleanConfigEnv sets XDG_CONFIG_HOME to a fixture path. All tests that
+// exercise the launch path must call this before touching config.Load or
+// RegistryPath(), so a test that does not name a registry of its own reads
+// the fixture's file, not something the shell exported — this package's
+// TestMain (config.IsolateConfigHomeForTest) clears WT_REGISTRY and
+// MODELMAN_REGISTRY for the whole process, so no inherited name reaches it.
 func withCleanConfigEnv(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("MODELMAN_REGISTRY", "")
 }
 
 // writeConfiguredAgent writes config.toml with one agent entry (name,
@@ -87,6 +134,65 @@ func writeConfiguredAgent(t *testing.T, home, agentName, providerID string) {
 	}
 }
 
+// writeProfilesTOML points XDG_CONFIG_HOME at a fresh temp directory, writes
+// body there as agent-wt/profiles.toml, and returns the file's path.
+func writeProfilesTOML(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "agent-wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "agent-wt", "profiles.toml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// fakeAgentOnPath installs a script called name that exits 0 in a fresh temp
+// directory at the front of PATH, so a launch runs it and never a real agent
+// CLI of that name.
+func fakeAgentOnPath(t *testing.T, name string) {
+	t.Helper()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// captureFile runs fn with *f (os.Stdout or os.Stderr) replaced by a pipe and
+// returns what fn wrote to it. The file is put back as soon as fn returns, and
+// on cleanup too, so a fn that ends the test does not leave it redirected.
+func captureFile(t *testing.T, f **os.File, fn func()) string {
+	t.Helper()
+	old := *f
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	*f = w
+	t.Cleanup(func() { *f = old })
+	fn()
+	*f = old
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return string(out)
+}
+
+// stubStdinTTY makes wt see a terminal on stdin (tty true) or none, until the
+// test ends.
+func stubStdinTTY(t *testing.T, tty bool) {
+	t.Helper()
+	old := stdinTTY
+	stdinTTY = func() bool { return tty }
+	t.Cleanup(func() { stdinTTY = old })
+}
+
 // TestMaybeInstallGuardInRepo installs the guard in a temp repo and verifies
 // that a subsequent Check reports Installed. Without this, the launcher would
 // silently skip guard protection on normal launches.
@@ -94,9 +200,7 @@ func TestMaybeInstallGuardInRepo(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	maybeInstallGuard()
 
@@ -109,9 +213,7 @@ func TestMaybeInstallGuardInRepo(t *testing.T) {
 // inside a git repo. The passthrough path must remain safe outside version
 // control.
 func TestMaybeInstallGuardOutsideRepo(t *testing.T) {
-	oldWd, _ := os.Getwd()
-	os.Chdir(t.TempDir())
-	defer os.Chdir(oldWd)
+	t.Chdir(t.TempDir())
 
 	maybeInstallGuard() // should not panic or print fatal error
 }
@@ -122,9 +224,7 @@ func TestMaybeInstallGuardIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	maybeInstallGuard()
 	maybeInstallGuard()
@@ -141,9 +241,7 @@ func TestCheckGuardStatusInstalled(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	if _, err := guard.Install(); err != nil {
 		t.Fatalf("Install: %v", err)
@@ -163,9 +261,7 @@ func TestCheckGuardStatusNotInstalled(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	status, err := checkGuardStatus()
 	if err != nil {
@@ -182,9 +278,7 @@ func TestRemoveGuardUninstalls(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	oldWd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(oldWd)
+	t.Chdir(dir)
 
 	if _, err := guard.Install(); err != nil {
 		t.Fatalf("Install: %v", err)
@@ -200,9 +294,7 @@ func TestRemoveGuardUninstalls(t *testing.T) {
 // TestGuardHelpersOutsideRepoError returns an error when not in a git repo so
 // the flags cannot be misused outside version control.
 func TestGuardHelpersOutsideRepoError(t *testing.T) {
-	oldWd, _ := os.Getwd()
-	os.Chdir(t.TempDir())
-	defer os.Chdir(oldWd)
+	t.Chdir(t.TempDir())
 
 	if _, err := checkGuardStatus(); err == nil {
 		t.Fatal("expected error outside repo for checkGuardStatus")
@@ -225,13 +317,8 @@ func TestGuardHelpersOutsideRepoError(t *testing.T) {
 func TestPickerSkippedOutsideTTY(t *testing.T) {
 	// Run from a non-git directory so the RunE path that would open the
 	// TUI is the outside-repo branch (the simplest one to trigger).
-	oldWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(t.TempDir()); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	t.Chdir(t.TempDir())
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	writeEmptyRegistry(t, home)
 
 	// Pipe stdin from /dev/null so isStdinTTY returns false.
@@ -244,12 +331,7 @@ func TestPickerSkippedOutsideTTY(t *testing.T) {
 	os.Stdin = devnull
 	t.Cleanup(func() { os.Stdin = oldStdin })
 
-	var buf bytes.Buffer
-	root := rootCmd()
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{}) // no -A, so picker path is taken
-	err = root.Execute()
+	_, err = runWT(t) // no -A, so picker path is taken
 	if err == nil {
 		t.Fatal("expected TTY-needs error, got nil")
 	}
@@ -258,5 +340,101 @@ func TestPickerSkippedOutsideTTY(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "-A") {
 		t.Errorf("error %q doesn't mention -A flag", err.Error())
+	}
+}
+
+// claudeStateDir is the directory claude keeps a project's transcripts in for
+// a working directory, under home. It asks the driver rather than rebuilding
+// the path, so a test cannot disagree with wt about where claude's state is.
+// HOME must not be changed between this call and the code under test.
+func claudeStateDir(t *testing.T, home, workdir string) string {
+	t.Helper()
+	sd, ok := agents.ByName("claude").(agents.StateDirer)
+	if !ok {
+		t.Fatal("the claude driver no longer reports a state directory")
+	}
+	t.Setenv("HOME", home)
+	return sd.StateDir(workdir)
+}
+
+// TestConfigErrorHintNamesTheFileToFix pins the hint on a config error. A
+// mistyped location is a registry problem, and registry.toml is not the
+// file `wt config` saves: it writes wt's own config.toml and cannot repair a
+// registry row, so telling the user to run it sent them to the wrong place
+// (#200). Every other config error keeps the existing hint.
+func TestConfigErrorHintNamesTheFileToFix(t *testing.T) {
+	t.Setenv("WT_REGISTRY", "/tmp/somewhere/registry.toml")
+	cfg := &config.Config{
+		DefaultTag: "code",
+		Providers:  []config.Provider{{ID: "omlx", Location: "Local"}},
+		Models:     []config.Model{{ID: "omlx/m", ProviderID: "omlx", ModelName: "m"}},
+	}
+	err := configError(cfg.Validate())
+	if err == nil {
+		t.Fatal("configError(nil-free validation error) = nil")
+	}
+	got := err.Error()
+	for _, want := range []string{`config error: provider "omlx" has location "Local"; expected "local" or "cloud"`, "/tmp/somewhere/registry.toml"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("error %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "wt config") {
+		t.Errorf("error %q still sends the user to `wt config`, which cannot edit the registry", got)
+	}
+	if !errors.Is(err, config.ErrLocation) {
+		t.Errorf("the wrapped error is lost: errors.Is(err, config.ErrLocation) = false")
+	}
+
+	other := configError(errors.New("default_tag must not be empty"))
+	if got := other.Error(); got != "config error: default_tag must not be empty (run `wt config` to repair)" {
+		t.Errorf("another config error = %q, want the existing hint unchanged", got)
+	}
+}
+
+// TestConfigErrorForABrokenRegistryLink pins what the commands that refuse
+// to run print when registry.toml is a symlink to a file that is not there:
+// the link, its target, and a hint about the link — not "seed the registry"
+// (there is one, behind the link) and not "run `wt config`" (which cannot
+// repair a symlink).
+func TestConfigErrorForABrokenRegistryLink(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	link := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "unmounted", "registry.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	_, loadErr := config.Load()
+	if !errors.Is(loadErr, config.ErrRegistryLink) {
+		t.Fatalf("Load error = %v, want config.ErrRegistryLink", loadErr)
+	}
+	got := configError(loadErr).Error()
+	want := "config error: registry link is broken: " + link + " is a symlink to " + target +
+		", which does not exist (fix the link or move it aside)"
+	if got != want {
+		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+// TestConfigErrorForAMissingRegistryNamesModelInit pins the whole line a
+// user reads when there is no registry: where it was looked for and the one
+// command that creates it, named once. It used to name a command that no
+// longer exists, and to say it twice.
+func TestConfigErrorForAMissingRegistryNamesModelInit(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	_, loadErr := config.Load()
+	if !errors.Is(loadErr, config.ErrRegistryMissing) {
+		t.Fatalf("Load error = %v, want config.ErrRegistryMissing", loadErr)
+	}
+	registry := filepath.Join(home, ".config", "local-ai", "registry.toml")
+	want := "config error: model registry not found at " + registry +
+		" — seed it with `wt model init`"
+	if got := configError(loadErr).Error(); got != want {
+		t.Errorf("configError =\n  %q\nwant\n  %q", got, want)
 	}
 }

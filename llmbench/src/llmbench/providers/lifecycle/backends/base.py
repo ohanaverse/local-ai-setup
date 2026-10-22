@@ -1,0 +1,205 @@
+"""Backend abstract base class and the plan it resolves down to.
+
+Every concrete backend (ollama, omlx, mtplx, mlx_lm_server) subclasses
+`Backend`. Exact method names matter, and every docstring here must be
+self-sufficient: a backend is written against this file alone.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import urllib.request
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+from ..envelope import LifecycleError
+from ..probe import RESTORE_WAIT_TIMEOUT, WARMUP_TIMEOUT, wait_for_port_open, warmup
+
+
+@dataclass(frozen=True)
+class StartPlan:
+    """The resolved, backend-specific plan for starting one model. Produced
+    by `Backend.resolve()` (a pure function) and consumed by every other
+    lifecycle method (`start`, `wait_ready`, `warm`, ...)."""
+
+    model: str  # the envelope's "model" string
+    direct_url: str
+    argv: list[str] | None = None  # backend-private spawn argv (mlx_lm_server, mtplx)
+    extra: dict[str, str] = field(default_factory=dict)
+
+
+class StillFinishing(str):
+    """A `stop_and_wait()` warning for a stop the provider ACCEPTED and has
+    not carried out within the wait: ollama keeps a model that is answering a
+    request loaded until the request ends, then unloads it by itself. It is
+    still a warning (non-None, so `orchestrate.stop()` reports ok=False and
+    an isolation warns): the model is loaded, so nothing is isolated yet. A
+    caller that wants to tell it from a failed stop checks
+    `isinstance(warning, StillFinishing)`. Mirrors wt's
+    `lifecycle.StillFinishingError` (#379)."""
+
+
+class Backend(ABC):
+    """One local-provider backend's lifecycle: availability, resolving a
+    start request into a plan, starting/waiting/warming it, stopping it,
+    and restoring it after a benchmark releases exclusivity.
+
+    Class attributes (set by each concrete subclass):
+      id: the provider id (e.g. "ollama", "omlx", "mtplx").
+      occupancy_key: the id of the physical process/port this backend
+        shares with another id — equal to `id` unless shared (e.g. omlx
+        and omlx-6bit share one process/port).
+      env_var: the LLM_ISOLATE_*_MODEL env var this backend's model
+        resolution honors, or None if it doesn't use one.
+      default_model: the model to use when no explicit model is given and
+        no env var is set, or None if there is no default.
+      health_url: a cheap liveness-check URL for this backend.
+      chat_url: the OpenAI-compatible chat-completions URL for this
+        backend.
+      cleanup_on_failure: whether a failed start should tear this backend
+        back down. True only for mtplx.
+      restore_action: what `restore()` should do after a benchmark run
+        releases exclusivity — "restart", "stop", or "skip" (default).
+    """
+
+    id: str
+    occupancy_key: str
+    env_var: str | None
+    default_model: str | None
+    health_url: str
+    chat_url: str
+    cleanup_on_failure: bool = False
+    restore_action: str = "skip"
+
+    @abstractmethod
+    def check_available(self) -> str | None:
+        """Return a reason string if this backend is unavailable on this
+        machine (e.g. a required binary is missing), or None if it's
+        available. Must have no side effects."""
+        ...
+
+    @abstractmethod
+    def resolve(self, model: str | None, extra_args: tuple[str, ...]) -> StartPlan:
+        """Validate `model`/`extra_args` and resolve them into a
+        `StartPlan`, raising LifecycleError on invalid input (e.g. no
+        model resolvable and none required-default).
+
+        PURE: must never have side effects (no subprocess calls, no
+        teardown) — the orchestrator depends on this being safe to call
+        before any teardown happens, so a bad request can be rejected
+        before anything else is touched.
+        """
+        ...
+
+    def already_serving(self, plan: StartPlan) -> bool:
+        """True when this backend's live process is already serving
+        `plan.model` (so start()/wait_ready() can be skipped and only
+        warm() need run). Default: never — mtplx overrides to keep an
+        already-loaded model instead of paying a full restart."""
+        return False
+
+    def replace_own_occupant(self, plan: StartPlan) -> None:  # noqa: B027 — intentional default no-op
+        """Tear down this backend's own previous occupant (a different
+        model on the same single-model-per-process backend) before
+        starting `plan`. Default: no-op — mtplx, ollama and omlx override."""
+
+    def unload_models(self) -> str | None:
+        """Unload every model this backend's long-running service still
+        holds, leaving the service up; a warning string when one stays
+        loaded. restore() calls it before the restart step, so a sweep's last
+        model does not stay resident after the run. Default: nothing to do —
+        ollama and omlx override (mtplx and mlx_lm_server are stopped
+        outright)."""
+        return None
+
+    @abstractmethod
+    def start(self, plan: StartPlan) -> None:
+        """Start this backend serving `plan`."""
+        ...
+
+    def wait_ready(self, plan: StartPlan) -> None:  # noqa: B027 — intentional default no-op
+        """Block until `plan` is ready to receive warmup traffic (e.g.
+        the model is loaded and listed in /v1/models). Default: no-op —
+        mtplx and mlx_lm_server override."""
+
+    def warm(self, plan: StartPlan) -> None:
+        """Force `plan.model` into GPU/RAM with a 1-token chat completion,
+        polling `self.health_url` for liveness first. Default
+        implementation delegates to `probe.warmup`; concrete backends
+        should not need to override this."""
+        warmup(plan.direct_url, plan.model, health_url=self.health_url, timeout=WARMUP_TIMEOUT)
+
+    @abstractmethod
+    def stop_and_wait(self) -> str | None:
+        """Stop this backend and wait for it to fully release its
+        resources (port, GPU/RAM). Return a warning string if the stop
+        didn't fully complete within its wait budget, or None on a clean
+        stop. A stop the provider accepted and is still carrying out is a
+        `StillFinishing` warning — still a warning, never None."""
+        ...
+
+    def restore(self) -> None:  # noqa: B027 — intentional default no-op
+        """Restore this backend to its normal (non-benchmark) state after
+        a benchmark run releases exclusivity. Default: no-op — backends
+        with restore_action="restart" override."""
+
+    def _restart_if_down(self, *, restart: Callable[[], object]) -> None:
+        """Shared shape for a restore_action="restart" backend's restore():
+        one one-shot 2s probe of self.health_url (matching bash's single
+        `curl -m 2`, not a poll loop) — return immediately if already up;
+        otherwise call `restart()` and poll self.health_url via
+        `wait_for_port_open`, raising LifecycleError if it never comes
+        back. ollama's and omlx's restore() bodies were otherwise
+        identical copies of this shape, differing only in how they
+        restart (`launchd.kickstart`, `omlx start`)."""
+        try:
+            urllib.request.urlopen(self.health_url, timeout=2.0)  # noqa: S310 — localhost probe
+            return
+        except OSError:
+            pass
+        restart()
+        if not wait_for_port_open(self.health_url, timeout=RESTORE_WAIT_TIMEOUT):
+            raise LifecycleError(f"{self.id} did not come back up ({self.health_url})")
+
+    def _resolve_model(self, explicit: str | None) -> str:
+        """The one place the explicit-arg > env-var > default precedence is
+        implemented; a backend whose resolve() follows that precedence
+        (ollama, omlx) calls this rather than reimplementing it.
+
+        Returns `explicit` if truthy, else `os.environ.get(self.env_var,
+        "")` if `self.env_var` is set and holds a non-empty string, else
+        `self.default_model` if that is not None, else "".
+        """
+        if explicit:
+            return explicit
+        if self.env_var and os.environ.get(self.env_var):
+            return os.environ[self.env_var]
+        if self.default_model is not None:
+            return self.default_model
+        return ""
+
+    @staticmethod
+    def _positional_arg(extra_args: tuple[str, ...], index: int) -> str:
+        """The `extra_args[index]` entry, or "" if absent/empty — the
+        shared positional-arg-as-absent convention `resolve()` uses
+        (mtplx's single model slot, mlx_lm_server's target/draft pair)."""
+        return extra_args[index] if len(extra_args) > index and extra_args[index] else ""
+
+
+class PidfileTrackedBackend(Backend):
+    """Shared base for a backend that runs as a single plain backgrounded
+    subprocess tracked by a pidfile (never a LaunchAgent) — mtplx and
+    mlx_lm_server both fit this shape (see `pidproc.PidfileProcess`).
+
+    Factors out the one field both backends otherwise duplicated
+    verbatim: the Popen handle `start()` spawns, so `wait_ready()` can
+    watch for the process dying mid-load. Safe as a plain instance
+    attribute (each concrete subclass is a module-level singleton) only
+    because these backends are single-occupancy — there is never more
+    than one concurrent isolate() call in flight for a given backend.
+    """
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen | None = None

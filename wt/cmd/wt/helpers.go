@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -46,10 +47,9 @@ func renderTable(headers []string, rows [][]string, theme themes.Theme) string {
 // maybeInstallGuard installs the main guard. Callers must ensure the
 // current directory is inside a git repo before invoking this helper. Errors
 // are written to stderr and ignored so that a guard-install failure does not
-// block the agent launch. This matches the bash engine's best-effort
-// behavior. It is a package-level var so tests can stub it out — the real
-// guard.Install operates on the test process's cwd, which would otherwise
-// install the hook into the repo under test.
+// block the agent launch. It is a package-level var so tests can stub it
+// out — the real guard.Install operates on the test process's cwd, which
+// would otherwise install the hook into the repo under test.
 var maybeInstallGuard = func() {
 	if _, err := guard.Install(); err != nil {
 		fmt.Fprintf(os.Stderr, "wt: failed to auto-install main guard: %v\n", err)
@@ -86,6 +86,16 @@ func removeGuard() error {
 // term.IsTerminal does a TIOCGWINSZ/TCGETS ioctl to confirm TTY-ness; a
 // plain os.FileInfo mode check would return true for /dev/null and other
 // character devices, which isn't strict enough.
+//
+// `wt start`'s two questions — the others question (decideOthers) and the
+// replace question (askReplace) — use it the same way on purpose (#424): stdin
+// is the "interactive invocation" signal, while the prompts themselves read
+// /dev/tty. A redirected stdin therefore means a script even when a terminal
+// is attached: `wt start x < answers.txt` asks neither question, keeps the
+// other providers' models with a warning, and fails closed on the replace
+// question naming --replace. A piped answer must never be able to stop a
+// model, and a script must never hang on a prompt nobody answers;
+// --replace and --others=keep|stop are how a script proceeds.
 func isStdinTTY() bool {
 	return term.IsTerminal(os.Stdin.Fd())
 }
@@ -93,6 +103,25 @@ func isStdinTTY() bool {
 // stdinTTY is a test seam wrapping isStdinTTY. Production code uses the real
 // terminal check; tests override it to control the TTY state deterministically.
 var stdinTTY = isStdinTTY
+
+// configError words a config load or validation error for the user, with a
+// hint that names where to fix it. config.LoadFixHint chooses the hint, for
+// this and for every other place that quotes such an error: `wt config` for
+// a problem in wt's own config.toml, the file it edits; the registry's own
+// repair for a problem there (a mistyped location, a link that leads
+// nowhere, a file that does not parse), which `wt config` cannot touch; and
+// nothing for a missing registry, whose error already names the command that
+// creates one (`wt model init`) — a hint would name a second repair.
+//
+// Every command that refuses to run on a.cfgErr or a.loadErr returns this.
+// Do not write the hint out at a call site: that is how `wt litellm` came to
+// send every registry problem to `wt config` (#291).
+func configError(err error) error {
+	if hint := config.LoadFixHint(err); hint != "" {
+		return fmt.Errorf("config error: %w (%s)", err, hint)
+	}
+	return fmt.Errorf("config error: %w", err)
+}
 
 // errPickerNeedsTTY is returned by the rootCmd RunE when an unpinned launch
 // path would otherwise try to open the interactive picker (Bubble Tea's

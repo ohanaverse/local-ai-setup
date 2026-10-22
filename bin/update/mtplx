@@ -1,0 +1,85 @@
+#!/bin/bash
+# update/mtplx — check for an MTPLX update and report how to apply it.
+#
+# Why this script does not upgrade anything: MTPLX ships as an app
+# (/Applications/MTPLX.app) whose Python runtime and model-server venv live
+# under ~/Library/Application Support/MTPLX/runtime-venv, rebuilt by the app from
+# its own bundled interpreter. The `mtplx` command on PATH is a shim that execs
+# that venv's entry point, so there is nothing for a package manager to upgrade
+# — `mtplx --help` has no update subcommand (start/tune/help/setup/quickstart/
+# serve/connect/ask/run/chat/status/stop/settings/gc/inspect/trace/forge/
+# hardware/models).
+#
+# What it can do is answer "is there a newer one, and is it worth opening the
+# app?": MTPLX.app is a Sparkle app with a live appcast
+# (SUFeedURL in its Info.plist), so the published version is readable without
+# the GUI. Applying it is the app's own flow — nothing here should download and
+# swap an application bundle behind your back.
+#
+# Note that mtplx bundles its own mlx_lm inside runtime-venv, and that is NOT
+# the copy this stack serves with: bin/lib/mlx-lm-resolve.sh resolves mlx_lm.*
+# out of the omlx keg and deliberately refuses to fall back to a bare
+# `command -v`, so mlx_lm_server follows omlx, not mtplx (update/mlx-lm-server).
+#
+# Usage: update/mtplx [--no-network] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/mtplx [--no-network] [--dry-run] [--check]
+
+Report the installed MTPLX version, the version published in the app's Sparkle
+appcast, and how to apply an update (open MTPLX.app — there is no CLI updater).
+
+  --no-network  skip the appcast lookup and report only the local state
+  --dry-run     this script changes nothing anyway; kept for consistency
+  --check       report and exit (identical to the default; nothing is ever run)
+EOF
+}
+
+update_init mtplx "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --no-network) NO_NETWORK=1 ;;
+        *)
+            printf 'update/mtplx: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+require_cmd mtplx
+
+installed=$(mtplx --version 2> /dev/null | sed -n 's/^mtplx //p')
+installed=${installed:-unknown}
+update_note "installed: $installed"
+
+APP="/Applications/MTPLX.app"
+app_version=""
+feed=""
+if [ -f "$APP/Contents/Info.plist" ]; then
+    app_version=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist" 2> /dev/null || true)
+    feed=$(plutil -extract SUFeedURL raw "$APP/Contents/Info.plist" 2> /dev/null || true)
+    update_note "app: $APP (CFBundleShortVersionString ${app_version:-unknown})"
+    [ -n "$feed" ] && update_note "feed: $feed"
+else
+    update_note "no app bundle at $APP"
+fi
+
+latest=""
+if [ -z "${NO_NETWORK:-}" ] && [ -n "$feed" ]; then
+    latest=$(curl -fsSL -m 8 "$feed" 2> /dev/null \
+        | sed -n 's/.*<sparkle:shortVersionString>\([^<]*\)<.*/\1/p' | head -1 || true)
+fi
+
+if [ -z "$latest" ]; then
+    update_note "latest: unknown (no network, no feed URL, or the lookup failed)"
+    update_finish manual "$installed installed — update through MTPLX.app"
+fi
+
+finish_against_published "$installed" "$latest" "open MTPLX.app to update"

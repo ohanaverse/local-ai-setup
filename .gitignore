@@ -1,7 +1,7 @@
 *.DS_Store
 .worktrees/
 
-# Agent-benchmark scratch workspaces (modelman/src/modelman/benchmark/agent/workspace.py)
+# Agent-benchmark scratch workspaces (llmbench/src/llmbench/benchmark/agent/workspace.py)
 # Defensive only: workspace.py always uses the OS temp dir, never the repo.
 /tmp/agent-bench-*
 

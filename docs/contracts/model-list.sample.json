@@ -1,0 +1,15 @@
+{
+ "registry": "/home/owner/.config/local-ai/registry.toml",
+ "models": [
+  {"id": "claude/native", "family": "claude", "provider_id": "claude", "model_name": "native", "location": "cloud", "tags": ["code", "design"], "registered": true, "status": "ok", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "ollama/glm-5.3:cloud", "family": "glm-5.3", "provider_id": "ollama", "model_name": "glm-5.3:cloud", "location": "cloud", "tags": [], "registered": true, "status": "ok", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "ollama/deepseek-v4-pro:cloud", "family": "deepseek-v4", "provider_id": "ollama", "model_name": "deepseek-v4-pro:cloud", "location": "cloud", "tags": [], "registered": true, "status": "ok", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "openrouter/z-ai--glm-5.3", "family": "glm-5.3", "provider_id": "openrouter", "model_name": "z-ai/glm-5.3", "location": "cloud", "tags": [], "registered": true, "status": "ok", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "ollama/qwen3.8:27b-mlx", "family": "qwen3.8", "provider_id": "ollama", "model_name": "qwen3.8:27b-mlx", "location": "local", "tags": [], "registered": true, "status": "ok", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "ollama/medgemma:27b", "family": "medgemma", "provider_id": "ollama", "model_name": "medgemma:27b", "location": "local", "tags": [], "registered": true, "status": "missing", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "ollama/minimax-m3:cloud", "family": "minimax-m3", "provider_id": "ollama", "model_name": "minimax-m3:cloud", "location": "cloud", "tags": [], "registered": true, "status": "ok", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "ollama/nomic-embed-text:latest", "family": "nomic-embed-text", "provider_id": "ollama", "model_name": "nomic-embed-text:latest", "location": "local", "tags": [], "registered": true, "status": "missing", "running": "", "size_bytes": null, "path": null, "malformed": []},
+  {"id": "ollama/gemma4:31b-mlx", "family": "", "provider_id": "ollama", "model_name": "gemma4:31b-mlx", "location": "local", "tags": [], "registered": false, "status": "new", "running": "", "size_bytes": null, "path": null, "malformed": []}
+ ],
+ "providers": {"mtplx": "partial", "ollama": "ok", "omlx": "ok"}
+}

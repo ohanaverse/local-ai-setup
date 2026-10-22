@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 // LaunchCmd describes a fully-built process to exec.
@@ -19,6 +18,12 @@ type LaunchCmd struct {
 	Env      []string // extra env vars, merged over os.Environ() by the caller
 	ClearEnv []string // env var names stripped from the inherited environment
 	Warn     string   // printed to stderr by Command when non-empty
+	// ModelFallback reports that the driver could not select the requested
+	// model and the agent will run on its OWN default model instead (Warn
+	// says why). A real launch warns and continues; wt smoke fails the row,
+	// because the default model answers the smoke prompt just as well and
+	// would otherwise report a model it never exercised as PASS.
+	ModelFallback bool
 }
 
 // Route is an alias so drivers in this package can refer to config.Route
@@ -40,7 +45,7 @@ type ProtocolDeclarer interface {
 // ProtocolsFor returns the named agent's declared protocols, or nil if the
 // agent is unknown or its driver doesn't implement ProtocolDeclarer. Used by
 // BuildLaunchCmd (to resolve the actual launch route) and by the model
-// picker (Task 6) — both need the same answer.
+// picker — both need the same answer.
 func ProtocolsFor(agent string) []Protocol {
 	driver := ByName(agent)
 	if driver == nil {
@@ -68,9 +73,11 @@ type Driver interface {
 // implementation can scope any per-provider, failure-prone work (e.g. pi's
 // exec: secret_ref resolution) to the provider actually being launched
 // instead of treating every registry provider as equally load-bearing for
-// this one launch.
+// this one launch. r is the route resolved for target — what Build is about
+// to receive — so the sync and Build agree on how the model is reached even
+// when the route differs from the LiteLLM toggle (a protocol-forced route).
 type Syncer interface {
-	SyncModels(cfg *config.Config, target config.Model) error
+	SyncModels(cfg *config.Config, target config.Model, r Route) error
 }
 
 // ArgSetter is an optional Driver capability: some agents (e.g. shell) need
@@ -90,27 +97,22 @@ type Commanded interface {
 	IsCommand() bool
 }
 
-// Resumer is an optional Driver capability for agents that support
-// resuming a previous session. Drivers that do not implement Resumer are
-// assumed to have no session-resume support.
-type Resumer interface {
-	// ResumeFlag is the CLI flag the agent expects before the session ID.
-	// Examples: "--resume" for claude, "--session" for opencode.
-	ResumeFlag() string
-
-	// LatestSession returns the most recently modified resumable session
-	// for the worktree at path, or nil if none exists. Errors indicate
-	// a lookup failure (e.g. unreadable session directory); callers decide
-	// whether to surface or swallow them.
-	LatestSession(path string) (*session.Session, error)
-}
-
 // OneShotRunner is an optional Driver capability for agents that can run a
 // single prompt non-interactively and exit. wt smoke appends OneShotArgs'
 // return value to the command Build already constructed, to verify a
 // model works through this agent without an interactive session.
 type OneShotRunner interface {
 	OneShotArgs(prompt string) []string
+}
+
+// StateDirer is an optional Driver capability for agents that keep state of
+// their own (transcripts, memory) in a directory keyed on the working
+// directory. wt smoke removes it for the temporary directory a row ran in,
+// which would otherwise leave one such directory behind per row.
+type StateDirer interface {
+	// StateDir returns that directory for the working directory path, which
+	// must be the path the agent itself sees (symlinks resolved).
+	StateDir(path string) string
 }
 
 // InstructionPointer describes a single file created by `wt --init`.
@@ -301,33 +303,59 @@ func IsCommand(name string) bool {
 }
 
 // BuildLaunchCmd resolves the agent driver, runs any pre-launch sync, builds
-// the exec.Cmd, appends passthrough args, and adds a resume flag when a prior
-// session is provided. It is the single shared launch constructor used by both
-// the non-TUI launch path (cmd/wt) and the TUI launch path (internal/tui).
+// the exec.Cmd and appends passthrough args. It is the single shared launch
+// constructor used by both the non-TUI launch path (cmd/wt) and the TUI launch
+// path (internal/tui).
 //
 // extraArgs are user-supplied args after `--`. For regular agents they are
 // appended to the agent's command. For agents implementing ArgSetter (e.g.
 // shell), the args are passed via SetArgs and not appended again.
-func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool, sess *session.Session, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+//
+// It never resumes a session. wt used to look up an agent's newest session
+// for the worktree and add the agent's resume flag itself; that appended a
+// one-shot run to whatever conversation was newest (#204), broke a launch
+// whose resumed session had stored another model (#198), and doubled the flag
+// when the user passed their own. Sessions are the agent's to manage: a user
+// who wants one continued says so in extraArgs, with the agent's own flags
+// (`-- --continue`, `-- --resume <id>`, `-- --session <id>`).
+func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, error) {
+	cmd, _, err := BuildLaunchCmdInfo(agent, m, worktreePath, yolo, cfg, extraArgs)
+	return cmd, err
+}
+
+// LaunchInfo is what a built launch says about itself beyond the exec.Cmd.
+type LaunchInfo struct {
+	// ModelFallback mirrors LaunchCmd.ModelFallback: the agent will run on
+	// its own default model, not the requested one. Warn is the driver's
+	// reason (already printed to stderr by Command).
+	ModelFallback bool
+	Warn          string
+}
+
+// BuildLaunchCmdInfo is BuildLaunchCmd plus the LaunchInfo of the command it
+// built. A real launch ignores the info (a fallback only warns); wt smoke
+// reads it to fail a row whose agent would answer on a different model.
+func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo bool, cfg *config.Config, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
+	var info LaunchInfo
 	d := ByName(agent)
 	if d == nil {
-		return nil, fmt.Errorf("unknown agent: %s", agent)
+		return nil, info, fmt.Errorf("unknown agent: %s", agent)
 	}
-	// Guard nil cfg (used by some command-level tests that only care
-	// about resume/session wiring). A nil config resolves as direct mode.
+	// Guard nil cfg (BuildPassthroughCmd and some command-level tests pass
+	// none). A nil config resolves as direct mode.
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
 	route, err := cfg.ResolveRoute(m, ProtocolsFor(agent))
 	if err != nil {
-		return nil, err
+		return nil, info, err
 	}
 	if route.Forced {
 		fmt.Fprintf(os.Stderr, "wt: %s requires LiteLLM for %s (no direct protocol overlap with provider %q) — routing through the proxy\n", agent, m.ID, route.ProviderID)
 	}
 	if s, ok := d.(Syncer); ok {
-		if err := s.SyncModels(cfg, m); err != nil {
-			return nil, err
+		if err := s.SyncModels(cfg, m, route); err != nil {
+			return nil, info, err
 		}
 	}
 	// If the driver consumes args itself (e.g. shell), hand them over and
@@ -336,45 +364,52 @@ func BuildLaunchCmd(agent string, m config.Model, worktreePath string, yolo bool
 		as.SetArgs(extraArgs)
 		extraArgs = nil
 	}
-	cmd, err := Command(d, m, yolo, route, worktreePath)
+	cmd, lc, err := command(d, m, yolo, route, worktreePath)
 	if err != nil {
-		return nil, err
+		return nil, info, err
 	}
+	info = LaunchInfo{ModelFallback: lc.ModelFallback, Warn: lc.Warn}
 	// Append passthrough args for regular agents.
 	if len(extraArgs) > 0 {
 		cmd.Args = append(cmd.Args, extraArgs...)
 	}
-	// Native models launch with no model override, so resuming a session
-	// would restore the session's stored model and silently override the
-	// user's "native" choice (for claude, routing a gateway model at the
-	// real Anthropic API). Skip the resume flag for native models.
-	if sess != nil && !m.Native {
-		if r, ok := d.(Resumer); ok {
-			cmd.Args = append(cmd.Args, r.ResumeFlag(), sess.ID)
-		}
-	}
-	return cmd, nil
+	return cmd, info, nil
 }
 
-// Command resolves the agent binary and returns an exec.Cmd ready to run in
-// workdir, with the driver's extra env merged over the inherited environment.
-func Command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, error) {
+// command resolves the agent binary and returns an exec.Cmd ready to run in
+// workdir, with the driver's extra env merged over the inherited environment,
+// plus the driver's LaunchCmd, so BuildLaunchCmdInfo can report what the
+// driver decided (ModelFallback) alongside the exec.Cmd.
+func command(d Driver, m config.Model, yolo bool, r Route, workdir string) (*exec.Cmd, LaunchCmd, error) {
 	lc := d.Build(m, yolo, r)
 	bin, err := exec.LookPath(lc.Bin)
 	if err != nil {
-		return nil, fmt.Errorf("agent %s not installed", lc.Bin)
+		return nil, lc, fmt.Errorf("agent %s not installed", lc.Bin)
 	}
 	if lc.Warn != "" {
 		fmt.Fprintln(os.Stderr, lc.Warn)
 	}
 	cmd := exec.Command(bin, lc.Args...)
-	cmd.Dir = workdir
-	if len(lc.ClearEnv) > 0 {
-		cmd.Env = append(filterEnv(os.Environ(), lc.ClearEnv), lc.Env...)
-	} else {
-		cmd.Env = append(os.Environ(), lc.Env...)
+	cmd.Env = append(filterEnv(os.Environ(), lc.ClearEnv), lc.Env...)
+	SetDir(cmd, workdir)
+	return cmd, lc, nil
+}
+
+// SetDir makes dir the working directory cmd runs in, PWD included. cmd's
+// environment is inherited from wt, whose PWD names the caller's directory,
+// and os/exec only fills PWD in when the environment has none — so an agent
+// that trusts PWD over getcwd (opencode does) would open the caller's
+// directory instead of dir.
+func SetDir(cmd *exec.Cmd, dir string) {
+	cmd.Dir = dir
+	if dir == "" {
+		return
 	}
-	return cmd, nil
+	env := cmd.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	cmd.Env = append(filterEnv(env, []string{"PWD"}), "PWD="+dir)
 }
 
 // filterEnv returns env with any entry whose key is in clear removed. It is

@@ -2,6 +2,7 @@ package litellm
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -78,6 +79,21 @@ func pricingInfo(c config.ModelCost) []kv {
 	return info
 }
 
+// providerAPIKey resolves a SecretRef provider's api_key. An env-name ref
+// resolves to "" without error when the variable is unset in this shell;
+// sync rebuilds every cloud row, so writing that "" would replace every
+// working key — it is an error instead, and the existing row is kept.
+func providerAPIKey(p config.Provider) (string, error) {
+	key, err := config.ResolveSecret(p.Auth.SecretRef)
+	if err != nil {
+		return "", fmt.Errorf("resolving credentials for provider %q: %w", p.ID, err)
+	}
+	if key == "" && p.Auth.SecretRef != "" {
+		return "", fmt.Errorf("secret_ref %q for provider %q resolved empty (variable unset in this shell?)", p.Auth.SecretRef, p.ID)
+	}
+	return key, nil
+}
+
 // BuildEntry builds the LiteLLM `model_list` row for a registry model:
 // model_name is the registry id, litellm_params come from the provider
 // policy, and model_info is derived pricing overridden by the model's own
@@ -93,14 +109,25 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 		model = pol.Prefix + m.ModelName
 	}
 	params := []kv{{"model", model}}
-	if p.Auth.BaseURL != "" {
-		params = append(params, kv{"api_base", p.Auth.BaseURL})
+	base := p.Auth.BaseURL
+	if base == "" && p.ID == "ollama" {
+		// An ollama row with no api_base makes LiteLLM start its own `ollama
+		// serve` (#202); OllamaAPIBase gives the repair this same default.
+		base = config.OllamaBaseURL
+	}
+	if base != "" {
+		if pol.V1Base {
+			// Provider.Origin, as wt's own probes read the address: the
+			// proxy has to dial the server wt started (#348).
+			base = p.Origin() + "/v1"
+		}
+		params = append(params, kv{"api_base", base})
 	}
 	switch {
 	case pol.SecretRef:
-		key, err := config.ResolveSecret(p.Auth.SecretRef)
+		key, err := providerAPIKey(p)
 		if err != nil {
-			return nil, fmt.Errorf("model %q: resolving credentials for provider %q: %w", m.ID, p.ID, err)
+			return nil, fmt.Errorf("model %q: %w", m.ID, err)
 		}
 		params = append(params, kv{"api_key", key})
 	case pol.APIKey != "":
@@ -125,6 +152,11 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 			info = append(info, kv{k, m.ModelInfo[k]})
 		}
 	}
+
+	// The ownership marker (#179) is set last so a registry model_info can
+	// never disown a wt row.
+	info = slices.DeleteFunc(info, func(e kv) bool { return e.key == ManagedKey })
+	info = append(info, kv{ManagedKey, true})
 
 	paramsNode, err := mapping(params)
 	if err != nil {

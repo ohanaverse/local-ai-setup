@@ -1,16 +1,9 @@
 // Package tui implements the Bubble Tea terminal UI for wt.
-//
-// Lesson 12 establishes the app shell: a single screen that shows a status,
-// responds to q/esc/ctrl+c, and demonstrates the Model/Update/View cycle.
-// Lesson 13 layers on the worktree/branch picker using bubbles/list.
-// Lesson 14 adds the agent+model screen reached after picking a worktree.
-// Lesson 15 added a separate model browser, opened with `m`; the picker
-// list now subsumes that role (the agent+model screen shows all
-// agent-compatible models in the active tag, sourced from config.toml).
 package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -20,12 +13,14 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -35,21 +30,16 @@ import (
 type phase int
 
 const (
-	phaseList           phase = iota // worktree list (lesson 13)
+	phaseList           phase = iota // worktree list
 	phaseAgent                       // agent+command picker (PR 2): picks between configured agents and command drivers before the model screen
-	phaseModel                       // agent+model picker (lesson 14 + lesson 15 merged)
-	phaseResume                      // resume prompt (lesson 16)
+	phaseModel                       // agent+model picker
 	phaseOllamaWarn                  // confirm before launching with unavailable ollama model
 	phaseNewWorktree                 // create-new-worktree prompt
 	phaseStarting                    // a start runs through the lifecycle engine, with live progress
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
+	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
+	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
 )
-
-// resumeModel holds the resume-prompt state for phaseResume (lesson 16).
-type resumeModel struct {
-	session *session.Session
-	choices list.Model
-}
 
 // model holds the entire UI state.
 type model struct {
@@ -88,21 +78,26 @@ type model struct {
 	// here so future per-phase rebuilds are one-line).
 	agentList list.Model // bubble/list of agent+command items (PR 2)
 
-	// launch state (lesson 16)
-	selectedPath string   // worktree path chosen in lesson 13
-	prePath      string   // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
-	yolo         bool     // pass skip-permissions flag to the agent
-	allowReplace bool     // --replace mode: the -M start path may stop a running occupant without the dialog
-	extraArgs    []string // user passthrough args after --
-	initialAgent string   // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
-	pinnedModel  string   // model from --model flag; "" = no model pinned (model picker is shown)
-	resume       resumeModel
-	launchModel  config.Model // highlighted model captured when entering phaseResume; launched from the resume choices
+	// launch state
+	selectedPath string       // worktree path chosen in the worktree list
+	prePath      string       // pre-resolved worktree path (-W/--cwd/outside-repo); skips the worktree picker when non-empty
+	yolo         bool         // pass skip-permissions flag to the agent
+	allowReplace bool         // --replace mode: the -M start path may stop a running occupant without the dialog
+	othersMode   string       // --others: "keep" or "stop" answers the -M pinned row's question about other providers' models without the dialog (othersFor); "" asks
+	extraArgs    []string     // user passthrough args after --
+	initialAgent string       // agent from --agent flag; "" = no agent pinned (agent/command picker is shown)
+	pinnedModel  string       // model from --model flag; "" = no model pinned (model picker is shown)
+	launchModel  config.Model // the model being launched, captured when the launch began (the routing phase finishes an Update later)
+	startNote    string       // what the engine printed during the start that led to this launch (statusNote, #258, #275); launchSelected, or proceedToLaunch when it has no row to launch, takes it once and puts it ahead of the failure
 
 	// filter inputs (PR 3b): -T/--tags and -F/--family values from the CLI;
 	// forwarded to the model screen so the picker can pre-filter the catalog.
 	activeTags   string // comma-delimited tag filter from -T/--tags; "" = no filter
 	activeFamily string // comma-delimited family filter from -F/--family; "" = no filter
+
+	// slotChecks are the statically validated slot profiles
+	// (profiles.ValidateSlots). nil means the picker shows no profile row.
+	slotChecks []profiles.SlotCheck
 
 	// default-branch guard warning (title-only; the confirm prompt was removed)
 	defaultBranch string // repo default branch (e.g. main)
@@ -113,18 +108,46 @@ type model struct {
 	// start-on-select flow (2026-09-20): Enter on a start row runs the model
 	// through the lifecycle engine with live progress; the replace-confirm
 	// dialog appears when Start reports the provider's single slot occupied
-	// (or unknowable) and AllowReplace was false.
+	// (or unknowable) and AllowReplace was false, or other providers' models
+	// loaded beside the model and the question about them unanswered (#412).
 	start    *startState   // in-flight start (phaseStarting); nil when idle
 	startRun int           // monotonically increasing run id; stale messages are dropped by id
 	replace  *replaceState // replace-confirm dialog (phaseReplaceConfirm)
 
-	// new-worktree prompt (this lesson)
+	// launch-time route check (#192): a launch that had to write the model's
+	// LiteLLM route waits for the proxy restart behind phaseRouting instead of
+	// freezing the picker.
+	routing  *routingState // in-flight route check (phaseRouting); nil when idle
+	routeRun int           // monotonically increasing run id; stale messages are dropped by id
+
+	// slot-profile launch: Enter on a profile row runs the launch flow's
+	// route writes, restart and probe behind phaseSlot. The flow is kept
+	// while the profile's local model starts and on the replace dialog.
+	slot    *slotFlow // in-flight profile launch; nil when idle
+	slotRun int       // monotonically increasing run id; stale messages are dropped by id
+
+	// new-worktree prompt
 	newInput         textinput.Model
 	newError         string
 	pendingHighlight string // branch name to focus after re-enumerating
 	repoRoot         string // cached from entriesLoadedMsg to avoid a second rev-parse
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
+
+	// prs is each head's (repository and branch) pull request, merged from
+	// the `gh pr list` listings a picker open runs (loadPRsCmd, one per
+	// worktree.PRListStates) as each answers; not Loaded() until the first
+	// does, empty when every one so far failed.
+	// Every build of the worktree list (the first, and the reload after a
+	// create) is tagged from it.
+	prs worktree.PRSet
+	// ownRepos is the owner/repo of every remote the repository has
+	// (worktree.EnumerateRepos), from the latest entry load: a local or
+	// worktree row with no known push/tracking repository is tagged only with
+	// a PR from one of them or from the listed repository itself
+	// (worktree.PRSet.ForBranch), never with a stranger's fork PR of the same
+	// branch name.
+	ownRepos worktree.RepoSet
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -134,6 +157,11 @@ type model struct {
 	// fatal error — but it remains wired into Run() for any future
 	// genuinely-fatal condition.
 	fatalErr error
+
+	// agentErr is what running the launched agent returned (nil for an
+	// exit 0). Run() returns it once the post-exit flow has run, so cmd/wt
+	// exits with the agent's status as the non-TUI path does (#412).
+	agentErr error
 }
 
 // Init returns the initial command. When a worktree path was pre-resolved
@@ -147,7 +175,29 @@ func (m model) Init() tea.Cmd {
 			return selectedEntryMsg{entry: worktree.Entry{Path: m.prePath}}
 		}
 	}
-	return loadEntriesCmd()
+	return loadPickerCmd()
+}
+
+// loadPickerCmd is a picker open's first command: it resolves the repository
+// root once (#390) and answers with a batch that loads the entries and runs
+// each PR listing (worktree.PRListStates) in that root, each in its own
+// command. The listings run beside the enumeration, never before it: the
+// picker shows as soon as the worktrees are in, and the tags appear as each
+// listing answers (prsLoadedMsg) — the open PRs' usually first, every
+// state's filled in after — whichever comes first. Outside a repository the
+// entry load reports the lookup's error and each listing answers a loaded,
+// empty set without running gh.
+func loadPickerCmd() tea.Cmd {
+	return func() tea.Msg {
+		root, err := findRepoRoot()
+		cmds := tea.BatchMsg{loadEntriesAtCmd(root, err)}
+		// No repository: root is "" and each listing answers an empty set
+		// without running gh.
+		for _, state := range worktree.PRListStates {
+			cmds = append(cmds, loadPRsCmd(root, state))
+		}
+		return cmds
+	}
 }
 
 // isTyping reports whether the current phase is actively receiving character
@@ -178,36 +228,56 @@ func (m model) openNewWorktreePrompt() model {
 }
 
 // Update handles messages and returns the new state plus optional commands.
+// Whatever the message did, the list on screen is then fitted to the lines its
+// screen prints around it (fitLists, layout.go).
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	next.fitLists()
+	return next, cmd
+}
+
+// update is Update without the final list fit.
+func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case startStageMsg, startTickMsg, startDoneMsg:
 		// The case list is exactly the set handleStartMsg handles, so it
 		// always has something to say.
 		return m.handleStartMsg(msg)
+	case routeDoneMsg, routeTickMsg:
+		// Likewise exactly the set handleRouteMsg handles.
+		return m.handleRouteMsg(msg)
+	case slotPreparedMsg, slotSettledMsg, slotTickMsg:
+		// Likewise exactly the set handleSlotMsg handles.
+		return m.handleSlotMsg(msg)
+	case slotAbortMsg:
+		// The slot applier failed after the terminal was released: no agent
+		// ran and nothing was recorded.
+		m.status = "launch failed: " + msg.err.Error()
+		m.phase = phaseModel
+		return m.refreshTable()
 	case tableRefreshedMsg:
 		// A refresh can land after the user moved on (a second start, a quit);
 		// only the picker it was built for should absorb it.
 		if m.phase != phaseModel || msg.gen != m.refreshGen {
 			return m, nil
 		}
+		if len(msg.items) == 0 {
+			// The re-probe left no row at all (#179 Phase B: the model a
+			// failed start was for is no longer on disk or running). Route
+			// back like enterModelPhase's empty table does instead of
+			// stranding the user on a "No items." picker; the status the
+			// failed start left, if any, already says what happened.
+			status := m.status
+			if status == "" {
+				status = catalog.NoRowsReason(m.agent)
+			}
+			return m.routeBackToAgent(status)
+		}
 		return m, m.applyRefreshedTable(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		if m.ready {
-			m.list.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseAgent {
-			m.agentList.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseModel {
-			m.models.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseResume {
-			m.resume.choices.SetSize(msg.Width-2, msg.Height-2)
-		}
-		if m.phase == phaseReplaceConfirm {
-			m.replace.choices.SetSize(msg.Width-2, msg.Height-2)
-		}
+		// Every list is sized by fitLists, from the lines and columns its
+		// screen prints around it.
 		if m.phase == phaseNewWorktree {
 			m.newInput.Width = msg.Width - 4
 		}
@@ -223,12 +293,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.listError = ""
+		// The load is over: take the placeholder down. Only the placeholder —
+		// a status another path set while the load was in flight (a pinned
+		// agent's config error, say) is still worth showing.
+		if m.status == loadingStatus {
+			m.status = ""
+		}
 		// Pass the three groups straight to buildList, which interleaves them
 		// into the picker (sentinel → worktrees → locals → separator → remotes)
 		// and tags the (current)/(default) markers on entryItem.
 		m.defaultBranch = msg.defaultBranch
 		m.repoRoot = msg.repoRoot
+		m.ownRepos = msg.ownRepos
 		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
+		if m.prs.Loaded() {
+			applyPRs(&m.list, m.prs, m.ownRepos)
+		}
 		m.ready = true
 
 		// Default-branch warning: if the only picker target is the current
@@ -259,6 +339,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return m, nil
+	case prsLoadedMsg:
+		// One listing's pull requests arrived: merged with any listing
+		// already in (one PR per head repository and branch, by
+		// worktree.MergePRs' rule, so arrival order does not matter),
+		// kept for any later build of the list, and put on the list
+		// already on screen in place, so the cursor, the filter and the
+		// page stay where the user left them. A listing
+		// that failed adds nothing: msg.prs is then empty.
+		m.prs = worktree.MergePRs(m.prs, msg.prs)
+		if m.ready {
+			applyPRs(&m.list, m.prs, m.ownRepos)
+			if note := remoteTagsHidden(m.list.Items(), m.prs); note != "" {
+				return m, m.list.NewStatusMessage(note)
+			}
+		}
+		return m, nil
 	case selectedEntryMsg:
 		// Bare branches (TypeBranch, Path="") have no worktree yet. Create
 		// one via EnsureForBranch before proceeding, so the agent launches
@@ -282,6 +378,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "agent exited: " + msg.err.Error()
 		}
+		m.agentErr = msg.err
 		return m, tea.Quit
 	case newWorktreeCreatedMsg:
 		m.creating = false
@@ -298,6 +395,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// wrap-around below, which must not move the cursor mid-start).
 		if m.phase == phaseStarting && m.start != nil {
 			return m.handleStartKey(msg)
+		}
+		// So does an in-flight route check, for the same reason and at the same
+		// place: the launch it precedes is already decided, so no key may move
+		// the cursor, pop a screen or quit by accident. Only ctrl+c gets out.
+		if m.phase == phaseRouting {
+			return m.handleRouteKey(msg)
+		}
+		// And a profile launch's route stage, for the same reason.
+		if m.phase == phaseSlot && m.slot != nil {
+			return m.handleSlotKey(msg)
+		}
+		// A status that has the screen to itself (statusAlone) is taken down
+		// by the next key, which does nothing else: the table was not on
+		// screen, so no key can have been meant for it. ctrl+c still quits.
+		if m.phase == phaseModel && m.statusAlone() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.status = ""
+			return m, nil
 		}
 		// Model picker wrap-around: bubble/list does not wrap by default.
 		// Skip while the filter input is active (or has just been opened,
@@ -346,17 +463,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = ""
 				return m, nil
 			}
-			if m.phase == phaseResume {
-				m.phase = phaseModel
-				m.status = ""
-				return m, nil
-			}
-			if m.phase == phaseOllamaWarn {
-				m.phase = phaseModel
-				m.status = ""
-				return m, nil
-			}
-			if m.phase == phaseReplaceConfirm {
+			if m.phase == phaseOllamaWarn || m.phase == phaseReplaceConfirm {
+				if m.phase == phaseReplaceConfirm {
+					m = m.dropSlot()
+				}
 				m.phase = phaseModel
 				m.status = ""
 				return m, nil
@@ -395,27 +505,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// launch directly, no model layer to resolve.
 					return m.launchPassthrough(item.name)
 				}
-				// Agent: validate the model catalog for the agent + active
-				// filters (-T/-F), then build the picker list and position
-				// the cursor. The full catalog is fetched ONCE here and
-				// narrowed in place by EligibleModelsIn, so the registry is
-				// walked once per entry.
-				firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
-				fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
-				if err != nil {
-					m.status = "config error: " + err.Error()
-					return m, nil
-				}
-				models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
-				if err != nil {
-					m.status = "config error: " + err.Error()
-					return m, nil
-				}
-				if len(models) == 0 {
-					m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
-					return m, nil
-				}
-				return m.enterModelPhase(m.agent, models, firstTag)
+				// Agent: validate the model catalog, then build the picker
+				// list and position the cursor.
+				return m.enterModelPhaseForAgent()
 			case phaseList:
 				if !m.ready {
 					return m, nil
@@ -463,15 +555,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !ok {
 					return m, nil
 				}
+				if highlighted.profile != nil && highlighted.blocked == "" {
+					// A slot profile is its own launch unit: its routes, its
+					// local model's start and its command all come from the
+					// profile, never from this row's id-only Model. A blocked
+					// profile falls through to the reason below.
+					return m.beginSlotLaunch(highlighted)
+				}
 				if highlighted.start {
 					// A start row: run the model through the lifecycle engine
 					// instead of launching. start and blocked are mutually
 					// exclusive — renderTable sets exactly one per row, and its
-					// discovered-row case clears start before setting blocked —
-					// so this order is a guard, not a precedence rule.
+					// route-refusal and route-error cases clear start when they
+					// set blocked — so this order is a guard, not a precedence
+					// rule.
 					// --replace is the -M pin's permission, not a blanket
 					// one: any other start row still gets the dialog.
-					return m.beginStart(highlighted, m.allowReplace && highlighted.model.ID == m.pinnedModel)
+					// So is --others.
+					pinned := highlighted.model.ID == m.pinnedModel
+					return m.beginStart(highlighted, m.allowReplace && pinned, m.othersFor(pinned))
 				}
 				if highlighted.blocked != "" {
 					m.status = highlighted.blocked
@@ -479,20 +581,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Check ollama availability before launching. Rotation is
 				// NOT recorded here: the user can still cancel the ollama
-				// warning or the resume prompt, or the check can fail, and
-				// in none of those cases did a launch happen. Recording
+				// warning, or the check can fail, and in neither case did
+				// a launch happen. Recording
 				// lives in launchAndRecord, the single commit point. The
 				// check is skipped when this agent×model pairing will
 				// actually route through LiteLLM (any upstream may serve
 				// the model) and when the model is not served by ollama —
-				// ollamacheck only probes the local ollama daemon. Uses the
+				// ollamacheck only asks the ollama daemon the registry
+				// names. Uses the
 				// per-model resolved route rather than the raw
 				// cfg.IsLitellm() toggle so a protocol-forced LiteLLM route
 				// (e.g. codex+ollama) isn't spuriously blocked by this
 				// local-availability check.
 				route, _ := m.cfg.ResolveRoute(highlighted.model, agents.ProtocolsFor(m.agent))
 				if !route.Litellm && ollamacheck.IsOllamaModel(highlighted.model) {
-					ok, err := ollamacheck.Check(highlighted.model)
+					ok, err := ollamacheck.Check(m.cfg, highlighted.model)
 					if err != nil {
 						m.status = "ollama check failed: " + err.Error()
 						return m, nil
@@ -505,28 +608,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m.proceedToLaunch()
-			case phaseResume:
-				if item, ok := m.resume.choices.SelectedItem().(choiceItem); ok {
-					switch item.choice {
-					case cancelChoice:
-						m.phase = phaseModel
-						return m, nil
-					case freshChoice:
-						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
-						if err != nil {
-							m.status = "launch failed: " + err.Error()
-							return m, nil
-						}
-						return m.launchAndRecord(cmd)
-					case resumeChoice:
-						cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.resume.session, m.cfg, m.extraArgs)
-						if err != nil {
-							m.status = "launch failed: " + err.Error()
-							return m, nil
-						}
-						return m.launchAndRecord(cmd)
-					}
-				}
 			case phaseOllamaWarn:
 				if item, ok := m.ollamaWarnModel.SelectedItem().(choiceItem); ok {
 					switch item.choice {
@@ -541,10 +622,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if item, ok := m.replace.choices.SelectedItem().(choiceItem); ok {
 					switch item.choice {
 					case replaceCancelChoice:
+						// A profile launch that got this far ends here; a
+						// restart it still owes is settled (dropSlot).
+						m = m.dropSlot()
 						m.phase = phaseModel
 						return m, nil
 					case replaceProceedChoice:
-						return m.beginStart(m.replace.item, true)
+						return m.retryStart(m.replace.item, true, m.replace.others)
+					case othersKeepChoice:
+						// #412: keep other providers' models; AllowReplace
+						// only for same-family occupants the dialog showed.
+						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: lifecycle.OthersAnswer{Decided: true}})
+					case othersStopChoice:
+						// Stop exactly the stoppable models the dialog showed.
+						return m.retryStart(m.replace.item, m.replace.allow, othersPlan{answer: lifecycle.OthersAnswer{Decided: true, Stop: m.replace.stop}})
 					}
 				}
 			case phaseNewWorktree:
@@ -586,11 +677,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.ready && m.phase == phaseList {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
-		return m, cmd
-	}
-	if m.phase == phaseResume && m.width > 0 && m.height > 0 {
-		var cmd tea.Cmd
-		m.resume.choices, cmd = m.resume.choices.Update(msg)
+		// A filter run a keystroke started before the latest tags arrived
+		// matched the items as they were then; its rows carry the old tags.
+		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos) {
+			applyPRs(&m.list, m.prs, m.ownRepos)
+		}
 		return m, cmd
 	}
 	if m.phase == phaseOllamaWarn && m.width > 0 && m.height > 0 {
@@ -628,29 +719,35 @@ func (m model) View() string {
 		}
 		return body
 	}
-	if m.phase == phaseResume {
-		if m.width <= 0 || m.height <= 0 {
-			return "resume prompt (waiting for window size)"
-		}
-		return m.resume.choices.View() + "\n[enter] choose   [esc] back"
-	}
 	if m.phase == phaseOllamaWarn {
 		if m.width <= 0 || m.height <= 0 {
 			return "ollama availability warning (waiting for window size)"
 		}
-		return m.ollamaWarnModel.View() + "\n[enter] choose   [esc] back"
+		return m.choiceFrame()(m.ollamaWarnModel.View())
 	}
 	if m.phase == phaseStarting {
 		if m.width <= 0 || m.height <= 0 {
 			return "start progress (waiting for window size)"
 		}
-		return m.startingView()
+		return clip(m.startingView(), m.width)
+	}
+	if m.phase == phaseRouting {
+		if m.width <= 0 || m.height <= 0 {
+			return "route update (waiting for window size)"
+		}
+		return clip(m.routingView(), m.width)
+	}
+	if m.phase == phaseSlot {
+		if m.width <= 0 || m.height <= 0 {
+			return "slot profile launch (waiting for window size)"
+		}
+		return clip(m.slotView(), m.width)
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
 			return "replace confirm (waiting for window size)"
 		}
-		return m.replace.choices.View() + "\n[enter] choose   [esc] back"
+		return drawnFrame(&m.replace.choices, m.height, m.replaceFrames()...)(m.replace.choices.View())
 	}
 	if m.phase == phaseModel {
 		if m.width <= 0 || m.height <= 0 {
@@ -667,25 +764,16 @@ func (m model) View() string {
 	if !m.ready {
 		return m.status
 	}
-	if m.listError != "" {
-		return ErrorStyle(m.theme).Render("error: "+m.listError) + "\n" + m.list.View()
-	}
-	// A pinned --agent that errors (config error, empty model catalog) sets
-	// m.status while staying on the worktree list; render it so the failure
-	// is visible instead of silently swallowed by the list view.
-	if m.status != "" {
-		return ErrorStyle(m.theme).Render(m.status) + "\n" + m.list.View()
-	}
-	return m.list.View()
+	return m.worktreeFrame()(m.list.View())
 }
 
 // launchCommand builds and runs a command (no model layer) — e.g. the shell
-// driver — in the selected worktree, skipping the model screen, ollama
-// check, and session resume. name is the picked command's driver name; the
+// driver — in the selected worktree, skipping the model screen and the
+// ollama check. name is the picked command's driver name; the
 // same BuildLaunchCmd path as agents is used, so a future command driver
 // launches by its own name rather than being hardcoded to "shell".
 func (m model) launchCommand(name string) (model, tea.Cmd) {
-	cmd, err := launchAgent(name, config.Model{}, m.selectedPath, false, nil, m.cfg, m.extraArgs)
+	cmd, err := launchAgent(name, config.Model{}, m.selectedPath, false, m.cfg, m.extraArgs)
 	if err != nil {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
@@ -705,6 +793,7 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
+	queueLaunchNotes(name, cmd, m.extraArgs)
 	return m, runAndWaitCmd(cmd, name, config.Model{})
 }
 
@@ -746,25 +835,7 @@ func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
 		}
 		// Pinned agent: skip the picker, run the same model setup
 		// that phaseAgent Enter would have run for an agent item.
-		// EligibleModelsIn narrows the single fetched catalog by
-		// -T/-F filters consistently with the phaseAgent Enter path.
-		firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
-		m.tag = firstTag
-		fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
-		if err != nil {
-			m.status = "config error: " + err.Error()
-			return m, nil
-		}
-		models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
-		if err != nil {
-			m.status = "config error: " + err.Error()
-			return m, nil
-		}
-		if len(models) == 0 {
-			m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, m.tag)
-			return m, nil
-		}
-		return m.enterModelPhase(m.agent, models, firstTag)
+		return m.enterModelPhaseForAgent()
 	}
 	// Unpinned: build the agent+command picker and hand off to phaseAgent.
 	// Clear any prior status so a stale error from a previous picker
@@ -785,12 +856,35 @@ var runInventory = realRunInventory
 // live probe of every local provider.
 func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmodels.Inventory(cfg) }
 
+// enterModelPhaseForAgent validates the model catalog for m.agent under the
+// active filters (-T/-F) and hands the eligible models to enterModelPhase. The
+// full catalog is fetched once and narrowed in place by EligibleModelsIn, so
+// the registry is walked once per entry. A config error or an empty eligible
+// list sets the status and leaves the phase where it is.
+func (m model) enterModelPhaseForAgent() (model, tea.Cmd) {
+	firstTag := config.FirstTag(m.activeTags, m.cfg.DefaultTag)
+	fullCatalog, err := m.cfg.ModelsForAgent(m.agent)
+	if err != nil {
+		m.status = "config error: " + err.Error()
+		return m, nil
+	}
+	models, err := m.cfg.EligibleModelsIn(m.agent, fullCatalog, m.activeTags, m.activeFamily)
+	if err != nil {
+		m.status = "config error: " + err.Error()
+		return m, nil
+	}
+	if len(models) == 0 {
+		m.status = fmt.Sprintf("no models for agent %q in tag %q — edit your config", m.agent, firstTag)
+		return m, nil
+	}
+	return m.enterModelPhase(m.agent, models, firstTag)
+}
+
 // enterModelPhase builds the selector table for the agent and either
 // transitions to phaseModel or, when exactly one launchable row exists, skips
-// the picker. The skip path reuses proceedToLaunch so the session-resume prompt
-// and the global rotation recording still run — the rotation only advances
-// after the user resolves the resume prompt, so a cancel there leaves
-// rotation untouched.
+// the picker. The skip path reuses proceedToLaunch so the launch-time route
+// check and the global rotation recording still run, exactly as for a row
+// picked by hand.
 //
 // models is the agent's eligible list; local models that are not
 // running appear as start rows (Enter runs the lifecycle engine; only blocked
@@ -800,8 +894,10 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // the pin and the picker can never disagree: a launch row (cloud, or a local
 // model the probe reports running) proceeds straight to launch, an idle local
 // start row is selected and shown for the user to start, and a blocked row
-// routes back with the row's own reason. A mismatch routes to phaseAgent (the
-// bad pin is cleared so re-entry validates fresh).
+// routes back with the row's own reason. A pinned slot profile
+// (-M profile/<name>) that is not blocked begins its launch through
+// beginSlotLaunch; a blocked one routes back like any blocked row. A mismatch
+// routes to phaseAgent (the bad pin is cleared so re-entry validates fresh).
 //
 // The header's tag line and hideDiscovered answer two different questions
 // and are intentionally not the same value: the tag line shows firstTag (the
@@ -812,27 +908,21 @@ func realRunInventory(cfg *config.Config) localmodels.Snapshot { return localmod
 // (EligibleModelsIn only filters when a tag set is present) while the
 // header still shows a tag.
 //
-// models must be non-empty: buildRows emits one row per model, so an empty
-// table is only possible from an empty input, and both callers (the phaseAgent
-// Enter path and proceedFromSelectedPath's pinned-agent path) already guard
-// len(models) == 0 with their own status message. A future caller must do the
-// same — there is no empty-table branch here to catch it.
+// models must be non-empty: the caller, enterModelPhaseForAgent, guards
+// len(models) == 0 with its own status message. A non-empty list can still build zero rows (#179
+// Phase B: a registry local model that is neither on disk nor running has no
+// row), so an empty table routes back with catalog.NoRowsReason rather than
+// opening a "No items." picker whose Enter does nothing.
 //
-// The only route-back is a rejected -M pin: one with no row at all (outside
-// the eligible list), or one whose row is blocked.
+// Route-backs: a rejected -M pin — one with no row (MissingReason when the
+// pin is in the eligible list and the probe can say why, else "not in the
+// eligible list"), or one whose row is blocked — and an empty table.
 func (m model) enterModelPhase(agent string, models []config.Model, firstTag string) (model, tea.Cmd) {
 	m.tag = firstTag
 
-	routeBack := func(status string) (model, tea.Cmd) {
-		m.status = status
-		m.pinnedModel = ""
-		items := buildAgentList(m.cfg)
-		m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
-		m.agentList.Title = "Pick an agent or command"
-		m.agentList.SetShowStatusBar(false)
-		m.phase = phaseAgent
-		return m, nil
-	}
+	// A closure, not a method value: it must see the m.tableModels/m.models
+	// assignments made below before it is called.
+	routeBack := func(status string) (model, tea.Cmd) { return m.routeBackToAgent(status) }
 
 	m.tableModels = models
 	m.refreshGen++
@@ -841,9 +931,9 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	snap := &inv
 
 	// One Rotation for both the marker and the cursor (each New() scans the
-	// config dir). A missing rotation.state yields "". tableFor also reads it
-	// for the marker; the cursor logic below reuses rot so the config dir is
-	// scanned once.
+	// config dir). tableFor reads the last-picked row id from it for the
+	// marker ("" when nothing was ever launched); the cursor logic below
+	// reuses rot so the config dir is scanned once.
 	rot := rotation.New()
 	tbl, lastID := m.tableFor(agent, models, snap, rot)
 
@@ -870,6 +960,19 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	if m.pinnedModel != "" {
 		idx, ok := idIndex[m.pinnedModel]
 		if !ok {
+			// MissingReason only for a pin the agent could use: one outside
+			// the eligible list (unsupported provider, filtered by -T/-F)
+			// would be told to pull, then refused as ineligible after.
+			if config.IndexModelByID(models, m.pinnedModel) >= 0 {
+				if reason := catalog.MissingReason(m.cfg, snap, m.pinnedModel); reason != "" {
+					return routeBack(reason)
+				}
+			}
+			// The same reason resolveModel gives a slot profile hidden by
+			// -T/-F or held by another agent (#412).
+			if reason := catalog.SlotPinReason(m.cfg, m.slotChecks, agent, m.pinnedModel, m.activeTags, m.activeFamily); reason != "" {
+				return routeBack(reason)
+			}
 			return routeBack(fmt.Sprintf("model %q is not in the eligible list for agent %q", m.pinnedModel, agent))
 		}
 		it := tbl.items[idx]
@@ -879,6 +982,18 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 			// agent picker, where the user can choose another agent or fix
 			// the model.
 			return routeBack(it.blocked)
+		case it.profile != nil:
+			// A slot profile: begin its launch, as the non-TUI pin does. The
+			// row is selected first so a failed launch returns to the picker
+			// on it. --replace applies when its local model has to start
+			// (handleSlotMsg reads it against the pin).
+			m.models.Select(idx)
+			m.phase = phaseModel
+			pinned, ok := m.models.SelectedItem().(*modelItem)
+			if !ok {
+				return m, nil
+			}
+			return m.beginSlotLaunch(pinned)
 		case it.start:
 			// The pin needs a start: run it through the same start flow every
 			// other start row uses, exactly as the non-TUI -M path does, so
@@ -891,34 +1006,52 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 			if !ok {
 				return m, nil
 			}
-			return m.beginStart(pinned, m.allowReplace)
+			return m.beginStart(pinned, m.allowReplace, m.othersFor(true))
 		}
 		m.models.Select(idx)
 		return m.proceedToLaunch()
 	}
 
-	// Cursor: the rotation's next-to-use model among actionable rows
-	// (launch or start — anything without a hint), otherwise the first
-	// actionable row, otherwise the top.
+	if len(tbl.items) == 0 {
+		return routeBack(catalog.NoRowsReason(agent))
+	}
+
+	// Cursor, in this order: the last-picked row when it is a slot profile
+	// that is here and not blocked (profiles do not rotate, so the one just
+	// used is offered again); otherwise the rotation's next-to-use model
+	// among actionable model rows (launch or start: anything without a
+	// hint); otherwise the first actionable row, a profile row included;
+	// otherwise the top.
+	//
+	// actionable holds model rows only. Rotation walks the registry, so a
+	// profile row could never be its answer, and a profile row's model is an
+	// id with nothing else in it.
 	var actionable []config.Model
 	first := -1
 	for i, it := range tbl.items {
-		if it.blocked == "" {
+		if it.blocked != "" {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		if it.profile == nil {
 			actionable = append(actionable, it.model)
-			if first < 0 {
-				first = i
-			}
 		}
 	}
 	pos := 0
 	if first >= 0 {
 		pos = first
 	}
-	// Rotation positions the cursor only when the last-launched model is a
-	// registry model: with no rotation state (or a stale/discovered id that
-	// is never in cfg.Models) NextFromEligible would fall back to the
-	// registry-first model, so the first launchable row is used instead.
-	if lastID != "" && config.IndexModelByID(m.cfg.Models, lastID) >= 0 {
+	if idx, ok := idIndex[lastID]; ok && tbl.items[idx].profile != nil && tbl.items[idx].blocked == "" {
+		pos = idx
+	} else if rotLast, _ := rot.Last(); rotLast != "" && config.IndexModelByID(m.cfg.Models, rotLast) >= 0 {
+		// Rotation positions the cursor only when the last-launched model is
+		// a registry model: with no rotation state (or a stale/discovered id
+		// that is never in cfg.Models) NextFromEligible would fall back to
+		// the registry-first model, so the first actionable row is used
+		// instead. The pointer is read from rotation.state (rot.Last), not
+		// from lastID: after a profile launch the two differ.
 		if next, ok := rot.NextFromEligible(actionable, m.cfg); ok {
 			if idx, ok := idIndex[next.ID]; ok {
 				pos = idx
@@ -928,27 +1061,48 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	m.models.Select(pos)
 
 	// The single-row shortcut launches only: a lone start row must show the
-	// picker and wait for Enter, never start a server unasked.
-	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start {
+	// picker and wait for Enter, never start a server unasked. A lone
+	// slot-profile row waits too: the shortcut launches the row as a model,
+	// and a profile row's model is only its id.
+	if len(tbl.items) == 1 && tbl.items[0].blocked == "" && !tbl.items[0].start && tbl.items[0].profile == nil {
 		return m.proceedToLaunch()
 	}
 	m.phase = phaseModel
+	// The list was built at the bare window size; give it the picker's.
+	m.fitLists()
+	return m, nil
+}
+
+// routeBackToAgent leaves the model phase for the agent picker with status as
+// the reason, clearing any -M pin so re-entry validates fresh. Shared by
+// enterModelPhase's route-backs and a table refresh that left no rows.
+func (m model) routeBackToAgent(status string) (model, tea.Cmd) {
+	m.status = status
+	m.pinnedModel = ""
+	items := buildAgentList(m.cfg)
+	m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
+	m.agentList.Title = "Pick an agent or command"
+	m.agentList.SetShowStatusBar(false)
+	m.phase = phaseAgent
 	return m, nil
 }
 
 // tableFor builds the selector table for agent from models and an inventory
-// snapshot, returning the table and the rotation's last-launched id. It is
-// the exact table build enterModelPhase performs (rotation last id from rot,
+// snapshot, returning the table and the last-picked row id, which is the row
+// the marker sits on: a model's id or a slot profile's (rot.LastPicked). It
+// is not the rotation pointer; a caller that needs that reads rot.Last. This
+// is the exact table build enterModelPhase performs (last-picked id from rot,
 // agent-scoped survey stats, one usage + refcount store read), shared with
 // refreshTable so a rebuilt table matches the original in every column.
 func (m model) tableFor(agent string, models []config.Model, snap *localmodels.Snapshot, rot *rotation.Rotation) (modelTable, string) {
-	lastID, _ := rot.Last()
+	lastID, _ := rot.LastPicked()
 	// Agent-scoped 30-day survey stats, one Events() read for the picker.
 	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
 	tbl := buildTable(tableInput{
 		cfg: m.cfg, agent: agent, models: models, inventory: snap,
 		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
 		usage:          newUsageStore(), stats: surveyStats,
+		slots: m.slotChecks,
 	}, newRefcountStore(), lastID)
 	return tbl, lastID
 }
@@ -982,11 +1136,11 @@ func (m model) refreshTable() (model, tea.Cmd) {
 	}
 	m.refreshGen++
 	gen := m.refreshGen
-	// The command captures only the values tableFor reads (cfg and the active
-	// -T/-F filters), never the live model: the goroutine must not touch it,
-	// and copying the whole struct would pin its lists and inputs for the
-	// duration of the probe.
-	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily}
+	// The command captures only the values tableFor reads (cfg, the active
+	// -T/-F filters and the slot profiles), never the live model: the
+	// goroutine must not touch it, and copying the whole struct would pin its
+	// lists and inputs for the duration of the probe.
+	src := model{cfg: m.cfg, activeTags: m.activeTags, activeFamily: m.activeFamily, slotChecks: m.slotChecks}
 	agent, models := m.agent, m.tableModels
 	return m, func() tea.Msg {
 		inv := runInventory(src.cfg)
@@ -1046,70 +1200,102 @@ func (m *model) applyRefreshedTable(msg tableRefreshedMsg) tea.Cmd {
 	return cmd
 }
 
-// proceedToLaunch checks for a prior session and either launches the agent
-// directly or transitions to the resume prompt. It is the shared flow used
-// by both the phaseModel enter handler and the ollama warning proceed choice.
+// proceedToLaunch is the one funnel every model launch passes through: the
+// phaseModel enter handler, the ollama warning's proceed choice, a pinned or
+// lone launch row in enterModelPhase, and a start that just succeeded. It
+// captures the highlighted row as the launch model, runs the launch-time
+// LiteLLM route check where one is needed, and continues in launchSelected —
+// in this same Update, unless the check had to write the route, in which case
+// phaseRouting shows the proxy restart first.
+func (m model) proceedToLaunch() (model, tea.Cmd) {
+	// A guard, not a path: Enter and the pin send a profile row to
+	// beginSlotLaunch themselves. Anything else that lands here with a
+	// profile highlighted must not go on to ResolveRoute and the single-model
+	// launch with the row's id-only Model.
+	if it, ok := m.models.SelectedItem().(*modelItem); ok && it.profile != nil {
+		if it.blocked != "" {
+			m.status = it.blocked
+			m.phase = phaseModel
+			return m, nil
+		}
+		return m.beginSlotLaunch(it)
+	}
+	// The highlighted list item is what gets launched, regardless
+	// of any other state. m.models is the single source of truth.
+	highlighted, ok := m.models.SelectedItem().(*modelItem)
+	if !ok {
+		// Reached after a start too (finishStart), and this way back to the
+		// picker never gets to launchSelected: the start's note (#258) is
+		// shown and dropped here, or it would sit on the model and be put
+		// ahead of some later, unrelated launch failure.
+		m.status = withNote(m.startNote, "no model selected")
+		m.startNote = ""
+		return m.refreshTable()
+	}
+	// Capture the model so launchAndRecord records exactly this pick, also
+	// when the launch continues from the routing phase an Update later,
+	// without re-reading the picker.
+	m.launchModel = highlighted.model
+	// A new attempt: whatever the status line still shows — an older error —
+	// is not about this launch, and the picker renders m.status. No caller sets a status just before calling
+	// this that is meant to survive it.
+	m.status = ""
+	// A launch row is a model that was already running, and wt may not be
+	// what started it, so its LiteLLM route may not exist yet. A row this
+	// flow just started is checked too (#275): its start writes the route,
+	// but a start whose route write failed still succeeds, and the check is
+	// what tries again before the agent meets "Invalid model name". With the
+	// route in place it changes nothing and waits for nothing.
+	if m.cfg == nil {
+		return m.launchSelected()
+	}
+	// Only a launch that goes through LiteLLM needs the route: a direct or
+	// native launch leaves config.yaml alone.
+	if route, _ := m.cfg.ResolveRoute(highlighted.model, agents.ProtocolsFor(m.agent)); !route.Litellm {
+		return m.launchSelected()
+	}
+	return m.checkLaunchRoute(highlighted.model)
+}
+
+// launchSelected launches m.launchModel. It reads m.launchModel rather than the
+// picker's cursor because it also runs from the routing phase's completion
+// message, an Update later than the one that picked the row.
 // Every path that bails back to the picker re-probes the table: this is reached
 // from the start flow, where the table was built before the attempt, so a start
 // that succeeded and then failed to launch would otherwise leave the picker
 // claiming RUNNING="-" for a model that is loaded and serving. The probe is
 // deferred to a command, so paying for it on the paths that did not start
 // anything costs nothing on the update loop.
-func (m model) proceedToLaunch() (model, tea.Cmd) {
-	// The highlighted list item is what gets launched, regardless
-	// of any other state. m.current is gone; m.models is the
-	// single source of truth.
-	highlighted, ok := m.models.SelectedItem().(*modelItem)
-	if !ok {
-		m.status = "no model selected"
+func (m model) launchSelected() (model, tea.Cmd) {
+	// wt starts the agent fresh. Whether to continue an earlier conversation
+	// is the agent's business: the user says so with the agent's own flags
+	// after `--` (m.extraArgs), which launchAgent passes through unchanged.
+	// The note of the start that led here (#258), taken once: a later launch
+	// from the same picker is not about that start.
+	note := m.startNote
+	m.startNote = ""
+	cmd, err := launchAgent(m.agent, m.launchModel, m.selectedPath, m.yolo, m.cfg, m.extraArgs)
+	if err != nil {
+		m.status = withNote(note, "launch failed: "+err.Error())
 		return m.refreshTable()
 	}
-	// Capture the model so launchAndRecord records exactly this pick in
-	// both the no-session and resume paths, without re-reading the picker.
-	m.launchModel = highlighted.model
-	// Native models launch fresh: resuming a session would restore the
-	// session's stored model, silently overriding the user's "native" choice
-	// (and, for claude, routing a gateway model at the real Anthropic API).
-	// Look up a prior session only for non-native models.
-	var sess *session.Session
-	if !highlighted.model.Native {
-		if r, ok := agents.ByName(m.agent).(agents.Resumer); ok {
-			var err error
-			sess, err = r.LatestSession(m.selectedPath)
-			if err != nil {
-				m.status = "session check failed: " + err.Error()
-				return m.refreshTable()
-			}
-		}
-	}
-	if sess == nil {
-		cmd, err := launchAgent(m.agent, highlighted.model, m.selectedPath, m.yolo, nil, m.cfg, m.extraArgs)
-		if err != nil {
-			m.status = "launch failed: " + err.Error()
-			return m.refreshTable()
-		}
-		return m.launchAndRecord(cmd)
-	}
-	m.phase = phaseResume
-	m.resume.session = sess
-	m.resume.choices = list.New(buildResumeChoices(sess), ThemedListDelegate(m.theme), m.width-2, m.height-2)
-	m.resume.choices.Title = "Resume previous session?"
-	return m, nil
+	return m.launchAndRecord(cmd)
 }
 
 // launchAndRecord records the model as last-launched (so the next picker
 // entry advances rotation), records a live-session refcount entry for the
 // model picker's "in use" column, and then runs the agent. Recording
 // happens here — the single commit point reached only after the ollama
-// check and resume prompt have been satisfied — so a cancelled ollama
-// warning, a cancelled resume prompt, or a failed ollama check never
-// advances the rotation or the refcount. Both state writes are
+// check has been satisfied — so a cancelled ollama warning or a failed
+// ollama check never advances the rotation or the refcount. Both state writes are
 // best-effort: a failure of either (or both) surfaces in m.status and the
 // launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	var errs []string
 	if err := rotation.New().RecordFor(m.agent, m.launchModel.ID); err != nil {
-		errs = append(errs, "rotation state not saved: "+err.Error())
+		// RecordFor's error names the file that failed (rotation.state, or
+		// last-picked.state, a write of its own).
+		errs = append(errs, err.Error())
 	}
 	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil {
 		errs = append(errs, "refcount state not saved: "+err.Error())
@@ -1120,36 +1306,71 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 	return m, runAndWaitCmd(cmd, m.agent, m.launchModel)
 }
 
-// loadEntriesCmd returns a command that enumerates worktrees/branches
-// and captures the repo root for the new-worktree prompt. The returned
-// message carries the three-group Enumerate shape, which the picker
-// (buildList) interleaves into sentinel → worktrees → locals →
-// separator → remotes.
+// findRepoRoot is the picker's `git rev-parse --show-toplevel`
+// (worktree.RepoRoot), a seam so a test can count the lookups a picker open
+// makes (#390).
+var findRepoRoot = worktree.RepoRoot
+
+// loadEntriesCmd returns a command that looks the repo root up afresh and
+// enumerates worktrees/branches there: the reload after a create, which runs
+// in whatever directory wt is in by then. A picker open goes through
+// loadPickerCmd instead, which shares one lookup with the PR listings.
 func loadEntriesCmd() tea.Cmd {
 	return func() tea.Msg {
-		root, err := worktree.RepoRoot()
-		if err != nil {
-			return entriesLoadedMsg{err: err}
-		}
-		groups, err := worktree.Enumerate(root, root)
-		defaultBranch, _ := worktree.DefaultBranch(root)
-		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, err: err}
+		root, err := findRepoRoot()
+		return loadEntriesAtCmd(root, err)()
 	}
 }
 
-// selectFirstEntry selects the first kindEntry item in l matching pred and
-// reports whether a match was found. Shared by the pendingHighlight,
-// default-branch, and current-checkout cursor placements in Update so a
-// future change to the iteration shape (e.g. skipping separator rows) only
-// needs to happen once.
-func selectFirstEntry(l *list.Model, pred func(entryItem) bool) bool {
+// loadEntriesAtCmd returns a command that enumerates worktrees/branches in
+// root, the repo root findRepoRoot answered (lookupErr its error), and
+// captures it for the new-worktree prompt. The returned message carries the
+// three-group Enumerate shape, which the picker (buildList) interleaves into
+// sentinel → worktrees → locals → separator → remotes.
+func loadEntriesAtCmd(root string, lookupErr error) tea.Cmd {
+	return func() tea.Msg {
+		if lookupErr != nil {
+			return entriesLoadedMsg{err: lookupErr}
+		}
+		groups, own, err := worktree.EnumerateRepos(root, root)
+		defaultBranch := worktree.DefaultBranch(root)
+		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, ownRepos: own, err: err}
+	}
+}
+
+// loadPRsCmd returns a command that runs one listing of the pull requests of
+// the repository at root with gh (worktree.PRs with state: one call, five
+// seconds at most, every failure an empty set) for the worktree picker's
+// tags. Each listing runs beside the entry load and the other listings, so
+// the picker never waits for it. An empty root (no repository) answers a
+// loaded, empty set without running gh.
+func loadPRsCmd(root, state string) tea.Cmd {
+	return func() tea.Msg {
+		if root == "" {
+			return prsLoadedMsg{prs: worktree.EmptyPRSet()}
+		}
+		return prsLoadedMsg{prs: worktree.PRs(root, state)}
+	}
+}
+
+// prsLoadedMsg carries one loadPRsCmd's answer: each head's pull request in
+// that listing, keyed by head repository and branch; loaded but empty when
+// the listing failed.
+type prsLoadedMsg struct {
+	prs worktree.PRSet
+}
+
+// selectFirstEntry selects the first kindEntry item in l matching pred.
+// Shared by the pendingHighlight, default-branch, and current-checkout cursor
+// placements in Update so a future change to the iteration shape (e.g.
+// skipping separator rows) only needs to happen once.
+func selectFirstEntry(l *list.Model, pred func(entryItem) bool) {
 	for i, it := range l.Items() {
 		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && pred(ei) {
 			l.Select(i)
-			return true
+			return
 		}
 	}
-	return false
 }
 
 // isCurrentOnDefaultBranch returns true when the entry is the current
@@ -1198,19 +1419,27 @@ type entriesLoadedMsg struct {
 	groups        []worktree.EntryGroup
 	defaultBranch string
 	repoRoot      string
+	ownRepos      worktree.RepoSet
 	err           error
 }
+
+// loadingStatus is the placeholder View shows until the worktree list
+// arrives. It lives in m.status, so the load has to take it back down: every
+// later screen renders m.status, and a placeholder left there reads as a
+// stuck "loading" message on the agent and model pickers.
+const loadingStatus = "loading worktrees..."
 
 // newRunModel builds the TUI's initial model from Run's arguments. It is split
 // out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
 // without starting a real tea.Program.
-func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
+func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
 	return model{
-		status:       "loading worktrees...",
+		status:       loadingStatus,
 		cfg:          cfg,
 		theme:        theme,
 		yolo:         yolo,
 		allowReplace: allowReplace,
+		othersMode:   others,
 		initialAgent: agent,
 		pinnedModel:  pinned,
 		activeTags:   tags,
@@ -1239,7 +1468,10 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // flag value (comma-delimited; "" = no filter). extraArgs are the user's
 // passthrough args after --. theme is the active color theme, loaded by
 // cmd/wt. allowReplace grants the -M start path permission to stop a running
-// occupant without the replace dialog (it comes from --replace). prePath,
+// occupant without the replace dialog (it comes from --replace). others is
+// --others ("keep", "stop" or ""): the -M start path's answer about other
+// providers' models loaded beside the model it starts, in place of the
+// dialog, by --replace's pinned-row rule (#412). prePath,
 // when non-empty, is a pre-resolved worktree path
 // (-W/--cwd/outside-repo): the worktree picker is skipped and control starts
 // at the agent/command picker (or model phase when agent is pinned). When
@@ -1252,25 +1484,138 @@ func newRunModel(yolo, allowReplace bool, agent, pinned, tags, family string, ex
 // this session makes; cmd/wt's main.go builds it as a closure over the
 // already-loaded profiles.toml state (mirrors the non-TUI path's
 // applyProfileForLaunch).
-func Run(yolo, allowReplace bool, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier) error {
-	p := tea.NewProgram(newRunModel(yolo, allowReplace, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), tea.WithAltScreen())
+// slots carries the slot profiles: the picker shows a row for each one that
+// names this agent, and a profile launch applies slots.Apply in place of
+// applyProfile.
+// When the launched agent's run failed, Run returns that error (an
+// *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
+// cmd/wt exits with the agent's status (#412).
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles) error {
+	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), slots)
+	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
 	// from a test invocation sharing the process).
 	pendingSummary = ""
+	pendingRouteNotes = ""
+	settleOut = &startOutput{what: settleOutWhat}
+	drainLine.Store(nil)
 	pendingSurveyState = pendingSurvey{}
 	profileApplier = applyProfile
 	finalModel, err := p.Run()
 	// The alt-screen is now torn down (p.Run() has returned and bubbletea
 	// has called exitAltScreen), so stdout reaches the user's terminal
 	// rather than a discarded buffer.
+	// Route output first: it belongs to the launch (or to the launch that
+	// never happened), so it goes above the summary and the survey.
+	flushRouteNotesAfterRun(finalModel, os.Stderr)
 	printPendingSummaryAndSurvey(cfg)
-	if err == nil {
-		if fm, ok := finalModel.(model); ok && fm.fatalErr != nil {
-			err = fm.fatalErr
+	return runResult(finalModel, err)
+}
+
+// runResult is what Run returns once the post-exit flow has run: the
+// program's own error, else the model's fatal error, else the error the
+// launched agent's run returned (an *exec.ExitError for a non-zero exit,
+// which cmd/wt turns into wt's own exit status, #412). It is extracted from
+// Run() so it is unit-testable without a real tea.Program/TTY.
+func runResult(final tea.Model, err error) error {
+	if err != nil {
+		return err
+	}
+	fm, ok := final.(model)
+	if !ok {
+		return nil
+	}
+	if fm.fatalErr != nil {
+		return fm.fatalErr
+	}
+	return fm.agentErr
+}
+
+// flushRouteNotesAfterRun prints, once the alt screen is gone, whatever route
+// output is still pending: the user quit, or the launch never happened, so
+// runAndWaitCmd never printed it. A check that is still in flight (the user
+// pressed ctrl+c on the routing screen, so its message was never handled) is
+// settled first — that waits for the proxy restart, which the process has to
+// wait for before exiting anyway, and is when the last of its output is in.
+// That wait can last as long as the restart, on a terminal that otherwise
+// looks idle, so it is announced first — but only when there really is
+// something left to wait for: a check whose command already finished settles
+// instantly and gets no line. It is extracted from Run() so it is
+// unit-testable without a real tea.Program/TTY.
+func flushRouteNotesAfterRun(final tea.Model, w io.Writer) {
+	if fm, ok := final.(model); ok && fm.routing != nil {
+		if !fm.routing.settled.Load() {
+			fmt.Fprintln(w, "wt: waiting for the LiteLLM proxy restart…")
+			// The screen that showed why is gone.
+			if d := drainView(); d != "" {
+				fmt.Fprintf(w, "wt: %s\n", d)
+			}
+		}
+		pendingRouteNotes += fm.routing.settle()
+	}
+	if fm, ok := final.(model); ok {
+		settleQuitSlot(fm, w)
+	}
+	flushRouteNotes(w)
+	// A settling restart started from the picker can still be running, and
+	// main() waits for it: from here on its lines have a terminal to go to.
+	settleOut.release(w)
+	// A start that was still running when wt quit (ctrl+c twice on the start
+	// screen) never reported, so what the engine had printed is still in its
+	// buffer: print it, and let whatever the engine and its proxy restart
+	// print from here on go straight to the terminal. main() waits for that
+	// restart before the process exits.
+	//
+	// A start the user quit out of at the routing stage (startState.quitting)
+	// is waited for as well. Nothing of it can be called off there, and its
+	// goroutine still has the proxy wait and the check after it to make
+	// (settleStart, #343), which for a server that is gone removes the
+	// route and starts one more restart. main()'s one WaitPendingRoutes is
+	// over when the first restart is, so without this the process left in
+	// the middle of the check: the dead model's route still in config.yaml,
+	// or config.yaml rewritten and the proxy never restarted. The quit while
+	// a cancel drains is not waited for: that ctrl+c is the way out of a
+	// teardown that hangs.
+	//
+	// The start of a profile's local model was told a restart is owed. The
+	// quit that is waited for settles it after the wait (settleQuitSlotStart);
+	// the one that is not was settled above (settleQuitSlot).
+	if fm, ok := final.(model); ok && fm.start != nil && fm.start.out != nil {
+		fm.start.out.release(w)
+		if fm.start.quitting {
+			settleQuitStart(fm.start.ch, w)
+			settleQuitSlotStart(fm)
 		}
 	}
-	return err
+}
+
+// quitStartGrace is how long a start that wt is quitting out of may take to
+// finish before the terminal says what it is waiting for. A start that had
+// already reported, or is about to, gets no line.
+var quitStartGrace = 200 * time.Millisecond
+
+// settleQuitStart returns once the goroutine of a start the user quit out of
+// has finished: it closes ch after its result, which nothing reads any more.
+// The wait is the proxy restart's, which the process waits for before it
+// exits in any case, and one request to the provider's server; it is
+// announced once it has lasted quitStartGrace.
+func settleQuitStart(ch <-chan tea.Msg, w io.Writer) {
+	grace := time.NewTimer(quitStartGrace)
+	defer grace.Stop()
+	for {
+		select {
+		case _, open := <-ch:
+			if !open {
+				return
+			}
+		case <-grace.C:
+			fmt.Fprintln(w, "wt: waiting for the LiteLLM proxy restart…")
+			for range ch {
+			}
+			return
+		}
+	}
 }
 
 // printPendingSummaryAndSurvey runs the TUI's post-exit flow once the
@@ -1284,6 +1629,19 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 	summary := pendingSummary
 	pendingSurveyState = pendingSurvey{}
 	pendingSummary = ""
+
+	if launched.profile {
+		// A slot-profile session. The refcount lines are released, then the
+		// stop picker runs as after any non-native launch; it is not
+		// filtered to the profile. No survey and no price notice: the
+		// profile is not one priced registry model.
+		releaseSession()
+		runStopPhase(cfg)
+		if summary != "" {
+			fmt.Println("\n" + summary)
+		}
+		return
+	}
 
 	var stats string
 	if launched.agent != "" {
@@ -1308,6 +1666,6 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 	// Command agents never touch a priced model, so the reminder is
 	// meaningless for them — same convention runSurvey already uses.
 	if summary != "" && launched.m.ID != "" {
-		emitPriceNotice()
+		emitPriceNotice(cfg)
 	}
 }

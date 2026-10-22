@@ -1,17 +1,14 @@
 package agents
 
 import (
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/session"
 )
 
 func nativeModel(agent string) config.Model {
@@ -27,10 +24,6 @@ func namedNativeModel(provider, name string) config.Model {
 
 func cloudModel(id string) config.Model {
 	return config.Model{ID: id, ModelName: id, Location: config.LocationCloud}
-}
-
-func localModel(id string) config.Model {
-	return config.Model{ID: id, ModelName: id, Location: config.LocationLocal}
 }
 
 // directRoute returns a direct-mode Route for model m.
@@ -54,22 +47,6 @@ func litellmRoute(m config.Model) config.Route {
 		ProviderID: m.ProviderID,
 		Litellm:    true,
 	}
-}
-
-// routeFor converts a test LitellmState into the Route Build expects:
-// enabled routes through the proxy, disabled dials the (ollama) direct route.
-func routeFor(m config.Model, gw config.LitellmState) config.Route {
-	if gw.Enabled {
-		return config.Route{
-			BaseOrigin: strings.TrimRight(gw.URL, "/"),
-			APIKey:     gw.APIKey,
-			ModelRef:   m.ID,
-			Display:    m.ModelName,
-			ProviderID: m.ProviderID,
-			Litellm:    true,
-		}
-	}
-	return directRoute(m)
 }
 
 // ollamaCloudModel mirrors cloudModel but with a real ProviderID, so the
@@ -161,7 +138,7 @@ func TestClaude(t *testing.T) {
 	if len(lc.Args) != 2 || lc.Args[0] != "--model" || lc.Args[1] != "deepseek-v4-pro:cloud" {
 		t.Errorf("cloud args = %v, want [--model deepseek-v4-pro:cloud]", lc.Args)
 	}
-	if !hasEnv(lc.Env, "ANTHROPIC_BASE_URL=http://localhost:11434") {
+	if !slices.Contains(lc.Env, "ANTHROPIC_BASE_URL=http://localhost:11434") {
 		t.Errorf("cloud env missing gateway: %v", lc.Env)
 	}
 
@@ -233,13 +210,13 @@ func TestCopilot(t *testing.T) {
 	if len(lc.Args) != 0 {
 		t.Errorf("copilot should not pass --model, got args %v", lc.Args)
 	}
-	if !hasEnv(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
+	if !slices.Contains(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
 		t.Errorf("env missing COPILOT_MODEL: %v", lc.Env)
 	}
-	if !hasEnv(lc.Env, "COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1") {
+	if !slices.Contains(lc.Env, "COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1") {
 		t.Errorf("env missing base url: %v", lc.Env)
 	}
-	if !hasEnv(lc.Env, "COPILOT_PROVIDER_WIRE_API=completions") {
+	if !slices.Contains(lc.Env, "COPILOT_PROVIDER_WIRE_API=completions") {
 		t.Errorf("env missing wire api: %v", lc.Env)
 	}
 	if len(d.Build(nativeModel("copilot"), false, directRoute(nativeModel("copilot"))).Env) != 0 {
@@ -255,10 +232,6 @@ func TestCopilot(t *testing.T) {
 	}
 }
 
-// OpenCode receives its model configuration via a single
-// OPENCODE_CONFIG_CONTENT env var containing inline JSON. After the
-// native-provider alignment, opencode is ollama-only — there is no native
-// branch to test.
 // OpenCode receives its model configuration via a single
 // OPENCODE_CONFIG_CONTENT env var containing inline JSON. In direct mode
 // it declares the same @ai-sdk/openai-compatible custom provider as in
@@ -278,24 +251,7 @@ func TestOpenCode(t *testing.T) {
 	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
 		t.Fatalf("env = %v, want OPENCODE_CONFIG_CONTENT", lc.Env)
 	}
-	content := envValue(t, lc.Env, "OPENCODE_CONFIG_CONTENT")
-	var parsed struct {
-		Model      string `json:"model"`
-		SmallModel string `json:"small_model"`
-		Provider   map[string]struct {
-			NPM     string `json:"npm"`
-			Options struct {
-				BaseURL string `json:"baseURL"`
-				APIKey  string `json:"apiKey"`
-			} `json:"options"`
-			Models map[string]struct {
-				Name string `json:"name"`
-			} `json:"models"`
-		} `json:"provider"`
-	}
-	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\n%s", err, content)
-	}
+	parsed := parseOpenCodeConfig(t, lc.Env)
 	if parsed.Model != "agent-wt/deepseek-v4-pro:cloud" {
 		t.Errorf("model = %q, want agent-wt/deepseek-v4-pro:cloud", parsed.Model)
 	}
@@ -323,15 +279,7 @@ func TestOpenCode(t *testing.T) {
 // test fixture instead of the user's real catalog.
 func writePiModels(t *testing.T, content string) {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".pi", "agent")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, piHomeModelsPath(t), content)
 }
 
 // Pi has no yolo flag (the pi CLI doesn't support skipping permissions).
@@ -430,7 +378,7 @@ func TestInstalled(t *testing.T) {
 	}
 }
 
-// Command builds an exec.Cmd with the correct binary, args, working
+// command builds an exec.Cmd with the correct binary, args, working
 // directory, and merged environment. This is the final step before the
 // tool replaces itself with the agent process.
 func TestCommand(t *testing.T) {
@@ -438,7 +386,7 @@ func TestCommand(t *testing.T) {
 	m := cloudModel("test-model")
 	workdir := "/tmp"
 
-	cmd, err := Command(d, m, false, directRoute(m), workdir)
+	cmd, _, err := command(d, m, false, directRoute(m), workdir)
 	if err != nil {
 		// pi may not be installed; that's fine, just verify the error is clear.
 		if !strings.Contains(err.Error(), "not installed") {
@@ -455,7 +403,7 @@ func TestCommand(t *testing.T) {
 	}
 }
 
-// Command must strip LaunchCmd.ClearEnv names from the inherited environment
+// command must strip LaunchCmd.ClearEnv names from the inherited environment
 // before launching. This is how native launches avoid inheriting the ollama
 // gateway vars (ANTHROPIC_BASE_URL etc.) from a parent shell that has them
 // exported — without it, a native claude launch would silently route to the
@@ -464,9 +412,9 @@ func TestCommandClearsInheritedEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "http://localhost:11434")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "ollama")
 
-	cmd, err := Command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
+	cmd, _, err := command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
 	if err != nil {
-		t.Fatalf("Command: %v", err)
+		t.Fatalf("command: %v", err)
 	}
 	if hasEnvKey(cmd.Env, "ANTHROPIC_BASE_URL") {
 		t.Errorf("cmd.Env still contains ANTHROPIC_BASE_URL: %v", cmd.Env)
@@ -485,7 +433,7 @@ func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
 	register("_test_regular", func() Driver { return regularTestDriver{} })
 	t.Cleanup(func() { delete(registry, "_test_regular") })
 
-	cmd, err := BuildLaunchCmd("_test_regular", config.Model{}, "/tmp", false, nil, &config.Config{}, []string{"--foo", "--bar"})
+	cmd, err := BuildLaunchCmd("_test_regular", config.Model{}, "/tmp", false, &config.Config{}, []string{"--foo", "--bar"})
 	if err != nil {
 		t.Fatalf("BuildLaunchCmd: %v", err)
 	}
@@ -504,7 +452,7 @@ func TestBuildLaunchCmdAppendsExtraArgs(t *testing.T) {
 // were also appended to cmd.Args the shell would receive duplicate arguments,
 // causing the command to malform or fail at runtime.
 func TestBuildLaunchCmdShellNoDoubleAppend(t *testing.T) {
-	cmd, err := BuildLaunchCmd("shell", config.Model{}, "/tmp", false, nil, &config.Config{}, []string{"echo", "hello"})
+	cmd, err := BuildLaunchCmd("shell", config.Model{}, "/tmp", false, &config.Config{}, []string{"echo", "hello"})
 	if err != nil {
 		t.Fatalf("BuildLaunchCmd: %v", err)
 	}
@@ -530,28 +478,13 @@ func (regularTestDriver) Build(_ config.Model, _ bool, _ Route) LaunchCmd {
 }
 func (regularTestDriver) YoloFlag() string { return "" }
 
-func hasEnv(env []string, want string) bool {
-	for _, e := range env {
-		if e == want {
-			return true
-		}
-	}
-	return false
-}
-
 // hasEnvKey reports whether env contains an entry for key (KEY=...).
 func hasEnvKey(env []string, key string) bool {
-	prefix := key + "="
-	for _, e := range env {
-		if strings.HasPrefix(e, prefix) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, key+"=") })
 }
 
 // clearEnvDriver is a test-only Driver that clears two env vars, used to
-// verify Command strips them from the inherited environment.
+// verify command strips them from the inherited environment.
 type clearEnvDriver struct{}
 
 func (clearEnvDriver) Build(_ config.Model, _ bool, _ Route) LaunchCmd {
@@ -560,7 +493,7 @@ func (clearEnvDriver) Build(_ config.Model, _ bool, _ Route) LaunchCmd {
 func (clearEnvDriver) YoloFlag() string { return "" }
 
 // warnDriver is a test-only Driver whose Build returns a fixed warning, used
-// to verify Command surfaces it on stderr.
+// to verify command surfaces it on stderr.
 type warnDriver struct{}
 
 func (warnDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
@@ -568,7 +501,7 @@ func (warnDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 }
 func (warnDriver) YoloFlag() string { return "" }
 
-// Command must print a non-empty LaunchCmd.Warn to stderr before returning the
+// command must print a non-empty LaunchCmd.Warn to stderr before returning the
 // command. This is how the pi driver tells the user it fell back to pi's
 // default model; if the warning is swallowed, the user silently gets a
 // different model than they selected.
@@ -579,11 +512,11 @@ func TestCommandPrintsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stderr = w
-	_, cmdErr := Command(warnDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
+	_, _, cmdErr := command(warnDriver{}, config.Model{}, false, directRoute(config.Model{}), "/tmp")
 	w.Close()
 	os.Stderr = old
 	if cmdErr != nil {
-		t.Fatalf("Command: %v", cmdErr)
+		t.Fatalf("command: %v", cmdErr)
 	}
 	out, _ := io.ReadAll(r)
 	if !strings.Contains(string(out), "test warning") {
@@ -597,12 +530,7 @@ func TestCommandPrintsWarning(t *testing.T) {
 // both fields to the same string, masking bugs where the wrong field is
 // passed to the agent CLI. These regression tests use the real shape.
 func ollamaPrefixedModel() config.Model {
-	return config.Model{
-		ID:         "ollama/deepseek-v4-pro:cloud",
-		ModelName:  "deepseek-v4-pro:cloud",
-		ProviderID: "ollama",
-		Location:   config.LocationCloud,
-	}
+	return ollamaCloudModel("deepseek-v4-pro:cloud")
 }
 
 // Claude must pass --model with the bare ModelName, not the registry ID
@@ -632,9 +560,6 @@ func TestClaudeOllamaPrefix(t *testing.T) {
 	}
 }
 
-// Codex must pass --model with the bare ModelName. The ollama-launch
-// profile (see docs/wt-agents/codex-wt.md) routes through Ollama; passing
-// the prefixed id causes codex to ask Ollama for an unknown model.
 // Codex must pass --model with the bare ModelName. The ollama provider block
 // (see docs/wt-agents/codex-wt.md) routes through Ollama; passing the prefixed
 // id as the --model value would make codex ask Ollama for a model it cannot
@@ -673,7 +598,7 @@ func TestCopilotOllamaPrefix(t *testing.T) {
 		t.Fatal("copilot driver not registered")
 	}
 	lc := d.Build(ollamaPrefixedModel(), false, directRoute(ollamaPrefixedModel()))
-	if !hasEnv(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
+	if !slices.Contains(lc.Env, "COPILOT_MODEL=deepseek-v4-pro:cloud") {
 		t.Errorf("COPILOT_MODEL missing or wrong; env = %v", lc.Env)
 	}
 	for _, e := range lc.Env {
@@ -700,24 +625,7 @@ func TestOpenCodeOllamaPrefix(t *testing.T) {
 	if len(lc.Env) != 1 || !strings.HasPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=") {
 		t.Fatalf("env = %v, want single OPENCODE_CONFIG_CONTENT entry", lc.Env)
 	}
-	payload := strings.TrimPrefix(lc.Env[0], "OPENCODE_CONFIG_CONTENT=")
-	var parsed struct {
-		Model      string `json:"model"`
-		SmallModel string `json:"small_model"`
-		Provider   map[string]struct {
-			NPM     string `json:"npm"`
-			Options struct {
-				BaseURL string `json:"baseURL"`
-				APIKey  string `json:"apiKey"`
-			} `json:"options"`
-			Models map[string]struct {
-				Name string `json:"name"`
-			} `json:"models"`
-		} `json:"provider"`
-	}
-	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
-		t.Fatalf("OPENCODE_CONFIG_CONTENT is not valid JSON: %v\npayload=%s", err, payload)
-	}
+	parsed := parseOpenCodeConfig(t, lc.Env)
 	if got, want := parsed.Model, "agent-wt/deepseek-v4-pro:cloud"; got != want {
 		t.Errorf("model = %q, want %q (agent-wt/<ModelName>, bare ModelName not m.ID)", got, want)
 	}
@@ -782,106 +690,6 @@ func TestCopilotNativeProviderNamed(t *testing.T) {
 	for _, k := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_WIRE_API", "COPILOT_MODEL"} {
 		if !slices.Contains(lc.ClearEnv, k) {
 			t.Errorf("ClearEnv = %v, want it to include %q", lc.ClearEnv, k)
-		}
-	}
-}
-
-// TestBuildLaunchCmdNativeSkipsResume pins the !m.Native defense-in-depth
-// guard at the package level. The wrapper-level TestBuildLaunchNativeSkipsResume
-// in cmd/wt covers the same contract end-to-end, but if a refactor drops the
-// `!m.Native` clause from BuildLaunchCmd itself, this test is the only
-// direct pin — without it the bug could regress silently if the wrapper test
-// is later deleted or rewritten as a perceived duplicate. Without this guard,
-// resuming a session would restore the session's stored model and silently
-// override the user's "native" choice (for claude, routing a gateway model at
-// the real Anthropic API).
-func TestBuildLaunchCmdNativeSkipsResume(t *testing.T) {
-	if !Installed("claude") {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cmd, err := BuildLaunchCmd("claude", nativeModel("claude"), "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, &config.Config{}, nil)
-	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, native model must not resume", got)
-	}
-}
-
-// TestBuildLaunchCmdNamedNativeSkipsResume pins the broadened §5 resume-skip
-// predicate for a *named* native-provider model (claude/opus, ModelName
-// "opus", Native true), not just the claude/native sentinel. The sentinel
-// tests (TestBuildLaunchCmdNativeSkipsResume and its cmd/wt + tui wrappers)
-// would still pass if the predicate regressed from !m.Native back to
-// !m.IsNative() — which only checks ModelName == "native" — so this test is
-// the guard that a named native model, which the old IsNative() would have
-// missed, is not resumed.
-func TestBuildLaunchCmdNamedNativeSkipsResume(t *testing.T) {
-	if !Installed("claude") {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cmd, err := BuildLaunchCmd("claude", namedNativeModel("claude", "opus"), "/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, &config.Config{}, nil)
-	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if strings.Contains(got, "--resume") || strings.Contains(got, "--session") {
-		t.Errorf("args = %q, named native model must not resume", got)
-	}
-}
-
-// TestBuildLaunchCmdResumeNonNative pins the inverse: a non-native model with
-// a non-nil session must append --resume. Together with
-// TestBuildLaunchCmdNativeSkipsResume, this locks both halves of the
-// `sess != nil && !m.Native` guard so neither clause can drift.
-func TestBuildLaunchCmdResumeNonNative(t *testing.T) {
-	if !Installed("claude") {
-		t.Skip("claude not installed on PATH; skipping launcher test")
-	}
-	cfg := &config.Config{
-		Providers: []config.Provider{{ID: "ollama", Protocols: []config.Protocol{config.ProtocolAnthropic, config.ProtocolOpenAIChat}, Auth: config.AuthConfig{Type: "none", BaseURL: "http://localhost:11434"}}},
-	}
-	cmd, err := BuildLaunchCmd("claude",
-		config.Model{ID: "ollama/kimi-k2.7-code:cloud", ModelName: "kimi-k2.7-code:cloud"},
-		"/tmp/repo", false,
-		&session.Session{ID: "abc-123", MTime: time.Now()}, cfg, nil)
-	if err != nil {
-		t.Fatalf("BuildLaunchCmd: %v", err)
-	}
-	got := strings.Join(cmd.Args, " ")
-	if !strings.Contains(got, "--resume abc-123") {
-		t.Errorf("args = %q, want --resume abc-123", got)
-	}
-}
-
-// TestResumerCapability asserts which drivers implement the Resumer
-// optional capability. claude and opencode support session resume; the
-// other agents do not. This is the contract that lets shared code stop
-// switching on the agent name.
-func TestResumerCapability(t *testing.T) {
-	cases := []struct {
-		agent     string
-		resumable bool
-	}{
-		{"claude", true},
-		{"opencode", true},
-		{"codex", false},
-		{"copilot", false},
-		{"pi", false},
-		{"agy", false},
-		{"shell", false},
-	}
-	for _, c := range cases {
-		d := ByName(c.agent)
-		if d == nil {
-			t.Fatalf("unknown agent: %s", c.agent)
-		}
-		_, got := d.(Resumer)
-		if got != c.resumable {
-			t.Errorf("agent %q Resumer = %v, want %v", c.agent, got, c.resumable)
 		}
 	}
 }
@@ -1018,5 +826,68 @@ func TestIssueFor(t *testing.T) {
 	}
 	if got := IssueFor(cfg, "shell", installed); got != "" {
 		t.Errorf("IssueFor(shell) = %q, want \"\" (command)", got)
+	}
+}
+
+// TestCommandSetsPWDToTheWorkdir pins that the agent's PWD names the
+// directory it runs in. The environment is inherited from wt, whose PWD is
+// the caller's directory, and os/exec only fills PWD in when the environment
+// has none — so an agent that trusts PWD over getcwd (opencode does) opened
+// the caller's directory instead of the worktree it was launched in.
+func TestCommandSetsPWDToTheWorkdir(t *testing.T) {
+	t.Setenv("PWD", "/stale/caller")
+	cmd, _, err := command(clearEnvDriver{}, config.Model{}, false, directRoute(config.Model{}), "/work/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pwd []string
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "PWD=") {
+			pwd = append(pwd, kv)
+		}
+	}
+	if len(pwd) != 1 || pwd[0] != "PWD=/work/tree" {
+		t.Fatalf("PWD entries = %v, want exactly PWD=/work/tree", pwd)
+	}
+}
+
+// TestBuildLaunchCmdLeavesSessionsToTheAgent pins, for both agents that can
+// resume, that wt adds no resume flag of its own and hands the user's over
+// unchanged (#198, #204). wt used to append the agent's resume flag and the
+// newest session id it could find for the directory, on every non-native
+// launch: a one-shot run then wrote into the user's last conversation, an
+// opencode launch failed when that session had stored another model, and a
+// user who passed their own flag got two. The flags come after wt's own, so a
+// yolo launch keeps working — for opencode, where a bare flag in front of a
+// subcommand would swallow it, that order is what makes `--continue` a flag
+// and not the yolo flag's value.
+func TestBuildLaunchCmdLeavesSessionsToTheAgent(t *testing.T) {
+	dir := t.TempDir()
+	for _, bin := range []string{"claude", "opencode"} {
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	native := config.Model{Native: true, ModelName: "native"}
+	for _, tc := range []struct {
+		agent string
+		extra []string
+		want  []string
+	}{
+		{"claude", nil, []string{"--dangerously-skip-permissions"}},
+		{"claude", []string{"--continue"}, []string{"--dangerously-skip-permissions", "--continue"}},
+		{"claude", []string{"--resume", "abc123", "--fork-session"}, []string{"--dangerously-skip-permissions", "--resume", "abc123", "--fork-session"}},
+		{"opencode", nil, []string{"--auto=true"}},
+		{"opencode", []string{"--continue"}, []string{"--auto=true", "--continue"}},
+		{"opencode", []string{"--session", "ses_1", "--fork"}, []string{"--auto=true", "--session", "ses_1", "--fork"}},
+	} {
+		cmd, err := BuildLaunchCmd(tc.agent, native, t.TempDir(), true, nil, tc.extra)
+		if err != nil {
+			t.Fatalf("%s %v: %v", tc.agent, tc.extra, err)
+		}
+		if got := cmd.Args[1:]; !slices.Equal(got, tc.want) {
+			t.Errorf("%s with %v: args = %v, want %v", tc.agent, tc.extra, got, tc.want)
+		}
 	}
 }

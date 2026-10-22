@@ -27,6 +27,55 @@ func TestBaseOriginTrimsV1Suffix(t *testing.T) {
 	}
 }
 
+// TestProviderOriginGivesMtplxThePortWtServesItOn pins the one rule about a
+// base_url with no port (#348). For the mtplx provider on this machine over
+// http it means the port `wt start` serves mtplx on, because that is where
+// the server wt started is: read as written it is port 80, and wt then
+// started a server on 8003 and looked for it on 80. Nothing else moves: a
+// url that names a port; an https url or another host, where the scheme's
+// own port is what the user wrote and wt could not have started the server;
+// and every other provider, which wt never hands a port to.
+func TestProviderOriginGivesMtplxThePortWtServesItOn(t *testing.T) {
+	for _, c := range []struct{ id, baseURL, want string }{
+		{"mtplx", "http://127.0.0.1/v1", "http://127.0.0.1:8003"},
+		{"mtplx", "http://127.0.0.1", "http://127.0.0.1:8003"},
+		{"mtplx", "http://localhost/v1/", "http://localhost:8003"},
+		{"mtplx", "http://LOCALHOST", "http://LOCALHOST:8003"},
+		// Other spellings of this machine: a dial of the unspecified address
+		// reaches the server on 127.0.0.1, and "localhost." is localhost.
+		{"mtplx", "http://0.0.0.0/v1", "http://0.0.0.0:8003"},
+		{"mtplx", "http://[::]/v1", "http://[::]:8003"},
+		{"mtplx", "http://localhost./v1", "http://localhost.:8003"},
+		{"mtplx", "http://0.0.0.0:80/v1", "http://0.0.0.0:80"},
+		// A port that is named is the port.
+		{"mtplx", "http://127.0.0.1:9123/v1", "http://127.0.0.1:9123"},
+		{"mtplx", "http://localhost:80", "http://localhost:80"},
+		// Not a server wt could have started: as written.
+		{"mtplx", "https://localhost/v1", "https://localhost"},
+		{"mtplx", "https://mtplx.example/v1", "https://mtplx.example"},
+		{"mtplx", "http://10.0.0.5/v1", "http://10.0.0.5"},
+		{"mtplx", "http://mtplx.example", "http://mtplx.example"},
+		{"mtplx", "http://localhost.example", "http://localhost.example"},
+		// This machine, but not where a server on 127.0.0.1 answers: wt did
+		// not start what is there, so no port is put on it.
+		{"mtplx", "http://[::1]/v1", "http://[::1]"},
+		{"mtplx", "http://127.0.0.2/v1", "http://127.0.0.2"},
+		{"mtplx", "", ""},
+		{"mtplx", "127.0.0.1", "127.0.0.1"},
+		// wt hands these servers no port.
+		{"omlx", "http://127.0.0.1/v1", "http://127.0.0.1"},
+		{"omlx-6bit", "http://localhost", "http://localhost"},
+		{"ollama", "http://127.0.0.1", "http://127.0.0.1"},
+		{"mlx_lm_server", "http://localhost/v1", "http://localhost"},
+		{"openrouter", "https://openrouter.ai/api/v1", "https://openrouter.ai/api"},
+	} {
+		p := Provider{ID: c.id, Auth: AuthConfig{Type: "none", BaseURL: c.baseURL}}
+		if got := p.Origin(); got != c.want {
+			t.Errorf("%s %q: Origin() = %q, want %q", c.id, c.baseURL, got, c.want)
+		}
+	}
+}
+
 // TestResolveSecret pins every secret_ref form: os.environ/NAME and bare
 // NAME env lookups (never error, empty on a miss), a literal value used
 // verbatim, and the exec: form that runs a command and returns its trimmed
@@ -290,14 +339,12 @@ func TestResolveSecretExecMemoized(t *testing.T) {
 func TestPath(t *testing.T) {
 	// With XDG_CONFIG_HOME set
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	if got := Path(); got != "/custom/xdg/agent-wt/config.toml" {
 		t.Errorf("Path() = %q, want %q", got, "/custom/xdg/agent-wt/config.toml")
 	}
 
 	// Without XDG_CONFIG_HOME — falls back to ~/.config
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("MODELMAN_REGISTRY", "")
 	home, _ := os.UserHomeDir()
 	want := filepath.Join(home, ".config", "agent-wt", "config.toml")
 	if got := Path(); got != want {
@@ -306,12 +353,10 @@ func TestPath(t *testing.T) {
 }
 
 // First-run experience: when no config file exists, Load must return a usable
-// default Config (not an error). The modelman-owned registry.toml must exist
-// (seeded by `modelman migrate`); with an empty registry, Load returns an
-// empty catalog.
+// default Config (not an error). registry.toml must exist (`wt model init`
+// creates it); with an empty registry, Load returns an empty catalog.
 func TestLoad_FileNotExist(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg, err := Load()
@@ -332,17 +377,14 @@ func TestLoad_FileNotExist(t *testing.T) {
 // follows.
 func TestLoad_ValidConfig(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
-	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
+	must(t, filepath.Join(tmp, "agent-wt", "config.toml"), `
 default_tag = "design"
 
 [[agents]]
 name = "claude"
 supported_providers = ["ollama"]
 default_provider = "ollama"
-`), 0644)
+`)
 	writeRegistry(t, tmp, `
 [[providers]]
 id = "ollama"
@@ -410,10 +452,7 @@ tags = ["code", "design"]
 // surface the problem rather than silently using defaults.
 func TestLoad_BadTOML(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
-	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`this is not toml {{{`), 0644)
+	must(t, filepath.Join(tmp, "agent-wt", "config.toml"), `this is not toml {{{`)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
 	_, err := Load()
@@ -794,11 +833,10 @@ func TestHasTag(t *testing.T) {
 }
 
 // Save writes config.toml atomically via temp file + rename. Providers and
-// models are modelman-owned (registry.toml) and are never persisted by wt, so
-// a Save of a config carrying providers must not write them to disk.
+// models belong to registry.toml and are never written to config.toml, so a
+// Save of a config carrying providers must not write them to disk.
 func TestSave(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, tmp, "providers = []\nmodels = []\n")
 
 	cfg := &Config{
@@ -817,10 +855,10 @@ func TestSave(t *testing.T) {
 	if loaded.DefaultTag != "code" {
 		t.Errorf("DefaultTag = %q, want %q", loaded.DefaultTag, "code")
 	}
-	// Save trims providers/models (modelman owns registry.toml), so the
+	// Save trims providers/models (they belong to registry.toml), so the
 	// saved config.toml has no providers and Load returns an empty catalog.
 	if len(loaded.Providers) != 0 {
-		t.Errorf("Providers = %v, want 0 (providers are modelman-owned, not saved by wt)", loaded.Providers)
+		t.Errorf("Providers = %v, want 0 (providers belong to registry.toml, not config.toml)", loaded.Providers)
 	}
 }
 
@@ -907,17 +945,14 @@ func TestDeriveNative(t *testing.T) {
 // test pins the Load()-level wiring.
 func TestLoad_DerivesNativeFromRegistryAuth(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("MODELMAN_REGISTRY", "")
-	cfgDir := filepath.Join(tmp, "agent-wt")
-	os.MkdirAll(cfgDir, 0755)
-	os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`
+	must(t, filepath.Join(tmp, "agent-wt", "config.toml"), `
 default_tag = "code"
 
 [[agents]]
 name = "claude"
 supported_providers = ["ollama"]
 default_provider = "ollama"
-`), 0644)
+`)
 	writeRegistry(t, tmp, `
 [[providers]]
 id = "ollama"
@@ -1002,6 +1037,25 @@ func TestResolveRouteDirectUsesProviderBaseURL(t *testing.T) {
 	}
 	if route.ModelRef != "z-ai/glm-4.6" {
 		t.Errorf("ModelRef = %q, want bare ModelName in direct mode", route.ModelRef)
+	}
+}
+
+// TestResolveRouteDirectDialsMtplxWhereWtServesIt verifies a direct route
+// reads the provider's address as wt's own probes do (#348): with an mtplx
+// base_url that names no port the agent is pointed at the port `wt start`
+// served the model on. Pointed at the url as written it dials port 80 and
+// the launch of a model wt has just started fails to connect.
+func TestResolveRouteDirectDialsMtplxWhereWtServesIt(t *testing.T) {
+	cfg := &Config{Providers: []Provider{{
+		ID: "mtplx", Protocols: []Protocol{ProtocolOpenAIChat},
+		Auth: AuthConfig{Type: "none", BaseURL: "http://127.0.0.1/v1"},
+	}}}
+	route, err := cfg.ResolveRoute(Model{ID: "mtplx/Y--Q35", ModelName: "Y/Q35", ProviderID: "mtplx"}, []Protocol{ProtocolOpenAIChat})
+	if err != nil {
+		t.Fatalf("ResolveRoute: %v", err)
+	}
+	if route.BaseOrigin != "http://127.0.0.1:8003" || route.Litellm {
+		t.Errorf("route = %+v, want a direct route to http://127.0.0.1:8003", route)
 	}
 }
 
@@ -1152,38 +1206,38 @@ func TestDirectRouteWhenProtocolsOverlap(t *testing.T) {
 // their provider endpoints directly.
 func TestLitellmDirectByDefault(t *testing.T) {
 	cfg := &Config{}
-	if !cfg.IsDirect() {
-		t.Fatalf("expected default routing mode to be direct")
-	}
 	if cfg.IsLitellm() {
 		t.Fatalf("expected default routing mode not to be litellm")
 	}
 }
 
-// TestIsExposedNativeAlways asserts that native models are always exposed,
-// even when the exposure set is empty. Native providers cannot route through
-// LiteLLM, so hiding them would make the agent unusable.
-func TestIsExposedNativeAlways(t *testing.T) {
-	cfg := &Config{exposed: map[string]ExposureEntry{}}
+// TestInCatalogNativeAlways asserts that native models are always in the
+// catalog, with nothing but the row itself. Native providers cannot route
+// through LiteLLM, so hiding them would make the agent unusable.
+func TestInCatalogNativeAlways(t *testing.T) {
+	cfg := &Config{}
 	m := Model{ID: "claude/native", ProviderID: "claude", Native: true}
-	if !cfg.IsExposed(m) {
-		t.Fatalf("native model must be exposed")
+	if !cfg.InCatalog(m) {
+		t.Fatalf("native model must be in the catalog")
 	}
 }
 
-// TestIsExposedNonNativeRequiresFlag asserts that non-native models only
-// appear in the catalog when modelman.toml has marked them litellm_exposed.
-// This prevents wt from advertising models that the LiteLLM proxy is not
-// configured to serve.
-func TestIsExposedNonNativeRequiresFlag(t *testing.T) {
-	cfg := &Config{exposed: map[string]ExposureEntry{"ollama/qwen3.8:27b-mlx": {Exposed: true, Ready: true}}}
-	exposed := Model{ID: "ollama/qwen3.8:27b-mlx", ProviderID: "ollama"}
-	unexposed := Model{ID: "ollama/gemma4:9b", ProviderID: "ollama"}
-	if !cfg.IsExposed(exposed) {
-		t.Fatalf("expected exposed model to be exposed")
+// TestInCatalogNonNativeAlwaysIncluded asserts that a non-native cloud model
+// is in the catalog whenever its provider resolves — no stored per-model
+// flag gates inclusion (#179: configured means exposed). Before #179 a cloud
+// model without an "exposed" flag in a state file was hidden; a regression
+// here would again make wt advertise only models someone had marked by hand.
+func TestInCatalogNonNativeAlwaysIncluded(t *testing.T) {
+	cfg := &Config{
+		Providers: []Provider{{ID: "cloudprov", Location: LocationCloud}},
 	}
-	if cfg.IsExposed(unexposed) {
-		t.Fatalf("expected unexposed model to be unexposed")
+	flagged := Model{ID: "cloudprov/flagged", ProviderID: "cloudprov"}
+	unflagged := Model{ID: "cloudprov/unflagged", ProviderID: "cloudprov"}
+	if !cfg.InCatalog(flagged) {
+		t.Fatalf("expected flagged cloud model to be in the catalog")
+	}
+	if !cfg.InCatalog(unflagged) {
+		t.Fatalf("expected unflagged cloud model to be in the catalog: configured means exposed (#179)")
 	}
 }
 
@@ -1194,16 +1248,8 @@ func TestIsExposedNonNativeRequiresFlag(t *testing.T) {
 // new control surface instead of silent data loss.
 func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("MODELMAN_REGISTRY", "")
 	writeRegistry(t, dir, "providers = []\nmodels = []\n")
-	cfgDir := Dir()
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(Path(), []byte("default_tag = \"code\"\n\n[gateway]\nmode = \"litellm\"\nurl = \"http://localhost:4000\"\napi_key = \"sk-x\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must(t, Path(), "default_tag = \"code\"\n\n[gateway]\nmode = \"litellm\"\nurl = \"http://localhost:4000\"\napi_key = \"sk-x\"\n")
 
 	cfg, err := Load()
 	if err != nil {
@@ -1218,9 +1264,9 @@ func TestMigrateDropsLegacyGatewayBlock(t *testing.T) {
 	}
 }
 
-// TestLitellmEnabledMissingURLFailsAtLaunchNotValidate: wt cannot repair
-// modelman.toml, so a bad value there must not fail Validate() (which
-// runs on every wt invocation, including `wt config`) — it must only
+// TestLitellmEnabledMissingURLFailsAtLaunchNotValidate: routing that is on
+// with no URL must not fail Validate(), which runs on every wt invocation,
+// `wt litellm set` (the command that repairs it) included. It must only
 // surface when a route is actually resolved at launch.
 func TestLitellmEnabledMissingURLFailsAtLaunchNotValidate(t *testing.T) {
 	cfg := &Config{
@@ -1244,29 +1290,13 @@ func TestDiscoveredModelID(t *testing.T) {
 	if got := DiscoveredModelID("omlx", "Qwen3.8-27B-4bit"); got != "omlx/Qwen3.8-27B-4bit" {
 		t.Errorf("got %q", got)
 	}
-	if got := DiscoveredModelID("mtplx", "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality"); got != "mtplx/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality" {
+	// omlx-6bit shares the omlx family
+	if got := DiscoveredModelID("omlx-6bit", "Qwen3.8-27B-6bit"); got != "omlx/Qwen3.8-27B-6bit" {
 		t.Errorf("got %q", got)
 	}
-}
-
-// TestExposedFlagIsRawModelmanFlag verifies ExposedFlag reports modelman.toml's
-// raw exposed flag — false for a local model with no flag even though
-// IsExposed treats every local model as exposed. The selector's EXPOSED
-// column must mirror modelman, not wt's catalog-membership predicate.
-func TestExposedFlagIsRawModelmanFlag(t *testing.T) {
-	cfg := &Config{
-		Providers: []Provider{{ID: "omlx", Location: LocationLocal}},
-		Models:    []Model{{ID: "omlx/a", ProviderID: "omlx"}, {ID: "omlx/b", ProviderID: "omlx"}},
-	}
-	cfg.SetExposedForTest(map[string]ExposureEntry{"omlx/a": {Exposed: true}})
-	if !cfg.ExposedFlag("omlx/a") {
-		t.Error("omlx/a: want exposed")
-	}
-	if cfg.ExposedFlag("omlx/b") || cfg.ExposedFlag("missing") {
-		t.Error("unflagged/missing ids must not read as exposed")
-	}
-	if !cfg.IsExposed(cfg.Models[1]) {
-		t.Fatal("precondition: IsExposed treats local models as exposed")
+	// mtplx artifact is the repo id form (org/name), not the directory form (org--name)
+	if got := DiscoveredModelID("mtplx", "Youssofal/Qwen3.8-27B-MTPLX"); got != "mtplx/Youssofal/Qwen3.8-27B-MTPLX" {
+		t.Errorf("got %q", got)
 	}
 }
 
@@ -1300,5 +1330,99 @@ func TestValidate_ModelNameRequired(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "model_name is required") {
 		t.Errorf("Validate() = %v, want an error naming model_name", err)
+	}
+}
+
+// locationTypoConfig is a registry with the two typos #200 is about: a
+// provider entry whose location is "Cloud", and a model that sets "Local" on
+// an otherwise healthy local provider. A third model overrides the mistyped
+// provider's location with a valid one of its own.
+func locationTypoConfig() *Config {
+	return &Config{
+		DefaultTag: "code",
+		Providers: []Provider{
+			{ID: "ollama", Location: LocationLocal},
+			{ID: "acme", Location: "Cloud"},
+		},
+		Models: []Model{
+			{ID: "ollama/good", ProviderID: "ollama", ModelName: "good"},
+			{ID: "ollama/typo", ProviderID: "ollama", ModelName: "typo", Location: "Local"},
+			{ID: "acme/inherits", ProviderID: "acme", ModelName: "inherits"},
+			{ID: "acme/overrides", ProviderID: "acme", ModelName: "overrides", Location: LocationCloud},
+		},
+		Agents: []Agent{{Name: "claude", SupportedProviders: []string{"ollama", "acme"}}},
+	}
+}
+
+// TestResolveLocationRejectsAnUnknownValue pins #200: a location that is
+// neither "local" nor "cloud" is not a location. ResolveLocation used to hand
+// back whatever string was set, so "Local" or "Cloud" resolved without error
+// and each consumer then decided for itself what a third kind of location
+// meant: the catalog offered the model, sync put it in neither its local nor
+// its cloud set and never routed it, and the launch failed at the proxy with
+// "Invalid model name". An unknown value now fails the way a missing one
+// does, in an error that names the entry and the value — so every consumer
+// that already fails closed on a missing location agrees about a mistyped one.
+func TestResolveLocationRejectsAnUnknownValue(t *testing.T) {
+	cfg := locationTypoConfig()
+	for id, wantErr := range map[string]string{
+		"ollama/good":    "",
+		"acme/overrides": "",
+		"ollama/typo":    `model "ollama/typo" has location "Local"; expected "local" or "cloud"`,
+		"acme/inherits":  `model "acme/inherits": provider "acme" has location "Cloud"; expected "local" or "cloud"`,
+	} {
+		m := cfg.Models[IndexModelByID(cfg.Models, id)]
+		loc, err := cfg.ResolveLocation(m)
+		switch {
+		case wantErr == "" && (err != nil || !loc.Valid()):
+			t.Errorf("%s: loc = %q err = %v, want a valid location", id, loc, err)
+		case wantErr != "" && (err == nil || err.Error() != wantErr):
+			t.Errorf("%s: err = %v, want %q", id, err, wantErr)
+		case wantErr != "" && loc != "":
+			t.Errorf("%s: loc = %q beside the error, want none", id, loc)
+		}
+	}
+}
+
+// TestLocationTypoIsOutOfTheCatalog pins the consequence the user sees: a
+// model whose location cannot be trusted is not offered, exactly like one
+// with no location at all. It used to be offered and then fail at launch.
+func TestLocationTypoIsOutOfTheCatalog(t *testing.T) {
+	cfg := locationTypoConfig()
+	for id, want := range map[string]bool{"ollama/good": true, "acme/overrides": true, "ollama/typo": false, "acme/inherits": false} {
+		if got := cfg.InCatalog(cfg.Models[IndexModelByID(cfg.Models, id)]); got != want {
+			t.Errorf("InCatalog(%s) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+// TestValidateReportsEveryMistypedLocation pins that validation names each
+// mistyped entry — the provider itself, even though one of its models
+// overrides it and another has none, and the model with its own typo — so
+// fixing what the first message names does not just reveal the next.
+func TestValidateReportsEveryMistypedLocation(t *testing.T) {
+	err := locationTypoConfig().ValidateAll()
+	if err == nil {
+		t.Fatal("ValidateAll() = nil, want the mistyped locations reported")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		`provider "acme" has location "Cloud"; expected "local" or "cloud"`,
+		`model "ollama/typo" has location "Local"; expected "local" or "cloud"`,
+		`model "acme/inherits": provider "acme" has location "Cloud"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("validation errors lack %q:\n%s", want, got)
+		}
+	}
+	for _, id := range []string{"ollama/good", "acme/overrides"} {
+		if strings.Contains(got, `"`+id+`"`) {
+			t.Errorf("validation errors name the healthy model %s:\n%s", id, got)
+		}
+	}
+	// A provider entry with no models is still checked.
+	lone := &Config{DefaultTag: "code", Providers: []Provider{{ID: "idle", Location: "remote"}}}
+	if err := lone.ValidateAll(); err == nil || !strings.Contains(err.Error(), `provider "idle" has location "remote"`) {
+		t.Errorf("a mistyped provider with no models: err = %v, want it reported", err)
 	}
 }

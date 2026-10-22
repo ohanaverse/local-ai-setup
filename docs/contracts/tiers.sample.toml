@@ -1,0 +1,341 @@
+generated_at = "2026-10-12T15:58:00Z"
+contracts_version = "fixture-1"
+
+[inventory]
+registry = "/home/owner/.config/local-ai/registry.toml"
+
+[inventory.providers]
+mtplx = "partial"
+ollama = "ok"
+omlx = "ok"
+
+[sources.modelsdev]
+status = "ok"
+fetched_at = "2026-10-12T15:58:00Z"
+records = 12
+attribution = "models.dev (https://models.dev), MIT"
+
+[sources.openrouter]
+status = "ok"
+fetched_at = "2026-10-12T15:58:00Z"
+records = 6
+unresolved = 1
+attribution = "Source: Artificial Analysis (artificialanalysis.ai) via OpenRouter (openrouter.ai/rankings)."
+
+[sources.arena]
+status = "ok"
+fetched_at = "2026-10-12T15:58:00Z"
+records = 6
+unresolved = 1
+attribution = "Arena (arena.ai), dataset lmarena-ai/leaderboard-dataset, CC BY 4.0"
+
+[sources.epoch]
+status = "ok"
+fetched_at = "2026-10-12T15:58:00Z"
+records = 6
+unresolved = 0
+attribution = "Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchmarks, CC BY 4.0"
+
+[alignment]
+floor = 33.7
+ceiling = 57.6
+
+[alignment.arena_agent]
+slope = 103.59921841274206
+intercept = 41.88951209043778
+shared = 3
+typical_miss = 1.0978083098775118
+
+[alignment.eci]
+slope = 1.0793397112615362
+intercept = -123.82658665394834
+shared = 3
+typical_miss = 1.056222524320934
+
+[[models]]
+provider_id = "ollama"
+model_name = "glm-5.3:cloud"
+registered = true
+canonical = "zhipuai/glm-5.3"
+resolved_by = "host"
+tier = "standard"
+code = "S"
+confidence = "high"
+basis = "measured"
+open_weights = true
+tool_call = true
+context = 1048576
+aligned_score = 44.3
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
+notes = []
+
+[models.votes]
+intelligence_index = "standard"
+arena_agent = "standard"
+eci = "standard"
+
+[models.efforts]
+arena_agent = "max"
+
+[models.scores]
+intelligence_index = 44.8
+coding_index = 74.8
+agentic_index = 53.1
+arena_agent = 0.02147446416824893
+arena_agent_ci_lower = 0.014306504009895325
+eci = 155.61
+
+[[models]]
+provider_id = "ollama"
+model_name = "deepseek-v4-pro:cloud"
+registered = true
+canonical = "deepseek/deepseek-v4-pro-0813"
+resolved_by = "alias"
+tier = "standard"
+code = "S"
+confidence = "high"
+basis = "measured"
+open_weights = true
+tool_call = true
+context = 1048576
+aligned_score = 43.5
+aligned_sources = [
+    "arena_agent",
+    "eci",
+]
+notes = []
+
+[models.votes]
+arena_agent = "standard"
+eci = "standard"
+
+[models.efforts]
+arena_agent = "high"
+
+[models.scores]
+arena_agent = 0.013425874696272922
+arena_agent_ci_lower = -0.0031749129284354416
+eci = 155.31
+
+[[models]]
+provider_id = "openrouter"
+model_name = "z-ai/glm-5.3"
+registered = true
+canonical = "zhipuai/glm-5.3"
+resolved_by = "host"
+tier = "standard"
+code = "S"
+confidence = "high"
+basis = "measured"
+open_weights = true
+tool_call = true
+context = 1048576
+aligned_score = 44.3
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
+notes = []
+
+[models.votes]
+intelligence_index = "standard"
+arena_agent = "standard"
+eci = "standard"
+
+[models.efforts]
+arena_agent = "max"
+
+[models.scores]
+intelligence_index = 44.8
+coding_index = 74.8
+agentic_index = 53.1
+arena_agent = 0.02147446416824893
+arena_agent_ci_lower = 0.014306504009895325
+eci = 155.61
+
+[[models]]
+provider_id = "ollama"
+model_name = "qwen3.8:27b-mlx"
+registered = true
+canonical = "alibaba/qwen3.8-27b"
+resolved_by = "normalized"
+tier = "standard"
+code = "S"
+confidence = "low"
+basis = "inherited"
+open_weights = true
+tool_call = true
+aligned_score = 33.7
+aligned_sources = [
+    "intelligence_index",
+]
+notes = [
+    "local build: served context unknown; context gate skipped",
+]
+
+[models.votes]
+intelligence_index = "standard"
+
+[models.efforts]
+
+[models.scores]
+intelligence_index = 33.7
+coding_index = 68.1
+agentic_index = 45.8
+
+[[models]]
+provider_id = "ollama"
+model_name = "minimax-m3:cloud"
+registered = true
+canonical = "minimax/MiniMax-M3"
+resolved_by = "normalized"
+tier = "quick"
+code = "Q"
+confidence = "high"
+basis = "measured"
+open_weights = true
+tool_call = true
+context = 512000
+aligned_score = 34.7
+aligned_sources = [
+    "arena_agent",
+    "eci",
+]
+notes = [
+    "host row has no canonical id; matched by name",
+]
+
+[models.votes]
+arena_agent = "quick"
+eci = "quick"
+
+[models.efforts]
+
+[models.scores]
+arena_agent = -0.06954648731246331
+arena_agent_ci_lower = -0.07855233102193303
+eci = 146.95
+
+[[models]]
+provider_id = "ollama"
+model_name = "nomic-embed-text:latest"
+registered = true
+tier = "unrated"
+code = "-"
+reason = "not_applicable"
+confidence = "none"
+basis = "inherited"
+notes = [
+    "ignored: embedding model",
+]
+
+[models.votes]
+
+[models.efforts]
+
+[models.scores]
+
+[[models]]
+provider_id = "ollama"
+model_name = "gemma4:31b-mlx"
+registered = false
+canonical = "google/gemma-4-31b-it"
+resolved_by = "normalized"
+tier = "unrated"
+code = "-"
+reason = "no_votes"
+confidence = "none"
+basis = "inherited"
+open_weights = true
+tool_call = true
+notes = [
+    "local build: served context unknown; context gate skipped",
+]
+
+[models.votes]
+
+[models.efforts]
+
+[models.scores]
+
+[[candidates]]
+canonical = "anthropic/claude-opus-5-5"
+resolved_by = "host"
+tier = "marathon"
+code = "M"
+confidence = "high"
+open_weights = false
+tool_call = true
+context = 1000000
+aligned_score = 57.0
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
+notes = [
+    "context is the largest among the key's models.dev rows",
+]
+
+[candidates.votes]
+intelligence_index = "deep"
+arena_agent = "deep"
+eci = "deep"
+
+[candidates.efforts]
+arena_agent = "high"
+
+[candidates.scores]
+intelligence_index = 57.6
+arena_agent = 0.14331280058415052
+arena_agent_ci_lower = 0.12150663912969831
+eci = 167.33
+
+[[candidates]]
+canonical = "anthropic/claude-fable-5"
+resolved_by = "host"
+tier = "deep"
+code = "D"
+confidence = "high"
+open_weights = false
+tool_call = true
+context = 1000000
+aligned_score = 50.6
+aligned_sources = [
+    "intelligence_index",
+    "arena_agent",
+    "eci",
+]
+notes = [
+    "context is the largest among the key's models.dev rows",
+]
+
+[candidates.votes]
+intelligence_index = "deep"
+arena_agent = "deep"
+eci = "deep"
+
+[candidates.efforts]
+arena_agent = "high"
+
+[candidates.scores]
+intelligence_index = 49.6
+coding_index = 76.5
+agentic_index = 50.7
+arena_agent = 0.08937936055727591
+arena_agent_ci_lower = 0.0766906485538394
+eci = 162.06
+
+[[unmapped]]
+provider_id = "ollama"
+model_name = "medgemma:27b"
+
+[[unresolved]]
+source = "arena"
+id = "Qwen3.8 Max"
+score = 0.023467932612357068

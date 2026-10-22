@@ -1,30 +1,22 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repo.
+Rules and gotchas live here; mechanisms, function lists and step-by-step detail live in [docs/internals/](docs/internals/) (each section names its page; [packages.md](docs/internals/packages.md) lists every file and package).
 
 ## What this repo is
 
 The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. Three launch inputs:
 
-1. **Where** — `--cwd` (current repo root), `-W <name>` (named worktree), or the worktree picker.
+1. **Where** — `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree), or the worktree picker. Outside a repository `-W` refuses (`not in a git repo`).
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
 3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (eligible models rotate on successive launches).
 
-`bin/*-wt` are shims that forward to `wt` (`claude-wt` → `wt --agent claude`). All logic lives in Go.
+`bin/*-wt` are shims that forward to `wt` (`claude-wt` → `wt --agent claude`), so `wt` must be on `$PATH`. All logic lives in Go.
 
 ## Installation
 
-```bash
-make install      # builds bin/wt and copies it + the shims to ~/.local/bin/
-```
+`make install` builds `bin/wt` and copies it and the shims to `~/.local/bin/` (Go 1.26.7, see `go.mod`; `make help` lists targets). `make test` needs `make install` first — it exercises the installed binary.
 
-Requires Go 1.26.7 (see `go.mod`).
-
-> **macOS codesign.** `make build`/`install` re-seal the ad-hoc signature (`codesign --force --sign -`). A drifted linker signature is rejected by AMFI with "Taskgated Invalid Signature" and SIGKILLs the binary (exit 137).
-
-Run `make help` for the full target list. `make test` requires `make install` first — it exercises the installed binary, not just the build.
-
-The `bin/*-wt` shims forward to `wt`, so `wt` must be on `$PATH`.
+> **macOS codesign.** `make build`/`install` re-seal the ad-hoc signature (`codesign --force --sign -`); a drifted one is rejected by AMFI ("Taskgated Invalid Signature") and SIGKILLs the binary (exit 137).
 
 ## Key flags
 
@@ -34,533 +26,252 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use/create the worktree for `<name>`; skip the worktree picker |
 | `-A <name>`, `--agent <name>` | Pin the agent or `shell`; never defaulted |
-| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`; cloud or running → launch; a non-running local starts (with a progress display; `--replace` skips the replace confirmation); a blocked model errors with that row's reason. Without `-A`, prompts for the agent first, then validates the pin |
-| `--replace` | With `-M`, start the model even if it means stopping a running one |
+| `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`: cloud or running → launch; a non-running local starts; a blocked model errors with that row's reason. Without `-A`, the agent is prompted first. `-M profile/<name>` pins a slot profile |
+| `--replace` | With `-M`, start the model even if it means stopping a running one (same provider only) |
+| `--others=keep\|stop` | Answer without asking when a start loads a model beside other providers' models (picker: `-M` row only). Unset: ask; with no TTY keep them and warn once (#412) |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
-| `--cwd` | Launch in the current repo root; skip the worktree picker |
+| `--cwd` | Launch in the current directory, repository or not. Takes no value: a first argument before `--` naming an existing directory is refused (#392) unless `shell`'s first word is a bare name on `$PATH` |
 | `--yolo` | Prepend the agent's skip-permissions flag |
-| `--init` | Seed AGENTS.md + pointer files, then exit |
-| `--version` | Print version and exit |
-| `--check-guard` / `--no-guard` | Check / remove the `block-main-commit` guard |
-| `--debug-worktrees` | List worktrees and branches (test helper) |
-| `--debug-session <agent>` | Print newest resumable session (test helper) |
-
-Legacy bash `--code`/`--design`/`--native` are unsupported; rotation is global, not slot-based (see [Rotation (Go)](#rotation-go)), the main guard is `internal/guard`.
+| `--init` / `--check-guard` / `--no-guard` | Seed AGENTS.md + pointer files then exit / check / remove the `block-main-commit` guard |
 
 ## Passthrough args
 
-Extra args forward to the launched agent. `--` is only required when the command starts with a flag-like token, since the root `wt` uses `cobra.ArbitraryArgs`.
+Extra args forward to the launched agent; `--` is required when any argument begins with a dash. Agents append them to the command; `shell` (`ArgSetter`) takes them as argv (`d.args[0]` = binary).
 
 ```bash
 claude-wt -W feat -- --verbose  # → claude --model X --verbose
 shell-wt -W test -- npm test    # → exec npm test in .worktrees/test
 ```
 
-For agents, args append to the command; for `shell` (implements `ArgSetter`), they become argv directly (`d.args[0]` = binary).
+## Post-exit flow
 
-## Post-run summary line
+After the launched subprocess exits, the TUI and non-TUI paths run the same fixed sequence — [docs/wt-agents/README.md#post-exit-order](docs/wt-agents/README.md#post-exit-order). Change both paths together.
 
-After the launched subprocess exits, both the TUI and non-TUI paths print a single `wt: <agent> · <model-id> · <duration>` line to stdout (model segment omitted for command agents like `shell`). Emitted on success and non-zero exit; never affects the exit code. The formatter lives in `internal/agents.Summary` and is the single source of truth for both paths. See `docs/wt-agents/README.md#post-run-summary-line`.
+- `survey.ReleaseSession()` runs before the stop picker; the summary line (`agents.Summary`) never affects the exit code.
+- **wt exits with the agent's status on both paths, after the whole tail** (#412): non-TUI `os.Exit(ee.ExitCode())`; TUI `tui.Run` returns the error and `runTUI` makes an `exitCodeError`. **Never `os.Exit` inside `internal/tui`.**
+- A batch of stops costs one LiteLLM restart and one ollama wait (#379, #142); a stop ollama accepted and still lists at the bound is `*lifecycle.StillFinishingError`, not a failure.
+- A slot-profile session's tail is release → stop picker → summary (no survey, no price notice).
 
-**Post-exit order (issues #115/#116), identical in the TUI and non-TUI paths:** release this session's refcount entry → survey (skipped for native models) → stop picker (below) → summary line → after-survey stats → stale-pricing notice. The interactive steps come first and the informational output last. The duration is measured when the agent exits.
-
-The stop picker (`survey.Picker`, `internal/survey/stop.go`) offers running local models that no live wt session uses (refcount zero, probe trusted, stop backend exists — `lifecycle.CanStop`/`lifecycle.StopModel`). It is line-typed (number toggles, `all`/`none`, Enter confirms, `q`/`esc` skips) and nothing starts selected. It is silent when nothing qualifies, when stdin is not a TTY, and for command agents and native models (neither runs a local server of its own). Ctrl+C or SIGTERM is caught for the whole picker on a context of its own: at the menu prompt it abandons the prompt (the read runs on a goroutine raced against the context), and during a stop it cancels the stop in flight and skips the remaining models — either way it prints `cancelled`, runs the TTY drain, and still reaches the summary line. wt's own refcount entry is released first (`refcount.Release`) — otherwise the model just used would always count as in use.
-
-After the summary, a stale-pricing notice may print (one line, issue #69): when modelman's `price_refresh_last_run` (top-level key in `~/.config/local-ai/modelman.toml`) isn't today's date — or is absent — wt prints `wt: token pricing last refreshed <date> — run 'modelman refresh-prices'` (or the "never been refreshed" variant; a malformed (non-`YYYY-MM-DD`) value also uses the "never been refreshed" wording). wt only notifies; modelman owns the refresh. Parse errors on modelman.toml stay silent. Skipped for command agents like `shell` (`m.ID == ""` — same convention the session survey below uses), since they never touch a priced model.
-
-Before the summary (see the post-exit order above), a post-session survey prompts up to four questions (did it work? speed? quality? — and on non-skip answers, what task were you doing) on the parent terminal — see [Session survey](#session-survey-go) below.
+Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before changing the summary line, the stop picker, the stale-pricing notice, the survey, session handling, or profiles.
 
 ## Session survey (Go)
 
-`internal/survey` records a post-session verdict for every agent launch with
-a model (skipped for command agents like `shell`, whose `m.ID == ""`, and for
-native models, `m.Native` — issue #116).
-`survey.PromptRun` is the single implementation wired into both the non-TUI
-path (`cmd/wt/launch.go runAgentCmd`, before the exit-code propagation) and
-the TUI path (`internal/tui`, via the same capture-then-emit pattern the
-summary line uses). It silently no-ops when stdin is not a TTY. It
-**returns** the after-survey stats block instead of printing it, so the
-caller can place it after the stop picker and summary.
-
-Order on every launch: **survey prompts → stop picker → summary → after-survey stats → pricing notice**.
-
-- **Paste drain:** after the last question, `PromptRun` flushes the kernel
-  TTY input queue (`drainTTYInput`: `TIOCFLUSH` darwin / `TCFLSH` linux /
-  no-op elsewhere) — a multi-line paste at the free-text question delivers
-  all its lines at once and anything unconsumed would otherwise execute as
-  shell commands in the parent terminal after wt exits. Targeted at
-  `os.Stdin`, not the injected reader, because the residue lives in the
-  kernel queue for fd 0. Don't remove this to "simplify" the survey.
-
-- **Store:** `~/.config/agent-wt/survey.jsonl`, wt-owned, 30-day retention,
-  pruned on every write (mirrors `internal/usage`).
-- **Worked% semantics:** `worked / (worked + failed)` over *answered*
-  surveys only; skips are recorded but excluded from the denominator.
-- **Model picker (SURVEY column):** each row gets a trailing `✓<pct> q<quality> s<speed>
-  n<answered>` segment sourced from the agent-scoped 30-day stats (omitted
-  when nothing has been answered yet); `⚠` replaces `✓` when
-  `WorkedPct < 70%` and `Answered >= 3`.
-- **`wt stats`** — see `docs/wt-stats.md`.
-- **Model id scheme:** Surveys and usage key on a free-form model id and never require a registry entry. Unregistered on-disk models use `config.DiscoveredModelID(provider, artifact)`; a registry match keeps its registry id.
+**The survey is switched off** (`survey.Enabled = false`, #136); the code is kept and tested, and `wt stats` and the SURVEY column still report stored answers. Keep `drainTTYInput` after the last question. [Details](docs/internals/launch-flow.md#session-survey-go).
 
 ## Docs
 
-- `docs/configuration.md` — Claude Code / Codex CLI config
-- `docs/wt-config.md` — `wt config` subcommands
-- `docs/wt-agents/` — per-agent reference (one file per launcher)
-- `docs/wt-agents/profiles.md` — local-model launch profiles (`wt profile ...`, `internal/profiles`)
-- `docs/superpowers/specs/` — design specs (input to implementation)
-- `docs/superpowers/plans/` — implementation plans (output of planning, input to execution)
-- `../CLAUDE.md` — monorepo-wide commands, benchmark isolation helpers, and shared config ownership (modelman owns `registry.toml`/`modelman.toml`; wt owns `~/.config/agent-wt/config.toml`).
+`docs/`: `wt-*.md` command references, `wt-agents/` per-agent reference (`README.md`: LiteLLM routes and post-exit order; `profiles.md`, `slot-profiles.md`), `configuration.md`, `internals/` (code-level notes, one page per section below), `superpowers/` (specs and plans). `../CLAUDE.md`: monorepo commands and config ownership (wt is the only writer of `registry.toml`, and owns `~/.config/agent-wt/config.toml`).
 
 ## Go tests
 
-Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters (the user-facing consequence of a regression).
+Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters.
 
-**Test seams.** TTY, installed-check, guard, TUI behavior, the model
-picker's usage store, local-inventory probing, and model starting are stubbed via package-level var seams (`tuiRun`,
-`launchFiltered`, `stdinTTY`, `installed`, `maybeInstallGuard`,
-`newUsageStore`, `flushTTY`, `stopSignalCtx`, `runInventory`, `startModel`, `probeInventory`, `smokeProbe`, `pickModelTUI`, `pickStartModelTUI`, `stopCandidates`, `stopEntries`, `stopPickerAll`, `confirmStop`, `loadProfileStore`, `confirmProfile`, `openTTY`, `profileApplier`) — production code calls the var, tests swap it. `runInventory` (in `internal/tui`) stubs `localmodels.Inventory`; the package's `TestMain` sets it to no-op so no test probes live servers. `startModel` (in `internal/tui/start_flow.go`) stubs `lifecycle.Start`; the same `TestMain` stubs it to fail so no test can start a real model process. `cmd/wt` carries its own seams, stubbed by `testmain_test.go`: `probeInventory` (the non-TUI inventory probe), a second `startModel` — a different package and signature (it wraps `startForLaunch`), a separate seam from the TUI's despite the shared name — and `lifecycleStart` (the engine behind that driver), all hard-failed by default so an unstubbed test can neither start a real model nor let the engine's route hook rewrite the real `config.yaml`. `internal/survey`'s `TestMain` stubs `flushTTY` the same way, so it is a no-op package-wide. Together the three `TestMain`s mean no Go test probes a real server, starts a real model, or drains the developer's terminal input queue. `internal/smoke`'s `smokeProbe` is the same idea for `Eligibility`, with the exported `SetSmokeProbeForTest` hook for other packages' tests. When adding
-a new seam, follow the same shape: a `var x = realX` plus a `realX` function.
-`internal/lifecycle` is the other convention: every seam (HTTP clients, exec, inventory, timeouts, pidfile paths) lives in one `env` struct that `defaultEnv()` fills and tests rebuild with `testEnv()`; its package `TestMain` doubles as a fake `mtplx` helper process when `LIFECYCLE_HELPER=mtplx`.
+- **Test seams** are package-level vars (`var x = realX`) that tests swap; `internal/lifecycle` keeps its seams in one `env` struct.
+- **Tests stay off the developer's machine**: each package's `TestMain` isolates what it reaches — `lifecycle.IsolateProcessesForTest()` (mtplx pidfile, signals), `tiers.IsolateForTest` (model-table packages), `config.IsolateConfigHomeForTest` (anything reaching `config.Dir()`), `gitenv.IsolateForTest()` (anything that can run git; `TestEveryPackageThatRunsGitIsolatesIt`). A new package or launch path needs the same (route check via `stubEnsureRoute(t)`); no test runs `psql`; scratch registries go through `WT_REGISTRY`.
+- **Assert on unexported functions directly**; parsing rendered lipgloss output flakes under forced-color ANSI.
 
-**Prefer asserting on unexported functions directly** — same-package tests
-can call them (e.g. `buildStatsRows`); parsing rendered lipgloss output
-couples tests to border glyphs/padding and flakes under forced-color ANSI.
+Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, runs git, starts a model, or touches routes.
 
 ```bash
-go test ./...                        # all Go tests
-go test ./internal/worktree -v       # verbose, one package
-go test ./internal/agents -run TestOpenCodeOllamaPrefix -v   # one test
-go vet ./...                         # static analysis
-make help                            # list Makefile targets
+go test ./...
+go test ./internal/agents -run TestOpenCodeOllamaPrefix   # one test
+go vet ./...
+make check   # shellcheck, shfmt, gofmt -l (wt-ci's gate); `make format` writes both
+make -C .. test-all   # CI-equivalent: root lint + llmbench + wt
 ```
-
-Key `make` targets: `build` (compile), `install` (compile + re-seal codesign + place on `$PATH`), `test` (requires `install` — exercises the installed binary), `check` (shellcheck lint + shfmt format-check + `go-format-check`, a `gofmt -l` gate that wt-ci also runs; `make format` writes both shell and Go).
-
-Package list: `internal/{config,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,session,themes,tui,configeditor,ollamacheck,catalog,localmodels,lifecycle,smoke}`, `cmd/wt`. Run `grep -c '^func Test' <pkg>/*_test.go` for current counts — each test's focus is documented in its own `//` comment (see above).
 
 ## Go module
 
-Module root is `wt/` (`go.mod` declares `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,tomlw,tiers,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
-| Path | Purpose |
-|---|---|
-| `cmd/wt/main.go` | CLI entry point (cobra), exit-code handling |
-| `cmd/wt/app.go` | shared dependency struct (loads/validates config once) |
-| `cmd/wt/commands.go` | `rotate` subcommand (debug helper) |
-| `cmd/wt/commands_config.go` | `wt config` subcommand family |
-| `cmd/wt/resolve.go` | `resolveModel` — single model for non-TUI launch, resolved from live `catalog` rows; a `-M` pin on a start row starts it through `startModel` |
-| `cmd/wt/start.go` | `startForLaunch` — the non-TUI start driver: progress on stderr, Ctrl+C cancel, the replace confirmation, and the package-level `allowReplace` the flag sets |
-| `cmd/wt/helpers.go` | `mustGetString`, `yolo`, `renderTable`; guard helpers (`maybeInstallGuard`, `checkGuardStatus`, `removeGuard`); TTY seams (`isStdinTTY`/`stdinTTY`) and picker-TTY errors |
-| `cmd/wt/launch.go` | `buildFilteredCmd`, `buildLaunch`, `launchFiltered` (all take `extraArgs`) |
-| `cmd/wt/stats.go` | `wt stats` command — read-only report over `survey.jsonl` |
-| `cmd/wt/model_cmds.go` | `wt start` / `wt stop` — `runStart` (screen-1 picker over all local rows via `localRows`, then the shared `startModel` driver) and `runStop` (argument forms, in-use confirmation); owns the `stopCandidates`/`stopEntries`/`stopPickerAll`/`confirmStop` seams |
-| `cmd/wt/smoke.go` | `wt smoke` command — one-shot model×agent smoke test, human/JSON output |
-| `cmd/wt/profile.go` | `wt profile list/show/status/on/off` — inspect and toggle `internal/profiles`; owns `setEnabledLine`'s surgical `enabled = ...` line edit |
-| `internal/config/` | config load/validate/save (agents + joined registry catalog); helpers (`Dir`, `WriteFileAtomic`, `OllamaBaseURL`, `FirstTag`) |
-| `internal/rotation/` | global rotation state + `Next` for the picker (replaces the per-slot model) |
-| `internal/usage/` | append-only JSONL launch history with 1d/7d/30d counts, shared by `wt rotate`, the model picker's per-row usage columns, and the rotation module; events carry an optional `agent` (`RecordFor`); `CountsForAgent` gives per-agent-model-pair counts, legacy agent-less lines count toward `Counts` only |
-| `internal/refcount/` | live-session "in use" model counts: JSONL state file keyed by pid, swept for dead pids on every launch, recorded at each launch path's commit point, consumed by the model picker's ref column |
-| `internal/survey/` | post-session survey: append-only JSONL verdicts (worked/speed/quality + task description), 1d/7d/30d stats per model and per agent×model combo — used by the post-run prompt, the model picker's survey segment, and `wt stats` |
-| `internal/agents/` | driver abstraction (`BuildLaunchCmd`, `ArgSetter`); picker catalog (`ListEntries`, `IssueFor`, `IsCommand`, `ByName`, `Names`, `Installed`); drivers: claude, codex, copilot, opencode, pi, agy, shell; `RunAndCleanup` (the shared apply-run-cleanup core for the TUI and non-TUI launch paths) |
-| `internal/profiles/` | Local-model launch profile overlays (`wt profile ...`, see `docs/wt-agents/profiles.md`): `Load`/`Save`/`Validate`/`Resolve`; `ApplyEnvAndArgs`/`ApplyWrapper`/`ApplyConfigContent` apply a resolved profile to an `exec.Cmd`; `SelfHeal` restores an orphaned config_content backup left by a session that never cleaned up |
-| `internal/smoke/` | `wt smoke`'s testable core: `Eligibility` (builds `catalog` rows per agent from one `localmodels.Inventory` snapshot — via the `smokeProbe` seam, with `SetSmokeProbeForTest` for other packages' tests — and keeps the launch rows (cloud, or a local model the probe reports running); it never starts or stops a model itself; `Candidates` additionally returns startable idle local rows (Action start) alongside launch rows, each with its eligible agents, for `wt smoke`'s start-first flow; returns both the eligible-model union and each model's eligible-agent list, so `EligibleAgents`/`AllEligibleModels` are thin wrappers over it and a caller needing both answers in one invocation should call `Eligibility` directly to avoid paying two probe rounds), `RunRow` (PASS/FAIL/SKIP classification via the `buildAndRun` seam) |
-| `internal/guard/` | `block-main-commit` pre-commit hook |
-| `internal/worktree/` | repo detection (`IsRepo`, `RepoRootAt`, `RepoRoot`), enumeration (`Enumerate`), creation (`EnsureForName`/`EnsureForBranch`) |
-| `internal/initseed/` | `--init` seeding |
-| `internal/session/` | resume detection (claude/opencode) |
-| `internal/ollamacheck/` | availability check before launch |
-| `internal/catalog/` | The shared row policy for every model list wt shows or resolves: `Build` (rows from an agent's eligible list plus one `localmodels.Inventory` snapshot), `Find` (row lookup by id, discovered rows included — a `-M` pin names a model, not necessarily a registry entry), `Row.Action` (launch / start / block), `Row.BlockReason`, and the presence status (`ok`/`absent`/`unknown` for registered locals, `new` for discovered rows). Knows nothing about rendering, counts or sorting — `internal/tui` wraps a `Row` in `tableRow` with those; `cmd/wt`'s `resolveModel` and `smoke.Eligibility` consume it directly. `Build` also marks a discovered model handed in via `Input.Models` (not just those it discovers itself) as `new`, so `wt start`/`smoke` rows built from a caller-supplied list keep discovered-row semantics. |
-| `internal/litellm/` | LiteLLM `config.yaml` route management (the sole implementation of LiteLLM route management; it replaced modelman's Python writer): `configfile.go` (read/write `model_list`), `entry.go`/`policy.go` (route entries, provider mappings, ready gate), `service.go` (expose/unexpose/sync/list), `restart.go` (proxy restart: `WT_LITELLM_RESTART_CMD`, else `launchctl kickstart -k` fallback; `RestartContext` runs it on the caller's ctx, `Listening` is the one-shot `/health/liveliness` probe — false only on a refused connection — and `WaitReady` the poll, called only from the lifecycle route hook). Backs `wt litellm ...` and `internal/lifecycle`'s route hook. |
-| `internal/localmodels/` | Local model inventory: `Inventory(cfg)` probes ollama (`/api/tags` + `/api/ps`, cloud `remote_host` entries excluded), omlx/mtplx (model-dir scan + `/v1/models`) and mlx_lm_server (running only) concurrently and returns registered + discovered entries with live `Running`; registry match keeps the registry id, else `config.DiscoveredModelID`. Status per family is `ok`/`partial` (the live running-state probe failed — ollama `/api/ps`, or omlx/mtplx `/v1/models` — so Running is untrustworthy)/`unreachable`/`unsupported`. Never reads modelman's `running` flag. The registry `auth.base_url` origins behind every probe resolve here (`FamilyOrigin`; `FamilyOriginPort(cfg, family)` returns the family origin **and** its numeric port from one resolution, with the family default applied to the origin when the registry value omits a port, so a command-line port and a dialed URL cannot disagree) — the inventory's own probes and `internal/lifecycle`'s start/stop backends share them, so the two always describe the same server. `Entry.ArtifactKnown` distinguishes an artifact the probe confirmed missing from one it could not determine (an unreachable family; `mlx_lm_server`, which has no artifact discovery). Each entry also carries `ModelName` (the provider-side name: the registry `model_name` when registered, else the artifact), and `Family(providerID)` is exported for consumers like `lifecycle`. |
-| `internal/lifecycle/` | Local model start engine (Go port of modelman's start/warmup): `Start(ctx, cfg, Target{ProviderID, ModelName}, Options{AllowReplace, Progress})`, `Occupant(target, snapshot)`, `Stop`. Backends: ollama (daemon must answer; 1-token chat loads the model; multi-tenant), omlx (`omlx start` when the daemon is down, warm by model basename, `omlx stop` to replace), mtplx (`mtplx serve …` spawned in its own session with modelman's pidfile/log paths; `mtplx stop --port N` to replace; torn down on failure/cancel). Live Inventory decides already-running and occupant; never replaces without `AllowReplace` (returns `*OccupiedError`); typed errors `DaemonDownError`/`BinaryMissingError`/`PortBusyError`/`UnsupportedError`/`OccupancyUnknownError`. Where the live probe cannot determine the running state — a single-model provider's server accepted the connection and then stalled, or answered unusably — `Start` returns `*OccupancyUnknownError` instead of assuming no occupant, and only `AllowReplace` proceeds. A provider that is definitively down (connection refused) is not indeterminate: that is an ordinary cold start and needs no confirmation. Writes nothing to modelman state; does not kickstart the ollama daemon. Consumed by the TUI's start-on-select flow (`internal/tui/start_flow.go`) and by `cmd/wt`'s `startForLaunch` (`wt -A <agent> -M <id>` on a non-running local model); `wt start` and `wt smoke` (for an idle pick) also start through the same driver; `wt stop` only stops. After a successful start/stop the public wrappers (`Start`, `Stop`, `StopModel`; `routes.go`) update LiteLLM `config.yaml` routes via `internal/litellm` and restart the proxy: single-model providers (omlx, mtplx) replace sibling routes on start and drop all family routes on stop, ollama adds/removes just the one model; LiteLLM failures only warn on stderr and never fail the start/stop, and a missing `config.yaml` is silent. `Start` reports `StageRouting` through `Options.Progress` before the hook runs, so callers stop rendering the engine's last stage during the route window. **The `config.yaml` write is synchronous (on the caller's ctx) but the proxy restart and readiness wait are not:** they run in a goroutine tracked by `lifecycle.WaitPendingRoutes()`, which every process exit must call (`cmd/wt/main.go`, plus `runAgentCmd`'s exit-code propagation and `wt smoke`'s failure exit, which bypass it) **and which every path about to use the proxy must call before handing off** (`cmd/wt/start.go`'s `startForLaunch` after a successful start, `internal/tui/start_flow.go` before `proceedToLaunch`, `cmd/wt/smoke.go` after the start step and before the first `RunRow`): the agent launched next talks to the model *through* LiteLLM, so proceeding mid-restart means a refused connection or the pre-restart route table (the model just started not listed yet). Async is therefore not a wall-clock saving for a plain `wt start`/`wt stop` — those still pay the restart at exit — it is about which code runs behind the proxy and which does not. That goroutine runs on `context.WithoutCancel(ctx)` **on purpose** — every caller cancels its own ctx via a scoped `defer cancel()` the instant the now-async hook returns, so inheriting cancellation means the restart never runs and the proxy silently never picks up the route change. Do not "restore" caller-cancellation propagation here; `TestRouteRestartSurvivesCallerCancelAfterReturn` and `TestStartWrapperRestartSurvivesCancelledCaller` pin it. Restart/readiness warnings are therefore always printed, never suppressed as "the user cancelled". Before writing, the hook probes `<url>/health/liveliness` once (`litellm.Listening`, 1.5s: false only for a refused connection or unresolvable host, so a slow or 503-ing proxy still counts as present); it waits up to 30s for the proxy only when it restarted it **and** that probe found something listening — a configured-but-stopped proxy costs nothing instead of stalling every start/stop for the full timeout. A replace is a separate case: the occupant's route is removed the moment it is stopped (the `env.onOccupantStopped` hook, wired only by `defaultEnv`), because a start that then fails returns without any route hook and would strand the dead occupant's row. That write is deferred-restart (`litellm.Options.NoRestart`): `Start` owns one settling bounce (`routeAfterStart`, or `bounceRoutes` when the start failed), so a replace restarts the proxy once, not twice. Failure wording lives in `internal/lifecycle/message.go` (`StartErrorMessage`, `StageLabel`), shared by both paths. |
-| `internal/configeditor/` | Bubble Tea forms behind `wt config`'s interactive editor (agent add/edit/delete) |
-| `internal/themes/` | color themes (4 palettes, `themes.toml`) |
-| `internal/tui/` | Bubble Tea shell + pickers + launch/resume; also exports `PickModel`, a standalone single-purpose picker (not part of the app.go state machine) reusing `buildTable`, consumed by `wt smoke`; `PickStartModel` is the same picker without launch-route gating (starting is not launching; `wt smoke`'s candidates are already route-checked per agent), used by `wt start` and `wt smoke`; rows that cannot start (blocked) are unselectable and show a notice with the block reason instead of returning. Selector table: `modelrows.go` (`buildRows`, `sortRows`; row action/block reason come from the embedded `catalog.Row`) delegates row inclusion and action to `internal/catalog`, and adds counts, survey stats and sort (cost ascending by output then input price, local and subscription-only = $0, no-data last; then 7d usage ascending; non-running local alphabetical); `modeltable.go` (`buildTable`, `renderTable`, header as list title via `styleTableTitle`) does the header and aligned rendering. `start_flow.go` is the start-on-select flow (`startModel` seam, `beginStart`, `runStart`, the `phaseStarting` progress + cancel keys, and the `phaseReplaceConfirm` dialog). `runInventory` is a test seam stubbing `localmodels.Inventory` for probing local models live. |
-| `docs/superpowers/` | specs + plans |
+**Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
+
+Every file and package in full: [docs/internals/packages.md](docs/internals/packages.md).
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) is wt-owned and contains **only agents and preferences** — Providers/Models live in the registry (below), and the `[litellm]` routing state is wt-owned in this same file (below). wt never writes providers/models to this file.
+`~/.config/agent-wt/config.toml` is wt-owned and holds **only Agents, DefaultTag, and the `[litellm]` table**; Providers/Models live in the registry and this file's write path never touches them.
 
-Fields:
+- **Writers go through `(*Config).PatchSave` or `lockedApply`** (flock, re-read fresh, mutate only their own fields); `Save(cfg)` only for a known-fresh `Config`.
+- `wt config` launches even when `config.toml` fails validation, so the editor can repair it.
 
-- **Agent** — tool with ≥1 supported provider and optional default.
-- **DefaultTag** — the default rotation tag group.
-
-> **Legacy `[gateway]` blocks.** LiteLLM routing used to be configured here (`GatewayConfig`); the type and the `[gateway]` table were removed — routing is now wt-owned again, as a `[litellm]` table (below). `migrateConfigSchema` detects a config.toml still carrying `[gateway]` and prints a one-time stderr notice (`wt: found a legacy [gateway] block in config.toml — LiteLLM routing is now controlled by wt (see 'wt litellm status'); this block will be dropped on next save`); since `Config` no longer decodes the field, the block is dropped on wt's next save. wt does not import its values: set them with `wt litellm set --url ... --api-key ...` (the old block's url/api_key are lost once dropped). `modelman migrate`'s import of `[gateway]` into modelman.toml only feeds the legacy fallback and is being reworked in a later phase.
-
-Key helpers: `Dir()` (config dir), `WriteFileAtomic` (atomic save), `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
-
-See `docs/superpowers/specs/2026-08-14-model-registry-data-model-design.md` for the full data model.
+Read [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md) before changing config load/save, migrations, the `[litellm]` table, registry loading, catalog membership, or location validation.
 
 ## LiteLLM routing state (wt-owned)
 
-Whether non-native models route through the LiteLLM proxy — `Config.IsLitellm()`, backed by the `[litellm]` table (`enabled`/`url`/`api_key`) in wt's own `~/.config/agent-wt/config.toml` (`Config.LitellmTable`) — or dial providers directly (`Config.IsDirect()`) is wt-owned since 2026-09-21. `~/.config/local-ai/modelman.toml`'s `[litellm]` is only a legacy read-only fallback (via `finalizeCfg`/`loadModelmanState`): on the first `Load` where config.toml already exists but has no `[litellm]`, the legacy table is copied into config.toml once (never creates config.toml just to migrate); afterwards wt's copy wins. `Config.UpdateLitellm` mutates and persists the state (config.toml writes are whole-file, last-writer-wins: a `wt config` editor session left open while `wt litellm on|off|set` ran will overwrite that change on save, and vice versa — re-run the command after saving in the editor) (config.toml is written 0600 when an api_key is stored); `LitellmConfigured()` reports URL+key set. Manage it with `wt litellm status [--json]|on|off|set --url ... --api-key ...` (see the `wt litellm` section). modelman's `litellm status|on|off|set` and its TUI toggle are passthroughs to these `wt litellm` commands (modelman requires `wt` on PATH), so modelman.toml's `[litellm]` table is now inert: modelman round-trips it verbatim and never edits it. Toggling is routing policy only; wt separately manages `config.yaml` routes and restarts the proxy after a route change through `wt litellm ...` (`lifecycle.Start`/`Stop`/`StopModel` call it after a successful start/stop). Env vars: `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`) overrides the config.yaml path; `WT_LITELLM_RESTART_CMD` (legacy `MODELMAN_LITELLM_RESTART_CMD`) overrides the restart command. `LitellmBaseURL()` trims trailing slashes so drivers append `/v1` (or nothing for claude) cleanly; the proxy loads `~/.config/litellm/config.yaml` only at startup and wt restarts it after route changes (see `docs/wt-agents/README.md#litellm-proxy-lifecycle`).
+The `[litellm]` table (`enabled`/`url`/`api_key`) decides whether non-native models route through the proxy (`Config.IsLitellm()`); set with `wt litellm status|on|off|set`, read nowhere else, routing policy only (never touches the proxy): [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#litellm-routing-state-wt-owned).
 
-## Registry (modelman-owned)
+## Registry
 
-`~/.config/local-ai/registry.toml` holds the canonical Providers/Models.
-The location is resolved with the same precedence as modelman's
-`_default_registry_path`: `MODELMAN_REGISTRY` > `XDG_CONFIG_HOME` >
-`~/.config` — keep the two in sync when changing either side. A
-`MODELMAN_REGISTRY` value starting with `~/` (or exactly `~`) is expanded
-via `expandHome`, matching Python's `Path.expanduser()` used by modelman's
-resolver — Go/the OS never expand `~` on their own, so this parity is
-deliberate, not incidental.
-wt loads it read-only via `config.Load` (fail-closed: missing/malformed
-registry is an error; seed with `modelman migrate`) and joins it in memory
-with its own `config.toml`, which now holds only Agents + DefaultTag. `Save`
-persists wt-owned fields only — wt never writes providers/models. Extra
-registry fields `model_info` is decoded (`Model.ModelInfo`) and merged into
-the LiteLLM rows wt writes (`internal/litellm/entry.go`); `fetch` is
-ignored by wt's parser; `cost`,
-`model_dir` (`Provider.ModelDir`), `auth.base_url` (`Auth.BaseURL`), and
-`auth.secret_ref` (`Auth.SecretRef`) are
-decoded (`config.ModelCost` in `internal/config/config.go`) and the cost is
-rendered as per-token + subscription pricing columns in the model picker
-(`internal/tui/model_list.go`).
+`~/.config/local-ai/registry.toml` holds the canonical Providers/Models. `config.Load` reads it fail-closed and never writes it; wt writes it through `config.UpdateRegistry` alone. Path precedence: `WT_REGISTRY` > `MODELMAN_REGISTRY` (legacy alias) > `XDG_CONFIG_HOME` > `~/.config`; llmbench's `registry_path` uses the same order — keep the two in sync (each has a precedence test).
 
-**Unconfigured-agent passthrough (issue #147).** A missing registry
-(`config.ErrRegistryMissing`) is tolerated by the launch-path gate for
-*every* agent, not just commands: `config.Load` still fails closed the same
-way, but `cmd/wt`'s `rootCmd().RunE` now only re-raises the error when it is
-*not* `ErrRegistryMissing`. `config.Load` also stopped discarding an
-already-parsed `config.toml` on a missing registry: the returned `Config`
-still carries real `Agents`/`DefaultTag` (just an empty model catalog), so a
-genuinely configured agent is never misread as unconfigured just because the
-registry also went missing — only an agent truly absent from `config.toml`
-reads as unconfigured via `agents.IsConfigured(cfg, name)` and launches its
-installed binary directly with no model routing, through
-`agents.BuildPassthroughCmd`. A configured agent whose registry is missing
-instead fails on model resolution (no models to resolve against) rather
-than silently launching native. `-M` against an unconfigured agent is still
-an error. A genuinely malformed `config.toml`/`registry.toml` (a real parse
-error, not `ErrRegistryMissing`) still fails closed with the repair hint.
-See `docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md`.
+- **`ResolveLocation` is the one judge of a location** (`config.ErrLocation`).
+- **On-disk and running state come from live probes**; no per-model state key exists, and whether a model is routed is `wt litellm list`.
+- **`config.UpdateRegistry` is the only write path**; its `apply` must be pure (it may run up to three times). `RegistryDoc` operations are patch-shaped — never round-trip a `config.Model` into the file.
+- **An id on more than one model row is refused, never resolved to the first row** (`config.ErrModelAmbiguous`); find a row through `RegistryDoc.Model`/`PatchModel`/`RemoveModel`.
+- **A malformed `fetch`/`draft` or `cost.time_prices` row reads as absent and never fails the load** (`Model.Malformed()`). Get a zone through `config.loadZone`, not `time.LoadLocation`.
+- **Read-side schemas are pinned by contract fixtures** in `../docs/contracts/`: a key added to or renamed in `modelListJSON`/`modelListRow` (`cmd/wt/model_list.go`) fails `cmd/wt/model_list_contract_test.go` until `model-list.sample.json` has it (modeltiers reads that document as its whole inventory).
+- A missing registry lets an *unconfigured* agent launch as a native passthrough (`agents.BuildPassthroughCmd`); a configured one fails on model resolution.
 
-**Read-side schemas are pinned by contract fixtures.** `docs/contracts/registry.sample.toml`
-and `docs/contracts/modelman.sample.toml` are loaded by `internal/config`
-contract tests and modelman's `tests/contracts/` — a schema change must
-update both sides or both CI jobs fail.
+> **`unknown provider "X"` errors are usually a registry data gap, not a wt bug.** Fix with `wt model init` on that machine (a provider it has no default row for is named in its output: a hand edit of `registry.toml`), not a code change here.
 
-**Exposure predicate (2026-09-15 local-model visibility design):** wt's `IsExposed` decides Stage-1 (tag/family/provider) catalog membership:
-- Native models (provider `auth.type = "native"`): always exposed.
-- Local models (location resolves to `"local"`): always exposed here too — the picker lists every configured and discovered local model with live STATUS/RUNNING, and the non-TUI path consults the same rows; what a row can do (launch, start, or block) is decided per row from the live probe, not from any flag (see the "Local-model resolution" section below). A model whose location can't be resolved (registry data gap) falls back to the cloud/native check below, fail-closed.
-- Cloud (and any model whose location doesn't resolve to local): `exposed` true (legacy `litellm_exposed` still read, ORed) AND (`ready = true` OR `location = "cloud"`), unchanged from before.
+> **Fixture gotcha.** `config.toml` lives in `$XDG_CONFIG_HOME/agent-wt/`, `registry.toml` in `$XDG_CONFIG_HOME/local-ai/` — fixtures populate both. LiteLLM's `config.yaml` follows neither, so a fixture that redirects the registry also names it (`WT_LITELLM_CONFIG` or `litellm.Options.Path`), or route writes refuse with `litellm.ErrRegistryRedirected`. `migrateConfigSchema` always ensures an `agy` agent, so a registry fixture with agents needs an `agy` provider or `Load` fails with `unknown provider "agy"`.
 
-The model picker's EXPOSED column shows `Y` for native models (as modelman's own column does, unconditionally) and otherwise reads the raw modelman flag via `Config.ExposedFlag` — unlike `IsExposed`, it does no location-based special-casing, so cloud-location models show their true exposure state while local models show modelman's via-flag visibility (which says nothing about whether the model is running — see the "Local-model resolution" section below).
+Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry). Adding a provider: the `adding-a-provider` skill.
 
-This means wt's picker can now show a local model modelman's own TUI still renders `–` for in its EXPOSED column — that divergence is intentional for local models; LiteLLM-forced routes (see the Agents table below) get their `config.yaml` route from wt itself: `lifecycle.Start`/`Stop`/`StopModel` add or remove routes through the route hook in `internal/lifecycle/routes.go` (see the `wt litellm` section below). wt still never writes modelman's `exposed` flag, so modelman's EXPOSED column for a local model reads modelman.toml's stale flag and can disagree with the real `config.yaml` route (a `wt start`-ed model is routed but may show `–` there, and the inverse after `wt stop`/`wt litellm sync`); the authoritative answer is `wt litellm list`. Reading `wt litellm list` in modelman's column is a deferred follow-up. See `docs/superpowers/specs/2026-09-15-wt-local-model-visibility-design.md`.
+## Local-model resolution
 
-> **`unknown provider "X"` errors are usually a registry data gap, not a wt
-> bug** — e.g. a `registry.toml` with models referencing `provider_id`s but
-> `providers = []`. Fix is `modelman sync`/`modelman migrate` on that machine,
-> not a code change here. (`modelman sync` now repairs a `providers = []`
-> registry by creating default entries for reconcilable providers.)
+Every model row wt shows or resolves is built by `internal/catalog` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag). A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx, not running or still loading) or **block**.
 
-**Lazy:** `newApp()` only loads config. wt never shells out for discovery;
-`-W`/`--cwd` runs one `ollama list` via `ollamacheck.Available()`. `localmodels.Inventory` performs HTTP and filesystem discovery only (still no subprocess) and is called by both `enterModelPhase` (TUI picker, pinned and non-pinned models) and `PickModel` (standalone picker for `wt smoke`) to show live local-model status. Discovery stays subprocess-free; `internal/lifecycle` is where wt execs provider binaries (`omlx`, `mtplx`) to start or stop models.
+- **`config.Provider.Origin` is the one reading of a provider's address** (#348): probes, routes, direct routes and pi's `models.json` all use it, and so must any new reader. A test never binds or dials the mtplx default port 8003.
+- **`localmodels.ServedIDs` is the one answer to "what is this server serving"** (#201).
+- A `-M` pin is looked up among all rows (`catalog.Find`, else `catalog.MissingReason`); without `-M`, the non-TUI path picks only launch rows — only a pin may start a model.
+- **A slot-profile row is not a model row** (`Model` holds only `profile/<name>`, `Row.Profile` the rest): test `r.Profile != nil` before reading any other `Model` field, calling `ResolveRoute`, or launching/starting `Model`.
 
-> **Fixture gotcha.** `Dir()` and `RegistryPath()` both honor `XDG_CONFIG_HOME`
-> (and `RegistryPath()` also honors `MODELMAN_REGISTRY`) but write to
-> *different* subdirs: `config.toml` → `$XDG_CONFIG_HOME/agent-wt/`,
-> `registry.toml` → `$XDG_CONFIG_HOME/local-ai/`. Test/smoke fixtures must
-> populate both. Also: `migrateConfigSchema` (runs on every `Load`)
-> unconditionally ensures an `agy` agent — any registry fixture with agents
-> needs a matching `agy` provider or `Load`/`Validate` fails with
-> `unknown provider "agy"`.
+Read [docs/internals/local-models.md](docs/internals/local-models.md) before changing row policy, the inventory probes, omlx loaded-state detection, pin resolution, rotation, or `wt start`/`wt stop`.
 
-## Local-model resolution (live rows, 2026-09-20)
+## Lifecycle (`internal/lifecycle`)
 
-Every model row wt shows or resolves — the TUI picker, `wt smoke`'s picker, and the non-TUI launch path — is built by `internal/catalog` from the agent's eligible list plus one `localmodels.Inventory` snapshot; the TUI only decorates the rows (counts, survey stats, sort, rendering). The rules live once in `catalog` (`Row.Action`/`Row.BlockReason`):
+The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends ollama (`Shared`), omlx (`Pool`), mtplx (`Exclusive`).
 
-- **launch** — a cloud row, or a local model the probe reports running.
-- **start** — a non-running local row of ollama/omlx/omlx-6bit/mtplx whose
-  status is not `absent` (a pulled ollama model is a start, not a launch
-  exception).
-- **block** — an `absent` row ("not on disk — pull or download it first") or
-  a provider with no start engine such as `mlx_lm_server` (the
-  `modelman start <id>` hint). Separately from these, a discovered row whose
-  route goes through LiteLLM is refused by the picker and the CLI ("not in
-  LiteLLM", unselectable — `renderTable` in the TUI, `pickerBlockedReason`
-  on the non-TUI path, not `catalog`).
+- **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`); unknown occupancy is `*OccupancyUnknownError`, never assumed empty. Other providers' models beside the target need `Options.Others` (#412); `--replace` never answers it.
+- **A start/stop wt performs updates `config.yaml`** through `internal/litellm` (route hook); `lifecycle.EnsureModelRoute` (#192) never fails a launch, a slot-profile launch uses the failing `profile_routes.go` calls.
+- **Call `WaitPendingRoutes()` on every process exit and before handing a model to an agent**: the `config.yaml` write is synchronous, the proxy restart and readiness wait are async. The restart goroutine runs on `context.WithoutCancel(ctx)` on purpose.
+- **A `Start` that returned nil is followed by one `SettleStart(ctx, out, cfg, target)`** (#343, #349); each package has one seam over it that its `TestMain` stubs (`lifecycleSettleStart` in `cmd/wt`, `settleStart` in `internal/tui`).
+- **A failed start is printed once, by `main`** (#344): a new command that can return one needs `SilenceErrors` or `asStartError`/`printOnce`, or the message prints twice.
+- **An ollama stop ollama accepted but has not carried out is `*StillFinishingError`, never nil** (#379); only the stop loop reads it as an outcome (exit 0). The TUI stops models only after the alt screen is gone.
+- **wt signals a process only after identifying it** (`mtplx_loading.go`): a pid is never enough (user's own, exact argv on the provider's port, recorded start time, rechecked before SIGKILL). The pidfile stays a bare pid (llmbench shares it).
 
-**TUI model picker:** Lists all configured and discovered local models —
-running and non-running alike — with live STATUS/RUNNING columns from the
-inventory (never the modelman flag). Enter on a start row runs
-`lifecycle.Start` with live progress, a cancel key, and a replace-confirm
-dialog (see TUI below); the single-row auto-launch shortcut applies only to
-launch rows.
-
-**A `-M` pin is looked up among ALL rows, discovered ones included**
-(`catalog.Find`) — the launch path accepts a model the registry does not
-name. The pin's own row decides the outcome wherever it appears: a launch
-row (cloud or running local) launches; a start row selects its row and
-enters the start flow; a blocked row routes back with that row's reason;
-a pin absent from the list keeps the "not in the eligible list" message.
-
-**Non-TUI launches (`cmd/wt/resolve.go`):** `resolveModel` builds the same
-`catalog` rows from one inventory snapshot. With no `-M`, only the launch
-rows are eligible for resolution (`launchableModels`) — rotation sees cloud
-plus running-local rows only, so it can never hand an agent a server that
-is not up, and a start row is never auto-selected: only a pin may start
-one. A `-M` pin on a start row is started by `startForLaunch`
-(`cmd/wt/start.go`): timestamped progress on stderr, Ctrl+C cancels (a
-second Ctrl+C exits wt), and an occupied provider needs a TTY `y/N` or
-`--replace`. The TUI starts a non-running pin at once too (with or without
-`-W`), and `--replace` there covers only the pinned row. Start failures on
-both paths use `lifecycle.StartErrorMessage`. When models matched but none is cloud or running, the error
-names the fix: "no cloud or running local model for agent X — start one with
-`wt -M <id>`".
-
-Start/stop local models with modelman: `modelman start <provider>/<name>`
-/ `modelman stop <provider>/<name>` / `modelman stop --all`, or the TUI's
-`s` keybinding (see `modelman/CLAUDE.md`).
-
-## Config (themes)
-
-`wt config` is the user-preference surface (separate from `config.toml`):
-
-```bash
-wt config                    # interactive viewer/editor (needs TTY)
-wt config theme              # active theme + available names
-wt config theme list         # list built-in themes
-wt config theme show <name>  # tokens with dark/light hex previews
-wt config theme set <name>   # activate (effective next launch)
-wt config theme unset        # revert to default
-wt config path               # print the config directory
-```
-
-> **Invalid-config repair.** `wt config` launches even when `config.toml` fails validation, so the editor can repair it. Other launch paths exit early on config errors.
+Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, the launch-time route check, restart or readiness waits, or replace.
 
 ## Rotation (Go)
 
-Global rotation — the Go equivalent of bash `--code`/`--design`. Each successful launch records a single model id; the next picker entry lands on the model *after* it. Per-slot rotation (`Slot{Agent,Tag,Family}`) was retired; only the global state file remains.
+Each successful single-model launch records its id in `~/.config/agent-wt/rotation.state` (`rotation.RecordFor`, which also writes `last-picked.state` and `usage.jsonl`); the picker cursor lands on the model after it (`FirstAfter`).
 
-- Public API (package `rotation`):
-  - `Rotation` (struct) — `New()` / `NewAt(dir)` constructors; `Last() (string, bool)`, `Record(modelID string) error`, `RecordFor(agent, modelID string) error` (rotation state plus an agent-attributed usage event; `Record` is `RecordFor("", id)`), `Next(cfg, agent, tags, family) (config.Model, bool)`, `StateDir() string`.
-  - Package-level `FirstAfter(models []config.Model, target config.Model) (config.Model, bool)` — shared by the picker and `wt rotate`.
-- State file: `~/.config/agent-wt/rotation.state` (atomic write, owns one model-id-per-line).
-- The model picker marks the last-launched row with a `> ` prefix
-  (`renderTable` sets `marked` in `internal/tui/modeltable.go`, value
-  from `rotation.Last()`; `Title()` composes the prefix — plain ASCII
-  because Unicode geometric shapes are East Asian Ambiguous width and
-  misalign CJK terminals); the cursor still lands on the rotation's
-  next-to-use model. Rotation positions the cursor only when a last-launched
-  registry model exists; otherwise (fresh install, stale id, or a
-  last-launched discovered model) it lands on the first launchable table
-  row. Rotation never advances onto a discovered row.
-- The model picker's leftmost column shows a live "in use" session count
-  (issue #73): `buildTable` queries `refcount.Store.Counts` over the
-  table's row IDs and sets
-  `modelItem.ref`; `Title()` renders it as a 2-rune prefix ("`3 `" or two
-  blank spaces, clamped at 9) *before* the rotation marker. See
-  `internal/refcount`.
-- **Picker table columns:** FAMILY, MODEL, LOC, STATUS, EXPOSED, RUNNING, COST, 1D, 7D, 30D, SURVEY (the SURVEY column is present but always empty for `wt smoke`'s picker, which has no agent context).
-- Usage history (1d/7d/30d per-model counts) lives at `~/.config/agent-wt/usage.jsonl` (JSONL, appended by `usage.Store.Record`; launch paths from `cmd/wt/launch.go` and `internal/tui` call `rotation.RecordFor(agent, id)`, which also records the agent-tagged usage event; consumed by the model picker — see `internal/usage`). Usage tracking uses `usage.Store.CountsForAgent(agent, modelIDs)` for per-agent-model-pair counts; `wt smoke`'s picker uses model-level `Counts` since there's no agent context yet. The picker's TUI callers fetch the agent's **full** catalog **once** via `cfg.ModelsForAgent`, narrow it in place with `cfg.EligibleModelsIn` (the shared single-traversal filter; `EligibleModels` is a thin wrapper that passes a nil catalog), and pass the eligible slice to `enterModelPhase`. `buildTable` (`internal/tui/modeltable.go`) then builds and sorts the rows (cloud plus running local by cost then 7-day usage, non-running local alphabetically) and renders them as an aligned table with per-model 1D/7D/30D usage cells; the header is the list title.
+- **Marker and pointer are two files**: `rotation.state` stays one bare registry id; `last-picked.state` holds the `> ` marker's row. A slot-profile launch calls `RecordProfile` (never `rotation.state`); a profile row never rotates.
+- **The sort order is also the default selection** — changing `sortRows` changes what a bare Enter picks. The marker is plain ASCII `> ` (Unicode misaligns CJK terminals).
 
-```bash
-go run ./cmd/wt rotate code    # debug helper: print the model after the last-launched in the "code" tag group
-```
-
-> **Migration from per-slot rotation.** On first load after upgrading, if `rotation.state` is absent and any legacy `rotation-<agent>-<tag>-<family>.state` or `rotation-<tag>.state` files exist, `Rotation.migrate` imports only the **single newest-mtime** entry and then deletes every legacy file. Distinct per-slot histories (e.g. `claude-code` vs. `claude-design`) are reduced to one global value — there is no in-repo back-compat layer for multi-slot users. Back up `~/.config/agent-wt/rotation-*.state` before upgrading if that matters.
+Details and pinned tests: [docs/internals/local-models.md](docs/internals/local-models.md#rotation-go).
 
 ## Agents (Go)
 
-Each agent registers a `Driver` (`Build(m config.Model, yolo bool, r config.Route) LaunchCmd`, `YoloFlag() string`). `BuildLaunchCmd(agent, m, worktreePath, yolo, sess, cfg, extraArgs)` is the shared constructor used by both TUI and non-TUI launch paths — it resolves one `config.Route` per launch via `(*config.Config).ResolveRoute(m, agents.ProtocolsFor(agent))` and hands it to `Build`; drivers should not bypass it.
+Each agent registers a `Driver`; `BuildLaunchCmd(agent, m, worktreePath, yolo, cfg, extraArgs)` is the shared constructor for both launch paths (it resolves one `config.Route` via `cfg.ResolveRoute(m, agents.ProtocolsFor(agent))`).
 
-**Unconfigured-agent passthrough.** `agents.IsConfigured(cfg, name)` is the
-single source of truth for "does this agent have a model catalog to resolve
-against" — commands are always configured; a model-driven agent needs a
-`config.toml` entry. When false, both launch paths skip the model layer and
-call `agents.BuildPassthroughCmd(agent, worktreePath, yolo, extraArgs)`,
-which reuses every driver's existing native-model branch via the sentinel
-`config.Model{Native: true, ModelName: "native"}` — no `--model`, no gateway
-env, the same env-clearing (`claude` clears `ANTHROPIC_*`, `copilot` clears
-`COPILOT_*`) a real native launch gets. `opencode`'s `Build` is the one
-driver that gained a native-model guard for this (it was previously
-ollama-only and never saw a native model). The TUI marks an installed,
-unconfigured agent row `passthrough` in the agent+command picker instead of
-the usual "not configured" issue; an uninstalled agent stays blocked either
-way, since a passthrough launch still needs a binary to exec.
+- An empty agent/provider wire-protocol intersection forces LiteLLM regardless of the toggle — so **codex always routes through LiteLLM**. Litellm/forced routes use the registry id (`m.ID`); direct routes the provider-side name (`m.ModelName`).
+- **copilot uses the chat-completions wire (`WIRE_API=completions`)** — its `responses` wire drops leading characters.
+- **claude maps all four model slots on every non-native single-model launch** (`claudeSlotVars`); an applied profile's `env` is appended later and wins.
+- agy is a native passthrough, not a command agent: `-A agy` without `-M` errors when more than one agy model is eligible.
 
-`Route` (`internal/config`) carries everything a launch needs: `BaseOrigin` (scheme://host:port, no wire-path suffix), `APIKey`, `ModelRef`, `Display`, `ProviderID`, `Protocol`, `Litellm`, `Forced`. Direct routes dial the model's own provider (`auth.base_url`, normalized via `BaseOrigin`, key from `auth.secret_ref` via `ResolveSecret`) with the provider-side model name; litellm/forced routes dial the proxy URL/key from wt's `[litellm]` config with the registry id.
+Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driver, `Route`, an optional capability (`Seeder`, `Syncer`, `ArgSetter`, …), or `ollamacheck.Check`. Per-agent env/args: [docs/wt-agents/](docs/wt-agents/). New driver: the `adding-a-wt-agent` skill.
 
-**Agent protocols.** Agents declare the wire protocols they speak via the `ProtocolDeclarer` capability (`Protocols() []Protocol`); registry providers declare what they serve (`Provider.protocols` in registry.toml, defaulting to `openai-chat`). `ResolveRoute` intersects the two — an empty intersection sets `Forced = true`, routing through LiteLLM regardless of the on/off toggle.
+## Profiles (`internal/profiles`)
 
-| Agent | Declared protocols |
-|---|---|
-| claude | `anthropic` |
-| codex | `openai-responses` |
-| copilot | `openai-chat` |
-| opencode | `openai-chat` |
-| pi | `openai-chat` |
-| agy, shell | none — agy is a native passthrough and shell is a command runner; neither resolves a route |
+Opt-in overlays from `~/.config/agent-wt/profiles.toml` (`profiles.Resolve`), applied on both launch paths and by `wt smoke`; operator reference [docs/wt-agents/profiles.md](docs/wt-agents/profiles.md).
 
-Consequence: codex has no direct path for any local provider (none serves `openai-responses`) — codex always routes through LiteLLM, and `BuildLaunchCmd` prints the forced-LiteLLM stderr notice on every direct-mode launch. claude × openrouter (`openai-chat` only) forces LiteLLM the same way.
+- Call the `config_content` cleanup explicitly after the run — `runAgentCmd`'s `os.Exit` skips defers.
+- Apply order is env/args → `config_content` (with `config_defaults`) → wrapper; load/validate/apply errors degrade to an unprofiled launch with a warning.
 
-**Optional capabilities** (interface checks via type assertion in `BuildLaunchCmd`):
+**Slot profiles** (hand-written `~/.config/agent-wt/slot-profiles.toml`, never written by wt; [docs/wt-agents/slot-profiles.md](docs/wt-agents/slot-profiles.md)) map an agent's model slots to registry models and are pinned with `-M profile/<name>`; claude is the only slot agent. A rule that belongs to one agent goes on that interface and is asked through `profiles.SlotDrivers` (warn-only: `agents.SlotConfigWarner`), never into `internal/profiles` or `internal/catalog`, which do not import `internal/agents` (#418).
 
-| Capability | Consumer | Drivers that implement it |
-|---|---|---|
-| `ProtocolDeclarer` | `Protocols() []Protocol` — the wire protocols the agent speaks; consumed by `ResolveRoute` (direct vs forced-LiteLLM) and the model picker | claude, codex, copilot, opencode, pi |
-| `Seeder` | Pre-launch file seeding (AGENTS.md + pointer files) | claude, copilot (only drivers implementing `InstructionPointers()`; others skip seeding entirely) |
-| `Syncer` | Pre-launch sync step (e.g. `pi` syncs models to `~/.pi/agent/models.json`) | pi |
-| `ArgSetter` | Consumes passthrough args as argv instead of appending | shell |
-| `Resumer` | `ResumeFlag()` + `LatestSession(path)` for resume support | claude, opencode |
-| `OneShotRunner` | `OneShotArgs(prompt)` — non-interactive single-prompt invocation, consumed by `wt smoke` | claude, codex, copilot, opencode, pi, agy |
+- **A slot profile is its own launch unit**: `launchSlotProfile` (`cmd/wt`) and `slot_flow.go` (`internal/tui`) run the same ten steps. Change both paths together.
+- **The file's problems are warnings, never a stopped wt** (`slotWarnings`; #418, #419).
+- **Fail closed, always the proxy, no file written**: nothing reads `cfg.IsLitellm()`; `config_content` travels only in inline `--settings`, the proxy token only in the process env.
+- **Automatic profiles are never applied to a slot-profile launch** (`applySlotProfile`, never `applyProfileForLaunch`).
+- **A default may be an agent alias** (`SlotCapable.DefaultAlias`, #391): use `SlotCheck.RestSlot()`/`FilledOrder()`, never `Profile.Default`.
 
-Drivers without `Resumer` (codex, copilot, pi, agy, shell) never resume — the session lookup in `internal/session` returns nil for them.
-
-**Model id contract.** The `m.ID`-vs-`m.ModelName` split is now a property of `Route.Litellm`, resolved centrally in `ResolveRoute` rather than per-driver: litellm/forced routes set `Route.ModelRef` to the **registry id** (`m.ID`, e.g. `ollama/qwen3.8:27b-mlx` — LiteLLM's `model_list` is keyed on it); direct routes set it to the **provider-side name** (`m.ModelName`, dialed at the provider's own `auth.base_url` via `Route.BaseOrigin`). `Route.Display` always carries `m.ModelName` for catalog "name" fields. Regression tests (`TestClaudeOllamaPrefix`, `TestOpenCodeOllamaPrefix`, …) use a model with distinct `ID`/`ModelName` so a wrong id can't slip through silently.
-
-| Agent | Launch behavior |
-|---|---|
-| claude | `ANTHROPIC_*` env (`ANTHROPIC_BASE_URL=r.BaseOrigin`; token `ollama` direct, `r.APIKey` litellm) + `--model <r.ModelRef>`; native: no args |
-| codex | `--model <r.ModelRef>` plus inline `-c` overrides declaring the `agent-wt` provider at `<r.BaseOrigin>/v1/` (`wire_api="responses"`); **non-native codex models always route through LiteLLM** (no local provider serves `openai-responses`), key exported as `AGENT_WT_GATEWAY_API_KEY`; native: no args (see `docs/wt-agents/codex-wt.md`) |
-| copilot | `COPILOT_PROVIDER_BASE_URL=<r.BaseOrigin>/v1`/`API_KEY`/`WIRE_API`/`COPILOT_MODEL=<r.ModelRef>` env; never `--model`. **Must use the chat-completions wire (`WIRE_API=completions`)** — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge (observed via LiteLLM; verified in both direct and litellm modes 2026-09-01, `glm-5.3-flash:cloud`). This deliberately diverges from `ollama launch copilot`, which still prescribes `responses`. Native models clear all `COPILOT_*` provider env vars. |
-| opencode | `OPENCODE_CONFIG_CONTENT` inline JSON with the wt-declared custom provider `agent-wt` at `<r.BaseOrigin>/v1` in both direct and litellm routes; model `agent-wt/<r.ModelRef>`; never `--model` |
-| pi | syncs models to `~/.pi/agent/models.json` (`_launch: true`); direct: `--model <r.ProviderID>/<m.ModelName>` from the pi provider named after the registry provider; litellm: `--model litellm/<r.ModelRef>`; no yolo |
-| agy | no model passthrough (chosen in its TUI); **not** a command agent — `IsCommand("agy")` is false, so the launch path still resolves a model and `-A agy` without `-M` errors "multiple models match" (→ TTY error on non-TTY stdin) when >1 agy model is eligible |
-| shell | execs passthrough args as argv, or interactive `bash`; no model/yolo/resume; `ArgSetter` |
-
-With LiteLLM routing on — or forced by a protocol mismatch — non-native models route through the proxy in the `[litellm]` table (`r.BaseOrigin` = its URL with trailing slashes trimmed, `r.APIKey` = its key, `r.ModelRef` = `m.ID`):
-
-| Agent | litellm routing |
-|---|---|
-| claude | `ANTHROPIC_BASE_URL`=`r.BaseOrigin` (no suffix) + `ANTHROPIC_AUTH_TOKEN`=`r.APIKey`, `--model <m.ID>` |
-| codex | same `-c` overrides with base_url `<r.BaseOrigin>/v1/` (trailing slash), key exported as `AGENT_WT_GATEWAY_API_KEY` from `r.APIKey`. **Always litellm, even in direct mode** (forced — no local provider serves `openai-responses`). **litellm ≤ 1.98.0 cannot serve codex** (responses→`ollama_chat` bridge crashes on codex's structured `reasoning`); see `docs/wt-agents/litellm-troubleshooting.md` |
-| copilot | `COPILOT_PROVIDER_BASE_URL=<r.BaseOrigin>/v1` + `COPILOT_PROVIDER_API_KEY=<r.APIKey>`, `COPILOT_MODEL=<m.ID>` |
-| opencode | `OPENCODE_CONFIG_CONTENT` with wt-declared custom provider `agent-wt` at `<r.BaseOrigin>/v1`, models map keyed by `m.ID`, model `agent-wt/<m.ID>`, `small_model` pinned the same — the builtin `openai` provider can't serve registry ids (catalog validation + responses-API stream mismatch) |
-| pi | syncModels creates the dedicated `litellm` provider (`<r.BaseOrigin>/v1` + `r.APIKey`) keyed by registry id and launches `--model litellm/<m.ID>`; pi splits `--model` on the first slash, so registry ids under a direct provider block are unreachable — empty `apiKey` invalidates pi's whole models.json, reverts write placeholder `"ollama"` |
-
-The pre-launch `ollamacheck.Check` is **skipped when LiteLLM routing is on** (`cfg.IsLitellm()`): a model absent from local `ollama list` is not an error when LiteLLM serves it from a non-local upstream.
-
-### Adding a new agent driver
-
-See the `adding-a-wt-agent` skill.
+Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-internalprofiles) before changing profiles, or its [slot-profile section](docs/internals/launch-flow.md#slot-profile-launch) before changing a slot-profile launch step.
 
 ## Smoke test (`wt smoke`)
 
-`wt smoke <model-id>` finds every agent currently eligible for one model and
-runs a one-shot prompt through each via `agents.BuildLaunchCmd` (the same
-in-process launch construction a real launch uses), reporting PASS/FAIL/SKIP.
-Every one-shot launch except codex runs with the agent's yolo flag forced on
-(`agents.BuildLaunchCmd(agentName, m, cwd, agentName != "codex", ...)` in
-`internal/smoke/smoke.go`, independent of the root `--yolo` flag) — a
-one-shot prompt has no TTY to answer an interactive tool-permission prompt,
-and without this a backing model that attempts a tool call for the trivial
-smoke prompt can spiral on repeated permission denials for many minutes
-instead of failing fast (see `TestRealBuildAndRunPassesYolo`). codex is
-excluded (`TestRealBuildAndRunSkipsYoloForCodex`): its `exec` subcommand
-never prompts for approval on its own, so forcing its yolo flag
-(`--dangerously-bypass-approvals-and-sandbox`) would only strip its sandbox
-for no benefit. **Cost:** every other agent runs in the current working
-directory with permission checks bypassed — harmless with the default
-sentinel prompt, but a `--prompt` override or an unprompted tool call runs
-genuinely unsupervised in this checkout (see `docs/wt-smoke.md`'s
-"Tool-use permission" note).
-Distinct from `make test-agents`/agents-smoke.sh's hand-curated regression
-matrix (static agent×model list, both routing modes) — `wt smoke` tests
-whatever routing mode is live right now, against whichever model you point it
-at. Never writes config or flips LiteLLM routing (it only reads the live state). It
-does start an idle local pick first (via the shared `startModel` driver,
-honouring root `--replace`) and, once a model is resolved, runs the
-exit-flow stop picker on pass or fail (registered only after the start step
-succeeds, so a failed start returns its error without the picker; skipped for `--json`
-or a non-TTY stdin; a FAIL still exits 1). It records no refcount entry, so
-there is none to release first. With no model-id on a TTY, the interactive picker
-is `internal/tui.PickStartModel` (route-skipping: `smoke.Candidates` already applied each agent's own route rules, and the agent-less check in `PickModel` could block a row an agent's forced-LiteLLM route accepts) — a standalone Bubble Tea program (not the main
-app's worktree→agent→model state machine) that reuses `buildTable` for
-the same table rows the agent flow's model picker renders, over
-`smoke.Eligibility`'s unfiltered cross-agent union (never narrowed to one
-agent's supported providers, since here the eligible agents are derived
-*from* the chosen model rather than the reverse). The picker performs a live
-`localmodels.Inventory` probe so STATUS/RUNNING columns show current local-model state. Always-on, timestamped
-progress lines go to stderr — a start line before each agent's row and a
-result line after, with FAIL rows carrying the same command/exit-code/output
-detail the final report shows (`logSmokeStart`/`logSmokeResult` in
-`cmd/wt/smoke.go`, sharing `writeSmokeFailDetail` with the final report so
-the two can't drift apart) — leaving stdout (the human table and `--json`
-report) unaffected. See `docs/wt-smoke.md`.
+`wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model, built like a real launch (`agents.BuildLaunchCmdInfo`), and reports PASS/FAIL/SKIP ([docs/wt-smoke.md](docs/wt-smoke.md)). Each row runs in its own temporary git repo unless `--cwd`; permission checks are off (yolo forced on except codex) and the directory is not a sandbox (#193). A model fallback is FAIL; the default prompt never contains its sentinel verbatim.
 
-- **Timeout is location-based** (`smokeTimeout`, `cmd/wt/smoke.go`): unset `--timeout` → 180s cloud / 900s local (unresolvable location counts as cloud). The flag default is `0` = unset; only an explicit value is validated. Local rows are slow because agents send 12–41k-token preambles that cold-prefill at 65–95 tok/s, so a timed-out local row usually isn't a broken agent.
-- **Diagnosing a slow local row:** `/tmp/local-ai-setup-mtplx.log` has one `mtplx_openai_generation` line per *completed* request (`prompt_tokens`, `elapsed_s`) plus `memory guard`/`pressure_trim` lines; killed (timed-out) requests leave no line, and a repeat agent is fast only while its prefix is still in mtplx's session cache. Rows run sequentially.
+Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row directories, yolo, process-group cleanup, env stripping, Ctrl+C, or timeouts (180s cloud, 900s local).
 
 ## Start/stop (`wt start`, `wt stop`)
 
-`wt start [model]` starts a local model without launching an agent (`cmd/wt/model_cmds.go`). With an id it resolves through `catalog.Find` over `localRows` (every configured local model plus detected ones, one inventory snapshot): an idle row starts via `startModel` (`--replace` skips the replace question), a running row is a no-op ("already running"), a blocked row errors with its `BlockReason`, and a cloud or unknown id errors. With no argument it needs a TTY and shows the screen-1 picker (`tui.PickStartModel`, via the `pickStartModelTUI` seam — `PickModel` minus launch-route gating, since starting is not launching) over all local rows; blocked rows are unselectable.
+`cmd/wt/model_cmds.go`; [docs/wt-start-stop.md](docs/wt-start-stop.md); code notes: [docs/internals/local-models.md](docs/internals/local-models.md#startstop-wt-start-wt-stop).
 
-`wt stop` with no argument probes the inventory once: `survey.PickerWith` takes the snapshot itself and returns whether it had anything to offer (the `stopPickerAll` seam), which decides the "no running local models" note. A bare provider is validated against the configured providers `lifecycle.CanStop` accepts (`stoppableProviders`), the same list its error message prints.
+## Cloud sync (`wt cloud-sync`)
 
-`wt stop [model|provider]` uses `survey.StopCandidates` (running models with live-session counts), `survey.StopEntries` (the shared stop loop) and `survey.PickerWith(..., Options{IncludeInUse: true})` for the no-arg picker (needs a TTY; in-use rows are listed with their session count, unlike the exit-flow pickers, which hide them). `<provider>/<name>` stops one model (not running: error; unknown: error); a bare provider (`ollama|omlx|omlx-6bit|mtplx`) stops all its running models (nothing running: exit 0 with a note). A target on a single-model provider (omlx, mtplx) widens to every running model of that provider (`withFamilyCollateral`; the collateral models are named on stdout) since it stops as a whole. If a live wt session uses the targets, `confirmStop` asks y/N on `/dev/tty` (default No) with the total session count (`stopImpact`: summed across models, a single-model provider counted once) and the in-use models named; `--yes` skips it. See `docs/wt-start-stop.md`.
+`internal/cloudsync` decides what a sync changes (no I/O, no clock); `cmd/wt/cloudsync*.go` owns fetches, the ollama CLI, the confirmation, the one registry write, the route sync and exit codes. Behavior: [docs/wt-cloud-sync.md](docs/wt-cloud-sync.md); operator procedure (parser repair after exit 3): the `cloud-sync` skill. **Change the page and the skill with the behavior** — both quote its messages.
+
+- **`ParsePricing` is the only code that knows the pricing page's HTML**; anything that stops looking like a price table is a `*ParseError`, never a short catalog (it would plan removing every ollama cloud entry).
+- **The plan's text is the plan** (`CatalogPlan.Format`/`PricePlan.Format`): deterministic, no clock, compared with the re-plan under the registry lock; `Apply` methods are pure and write only the shown diff.
+- **Exit codes 2 to 5 are the ollama flow's and win over 1** (each: it changed nothing). A flow whose provider the registry does not use is skipped (exit 0); cloud-sync never seeds a provider row.
+
+Read [docs/internals/cloud-sync.md](docs/internals/cloud-sync.md) before changing a planner or parser, either `Format`, `cost.time_prices` rows, the removal digest, the registry write, an exit code, or how the ollama CLI is run.
 
 ## LiteLLM routes (`wt litellm`)
 
-`wt litellm expose|unexpose <id>...` add or remove `config.yaml` routes for registry models (the proxy is restarted after a change; an unchanged config writes nothing). `wt litellm sync` makes local-model routes match the running models (it leaves alone any provider family whose probe status is not `ok` — an omlx/mtplx whose `/v1/models` fails reports `partial` — with a warning, and models whose provider has no probe (retired llamacpp) with no warning, since running state cannot be trusted; the exception is a server that *refuses the connection*, reported as `Snapshot.Down`, whose routes are stale and are removed), `wt litellm list` prints routed ids from `config.yaml`, and `wt litellm providers` lists providers with a LiteLLM mapping. The routing state itself is wt-owned (the `[litellm]` table in wt's `config.toml`): `wt litellm status [--json]` shows it (the api key is never printed, only `api_key_set` in JSON or the last 4 chars in text), `wt litellm on|off` flips routing (policy only; the proxy is untouched; a warning is printed when url/api_key are unset), and `wt litellm set [--url U] [--api-key K]` updates either field independently. `expose`/`unexpose`/`sync` refuse only when wt's config failed to *load* (`app.loadErr`, so a default empty config is never acted on); registry validation gaps (`cfgErr` only, e.g. some model with an unknown provider) do not block them, since `litellm.Apply` validates each requested model and reports a broken one per id (exit 1) without blocking the healthy ids. The route commands take `--json`; `expose` alone also takes `--dry-run` (validate only) and `--skip-ready-gate` (caller already verified readiness; used by modelman). Code: `cmd/wt/litellm.go`, `internal/litellm`. The same route updates run automatically from `wt start`/`wt stop` (the hook is described in the `internal/lifecycle/` package-table row). wt never writes modelman's `exposed` flag.
+`cmd/wt/litellm.go` + `internal/litellm`, the sole implementation of `config.yaml` route management. Subcommands `sync|list|providers|status|on|off|set|restart`; `sync` is the only CLI route write, `restart` is what `bin/update/litellm` runs. Operator doc: [docs/wt-agents/README.md](docs/wt-agents/README.md#litellm-routes-are-wt-owned); JSON shapes: [../docs/contracts/litellm-cli.sample.json](../docs/contracts/litellm-cli.sample.json).
 
-**Config file handling.** `internal/litellm` edits `config.yaml` comment-preservingly with yaml.v3: content and comments survive, but sequence indentation is normalized and blank lines are dropped on the first wt write. Permission bits are preserved, the write is atomic (unique temp file + rename) and guarded by an flock on `<config>.lock`. The path comes from `WT_LITELLM_CONFIG` (legacy `MODELMAN_LITELLM_CONFIG`), default `~/.config/litellm/config.yaml`. After a change wt restarts the proxy (`WT_LITELLM_RESTART_CMD`, legacy `MODELMAN_LITELLM_RESTART_CMD`, else `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`) and returns (the `wt litellm` commands never wait for the proxy). Only the automatic route hook (`internal/lifecycle/routes.go`, used by `wt start`/`wt stop`/`wt smoke`/the TUI start flow and stop picker) additionally calls `WaitReady` — up to 30s on `/health/liveliness` — and only when a LiteLLM URL is configured and a 1.5s `Listening` pre-probe before the restart was not refused. That restart+wait runs asynchronously on a context detached from the caller's, so it does **not** abandon on Ctrl+C; `lifecycle.WaitPendingRoutes()` — before process exit, and before any launch path hands the model to an agent — is what guarantees it completes (see the `internal/lifecycle/` row above). The settling bounce after a failed or cancelled start (`bounceRoutes`) additionally bounds its *synchronous* `config.yaml` lock wait with `settleTimeout` (15s); that deadline never reaches the async restart, which re-detaches with its own `context.WithoutCancel`. A missing `config.yaml` is silent on the automatic start/stop hook; LiteLLM failures there only warn.
+- **wt owns only its own rows** (`model_info.wt_managed: true`); a hand-written row keeps everything except an empty ollama `api_base` (#202).
+- **`sync` trusts only `ok` families** (an untrustworthy probe freezes the family with a warning) and **never takes "the first row with the id"** on a duplicated id.
+- **An `os.environ/VAR` api_base stays as written**; "set for the proxy" comes from `litellm.ProxyEnv`, not `os.Getenv`. `status` shows the api key only as `api_key_set` / last 4 chars.
+- Paths: `WT_LITELLM_CONFIG` (default `~/.config/litellm/config.yaml`), `WT_LITELLM_RESTART_CMD`; a redirected registry without `WT_LITELLM_CONFIG` is refused (`litellm.ErrRegistryRedirected`). **A restarting command can block about 3.5 minutes** (in-flight requests drain, #377); every restart waits for the proxy to answer (#382). Manual forced restart: `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`. Test seams `bounce` (`litellm.StubProxyReadinessForTest`) and `proxyProc` refuse inside a test binary.
+- The spend database (`litellm.DatabaseURL()`) is read-only, only for `wt stats`; errors never print a value.
 
-**Exit codes and JSON.** Exit 0 when every id applied; exit 1 when any id failed (the JSON is still printed) or the config could not be processed. Change commands (`expose`/`unexpose`/`sync`) emit `{"outcomes":[{"id","action","error"}],"changed":bool,"warnings":[...]}`; `list` emits `{"routed":[...]}`; `providers` emits `{"providers":{"<id>":{"cloud":bool}}}` (modelman reads this instead of keeping its own provider table); `status` emits `{"enabled":bool,"url":"...","api_key_set":bool}`. Fixture: `docs/contracts/litellm-cli.sample.json`. `status`/`on`/`off`/`set` also refuse only on a config *load* failure.
+Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before changing sync's desired set, row ownership or adoption, the `api_base` repair, ollama-serve warnings, or `config.yaml` I/O.
 
-## Guard (Go)
+## Guard, init seeding, sessions
 
-`internal/guard` manages the `block-main-commit` pre-commit hook (embedded via `//go:embed`). `Check`/`Install`/`Uninstall`; `Install` is idempotent and appends rather than overwrites. Uses `git rev-parse --git-common-dir` so the hook applies to all worktrees.
-
-## Init seeding (Go)
-
-`wt --init` seeds `AGENTS.md` (and a pointer file: claude → `CLAUDE.md` `@AGENTS.md`, copilot → `.github/copilot-instructions.md`). Existing files are never overwritten (`Result.Skipped`). Handled in `cmd/wt/main.go` before any agent-binary requirement, so it works with no agent installed.
-
-## Session resume (Go)
-
-`internal/session` finds the newest resumable session (claude `*.jsonl` under `~/.claude/projects/<slug>`, opencode `*.json` under `~/.local/share/opencode/storage/session/<project-id>`). Others (incl. shell) return nil.
-
-On Enter in the TUI, a prior session offers Start fresh (default) / Cancel / Resume (`--resume <id>` claude, `--session <id>` opencode). Non-TUI does the same without prompting.
-
-> **Native models never resume.** A native model (e.g. `claude/native`) launches with no model override; resuming would restore the session's stored model and silently override "native" (routing a proxy-routed model at the real Anthropic API). Both paths skip the session lookup for native models.
+- `internal/guard` manages the `block-main-commit` hook (`Install` is idempotent and appends; `git rev-parse --git-common-dir` covers all worktrees).
+- `wt --init` seeds `AGENTS.md` and a pointer file (`cmd/wt/main.go`, before any agent-binary requirement); existing files are never overwritten.
+- wt launches a fresh agent every time and leaves session handling to the agent (#198, #204): continue with the agent's own flags after `--` (`claude-wt -- --continue`). Why the session lookup stays removed: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#sessions-go).
 
 ## TUI (Go)
 
-`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`). Phases: worktree picker → agent+command picker → model picker → resume prompt → launch, plus the start-on-select screens (`internal/tui/start_flow.go`): `phaseStarting` — Enter on a non-running local row of ollama/omlx/mtplx starts it through `internal/lifecycle`, showing the current engine stage and elapsed seconds; esc/q/ctrl+c cancels the run (the engine tears down anything it spawned); once cancellation is draining esc and q are ignored and only ctrl+c quits wt, so a mashed key cannot orphan a half-started server while a hung teardown still has an escape hatch; success launches immediately through `proceedToLaunch`, skipping the ollama availability check since the model just loaded; a cancel or any failure other than the two confirm cases rebuilds the table from a fresh inventory with the cursor kept — and `phaseReplaceConfirm` — when Start reports the provider's single slot occupied (`*OccupiedError`, naming the running model) or its state unknowable (`*OccupancyUnknownError`, naming provider and origin), a dialog offers Cancel (the default cursor position) and "Replace and start"; confirming re-issues Start with `AllowReplace: true`. Each picker is skipped only when its selection is already resolved: `prePath` (from `-W`/`--cwd`/outside-repo) skips the worktree picker, `-A` skips the agent+command picker, and `-M` skips the model picker (a pinned non-running local model starts immediately; a pinned model is validated against the agent's eligible list once the agent is resolved). Every picker uses `ThemedListDelegate` (active color theme) — production code never uses `list.NewDefaultDelegate`.
+`internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`): worktree → agent+command → model picker → launch, plus starting, routing, slot-profile, replace-confirm and ollama-warning screens; a picker is skipped when its selection is resolved.
 
-> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`, `wt rotate`) skip the TUI. `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted (command agents like `shell` launch directly with no model layer).
+- **A view fits the terminal** (`internal/tuilayout`): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update` (`TestEveryListPhaseFitsTheTerminal`).
+- **The update goroutine never waits**: use non-blocking `tryEnsureModelRoute`; waits run in a command behind `phaseRouting` (`settleStart`, #343).
+- **A start prints into the flow, not onto the screen** (#275) and cannot be cancelled from the routing stage on (`pastCancel`).
+- **A slot-profile launch waits behind `phaseSlot`**; `flushRouteNotesAfterRun` settles any restart still owed on every way out.
+- **A model table is priced once, when built** (`modelrows.go`): read `tableRow.price()`/`timePriced()`, never `Model.Cost`'s flat fields or a clock.
+- **TIER is display only**, never sorted or routed on; a missing or unparseable `tiers.toml` is `-`, never an error.
+- A test that sets state by hand goes through `Update` before reading `View()`.
+
+> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted.
+
+Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, start-on-select, the launch-time route check, or the model table.
 
 ## Worktree (Go)
 
-`internal/worktree` handles enumeration (`Enumerate` → worktrees / local branches / remote-only branches) and creation (`EnsureForName` for `-W`, `EnsureForBranch` for the picker). Every function takes `dir` (repo root) first for testability.
+`internal/worktree` handles enumeration (`Enumerate`) and creation (`EnsureForName` for `-W`, `EnsureForBranch` for the picker). Every function takes `dir` (repo root) first for testability.
 
-> **`Enumerate` fetches before listing.** It runs `git fetch --all --prune` (5s timeout) before building the picker's groups, so branches teammates pushed since your last manual fetch/pull/push show up, and remote-tracking refs for branches deleted upstream are pruned. Fetches every configured remote, not just `origin` (fork workflows: `upstream`, etc.). Failure — offline, no remotes, timeout — is silently ignored; the picker falls back to whatever local refs already exist. `-W`/`--cwd` skip `Enumerate` entirely (no picker, no fetch) and `EnsureForName`'s `-W` path never consults remotes in the first place.
+> **A launch that has a directory needs no repository**: the repo root handed to `runLaunchPath` gates the guard install and nothing else (state is keyed by model, agent and pid). Only `-W` and the worktree picker refuse outside one; don't key new launch state on the repository. [Details](docs/internals/launch-flow.md#launch-directory-and-the-repository).
 
-> **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and
-> directories inside `.git` have no worktree, so `--show-toplevel` fails there;
-> `--git-dir` succeeds. Don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
+> **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and `EnsureForName` never consults remotes.
+
+> **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
+
+> **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 
 > **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it, and the picker skips bare default-branch rows.
 
-## Migration (Go)
-
-On first run, `wt` migrates legacy `~/.config/agent-wt/models.conf` → `config.toml` (parses `CODE_MODELS`/`DESIGN_MODELS`, skips comments, seeds native providers, merges tag unions). Runs once, and writes the full legacy shape — including Providers/Models — via `saveFull` so `modelman migrate` can later import them into `registry.toml`; `Load`'s normal path still overwrites in-memory Providers/Models with the joined registry. `migrateConfigSchema` runs on every `Load()`, but only its **agent** fixups still matter (renames `google`→`agy`, ensures agy entries, removes `opencode` native provider) — its provider/model fixups are dead code now that `Load` overwrites those fields from the registry.
-
 ## Verification commands
 
+Run the Go test block above before any commit, then exercise the installed binary:
+
 ```bash
-go test ./...        # before any commit
-go vet ./...         # static analysis
-go build ./...       # verify compilation
-wt                   # interactive TUI (needs TTY)
-wt -W my-feature -A claude   # named worktree + launch
-wt --cwd -A codex    # current repo root
-claude-wt --cwd      # shim forwards to wt
-wt --init            # seed agent instruction files
-wt smoke <model-id>     # one-shot smoke test: every agent currently eligible for one model
-                       # (never writes config or flips LiteLLM routing: it reads the live state, and the routing on/off state is wt-owned in config.toml; see docs/wt-smoke.md)
-make test-agents        # live one-shot smoke: every agent × configured models, both routing modes
-                       # (flips routing off/on via `wt litellm off|on` on the wt found on PATH, snapshotting wt's own ${XDG_CONFIG_HOME:-$HOME/.config}/agent-wt/config.toml first and restoring it afterwards — removing it if it did not exist; --modes current for one pass)
+wt -W my-feature -A claude           # named worktree + launch
+wt model list [--json]               # every registry model and local model found, with live status
+wt cloud-sync --dry-run              # plan a price and ollama-catalog refresh; changes nothing
+wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
+make test-agents                     # live agent × model matrix, both routing modes (flips `wt litellm off|on`)
 ```
 
-> Verifying a branch's behavior against live data requires building it first
-> (`go build -o /tmp/wt-verify ./cmd/wt`) — `~/.local/bin/wt` is whatever was
-> last `make install`ed and may predate the branch.
+The full command list (`wt served`, `wt warm`, `wt model add|edit|rm|init`, `wt profile list`, `wt stats`, `wt profile list|show`, `wt start|stop`, `wt litellm`, …): [docs/internals/testing.md](docs/internals/testing.md#verification-commands).
+
+> Verifying a branch's behavior requires building it first (`D=$(mktemp -d)`, then `go build -o "$D/wt" ./cmd/wt`) — `~/.local/bin/wt` is whatever was last `make install`ed and may predate the branch.
+
+> **A built wt that must not touch this machine** runs with every path redirected. Any one left out reaches the real file:
+>
+> ```bash
+> env -i PATH="$PATH" HOME="$D/home" WT_REGISTRY="$D/registry.toml" \
+>   WT_LITELLM_CONFIG="$D/config.yaml" WT_LITELLM_RESTART_CMD=true \
+>   WT_MTPLX_PIDFILE="$D/mtplx.pid" "$D/wt" model list
+> ```
+>
+> This redirects files, not servers: a start, stop or probe still reaches whatever answers at the registry's `base_url`s, and `wt cloud-sync` still runs the real `ollama`.
