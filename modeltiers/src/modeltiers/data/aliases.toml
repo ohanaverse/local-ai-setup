@@ -105,6 +105,11 @@ canonical = "recursive/flint"
 note = "the ollama library page for flint (https://ollama.com/library/flint) states 'Flint is a 39.8 billion-parameter mixture-of-experts model from Recursive' and links Recursive's Hugging Face repo RecursiveSI/flint, whose card has no base_model (the publisher's own release, not a fine-tune); flint:40b and flint:latest share manifest digest 39fc172e198d, its config has no remote_model (a local build), and the library's other tags (40b-a2b-gguf-nvfp4, -mlx-bf16, -q4_1, -qat-int4) are the same model at other encodings; models.dev has one Flint key, this one (row flint-40b-free), read 2026-10-21"
 inventory = [{ provider_id = "ollama", model_name = "flint:40b" }]
 
+[[alias]]
+canonical = "meta/muse-wonder-1.0"
+note = "Epoch's runs of Muse Wonder are all under model_version muse-wonder-1.0 (_max x6, _unknown x3, _xhigh x1), read 2026-10-21; every models.dev row with model id muse-wonder-1.0 (9 rows) carries this key, and no other key is a Muse Wonder (the other meta/muse-* keys are Spark, Glimmer and Image), read 2026-10-21"
+epoch = ["Muse Wonder"]
+
 [[ignore]]
 inventory = { provider_id = "ollama", model_name = "nomic-embed-text:latest" }
 reason = "embedding model"
