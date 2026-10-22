@@ -264,3 +264,47 @@ def test_http_fetcher_makes_a_body_cut_short_a_retryable_failure(
     with pytest.raises(FetchError, match="IncompleteRead") as caught:
         fetch.http_fetcher("https://example.test/x")
     assert caught.value.retryable is True
+
+
+class _Redirected(FakeResponse):
+    def __init__(self, final: str) -> None:
+        super().__init__(b"never read")
+        self.final = final
+
+    def geturl(self) -> str:
+        return self.final
+
+    def read(self, *args: Any) -> bytes:
+        raise AssertionError("a redirect check does not read the body")
+
+
+def test_http_resolver_returns_where_the_redirects_end_in_ten_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+
+    def urlopen(request: urllib.request.Request, timeout: float) -> Any:
+        seen.append((request.full_url, request.get_header("User-agent"), timeout))
+        return _Redirected("https://new.example/models")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert fetch.http_resolver("https://old.example/models") == "https://new.example/models"
+    assert seen == [("https://old.example/models", "modeltiers/0.1", 10)]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (_http_error(403), "HTTP 403"),
+        (urllib.error.URLError("no route"), "no route"),
+        (TimeoutError("slow"), "slow"),
+        (http.client.RemoteDisconnected("closed"), "closed"),
+        (UnicodeError("label empty or too long"), "label empty or too long"),
+    ],
+)
+def test_http_resolver_turns_every_failure_into_a_fetch_error(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, message: str
+) -> None:
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen(failure, []))
+    with pytest.raises(FetchError, match=message):
+        fetch.http_resolver("https://old.example/models")

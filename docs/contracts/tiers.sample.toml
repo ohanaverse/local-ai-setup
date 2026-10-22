@@ -65,6 +65,8 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 1048576
+card_kind = "huggingface"
+card_url = "https://huggingface.co/zai-org/GLM-5.3"
 aligned_score = 44.3
 aligned_sources = [
     "intelligence_index",
@@ -134,6 +136,8 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 1048576
+card_kind = "huggingface"
+card_url = "https://huggingface.co/zai-org/GLM-5.3"
 aligned_score = 44.3
 aligned_sources = [
     "intelligence_index",
@@ -170,6 +174,8 @@ confidence = "low"
 basis = "inherited"
 open_weights = true
 tool_call = true
+card_kind = "huggingface"
+card_url = "https://huggingface.co/Qwen/Qwen3.8-27B"
 aligned_score = 33.7
 aligned_sources = [
     "intelligence_index",
@@ -272,6 +278,8 @@ confidence = "high"
 open_weights = false
 tool_call = true
 context = 1000000
+card_kind = "vendor"
+card_url = "https://vendor.example/anthropic/models"
 aligned_score = 57.0
 aligned_sources = [
     "intelligence_index",
@@ -305,6 +313,8 @@ confidence = "high"
 open_weights = false
 tool_call = true
 context = 1000000
+card_kind = "vendor"
+card_url = "https://vendor.example/anthropic/models"
 aligned_score = 50.6
 aligned_sources = [
     "intelligence_index",

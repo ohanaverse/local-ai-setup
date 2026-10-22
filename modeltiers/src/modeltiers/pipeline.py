@@ -5,10 +5,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from modeltiers import aliases as aliases_mod
-from modeltiers import align, assign, identity
+from modeltiers import align, assign, cards, identity
 from modeltiers.aliases import SOURCES, Aliases
 from modeltiers.align import Aligned, Alignment
 from modeltiers.assign import Evidence, Facts, SentinelResult, Verdict
+from modeltiers.cards import Card, Vendors
 from modeltiers.contracts import RANK, UNRATED, Contracts
 from modeltiers.errors import ConfigError
 from modeltiers.identity import Index, Match, RowIdentity, SourceIdentity
@@ -89,6 +90,7 @@ class Rated:
     evidence: Evidence
     facts: Facts
     verdict: Verdict
+    card: Card | None = None  # where a click-through goes; None: nothing to link
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -126,6 +128,7 @@ class Assignment:
 _NO_EVIDENCE = Evidence(
     votes={}, scores={}, efforts={}, base=UNRATED, pre_gate=UNRATED, confidence="none"
 )
+OPENROUTER_SIGNAL = "intelligence_index"  # the signal OpenRouter votes
 _RESOLUTION_ORDER = (identity.ALIAS, identity.HOST, identity.NORMALIZED)
 
 
@@ -170,6 +173,7 @@ def _rate(
     matches: Mapping[str, Match],
     contracts: Contracts,
     alignment: Alignment,
+    vendors: Vendors,
     *,
     location: str | None,
     host_row: ModelsDevRow | None,
@@ -180,17 +184,23 @@ def _rate(
     evidence = _weigh(matches, contracts)
     rows = result.index.rows_for(key)
     facts = assign.gather(rows, location=location, host_row=host_row)
+    scored = matches.get(OPENROUTER_SIGNAL)
     return Rated(
         open_weights=_open_weights(rows),
         aligned=align.aligned(_voting_scores(evidence, contracts), alignment),
         evidence=evidence,
         facts=facts,
         verdict=assign.decide(evidence, facts, contracts),
+        card=cards.card_for(key, None if scored is None else scored.record, vendors),
     )
 
 
 def _model(
-    entry: RowIdentity, result: Identity, contracts: Contracts, alignment: Alignment
+    entry: RowIdentity,
+    result: Identity,
+    contracts: Contracts,
+    alignment: Alignment,
+    vendors: Vendors,
 ) -> ModelResult:
     if entry.canonical is None:
         # Listed under [[ignore]]: unrated, and no gate has anything to read.
@@ -210,6 +220,7 @@ def _model(
         _matches(result, entry.canonical, contracts),
         contracts,
         alignment,
+        vendors,
         location=entry.row.location,
         host_row=entry.host_row,
     )
@@ -220,11 +231,12 @@ def _model(
         evidence=rated.evidence,
         facts=rated.facts,
         verdict=rated.verdict,
+        card=rated.card,
     )
 
 
 def _candidates(
-    result: Identity, contracts: Contracts, alignment: Alignment
+    result: Identity, contracts: Contracts, alignment: Alignment, vendors: Vendors
 ) -> tuple[Candidate, ...]:
     held = {entry.canonical.lower() for entry in result.rows if entry.canonical is not None}
     keys: dict[str, str] = {}
@@ -236,7 +248,9 @@ def _candidates(
     for key in keys.values():
         matches = _matches(result, key, contracts)
         steps = {match.resolved_by for match in matches.values()}
-        rated = _rate(result, key, matches, contracts, alignment, location=None, host_row=None)
+        rated = _rate(
+            result, key, matches, contracts, alignment, vendors, location=None, host_row=None
+        )
         found.append(
             Candidate(
                 canonical=key,
@@ -246,6 +260,7 @@ def _candidates(
                 evidence=rated.evidence,
                 facts=rated.facts,
                 verdict=rated.verdict,
+                card=rated.card,
             )
         )
     found.sort(key=lambda c: (-RANK[c.verdict.tier], c.canonical.lower()))
@@ -283,24 +298,30 @@ def _sentinels(result: Identity, contracts: Contracts) -> tuple[SentinelResult, 
 
 
 def assign_all(
-    result: Identity, contracts: Contracts, *, min_shared: int = align.MIN_SHARED
+    result: Identity,
+    contracts: Contracts,
+    *,
+    min_shared: int = align.MIN_SHARED,
+    vendors: Vendors | None = None,
 ) -> Assignment:
     """Give every resolved key its tier and its aligned score. Raises
     ConfigError for a sentinel whose canonical is not a known key. A failed
     sentinel is not an error here: it is in `Assignment.sentinels`, and the
     caller writes nothing. `min_shared` is the fewest shared models a signal
-    is fitted to the intelligence index on."""
+    is fitted to the intelligence index on. `vendors` is each lab's catalog
+    address (`cards.refresh`); without it no card links to a lab."""
+    labs = vendors or {}
     sentinels = _sentinels(result, contracts)
     alignment = _alignment(result, contracts, min_shared)
     return Assignment(
         identity=result,
         contracts=contracts,
         models=tuple(
-            _model(entry, result, contracts, alignment)
+            _model(entry, result, contracts, alignment, labs)
             for entry in result.rows
             if not entry.unmapped
         ),
-        candidates=_candidates(result, contracts, alignment),
+        candidates=_candidates(result, contracts, alignment, labs),
         alignment=alignment,
         unresolved=_unresolved(result, contracts),
         sentinels=sentinels,

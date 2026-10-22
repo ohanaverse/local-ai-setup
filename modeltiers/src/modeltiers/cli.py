@@ -17,6 +17,7 @@ from pathlib import Path
 from modeltiers import aliases as aliases_mod
 from modeltiers import (
     align,
+    cards,
     changes,
     identity,
     ladder,
@@ -32,7 +33,7 @@ from modeltiers import (
 from modeltiers import contracts as contracts_mod
 from modeltiers import inventory as inventory_mod
 from modeltiers.errors import ConfigError, ModelTiersError
-from modeltiers.fetch import Fetcher, Sleep, http_fetcher
+from modeltiers.fetch import Fetcher, Resolver, Sleep, http_fetcher, http_resolver
 from modeltiers.inventory import RunWt
 from modeltiers.loader import ScoreRecords, SourceResult, SourceSpec, SourceSpecs
 from modeltiers.records import Inventory, ModelsDev
@@ -58,6 +59,8 @@ class Deps:
     specs: SourceSpecs = field(default_factory=loader.build_specs)
     aliases_path: Path | None = None  # None: the committed data/aliases.toml
     contracts_path: Path | None = None  # None: the committed data/contracts.toml
+    vendors_path: Path | None = None  # None: the committed data/vendors.toml
+    resolver: Resolver = http_resolver  # follows a lab's catalog address to where it ends
     align_min: int = align.MIN_SHARED  # the fewest shared models a signal is aligned on
 
 
@@ -116,10 +119,12 @@ def _parser() -> argparse.ArgumentParser:
     shown.add_argument(
         "--sort",
         choices=show.SORT_COLUMNS,
+        default=show.DEFAULT_SORT,
         metavar="COLUMN",
         help=(
             f"order the rows by one of {', '.join(show.SORT_COLUMNS)}: highest first, "
-            "rows with no value last; `model` is alphabetical"
+            "rows with no value last; `model` is alphabetical "
+            f"(default: {show.DEFAULT_SORT})"
         ),
     )
     shown.add_argument(
@@ -177,11 +182,31 @@ def _check_registry(inventory: Inventory, *, dry_run: bool) -> None:
     _warn(f"{found}; without --dry-run this run is refused and exits 1. {remedy}")
 
 
+def _vendor_links(
+    vendors: cards.Vendors, cache: Path, deps: Deps, *, offline: bool
+) -> dict[str, str]:
+    """Where each lab's catalog is now: its redirects followed (unless
+    `offline`) and the answer kept for the next run. A lab that does not
+    answer keeps the address it had, and only an address a check confirmed is
+    kept; the cache is only a convenience, so one that cannot be written is a
+    warning."""
+    kept = cards.read_cache(cache, vendors)
+    found = cards.refresh(vendors, kept, None if offline else deps.resolver, _warn)
+    now_kept = {**kept, **{prefix: found.urls[prefix] for prefix in found.answered}}
+    if now_kept != kept:
+        try:
+            output.write_text(cache / cards.CACHE_FILE, cards.cache_text(now_kept, vendors))
+        except OSError as exc:
+            _warn(f"cannot keep the vendor links in {cache}: {exc.strerror}")
+    return found.urls
+
+
 def _run(args: argparse.Namespace, deps: Deps) -> int:
     # Before the inventory is read and before any fetch: a bad data file
     # costs no download.
     aliases = aliases_mod.load_aliases(deps.aliases_path)
     contracts = contracts_mod.load_contracts(deps.contracts_path)
+    vendors = cards.load_vendors(deps.vendors_path)
     inventory = inventory_mod.load_inventory(path=args.inventory, run_wt=deps.run_wt)
     _check_registry(inventory, dry_run=args.dry_run)
     for line in inventory_mod.provider_warnings(inventory):
@@ -197,10 +222,11 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
         offline=args.offline,
         warn=_warn,
     )
+    labs = _vendor_links(vendors, cache, deps, offline=args.offline)
     identity = pipeline.resolve_all(inventory, sources, aliases)
     for line in identity.warnings:
         _warn(line)
-    assignment = pipeline.assign_all(identity, contracts, min_shared=deps.align_min)
+    assignment = pipeline.assign_all(identity, contracts, min_shared=deps.align_min, vendors=labs)
     for line in report.alignment_warnings(assignment):
         _warn(line)
     print(

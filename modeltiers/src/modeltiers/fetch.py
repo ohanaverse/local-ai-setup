@@ -15,11 +15,14 @@ from modeltiers.errors import FetchError
 
 Fetcher = Callable[[str], bytes]
 Sleep = Callable[[float], None]
+# Takes a URL and returns the address its redirects end at, or raises FetchError.
+Resolver = Callable[[str], str]
 # Raises FetchError(retryable=True) when a body that arrived is a failed download,
 # and reads the body on the way: `fetch_checked` returns what it read.
 type BodyCheck[T] = Callable[[bytes], T]
 
 TIMEOUT_SECONDS = 30
+RESOLVE_TIMEOUT_SECONDS = 10
 RETRY_DELAY_SECONDS = 2
 USER_AGENT = "modeltiers/0.1"
 
@@ -53,6 +56,23 @@ def http_fetcher(url: str) -> bytes:
         # A body cut short or a garbled status line: urllib passes these through raw.
         raise FetchError(f"{url}: {exc!r}", retryable=True) from exc
     except OSError as exc:
+        raise FetchError(f"{url}: {exc}") from exc
+
+
+def http_resolver(url: str) -> str:
+    """Follow `url`'s redirects and return the address they end at. The body
+    is never read. One attempt with a 10-second timeout: a vendor page that
+    does not answer keeps the address it had."""
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=RESOLVE_TIMEOUT_SECONDS) as response:
+            final: str = response.geturl()
+            return final
+    except urllib.error.HTTPError as exc:
+        raise FetchError(f"{url}: HTTP {exc.code}") from exc
+    # ValueError: a redirect to a host the resolver cannot encode (an empty or
+    # over-long label) fails inside urllib as a UnicodeError, not an OSError.
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
         raise FetchError(f"{url}: {exc}") from exc
 
 

@@ -14,8 +14,8 @@ Run from the repo root as `uv run --directory modeltiers modeltiers <command>`, 
 
 | Command | Effect |
 |---|---|
-| `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Validate the two data files, read the inventory, load the four sources, resolve, assign tiers, check sentinels, print the report, write `tiers.toml`. `--dry-run` does everything except write and returns the code the real run would (except under a redirected registry, below). `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt model list --json` output and does not run wt. |
-| `modeltiers show [--candidates] [--sort COLUMN] [--wide] [--html FILE]` | The tier table from `tiers.toml`, led by the file's age in days (a `warning:` on stderr past 14). `--html FILE` writes one self-contained sortable page, prints `wrote <absolute path>`, and refuses (exit 1) a `FILE` that is the output file under any name (symlink, case variant). |
+| `modeltiers run [--dry-run] [--offline] [--inventory FILE]` | Validate the data files (`aliases.toml`, `contracts.toml`, `vendors.toml`), read the inventory, load the four sources, follow each closed lab's catalog address through its redirects (not under `--offline`), resolve, assign tiers, check sentinels, print the report, write `tiers.toml`. `--dry-run` does everything except write and returns the code the real run would (except under a redirected registry, below). `--offline` fetches nothing and reads each source's newest good snapshot. `--inventory FILE` reads saved `wt model list --json` output and does not run wt. |
+| `modeltiers show [--candidates] [--sort COLUMN] [--wide] [--html FILE]` | The tier table from `tiers.toml`, led by the file's age in days (a `warning:` on stderr past 14), rows by aligned score, highest first, unless `--sort` says otherwise. `--html FILE` writes one self-contained sortable page, opening in that order, with each canonical key linked to its model card (Hugging Face, the lab's catalog of models, or OpenRouter), prints `wrote <absolute path>`, and refuses (exit 1) a `FILE` that is the output file under any name (symlink, case variant). |
 | `modeltiers explain <model>` | One entry's identity, tier, votes, scores, aligned score, gates and notes. Argument: exact `provider_id/model_name`, else a canonical key in any case. No match exits 1. |
 | `modeltiers ladder <signal> [--low SCORE] [--high SCORE]` | One signal's resolved scores highest first with gaps and midpoints; the tool for moving a floor (guide step 5). No window match exits 1. |
 
@@ -42,14 +42,16 @@ Development: `make install` (`uv sync`), `make check` (ruff lint, `ruff format -
 |---|---|---|
 | Output file | `$XDG_CONFIG_HOME/local-ai/tiers.toml`, else `~/.config/local-ai/tiers.toml` | `MODELTIERS_OUT` |
 | Snapshots | `$XDG_CACHE_HOME/local-ai/modeltiers/`, else `~/.cache/local-ai/modeltiers/` | `MODELTIERS_CACHE` |
+| Vendor links | `<snapshots>/vendor-links.toml`: where each closed lab's catalog address last ended after redirects | none |
 | Aliases | `src/modeltiers/data/aliases.toml` (committed, package data) | none |
 | Contracts | `src/modeltiers/data/contracts.toml` (committed, package data) | none |
+| Vendors | `src/modeltiers/data/vendors.toml` (committed, package data): each closed lab's catalog of models, for card links | none |
 
 An ad-hoc run from a shell must set `MODELTIERS_CACHE` and `MODELTIERS_OUT` to scratch paths unless it is meant to touch the real cache and the real `tiers.toml`.
 
 ## Pipeline
 
-One module per stage (`inventory`, `fetch`, `snapshots`, `sources/*`, `loader`, `configfile`, `tokens`, `aliases`, `identity`, `contracts`, `assign`, `align`, `pipeline`, `output`, `report`, `changes`, `show`, `page`, `ladder`, `cli`), plain frozen dataclasses (`records.py`) in and out. Per-module jobs and function lists: [internals, Pipeline](docs/internals.md#pipeline-module-map). Rules that bite:
+One module per stage (`inventory`, `fetch`, `snapshots`, `sources/*`, `loader`, `configfile`, `tokens`, `aliases`, `identity`, `contracts`, `assign`, `align`, `pipeline`, `cards`, `output`, `report`, `changes`, `show`, `page`, `ladder`, `cli`), plain frozen dataclasses (`records.py`) in and out. Per-module jobs and function lists: [internals, Pipeline](docs/internals.md#pipeline-module-map). Rules that bite:
 
 - The inventory join key is (`provider_id`, `model_name`), never the registry `id`; rows with `model_name` `native` are dropped.
 - Sources are pure parsers (bytes to records); an unrecognised shape or a count under `min_rows` raises `SourceParseError`. A models.dev *provider* entry with no `models` object is a shape change that fails the whole source (falls back to its newest good snapshot), never a quiet empty provider.
@@ -57,7 +59,8 @@ One module per stage (`inventory`, `fetch`, `snapshots`, `sources/*`, `loader`, 
 - `aliases.py` refuses, before any fetch, an unknown key, a matched string with leading/trailing space, an `[[ignore]]` without a reason and a pair or source id claimed twice; it also refuses an alias whose canonical is not a models.dev key and lists no source id, and a declared key whose token sequence another key already has.
 - `align.py`'s aligned score is advisory and read by no tier, gate or sentinel. `show.py` re-derives it for `explain` and imports nothing from `align.py` but `ANCHOR`; `test_explain_translates_a_score_as_the_run_that_wrote_the_file_did` holds the two to one rule.
 - `show.py` and `page.py`: a new numeric sort column is one `_SORT_VALUES` entry plus a page column (`tests/test_page.py` enforces it); the page writes nothing from the document as markup (JSON in a non-executing script element, cells set with `textContent`) and loads nothing external. Details in internals.
-- `cli.py`: `main(argv, *, deps=None)`; `Deps` carries every seam (`aliases_path`, `contracts_path`, `align_min` included).
+- `cards.py`: a card link is worked out by `run` and written as `card_kind`/`card_url`, so `show` and the page still read the file alone and fetch nothing. The order is fixed: OpenRouter's `hugging_face_id`, the lab's catalog in `vendors.toml`, the OpenRouter page, no link. Only an https address reaches a page's `href` (`cards.is_https`, checked when `run` writes and again when the page reads); redirects are followed in `run` alone, never `--offline`, `show` or the page.
+- `cli.py`: `main(argv, *, deps=None)`; `Deps` carries every seam (`aliases_path`, `contracts_path`, `vendors_path`, `resolver`, `align_min` included).
 
 ## Identity
 

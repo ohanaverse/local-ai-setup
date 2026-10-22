@@ -1,0 +1,4 @@
+[[vendor]]
+prefix = "anthropic"
+url = "https://vendor.example/anthropic/models"
+note = "fixture"

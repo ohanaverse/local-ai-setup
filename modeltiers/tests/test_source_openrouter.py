@@ -25,6 +25,7 @@ def test_golden(read_fixture: Callable[[str], bytes]) -> None:
         score=44.8,
         coding_index=74.8,
         agentic_index=53.1,
+        hugging_face_id="zai-org/GLM-5.3",
     )
     # Eight models; the one with no benchmarks and the one whose
     # artificial_analysis is null have no score and give no record.
@@ -95,3 +96,26 @@ def test_the_default_minimum_is_the_specs(read_fixture: Callable[[str], bytes]) 
 def test_an_unrecognised_shape_raises(data: bytes, message: str) -> None:
     with pytest.raises(SourceParseError, match=message):
         openrouter.parse(data, min_rows=1)
+
+
+@pytest.mark.parametrize(
+    ("given", "kept"),
+    [("Org/Model", "Org/Model"), ("", None), (None, None), (7, None), (["x"], None)],
+)
+def test_the_hugging_face_id_is_kept_only_when_it_is_a_nonempty_string(
+    given: Any, kept: str | None
+) -> None:
+    body = _doc(
+        {
+            "id": "v/m",
+            "hugging_face_id": given,
+            "benchmarks": {"artificial_analysis": {"intelligence_index": 10}},
+        }
+    )
+    assert openrouter.parse(body, min_rows=1)[0].hugging_face_id == kept
+
+
+def test_a_model_without_the_field_has_no_hugging_face_id() -> None:
+    assert (
+        openrouter.parse(_scored({"intelligence_index": 10}), min_rows=1)[0].hugging_face_id is None
+    )

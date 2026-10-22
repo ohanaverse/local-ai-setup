@@ -17,8 +17,8 @@ import pytest
 from fakes import FakeFetcher, Sleeps
 
 from modeltiers import aliases as aliases_mod
+from modeltiers import cards, fetch, loader, output, pipeline
 from modeltiers import contracts as contracts_mod
-from modeltiers import fetch, loader, output, pipeline
 from modeltiers import inventory as inventory_mod
 from modeltiers.aliases import Aliases
 from modeltiers.contracts import Contracts
@@ -187,7 +187,8 @@ def assignment(
 ) -> Assignment:
     """The golden fixtures resolved and assigned: what `run` writes."""
     identity = pipeline.resolve_all(inventory, sources, fixture_aliases)
-    return pipeline.assign_all(identity, rule, min_shared=ALIGN_MIN)
+    vendors = cards.load_vendors(FIXTURES / "vendors.toml")
+    return pipeline.assign_all(identity, rule, min_shared=ALIGN_MIN, vendors=vendors)
 
 
 @pytest.fixture

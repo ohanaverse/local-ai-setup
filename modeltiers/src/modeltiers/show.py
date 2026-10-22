@@ -129,6 +129,8 @@ _SORT_VALUES: Mapping[str, Callable[[Mapping[str, Any]], float | None]] = {
 }
 # What `show --sort` takes. `model` is alphabetical; the rest are highest first.
 SORT_COLUMNS = ("tier", "model", *(name for name in _SORT_VALUES if name != "tier"))
+# The order `show` and the page use when no `--sort` is given.
+DEFAULT_SORT = "aligned"
 
 
 def ordered(
