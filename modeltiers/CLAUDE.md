@@ -30,6 +30,8 @@ Run from the repo root as `uv run --directory modeltiers modeltiers <command>`, 
 
 1 takes precedence over 3 and 3 over 2. Unmapped rows and unresolved records do not change the exit code.
 
+A `run` that fails (exit 1 or 3) ends its stderr with a blank line and `ERROR: modeltiers run FAILED (exit N): <reason>; tiers.toml was not written.` (`cli._run_failed`); exit 2 is a warning, and `show`, `explain` and `ladder` keep the plain `modeltiers: <message>`. For an exit 3, the `sentinel-failure` skill (`.claude/skills/`) investigates, recommends a `contracts.toml` fix and asks before editing.
+
 **Redirected registry.** wt follows `WT_REGISTRY`; the output path does not. When the registry path the inventory reports is not `registry.toml` in the output file's directory and `MODELTIERS_OUT` is unset, `run` exits 1 before any fetch. `run --dry-run` writes nothing, so it goes on: it prints its whole report, compared against the default output file, after a `warning:` on stderr that the same run without `--dry-run` is refused; its exit code is the one the report gives (0, 2 or 3). Set `MODELTIERS_OUT` for any run against a scratch registry.
 
 Development: `make install` (`uv sync`), `make check` (ruff lint, `ruff format --check`, mypy strict on `src/`), `make test` (pytest with coverage; fails under the floor in `pyproject.toml`), `make all`. One test: `uv run pytest tests/test_loader.py::test_a_clean_fetch_is_ok_and_saved`.

@@ -66,9 +66,24 @@ inventory = [
 ]
 
 [[alias]]
+canonical = "alibaba/qwen3.6-27b"
+note = "The MTPLX repo's mtplx_build_metadata.json and mtplx_upload_manifest.json name base repo mlx-community/Qwen3.6-27B-8bit (revision c5a593c1475a746e43a543b0a02bd2b357e5745f), and its README and mtplx_runtime.json describe a flat 8-bit affine group64 quantization with an added MTP draft sidecar; its README names the base model Qwen/Qwen3.6-27B. mlx-community/Qwen3.6-27B-8bit has Hugging Face base_model Qwen/Qwen3.6-27B, relation quantized. The repo's own card gives no base_model. idkeys Qwen3.6-27B gave alibaba/qwen3.6-27b x25 (and one row with no key). Read 2026-10-21"
+inventory = [{ provider_id = "mtplx", model_name = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality" }]
+
+[[alias]]
 canonical = "alibaba/qwen3.8-27b"
 note = "Hugging Face base_model is Qwen/Qwen3.8-27B with base_model_relation quantized, read 2026-10-12"
 inventory = [{ provider_id = "mtplx", model_name = "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality" }]
+
+[[alias]]
+canonical = "alibaba/qwen3.8-27b"
+note = "Hugging Face base_model is Qwen/Qwen3.8-27B with relation quantized (tag base_model:quantized:Qwen/Qwen3.8-27B); the repo's mtplx_runtime.json names source_repo Qwen--Qwen3.8-27B with an 8-bit affine forge_recipe (a quantization), and MTPLX_FP16_CONVERSION_MANIFEST.json states a bf16-to-fp16 tensor conversion with quantized tensors preserved; same base as the aliased ...Optimized-Quality row, read 2026-10-21"
+inventory = [{ provider_id = "mtplx", model_name = "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16" }]
+
+[[alias]]
+canonical = "alibaba/qwen3.8-27b"
+note = "Hugging Face base_model is Qwen/Qwen3.8-27B with base_model_relation quantized (tag base_model:quantized:Qwen/Qwen3.8-27B), and the repo's mtplx_runtime.json names base_trunk Qwen/Qwen3.8-27B; models.dev rows with id Qwen/Qwen3.8-27B all carry this one key, read 2026-10-21"
+inventory = [{ provider_id = "mtplx", model_name = "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed" }]
 
 [[alias]]
 canonical = "google/gemini-3-pro-preview"
@@ -84,6 +99,16 @@ epoch = ["Gemini 3 Flash"]
 canonical = "google/gemini-4-argon"
 note = "declared here: Arena lists the model under organization google and models.dev had no key for it on 2026-10-12. Replace with models.dev's key once it has one"
 arena = ["Gemini 4 Argon"]
+
+[[alias]]
+canonical = "recursive/flint"
+note = "the ollama library page for flint (https://ollama.com/library/flint) states 'Flint is a 39.8 billion-parameter mixture-of-experts model from Recursive' and links Recursive's Hugging Face repo RecursiveSI/flint, whose card has no base_model (the publisher's own release, not a fine-tune); flint:40b and flint:latest share manifest digest 39fc172e198d, its config has no remote_model (a local build), and the library's other tags (40b-a2b-gguf-nvfp4, -mlx-bf16, -q4_1, -qat-int4) are the same model at other encodings; models.dev has one Flint key, this one (row flint-40b-free), read 2026-10-21"
+inventory = [{ provider_id = "ollama", model_name = "flint:40b" }]
+
+[[alias]]
+canonical = "meta/muse-wonder-1.0"
+note = "Epoch's runs of Muse Wonder are all under model_version muse-wonder-1.0 (_max x6, _unknown x3, _xhigh x1), read 2026-10-21; every models.dev row with model id muse-wonder-1.0 (9 rows) carries this key, and no other key is a Muse Wonder (the other meta/muse-* keys are Spark, Glimmer and Image), read 2026-10-21"
+epoch = ["Muse Wonder"]
 
 [[ignore]]
 inventory = { provider_id = "ollama", model_name = "nomic-embed-text:latest" }

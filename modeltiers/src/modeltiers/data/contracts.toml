@@ -1,6 +1,8 @@
 # The tier rule as data. Read by modeltiers.contracts; validated on every run.
-# Floors and sentinels were set from the 2026-10-12 snapshots. Editing this
-# file is the re-calibration: there is no flag that overrides a sentinel.
+# Floors and sentinels were set from the 2026-10-12 snapshots; the Fable 5.1 and
+# MiniMax-M3 sentinels were re-pinned 2026-10-21 (source re-scores, floors kept).
+# Editing this file is the re-calibration: there is no flag that overrides a
+# sentinel.
 #
 # [tiers.<tier>]     code = one character; context_min = the context the tier needs
 # [signals.<signal>] floors = the lowest score that votes each tier; a score under
@@ -10,7 +12,7 @@
 # [sources.<source>] attribution = the line printed with that source's data
 # [[sentinels]]      canonical, tier (before the gates), votes = the pinned ones
 
-version = "2026-10-13"
+version = "2026-10-21"
 
 [tiers.quick]
 code = "Q"
@@ -58,7 +60,7 @@ attribution = "Epoch AI, 'Capabilities & benchmarking', https://epoch.ai/benchma
 
 [[sentinels]]
 canonical = "anthropic/claude-fable-5-1"
-tier = "deep"
+tier = "marathon"
 votes = { intelligence_index = "deep", arena_agent = "deep", eci = "deep" }
 
 [[sentinels]]
@@ -89,7 +91,7 @@ votes = { intelligence_index = "standard", arena_agent = "standard", eci = "stan
 [[sentinels]]
 canonical = "minimax/MiniMax-M3"
 tier = "quick"
-votes = { intelligence_index = "quick", arena_agent = "quick", eci = "quick" }
+votes = { intelligence_index = "quick", arena_agent = "unrated", eci = "quick" }
 
 [[sentinels]]
 canonical = "google/gemma-4-31b-it"
