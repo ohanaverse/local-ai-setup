@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from conftest import ALIGN_MIN, FIXTURES, INVENTORY, T0, scaled_openrouter
-from fakes import FakeFetcher, Sleeps
+from fakes import FakeFetcher, FakeResolver, Sleeps
 
 from modeltiers import cli, fetch
 from modeltiers.assign import NOTE_NO_ROWS
@@ -42,6 +42,8 @@ def _deps(
     return cli.Deps(
         fetcher=FakeFetcher(answers),
         sleep=Sleeps(),
+        resolver=FakeResolver(),
+        vendors_path=FIXTURES / "vendors.toml",
         now=lambda: now,
         specs=specs,
         aliases_path=aliases_path,

@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 import pytest
 from conftest import ALIGN_MIN, FIXTURES, INVENTORY, SAMPLE, T0, scaled_openrouter
-from fakes import FakeFetcher, Sleeps
+from fakes import FakeFetcher, FakeResolver, Sleeps
 
 from modeltiers import cli, fetch
 from modeltiers.loader import SourceSpecs
@@ -30,6 +30,8 @@ def _deps(specs: SourceSpecs, answers: Answers) -> cli.Deps:
     return cli.Deps(
         fetcher=FakeFetcher(answers),
         sleep=Sleeps(),
+        resolver=FakeResolver(),
+        vendors_path=FIXTURES / "vendors.toml",
         now=lambda: T0,
         specs=specs,
         aliases_path=FIXTURES / "aliases.toml",

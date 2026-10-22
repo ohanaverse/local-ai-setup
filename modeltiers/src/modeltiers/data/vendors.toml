@@ -1,0 +1,36 @@
+# Where a closed model's lab keeps its catalog of models: one page per lab,
+# keyed by the lab prefix of a canonical key (`anthropic/claude-...`). A card
+# link for a closed model points here, not at the model, so one stable page
+# serves every model of the lab. `run` follows each address's redirects and
+# keeps where they end (see cards.py); an address here is only the start.
+# Each note says when the address was read.
+
+[[vendor]]
+prefix = "anthropic"
+url = "https://platform.claude.com/docs/en/models/overview"
+note = "docs.anthropic.com/en/docs/about-claude/models redirected here, read 2026-10-21"
+
+[[vendor]]
+prefix = "openai"
+url = "https://developers.openai.com/api/docs/models"
+note = "platform.openai.com/docs/models redirected here, read 2026-10-21"
+
+[[vendor]]
+prefix = "google"
+url = "https://ai.google.dev/gemini-api/docs/models"
+note = "answered without a redirect, read 2026-10-21"
+
+[[vendor]]
+prefix = "mistral"
+url = "https://docs.mistral.ai/models"
+note = "docs.mistral.ai/getting-started/models redirected here, read 2026-10-21"
+
+[[vendor]]
+prefix = "xai"
+url = "https://docs.x.ai/developers/models"
+note = "docs.x.ai/docs/models redirected here, read 2026-10-21"
+
+[[vendor]]
+prefix = "cohere"
+url = "https://docs.cohere.com/docs/models"
+note = "answered without a redirect, read 2026-10-21"

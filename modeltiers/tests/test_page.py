@@ -6,7 +6,7 @@ from typing import Any
 
 from conftest import T0
 
-from modeltiers import page, show
+from modeltiers import cards, page, show
 
 _DATA = re.compile(r'<script id="data" type="application/json">(.*?)</script>', re.DOTALL)
 _COLUMNS = re.compile(r"const COLUMNS = \[(.*?)^\s*\];", re.DOTALL | re.MULTILINE)
@@ -65,6 +65,8 @@ def test_a_row_has_every_column_with_none_for_what_the_file_does_not_give(
         "reason": None,
         "open_weights": True,
         "context": 1048576,
+        "card_kind": "huggingface",
+        "card_url": "https://huggingface.co/zai-org/GLM-5.3",
         "intelligence_index": 44.8,
         "arena_agent": 0.02147446416824893,
         "eci": 155.61,
@@ -83,6 +85,8 @@ def test_a_row_has_every_column_with_none_for_what_the_file_does_not_give(
         "reason": "not_applicable",
         "open_weights": None,
         "context": None,
+        "card_kind": None,
+        "card_url": None,
         "intelligence_index": None,
         "arena_agent": None,
         "eci": None,
@@ -153,7 +157,10 @@ def test_the_page_loads_nothing_from_anywhere(document: dict[str, Any]) -> None:
     """One file, read from disk: no script, stylesheet, font or image is
     fetched, and nothing in it is a link."""
     text = page.page_html(document, T0)
-    assert not re.search(r"\b(src|href|action)\s*=", text)
+    assert not re.search(r"\b(src|action)\s*=", text)
+    # The one address the script sets is a card link the reader may follow: a
+    # navigation, not a load, and it comes from the row.
+    assert re.findall(r"\bhref\s*=[^;]*;", text) == ["href = row.card_url;"]
     assert not re.search(r"<(link|img|iframe|object|embed|form)\b", text)
     assert "@import" not in text
     assert "url(" not in text
@@ -307,3 +314,46 @@ def test_every_name_the_cli_sorts_the_table_by_is_a_column_the_page_sorts_by() -
     `show --html --sort X` wrote an unsorted page, with no error on either side."""
     names = _page_sort_names(page.page_html({}, T0))
     assert set(show.SORT_COLUMNS) <= names
+
+
+# --- card links ---------------------------------------------------------------
+
+
+def test_a_row_carries_its_card_and_a_bad_one_is_none(document: dict[str, Any]) -> None:
+    rows = {row["name"]: row for row in page.page_rows(document)}
+    opus = rows["anthropic/claude-opus-5-5"]
+    assert (opus["card_kind"], opus["card_url"]) == (
+        "vendor",
+        "https://vendor.example/anthropic/models",
+    )
+
+    doc = copy.deepcopy(document)
+    doc["models"][0]["card_url"] = "javascript:alert(1)"
+    doc["models"][1]["card_kind"] = "somewhere"
+    doc["models"][1]["card_url"] = "https://ok.example/m"
+    doc["models"][2]["card_url"] = 7
+    bad = page.page_rows(doc)
+    assert [(r["card_kind"], r["card_url"]) for r in bad[:3]] == [(None, None)] * 3
+
+
+def test_a_hostile_address_never_reaches_the_pages_data(document: dict[str, Any]) -> None:
+    doc = copy.deepcopy(document)
+    doc["models"][0]["card_url"] = 'https://x.example/"><script>alert(1)</script>'
+    text = page.page_html(doc, T0)
+    assert "<script>alert(1)" not in text
+    # An address with no space or control character is still only ever an attribute value.
+    assert "</script><script" not in text
+
+
+def test_the_pages_script_knows_every_kind_of_card() -> None:
+    text = page.page_html({}, T0)
+    (block,) = re.findall(r"const CARDS = \{(.*?)^\s*\};", text, re.DOTALL | re.MULTILINE)
+    assert set(re.findall(r"^\s*(\w+): \{ tag:", block, re.MULTILINE)) == set(cards.KINDS)
+
+
+def test_the_canonical_cell_is_the_link_and_nothing_is_written_as_markup() -> None:
+    text = page.page_html({}, T0)
+    assert 'column.key === "canonical"' in text
+    assert "link.href = row.card_url;" in text
+    assert 'link.rel = "noopener noreferrer";' in text
+    assert "innerHTML" not in text

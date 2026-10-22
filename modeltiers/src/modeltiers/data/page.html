@@ -88,6 +88,12 @@
   td.num { font-variant-numeric: tabular-nums; }
   td.name { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
   td.dim { color: var(--muted); }
+  td.name a { color: inherit; text-decoration-color: var(--line); text-underline-offset: 2px; }
+  td.name a:hover, td.name a:focus-visible { text-decoration-color: currentColor; }
+  .card {
+    margin-left: 6px; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px;
+    font: 11px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--muted);
+  }
   .chip {
     display: inline-block; min-width: 78px; padding: 1px 8px;
     border-radius: 999px; font-size: 12px; font-weight: 600; text-align: center;
@@ -238,6 +244,34 @@
     return Object.prototype.hasOwnProperty.call(labels, value) ? labels[value] : String(value);
   }
 
+  // What a card link says it goes to, and the short tag shown beside the key.
+  const CARDS = {
+    huggingface: { tag: "hf", title: "Model card on Hugging Face" },
+    vendor: { tag: "docs", title: "The lab's own catalog of its models" },
+    openrouter: { tag: "or", title: "OpenRouter's page for the model" },
+  };
+
+  // The key as a link to its card, and the tag. The address was checked to be
+  // https when the page was written; it is set as an attribute, never as markup.
+  function cardLink(row, text) {
+    const kindOf = Object.prototype.hasOwnProperty.call(CARDS, row.card_kind) ? CARDS[row.card_kind] : null;
+    const link = document.createElement("a");
+    link.href = row.card_url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = text;
+    link.title = kindOf ? kindOf.title : "Model card";
+    const wrap = document.createDocumentFragment();
+    wrap.append(link);
+    if (kindOf) {
+      const tag = document.createElement("span");
+      tag.className = "card";
+      tag.textContent = kindOf.tag;
+      wrap.append(tag);
+    }
+    return wrap;
+  }
+
   function cell(row, column) {
     const td = document.createElement("td");
     const text = cellText(row, column);
@@ -249,7 +283,11 @@
       td.appendChild(chip);
       return td;
     }
-    td.textContent = text;
+    if (column.key === "canonical" && text !== NONE && row.card_url) {
+      td.append(cardLink(row, text));
+    } else {
+      td.textContent = text;
+    }
     if (column.type === "num") td.classList.add("num");
     if (column.cls) td.classList.add(column.cls);
     // A candidate is named by its key: the second copy is only an echo.

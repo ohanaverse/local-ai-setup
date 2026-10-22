@@ -15,7 +15,7 @@ from datetime import datetime
 from importlib import resources
 from typing import Any
 
-from modeltiers import show
+from modeltiers import cards, show
 from modeltiers.contracts import RANK, UNRATED
 from modeltiers.show import SCORE_COLUMNS, UNMAPPED, Document
 
@@ -30,6 +30,7 @@ def _text(value: Any) -> str | None:
 def _row(kind: str, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
     opened = entry.get("open_weights")
     context = show.number(entry.get("context"))
+    card = cards.describe(entry)
     row: dict[str, Any] = {
         "kind": kind,
         "name": name,
@@ -39,6 +40,9 @@ def _row(kind: str, name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
         "reason": _text(entry.get("reason")),
         "open_weights": opened if isinstance(opened, bool) else None,
         "context": None if context is None else int(context),
+        # Only an https address reaches the page, where it becomes an `href`.
+        "card_kind": None if card is None else card.kind,
+        "card_url": None if card is None else card.url,
     }
     row.update({column: show.score(entry, column) for column in SCORE_COLUMNS})
     row["aligned_score"] = show.aligned_score(entry)

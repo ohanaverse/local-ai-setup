@@ -173,13 +173,20 @@ with the attribution lines of the sources whose data they print.
   `agentic_index` or `aligned`. `model` is alphabetical; every other column puts the
   highest value first and the rows with no value last. In the terminal your
   models and the candidates are sorted separately; the page sorts them
-  together. Without it the order is the file's.
+  together. Without it the order is `aligned`, highest first, so the best-scored
+  models come first.
 - **`--html FILE`** writes one page and prints only `wrote <path>`. The page
   lists your models, the unmapped rows and every candidate together, with
   every `--wide` column, the canonical key and the reason an unrated row is
   unrated. Click a column heading to sort by it, and again to reverse; the
   filters narrow the rows by name, tier, and yours or candidates. `--sort`
-  sets the order the page opens in. The file holds everything it needs and
+  sets the order the page opens in (`aligned` without it). A canonical key
+  that has a model card is a link to it, tagged `hf` (the open weights'
+  Hugging Face card), `docs` (the lab's own catalog of its models, for a
+  closed model; a directory, not the model's page) or `or` (OpenRouter's page
+  for the model, when nothing official is known). A model with none has no
+  link. `run` works the links out, following each lab's catalog address if
+  the lab has moved it, so the page makes no requests of its own. The file holds everything it needs and
   requests nothing, so it opens straight from disk (`open "$HOME/tiers.html"`).
   It is a copy of `tiers.toml` at that moment: write it again after a run.
   `FILE` cannot be `tiers.toml` itself.
@@ -628,7 +635,7 @@ MODELTIERS_OUT="$SCRATCH/tiers.toml" uv run --directory modeltiers modeltiers sh
 - **A local row's context is unknown,** so the context gate is skipped for it and the entry says so in a note.
 - **Low floors are rough.** Sources often disagree by one tier near a floor, which is what `medium` confidence shows. A two-vote model takes the lower vote, so thin evidence cannot promote a model.
 - **A redirected registry stops the write.** wt's inventory follows `WT_REGISTRY`; the output path does not. When the registry wt read is not `registry.toml` beside the output file and `MODELTIERS_OUT` is unset, `run` exits 1 before any fetch, so a scratch inventory can never replace the real `tiers.toml`. `run --dry-run` writes nothing, so it goes on: it prints a `warning:` that the same run without the flag is refused, then its whole report, and its exit code is the one the report gives (0, 2 or 3) where the real run's is 1. This is the only case in which `--dry-run` does not return the real run's code. Set `MODELTIERS_OUT` (step 6).
-- **`--dry-run` still writes snapshots.** It skips `tiers.toml` only. Use `MODELTIERS_CACHE` to keep a trial run out of the real cache.
+- **`--dry-run` still writes snapshots.** It skips `tiers.toml` only, and the card links' `vendor-links.toml` is written beside the snapshots. Use `MODELTIERS_CACHE` to keep a trial run out of the real cache.
 - **`--directory modeltiers` moves the working directory.** A relative `--inventory`, `--html` or `MODELTIERS_OUT` path resolves from `modeltiers/`. Use absolute paths. `show --html` prints the full path it wrote.
 - **An ignore is never re-examined.** `[[ignore]]` is checked before any other step, so an ignored row stays `unrated` after models.dev gains a key for it. When you re-calibrate, re-check each entry whose reason ends `(checked <date>)` with step 4 (d).
 - **A row left listed is not forgotten.** A row under `unmapped:` or a record under `unresolved:` that step 4 found no evidence for is printed by every run. It needs nothing until evidence turns up; do not alias or ignore it to make the list empty.

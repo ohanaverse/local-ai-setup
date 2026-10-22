@@ -2,7 +2,7 @@
 the copies under tests/fixtures/, so calibration can change the committed
 values without changing a test."""
 
-from modeltiers import aliases, contracts
+from modeltiers import aliases, cards, contracts
 
 
 def test_the_committed_aliases_file_loads_and_validates() -> None:
@@ -23,3 +23,9 @@ def test_the_committed_contracts_file_loads_and_validates() -> None:
     assert set(loaded.attribution) == set(contracts.SOURCES)
     assert loaded.sentinels
     assert all("/" in sentinel.canonical for sentinel in loaded.sentinels)
+
+
+def test_the_committed_vendors_file_loads_and_validates() -> None:
+    loaded = cards.load_vendors()
+    assert {"anthropic", "openai", "google"} <= set(loaded)
+    assert all(cards.is_https(url) for url in loaded.values())

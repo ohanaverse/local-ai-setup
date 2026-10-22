@@ -1,3 +1,5 @@
+import json
+import re
 import tomllib
 from collections.abc import Callable
 from dataclasses import replace
@@ -14,7 +16,7 @@ from conftest import (
     scaled_openrouter,
     without_timestamps,
 )
-from fakes import FakeFetcher, Sleeps
+from fakes import FakeFetcher, FakeResolver, Sleeps
 
 from modeltiers import cli, fetch, snapshots
 from modeltiers.errors import FetchError, InventoryError
@@ -63,6 +65,20 @@ S  standard  high    ollama/deepseek-v4-pro:cloud    deepseek/deepseek-v4-pro-08
 S  standard  high    openrouter/z-ai/glm-5.3         zhipuai/glm-5.3
 S  standard  low     ollama/qwen3.8:27b-mlx          alibaba/qwen3.8-27b
 Q  quick     high    ollama/minimax-m3:cloud         minimax/MiniMax-M3
+-  unrated   none    ollama/nomic-embed-text:latest  -  (not_applicable)
+-  unrated   none    ollama/gemma4:31b-mlx           google/gemma-4-31b-it  (no_votes)
+unmapped: 1 (unrated until aliased or ignored)
+  ollama/medgemma:27b
+"""
+
+# `show` lists the rows by aligned score, highest first; `run` prints the file's order.
+SHOWN_TABLE = """\
+T  tier      conf    model                           canonical
+S  standard  high    ollama/glm-5.3:cloud            zhipuai/glm-5.3
+S  standard  high    openrouter/z-ai/glm-5.3         zhipuai/glm-5.3
+S  standard  high    ollama/deepseek-v4-pro:cloud    deepseek/deepseek-v4-pro-0813
+Q  quick     high    ollama/minimax-m3:cloud         minimax/MiniMax-M3
+S  standard  low     ollama/qwen3.8:27b-mlx          alibaba/qwen3.8-27b
 -  unrated   none    ollama/nomic-embed-text:latest  -  (not_applicable)
 -  unrated   none    ollama/gemma4:31b-mlx           google/gemma-4-31b-it  (no_votes)
 unmapped: 1 (unrated until aliased or ignored)
@@ -121,6 +137,8 @@ def _deps(
     deps = cli.Deps(
         fetcher=fetcher,
         sleep=Sleeps(),
+        resolver=FakeResolver(),
+        vendors_path=FIXTURES / "vendors.toml",
         now=lambda: now,
         run_wt=run_wt,
         specs=specs,
@@ -190,6 +208,7 @@ def test_snapshots_go_under_modeltiers_cache(
         "epoch",
         "modelsdev",
         "openrouter",
+        "vendor-links.toml",
     ]
 
 
@@ -746,7 +765,7 @@ def test_show_prints_the_age_the_table_and_the_attribution(
     captured = capsys.readouterr()
     assert captured.out == (
         "tiers.toml generated 2026-10-12T15:58:00Z (7 days old), contracts fixture-1\n"
-        + TABLE
+        + SHOWN_TABLE
         + "candidates: 2 (list them with --candidates)\n"
         + ATTRIBUTION
     )
@@ -761,7 +780,7 @@ def test_show_candidates_lists_them_and_warns_past_fourteen_days(
     captured = capsys.readouterr()
     assert captured.out == (
         "tiers.toml generated 2026-10-12T15:58:00Z (15 days old), contracts fixture-1\n"
-        + TABLE
+        + SHOWN_TABLE
         + "candidates: 2 (scored by a source, not in the inventory)\n"
         + "M  marathon  high    anthropic/claude-opus-5-5\n"
         + "D  deep      high    anthropic/claude-fable-5\n"
@@ -980,3 +999,127 @@ def test_explain_an_unmapped_row_and_a_name_that_matches_nothing(
         "modeltiers: no model or canonical key 'ollama/absent:cloud' in the file generated "
         "2026-10-12T15:58:00Z\n"
     )
+
+
+# --- card links and the redirects behind them -----------------------------------
+
+ANTHROPIC_FIXTURE_URL = "https://vendor.example/anthropic/models"
+ANTHROPIC_MOVED_URL = "https://vendor.example/anthropic/moved"
+
+
+def _card_urls(out: Path) -> dict[str, str]:
+    document = tomllib.loads(out.read_text())
+    return {
+        entry["canonical"]: entry["card_url"]
+        for entry in [*document["models"], *document["candidates"]]
+        if "card_url" in entry
+    }
+
+
+def test_run_writes_a_card_for_each_model_that_has_one(
+    specs: SourceSpecs, good_answers: Answers, out: Path
+) -> None:
+    assert cli.main(RUN, deps=_deps(specs, good_answers)[0]) == 0
+    assert _card_urls(out) == {
+        "zhipuai/glm-5.3": "https://huggingface.co/zai-org/GLM-5.3",
+        "alibaba/qwen3.8-27b": "https://huggingface.co/Qwen/Qwen3.8-27B",
+        "anthropic/claude-opus-5-5": ANTHROPIC_FIXTURE_URL,
+        "anthropic/claude-fable-5": ANTHROPIC_FIXTURE_URL,
+    }
+
+
+def test_a_catalog_that_moved_is_followed_written_and_kept_for_the_next_run(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    out: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    deps, _ = _deps(specs, good_answers)
+    moved = replace(deps, resolver=FakeResolver({ANTHROPIC_FIXTURE_URL: ANTHROPIC_MOVED_URL}))
+    assert cli.main(RUN, deps=moved) == 0
+    assert _card_urls(out)["anthropic/claude-fable-5"] == ANTHROPIC_MOVED_URL
+    assert capsys.readouterr().err == (
+        MTPLX_WARNING
+        + f"warning: vendor link anthropic: {ANTHROPIC_FIXTURE_URL} moved to {ANTHROPIC_MOVED_URL}\n"
+    )
+    kept = tomllib.loads((tmp_path / "cache" / "vendor-links.toml").read_text())
+    assert kept == {"anthropic": {"from": ANTHROPIC_FIXTURE_URL, "url": ANTHROPIC_MOVED_URL}}
+    # The next run, with no network to the lab at all, starts from where it ended.
+    offline_deps, _ = _deps(specs, good_answers)
+    assert cli.main([*RUN, "--offline"], deps=offline_deps) == 0
+    assert _card_urls(out)["anthropic/claude-fable-5"] == ANTHROPIC_MOVED_URL
+
+
+def test_an_offline_run_follows_no_redirect(specs: SourceSpecs, good_answers: Answers) -> None:
+    deps, _ = _deps(specs, good_answers)
+    assert cli.main(RUN, deps=deps) == 0  # fills the snapshots
+    resolver = FakeResolver({ANTHROPIC_FIXTURE_URL: ANTHROPIC_MOVED_URL})
+    assert cli.main([*RUN, "--offline"], deps=replace(deps, resolver=resolver)) == 0
+    assert resolver.calls == []
+
+
+def test_a_catalog_that_does_not_answer_keeps_its_address_and_the_run_goes_on(
+    specs: SourceSpecs,
+    good_answers: Answers,
+    out: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    deps, _ = _deps(specs, good_answers)
+    down = replace(deps, resolver=FakeResolver(down=frozenset({ANTHROPIC_FIXTURE_URL})))
+    assert cli.main(RUN, deps=down) == 0
+    assert _card_urls(out)["anthropic/claude-fable-5"] == ANTHROPIC_FIXTURE_URL
+    err = capsys.readouterr().err
+    assert (
+        f"warning: vendor link anthropic: could not check it ({ANTHROPIC_FIXTURE_URL}: HTTP 503)"
+        in err
+    )
+    # An address that never answered would shadow a later release's: not kept.
+    assert not (tmp_path / "cache" / "vendor-links.toml").exists()
+
+
+def test_a_bad_vendors_file_stops_the_run_before_any_download(
+    specs: SourceSpecs, good_answers: Answers, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "vendors.toml"
+    bad.write_text('[[vendor]]\nprefix = "x"\nurl = "http://insecure.example/"\nnote = "n"\n')
+    deps, fetcher = _deps(specs, good_answers)
+    assert cli.main(RUN, deps=replace(deps, vendors_path=bad)) == 1
+    assert "not an https address" in capsys.readouterr().err
+    assert fetcher.calls == []
+
+
+def test_default_deps_follow_redirects_with_the_real_resolver() -> None:
+    deps = cli.Deps()
+    assert deps.resolver is fetch.http_resolver
+    assert deps.vendors_path is None  # the committed data/vendors.toml
+
+
+def test_show_orders_the_rows_by_aligned_score_unless_told_otherwise(
+    written: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def names(argv: list[str]) -> list[str]:
+        assert cli.main(argv, deps=_reader_deps(T1)) == 0
+        lines = capsys.readouterr().out.splitlines()
+        return [line.split()[3] for line in lines if line[:3] in ("S  ", "Q  ", "-  ")]
+
+    by_aligned = names(["show"])
+    assert by_aligned == names(["show", "--sort", "aligned"])
+    assert by_aligned[:2] == ["ollama/glm-5.3:cloud", "openrouter/z-ai/glm-5.3"]
+    assert names(["show", "--sort", "model"]) == sorted(by_aligned, key=str.lower)
+    assert names(["show", "--sort", "model"]) != by_aligned
+
+
+def test_the_page_opens_in_aligned_order_unless_told_otherwise(
+    written: None, tmp_path: Path
+) -> None:
+    def opens_in(*argv: str) -> str | None:
+        target = tmp_path / "page.html"
+        assert cli.main(["show", "--html", str(target), *argv], deps=_reader_deps(T1)) == 0
+        found = re.search(r'"sort": ("[a-z_]+"|null)', target.read_text())
+        assert found is not None
+        return str(json.loads(found.group(1))) if found.group(1) != "null" else None
+
+    assert opens_in() == "aligned"
+    assert opens_in("--sort", "eci") == "eci"

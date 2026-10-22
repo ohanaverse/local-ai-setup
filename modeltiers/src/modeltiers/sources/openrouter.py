@@ -33,6 +33,7 @@ def parse(data: bytes, *, min_rows: int = MIN_ROWS) -> tuple[ScoreRecord, ...]:
             raise SourceParseError(f"{SOURCE}: {model_id}.artificial_analysis is not an object")
         if indices.get("intelligence_index") is None:
             continue
+        hugging_face_id = model.get("hugging_face_id")
         records.append(
             ScoreRecord(
                 source=SOURCE,
@@ -46,6 +47,10 @@ def parse(data: bytes, *, min_rows: int = MIN_ROWS) -> tuple[ScoreRecord, ...]:
                 agentic_index=optional_number(
                     SOURCE, f"{model_id}.agentic_index", indices.get("agentic_index")
                 ),
+                # "" is how a closed model says it has none.
+                hugging_face_id=hugging_face_id
+                if isinstance(hugging_face_id, str) and hugging_face_id
+                else None,
             )
         )
     require_rows(SOURCE, len(records), min_rows)

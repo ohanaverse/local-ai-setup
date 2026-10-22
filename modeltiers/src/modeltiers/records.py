@@ -60,3 +60,4 @@ class ScoreRecord:
     effort: str | None = None
     coding_index: float | None = None  # OpenRouter only; evidence, no vote
     agentic_index: float | None = None  # OpenRouter only; evidence, no vote
+    hugging_face_id: str | None = None  # OpenRouter only; names the open weights' card
