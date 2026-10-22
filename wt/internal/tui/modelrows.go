@@ -37,8 +37,8 @@ type tableRow struct {
 	// in and timed are the row's price in force at that instant and whether
 	// its model's price depends on the time, resolved once when the row was
 	// given its clock (pricedAt). Resolving checks each cost.time_prices row
-	// against the registry's rules and reads its timezone, and so nothing
-	// that draws the table resolves again. Neither is set for a row with no clock.
+	// against the registry's rules and reads its timezone, so nothing that
+	// draws the table resolves again. Neither is set for a row with no clock.
 	in    config.PriceInForce
 	timed bool
 	// tier is the model's rating in the tiers file (tiers.Index.Rating): the
@@ -75,8 +75,8 @@ func (r tableRow) pricedAt(at time.Time) tableRow {
 }
 
 // price is the row's three prices in force at the instant its table was
-// built, as pricedAt resolved them. It is what the COST column shows. A row with no clock has its model's flat
-// prices.
+// built, as pricedAt resolved them. It is what the COST column shows. A row
+// with no clock has its model's flat prices.
 func (r tableRow) price() config.PriceInForce {
 	if r.at.IsZero() {
 		return r.costModel().Cost.Flat()

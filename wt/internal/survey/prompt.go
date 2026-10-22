@@ -32,8 +32,8 @@ func realFlushTTY() { _ = drainTTYInput(int(os.Stdin.Fd())) }
 // (2026-10-05, #136): the questions were skipped often, and the speed rating
 // in particular barely told models apart, so the survey is paused while what
 // replaces it is decided. Everything else is kept on purpose — the questions,
-// the store, `wt stats`, which goes on reporting
-// the answers already recorded — so bringing the survey back is this one
+// the store and `wt stats`, which goes on reporting the answers already
+// recorded — so bringing the survey back is this one
 // value. A var, not a const, so the package's tests can run the kept code.
 var Enabled = false
 

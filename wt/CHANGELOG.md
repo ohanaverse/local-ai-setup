@@ -255,6 +255,15 @@
 
 ### Changed
 
+- The model picker is ordered by tier score, and its SURVEY column is gone.
+  Rows now fall in four bands: native models, slot-profile rows (now
+  alphabetical by `profile/<name>` rather than in `slot-profiles.toml`
+  order), local models that are running and ready, then every other model.
+  Within the last two bands the TIER score orders the rows, highest first,
+  with unscored models last and ties alphabetical by id; price and 7-day
+  usage no longer order anything. The first row is still the default pick,
+  so a bare Enter now launches the highest-scored model rather than the
+  cheapest. `wt stats` still reports the survey answers already recorded.
 - A single-model launch of Claude Code on a non-native model now maps all
   four of Claude Code's model slots to that model. Wherever wt sets
   `ANTHROPIC_BASE_URL` (a direct provider or the LiteLLM proxy), it also
@@ -286,7 +295,7 @@
 - The model picker shows the price in force now. For a model with
   `cost.time_prices` rows (ollama's off-peak row, the rows `wt cloud-sync`
   stores for a model OpenRouter prices by time of day, or rows written by
-  hand), the COST column shows, and the cost sort uses, the prices of the
+  hand), the COST column shows the prices of the
   row whose timezone and windows hold the current instant, and the model's
   own price when none does. It used to show the model's own price at every
   hour, which for an ollama cloud model is the peak price (and for a model
@@ -294,8 +303,8 @@
   price is marked `~`, and the column heading then reads `COST (~ varies
   by time)`.
   The mark and the heading take room: at a few widths a table with a
-  time-priced model in it shows one usage column fewer (1D, 7D, 30D or
-  SURVEY) than it would without one, and at three widths, where COST is
+  time-priced model in it shows one usage column fewer (1D, 7D or 30D)
+  than it would without one, and at three widths, where COST is
   the last column there is room for, it shows no COST column where a table
   of single prices has one.
   The line under the launcher's table now names the highlighted model's
