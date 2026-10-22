@@ -1,6 +1,8 @@
 # The tier rule as data. Read by modeltiers.contracts; validated on every run.
-# Floors and sentinels were set from the 2026-10-12 snapshots. Editing this
-# file is the re-calibration: there is no flag that overrides a sentinel.
+# Floors and sentinels were set from the 2026-10-12 snapshots; the Fable 5.1 and
+# MiniMax-M3 sentinels were re-pinned 2026-10-21 (source re-scores, floors kept).
+# Editing this file is the re-calibration: there is no flag that overrides a
+# sentinel.
 #
 # [tiers.<tier>]     code = one character; context_min = the context the tier needs
 # [signals.<signal>] floors = the lowest score that votes each tier; a score under
