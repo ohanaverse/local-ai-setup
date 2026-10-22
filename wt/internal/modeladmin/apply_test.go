@@ -904,6 +904,37 @@ func TestAddCloudModelIsManual(t *testing.T) {
 	}
 }
 
+// TestAddOllamaCloudTagIsCloud verifies an ollama model whose tag ends in
+// :cloud or -cloud is written with location = "cloud" when --location is not
+// given, and that an explicit location and a local tag are left alone.
+// Without the key the row inherits the ollama provider's "local", and wt
+// model list shows a cloud model as a missing local one.
+func TestAddOllamaCloudTagIsCloud(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry)
+	for _, req := range []AddRequest{
+		{ProviderID: "ollama", ModelName: "beam:cloud", Fields: Fields{Family: ptr("beam")}},
+		{ProviderID: "ollama", ModelName: "nemo:30b-cloud", Fields: Fields{Family: ptr("nemo")}},
+		{ProviderID: "ollama", ModelName: "qwen3:8b", Fields: Fields{Family: ptr("qwen3")}},
+		{ProviderID: "ollama", ModelName: "pinned:cloud", Fields: Fields{Family: ptr("p"), Location: ptr("local")}},
+	} {
+		if _, err := Add(req, config.SeedEnv{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := read(t, path)
+	for _, id := range []string{"ollama/beam:cloud", "ollama/nemo:30b-cloud"} {
+		if !strings.Contains(sliceRow(got, id), `location = "cloud"`) {
+			t.Errorf("row %s has no location = \"cloud\":\n%s", id, sliceRow(got, id))
+		}
+	}
+	if strings.Contains(sliceRow(got, "ollama/qwen3:8b"), "location") {
+		t.Errorf("a local tag must get no location key:\n%s", sliceRow(got, "ollama/qwen3:8b"))
+	}
+	if !strings.Contains(sliceRow(got, "ollama/pinned:cloud"), `location = "local"`) {
+		t.Errorf("an explicit location must win:\n%s", sliceRow(got, "ollama/pinned:cloud"))
+	}
+}
+
 // sliceRow is the text of the [[models]] row with the given id.
 func sliceRow(registry, id string) string {
 	i := strings.Index(registry, "id = \""+id+"\"")

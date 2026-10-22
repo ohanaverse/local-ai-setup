@@ -103,6 +103,12 @@ func planAdd(req AddRequest) (addPlan, error) {
 	if req.Location != nil {
 		location = strings.TrimSpace(*req.Location)
 	}
+	if location == "" && UsesOllama(req.ProviderID) && cloudsync.IsCloudTag(req.ModelName) {
+		// The ollama provider is local; a cloud tag would inherit that and
+		// list as a missing local model. cloud-sync writes the same key.
+		location = string(config.LocationCloud)
+		set["location"] = location
+	}
 	if cloudsync.CoveredBySync(req.ProviderID, location, req.ModelName) {
 		// Hand-added: cloud-sync keeps it until its source lists it.
 		set["source"] = string(config.SourceManual)
