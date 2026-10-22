@@ -134,7 +134,7 @@ candidates: 2 (list them with --candidates)
 | Exit | Meaning | What to do |
 |---|---|---|
 | 0 | Written (or would be, under `--dry-run`) | Read the lists; see step 3 |
-| 1 | Not written: an invalid `aliases.toml` or `contracts.toml`, wt missing or failing, a redirected registry (a run without `--dry-run`; see Gotchas), or a source with no usable data and no good snapshot | The `modeltiers:` line on stderr names the entry, the file or the source |
+| 1 | Not written: an invalid `aliases.toml` or `contracts.toml`, wt missing or failing, a redirected registry (a run without `--dry-run`; see Gotchas), or a source with no usable data and no good snapshot | The last line on stderr, `ERROR: modeltiers run FAILED (exit 1): <reason>; tiers.toml was not written.`, names the entry, the file or the source |
 | 2 | Written, with a source that fell back to its last good snapshot | The source's line says `stale`. Run again later; the tiers from that source are as old as its `fetched` time |
 | 3 | Not written: a sentinel model's votes or tier moved | Step 5 |
 
@@ -511,6 +511,8 @@ reason, and an unknown key in the file each stop the run with exit 1 and a
 message that names the entry.
 
 ### 5. Re-calibrate after a sentinel failure
+
+(In Claude Code, the `sentinel-failure` skill does the investigation below, reports what it found with a recommended edit, and asks before changing anything.)
 
 `contracts.toml` pins a handful of sentinel models to the votes and the tier
 they had when the floors were set. When one differs, `run` prints every
