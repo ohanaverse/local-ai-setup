@@ -397,7 +397,7 @@ func TestUnknownAgentLaunchShowsError(t *testing.T) {
 func TestSelectedEntryMsgPositionsCursorAtNextToUse(t *testing.T) {
 	dir := tempStateDir(t)
 	// State: last=ollama/gemma4:9b. The rotation's next-to-use is gemma4:14b.
-	// The selector table sorts equal-cost rows by id (14b, 9b, design), so
+	// The selector table sorts its unscored rows by id (14b, 9b, design), so
 	// 14b sits at list index 0 — assert on the selected model, not a
 	// registry-order index.
 	stubUsageStore(t)
@@ -464,7 +464,7 @@ func TestModelPickerMarksLastLaunchedRow(t *testing.T) {
 			markerIdx = i
 		}
 	}
-	// The table sorts equal-cost rows by id: 14b (0), 9b (1), design (2).
+	// The table sorts its unscored rows by id: 14b (0), 9b (1), design (2).
 	if markerIdx != 1 {
 		t.Errorf("marker row = %d, want 1 (ollama/gemma4:9b)", markerIdx)
 	}
@@ -843,8 +843,8 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	// so "next" from gemma4:14b (index 1) is gemma4:design (index 2).
 	m2 := model{cfg: testConfig(), phase: phaseList, width: 80, height: 24}
 	m2 = drivePhaseAgentEnter(t, m2, "claude")
-	// (Sort order shifts with the launch just recorded — the table orders by
-	// 7-day usage — so assert on the selected model, not an index.)
+	// (Assert on the selected model, not an index: rows are unscored, so
+	// they sort by id.)
 	if got := selectedModelID(m2); got != "ollama/gemma4:design" {
 		t.Errorf("entry 2: cursor on %q, want ollama/gemma4:design (next after gemma4:14b in 3-item snapshot)", got)
 	}

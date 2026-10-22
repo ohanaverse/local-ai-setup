@@ -140,11 +140,11 @@ func TestProfileRowsNeedTheOptIn(t *testing.T) {
 	}
 }
 
-// TestSortRowsPutsProfilesBetweenNativeAndTheRest pins the picker's three
-// bands: native rows, then profile rows in file order, then every other row
-// in the order it had before. The sort order is also the default selection,
-// so a profile sorted by cost or id would move whenever a price changed, and
-// one sorted above a native row would become what a bare Enter picks.
+// TestSortRowsPutsProfilesBetweenNativeAndTheRest pins the picker's bands
+// with real slot-profile rows: native rows, then profile rows alphabetically
+// by id (not in file order), then every other row. The sort order is also the
+// default selection, so a profile sorted above a native row would become what
+// a bare Enter picks.
 func TestSortRowsPutsProfilesBetweenNativeAndTheRest(t *testing.T) {
 	profile := func(index int, name string, verdict catalog.Action) tableRow {
 		c := slotCheckFor(index, name, "opus", map[string]string{"opus": "openrouter/a"})
@@ -167,7 +167,7 @@ func TestSortRowsPutsProfilesBetweenNativeAndTheRest(t *testing.T) {
 	for _, r := range rows {
 		got = append(got, r.Model.ID)
 	}
-	want := "claude/native,profile/start,profile/alpha,profile/zeta,openrouter/cheap,openrouter/dear,omlx/idle"
+	want := "claude/native,profile/alpha,profile/start,profile/zeta,omlx/idle,openrouter/cheap,openrouter/dear"
 	if strings.Join(got, ",") != want {
 		t.Errorf("order = %s\nwant    %s", strings.Join(got, ","), want)
 	}
@@ -221,7 +221,7 @@ func TestProfileRowCells(t *testing.T) {
 		}{
 			{colFamily, "FAMILY", "profile"}, {colModel, "MODEL", c.id}, {colLoc, "LOC", c.loc},
 			{colStatus, "STATUS", "ok"}, {colRunning, "RUNNING", c.running}, {colCost, "COST", c.cost},
-			{col7D, "7D", c.d7}, {colSurvey, "SURVEY", ""},
+			{col7D, "7D", c.d7},
 		} {
 			if got := cell(want.col); got != want.val {
 				t.Errorf("%s: %s = %q, want %q", c.name, want.name, got, want.val)
@@ -427,8 +427,8 @@ func TestProfileRowScreenFitsAndShowsItsSlots(t *testing.T) {
 		name := fmt.Sprintf("%dx%d", width, height)
 		stubInventory(t, runningOmlxSnapshot())
 		m := slotPicker(t, slotTestConfig(), slotRowChecks(), width, height)
-		if got, want := strings.Join(itemIDs(m), ","), "profile/cloud,profile/mixed,profile/broken,"; !strings.HasPrefix(got, want) {
-			t.Fatalf("%s: rows = %s, want the three profiles first, in file order", name, got)
+		if got, want := strings.Join(itemIDs(m), ","), "profile/broken,profile/cloud,profile/mixed,"; !strings.HasPrefix(got, want) {
+			t.Fatalf("%s: rows = %s, want the three profiles first, alphabetically", name, got)
 		}
 
 		m.models.Select(indexOfID(m, "openrouter/a"))

@@ -12,9 +12,8 @@ import (
 // selector table buildTable produces for the main TUI's agent flow, for
 // callers (e.g. wt smoke) that need a one-off model pick without the full
 // worktree->agent->model->launch state machine. Unlike that flow, the
-// list here is never scoped to a single agent, so its survey segment is
-// always empty (agent-specific) and undiscovered models are hidden (wt smoke
-// only shows the models it passes in). A per-row exception marker can still
+// list here is never scoped to a single agent, and undiscovered models are
+// hidden (wt smoke only shows the models it passes in). A per-row exception marker can still
 // appear: passing a non-nil cfg still runs buildTable's route-resolution
 // branch, so "(litellm required)"/"(unavailable)" can show; only
 // "(via proxy)" is suppressed, since ProtocolsFor("") returns nil and
@@ -59,8 +58,8 @@ func (m *pickModel) fit() {
 
 // newPickModel builds the picker's list from models via the same buildTable
 // the agent flow uses. cfg may be nil (no inventory probe and no per-row route
-// resolution). The agent argument is "" and stats is nil since this list isn't
-// scoped to one agent; discovered (unregistered) local models are hidden.
+// resolution). The agent argument is "" since this list isn't scoped to one
+// agent; discovered (unregistered) local models are hidden.
 // The caller's models may include start-able and blocked rows; blocked rows
 // are shown (with their reason) but Enter on them does not select.
 func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme, skipRoute bool) pickModel {

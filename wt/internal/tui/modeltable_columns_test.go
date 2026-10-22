@@ -10,16 +10,15 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // realisticTable is a table with the shapes real rows take: a long cloud model
-// id with prices, usage and a survey segment (and the last-launched marker); a
+// id with prices, and usage (and the last-launched marker); a
 // running local model in use by two sessions; and a discovered local model
-// with no family, cost or survey.
+// with no family or cost.
 func realisticTable() modelTable {
 	rows := []tableRow{
 		{
@@ -29,7 +28,6 @@ func realisticTable() modelTable {
 				Location: config.LocationCloud, Status: catalog.StatusOK,
 			},
 			counts: usage.UsageCounts{OneDay: 3, SevenDay: 12, ThirtyDay: 104},
-			stats:  survey.Stats{Answered: 12, Worked: 11, Failed: 1, RatedSpeed: 12, SpeedSum: 44, RatedQuality: 12, QualitySum: 51},
 			tier:   tiers.Entry{Tier: "deep", Code: "D", Confidence: "high", Aligned: 51.6, HasAligned: true, Sources: 3},
 		},
 		{
@@ -53,8 +51,8 @@ func realisticTable() modelTable {
 // captured from that code, with the TIER column added after MODEL: the header
 // and the three rows' titles.
 const (
-	goldenHeader = "    FAMILY   MODEL                                            TIER  LOC    STATUS  RUNNING  COST                     1D  7D  30D  SURVEY"
-	goldenRow0   = "  > sonnet   openrouter/anthropic/claude-sonnet-4.5-thinking  D52   cloud  ok      -         3.0000  0.3000 15.0000  3   12  104  ✓92% q4.2 s3.7 n12"
+	goldenHeader = "    FAMILY   MODEL                                            TIER  LOC    STATUS  RUNNING  COST                     1D  7D  30D"
+	goldenRow0   = "  > sonnet   openrouter/anthropic/claude-sonnet-4.5-thinking  D52   cloud  ok      -         3.0000  0.3000 15.0000  3   12  104"
 	goldenRow1   = "2   qwen3.8  omlx/Qwen3.8-27B-Instruct-MLX-6bit               -     local  ok      run      -                        1   4   9"
 	goldenRow2   = "    -        ollama/gemma4:9b                                 -     local  new     -        -                        0   0   0"
 )
@@ -120,7 +118,7 @@ func shownColumns(header string) string {
 
 // TestModelTableDropsWholeColumnsInOrder pins what a model table shows when it
 // is wider than its list: whole columns go, from the right-hand end of the
-// drop order (survey, 30D, 7D, 1D, cost, tier, location, family), and MODEL, STATUS
+// drop order (30D, 7D, 1D, cost, tier, location, family), and MODEL, STATUS
 // and RUNNING always stay. Before this the terminal cut the row wherever its
 // edge fell, so on an 80-column terminal a long model id pushed STATUS and
 // RUNNING — whether Enter launches or starts — off the screen. Each width also
@@ -128,7 +126,7 @@ func shownColumns(header string) string {
 // whole in the header and in every row, and that the header and the rows start
 // each shown column at the same place.
 func TestModelTableDropsWholeColumnsInOrder(t *testing.T) {
-	const all = "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"
+	const all = "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"
 	for _, tc := range []struct {
 		width int
 		want  string
@@ -270,7 +268,7 @@ func TestModelTableColumnBoundaries(t *testing.T) {
 		{126, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D"},
 		{130, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D"},
 		{135, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
-		{152, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
+		{152, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
 	})
 	// One column short of the first boundary the rows still fit — they need no
 	// title-bar room — and the header is what is cut.
@@ -313,15 +311,14 @@ func TestModelTableCountsTheExceptionNote(t *testing.T) {
 		{123, "FAMILY MODEL LOC STATUS RUNNING COST 1D"},
 		{127, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D"},
 		{132, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D"},
-		{140, "FAMILY MODEL LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
-		{146, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"},
+		{138, "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"},
 	})
 }
 
 // TestModelTableUnchangedWhenItFits pins that at a width with room for
 // everything the table is byte for byte what it was before columns could be
 // dropped: the same columns, order and padding, the marker and ref prefixes,
-// and trailing spaces trimmed on a row with no survey segment. The expected
+// and trailing spaces trimmed on a row with no trailing cell. The expected
 // strings were captured from the code as it was.
 func TestModelTableUnchangedWhenItFits(t *testing.T) {
 	m := tablePicker(t, 200, 24)

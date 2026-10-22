@@ -15,28 +15,6 @@ func ratingCell(prefix string, avg float64, ok bool) string {
 	return fmt.Sprintf("%s%.1f", prefix, avg)
 }
 
-// FormatPickerSegment renders the compact 30-day survey segment appended
-// to a model picker row: "[⚠]✓<pct> q<quality> s<speed> n<answered>".
-// Returns "" when Answered == 0 so the caller can omit the segment
-// entirely rather than showing a meaningless "✓- q- s- n0".
-//
-// ⚠ replaces ✓ when the combo looks broken: WorkedPct < 70% with at least
-// 3 answered surveys (Answered < 3 is too little signal to flag).
-func FormatPickerSegment(s Stats) string {
-	pct, ok := s.WorkedPct()
-	if !ok {
-		return ""
-	}
-	marker := "✓"
-	if pct < 70 && s.Answered >= 3 {
-		marker = "⚠"
-	}
-	quality, qok := s.QualityAvg()
-	speed, sok := s.SpeedAvg()
-	return fmt.Sprintf("%s%d%% %s %s n%d",
-		marker, int(pct+0.5), ratingCell("q", quality, qok), ratingCell("s", speed, sok), s.Answered)
-}
-
 // windowSpec pairs a window's display label with its duration, in the
 // fixed 1d/7d/30d display order.
 type windowSpec struct {

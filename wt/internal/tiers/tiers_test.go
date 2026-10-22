@@ -237,3 +237,30 @@ func TestCellRightAlignsTheScore(t *testing.T) {
 		t.Errorf("ScoreDigits of no score = %d, want 0", got)
 	}
 }
+
+// TestEntryScore pins Score, the value a table sorts by: the aligned score
+// rounded to a whole number exactly as the TIER column shows it, with ok
+// false when the entry has no aligned score (whatever Aligned holds), so an
+// unscored row is told apart from a scored 0.
+func TestEntryScore(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		e      Entry
+		score  int
+		wantOK bool
+	}{
+		{"rounds down", Entry{Aligned: 44.4, HasAligned: true}, 44, true},
+		{"rounds up", Entry{Aligned: 44.5, HasAligned: true}, 45, true},
+		{"near zero is a score of 0", Entry{Aligned: 0.3, HasAligned: true}, 0, true},
+		{"zero is a score", Entry{HasAligned: true}, 0, true},
+		{"unrated entry keeps its score", Entry{Tier: "unrated", Code: "-", Aligned: 9.3, HasAligned: true}, 9, true},
+		{"no aligned score", Entry{Tier: "marathon", Code: "M"}, 0, false},
+		{"stray Aligned without HasAligned", Entry{Aligned: 30}, 30, false},
+		{"zero value", Entry{}, 0, false},
+	} {
+		got, ok := c.e.Score()
+		if got != c.score || ok != c.wantOK {
+			t.Errorf("%s: Score() = %d, %v; want %d, %v", c.name, got, ok, c.score, c.wantOK)
+		}
+	}
+}

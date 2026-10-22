@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -53,107 +55,159 @@ func TestBuildRowsCountsAreAgentScoped(t *testing.T) {
 	}
 }
 
-// TestSortRowsTwoGroups verifies the spec's sort: group 1 (cloud + running
-// local) by cost ascending — output price, then input price; local and
-// subscription-only count as $0; no cost data last — then 7-day usage
-// ascending; group 2 (non-running local) alphabetical. Cheap and already-
-// running models must come first.
-func TestSortRowsTwoGroups(t *testing.T) {
-	cloud := func(id string, in, out *float64, sub *float64) tableRow {
-		return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id, Cost: config.ModelCost{InputPricePerMillion: in, OutputPricePerMillion: out, SubscriptionPrice: sub}}}}
+// sortEntry is the tier entry for the sort tests. A score of -1 is a row with
+// no aligned score; any other value is the aligned score the TIER column
+// would show.
+func sortEntry(score float64) tiers.Entry {
+	if score < 0 {
+		return tiers.Entry{}
 	}
-	local := func(id string, running bool, sevenDay int) tableRow {
-		return tableRow{Row: catalog.Row{Location: config.LocationLocal, Running: running, Model: config.Model{ID: id}}, counts: usage.UsageCounts{SevenDay: sevenDay}}
-	}
-	rows := []tableRow{
-		local("z-off", false, 0),
-		cloud("pricey", f64(3), f64(15), nil),
-		cloud("nodata", nil, nil, nil),
-		local("run-busy", true, 5),
-		cloud("sub", nil, nil, f64(100)),
-		cloud("cheap-in-hi", f64(2), f64(1), nil),
-		cloud("cheap-in-lo", f64(1), f64(1), nil),
-		local("a-off", false, 0),
-		local("run-idle", true, 1),
-	}
-	sortRows(rows)
-	// $0 rows (sub, run-idle, run-busy) tie on cost and order by 7d usage
-	// ascending: sub(0), run-idle(1), run-busy(5). Then priced cloud rows by
-	// output then input price, then the no-data row; group 2 alphabetical.
-	want := "sub,run-idle,run-busy,cheap-in-lo,cheap-in-hi,pricey,nodata,a-off,z-off"
+	return tiers.Entry{Tier: "standard", Code: "S", Aligned: score, HasAligned: true}
+}
+
+// sortCloud is a cloud row with the given id and score.
+func sortCloud(id string, score float64) tableRow {
+	return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id}}, tier: sortEntry(score)}
+}
+
+// sortLocal is a local row, running and/or loading, with the given score.
+func sortLocal(id string, running, loading bool, score float64) tableRow {
+	return tableRow{Row: catalog.Row{Location: config.LocationLocal, Running: running, Loading: loading, Model: config.Model{ID: id}}, tier: sortEntry(score)}
+}
+
+// sortNative is a native (agent-own) cloud row with the given score.
+func sortNative(id string, score float64) tableRow {
+	return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id, Native: true}}, tier: sortEntry(score)}
+}
+
+// sortProfile is a slot-profile row with the given index and name.
+func sortProfile(index int, name string) tableRow {
+	c := slotCheckFor(index, name, "opus", map[string]string{"opus": "openrouter/a"})
+	return tableRow{Row: catalog.Row{Model: config.Model{ID: c.Profile.ID()}, Status: catalog.StatusOK,
+		Profile: &catalog.ProfileRow{Check: c, Verdict: catalog.ActionLaunch}}}
+}
+
+func assertOrder(t *testing.T, rows []tableRow, want string) {
+	t.Helper()
 	if got := strings.Join(rowIDs(rows), ","); got != want {
 		t.Errorf("order = %s\nwant    %s", got, want)
 	}
 }
 
-// TestSortRowsNativeFirst verifies issue #172: a native model sorts ahead of
-// every other row, even when it would otherwise lose the $0 tie on 7-day
-// usage to a subscription-only cloud model or an idle running local model.
-func TestSortRowsNativeFirst(t *testing.T) {
+// TestSortRowsBands pins the four bands in one table: native, then slot
+// profiles, then running local models, then everything else. Every band's
+// rows are given a score that would put them in another place if the score
+// ordered across bands, so only the band decides who is above whom.
+func TestSortRowsBands(t *testing.T) {
 	rows := []tableRow{
-		{Row: catalog.Row{Location: config.LocationLocal, Running: true, Model: config.Model{ID: "run-idle"}}},
-		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "sub", Cost: config.ModelCost{SubscriptionPrice: f64(100)}}}},
-		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "native", Native: true}}, counts: usage.UsageCounts{SevenDay: 50}},
-		{Row: catalog.Row{Location: config.LocationLocal, Model: config.Model{ID: "a-off"}}},
+		sortCloud("cloud-top", 99),
+		sortLocal("local-idle", false, false, 98),
+		sortLocal("local-run", true, false, 1),
+		sortProfile(0, "p"),
+		sortNative("native", 0),
 	}
 	sortRows(rows)
-	want := "native,run-idle,sub,a-off"
-	if got := strings.Join(rowIDs(rows), ","); got != want {
-		t.Errorf("order = %s\nwant    %s", got, want)
-	}
+	assertOrder(t, rows, "native,profile/p,local-run,cloud-top,local-idle")
 }
 
-// TestSortRowsNativeTieBreak verifies native-first is a partition, not an
-// escape from the ordinary ordering: among the native rows the cost → 7-day
-// usage → id rules still decide. Each native row here has a different cost
-// shape — no cost data, subscription-only $0, and priced — so a regression
-// that dropped the cost comparison among natives, or ordered natives by id,
-// reorders them and fails. (An earlier version gave every native row identical
-// no-data cost, so the cost tier was never exercised and the test passed
-// either way.)
-func TestSortRowsNativeTieBreak(t *testing.T) {
-	native := func(id string, cost config.ModelCost, sevenDay int) tableRow {
-		return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id, Native: true, Cost: cost}}, counts: usage.UsageCounts{SevenDay: sevenDay}}
-	}
+// TestSortRowsNativeAlphabetical pins that native rows sort by id, whatever
+// their score or order of arrival, and stay ahead of every other row.
+func TestSortRowsNativeAlphabetical(t *testing.T) {
 	rows := []tableRow{
-		// Priced below every native row, so it doubles as the native-first
-		// control: cost alone must not lift it above a native.
-		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "cheap", Cost: config.ModelCost{InputPricePerMillion: f64(0.01), OutputPricePerMillion: f64(0.01)}}}},
-		native("n-nodata", config.ModelCost{}, 0),
-		native("n-cheap", config.ModelCost{InputPricePerMillion: f64(0.1), OutputPricePerMillion: f64(0.1)}, 9),
-		native("n-free-a", config.ModelCost{SubscriptionPrice: f64(50)}, 3),
-		native("n-free-b", config.ModelCost{SubscriptionPrice: f64(50)}, 1),
+		sortCloud("a-cloud", 90),
+		sortNative("claude/zeta", 80),
+		sortNative("claude/alpha", -1),
+		sortNative("claude/mid", 10),
 	}
 	sortRows(rows)
-	// Natives first. Among them the $0 subscription pair ties on cost and
-	// orders by 7-day usage ascending (b:1, a:3), then the priced native, then
-	// the no-cost-data one; the cheaper non-native row still trails them all.
-	want := "n-free-b,n-free-a,n-cheap,n-nodata,cheap"
-	if got := strings.Join(rowIDs(rows), ","); got != want {
-		t.Errorf("order = %s\nwant    %s", got, want)
-	}
+	assertOrder(t, rows, "claude/alpha,claude/mid,claude/zeta,a-cloud")
 }
 
-// TestSortRowsPutsALoadingModelWithTheStartRows pins where a model that omlx
-// is still loading sorts (#259). The sort order is also the default selection,
-// and group 1 is what a bare Enter launches at once: a loading model left
-// there sorts first on its $0 cost and becomes the default pick while it
-// cannot answer. It belongs with the other rows Enter starts.
-func TestSortRowsPutsALoadingModelWithTheStartRows(t *testing.T) {
-	local := func(id string, running, loading bool) tableRow {
-		return tableRow{Row: catalog.Row{Location: config.LocationLocal, Running: running, Loading: loading, Model: config.Model{ID: id}}}
-	}
+// TestSortRowsProfilesAlphabeticalNotFileOrder pins that profile rows sort by
+// their id (profile/<name>) and not by their position in slot-profiles.toml:
+// the file order here (zeta, alpha, mid) is the reverse of the alphabet.
+func TestSortRowsProfilesAlphabeticalNotFileOrder(t *testing.T) {
+	rows := []tableRow{sortProfile(0, "zeta"), sortProfile(1, "alpha"), sortProfile(2, "mid"), sortCloud("m", 50)}
+	sortRows(rows)
+	assertOrder(t, rows, "profile/alpha,profile/mid,profile/zeta,m")
+}
+
+// TestSortRowsRunningLocalFollowsProfiles pins the user's rule: a local model
+// that is running sits right after the slot profiles and above the rest, even
+// above cloud and idle local models with a higher score. Several running
+// local models order among themselves by score.
+func TestSortRowsRunningLocalFollowsProfiles(t *testing.T) {
 	rows := []tableRow{
-		local("m-loading", true, true),
-		local("z-off", false, false),
-		{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: "cloud", Cost: config.ModelCost{OutputPricePerMillion: f64(1)}}}},
-		local("run", true, false),
-		local("a-off", false, false),
+		sortCloud("cloud-best", 90),
+		sortLocal("local-idle", false, false, 80),
+		sortLocal("run-low", true, false, 10),
+		sortProfile(0, "p"),
+		sortLocal("run-high", true, false, 40),
+		sortLocal("run-unscored", true, false, -1),
 	}
 	sortRows(rows)
-	if got, want := strings.Join(rowIDs(rows), ","), "run,cloud,a-off,m-loading,z-off"; got != want {
-		t.Errorf("order = %s\nwant    %s", got, want)
+	assertOrder(t, rows, "profile/p,run-high,run-low,run-unscored,cloud-best,local-idle")
+}
+
+// TestSortRowsByScoreThenID pins the order inside a band: score descending;
+// scores that round to the same whole number tie and fall to id; a row with
+// no score sorts after every scored row, a score of 0 included, and
+// alphabetically among the unscored.
+func TestSortRowsByScoreThenID(t *testing.T) {
+	rows := []tableRow{
+		sortCloud("unscored-b", -1),
+		sortCloud("zero", 0),
+		sortCloud("tie-z", 44.6), // rounds to 45
+		sortCloud("low", 3),
+		sortCloud("tie-a", 45.4), // rounds to 45
+		sortCloud("unscored-a", -1),
+		sortCloud("top", 70),
+		sortCloud("near-zero", 0.4), // rounds to 0, ties with zero
 	}
+	sortRows(rows)
+	assertOrder(t, rows, "top,tie-a,tie-z,low,near-zero,zero,unscored-a,unscored-b")
+}
+
+// TestSortRowsIgnoresCostAndUsage pins that price and 7-day usage no longer
+// order anything: a dear heavily used model with the higher score is above a
+// free unused one.
+func TestSortRowsIgnoresCostAndUsage(t *testing.T) {
+	dear := sortCloud("dear", 60)
+	dear.Model.Cost = config.ModelCost{InputPricePerMillion: f64(30), OutputPricePerMillion: f64(150)}
+	dear.counts = usage.UsageCounts{SevenDay: 500}
+	free := sortCloud("free", 20)
+	free.Model.Cost = config.ModelCost{SubscriptionPrice: f64(0)}
+	rows := []tableRow{free, dear}
+	sortRows(rows)
+	assertOrder(t, rows, "dear,free")
+}
+
+// TestSortRowsLoadingLocalIsNotInTheRunningBand pins #259 under the new
+// bands: a local model omlx is still loading (Running and Loading) cannot
+// answer, so it sorts with the rest by score and not after the profiles. It
+// must never be a default pick ahead of a model that can answer.
+func TestSortRowsLoadingLocalIsNotInTheRunningBand(t *testing.T) {
+	rows := []tableRow{
+		sortCloud("cloud", 30),
+		sortLocal("m-loading", true, true, 95),
+		sortLocal("run", true, false, 5),
+	}
+	sortRows(rows)
+	assertOrder(t, rows, "run,m-loading,cloud")
+}
+
+// TestSortRowsStable pins that the order depends only on the rows, not on the
+// order they arrive in: two differently shuffled copies sort identically.
+func TestSortRowsStable(t *testing.T) {
+	mk := func() []tableRow {
+		return []tableRow{sortCloud("b", 5), sortCloud("a", 5), sortLocal("r", true, false, 1), sortProfile(0, "p"), sortNative("n", 1)}
+	}
+	x, y := mk(), mk()
+	rand.New(rand.NewSource(1)).Shuffle(len(x), func(i, j int) { x[i], x[j] = x[j], x[i] })
+	rand.New(rand.NewSource(2)).Shuffle(len(y), func(i, j int) { y[i], y[j] = y[j], y[i] })
+	sortRows(x)
+	sortRows(y)
+	assertOrder(t, x, strings.Join(rowIDs(y), ","))
 }
 
 // timedRows are two cloud rows for the price tests: "timed" has a dear flat
@@ -177,32 +231,32 @@ var (
 	pickerSaturday = time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 )
 
-// TestSortRowsUsesThePriceInForce pins the cost sort on a model priced by
-// time of day: it sorts by the price in force when the table was built, not
-// by its flat price. The sort order is also the picker's default selection,
-// so a model that is the cheapest right now is what a bare Enter launches,
-// and one in its dear window does not keep a cheap model's place. A row with
-// no clock (one built by hand) sorts by its flat price, and sorting again at
-// the same instant changes nothing.
-func TestSortRowsUsesThePriceInForce(t *testing.T) {
+// TestPriceInForceForTimedModels pins that a model priced by time of day
+// resolves to the price in force when the table was built (tableRow.price),
+// not its flat price: the COST column and the mode line read it. A row with
+// no clock (one built by hand) is priced flat. Sorting no longer reads the
+// price, and so must not reorder these rows whatever the clock.
+func TestPriceInForceForTimedModels(t *testing.T) {
 	for _, c := range []struct {
-		name string
-		at   time.Time
-		want string
+		name      string
+		at        time.Time
+		timedOut  float64
+		timedLate bool
 	}{
-		{"a weekday: the flat price is in force", pickerMonday, "steady,timed"},
-		{"a weekend: the cheap row is in force", pickerSaturday, "timed,steady"},
-		{"no clock: the flat price", time.Time{}, "steady,timed"},
+		{"a weekday: the flat price is in force", pickerMonday, 3.96, false},
+		{"a weekend: the cheap row is in force", pickerSaturday, 1.98, true},
+		{"no clock: the flat price", time.Time{}, 3.96, false},
 	} {
 		rows := timedRows(c.at)
-		sortRows(rows)
-		if got := strings.Join(rowIDs(rows), ","); got != c.want {
-			t.Errorf("%s: order = %s, want %s", c.name, got, c.want)
+		p := rows[0].price()
+		if p.Output == nil || *p.Output != c.timedOut {
+			t.Errorf("%s: timed output price = %v, want %v", c.name, p.Output, c.timedOut)
+		}
+		if got := rows[1].price(); got.Output == nil || *got.Output != 3 {
+			t.Errorf("%s: steady output price = %v, want 3", c.name, got.Output)
 		}
 		sortRows(rows)
-		if got := strings.Join(rowIDs(rows), ","); got != c.want {
-			t.Errorf("%s: sorted a second time, order = %s, want it unchanged (%s)", c.name, got, c.want)
-		}
+		assertOrder(t, rows, "steady,timed") // unscored, so by id
 	}
 	// A model whose flat price is missing and whose row supplies one has cost
 	// data while the row is in force, and none outside it.
@@ -212,11 +266,11 @@ func TestSortRowsUsesThePriceInForce(t *testing.T) {
 		rows[0] = rows[0].pricedAt(at)
 		return rows
 	}
-	if k := rowCostKey(rowsOnly(pickerSaturday)[0]); k.noData || k.out != 1.98 || k.in != 0.66 {
-		t.Errorf("rows only, at the weekend: cost key = %+v, want the row's prices", k)
+	if p := rowsOnly(pickerSaturday)[0].price(); p.Output == nil || *p.Output != 1.98 || p.Input == nil || *p.Input != 0.66 {
+		t.Errorf("rows only, at the weekend: price = %+v, want the row's prices", p)
 	}
-	if k := rowCostKey(rowsOnly(pickerMonday)[0]); !k.noData {
-		t.Errorf("rows only, on a weekday: cost key = %+v, want no cost data", k)
+	if p := rowsOnly(pickerMonday)[0].price(); p.Input != nil || p.Cache != nil || p.Output != nil {
+		t.Errorf("rows only, on a weekday: price = %+v, want no price", p)
 	}
 }
 
@@ -265,8 +319,8 @@ func TestBuildRowsPricesEachRowOnce(t *testing.T) {
 	check := func(when string) {
 		t.Helper()
 		r := rows[0]
-		if k := rowCostKey(r); k.out != 1.98 || k.in != 0.66 {
-			t.Errorf("%s: cost key = %+v, want the weekend row's 0.66 in, 1.98 out", when, k)
+		if p := r.price(); p.Output == nil || *p.Output != 1.98 || p.Input == nil || *p.Input != 0.66 {
+			t.Errorf("%s: price = %+v, want the weekend row's 0.66 in, 1.98 out", when, p)
 		}
 		if got, want := costCell(r), " 0.6600  0.0220  1.9800~"; got != want {
 			t.Errorf("%s: COST cell = %q, want %q", when, got, want)
@@ -280,4 +334,22 @@ func TestBuildRowsPricesEachRowOnce(t *testing.T) {
 	// the flat price, and no mark.
 	rows[0].Model.Cost.TimePrices[0].Timezone = "Nowhere/None"
 	check("after the row changed under the table")
+}
+
+// TestBuildRowsSortByTheTiersFileScore pins the path from a written tiers
+// file to the order: buildRows rates each row from the file and sortRows
+// orders by the rounded aligned score, highest first, with a model the file
+// does not list after the scored ones. The file is the one writeTiers puts
+// under a temporary MODELTIERS_OUT.
+func TestBuildRowsSortByTheTiersFileScore(t *testing.T) {
+	writeTiers(t) // openrouter/a 44, omlx/qwen3.8 31, openrouter/b 9 (unrated)
+	models := []config.Model{
+		{ID: "openrouter/zzz", ProviderID: "openrouter", ModelName: "zzz"},
+		{ID: "openrouter/b", ProviderID: "openrouter", ModelName: "b"},
+		{ID: "openrouter/a", ProviderID: "openrouter", ModelName: "a"},
+		{ID: "ollama/q", ProviderID: "ollama", ModelName: "q"},
+	}
+	rows := buildRows(tableInput{cfg: rowsTestCfg(), agent: "claude", models: models, now: pickerMonday})
+	sortRows(rows)
+	assertOrder(t, rows, "openrouter/a,openrouter/b,ollama/q,openrouter/zzz")
 }

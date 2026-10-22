@@ -21,7 +21,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -1092,17 +1091,15 @@ func (m model) routeBackToAgent(status string) (model, tea.Cmd) {
 // the marker sits on: a model's id or a slot profile's (rot.LastPicked). It
 // is not the rotation pointer; a caller that needs that reads rot.Last. This
 // is the exact table build enterModelPhase performs (last-picked id from rot,
-// agent-scoped survey stats, one usage + refcount store read), shared with
-// refreshTable so a rebuilt table matches the original in every column.
+// one usage + refcount store read), shared with refreshTable so a rebuilt
+// table matches the original in every column.
 func (m model) tableFor(agent string, models []config.Model, snap *localmodels.Snapshot, rot *rotation.Rotation) (modelTable, string) {
 	lastID, _ := rot.LastPicked()
-	// Agent-scoped 30-day survey stats, one Events() read for the picker.
-	surveyStats := survey.AgentModelStats(newSurveyStore().Events(), agent, survey.Window30d, time.Now().UTC())
 	tbl := buildTable(tableInput{
 		cfg: m.cfg, agent: agent, models: models, inventory: snap,
 		hideDiscovered: m.activeTags != "" || m.activeFamily != "",
-		usage:          newUsageStore(), stats: surveyStats,
-		slots: m.slotChecks,
+		usage:          newUsageStore(),
+		slots:          m.slotChecks,
 	}, newRefcountStore(), lastID)
 	return tbl, lastID
 }

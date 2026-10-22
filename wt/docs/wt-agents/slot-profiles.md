@@ -247,7 +247,7 @@ lines again when the picker has closed: after the session, or when you quit.
 ## In the picker
 
 A valid profile for the agent appears after the native rows and before every
-other row, in file order. The screen below is an illustrative mock-up with
+other row (running local models come next), alphabetical by `profile/<name>`, not in file order. The screen below is an illustrative mock-up with
 some columns omitted.
 
 ```
@@ -271,7 +271,7 @@ some columns omitted.
 | RUNNING | The local model's state (`run`, `load` or `-`), on a blocked row too, whichever rule blocked it; `-` for an all-cloud profile, for a profile that names two local models, for one whose local model is not in the registry or has no row of its own, and for the one row of profiles sharing a name |
 | COST | The `default` slot model's price in force (the `sonnet` slot's for `opusplan`), with `~` when it is time-priced |
 | 1D / 7D / 30D | Launches of this profile |
-| In-use prefix, SURVEY | Blank |
+| In-use prefix | Blank |
 
 - **The line under the table** lists the highlighted profile's slots in
   place of the `LiteLLM: on|off` line: the default first, marked `*`, then

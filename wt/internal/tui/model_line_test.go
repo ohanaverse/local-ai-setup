@@ -59,12 +59,12 @@ func TestModelItemLineFormat(t *testing.T) {
 				{ID: "m2", Family: "fam-a", ProviderID: "p1", Location: "local", Tags: []string{}},
 				{ID: "m1", Family: "fam-a", ProviderID: "p1", Location: "local", Tags: []string{"t1", "t2"}},
 			},
-			// Group 1 (cloud) sorts before group 2 (non-running local, by id):
-			// m3, then m1, m2. No cost data renders "-"; usage is per model.
+			// No model is native, running or scored, so all sort by id: m1, m2,
+			// m3. No cost data renders "-"; usage is per model.
 			expected: []string{
-				"fam-b m3 - cloud ok - - 100 200 300",
 				"fam-a m1 - local ok - - 1 2 3",
 				"fam-a m2 - local ok - - 10 20 30",
+				"fam-b m3 - cloud ok - - 100 200 300",
 			},
 		},
 		{
@@ -82,7 +82,7 @@ func TestModelItemLineFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tbl := buildTable(tableInput{models: tt.models, usage: store}, refcount.NewStoreAt(t.TempDir()), "")
-			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D SURVEY"; got != want {
+			if got, want := strings.Join(strings.Fields(tbl.header), " "), "FAMILY MODEL TIER LOC STATUS RUNNING COST 1D 7D 30D"; got != want {
 				t.Errorf("header = %q, want %q", got, want)
 			}
 			if len(tbl.items) != len(tt.expected) {

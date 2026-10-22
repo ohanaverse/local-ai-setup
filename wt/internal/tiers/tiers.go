@@ -81,6 +81,11 @@ func (e Entry) Rated() bool {
 // it.
 func (e Entry) score() int { return int(math.Round(e.Aligned)) }
 
+// Score is the aligned score rounded to a whole number, as the TIER column
+// shows it, and whether the entry has one. A table sorts by this value, so two
+// rows that show the same score are tied.
+func (e Entry) Score() (int, bool) { return e.score(), e.HasAligned }
+
 // Short is the entry in its fewest characters, for the slot line: the code
 // followed by the rounded aligned score ("S44"), the code alone when the
 // entry has no aligned score, the score alone ("9") for an unrated entry that

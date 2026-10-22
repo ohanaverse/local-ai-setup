@@ -6,60 +6,6 @@ import (
 	"time"
 )
 
-// TestFormatPickerSegmentOmittedWhenNoAnswered verifies FormatPickerSegment
-// returns "" for a model with zero answered surveys, so the picker row
-// omits the segment entirely rather than showing a meaningless "✓- q- s- n0".
-func TestFormatPickerSegmentOmittedWhenNoAnswered(t *testing.T) {
-	if got := FormatPickerSegment(Stats{}); got != "" {
-		t.Fatalf("FormatPickerSegment(zero) = %q, want empty", got)
-	}
-}
-
-// TestFormatPickerSegmentChecksWorked pins the exact rendered format
-// ("✓92% q4.2 s3.9 n12") end-to-end, so a change to rounding, field order,
-// or the prefix scheme in FormatPickerSegment is caught immediately.
-func TestFormatPickerSegmentChecksWorked(t *testing.T) {
-	s := Stats{Answered: 12, Worked: 11, Failed: 1, RatedQuality: 10, QualitySum: 42, RatedSpeed: 10, SpeedSum: 39}
-	got := FormatPickerSegment(s)
-	want := "✓92% q4.2 s3.9 n12"
-	if got != want {
-		t.Fatalf("FormatPickerSegment = %q, want %q", got, want)
-	}
-}
-
-// TestFormatPickerSegmentWarnsBelowThreshold verifies the ⚠ swap: it only
-// triggers when the combo has enough signal (Answered >= 3) AND is below
-// 70% worked — either condition alone must not flag it, so a single bad
-// run doesn't scare a user off a combo with too little data to judge.
-func TestFormatPickerSegmentWarnsBelowThreshold(t *testing.T) {
-	belowThresholdEnoughData := Stats{Answered: 3, Worked: 2, Failed: 1} // 66.7% < 70%, Answered >= 3
-	if got := FormatPickerSegment(belowThresholdEnoughData); !strings.HasPrefix(got, "⚠") {
-		t.Fatalf("FormatPickerSegment = %q, want ⚠ prefix (67%% < 70%% with 3 answered)", got)
-	}
-
-	belowThresholdNotEnoughData := Stats{Answered: 2, Worked: 1, Failed: 1} // 50% < 70%, Answered < 3
-	if got := FormatPickerSegment(belowThresholdNotEnoughData); !strings.HasPrefix(got, "✓") {
-		t.Fatalf("FormatPickerSegment = %q, want ✓ prefix (only 2 answered, too little signal to warn)", got)
-	}
-
-	aboveThreshold := Stats{Answered: 10, Worked: 8, Failed: 2} // 80% >= 70%
-	if got := FormatPickerSegment(aboveThreshold); !strings.HasPrefix(got, "✓") {
-		t.Fatalf("FormatPickerSegment = %q, want ✓ prefix (80%% >= 70%%)", got)
-	}
-}
-
-// TestFormatPickerSegmentUnratedShowsDash verifies a worked-but-unrated
-// combo still renders a segment (Answered > 0), with a dash in place of
-// whichever rating was never given.
-func TestFormatPickerSegmentUnratedShowsDash(t *testing.T) {
-	s := Stats{Answered: 3, Worked: 3}
-	got := FormatPickerSegment(s)
-	want := "✓100% q- s- n3"
-	if got != want {
-		t.Fatalf("FormatPickerSegment = %q, want %q", got, want)
-	}
-}
-
 // TestFormatAfterSurveyShowsDashForEmptyWindow verifies the combo row
 // renders "—" for a window with zero answered surveys, while the model row
 // (all agents) still shows real data from an event recorded by a different

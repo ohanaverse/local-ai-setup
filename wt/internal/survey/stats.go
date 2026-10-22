@@ -99,8 +99,7 @@ func ModelStats(events []Event, window time.Duration, asOf time.Time) map[string
 }
 
 // AgentModelStats aggregates events for one agent, keyed by model id, for
-// events within window of asOf. Used by the model picker (agent-scoped
-// segment) and the after-survey combo row.
+// events within window of asOf. Used by the after-survey combo row.
 func AgentModelStats(events []Event, agent string, window time.Duration, asOf time.Time) map[string]Stats {
 	out := map[string]Stats{}
 	for _, ev := range events {

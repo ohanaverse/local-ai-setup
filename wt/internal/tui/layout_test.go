@@ -943,13 +943,12 @@ func TestModelPickerWithTimePricedModelsFitsTheTerminal(t *testing.T) {
 
 // TestAnOpenPickerKeepsThePricesItOpenedWith pins when the picker reads its
 // clock: once, when the table is built, and not again while the picker is
-// open. The cost sort is also the default selection, so a table that priced
-// itself again on a resize or a cursor move would reorder its rows under the
-// cursor at a window boundary, between the user reading a row and pressing
-// Enter. Here the clock moves from deepseek's dear window to its cheap one
+// open. A table that priced itself again on a resize or a cursor move would
+// change its COST cells and the mode line's price under the cursor at a
+// window boundary, between the user reading a row and pressing Enter. Here the clock moves from deepseek's dear window to its cheap one
 // (and from ollama's off-peak hours to its peak) while the picker is
 // resized through every width, redrawn and moved in: the clock is read
-// once, the rows keep their order, and the COST cells still show the prices
+// once, and the COST cells and mode-line price still show the prices
 // of the instant the picker opened at.
 func TestAnOpenPickerKeepsThePricesItOpenedWith(t *testing.T) {
 	reads, now := 0, deepseekDear
@@ -1019,7 +1018,7 @@ func modeLinePickerConfig(litellm bool) *config.Config {
 // table: beside the LiteLLM mode it names the price in force for the
 // highlighted model, `cost <input>/<cached>/<output>` per million tokens,
 // as `cost~` when that price depends on the time. The COST column is the
-// first thing a narrow table gives up after usage and survey, and a table
+// first thing a narrow table gives up after usage, and a table
 // with an OpenRouter id in it gives it up at 80 columns, so without this
 // line the price a user picks by is on screen only on a wide terminal.
 //

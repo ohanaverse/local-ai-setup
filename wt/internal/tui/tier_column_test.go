@@ -111,8 +111,8 @@ func TestTierColumnWithoutAFile(t *testing.T) {
 }
 
 // TestAnAllDashTierColumnIsDroppedFirst pins which column a table one
-// column too wide for its list gives up: with ratings, the survey segment,
-// so TIER outlasts the usage columns and COST; with no row rated or scored
+// column too wide for its list gives up: with ratings, the 30D usage
+// column, so TIER outlasts the usage columns and COST; with no row rated or scored
 // (no tiers file, the case of a user who never ran modeltiers), TIER, a
 // column of dashes. Without this, that user's picker drops COST at a width
 // where it fits beside everything but the dashes.
@@ -127,15 +127,15 @@ func TestAnAllDashTierColumnIsDroppedFirst(t *testing.T) {
 	t.Run("rated", func(t *testing.T) {
 		writeTiers(t)
 		cols := oneTooNarrow(slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks()))
-		if cols.Shown(colSurvey) || !cols.Shown(colTier) {
-			t.Errorf("rated table: SURVEY shown %v, TIER shown %v; want SURVEY dropped and TIER kept", cols.Shown(colSurvey), cols.Shown(colTier))
+		if cols.Shown(col30D) || !cols.Shown(colTier) || !cols.Shown(col7D) {
+			t.Errorf("rated table: 30D shown %v, 7D shown %v, TIER shown %v; want 30D dropped and 7D and TIER kept", cols.Shown(col30D), cols.Shown(col7D), cols.Shown(colTier))
 		}
 	})
 	t.Run("no tiers file", func(t *testing.T) {
 		t.Setenv(tiers.OutEnv, filepath.Join(t.TempDir(), "absent.toml"))
 		cols := oneTooNarrow(slotTable(t, slotTestConfig(), idleOmlxSnapshot(), slotRowChecks()))
-		if cols.Shown(colTier) || !cols.Shown(colSurvey) || !cols.Shown(colCost) {
-			t.Errorf("unrated table: TIER shown %v, SURVEY shown %v, COST shown %v; want only TIER dropped", cols.Shown(colTier), cols.Shown(colSurvey), cols.Shown(colCost))
+		if cols.Shown(colTier) || !cols.Shown(col30D) || !cols.Shown(colCost) {
+			t.Errorf("unrated table: TIER shown %v, 30D shown %v, COST shown %v; want only TIER dropped", cols.Shown(colTier), cols.Shown(col30D), cols.Shown(colCost))
 		}
 	})
 }
