@@ -48,3 +48,43 @@ make check                           # shellcheck + shfmt check + go-format-chec
 ```
 
 From the monorepo root, `make test-all` runs the CI-equivalent sweep (root lint + llmbench + wt build/vet/test).
+
+
+## Detail moved from wt/CLAUDE.md
+
+The full text of rules that [CLAUDE.md](../../CLAUDE.md) now keeps as one-line summaries.
+
+- **Tests stay off the developer's machine.** The `TestMain` of each package that builds a model table (`cmd/wt`, `internal/tui`) calls `tiers.IsolateForTest` (`MODELTIERS_OUT` at a file that does not exist), so no test reads the real `tiers.toml`. The `TestMain` of each package that reaches `config.Dir()` calls `config.IsolateConfigHomeForTest` (throwaway `XDG_CONFIG_HOME`; `WT_REGISTRY` and `MODELMAN_REGISTRY` cleared); `cmd/wt` and `internal/tui` also stub the inventory probe, hard-fail model starts and no-op the route check, and no test runs `psql`. Tests name a scratch registry through `WT_REGISTRY`, and where no `TestMain` isolates also set `MODELMAN_REGISTRY` to `""`. A new package that reaches `config.Dir()` needs the same; a new launch path calls the route check through `stubEnsureRoute(t)`'s seam.
+
+- **Git finds only repositories a test made**: the `TestMain` of every package whose tests can run git (itself, or via `internal/worktree`, `guard` or `smoke`) calls `gitenv.IsolateForTest()` (`TestEveryPackageThatRunsGitIsolatesIt`). It also blocks ssh (`GIT_SSH_COMMAND=false`) and git's terminal prompts (`GIT_TERMINAL_PROMPT=0`), not https or `git://`, so a fixture remote that must not be reached gets a URL no transport can fetch.
+
+
+## Verification commands
+
+Run the Go test block in [CLAUDE.md](../../CLAUDE.md#go-tests) before any commit, then exercise the installed binary (build the branch first: `D=$(mktemp -d)`, `go build -o "$D/wt" ./cmd/wt`; with `~/.local/bin/wt` possibly predating it). Also: `--version` prints the version and exits; `--debug-worktrees` lists worktrees and branches (test helper); `--check-guard` / `--no-guard` check / remove the `block-main-commit` guard.
+
+```bash
+wt                                   # interactive TUI (needs TTY)
+wt -W my-feature -A claude           # named worktree + launch
+wt --cwd -A codex                    # current directory
+claude-wt --cwd                      # shim forwards to wt
+wt --init                            # seed agent instruction files
+wt start [<id>] / wt stop [<id>|<provider>|--all]   # local-model lifecycle (routes follow automatically)
+wt served <provider> [--json]        # ids an omlx/mtplx/mlx_lm_server server is serving now
+wt warm omlx <model>                 # load a model into a running omlx (keyed warmup; llmbench's omlx backend calls it)
+wt litellm list / sync / status      # routed ids, reconcile cloud + running local routes, routing state
+wt model init [--json]               # create registry.toml if missing; add default provider rows (safe to re-run)
+wt model                             # `wt config` on its Models tab (needs TTY): n add, enter edit/register, d remove
+wt model list [--json]               # every registry model and every local model found, with live status
+wt model add <provider> <name> --family F   # register a model (one route sync)
+wt model add mlx_lm_server <target> --draft <draft> --family F   # a target+draft pairing; wt cannot start one
+wt model edit <id> --tags code       # change family, tags, location or prices; nothing else in the row moves
+wt model rm <id> [--yes]             # registry only; prints where the weights are
+wt cloud-sync --dry-run              # plan a price and ollama-catalog refresh; changes nothing (fetches public pages, runs `ollama list`)
+wt profile show -A <agent> -M <id>   # dry-run profile resolution
+wt profile list                      # automatic profiles, then slot profiles with each one's static verdict
+wt profile show -A claude -M profile/<name>   # a slot profile: the picker's verdict, the slots, the --settings payload (key masked)
+wt stats [--window 7d] [--family F] [--json]  # survey table, then launches and LiteLLM spend per model
+wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]
+make test-agents                     # live agent × model matrix in both routing modes (flips `wt litellm off|on`, restoring config.toml; --modes current for one pass)
+```

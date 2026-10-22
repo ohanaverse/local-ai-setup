@@ -18,3 +18,10 @@ Read this before changing `wt cloud-sync`: the planners and parsers in `internal
 - **A registry entry goes in the registry write; its tag goes afterwards**, and only when it is a cloud tag, `ollama list` showed it and no remaining ollama entry names it (`CatalogApplied.Removes`).
 - **Every ollama command is pinned to `localmodels.FamilyOrigin(cfg, "ollama")`**, whatever `OLLAMA_HOST` the shell exports. It is the one derivation of that address; add no other. A `base_url` that gives no `http(s)://host` stops the ollama flow before any fetch (exit 2), because ollama reads an unusable `OLLAMA_HOST` as its default daemon (`TestCloudSyncOllamaRefusesABaseURLThatNamesNoDaemon`). The pre-launch `ollamacheck.Check` pins its `ollama list` to the same address and, for such a `base_url` or a registry with no ollama row, reports an error without running anything (`TestCheckCannotTellWithoutADaemonAddress`).
 - **Every line of a run keeps its flow prefix**, an ollama failure included: `ollamaFailure` reduces ollama's stderr (progress, cursor escapes) to its last line that says anything, and a failed pull or rm gets a second line saying what is left and what to run next.
+
+
+## Detail moved from wt/CLAUDE.md
+
+The full text of rules that [CLAUDE.md](../../CLAUDE.md) now keeps as one-line summaries.
+
+- `internal/cloudsync` holds everything that decides what a sync changes, with no I/O and no clock. The command (`cmd/wt/cloudsync*.go`) owns the fetches, the ollama CLI, the confirmation, the one registry write, the route sync and the exit codes. What the command does for a user — the two flows, the order of a run, every flag, exit code and message, failure and recovery — is [docs/wt-cloud-sync.md](../wt-cloud-sync.md); the operator's procedure, including the parser repair after an exit 3, is the `cloud-sync` skill (`.claude/skills/cloud-sync/`). **Change the page and the skill with the behavior**: both quote the command's messages.

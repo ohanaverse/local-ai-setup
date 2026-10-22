@@ -53,15 +53,9 @@ LiteLLM applies to a request's headers is quoted in that file under
    export's `response` column against the ndjson export's
    `proxy_server_request.messages`. Requires step 2's output.
 
-`header_probe.py` is a separate one-off debugging tool, not part of the
-numbered pipeline: a minimal `http.server` handler that logs every header a
-client sends and answers with a JSON shape permissive enough to satisfy an
-OpenAI chat-completions or legacy completions caller. Used to determine what
-headers a harness actually sends when the binary can't be `strings`-grepped
-(e.g. Copilot CLI's compressed Node SEA build) by pointing the harness's
-provider-base-URL override at it instead of the real provider. See the
-Copilot section of [session-log-sources.md](session-log-sources.md) for the
-worked example.
+`header_probe.py` is a separate one-off tool (not in the numbered pipeline): an
+`http.server` that logs every header a client sends, to learn what a harness
+sends; see [session-log-sources.md](session-log-sources.md#transcript-builder-details).
 
 Run scripts with `python3 <script>.py ...` — no venv/dependencies beyond the
 stdlib. Exception: `antigravity/extract_descriptors.py` (one-off: extracts
@@ -89,22 +83,11 @@ protobuf FileDescriptorProtos from the `agy` binary to decode Antigravity
   inline `(litellm_truncated skipped N chars ...)` marker copied verbatim
   from the source — don't treat it as a bug in these scripts.
 - A single `session_id` can span **multiple interleaved agent threads**
-  (a main Claude Code conversation, spawned sub-agents, and/or a separate
-  per-action judge process making one-shot calls). `build_full_transcript.py`
-  handles this by grouping turns into threads two ways, in priority order:
-  1. **Ground truth**: the `x-claude-code-agent-id` request header (echoed
-     into `proxy_server_request.litellm_metadata.headers`) is unique per
-     spawned sub-agent and used directly as the thread key
-     (`agent:<id>` in output).
-  2. **Heuristic fallback** (calls without that header, e.g. a non-Claude-Code
-     judge process): threads are inferred by matching tool-call IDs (stable
-     across the Anthropic-request/OpenAI-response translation litellm does)
-     or exact response text against previously-seen turns, walking newest
-     message first (`find_anchor`).
-  Threads with `>= MAIN_THREAD_MIN_SIZE` (5) turns render as full linear
-  conversations; smaller ones are pooled into one "Isolated / short calls"
-  section, since a short thread's full message list *is* the whole
-  conversation rather than an incremental diff.
+  (main conversation, sub-agents, a judge process). `build_full_transcript.py`
+  keys threads on the `x-claude-code-agent-id` header, else infers them by
+  tool-call-ID/response-text matching; threads under `MAIN_THREAD_MIN_SIZE`
+  (5) turns are pooled as "Isolated / short calls". Details:
+  [session-log-sources.md](session-log-sources.md#transcript-builder-details).
 
 ## Working with generated outputs
 

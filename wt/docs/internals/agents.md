@@ -49,3 +49,10 @@ Per-agent env/args/config shapes (direct and LiteLLM): [docs/wt-agents/](../wt-a
 **Pre-launch `ollamacheck.Check`** (both paths: `cmd/wt/launch.go`, `internal/tui/app.go`) runs only when the model's *resolved route* is direct and the model is ollama (`!route.Litellm && ollamacheck.IsOllamaModel(m)`) — not the raw toggle, so a protocol-forced route (codex+ollama) isn't spuriously blocked. It shells out to `ollama list`, pinned with `OLLAMA_HOST` to the daemon the registry's ollama provider row names (`localmodels.FamilyOrigin(cfg, "ollama")`), not the one the shell's `OLLAMA_HOST` names, and stopped after `ollamacheck`'s 30-second limit (the one `wt cloud-sync` gives the same command) so a daemon that never answers cannot freeze the picker. It answers "not available" when no `ollama` command is installed, and an error — the TUI shows it as the picker's status, the non-TUI launch stops with it — when `ollama list` fails, the registry has no ollama provider row, or the row's `base_url` gives no `http(s)://host` (no command is run then: ollama reads an unusable `OLLAMA_HOST` as its default daemon). The lookup and the list are one seam, `ollamacheck.StubListForTest`. The TUI start flow skips it for a model it just loaded.
 
 New driver: see the `adding-a-wt-agent` skill.
+
+
+## Detail moved from wt/CLAUDE.md
+
+The full text of rules that [CLAUDE.md](../../CLAUDE.md) now keeps as one-line summaries.
+
+- **claude maps all four model slots on every non-native single-model launch**: `Build` sets `ANTHROPIC_DEFAULT_<SLOT>_MODEL` to the `--model` reference and `…_MODEL_NAME` to `m.ModelName`, and clears the inherited values. An applied automatic profile's `env` is appended later, so its value for one of them wins. The names come from `claudeSlotVars`, shared with the slot-profile build.
