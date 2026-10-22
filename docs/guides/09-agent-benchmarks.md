@@ -132,6 +132,7 @@ Every number in that report is self-consistent, which is the point of reading th
 
 ## Gotchas
 
+- **`--directory llmbench` makes `llmbench/` the working directory.** A relative path passed to `agent run`, `eval run`, `--root` or `--results-dir` resolves from there: `../benchmarks/suites/smoke.toml`, not `benchmarks/suites/smoke.toml`.
 - **`pi` needs no permission-bypass flag** for this harness — tool execution works under `--no-approve` in `--mode json` because non-interactive modes never prompt; see the spec's "Verified against the live setup" for why `--no-approve` is passed anyway (pinning project-trust behavior, not enabling tools).
 - **`route = "direct"` requires a matching `[routes.direct.<provider>]` block** in the suite — preflight fails immediately, naming the missing provider, rather than after an agent has already run.
 - **`omlx` 4-bit and 6-bit share one provider.** Use a row's `provider =` override (not just the model id) to isolate the exact variant — same rule as `llmbench`'s own isolation, see [05-benchmarks](05-benchmarks.md) Gotchas.
