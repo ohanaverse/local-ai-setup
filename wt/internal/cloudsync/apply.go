@@ -80,6 +80,8 @@ func rowCost(doc *config.RegistryDoc, id string) *Cost {
 // ollama.
 type CatalogApplied struct {
 	Updated, Added, Removed int
+	// Graduated counts manual entries set to curated.
+	Graduated int
 	// Pulls are the tags to `ollama pull`, in plan order.
 	Pulls []string
 	// Removes are the tags to `ollama rm`: first those of the entries Apply
@@ -141,6 +143,12 @@ func (p *CatalogPlan) Apply(doc *config.RegistryDoc, pulled []string, now time.T
 			return CatalogApplied{}, err
 		}
 		done.Added++
+	}
+	for _, id := range p.Graduations {
+		if err := doc.PatchModel(id, map[string]any{"source": "curated"}, nil); err != nil {
+			return CatalogApplied{}, err
+		}
+		done.Graduated++
 	}
 	var removedTags []string
 	for _, id := range p.Removals {

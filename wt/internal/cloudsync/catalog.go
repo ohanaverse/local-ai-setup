@@ -58,6 +58,12 @@ type CatalogPlan struct {
 	Removals []string
 	// StrayTags are pulled cloud tags neither on the page nor in the registry.
 	StrayTags []string
+	// Graduations are the manual entries the page now lists: Apply sets their
+	// source to curated, after which a later disappearance removes them.
+	Graduations []string
+	// Kept are the manual entries the page does not list. They are never
+	// removed, re-tagged or `ollama rm`'d while manual.
+	Kept []string
 	// Replaced maps a removed id to the id it is re-added under.
 	Replaced map[string]string
 	Warnings []string
@@ -103,7 +109,13 @@ func (p *CatalogPlan) RemovalDigest() string {
 		strays[i] = "rm " + t
 	}
 	sort.Strings(strays)
-	items = append(items, strays...)
+	return digestOf(append(items, strays...))
+}
+
+// digestOf is the first 12 hex digits of the SHA-256 of items joined with
+// newlines, or "" for none. The caller sorts: both flows' digests share this
+// format, so a digest printed by an earlier wt still approves the same plan.
+func digestOf(items []string) string {
 	if len(items) == 0 {
 		return ""
 	}
@@ -114,7 +126,7 @@ func (p *CatalogPlan) RemovalDigest() string {
 // HasWork reports whether applying the plan would change anything, in the
 // registry or in ollama.
 func (p *CatalogPlan) HasWork() bool {
-	return len(p.Updates)+len(p.Additions)+len(p.Pulls)+len(p.Removals)+len(p.StrayTags) > 0
+	return len(p.Updates)+len(p.Additions)+len(p.Pulls)+len(p.Removals)+len(p.StrayTags)+len(p.Graduations) > 0
 }
 
 func isOllamaCloud(e Entry) bool {
@@ -343,7 +355,7 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 	ids := map[string]bool{}
 	for _, e := range entries {
 		ids[e.ID] = true
-		if isOllamaCloud(e) {
+		if isOllamaCloud(e) && !e.Manual() {
 			plan.CloudEntries++
 		}
 	}
@@ -368,6 +380,15 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 			// tag below.
 			retagged, entry = entry, nil
 		}
+		if retagged != nil && retagged.Manual() {
+			// A hand-added entry is never replaced: keep it as it is, with
+			// both tags counted as listed so neither becomes a stray, and
+			// say so. It does not graduate on this match.
+			matched[retagged.ID] = true
+			listed[retagged.ModelName], listed[tag] = true, true
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s: manual entry's tag %q is not the one ollama publishes (%q); kept as it is", retagged.ID, retagged.ModelName, tag))
+			continue
+		}
 		if tag == "" {
 			// Still on the page, just unresolved: protect whatever may be it.
 			for _, e := range entries {
@@ -384,6 +405,9 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 		}
 		if entry != nil {
 			matched[entry.ID] = true
+			if entry.Manual() && tag != "" {
+				plan.Graduations = append(plan.Graduations, entry.ID)
+			}
 			// Both: the entry's tag and the canonical pulled tag are listed.
 			listed[entry.ModelName] = true
 			if tag != "" {
@@ -450,7 +474,9 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 		if e.ProviderID == ollamaProvider {
 			registered[e.ModelName] = true
 		}
-		if isOllamaCloud(e) && !matched[e.ID] {
+		if isOllamaCloud(e) && !matched[e.ID] && e.Manual() {
+			plan.Kept = append(plan.Kept, e.ID)
+		} else if isOllamaCloud(e) && !matched[e.ID] {
 			plan.Removals = append(plan.Removals, e.ID)
 			if !IsCloudTag(e.ModelName) {
 				// An entry marked location = "cloud" over a tag that is not a
@@ -522,6 +548,18 @@ func (p *CatalogPlan) Format() string {
 			line += " (re-tagged as " + to + ")"
 		}
 		lines = append(lines, line)
+	}
+	if len(p.Graduations) > 0 {
+		lines = append(lines, fmt.Sprintf("Graduated (manual -> curated) (%d):", len(p.Graduations)))
+		for _, id := range p.Graduations {
+			lines = append(lines, "  "+id)
+		}
+	}
+	if len(p.Kept) > 0 {
+		lines = append(lines, fmt.Sprintf("Kept (manual, not on ollama.com/pricing) (%d):", len(p.Kept)))
+		for _, id := range p.Kept {
+			lines = append(lines, "  "+id)
+		}
 	}
 	lines = append(lines, fmt.Sprintf("ollama rm — pulled, unregistered, off the page (%d):", len(p.StrayTags)))
 	for _, tag := range p.StrayTags {

@@ -554,3 +554,26 @@ time_prices = []
 		t.Errorf("after the catalog sync, registry.toml =\n%s\nwant only the stamp and the one price changed:\n%s", got, want)
 	}
 }
+
+// TestCatalogApplyGraduatesToCurated applies a plan whose page lists a manual
+// entry: the row's source becomes curated, and it is neither removed nor
+// handed to `ollama rm`. Graduation is what ends the protection, so it must
+// reach the registry.
+func TestCatalogApplyGraduatesToCurated(t *testing.T) {
+	path := scratchRegistry(t, ollamaProviderRow+`[[models]]
+id = "ollama/beam:cloud"
+family = "beam"
+provider_id = "ollama"
+model_name = "beam:cloud"
+location = "cloud"
+source = "manual"
+tags = []
+`)
+	done, _ := applyCatalog(t, catalogOf(cm("beam")), []string{"beam:cloud"}, nil)
+	if done.Graduated != 1 || done.Removed != 0 || len(done.Removes) != 0 {
+		t.Errorf("applied = %+v, want one graduation and no removal", done)
+	}
+	if got := str(modelRows(t, path)["ollama/beam:cloud"], "source"); got != "curated" {
+		t.Errorf("source = %q, want curated", got)
+	}
+}

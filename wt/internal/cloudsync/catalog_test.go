@@ -713,3 +713,95 @@ func TestPlanCatalogIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func manual(e *Entry) { e.Source = "manual" }
+
+// TestPlanKeepsAManualEntryOffThePage pins the protection of a hand-added
+// ollama cloud model: the page does not list it, yet it is neither a removal
+// nor a stray tag, it is reported as kept, and it stays out of the count the
+// mass-removal guard weighs. Removing it would delete a free model the user
+// added with `wt model add` and `ollama rm` its tag.
+func TestPlanKeepsAManualEntryOffThePage(t *testing.T) {
+	entries := []Entry{cloudEntry("beam:cloud", manual), cloudEntry("old:cloud"), cloudEntry("keep:cloud")}
+	plan := PlanCatalog(entries, catalogOf(cm("keep")), []string{"beam:cloud", "old:cloud", "keep:cloud"}, nil)
+	wantIDs(t, "removals", plan.Removals, "ollama/old:cloud")
+	wantIDs(t, "kept", plan.Kept, "ollama/beam:cloud")
+	wantIDs(t, "stray tags", plan.StrayTags)
+	wantIDs(t, "graduations", plan.Graduations)
+	if plan.CloudEntries != 2 {
+		t.Errorf("CloudEntries = %d, want 2 (the manual entry is not counted)", plan.CloudEntries)
+	}
+}
+
+// TestPlanGraduatesAManualEntryTheCatalogListsAndReprices pins the end of the
+// protection: once the page lists the model it is re-priced like any entry
+// and marked for graduation to curated, after which a later disappearance
+// from the page removes it.
+func TestPlanGraduatesAManualEntryTheCatalogListsAndReprices(t *testing.T) {
+	entries := []Entry{cloudEntry("beam:cloud", manual)}
+	plan := PlanCatalog(entries, catalogOf(cm("beam")), nil, nil)
+	wantIDs(t, "graduations", plan.Graduations, "ollama/beam:cloud")
+	wantIDs(t, "updates", updateIDs(plan), "ollama/beam:cloud")
+	wantIDs(t, "removals", plan.Removals)
+	wantIDs(t, "kept", plan.Kept)
+	if !plan.HasWork() {
+		t.Error("HasWork = false for a plan that only graduates")
+	}
+}
+
+// TestPlanManualEntryUnderAnUnpublishedTagIsNeitherRetaggedNorRemoved pins
+// that a hand-added entry whose tag differs from the one ollama publishes is
+// left exactly as it is: no re-tag (which would remove it), no graduation,
+// and the published tag is not offered up as a stray for `ollama rm`.
+func TestPlanManualEntryUnderAnUnpublishedTagIsNeitherRetaggedNorRemoved(t *testing.T) {
+	entries := []Entry{cloudEntry("beam:cloud", manual, withName("beam"))}
+	pulled := []string{"beam:cloud", "beam:120b-cloud"}
+	plan := PlanCatalog(entries, catalogOf(cm("beam")), pulled, map[string]string{"beam": "beam:120b-cloud"})
+	wantIDs(t, "removals", plan.Removals)
+	wantIDs(t, "additions", additionIDs(plan))
+	wantIDs(t, "graduations", plan.Graduations)
+	wantIDs(t, "stray tags", plan.StrayTags)
+	if len(plan.Replaced) != 0 {
+		t.Errorf("replaced = %v, want none", plan.Replaced)
+	}
+	found := false
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "ollama/beam:cloud") && strings.Contains(w, "manual") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one naming the manual entry", plan.Warnings)
+	}
+}
+
+// TestPlanUnresolvedModelDoesNotGraduateAManualEntry pins that a page model
+// whose cloud tag could not be looked up protects a same-named manual entry
+// from removal but does not graduate it: graduation is irreversible, so it
+// waits for a real match.
+func TestPlanUnresolvedModelDoesNotGraduateAManualEntry(t *testing.T) {
+	entries := []Entry{cloudEntry("x:cloud", manual, withName("x"))}
+	plan := PlanCatalog(entries, catalogOf(cm("x")), nil, map[string]string{"x": ""})
+	wantIDs(t, "removals", plan.Removals)
+	wantIDs(t, "graduations", plan.Graduations)
+}
+
+// TestCatalogPlanFormatShowsManualLines pins how the plan words kept and
+// graduated manual entries, and that a plan without any prints no such
+// section (TestCatalogPlanFormat holds the unchanged text).
+func TestCatalogPlanFormatShowsManualLines(t *testing.T) {
+	entries := []Entry{cloudEntry("beam:cloud", manual), cloudEntry("now:cloud", manual)}
+	plan := PlanCatalog(entries, catalogOf(cm("now")), nil, nil)
+	got := plan.Format()
+	for _, want := range []string{
+		"Graduated (manual -> curated) (1):\n  ollama/now:cloud",
+		"Kept (manual, not on ollama.com/pricing) (1):\n  ollama/beam:cloud",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Format() lacks %q:\n%s", want, got)
+		}
+	}
+	if plain := PlanCatalog([]Entry{cloudEntry("a:cloud")}, catalogOf(cm("a")), nil, nil).Format(); strings.Contains(plain, "Graduated") || strings.Contains(plain, "Kept") {
+		t.Errorf("a plan with no manual entries prints a manual section:\n%s", plain)
+	}
+}

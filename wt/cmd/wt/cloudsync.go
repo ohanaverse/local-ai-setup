@@ -418,7 +418,11 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 			fmt.Fprintln(errOut, "ollama: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again")
 			res.ollamaCode, res.ollamaWhy = 5, errPlanChanged.Error()
 		} else {
-			fmt.Fprintf(out, "ollama: updated %d, added %d and removed %d model(s)\n", applied.ollama.Updated, applied.ollama.Added, applied.ollama.Removed)
+			fmt.Fprintf(out, "ollama: updated %d, added %d and removed %d model(s)", applied.ollama.Updated, applied.ollama.Added, applied.ollama.Removed)
+			if applied.ollama.Graduated > 0 {
+				fmt.Fprintf(out, "; graduated %d manual model(s) to curated", applied.ollama.Graduated)
+			}
+			fmt.Fprintln(out)
 			runOllamaWork(ctx, out, errOut, ollama.origin, applied.ollama, &res)
 		}
 	}
