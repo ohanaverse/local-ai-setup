@@ -650,7 +650,7 @@ func TestProbeProxyFailsThroughAStartWithRestartOwed(t *testing.T) {
 	if err != nil || !owed {
 		t.Fatalf("cloud route = (%v, %v), want (true, nil)", owed, err)
 	}
-	if err := Start(ctx, cfg, Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}, Options{RestartOwed: owed}); err != nil {
+	if err := startFull(ctx, fullFamilies, cfg, Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}, Options{RestartOwed: owed}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	WaitPendingRoutes()
@@ -890,7 +890,7 @@ func TestIdleLocalModelPlusMissingCloudRouteRestartsOnce(t *testing.T) {
 			if err != nil || !owed {
 				t.Fatalf("cloud route = (%v, %v), want (true, nil)", owed, err)
 			}
-			if err := Start(ctx, cfg, local, Options{RestartOwed: owed}); err != nil {
+			if err := startFull(ctx, fullFamilies, cfg, local, Options{RestartOwed: owed}); err != nil {
 				t.Fatalf("Start: %v", err)
 			}
 			WaitPendingRoutes()
@@ -956,7 +956,7 @@ func TestStartRefusedWhileRestartOwed(t *testing.T) {
 
 	t.Run("confirmed retry restarts once in total", func(t *testing.T) {
 		path, restarts, cfg, target, calls := refused(t)
-		if err := Start(context.Background(), cfg, target, Options{AllowReplace: true, RestartOwed: true}); err != nil {
+		if err := Start(context.Background(), cfg, target, Options{AllowReplace: true, RestartOwed: true, Others: OthersAnswer{Decided: true}}); err != nil {
 			t.Fatalf("retry: %v", err)
 		}
 		WaitPendingRoutes()
@@ -999,7 +999,7 @@ func TestStartFailureSettlesAnOwedRestart(t *testing.T) {
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
 	for _, owed := range []bool{false, true} {
-		err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}, Options{RestartOwed: owed})
+		err := startFull(context.Background(), fullFamilies, cfg, Target{ProviderID: "ollama", ModelName: "a:1", ModelID: "ollama/a:1"}, Options{RestartOwed: owed})
 		WaitPendingRoutes()
 		if err == nil || RestartStillOwed(err) {
 			t.Fatalf("RestartOwed=%v: Start = %v, want a failure that is not a refusal", owed, err)

@@ -132,10 +132,14 @@ func poolVictims(pool *localmodels.Pool, t Target, others []localmodels.Entry) [
 // provider families (#412): every running entry whose family is not the
 // target's, and the families whose probe cannot be trusted, which are
 // reported as unknown and never read as empty. A family whose server refused
-// the connection (Down) holds nothing. It returns nothing when the target is
-// already running (the start is a no-op) or is itself loading: the start that
-// began that load already asked. An mtplx still loading is not in the
-// snapshot (its port refuses); env.residents adds it.
+// the connection (Down) holds nothing. A family wt knows about but that the
+// probe never saw (absent from the snapshot — no registry footprint at probe
+// time, so the probe never ran) is also reported as unknown: it was never
+// probed, so its running state is not trusted-empty, and a start may be
+// loading beside a serving-but-unregistered family (#423). It returns nothing
+// when the target is already running (the start is a no-op) or is itself
+// loading: the start that began that load already asked. An mtplx still loading
+// is not in the snapshot (its port refuses); env.residents adds it.
 func residentOthers(snap localmodels.Snapshot, family string, t Target) (others []Resident, unknown []string) {
 	if isRunning(snap, family, t) || isLoading(snap, family, t) {
 		return nil, nil
@@ -146,6 +150,27 @@ func residentOthers(snap localmodels.Snapshot, family string, t Target) (others 
 			untrusted[f] = true
 			unknown = append(unknown, f)
 		}
+	}
+	// Families the probe never saw: known to wt (localmodels.Families), absent
+	// from the snapshot, not the target, not empty, not Down — and not already
+	// speaking through running entries. They are unknown, never empty.
+	runningFamilies := map[string]bool{}
+	for _, en := range snap.Entries {
+		if en.Running {
+			runningFamilies[localmodels.Family(en.ProviderID)] = true
+		}
+	}
+	for _, f := range localmodels.Families() {
+		if f == family || f == "" || snap.Down[f] {
+			continue
+		}
+		if _, probed := snap.Providers[f]; probed {
+			continue
+		}
+		if runningFamilies[f] {
+			continue
+		}
+		unknown = append(unknown, f)
 	}
 	sort.Strings(unknown)
 	for _, en := range snap.Entries {

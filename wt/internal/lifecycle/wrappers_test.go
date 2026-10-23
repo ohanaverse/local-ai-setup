@@ -179,7 +179,7 @@ func TestStartWrapperAddsRouteOnSuccess(t *testing.T) {
 	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"a:1"}, nil), openaiSrv(t, nil))
 
-	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
+	if err := startFull(context.Background(), fullFamilies, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	WaitPendingRoutes()
@@ -344,7 +344,7 @@ func TestStartWrapperReplaceThenFailDropsOccupantRoute(t *testing.T) {
 	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
-	err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true})
+	err := startFull(context.Background(), localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}, Entries: []localmodels.Entry{running("mtplx", "mtplx/Y--Q27", "Y/Q27")}}, cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true})
 	if err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
@@ -376,7 +376,7 @@ func TestStartWrapperReportsRoutingStage(t *testing.T) {
 			routedAtStage = routedIDs(t, path)
 		}
 	}
-	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{Progress: report}); err != nil {
+	if err := startFull(context.Background(), fullFamilies, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{Progress: report}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	WaitPendingRoutes()
@@ -420,7 +420,7 @@ func TestStartWrapperRestartSurvivesCancelledCaller(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // the caller's own scoped defer cancel() has already fired
-	if err := Start(ctx, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
+	if err := startFull(ctx, fullFamilies, cfg, Target{ProviderID: "ollama", ModelName: "a:1"}, Options{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	WaitPendingRoutes()
@@ -493,7 +493,7 @@ func TestStartWrapperReplaceBouncesProxyOnce(t *testing.T) {
 	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
-	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err != nil {
+	if err := startFull(context.Background(), localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}, Entries: []localmodels.Entry{running("mtplx", "mtplx/Y--Q27", "Y/Q27")}}, cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err != nil {
 		t.Fatal(err)
 	}
 	WaitPendingRoutes()
@@ -516,7 +516,7 @@ func TestStartWrapperReplaceThenFailStillBouncesOnce(t *testing.T) {
 	swapBackend(t, "mtplx", &fakeBackend{single: true, calls: &calls, startErr: errors.New("out of memory")})
 	cfg := wrapCfg(t, ollamaSrv(t, nil, nil), openaiSrv(t, []string{"Y/Q27"}))
 
-	if err := Start(context.Background(), cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err == nil {
+	if err := startFull(context.Background(), localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}, Entries: []localmodels.Entry{running("mtplx", "mtplx/Y--Q27", "Y/Q27")}}, cfg, Target{ProviderID: "mtplx", ModelName: "Y/Q35"}, Options{AllowReplace: true}); err == nil {
 		t.Fatal("Start = nil, want the backend's failure")
 	}
 	WaitPendingRoutes()
@@ -686,7 +686,7 @@ func TestStartWrapperRoutesDiscoveredModel(t *testing.T) {
 	swapBackend(t, "ollama", &fakeBackend{calls: &calls})
 	cfg := wrapCfg(t, ollamaSrv(t, []string{"llama3.2:3b"}, nil), openaiSrv(t, nil))
 
-	if err := Start(context.Background(), cfg, Target{ProviderID: "ollama", ModelName: "llama3.2:3b"}, Options{}); err != nil {
+	if err := startFull(context.Background(), fullFamilies, cfg, Target{ProviderID: "ollama", ModelName: "llama3.2:3b"}, Options{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	WaitPendingRoutes()

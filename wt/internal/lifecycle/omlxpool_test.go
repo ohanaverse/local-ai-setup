@@ -209,7 +209,7 @@ func poolEnv(t *testing.T, snap localmodels.Snapshot) (*env, *[]string) {
 
 func poolSnap(ceiling int64, sizes map[string]int64, loaded ...string) localmodels.Snapshot {
 	p := &localmodels.Pool{Ceiling: ceiling, SizesKnown: true}
-	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK}, OmlxPool: p}
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}, OmlxPool: p}
 	for id, size := range sizes {
 		l := slices.Contains(loaded, id)
 		p.Models = append(p.Models, localmodels.PoolModel{ID: id, Loaded: l, Size: size})
@@ -552,7 +552,7 @@ func TestStopBatchOnPoolKeepsSiblingRoutes(t *testing.T) {
 // (no sizes), and loaded are the models it found loaded.
 func keylessSnap(loaded ...string) localmodels.Snapshot {
 	p := &localmodels.Pool{}
-	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK}, OmlxPool: p}
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}, OmlxPool: p}
 	for _, id := range loaded {
 		p.Models = append(p.Models, localmodels.PoolModel{ID: id, Loaded: true})
 		snap.Entries = append(snap.Entries, localmodels.Entry{ProviderID: "omlx", ModelID: "omlx/" + id, ModelName: id, Artifact: id, Running: true})

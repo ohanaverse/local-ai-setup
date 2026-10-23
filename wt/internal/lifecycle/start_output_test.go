@@ -82,7 +82,7 @@ func TestALateRestartWarningFollowsTheStartToOut(t *testing.T) {
 		t.Fatal("a restart is pending before the start")
 	}
 	e := testEnv()
-	e.inventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
+	e.inventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}} }
 	var calls []string
 	e.backends = map[string]backend{"mtplx": &fakeBackend{single: true, calls: &calls}}
 	var out bytes.Buffer
