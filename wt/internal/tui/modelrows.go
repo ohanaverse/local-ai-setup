@@ -190,10 +190,12 @@ func (r *tableRow) rate(ratings tiers.Index) {
 //     by tier score, highest first;
 //  4. every other model, by tier score, highest first.
 //
-// Within bands 3 and 4 a model with a tied score, or with no score, sorts
-// alphabetically by id, and a model with no score after every scored one. The
-// score compared is the one the TIER column shows (rounded), so rows that look
-// tied are ordered by id. Cost and usage no longer order anything.
+// Within bands 3 and 4 a model with a tied score, or with no score, sorts by
+// family (alphabetical, a model with no family after the named ones) and then
+// by id, so a family's models sit together instead of being split by provider
+// prefix; a model with no score sorts after every scored one. The score
+// compared is the one the TIER column shows (rounded), so rows that look tied
+// are ordered by family and id. Cost and usage no longer order anything.
 //
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and
@@ -227,6 +229,12 @@ func sortRows(rows []tableRow) {
 			}
 			if oka && sa != sb {
 				return sa > sb
+			}
+			if fa, fb := a.Model.Family, b.Model.Family; fa != fb {
+				if fa == "" || fb == "" {
+					return fb == ""
+				}
+				return fa < fb
 			}
 		}
 		return a.Model.ID < b.Model.ID
