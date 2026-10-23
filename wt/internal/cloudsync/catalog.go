@@ -500,9 +500,12 @@ func PlanCatalog(entries []Entry, catalog Catalog, pulled []string, resolved map
 		if e.ProviderID == ollamaProvider {
 			registered[e.ModelName] = true
 		}
-		if isOllamaCloud(e) && !matched[e.ID] && e.Manual() {
+		if !isOllamaCloud(e) || matched[e.ID] {
+			continue
+		}
+		if e.Manual() {
 			plan.Kept = append(plan.Kept, e.ID)
-		} else if isOllamaCloud(e) && !matched[e.ID] {
+		} else {
 			plan.Removals = append(plan.Removals, e.ID)
 			if !IsCloudTag(e.ModelName) {
 				// An entry marked location = "cloud" over a tag that is not a

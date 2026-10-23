@@ -904,6 +904,37 @@ func TestAddCloudModelIsManual(t *testing.T) {
 	}
 }
 
+// TestAddOllamaCloudTagIsCloud verifies an ollama model whose tag ends in
+// :cloud or -cloud is written with location = "cloud" when --location is not
+// given, and that an explicit location and a local tag are left alone.
+// Without the key the row inherits the ollama provider's "local", and wt
+// model list shows a cloud model as a missing local one.
+func TestAddOllamaCloudTagIsCloud(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry)
+	for _, req := range []AddRequest{
+		{ProviderID: "ollama", ModelName: "beam:cloud", Fields: Fields{Family: ptr("beam")}},
+		{ProviderID: "ollama", ModelName: "nemo:30b-cloud", Fields: Fields{Family: ptr("nemo")}},
+		{ProviderID: "ollama", ModelName: "qwen3:8b", Fields: Fields{Family: ptr("qwen3")}},
+		{ProviderID: "ollama", ModelName: "pinned:cloud", Fields: Fields{Family: ptr("p"), Location: ptr("local")}},
+	} {
+		if _, err := Add(req, config.SeedEnv{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := read(t, path)
+	for _, id := range []string{"ollama/beam:cloud", "ollama/nemo:30b-cloud"} {
+		if !strings.Contains(sliceRow(got, id), `location = "cloud"`) {
+			t.Errorf("row %s has no location = \"cloud\":\n%s", id, sliceRow(got, id))
+		}
+	}
+	if strings.Contains(sliceRow(got, "ollama/qwen3:8b"), "location") {
+		t.Errorf("a local tag must get no location key:\n%s", sliceRow(got, "ollama/qwen3:8b"))
+	}
+	if !strings.Contains(sliceRow(got, "ollama/pinned:cloud"), `location = "local"`) {
+		t.Errorf("an explicit location must win:\n%s", sliceRow(got, "ollama/pinned:cloud"))
+	}
+}
+
 // sliceRow is the text of the [[models]] row with the given id.
 func sliceRow(registry, id string) string {
 	i := strings.Index(registry, "id = \""+id+"\"")
@@ -955,5 +986,24 @@ tags = []
 		if !errors.As(err, &fe) || fe.Field != FieldSource || !strings.Contains(err.Error(), "cloud-sync covers") {
 			t.Errorf("Edit local model source %q: err = %v, want a FieldError saying cloud-sync does not cover it", v, err)
 		}
+	}
+}
+
+// TestEditSourceJudgesTheLocationTheSameEditSets pins that --source is checked
+// against the row as the patch leaves it: marking a local ollama model manual
+// in the same edit that makes it cloud is allowed, and the reverse (making a
+// manual cloud model local in one edit with --source) is refused, so the
+// covered-only rule cannot be dodged or tripped by flag order.
+func TestEditSourceJudgesTheLocationTheSameEditSets(t *testing.T) {
+	path := scratchRegistry(t, baseRegistry)
+	if _, err := Edit("ollama/gemma4:9b", Fields{Location: ptr("cloud"), Source: ptr("manual")}); err != nil {
+		t.Fatalf("--location cloud --source manual on a local model: %v", err)
+	}
+	if !strings.Contains(sliceRow(read(t, path), "ollama/gemma4:9b"), `source = "manual"`) {
+		t.Errorf("source not set:\n%s", read(t, path))
+	}
+	var fe *FieldError
+	if _, err := Edit("ollama/gemma4:9b", Fields{Location: ptr("local"), Source: ptr("curated")}); !errors.As(err, &fe) || fe.Field != FieldSource {
+		t.Errorf("--location local --source curated: err = %v, want a FieldError on %q", err, FieldSource)
 	}
 }
