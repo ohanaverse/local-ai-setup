@@ -437,6 +437,28 @@ func TestPlanPricesRepricesAKeptVariantFromItsBase(t *testing.T) {
 	}
 }
 
+// TestPlanPricesKeepsAnOwnRateVariantAtItsPrice pins that a kept variant whose
+// suffix is billed at its own rate (`:free`, `:nitro`, `:floor`) is not
+// repriced from the bare model: the list dropping `model:free` while still
+// carrying `model` must not turn a free row into the paid base price, which
+// spend and usage reports would then show as a charge. It is still kept.
+func TestPlanPricesKeepsAnOwnRateVariantAtItsPrice(t *testing.T) {
+	free := &Cost{Input: f(0), Output: f(0)}
+	entries := []Entry{
+		orEntry("qwen3.8:free", free),
+		orEntry("qwen3.8:nitro", nil),
+		orEntry("qwen3.8:floor", nil),
+	}
+	plan := PlanPrices(entries, healthyList("vendor/qwen3.8"))
+	wantIDs(t, "removals", plan.Removals)
+	if len(plan.Matched) != 0 {
+		t.Errorf("matched = %+v, want none (an own-rate variant is not repriced from its base)", plan.Matched)
+	}
+	if len(plan.Warnings) != 3 {
+		t.Errorf("warnings = %q, want one kept note per variant", plan.Warnings)
+	}
+}
+
 // TestPlanPricesGraduatesAManualModelOnTheList pins that presence on the
 // list, whatever the price, graduates a manual model: a free model (price 0)
 // or one OpenRouter cannot price is on the list, and the user's rule is that

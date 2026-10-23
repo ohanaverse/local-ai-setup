@@ -3,6 +3,7 @@ package worktree
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -396,31 +397,69 @@ func TestPRSetForBranchUsesTheTrackedRepositoryAlone(t *testing.T) {
 	}
 }
 
-// TestPRStaleReportsWhetherTheBranchMoved pins #389: a PR whose head commit
-// is no longer the tip of its branch is stale — the branch has commits the
-// PR never contained — while a PR whose head is the tip, or that reports no
-// head at all, is not.
-func TestPRStaleReportsWhetherTheBranchMoved(t *testing.T) {
+// gitRun runs git in dir for a test and returns its trimmed output.
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := runGitCmd(dir, args...)
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestPRStaleReportsWhetherTheBranchWasReused pins #389: a merged or closed
+// PR is stale when its head commit and the branch tip are unrelated (the name
+// was reused for new work). Everything git cannot judge, or that is still
+// live, keeps the tag: an open PR whatever the branch looks like (a rebase),
+// a head the branch contains or is contained by (commits added, or the local
+// branch behind a push), a head commit this repository does not have, a PR
+// with no head, and no branch. A tag spelled like the branch is not the branch.
+func TestPRStaleReportsWhetherTheBranchWasReused(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
+	first := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, dir, "commit", "--allow-empty", "-m", "second")
 	tip, err := BranchTip(dir, "main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tip == "" {
-		t.Fatal("BranchTip = \"\", want a sha")
+	if tip == "" || tip == first {
+		t.Fatalf("BranchTip = %q, want the second commit, not %q", tip, first)
 	}
-	if stale := (PR{HeadRefOid: tip}).Stale("main", dir); stale {
-		t.Error("a PR whose head is the branch tip is stale, want false")
-	}
-	if stale := (PR{HeadRefOid: "0123456789012345678901234567890123456789"}).Stale("main", dir); !stale {
-		t.Error("a PR whose head is not the branch tip is not stale, want true")
-	}
-	if stale := (PR{HeadRefOid: ""}).Stale("main", dir); stale {
-		t.Error("a PR with no head commit is stale, want false")
-	}
-	if stale := (PR{HeadRefOid: tip}).Stale("", dir); stale {
-		t.Error("no branch is never stale, want false")
+	gitRun(t, dir, "checkout", "-q", "-b", "other", first)
+	gitRun(t, dir, "commit", "--allow-empty", "-m", "unrelated work")
+	unrelated := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, dir, "checkout", "-q", "main")
+	gitRun(t, dir, "checkout", "-q", "-b", "ahead")
+	gitRun(t, dir, "commit", "--allow-empty", "-m", "pushed since")
+	pushed := gitRun(t, dir, "rev-parse", "HEAD")
+	gitRun(t, dir, "checkout", "-q", "main")
+	// A tag named like a branch must not stand in for it.
+	gitRun(t, dir, "tag", "tagged", first)
+	gitRun(t, dir, "branch", "tagged", tip)
+
+	for _, tc := range []struct {
+		name   string
+		pr     PR
+		branch string
+		stale  bool
+	}{
+		{"head is the tip", PR{State: PRMerged, HeadRefOid: tip}, "main", false},
+		{"head is unrelated to the tip: a reused name", PR{State: PRMerged, HeadRefOid: unrelated}, "main", true},
+		{"a closed PR is judged the same", PR{State: PRClosed, HeadRefOid: unrelated}, "main", true},
+		{"head is an ancestor of the tip: commits added since", PR{State: PRMerged, HeadRefOid: first}, "main", false},
+		{"the tip is an ancestor of the head: the local branch is behind", PR{State: PRMerged, HeadRefOid: pushed}, "main", false},
+		{"an open PR is never stale, a rebase included", PR{State: PROpen, HeadRefOid: unrelated}, "main", false},
+		{"a draft PR is never stale", PR{State: PRDraft, HeadRefOid: unrelated}, "main", false},
+		{"a head commit not fetched here cannot be judged", PR{State: PRMerged, HeadRefOid: "0123456789012345678901234567890123456789"}, "main", false},
+		{"no head commit", PR{State: PRMerged}, "main", false},
+		{"no branch", PR{State: PRMerged, HeadRefOid: unrelated}, "", false},
+		{"a branch that does not exist", PR{State: PRMerged, HeadRefOid: unrelated}, "gone", false},
+		{"a tag of the branch's name does not shadow it", PR{State: PRMerged, HeadRefOid: first}, "tagged", false},
+	} {
+		if got := tc.pr.Stale(tc.branch, dir); got != tc.stale {
+			t.Errorf("%s: Stale = %v, want %v", tc.name, got, tc.stale)
+		}
 	}
 }
 

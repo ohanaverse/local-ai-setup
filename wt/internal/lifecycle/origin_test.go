@@ -79,7 +79,9 @@ func TestMtplxStartAndItsCheckAskOnePortForABaseURLWithoutOne(t *testing.T) {
 	t.Setenv("LIFECYCLE_HELPER_LISTEN", listen)
 	network := &servedAt{to: map[string]string{mtplxServeHost: listen}}
 	network.on(e)
-	e.inventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}} }
+	e.inventory = func(*config.Config) localmodels.Snapshot {
+		return localmodels.Snapshot{Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}}
+	}
 	cfg := provCfg("mtplx", "http://127.0.0.1/v1")
 	target := Target{ProviderID: "mtplx", ModelName: "Org/Model", ModelID: "mtplx/Org--Model"}
 

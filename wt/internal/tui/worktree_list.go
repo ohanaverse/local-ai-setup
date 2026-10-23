@@ -220,20 +220,10 @@ func prFor(ei entryItem, prs worktree.PRSet, own worktree.RepoSet) *worktree.PR 
 	if !found {
 		return nil
 	}
-	if !ei.remote && pr.Stale(ei.prBranch, dirForEntry(ei.entry)) {
+	if !ei.remote && pr.Stale(ei.prBranch, ei.entry.Path) {
 		return nil
 	}
 	return &pr
-}
-
-// dirForEntry is the repository a row's branch is read in: the entry's own
-// path when it carries one (a worktree or a worktree-typed row), "" for a
-// bare branch name (the picker's working repository).
-func dirForEntry(e worktree.Entry) string {
-	if e.Path != "" {
-		return e.Path
-	}
-	return ""
 }
 
 // remoteTagsHidden is the notice for a listing whose pull requests cannot

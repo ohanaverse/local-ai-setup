@@ -159,6 +159,41 @@ func Inventory(cfg *config.Config) Snapshot {
 	return inventory(cfg, &http.Client{Timeout: probeTimeout})
 }
 
+// UnregisteredAnswering returns the probe families, other than skip, that the
+// snapshot never probed (no registry footprint at probe time) but whose
+// server answers at its origin: a serving-but-unregistered family holds
+// something wt cannot name (#423). A refused connection means nothing listens
+// and stays out, so a provider nobody runs adds nothing; a timeout or a bad
+// answer is returned, as inventory reads such a family as untrustworthy. The
+// probes run concurrently.
+func UnregisteredAnswering(cfg *config.Config, client *http.Client, snap Snapshot, skip string) []string {
+	var todo []string
+	for _, f := range Families() {
+		if _, probed := snap.Providers[f]; probed || f == skip || snap.Down[f] {
+			continue
+		}
+		todo = append(todo, f)
+	}
+	answered := make([]bool, len(todo))
+	var wg sync.WaitGroup
+	for i, f := range todo {
+		wg.Add(1)
+		go func(i int, f string) {
+			defer wg.Done()
+			_, err := FetchModelIDsErr(client, FamilyOrigin(cfg, f)+"/v1/models")
+			answered[i] = err == nil || !refused(err)
+		}(i, f)
+	}
+	wg.Wait()
+	var out []string
+	for i, f := range todo {
+		if answered[i] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // familyIDs is the ONE table of probe families and the registry provider ids
 // that belong to each; Family, Families and familyProviderIDs are all
 // derived from it, so a new family (or a second provider id sharing one, as

@@ -2,9 +2,11 @@ package lifecycle
 
 import (
 	"errors"
+	"net/http"
 	"reflect"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -184,32 +186,28 @@ func TestResidentOthers(t *testing.T) {
 			[]string{"mlx_lm_server/p!", "mtplx/m1", "ollama/a"}, nil},
 		{"an mtplx start sees ollama and both omlx rows, not mtplx", mtplxT,
 			localmodels.Snapshot{Entries: []localmodels.Entry{mt, ol, om, om6}},
-			[]string{"ollama/a", "omlx/A", "omlx-6bit/S"}, []string{"mlx_lm_server"}},
+			[]string{"ollama/a", "omlx/A", "omlx-6bit/S"}, nil},
 		{"an ollama start sees omlx and mtplx, not ollama", ollamaT,
 			localmodels.Snapshot{Entries: []localmodels.Entry{mt, ol, om}},
-			[]string{"mtplx/m1", "omlx/A"}, []string{"mlx_lm_server"}},
+			[]string{"mtplx/m1", "omlx/A"}, nil},
 		{"the target's own family is excluded", omlxT,
-			localmodels.Snapshot{Entries: []localmodels.Entry{om, om6}}, nil, []string{"mlx_lm_server", "mtplx", "ollama"}},
+			localmodels.Snapshot{Entries: []localmodels.Entry{om, om6}}, nil, nil},
 		{"an untrusted family is unknown, never empty", omlxT,
 			localmodels.Snapshot{Entries: []localmodels.Entry{mt, ol},
 				Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial, "ollama": localmodels.StatusOK, "omlx": localmodels.StatusPartial}},
-			[]string{"ollama/a"}, []string{"mlx_lm_server", "mtplx"}},
+			[]string{"ollama/a"}, []string{"mtplx"}},
 		{"a Down family holds nothing", omlxT,
 			localmodels.Snapshot{Entries: []localmodels.Entry{ol},
 				Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusPartial, "ollama": localmodels.StatusOK},
 				Down:      map[string]bool{"mtplx": true}},
-			[]string{"ollama/a"}, []string{"mlx_lm_server"}},
-		{"a known family absent from the snapshot is unknown", omlxT,
-			localmodels.Snapshot{Entries: []localmodels.Entry{ol},
-				Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK}},
-			[]string{"ollama/a"}, []string{"mlx_lm_server", "mtplx"}},
+			[]string{"ollama/a"}, nil},
 		{"an omlx model still loading is listed but is not stoppable", ollamaT,
 			localmodels.Snapshot{Entries: []localmodels.Entry{loadingOm, mt}},
-			[]string{"omlx/L!", "mtplx/m1"}, []string{"mlx_lm_server"}},
+			[]string{"omlx/L!", "mtplx/m1"}, nil},
 		{"an ambiguous mlx_lm_server is unknown", omlxT,
 			localmodels.Snapshot{Providers: map[string]localmodels.Status{"mlx_lm_server": localmodels.StatusPartial},
 				Ambiguous: map[string]bool{"mlx_lm_server": true}},
-			nil, []string{"mlx_lm_server", "mtplx", "ollama"}},
+			nil, []string{"mlx_lm_server"}},
 		{"a target already running asks nothing", omlxT,
 			localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/T", "T"), mt},
 				Providers: map[string]localmodels.Status{"ollama": localmodels.StatusPartial}},
@@ -268,7 +266,7 @@ func TestResidentsFindAnMtplxStillLoading(t *testing.T) {
 
 	_, e := loadingEnv(t, true)
 	others, unknown := e.residents(loadCfg(), down, "omlx", omlxT)
-	if len(others) != 1 || others[0].PID != 4242 || !others[0].Stoppable || others[0].Entry.ModelID != "mtplx/org--m" || len(unknown) != 2 {
+	if len(others) != 1 || others[0].PID != 4242 || !others[0].Stoppable || others[0].Entry.ModelID != "mtplx/org--m" || len(unknown) != 0 {
 		t.Fatalf("residents = %+v unknown = %v, want mtplx/org--m loading as pid 4242", others, unknown)
 	}
 	if got := others[0].Label(); got != "mtplx/org--m (loading)" {
@@ -287,7 +285,7 @@ func TestResidentsFindAnMtplxStillLoading(t *testing.T) {
 
 	pt, e := loadingEnv(t, true)
 	pt.describe = errors.New("ps failed")
-	if others, unknown := e.residents(loadCfg(), down, "omlx", omlxT); len(others) != 0 || !reflect.DeepEqual(unknown, []string{"mlx_lm_server", "mtplx", "ollama"}) {
+	if others, unknown := e.residents(loadCfg(), down, "omlx", omlxT); len(others) != 0 || !reflect.DeepEqual(unknown, []string{"mtplx"}) {
 		t.Errorf("unreadable pidfile process: residents = %+v unknown = %v, want mtplx unknown", others, unknown)
 	}
 }
@@ -308,5 +306,42 @@ func TestResidentFigure(t *testing.T) {
 		if got := tc.r.Figure(); got != tc.want {
 			t.Errorf("Figure(%+v) = %q, want %q", tc.r.Entry, got, tc.want)
 		}
+	}
+}
+
+// TestResidentsReportAnUnregisteredFamilyOnlyWhenItAnswers pins #423: a family
+// the snapshot never probed (no registry footprint) is unknown to a start only
+// when its server answers, so a serving-but-unregistered family is asked
+// about while a provider nobody runs adds no prompt and no warning. A target
+// already running asks nothing, so it is not probed either.
+func TestResidentsReportAnUnregisteredFamilyOnlyWhenItAnswers(t *testing.T) {
+	var asked []string
+	prev := unregisteredAnswering
+	t.Cleanup(func() { unregisteredAnswering = prev })
+	unregisteredAnswering = func(_ *config.Config, _ *http.Client, _ localmodels.Snapshot, skip string) []string {
+		asked = append(asked, skip)
+		return []string{"mtplx"}
+	}
+	omlxT := Target{ProviderID: "omlx", ModelName: "T"}
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK}}
+
+	e := defaultEnv()
+	if _, unknown := e.residents(loadCfg(), snap, "omlx", omlxT); !reflect.DeepEqual(unknown, []string{"mtplx"}) {
+		t.Errorf("an answering unregistered family: unknown = %v, want [mtplx]", unknown)
+	}
+
+	unregisteredAnswering = func(*config.Config, *http.Client, localmodels.Snapshot, string) []string { return nil }
+	if _, unknown := e.residents(loadCfg(), snap, "omlx", omlxT); len(unknown) != 0 {
+		t.Errorf("a refusing unregistered family: unknown = %v, want none", unknown)
+	}
+
+	asked = nil
+	unregisteredAnswering = func(_ *config.Config, _ *http.Client, _ localmodels.Snapshot, skip string) []string {
+		asked = append(asked, skip)
+		return []string{"mtplx"}
+	}
+	running := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/T", "T")}}
+	if _, unknown := e.residents(loadCfg(), running, "omlx", omlxT); len(unknown) != 0 || len(asked) != 0 {
+		t.Errorf("target already running: unknown = %v, probes = %v, want neither", unknown, asked)
 	}
 }

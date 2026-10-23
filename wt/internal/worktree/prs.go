@@ -50,8 +50,8 @@ type PR struct {
 	State  PRState
 	Title  string
 	// HeadRefOid is the pull request's head commit; "" when gh did not
-	// report one. A branch whose tip is not that commit has moved past the
-	// PR (a reused branch name, a force-push): the tag is stale.
+	// report one. For a merged or closed PR, a branch unrelated to that
+	// commit is a reused branch name: the tag is stale (Stale).
 	HeadRefOid string
 }
 
@@ -210,26 +210,30 @@ func (s PRSet) HasHeadRepo(repo string) bool {
 	return false
 }
 
-// BranchTip resolves a branch's current commit in dir ("" for the working
-// repository) or "" when the branch cannot be resolved.
+// BranchTip resolves a local branch's current commit in dir ("" for the
+// working repository) or "" when the branch cannot be resolved. It reads
+// refs/heads/<branch> by its full name: a bare name could resolve to a tag or
+// a remote-tracking ref of the same spelling.
 func BranchTip(dir, branch string) (string, error) {
 	if branch == "" {
 		return "", nil
 	}
-	out, err := runGit(dir, "rev-parse", "--verify", branch)
+	out, err := runGit(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-// Stale reports whether the PR's head commit is no longer the tip of its
-// branch in dir: the branch has commits the PR never contained (a branch
-// name reused after the PR merged, a force-push). A PR with no head commit
-// to compare is never stale; a branch that cannot be resolved is left
-// alone.
+// Stale reports whether a merged or closed PR's head commit has nothing to do
+// with its branch in dir: neither contains the other, so the branch name was
+// reused for new work after the PR ended. An open or draft PR is the live one
+// for its branch name and is never stale, which keeps the tag on a branch
+// rebased or amended since it was pushed. A PR with no head commit to compare
+// is never stale, and neither is one git cannot judge: a branch that does not
+// resolve, or a head commit not fetched here. The branch is left alone.
 func (p PR) Stale(branch, dir string) bool {
-	if p.HeadRefOid == "" || branch == "" {
+	if p.HeadRefOid == "" || branch == "" || p.State == PROpen || p.State == PRDraft {
 		return false
 	}
 	tip, err := BranchTip(dir, branch)
@@ -239,17 +243,35 @@ func (p PR) Stale(branch, dir string) bool {
 	if tip == p.HeadRefOid {
 		return false
 	}
-	return !isAncestor(dir, p.HeadRefOid, tip)
+	// The PR's head is an ancestor of the tip (commits added since) or the tip
+	// is an ancestor of the PR's head (the local branch is behind what was
+	// pushed): the branch still carries the PR's work, so the tag stands.
+	headInTip, err := isAncestor(dir, p.HeadRefOid, tip)
+	if err != nil || headInTip {
+		return false
+	}
+	tipInHead, err := isAncestor(dir, tip, p.HeadRefOid)
+	return err == nil && !tipInHead
 }
 
 // isAncestor reports whether ancestor is an ancestor of tip in dir (a commit
-// is its own ancestor).
-func isAncestor(dir, ancestor, tip string) bool {
+// is its own ancestor). Only git's answer "no" (exit 1) is false with a nil
+// error; any other failure, such as a commit this repository does not have
+// (exit 128), is an error and says nothing about ancestry.
+func isAncestor(dir, ancestor, tip string) (bool, error) {
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", ancestor, tip)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	return cmd.Run() == nil
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // EmptyPRSet is a loaded set with no pull requests: what a listing that

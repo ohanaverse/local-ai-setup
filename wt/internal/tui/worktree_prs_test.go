@@ -143,8 +143,15 @@ func TestPRTagDroppedWhenTheBranchMoved(t *testing.T) {
 		t.Fatalf("main tag = %q, want #384 merged (the PR head is the branch tip)", tag)
 	}
 
+	// A parentless commit shares no history with main: the name was reused.
+	cmd := exec.Command("git", "commit-tree", "-m", "old PR work", "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
 	prs = prsIn("o/base", map[string]worktree.PR{
-		"main": {Number: 384, State: worktree.PRMerged, Title: "Current work", HeadRefOid: "0123456789012345678901234567890123456789"},
+		"main": {Number: 384, State: worktree.PRMerged, Title: "Current work", HeadRefOid: strings.TrimSpace(string(out))},
 	})
 	l = buildList(groups, "", root, themes.Default, 80, 24)
 	applyPRs(&l, prs, nil)

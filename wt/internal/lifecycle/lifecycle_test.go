@@ -96,9 +96,9 @@ func startFull(ctx context.Context, snap localmodels.Snapshot, cfg *config.Confi
 // fullFamilies is the synthetic snapshot every start against a partial
 // synthetic registry answers with: all known families probed and clean.
 var fullFamilies = localmodels.Snapshot{Providers: map[string]localmodels.Status{
-	"ollama":         localmodels.StatusOK,
-	"omlx":           localmodels.StatusOK,
-	"mtplx":          localmodels.StatusOK,
+	"ollama":        localmodels.StatusOK,
+	"omlx":          localmodels.StatusOK,
+	"mtplx":         localmodels.StatusOK,
 	"mlx_lm_server": localmodels.StatusOK,
 }}
 

@@ -330,9 +330,12 @@ type removalPlan interface {
 }
 
 // removalGateWording carries the per-flow text the shared removal gate
-// prints: the mass-removal line's plan kind and what to check, the unapproved
-// removals' reason, and — for the ollama flow — whether re-tagged entries are
-// not counted in the removals the plan weighs.
+// prints. The mass-removal refusal reads "N of massTotal massNoun would be
+// removed massNote — check massCheck": massNoun names what is counted,
+// massTotal is the count the plan weighs its removals against, massNote is an
+// aside about that count (the ollama flow does not count re-tagged entries),
+// and massCheck is what to verify before forcing. reason is the unapproved
+// removals' explanation.
 type removalGateWording struct {
 	massNoun  string
 	massTotal int
@@ -355,12 +358,12 @@ func removalGate(errOut io.Writer, plan removalPlan, flow string, o cloudSyncOpt
 		return false
 	}
 	if digest := plan.RemovalDigest(); o.yes && digest != "" && !slices.Contains(approvedDigests(o.approve), digest) {
-		reasonFinal := w.reason
+		why := w.reason
 		if o.approve != "" {
-			reasonFinal = "the removals are not the ones digest " + o.approve + " approved"
+			why = "the removals are not the ones digest " + o.approve + " approved"
 		}
 		fmt.Fprintf(errOut, "%s: error: %s — review a --dry-run, then re-run with `--yes --approve-removals %s`. Nothing was changed by the %s flow.\n",
-			flow, reasonFinal, digest, flow)
+			flow, why, digest, flow)
 		setCode(5)
 		return false
 	}
