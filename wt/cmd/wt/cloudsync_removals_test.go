@@ -252,3 +252,91 @@ func TestWithheldRemovalsAreSaid(t *testing.T) {
 		t.Error("a short list removed a model")
 	}
 }
+
+// fakeRemovalPlan is the part of a price or catalog plan the shared removal
+// gate reads, so the gate's own decisions can be pinned without a full plan.
+type fakeRemovalPlan struct {
+	gone   int
+	mass   bool
+	digest string
+}
+
+func (f fakeRemovalPlan) EntriesGone() int      { return f.gone }
+func (f fakeRemovalPlan) MassRemoval() bool     { return f.mass }
+func (f fakeRemovalPlan) RemovalDigest() string { return f.digest }
+
+// TestRemovalGateRefusesAMassRemovalWithoutForce pins the shared gate's
+// mass-removal refusal: a plan that would remove more than half its removable
+// candidates without --force is refused (exit 4) and prints the flow's wording.
+func TestRemovalGateRefusesAMassRemovalWithoutForce(t *testing.T) {
+	var buf bytes.Buffer
+	var code int
+	ok := removalGate(&buf, fakeRemovalPlan{gone: 2, mass: true}, "openrouter", cloudSyncOpts{}, func(c int) { code = c }, removalGateWording{
+		massNoun:  "OpenRouter-priced models",
+		massTotal: 3,
+		massNote:  "",
+		massCheck: "OpenRouter's list is complete",
+		reason:    "the plan removes models",
+	})
+	if ok {
+		t.Error("removalGate = true, want false for a mass removal without --force")
+	}
+	if code != 4 {
+		t.Errorf("code = %d, want 4", code)
+	}
+	if want := "openrouter: error: 2 of 3 OpenRouter-priced models would be removed — check OpenRouter's list is complete, then re-run with --force. Nothing was changed by the openrouter flow.\n"; !strings.Contains(buf.String(), want) {
+		t.Errorf("output = %q, want it to contain %q", buf.String(), want)
+	}
+}
+
+// TestRemovalGateRefusesAnUnapprovedRemovalUnderYes pins the shared gate's
+// second refusal: under --yes, a removal plan whose digest was not approved is
+// refused (exit 5) and prints the flow's wording.
+func TestRemovalGateRefusesAnUnapprovedRemovalUnderYes(t *testing.T) {
+	var buf bytes.Buffer
+	var code int
+	ok := removalGate(&buf, fakeRemovalPlan{gone: 1, digest: "deadbeefcafe"}, "ollama", cloudSyncOpts{yes: true}, func(c int) { code = c }, removalGateWording{
+		massNoun:  "ollama cloud entries",
+		massTotal: 3,
+		massNote:  "",
+		massCheck: "the page parsed correctly",
+		reason:    "the plan deletes models",
+	})
+	if ok {
+		t.Error("removalGate = true, want false for an unapproved removal")
+	}
+	if code != 5 {
+		t.Errorf("code = %d, want 5", code)
+	}
+	if want := "ollama: error: the plan deletes models — review a --dry-run, then re-run with `--yes --approve-removals deadbeefcafe`. Nothing was changed by the ollama flow.\n"; !strings.Contains(buf.String(), want) {
+		t.Errorf("output = %q, want it to contain %q", buf.String(), want)
+	}
+}
+
+// TestRemovalGateAllowsAnApprovedRemovalAndANoRemovalPlan pins the two
+// ways the shared gate says yes: a removal plan under --yes whose digest was
+// approved, and a plan with nothing to remove at all.
+func TestRemovalGateAllowsAnApprovedRemovalAndANoRemovalPlan(t *testing.T) {
+	var buf bytes.Buffer
+	var code int
+	ok := removalGate(&buf, fakeRemovalPlan{gone: 1, digest: "deadbeefcafe"}, "openrouter", cloudSyncOpts{yes: true, approve: "deadbeefcafe"}, func(c int) { code = c }, removalGateWording{
+		massNoun:  "OpenRouter-priced models",
+		massTotal: 3,
+		massCheck: "OpenRouter's list is complete",
+		reason:    "the plan removes models",
+	})
+	if !ok {
+		t.Error("removalGate = false, want true for an approved removal under --yes")
+	}
+	if code != 0 {
+		t.Errorf("code = %d, want 0", code)
+	}
+	if ok := removalGate(&buf, fakeRemovalPlan{}, "ollama", cloudSyncOpts{}, func(c int) { code = c }, removalGateWording{
+		massNoun:  "ollama cloud entries",
+		massTotal: 3,
+		massCheck: "the page parsed correctly",
+		reason:    "the plan deletes models",
+	}); !ok {
+		t.Error("removalGate = false, want true for a plan with nothing to remove")
+	}
+}

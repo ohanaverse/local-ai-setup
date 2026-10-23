@@ -2,12 +2,14 @@ package localmodels
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -920,5 +922,39 @@ func TestInventoryFindsAnOmlxModelInsideAnOrganizationFolder(t *testing.T) {
 	}
 	if f, ok := byModelID(snap, config.DiscoveredModelID("omlx", "Flat-4bit")); !ok || f.Running {
 		t.Errorf("flat model = %+v ok=%v, want listed and not running", f, ok)
+	}
+}
+
+// TestUnregisteredAnsweringReportsOnlyAFamilyThatAnswers verifies the probe of
+// families the snapshot never saw (#423): a family with no registry footprint
+// whose server answers is returned (it holds something wt cannot name), one
+// that refuses the connection is not (a provider nobody runs is not news), a
+// family the snapshot did probe or the target's own is never asked, and a
+// failure that is not a refusal counts as an answer, since it proves nothing
+// is idle. Without it a start loads beside a serving family unseen, or warns
+// about every provider the user never uses.
+func TestUnregisteredAnsweringReportsOnlyAFamilyThatAnswers(t *testing.T) {
+	srv := modelsServer(t, "x")
+	mtplx := onlyHost(t, "localhost:"+strconv.Itoa(config.MtplxPort), srv)
+	cfg := &config.Config{}
+
+	if got := UnregisteredAnswering(cfg, mtplx, Snapshot{}, "omlx"); !reflect.DeepEqual(got, []string{"mtplx"}) {
+		t.Errorf("answering = %v, want only mtplx (the rest refuse)", got)
+	}
+	if got := UnregisteredAnswering(cfg, mtplx, Snapshot{}, "mtplx"); len(got) != 0 {
+		t.Errorf("target's own family: answering = %v, want none", got)
+	}
+	if got := UnregisteredAnswering(cfg, mtplx, Snapshot{Providers: map[string]Status{"mtplx": StatusOK}}, "omlx"); len(got) != 0 {
+		t.Errorf("a probed family: answering = %v, want none", got)
+	}
+	if got := UnregisteredAnswering(cfg, mtplx, Snapshot{Down: map[string]bool{"mtplx": true}}, "omlx"); len(got) != 0 {
+		t.Errorf("a Down family: answering = %v, want none", got)
+	}
+
+	slow := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("i/o timeout")
+	})}
+	if got := UnregisteredAnswering(cfg, slow, Snapshot{}, "ollama"); !reflect.DeepEqual(got, []string{"mlx_lm_server", "mtplx", "omlx"}) {
+		t.Errorf("unreadable answers: answering = %v, want every family asked", got)
 	}
 }

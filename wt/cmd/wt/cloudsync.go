@@ -322,28 +322,66 @@ func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.
 	return run
 }
 
+// removalPlan is the part of a price or catalog plan the removal gate reads.
+type removalPlan interface {
+	EntriesGone() int
+	MassRemoval() bool
+	RemovalDigest() string
+}
+
+// removalGateWording carries the per-flow text the shared removal gate
+// prints. The mass-removal refusal reads "N of massTotal massNoun would be
+// removed massNote — check massCheck": massNoun names what is counted,
+// massTotal is the count the plan weighs its removals against, massNote is an
+// aside about that count (the ollama flow does not count re-tagged entries),
+// and massCheck is what to verify before forcing. reason is the unapproved
+// removals' explanation.
+type removalGateWording struct {
+	massNoun  string
+	massTotal int
+	massNote  string
+	massCheck string
+	reason    string
+}
+
+// removalGate decides whether a printed removal plan may be applied: not a
+// mass removal without --force, and under --yes not a plan that removes
+// anything without the digest of a reviewed dry run. The openrouter and ollama
+// flows share this decision and the exit codes it sets; the flow names the
+// error lines and the code the refusal sets, and the wording carries what
+// differs between flows.
+func removalGate(errOut io.Writer, plan removalPlan, flow string, o cloudSyncOpts, setCode func(code int), w removalGateWording) bool {
+	if plan.MassRemoval() && !o.force {
+		fmt.Fprintf(errOut, "%s: error: %d of %d %s would be removed%s — check %s, then re-run with --force. Nothing was changed by the %s flow.\n",
+			flow, plan.EntriesGone(), w.massTotal, w.massNoun, w.massNote, w.massCheck, flow)
+		setCode(4)
+		return false
+	}
+	if digest := plan.RemovalDigest(); o.yes && digest != "" && !slices.Contains(approvedDigests(o.approve), digest) {
+		why := w.reason
+		if o.approve != "" {
+			why = "the removals are not the ones digest " + o.approve + " approved"
+		}
+		fmt.Fprintf(errOut, "%s: error: %s — review a --dry-run, then re-run with `--yes --approve-removals %s`. Nothing was changed by the %s flow.\n",
+			flow, why, digest, flow)
+		setCode(5)
+		return false
+	}
+	return true
+}
+
 // openrouterGate decides whether a printed OpenRouter plan may be applied,
 // as ollamaGate does for the ollama flow: not a mass removal without
 // --force, and under --yes not a plan that removes anything without the
 // digest of a reviewed dry run. It reports false, with the reason printed
 // and res.openrouterCode set, when it may not.
 func openrouterGate(errOut io.Writer, r *openRouterRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
-	if r.plan.MassRemoval() && !o.force {
-		fmt.Fprintf(errOut, "openrouter: error: %d of %d OpenRouter-priced models would be removed — check OpenRouter's list is complete, then re-run with --force. Nothing was changed by the openrouter flow.\n",
-			r.plan.EntriesGone(), r.plan.RemovableCandidates)
-		res.openrouterCode = 4
-		return false
-	}
-	if digest := r.plan.RemovalDigest(); o.yes && digest != "" && !slices.Contains(approvedDigests(o.approve), digest) {
-		reason := "the plan removes models"
-		if o.approve != "" {
-			reason = "the removals are not the ones digest " + o.approve + " approved"
-		}
-		fmt.Fprintf(errOut, "openrouter: error: %s — review a --dry-run, then re-run with `--yes --approve-removals %s`. Nothing was changed by the openrouter flow.\n", reason, digest)
-		res.openrouterCode = 5
-		return false
-	}
-	return true
+	return removalGate(errOut, r.plan, "openrouter", o, func(code int) { res.openrouterCode = code }, removalGateWording{
+		massNoun:  "OpenRouter-priced models",
+		massTotal: r.plan.RemovableCandidates,
+		massCheck: "OpenRouter's list is complete",
+		reason:    "the plan removes models",
+	})
 }
 
 // cloudSyncApplied is what the registry write did. The apply function

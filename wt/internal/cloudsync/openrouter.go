@@ -242,8 +242,30 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s)", e.ID, e.ModelName))
 			case suffixedListedModel(e.ModelName, api):
 				// A routing variant (`:nitro`, `:floor`) or alias of a model the
-				// list carries under its bare id: still served, so not removed.
+				// list carries under its bare id: still served, so not removed. It
+				// is kept rather than removed, and its price is refreshed from the
+				// base the list carries, so a kept row cannot sit on a stale price
+				// while its base moved. A suffix that routes at a rate of its own
+				// (ownRateSuffix) is kept at the price it has: the base's would be
+				// a wrong one, `:free` turned into a charge included.
+				base, suffix, _ := strings.Cut(e.ModelName, ":")
+				basePrice := api[base]
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is kept", e.ID, e.ModelName))
+				if !ownRateSuffix(suffix) && basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
+					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil) {
+					var after Cost
+					if e.Cost != nil {
+						after = *e.Cost
+					}
+					after.Input, after.Output = basePrice.Input, basePrice.Output
+					if basePrice.Cache != nil {
+						after.Cache = basePrice.Cache
+					}
+					after.TimePrices = withOpenRouterRows(after.TimePrices, basePrice.Rates)
+					plan.Matched = append(plan.Matched, PriceChange{
+						ModelID: e.ID, Before: e.Cost, After: after, Changed: !sameCost(e.Cost, after),
+					})
+				}
 			default:
 				plan.Removals = append(plan.Removals, e.ID)
 			}
@@ -286,6 +308,20 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 		})
 	}
 	return plan
+}
+
+// ownRateSuffix reports whether a `:variant` routing suffix is billed at a rate
+// of its own, which the bare model's price does not give: `:free` costs
+// nothing, `:nitro` and `:floor` route to the fastest or the cheapest
+// provider and are priced as that provider is. The listing carries such a
+// variant under its own id when it serves it; once it does not, nothing says
+// what it would cost, so a kept row keeps the price it has.
+func ownRateSuffix(suffix string) bool {
+	switch suffix {
+	case "free", "nitro", "floor":
+		return true
+	}
+	return false
 }
 
 // suffixedListedModel reports whether name is a listed id plus a `:variant`

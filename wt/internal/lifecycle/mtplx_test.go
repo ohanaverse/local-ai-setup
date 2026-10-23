@@ -21,6 +21,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 func TestMain(m *testing.M) {
@@ -37,6 +38,8 @@ func TestMain(m *testing.M) {
 		return litellm.Result{}, errors.New("applyRoutes not stubbed in this test")
 	}
 	probeProxy = func(context.Context, string, time.Duration) bool { return false }
+	// No test may dial a family's default port to see whether it serves.
+	unregisteredAnswering = func(*config.Config, *http.Client, localmodels.Snapshot, string) []string { return nil }
 	os.Exit(m.Run())
 }
 

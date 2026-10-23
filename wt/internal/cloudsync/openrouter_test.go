@@ -403,6 +403,62 @@ func TestPlanPricesKeepsAManualModelOffTheList(t *testing.T) {
 	}
 }
 
+// TestPlanPricesRepricesAKeptVariantFromItsBase pins the #449 fix: a kept
+// variant row (its base is listed) is repriced from that base, so a kept
+// variant cannot sit on a stale price. A dropped suffix is the same shape -
+// the base is still served, so the row is kept and re-priced from it.
+func TestPlanPricesRepricesAKeptVariantFromItsBase(t *testing.T) {
+	entries := []Entry{
+		orEntry("qwen3.8", nil),        // plain listed model: matched
+		orEntry("qwen3.8:online", nil), // variant of a listed base: kept + repriced
+	}
+	plan := PlanPrices(entries, healthyList("vendor/qwen3.8"))
+	wantIDs(t, "removals", plan.Removals)
+	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "openrouter/qwen3.8:online") {
+		t.Errorf("warnings = %q, want the kept-variant note", plan.Warnings)
+	}
+	if len(plan.Matched) != 2 {
+		t.Fatalf("matched = %d, want the plain model and the kept variant (both repriced):\n%s", len(plan.Matched), plan.Format())
+	}
+	var kept *PriceChange
+	for i := range plan.Matched {
+		if plan.Matched[i].ModelID == "openrouter/qwen3.8:online" {
+			kept = &plan.Matched[i]
+		}
+	}
+	if kept == nil {
+		t.Fatalf("matched = %+v, want the kept variant", plan.Matched)
+	}
+	if !samePrice(kept.After.Input, f(0.000001*1e6)) || !samePrice(kept.After.Output, f(0.000002*1e6)) {
+		t.Errorf("kept variant after = %+v, want the base's price", kept.After)
+	}
+	if kept.Before != nil || kept.Changed != true {
+		t.Errorf("kept variant = %+v, want a changed entry (stale -> base)", kept)
+	}
+}
+
+// TestPlanPricesKeepsAnOwnRateVariantAtItsPrice pins that a kept variant whose
+// suffix is billed at its own rate (`:free`, `:nitro`, `:floor`) is not
+// repriced from the bare model: the list dropping `model:free` while still
+// carrying `model` must not turn a free row into the paid base price, which
+// spend and usage reports would then show as a charge. It is still kept.
+func TestPlanPricesKeepsAnOwnRateVariantAtItsPrice(t *testing.T) {
+	free := &Cost{Input: f(0), Output: f(0)}
+	entries := []Entry{
+		orEntry("qwen3.8:free", free),
+		orEntry("qwen3.8:nitro", nil),
+		orEntry("qwen3.8:floor", nil),
+	}
+	plan := PlanPrices(entries, healthyList("vendor/qwen3.8"))
+	wantIDs(t, "removals", plan.Removals)
+	if len(plan.Matched) != 0 {
+		t.Errorf("matched = %+v, want none (an own-rate variant is not repriced from its base)", plan.Matched)
+	}
+	if len(plan.Warnings) != 3 {
+		t.Errorf("warnings = %q, want one kept note per variant", plan.Warnings)
+	}
+}
+
 // TestPlanPricesGraduatesAManualModelOnTheList pins that presence on the
 // list, whatever the price, graduates a manual model: a free model (price 0)
 // or one OpenRouter cannot price is on the list, and the user's rule is that

@@ -81,6 +81,27 @@ func fakeEnvFamilies(snap localmodels.Snapshot, calls *[]string) *env {
 	return e
 }
 
+// startFull runs Start on an env whose live inventory answers every known
+// family, so starts against a synthetic registry that names only part of the
+// family set take the occupancy check's decided branch instead of reading the
+// known-but-absent families as unknown (#423: a family wt knows about but a
+// snapshot did not probe is "unknown what it holds", not "empty").
+func startFull(ctx context.Context, snap localmodels.Snapshot, cfg *config.Config, t Target, opts Options) error {
+	e := defaultEnv()
+	e.inventory = func(*config.Config) localmodels.Snapshot { return snap }
+	e.backends = backendsByFamily
+	return startWith(ctx, e, cfg, t, opts)
+}
+
+// fullFamilies is the synthetic snapshot every start against a partial
+// synthetic registry answers with: all known families probed and clean.
+var fullFamilies = localmodels.Snapshot{Providers: map[string]localmodels.Status{
+	"ollama":        localmodels.StatusOK,
+	"omlx":          localmodels.StatusOK,
+	"mtplx":         localmodels.StatusOK,
+	"mlx_lm_server": localmodels.StatusOK,
+}}
+
 func running(provider, id, name string) localmodels.Entry {
 	return localmodels.Entry{ProviderID: provider, ModelID: id, ModelName: name, Running: true}
 }
@@ -157,7 +178,8 @@ func TestStartNeverReplacesSilently(t *testing.T) {
 // then the backend's own stages).
 func TestStartReplacesInOrderWhenAllowed(t *testing.T) {
 	var calls []string
-	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("mtplx", "mtplx/old", "Org/Old")}}
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("mtplx", "mtplx/old", "Org/Old")},
+		Providers: map[string]localmodels.Status{"mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}}
 	var stages []Stage
 	err := start(context.Background(), fakeEnv(snap, true, &calls), &config.Config{}, Target{ProviderID: "mtplx", ModelName: "Org/New"},
 		Options{AllowReplace: true, Progress: func(s Stage) { stages = append(stages, s) }})
@@ -177,7 +199,8 @@ func TestStartReplacesInOrderWhenAllowed(t *testing.T) {
 // multi-tenant and nothing is replaced.
 func TestStartOllamaIgnoresOtherRunningModels(t *testing.T) {
 	var calls []string
-	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("ollama", "ollama/a", "a:1b")}}
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("ollama", "ollama/a", "a:1b")},
+		Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}}
 	if err := start(context.Background(), fakeEnv(snap, false, &calls), &config.Config{}, Target{ProviderID: "ollama", ModelName: "b:2b"}, Options{}); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +214,8 @@ func TestStartOllamaIgnoresOtherRunningModels(t *testing.T) {
 // would fail confusingly or corrupt the running model.
 func TestStartStopFailureDoesNotStart(t *testing.T) {
 	var calls []string
-	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/old", "Old-4bit")}}
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/old", "Old-4bit")},
+		Providers: map[string]localmodels.Status{"omlx": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}}
 	e := fakeEnv(snap, true, &calls)
 	e.backends["omlx"].(*fakeBackend).stopErr = errors.New("still listening")
 	err := start(context.Background(), e, &config.Config{}, Target{ProviderID: "omlx", ModelName: "New-4bit"}, Options{AllowReplace: true})
@@ -348,7 +372,7 @@ func TestStartRefusesWhenServerAnswersUnusably(t *testing.T) {
 // AllowReplace for every normal start, which is worse than the bug.
 func TestStartProceedsWhenProviderIsDown(t *testing.T) {
 	var calls []string
-	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial, "mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}}, true, &calls)
 	cfg := provCfg("omlx", "http://"+freeAddr(t))
 
 	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
@@ -385,7 +409,7 @@ func TestStartFindsOccupantTheSnapshotMissed(t *testing.T) {
 // unknown nor occupied.
 func TestStartProceedsWhenServerReportsNoModel(t *testing.T) {
 	var calls []string
-	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial, "mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}}, true, &calls)
 	cfg := provCfg("omlx", openaiSrv(t, nil))
 
 	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
@@ -404,7 +428,7 @@ func TestStartProceedsWhenServerReportsNoModel(t *testing.T) {
 // is loaded, finds nothing, and the start proceeds.
 func TestStartIntoAnIdleOmlxThatListsItsPool(t *testing.T) {
 	var calls []string
-	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial}}, true, &calls)
+	e := fakeEnv(localmodels.Snapshot{Providers: map[string]localmodels.Status{"omlx": localmodels.StatusPartial, "mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK, "mlx_lm_server": localmodels.StatusOK}}, true, &calls)
 	cfg := provCfg("omlx", (&fakePool{loaded: map[string]bool{"a": false, "b": false}, mgmtKey: "k"}).serve(t))
 	if err := start(context.Background(), e, cfg, Target{ProviderID: "omlx", ModelName: "b"}, Options{}); err != nil {
 		t.Fatalf("start into an idle omlx = %v, want nil: a listed, unloaded model is not an occupant", err)

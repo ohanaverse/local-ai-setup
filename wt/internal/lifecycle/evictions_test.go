@@ -2,9 +2,11 @@ package lifecycle
 
 import (
 	"errors"
+	"net/http"
 	"reflect"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
@@ -304,5 +306,42 @@ func TestResidentFigure(t *testing.T) {
 		if got := tc.r.Figure(); got != tc.want {
 			t.Errorf("Figure(%+v) = %q, want %q", tc.r.Entry, got, tc.want)
 		}
+	}
+}
+
+// TestResidentsReportAnUnregisteredFamilyOnlyWhenItAnswers pins #423: a family
+// the snapshot never probed (no registry footprint) is unknown to a start only
+// when its server answers, so a serving-but-unregistered family is asked
+// about while a provider nobody runs adds no prompt and no warning. A target
+// already running asks nothing, so it is not probed either.
+func TestResidentsReportAnUnregisteredFamilyOnlyWhenItAnswers(t *testing.T) {
+	var asked []string
+	prev := unregisteredAnswering
+	t.Cleanup(func() { unregisteredAnswering = prev })
+	unregisteredAnswering = func(_ *config.Config, _ *http.Client, _ localmodels.Snapshot, skip string) []string {
+		asked = append(asked, skip)
+		return []string{"mtplx"}
+	}
+	omlxT := Target{ProviderID: "omlx", ModelName: "T"}
+	snap := localmodels.Snapshot{Providers: map[string]localmodels.Status{"ollama": localmodels.StatusOK, "omlx": localmodels.StatusOK}}
+
+	e := defaultEnv()
+	if _, unknown := e.residents(loadCfg(), snap, "omlx", omlxT); !reflect.DeepEqual(unknown, []string{"mtplx"}) {
+		t.Errorf("an answering unregistered family: unknown = %v, want [mtplx]", unknown)
+	}
+
+	unregisteredAnswering = func(*config.Config, *http.Client, localmodels.Snapshot, string) []string { return nil }
+	if _, unknown := e.residents(loadCfg(), snap, "omlx", omlxT); len(unknown) != 0 {
+		t.Errorf("a refusing unregistered family: unknown = %v, want none", unknown)
+	}
+
+	asked = nil
+	unregisteredAnswering = func(_ *config.Config, _ *http.Client, _ localmodels.Snapshot, skip string) []string {
+		asked = append(asked, skip)
+		return []string{"mtplx"}
+	}
+	running := localmodels.Snapshot{Entries: []localmodels.Entry{running("omlx", "omlx/T", "T")}}
+	if _, unknown := e.residents(loadCfg(), running, "omlx", omlxT); len(unknown) != 0 || len(asked) != 0 {
+		t.Errorf("target already running: unknown = %v, probes = %v, want neither", unknown, asked)
 	}
 }

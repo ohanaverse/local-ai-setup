@@ -132,10 +132,11 @@ func poolVictims(pool *localmodels.Pool, t Target, others []localmodels.Entry) [
 // provider families (#412): every running entry whose family is not the
 // target's, and the families whose probe cannot be trusted, which are
 // reported as unknown and never read as empty. A family whose server refused
-// the connection (Down) holds nothing. It returns nothing when the target is
-// already running (the start is a no-op) or is itself loading: the start that
-// began that load already asked. An mtplx still loading is not in the
-// snapshot (its port refuses); env.residents adds it.
+// the connection (Down) holds nothing. A family the snapshot never probed is
+// not here: env.residents asks its server (#423). It returns nothing
+// when the target is already running (the start is a no-op) or is itself
+// loading: the start that began that load already asked. An mtplx still loading
+// is not in the snapshot (its port refuses); env.residents adds it.
 func residentOthers(snap localmodels.Snapshot, family string, t Target) (others []Resident, unknown []string) {
 	if isRunning(snap, family, t) || isLoading(snap, family, t) {
 		return nil, nil
@@ -166,12 +167,25 @@ func loadingOmlx(family string, en localmodels.Entry) bool {
 	return family == "omlx" && en.Loading
 }
 
-// residents is residentOthers plus an mtplx still loading: its port refuses,
+// unregisteredAnswering is the probe of families the snapshot never saw; a test
+// swaps it so none dials a default port.
+var unregisteredAnswering = localmodels.UnregisteredAnswering
+
+// residents is residentOthers plus the answering unregistered families and an mtplx still loading: its port refuses,
 // so the snapshot reads mtplx Down, and only wt's pidfile shows it
 // (loadingMtplx). A pidfile wt cannot check makes mtplx unknown; one that
 // names nothing wt can verify is left out, as the stop picker leaves it.
 func (e *env) residents(cfg *config.Config, snap localmodels.Snapshot, family string, t Target) ([]Resident, []string) {
 	others, unknown := residentOthers(snap, family, t)
+	if !isRunning(snap, family, t) && !isLoading(snap, family, t) {
+		// A family with no registry footprint is never probed, so the snapshot
+		// cannot tell it is serving. Ask its server: one that answers is
+		// unknown (never empty), one that refuses holds nothing and stays quiet.
+		if extra := unregisteredAnswering(cfg, e.probeClient, snap, family); len(extra) > 0 {
+			unknown = append(unknown, extra...)
+			sort.Strings(unknown)
+		}
+	}
 	if family == "mtplx" || !snap.Down["mtplx"] || isRunning(snap, family, t) || isLoading(snap, family, t) {
 		return others, unknown
 	}
