@@ -174,7 +174,11 @@ func TestEnsureBranchWorktreeCmdSuccess(t *testing.T) {
 // package's tests self-contained.
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
-	if err := exec.Command("git", "init", dir).Run(); err != nil {
+	// Pin the initial branch to "main" so the repo does not depend on the
+	// runner's git init.defaultBranch (CI's may be "master"). A test that
+	// then queries refs/heads/main (TestPRTagDroppedWhenTheBranchMoved)
+	// must find it. Matches internal/worktree/enumerate_test.go.
+	if err := exec.Command("git", "init", "-b", "main", dir).Run(); err != nil {
 		t.Fatalf("git init: %v", err)
 	}
 	// Set identity so commits/worktree-add don't fail.
