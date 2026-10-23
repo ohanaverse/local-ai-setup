@@ -168,6 +168,24 @@ func TestSortRowsByScoreThenID(t *testing.T) {
 	assertOrder(t, rows, "top,tie-a,tie-z,low,near-zero,zero,unscored-a,unscored-b")
 }
 
+// TestSortRowsTiedScoresGroupByFamily pins that rows tied on score sit with
+// their family, not split by the provider prefix of their id (the S34 qwen3.8
+// rows were interleaved with a mistral row), that a row with no family follows
+// the named ones, and that a higher score still outranks a family's grouping.
+func TestSortRowsTiedScoresGroupByFamily(t *testing.T) {
+	fam := func(r tableRow, f string) tableRow { r.Model.Family = f; return r }
+	rows := []tableRow{
+		fam(sortCloud("omlx/qwen", 34), "qwen3.8"),
+		fam(sortCloud("ollama/mistral", 34), "mistral-large-4"),
+		fam(sortCloud("mtplx/qwen", 34), "qwen3.8"),
+		sortCloud("a-nofamily", 34),
+		fam(sortCloud("ollama/qwen", 34), "qwen3.8"),
+		fam(sortCloud("zz/qwen-top", 50), "qwen3.8"),
+	}
+	sortRows(rows)
+	assertOrder(t, rows, "zz/qwen-top,ollama/mistral,mtplx/qwen,ollama/qwen,omlx/qwen,a-nofamily")
+}
+
 // TestSortRowsIgnoresCostAndUsage pins that price and 7-day usage no longer
 // order anything: a dear heavily used model with the higher score is above a
 // free unused one.
