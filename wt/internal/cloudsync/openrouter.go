@@ -242,8 +242,28 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s)", e.ID, e.ModelName))
 			case suffixedListedModel(e.ModelName, api):
 				// A routing variant (`:nitro`, `:floor`) or alias of a model the
-				// list carries under its bare id: still served, so not removed.
+				// list carries under its bare id: still served, so not removed. It
+				// is kept rather than removed, and its price is refreshed from the
+				// base the list carries, so a kept row cannot sit on a stale price
+				// while its base moved.
+				base, _, _ := strings.Cut(e.ModelName, ":")
+				basePrice, _ := api[base]
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is kept", e.ID, e.ModelName))
+				if basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
+					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil) {
+					var after Cost
+					if e.Cost != nil {
+						after = *e.Cost
+					}
+					after.Input, after.Output = basePrice.Input, basePrice.Output
+					if basePrice.Cache != nil {
+						after.Cache = basePrice.Cache
+					}
+					after.TimePrices = withOpenRouterRows(after.TimePrices, basePrice.Rates)
+					plan.Matched = append(plan.Matched, PriceChange{
+						ModelID: e.ID, Before: e.Cost, After: after, Changed: !sameCost(e.Cost, after),
+					})
+				}
 			default:
 				plan.Removals = append(plan.Removals, e.ID)
 			}
