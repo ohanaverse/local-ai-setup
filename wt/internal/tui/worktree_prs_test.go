@@ -118,6 +118,41 @@ func TestApplyPRsTagsEveryKindOfRow(t *testing.T) {
 	}
 }
 
+// TestPRTagDroppedWhenTheBranchMoved pins #389: a merged PR whose head commit
+// is no longer the branch's tip means the branch moved past the PR — a branch
+// name reused after the PR merged — so the row's tag is stale and dropped.
+func TestPRTagDroppedWhenTheBranchMoved(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	tip, err := worktree.BranchTip(dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip == "" {
+		t.Fatal("worktree.BranchTip = \"\", want a sha")
+	}
+	prs := prsIn("o/base", map[string]worktree.PR{
+		"main": {Number: 384, State: worktree.PRMerged, Title: "Current work", HeadRefOid: tip},
+	})
+	groups, root := prGroups(t)
+	groups[0].Entries[0].Branch = "main"
+	groups[0].Entries[0].Path = dir
+	l := buildList(groups, "", root, themes.Default, 80, 24)
+	applyPRs(&l, prs, nil)
+	if tag := rowByBranch(t, l.Items(), "main").prTag(); tag != "#384 merged" {
+		t.Fatalf("main tag = %q, want #384 merged (the PR head is the branch tip)", tag)
+	}
+
+	prs = prsIn("o/base", map[string]worktree.PR{
+		"main": {Number: 384, State: worktree.PRMerged, Title: "Current work", HeadRefOid: "0123456789012345678901234567890123456789"},
+	})
+	l = buildList(groups, "", root, themes.Default, 80, 24)
+	applyPRs(&l, prs, nil)
+	if tag := rowByBranch(t, l.Items(), "main").prTag(); tag != "" {
+		t.Errorf("main tag = %q, want none: the PR's head is not the branch tip", tag)
+	}
+}
+
 // TestPRRowDescriptionAndFilterValue pins the second line and the filter: the
 // PR title sits between the row type and the path, a long one is cut so the
 // path keeps some room, and the PR number is part of the filter value so

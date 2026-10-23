@@ -396,6 +396,34 @@ func TestPRSetForBranchUsesTheTrackedRepositoryAlone(t *testing.T) {
 	}
 }
 
+// TestPRStaleReportsWhetherTheBranchMoved pins #389: a PR whose head commit
+// is no longer the tip of its branch is stale — the branch has commits the
+// PR never contained — while a PR whose head is the tip, or that reports no
+// head at all, is not.
+func TestPRStaleReportsWhetherTheBranchMoved(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	tip, err := BranchTip(dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip == "" {
+		t.Fatal("BranchTip = \"\", want a sha")
+	}
+	if stale := (PR{HeadRefOid: tip}).Stale("main", dir); stale {
+		t.Error("a PR whose head is the branch tip is stale, want false")
+	}
+	if stale := (PR{HeadRefOid: "0123456789012345678901234567890123456789"}).Stale("main", dir); !stale {
+		t.Error("a PR whose head is not the branch tip is not stale, want true")
+	}
+	if stale := (PR{HeadRefOid: ""}).Stale("main", dir); stale {
+		t.Error("a PR with no head commit is stale, want false")
+	}
+	if stale := (PR{HeadRefOid: tip}).Stale("", dir); stale {
+		t.Error("no branch is never stale, want false")
+	}
+}
+
 // TestEmptyPRSetIsLoadedWithNoPRs pins the invariant a failed listing relies
 // on: it counts as answered, adds no tag, and merges away.
 func TestEmptyPRSetIsLoadedWithNoPRs(t *testing.T) {

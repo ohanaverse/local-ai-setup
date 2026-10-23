@@ -49,6 +49,10 @@ type PR struct {
 	Number int
 	State  PRState
 	Title  string
+	// HeadRefOid is the pull request's head commit; "" when gh did not
+	// report one. A branch whose tip is not that commit has moved past the
+	// PR (a reused branch name, a force-push): the tag is stale.
+	HeadRefOid string
 }
 
 // listPRs runs `gh pr list --state state` in dir and returns its JSON. It is the test seam:
@@ -68,7 +72,7 @@ func realListPRs(dir, state string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
 		"--state", state,
 		"--limit", strconv.Itoa(prLimit),
-		"--json", "number,state,isDraft,headRefName,isCrossRepository,title,headRepository")
+		"--json", "number,state,isDraft,headRefName,isCrossRepository,title,headRepository,headRefOid")
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -206,6 +210,48 @@ func (s PRSet) HasHeadRepo(repo string) bool {
 	return false
 }
 
+// BranchTip resolves a branch's current commit in dir ("" for the working
+// repository) or "" when the branch cannot be resolved.
+func BranchTip(dir, branch string) (string, error) {
+	if branch == "" {
+		return "", nil
+	}
+	out, err := runGit(dir, "rev-parse", "--verify", branch)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// Stale reports whether the PR's head commit is no longer the tip of its
+// branch in dir: the branch has commits the PR never contained (a branch
+// name reused after the PR merged, a force-push). A PR with no head commit
+// to compare is never stale; a branch that cannot be resolved is left
+// alone.
+func (p PR) Stale(branch, dir string) bool {
+	if p.HeadRefOid == "" || branch == "" {
+		return false
+	}
+	tip, err := BranchTip(dir, branch)
+	if err != nil || tip == "" {
+		return false
+	}
+	if tip == p.HeadRefOid {
+		return false
+	}
+	return !isAncestor(dir, p.HeadRefOid, tip)
+}
+
+// isAncestor reports whether ancestor is an ancestor of tip in dir (a commit
+// is its own ancestor).
+func isAncestor(dir, ancestor, tip string) bool {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", ancestor, tip)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	return cmd.Run() == nil
+}
+
 // EmptyPRSet is a loaded set with no pull requests: what a listing that
 // failed (or was never run) answers, so it adds no tags yet counts as in.
 func EmptyPRSet() PRSet { return PRSet{ByHead: map[PRKey]PR{}} }
@@ -256,6 +302,9 @@ type ghPR struct {
 	HeadRefName       string `json:"headRefName"`
 	IsCrossRepository bool   `json:"isCrossRepository"`
 	Title             string `json:"title"`
+	// HeadRefOid is the pull request's head commit; "" when gh did not
+	// report one.
+	HeadRefOid        string `json:"headRefOid"`
 	// HeadRepository is null for a fork that was deleted; it then decodes
 	// as the zero value.
 	HeadRepository struct {
@@ -305,7 +354,7 @@ func parsePRs(data []byte) (PRSet, error) {
 			set.BaseRepo = repo
 		}
 		k := PRKey{Repo: repo, Branch: p.HeadRefName}
-		pr := PR{Number: p.Number, State: prState(p.State, p.IsDraft), Title: p.Title}
+		pr := PR{Number: p.Number, State: prState(p.State, p.IsDraft), Title: p.Title, HeadRefOid: p.HeadRefOid}
 		if cur, ok := set.ByHead[k]; ok && !preferPR(pr, cur) {
 			continue
 		}

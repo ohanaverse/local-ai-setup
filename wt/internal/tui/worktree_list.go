@@ -202,8 +202,10 @@ func applyPRs(l *list.Model, prs worktree.PRSet, own worktree.RepoSet) {
 // (Entry.TrackRepo) alone; with none known, under the listed repository and
 // own, the repository's remotes' repositories, and one PR chosen
 // (worktree.PRSet.ForBranch: live over closed or merged, then the higher
-// number). A stranger's fork PR never tags it. prsCurrent asks this with the same own, so the tags and the
-// stale-filter check agree.
+// number). A stranger's fork PR never tags it. prsCurrent asks this with the
+// same own, so the tags and the stale-filter check agree. A PR whose head
+// commit is no longer the branch's tip is stale — the branch has moved past
+// a PR that merged under a reused branch name — and tags nothing (#389).
 func prFor(ei entryItem, prs worktree.PRSet, own worktree.RepoSet) *worktree.PR {
 	if ei.prBranch == "" {
 		return nil
@@ -218,7 +220,20 @@ func prFor(ei entryItem, prs worktree.PRSet, own worktree.RepoSet) *worktree.PR 
 	if !found {
 		return nil
 	}
+	if !ei.remote && pr.Stale(ei.prBranch, dirForEntry(ei.entry)) {
+		return nil
+	}
 	return &pr
+}
+
+// dirForEntry is the repository a row's branch is read in: the entry's own
+// path when it carries one (a worktree or a worktree-typed row), "" for a
+// bare branch name (the picker's working repository).
+func dirForEntry(e worktree.Entry) string {
+	if e.Path != "" {
+		return e.Path
+	}
+	return ""
 }
 
 // remoteTagsHidden is the notice for a listing whose pull requests cannot
