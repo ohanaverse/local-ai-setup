@@ -304,7 +304,7 @@ type ghPR struct {
 	Title             string `json:"title"`
 	// HeadRefOid is the pull request's head commit; "" when gh did not
 	// report one.
-	HeadRefOid        string `json:"headRefOid"`
+	HeadRefOid string `json:"headRefOid"`
 	// HeadRepository is null for a fork that was deleted; it then decodes
 	// as the zero value.
 	HeadRepository struct {

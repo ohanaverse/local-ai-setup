@@ -409,7 +409,7 @@ func TestPlanPricesKeepsAManualModelOffTheList(t *testing.T) {
 // the base is still served, so the row is kept and re-priced from it.
 func TestPlanPricesRepricesAKeptVariantFromItsBase(t *testing.T) {
 	entries := []Entry{
-		orEntry("qwen3.8", nil),           // plain listed model: matched
+		orEntry("qwen3.8", nil),        // plain listed model: matched
 		orEntry("qwen3.8:online", nil), // variant of a listed base: kept + repriced
 	}
 	plan := PlanPrices(entries, healthyList("vendor/qwen3.8"))

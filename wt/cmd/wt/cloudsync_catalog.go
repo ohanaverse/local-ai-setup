@@ -200,29 +200,17 @@ func ollamaTouchedIDs(plan *cloudsync.CatalogPlan) []string {
 // anything without the digest of a reviewed dry run. It reports false, with
 // the reason printed and res.ollamaCode set, when it may not.
 func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
-	if c.plan.MassRemoval() && !o.force {
-		// The count is the one MassRemoval weighed. The plan printed above
-		// lists every removal, a re-tagged one included, so when the two
-		// numbers differ the line says why.
-		gone, note := c.plan.EntriesGone(), ""
-		if gone != len(c.plan.Removals) {
-			note = " (re-tagged entries are not counted)"
-		}
-		fmt.Fprintf(errOut, "ollama: error: %d of %d ollama cloud entries would be removed%s — check the page parsed correctly, then re-run with --force. Nothing was changed by the ollama flow.\n",
-			gone, c.plan.CloudEntries, note)
-		res.ollamaCode = 4
-		return false
+	massNote := ""
+	if gone := c.plan.EntriesGone(); gone != len(c.plan.Removals) {
+		massNote = " (re-tagged entries are not counted)"
 	}
-	if digest := c.plan.RemovalDigest(); o.yes && digest != "" && !slices.Contains(approvedDigests(o.approve), digest) {
-		reason := "the plan deletes models"
-		if o.approve != "" {
-			reason = "the removals are not the ones digest " + o.approve + " approved"
-		}
-		fmt.Fprintf(errOut, "ollama: error: %s — review a --dry-run, then re-run with `--yes --approve-removals %s`. Nothing was changed by the ollama flow.\n", reason, digest)
-		res.ollamaCode = 5
-		return false
-	}
-	return true
+	return removalGate(errOut, c.plan, "ollama", o, func(code int) { res.ollamaCode = code }, removalGateWording{
+		massNoun:  "ollama cloud entries",
+		massTotal: c.plan.CloudEntries,
+		massNote:  massNote,
+		massCheck: "the page parsed correctly",
+		reason:    "the plan deletes models",
+	})
 }
 
 // runOllamaWork does what the registry write left for ollama: the pulls,
