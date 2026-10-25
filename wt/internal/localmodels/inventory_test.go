@@ -958,3 +958,129 @@ func TestUnregisteredAnsweringReportsOnlyAFamilyThatAnswers(t *testing.T) {
 		t.Errorf("unreadable answers: answering = %v, want every family asked", got)
 	}
 }
+
+// recProvider is a registry rec row aimed at a test server's url, with the
+// literal key secretRef ("" for none).
+func recProvider(baseURL, secretRef string) config.Provider {
+	p := localProvider("rec", baseURL, "")
+	if secretRef != "" {
+		p.Auth = config.AuthConfig{Type: "api_key", BaseURL: baseURL, SecretRef: secretRef}
+	}
+	return p
+}
+
+// recCfg is a registry with one rec provider and its one model, rec/flint.
+func recCfg(p config.Provider) *config.Config {
+	return &config.Config{
+		Providers: []config.Provider{p},
+		Models:    []config.Model{{ID: "rec/flint", ProviderID: "rec", ModelName: "flint"}},
+	}
+}
+
+// TestRecInventoryRunning verifies rec is probed the served-only way: its
+// /v1/models, asked with the key its secret_ref names, lists flint, so the
+// registered rec/flint entry is Running and the family OK. rec lists no
+// artifacts, so ArtifactKnown stays false. Without the served-only branch rec
+// was never probed and a serving flint read as stopped.
+func TestRecInventoryRunning(t *testing.T) {
+	srv, seen := keyedModelsServer(t, "k", "flint")
+	snap := inventory(recCfg(recProvider(srv.URL, "k")), testClient)
+	if snap.Providers["rec"] != StatusOK || snap.Down["rec"] {
+		t.Errorf("status = %q down = %v, want ok and not down", snap.Providers["rec"], snap.Down["rec"])
+	}
+	e, ok := byModelID(snap, "rec/flint")
+	if !ok || !e.Running || e.ArtifactKnown {
+		t.Errorf("rec/flint = %+v (present %v), want running with ArtifactKnown false", e, ok)
+	}
+	if len(*seen) == 0 || (*seen)[0] != "Bearer k" {
+		t.Errorf("Authorization = %q, want Bearer k", *seen)
+	}
+}
+
+// TestRecInventoryNoKeySendsNoAuthorization verifies a rec row with no
+// secret_ref probes without an Authorization header and still reads flint
+// running: a provider with no key sends none.
+func TestRecInventoryNoKeySendsNoAuthorization(t *testing.T) {
+	var auth atomic.Value
+	auth.Store("")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := r.Header.Get("Authorization"); a != "" {
+			auth.Store(a)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": "flint"}}})
+	}))
+	t.Cleanup(srv.Close)
+	snap := inventory(recCfg(recProvider(srv.URL, "")), testClient)
+	if e, _ := byModelID(snap, "rec/flint"); !e.Running {
+		t.Errorf("rec/flint = %+v, want running", e)
+	}
+	if a := auth.Load().(string); a != "" {
+		t.Errorf("Authorization = %q, want none", a)
+	}
+}
+
+// TestRecInventoryStoppedIsAStartRow verifies a stopped rec (its port refuses
+// the connection) marks the family Down with rec/flint not running and its
+// artifact unknown: the shape internal/catalog turns into a start row (see
+// catalog's test of the same name). Down is what lets sync drop the dead
+// route.
+func TestRecInventoryStoppedIsAStartRow(t *testing.T) {
+	gone := modelsServer(t, "flint")
+	goneURL := gone.URL
+	gone.Close()
+	snap := inventory(recCfg(recProvider(goneURL, "k")), testClient)
+	if !snap.Down["rec"] {
+		t.Errorf("Down = %v, want rec down (connection refused)", snap.Down)
+	}
+	e, ok := byModelID(snap, "rec/flint")
+	if !ok || e.Running || e.ArtifactKnown {
+		t.Errorf("rec/flint = %+v (present %v), want not running, ArtifactKnown false", e, ok)
+	}
+}
+
+// TestRecInventoryRefusedKeyIsPartial verifies a rec that answers 401 is up
+// with an unreadable running state: family Partial, never Down, with the
+// refusal recorded as the probe failure so wt names the key as the repair.
+// Down would let sync drop a serving flint's route.
+func TestRecInventoryRefusedKeyIsPartial(t *testing.T) {
+	srv, _ := keyedModelsServer(t, "k", "flint")
+	snap := inventory(recCfg(recProvider(srv.URL, "wrong")), testClient)
+	if snap.Providers["rec"] != StatusPartial || snap.Down["rec"] || !errors.Is(snap.ProbeFailures["rec"], ErrKeyRefused) {
+		t.Errorf("status %q down %v failure %v; want partial, not down, ErrKeyRefused", snap.Providers["rec"], snap.Down["rec"], snap.ProbeFailures["rec"])
+	}
+}
+
+// TestRecInventoryUnreadableKeyIsPartial verifies a rec secret_ref wt cannot
+// resolve reads like a refused key: family Partial, not Down, with a
+// *KeyUnreadableError naming rec as the probe failure.
+func TestRecInventoryUnreadableKeyIsPartial(t *testing.T) {
+	srv, _ := keyedModelsServer(t, "k", "flint")
+	snap := inventory(recCfg(recProvider(srv.URL, "exec:/nonexistent/key")), testClient)
+	var ku *KeyUnreadableError
+	if snap.Providers["rec"] != StatusPartial || snap.Down["rec"] || !errors.As(snap.ProbeFailures["rec"], &ku) || ku.Family != "rec" {
+		t.Errorf("status %q down %v failure %v; want partial, not down, *KeyUnreadableError{rec}", snap.Providers["rec"], snap.Down["rec"], snap.ProbeFailures["rec"])
+	}
+}
+
+// TestMlxLmServerStillRunningOnly pins that generalising the served-only
+// probe left mlx_lm_server running-only and rec not: a stopped mlx_lm_server
+// pairing is Down, not running, artifact unknown (catalog hides it and blocks
+// it, see catalog's test of the same name), and only mlx_lm_server answers
+// RunningOnly. Losing that would offer a start wt has no engine for.
+func TestMlxLmServerStillRunningOnly(t *testing.T) {
+	gone := modelsServer(t, "x")
+	goneURL := gone.URL
+	gone.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{localProvider("mlx_lm_server", goneURL, "")},
+		Models:    []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p"}},
+	}
+	snap := inventory(cfg, testClient)
+	e, ok := byModelID(snap, "mlx_lm_server/p")
+	if !snap.Down["mlx_lm_server"] || !ok || e.Running || e.ArtifactKnown {
+		t.Errorf("down %v entry %+v (present %v), want down, not running, ArtifactKnown false", snap.Down["mlx_lm_server"], e, ok)
+	}
+	if !RunningOnly("mlx_lm_server") || RunningOnly("rec") {
+		t.Errorf("RunningOnly(mlx_lm_server) = %v, RunningOnly(rec) = %v; want true, false", RunningOnly("mlx_lm_server"), RunningOnly("rec"))
+	}
+}

@@ -227,6 +227,18 @@ func TestResidentOthers(t *testing.T) {
 	}
 }
 
+// TestRunningRecIsAResidentWhenAnotherFamilyStarts verifies a running
+// rec/flint is one of the other providers' models an mtplx start asks about
+// (#412), and that it is offered a stop: rec is a process server wt can stop.
+// Missing it would load mtplx beside flint unasked.
+func TestRunningRecIsAResidentWhenAnotherFamilyStarts(t *testing.T) {
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{running("rec", "rec/flint", "flint")}}
+	others, unknown := residentOthers(snap, "mtplx", Target{ProviderID: "mtplx", ModelName: "Org/New"})
+	if got, want := residentIDs(others), []string{"rec/flint"}; !reflect.DeepEqual(got, want) || len(unknown) != 0 {
+		t.Errorf("residents = %v unknown = %v, want %v (stoppable) and nothing unknown", got, unknown, want)
+	}
+}
+
 // TestResidentOthersLoadingOmlxIsNotStoppable pins that an omlx model of
 // another family that is still loading is listed but never offered a stop
 // (#412): omlx refuses to unload a model mid-load, so a stop answer would end
