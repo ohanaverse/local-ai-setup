@@ -38,8 +38,8 @@ because its pinned GGUF had been deleted:
 host: both plists, both log files, and the Homebrew formula. Disabled in the
 repo on that day: the `llamacpp` entries in the benchmark scripts,
 `SUPPORTED_PROVIDER_IDS`, `DEFAULT_PROVIDER_IDS`
-(`llmbench/src/llmbench/registry.py`; wt's `defaultProviderIDs` in
-`wt/internal/config/registry_seed.go` never listed it), and the two litellm
+(`llmbench/src/llmbench/registry.py`; wt's provider table
+`wt/internal/provider/table.go` never gave it a seed row), and the two litellm
 rows.
 
 **Removed from the repo** in the modelman retirement (Step 6): modelman's
@@ -132,8 +132,8 @@ the plist is installed, `launchctl unload` it by hand:
      `test_llamacpp_does_not_respect_solo`, and update the two tests that
      rely on `restore_action == "skip"` (`test_llamacpp_is_never_restored`,
      `test_restore_no_ops_while_restore_action_is_skip`)
-   - add `llamacpp` to `defaultProviderIDs` in
-     `wt/internal/config/registry_seed.go` if wt should seed its row. wt has
+   - give `llamacpp` a `Seed` in `wt/internal/provider/table.go` if wt
+     should seed its row. wt has
      no lifecycle backend for it and never had: `wt start` cannot start it
    - `llama_cpp` entries back in `benchmarks/qwen3.8-benchmark` and
      `benchmarks/ornith-1.5-benchmark`: the `DIRECT_URLS`, `DIRECT_MODELS`,
@@ -194,10 +194,10 @@ the plist is installed, `launchctl unload` it by hand:
   of sweeping many pairings per benchmark session — so there is nothing to
   restore from a plist here, only the code wiring below.
 - Registry: `[[providers]] id = "mlx_lm_server"` with
-  `auth.base_url = "http://localhost:8001/v1"` (`defaultProviderRow` in
-  `wt/internal/config/registry_seed.go`); one variant = one target+draft
+  `auth.base_url = "http://localhost:8001/v1"` (its `Seed` in
+  `wt/internal/provider/table.go`); one variant = one target+draft
   pairing (`ModelEntry.fetch` = target, `ModelEntry.draft` = draft).
-- Code wiring: `defaultProviderIDs` (`wt/internal/config/registry_seed.go`)
+- Code wiring: the provider table (`wt/internal/provider/table.go`)
   and `DEFAULT_PROVIDER_IDS` (`llmbench/src/llmbench/registry.py`), `SUPPORTED_PROVIDER_IDS`
   (`llmbench/src/llmbench/providers/lifecycle/backends/__init__.py`,
   re-exported by `llmbench/src/llmbench/benchmark/isolation.py`),
