@@ -13,6 +13,15 @@ const MtplxPort = 8003
 // as its key: the name OpenRouter's own tools and this repo's LiteLLM setup use.
 const OpenRouterKeyEnv = "OPENROUTER_API_KEY"
 
+// Default origins and model directories: each is named once and read by both a
+// family's facts and its provider's seed row, so the two cannot drift.
+const (
+	omlxOrigin    = "http://localhost:8000"
+	mlxLMOrigin   = "http://localhost:8001"
+	omlxModelDir  = "~/.omlx/models"
+	mtplxModelDir = "~/.mtplx/models"
+)
+
 var mtplxOrigin = "http://localhost:" + strconv.Itoa(MtplxPort)
 
 var openaiLocal = Policy{Prefix: "openai/", APIKey: "not-needed", V1Base: true}
@@ -46,7 +55,7 @@ var providers = []Spec{
 		Policy: &openaiLocal,
 		Seed: &Seed{
 			Name: "mlx-lm server (target+draft)", Location: "local", AuthType: "none",
-			BaseURL: "http://localhost:8001/v1",
+			BaseURL: mlxLMOrigin + "/v1",
 		},
 	},
 	{
@@ -75,17 +84,17 @@ var families = map[string]FamilySpec{
 		RoutesFollowArtifact: true, Tenancy: Shared,
 	},
 	"omlx": {
-		Name: "omlx", DefaultOrigin: "http://localhost:8000", DefaultModelDir: "~/.omlx/models",
+		Name: "omlx", DefaultOrigin: omlxOrigin, DefaultModelDir: omlxModelDir,
 		Served: true, Tenancy: Pool,
 	},
 	"mtplx": {
-		Name: "mtplx", DefaultOrigin: mtplxOrigin, DefaultModelDir: "~/.mtplx/models",
+		Name: "mtplx", DefaultOrigin: mtplxOrigin, DefaultModelDir: mtplxModelDir,
 		WtPort: MtplxPort, Served: true, Tenancy: Exclusive,
 	},
 	// mlx_lm_server is NoTenancy: wt cannot start it (llmbench does), so
 	// lifecycle.TenancyOf has no backend for it.
 	"mlx_lm_server": {
-		Name: "mlx_lm_server", DefaultOrigin: "http://localhost:8001",
+		Name: "mlx_lm_server", DefaultOrigin: mlxLMOrigin,
 		RunningOnly: true, Served: true,
 	},
 }
