@@ -10,6 +10,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // Target names the model to start by its provider-side name — exactly
@@ -86,9 +87,10 @@ type OthersAnswer struct {
 // Resident is a model of another provider family that is loaded while a
 // start runs: it holds memory the target will share. Stoppable is false when
 // wt has no backend that can stop it (mlx_lm_server), or when it is an omlx
-// model still loading, which omlx refuses to unload. PID is set for an mtplx
-// still loading, known only by wt's pidfile: that one is stopped only through
-// the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
+// model still loading, which omlx refuses to unload. PID is set for a process
+// server (mtplx) still loading, known only by wt's pidfile: that one is
+// stopped only through the verified pidfile stop (stopLoadingServer), never by
+// a pid alone.
 type Resident struct {
 	Entry     localmodels.Entry
 	Stoppable bool
@@ -216,16 +218,17 @@ func (e *PortBusyError) Error() string {
 	return fmt.Sprintf("port %d is in use by another process — stop it before starting this model", e.Port)
 }
 
-// MtplxAddressError means the registry's mtplx base_url gives a start no
-// address: it names no port and is not a url wt puts its own on, or it does
-// not parse. wt serves mtplx on 127.0.0.1 and gives a url with no port its
-// port only where that server answers (config.Provider.Origin); a server
-// spawned for any other url would not be the one at that address, so nothing
-// is spawned. Origin is the address as wt reads it.
-type MtplxAddressError struct{ Origin string }
+// PortlessAddressError means the registry's base_url for a process family
+// (Provider, e.g. mtplx) gives a start no address: it names no port and is
+// not a url wt puts its own on, or it does not parse. wt serves the family on
+// 127.0.0.1 and gives a url with no port its port only where that server
+// answers (config.Provider.Origin); a server spawned for any other url would
+// not be the one at that address, so nothing is spawned. Origin is the
+// address as wt reads it.
+type PortlessAddressError struct{ Provider, Origin string }
 
-func (e *MtplxAddressError) Error() string {
-	return fmt.Sprintf("the registry's mtplx base_url (%s) names no port, and wt serves mtplx on 127.0.0.1 — name the port mtplx listens on in the base_url, or use http://127.0.0.1", e.Origin)
+func (e *PortlessAddressError) Error() string {
+	return fmt.Sprintf("the registry's %s base_url (%s) names no port, and wt serves %s on 127.0.0.1 — name the port %s listens on in the base_url, or use http://127.0.0.1", e.Provider, e.Origin, e.Provider, e.Provider)
 }
 
 // OccupancyUnknownError means the provider's live state could not be
@@ -236,6 +239,18 @@ type OccupancyUnknownError struct{ ProviderID, Origin string }
 
 func (e *OccupancyUnknownError) Error() string {
 	return fmt.Sprintf("cannot tell whether %s at %s is already serving a model — confirm before replacing it", e.ProviderID, e.Origin)
+}
+
+// LoadingInstanceError means a ScopeMachine family's one instance (a process wt
+// spawned, pid PID) is still loading, so a start cannot tell what it will
+// serve and must not spawn a second one on the machine.
+type LoadingInstanceError struct {
+	ProviderID string
+	PID        int
+}
+
+func (e *LoadingInstanceError) Error() string {
+	return fmt.Sprintf("%s already has an instance (pid %d) still loading; wait for it to finish, or run `wt stop %s`", e.ProviderID, e.PID, e.ProviderID)
 }
 
 // KeyRefusedError means a provider's server refused a request for want of a
@@ -338,11 +353,19 @@ func targetIs(snap localmodels.Snapshot, family string, t Target, is func(localm
 // agreement used to be manual — the occupancy check held its own hardcoded
 // family list — so a new single-model backend could be startable while the
 // check still reported no occupant, replacing a running model without a
-// confirmation.
-var backendsByFamily = map[string]backend{
-	"ollama": ollamaBackend{},
-	"omlx":   omlxBackend{},
-	"mtplx":  mtplxBackend{},
+// confirmation. Every process family in the provider table
+// (provider.ProcessFamilies) gets the one spec-driven processServer backend.
+var backendsByFamily = buildBackends()
+
+func buildBackends() map[string]backend {
+	m := map[string]backend{
+		"ollama": ollamaBackend{},
+		"omlx":   omlxBackend{},
+	}
+	for _, family := range provider.ProcessFamilies() {
+		m[family] = processServer{family}
+	}
+	return m
 }
 
 // resolveEvictions decides which running models starting t would displace. It
@@ -383,7 +406,10 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 	return victims, false
 }
 
-// Start starts t. It is a no-op when live Inventory shows t already running.
+// Start starts t. It is a no-op when live Inventory shows t already running,
+// or when a machine-scope family's readiness command finds its one instance
+// already serving t, on whatever port (machineOccupant: the instance is
+// adopted; one serving another model is the occupant).
 // A t that omlx is still loading is not running yet: Start joins that load
 // and returns once the model is loaded, asking nothing (see evictions). It
 // returns *OccupiedError (touching nothing) when it would replace a running
@@ -428,8 +454,13 @@ func startWith(ctx context.Context, e *env, cfg *config.Config, t Target, opts O
 	return nil
 }
 
+// familyOf is the family a start's provider id belongs to
+// (localmodels.Family); a test swaps it so a synthetic family's provider id
+// names that family.
+var familyOf = localmodels.Family
+
 func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Options) error {
-	family := localmodels.Family(t.ProviderID)
+	family := familyOf(t.ProviderID)
 	b := e.backends[family]
 	if b == nil {
 		return &UnsupportedError{ProviderID: t.ProviderID}
@@ -443,6 +474,19 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if isRunning(snap, family, t) {
 		return nil
 	}
+	// A ScopeMachine family (rec) runs one instance on the whole machine, on
+	// whatever port it was started with, so the snapshot's probe of the
+	// registry's port cannot see it: its readiness command answers instead.
+	// One already serving t is adopted, the same no-op as a target the
+	// snapshot shows running (the route hook still runs); one serving another
+	// model is the occupant, asked about and stopped like any other.
+	foreign, foreignFound, adopt, merr := e.machineOccupant(ctx, cfg, family, t)
+	if merr != nil {
+		return merr
+	}
+	if adopt {
+		return nil
+	}
 	// Residents are read only when there is a question to ask or an approved
 	// stop to make: a Decided answer with nothing to stop (every caller
 	// today) would throw them away, and reading them can cost a pidfile read
@@ -452,7 +496,13 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if !opts.Others.Decided || len(opts.Others.Stop) > 0 {
 		others, othersUnknown = e.residents(cfg, snap, family, t)
 	}
-	victims, unknown := e.resolveEvictions(ctx, cfg, family, t, snap)
+	var victims []localmodels.Entry
+	var unknown bool
+	if foreignFound {
+		victims = []localmodels.Entry{foreign}
+	} else {
+		victims, unknown = e.resolveEvictions(ctx, cfg, family, t, snap)
+	}
 	if unknown && !opts.AllowReplace {
 		origin := localmodels.FamilyOrigin(cfg, family)
 		return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}
@@ -546,7 +596,7 @@ func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, othe
 		}
 		var err error
 		if r.PID > 0 {
-			err = e.stopLoadingMtplx(ctx, cfg, r.PID)
+			err = e.stopLoadingServer(ctx, cfg, localmodels.Family(r.Entry.ProviderID), r.PID)
 		} else if b := e.backends[localmodels.Family(r.Entry.ProviderID)]; b == nil {
 			err = &UnsupportedError{ProviderID: r.Entry.ProviderID}
 		} else {

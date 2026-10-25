@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"errors"
 	"fmt"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // StageLabel is the user-facing phrase for a start stage, shared by the TUI's
@@ -29,7 +31,9 @@ func StageLabel(s Stage) string {
 // TUI's picker status line and the non-TUI driver's stderr. A down daemon
 // names the provider and origin (the user has to start an app or service);
 // the binary, port and mtplx address errors are already actionable as
-// written; a server
+// written; a provider key that could not be read (*KeyUnreadableError) names
+// the model, the family and the resolve error, so the fix is the secret_ref,
+// not the server; a server
 // that was stopped again after it started (*StoppedError) did not fail to
 // start, and is worded as not running; everything
 // else is prefixed with the model id so an unattributed engine error is still
@@ -43,8 +47,11 @@ func StartErrorMessage(id string, err error) string {
 	var bin *BinaryMissingError
 	var busy *PortBusyError
 	var stopped *StoppedError
-	var addr *MtplxAddressError
+	var addr *PortlessAddressError
+	var unreadable *localmodels.KeyUnreadableError
 	switch {
+	case errors.As(err, &unreadable):
+		return fmt.Sprintf("%s: the API key the registry's %s provider names in auth.secret_ref could not be read: %v", id, unreadable.Family, unreadable.Err)
 	case errors.As(err, &down):
 		return fmt.Sprintf("%s is not answering at %s — start it first", down.Provider, down.Origin)
 	case errors.As(err, &bin), errors.As(err, &busy), errors.As(err, &addr):

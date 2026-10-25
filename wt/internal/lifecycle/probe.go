@@ -28,12 +28,23 @@ var chatCompletionMarker = regexp.MustCompile(`"object"\s*:\s*"chat\.completion"
 // probe does one GET. responded is true for ANY HTTP response (2xx or an error
 // status: something is listening); timedOut is true when the listener accepted
 // the connection and then stalled. A refused/reset connection is neither.
+// It sends no Authorization header (probeKeyed with no key).
 func (e *env) probe(ctx context.Context, url string, timeout time.Duration) (responded, timedOut bool) {
+	return e.probeKeyed(ctx, url, "", timeout)
+}
+
+// probeKeyed is probe with key, when there is one, sent as a Bearer token —
+// for a server that wants its key on every route. With key "" the request
+// carries no Authorization header, exactly as probe always sent it.
+func (e *env) probeKeyed(ctx context.Context, url, key string, timeout time.Duration) (responded, timedOut bool) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, false
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	resp, err := e.probeClient.Do(req)
 	if err != nil {
@@ -58,13 +69,14 @@ func (e *env) sleep(ctx context.Context, d time.Duration) error {
 
 // waitPortOpen polls url until it answers (any response counts), returning
 // false (no error) when timeout passes first; ctx cancellation returns its error.
-func (e *env) waitPortOpen(ctx context.Context, url string, timeout time.Duration) (bool, error) {
+// key goes with each probe when there is one ("" sends no header).
+func (e *env) waitPortOpen(ctx context.Context, url, key string, timeout time.Duration) (bool, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if responded, _ := e.probe(ctx, url, time.Second); responded {
+		if responded, _ := e.probeKeyed(ctx, url, key, time.Second); responded {
 			return true, nil
 		}
 		if err := e.sleep(ctx, e.pollInterval); err != nil {
@@ -76,14 +88,15 @@ func (e *env) waitPortOpen(ctx context.Context, url string, timeout time.Duratio
 
 // portClosedWithin polls url until it stops answering. A response — success or
 // error status — or a read timeout means something still holds the port; only
-// a connection-level failure means it closed.
-func (e *env) portClosedWithin(ctx context.Context, url string, timeout time.Duration) (bool, error) {
+// a connection-level failure means it closed. key goes with each probe when
+// there is one ("" sends no header).
+func (e *env) portClosedWithin(ctx context.Context, url, key string, timeout time.Duration) (bool, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		responded, timedOut := e.probe(ctx, url, time.Second)
+		responded, timedOut := e.probeKeyed(ctx, url, key, time.Second)
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
@@ -98,8 +111,12 @@ func (e *env) portClosedWithin(ctx context.Context, url string, timeout time.Dur
 }
 
 // waitForModel polls modelsURL until it lists model (lenient name match), the
-// serve process dies (when proc is given), or timeout passes.
-func (e *env) waitForModel(ctx context.Context, modelsURL, model string, proc procWatch, timeout time.Duration) error {
+// serve process dies (when proc is given), or timeout passes. key, when there
+// is one, goes with each request as a Bearer token; a server that refuses it
+// (401/403) ends the wait at once with a *KeyRefusedError, since no amount of
+// polling changes that answer. With no key a refusal is polled through as
+// before.
+func (e *env) waitForModel(ctx context.Context, modelsURL, model string, proc procWatch, key string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
@@ -110,7 +127,11 @@ func (e *env) waitForModel(ctx context.Context, modelsURL, model string, proc pr
 				return fmt.Errorf("serve process exited during model load: %v", err)
 			}
 		}
-		for _, id := range localmodels.FetchModelIDs(e.probeClient, modelsURL) {
+		ids, ferr := localmodels.FetchModelIDsKeyed(e.probeClient, modelsURL, key)
+		if key != "" && errors.Is(ferr, localmodels.ErrKeyRefused) {
+			return &KeyRefusedError{URL: modelsURL, KeySent: true, Detail: ferr.Error()}
+		}
+		for _, id := range ids {
 			if localmodels.NameMatches(id, model) {
 				return nil
 			}
@@ -264,7 +285,13 @@ func trimTrailingPartialRune(s string) string {
 func (e *env) liveServed(ctx context.Context, cfg *config.Config, family string) (ids []string, known bool) {
 	origin := localmodels.FamilyOrigin(cfg, family)
 	modelsURL := origin + "/v1/models"
-	responded, timedOut := e.probe(ctx, modelsURL, e.prebindTimeout)
+	// A keyed server is asked with its key, as ServedIDs below asks it;
+	// omlx keeps its own key handling, so its liveness probe stays keyless.
+	key := ""
+	if family != "omlx" {
+		key = localmodels.FamilyAPIKey(cfg, family)
+	}
+	responded, timedOut := e.probeKeyed(ctx, modelsURL, key, e.prebindTimeout)
 	switch {
 	case responded:
 		// The same question the inventory asks, so the two agree: for omlx,

@@ -299,7 +299,7 @@ const MtplxPort = provider.MtplxPort
 // this machine, an /etc/hosts alias, is such a host: nothing here resolves
 // names, so that url has to name its port; so are ::1 and 127.0.0.2, this
 // machine but not 127.0.0.1). `wt start` refuses an mtplx url left with no
-// port (lifecycle.MtplxAddressError); and every other provider — wt never
+// port (lifecycle.PortlessAddressError); and every other provider — wt never
 // tells omlx or ollama a port (they listen where their own settings say), so
 // there the address wt probes, the one a start waits on and the route's
 // api_base already agree, and a default port would be a guess.

@@ -6,6 +6,7 @@ package localmodels
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -47,11 +48,34 @@ func FetchModelIDs(client *http.Client, url string) []string {
 // is serving". A nil error with zero ids means the server answered and is
 // serving nothing.
 func FetchModelIDsErr(client *http.Client, url string) ([]string, error) {
-	resp, err := client.Get(url)
+	return FetchModelIDsKeyed(client, url, "")
+}
+
+// ErrKeyRefused is the error a probe wraps when the server answered 401 or
+// 403: it is up and understood the request, and turns it away for want of a
+// valid API key. A caller tells it apart with errors.Is — it is never "down".
+var ErrKeyRefused = errors.New("refused for want of a valid API key")
+
+// FetchModelIDsKeyed is FetchModelIDsErr with key, when there is one, sent as
+// a Bearer token. With key "" the request carries no Authorization header at
+// all: a provider with no secret_ref is asked exactly as it always was. A 401
+// or 403 answer is an error wrapping ErrKeyRefused.
+func FetchModelIDsKeyed(client *http.Client, url, key string) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("GET %s: status %d: %w", url, resp.StatusCode, ErrKeyRefused)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
 	}

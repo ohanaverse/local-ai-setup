@@ -2,9 +2,11 @@ package localmodels
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -325,5 +327,119 @@ func TestInventoryLoadingFlagEdges(t *testing.T) {
 		if en, ok := byModelID(snap, id); !ok || !en.Running || !en.Loading {
 			t.Errorf("%s = %+v ok=%v, want running and loading", id, en, ok)
 		}
+	}
+}
+
+// keyedModelsServer serves /v1/models listing ids, but only to a request
+// carrying "Bearer <key>" — the rec-style server whose every route, /health
+// and /v1/models included, wants the key. Every request's Authorization header
+// is recorded, so a test can also pin what was sent.
+func keyedModelsServer(t *testing.T, key string, ids ...string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		data := []map[string]string{}
+		for _, id := range ids {
+			data = append(data, map[string]string{"id": id})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+// TestFetchModelIDsSendsNoHeaderWithoutAKey pins the hard constraint of the
+// keyed probe: with no key the request carries no Authorization header at
+// all, so ollama, omlx and mtplx with no secret_ref are asked exactly as they
+// were before keys reached the probes.
+func TestFetchModelIDsSendsNoHeaderWithoutAKey(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Values("Authorization")...)
+		_, _ = w.Write([]byte(`{"data":[{"id":"a"}]}`))
+	}))
+	defer srv.Close()
+	if ids := FetchModelIDs(testClient, srv.URL); !slices.Equal(ids, []string{"a"}) {
+		t.Fatalf("FetchModelIDs = %v, want [a]", ids)
+	}
+	if _, err := FetchModelIDsKeyed(testClient, srv.URL, ""); err != nil {
+		t.Fatalf("FetchModelIDsKeyed(no key): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Authorization headers sent = %q, want none", got)
+	}
+}
+
+// TestFetchModelIDsKeyedSendsBearer verifies a key goes with the request as a
+// Bearer token, so a server that wants a key on /v1/models answers the probe.
+func TestFetchModelIDsKeyedSendsBearer(t *testing.T) {
+	srv, seen := keyedModelsServer(t, "k", "Org/A", "Org/B")
+	ids, err := FetchModelIDsKeyed(testClient, srv.URL, "k")
+	if err != nil || !slices.Equal(ids, []string{"Org/A", "Org/B"}) {
+		t.Fatalf("FetchModelIDsKeyed = %v, %v; want [Org/A Org/B]", ids, err)
+	}
+	if !slices.Equal(*seen, []string{"Bearer k"}) {
+		t.Errorf("Authorization = %q, want [Bearer k]", *seen)
+	}
+}
+
+// TestFetchModelIDsKeyedRefusal verifies a 401 is told apart from any other
+// failure: the error is ErrKeyRefused, so a caller can say "set or fix the
+// key" instead of "the server is broken", and no ids come back.
+func TestFetchModelIDsKeyedRefusal(t *testing.T) {
+	srv, _ := keyedModelsServer(t, "k", "Org/A")
+	ids, err := FetchModelIDsKeyed(testClient, srv.URL, "wrong")
+	if !errors.Is(err, ErrKeyRefused) || ids != nil {
+		t.Errorf("FetchModelIDsKeyed(wrong key) = %v, %v; want nil, ErrKeyRefused", ids, err)
+	}
+}
+
+// TestServedIDsUsesTheFamilysSecretRef verifies ServedIDs asks a keyed
+// family's server with the key its registry row's auth.secret_ref names: with
+// it the ids come back; with no secret_ref the same server refuses and the
+// error says so (ErrKeyRefused) rather than reading as an empty server.
+func TestServedIDsUsesTheFamilysSecretRef(t *testing.T) {
+	srv, _ := keyedModelsServer(t, "k", "Org/Q")
+	keyed := &config.Config{Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "api_key", BaseURL: srv.URL, SecretRef: "k"}}}}
+	if ids, err := ServedIDs(keyed, testClient, "mtplx"); err != nil || !slices.Equal(ids, []string{"Org/Q"}) {
+		t.Errorf("keyed ServedIDs = %v, %v; want [Org/Q]", ids, err)
+	}
+	keyless := &config.Config{Providers: []config.Provider{{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: srv.URL}}}}
+	if ids, err := ServedIDs(keyless, testClient, "mtplx"); !errors.Is(err, ErrKeyRefused) || ids != nil {
+		t.Errorf("keyless ServedIDs = %v, %v; want nil, ErrKeyRefused", ids, err)
+	}
+}
+
+// TestInventoryShowsAKeyedFamilyPartialNotDown verifies a server that turns
+// the probe away for want of a key is up, not down: the family is
+// StatusPartial (its Running flags cannot be read) with the refusal as its
+// probe failure, and never Down — Down would let a sync drop the routes of a
+// serving model and a start replace it unasked. A secret_ref wt cannot
+// resolve reads the same way: partial, with a *KeyUnreadableError naming the
+// family.
+func TestInventoryShowsAKeyedFamilyPartialNotDown(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "Org--Q")
+	srv, _ := keyedModelsServer(t, "k", "Org/Q")
+
+	snap := inventory(&config.Config{Providers: []config.Provider{localProvider("mtplx", srv.URL, root)}}, testClient)
+	if snap.Providers["mtplx"] != StatusPartial || snap.Down["mtplx"] || !errors.Is(snap.ProbeFailures["mtplx"], ErrKeyRefused) {
+		t.Errorf("unkeyed: status %q down %v failure %v; want partial, not down, ErrKeyRefused", snap.Providers["mtplx"], snap.Down["mtplx"], snap.ProbeFailures["mtplx"])
+	}
+
+	unreadable := localProvider("mtplx", srv.URL, root)
+	unreadable.Auth = config.AuthConfig{Type: "api_key", BaseURL: srv.URL, SecretRef: "exec:/nonexistent/wt-test-secret"}
+	snap = inventory(&config.Config{Providers: []config.Provider{unreadable}}, testClient)
+	var ku *KeyUnreadableError
+	if snap.Providers["mtplx"] != StatusPartial || snap.Down["mtplx"] || !errors.As(snap.ProbeFailures["mtplx"], &ku) || ku.Family != "mtplx" {
+		t.Errorf("unreadable key: status %q down %v failure %v; want partial, not down, *KeyUnreadableError{mtplx}", snap.Providers["mtplx"], snap.Down["mtplx"], snap.ProbeFailures["mtplx"])
 	}
 }

@@ -1,10 +1,12 @@
 package lifecycle
 
 import (
+	"context"
 	"sort"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // poolAdmissionMarginPct is the share of omlx's ceiling wt keeps free when it
@@ -55,6 +57,53 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 		return others, true
 	}
 	return poolVictims(snap.OmlxPool, t, others), true
+}
+
+// machineOccupant is what a start of t finds of a ScopeMachine family's one
+// instance on this machine, through its readiness command (foreignInstance),
+// whatever port it is on and whoever started it. adopt: the instance already
+// serves t, so the start has nothing to do. Otherwise found reports an
+// instance serving another model, returned as occ in the shape every
+// occupant has, so the start asks before replacing it (OccupiedError) and
+// stops it with the family's stop. A family of any other scope runs no
+// command and finds nothing; so does one whose binary or key cannot be had,
+// which the backend's start then reports. An instance wt spawned that is
+// still loading answers "not ready" too; the pidfile finds it, and the start
+// fails with *LoadingInstanceError rather than spawn a second one.
+func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, family string, t Target) (occ localmodels.Entry, found, adopt bool, err error) {
+	spec, ok := machineScoped(family)
+	if !ok {
+		return localmodels.Entry{}, false, false, nil
+	}
+	bin, err := e.lookPath(spec.Binary)
+	if err != nil {
+		return localmodels.Entry{}, false, false, nil
+	}
+	key, err := localmodels.FamilyAPIKeyErr(cfg, family)
+	if err != nil {
+		return localmodels.Entry{}, false, false, nil
+	}
+	st, running := e.foreignInstance(ctx, family, bin, key)
+	if !running {
+		// A readiness command also says "not ready" for an instance wt
+		// spawned that is still loading; its pidfile is the only sign of it.
+		if _, l := e.loadingServer(cfg, family); l.PID > 0 {
+			return localmodels.Entry{}, false, false, &LoadingInstanceError{ProviderID: family, PID: l.PID}
+		}
+		return localmodels.Entry{}, false, false, nil
+	}
+	if st.Model != "" && SameModel(family, st.Model, t.ModelName) {
+		return localmodels.Entry{}, false, true, nil
+	}
+	providerID := family
+	if ids := provider.FamilyProviderIDs(family); len(ids) > 0 {
+		providerID = ids[0]
+	}
+	occ = localmodels.Entry{ProviderID: providerID, ModelID: family, ModelName: st.Model, Running: true}
+	if st.Model != "" {
+		occ.ModelID = config.DiscoveredModelID(family, st.Model)
+	}
+	return occ, true, false, nil
 }
 
 // runningOthers lists the family's running models other than the target.
@@ -171,10 +220,11 @@ func loadingOmlx(family string, en localmodels.Entry) bool {
 // swaps it so none dials a default port.
 var unregisteredAnswering = localmodels.UnregisteredAnswering
 
-// residents is residentOthers plus the answering unregistered families and an mtplx still loading: its port refuses,
-// so the snapshot reads mtplx Down, and only wt's pidfile shows it
-// (loadingMtplx). A pidfile wt cannot check makes mtplx unknown; one that
-// names nothing wt can verify is left out, as the stop picker leaves it.
+// residents is residentOthers plus the answering unregistered families and
+// any other process family's server still loading (mtplx): its port refuses,
+// so the snapshot reads the family Down, and only wt's pidfile shows it
+// (loadingServer). A pidfile wt cannot check makes the family unknown; one
+// that names nothing wt can verify is left out, as the stop picker leaves it.
 func (e *env) residents(cfg *config.Config, snap localmodels.Snapshot, family string, t Target) ([]Resident, []string) {
 	others, unknown := residentOthers(snap, family, t)
 	if !isRunning(snap, family, t) && !isLoading(snap, family, t) {
@@ -186,36 +236,42 @@ func (e *env) residents(cfg *config.Config, snap localmodels.Snapshot, family st
 			sort.Strings(unknown)
 		}
 	}
-	if family == "mtplx" || !snap.Down["mtplx"] || isRunning(snap, family, t) || isLoading(snap, family, t) {
+	if isRunning(snap, family, t) || isLoading(snap, family, t) {
 		return others, unknown
 	}
-	id, l := e.loadingMtplx(cfg)
-	switch {
-	case l.Err != nil:
-		unknown = append(unknown, "mtplx")
-		sort.Strings(unknown)
-	case l.PID > 0:
-		others = append(others, Resident{Entry: loadingMtplxEntry(snap, id.model), Stoppable: true, PID: l.PID})
+	for _, f := range provider.ProcessFamilies() {
+		if f == family || !snap.Down[f] {
+			continue
+		}
+		id, l := e.loadingServer(cfg, f)
+		switch {
+		case l.Err != nil:
+			unknown = append(unknown, f)
+			sort.Strings(unknown)
+		case l.PID > 0:
+			others = append(others, Resident{Entry: loadingServerEntry(snap, f, id.model), Stoppable: true, PID: l.PID})
+		}
 	}
 	return others, unknown
 }
 
-// loadingMtplxEntry is the entry of the model an mtplx still loading is
-// serving (model, its --model-id): the snapshot's own entry for it, so the
-// resident carries the registry id the picker shows, else a discovered one.
-// An mtplx whose command line named no model is the provider alone.
-func loadingMtplxEntry(snap localmodels.Snapshot, model string) localmodels.Entry {
+// loadingServerEntry is the entry of the model family's server still loading
+// is serving (model, the value of its spec's ModelFlag): the snapshot's own
+// entry for it, so the resident carries the registry id the picker shows,
+// else a discovered one. A server whose command line named no model is the
+// provider alone.
+func loadingServerEntry(snap localmodels.Snapshot, family, model string) localmodels.Entry {
 	if model != "" {
 		for _, en := range snap.Entries {
-			if localmodels.Family(en.ProviderID) == "mtplx" && SameModel("mtplx", en.ModelName, model) {
+			if localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, model) {
 				en.Running, en.Loading = true, true
 				return en
 			}
 		}
 	}
-	en := localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx", ModelName: model, Running: true, Loading: true}
+	en := localmodels.Entry{ProviderID: family, ModelID: family, ModelName: model, Running: true, Loading: true}
 	if model != "" {
-		en.ModelID = config.DiscoveredModelID("mtplx", model)
+		en.ModelID = config.DiscoveredModelID(family, model)
 	}
 	return en
 }

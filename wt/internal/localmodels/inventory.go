@@ -174,7 +174,14 @@ func UnregisteredAnswering(cfg *config.Config, client *http.Client, snap Snapsho
 		wg.Add(1)
 		go func(i int, f string) {
 			defer wg.Done()
-			_, err := FetchModelIDsErr(client, FamilyOrigin(cfg, f)+"/v1/models")
+			// A key cannot change the outcome here (a refusal is an answer),
+			// but a keyed server is asked as it wants to be all the same;
+			// omlx's /v1/models stays unkeyed, as its pool path asks it.
+			key := ""
+			if f != "omlx" {
+				key = FamilyAPIKey(cfg, f)
+			}
+			_, err := FetchModelIDsKeyed(client, FamilyOrigin(cfg, f)+"/v1/models", key)
 			answered[i] = err == nil || !refused(err)
 		}(i, f)
 	}
@@ -519,11 +526,16 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 		// (knowsArtifacts stays false), but /v1/models still says whether the
 		// server is serving, with the same trust rules as omlx/mtplx — an
 		// answer is OK, a refused connection is Down (nothing listening), any
-		// other failure is Partial (Running untrustworthy).
-		loaded, err := FetchModelIDsErr(client, origin+"/v1/models")
+		// other failure is Partial (Running untrustworthy). ServedIDs asks
+		// with the family's key when its registry row names one.
+		loaded, err := ServedIDs(cfg, client, family)
 		if err != nil {
 			s.status = StatusPartial
 			s.down = refused(err)
+			var ku *KeyUnreadableError
+			if errors.Is(err, ErrKeyRefused) || errors.As(err, &ku) {
+				s.probeErr = err // the repair is the key, so say so
+			}
 		}
 		s.loaded = loaded
 	}

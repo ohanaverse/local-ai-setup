@@ -43,12 +43,81 @@ func TestTableInvariants(t *testing.T) {
 		if len(FamilyProviderIDs(f)) == 0 {
 			t.Errorf("family %q has no providers", f)
 		}
+		if pr := spec.Process; pr != nil {
+			if spec.Tenancy != Exclusive {
+				t.Errorf("family %q has a Process but tenancy %v, want Exclusive", f, spec.Tenancy)
+			}
+			if pr.Binary == "" {
+				t.Errorf("family %q process has no Binary", f)
+			}
+			// Without these the server wt spawns is never recognised (argv
+			// match) or has no pidfile to be found by.
+			if pr.PidfileDefault == "" || pr.Subcommand == "" || pr.PortFlag == "" {
+				t.Errorf("family %q process needs PidfileDefault, Subcommand and PortFlag", f)
+			}
+			if !slices.Contains(pr.Spawn, "{model}") || !slices.Contains(pr.Spawn, "{port}") {
+				t.Errorf("family %q spawn %v must contain {model} and {port}", f, pr.Spawn)
+			}
+			switch pr.Ready.Kind {
+			case ReadyModelsList:
+			case ReadyCommandJSON:
+				if len(pr.Ready.Command) == 0 || pr.Ready.Path == "" {
+					t.Errorf("family %q command-json ready needs Command and Path", f)
+				}
+			default:
+				t.Errorf("family %q ready kind %q is not known", f, pr.Ready.Kind)
+			}
+		}
+		for _, p := range scopeProblems(spec) {
+			t.Errorf("family %q: %s", f, p)
+		}
 		if spec.DefaultOrigin == "" || strings.HasSuffix(spec.DefaultOrigin, "/") || strings.HasSuffix(spec.DefaultOrigin, "/v1") {
 			t.Errorf("family %q default origin %q must be non-empty with no trailing / or /v1", f, spec.DefaultOrigin)
 		}
 	}
 	if f := Families(); !slices.IsSorted(f) {
 		t.Errorf("Families() = %v, want sorted", f)
+	}
+}
+
+// scopeProblems is what is wrong with a family's Scope: a ScopeMachine
+// family is one instance on the whole machine, so it holds one model at a
+// time (Exclusive), and wt can find that instance on a port the registry
+// does not name only through a readiness command (command-json).
+func scopeProblems(f FamilySpec) []string {
+	if f.Scope != ScopeMachine {
+		return nil
+	}
+	var out []string
+	if f.Tenancy != Exclusive {
+		out = append(out, "scope is machine but tenancy is not Exclusive")
+	}
+	if f.Process == nil || f.Process.Ready.Kind != ReadyCommandJSON {
+		out = append(out, "scope is machine but readiness is not a command-json check")
+	}
+	return out
+}
+
+// TestScopeProblems verifies the ScopeMachine rule TestTableInvariants
+// applies, on synthetic rows: no table row is machine-scoped yet, so without
+// this the rule would pass vacuously and could be wrong unnoticed until rec's
+// row lands.
+func TestScopeProblems(t *testing.T) {
+	cmd := &ProcessSpec{Ready: Ready{Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true"}}
+	list := &ProcessSpec{Ready: Ready{Kind: ReadyModelsList}}
+	for name, tc := range map[string]struct {
+		f    FamilySpec
+		want int
+	}{
+		"port scope, pool":              {FamilySpec{Scope: ScopePort, Tenancy: Pool}, 0},
+		"machine, exclusive, command":   {FamilySpec{Scope: ScopeMachine, Tenancy: Exclusive, Process: cmd}, 0},
+		"machine, pool":                 {FamilySpec{Scope: ScopeMachine, Tenancy: Pool, Process: cmd}, 1},
+		"machine, models list":          {FamilySpec{Scope: ScopeMachine, Tenancy: Exclusive, Process: list}, 1},
+		"machine, shared and unmanaged": {FamilySpec{Scope: ScopeMachine, Tenancy: Shared}, 2},
+	} {
+		if got := scopeProblems(tc.f); len(got) != tc.want {
+			t.Errorf("%s: scopeProblems = %q, want %d problems", name, got, tc.want)
+		}
 	}
 }
 
@@ -223,9 +292,62 @@ func TestResultsAreCopies(t *testing.T) {
 	if got := SeedRow("mtplx"); got["name"] == "mutated" || got["auth"].(map[string]any)["base_url"] == "mutated" {
 		t.Error("SeedRow returned a shared map")
 	}
+	pf, _ := ProcessFor("mtplx")
+	pf.Spawn[0] = "mutated"
+	if again, _ := ProcessFor("mtplx"); again.Spawn[0] == "mutated" {
+		t.Error("ProcessFor shares Spawn with the table")
+	}
+	fam, _ := FamilyByName("mtplx")
+	fam.Process.Stop[0] = "mutated"
+	if again, _ := FamilyByName("mtplx"); again.Process.Stop[0] == "mutated" {
+		t.Error("FamilyByName shares Process.Stop with the table")
+	}
 	spec, _ := Lookup("ollama")
 	spec.Seed.Protocols[0] = "mutated"
 	if again, _ := Lookup("ollama"); again.Seed.Protocols[0] == "mutated" {
 		t.Error("Lookup shares a Seed's Protocols slice with the table")
+	}
+}
+
+// TestProcessSpecMtplx pins every field of mtplx's process facts: the
+// lifecycle engine spawns, stops and recognises the server from them, so a
+// drifted flag would start or kill the wrong thing.
+func TestProcessSpecMtplx(t *testing.T) {
+	got, ok := ProcessFor("mtplx")
+	if !ok {
+		t.Fatal("ProcessFor(mtplx) absent")
+	}
+	want := ProcessSpec{
+		Binary:         "mtplx",
+		Spawn:          []string{"serve", "--model", "{model}", "--port", "{port}", "--host", "127.0.0.1", "--model-id", "{model}"},
+		Stop:           []string{"stop", "--port", "{port}", "--grace-seconds", "10"},
+		PidfileDefault: "/tmp/local-ai-setup-mtplx.pid",
+		LogDefault:     "/tmp/local-ai-setup-mtplx.log",
+		PidfileEnv:     "WT_MTPLX_PIDFILE",
+		Subcommand:     "serve",
+		DaemonModule:   "mtplx.server.openai",
+		PortFlag:       "--port",
+		ModelFlag:      "--model-id",
+		Ready:          Ready{Kind: ReadyModelsList},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ProcessFor(mtplx) = %+v, want %+v", got, want)
+	}
+	if f, _ := FamilyByName("mtplx"); f.Scope != ScopePort {
+		t.Errorf("mtplx scope = %v, want ScopePort", f.Scope)
+	}
+}
+
+// TestProcessFamilies checks only mtplx has process facts: the other families
+// are served by something wt does not spawn, and an engine that found a
+// process for them would try to.
+func TestProcessFamilies(t *testing.T) {
+	if got := ProcessFamilies(); !reflect.DeepEqual(got, []string{"mtplx"}) {
+		t.Errorf("ProcessFamilies() = %v, want [mtplx]", got)
+	}
+	for _, f := range []string{"omlx", "ollama", "mlx_lm_server", ""} {
+		if _, ok := ProcessFor(f); ok {
+			t.Errorf("ProcessFor(%q) present, want absent", f)
+		}
 	}
 }

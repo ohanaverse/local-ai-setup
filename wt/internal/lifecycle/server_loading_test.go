@@ -16,6 +16,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // Tests for the mtplx that is still loading (#308): its port refuses, so the
@@ -60,7 +61,7 @@ func (pt *procTable) env(t *testing.T) *env {
 	t.Helper()
 	dir := t.TempDir()
 	e := testEnv()
-	e.mtplxProc = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
+	e.serverProc["mtplx"] = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
 	e.stopGrace = 60 * time.Millisecond
 	e.stopTimeout = 60 * time.Millisecond
 	e.describe = func(pid int) (procInfo, bool, error) {
@@ -90,15 +91,101 @@ func mine(pid int, start string, argv []string) procInfo {
 
 func writePidfile(t *testing.T, e *env, content string) {
 	t.Helper()
-	if err := os.WriteFile(e.mtplxProc.pidfile, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(e.serverProc["mtplx"].pidfile, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func writeStartRecord(t *testing.T, e *env, content string) {
 	t.Helper()
-	if err := os.WriteFile(e.mtplxProc.startfile(), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(e.serverProc["mtplx"].startfile(), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// acmeSpec is a synthetic process family's spec: every recognition fact
+// differs from mtplx's, so a rule that still reads an mtplx constant fails.
+var acmeSpec = provider.ProcessSpec{Binary: "acme", Subcommand: "run", DaemonModule: "acme.srv", PortFlag: "-p"}
+
+// mtplxSpec is mtplx's process spec as the table has it, and mtplxPidfileEnv
+// the variable that redirects its pidfile (WT_MTPLX_PIDFILE).
+var (
+	mtplxSpec, _    = provider.ProcessFor("mtplx")
+	mtplxPidfileEnv = mtplxSpec.PidfileEnv
+)
+
+// TestServerArgvMatchesSyntheticSpec verifies the command-line rule takes
+// every constant from the spec, not from mtplx: a family other than mtplx is
+// recognised by its own binary, subcommand, daemon module and port flag, and
+// the rule stays as strict (whole arguments, the flag and port as two).
+func TestServerArgvMatchesSyntheticSpec(t *testing.T) {
+	for name, tc := range map[string]struct {
+		argv []string
+		want bool
+	}{
+		"binary as argv[0]":    {[]string{"acme", "run", "-p", "9000"}, true},
+		"python wrapper":       {[]string{"python3", "/x/acme", "run", "-p", "9000"}, true},
+		"daemon module":        {[]string{"/usr/bin/python3", "-m", "acme.srv", "-p", "9000"}, true},
+		"another port":         {[]string{"acme", "run", "-p", "9001"}, false},
+		"words as editor args": {[]string{"vim", "acme", "run", "-p", "9000"}, false},
+		"mtplx's port flag":    {[]string{"acme", "run", "--port", "9000"}, false},
+		"flag and port as one": {[]string{"acme", "run", "-p9000"}, false},
+	} {
+		if got := serverArgvMatches(acmeSpec, tc.argv, 9000); got != tc.want {
+			t.Errorf("%s: serverArgvMatches(%q) = %v, want %v", name, tc.argv, got, tc.want)
+		}
+	}
+}
+
+// TestLoadingServerGeneric verifies the pidfile check works for any process
+// family the spec seam names, not only mtplx: a synthetic acme family whose
+// pidfile names a live acme server reads as loading, and the same pid owned
+// by another user is a stray wt leaves alone.
+func TestLoadingServerGeneric(t *testing.T) {
+	old := processSpecFor
+	processSpecFor = func(family string) (provider.ProcessSpec, bool) {
+		if family == "acme" {
+			return acmeSpec, true
+		}
+		return old(family)
+	}
+	// acme has no provider-table row, so no address of its own: the address
+	// seam gives it port 9000, the port its server is identified on.
+	oldOrigin := familyOriginPort
+	familyOriginPort = func(cfg *config.Config, family string) (string, int, error) {
+		if family == "acme" {
+			return "http://127.0.0.1:9000", 9000, nil
+		}
+		return oldOrigin(cfg, family)
+	}
+	t.Cleanup(func() { processSpecFor, familyOriginPort = old, oldOrigin })
+	if p := serverPort(loadCfg(), "acme"); p != 9000 {
+		t.Fatalf("serverPort(acme) = %d, want 9000 from the address seam", p)
+	}
+	argv := []string{"acme", "run", "-p", "9000"}
+	for name, tc := range map[string]struct {
+		uid       int
+		wantPID   int
+		wantStray string
+	}{
+		"own server": {os.Getuid(), 4242, ""},
+		"another's":  {os.Getuid() + 1, 0, "which another user owns"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			info := mine(4242, "100.5", argv)
+			info.uid = tc.uid
+			pt := &procTable{procs: map[int]procInfo{4242: info}}
+			e := pt.env(t)
+			dir := t.TempDir()
+			e.serverProc["acme"] = pidProcess{name: "acme", pidfile: filepath.Join(dir, "acme.pid"), logfile: filepath.Join(dir, "acme.log")}
+			if err := os.WriteFile(e.serverProc["acme"].pidfile, []byte("4242"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, l := e.loadingServer(loadCfg(), "acme")
+			if l.PID != tc.wantPID || l.Err != nil || !strings.Contains(l.Stray, tc.wantStray) || (tc.wantStray == "") != (l.Stray == "") {
+				t.Errorf("loadingServer = %+v, want PID %d and a stray containing %q", l, tc.wantPID, tc.wantStray)
+			}
+		})
 	}
 }
 
@@ -134,8 +221,8 @@ func TestIsMtplxServerMatchesOnlyTheServerWtSpawns(t *testing.T) {
 		"sleep":                     {[]string{"sleep", "60"}, false},
 		"nothing":                   {nil, false},
 	} {
-		if got := isMtplxServer(tc.argv, 8003); got != tc.want {
-			t.Errorf("%s: isMtplxServer(%q) = %v, want %v", name, tc.argv, got, tc.want)
+		if got := serverArgvMatches(mtplxSpec, tc.argv, 8003); got != tc.want {
+			t.Errorf("%s: serverArgvMatches(%q) = %v, want %v", name, tc.argv, got, tc.want)
 		}
 	}
 }
@@ -209,12 +296,12 @@ func TestLoadingMtplxNeverRestsOnThePidAlone(t *testing.T) {
 				writeStartRecord(t, e, tc.record)
 			}
 			if tc.linkPidfile {
-				symlinked(t, e.mtplxProc.pidfile)
+				symlinked(t, e.serverProc["mtplx"].pidfile)
 			}
 			if tc.linkRecord {
-				symlinked(t, e.mtplxProc.startfile())
+				symlinked(t, e.serverProc["mtplx"].startfile())
 			}
-			id, l := e.loadingMtplx(loadCfg())
+			id, l := e.loadingServer(loadCfg(), "mtplx")
 			if l.PID != tc.wantPID || id.pid != tc.wantPID || id.group != tc.wantGroup {
 				t.Errorf("PID = %d (ident %+v), want pid %d group %v", l.PID, id, tc.wantPID, tc.wantGroup)
 			}
@@ -228,7 +315,7 @@ func TestLoadingMtplxNeverRestsOnThePidAlone(t *testing.T) {
 				t.Errorf("signals = %v, want none: reading the state signals nothing", pt.signals)
 			}
 			if tc.pidfile != "" {
-				if _, err := os.Lstat(e.mtplxProc.pidfile); err != nil {
+				if _, err := os.Lstat(e.serverProc["mtplx"].pidfile); err != nil {
 					t.Errorf("the pidfile was removed by a read (%v): wt start does not prune it, and neither does this", err)
 				}
 			}
@@ -290,8 +377,8 @@ func loadingEnv(t *testing.T, recorded bool) (*procTable, *env) {
 }
 
 func filesLeft(e *env) (pidfile, record bool) {
-	_, perr := os.Stat(e.mtplxProc.pidfile)
-	_, rerr := os.Stat(e.mtplxProc.startfile())
+	_, perr := os.Stat(e.serverProc["mtplx"].pidfile)
+	_, rerr := os.Stat(e.serverProc["mtplx"].startfile())
 	return perr == nil, rerr == nil
 }
 
@@ -323,7 +410,7 @@ func TestStopLoadingMtplxTerminatesTheVerifiedServer(t *testing.T) {
 			pt.procs[4242] = info
 			pt.signalErr = tc.sigErr
 			pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) { delete(pt.procs, 4242) }
-			if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+			if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242); err != nil {
 				t.Fatal(err)
 			}
 			if !slices.Equal(pt.signals, []string{tc.want}) {
@@ -350,7 +437,7 @@ func TestStopLoadingMtplxKillsOnlyTheSameProcess(t *testing.T) {
 				delete(pt.procs, 4242)
 			}
 		}
-		if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+		if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242); err != nil {
 			t.Fatal(err)
 		}
 		if !slices.Equal(pt.signals, []string{"-4242:15", "-4242:9"}) {
@@ -371,7 +458,7 @@ func TestStopLoadingMtplxKillsOnlyTheSameProcess(t *testing.T) {
 			info.pgid = 77
 			pt.procs[4242] = info
 		}
-		if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+		if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242); err != nil {
 			t.Fatal(err)
 		}
 		if !slices.Equal(pt.signals, []string{"-4242:15", "4242:9"}) {
@@ -386,7 +473,7 @@ func TestStopLoadingMtplxKillsOnlyTheSameProcess(t *testing.T) {
 				pt.signalErr = syscall.ESRCH
 			}
 		}
-		if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+		if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242); err != nil {
 			t.Fatalf("err = %v, want nil: ESRCH from the kill means the process is gone", err)
 		}
 	})
@@ -395,7 +482,7 @@ func TestStopLoadingMtplxKillsOnlyTheSameProcess(t *testing.T) {
 		pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) {
 			pt.procs[4242] = mine(4242, "200.0", daemonArgv(loadPort)) // another process, same pid
 		}
-		if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+		if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242); err != nil {
 			t.Fatal(err)
 		}
 		if !slices.Equal(pt.signals, []string{"-4242:15"}) {
@@ -407,7 +494,7 @@ func TestStopLoadingMtplxKillsOnlyTheSameProcess(t *testing.T) {
 		pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) {
 			pt.procs[4242] = mine(4242, "100.5", []string{"sleep", "60"})
 		}
-		err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+		err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242)
 		if err == nil || !strings.Contains(err.Error(), "not killed") {
 			t.Fatalf("err = %v, want a refusal to kill", err)
 		}
@@ -427,7 +514,7 @@ func TestStopLoadingMtplxKillsOnlyTheSameProcess(t *testing.T) {
 func TestStopLoadingMtplxNeverReportsAServerItLeftUp(t *testing.T) {
 	t.Run("survives SIGKILL", func(t *testing.T) {
 		pt, e := loadingEnv(t, true)
-		err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+		err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242)
 		if err == nil || !strings.Contains(err.Error(), "still running") {
 			t.Fatalf("err = %v, want still-running", err)
 		}
@@ -441,7 +528,7 @@ func TestStopLoadingMtplxNeverReportsAServerItLeftUp(t *testing.T) {
 	t.Run("process table unreadable after the signal", func(t *testing.T) {
 		pt, e := loadingEnv(t, true)
 		pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) { pt.describe = errors.New("sysctl: boom") }
-		err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+		err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242)
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("err = %v, want the process table's error", err)
 		}
@@ -464,7 +551,7 @@ func TestStopLoadingMtplxNeverReportsAServerItLeftUp(t *testing.T) {
 				}
 			}
 		}
-		err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+		err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242)
 		if err == nil || !strings.Contains(err.Error(), "cannot confirm mtplx (pid 4242) stopped") {
 			t.Fatalf("err = %v, want cannot-confirm: an unread process is not a stopped one", err)
 		}
@@ -478,7 +565,7 @@ func TestStopLoadingMtplxNeverReportsAServerItLeftUp(t *testing.T) {
 	t.Run("signal refused", func(t *testing.T) {
 		pt, e := loadingEnv(t, true)
 		e.signal = func(int, syscall.Signal) error { return syscall.EPERM }
-		err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+		err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242)
 		if err == nil || !errors.Is(err, syscall.EPERM) {
 			t.Fatalf("err = %v, want EPERM", err)
 		}
@@ -500,7 +587,7 @@ func TestStopLoadingMtplxSignalsNothingItDidNotJustVerify(t *testing.T) {
 			pt.procs[5000] = mine(5000, "300.0", daemonArgv(loadPort))
 			writePidfile(t, e, "5000")
 		},
-		"pidfile gone": func(t *testing.T, _ *procTable, e *env) { _ = os.Remove(e.mtplxProc.pidfile) },
+		"pidfile gone": func(t *testing.T, _ *procTable, e *env) { _ = os.Remove(e.serverProc["mtplx"].pidfile) },
 		"process is another program now": func(_ *testing.T, pt *procTable, _ *env) {
 			pt.procs[4242] = mine(4242, "100.5", []string{"sleep", "60"})
 		},
@@ -513,7 +600,7 @@ func TestStopLoadingMtplxSignalsNothingItDidNotJustVerify(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pt, e := loadingEnv(t, true)
 			change(t, pt, e)
-			if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err == nil {
+			if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242); err == nil {
 				t.Error("err = nil, want a refusal")
 			}
 			if len(pt.signals) != 0 {
@@ -549,7 +636,7 @@ func TestStopLoadingMtplxCancelledSendsNoKill(t *testing.T) {
 					cancel()
 				}
 			}
-			err := e.stopLoadingMtplx(ctx, loadCfg(), 4242)
+			err := e.stopLoadingServer(ctx, loadCfg(), "mtplx", 4242)
 			var interrupted *StopInterruptedError
 			if !errors.Is(err, context.Canceled) || !errors.As(err, &interrupted) {
 				t.Fatalf("err = %v, want a *StopInterruptedError wrapping context.Canceled", err)
@@ -606,7 +693,7 @@ func TestStopLoadingMtplxWaitsOutAProcessThatIsExiting(t *testing.T) {
 					delete(pt.procs, 4242)
 				}
 			}
-			err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242)
+			err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242)
 			if (tc.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}
@@ -631,10 +718,10 @@ func TestStopLoadingMtplxLeavesANewerStartsPidfile(t *testing.T) {
 		delete(pt.procs, 4242)
 		writePidfile(t, e, "5000")
 	}
-	if err := e.stopLoadingMtplx(context.Background(), loadCfg(), 4242); err != nil {
+	if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", 4242); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(e.mtplxProc.pidfile); string(b) != "5000" {
+	if b, _ := os.ReadFile(e.serverProc["mtplx"].pidfile); string(b) != "5000" {
 		t.Errorf("pidfile = %q, want the newer start's pid 5000 left in place", b)
 	}
 }
@@ -672,7 +759,7 @@ func TestMtplxStopRemovesThePidfileOfTheServerItStopped(t *testing.T) {
 	for name, recorded := range map[string]bool{"started by this wt": true, "pid-only pidfile": false} {
 		t.Run(name, func(t *testing.T) {
 			pt, e, cfg := stopEnv(t, recorded, func(pt *procTable, _ *env) { delete(pt.procs, 4242) })
-			if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+			if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err != nil {
 				t.Fatal(err)
 			}
 			if pidfile, record := filesLeft(e); pidfile || record {
@@ -720,7 +807,7 @@ func TestMtplxStopLeavesAPidfileItCannotTieToTheServerItStopped(t *testing.T) {
 			wantPid: "999",
 		},
 		"is a symlink": {
-			before:  func(t *testing.T, pt *procTable, e *env) { symlinked(t, e.mtplxProc.pidfile) },
+			before:  func(t *testing.T, pt *procTable, e *env) { symlinked(t, e.serverProc["mtplx"].pidfile) },
 			wantPid: "4242",
 		},
 		"process table unreadable": {
@@ -757,10 +844,10 @@ func TestMtplxStopLeavesAPidfileItCannotTieToTheServerItStopped(t *testing.T) {
 			if tc.before != nil {
 				tc.before(t, pt, e)
 			}
-			if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+			if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err != nil {
 				t.Fatal(err)
 			}
-			if b, err := os.ReadFile(e.mtplxProc.pidfile); err != nil || string(b) != tc.wantPid {
+			if b, err := os.ReadFile(e.serverProc["mtplx"].pidfile); err != nil || string(b) != tc.wantPid {
 				t.Errorf("pidfile = %q (%v), want %q left in place", b, err, tc.wantPid)
 			}
 			if _, record := filesLeft(e); !record {
@@ -780,7 +867,7 @@ func TestMtplxStopThatFailsLeavesThePidfile(t *testing.T) {
 	_, e, cfg := stopEnv(t, true, func(*procTable, *env) {})
 	// An `mtplx stop` that exits 0 and stops nothing.
 	e.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
-	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err == nil {
+	if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err == nil {
 		t.Fatal("stop = nil over a port that still answers")
 	}
 	if pidfile, record := filesLeft(e); !pidfile || !record {
@@ -798,9 +885,9 @@ func stubProcessSeams(t *testing.T) (*procTable, string) {
 	oldDescribe, oldSignal := describeProc, signalProc
 	describeProc, signalProc = fake.describe, fake.signal
 	t.Cleanup(func() { describeProc, signalProc = oldDescribe, oldSignal })
-	t.Setenv(mtplxPidfileEnv, fake.mtplxProc.pidfile)
+	t.Setenv(mtplxPidfileEnv, fake.serverProc["mtplx"].pidfile)
 	writePidfile(t, fake, "4242")
-	return pt, fake.mtplxProc.pidfile
+	return pt, fake.serverProc["mtplx"].pidfile
 }
 
 // TestLoadingStopIsMtplxOnly verifies the pidfile answers for mtplx and for
@@ -875,7 +962,7 @@ func TestMtplxStartThatFailsLeavesNoPidfileAndNoRecord(t *testing.T) {
 		recorded = true
 		return procInfo{start: "1700000000.25"}, true, nil
 	}
-	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err == nil {
+	if err := (processServer{"mtplx"}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err == nil {
 		t.Fatal("start of a server that dies while loading succeeded")
 	}
 	if !recorded {
@@ -896,7 +983,7 @@ func TestMtplxStartThatFailsLeavesNoPidfileAndNoRecord(t *testing.T) {
 func TestMtplxStartRecordsWhatIdentifiesTheServer(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "", 0)
 	e.describe = func(pid int) (procInfo, bool, error) { return procInfo{start: "1700000000.25"}, true, nil }
-	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err != nil {
+	if err := (processServer{"mtplx"}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err != nil {
 		t.Fatal(err)
 	}
 	argv, err := os.ReadFile(argvFile)
@@ -904,20 +991,20 @@ func TestMtplxStartRecordsWhatIdentifiesTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid, _, _ := strings.Cut(string(argv), "\n")
-	if b, _ := os.ReadFile(e.mtplxProc.pidfile); string(b) != pid {
+	if b, _ := os.ReadFile(e.serverProc["mtplx"].pidfile); string(b) != pid {
 		t.Errorf("pidfile = %q, want exactly the pid %s (llmbench parses it with int())", b, pid)
 	}
 	want := fmt.Sprintf(`{"pid":%s,"started":"1700000000.25"}`, pid)
-	if b, _ := os.ReadFile(e.mtplxProc.startfile()); string(b) != want {
+	if b, _ := os.ReadFile(e.serverProc["mtplx"].startfile()); string(b) != want {
 		t.Errorf("start record = %q, want %s", b, want)
 	}
-	if got := e.recordedStart(mustAtoi(t, pid)); got != "1700000000.25" {
+	if got := e.recordedStart("mtplx", mustAtoi(t, pid)); got != "1700000000.25" {
 		t.Errorf("recordedStart = %q, want the start time just written", got)
 	}
 
 	e.describe = func(int) (procInfo, bool, error) { return procInfo{}, false, errors.New("boom") }
-	e.recordStart(mustAtoi(t, pid))
-	if _, err := os.Stat(e.mtplxProc.startfile()); !os.IsNotExist(err) {
+	e.recordStart("mtplx", mustAtoi(t, pid))
+	if _, err := os.Stat(e.serverProc["mtplx"].startfile()); !os.IsNotExist(err) {
 		t.Errorf("start record after an unreadable process table: stat err = %v, want it removed", err)
 	}
 }
@@ -944,8 +1031,8 @@ func TestProcessSeamsFailClosedHere(t *testing.T) {
 	if err := e.signal(os.Getpid(), 0); err == nil {
 		t.Error("signal succeeded: the signal seam is not closed")
 	}
-	if strings.HasPrefix(e.mtplxProc.pidfile, "/tmp/local-ai-setup") || strings.HasPrefix(e.mtplxProc.logfile, "/tmp/local-ai-setup") {
-		t.Errorf("mtplxProc = %+v, want paths away from the real pidfile and log", e.mtplxProc)
+	if strings.HasPrefix(e.serverProc["mtplx"].pidfile, "/tmp/local-ai-setup") || strings.HasPrefix(e.serverProc["mtplx"].logfile, "/tmp/local-ai-setup") {
+		t.Errorf("serverProc[\"mtplx\"] = %+v, want paths away from the real pidfile and log", e.serverProc["mtplx"])
 	}
 	if l := LoadingServer(loadCfg(), "mtplx"); l != (Loading{}) {
 		t.Errorf("LoadingServer = %+v, want nothing: no pidfile is readable here", l)
