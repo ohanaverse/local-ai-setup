@@ -189,6 +189,12 @@ Available Commands:
 
 `~/.config/agent-wt/config.toml` shape (wt-owned): a `default_tag = "code"` line plus `[[agents]]` entries (launch names, per-agent provider availability). **wt never writes providers or models into this file** — the Agents tab of `wt config` touches only agents and the default tag, and its Models tab and `wt model add|edit|rm` write `registry.toml`; registry data is overwritten in-memory on every load and never persisted back here (the `Load()` comment in `internal/config/config.go`: "registry.toml is the source of truth"). The `[[providers]]`/`[[models]]` blocks still present on disk are inert migration exchange output (see [00-config-map](00-config-map.md)).
 
+**An agent sees a provider's models only when its `supported_providers` lists the provider.** That list is per agent, in this file, and a new provider is not added to it for you: to use `rec/flint` ([02-providers-and-models](02-providers-and-models.md) Step 4) from an agent, add `rec` to that agent's `supported_providers` — on the Agents tab of `wt config` (the Supported Providers field) or by editing the agent's entry. Without it the model is missing from that agent's picker, and `-M rec/flint` is not in its eligible list. rec serves OpenAI chat completions only, so an agent that speaks only another protocol reaches it through LiteLLM (§4). Check which agents list it:
+
+```bash
+grep -n 'supported_providers' ~/.config/agent-wt/config.toml
+```
+
 ### 7. Extras
 
 - `--init` — seed `AGENTS.md` (if missing) plus an agent-specific pointer file, then exit (`internal/initseed/`).

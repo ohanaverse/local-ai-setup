@@ -253,6 +253,7 @@ Log homes (all from live plists / on-disk checks, 2026-08-29):
 | Postgres | `/opt/homebrew/var/log/postgresql@16.log` | single file |
 | Redis | `/opt/homebrew/var/log/redis.log` | single file |
 | Ollama | `/Users/keith/.ollama/logs/server.log`, `app.log` | app-managed; rotated as `server-1.log` … `server-5.log` |
+| rec | `/tmp/local-ai-setup-rec.log` (next to `WT_REC_PIDFILE` when set) | written while wt runs `rec serve`; also `~/.local/share/rec/state/launch-server.log` for rec's own launches |
 
 Crash-loop recognition — with `KeepAlive = true`, a service that dies on startup is relaunched by launchd immediately, forever. Look for the signature in `launchctl list`:
 
@@ -288,11 +289,24 @@ Exception: No api key passed in.
 
 Startup-fault lines worth reacting to: repeated `Error loading config`, YAML parse errors, database-connection errors (Postgres down — check `pg_isready`), or the same traceback re-printed every few seconds (looping). For the brew trio the log file is shared stdout+stderr, so `tail -50` those directly.
 
+**`wt start rec/flint` fails?** rec has no LaunchAgent; wt spawns `rec serve` and waits on `rec status`. Check rec itself first:
+
+```bash
+rec status; echo "exit=$?"                       # one JSON line ("ready", "model", "endpoint"), exit 0; exit 1 = no instance at all
+rec auth token > /dev/null; echo "exit=$?"       # the key wt reads (the row's secret_ref); never print the key itself
+rec doctor                                       # rec's own hardware and installation check
+tail -50 /tmp/local-ai-setup-rec.log             # what the last wt-started rec printed
+```
+
+- `rec auth token` fails: wt stops the start before spawning anything, and `wt model list` shows rec `partial` rather than down. wt cannot start rec until that command works (a fresh install without a key is the likely case); fix it with rec's own tools (`rec doctor`), then retry.
+- `rec status` says ready with another `endpoint` than `http://127.0.0.1:11500/v1`, or with a model other than `flint`: another rec owns the machine (one instance per machine); `wt start` asks before replacing it (`--replace` answers yes), or stop it with `rec stop`.
+- The start sits on "waiting for the model to load": loading takes some seconds with the port closed; the start fails with the log's tail if `rec serve` exits during the load.
+
 **Redaction rule:** err logs can echo API keys, `Authorization` headers, and request bodies. Before pasting any log excerpt into an issue, a repo, or an agent transcript: strip anything `sk-…`, `Bearer …`, or base64-ish that isn't obviously a path. The LiteLLM plist env values themselves never appear in these logs, but never quote plist contents either — its `EnvironmentVariables` block is the secret store (guide 01 §7).
 
 ### 4. Upgrades — one script per tool, then verify
 
-Eight tools, one script each, under `bin/update/`: `wt`, `litellm`, `ollama`, `omlx`, `mlx-lm-server`, `mtplx`, `postgresql`, `redis`. `bin/update-tools` (also `make update-tools`) runs them in dependency order — the LiteLLM store and cache first, then the model backends, then litellm which depends on those, and wt last — prints the plan, asks before touching anything (`--yes` to skip, and required when stdin is not a terminal), and ends with a summary. Every script:
+Nine tools, one script each, under `bin/update/`: `wt`, `litellm`, `ollama`, `omlx`, `mlx-lm-server`, `mtplx`, `rec`, `postgresql`, `redis`. `bin/update-tools` (also `make update-tools`) runs them in dependency order — the LiteLLM store and cache first, then the model backends, then litellm which depends on those, and wt last — prints the plan, asks before touching anything (`--yes` to skip, and required when stdin is not a terminal), and ends with a summary. Every script:
 
 - takes **`--check`** (report what is installed and whether an update is available; change no tool — `bin/update/omlx --check` does run `brew update` first, because omlx comes from a third-party tap whose answer is only as fresh as its last fetch) and **`--dry-run`** (print the exact commands; run nothing);
 - prints one trailer line — `[update:omlx] updated — 0.7.0 -> 0.8.0` — which is what the umbrella's summary reads back, so a script run by hand and the sweep can never disagree. Its status is `updated` (a new version is installed), `restarted` (the version stood still but the running service was replaced with what is on disk — the normal outcome for litellm, whose proxy holds the code it imported at boot), `current` (nothing to do), `stale` (an update is available and was not applied), `delegated`, `dry-run`, `manual`, `not-installed`, or `failed` — which is also what a service that was restarted and did not answer again within 60 seconds reports, whatever the upgrade itself did;
@@ -376,6 +390,14 @@ ollama version is 0.40.3
 ```
 
 **MTPLX** — `bin/update/mtplx`. Also an app (`/Applications/MTPLX.app`), for the same reason and with the same shape of answer, except that MTPLX publishes a Sparkle appcast (`SUFeedURL` in its `Info.plist`), so the script reads the released version straight from that feed instead of guessing. `mtplx --help` has no update subcommand, and the `mtplx` on PATH is a shim that execs the venv the app maintains under `~/Library/Application Support/MTPLX/runtime-venv` — update by opening the app. Note that mtplx bundles its own `mlx_lm`, and that one is **not** what this stack serves with (see below).
+
+**rec** — `bin/update/rec`. rec is one self-updating binary (`~/.local/bin/rec`), so the script reports the installed version (`rec --version`) and the latest GitHub release of `recursive-oss/rec` (best-effort; `--no-network` skips the lookup and ends in `manual`), and when a newer one exists runs `rec update -y`, then reads the version again (`updated`, or `failed` if it did not move). It refuses to replace rec under a running server: when `rec status` reports `"ready":true` it ends in `manual`, telling you to stop rec first (`wt stop rec`) and rerun, and changes nothing. `--check` reports `current`, or `manual` when an update is available; `--dry-run` prints `rec update -y`. Not installed (`rec` not on PATH) is `not-installed`. The weights and the key under `~/.local/share/rec` are rec's to manage; the script never touches them.
+
+```bash
+bin/update/rec --check     # installed version, and whether a newer release exists
+wt stop rec                # if a rec server is running
+bin/update/rec             # rec update -y
+```
 
 **mlx_lm_server** — `bin/update/mlx-lm-server`. There is nothing to upgrade here: mlx_lm is not a dependency of this repo, no `mlx_lm.*` console script is on PATH, and the only working copy belongs to the versioned omlx keg (`/opt/homebrew/Cellar/omlx/<version>/libexec/bin/mlx_lm.server`), built against that keg's pinned Python and mlx versions. `bin/lib/mlx-lm-resolve.sh` is the one place that knows how to find it, and it deliberately does not fall back to a bare `command -v`, because nothing else on the system is guaranteed to work. So `brew upgrade omlx` is what moves mlx_lm, and this script's job is to make that visible and to catch a resolution that has broken before an llmbench isolation fails somewhere less legible. It reports the resolved binary, the keg and version it came from, and the `mlx-lm` distribution inside it — then exits `delegated`, because `bin/update/omlx` already ran in the same sweep.
 

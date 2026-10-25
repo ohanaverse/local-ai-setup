@@ -54,7 +54,7 @@ wt model rm ollama/qwen3:8b
 wt model list                    # 3. what the registry has, and what is on disk without an entry (STATUS new)
 ```
 
-1. **`wt model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`, a provider a model or a configured agent names, a native row per configured agent — `wt model init --help` has the full list). It never changes a row that exists, so running it again is safe. `wt model add` adds a missing default row too, in the same write as the model.
+1. **`wt model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`/`rec`, a provider a model or a configured agent names, a native row per configured agent — `wt model init --help` has the full list). It never changes a row that exists, so running it again is safe. `wt model add` adds a missing default row too, in the same write as the model.
 2. **Add, edit, remove.** `wt model add <provider> <name> --family <family>` registers a model under a derived id — the id wt already shows an unregistered local model under, or `<provider>/<name>` with `/` written `--` for a cloud model — and `--id` overrides it. `wt model edit <id>` changes family, tags, location and prices, and nothing else in the row; the id, the provider and the name are fixed. `wt model rm <id>` removes the row and prints where the weights are: wt never deletes them (Step 5). The Models tab does the same from a form. Every flag and key: `wt/docs/wt-model.md`.
 3. **Routes follow by themselves.** Each command syncs the LiteLLM routes once after its write, and the tab once when you quit (Step 6). A sync that could not run is a warning; the registry change stands.
 
@@ -163,7 +163,7 @@ supports_vision = true
 
 Removing only the entry — deleting its block; the artifact stays on disk until you remove it with the provider's tool (Step 5) — does not unroute a model that is still on disk and running: the next sync drops the row named after the old id and writes one under the discovered id (when the two ids are equal, the row simply stays). The exception is an `mlx_lm_server` pairing: it cannot be discovered, so with its entry gone nothing names it and the next sync removes its route even while the server is still up. Convention for a new local entry: `id = "<provider family>/<model_name>"` (the family is the provider id, except that `omlx-6bit` belongs to `omlx`). With `model_name` spelled the way the provider lists the artifact, that is the id wt already gives the model without an overlay, so its usage and survey history (keyed by id) carries over when the entry is added or removed. An entry whose id spells a `/` as `--` — the shape older registries hold for a name containing `/` on every provider except mtplx and the native ones (an omlx repo name became `omlx/mlx-community--<name>`), so an older registry may hold some — works, but adding or removing it starts a separate history key.
 
-### 4. Add a model from Hugging Face (oMLX, MTPLX, mlx_lm_server; llama.cpp retired — see [provider-artifacts.md](../reference/provider-artifacts.md))
+### 4. Add a model from Hugging Face (oMLX, MTPLX, mlx_lm_server; llama.cpp retired — see [provider-artifacts.md](../reference/provider-artifacts.md)), or rec's Flint
 
 Download the artifact first (Step 5); the block is the optional overlay of Step 3, except for an `mlx_lm_server` pairing, which must have one. For oMLX and MTPLX, `wt model add omlx <model directory name> --family <family>` and `wt model add mtplx <org>/<name> --family <family>` (or `enter` on the model's `new` row in the Models tab) write the block shown, and `wt model add mlx_lm_server <target> --draft <draft> --family <family>` writes the pairing's (each side a Hugging Face repo id or a local path; the Models tab's form does not create a pairing, and edits the family, tags and prices of one that is there). `model_name` is spelled the way the provider lists the artifact, and `id` is `<provider family>/<model_name>`.
 
@@ -211,6 +211,49 @@ repo = "<org>/<target repo>"         # or: local_path = "<absolute directory>"
 repo = "<org>/<draft repo>"          # or: local_path = "<absolute directory>"
 ```
 
+**rec** — the engine that serves the Flint model. It is one binary, `~/.local/bin/rec`, installed with rec's own installer (from the `recursive-oss/rec` GitHub releases) and kept current by `bin/update/rec` ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4); its weights, runtime and key live under `~/.local/share/rec` ([provider-artifacts.md](../reference/provider-artifacts.md#rec--active-on-demand-only-no-standing-artifact)). rec serves one model, and wt registers it, it does not discover it:
+
+```bash
+rec doctor                          # rec's own hardware and installation check
+rec pull                            # download the model without starting a server (rec's own tool, like Step 5)
+rec auth token > /dev/null && echo key-ok   # the key wt reads; never print it into chat or docs
+wt model init                       # with rec on PATH, adds the rec provider row
+wt model add rec flint --family <family>
+wt start rec/flint                  # spawns `rec serve --port 11500` and waits for `rec status` to say ready
+wt stop rec                         # runs `rec stop`
+```
+
+The provider row `wt model init` (or the first `wt model add rec …`) writes:
+
+```toml
+[[providers]]
+id = "rec"
+name = "rec"
+location = "local"
+
+[providers.auth]
+type = "none"
+secret_ref = "exec:rec auth token"
+base_url = "http://127.0.0.1:11500/v1"
+```
+
+and the model block:
+
+```toml
+[[models]]
+id = "rec/flint"
+family = "<family>"
+provider_id = "rec"
+model_name = "flint"
+tags = []
+```
+
+- **The model name is exactly `flint`.** rec answers a request for any other model with a 400, and wt finds the running model by that name.
+- **The entry is required.** rec lists no files wt could scan, so a stopped `rec/flint` is a start row only because the registry names it; a model a running rec serves with no entry is not listed.
+- **Every request needs rec's key.** wt runs `rec auth token` (the row's `secret_ref`) for every probe, start and stop, and writes the key into the model's LiteLLM route as `api_key`, so requests through the proxy carry it. A `rec auth token` that fails stops `wt start rec/flint` before anything is spawned.
+- **One instance per machine.** A rec that is already serving `flint` at the registry's address (`127.0.0.1:11500`) — one you started with `rec serve`, say — is adopted: `wt start` spawns nothing. One on another port is asked about and replaced (`rec stop` reaches it wherever it is). Keep the seeded `127.0.0.1` in `base_url`: wt compares addresses as text, so a hand-written `localhost` makes it ask to replace an instance it could have adopted.
+- **OpenAI chat completions only.** The row has no `protocols`, so it serves `openai-chat`; an agent that speaks another protocol reaches it through LiteLLM ([06-wt-agents-and-models](06-wt-agents-and-models.md) §4). An agent uses it only when it lists `rec` in its `supported_providers` (guide 06).
+
 `[models.fetch]` also takes `files` and `quantizations` (lists) — they selected GGUF files for the retired llama.cpp provider; leave them out for the providers above.
 
 ### 5. Downloads
@@ -223,6 +266,7 @@ wt does not download models and has no download command. Use the provider's own 
 | omlx | `hf download <org>/<repo> --local-dir ~/.omlx/models/<repo>` | a directory holding `config.json`, directly under the omlx provider row's `model_dir` (default `~/.omlx/models`) or one organization folder down; the directory name is the model's name | `rm -rf` that directory |
 | mtplx | `mtplx pull <org>/<name>` | `<org>--<name>` under the mtplx provider row's `model_dir` (default `~/.mtplx/models`) | `rm -rf` that directory |
 | mlx_lm_server | `hf download <org>/<repo> --local-dir <directory>`, once per side | anywhere — name each directory as that side's `local_path` (Step 4) | `rm -rf` that directory |
+| rec | `rec pull` | rec's own data directory, `~/.local/share/rec` (wt does not scan it) | `rec uninstall` (rec, its models and its settings) |
 
 <!-- UNVERIFIED — none of these downloads was run from this session (each fetches gigabytes). `ollama pull` and the omlx `hf download` line are the commands 01-initial-setup already uses; `mtplx pull` is from `mtplx pull --help` (mtplx 2.12.0), and the directories are the ones wt's inventory scans (`wt/internal/localmodels/inventory.go`). That `mlx_lm.server` fetches a `repo` side by itself is from the isolation code, which passes the repo id through unchanged (`llmbench/src/llmbench/benchmark/isolation.py`), not from a run. -->
 
@@ -256,7 +300,7 @@ wt litellm sync             # apply: writes config.yaml, restarts the proxy only
 To route a local model, start it (illustrative — use any `<provider>/<model>` id from `registry.toml`, or the discovered id of an on-disk model with no entry):
 
 ```bash
-wt start ollama/gpt-oss:20b    # ollama, omlx, mtplx; `wt start` with no argument is a picker of every local model on disk
+wt start ollama/gpt-oss:20b    # ollama, omlx, mtplx, rec; `wt start` with no argument is a picker of every local model on disk
 ```
 
 `wt start` has no backend for an `mlx_lm_server` pairing: it prints the command that starts one, `llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>` with the pairing's own target and draft ([10-mlx-lm-quantization](10-mlx-lm-quantization.md) Step 4). wt starts the others:
@@ -273,11 +317,11 @@ wt: ollama/gpt-oss:20b is running
 wt litellm list    # the routes config.yaml now holds — the authoritative answer
 ```
 
-`wt start <id>` also takes an on-disk model that has **no registry entry**, by its discovered id `<family>/<artifact>` (`ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` — mtplx keeps the `/`). It starts the model without registering it and routes it under that id, and `wt stop <that id>` stops it. `wt model list` prints the live inventory — every registry model with its STATUS (`ok`, or `missing` for a local one that is not on disk), and each unregistered artifact under its discovered id with STATUS `new` — with RUNNING `run` beside a model a probe finds serving. `wt served <provider>` prints what an omlx, mtplx or mlx_lm_server server is serving now. To give such a model a family and tags, register it with `wt model add <provider> <name> --family <family>` (or `enter` on its row in the Models tab), which keeps its discovered id (`<family>/<artifact>` — the convention of Step 3): registering a running model that way keeps its route and its usage history. On a registry whose only omlx-family row is `omlx-6bit`, such a model is still listed and started as `omlx/<directory name>`, through that row.
+`wt start <id>` also takes an on-disk model that has **no registry entry**, by its discovered id `<family>/<artifact>` (`ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` — mtplx keeps the `/`). It starts the model without registering it and routes it under that id, and `wt stop <that id>` stops it. `wt model list` prints the live inventory — every registry model with its STATUS (`ok`, or `missing` for a local one that is not on disk), and each unregistered artifact under its discovered id with STATUS `new` — with RUNNING `run` beside a model a probe finds serving. `wt served <provider>` prints what an omlx, mtplx, mlx_lm_server or rec server is serving now. To give such a model a family and tags, register it with `wt model add <provider> <name> --family <family>` (or `enter` on its row in the Models tab), which keeps its discovered id (`<family>/<artifact>` — the convention of Step 3): registering a running model that way keeps its route and its usage history. On a registry whose only omlx-family row is `omlx-6bit`, such a model is still listed and started as `omlx/<directory name>`, through that row.
 
 `wt start` of an ollama model fails at once when the ollama daemon is not answering (`ollama is not answering at <origin> — start it first`) and writes no route: start the ollama app or service and run it again. A `wt litellm sync` run while the daemon refuses the connection reads it as "nothing is listening" and drops the ollama routes, with a warning; the next sync after the daemon is back writes them again.
 
-**Taking a model off the proxy**: a cloud model — `wt model rm <id>` (Step 1), whose sync drops its row. A local model — stop it: `wt stop <omlx model>` unloads just that model (the service and its other loaded models stay up) and removes only its route, `wt stop omlx` halts the service and clears the family's routes, and stopping an mtplx model clears that provider family's wt-written routes; `wt stop --all` stops every running local model and then halts the omlx service. When omlx wants its API key for the unload and the registry names no `auth.secret_ref` (Step 2), `wt stop <omlx model>` says so (`omlx will not unload <model> without its API key …`) and changes nothing; set `auth.secret_ref` (or run `wt stop omlx`); an `mlx_lm_server` pairing has no wt stop hook, and `wt stop --all` leaves it running: `uv run --directory llmbench llmbench provider stop mlx_lm_server` stops it, and the next `wt litellm sync` drops its route; a pulled ollama model keeps its route until the model is removed from ollama and a sync runs. Deleting a local registry entry alone does not unroute a model that is still on disk and running (Step 3). A row you wrote by hand in `config.yaml` is never removed or rewritten, even when its name equals a discovered model's id — wt then leaves that name to your row, so delete the row yourself if you want wt's.
+**Taking a model off the proxy**: a cloud model — `wt model rm <id>` (Step 1), whose sync drops its row. A local model — stop it: `wt stop <omlx model>` unloads just that model (the service and its other loaded models stay up) and removes only its route, `wt stop omlx` halts the service and clears the family's routes, and stopping an mtplx model, or `wt stop rec`, clears that provider family's wt-written routes; `wt stop --all` stops every running local model and then halts the omlx service. When omlx wants its API key for the unload and the registry names no `auth.secret_ref` (Step 2), `wt stop <omlx model>` says so (`omlx will not unload <model> without its API key …`) and changes nothing; set `auth.secret_ref` (or run `wt stop omlx`); an `mlx_lm_server` pairing has no wt stop hook, and `wt stop --all` leaves it running: `uv run --directory llmbench llmbench provider stop mlx_lm_server` stops it, and the next `wt litellm sync` drops its route; a pulled ollama model keeps its route until the model is removed from ollama and a sync runs. Deleting a local registry entry alone does not unroute a model that is still on disk and running (Step 3). A row you wrote by hand in `config.yaml` is never removed or rewritten, even when its name equals a discovered model's id — wt then leaves that name to your row, so delete the row yourself if you want wt's.
 
 **`wt` must be on PATH** (`make install` from the repo root). It writes the `model_list` entry into `~/.config/litellm/config.yaml`, stamping it `model_info.wt_managed: true` and touching only rows it owns plus a few launcher-required `litellm_settings` — hand-written rows, `general_settings`, other sections and comments survive — and restarts LiteLLM itself, but *only when the file actually changed* (`WT_LITELLM_RESTART_CMD`, legacy `MODELMAN_LITELLM_RESTART_CMD`, falling back to `launchctl kickstart -k gui/$(id -u)/local.litellm.proxy`; see [01-initial-setup](01-initial-setup.md) §7). How sync decides — the ownership marker, adoption of unmarked rows, what a rebuild keeps from a hand-edited row, `--dry-run` — is in [04-litellm-config](04-litellm-config.md) §2.
 

@@ -122,7 +122,7 @@ Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-re
 
 ## Local-model resolution
 
-Every model row wt shows or resolves is built by `internal/catalog` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag). A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx, not running or still loading) or **block**.
+Every model row wt shows or resolves is built by `internal/catalog` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag). A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec, not running or still loading) or **block**.
 
 - **`config.Provider.Origin` is the one reading of a provider's address** (#348): probes, routes, direct routes and pi's `models.json` all use it, and so must any new reader. A test never binds or dials the mtplx default port 8003.
 - **`localmodels.ServedIDs` is the one answer to "what is this server serving"** (#201).
@@ -133,7 +133,7 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md) before cha
 
 ## Lifecycle (`internal/lifecycle`)
 
-The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends ollama (`Shared`), omlx (`Pool`), every process-server family (mtplx today, `Exclusive`; one spec-driven `processServer` backend, a `Process` row in `internal/provider/table.go`).
+The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends ollama (`Shared`), omlx (`Pool`), every process-server family (mtplx and rec, `Exclusive`; one spec-driven `processServer` backend, a `Process` row in `internal/provider/table.go`). rec is `ScopeMachine` (one instance per machine, found through `rec status`) and `ServedOnly` (no artifacts: only its registered `rec/flint` is listed).
 
 - **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`); unknown occupancy is `*OccupancyUnknownError`, never assumed empty. Other providers' models beside the target need `Options.Others` (#412); `--replace` never answers it.
 - **A start/stop wt performs updates `config.yaml`** through `internal/litellm` (route hook); `lifecycle.EnsureModelRoute` (#192) never fails a launch, a slot-profile launch uses the failing `profile_routes.go` calls.
@@ -142,7 +142,7 @@ The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends
 - **A failed start is printed once, by `main`** (#344): a new command that can return one needs `SilenceErrors` or `asStartError`/`printOnce`, or the message prints twice.
 - **An ollama stop ollama accepted but has not carried out is `*StillFinishingError`, never nil** (#379); only the stop loop reads it as an outcome (exit 0). The TUI stops models only after the alt screen is gone.
 - **wt signals a process only after identifying it** (`server_loading.go`): a pid is never enough (user's own, a process server's exact argv on the provider's port, recorded start time, rechecked before SIGKILL). The pidfile stays a bare pid (llmbench shares it).
-- **A key the registry names goes with every probe of a process server** (`localmodels.FamilyAPIKeyErr`): a `secret_ref` that cannot be read ends a start before the spawn (`*KeyUnreadableError`); a refused key is `localmodels.ErrKeyRefused` (family `partial`, not `down`). A `ScopeMachine` family's existing instance is adopted when it serves the target and asked about before it is replaced otherwise (details and known limits: `docs/internals/local-models.md`).
+- **A key the registry names goes with every probe of a process server** (`localmodels.FamilyAPIKeyErr`): a `secret_ref` that cannot be read ends a start before the spawn (`*KeyUnreadableError`); a refused key is `localmodels.ErrKeyRefused` (family `partial`, not `down`). rec's key (`exec:rec auth token`) also goes into its LiteLLM route. A `ScopeMachine` family's existing instance is adopted when it serves the target at the registry's address and asked about before it is replaced otherwise (details and known limits: `docs/internals/local-models.md`).
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, the launch-time route check, restart or readiness waits, or replace.
 
@@ -272,7 +272,7 @@ The full command list (`wt served`, `wt warm`, `wt model add|edit|rm|init`, `wt 
 > ```bash
 > env -i PATH="$PATH" HOME="$D/home" WT_REGISTRY="$D/registry.toml" \
 >   WT_LITELLM_CONFIG="$D/config.yaml" WT_LITELLM_RESTART_CMD=true \
->   WT_MTPLX_PIDFILE="$D/mtplx.pid" "$D/wt" model list
+>   WT_MTPLX_PIDFILE="$D/mtplx.pid" WT_REC_PIDFILE="$D/rec.pid" "$D/wt" model list
 > ```
 >
 > This redirects files, not servers: a start, stop or probe still reaches whatever answers at the registry's `base_url`s, and `wt cloud-sync` still runs the real `ollama`.
