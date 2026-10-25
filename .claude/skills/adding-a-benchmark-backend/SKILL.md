@@ -53,9 +53,8 @@ to `llmbench/` unless they start with another directory; a bare `backends/...` i
    `src/llmbench/registry.py` (`LOCAL_PROVIDERS =
    set(DEFAULT_PROVIDER_IDS)` in `src/llmbench/benchmark/runner.py`) — a
    backend missing from that set is silently skipped by `llmbench run` —
-   and, if `wt model init` should seed the provider's row, add the id to
-   `defaultProviderIDs` and a row to `defaultProviderRow` in
-   `wt/internal/config/registry_seed.go` (see the `adding-a-provider`
+   and, if `wt model init` should seed the provider's row, give the provider
+   a `Seed` in `wt/internal/provider/table.go` (see the `adding-a-provider`
    skill in `wt/.claude/skills/`).
 6. **Update the drift trip-wire.** `tests/benchmark/test_isolation.py`'s
    `test_supported_provider_ids_matches_the_backends_registry_documented_list`
