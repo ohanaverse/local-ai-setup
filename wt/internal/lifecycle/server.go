@@ -161,11 +161,7 @@ func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) err
 		return nil
 	}
 	if runErr != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = spec.Binary + " stop failed"
-		}
-		return errors.New(msg)
+		return stopCommandError(spec, out)
 	}
 	return fmt.Errorf("%s still listening on port %d", spec.Binary, port)
 }
@@ -219,6 +215,11 @@ func (b processServer) stopMachineInstance(ctx context.Context, e *env, cfg *con
 			return err
 		}
 		if st, _ := e.foreignInstance(ctx, cfg, b.family, bin, key); !st.Ready {
+			// A readiness command cut short by the cancelled context reads as
+			// "not ready" too; that is not the instance having stopped.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			e.forgetStopped(ctx, b.family, named)
 			return nil
 		}
@@ -230,13 +231,19 @@ func (b processServer) stopMachineInstance(ctx context.Context, e *env, cfg *con
 		}
 	}
 	if runErr != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = spec.Binary + " stop failed"
-		}
-		return errors.New(msg)
+		return stopCommandError(spec, out)
 	}
 	return fmt.Errorf("%s still reports an instance ready after `%s %s`", spec.Binary, spec.Binary, strings.Join(spec.Stop, " "))
+}
+
+// stopCommandError is the error for a spec's stop command that failed and left
+// the server up: the command's own output, else a line naming the binary.
+func stopCommandError(spec provider.ProcessSpec, out []byte) error {
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = spec.Binary + " stop failed"
+	}
+	return errors.New(msg)
 }
 
 // stopModel: a process server serves one model per process, so stopping its

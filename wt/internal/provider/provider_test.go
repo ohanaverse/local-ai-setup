@@ -50,6 +50,11 @@ func TestTableInvariants(t *testing.T) {
 			if pr.Binary == "" {
 				t.Errorf("family %q process has no Binary", f)
 			}
+			// Without these the server wt spawns is never recognised (argv
+			// match) or has no pidfile to be found by.
+			if pr.PidfileDefault == "" || pr.Subcommand == "" || pr.PortFlag == "" {
+				t.Errorf("family %q process needs PidfileDefault, Subcommand and PortFlag", f)
+			}
 			if !slices.Contains(pr.Spawn, "{model}") || !slices.Contains(pr.Spawn, "{port}") {
 				t.Errorf("family %q spawn %v must contain {model} and {port}", f, pr.Spawn)
 			}
