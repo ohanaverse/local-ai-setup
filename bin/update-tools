@@ -4,7 +4,7 @@
 #
 # Why the order is what it is: the services are upgraded before the things that
 # talk to them. postgresql and redis first (LiteLLM's store and cache), then the
-# model backends (ollama, omlx and the mlx_lm inside its keg, mtplx), then
+# model backends (ollama, omlx and the mlx_lm inside its keg, mtplx, rec), then
 # litellm — which depends on the first two and routes to the third group — and
 # wt last, because wt is this checkout and rebuilding it mid-sweep would swap
 # the tool out from under the run.
@@ -29,7 +29,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/update-common.sh"
 
 UPDATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update"
 
-TOOLS=(postgresql redis ollama omlx mlx-lm-server mtplx litellm wt)
+TOOLS=(postgresql redis ollama omlx mlx-lm-server mtplx rec litellm wt)
 PURPOSES=(
     "the LiteLLM store (spend logs, admin state)"
     "the LiteLLM cache/session store"
@@ -37,6 +37,7 @@ PURPOSES=(
     "the local model backend, and the mlx_lm keg"
     "mlx_lm, which ships inside the omlx keg"
     "the native-MTP local model backend (app-managed)"
+    "the rec/flint local model engine (self-updating binary)"
     "the proxy wt routes agents through"
     "this checkout's launcher"
 )
@@ -61,6 +62,7 @@ Tools, in order:
   omlx           the local model backend, and the mlx_lm keg
   mlx-lm-server  mlx_lm, which ships inside the omlx keg
   mtplx          the native-MTP local model backend (app-managed)
+  rec            the rec/flint local model engine (self-updating binary)
   litellm        the proxy wt routes agents through
   wt             this checkout's launcher
 EOF
