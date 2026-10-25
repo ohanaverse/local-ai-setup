@@ -21,6 +21,12 @@ import (
 //
 // mtplx and mlx_lm_server serve one model per process, so their /v1/models is
 // the answer. omlx's is not (#201) — see OmlxPool.
+//
+// Every family but omlx is asked with the key its registry row names
+// (FamilyAPIKeyErr), and with no Authorization header when it names none. A
+// server that turns the request away is an error wrapping ErrKeyRefused; a
+// secret_ref that cannot be resolved is a *KeyUnreadableError and the server
+// is not asked. omlx keeps its own key handling (OmlxPool).
 func ServedIDs(cfg *config.Config, client *http.Client, family string) ([]string, error) {
 	if family == "omlx" {
 		p, err := OmlxPool(cfg, client)
@@ -29,25 +35,65 @@ func ServedIDs(cfg *config.Config, client *http.Client, family string) ([]string
 		}
 		return p.LoadedIDs(), nil
 	}
+	key, err := FamilyAPIKeyErr(cfg, family)
+	if err != nil {
+		return nil, err
+	}
 	origin := FamilyOrigin(cfg, family)
-	return FetchModelIDsErr(client, origin+"/v1/models")
+	return FetchModelIDsKeyed(client, origin+"/v1/models", key)
 }
+
+// KeyUnreadableError means a family's registry row names an auth.secret_ref
+// wt could not resolve (an exec: command that failed), so its server cannot
+// be asked as it wants to be. It is a probe failure, never "down": the server
+// may well be serving.
+type KeyUnreadableError struct {
+	Family string
+	Err    error
+}
+
+func (e *KeyUnreadableError) Error() string {
+	return fmt.Sprintf("cannot read the API key the registry's %s provider names in auth.secret_ref: %v", e.Family, e.Err)
+}
+
+func (e *KeyUnreadableError) Unwrap() error { return e.Err }
 
 // FamilyAPIKey is the key the registry gives for a family's server: the first
 // provider row of the family whose auth.secret_ref resolves to something. ""
 // when there is none — the usual case, a local server that wants no key.
 // Exported for internal/lifecycle, whose warmup sends it as the probe does.
 func FamilyAPIKey(cfg *config.Config, family string) string {
+	key, _ := FamilyAPIKeyErr(cfg, family)
+	return key
+}
+
+// FamilyAPIKeyErr is FamilyAPIKey with a resolution failure kept: when no row
+// of the family resolves to a key and at least one row's secret_ref failed to
+// resolve, it returns a *KeyUnreadableError for the first failure. A row
+// whose secret_ref resolves to "" (an unset environment variable) is no key,
+// not an error, as FamilyAPIKey has always read it.
+func FamilyAPIKeyErr(cfg *config.Config, family string) (string, error) {
+	var firstErr error
 	for _, id := range familyProviderIDs(family) {
 		p := cfg.ProviderByID(id)
 		if p == nil || p.Auth.SecretRef == "" {
 			continue
 		}
-		if key, err := config.ResolveSecret(p.Auth.SecretRef); err == nil && key != "" {
-			return key
+		key, err := config.ResolveSecret(p.Auth.SecretRef)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if key != "" {
+			return key, nil
 		}
 	}
-	return ""
+	if firstErr != nil {
+		return "", &KeyUnreadableError{Family: family, Err: firstErr}
+	}
+	return "", nil
 }
 
 // omlxLoaded lists the models an omlx server has loaded (or is loading).

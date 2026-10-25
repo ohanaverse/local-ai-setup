@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,18 +68,18 @@ func TestWaitPortOpenAndClosed(t *testing.T) {
 	up := httptest.NewServer(http.NotFoundHandler())
 	defer up.Close()
 
-	if ok, err := e.waitPortOpen(ctx, up.URL, 100*time.Millisecond); !ok || err != nil {
+	if ok, err := e.waitPortOpen(ctx, up.URL, "", 100*time.Millisecond); !ok || err != nil {
 		t.Errorf("waitPortOpen(up) = %v, %v", ok, err)
 	}
-	if closed, err := e.portClosedWithin(ctx, up.URL, 60*time.Millisecond); closed || err != nil {
+	if closed, err := e.portClosedWithin(ctx, up.URL, "", 60*time.Millisecond); closed || err != nil {
 		t.Errorf("portClosedWithin(up) = %v, %v; want false, nil", closed, err)
 	}
 	dead := httptest.NewServer(http.NotFoundHandler())
 	dead.Close()
-	if ok, err := e.waitPortOpen(ctx, dead.URL, 60*time.Millisecond); ok || err != nil {
+	if ok, err := e.waitPortOpen(ctx, dead.URL, "", 60*time.Millisecond); ok || err != nil {
 		t.Errorf("waitPortOpen(dead) = %v, %v; want false, nil", ok, err)
 	}
-	if closed, err := e.portClosedWithin(ctx, dead.URL, 100*time.Millisecond); !closed || err != nil {
+	if closed, err := e.portClosedWithin(ctx, dead.URL, "", 100*time.Millisecond); !closed || err != nil {
 		t.Errorf("portClosedWithin(dead) = %v, %v; want true, nil", closed, err)
 	}
 }
@@ -92,10 +94,10 @@ func TestWaitsAbortOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	if _, err := e.portClosedWithin(ctx, up.URL, 5*time.Second); !errors.Is(err, context.Canceled) {
+	if _, err := e.portClosedWithin(ctx, up.URL, "", 5*time.Second); !errors.Is(err, context.Canceled) {
 		t.Errorf("portClosedWithin err = %v, want context.Canceled", err)
 	}
-	if _, err := e.waitPortOpen(ctx, "http://127.0.0.1:1/", 5*time.Second); !errors.Is(err, context.Canceled) {
+	if _, err := e.waitPortOpen(ctx, "http://127.0.0.1:1/", "", 5*time.Second); !errors.Is(err, context.Canceled) {
 		t.Errorf("waitPortOpen err = %v, want context.Canceled", err)
 	}
 	if time.Since(start) > time.Second {
@@ -126,19 +128,19 @@ func TestWaitForModel(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen3.8"}]}`))
 	}))
 	defer srv.Close()
-	if err := e.waitForModel(ctx, srv.URL, "Qwen3.8", nil, time.Second); err != nil {
+	if err := e.waitForModel(ctx, srv.URL, "Qwen3.8", nil, "", time.Second); err != nil {
 		t.Fatalf("waitForModel: %v", err)
 	}
 
 	never := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"data":[]}`)) }))
 	defer never.Close()
-	if err := e.waitForModel(ctx, never.URL, "x", nil, 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
+	if err := e.waitForModel(ctx, never.URL, "x", nil, "", 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("never-listed err = %v, want timed out", err)
 	}
 
 	dead := &fakeProc{done: true, err: errors.New("exit status 3")}
 	start := time.Now()
-	if err := e.waitForModel(ctx, never.URL, "x", dead, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exited") {
+	if err := e.waitForModel(ctx, never.URL, "x", dead, "", 5*time.Second); err == nil || !strings.Contains(err.Error(), "exited") {
 		t.Errorf("dead-proc err = %v, want exited", err)
 	}
 	if time.Since(start) > time.Second {
@@ -369,5 +371,101 @@ func TestWarmupStaleChatReasonReplacedByHealthReason(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "not found") {
 		t.Errorf("warmup err = %q, want it to NOT still carry the earlier chat-completion reason after the health check started failing", err.Error())
+	}
+}
+
+// authRecorder answers every request — 401 unless it carries "Bearer <key>",
+// then a /v1/models body listing ids — and records each request's
+// Authorization header.
+type authRecorder struct {
+	mu   sync.Mutex
+	key  string
+	ids  []string
+	seen []string
+}
+
+func (a *authRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	a.seen = append(a.seen, r.Header.Get("Authorization"))
+	a.mu.Unlock()
+	if r.Header.Get("Authorization") != "Bearer "+a.key {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	data := []map[string]string{}
+	for _, id := range a.ids {
+		data = append(data, map[string]string{"id": id})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+}
+
+func (a *authRecorder) headers() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.seen...)
+}
+
+// TestProbeKeyedSendsBearerAndPlainProbeSendsNone pins both halves of the
+// key on the liveness probes: probeKeyed (and the waits built on it) send
+// "Bearer <key>", while probe — and a wait given no key — send no
+// Authorization header at all, so a provider with no secret_ref is probed
+// exactly as before.
+func TestProbeKeyedSendsBearerAndPlainProbeSendsNone(t *testing.T) {
+	e := testEnv()
+	ctx := context.Background()
+	rec := &authRecorder{key: "k"}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+
+	if responded, _ := e.probeKeyed(ctx, srv.URL, "k", time.Second); !responded {
+		t.Fatal("probeKeyed did not respond")
+	}
+	if responded, _ := e.probe(ctx, srv.URL, time.Second); !responded {
+		t.Fatal("probe did not respond")
+	}
+	if ok, err := e.waitPortOpen(ctx, srv.URL, "k", 100*time.Millisecond); !ok || err != nil {
+		t.Fatalf("waitPortOpen = %v, %v", ok, err)
+	}
+	if ok, err := e.waitPortOpen(ctx, srv.URL, "", 100*time.Millisecond); !ok || err != nil {
+		t.Fatalf("waitPortOpen(no key) = %v, %v", ok, err)
+	}
+	want := []string{"Bearer k", "", "Bearer k", ""}
+	if got := rec.headers(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Authorization headers = %q, want %q", got, want)
+	}
+}
+
+// TestWaitForModelWithKey verifies waitForModel asks a keyed server with the
+// key and returns once the model is listed, and that a key the server turns
+// away (401) ends the wait at once with *KeyRefusedError{KeySent: true}: no
+// amount of polling changes that answer, so waiting out the load budget only
+// hides the cause. With no key, a 401 keeps the old behavior (poll to the
+// timeout).
+func TestWaitForModelWithKey(t *testing.T) {
+	e := testEnv()
+	ctx := context.Background()
+	rec := &authRecorder{key: "k", ids: []string{"org/Qwen3.8"}}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+
+	if err := e.waitForModel(ctx, srv.URL, "Qwen3.8", nil, "k", time.Second); err != nil {
+		t.Fatalf("waitForModel(right key): %v", err)
+	}
+	if got := rec.headers(); len(got) == 0 || got[0] != "Bearer k" {
+		t.Errorf("Authorization = %q, want Bearer k", got)
+	}
+
+	start := time.Now()
+	err := e.waitForModel(ctx, srv.URL, "Qwen3.8", nil, "wrong", 5*time.Second)
+	var kr *KeyRefusedError
+	if !errors.As(err, &kr) || !kr.KeySent || kr.URL != srv.URL {
+		t.Errorf("waitForModel(wrong key) = %v, want *KeyRefusedError{URL, KeySent: true}", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Errorf("a refused key should end the wait at once, took %v", time.Since(start))
+	}
+
+	if err := e.waitForModel(ctx, srv.URL, "Qwen3.8", nil, "", 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("waitForModel(no key) = %v, want timed out", err)
 	}
 }

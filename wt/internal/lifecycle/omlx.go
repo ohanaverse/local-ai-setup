@@ -30,7 +30,7 @@ func (omlxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Targ
 		}
 		report(StageStarting)
 		out, runErr := e.run(ctx, bin, "start")
-		up, werr := e.waitPortOpen(ctx, health, e.portUpTimeout)
+		up, werr := e.waitPortOpen(ctx, health, "", e.portUpTimeout) // omlx answers its liveness probe keyless (any status counts)
 		if werr != nil {
 			return werr
 		}
@@ -60,7 +60,7 @@ func (omlxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error {
 	if bin, err := e.lookPath("omlx"); err == nil {
 		_, _ = e.run(ctx, bin, "stop")
 	}
-	closed, err := e.portClosedWithin(ctx, origin+"/v1/models", e.stopTimeout)
+	closed, err := e.portClosedWithin(ctx, origin+"/v1/models", "", e.stopTimeout)
 	if err != nil {
 		return err
 	}

@@ -89,8 +89,12 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	if aerr != nil {
 		return aerr
 	}
+	// The key the registry names for this server, resolved once per start
+	// and sent with every probe and the warmup; "" (no header) when the
+	// family's provider row has no secret_ref.
+	key := localmodels.FamilyAPIKey(cfg, b.family)
 	report(StageStarting)
-	closed, cerr := e.portClosedWithin(ctx, models, e.prebindTimeout)
+	closed, cerr := e.portClosedWithin(ctx, models, key, e.prebindTimeout)
 	if cerr != nil {
 		return cerr
 	}
@@ -110,14 +114,14 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 		}
 	}()
 	report(StageWaiting)
-	if err = e.waitForModel(ctx, models, t.ModelName, sp, e.loadTimeout); err != nil {
+	if err = e.waitForModel(ctx, models, t.ModelName, sp, key, e.loadTimeout); err != nil {
 		if tail := proc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
 			err = fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
 		}
 		return err
 	}
 	report(StageWarming)
-	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, models, "", 120*time.Second)
+	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, 120*time.Second)
 }
 
 func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) error {
@@ -134,7 +138,7 @@ func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) err
 	// identified: only that process's pidfile is removed below.
 	named, _ := e.loadingServer(cfg, b.family)
 	out, runErr := e.run(ctx, bin, expandArgs(spec.Stop, "", port)...)
-	closed, cerr := e.portClosedWithin(ctx, models, e.stopTimeout)
+	closed, cerr := e.portClosedWithin(ctx, models, localmodels.FamilyAPIKey(cfg, b.family), e.stopTimeout)
 	if cerr != nil {
 		return cerr
 	}
