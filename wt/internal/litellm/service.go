@@ -10,6 +10,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"gopkg.in/yaml.v3"
 )
 
@@ -992,6 +993,7 @@ func Sync(cfg *config.Config, local []config.Model, o Options) (Result, error) {
 // provider. `wt litellm providers` prints this, so a reader of the policy
 // table needs no copy of its own.
 func Providers() map[string]bool {
+	policies := provider.Policies()
 	out := make(map[string]bool, len(policies))
 	for id, p := range policies {
 		out[id] = p.Cloud
