@@ -954,7 +954,7 @@ func TestUnregisteredAnsweringReportsOnlyAFamilyThatAnswers(t *testing.T) {
 	slow := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("i/o timeout")
 	})}
-	if got := UnregisteredAnswering(cfg, slow, Snapshot{}, "ollama"); !reflect.DeepEqual(got, []string{"mlx_lm_server", "mtplx", "omlx"}) {
+	if got := UnregisteredAnswering(cfg, slow, Snapshot{}, "ollama"); !reflect.DeepEqual(got, []string{"mlx_lm_server", "mtplx", "omlx", "rec"}) {
 		t.Errorf("unreadable answers: answering = %v, want every family asked", got)
 	}
 }

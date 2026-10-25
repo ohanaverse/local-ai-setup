@@ -30,7 +30,7 @@ func TestFamilyTablePinned(t *testing.T) {
 			t.Errorf("Family(%q) = %q, want %q", id, got, want)
 		}
 	}
-	if got, want := Families(), []string{"mlx_lm_server", "mtplx", "ollama", "omlx"}; !slices.Equal(got, want) {
+	if got, want := Families(), []string{"mlx_lm_server", "mtplx", "ollama", "omlx", "rec"}; !slices.Equal(got, want) {
 		t.Errorf("Families() = %v, want %v", got, want)
 	}
 	if got, want := FamilyProviderIDs("omlx"), []string{"omlx", "omlx-6bit"}; !slices.Equal(got, want) {

@@ -169,7 +169,7 @@ model_name = "org/m"
 		{"nothing installed, nothing referenced", "", SeedEnv{}, nil},
 		{"a nil OnPath means nothing is installed", "", SeedEnv{Agents: []string{"claude"}}, []string{"claude"}},
 		{"only what is on PATH", "", SeedEnv{OnPath: onPath("mtplx")}, []string{"mtplx"}},
-		{"mlx_lm_server is never taken from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx"}},
+		{"mlx_lm_server is never taken from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx", "rec"}},
 		{"an installed omlx is covered by an omlx-6bit row", sixBit, SeedEnv{OnPath: onPath("omlx", "ollama")}, []string{"ollama"}},
 		{"but a model that references omlx gets the row", sixBit + omlxModel, SeedEnv{OnPath: onPath("omlx")}, []string{"omlx"}},
 		{"an agent whose name is already a provider is skipped", sixBit, SeedEnv{Agents: []string{"omlx-6bit", "", "pi"}}, []string{"pi"}},
@@ -178,7 +178,7 @@ model_name = "org/m"
 		{"an agent lists omlx beside an omlx-6bit row", sixBit, SeedEnv{AgentProviders: []string{"omlx"}}, []string{"omlx"}},
 		{"an agent lists openrouter", "", SeedEnv{AgentProviders: []string{"openrouter"}}, []string{"openrouter"}},
 		{"an agent lists a provider that has its row", sixBit, SeedEnv{AgentProviders: []string{"omlx-6bit"}}, nil},
-		{"openrouter is not seeded from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx"}},
+		{"openrouter is not seeded from PATH", "", SeedEnv{OnPath: func(string) bool { return true }}, []string{"ollama", "omlx", "mtplx", "rec"}},
 		{"a model that references openrouter gets the row", openrouterModel, SeedEnv{}, []string{"openrouter"}},
 	}
 	for _, c := range cases {

@@ -27,7 +27,7 @@ func TestDiscoveredModelIDPinned(t *testing.T) {
 // TestSeedableProviderIDsPinned pins which providers `wt model init` can seed,
 // and their order (local first, then cloud).
 func TestSeedableProviderIDsPinned(t *testing.T) {
-	want := []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "openrouter"}
+	want := []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "openrouter"}
 	if got := SeedableProviderIDs(); !slices.Equal(got, want) {
 		t.Errorf("SeedableProviderIDs() = %v, want %v", got, want)
 	}

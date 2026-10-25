@@ -22,6 +22,12 @@ const (
 	mtplxModelDir = "~/.mtplx/models"
 )
 
+// rec's address, named once for the family and the seed URL.
+const (
+	recPort   = 11500
+	recOrigin = "http://127.0.0.1:11500"
+)
+
 var mtplxOrigin = "http://localhost:" + strconv.Itoa(MtplxPort)
 
 var openaiLocal = Policy{Prefix: "openai/", APIKey: "not-needed", V1Base: true}
@@ -66,6 +72,14 @@ var providers = []Spec{
 			ModelDir: "~/.mtplx/models", Command: "mtplx",
 		},
 	},
+	{
+		ID: "rec", Family: "rec",
+		Policy: &Policy{Prefix: "openai/", SecretRef: true, V1Base: true},
+		Seed: &Seed{
+			Name: "rec", Location: "local", AuthType: "none", BaseURL: recOrigin + "/v1",
+			SecretRef: "exec:rec auth token", Command: "rec",
+		},
+	},
 	{ID: "llamacpp", Policy: &Policy{Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"}},
 	{
 		ID:     "openrouter",
@@ -108,6 +122,26 @@ var families = map[string]FamilySpec{
 	// lifecycle.TenancyOf has no backend for it.
 	"mlx_lm_server": {
 		Name: "mlx_lm_server", DefaultOrigin: mlxLMOrigin,
-		RunningOnly: true, Served: true,
+		RunningOnly: true, Served: true, ServedOnly: true,
+	},
+	// rec: one instance per machine serving one fixed model; wt starts it and
+	// finds it through `rec status`, and lists no artifacts for it.
+	"rec": {
+		Name: "rec", DefaultOrigin: recOrigin, WtPort: recPort,
+		Served: true, ServedOnly: true, Tenancy: Exclusive, Scope: ScopeMachine,
+		Process: &ProcessSpec{
+			Binary:         "rec",
+			Spawn:          []string{"serve", "--port", "{port}"},
+			Stop:           []string{"stop"},
+			PidfileDefault: "/tmp/local-ai-setup-rec.pid",
+			LogDefault:     "/tmp/local-ai-setup-rec.log",
+			PidfileEnv:     "WT_REC_PIDFILE",
+			Subcommand:     "serve",
+			PortFlag:       "--port",
+			Ready: Ready{
+				Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true",
+				ModelPath: "model", EndpointPath: "endpoint",
+			},
+		},
 	},
 }
