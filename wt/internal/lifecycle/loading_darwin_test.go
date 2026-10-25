@@ -165,7 +165,7 @@ func TestProcArgvTreatsNoArgumentsAsExiting(t *testing.T) {
 // no signal. It is what shows the command-line rule matches how a `#!/bin/sh`
 // mtplx really appears in the process table, not only the fixtures above.
 func TestLoadingMtplxOnTheRealProcessTable(t *testing.T) {
-	_, _, port := mtplxEndpoint(loadCfg())
+	_, _, port := serverEndpoint(loadCfg(), "mtplx")
 	args := []string{"serve", "--model", "org/m", "--port", strconv.Itoa(port), "--host", "127.0.0.1", "--model-id", "org/m"}
 	for name, ignoreTerm := range map[string]bool{"goes on SIGTERM": false, "ignores SIGTERM": true} {
 		t.Run(name, func(t *testing.T) {

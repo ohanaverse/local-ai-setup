@@ -10,6 +10,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // Target names the model to start by its provider-side name — exactly
@@ -217,16 +218,17 @@ func (e *PortBusyError) Error() string {
 	return fmt.Sprintf("port %d is in use by another process — stop it before starting this model", e.Port)
 }
 
-// MtplxAddressError means the registry's mtplx base_url gives a start no
-// address: it names no port and is not a url wt puts its own on, or it does
-// not parse. wt serves mtplx on 127.0.0.1 and gives a url with no port its
-// port only where that server answers (config.Provider.Origin); a server
-// spawned for any other url would not be the one at that address, so nothing
-// is spawned. Origin is the address as wt reads it.
-type MtplxAddressError struct{ Origin string }
+// PortlessAddressError means the registry's base_url for a process family
+// (Provider, e.g. mtplx) gives a start no address: it names no port and is
+// not a url wt puts its own on, or it does not parse. wt serves the family on
+// 127.0.0.1 and gives a url with no port its port only where that server
+// answers (config.Provider.Origin); a server spawned for any other url would
+// not be the one at that address, so nothing is spawned. Origin is the
+// address as wt reads it.
+type PortlessAddressError struct{ Provider, Origin string }
 
-func (e *MtplxAddressError) Error() string {
-	return fmt.Sprintf("the registry's mtplx base_url (%s) names no port, and wt serves mtplx on 127.0.0.1 — name the port mtplx listens on in the base_url, or use http://127.0.0.1", e.Origin)
+func (e *PortlessAddressError) Error() string {
+	return fmt.Sprintf("the registry's %s base_url (%s) names no port, and wt serves %s on 127.0.0.1 — name the port %s listens on in the base_url, or use http://127.0.0.1", e.Provider, e.Origin, e.Provider, e.Provider)
 }
 
 // OccupancyUnknownError means the provider's live state could not be
@@ -339,11 +341,19 @@ func targetIs(snap localmodels.Snapshot, family string, t Target, is func(localm
 // agreement used to be manual — the occupancy check held its own hardcoded
 // family list — so a new single-model backend could be startable while the
 // check still reported no occupant, replacing a running model without a
-// confirmation.
-var backendsByFamily = map[string]backend{
-	"ollama": ollamaBackend{},
-	"omlx":   omlxBackend{},
-	"mtplx":  mtplxBackend{},
+// confirmation. Every process family in the provider table
+// (provider.ProcessFamilies) gets the one spec-driven processServer backend.
+var backendsByFamily = buildBackends()
+
+func buildBackends() map[string]backend {
+	m := map[string]backend{
+		"ollama": ollamaBackend{},
+		"omlx":   omlxBackend{},
+	}
+	for _, family := range provider.ProcessFamilies() {
+		m[family] = processServer{family}
+	}
+	return m
 }
 
 // resolveEvictions decides which running models starting t would displace. It

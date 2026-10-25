@@ -43,7 +43,7 @@ func StartErrorMessage(id string, err error) string {
 	var bin *BinaryMissingError
 	var busy *PortBusyError
 	var stopped *StoppedError
-	var addr *MtplxAddressError
+	var addr *PortlessAddressError
 	switch {
 	case errors.As(err, &down):
 		return fmt.Sprintf("%s is not answering at %s — start it first", down.Provider, down.Origin)

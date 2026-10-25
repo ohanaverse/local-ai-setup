@@ -282,7 +282,7 @@ func TestEvictionsDeriveSingleModelFromBackendRegistry(t *testing.T) {
 	if !maps.Equal(defaultEnv().backends, map[string]backend{
 		"ollama": ollamaBackend{},
 		"omlx":   omlxBackend{},
-		"mtplx":  mtplxBackend{},
+		"mtplx":  processServer{"mtplx"},
 	}) {
 		t.Fatalf("defaultEnv's backends must be the registry wt can start: ollama, omlx and mtplx, each with its own backend")
 	}

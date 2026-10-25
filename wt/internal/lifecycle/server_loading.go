@@ -30,10 +30,9 @@ import (
 // family's spec; a test swaps it to give a synthetic family a spec.
 var processSpecFor = provider.ProcessFor
 
-// serverPort is the port family's server is identified on. Until the
-// endpoint is generic, every process family resolves it through mtplx's.
-func serverPort(cfg *config.Config, _ string) int {
-	_, _, port := mtplxEndpoint(cfg)
+// serverPort is the port family's server is identified on.
+func serverPort(cfg *config.Config, family string) int {
+	_, _, port := serverEndpoint(cfg, family)
 	return port
 }
 
@@ -140,7 +139,11 @@ func (p pidProcess) startfile() string { return p.pidfile + ".wt" }
 // and an older start's is removed: the server is then identified by its
 // command line alone, as one an older wt started is.
 func (e *env) recordStart(family string, pid int) {
-	path := e.serverProc[family].startfile()
+	p, ok := e.serverProc[family]
+	if !ok || p.pidfile == "" {
+		return // no pidfile for family: no path a record could go beside
+	}
+	path := p.startfile()
 	if info, found, err := e.describe(pid); err == nil && found && info.start != "" {
 		if b, err := json.Marshal(startRecord{PID: pid, Started: info.start}); err == nil && writeFileAtomic(path, b) == nil {
 			return
@@ -173,7 +176,11 @@ func writeFileAtomic(path string, b []byte) error {
 // file (readOwnFile): the record is what allows a signal to a whole process
 // group.
 func (e *env) recordedStart(family string, pid int) string {
-	b, ok := readOwnFile(e.serverProc[family].startfile(), os.Getuid())
+	p, ok := e.serverProc[family]
+	if !ok || p.pidfile == "" {
+		return ""
+	}
+	b, ok := readOwnFile(p.startfile(), os.Getuid())
 	if !ok {
 		return ""
 	}
@@ -336,7 +343,10 @@ func (e *env) stopLoadingServer(ctx context.Context, cfg *config.Config, family 
 // confirmed gone, as a failed start's cleanup does — each only while it still
 // names pid: a new start may have put its own pid there since.
 func (e *env) forgetServer(family string, pid int) {
-	p := e.serverProc[family]
+	p, ok := e.serverProc[family]
+	if !ok || p.pidfile == "" {
+		return
+	}
 	if b, ok := readOwnFile(p.pidfile, os.Getuid()); ok && strings.TrimSpace(string(b)) == strconv.Itoa(pid) {
 		_ = os.Remove(p.pidfile)
 	}
@@ -346,7 +356,7 @@ func (e *env) forgetServer(family string, pid int) {
 }
 
 // forgetStopped is the cleanup of a stop that went through the port
-// (mtplxBackend.stop): id is what family's pidfile named before the stop
+// (processServer.stop): id is what family's pidfile named before the stop
 // command ran — verified then as this provider's server (loadingServer), the
 // zero value when it named nothing wt could verify. The files are removed
 // once the process table shows that process gone, and left for anything else:

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -135,7 +136,7 @@ func pidGone(pid int) bool {
 func TestMtplxStartSpawnsWaitsWarms(t *testing.T) {
 	e, cfg, port, argvFile := mtplxEnv(t, "serve", 0)
 	var stages []Stage
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(s Stage) { stages = append(stages, s) })
+	err := processServer{"mtplx"}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(s Stage) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -164,7 +165,7 @@ func TestMtplxCancelTearsDownSpawnedProcess(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "serve", 5000) // never listens within the test
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(500 * time.Millisecond); cancel() }()
-	err := mtplxBackend{}.start(ctx, e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	err := processServer{"mtplx"}.start(ctx, e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -184,7 +185,7 @@ func TestMtplxCancelTearsDownSpawnedProcess(t *testing.T) {
 func TestMtplxProcessDiesDuringLoad(t *testing.T) {
 	e, cfg, _, _ := mtplxEnv(t, "die", 0)
 	start := time.Now()
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	err := processServer{"mtplx"}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.Contains(err.Error(), "exited") {
 		t.Errorf("die: err = %v, want an 'exited' error", err)
 	}
@@ -193,7 +194,7 @@ func TestMtplxProcessDiesDuringLoad(t *testing.T) {
 	}
 
 	e2, cfg2, _, _ := mtplxEnv(t, "die-now", 0)
-	err = mtplxBackend{}.start(context.Background(), e2, cfg2, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	err = processServer{"mtplx"}.start(context.Background(), e2, cfg2, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.Contains(err.Error(), "exited immediately") {
 		t.Errorf("die-now: err = %v, want 'exited immediately'", err)
 	}
@@ -206,14 +207,14 @@ func TestMtplxMissingBinaryAndPortBusy(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "serve", 0)
 	e.lookPath = func(string) (string, error) { return "", errors.New("nope") }
 	var bm *BinaryMissingError
-	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {}); !errors.As(err, &bm) {
+	if err := (processServer{"mtplx"}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {}); !errors.As(err, &bm) {
 		t.Errorf("err = %v, want *BinaryMissingError", err)
 	}
 
 	busy := httptest.NewServer(http.NotFoundHandler())
 	defer busy.Close()
 	e.lookPath = func(string) (string, error) { return os.Args[0], nil }
-	err := (mtplxBackend{}).start(context.Background(), e, provCfg("mtplx", busy.URL), Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {})
+	err := (processServer{"mtplx"}).start(context.Background(), e, provCfg("mtplx", busy.URL), Target{ProviderID: "mtplx", ModelName: "m"}, func(Stage) {})
 	var pb *PortBusyError
 	if !errors.As(err, &pb) {
 		t.Errorf("err = %v, want *PortBusyError", err)
@@ -239,7 +240,7 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 		return nil, nil
 	}
 	cfg := provCfg("mtplx", "http://"+addr+"/v1")
-	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+	if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err != nil {
 		logPortHolder(t, addr)
 		t.Fatalf("stop: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestMtplxStopRunsMtplxStopAndConfirmsPortClosed(t *testing.T) {
 	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return []byte("no such server"), errors.New("exit 1")
 	}
-	if err := (mtplxBackend{}).stop(context.Background(), e, provCfg("mtplx", "http://"+addr2+"/v1")); err == nil || !strings.Contains(err.Error(), "no such server") {
+	if err := (processServer{"mtplx"}).stop(context.Background(), e, provCfg("mtplx", "http://"+addr2+"/v1")); err == nil || !strings.Contains(err.Error(), "no such server") {
 		t.Errorf("err = %v, want the command's stderr text", err)
 	}
 }
@@ -290,7 +291,7 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 // show up here instead of the registry's host and fail the test.
 func TestMtplxEndpointPortMatchesModelsURL(t *testing.T) {
 	cfg := provCfg("mtplx", "http://127.0.0.1") // registry value with no port
-	origin, modelsURL, port := mtplxEndpoint(cfg)
+	origin, modelsURL, port := serverEndpoint(cfg, "mtplx")
 	if origin != "http://127.0.0.1:8003" {
 		t.Errorf("origin = %q, want http://127.0.0.1:8003", origin)
 	}
@@ -417,7 +418,7 @@ func TestMtplxFailedStartShowsWholeLogLines(t *testing.T) {
 	if err := os.WriteFile(e.serverProc["mtplx"].logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	err := processServer{"mtplx"}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.HasSuffix(err.Error(), "; log tail: boom") {
 		t.Errorf("err = %v, want the log tail to be the server's last line alone", err)
 	}
@@ -431,7 +432,7 @@ func TestSpawnExitedImmediatelyShowsWholeLogLines(t *testing.T) {
 	if err := os.WriteFile(e.serverProc["mtplx"].logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\nfatal: out of memory\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	err := processServer{"mtplx"}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
 	if err == nil || !strings.Contains(err.Error(), "exited immediately") {
 		t.Fatalf("err = %v, want 'exited immediately'", err)
 	}
@@ -535,14 +536,97 @@ func TestMtplxStopNeverReportsAServerItLeftUp(t *testing.T) {
 	e.stopTimeout = 60 * time.Millisecond
 	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
 	e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte("no server to stop"), nil }
-	err := (mtplxBackend{}).stop(context.Background(), e, cfg)
+	err := (processServer{"mtplx"}).stop(context.Background(), e, cfg)
 	if err == nil || !strings.Contains(err.Error(), "mtplx still listening on port "+portStr) {
 		t.Errorf("exit 0, port open: err = %v, want still-listening", err)
 	}
 
 	e.lookPath = func(string) (string, error) { return "", errors.New("not found") }
 	var missing *BinaryMissingError
-	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); !errors.As(err, &missing) {
+	if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); !errors.As(err, &missing) {
 		t.Errorf("no binary: err = %v, want *BinaryMissingError", err)
+	}
+}
+
+// TestProcessServerMtplxArgvPinned pins the exact argv the spec-driven
+// backend hands mtplx: `serve --model M --port 8003 --host 127.0.0.1
+// --model-id M` to spawn and `stop --port 8003 --grace-seconds 10` to stop.
+// llmbench runs and finds the server with the same argv, and wt's own
+// identification of a loading server matches on it (serverArgvMatches), so a
+// template drift would make either tool blind to the other's server. The
+// registry names no port, so the port is wt's default; the test stands the
+// helper elsewhere and never binds 8003 (servedAt).
+func TestProcessServerMtplxArgvPinned(t *testing.T) {
+	e, _, _, argvFile := mtplxEnv(t, "serve", 0)
+	listen := freeAddr(t)
+	t.Setenv("LIFECYCLE_HELPER_LISTEN", listen)
+	network := &servedAt{to: map[string]string{mtplxServeHost: listen}}
+	network.on(e)
+	cfg := provCfg("mtplx", "http://127.0.0.1/v1")
+	b := processServer{"mtplx"}
+	if err := b.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "M"}, func(Stage) {}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	raw, _ := os.ReadFile(argvFile)
+	lines := strings.SplitN(string(raw), "\n", 2)
+	if want := "serve --model M --port 8003 --host 127.0.0.1 --model-id M"; len(lines) != 2 || lines[1] != want {
+		t.Errorf("spawn argv = %q, want %q", lines[1:], want)
+	}
+	pid, _ := strconv.Atoi(lines[0])
+	var ran []string
+	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		ran = append([]string{name}, args...)
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+		pidGone(pid)
+		return nil, nil
+	}
+	if err := b.stop(context.Background(), e, cfg); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if want := []string{os.Args[0], "stop", "--port", "8003", "--grace-seconds", "10"}; !reflect.DeepEqual(ran, want) {
+		t.Errorf("stop argv = %v, want %v", ran, want)
+	}
+}
+
+// TestExpandArgs verifies a spec's argv template has {model} and {port}
+// replaced in every element, wherever they appear, and everything else left
+// as written: the template is the only place a family's command line is
+// spelled, so the expansion must not add, drop or reorder arguments, nor
+// change the template it was given.
+func TestExpandArgs(t *testing.T) {
+	tmpl := []string{"serve", "--model", "{model}", "--port", "{port}", "--id={model}@{port}", "plain"}
+	got := expandArgs(tmpl, "Org/M", 8123)
+	want := []string{"serve", "--model", "Org/M", "--port", "8123", "--id=Org/M@8123", "plain"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("expandArgs = %v, want %v", got, want)
+	}
+	if tmpl[2] != "{model}" {
+		t.Errorf("expandArgs changed its template: %v", tmpl)
+	}
+	if got := expandArgs([]string{"stop", "--port", "{port}"}, "", 8003); !reflect.DeepEqual(got, []string{"stop", "--port", "8003"}) {
+		t.Errorf("stop expansion = %v", got)
+	}
+}
+
+// TestPortlessAddressErrorKeepsMtplxText verifies the generic error a start
+// returns for a registry base_url with no port keeps, for mtplx, the exact
+// sentence MtplxAddressError printed: users and docs know it, and the
+// refactor must not change what wt says.
+func TestPortlessAddressErrorKeepsMtplxText(t *testing.T) {
+	err := &PortlessAddressError{Provider: "mtplx", Origin: "http://mybox"}
+	want := "the registry's mtplx base_url (http://mybox) names no port, and wt serves mtplx on 127.0.0.1 — name the port mtplx listens on in the base_url, or use http://127.0.0.1"
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestProcessServerIsComparable verifies the process-server backend is a
+// comparable value holding only its family, so the production registry can
+// still be compared with maps.Equal — the guard that keeps defaultEnv's
+// backends and the families wt can start one set — and mtplx is built from
+// the provider table as processServer{"mtplx"}.
+func TestProcessServerIsComparable(t *testing.T) {
+	if !maps.Equal(defaultEnv().backends, map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}, "mtplx": processServer{"mtplx"}}) {
+		t.Errorf("defaultEnv().backends = %v, want ollama, omlx and processServer{mtplx}", defaultEnv().backends)
 	}
 }

@@ -150,7 +150,9 @@ func TestLoadingServerGeneric(t *testing.T) {
 		return old(family)
 	}
 	t.Cleanup(func() { processSpecFor = old })
-	argv := []string{"acme", "run", "-p", strconv.Itoa(loadPort)}
+	// acme has no provider-table row, so no address: the port its server is
+	// identified on is whatever serverPort resolves for it.
+	argv := []string{"acme", "run", "-p", strconv.Itoa(serverPort(loadCfg(), "acme"))}
 	for name, tc := range map[string]struct {
 		uid       int
 		wantPID   int
@@ -747,7 +749,7 @@ func TestMtplxStopRemovesThePidfileOfTheServerItStopped(t *testing.T) {
 	for name, recorded := range map[string]bool{"started by this wt": true, "pid-only pidfile": false} {
 		t.Run(name, func(t *testing.T) {
 			pt, e, cfg := stopEnv(t, recorded, func(pt *procTable, _ *env) { delete(pt.procs, 4242) })
-			if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+			if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err != nil {
 				t.Fatal(err)
 			}
 			if pidfile, record := filesLeft(e); pidfile || record {
@@ -832,7 +834,7 @@ func TestMtplxStopLeavesAPidfileItCannotTieToTheServerItStopped(t *testing.T) {
 			if tc.before != nil {
 				tc.before(t, pt, e)
 			}
-			if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err != nil {
+			if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err != nil {
 				t.Fatal(err)
 			}
 			if b, err := os.ReadFile(e.serverProc["mtplx"].pidfile); err != nil || string(b) != tc.wantPid {
@@ -855,7 +857,7 @@ func TestMtplxStopThatFailsLeavesThePidfile(t *testing.T) {
 	_, e, cfg := stopEnv(t, true, func(*procTable, *env) {})
 	// An `mtplx stop` that exits 0 and stops nothing.
 	e.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
-	if err := (mtplxBackend{}).stop(context.Background(), e, cfg); err == nil {
+	if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err == nil {
 		t.Fatal("stop = nil over a port that still answers")
 	}
 	if pidfile, record := filesLeft(e); !pidfile || !record {
@@ -950,7 +952,7 @@ func TestMtplxStartThatFailsLeavesNoPidfileAndNoRecord(t *testing.T) {
 		recorded = true
 		return procInfo{start: "1700000000.25"}, true, nil
 	}
-	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err == nil {
+	if err := (processServer{"mtplx"}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err == nil {
 		t.Fatal("start of a server that dies while loading succeeded")
 	}
 	if !recorded {
@@ -971,7 +973,7 @@ func TestMtplxStartThatFailsLeavesNoPidfileAndNoRecord(t *testing.T) {
 func TestMtplxStartRecordsWhatIdentifiesTheServer(t *testing.T) {
 	e, cfg, _, argvFile := mtplxEnv(t, "", 0)
 	e.describe = func(pid int) (procInfo, bool, error) { return procInfo{start: "1700000000.25"}, true, nil }
-	if err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err != nil {
+	if err := (processServer{"mtplx"}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "org/m"}, func(Stage) {}); err != nil {
 		t.Fatal(err)
 	}
 	argv, err := os.ReadFile(argvFile)

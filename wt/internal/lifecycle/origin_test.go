@@ -165,7 +165,7 @@ func TestStartProbeAndRouteAgreeOnAProvidersAddress(t *testing.T) {
 
 			switch family {
 			case "mtplx":
-				if origin, models, port := mtplxEndpoint(cfg); origin != c.want || models != c.want+"/v1/models" || !strings.HasSuffix(origin, ":"+strconv.Itoa(port)) {
+				if origin, models, port := serverEndpoint(cfg, "mtplx"); origin != c.want || models != c.want+"/v1/models" || !strings.HasSuffix(origin, ":"+strconv.Itoa(port)) {
 					t.Errorf("start: origin %q, models url %q, --port %d; want %q", origin, models, port, c.want)
 				}
 			case "omlx", "ollama":
@@ -227,10 +227,10 @@ func TestMtplxStartRefusesABaseURLWithNoPortItCannotServe(t *testing.T) {
 			network := &servedAt{}
 			network.on(e)
 			cfg := provCfg("mtplx", base)
-			err := (mtplxBackend{}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
-			var addr *MtplxAddressError
+			err := (processServer{"mtplx"}).start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+			var addr *PortlessAddressError
 			if !errors.As(err, &addr) {
-				t.Fatalf("start = %v, want *MtplxAddressError", err)
+				t.Fatalf("start = %v, want *PortlessAddressError", err)
 			}
 			if want := config.BaseOrigin(base); addr.Origin != want {
 				t.Errorf("the error names %q, want the registry's address %q", addr.Origin, want)
