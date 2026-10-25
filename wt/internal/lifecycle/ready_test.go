@@ -149,6 +149,31 @@ func TestWaitReadyFailsFastWhenProcessDies(t *testing.T) {
 	}
 }
 
+// TestWaitReadyRejectsAnInstanceServingAnotherModel verifies a readiness
+// command that reports ready for a different model does not satisfy the
+// wait: it times out naming the model the instance serves, while the same
+// command naming the requested model still succeeds. A machine-scope
+// family's readiness command answers for whatever instance holds the
+// machine, so a foreign instance finishing its own load must not read as
+// the server wt spawned being ready.
+func TestWaitReadyRejectsAnInstanceServingAnotherModel(t *testing.T) {
+	stubReadySpec(t)
+	e := testEnv()
+	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+		return []byte(`{"ready":true,"model":"other"}`), nil
+	}
+	err := e.waitReady(context.Background(), &config.Config{}, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "recx reports an instance serving other, not flint") {
+		t.Fatalf("waitReady = %v, want a timeout naming the other model", err)
+	}
+	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+		return []byte(`{"ready":true,"model":"flint"}`), nil
+	}
+	if err := e.waitReady(context.Background(), &config.Config{}, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second); err != nil {
+		t.Errorf("waitReady for the matching model = %v, want nil", err)
+	}
+}
+
 // TestWaitReadyTimeout verifies a server that never becomes ready ends the
 // wait at the deadline with an error naming the family, and that a cancelled
 // context ends it with the context's error: a start must not hang forever.

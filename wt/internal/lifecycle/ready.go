@@ -110,8 +110,9 @@ func jsonScalarAt(doc map[string]any, path string) (string, bool) {
 // timing and errors unchanged). Any other kind polls readyNow every
 // pollInterval: nil once ready; "serve process exited during model load"
 // the moment sp has exited; a server whose port is still closed while its
-// process lives is loading, not failed, and is waited for; at timeout an
-// error naming the family; a ctx error as itself.
+// process lives is loading, not failed, and is waited for; a ready answer
+// naming another model is not ready; at timeout an error naming the family
+// (and the other model, when one was seen); a ctx error as itself.
 func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, sp procWatch, bin, modelsURL, model, key string, timeout time.Duration) error {
 	spec, ok := processSpecFor(family)
 	if !ok {
@@ -121,6 +122,12 @@ func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, 
 		return e.waitForModel(ctx, modelsURL, model, sp, key, timeout)
 	}
 	deadline := time.Now().Add(timeout)
+	// other is the model a ready instance named when it was not model: a
+	// ScopeMachine family's readiness command answers for whatever instance
+	// holds the machine, which need not be the one wt spawned. That is not
+	// ready; the wait goes on, so a server that refuses the second instance
+	// still ends it through sp.exited().
+	other := ""
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -134,7 +141,9 @@ func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, 
 		if err != nil {
 			return err
 		}
-		if st.Ready {
+		if st.Ready && spec.Ready.ModelPath != "" && st.Model != "" && !SameModel(family, st.Model, model) {
+			other = st.Model
+		} else if st.Ready {
 			return nil
 		}
 		if err := e.sleep(ctx, e.pollInterval); err != nil {
@@ -143,6 +152,9 @@ func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, 
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if other != "" {
+		return fmt.Errorf("timed out waiting for %s to be ready to serve %s: %s reports an instance serving %s, not %s", family, model, family, other, model)
 	}
 	return fmt.Errorf("timed out waiting for %s to be ready to serve %s", family, model)
 }

@@ -104,8 +104,16 @@ func defaultEnv() *env {
 	}
 }
 
+// commandWaitDelay bounds how long a command's Wait outlives its context
+// once the context ends: without it Wait blocks until every writer to the
+// output pipe closes, so a command that forked a child holding the pipe (a
+// launcher) would hang its caller after the deadline killed it.
+const commandWaitDelay = time.Second
+
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = commandWaitDelay
+	return cmd.CombinedOutput()
 }
 
 // runCommandEnv is runCommand with extra vars layered over the inherited
@@ -115,5 +123,6 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 func runCommandEnv(ctx context.Context, extra []string, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), extra...)
+	cmd.WaitDelay = commandWaitDelay
 	return cmd.CombinedOutput()
 }

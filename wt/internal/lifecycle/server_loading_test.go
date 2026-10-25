@@ -222,7 +222,7 @@ func TestIsMtplxServerMatchesOnlyTheServerWtSpawns(t *testing.T) {
 		"nothing":                   {nil, false},
 	} {
 		if got := serverArgvMatches(mtplxSpec, tc.argv, 8003); got != tc.want {
-			t.Errorf("%s: isMtplxServer(%q) = %v, want %v", name, tc.argv, got, tc.want)
+			t.Errorf("%s: serverArgvMatches(%q) = %v, want %v", name, tc.argv, got, tc.want)
 		}
 	}
 }
@@ -1032,7 +1032,7 @@ func TestProcessSeamsFailClosedHere(t *testing.T) {
 		t.Error("signal succeeded: the signal seam is not closed")
 	}
 	if strings.HasPrefix(e.serverProc["mtplx"].pidfile, "/tmp/local-ai-setup") || strings.HasPrefix(e.serverProc["mtplx"].logfile, "/tmp/local-ai-setup") {
-		t.Errorf("mtplxProc = %+v, want paths away from the real pidfile and log", e.serverProc["mtplx"])
+		t.Errorf("serverProc[\"mtplx\"] = %+v, want paths away from the real pidfile and log", e.serverProc["mtplx"])
 	}
 	if l := LoadingServer(loadCfg(), "mtplx"); l != (Loading{}) {
 		t.Errorf("LoadingServer = %+v, want nothing: no pidfile is readable here", l)

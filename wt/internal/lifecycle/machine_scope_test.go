@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -38,6 +39,9 @@ type machineHarness struct {
 	mu      sync.Mutex
 	calls   []string
 	stopped bool
+	// stopIgnored makes the stop command succeed without stopping anything:
+	// status keeps reporting the instance ready.
+	stopIgnored bool
 }
 
 func (h *machineHarness) record(c string) {
@@ -121,7 +125,7 @@ func machineEnv(t *testing.T, serving string) (*env, *machineHarness) {
 			}
 			return []byte(`{"ready":true,"model":"` + serving + `","endpoint":"http://127.0.0.1:11500/v1"}`), nil
 		case "stop":
-			h.stopped = true
+			h.stopped = !h.stopIgnored
 			return nil, nil
 		}
 		t.Errorf("unexpected command %s %s", name, cmd)
@@ -189,6 +193,24 @@ func TestMachineScopeStopsForeignInstanceWhenAllowed(t *testing.T) {
 	}
 	if got, want := h.seq(), []string{"status", "stop", "status", "spawn"}; !slices.Equal(got, want) {
 		t.Errorf("calls = %v, want %v", got, want)
+	}
+}
+
+// TestMachineScopeDoesNotSpawnWhileStatusStaysReady verifies a confirmed
+// replace whose stop command leaves the instance reporting ready ends with
+// an error naming the stop, and never spawns: the old instance holds the
+// machine, so a second one would collide with it (or be refused) and the
+// start would report a failure that hides the real one.
+func TestMachineScopeDoesNotSpawnWhileStatusStaysReady(t *testing.T) {
+	e, h := machineEnv(t, "other")
+	h.stopIgnored = true
+	e.stopTimeout = 30 * time.Millisecond
+	err := start(context.Background(), e, &config.Config{}, recxTarget("flint"), Options{AllowReplace: true, Others: OthersAnswer{Decided: true}})
+	if err == nil || errors.Is(err, errSpawnStub) || !strings.Contains(err.Error(), "still reports") {
+		t.Fatalf("start = %v, want the stop's still-reports-ready error", err)
+	}
+	if got := h.seq(); slices.Contains(got, "spawn") || !slices.Contains(got, "stop") {
+		t.Errorf("calls = %v, want a stop and no spawn", got)
 	}
 }
 

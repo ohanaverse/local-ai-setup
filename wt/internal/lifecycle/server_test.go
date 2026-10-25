@@ -269,7 +269,7 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 		t.Fatal("mtplx backend missing or not single-model")
 	}
 	if e.serverProc["mtplx"].pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.serverProc["mtplx"].logfile != "/tmp/local-ai-setup-mtplx.log" {
-		t.Errorf("mtplxProc = %+v, want the paths llmbench's mtplx backend uses", e.serverProc["mtplx"])
+		t.Errorf("serverProc[\"mtplx\"] = %+v, want the paths llmbench's mtplx backend uses", e.serverProc["mtplx"])
 	}
 	if got := e.serverProc["mtplx"].startfile(); got != "/tmp/local-ai-setup-mtplx.pid.wt" {
 		t.Errorf("start record = %q, want it beside the pidfile, which stays a bare pid for llmbench", got)
@@ -278,7 +278,7 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 	// touches the real ones.
 	t.Setenv(mtplxPidfileEnv, "/scratch/m.pid")
 	if p := defaultEnv().serverProc["mtplx"]; p.pidfile != "/scratch/m.pid" || p.logfile != "/scratch/m.log" || p.startfile() != "/scratch/m.pid.wt" {
-		t.Errorf("mtplxProc under %s = %+v, want the pidfile it names and the log beside it", mtplxPidfileEnv, p)
+		t.Errorf("serverProc[\"mtplx\"] under %s = %+v, want the pidfile it names and the log beside it", mtplxPidfileEnv, p)
 	}
 }
 
@@ -610,7 +610,8 @@ func TestExpandArgs(t *testing.T) {
 
 // TestPortlessAddressErrorKeepsMtplxText verifies the generic error a start
 // returns for a registry base_url with no port keeps, for mtplx, the exact
-// sentence MtplxAddressError printed: users and docs know it, and the
+// sentence the mtplx-only address error printed before PortlessAddressError
+// replaced it: users and docs know it, and the
 // refactor must not change what wt says.
 func TestPortlessAddressErrorKeepsMtplxText(t *testing.T) {
 	err := &PortlessAddressError{Provider: "mtplx", Origin: "http://mybox"}
