@@ -125,7 +125,7 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 		}
 	}()
 	report(StageWaiting)
-	if err = e.waitReady(ctx, cfg, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
+	if err = e.waitReady(ctx, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
 		if tail := proc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
 			err = fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
 		}
@@ -187,12 +187,12 @@ func machineScoped(family string) (provider.ProcessSpec, bool) {
 // whoever started it: running is true when the command says ready, and
 // st.Model is the model it serves ("" when the command names none). A family
 // of any other scope (mtplx) runs nothing and reports nothing running.
-func (e *env) foreignInstance(ctx context.Context, cfg *config.Config, family string, bin, key string) (st readyState, running bool) {
+func (e *env) foreignInstance(ctx context.Context, family string, bin, key string) (st readyState, running bool) {
 	spec, ok := machineScoped(family)
 	if !ok {
 		return readyState{}, false
 	}
-	st, err := e.readyNow(ctx, cfg, spec, bin, "", "", key)
+	st, err := e.readyNow(ctx, spec, bin, "", "", key)
 	if err != nil || !st.Ready {
 		return readyState{}, false
 	}
@@ -214,7 +214,15 @@ func (b processServer) stopMachineInstance(ctx context.Context, e *env, cfg *con
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if st, _ := e.foreignInstance(ctx, cfg, b.family, bin, key); !st.Ready {
+		st, _ := e.foreignInstance(ctx, b.family, bin, key)
+		// "Not ready" is also what an instance still loading answers, so the
+		// stop is done only once the process wt named is gone too.
+		alive := false
+		if named.pid > 0 {
+			_, l := e.loadingServer(cfg, b.family)
+			alive = l.PID == named.pid
+		}
+		if !st.Ready && !alive {
 			// A readiness command cut short by the cancelled context reads as
 			// "not ready" too; that is not the instance having stopped.
 			if err := ctx.Err(); err != nil {
@@ -232,6 +240,11 @@ func (b processServer) stopMachineInstance(ctx context.Context, e *env, cfg *con
 	}
 	if runErr != nil {
 		return stopCommandError(spec, out)
+	}
+	if named.pid > 0 {
+		if _, l := e.loadingServer(cfg, b.family); l.PID == named.pid {
+			return fmt.Errorf("%s (pid %d) is still running after `%s %s`", spec.Binary, named.pid, spec.Binary, strings.Join(spec.Stop, " "))
+		}
 	}
 	return fmt.Errorf("%s still reports an instance ready after `%s %s`", spec.Binary, spec.Binary, strings.Join(spec.Stop, " "))
 }

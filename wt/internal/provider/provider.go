@@ -126,7 +126,7 @@ type ReadyKind string
 
 const (
 	// ReadyModelsList: the server's models list names the model.
-	ReadyModelsList ReadyKind = "models-lists"
+	ReadyModelsList ReadyKind = "models-list"
 	// ReadyCommandJSON: a command's JSON output holds the ready value.
 	ReadyCommandJSON ReadyKind = "command-json"
 )

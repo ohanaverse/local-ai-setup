@@ -62,9 +62,9 @@ A family with a `Process *provider.ProcessSpec` row in `internal/provider/table.
 
 1. A machine-scope instance adopted on a port other than the registry's origin still gets a route to the registry origin; the recorded address/inventory arrives with PR 3.
 2. A foreign instance of a machine-scope server on a port the registry does not name is not listed as a resident when another family starts. Nothing is stopped without approval, so the cost is a missing line in the "others loaded" prompt.
-3. (Fixed: `waitReady` compares the model a ready instance names with the target when `ModelPath` is set; an instance whose command names no model still reads as ready.)
+3. (Fixed: `waitReady` compares the model a ready instance names with the target when `ModelPath` is set; a ready answer naming no model is not ready.)
 4. The readiness command's output is read as stdout and stderr combined, so noise on stderr breaks the JSON parse (the check then reads "not ready").
-5. A failing readiness command counts as "not running" when waiting for a stop.
+5. (Fixed for an instance wt spawned: its pidfile (`loadingServer`) keeps a start from spawning beside it (`*LoadingInstanceError`) and keeps a stop waiting for the process to exit. A foreign instance that is still loading, or whose status command fails, still reads as "not running".)
 
 ## Rotation (Go)
 

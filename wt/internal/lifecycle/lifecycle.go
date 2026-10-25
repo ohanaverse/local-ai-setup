@@ -241,6 +241,18 @@ func (e *OccupancyUnknownError) Error() string {
 	return fmt.Sprintf("cannot tell whether %s at %s is already serving a model — confirm before replacing it", e.ProviderID, e.Origin)
 }
 
+// LoadingInstanceError means a ScopeMachine family's one instance (a process wt
+// spawned, pid PID) is still loading, so a start cannot tell what it will
+// serve and must not spawn a second one on the machine.
+type LoadingInstanceError struct {
+	ProviderID string
+	PID        int
+}
+
+func (e *LoadingInstanceError) Error() string {
+	return fmt.Sprintf("%s already has an instance (pid %d) still loading; wait for it to finish, or run `wt stop %s`", e.ProviderID, e.PID, e.ProviderID)
+}
+
 // KeyRefusedError means a provider's server refused a request for want of a
 // valid API key (HTTP 401 or 403). Waiting does not change that answer, so a
 // warmup stops on it instead of polling to its timeout.
@@ -468,7 +480,10 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	// One already serving t is adopted, the same no-op as a target the
 	// snapshot shows running (the route hook still runs); one serving another
 	// model is the occupant, asked about and stopped like any other.
-	foreign, foreignFound, adopt := e.machineOccupant(ctx, cfg, family, t)
+	foreign, foreignFound, adopt, merr := e.machineOccupant(ctx, cfg, family, t)
+	if merr != nil {
+		return merr
+	}
 	if adopt {
 		return nil
 	}

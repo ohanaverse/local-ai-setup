@@ -67,26 +67,33 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 // occupant has, so the start asks before replacing it (OccupiedError) and
 // stops it with the family's stop. A family of any other scope runs no
 // command and finds nothing; so does one whose binary or key cannot be had,
-// which the backend's start then reports.
-func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, family string, t Target) (occ localmodels.Entry, found, adopt bool) {
+// which the backend's start then reports. An instance wt spawned that is
+// still loading answers "not ready" too; the pidfile finds it, and the start
+// fails with *LoadingInstanceError rather than spawn a second one.
+func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, family string, t Target) (occ localmodels.Entry, found, adopt bool, err error) {
 	spec, ok := machineScoped(family)
 	if !ok {
-		return localmodels.Entry{}, false, false
+		return localmodels.Entry{}, false, false, nil
 	}
 	bin, err := e.lookPath(spec.Binary)
 	if err != nil {
-		return localmodels.Entry{}, false, false
+		return localmodels.Entry{}, false, false, nil
 	}
 	key, err := localmodels.FamilyAPIKeyErr(cfg, family)
 	if err != nil {
-		return localmodels.Entry{}, false, false
+		return localmodels.Entry{}, false, false, nil
 	}
-	st, running := e.foreignInstance(ctx, cfg, family, bin, key)
+	st, running := e.foreignInstance(ctx, family, bin, key)
 	if !running {
-		return localmodels.Entry{}, false, false
+		// A readiness command also says "not ready" for an instance wt
+		// spawned that is still loading; its pidfile is the only sign of it.
+		if _, l := e.loadingServer(cfg, family); l.PID > 0 {
+			return localmodels.Entry{}, false, false, &LoadingInstanceError{ProviderID: family, PID: l.PID}
+		}
+		return localmodels.Entry{}, false, false, nil
 	}
 	if st.Model != "" && SameModel(family, st.Model, t.ModelName) {
-		return localmodels.Entry{}, false, true
+		return localmodels.Entry{}, false, true, nil
 	}
 	providerID := family
 	if ids := provider.FamilyProviderIDs(family); len(ids) > 0 {
@@ -96,7 +103,7 @@ func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, family st
 	if st.Model != "" {
 		occ.ModelID = config.DiscoveredModelID(family, st.Model)
 	}
-	return occ, true, false
+	return occ, true, false, nil
 }
 
 // runningOthers lists the family's running models other than the target.

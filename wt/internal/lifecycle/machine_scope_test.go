@@ -23,10 +23,12 @@ import (
 // is ready and which model it serves, `<bin> stop` stops it whatever port it
 // listens on.
 var machineSpec = provider.ProcessSpec{
-	Binary: "recx",
-	Spawn:  []string{"serve", "--model", "{model}", "--port", "{port}"},
-	Stop:   []string{"stop"},
-	Ready:  readySpec.Ready,
+	Binary:     "recx",
+	Subcommand: "serve",
+	PortFlag:   "--port",
+	Spawn:      []string{"serve", "--model", "{model}", "--port", "{port}"},
+	Stop:       []string{"stop"},
+	Ready:      readySpec.Ready,
 }
 
 // errSpawnStub is what the stubbed spawn returns: a start that reaches the
@@ -242,7 +244,7 @@ func TestPortScopeNeverRunsTheReadinessCommand(t *testing.T) {
 		didSpawn = true
 		return nil, errSpawnStub
 	}
-	if _, running := e.foreignInstance(context.Background(), loadCfg(), "mtplx", "/bin/mtplx", ""); running {
+	if _, running := e.foreignInstance(context.Background(), "mtplx", "/bin/mtplx", ""); running {
 		t.Error("foreignInstance reported a running instance for a port-scope family")
 	}
 	err := start(context.Background(), e, loadCfg(), Target{ProviderID: "mtplx", ModelName: "org/m"}, Options{Others: OthersAnswer{Decided: true}})
@@ -251,5 +253,61 @@ func TestPortScopeNeverRunsTheReadinessCommand(t *testing.T) {
 	}
 	if runs != 0 {
 		t.Errorf("a port-scope start ran %d commands, want 0", runs)
+	}
+}
+
+// loadingRecx makes the pidfile of e's recx family name a live recx server
+// (pid 4242) that a process-table lookup identifies as wt's own, as one wt
+// spawned and is still loading. alive reports whether the process still exists.
+func loadingRecx(t *testing.T, e *env, alive *bool) {
+	t.Helper()
+	if err := os.WriteFile(e.serverProc["recx"].pidfile, []byte("4242"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{"recx", "serve", "--model", "flint", "--port", strconv.Itoa(serverPort(&config.Config{}, "recx"))}
+	e.describe = func(pid int) (procInfo, bool, error) {
+		if pid != 4242 || !*alive {
+			return procInfo{}, false, nil
+		}
+		return mine(4242, "100.5", argv), true, nil
+	}
+}
+
+// TestMachineScopeRefusesToSpawnBesideALoadingInstance verifies a start whose
+// readiness command says "not ready" while the pidfile names a live recx
+// server wt spawned fails with *LoadingInstanceError and spawns nothing: a
+// loading instance answers exactly like no instance, and a second one would
+// collide with it.
+func TestMachineScopeRefusesToSpawnBesideALoadingInstance(t *testing.T) {
+	e, h := machineEnv(t, "")
+	alive := true
+	loadingRecx(t, e, &alive)
+	err := start(context.Background(), e, &config.Config{}, recxTarget("other"), Options{Others: OthersAnswer{Decided: true}})
+	var le *LoadingInstanceError
+	if !errors.As(err, &le) || le.PID != 4242 {
+		t.Fatalf("start = %v, want *LoadingInstanceError for pid 4242", err)
+	}
+	if got := h.seq(); slices.Contains(got, "spawn") || slices.Contains(got, "stop") {
+		t.Errorf("calls = %v, want no spawn and no stop", got)
+	}
+}
+
+// TestMachineScopeStopWaitsForALoadingProcessToExit verifies a stop whose
+// readiness command already says "not ready" (the instance is still loading)
+// is not done while the process wt named is alive: it fails when the process
+// outlives the stop timeout, and succeeds once it is gone.
+func TestMachineScopeStopWaitsForALoadingProcessToExit(t *testing.T) {
+	e, _ := machineEnv(t, "")
+	e.stopTimeout = 30 * time.Millisecond
+	alive := true
+	loadingRecx(t, e, &alive)
+	b := processServer{"recx"}
+	err := b.stop(context.Background(), e, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "pid 4242") {
+		t.Fatalf("stop = %v, want an error naming the process still running", err)
+	}
+	alive = false
+	if err := b.stop(context.Background(), e, &config.Config{}); err != nil {
+		t.Errorf("stop after exit = %v, want nil", err)
 	}
 }

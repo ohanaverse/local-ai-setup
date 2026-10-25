@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
@@ -92,7 +91,7 @@ func TestReadyNowCommandJSON(t *testing.T) {
 				}
 				return []byte(tc.out), tc.err
 			}
-			got, err := e.readyNow(context.Background(), &config.Config{}, readySpec, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "")
+			got, err := e.readyNow(context.Background(), readySpec, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "")
 			if err != nil {
 				t.Fatalf("readyNow err = %v, want nil", err)
 			}
@@ -120,7 +119,7 @@ func TestWaitReadyKeepsWaitingWhilePortClosed(t *testing.T) {
 		}
 		return []byte(`{"ready":true,"model":"flint"}`), nil
 	}
-	err := e.waitReady(context.Background(), &config.Config{}, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second)
+	err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second)
 	if err != nil {
 		t.Fatalf("waitReady = %v, want nil", err)
 	}
@@ -140,7 +139,7 @@ func TestWaitReadyFailsFastWhenProcessDies(t *testing.T) {
 		atomic.AddInt32(&runs, 1)
 		return []byte(`{"ready":false}`), nil
 	}
-	err := e.waitReady(context.Background(), &config.Config{}, "recx", &countingProc{exitAt: 2}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 5*time.Second)
+	err := e.waitReady(context.Background(), "recx", &countingProc{exitAt: 2}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 5*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "exited during model load") {
 		t.Fatalf("waitReady = %v, want an exited-during-load error", err)
 	}
@@ -162,14 +161,14 @@ func TestWaitReadyRejectsAnInstanceServingAnotherModel(t *testing.T) {
 	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		return []byte(`{"ready":true,"model":"other"}`), nil
 	}
-	err := e.waitReady(context.Background(), &config.Config{}, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
+	err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "recx reports an instance serving other, not flint") {
 		t.Fatalf("waitReady = %v, want a timeout naming the other model", err)
 	}
 	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		return []byte(`{"ready":true,"model":"flint"}`), nil
 	}
-	if err := e.waitReady(context.Background(), &config.Config{}, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second); err != nil {
+	if err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second); err != nil {
 		t.Errorf("waitReady for the matching model = %v, want nil", err)
 	}
 }
@@ -183,13 +182,27 @@ func TestWaitReadyTimeout(t *testing.T) {
 	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		return []byte(`{"ready":false}`), nil
 	}
-	err := e.waitReady(context.Background(), &config.Config{}, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
+	err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "recx") {
 		t.Fatalf("waitReady = %v, want a timeout naming recx", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := e.waitReady(ctx, &config.Config{}, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second); !errors.Is(err, context.Canceled) {
+	if err := e.waitReady(ctx, "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second); !errors.Is(err, context.Canceled) {
 		t.Errorf("waitReady after cancel = %v, want context.Canceled", err)
+	}
+}
+
+// TestWaitReadyTreatsAReadyAnswerWithNoModelAsNotReady verifies a ready
+// answer that names no model, from a spec that reads one, does not end the
+// wait: an instance mid-transition may serve something else, and warming the
+// wrong model is worse than a timeout that says what was seen.
+func TestWaitReadyTreatsAReadyAnswerWithNoModelAsNotReady(t *testing.T) {
+	stubReadySpec(t)
+	e := testEnv()
+	e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte(`{"ready":true}`), nil }
+	err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "names no model") {
+		t.Fatalf("waitReady = %v, want a timeout saying the instance names no model", err)
 	}
 }

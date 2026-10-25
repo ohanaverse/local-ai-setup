@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
@@ -33,7 +32,7 @@ type readyState struct {
 // output, a missing path or a timeout is not ready with a nil error — a
 // server still loading answers exactly that way (rec exits 1 while nothing
 // is reachable) and the wait goes on.
-func (e *env) readyNow(ctx context.Context, cfg *config.Config, spec provider.ProcessSpec, bin, modelsURL, model, key string) (readyState, error) {
+func (e *env) readyNow(ctx context.Context, spec provider.ProcessSpec, bin, modelsURL, model, key string) (readyState, error) {
 	switch spec.Ready.Kind {
 	case provider.ReadyModelsList:
 		ids, err := localmodels.FetchModelIDsKeyed(e.probeClient, modelsURL, key)
@@ -111,9 +110,9 @@ func jsonScalarAt(doc map[string]any, path string) (string, bool) {
 // pollInterval: nil once ready; "serve process exited during model load"
 // the moment sp has exited; a server whose port is still closed while its
 // process lives is loading, not failed, and is waited for; a ready answer
-// naming another model is not ready; at timeout an error naming the family
+// naming another model, or none when the spec reads one, is not ready; at timeout an error naming the family
 // (and the other model, when one was seen); a ctx error as itself.
-func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, sp procWatch, bin, modelsURL, model, key string, timeout time.Duration) error {
+func (e *env) waitReady(ctx context.Context, family string, sp procWatch, bin, modelsURL, model, key string, timeout time.Duration) error {
 	spec, ok := processSpecFor(family)
 	if !ok {
 		return &UnsupportedError{ProviderID: family}
@@ -128,6 +127,8 @@ func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, 
 	// ready; the wait goes on, so a server that refuses the second instance
 	// still ends it through sp.exited().
 	other := ""
+	// unnamed: a ready answer named no model although the spec reads one.
+	unnamed := false
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -137,13 +138,18 @@ func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, 
 				return fmt.Errorf("serve process exited during model load: %v", err)
 			}
 		}
-		st, err := e.readyNow(ctx, cfg, spec, bin, modelsURL, model, key)
+		st, err := e.readyNow(ctx, spec, bin, modelsURL, model, key)
 		if err != nil {
 			return err
 		}
-		if st.Ready && spec.Ready.ModelPath != "" && st.Model != "" && !SameModel(family, st.Model, model) {
+		switch {
+		case st.Ready && spec.Ready.ModelPath != "" && st.Model == "":
+			// Ready but naming no model: it may be mid-transition, and wt
+			// cannot tell it serves the target.
+			unnamed = true
+		case st.Ready && spec.Ready.ModelPath != "" && !SameModel(family, st.Model, model):
 			other = st.Model
-		} else if st.Ready {
+		case st.Ready:
 			return nil
 		}
 		if err := e.sleep(ctx, e.pollInterval); err != nil {
@@ -155,6 +161,9 @@ func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, 
 	}
 	if other != "" {
 		return fmt.Errorf("timed out waiting for %s to be ready to serve %s: %s reports an instance serving %s, not %s", family, model, family, other, model)
+	}
+	if unnamed {
+		return fmt.Errorf("timed out waiting for %s to be ready to serve %s: %s reports an instance ready but names no model", family, model, family)
 	}
 	return fmt.Errorf("timed out waiting for %s to be ready to serve %s", family, model)
 }
