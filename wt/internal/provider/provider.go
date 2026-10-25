@@ -104,6 +104,89 @@ type FamilySpec struct {
 	// Served: the server reports what it serves (`wt served`).
 	Served  bool
 	Tenancy Tenancy
+	// Scope is what one server of this family excludes: a port, or the machine.
+	Scope Scope
+	// Process says how wt spawns, stops and recognises the family's server;
+	// nil when wt does not run it.
+	Process *ProcessSpec
+}
+
+// Scope is the extent over which a family's servers exclude each other.
+type Scope int
+
+const (
+	// ScopePort: one server per port.
+	ScopePort Scope = iota
+	// ScopeMachine: one server on the whole machine.
+	ScopeMachine
+)
+
+// ReadyKind is how wt decides a spawned server is ready.
+type ReadyKind string
+
+const (
+	// ReadyModelsList: the server's models list names the model.
+	ReadyModelsList ReadyKind = "models-lists"
+	// ReadyCommandJSON: a command's JSON output holds the ready value.
+	ReadyCommandJSON ReadyKind = "command-json"
+)
+
+// Ready is a family's readiness check.
+type Ready struct {
+	Kind ReadyKind
+	// Command is the argv after the binary for command-json.
+	Command []string
+	// Path is a dot-separated JSON path whose scalar, rendered as text, must
+	// equal Equals ("true" for a bool).
+	Path   string
+	Equals string
+	// ModelPath is the JSON path of the model the instance serves.
+	ModelPath string
+}
+
+// ProcessSpec is how wt runs a family's server as a process.
+type ProcessSpec struct {
+	Binary string
+	// Spawn and Stop are argv templates after Binary with {model} and {port}
+	// placeholders.
+	Spawn, Stop                []string
+	PidfileDefault, LogDefault string
+	PidfileEnv                 string
+	// Subcommand, DaemonModule and PortFlag say how the running server's argv
+	// is recognised; ModelFlag is the argv flag whose value is the model name.
+	Subcommand, DaemonModule, PortFlag, ModelFlag string
+	Ready                                         Ready
+}
+
+func (p *ProcessSpec) clone() *ProcessSpec {
+	if p == nil {
+		return nil
+	}
+	c := *p
+	c.Spawn = slices.Clone(p.Spawn)
+	c.Stop = slices.Clone(p.Stop)
+	c.Ready.Command = slices.Clone(p.Ready.Command)
+	return &c
+}
+
+// ProcessFor returns a copy of a family's process facts; false when wt does
+// not run the family.
+func ProcessFor(family string) (ProcessSpec, bool) {
+	if f, ok := families[family]; ok && f.Process != nil {
+		return *f.Process.clone(), true
+	}
+	return ProcessSpec{}, false
+}
+
+// ProcessFamilies returns the families with process facts, sorted.
+func ProcessFamilies() []string {
+	var out []string
+	for _, name := range Families() {
+		if families[name].Process != nil {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (s Spec) clone() Spec {
@@ -182,6 +265,7 @@ func FamilyProviderIDs(family string) []string {
 // FamilyByName returns a family's facts.
 func FamilyByName(name string) (FamilySpec, bool) {
 	f, ok := families[name]
+	f.Process = f.Process.clone()
 	return f, ok
 }
 

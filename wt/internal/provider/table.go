@@ -89,7 +89,20 @@ var families = map[string]FamilySpec{
 	},
 	"mtplx": {
 		Name: "mtplx", DefaultOrigin: mtplxOrigin, DefaultModelDir: mtplxModelDir,
-		WtPort: MtplxPort, Served: true, Tenancy: Exclusive,
+		WtPort: MtplxPort, Served: true, Tenancy: Exclusive, Scope: ScopePort,
+		Process: &ProcessSpec{
+			Binary:         "mtplx",
+			Spawn:          []string{"serve", "--model", "{model}", "--port", "{port}", "--host", "127.0.0.1", "--model-id", "{model}"},
+			Stop:           []string{"stop", "--port", "{port}", "--grace-seconds", "10"},
+			PidfileDefault: "/tmp/local-ai-setup-mtplx.pid",
+			LogDefault:     "/tmp/local-ai-setup-mtplx.log",
+			PidfileEnv:     "WT_MTPLX_PIDFILE",
+			Subcommand:     "serve",
+			DaemonModule:   "mtplx.server.openai",
+			PortFlag:       "--port",
+			ModelFlag:      "--model-id",
+			Ready:          Ready{Kind: ReadyModelsList},
+		},
 	},
 	// mlx_lm_server is NoTenancy: wt cannot start it (llmbench does), so
 	// lifecycle.TenancyOf has no backend for it.
