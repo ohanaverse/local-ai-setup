@@ -34,9 +34,22 @@ start and stop needs all of them.
    `loadedSize`), and `sources.go` for what the server says it is serving.
    Without this the provider's registry models are rows wt cannot probe: they
    are listed and never startable.
-3. **Lifecycle (local only).** Add a backend to `backendsByFamily` in
-   `internal/lifecycle/lifecycle.go` with a `tenancy()` equal to the family's
-   row in the table (`TestBackendsMatchProviderTable` fails otherwise).
+3. **Lifecycle (local only).** A server wt runs as a process (`<bin> serve
+   ...` per model on one port) needs no backend code: add a `Process`
+   (`*provider.ProcessSpec`) to the family's row in `internal/provider/table.go`
+   — `Binary`, `Spawn`/`Stop` argv templates (`{model}`, `{port}`), pidfile and
+   log defaults (`PidfileEnv` for a scratch override), how its running argv is
+   recognised (`Subcommand`, `DaemonModule`, `PortFlag`, `ModelFlag`), a `Ready`
+   check (`ReadyModelsList`, or `ReadyCommandJSON` with `Command`, `Path`,
+   `Equals`, `ModelPath`) and the family `Scope` (`ScopePort`, or
+   `ScopeMachine` for one instance on the whole machine, which needs a
+   `ReadyCommandJSON` check) — plus the provider's `Seed` and `Policy`. mtplx
+   is the model row. `lifecycle` registers `processServer` for every
+   `provider.ProcessFamilies()` family on its own. Until the registry overlay
+   lands in a later change, such a provider is a data row in `table.go`, not a
+   registry entry. Any other kind of server (ollama, omlx style) still needs a
+   backend in `backendsByFamily` (`internal/lifecycle/lifecycle.go`) with a
+   `tenancy()` equal to the family's row (`TestBackendsMatchProviderTable`).
 4. **Tests and docs.** Run `go test ./...` from `wt/` and extend the tests
    that fail. Add the provider to `docs/internals/local-models.md` and, for the
    user, to `../docs/guides/02-providers-and-models.md`.

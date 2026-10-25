@@ -133,7 +133,7 @@ Read [docs/internals/local-models.md](docs/internals/local-models.md) before cha
 
 ## Lifecycle (`internal/lifecycle`)
 
-The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends ollama (`Shared`), omlx (`Pool`), mtplx (`Exclusive`).
+The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends ollama (`Shared`), omlx (`Pool`), every process-server family (mtplx today, `Exclusive`; one spec-driven `processServer` backend, a `Process` row in `internal/provider/table.go`).
 
 - **Anything that displaces a model needs `AllowReplace`** (`*OccupiedError`); unknown occupancy is `*OccupancyUnknownError`, never assumed empty. Other providers' models beside the target need `Options.Others` (#412); `--replace` never answers it.
 - **A start/stop wt performs updates `config.yaml`** through `internal/litellm` (route hook); `lifecycle.EnsureModelRoute` (#192) never fails a launch, a slot-profile launch uses the failing `profile_routes.go` calls.
@@ -141,7 +141,8 @@ The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends
 - **A `Start` that returned nil is followed by one `SettleStart(ctx, out, cfg, target)`** (#343, #349); each package has one seam over it that its `TestMain` stubs (`lifecycleSettleStart` in `cmd/wt`, `settleStart` in `internal/tui`).
 - **A failed start is printed once, by `main`** (#344): a new command that can return one needs `SilenceErrors` or `asStartError`/`printOnce`, or the message prints twice.
 - **An ollama stop ollama accepted but has not carried out is `*StillFinishingError`, never nil** (#379); only the stop loop reads it as an outcome (exit 0). The TUI stops models only after the alt screen is gone.
-- **wt signals a process only after identifying it** (`server_loading.go`): a pid is never enough (user's own, exact argv on the provider's port, recorded start time, rechecked before SIGKILL). The pidfile stays a bare pid (llmbench shares it).
+- **wt signals a process only after identifying it** (`server_loading.go`): a pid is never enough (user's own, a process server's exact argv on the provider's port, recorded start time, rechecked before SIGKILL). The pidfile stays a bare pid (llmbench shares it).
+- **A key the registry names goes with every probe of a process server** (`localmodels.FamilyAPIKeyErr`): a `secret_ref` that cannot be read ends a start before the spawn (`*KeyUnreadableError`); a refused key is `localmodels.ErrKeyRefused` (family `partial`, not `down`). A `ScopeMachine` family's existing instance is adopted when it serves the target and asked about before it is replaced otherwise (details and known limits: `docs/internals/local-models.md`).
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, the launch-time route check, restart or readiness waits, or replace.
 
