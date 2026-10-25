@@ -416,3 +416,38 @@ func TestMachineOccupantUsesTheRegistryID(t *testing.T) {
 		})
 	}
 }
+
+// TestMachineScopeRefusesAPortlessRegistryOriginBeforeAsking verifies a
+// machine-scope start whose registry origin wt cannot serve at (no port, an
+// https or bracketed IPv6 URL, a hosts alias) fails with
+// *PortlessAddressError right after the readiness command finds the instance,
+// with or without AllowReplace: no question, no stop, no spawn. Asking would
+// make a correctly serving instance a victim the user approves stopping, only
+// for the spawn to fail on the same address afterwards, leaving no instance.
+func TestMachineScopeRefusesAPortlessRegistryOriginBeforeAsking(t *testing.T) {
+	for name, opts := range map[string]Options{
+		"ask":          {Others: OthersAnswer{Decided: true}},
+		"allowReplace": {AllowReplace: true, Others: OthersAnswer{Decided: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, h := machineEnvSpec(t, "flint", endpointSpec())
+			h.endpoint = "http://127.0.0.1:" + strconv.Itoa(h.port+1) + "/v1"
+			old := familyOriginPort
+			familyOriginPort = func(cfg *config.Config, f string) (string, int, error) {
+				if f == "recx" {
+					return "", 0, errors.New("no port")
+				}
+				return old(cfg, f)
+			}
+			t.Cleanup(func() { familyOriginPort = old })
+			err := start(context.Background(), e, &config.Config{}, recxTarget("flint"), opts)
+			var pe *PortlessAddressError
+			if !errors.As(err, &pe) || pe.Provider != "recx" {
+				t.Fatalf("start = %v, want *PortlessAddressError for recx", err)
+			}
+			if got := h.seq(); !slices.Equal(got, []string{"status"}) {
+				t.Errorf("calls = %v, want only the readiness command (nothing stopped or spawned)", got)
+			}
+		})
+	}
+}

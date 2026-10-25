@@ -67,7 +67,10 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 // or t at another address, returned as occ in the shape every occupant has
 // (snap's registered entry for its model when there is one, serverEntry),
 // so the start asks before replacing it (OccupiedError) and stops it with
-// the family's stop. A family of any other scope runs no
+// the family's stop. An instance found while the registry origin cannot be
+// served at (serverStartEndpoint) is *PortlessAddressError instead: the
+// replace could only end in that same error with the instance gone. A
+// family of any other scope runs no
 // command and finds nothing; so does one whose binary or key cannot be had,
 // which the backend's start then reports. An instance wt spawned that is
 // still loading answers "not ready" too; the pidfile finds it, and the start
@@ -96,6 +99,12 @@ func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, snap loca
 	}
 	if st.Model != "" && SameModel(family, st.Model, t.ModelName) && atRegistryAddress(cfg, family, st.Endpoint) {
 		return localmodels.Entry{}, false, true, nil
+	}
+	// A registry origin wt cannot serve at fails now, before the question
+	// and any stop: the replace would stop the instance and the spawn would
+	// then fail on this same address, leaving nothing running.
+	if _, _, _, aerr := serverStartEndpoint(cfg, family); aerr != nil {
+		return localmodels.Entry{}, false, false, aerr
 	}
 	// The occupant's entry is the snapshot's own registered one when there
 	// is one, so the route dropped after a replace is the registry id's.

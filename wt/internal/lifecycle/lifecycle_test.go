@@ -276,8 +276,9 @@ func TestTypedErrorMessages(t *testing.T) {
 //
 // maps.Equal compares interface values with ==, so a backend struct that gained
 // a non-comparable field (a slice, map or func) would make this guard panic
-// rather than fail. All three backends are empty structs today, so it is safe;
-// a new backend must stay comparable for this guard to work.
+// rather than fail. ollamaBackend and omlxBackend are empty structs and
+// processServer holds only a family name (a string), so every backend is
+// comparable today; a new backend must stay comparable for this guard to work.
 func TestEvictionsDeriveSingleModelFromBackendRegistry(t *testing.T) {
 	if !maps.Equal(defaultEnv().backends, map[string]backend{
 		"ollama": ollamaBackend{},

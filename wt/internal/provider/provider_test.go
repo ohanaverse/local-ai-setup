@@ -101,9 +101,9 @@ func scopeProblems(f FamilySpec) []string {
 }
 
 // TestScopeProblems verifies the ScopeMachine rule TestTableInvariants
-// applies, on synthetic rows: no table row is machine-scoped yet, so without
-// this the rule would pass vacuously and could be wrong unnoticed until rec's
-// row lands.
+// applies, on synthetic rows: rec is the only machine-scoped table row and
+// satisfies the rule, so the table alone never shows that each broken shape
+// (pool tenancy, a models-list readiness) is caught; these rows do.
 func TestScopeProblems(t *testing.T) {
 	cmd := &ProcessSpec{Ready: Ready{Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true"}}
 	list := &ProcessSpec{Ready: Ready{Kind: ReadyModelsList}}
