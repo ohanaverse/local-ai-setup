@@ -356,8 +356,10 @@ func tableString(t *tomlw.Table, key string) string {
 // what to repair and where.
 func describe(err error, providerID string) error {
 	if errors.Is(err, config.ErrNoProviderRow) {
-		return fmt.Errorf("%w: add a [[providers]] block for %q to %s and run this again (wt adds a default row by itself only for ollama, omlx, mtplx, mlx_lm_server and openrouter)",
-			err, providerID, config.RegistryPath())
+		ids := config.SeedableProviderIDs()
+		seeded := strings.Join(ids[:len(ids)-1], ", ") + " and " + ids[len(ids)-1]
+		return fmt.Errorf("%w: add a [[providers]] block for %q to %s and run this again (wt adds a default row by itself only for %s)",
+			err, providerID, config.RegistryPath(), seeded)
 	}
 	return err
 }
