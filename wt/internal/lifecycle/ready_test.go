@@ -105,6 +105,35 @@ func TestReadyNowCommandJSON(t *testing.T) {
 	}
 }
 
+// TestReadyNowReadsTheEndpoint verifies a ready answer carries the instance's
+// endpoint from the spec's EndpointPath, and "" when the JSON lacks it or the
+// spec names no path. A start compares that endpoint with the registry's
+// address before it adopts an instance; a wrong or invented one would adopt a
+// server the routes do not point at.
+func TestReadyNowReadsTheEndpoint(t *testing.T) {
+	withPath := readySpec
+	withPath.Ready.EndpointPath = "endpoint"
+	full := `{"ready":true,"model":"flint","endpoint":"http://127.0.0.1:9/v1"}`
+	for name, tc := range map[string]struct {
+		spec provider.ProcessSpec
+		out  string
+		want readyState
+	}{
+		"endpoint":       {spec: withPath, out: full, want: readyState{Ready: true, Model: "flint", Endpoint: "http://127.0.0.1:9/v1"}},
+		"absent in json": {spec: withPath, out: `{"ready":true,"model":"flint"}`, want: readyState{Ready: true, Model: "flint"}},
+		"no path":        {spec: readySpec, out: full, want: readyState{Ready: true, Model: "flint"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := testEnv()
+			e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte(tc.out), nil }
+			got, err := e.readyNow(context.Background(), tc.spec, "/bin/recx", "", "flint", "")
+			if err != nil || got != tc.want {
+				t.Errorf("readyNow = %+v, %v; want %+v, nil", got, err, tc.want)
+			}
+		})
+	}
+}
+
 // TestWaitReadyKeepsWaitingWhilePortClosed verifies a server still loading
 // (its readiness command says not ready, its process alive) is waited for,
 // not failed: rec keeps its port closed for ~10 s while loading, and treating

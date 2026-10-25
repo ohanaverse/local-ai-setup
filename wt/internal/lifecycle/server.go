@@ -185,7 +185,9 @@ func machineScoped(family string) (provider.ProcessSpec, bool) {
 // foreignInstance asks a ScopeMachine family's readiness command whether the
 // family's one instance on this machine is running, on whatever port, and
 // whoever started it: running is true when the command says ready, and
-// st.Model is the model it serves ("" when the command names none). A family
+// st.Model is the model it serves ("" when the command names none) and
+// st.Endpoint the URL it says it listens at ("" when the spec reads no
+// EndpointPath or the command names none). A family
 // of any other scope (mtplx) runs nothing and reports nothing running.
 func (e *env) foreignInstance(ctx context.Context, family string, bin, key string) (st readyState, running bool) {
 	spec, ok := machineScoped(family)

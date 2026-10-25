@@ -480,7 +480,7 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	// One already serving t is adopted, the same no-op as a target the
 	// snapshot shows running (the route hook still runs); one serving another
 	// model is the occupant, asked about and stopped like any other.
-	foreign, foreignFound, adopt, merr := e.machineOccupant(ctx, cfg, family, t)
+	foreign, foreignFound, adopt, merr := e.machineOccupant(ctx, cfg, snap, family, t)
 	if merr != nil {
 		return merr
 	}
