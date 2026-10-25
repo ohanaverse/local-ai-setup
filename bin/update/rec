@@ -68,7 +68,7 @@ if [ "$installed" != "unknown" ]; then
 fi
 
 # A running server must never be updated underneath.
-if rec status 2> /dev/null | grep -q '"ready":true'; then
+if rec status 2> /dev/null | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'; then
     update_finish manual "$installed installed, $latest available, but a rec server is running — stop rec first (\`wt stop rec\`), then rerun"
 fi
 

@@ -79,7 +79,7 @@ func modelAddCmd(a *app) *cobra.Command {
 			"name written \"--\" for any other provider. --id overrides it, with an id\n" +
 			"of that shape: <provider>/<name>, no spaces. The id, the provider and the\n" +
 			"name cannot be changed afterwards.\n\n" +
-			"A missing default provider row (ollama, omlx, mtplx, openrouter) is added\n" +
+			"A missing default provider row (ollama, omlx, mtplx, rec, openrouter) is added\n" +
 			"in the same write; a provider wt has no default row for must have its\n" +
 			"[[providers]] block in registry.toml first. For an ollama model wt runs\n" +
 			"`ollama show` once and records whether the model supports tools and\n" +
