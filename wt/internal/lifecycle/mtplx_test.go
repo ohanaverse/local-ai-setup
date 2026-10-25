@@ -101,14 +101,14 @@ func mtplxEnv(t *testing.T, mode string, delayMS int) (*env, *config.Config, int
 	t.Setenv("LIFECYCLE_HELPER_MODE", mode)
 	t.Setenv("LIFECYCLE_HELPER_DELAY_MS", strconv.Itoa(delayMS))
 	e := testEnv()
-	e.mtplxProc = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
+	e.serverProc["mtplx"] = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
 	e.lookPath = func(string) (string, error) { return os.Args[0], nil }
 	e.loadTimeout = 3 * time.Second
 	addr := freeAddr(t)
 	_, portStr, _ := net.SplitHostPort(addr)
 	port, _ := strconv.Atoi(portStr)
 	t.Cleanup(func() { // kill a helper the test left running
-		if b, err := os.ReadFile(e.mtplxProc.pidfile); err == nil {
+		if b, err := os.ReadFile(e.serverProc["mtplx"].pidfile); err == nil {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
 				_ = syscall.Kill(pid, syscall.SIGTERM)
 			}
@@ -148,11 +148,11 @@ func TestMtplxStartSpawnsWaitsWarms(t *testing.T) {
 	if len(lines) != 2 || lines[1] != want {
 		t.Errorf("argv = %q, want %q", lines[1:], want)
 	}
-	pidB, err := os.ReadFile(e.mtplxProc.pidfile)
+	pidB, err := os.ReadFile(e.serverProc["mtplx"].pidfile)
 	if err != nil || strings.TrimSpace(string(pidB)) != strings.TrimSpace(lines[0]) {
 		t.Errorf("pidfile = %q (%v), want the helper pid %s", pidB, err, lines[0])
 	}
-	if _, err := os.Stat(e.mtplxProc.logfile); err != nil {
+	if _, err := os.Stat(e.serverProc["mtplx"].logfile); err != nil {
 		t.Errorf("logfile missing: %v", err)
 	}
 }
@@ -173,7 +173,7 @@ func TestMtplxCancelTearsDownSpawnedProcess(t *testing.T) {
 	if pid == 0 || !pidGone(pid) {
 		t.Errorf("spawned process %d still alive after cancel", pid)
 	}
-	if _, err := os.Stat(e.mtplxProc.pidfile); !os.IsNotExist(err) {
+	if _, err := os.Stat(e.serverProc["mtplx"].pidfile); !os.IsNotExist(err) {
 		t.Errorf("pidfile should be removed, stat err = %v", err)
 	}
 }
@@ -267,16 +267,16 @@ func TestDefaultEnvRegistersMtplx(t *testing.T) {
 	if e.backends["mtplx"] == nil || e.backends["mtplx"].tenancy() != Exclusive {
 		t.Fatal("mtplx backend missing or not single-model")
 	}
-	if e.mtplxProc.pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.mtplxProc.logfile != "/tmp/local-ai-setup-mtplx.log" {
-		t.Errorf("mtplxProc = %+v, want the paths llmbench's mtplx backend uses", e.mtplxProc)
+	if e.serverProc["mtplx"].pidfile != "/tmp/local-ai-setup-mtplx.pid" || e.serverProc["mtplx"].logfile != "/tmp/local-ai-setup-mtplx.log" {
+		t.Errorf("mtplxProc = %+v, want the paths llmbench's mtplx backend uses", e.serverProc["mtplx"])
 	}
-	if got := e.mtplxProc.startfile(); got != "/tmp/local-ai-setup-mtplx.pid.wt" {
+	if got := e.serverProc["mtplx"].startfile(); got != "/tmp/local-ai-setup-mtplx.pid.wt" {
 		t.Errorf("start record = %q, want it beside the pidfile, which stays a bare pid for llmbench", got)
 	}
 	// WT_MTPLX_PIDFILE moves all three, so a run against scratch state never
 	// touches the real ones.
 	t.Setenv(mtplxPidfileEnv, "/scratch/m.pid")
-	if p := defaultEnv().mtplxProc; p.pidfile != "/scratch/m.pid" || p.logfile != "/scratch/m.log" || p.startfile() != "/scratch/m.pid.wt" {
+	if p := defaultEnv().serverProc["mtplx"]; p.pidfile != "/scratch/m.pid" || p.logfile != "/scratch/m.log" || p.startfile() != "/scratch/m.pid.wt" {
 		t.Errorf("mtplxProc under %s = %+v, want the pidfile it names and the log beside it", mtplxPidfileEnv, p)
 	}
 }
@@ -414,7 +414,7 @@ func TestLogTailLinesReadsOnlyTheTail(t *testing.T) {
 // line the cut fell in.
 func TestMtplxFailedStartShowsWholeLogLines(t *testing.T) {
 	e, cfg, _, _ := mtplxEnv(t, "die", 0)
-	if err := os.WriteFile(e.mtplxProc.logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\n"), 0o644); err != nil {
+	if err := os.WriteFile(e.serverProc["mtplx"].logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
@@ -428,7 +428,7 @@ func TestMtplxFailedStartShowsWholeLogLines(t *testing.T) {
 // carries the line-start tail too.
 func TestSpawnExitedImmediatelyShowsWholeLogLines(t *testing.T) {
 	e, cfg, _, _ := mtplxEnv(t, "die-now", 0)
-	if err := os.WriteFile(e.mtplxProc.logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\nfatal: out of memory\n"), 0o644); err != nil {
+	if err := os.WriteFile(e.serverProc["mtplx"].logfile, []byte(strings.Repeat("x", 600)+" sustained MTP runtime\nfatal: out of memory\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	err := mtplxBackend{}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})

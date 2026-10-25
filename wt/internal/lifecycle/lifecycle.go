@@ -86,9 +86,10 @@ type OthersAnswer struct {
 // Resident is a model of another provider family that is loaded while a
 // start runs: it holds memory the target will share. Stoppable is false when
 // wt has no backend that can stop it (mlx_lm_server), or when it is an omlx
-// model still loading, which omlx refuses to unload. PID is set for an mtplx
-// still loading, known only by wt's pidfile: that one is stopped only through
-// the verified pidfile stop (stopLoadingMtplx), never by a pid alone.
+// model still loading, which omlx refuses to unload. PID is set for a process
+// server (mtplx) still loading, known only by wt's pidfile: that one is
+// stopped only through the verified pidfile stop (stopLoadingServer), never by
+// a pid alone.
 type Resident struct {
 	Entry     localmodels.Entry
 	Stoppable bool
@@ -546,7 +547,7 @@ func (e *env) stopOthers(ctx context.Context, cfg *config.Config, t Target, othe
 		}
 		var err error
 		if r.PID > 0 {
-			err = e.stopLoadingMtplx(ctx, cfg, r.PID)
+			err = e.stopLoadingServer(ctx, cfg, localmodels.Family(r.Entry.ProviderID), r.PID)
 		} else if b := e.backends[localmodels.Family(r.Entry.ProviderID)]; b == nil {
 			err = &UnsupportedError{ProviderID: r.Entry.ProviderID}
 		} else {

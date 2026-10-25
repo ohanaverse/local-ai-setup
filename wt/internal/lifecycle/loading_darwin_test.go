@@ -65,7 +65,7 @@ func childEnv(t *testing.T, child int) *env {
 	t.Helper()
 	dir := t.TempDir()
 	e := testEnv()
-	e.mtplxProc = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
+	e.serverProc["mtplx"] = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
 	e.describe = realDescribeProc
 	e.signal = func(pid int, sig syscall.Signal) error {
 		if pid != child && pid != -child {
@@ -173,7 +173,7 @@ func TestLoadingMtplxOnTheRealProcessTable(t *testing.T) {
 			pid, done := startChild(t, script, args...)
 			e := childEnv(t, pid)
 			writePidfile(t, e, strconv.Itoa(pid))
-			e.recordStart(pid)
+			e.recordStart("mtplx", pid)
 			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 				if _, err := os.Stat(ready); err == nil {
 					break
@@ -181,11 +181,11 @@ func TestLoadingMtplxOnTheRealProcessTable(t *testing.T) {
 					t.Fatal("the fake mtplx never came up")
 				}
 			}
-			id, l := e.loadingMtplx(loadCfg())
+			id, l := e.loadingServer(loadCfg(), "mtplx")
 			if l.PID != pid || !id.group {
 				t.Fatalf("Loading = %+v ident = %+v, want the child identified as mtplx, in the group wt recorded as its own", l, id)
 			}
-			if err := e.stopLoadingMtplx(context.Background(), loadCfg(), pid); err != nil {
+			if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", pid); err != nil {
 				t.Fatal(err)
 			}
 			waitReaped(t, done)
@@ -202,11 +202,11 @@ func TestLoadingMtplxOnTheRealProcessTable(t *testing.T) {
 			return nil
 		}
 		writePidfile(t, e, strconv.Itoa(pid))
-		_, l := e.loadingMtplx(loadCfg())
+		_, l := e.loadingServer(loadCfg(), "mtplx")
 		if l.PID != 0 || l.Stray == "" || l.Err != nil {
 			t.Errorf("Loading = %+v, want a stray note and no pid", l)
 		}
-		if err := e.stopLoadingMtplx(context.Background(), loadCfg(), pid); err == nil {
+		if err := e.stopLoadingServer(context.Background(), loadCfg(), "mtplx", pid); err == nil {
 			t.Error("stop of a process that is not mtplx succeeded")
 		}
 		if err := syscall.Kill(pid, 0); err != nil {

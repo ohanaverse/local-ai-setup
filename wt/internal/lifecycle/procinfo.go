@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // procInfo is what the process table says about one live pid: the evidence wt
@@ -44,30 +46,43 @@ var (
 
 func realSignalProc(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) }
 
-// mtplxPidfileEnv names another path for the mtplx pidfile; the log and wt's
-// start record follow it. It exists so a test, or a built wt run by hand
-// against scratch state, never touches the real pidfile. llmbench does not
-// read it: the two tools share a pidfile only at the default path.
-const mtplxPidfileEnv = "WT_MTPLX_PIDFILE"
-
-// mtplxProcess is the pidfile and log of the mtplx server: the paths llmbench's
-// mtplx backend uses too, unless WT_MTPLX_PIDFILE names another pidfile.
-func mtplxProcess() pidProcess {
-	p := pidProcess{name: "mtplx", pidfile: "/tmp/local-ai-setup-mtplx.pid", logfile: "/tmp/local-ai-setup-mtplx.log"}
-	if path := os.Getenv(mtplxPidfileEnv); path != "" {
+// serverProcess is the pidfile and log of a process family's server: the
+// spec's defaults — for mtplx the paths llmbench's mtplx backend uses too —
+// unless the spec's PidfileEnv (mtplx: WT_MTPLX_PIDFILE) names another
+// pidfile, which the log and wt's start record then follow. The variable
+// exists so a test, or a built wt run by hand against scratch state, never
+// touches the real pidfile. llmbench does not read it: the two tools share a
+// pidfile only at the default path.
+func serverProcess(spec provider.ProcessSpec) pidProcess {
+	p := pidProcess{name: spec.Binary, pidfile: spec.PidfileDefault, logfile: spec.LogDefault}
+	if spec.PidfileEnv == "" {
+		return p
+	}
+	if path := os.Getenv(spec.PidfileEnv); path != "" {
 		p.pidfile = path
 		p.logfile = strings.TrimSuffix(path, ".pid") + ".log"
 	}
 	return p
 }
 
+// serverProcesses is serverProcess for every process family, keyed by family.
+func serverProcesses() map[string]pidProcess {
+	procs := map[string]pidProcess{}
+	for _, family := range provider.ProcessFamilies() {
+		if spec, ok := processSpecFor(family); ok {
+			procs[family] = serverProcess(spec)
+		}
+	}
+	return procs
+}
+
 // IsolateProcessesForTest is for a package's TestMain: it makes the
 // process-table read and the signal fail for the rest of the process, and
-// points the mtplx pidfile at a directory that does not exist. A test that
-// reaches the production stop path without stubbing it then reads no real
-// pidfile and signals no real process. Production code never calls it — like
-// config.IsolateConfigHomeForTest, it exists so cross-package tests share one
-// definition.
+// points every process family's pidfile (its spec's PidfileEnv) at a
+// directory that does not exist. A test that reaches the production stop path
+// without stubbing it then reads no real pidfile and signals no real process.
+// Production code never calls it — like config.IsolateConfigHomeForTest, it
+// exists so cross-package tests share one definition.
 func IsolateProcessesForTest() {
 	describeProc = func(pid int) (procInfo, bool, error) {
 		return procInfo{}, false, fmt.Errorf("describeProc not stubbed in this test (pid %d)", pid)
@@ -75,39 +90,44 @@ func IsolateProcessesForTest() {
 	signalProc = func(pid int, sig syscall.Signal) error {
 		return fmt.Errorf("signalProc not stubbed in this test (pid %d, signal %d)", pid, sig)
 	}
-	_ = os.Setenv(mtplxPidfileEnv, filepath.Join(os.TempDir(), "wt-test-no-mtplx-"+strconv.Itoa(os.Getpid()), "mtplx.pid"))
+	for _, family := range provider.ProcessFamilies() {
+		if spec, ok := processSpecFor(family); ok && spec.PidfileEnv != "" {
+			_ = os.Setenv(spec.PidfileEnv, filepath.Join(os.TempDir(), "wt-test-no-"+family+"-"+strconv.Itoa(os.Getpid()), family+".pid"))
+		}
+	}
 }
 
-// isMtplxServer reports whether argv is the mtplx server for port, in either
-// of the two forms the pid wt spawned takes (mtplx 2.12.0):
+// serverArgvMatches reports whether argv is spec's server for port, in either
+// of the two forms the pid wt spawned takes (mtplx 2.12.0 as the example):
 //
 //   - the wrapper: an interpreter (sh or python — mtplx is a script) running
-//     a file named mtplx with the `serve` subcommand, exactly what wt passes
-//     (argv[1] and argv[2]); or mtplx itself as argv[0] with `serve` next;
-//   - the daemon `mtplx serve` then execs in the same pid, which is the one
-//     that loads the weights: python with `-m mtplx.server.openai` after
+//     a file named spec.Binary with spec.Subcommand, exactly what wt passes
+//     (argv[1] and argv[2]); or spec.Binary itself as argv[0] with
+//     spec.Subcommand next;
+//   - the daemon the wrapper then execs in the same pid, which is the one
+//     that loads the weights: python with `-m spec.DaemonModule` after
 //     nothing but interpreter options.
 //
 // The interpreter's name is compared without regard to case: a macOS
 // framework Python re-execs into `.../Python.app/Contents/MacOS/Python`.
 //
-// Either must be followed by `--port` and this port as two separate
+// Either must be followed by spec.PortFlag and this port as two separate
 // arguments. Positions and whole arguments are compared, never substrings, so
 // a command that only mentions the words — `vim mtplx serve --port 8003` — is
 // not a server.
-func isMtplxServer(argv []string, port int) bool {
+func serverArgvMatches(spec provider.ProcessSpec, argv []string, port int) bool {
 	rest := -1
-	if len(argv) >= 2 && filepath.Base(argv[0]) == "mtplx" && argv[1] == "serve" {
+	if len(argv) >= 2 && filepath.Base(argv[0]) == spec.Binary && argv[1] == spec.Subcommand {
 		rest = 2
 	} else if len(argv) >= 3 {
 		interp := filepath.Base(argv[0])
 		python := strings.HasPrefix(strings.ToLower(interp), "python")
-		if (python || interp == "sh" || interp == "bash") && filepath.Base(argv[1]) == "mtplx" && argv[2] == "serve" {
+		if (python || interp == "sh" || interp == "bash") && filepath.Base(argv[1]) == spec.Binary && argv[2] == spec.Subcommand {
 			rest = 3
-		} else if python {
+		} else if python && spec.DaemonModule != "" {
 			for i := 1; i+1 < len(argv) && strings.HasPrefix(argv[i], "-"); i++ {
 				if argv[i] == "-m" {
-					if argv[i+1] == "mtplx.server.openai" {
+					if argv[i+1] == spec.DaemonModule {
 						rest = i + 2
 					}
 					break
@@ -120,7 +140,7 @@ func isMtplxServer(argv []string, port int) bool {
 	}
 	want := strconv.Itoa(port)
 	for i := rest; i+1 < len(argv); i++ {
-		if argv[i] == "--port" && argv[i+1] == want {
+		if argv[i] == spec.PortFlag && argv[i+1] == want {
 			return true
 		}
 	}

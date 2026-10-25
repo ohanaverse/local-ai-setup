@@ -141,7 +141,7 @@ The start/stop engine (`Start`, `Stop`, `BeginStops` + `SettleRoutes`); backends
 - **A `Start` that returned nil is followed by one `SettleStart(ctx, out, cfg, target)`** (#343, #349); each package has one seam over it that its `TestMain` stubs (`lifecycleSettleStart` in `cmd/wt`, `settleStart` in `internal/tui`).
 - **A failed start is printed once, by `main`** (#344): a new command that can return one needs `SilenceErrors` or `asStartError`/`printOnce`, or the message prints twice.
 - **An ollama stop ollama accepted but has not carried out is `*StillFinishingError`, never nil** (#379); only the stop loop reads it as an outcome (exit 0). The TUI stops models only after the alt screen is gone.
-- **wt signals a process only after identifying it** (`mtplx_loading.go`): a pid is never enough (user's own, exact argv on the provider's port, recorded start time, rechecked before SIGKILL). The pidfile stays a bare pid (llmbench shares it).
+- **wt signals a process only after identifying it** (`server_loading.go`): a pid is never enough (user's own, exact argv on the provider's port, recorded start time, rechecked before SIGKILL). The pidfile stays a bare pid (llmbench shares it).
 
 Read [docs/internals/local-models.md](docs/internals/local-models.md#lifecycle-internallifecycle) before changing start/stop, the route hook, the launch-time route check, restart or readiness waits, or replace.
 

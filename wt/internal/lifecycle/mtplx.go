@@ -62,7 +62,7 @@ func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Tar
 	if !closed {
 		return &PortBusyError{Port: port}
 	}
-	sp, serr := e.mtplxProc.spawn(bin, []string{
+	sp, serr := e.serverProc["mtplx"].spawn(bin, []string{
 		"serve", "--model", t.ModelName, "--port", strconv.Itoa(port),
 		"--host", "127.0.0.1", "--model-id", t.ModelName,
 	})
@@ -70,8 +70,8 @@ func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Tar
 		return serr
 	}
 	// What a later `wt stop` identifies this process by while its port is
-	// still closed (mtplx_loading.go).
-	e.recordStart(sp.cmd.Process.Pid)
+	// still closed (server_loading.go).
+	e.recordStart("mtplx", sp.cmd.Process.Pid)
 	defer func() {
 		if err != nil {
 			sp.kill() // never leave a half-started server holding the port
@@ -79,7 +79,7 @@ func (mtplxBackend) start(ctx context.Context, e *env, cfg *config.Config, t Tar
 	}()
 	report(StageWaiting)
 	if err = e.waitForModel(ctx, models, t.ModelName, sp, e.loadTimeout); err != nil {
-		if tail := e.mtplxProc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
+		if tail := e.serverProc["mtplx"].logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
 			err = fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
 		}
 		return err
@@ -96,14 +96,14 @@ func (mtplxBackend) stop(ctx context.Context, e *env, cfg *config.Config) error 
 	_, models, port := mtplxEndpoint(cfg)
 	// What the pidfile names now, while the server is still there to be
 	// identified: only that process's pidfile is removed below.
-	named, _ := e.loadingMtplx(cfg)
+	named, _ := e.loadingServer(cfg, "mtplx")
 	out, runErr := e.run(ctx, bin, "stop", "--port", strconv.Itoa(port), "--grace-seconds", "10")
 	closed, cerr := e.portClosedWithin(ctx, models, e.stopTimeout)
 	if cerr != nil {
 		return cerr
 	}
 	if closed {
-		e.forgetStopped(ctx, named)
+		e.forgetStopped(ctx, "mtplx", named)
 		return nil
 	}
 	if runErr != nil {

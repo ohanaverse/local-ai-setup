@@ -40,10 +40,12 @@ type env struct {
 	onOccupantStopped func(ctx context.Context, cfg *config.Config, occ localmodels.Entry) bool
 	restartOwed       bool // set by start() when the hook reported an owed restart
 
-	mtplxProc pidProcess // pidfile + log used for the spawned mtplx server
+	// serverProc is the pidfile + log of each process family's spawned
+	// server (provider.ProcessFamilies), keyed by family.
+	serverProc map[string]pidProcess
 
 	// The process table and the signal, for the one stop that has no port to
-	// go through: an mtplx that is still loading (mtplx_loading.go).
+	// go through: a process server that is still loading (server_loading.go).
 	describe func(pid int) (info procInfo, found bool, err error)
 	signal   func(pid int, sig syscall.Signal) error
 
@@ -51,7 +53,7 @@ type env struct {
 	warmupTimeout  time.Duration // ollama/omlx warmup budget
 	loadTimeout    time.Duration // wait for a spawned server to list the model
 	stopTimeout    time.Duration // wait for a port to close after a stop
-	stopGrace      time.Duration // SIGTERM-to-SIGKILL wait for a loading mtplx (`mtplx stop`'s --grace-seconds)
+	stopGrace      time.Duration // SIGTERM-to-SIGKILL wait for a loading process server (`mtplx stop`'s --grace-seconds)
 	portUpTimeout  time.Duration // wait for a daemon to answer after `start`
 	prebindTimeout time.Duration // wait for a port to free before spawning
 
@@ -78,7 +80,7 @@ func defaultEnv() *env {
 		inventory:         localmodels.Inventory,
 		backends:          maps.Clone(backendsByFamily),
 		onOccupantStopped: routeAfterOccupantStopped,
-		mtplxProc:         mtplxProcess(),
+		serverProc:        serverProcesses(),
 		describe:          describeProc,
 		signal:            signalProc,
 		pollInterval:      time.Second,
