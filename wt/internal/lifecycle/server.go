@@ -91,8 +91,14 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	}
 	// The key the registry names for this server, resolved once per start
 	// and sent with every probe and the warmup; "" (no header) when the
-	// family's provider row has no secret_ref.
-	key := localmodels.FamilyAPIKey(cfg, b.family)
+	// family's provider row has no secret_ref. A secret_ref that cannot be
+	// read ends the start here, before the port check and the spawn: the
+	// server would refuse every keyless probe and the start would only time
+	// out, never naming the key.
+	key, kerr := localmodels.FamilyAPIKeyErr(cfg, b.family)
+	if kerr != nil {
+		return kerr
+	}
 	report(StageStarting)
 	closed, cerr := e.portClosedWithin(ctx, models, key, e.prebindTimeout)
 	if cerr != nil {

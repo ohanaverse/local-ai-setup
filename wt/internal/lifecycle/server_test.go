@@ -630,3 +630,33 @@ func TestProcessServerIsComparable(t *testing.T) {
 		t.Errorf("defaultEnv().backends = %v, want ollama, omlx and processServer{mtplx}", defaultEnv().backends)
 	}
 }
+
+// TestStartFailsFastWhenTheKeyCannotBeRead verifies a start whose provider
+// names an auth.secret_ref wt cannot resolve stops at once with the key error
+// (*KeyUnreadableError naming the family), before the port check and before
+// anything is spawned or a pidfile written. Without it the start sent no key,
+// polled a key-on-every-route server's 401s for the whole load budget and
+// ended in a "timed out" message that never named the key.
+func TestStartFailsFastWhenTheKeyCannotBeRead(t *testing.T) {
+	e, cfg, _, argvFile := mtplxEnv(t, "serve", 0)
+	cfg.Providers[0].Auth = config.AuthConfig{Type: "api_key", BaseURL: cfg.Providers[0].Auth.BaseURL, SecretRef: "exec:/nonexistent/key-cmd"}
+	var stages []Stage
+	start := time.Now()
+	err := processServer{"mtplx"}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(s Stage) { stages = append(stages, s) })
+	var ku *localmodels.KeyUnreadableError
+	if !errors.As(err, &ku) || ku.Family != "mtplx" {
+		t.Fatalf("err = %v, want *localmodels.KeyUnreadableError{Family: mtplx}", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Errorf("an unreadable key should fail at once, took %v", time.Since(start))
+	}
+	if _, err := os.Stat(argvFile); !os.IsNotExist(err) {
+		t.Errorf("a process was spawned (argv file stat err = %v)", err)
+	}
+	if _, err := os.Stat(e.serverProc["mtplx"].pidfile); !os.IsNotExist(err) {
+		t.Errorf("a pidfile was written (stat err = %v)", err)
+	}
+	if len(stages) != 0 {
+		t.Errorf("stages reported = %v, want none", stages)
+	}
+}
