@@ -153,6 +153,7 @@
 - Produces (exact):
   - `func (e *env) foreignInstance(ctx context.Context, cfg *config.Config, family string, bin, key string) (st readyState, running bool)` — for a `ScopeMachine` family, runs the readiness command; `running` is true when the command says ready (any port), `st.Model` is the model it serves.
   - In `start`: for a `ScopeMachine` process family, before the port check, `foreignInstance` runs; if `running` and `SameModel(family, st.Model, t.ModelName)` the start is a no-op that returns nil (adopt: no stop, no spawn, no pidfile written); if `running` with another model it is a victim — returned as `OccupiedError` unless `opts.AllowReplace`, and then stopped with the spec's stop command (waiting for the readiness command to report not ready) before the spawn.
+  - `var familyOriginPort = localmodels.FamilyOriginPort` in `server.go`, the one seam through which `serverStartEndpoint`/`serverEndpoint` resolve a family's address (added here because a synthetic test family has no table row and would otherwise resolve to port 0, and a `PortlessAddressError`); production code is unchanged. In the same task, change `TestLoadingServerGeneric` so the `acme` family gets a real port (9000) through this seam instead of the degenerate port 0.
   - `Resident`/victims for such an instance use `Entry{ProviderID: <first id of the family>, ModelID: DiscoveredModelID(family, model), ModelName: st.Model, Running: true}`.
   - `TenancyOf`, `Startable` and routes are unchanged; `ScopePort` families (mtplx) never run the readiness command.
 
