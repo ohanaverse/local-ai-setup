@@ -120,7 +120,7 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 		}
 	}()
 	report(StageWaiting)
-	if err = e.waitForModel(ctx, models, t.ModelName, sp, key, e.loadTimeout); err != nil {
+	if err = e.waitReady(ctx, cfg, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
 		if tail := proc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
 			err = fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
 		}

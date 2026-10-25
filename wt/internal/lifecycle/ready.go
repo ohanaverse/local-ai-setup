@@ -1,0 +1,148 @@
+package lifecycle
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
+)
+
+// readyState is one answer to "is the spawned server ready": Model is the
+// model the server says it serves, when its readiness check names one.
+type readyState struct {
+	Ready bool
+	Model string
+}
+
+// readyNow asks once whether a process family's server is ready to serve
+// model, the way its spec's Ready says.
+//
+// ReadyModelsList: ready when modelsURL lists the model (lenient name match);
+// a keyed request the server refuses is a *KeyRefusedError.
+//
+// ReadyCommandJSON: bin runs with spec.Ready.Command, bounded by
+// e.readyCmdTimeout; its output must be one JSON object whose value at the
+// dot-separated Path renders as Equals. A failed command, empty or invalid
+// output, a missing path or a timeout is not ready with a nil error — a
+// server still loading answers exactly that way (rec exits 1 while nothing
+// is reachable) and the wait goes on.
+func (e *env) readyNow(ctx context.Context, cfg *config.Config, spec provider.ProcessSpec, bin, modelsURL, model, key string) (readyState, error) {
+	switch spec.Ready.Kind {
+	case provider.ReadyModelsList:
+		ids, err := localmodels.FetchModelIDsKeyed(e.probeClient, modelsURL, key)
+		if key != "" && errors.Is(err, localmodels.ErrKeyRefused) {
+			return readyState{}, &KeyRefusedError{URL: modelsURL, KeySent: true, Detail: err.Error()}
+		}
+		for _, id := range ids {
+			if localmodels.NameMatches(id, model) {
+				return readyState{Ready: true, Model: id}, nil
+			}
+		}
+		return readyState{}, nil
+	case provider.ReadyCommandJSON:
+		rctx, cancel := context.WithTimeout(ctx, e.readyCmdTimeout)
+		defer cancel()
+		out, err := e.run(rctx, bin, spec.Ready.Command...)
+		if err != nil || rctx.Err() != nil {
+			return readyState{}, nil
+		}
+		var doc map[string]any
+		dec := json.NewDecoder(bytes.NewReader(out))
+		dec.UseNumber()
+		if err := dec.Decode(&doc); err != nil || doc == nil {
+			return readyState{}, nil
+		}
+		got, ok := jsonScalarAt(doc, spec.Ready.Path)
+		if !ok || got != spec.Ready.Equals {
+			return readyState{}, nil
+		}
+		st := readyState{Ready: true}
+		if spec.Ready.ModelPath != "" {
+			st.Model, _ = jsonScalarAt(doc, spec.Ready.ModelPath)
+		}
+		return st, nil
+	default:
+		return readyState{}, fmt.Errorf("unknown readiness kind %q", spec.Ready.Kind)
+	}
+}
+
+// jsonScalarAt is the scalar at a dot-separated path in doc rendered as
+// text: a string as itself, a bool as "true"/"false", a number as written.
+// A missing key, a null, an object or an array is false.
+func jsonScalarAt(doc map[string]any, path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	var cur any = doc
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		if cur, ok = m[seg]; !ok {
+			return "", false
+		}
+	}
+	switch v := cur.(type) {
+	case string:
+		return v, true
+	case bool:
+		if v {
+			return "true", true
+		}
+		return "false", true
+	case json.Number:
+		return v.String(), true
+	default:
+		return "", false
+	}
+}
+
+// waitReady waits for family's spawned server to be ready to serve model.
+// A ReadyModelsList family waits exactly as waitForModel always has (its
+// timing and errors unchanged). Any other kind polls readyNow every
+// pollInterval: nil once ready; "serve process exited during model load"
+// the moment sp has exited; a server whose port is still closed while its
+// process lives is loading, not failed, and is waited for; at timeout an
+// error naming the family; a ctx error as itself.
+func (e *env) waitReady(ctx context.Context, cfg *config.Config, family string, sp procWatch, bin, modelsURL, model, key string, timeout time.Duration) error {
+	spec, ok := processSpecFor(family)
+	if !ok {
+		return &UnsupportedError{ProviderID: family}
+	}
+	if spec.Ready.Kind == provider.ReadyModelsList {
+		return e.waitForModel(ctx, modelsURL, model, sp, key, timeout)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if sp != nil {
+			if done, err := sp.exited(); done {
+				return fmt.Errorf("serve process exited during model load: %v", err)
+			}
+		}
+		st, err := e.readyNow(ctx, cfg, spec, bin, modelsURL, model, key)
+		if err != nil {
+			return err
+		}
+		if st.Ready {
+			return nil
+		}
+		if err := e.sleep(ctx, e.pollInterval); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("timed out waiting for %s to be ready to serve %s", family, model)
+}

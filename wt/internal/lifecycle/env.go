@@ -56,6 +56,9 @@ type env struct {
 	stopGrace      time.Duration // SIGTERM-to-SIGKILL wait for a loading process server (`mtplx stop`'s --grace-seconds)
 	portUpTimeout  time.Duration // wait for a daemon to answer after `start`
 	prebindTimeout time.Duration // wait for a port to free before spawning
+	// readyCmdTimeout bounds one run of a command-json readiness check
+	// (ready.go); a run that outlives it counts as not ready.
+	readyCmdTimeout time.Duration
 
 	// ollamaUnloadTimeout bounds the wait for a model to leave /api/ps after
 	// an `ollama stop` that exited 0. ollama accepts a stop of a model with a
@@ -90,6 +93,7 @@ func defaultEnv() *env {
 		stopGrace:         10 * time.Second,
 		portUpTimeout:     90 * time.Second,
 		prebindTimeout:    10 * time.Second,
+		readyCmdTimeout:   5 * time.Second,
 
 		ollamaUnloadTimeout: 3 * time.Minute,
 		stopNoticeAfter:     2 * time.Second,
