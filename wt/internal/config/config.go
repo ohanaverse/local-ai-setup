@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // Location says whether a model is hosted locally or in the cloud.
@@ -44,7 +46,7 @@ const (
 // OllamaURLer capability, adding the per-agent path suffix ("/", "/v1",
 // "/v1/") their wire protocol expects; legacy migration writes it as the
 // ollama provider's auth base URL.
-const OllamaBaseURL = "http://localhost:11434"
+const OllamaBaseURL = provider.OllamaOrigin
 
 // ── LiteLLM routing state (wt-owned) ─────────────────────
 
@@ -276,7 +278,7 @@ func BaseOrigin(url string) string {
 // base_url names none. mtplx is the one local server wt hands a port to
 // (`mtplx serve --port`, `mtplx stop --port`); omlx and ollama listen where
 // their own configuration says, and wt cannot start an mlx_lm_server.
-const MtplxPort = 8003
+const MtplxPort = provider.MtplxPort
 
 // Origin is the address wt reaches provider p at: BaseOrigin of its
 // auth.base_url, with the port filled in where the url names none and wt is
@@ -303,14 +305,15 @@ const MtplxPort = 8003
 // api_base already agree, and a default port would be a guess.
 func (p Provider) Origin() string {
 	origin := BaseOrigin(p.Auth.BaseURL)
-	if p.ID != "mtplx" {
+	port := provider.WtPortFor(p.ID)
+	if port == 0 {
 		return origin
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Scheme != "http" || u.Port() != "" || !servesMtplxAt(u.Hostname()) {
 		return origin
 	}
-	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(MtplxPort))
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
 	return u.String()
 }
 
@@ -952,17 +955,7 @@ func (m Model) HasTag(tag string) bool {
 // it>". Registry-matched models keep their registry id instead; callers do
 // that lookup before falling back to this.
 func DiscoveredModelID(providerID, artifactName string) string {
-	return discoveredFamily(providerID) + "/" + artifactName
-}
-
-// discoveredFamily maps a registry provider id to its probe family.
-// Mirrors internal/localmodels.Family: omlx and omlx-6bit share "omlx";
-// every other local provider is its own family.
-func discoveredFamily(providerID string) string {
-	if providerID == "omlx" || providerID == "omlx-6bit" {
-		return "omlx"
-	}
-	return providerID
+	return provider.FamilyOr(providerID) + "/" + artifactName
 }
 
 // ModelsWithTag returns models whose tags include tag.

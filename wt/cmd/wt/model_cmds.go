@@ -20,6 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/spf13/cobra"
@@ -744,7 +745,7 @@ const servedProbeTimeout = 5 * time.Second
 // servedFamilies are the providers `wt served` answers for: the ones whose
 // server says what it is serving. Ollama has no such answer — a pulled model
 // loads on request — so it is left out rather than answered with its pulls.
-var servedFamilies = []string{"mlx_lm_server", "mtplx", "omlx"}
+var servedFamilies = provider.ServedFamilies()
 
 func servedCmd(a *app) *cobra.Command {
 	var asJSON bool

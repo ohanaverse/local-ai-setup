@@ -1,0 +1,294 @@
+// Package provider is wt's one table of provider facts: which providers share
+// a server (a family), how each routes through LiteLLM, which default registry
+// row each is seeded with, and the per-family defaults and flags the inventory,
+// lifecycle and commands read.
+//
+// It is a leaf: standard library only, so config, localmodels, litellm and
+// lifecycle can all import it (config cannot import localmodels, which is why
+// these tables used to be copied between packages and drifted). It holds facts,
+// not behavior: probes, start/stop and name matching stay in the packages that
+// own them and read their facts from here. The table is in table.go.
+package provider
+
+import (
+	"slices"
+	"sort"
+)
+
+// Tenancy is how a provider's server holds models, which decides what a start
+// displaces, what a stop takes down, and which routes each removes.
+type Tenancy int
+
+const (
+	// NoTenancy: wt has no lifecycle backend for the provider.
+	NoTenancy Tenancy = iota
+	// Exclusive: one model per process (mtplx). A start replaces the
+	// occupant, a stop stops the process, and the family's routes go as one.
+	Exclusive
+	// Shared: models load beside each other and a pulled model is served on
+	// request (ollama). Routes follow the artifact, not loaded state.
+	Shared
+	// Pool: several models loaded at once under a memory ceiling, evicted by
+	// least recent use (omlx). A start loads beside and may evict; a stop
+	// unloads one model; routes follow each model's loaded state.
+	Pool
+)
+
+// Policy describes how one registry provider maps onto a LiteLLM row.
+//   - Prefix     — LiteLLM `model` prefix (verbatim model string when FixedModel).
+//   - APIKey     — literal api_key to write, "" to omit.
+//   - SecretRef  — api_key comes from resolving the provider's
+//     auth.secret_ref (config.ResolveSecret — env, exec:, or
+//     literal) instead.
+//   - Cloud      — the model lives remotely (`wt litellm providers` reports it).
+//   - V1Base     — OpenAI-compatible server: api_base is the provider's
+//     origin plus "/v1" whichever form the registry stores, because
+//     LiteLLM's openai/ provider appends only /chat/completions (#168).
+type Policy struct {
+	Prefix     string
+	FixedModel bool
+	APIKey     string
+	SecretRef  bool
+	Cloud      bool
+	V1Base     bool
+}
+
+// Seed is the default registry row wt adds for a provider (`wt model init`,
+// `wt model add`), and what makes wt notice the provider is installed.
+type Seed struct {
+	Name      string
+	Location  string   // "local" or "cloud"
+	Protocols []string // omitted from the row when empty
+	AuthType  string   // auth.type: "none" or "api_key"
+	SecretRef string   // auth.secret_ref, omitted when empty
+	BaseURL   string   // auth.base_url as the registry stores it (with /v1 where the provider has it)
+	ModelDir  string   // omitted from the row when empty
+	// Command is the binary whose presence on PATH makes wt seed the row;
+	// empty means only a model reference or an agent listing seeds it.
+	Command string
+	// PathSuppressedBy names a provider whose existing row stops the PATH
+	// trigger alone (a model reference or agent listing still seeds): omlx-6bit
+	// is the same installed server as omlx.
+	PathSuppressedBy string
+}
+
+// Spec is one registry provider id's row in the table.
+type Spec struct {
+	ID string
+	// Family names the FamilySpec whose server this provider id talks to;
+	// empty for providers outside every family (llamacpp, openrouter).
+	Family string
+	// Policy is the LiteLLM mapping; nil means the provider is never routed
+	// through LiteLLM (native agents are not in the table at all).
+	Policy *Policy
+	// Seed is the default row; nil means wt adds none.
+	Seed *Seed
+}
+
+// FamilySpec holds the facts shared by every provider id of one server.
+type FamilySpec struct {
+	Name string
+	// DefaultOrigin is where the server listens when the registry names no
+	// base_url, without a /v1 suffix.
+	DefaultOrigin string
+	// DefaultModelDir is the model directory when the registry names none.
+	DefaultModelDir string
+	// WtPort is the port wt hands the server when the registry's base_url
+	// has none; 0 means the server owns its port.
+	WtPort int
+	// RunningOnly: wt cannot list what is on disk, only what is serving.
+	RunningOnly bool
+	// RoutesFollowArtifact: a pulled model is served on request, so its
+	// route exists while the artifact does, not while it is loaded.
+	RoutesFollowArtifact bool
+	// Served: the server reports what it serves (`wt served`).
+	Served  bool
+	Tenancy Tenancy
+}
+
+func (s Spec) clone() Spec {
+	if s.Policy != nil {
+		p := *s.Policy
+		s.Policy = &p
+	}
+	if s.Seed != nil {
+		sd := *s.Seed
+		sd.Protocols = slices.Clone(sd.Protocols)
+		s.Seed = &sd
+	}
+	return s
+}
+
+// Lookup returns the table row for a provider id.
+func Lookup(id string) (Spec, bool) {
+	for _, s := range providers {
+		if s.ID == id {
+			return s.clone(), true
+		}
+	}
+	return Spec{}, false
+}
+
+// All returns every provider row, in table order.
+func All() []Spec {
+	out := make([]Spec, len(providers))
+	for i, s := range providers {
+		out[i] = s.clone()
+	}
+	return out
+}
+
+// FamilyOf returns the family a provider id belongs to, "" for an id outside
+// every family.
+func FamilyOf(id string) string {
+	for _, s := range providers {
+		if s.ID == id {
+			return s.Family
+		}
+	}
+	return ""
+}
+
+// FamilyOr is FamilyOf, except an id outside every family is its own name.
+func FamilyOr(id string) string {
+	if f := FamilyOf(id); f != "" {
+		return f
+	}
+	return id
+}
+
+// Families returns every family name, sorted.
+func Families() []string {
+	out := make([]string, 0, len(families))
+	for name := range families {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// FamilyProviderIDs returns the provider ids of a family, in table order; nil
+// for an unknown family.
+func FamilyProviderIDs(family string) []string {
+	var out []string
+	for _, s := range providers {
+		if s.Family == family {
+			out = append(out, s.ID)
+		}
+	}
+	return out
+}
+
+// FamilyByName returns a family's facts.
+func FamilyByName(name string) (FamilySpec, bool) {
+	f, ok := families[name]
+	return f, ok
+}
+
+// PolicyFor returns a provider's LiteLLM mapping; false for natives and
+// unknown ids.
+func PolicyFor(id string) (Policy, bool) {
+	for _, s := range providers {
+		if s.ID == id && s.Policy != nil {
+			return *s.Policy, true
+		}
+	}
+	return Policy{}, false
+}
+
+// Policies returns every provider's LiteLLM mapping, keyed by provider id.
+func Policies() map[string]Policy {
+	out := make(map[string]Policy, len(providers))
+	for _, s := range providers {
+		if s.Policy != nil {
+			out[s.ID] = *s.Policy
+		}
+	}
+	return out
+}
+
+func seedableIDs(location string) []string {
+	var out []string
+	for _, s := range providers {
+		if s.Seed != nil && s.Seed.Location == location {
+			out = append(out, s.ID)
+		}
+	}
+	return out
+}
+
+// SeedableLocalIDs returns the local providers wt can seed a default row for,
+// in table order.
+func SeedableLocalIDs() []string { return seedableIDs("local") }
+
+// SeedableCloudIDs returns the cloud providers wt can seed a default row for.
+func SeedableCloudIDs() []string { return seedableIDs("cloud") }
+
+// SeedRow returns a fresh default registry row for a provider id (the shape
+// config.RegistryDoc takes), nil when wt seeds none.
+func SeedRow(id string) map[string]any {
+	for _, s := range providers {
+		if s.ID != id || s.Seed == nil {
+			continue
+		}
+		sd := s.Seed
+		auth := map[string]any{"type": sd.AuthType, "base_url": sd.BaseURL}
+		if sd.SecretRef != "" {
+			auth["secret_ref"] = sd.SecretRef
+		}
+		row := map[string]any{"id": s.ID, "name": sd.Name, "location": sd.Location, "auth": auth}
+		if len(sd.Protocols) > 0 {
+			row["protocols"] = slices.Clone(sd.Protocols)
+		}
+		if sd.ModelDir != "" {
+			row["model_dir"] = sd.ModelDir
+		}
+		return row
+	}
+	return nil
+}
+
+// InstalledCommands returns provider id -> the binary whose presence on PATH
+// makes wt seed that provider's row.
+func InstalledCommands() map[string]string {
+	out := map[string]string{}
+	for _, s := range providers {
+		if s.Seed != nil && s.Seed.Command != "" {
+			out[s.ID] = s.Seed.Command
+		}
+	}
+	return out
+}
+
+// PathSuppressedBy returns the provider id whose existing row stops id's PATH
+// trigger, "" if none.
+func PathSuppressedBy(id string) string {
+	for _, s := range providers {
+		if s.ID == id && s.Seed != nil {
+			return s.Seed.PathSuppressedBy
+		}
+	}
+	return ""
+}
+
+// WtPortFor returns the port wt hands the server of a provider id when its
+// registry base_url names none; 0 when the server owns its port or the id is
+// unknown.
+func WtPortFor(providerID string) int {
+	if f, ok := families[FamilyOf(providerID)]; ok {
+		return f.WtPort
+	}
+	return 0
+}
+
+// ServedFamilies returns the families whose server reports what it serves,
+// sorted.
+func ServedFamilies() []string {
+	var out []string
+	for _, name := range Families() {
+		if families[name].Served {
+			out = append(out, name)
+		}
+	}
+	return out
+}

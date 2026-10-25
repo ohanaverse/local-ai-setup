@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // Status is one provider family's probe outcome.
@@ -43,27 +44,20 @@ const (
 // probeTimeout bounds each HTTP probe.
 const probeTimeout = 2 * time.Second
 
-const (
-	defaultOmlxOrigin  = "http://localhost:8000"
-	defaultMlxLMOrigin = "http://localhost:8001"
-	defaultOmlxDir     = "~/.omlx/models"
-	defaultMtplxDir    = "~/.mtplx/models"
-)
-
-// defaultMtplxOrigin is where wt looks for mtplx when the registry has no
-// mtplx base_url. Its port is config.MtplxPort, the one a start serves mtplx
-// on and config.Provider.Origin gives a url with no port, so the three cannot
-// come to name different ports.
-var defaultMtplxOrigin = "http://localhost:" + strconv.Itoa(config.MtplxPort)
-
 // ModelDir is the expanded model directory the probe scans for a family: the
 // first of the family's provider rows that names a model_dir, else the family
 // default. An omlx-6bit-only registry still resolves (same server). Callers
 // that need to agree with the probe use this rather than re-deriving it.
 func ModelDir(cfg *config.Config, family string) (string, error) {
-	setting := defaultOmlxDir
-	if family == "mtplx" {
-		setting = defaultMtplxDir
+	// A family with no directory of its own falls back to omlx's (legacy: only
+	// omlx and mtplx are ever scanned).
+	setting := ""
+	if f, ok := provider.FamilyByName(family); ok {
+		setting = f.DefaultModelDir
+	}
+	if setting == "" {
+		omlx, _ := provider.FamilyByName("omlx")
+		setting = omlx.DefaultModelDir
 	}
 	for _, id := range familyProviderIDs(family) {
 		if p := cfg.ProviderByID(id); p != nil && p.ModelDir != "" {
@@ -194,56 +188,34 @@ func UnregisteredAnswering(cfg *config.Config, client *http.Client, snap Snapsho
 	return out
 }
 
-// familyIDs is the ONE table of probe families and the registry provider ids
-// that belong to each; Family, Families and familyProviderIDs are all
-// derived from it, so a new family (or a second provider id sharing one, as
-// omlx-6bit shares omlx's single server) is added in exactly one place and can
-// never be visible to one accessor and not another.
-var familyIDs = map[string][]string{
-	"mlx_lm_server": {"mlx_lm_server"},
-	"mtplx":         {"mtplx"},
-	"ollama":        {"ollama"},
-	"omlx":          {"omlx", "omlx-6bit"},
-}
-
 // Family maps a registry provider id to its probe family; "" when wt has no
 // probe for it (e.g. retired llamacpp). omlx and omlx-6bit are ONE physical
-// server, so they share the "omlx" family.
-func Family(providerID string) string {
-	for family, ids := range familyIDs {
-		for _, id := range ids {
-			if id == providerID {
-				return family
-			}
-		}
-	}
-	return ""
-}
+// server, so they share the "omlx" family. The table is internal/provider's.
+func Family(providerID string) string { return provider.FamilyOf(providerID) }
 
 // Families lists every probe family wt knows, sorted.
-func Families() []string {
-	out := make([]string, 0, len(familyIDs))
-	for f := range familyIDs {
-		out = append(out, f)
-	}
-	sort.Strings(out)
-	return out
-}
+func Families() []string { return provider.Families() }
 
 // RunningOnly reports whether a provider's family is probed for running state
 // only: wt can never enumerate what it has on disk, so a stopped model of that
 // family is indistinguishable from one that does not exist. True only for
 // mlx_lm_server (one target+draft pairing per process, and the served name is
-// not reconstructable). It is the one place that names such a family —
-// knowsArtifacts and internal/catalog's row rules both ask it, so adding a
-// second running-only family is an edit here alone.
-func RunningOnly(providerID string) bool { return Family(providerID) == "mlx_lm_server" }
+// not reconstructable). It is a flag on the family's row in internal/provider
+// — knowsArtifacts and internal/catalog's row rules both ask it, so adding a
+// second running-only family is an edit there alone.
+func RunningOnly(providerID string) bool {
+	f, ok := provider.FamilyByName(provider.FamilyOf(providerID))
+	return ok && f.RunningOnly
+}
 
 // RoutesFollowArtifact reports whether a family's LiteLLM routes follow
 // artifact presence rather than running state. True only for ollama: it
 // lazy-loads a model on request (and unloads idle ones), so a pulled model is
 // servable whether or not it is loaded. family is a Family value.
-func RoutesFollowArtifact(family string) bool { return family == "ollama" }
+func RoutesFollowArtifact(family string) bool {
+	f, ok := provider.FamilyByName(family)
+	return ok && f.RoutesFollowArtifact
+}
 
 // source is one family's probe result.
 type source struct {
@@ -386,15 +358,13 @@ func (s *source) loadedSize(name string) int64 {
 }
 
 // familyProviderIDs lists the registry provider ids that belong to a family.
-func familyProviderIDs(family string) []string { return familyIDs[family] }
+func familyProviderIDs(family string) []string { return provider.FamilyProviderIDs(family) }
 
 // FamilyProviderIDs is familyProviderIDs for other packages, as a copy: every
 // registry provider id that names the family's one server ("omlx" and
 // "omlx-6bit" for omlx). A caller that must reach every registry row of a
 // model the server holds asks under each of them.
-func FamilyProviderIDs(family string) []string {
-	return append([]string(nil), familyProviderIDs(family)...)
-}
+func FamilyProviderIDs(family string) []string { return provider.FamilyProviderIDs(family) }
 
 // familyProviderID is the provider id a family's DISCOVERED entries are named
 // after: the first provider row of the family the registry actually defines
@@ -421,15 +391,8 @@ func familyProviderID(cfg *config.Config, family string) string {
 // (#348).
 func FamilyOrigin(cfg *config.Config, family string) string {
 	def := ""
-	switch family {
-	case "ollama":
-		def = config.OllamaBaseURL
-	case "omlx":
-		def = defaultOmlxOrigin
-	case "mtplx":
-		def = defaultMtplxOrigin
-	case "mlx_lm_server":
-		def = defaultMlxLMOrigin
+	if f, ok := provider.FamilyByName(family); ok {
+		def = f.DefaultOrigin
 	}
 	for _, id := range familyProviderIDs(family) {
 		if p := cfg.ProviderByID(id); p != nil && p.Auth.BaseURL != "" {
