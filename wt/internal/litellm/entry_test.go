@@ -320,3 +320,16 @@ func TestPricingInfoReadsOnlyTheFlatPrices(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildEntryRecWithoutSecretRefUsesPlaceholder: a rec row with no
+// secret_ref gets the policy placeholder, not an empty api_key.
+func TestBuildEntryRecWithoutSecretRefUsesPlaceholder(t *testing.T) {
+	n, err := BuildEntry(config.Model{ID: "rec/flint", ModelName: "flint"}, config.Provider{ID: "rec"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := yaml.Marshal(n)
+	if !strings.Contains(string(b), "api_key: not-needed") {
+		t.Errorf("entry lacks the placeholder key:\n%s", b)
+	}
+}

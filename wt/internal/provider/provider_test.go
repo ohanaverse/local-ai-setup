@@ -155,7 +155,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 		"omlx-6bit":     {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"mlx_lm_server": {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"mtplx":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
-		"rec":           {Prefix: "openai/", SecretRef: true, V1Base: true},
+		"rec":           {Prefix: "openai/", APIKey: "not-needed", SecretRef: true, V1Base: true},
 		"llamacpp":      {Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"},
 		"openrouter":    {Prefix: "openrouter/", SecretRef: true, Cloud: true},
 	}
@@ -178,7 +178,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	if got, want := SeedableCloudIDs(), []string{"openrouter"}; !slices.Equal(got, want) {
 		t.Errorf("SeedableCloudIDs() = %v, want %v", got, want)
 	}
-	if got, want := InstalledCommands(), map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx", "rec": "rec"}; !reflect.DeepEqual(got, want) {
+	if got, want := InstalledCommands(), map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("InstalledCommands() = %v, want %v", got, want)
 	}
 	if got := PathSuppressedBy("omlx"); got != "omlx-6bit" {
@@ -401,7 +401,7 @@ func TestRecRows(t *testing.T) {
 		f.RoutesFollowArtifact || f.DefaultModelDir != "" {
 		t.Errorf("family rec = %+v", f)
 	}
-	if p, ok := PolicyFor("rec"); !ok || p != (Policy{Prefix: "openai/", SecretRef: true, V1Base: true}) {
+	if p, ok := PolicyFor("rec"); !ok || p != (Policy{Prefix: "openai/", APIKey: "not-needed", SecretRef: true, V1Base: true}) {
 		t.Errorf("PolicyFor(rec) = %+v, %v", p, ok)
 	}
 	spec, ok := Lookup("rec")
@@ -410,7 +410,7 @@ func TestRecRows(t *testing.T) {
 	}
 	wantSeed := Seed{
 		Name: "rec", Location: "local", AuthType: "none", BaseURL: "http://127.0.0.1:11500/v1",
-		SecretRef: "exec:rec auth token", Command: "rec",
+		SecretRef: "exec:rec auth token",
 	}
 	if !reflect.DeepEqual(*spec.Seed, wantSeed) {
 		t.Errorf("rec seed = %+v, want %+v", *spec.Seed, wantSeed)

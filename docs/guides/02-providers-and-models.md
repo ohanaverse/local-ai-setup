@@ -217,8 +217,8 @@ repo = "<org>/<draft repo>"          # or: local_path = "<absolute directory>"
 rec doctor                          # rec's own hardware and installation check
 rec pull                            # download the model without starting a server (rec's own tool, like Step 5)
 rec auth token > /dev/null && echo key-ok   # the key wt reads; never print it into chat or docs
-wt model init                       # with rec on PATH, adds the rec provider row
 wt model add rec flint --family <family>
+wt model init                       # adds the rec provider row once a model or agent references rec; a `rec` on PATH alone never does (SoX ships its own)
 wt start rec/flint                  # spawns `rec serve --port 11500` and waits for `rec status` to say ready
 wt stop rec                         # runs `rec stop`
 ```

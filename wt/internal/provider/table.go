@@ -74,10 +74,12 @@ var providers = []Spec{
 	},
 	{
 		ID: "rec", Family: "rec",
-		Policy: &Policy{Prefix: "openai/", SecretRef: true, V1Base: true},
+		Policy: &Policy{Prefix: "openai/", APIKey: "not-needed", SecretRef: true, V1Base: true},
+		// No Command: SoX ships its own `rec`, so the name on PATH proves
+		// nothing; only a model reference or agent listing seeds the row.
 		Seed: &Seed{
 			Name: "rec", Location: "local", AuthType: "none", BaseURL: recOrigin + "/v1",
-			SecretRef: "exec:rec auth token", Command: "rec",
+			SecretRef: "exec:rec auth token",
 		},
 	},
 	{ID: "llamacpp", Policy: &Policy{Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"}},
