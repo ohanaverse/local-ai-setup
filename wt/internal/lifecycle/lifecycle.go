@@ -394,7 +394,10 @@ func (e *env) resolveEvictions(ctx context.Context, cfg *config.Config, family s
 	return victims, false
 }
 
-// Start starts t. It is a no-op when live Inventory shows t already running.
+// Start starts t. It is a no-op when live Inventory shows t already running,
+// or when a machine-scope family's readiness command finds its one instance
+// already serving t, on whatever port (machineOccupant: the instance is
+// adopted; one serving another model is the occupant).
 // A t that omlx is still loading is not running yet: Start joins that load
 // and returns once the model is loaded, asking nothing (see evictions). It
 // returns *OccupiedError (touching nothing) when it would replace a running
@@ -439,8 +442,13 @@ func startWith(ctx context.Context, e *env, cfg *config.Config, t Target, opts O
 	return nil
 }
 
+// familyOf is the family a start's provider id belongs to
+// (localmodels.Family); a test swaps it so a synthetic family's provider id
+// names that family.
+var familyOf = localmodels.Family
+
 func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Options) error {
-	family := localmodels.Family(t.ProviderID)
+	family := familyOf(t.ProviderID)
 	b := e.backends[family]
 	if b == nil {
 		return &UnsupportedError{ProviderID: t.ProviderID}
@@ -454,6 +462,16 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if isRunning(snap, family, t) {
 		return nil
 	}
+	// A ScopeMachine family (rec) runs one instance on the whole machine, on
+	// whatever port it was started with, so the snapshot's probe of the
+	// registry's port cannot see it: its readiness command answers instead.
+	// One already serving t is adopted, the same no-op as a target the
+	// snapshot shows running (the route hook still runs); one serving another
+	// model is the occupant, asked about and stopped like any other.
+	foreign, foreignFound, adopt := e.machineOccupant(ctx, cfg, family, t)
+	if adopt {
+		return nil
+	}
 	// Residents are read only when there is a question to ask or an approved
 	// stop to make: a Decided answer with nothing to stop (every caller
 	// today) would throw them away, and reading them can cost a pidfile read
@@ -463,7 +481,13 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if !opts.Others.Decided || len(opts.Others.Stop) > 0 {
 		others, othersUnknown = e.residents(cfg, snap, family, t)
 	}
-	victims, unknown := e.resolveEvictions(ctx, cfg, family, t, snap)
+	var victims []localmodels.Entry
+	var unknown bool
+	if foreignFound {
+		victims = []localmodels.Entry{foreign}
+	} else {
+		victims, unknown = e.resolveEvictions(ctx, cfg, family, t, snap)
+	}
 	if unknown && !opts.AllowReplace {
 		origin := localmodels.FamilyOrigin(cfg, family)
 		return &OccupancyUnknownError{ProviderID: t.ProviderID, Origin: origin}

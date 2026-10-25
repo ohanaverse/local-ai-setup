@@ -30,6 +30,11 @@ import (
 // family's spec; a test swaps it to give a synthetic family a spec.
 var processSpecFor = provider.ProcessFor
 
+// familySpecFor is the one seam through which lifecycle reads a process
+// family's table facts (its Tenancy and Scope); a test swaps it, beside
+// processSpecFor, to give a synthetic family a tenancy and a scope.
+var familySpecFor = provider.FamilyByName
+
 // serverPort is the port family's server is identified on.
 func serverPort(cfg *config.Config, family string) int {
 	_, _, port := serverEndpoint(cfg, family)

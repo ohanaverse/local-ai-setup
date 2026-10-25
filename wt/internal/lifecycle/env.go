@@ -43,6 +43,9 @@ type env struct {
 	// serverProc is the pidfile + log of each process family's spawned
 	// server (provider.ProcessFamilies), keyed by family.
 	serverProc map[string]pidProcess
+	// spawn starts a process family's server (pidProcess.spawn); a test
+	// swaps it so a start that reaches the spawn starts no process.
+	spawn func(p pidProcess, bin string, args []string) (*spawned, error)
 
 	// The process table and the signal, for the one stop that has no port to
 	// go through: a process server that is still loading (server_loading.go).
@@ -84,6 +87,7 @@ func defaultEnv() *env {
 		backends:          maps.Clone(backendsByFamily),
 		onOccupantStopped: routeAfterOccupantStopped,
 		serverProc:        serverProcesses(),
+		spawn:             pidProcess.spawn,
 		describe:          describeProc,
 		signal:            signalProc,
 		pollInterval:      time.Second,

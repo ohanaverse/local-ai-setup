@@ -63,12 +63,56 @@ func TestTableInvariants(t *testing.T) {
 				t.Errorf("family %q ready kind %q is not known", f, pr.Ready.Kind)
 			}
 		}
+		for _, p := range scopeProblems(spec) {
+			t.Errorf("family %q: %s", f, p)
+		}
 		if spec.DefaultOrigin == "" || strings.HasSuffix(spec.DefaultOrigin, "/") || strings.HasSuffix(spec.DefaultOrigin, "/v1") {
 			t.Errorf("family %q default origin %q must be non-empty with no trailing / or /v1", f, spec.DefaultOrigin)
 		}
 	}
 	if f := Families(); !slices.IsSorted(f) {
 		t.Errorf("Families() = %v, want sorted", f)
+	}
+}
+
+// scopeProblems is what is wrong with a family's Scope: a ScopeMachine
+// family is one instance on the whole machine, so it holds one model at a
+// time (Exclusive), and wt can find that instance on a port the registry
+// does not name only through a readiness command (command-json).
+func scopeProblems(f FamilySpec) []string {
+	if f.Scope != ScopeMachine {
+		return nil
+	}
+	var out []string
+	if f.Tenancy != Exclusive {
+		out = append(out, "scope is machine but tenancy is not Exclusive")
+	}
+	if f.Process == nil || f.Process.Ready.Kind != ReadyCommandJSON {
+		out = append(out, "scope is machine but readiness is not a command-json check")
+	}
+	return out
+}
+
+// TestScopeProblems verifies the ScopeMachine rule TestTableInvariants
+// applies, on synthetic rows: no table row is machine-scoped yet, so without
+// this the rule would pass vacuously and could be wrong unnoticed until rec's
+// row lands.
+func TestScopeProblems(t *testing.T) {
+	cmd := &ProcessSpec{Ready: Ready{Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true"}}
+	list := &ProcessSpec{Ready: Ready{Kind: ReadyModelsList}}
+	for name, tc := range map[string]struct {
+		f    FamilySpec
+		want int
+	}{
+		"port scope, pool":              {FamilySpec{Scope: ScopePort, Tenancy: Pool}, 0},
+		"machine, exclusive, command":   {FamilySpec{Scope: ScopeMachine, Tenancy: Exclusive, Process: cmd}, 0},
+		"machine, pool":                 {FamilySpec{Scope: ScopeMachine, Tenancy: Pool, Process: cmd}, 1},
+		"machine, models list":          {FamilySpec{Scope: ScopeMachine, Tenancy: Exclusive, Process: list}, 1},
+		"machine, shared and unmanaged": {FamilySpec{Scope: ScopeMachine, Tenancy: Shared}, 2},
+	} {
+		if got := scopeProblems(tc.f); len(got) != tc.want {
+			t.Errorf("%s: scopeProblems = %q, want %d problems", name, got, tc.want)
+		}
 	}
 }
 

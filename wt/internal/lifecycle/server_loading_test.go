@@ -149,10 +149,20 @@ func TestLoadingServerGeneric(t *testing.T) {
 		}
 		return old(family)
 	}
-	t.Cleanup(func() { processSpecFor = old })
-	// acme has no provider-table row, so no address: the port its server is
-	// identified on is whatever serverPort resolves for it.
-	argv := []string{"acme", "run", "-p", strconv.Itoa(serverPort(loadCfg(), "acme"))}
+	// acme has no provider-table row, so no address of its own: the address
+	// seam gives it port 9000, the port its server is identified on.
+	oldOrigin := familyOriginPort
+	familyOriginPort = func(cfg *config.Config, family string) (string, int, error) {
+		if family == "acme" {
+			return "http://127.0.0.1:9000", 9000, nil
+		}
+		return oldOrigin(cfg, family)
+	}
+	t.Cleanup(func() { processSpecFor, familyOriginPort = old, oldOrigin })
+	if p := serverPort(loadCfg(), "acme"); p != 9000 {
+		t.Fatalf("serverPort(acme) = %d, want 9000 from the address seam", p)
+	}
+	argv := []string{"acme", "run", "-p", "9000"}
 	for name, tc := range map[string]struct {
 		uid       int
 		wantPID   int

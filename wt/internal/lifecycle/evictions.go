@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"context"
 	"sort"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -56,6 +57,46 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 		return others, true
 	}
 	return poolVictims(snap.OmlxPool, t, others), true
+}
+
+// machineOccupant is what a start of t finds of a ScopeMachine family's one
+// instance on this machine, through its readiness command (foreignInstance),
+// whatever port it is on and whoever started it. adopt: the instance already
+// serves t, so the start has nothing to do. Otherwise found reports an
+// instance serving another model, returned as occ in the shape every
+// occupant has, so the start asks before replacing it (OccupiedError) and
+// stops it with the family's stop. A family of any other scope runs no
+// command and finds nothing; so does one whose binary or key cannot be had,
+// which the backend's start then reports.
+func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, family string, t Target) (occ localmodels.Entry, found, adopt bool) {
+	spec, ok := machineScoped(family)
+	if !ok {
+		return localmodels.Entry{}, false, false
+	}
+	bin, err := e.lookPath(spec.Binary)
+	if err != nil {
+		return localmodels.Entry{}, false, false
+	}
+	key, err := localmodels.FamilyAPIKeyErr(cfg, family)
+	if err != nil {
+		return localmodels.Entry{}, false, false
+	}
+	st, running := e.foreignInstance(ctx, cfg, family, bin, key)
+	if !running {
+		return localmodels.Entry{}, false, false
+	}
+	if st.Model != "" && SameModel(family, st.Model, t.ModelName) {
+		return localmodels.Entry{}, false, true
+	}
+	providerID := family
+	if ids := provider.FamilyProviderIDs(family); len(ids) > 0 {
+		providerID = ids[0]
+	}
+	occ = localmodels.Entry{ProviderID: providerID, ModelID: family, ModelName: st.Model, Running: true}
+	if st.Model != "" {
+		occ.ModelID = config.DiscoveredModelID(family, st.Model)
+	}
+	return occ, true, false
 }
 
 // runningOthers lists the family's running models other than the target.

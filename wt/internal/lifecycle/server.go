@@ -21,9 +21,14 @@ import (
 type processServer struct{ family string }
 
 func (b processServer) tenancy() Tenancy {
-	f, _ := provider.FamilyByName(b.family)
+	f, _ := familySpecFor(b.family)
 	return f.Tenancy
 }
+
+// familyOriginPort is the one seam through which serverStartEndpoint, and so
+// serverEndpoint, resolve a family's address; a test swaps it to give a
+// synthetic family, which has no provider-table row, a real port.
+var familyOriginPort = localmodels.FamilyOriginPort
 
 // serverStartEndpoint returns the origin, /v1/models URL and port a start
 // serves family at. All three come from one resolution so the port passed to
@@ -31,7 +36,7 @@ func (b processServer) tenancy() Tenancy {
 // origin with no port, or one that does not parse, is a *PortlessAddressError:
 // the server a start would spawn is not at that address.
 func serverStartEndpoint(cfg *config.Config, family string) (origin, modelsURL string, port int, err error) {
-	origin, port, err = localmodels.FamilyOriginPort(cfg, family)
+	origin, port, err = familyOriginPort(cfg, family)
 	if err != nil {
 		asRead := localmodels.FamilyOrigin(cfg, family)
 		return "", "", 0, &PortlessAddressError{Provider: family, Origin: asRead}
@@ -107,7 +112,7 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	if !closed {
 		return &PortBusyError{Port: port}
 	}
-	sp, serr := proc.spawn(bin, expandArgs(spec.Spawn, t.ModelName, port))
+	sp, serr := e.spawn(proc, bin, expandArgs(spec.Spawn, t.ModelName, port))
 	if serr != nil {
 		return serr
 	}
@@ -140,6 +145,9 @@ func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) err
 		return &BinaryMissingError{Binary: spec.Binary}
 	}
 	_, models, port := serverEndpoint(cfg, b.family)
+	if _, machine := machineScoped(b.family); machine {
+		return b.stopMachineInstance(ctx, e, cfg, spec, bin, port)
+	}
 	// What the pidfile names now, while the server is still there to be
 	// identified: only that process's pidfile is removed below.
 	named, _ := e.loadingServer(cfg, b.family)
@@ -160,6 +168,75 @@ func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) err
 		return errors.New(msg)
 	}
 	return fmt.Errorf("%s still listening on port %d", spec.Binary, port)
+}
+
+// machineScoped reports whether family's server is one instance on the whole
+// machine (provider.ScopeMachine) that wt finds through a readiness command:
+// only such a command can see an instance on a port the registry does not
+// name. TestTableInvariants holds every ScopeMachine row to that.
+func machineScoped(family string) (provider.ProcessSpec, bool) {
+	f, ok := familySpecFor(family)
+	if !ok || f.Scope != provider.ScopeMachine {
+		return provider.ProcessSpec{}, false
+	}
+	spec, ok := processSpecFor(family)
+	if !ok || spec.Ready.Kind != provider.ReadyCommandJSON {
+		return provider.ProcessSpec{}, false
+	}
+	return spec, true
+}
+
+// foreignInstance asks a ScopeMachine family's readiness command whether the
+// family's one instance on this machine is running, on whatever port, and
+// whoever started it: running is true when the command says ready, and
+// st.Model is the model it serves ("" when the command names none). A family
+// of any other scope (mtplx) runs nothing and reports nothing running.
+func (e *env) foreignInstance(ctx context.Context, cfg *config.Config, family string, bin, key string) (st readyState, running bool) {
+	spec, ok := machineScoped(family)
+	if !ok {
+		return readyState{}, false
+	}
+	st, err := e.readyNow(ctx, cfg, spec, bin, "", "", key)
+	if err != nil || !st.Ready {
+		return readyState{}, false
+	}
+	return st, true
+}
+
+// stopMachineInstance stops a ScopeMachine family's instance with the spec's
+// stop command, which stops it whatever port it listens on, and waits up to
+// e.stopTimeout for the readiness command to say it is no longer ready. No
+// pid is signalled: the instance may not be one wt started. The pidfile wt
+// keeps is removed only for the process it named before the stop, once that
+// process is gone (forgetStopped).
+func (b processServer) stopMachineInstance(ctx context.Context, e *env, cfg *config.Config, spec provider.ProcessSpec, bin string, port int) error {
+	named, _ := e.loadingServer(cfg, b.family)
+	key := localmodels.FamilyAPIKey(cfg, b.family)
+	out, runErr := e.run(ctx, bin, expandArgs(spec.Stop, "", port)...)
+	deadline := time.Now().Add(e.stopTimeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if st, _ := e.foreignInstance(ctx, cfg, b.family, bin, key); !st.Ready {
+			e.forgetStopped(ctx, b.family, named)
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		if err := e.sleep(ctx, e.pollInterval); err != nil {
+			return err
+		}
+	}
+	if runErr != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = spec.Binary + " stop failed"
+		}
+		return errors.New(msg)
+	}
+	return fmt.Errorf("%s still reports an instance ready after `%s %s`", spec.Binary, spec.Binary, strings.Join(spec.Stop, " "))
 }
 
 // stopModel: a process server serves one model per process, so stopping its
