@@ -9,6 +9,10 @@ const OllamaOrigin = "http://localhost:11434"
 // none (wt serves it on 127.0.0.1 only).
 const MtplxPort = 8003
 
+// OpenRouterKeyEnv is the environment variable the seeded openrouter row names
+// as its key: the name OpenRouter's own tools and this repo's LiteLLM setup use.
+const OpenRouterKeyEnv = "OPENROUTER_API_KEY"
+
 var mtplxOrigin = "http://localhost:" + strconv.Itoa(MtplxPort)
 
 var openaiLocal = Policy{Prefix: "openai/", APIKey: "not-needed", V1Base: true}
@@ -59,7 +63,7 @@ var providers = []Spec{
 		Policy: &Policy{Prefix: "openrouter/", SecretRef: true, Cloud: true},
 		Seed: &Seed{
 			Name: "OpenRouter", Location: "cloud", AuthType: "api_key",
-			SecretRef: "OPENROUTER_API_KEY", BaseURL: "https://openrouter.ai/api/v1",
+			SecretRef: OpenRouterKeyEnv, BaseURL: "https://openrouter.ai/api/v1",
 		},
 	},
 }

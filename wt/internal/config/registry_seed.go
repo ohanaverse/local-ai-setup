@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // SeedEnv is what seeding needs to know about the machine. It is built
@@ -68,82 +70,23 @@ func seedAgents() (names, providers []string, err error) {
 	return names, providers, nil
 }
 
-// defaultProviderIDs are the local providers with a default row, in the
-// order the rows are added.
-var defaultProviderIDs = []string{"ollama", "omlx", "mlx_lm_server", "mtplx"}
-
-// installedProviderCommands maps a default provider to the command whose
-// presence on PATH shows it is installed. mlx_lm_server has none — it is a
-// module run from omlx's Python — so it gets a row only from a model that
-// references it or an agent that lists it.
-var installedProviderCommands = map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx"}
-
-// defaultProviderRow is the default row for a provider. It leaves
-// `protocols` out when it is just ["openai-chat"], the default a reader
-// assumes (Provider.EffectiveProtocols). A fresh map on every call.
-func defaultProviderRow(id string) map[string]any {
-	switch id {
-	case "ollama":
-		return map[string]any{
-			"id": "ollama", "name": "Ollama", "location": "local",
-			"protocols": []string{"anthropic", "openai-chat"},
-			"auth":      map[string]any{"type": "none", "base_url": "http://localhost:11434"},
-		}
-	case "omlx":
-		return map[string]any{
-			"id": "omlx", "name": "oMLX", "location": "local",
-			"auth": map[string]any{"type": "none", "base_url": "http://localhost:8000"},
-		}
-	case "mlx_lm_server":
-		return map[string]any{
-			"id": "mlx_lm_server", "name": "mlx-lm server (target+draft)", "location": "local",
-			"auth": map[string]any{"type": "none", "base_url": "http://localhost:8001/v1"},
-		}
-	case "mtplx":
-		return map[string]any{
-			"id": "mtplx", "name": "MTPLX", "location": "local", "model_dir": "~/.mtplx/models",
-			"auth": map[string]any{"type": "none", "base_url": "http://localhost:8003/v1"},
-		}
-	}
-	return nil
-}
-
-// cloudProviderIDs are the cloud providers with a default row: the ones wt
-// can route (internal/litellm's policy table).
-var cloudProviderIDs = []string{"openrouter"}
-
 // SeedableProviderIDs is every provider wt can add a default row for by
-// itself — the local ones (defaultProviderIDs) and the cloud ones
-// (cloudProviderIDs). Callers that offer providers for a new model row, like
-// the Models tab's add form, take it so the choice grows with this list
-// instead of copying it.
+// itself — the local ones and the cloud ones, from internal/provider's table.
+// Callers that offer providers for a new model row, like the Models tab's add
+// form, take it so the choice grows with the table instead of copying it.
 func SeedableProviderIDs() []string {
-	return append(slices.Clone(defaultProviderIDs), cloudProviderIDs...)
+	return append(provider.SeedableLocalIDs(), provider.SeedableCloudIDs()...)
 }
 
 // OpenRouterKeyEnv is the environment variable the seeded openrouter row
 // names as its key: the name OpenRouter's own tools and this repo's LiteLLM
-// setup use.
-const OpenRouterKeyEnv = "OPENROUTER_API_KEY"
-
-// cloudProviderRow is the default row for a cloud provider: its name, its
-// public address and how it authenticates. auth.secret_ref is the NAME of
-// the environment variable that holds the key, never a key: seeding must not
-// write a secret or guess where one is kept. The name is there so that a
+// setup use. The row itself is internal/provider's: auth.secret_ref is the
+// NAME of that variable, never a key, so seeding writes no secret and a
 // missing key fails loudly — a row with no secret_ref gives a LiteLLM route
 // with an empty api_key, while a named variable that is unset is refused
 // ("resolved empty") and the route is not written. A user who keeps the key
-// elsewhere edits secret_ref; seeding never changes a row that exists. A
-// fresh map on every call.
-func cloudProviderRow(id string) map[string]any {
-	if id == "openrouter" {
-		return map[string]any{
-			"id": "openrouter", "name": "OpenRouter", "location": "cloud",
-			"auth": map[string]any{"type": "api_key", "secret_ref": OpenRouterKeyEnv, "base_url": "https://openrouter.ai/api/v1"},
-		}
-	}
-	return nil
-}
+// elsewhere edits secret_ref; seeding never changes a row that exists.
+const OpenRouterKeyEnv = provider.OpenRouterKeyEnv
 
 // SeedRegistryDefaults adds the provider rows a working registry needs and
 // reports the ids it added, in the order it added them. It is the
@@ -205,11 +148,11 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string
 			}
 		}
 	}
-	for id, command := range installedProviderCommands {
+	for id, command := range provider.InstalledCommands() {
 		if env.OnPath == nil || !env.OnPath(command) {
 			continue
 		}
-		if id == "omlx" && existing["omlx-6bit"] {
+		if by := provider.PathSuppressedBy(id); by != "" && existing[by] {
 			continue
 		}
 		wanted[id] = true
@@ -223,20 +166,14 @@ func SeedRegistryDefaults(d *RegistryDoc, env SeedEnv) (added, unseeded []string
 		added = append(added, id)
 		return nil
 	}
-	for _, id := range defaultProviderIDs {
-		if existing[id] || !(wanted[id] || listed[id]) {
-			continue
-		}
-		if err := add(defaultProviderRow(id)); err != nil {
-			return nil, nil, err
-		}
-	}
-	for _, id := range cloudProviderIDs {
-		if existing[id] || !(wanted[id] || listed[id]) {
-			continue
-		}
-		if err := add(cloudProviderRow(id)); err != nil {
-			return nil, nil, err
+	for _, ids := range [][]string{provider.SeedableLocalIDs(), provider.SeedableCloudIDs()} {
+		for _, id := range ids {
+			if existing[id] || !(wanted[id] || listed[id]) {
+				continue
+			}
+			if err := add(provider.SeedRow(id)); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 	for _, name := range env.Agents {

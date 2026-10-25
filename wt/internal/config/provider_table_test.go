@@ -1,7 +1,6 @@
 package config
 
 import (
-	"reflect"
 	"slices"
 	"testing"
 )
@@ -34,43 +33,27 @@ func TestSeedableProviderIDsPinned(t *testing.T) {
 	}
 }
 
-// TestSeedRowsPinned pins the exact default registry rows wt seeds, since they
-// are written into users' registry.toml and a contract fixture reads them.
-func TestSeedRowsPinned(t *testing.T) {
-	local := map[string]map[string]any{
-		"ollama": {
-			"id": "ollama", "name": "Ollama", "location": "local",
-			"protocols": []string{"anthropic", "openai-chat"},
-			"auth":      map[string]any{"type": "none", "base_url": "http://localhost:11434"},
-		},
-		"omlx": {
-			"id": "omlx", "name": "oMLX", "location": "local",
-			"auth": map[string]any{"type": "none", "base_url": "http://localhost:8000"},
-		},
-		"mlx_lm_server": {
-			"id": "mlx_lm_server", "name": "mlx-lm server (target+draft)", "location": "local",
-			"auth": map[string]any{"type": "none", "base_url": "http://localhost:8001/v1"},
-		},
-		"mtplx": {
-			"id": "mtplx", "name": "MTPLX", "location": "local", "model_dir": "~/.mtplx/models",
-			"auth": map[string]any{"type": "none", "base_url": "http://localhost:8003/v1"},
-		},
+// TestProviderOriginPortFillIn pins when wt fills in the port it hands a
+// server: only for the provider wt starts (mtplx), an http url, and a host
+// that server answers on. Everything else, including a provider id the table
+// does not know, is left as the registry wrote it.
+func TestProviderOriginPortFillIn(t *testing.T) {
+	cases := []struct {
+		id, baseURL, want string
+	}{
+		{"mtplx", "http://localhost/v1", "http://localhost:8003"},
+		{"mtplx", "http://127.0.0.1:9000/v1", "http://127.0.0.1:9000"},
+		{"mtplx", "https://localhost/v1", "https://localhost"},
+		{"mtplx", "http://example.com/v1", "http://example.com"},
+		{"omlx", "http://localhost/v1", "http://localhost"},
+		{"omlx-6bit", "http://localhost/v1", "http://localhost"},
+		{"acme", "http://localhost/v1", "http://localhost"},
+		{"", "http://localhost", "http://localhost"},
 	}
-	for id, want := range local {
-		if got := defaultProviderRow(id); !reflect.DeepEqual(got, want) {
-			t.Errorf("defaultProviderRow(%q) = %#v, want %#v", id, got, want)
+	for _, c := range cases {
+		p := Provider{ID: c.id, Auth: AuthConfig{BaseURL: c.baseURL}}
+		if got := p.Origin(); got != c.want {
+			t.Errorf("Provider{%q, %q}.Origin() = %q, want %q", c.id, c.baseURL, got, c.want)
 		}
-	}
-	for _, id := range []string{"omlx-6bit", "llamacpp", "bogus"} {
-		if got := defaultProviderRow(id); got != nil {
-			t.Errorf("defaultProviderRow(%q) = %#v, want nil", id, got)
-		}
-	}
-	wantCloud := map[string]any{
-		"id": "openrouter", "name": "OpenRouter", "location": "cloud",
-		"auth": map[string]any{"type": "api_key", "secret_ref": "OPENROUTER_API_KEY", "base_url": "https://openrouter.ai/api/v1"},
-	}
-	if got := cloudProviderRow("openrouter"); !reflect.DeepEqual(got, wantCloud) {
-		t.Errorf("cloudProviderRow(openrouter) = %#v, want %#v", got, wantCloud)
 	}
 }
