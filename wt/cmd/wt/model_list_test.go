@@ -679,3 +679,76 @@ windows = [{ days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start = "
 		t.Errorf("--json: stdout lacks the phrase in a malformed array, or stderr is not the one line:\n%s\n%s", out, errOut)
 	}
 }
+
+// modelListServeArgsConfig is modelListConfig plus a registered mtplx model
+// that carries serve_args, with the snapshot that finds it: the one row of
+// the contract test that prints the omitempty serve_args key, kept out of the
+// shared config so the listings the other tests count do not change.
+func modelListServeArgsConfig() (*config.Config, localmodels.Snapshot) {
+	cfg, snap := modelListConfig(), modelListSnapshot()
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "mtplx", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}})
+	cfg.Models = append(cfg.Models, config.Model{ID: "mtplx/Org/Tuned-4bit", Family: "qwen3.8", ProviderID: "mtplx", ModelName: "Org/Tuned-4bit",
+		ServeArgs: config.ServeArgs{Args: []string{"--profile", "turbo"}}})
+	snap.Providers["mtplx"] = localmodels.StatusOK
+	snap.Entries = append(snap.Entries, localmodels.Entry{ProviderID: "mtplx", ModelID: "mtplx/Org/Tuned-4bit", ModelName: "Org/Tuned-4bit",
+		Artifact: "Org/Tuned-4bit", ArtifactKnown: true, Registered: true})
+	return cfg, snap
+}
+
+// TestModelListShowsServeArgs verifies a model's serve_args reach both
+// outputs (#432): --json carries them as an array under serve_args, and the
+// text listing names them under the table, one line per model, since the
+// table has no column for them. A model with none gets no key and no line.
+func TestModelListShowsServeArgs(t *testing.T) {
+	cfg, snap := modelListServeArgsConfig()
+	stubProbeInventory(t, snap)
+	var out, errOut bytes.Buffer
+	if err := runModelList(&out, &errOut, cfg, true, 80); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Models []struct {
+			ID        string   `json:"id"`
+			ServeArgs []string `json:"serve_args"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	withArgs := 0
+	for _, m := range doc.Models {
+		if len(m.ServeArgs) > 0 {
+			withArgs++
+			if m.ID != "mtplx/Org/Tuned-4bit" || strings.Join(m.ServeArgs, " ") != "--profile turbo" {
+				t.Errorf("serve_args on %s = %v, want [--profile turbo] on the mtplx model alone", m.ID, m.ServeArgs)
+			}
+		}
+	}
+	if withArgs != 1 || strings.Count(out.String(), `"serve_args"`) != 1 {
+		t.Errorf("%d models carry serve_args (key printed %d times), want exactly one", withArgs, strings.Count(out.String(), `"serve_args"`))
+	}
+
+	out.Reset()
+	if err := runModelList(&out, &errOut, cfg, false, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "mtplx/Org/Tuned-4bit: serve_args --profile turbo\n") || strings.Count(out.String(), "serve_args") != 1 {
+		t.Errorf("text listing:\n%s\nwant one serve_args line, for the mtplx model", out.String())
+	}
+}
+
+// TestNoteMalformedSaysARefusedServeArgsIsNotReadAsAbsent verifies a serve_args
+// wt keeps but cannot use (here a flag wt sets itself) is reported as a refused
+// start, not as "read as absent": the args stay on the row and `wt start`
+// stops on them, so the old wording sent the user hunting for a value that was
+// in fact still in force.
+func TestNoteMalformedSaysARefusedServeArgsIsNotReadAsAbsent(t *testing.T) {
+	cfg := &config.Config{Models: []config.Model{{ID: "mtplx/Org/M", ProviderID: "mtplx", ModelName: "Org/M",
+		ServeArgs: config.ServeArgs{Args: []string{"--port", "9"}}}}}
+	var errOut bytes.Buffer
+	noteMalformed(&errOut, cfg)
+	got := errOut.String()
+	if strings.Contains(got, "absent") || !strings.Contains(got, "refuses this model") || !strings.Contains(got, "--clear-serve-args") {
+		t.Errorf("note = %q, want a refused-start line and no \"absent\"", got)
+	}
+}

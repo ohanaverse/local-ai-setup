@@ -2,7 +2,9 @@
 
 wt owns and writes the file. llmbench never writes it, so this reader keeps
 no unknown keys, parses no prices and accepts a top-level table it does not
-know.
+know. That includes a model's `serve_args` (extra `mtplx serve` arguments wt
+appends when it starts the model): llmbench starts mtplx from its own spec and
+never applies them.
 """
 
 from __future__ import annotations
