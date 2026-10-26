@@ -35,6 +35,9 @@ uv run llmbench run --family <family> --passes 3   # <family>: one of yours — 
 uv run llmbench provider restore
 # → restored providers
 
+# stop one provider instead (from the repo root; rec shown):
+uv run --directory llmbench llmbench provider stop rec
+
 uv run llmbench show-results --latest   # prints summary.md
 ```
 
@@ -199,7 +202,7 @@ ls /Users/keith/.config/local-ai/benchmarks/
 ## Gotchas
 
 - **Isolation is mandatory.** Local models share Apple Silicon GPU/RAM; a second loaded model skews every number in the run (this repo's `CLAUDE.md`). llmbench enforces it internally — each target is isolated through `src/llmbench/providers/lifecycle/orchestrate.py` (called in-process, not via a subprocess or PATH lookup — issue #79) before its requests, and the whole stack is restored in a `finally` (`src/llmbench/benchmark/isolation.py`).
-- **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service; mtplx: `mtplx stop --port 8003 --grace-seconds 10` ends its serve process; rec: `rec stop` ends the machine's one instance (`rec status` then exits 1); mlx_lm_server: the process in its pidfile is signalled.
+- **Per-backend stop mechanics differ.** Ollama: `ollama stop <model>` unloads the model but keeps the daemon on `:11434` (isolation polls `ollama ps`, not the port); oMLX: `omlx stop` halts the whole service; mtplx: `mtplx stop --port 8003 --grace-seconds 10` ends its serve process; rec: `rec stop` asks the machine's one instance to stop, and llmbench then waits (up to 30 s) until `rec status` reports no instance — exits 1 — before reporting ok; while it still answers, even with `ready:false` (shutting down or loading), the instance is not gone, and after the wait the stop returns a warning instead (`provider stop rec` then reports `ok: false`) and an isolation refuses to spawn a new rec beside it; mlx_lm_server: the process in its pidfile is signalled.
 - **oMLX serves 4-bit and 6-bit variants — name the exact one.** Manual isolation: `uv run llmbench provider isolate omlx` warms `Ornith-1.5-35B-A3B-MLX-4bit`, `... omlx-6bit` warms the 6-bit variant. `llmbench run` passes the registry row's own `provider_id` to isolation and, for oMLX, no model name: a row under provider `omlx-6bit` is warmed with the 6-bit default, a row under `omlx` with the 4-bit default. So a 6-bit model registered under provider `omlx` is warmed as 4-bit, and any oMLX target other than the two defaults is warmed as a default — set `LLM_ISOLATE_OMLX_4BIT_MODEL` / `LLM_ISOLATE_OMLX_6BIT_MODEL` to the target before `llmbench run`.
 - **Isolating another backend unloads every ollama model.** The ollama stop runs `ollama stop` for each model `ollama ps` lists and polls once a second, for up to three minutes, until none is loaded (`stop_and_wait` in `backends/ollama.py`) — a model finishing a request stays listed until that request ends. A model still listed after the wait is a warning, worded by cause: `ollama is still finishing a request on <model> …; it unloads it when that ends` (`them` when more than one is listed) when ollama accepted every stop still pending, `ollama still has models loaded …` otherwise. Neither is a clean stop: `llmbench provider stop ollama` reports `ok: false` for both, and an isolation warns and goes on, as for any provider that did not let go. `LLM_ISOLATE_OLLAMA_MODEL` plays no part in stopping.
 - **`isolate ollama` does not unload ollama models.** ollama is the kept backend, so its stop never runs: a model already loaded stays loaded beside the warmed one. Check `ollama ps` and run `ollama stop <model>` for each leftover before isolating ollama.
@@ -215,7 +218,7 @@ ls /Users/keith/.config/local-ai/benchmarks/
 ## Going deeper
 
 - Benchmark CLI design (isolation contract, workload spec, results shape): `~/github/ohanaverse/local-ai-setup/docs/superpowers/modelman/specs/2026-09-05-modelman-benchmark-design.md`
-- Provider lifecycle CLI + orchestration, stop/start/warmup per backend: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/providers/lifecycle/` (`cli.py` the `llmbench provider` commands, `orchestrate.py` isolate/stop/stop-all/restore, `backends/` one module per provider), and `/Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
+- Provider lifecycle CLI + orchestration, stop/start/warmup per backend: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/providers/lifecycle/` (`cli.py` the `llmbench provider` commands, `orchestrate.py` isolate/stop/stop-all/restore, `backends/` one module per hand-written backend — ollama, omlx, mlx_lm_server — while mtplx and rec are instances of the generic `backends/process_server.py`, built from `docs/contracts/process-providers.toml`), and `/Users/keith/github/ohanaverse/local-ai-setup/CLAUDE.md` (Key Gotchas)
 - Legacy benchmark docs + archived numbers: `/Users/keith/github/ohanaverse/local-ai-setup/benchmarks/README.md`, `.../qwen3.8-benchmark.md`, `.../ornith-1.5-benchmark.md`
 - llmbench source: `~/github/ohanaverse/local-ai-setup/llmbench/src/llmbench/benchmark/` (`cli.py` flags/pointer, `runner.py` target discovery, `results.py` markdown, `isolation.py` in-process lifecycle adapter)
 - Launching `wt` agents against the benchmarked models: [06-wt-agents-and-models](06-wt-agents-and-models.md)

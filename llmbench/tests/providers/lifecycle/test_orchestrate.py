@@ -477,9 +477,9 @@ def test_stop_returns_ok_on_clean_stop():
 def test_stop_mtplx_reports_failure_when_port_never_closes():
     """BUG FIX (a), proven through the real dispatch. Task 5 fixed
     mtplx's stop_and_wait() (now ProcessServerBackend's) to poll for the
-    port actually closing and
-    return a warning when it doesn't; before that, any `mtplx stop` that
-    exited 0 was reported as success even with port 8003 still bound.
+    port actually closing and return a warning when it doesn't; before
+    that, any `mtplx stop` that exited 0 was reported as success even with
+    port 8003 still bound.
     stop() must surface that warning as a hard ok=False — a caller about to
     start the next model on that port needs to know, and stderr is not part
     of the envelope it reads."""
