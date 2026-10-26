@@ -119,7 +119,7 @@ def _origin_key(url: str) -> tuple[str, str, int | None] | None:
         return None
     scheme = parts.scheme.lower()
     if port is None:
-        port = {"http": 80, "https": 443}.get(scheme)
+        port = _SCHEME_PORTS.get(scheme)
     return scheme, parts.hostname.lower(), port
 
 
@@ -137,15 +137,6 @@ def _masked_tail(tail: str, key: str | None) -> str:
                 break
         tail = probe._scrub(tail, key)  # noqa: SLF001 — the one masking rule
     return tail.strip()
-
-
-def _as_text(value: object) -> str | None:
-    """A JSON scalar as the text a contract `equals` is compared with."""
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
 
 
 @dataclass(frozen=True)
@@ -303,7 +294,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
 
     def _reports_ready(self, bin_path: str) -> bool:
         ready = self.spec.ready
-        return _as_text(self._status(bin_path, ready.path)) == ready.equals
+        return probe.as_text(self._status(bin_path, ready.path)) == ready.equals
 
     def already_serving(self, plan: StartPlan) -> bool:
         """`models-list`: /v1/models lists the model. `command-json`: the
@@ -324,10 +315,13 @@ class ProcessServerBackend(PidfileTrackedBackend):
             return False
         if not self._reports_ready(bin_path):
             return False
-        if ready.model_path and _as_text(self._status(bin_path, ready.model_path)) != plan.model:
+        if (
+            ready.model_path
+            and probe.as_text(self._status(bin_path, ready.model_path)) != plan.model
+        ):
             return False
         if ready.endpoint_path:
-            endpoint = _as_text(self._status(bin_path, ready.endpoint_path))
+            endpoint = probe.as_text(self._status(bin_path, ready.endpoint_path))
             if endpoint is None or _origin_key(endpoint) != _origin_key(addr.origin):
                 return False
         return True
@@ -357,9 +351,17 @@ class ProcessServerBackend(PidfileTrackedBackend):
             lingering = self._lingering_status(bin_path)
             if lingering is not None:
                 raise LifecycleError(self._lingering_warning(lingering))
-        self._proc = self._pidproc.spawn(
-            [bin_path, *expand(self.spec.spawn, model=plan.model, port=addr.port)]
-        )
+        try:
+            self._proc = self._pidproc.spawn(
+                [bin_path, *expand(self.spec.spawn, model=plan.model, port=addr.port)]
+            )
+        except LifecycleError as exc:
+            # spawn()'s immediate-exit error carries the log's tail: mask the
+            # key in it the way wait_ready() does.
+            head, sep, raw = str(exc).partition("; log tail: ")
+            if not sep:
+                raise
+            raise LifecycleError(self._with_log_tail(head, raw)) from None
 
     def wait_ready(self, plan: StartPlan) -> None:
         """Wait for the spawned server to be ready. A load that fails (the
@@ -374,14 +376,20 @@ class ProcessServerBackend(PidfileTrackedBackend):
         except probe.WarmupRefusedError:
             raise
         except LifecycleError as exc:
-            key = self._key(strict=False)
-            raw = self._pidproc.log_tail()
-            if key is None and self._key_unreadable and raw.strip():
-                raise LifecycleError(f"{exc}; {_TAIL_WITHHELD}") from exc
-            tail = _masked_tail(raw, key)
-            if not tail:
+            message = self._with_log_tail(str(exc), self._pidproc.log_tail())
+            if message == str(exc):
                 raise
-            raise LifecycleError(f"{exc}; log tail: {tail}") from exc
+            raise LifecycleError(message) from exc
+
+    def _with_log_tail(self, message: str, raw: str) -> str:
+        """`message` with the log tail `raw` appended, the key masked in it;
+        a row that names a key which cannot be read leaves nothing to mask
+        with, so the tail is withheld. `message` alone for an empty tail."""
+        key = self._key(strict=False)
+        if key is None and self._key_unreadable and raw.strip():
+            return f"{message}; {_TAIL_WITHHELD}"
+        tail = _masked_tail(raw, key)
+        return f"{message}; log tail: {tail}" if tail else message
 
     def _wait_ready(self, plan: StartPlan) -> None:
         ready = self.spec.ready
@@ -495,7 +503,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
     def _lingering_warning(self, lingering: _Lingering) -> str:
         outcome, value = lingering
         said = (
-            f"ready={_as_text(value)}"
+            f"ready={probe.as_text(value)}"
             if outcome == "answered"
             else "the status command did not answer"
         )

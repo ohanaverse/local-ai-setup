@@ -526,6 +526,23 @@ def test_wait_ready_failure_carries_the_masked_log_tail(tmp_path, failure, tail,
     assert not leaked
 
 
+def test_spawn_immediate_exit_tail_is_masked():
+    """PidfileProcess.spawn() bakes the log tail into its immediate-exit
+    error; start() masks the provider key in it like wait_ready() does."""
+    _registry(_provider_row(secret_ref="sekrit-value"))
+    backend = ProcessServerBackend(_spec())
+    plan = backend.resolve("m", ())
+    failure = LifecycleError("fake exited immediately (exit 1); log tail: auth sekrit-value boom")
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend._pidproc = MagicMock(spawn=MagicMock(side_effect=failure))
+        backend.start(plan)
+    assert str(exc.value) == "fake exited immediately (exit 1); log tail: auth *** boom"
+
+
 def _logged(backend: ProcessServerBackend, tmp_path: Path, text: str) -> None:
     log = tmp_path / "fake.log"
     log.write_text(text)

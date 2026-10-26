@@ -386,7 +386,7 @@ def command_status(
     return ("answered", node)
 
 
-def _as_text(value: object) -> str | None:
+def as_text(value: object) -> str | None:
     """A JSON scalar as the text `equals` is compared with: JSON's own
     spelling for booleans ("true"/"false"), str() for the rest; None stays
     None (no answer never equals anything)."""
@@ -413,7 +413,7 @@ def wait_for_command_ready(
     for _ in _deadline_loop(timeout):
         if proc is not None and proc.poll() is not None:
             raise LifecycleError(f"serve process exited during model load: exit {proc.returncode}")
-        if _as_text(command_json(argv, path=path)) == equals:
+        if as_text(command_json(argv, path=path)) == equals:
             return
         time.sleep(1.0)
     raise LifecycleError(f"timed out waiting for {binary} to report {path} = {equals}")
