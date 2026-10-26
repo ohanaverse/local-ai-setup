@@ -19,6 +19,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // saveFailedHTML keeps a page ParsePricing refused, so the parser can be
@@ -71,7 +72,7 @@ func (c *ollamaRun) replan(entries []cloudsync.Entry) *cloudsync.CatalogPlan {
 // the row every catalog entry names, and the one that says which daemon the
 // ollama CLI is pinned to.
 func hasOllamaProvider(providers []cloudsync.Provider) bool {
-	return slices.ContainsFunc(providers, func(p cloudsync.Provider) bool { return p.ID == flowOllama })
+	return slices.ContainsFunc(providers, func(p cloudsync.Provider) bool { return p.ID == provider.IDOllama })
 }
 
 // planOllamaFlow reads the page and `ollama list`, resolves the cloud tags
@@ -106,7 +107,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 	// names no daemon ("/v1", a blank, no scheme) would send the pulls and
 	// removals somewhere the registry does not say, in silence. (A row with
 	// no base_url at all has wt's documented default, which is an address.)
-	origin := localmodels.FamilyOrigin(cfg, "ollama")
+	origin := localmodels.FamilyOrigin(cfg, provider.IDOllama)
 	if u, err := url.Parse(origin); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return stop(2, "the ollama provider row's base_url names no daemon (it reads as %q): set auth.base_url to http://host:port; nothing was changed", origin)
 	}

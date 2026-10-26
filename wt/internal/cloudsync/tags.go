@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // CatalogNameKey is the model-row key that records which page name a row was
@@ -18,7 +20,8 @@ const CatalogNameKey = "catalog_name"
 // model; %s is the page name.
 const LibraryTagsURL = "https://ollama.com/library/%s/tags"
 
-const ollamaProvider = "ollama"
+// ollamaProvider is the provider_id of every row the ollama flow addresses.
+const ollamaProvider = provider.IDOllama
 
 // tagLookups is how many library pages are read at once.
 const tagLookups = 8

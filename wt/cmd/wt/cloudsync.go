@@ -18,6 +18,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -34,32 +35,37 @@ var (
 	cloudSyncNow = time.Now
 )
 
-// The flows' names: --only's spelling, the prefix of every line a flow prints
-// and the registry provider each syncs.
+// The flows' names: --only's spelling and the prefix of every line a flow
+// prints. Each is named for the provider it syncs (cloudFlow.provider, held to
+// a provider of the table by TestCloudFlowsMatchTheirProviders), but a flow
+// name is not a provider id: code that looks a provider up uses provider.ID*.
 const (
 	flowOpenRouter = "openrouter"
 	flowOllama     = "ollama"
 )
 
-// cloudFlow is what the command knows of a flow before it plans one: its name
-// and a way to reach the --only choice for it in cloudSyncOpts. The planners,
-// gates and applies are typed per flow (openRouterRun, ollamaRun) and stay in
-// their files; this table is where a flow is declared to the command line, so
-// --only, its error text, the --only flag's help and the order of the flows
-// come from one place (#453). It does not yet drive cloudSyncOutcome, its
-// err(), runCloudSync's pending list or the flow descriptions in the command's
-// Long text: a new flow still edits those by hand.
-// TestCloudFlowsMatchTheirProviders holds each name to a provider of the table
-// in internal/provider and to a line in --help.
+// cloudFlow is what the command knows of a flow before it plans one: its
+// name, the registry provider it syncs, and a way to reach the --only choice
+// for it in cloudSyncOpts. The planners, gates and applies are typed per flow
+// (openRouterRun, ollamaRun) and stay in their files; this table is where a
+// flow is declared to the command line, so --only, its error text, the --only
+// flag's help, the order of the flows and the order of the "not applied" lines
+// (pendingFlows) come from one place (#453, #475). It does not drive
+// cloudSyncOutcome, its err() (whose exit-code priority is semantic) or the
+// flow descriptions in the command's Long text, which the docs and the skill
+// quote: those stay hand-written until a third flow exists.
+// TestCloudFlowsMatchTheirProviders holds each flow to a provider of the table
+// in internal/provider.
 type cloudFlow struct {
 	name     string
+	provider string
 	selected func(*cloudSyncOpts) *bool
 }
 
 // cloudFlows are the flows in the order they are planned and reported.
 var cloudFlows = []cloudFlow{
-	{flowOpenRouter, func(o *cloudSyncOpts) *bool { return &o.openrouter }},
-	{flowOllama, func(o *cloudSyncOpts) *bool { return &o.ollama }},
+	{flowOpenRouter, provider.IDOpenRouter, func(o *cloudSyncOpts) *bool { return &o.openrouter }},
+	{flowOllama, provider.IDOllama, func(o *cloudSyncOpts) *bool { return &o.ollama }},
 }
 
 // cloudSyncFlows are the flows' names, in cloudFlows' order: the flows
@@ -457,6 +463,18 @@ type cloudSyncApplied struct {
 // a registry removed since the plan as absent as it found it.
 var errPlanChanged = errors.New("the registry changed after the plan was printed")
 
+// pendingFlows names the flows in active, in cloudFlows' order: the order of
+// the lines that concern all the flows about to be applied.
+func pendingFlows(active map[string]bool) []string {
+	var names []string
+	for _, f := range cloudFlows {
+		if active[f.name] {
+			names = append(names, f.name)
+		}
+	}
+	return names
+}
+
 // runCloudSync is `wt cloud-sync`: plan both flows with no lock held, print
 // both plans, gate, apply both in one registry write, run the ollama flow's
 // ollama work, sync the routes once. The flows are independent: one that
@@ -499,13 +517,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 		return res.err()
 	}
 	// The flows about to be applied, for the lines that concern all of them.
-	var pending []string
-	if openrouter != nil {
-		pending = append(pending, flowOpenRouter)
-	}
-	if ollama != nil {
-		pending = append(pending, flowOllama)
-	}
+	pending := pendingFlows(map[string]bool{flowOpenRouter: openrouter != nil, flowOllama: ollama != nil})
 	notApplied := func(w io.Writer, format string, args ...any) {
 		for _, flow := range pending {
 			fmt.Fprintf(w, "%s: %s\n", flow, fmt.Sprintf(format, args...))

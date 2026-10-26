@@ -2,11 +2,11 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
@@ -63,10 +63,11 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 // TestCloudFlowsMatchTheirProviders holds the flow table (cloudFlows) to what
 // the command line and the registry say of a flow (#453): each flow is named
 // for a provider of the table in internal/provider, a name is used once,
-// `--only <name>` selects that flow and no other, selecting every flow by
-// default reaches each one's option, and --help describes each. A flow added
-// to the table without a provider, a way to select it or a line in --help
-// fails here, instead of being reachable some ways and not others.
+// `--only <name>` selects that flow and no other, and selecting every flow by
+// default reaches each one's option. A flow added to the table without a
+// provider or a way to select it fails here, instead of being reachable some
+// ways and not others. (--help's line per flow is held by
+// TestCloudSyncFlowsAreNamedForTheirProviders.)
 func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 	if len(cloudFlows) == 0 || len(cloudFlows) != len(cloudSyncFlows) {
 		t.Fatalf("cloudFlows has %d flows and cloudSyncFlows %v", len(cloudFlows), cloudSyncFlows)
@@ -77,8 +78,8 @@ func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 			t.Errorf("flow %d (%q): empty, repeated or out of order against cloudSyncFlows %v", i, f.name, cloudSyncFlows)
 		}
 		seen[f.name] = true
-		if _, ok := provider.Lookup(f.name); !ok {
-			t.Errorf("flow %q names no provider of the table in internal/provider", f.name)
+		if _, ok := provider.Lookup(f.provider); !ok || f.provider != f.name {
+			t.Errorf("flow %q syncs provider %q: want a provider of the table in internal/provider that the flow is named for", f.name, f.provider)
 		}
 
 		var only cloudSyncOpts
@@ -97,17 +98,30 @@ func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 		t.Errorf("no --only selected %v, want every flow %v", got, cloudSyncFlows)
 	}
 
-	var help bytes.Buffer
-	cmd := cloudSyncCmd(&app{cfg: &config.Config{}})
-	cmd.SetArgs([]string{"--help"})
-	cmd.SetOut(&help)
-	cmd.SetErr(&help)
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
+}
+
+// TestPendingFlowsFollowTheTableOrder pins #475's point: the lines that
+// concern every flow about to be applied ("not applied (declined)", the
+// error when the question cannot be asked) come out in cloudFlows' order, and
+// only for the flows that have something to apply. They used to be appended
+// by hand in an order that could disagree with the table's. The order is the
+// table's even when the table is reordered, which the test does.
+func TestPendingFlowsFollowTheTableOrder(t *testing.T) {
+	both := map[string]bool{flowOpenRouter: true, flowOllama: true}
+	if got := strings.Join(pendingFlows(both), ","); got != flowOpenRouter+","+flowOllama {
+		t.Errorf("pendingFlows(both) = %s, want the table's order", got)
 	}
-	for _, f := range cloudFlows {
-		if !strings.Contains(help.String(), "\n  "+f.name+" ") {
-			t.Errorf("--help has no line describing the %s flow:\n%s", f.name, help.String())
-		}
+	if got := pendingFlows(map[string]bool{flowOllama: true}); len(got) != 1 || got[0] != flowOllama {
+		t.Errorf("pendingFlows(ollama only) = %v", got)
+	}
+	if got := pendingFlows(map[string]bool{flowOpenRouter: false, flowOllama: false}); got != nil {
+		t.Errorf("pendingFlows(none) = %v, want nil", got)
+	}
+
+	saved := slices.Clone(cloudFlows)
+	t.Cleanup(func() { cloudFlows = saved })
+	slices.Reverse(cloudFlows)
+	if got := strings.Join(pendingFlows(both), ","); got != flowOllama+","+flowOpenRouter {
+		t.Errorf("with the table reversed, pendingFlows = %s, want it to follow", got)
 	}
 }
