@@ -119,6 +119,9 @@ def _origin_key(url: str) -> tuple[str, str, int | None] | None:
     return scheme, parts.hostname.lower(), port
 
 
+_TAIL_WITHHELD = "log tail withheld: provider key unreadable, cannot mask"
+
+
 def _masked_tail(tail: str, key: str | None) -> str:
     """A log tail (already bounded by `PidfileProcess.log_tail`) with `key`
     masked the way probe masks an echoed body, plus a trailing part of the
@@ -174,6 +177,14 @@ class ProcessServerBackend(PidfileTrackedBackend):
         self.restore_action = spec.restore_action
         self.cleanup_on_failure = cleanup_on_failure
         self._pidproc = PidfileProcess(name=spec.provider, pidfile=spec.pidfile, logfile=spec.log)
+        # The key resolved for the current isolate: `(key,)` once resolved,
+        # None before. Reset by `already_serving`, the first key-using step
+        # of every isolate, so the `exec:` command runs once per isolate and
+        # a rotated key is picked up by the next one.
+        self._resolved_key: tuple[str | None] | None = None
+        # True after a resolution of a named `secret_ref` failed: nothing to
+        # mask a log tail with, so the tail is withheld.
+        self._key_unreadable = False
 
     # --- addresses and key -------------------------------------------------
 
@@ -224,20 +235,32 @@ class ProcessServerBackend(PidfileTrackedBackend):
         return self._address().chat_url
 
     def _key(self, *, strict: bool = True) -> str | None:
-        """The provider's bearer key, resolved now, or None when its row
-        names no `secret_ref` (or the reference resolves to ""). An
-        unreadable reference raises a LifecycleError naming the provider
-        (never the value) when `strict`, and reads as no key otherwise."""
+        """The provider's bearer key for this isolate, or None when its row
+        names no `secret_ref` (or the reference resolves to ""). Resolved
+        once and reused until `_forget_key()`. An unreadable reference is
+        not remembered: it raises a LifecycleError naming the provider
+        (never the value) when `strict`, and reads as no key otherwise, and
+        either way marks the key unreadable for the log-tail rule."""
+        if self._resolved_key is not None:
+            return self._resolved_key[0]
         row = _provider_row(self.id)
         if row is None or not row.secret_ref:
+            self._resolved_key = (None,)
             return None
         try:
             key = resolve_secret(row.secret_ref)
         except LifecycleError as exc:
+            self._key_unreadable = True
             if not strict:
                 return None
             raise LifecycleError(f"{self.id}: cannot read the provider key: {exc}") from None
+        self._key_unreadable = False
+        self._resolved_key = (key or None,)
         return key or None
+
+    def _forget_key(self) -> None:
+        self._resolved_key = None
+        self._key_unreadable = False
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -282,8 +305,10 @@ class ProcessServerBackend(PidfileTrackedBackend):
         """`models-list`: /v1/models lists the model. `command-json`: the
         status command reports ready, with the requested model, and (when
         the spec names an endpoint path) an endpoint at this backend's
-        origin. Resolves the key first, so an unreadable one fails an
-        isolation before any teardown."""
+        origin. The first key-using step of every isolate: forgets the
+        previous isolate's key and resolves it afresh, so an unreadable one
+        fails an isolation before any teardown."""
+        self._forget_key()
         key = self._key()
         addr = self._address()
         ready = self.spec.ready
@@ -336,14 +361,20 @@ class ProcessServerBackend(PidfileTrackedBackend):
         """Wait for the spawned server to be ready. A load that fails (the
         process exited, or the wait timed out) carries the server log's tail,
         as wt's readiness-wait failure does and as spawn()'s immediate-exit
-        check already did; the key is masked in it. A refused key is not a
-        load failure and is raised as it is."""
+        check already did; the key is masked in it. A row that names a key
+        which cannot be read leaves nothing to mask with, so the tail is
+        withheld. A refused key is not a load failure and is raised as it
+        is."""
         try:
             self._wait_ready(plan)
         except probe.WarmupRefusedError:
             raise
         except LifecycleError as exc:
-            tail = _masked_tail(self._pidproc.log_tail(), self._key(strict=False))
+            key = self._key(strict=False)
+            raw = self._pidproc.log_tail()
+            if key is None and self._key_unreadable and raw.strip():
+                raise LifecycleError(f"{exc}; {_TAIL_WITHHELD}") from exc
+            tail = _masked_tail(raw, key)
             if not tail:
                 raise
             raise LifecycleError(f"{exc}; log tail: {tail}") from exc

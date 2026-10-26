@@ -523,6 +523,110 @@ def test_wait_ready_failure_carries_the_masked_log_tail(tmp_path, failure, tail,
     assert not leaked
 
 
+def _logged(backend: ProcessServerBackend, tmp_path: Path, text: str) -> None:
+    log = tmp_path / "fake.log"
+    log.write_text(text)
+    backend._pidproc = dataclasses.replace(backend._pidproc, logfile=str(log))
+
+
+def test_load_failure_tail_is_masked_with_the_key_resolved_at_the_start_of_the_isolate(
+    tmp_path,
+):
+    """The key a load-failure tail is masked with is the one the isolate
+    resolved first: a `rec auth token` that fails the second time must not
+    let the raw tail (key included) out."""
+    backend = _cj_backend()
+    _registry(_provider_row(base_url="http://127.0.0.1:9100/v1", secret_ref="exec:fake-token"))
+    _logged(backend, tmp_path, "loading\nkey sekrit-value in use\nout of memory\n")
+    plan = backend.resolve("m", ())
+    with (
+        patch(f"{PS}.resolve_secret", side_effect=["sekrit-value", SecretError("nope")]),
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.command_json", return_value=None),
+        patch(f"{PS}.probe.command_status", return_value=("gone", None), create=True),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch(
+            f"{PS}.probe.wait_for_command_ready",
+            side_effect=LifecycleError("serve process exited during model load: exit 9"),
+        ),
+        patch.object(type(backend._pidproc), "spawn"),
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.already_serving(plan)
+        backend.start(plan)
+        backend.wait_ready(plan)
+    msg = str(exc.value)
+    assert ("sekrit" in msg, "out of memory" in msg, "key *** in use" in msg) == (
+        False,
+        True,
+        True,
+    )
+
+
+def test_load_failure_tail_is_withheld_when_the_key_cannot_be_read(tmp_path):
+    """With a secret_ref and no key to mask with, the tail is withheld: the
+    rule that a key never appears in a log tail holds unconditionally."""
+    _registry(_provider_row(secret_ref="exec:fake-token"))
+    backend = ProcessServerBackend(_spec())
+    _logged(backend, tmp_path, "auth sekrit-value\nout of memory\n")
+    with (
+        patch(f"{PS}.resolve_secret", side_effect=SecretError("nope")),
+        patch.object(
+            backend,
+            "_wait_ready",
+            side_effect=LifecycleError("serve process exited during model load (exit 9)"),
+        ),
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.wait_ready(backend.resolve("m", ()))
+    msg = str(exc.value)
+    assert msg == (
+        "serve process exited during model load (exit 9); "
+        "log tail withheld: provider key unreadable, cannot mask"
+    )
+
+
+def test_load_failure_tail_of_a_key_less_provider_is_unchanged(tmp_path):
+    backend = ProcessServerBackend(_spec())
+    _logged(backend, tmp_path, "out of memory\n")
+    with (
+        patch(f"{PS}.resolve_secret") as resolver,
+        patch(f"{PS}.probe.wait_for_model", side_effect=LifecycleError("timed out")),
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.wait_ready(backend.resolve("m", ()))
+    assert str(exc.value) == "timed out; log tail: out of memory"
+    resolver.assert_not_called()
+
+
+def test_the_secret_command_runs_once_per_isolate():
+    """already_serving, start, wait_ready, warm and a stop within one
+    isolate share one resolved key; the next isolate resolves it afresh
+    (a rotated key is picked up)."""
+    _registry(_provider_row(secret_ref="exec:fake-token"))
+    backend = ProcessServerBackend(_spec())
+    plan = backend.resolve("m", ())
+    with (
+        patch(f"{PS}.resolve_secret", return_value="tok") as resolver,
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch(f"{PS}.probe.wait_for_model"),
+        patch(f"{PS}.probe.warmup"),
+        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()),
+        patch.object(backend, "_pidproc"),
+    ):
+        backend.already_serving(plan)
+        backend.replace_own_occupant(plan)
+        backend.start(plan)
+        backend.wait_ready(plan)
+        backend.warm(plan)
+        assert resolver.call_count == 1
+        backend.already_serving(plan)
+        assert resolver.call_count == 2
+
+
 def test_secret_resolves_once_per_call():
     _registry(_provider_row(secret_ref="exec:fake-token"))
     backend = ProcessServerBackend(_spec())
