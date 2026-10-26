@@ -126,7 +126,7 @@ func TestPendingFlowsFollowTheTableOrder(t *testing.T) {
 	if got := strings.Join(pendingFlows(both), ","); got != flowOpenRouter+","+flowOllama {
 		t.Errorf("pendingFlows(both) = %s, want the table's order", got)
 	}
-	if got := pendingFlows(map[string]bool{flowOllama: true}); len(got) != 1 || got[0] != flowOllama {
+	if got := pendingFlows(map[string]bool{flowOpenRouter: false, flowOllama: true}); len(got) != 1 || got[0] != flowOllama {
 		t.Errorf("pendingFlows(ollama only) = %v", got)
 	}
 	if got := pendingFlows(map[string]bool{flowOpenRouter: false, flowOllama: false}); got != nil {
@@ -138,5 +138,29 @@ func TestPendingFlowsFollowTheTableOrder(t *testing.T) {
 	slices.Reverse(cloudFlows)
 	if got := strings.Join(pendingFlows(both), ","); got != flowOllama+","+flowOpenRouter {
 		t.Errorf("with the table reversed, pendingFlows = %s, want it to follow", got)
+	}
+}
+
+// TestPendingFlowsPanicsWhenAFlowIsMissing pins #478: a flow of cloudFlows
+// that the caller's map does not answer for would have its "not applied"
+// lines dropped without a word, so pendingFlows refuses it loudly, naming the
+// flow. A map that answers false for it is fine.
+func TestPendingFlowsPanicsWhenAFlowIsMissing(t *testing.T) {
+	for _, missing := range cloudSyncFlows {
+		active := map[string]bool{}
+		for _, name := range cloudSyncFlows {
+			if name != missing {
+				active[name] = true
+			}
+		}
+		func() {
+			defer func() {
+				msg, _ := recover().(string)
+				if !strings.Contains(msg, "no answer for the "+missing+" flow") {
+					t.Errorf("without %s: panic = %q, want it to name the flow", missing, msg)
+				}
+			}()
+			pendingFlows(active)
+		}()
 	}
 }

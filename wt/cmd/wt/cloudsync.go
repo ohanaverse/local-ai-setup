@@ -35,9 +35,10 @@ var (
 )
 
 // The flows' names: --only's spelling and the prefix of every line a flow
-// prints. Each is named for the provider it syncs (held to a provider of the
-// table by TestCloudFlowsMatchTheirProviders), but a flow name is not a
-// provider id: code that looks a provider up uses provider.ID*.
+// prints. A flow is named for the provider it syncs, and TestCloudFlowsMatchTheirProviders
+// holds the name equal to that provider's id in the table, so the two strings
+// are the same by contract and not by type (#479): code that looks a provider
+// up uses provider.ID*, and one that prints or parses a flow uses these.
 const (
 	flowOpenRouter = "openrouter"
 	flowOllama     = "ollama"
@@ -462,11 +463,18 @@ type cloudSyncApplied struct {
 var errPlanChanged = errors.New("the registry changed after the plan was printed")
 
 // pendingFlows names the flows in active, in cloudFlows' order: the order of
-// the lines that concern all the flows about to be applied.
+// the lines that concern all the flows about to be applied. active must answer
+// for every flow of the table, false included: a flow missing from it would
+// have its "not applied" lines dropped without a word, so that is a
+// programming error and panics (#478), where runCloudSync builds the map.
 func pendingFlows(active map[string]bool) []string {
 	var names []string
 	for _, f := range cloudFlows {
-		if active[f.name] {
+		on, answered := active[f.name]
+		if !answered {
+			panic(fmt.Sprintf("cloud-sync: pendingFlows has no answer for the %s flow: add it where runCloudSync builds the map", f.name))
+		}
+		if on {
 			names = append(names, f.name)
 		}
 	}
