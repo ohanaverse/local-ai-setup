@@ -123,9 +123,9 @@ func MachineScoped(family string) bool {
 // instance on this machine, found through its readiness command (the stop
 // side of machineOccupant, #457): snap's registered entry for the model it
 // serves when there is one, else a discovered one (serverEntry). It reports
-// false for a family of any other scope, one whose binary or key cannot be
-// had, and one with nothing ready: the same cases machineOccupant finds
-// nothing in.
+// false for a family of any other scope, one whose binary cannot be had, and
+// one with nothing ready. Unlike machineOccupant it reads no key: the
+// readiness command takes none, and a stop must not depend on one.
 func MachineEntry(cfg *config.Config, snap localmodels.Snapshot, family string) (localmodels.Entry, bool) {
 	return defaultEnv().machineEntry(cfg, snap, family)
 }
@@ -139,13 +139,11 @@ func (e *env) machineEntry(cfg *config.Config, snap localmodels.Snapshot, family
 	if err != nil {
 		return localmodels.Entry{}, false
 	}
-	key, err := localmodels.FamilyAPIKeyErr(cfg, family)
-	if err != nil {
-		return localmodels.Entry{}, false
-	}
+	// No key: a ReadyCommandJSON check sends none, and `rec stop` needs none,
+	// so an unreadable secret_ref must not hide an instance the user can stop.
 	ctx, cancel := context.WithTimeout(context.Background(), e.readyCmdTimeout)
 	defer cancel()
-	st, running := e.foreignInstance(ctx, family, bin, key)
+	st, running := e.foreignInstance(ctx, family, bin, "")
 	if !running {
 		return localmodels.Entry{}, false
 	}
