@@ -27,6 +27,7 @@ planning, coding, code_review, doc_summary) — see [docs/guides/11-capability-e
 - **`ornith-1.5-benchmark.md`** — Benchmark doc for the three Ornith-1.5-35B variants (Ollama Q4_K_M, oMLX 4-bit, oMLX 6-bit; llama.cpp Q6_K retired 2026-09-07).
 - **`ornith-1.5-benchmark`** — Single-pass benchmark script for Ornith-1.5.
 - **`ornith-1.5-benchmark-multi`** — Multi-pass wrapper for Ornith-1.5.
+- **`mtplx-profile-matrix`** / **`mtplx-profile-matrix.md`** — Compares mtplx `--profile`s (`sustained`, `turbo`, `stable`) by running two Claude Code turns through a slot profile and counting HTTP 507 refusals and memory-guard actions (#393). Needs a registered mtplx model and a slot profile that uses it.
 - **`results/`** — Per-pass markdown output from each benchmark run.
 
 ## Quick start

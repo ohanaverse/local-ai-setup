@@ -11,6 +11,7 @@ SHELL_SCRIPTS := \
 	benchmarks/qwen3.8-benchmark-multi \
 	benchmarks/ornith-1.5-benchmark \
 	benchmarks/ornith-1.5-benchmark-multi \
+	benchmarks/mtplx-profile-matrix \
 	benchmarks/lib/benchmark-common.sh \
 	benchmarks/lib/benchmark-multi.sh \
 	wt/bin/*-wt \

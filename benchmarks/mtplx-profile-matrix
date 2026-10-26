@@ -1,0 +1,239 @@
+#!/bin/bash
+# mtplx-profile-matrix — does an mtplx --profile change how a Claude Code slot copes with memory?
+#
+# Built for #393 (mtplx answers 507 "insufficient memory" on Claude Code's prefill). For each
+# round and each profile it sets the model's `serve_args` (wt model edit --serve-arg), restarts
+# mtplx cold, runs two Claude Code turns non-interactively through a slot profile, and records
+# the refusals, mtplx's memory-guard actions, request timings and whether the tests passed.
+# Profiles are interleaved (sustained-1, turbo-1, stable-1, sustained-2, ...) so drift in the
+# machine's state shows up as a trend, not as a difference between profiles.
+#
+# It changes the registry (serve_args on ONE model) and loads that model (~28 GB for a 27B).
+# On exit, success or not, it clears the serve_args it set and stops mtplx. One local model at
+# a time: it refuses to start while another is loaded, as the other benchmarks require.
+#
+# Usage:
+#   mtplx-profile-matrix --model <mtplx/org/name> --profile <slot profile/name> [options]
+#     --runs N              rounds (default 2)
+#     --conditions "a b c"  mtplx profiles to compare (default "sustained turbo stable")
+#     --task light|heavy    heavy first makes Claude read ~118 KB of notes, so prompts reach
+#                           40-47k tokens (default light, ~15-23k)
+#     --out DIR             results directory (default /tmp/mtplx-profile-matrix-<timestamp>)
+#     --dry-run             print every command, run nothing, write nothing
+#
+# The slot profile must put the model on the slots Claude Code sends its full prompt to
+# (sonnet and haiku, for instance); see wt/docs/wt-agents/slot-profiles.md.
+# Results: <out>/results.tsv, turns.tsv, outcomes.tsv, logs/. Archive a run into
+# benchmarks/results/ (benchmarks/mtplx-profile-matrix.md says what to record).
+
+set -u
+
+MODEL=""; SLOT_PROFILE=""; RUNS=2; CONDITIONS="sustained turbo stable"; TASK=light; OUT=""; DRY=0
+ERR_LOG="$HOME/.litellm.err.log"           # where LiteLLM writes the 507 text
+MTPLX_LOG=/tmp/local-ai-setup-mtplx.log    # the server wt starts (provider table, mtplx LogDefault)
+P1_LIGHT='Run the tests with python3 -m unittest and fix the failing test.'
+P1_HEAVY='Read every file in notes/ (just read them, no summary), then run the tests with python3 -m unittest and fix the failing test.'
+P2='Now add a test for median of a single-element list and run all tests.'
+TOOLS=(--allowedTools "Bash(python3:*)" "Edit" "Write" "Read" "Glob" "Grep")
+
+usage() { sed -n '2,/^# benchmarks\/results\//p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+while [ $# -gt 0 ]; do
+    case $1 in
+        --model) MODEL=${2:?}; shift 2 ;;
+        --profile) SLOT_PROFILE=${2:?}; shift 2 ;;
+        --runs) RUNS=${2:?}; shift 2 ;;
+        --conditions) CONDITIONS=${2:?}; shift 2 ;;
+        --task) TASK=${2:?}; shift 2 ;;
+        --out) OUT=${2:?}; shift 2 ;;
+        --dry-run) DRY=1; shift ;;
+        -h | --help) usage 0 ;;
+        *) echo "unknown option: $1" >&2; usage ;;
+    esac
+done
+[ -n "$MODEL" ] && [ -n "$SLOT_PROFILE" ] || { echo "--model and --profile are required" >&2; usage; }
+case $TASK in light | heavy) ;; *) echo "--task is light or heavy" >&2; exit 2 ;; esac
+[ -n "$OUT" ] || OUT="/tmp/mtplx-profile-matrix-$(date +%Y%m%d-%H%M%S)"
+TASK_SRC="$OUT/task.orig"; TASK_DIR="$OUT/task"
+[ "$TASK" = heavy ] && P1=$P1_HEAVY || P1=$P1_LIGHT
+[ "$TASK" = heavy ] && PREFIX="H-" || PREFIX=""
+
+# run echoes every command before it runs it (a dry run only echoes). The echo goes to fd 3, a
+# copy of stdout, so a command's own redirection does not hide it.
+exec 3>&1
+run() { echo "+ $*" >&3; [ $DRY = 1 ] || "$@"; }
+log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+cleanup() {
+    log "cleaning up: clearing serve_args, stopping mtplx"
+    run wt model edit "$MODEL" --clear-serve-args > /dev/null 2>&1
+    run wt stop mtplx > /dev/null 2>&1
+}
+
+preflight() {
+    command -v wt > /dev/null && command -v claude > /dev/null || { echo "wt and claude must be on PATH"; exit 1; }
+    local busy
+    busy=$(wt model list 2> /dev/null | awk 'NR>1 && ($5=="run" || $5=="load") {print $1}')
+    if [ -n "$busy" ]; then
+        echo "these local models are loaded; unload them first so the measurement is clean:"
+        echo "$busy"; exit 1
+    fi
+    wt model list 2> /dev/null | grep -q "^$MODEL " || { echo "$MODEL is not in the registry"; exit 1; }
+    wt profile list 2> /dev/null | grep -q "$SLOT_PROFILE ok" || { echo "$SLOT_PROFILE is not an ok slot profile (wt profile list)"; exit 1; }
+    log "free memory: $(memory_pressure 2> /dev/null | tail -1)"
+}
+
+# make_task builds the scratch repo a run starts from: a small module with a median that is wrong
+# for even lengths, and four unittest tests (two fail). The heavy task adds notes/, 5 files of
+# seeded filler words (~118 KB), so the same files come out every time.
+make_task() {
+    [ $DRY = 1 ] && { echo "+ build $TASK_SRC ($TASK)" >&3; return; }
+    rm -rf "$TASK_SRC"; mkdir -p "$TASK_SRC"
+    cat > "$TASK_SRC/stats.py" << 'EOF'
+"""Small statistics helpers."""
+
+
+def mean(xs):
+    return sum(xs) / len(xs)
+
+
+def median(xs):
+    xs = sorted(xs)
+    mid = len(xs) // 2
+    if len(xs) % 2:
+        return xs[mid]
+    return xs[mid]
+EOF
+    cat > "$TASK_SRC/test_stats.py" << 'EOF'
+import unittest
+
+from stats import mean, median
+
+
+class StatsTest(unittest.TestCase):
+    def test_mean(self):
+        self.assertEqual(mean([1, 2, 3, 4]), 2.5)
+
+    def test_median_odd(self):
+        self.assertEqual(median([5, 1, 3]), 3)
+
+    def test_median_even(self):
+        self.assertEqual(median([4, 1, 3, 2]), 2.5)
+
+    def test_median_two(self):
+        self.assertEqual(median([10, 20]), 15)
+
+
+if __name__ == "__main__":
+    unittest.main()
+EOF
+    if [ "$TASK" = heavy ]; then
+        python3 - "$TASK_SRC/notes" << 'EOF'
+import os, random, sys
+out = sys.argv[1]
+os.makedirs(out)
+random.seed(393)
+words = ("cache prefix buffer token window shard replica ledger cursor queue latency budget quota "
+         "snapshot journal manifest vector matrix kernel schedule worker thread socket header "
+         "payload digest cluster region partition metric counter gauge sample window bucket "
+         "retry backoff timeout deadline commit rollback lease lock barrier signal handler "
+         "pipeline stage merge split filter reduce sort index scan probe batch stream frame").split()
+for i in range(1, 6):
+    lines = [" ".join(random.choice(words) for _ in range(random.randint(9, 16))) + "." for _ in range(260)]
+    with open(f"{out}/notes-{i}.txt", "w") as f:
+        f.write(f"Working notes, part {i}. These are filler for a memory test; nothing in them matters.\n\n"
+                + "\n".join(lines) + "\n")
+EOF
+    fi
+}
+
+# set_condition: sustained is what wt starts (its --model-id makes mtplx skip the per-model
+# profile promotion); any other profile is passed through serve_args.
+set_condition() {
+    run wt model edit "$MODEL" --clear-serve-args > /dev/null 2>&1
+    [ "$1" = sustained ] || run wt model edit "$MODEL" --serve-arg --profile --serve-arg "$1"
+}
+
+size() { [ -f "$1" ] && stat -f %z "$1" || echo 0; }
+since() { # the part of file $1 after byte offset $2 (all of it if the file was truncated)
+    local f=$1 off=$2 cur
+    cur=$(size "$f"); [ "$cur" -lt "$off" ] && off=0
+    [ -f "$f" ] && tail -c +"$((off + 1))" "$f" || true
+}
+
+# Snapshots taken at the start of a run; measure_stop reports what happened after them.
+measure_start() {
+    M_ERR_OFF=$(size "$ERR_LOG"); M_MTPLX_OFF=$(size "$MTPLX_LOG"); M_T0=$(date +%s)
+    M_T0_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+}
+
+# measure_stop records: LiteLLM error-log lines naming 'insufficient memory' (one failed request
+# writes several, so this overcounts); mtplx's memory-guard actions; the proxy's request count,
+# failures and timings. LiteLLM_SpendLogs.startTime is naive UTC, so it is compared as UTC.
+measure_stop() {
+    local label=$1 n507 new shed allocfail sysabort trim prof req wall
+    n507=$(since "$ERR_LOG" "$M_ERR_OFF" | grep -c "insufficient memory")
+    new=$(since "$MTPLX_LOG" "$M_MTPLX_OFF")
+    shed=$(grep -c '"action": "prefill_admission_shed"' <<< "$new")
+    allocfail=$(grep -c '"action": "allocation_failure_shed"' <<< "$new")
+    sysabort=$(grep -c '"action": "prefill_system_abort"' <<< "$new")
+    trim=$(grep -ci "pressure_trim" <<< "$new")
+    prof=$(grep -io "profile: *[a-z-]*" <<< "$new" | head -1)
+    req=$(psql -d litellm -At -F '|' -c "select count(*), count(*) filter (where status='failure'), coalesce(round(avg(request_duration_ms)/1000.0,1),0), coalesce(round(max(request_duration_ms)/1000.0,1),0), coalesce(max(prompt_tokens) filter (where status='success'),0) from \"LiteLLM_SpendLogs\" where \"startTime\" >= (to_timestamp($M_T0) at time zone 'UTC') and model ilike '%mtplx%'" 2> /dev/null) || req="n/a"
+    wall=$(($(date +%s) - M_T0))
+    [ -f "$OUT/results.tsv" ] || printf 'label\tprofile_line\terr_log_507_lines(overcounts)\tadmission_shed\talloc_failure\tprefill_abort\tpressure_trim\trequests|failed|avg_s|max_s|max_ok_prompt_tokens\twall_s\tstarted_utc\n' > "$OUT/results.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "${prof:-none seen}" "$n507" "$shed" "$allocfail" "$sysabort" "$trim" "${req:-n/a}" "$wall" "$M_T0_ISO" | tee -a "$OUT/results.tsv"
+}
+
+FIRST=1
+turn() { # turn <label> <n> <claude args...>
+    local label=$1 n=$2; shift 2
+    local t0 rc=0 out="$OUT/logs/$label-t$n.txt"
+    t0=$(date +%s)
+    echo "+ (cd task && wt --cwd -A claude -M $SLOT_PROFILE -- $* ${TOOLS[*]}) < /dev/null > $out" >&3
+    if [ $DRY = 0 ]; then
+        (cd "$TASK_DIR" && wt --cwd -A claude -M "$SLOT_PROFILE" -- "$@" "${TOOLS[@]}" < /dev/null) > "$out" 2>&1
+        rc=$?
+    fi
+    [ $DRY = 1 ] || printf '%s\t%s\t%s\t%s\n' "$label" "$n" "$(($(date +%s) - t0))" "$rc" >> "$OUT/turns.tsv"
+    log "$label turn $n: $(($(date +%s) - t0))s, exit $rc"
+    if [ "$rc" != 0 ] && [ $FIRST = 1 ]; then
+        echo "the first turn failed (exit $rc), so the setup is probably wrong; stopping. See $out"
+        tail -5 "$out" 2> /dev/null
+        exit 1
+    fi
+    FIRST=0
+}
+
+[ $DRY = 1 ] || trap cleanup EXIT
+if [ $DRY = 0 ]; then
+    mkdir -p "$OUT/logs"
+    [ -f "$OUT/turns.tsv" ] || printf 'label\tturn\tseconds\texit\n' > "$OUT/turns.tsv"
+fi
+preflight
+make_task
+log "results in $OUT"
+
+for round in $(seq 1 "$RUNS"); do
+    for cond in $CONDITIONS; do
+        label="$PREFIX$cond-$round"
+        log "=== $label"
+        set_condition "$cond"
+        run wt stop mtplx > /dev/null 2>&1 # a cold server for every run
+        run rm -rf "$TASK_DIR"
+        run cp -R "$TASK_SRC" "$TASK_DIR"
+        [ $DRY = 1 ] || measure_start
+        turn "$label" 1 -p "$P1"
+        turn "$label" 2 --continue -p "$P2"
+        if [ $DRY = 1 ]; then
+            pass="-"
+        elif (cd "$TASK_DIR" && python3 -m unittest > /dev/null 2>&1); then
+            pass=yes
+        else
+            pass=no
+        fi
+        [ $DRY = 1 ] || measure_stop "$label"
+        echo "  tests pass at the end: $pass"
+        [ $DRY = 1 ] || printf '%s\t%s\n' "$label" "$pass" >> "$OUT/outcomes.tsv"
+    done
+done
+log "done. results: $OUT/results.tsv  turns: $OUT/turns.tsv  outcomes: $OUT/outcomes.tsv"
