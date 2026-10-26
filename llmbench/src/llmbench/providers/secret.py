@@ -50,4 +50,7 @@ def _run(ref: str) -> str:
         raise SecretError(f"secret command {ref!r} could not run ({type(exc).__name__})") from exc
     if result.returncode != 0:
         raise SecretError(f"secret command {ref!r} failed (exit {result.returncode})")
-    return result.stdout.strip()
+    value = result.stdout.strip()
+    if not value:
+        raise SecretError(f"secret command {ref!r} produced no output")
+    return value

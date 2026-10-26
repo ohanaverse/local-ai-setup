@@ -37,18 +37,19 @@ endpoint_path = ""
 """
 
 
-@pytest.fixture(autouse=True)
-def _fresh_cache():
-    ps.process_specs.cache_clear()
-    yield
-    ps.process_specs.cache_clear()
-
-
-def _use(monkeypatch, tmp_path: Path, text: str) -> None:
-    f = tmp_path / "pp.toml"
+def _use(monkeypatch, tmp_path: Path, text: str, name: str = "pp.toml") -> None:
+    f = tmp_path / name
     f.write_text(text)
     monkeypatch.setenv("LLMBENCH_PROCESS_PROVIDERS", str(f))
-    ps.process_specs.cache_clear()
+
+
+def test_swapping_the_env_var_needs_no_cache_clear(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD, "a.toml")
+    assert set(ps.process_specs()) == {"x"}
+    _use(monkeypatch, tmp_path, GOOD.replace('provider = "x"', 'provider = "y"'), "b.toml")
+    assert set(ps.process_specs()) == {"y"}
+    _use(monkeypatch, tmp_path, GOOD, "a.toml")
+    assert set(ps.process_specs()) == {"x"}
 
 
 def test_real_contract_file_exists_at_computed_path(monkeypatch):

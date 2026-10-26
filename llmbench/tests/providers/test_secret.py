@@ -44,8 +44,21 @@ def test_exec_empty_command_is_secret_error():
         secret.resolve_secret("exec:")
 
 
+@pytest.mark.parametrize("body", ["exit 0", 'echo "   "'])
+def test_exec_no_output_is_secret_error(tmp_path, body):
+    p = _script(tmp_path, body)
+    ref = f"exec:{p}"
+    with pytest.raises(secret.SecretError) as ei:
+        secret.resolve_secret(ref)
+    assert ref in str(ei.value)
+
+
 def test_exec_timeout(tmp_path, monkeypatch):
-    p = _script(tmp_path, "sleep 5")
+    # tests/conftest.py makes os.kill a no-op (os is one shared module), so
+    # subprocess.run's kill at the timeout does nothing here and the call waits
+    # out the script's sleep; production kills the child at the timeout (this
+    # body takes ~0.2 s outside pytest). Keep the sleep short.
+    p = _script(tmp_path, "sleep 1")
     monkeypatch.setattr(secret, "EXEC_TIMEOUT_S", 0.2)
     ref = f"exec:{p}"
     with pytest.raises(secret.SecretError) as ei:

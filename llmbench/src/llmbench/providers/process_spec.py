@@ -112,10 +112,14 @@ def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
     )
 
 
-@functools.cache
 def process_specs() -> dict[str, ProcessSpec]:
     """Every process provider in the contract file, keyed by provider id."""
-    path = contract_path()
+    return _load(contract_path())
+
+
+@functools.cache
+def _load(path: Path) -> dict[str, ProcessSpec]:
+    """Parse one contract file; cached per path so swapping the file works."""
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
