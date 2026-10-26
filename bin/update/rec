@@ -71,6 +71,11 @@ fi
 # --check changes nothing, so a running server is no obstacle to saying an
 # update is available; the refusal below belongs to the update itself.
 if [ "$UPDATE_CHECK" -eq 1 ]; then
+    # An unreadable installed version cannot be compared, so "available" would
+    # be a guess (finish_against_published reports the same case as manual).
+    if [ "$installed" = "unknown" ]; then
+        update_finish manual "installed version unknown, $latest published — run 'rec update'"
+    fi
     update_finish stale "$installed installed, $latest available"
 fi
 
