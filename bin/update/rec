@@ -91,6 +91,11 @@ fi
 
 after=$(rec --version 2> /dev/null | sed -n 's/^rec //p' | head -1)
 after=${after:-unknown}
+if [ "$after" = "unknown" ] || [ "$installed" = "unknown" ]; then
+    # rec update -y succeeded, but a version that cannot be read cannot show
+    # whether it moved; "still $installed" would be a false failure.
+    update_finish manual "rec update ran, but the version cannot be read (was $installed, now $after) — check 'rec --version'"
+fi
 if [ "$after" = "$installed" ]; then
     update_finish failed "rec update ran but rec is still $installed ($latest published)"
 fi
