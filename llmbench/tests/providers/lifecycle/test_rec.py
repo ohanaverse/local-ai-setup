@@ -76,6 +76,10 @@ class FakeRec:
     stop_works: bool = True
     die_on_spawn: int | None = None
     die_after_polls: int | None = None
+    # What `rec serve` writes to its log once it starts loading.
+    load_log: str = "loading flint\n"
+    # Argv[0]s a test lets reach the real Popen (a secret command).
+    allowed_popen: set[str] = field(default_factory=set)
     spawn_argv: list[str] | None = None
     status_polls_after_spawn: int = 0
     stop_argvs: list[list[str]] = field(default_factory=list)
@@ -128,6 +132,8 @@ class FakeRec:
             proc.poll.return_value = self.die_on_spawn
             proc.returncode = self.die_on_spawn
             return proc
+        stdout.write(self.load_log.encode())
+        stdout.flush()
         self.running, self.ready = True, False
         self.model, self.endpoint = self.serve_model, REC_ENDPOINT
         self._pending = self.polls_until_ready
@@ -176,7 +182,11 @@ def fake_rec(monkeypatch, tmp_path):
         argv = [str(a) for a in cmd] if isinstance(cmd, list | tuple) else [str(cmd)]
         if os.path.basename(argv[0]) == "rec":
             return fake.popen(argv, **kwargs)
-        return real_popen(cmd, *args, **kwargs)
+        if argv[0] in fake.allowed_popen:
+            return real_popen(cmd, *args, **kwargs)
+        # Nothing else may be spawned for real (the conftest guard covers
+        # subprocess.run, not Popen): fail loudly, naming only the argv.
+        raise AssertionError(f"unexpected Popen {argv}")
 
     # subprocess and urllib.request are shared module objects: these reach
     # process_server, probe, pidproc and secret alike.
@@ -302,6 +312,9 @@ def test_isolate_rec_unreadable_key(fake_rec, tmp_path, capsys, ref_kind):
         "exec:/nonexistent/k" if ref_kind == "missing-command" else _leaky_secret_command(tmp_path)
     )
     _write_registry(secret_ref)
+    # The secret command is the one thing these tests run for real (it is
+    # missing, or a tmp_path script).
+    fake_rec.allowed_popen.add(secret_ref.removeprefix("exec:"))
 
     result = orchestrate.isolate("rec")
 
@@ -348,15 +361,38 @@ def test_rec_process_dying_fails_fast_with_log_tail(fake_rec, tmp_path):
 
 
 def test_rec_process_dying_during_load_fails_fast(fake_rec):
+    """The common real failure (a late OOM kill): the error carries the
+    server log's tail, as wt's readiness-wait failure does, and never the
+    key even when the server echoed it into its log."""
     fake_rec.die_after_polls = 1
     fake_rec.polls_until_ready = 10_000
+    # No other "k" in the text: the scrub masks every occurrence of the key.
+    fake_rec.load_log = f"auth Bearer {KEY}xyz\noom: out of memory loading flint\n"
 
     result = orchestrate.isolate("rec")
 
     assert result.ok is False
-    assert "exited during model load" in (result.error or "")
-    assert "exit 9" in (result.error or "")
+    error = result.error or ""
+    assert "exited during model load" in error
+    assert "exit 9" in error
+    assert "log tail:" in error
+    assert "oom: out of memory loading flint" in error
+    leaked = f"Bearer {KEY}xyz" in error
+    assert not leaked
     assert fake_rec.status_polls_after_spawn <= 1
+
+
+def test_rec_load_timeout_carries_the_log_tail(fake_rec, monkeypatch):
+    fake_rec.polls_until_ready = 10_000_000
+    fake_rec.load_log = "still loading flint shard 3/9\n"
+    monkeypatch.setattr(f"{PS}.probe.MODEL_LOAD_TIMEOUT", 0.2)
+
+    result = orchestrate.isolate("rec")
+
+    assert result.ok is False
+    error = result.error or ""
+    assert error.startswith("timed out waiting for rec to report ready = true")
+    assert "log tail: still loading flint shard 3/9" in error
 
 
 # --- stop / stop_all / restore -----------------------------------------------

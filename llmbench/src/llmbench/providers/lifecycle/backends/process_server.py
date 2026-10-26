@@ -102,6 +102,19 @@ def _origin_key(url: str) -> tuple[str, str, int | None] | None:
     return scheme, parts.hostname.lower(), port
 
 
+def _masked_tail(tail: str, key: str | None) -> str:
+    """A log tail (already bounded by `PidfileProcess.log_tail`) with `key`
+    masked the way probe masks an echoed body, plus a trailing part of the
+    key left at the tail's cut start dropped, so no fragment survives."""
+    if key:
+        for n in range(len(key) - 1, 0, -1):
+            if tail.startswith(key[-n:]):
+                tail = tail[n:]
+                break
+        tail = probe._scrub(tail, key)  # noqa: SLF001 — the one masking rule
+    return tail.strip()
+
+
 def _as_text(value: object) -> str | None:
     """A JSON scalar as the text a contract `equals` is compared with."""
     if value is None:
@@ -295,6 +308,22 @@ class ProcessServerBackend(PidfileTrackedBackend):
         )
 
     def wait_ready(self, plan: StartPlan) -> None:
+        """Wait for the spawned server to be ready. A load that fails (the
+        process exited, or the wait timed out) carries the server log's tail,
+        as wt's readiness-wait failure does and as spawn()'s immediate-exit
+        check already did; the key is masked in it. A refused key is not a
+        load failure and is raised as it is."""
+        try:
+            self._wait_ready(plan)
+        except probe.WarmupRefusedError:
+            raise
+        except LifecycleError as exc:
+            tail = _masked_tail(self._pidproc.log_tail(), self._key(strict=False))
+            if not tail:
+                raise
+            raise LifecycleError(f"{exc}; log tail: {tail}") from exc
+
+    def _wait_ready(self, plan: StartPlan) -> None:
         ready = self.spec.ready
         if ready.kind == "models-list":
             key = self._key()

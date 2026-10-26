@@ -491,6 +491,38 @@ def test_wait_ready_and_warm_models_list_pass_the_key():
     assert warmup.call_args.kwargs["timeout"] == 120.0
 
 
+@pytest.mark.parametrize(
+    ("failure", "tail", "expected"),
+    [
+        # models-list kind (mtplx's), process gone mid-load: tail appended,
+        # the key masked, and a key fragment at the tail's cut start dropped.
+        (
+            LifecycleError("serve process exited during model load (exit 9)"),
+            "rit-value\nauth sekrit-value\nout of memory\n",
+            "serve process exited during model load (exit 9); log tail: auth ***\nout of memory",
+        ),
+        # An empty log leaves the error exactly as raised.
+        (LifecycleError("timed out"), "", "timed out"),
+        # A refused key is not a load failure: no tail.
+        (probe.WarmupRefusedError("refused"), "out of memory\n", "refused"),
+    ],
+)
+def test_wait_ready_failure_carries_the_masked_log_tail(tmp_path, failure, tail, expected):
+    _registry(_provider_row(secret_ref="sekrit-value"))
+    backend = ProcessServerBackend(_spec())
+    log = tmp_path / "fake.log"
+    log.write_text(tail)
+    backend._pidproc = dataclasses.replace(backend._pidproc, logfile=str(log))
+    with (
+        patch(f"{PS}.probe.wait_for_model", side_effect=failure),
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.wait_ready(backend.resolve("m", ()))
+    assert str(exc.value) == expected
+    leaked = "sekrit" in str(exc.value)
+    assert not leaked
+
+
 def test_secret_resolves_once_per_call():
     _registry(_provider_row(secret_ref="exec:fake-token"))
     backend = ProcessServerBackend(_spec())
