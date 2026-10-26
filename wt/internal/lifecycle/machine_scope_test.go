@@ -144,6 +144,7 @@ func machineEnvSpec(t *testing.T, serving string, spec provider.ProcessSpec) (*e
 		t.Errorf("unexpected command %s %s", name, cmd)
 		return nil, errors.New("unexpected")
 	}
+	e.runOut = e.run
 	e.spawn = func(p pidProcess, bin string, args []string) (*spawned, error) {
 		h.record("spawn")
 		return nil, errSpawnStub
@@ -246,7 +247,7 @@ func TestPortScopeNeverRunsTheReadinessCommand(t *testing.T) {
 	e.serverProc["mtplx"] = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
 	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
 	runs := 0
-	e.run = func(context.Context, string, ...string) ([]byte, error) {
+	e.runOut = func(context.Context, string, ...string) ([]byte, error) {
 		runs++
 		return []byte(`{"ready":true,"model":"other"}`), nil
 	}

@@ -23,9 +23,13 @@ type env struct {
 	chatClient  *http.Client // warmup chat requests; bounded by ctx, not a client timeout
 	lookPath    func(string) (string, error)
 	run         func(ctx context.Context, name string, args ...string) ([]byte, error)
-	runEnv      func(ctx context.Context, extra []string, name string, args ...string) ([]byte, error)
-	inventory   func(*config.Config) localmodels.Snapshot
-	backends    map[string]backend // keyed by provider family
+	// runOut is run with stdout alone: a readiness command's answer is JSON
+	// on stdout, and a warning or update hint a tool prints on stderr ahead of
+	// it must not make the answer unreadable (ready.go, #458).
+	runOut    func(ctx context.Context, name string, args ...string) ([]byte, error)
+	runEnv    func(ctx context.Context, extra []string, name string, args ...string) ([]byte, error)
+	inventory func(*config.Config) localmodels.Snapshot
+	backends  map[string]backend // keyed by provider family
 
 	// onOccupantStopped fires the moment a replace has stopped the running
 	// occupant, before the new model is started — and, on a Pool, once per
@@ -82,6 +86,7 @@ func defaultEnv() *env {
 		chatClient:        &http.Client{},
 		lookPath:          exec.LookPath,
 		run:               runCommand,
+		runOut:            runCommandStdout,
 		runEnv:            runCommandEnv,
 		inventory:         localmodels.Inventory,
 		backends:          maps.Clone(backendsByFamily),
@@ -114,6 +119,14 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = commandWaitDelay
 	return cmd.CombinedOutput()
+}
+
+// runCommandStdout is runCommand returning stdout alone; stderr is dropped,
+// including the stderr text of a failed command's *exec.ExitError.
+func runCommandStdout(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = commandWaitDelay
+	return cmd.Output()
 }
 
 // runCommandEnv is runCommand with extra vars layered over the inherited

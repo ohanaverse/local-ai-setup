@@ -20,9 +20,14 @@ import (
 // in milliseconds. It also clears the occupant-stopped route hook: the
 // injectable cores stay hook-free, so a core-level test never reaches
 // config.yaml (the public wrappers are covered in wrappers_test.go instead).
+// runOut answers "not stubbed" so a readiness check never shells out to a
+// binary on the developer's machine; a test that reads one sets it.
 func testEnv() *env {
 	e := defaultEnv()
 	e.onOccupantStopped = nil
+	e.runOut = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("runOut not stubbed")
+	}
 	e.pollInterval = 5 * time.Millisecond
 	e.warmupTimeout = 300 * time.Millisecond
 	e.loadTimeout = 300 * time.Millisecond

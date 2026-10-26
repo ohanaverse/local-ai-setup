@@ -150,6 +150,7 @@ func recEnv(t *testing.T, h *recHarness) *env {
 		t.Errorf("unexpected command %s %s", name, cmd)
 		return nil, errors.New("unexpected")
 	}
+	e.runOut = e.run
 	e.spawn = func(pp pidProcess, bin string, args []string) (*spawned, error) {
 		h.mu.Lock()
 		h.calls = append(h.calls, "spawn")
