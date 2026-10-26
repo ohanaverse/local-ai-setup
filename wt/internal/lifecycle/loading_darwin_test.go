@@ -139,8 +139,8 @@ func TestRealProcessTableDescribesAChild(t *testing.T) {
 }
 
 // TestProcArgvTreatsNoArgumentsAsExiting verifies what the real process-table
-// read makes of kern.procargs2's answer: EINVAL for a pid the kernel just
-// listed is a process being taken apart (exiting, no argv, no error), any
+// read makes of kern.procargs2's answer: EINVAL or EIO for a pid the kernel
+// just listed is a process being taken apart (exiting, no argv, no error), any
 // other failure is an error, and a buffer is parsed. A dying mtplx spends a
 // quarter of a second and more in that state; read as an error, it made
 // `wt stop mtplx` print "failed" over a server that had stopped.
@@ -148,8 +148,17 @@ func TestProcArgvTreatsNoArgumentsAsExiting(t *testing.T) {
 	if argv, exiting, err := procArgv(nil, unix.EINVAL); argv != nil || !exiting || err != nil {
 		t.Errorf("EINVAL: argv %q exiting %v err %v, want exiting and no error", argv, exiting, err)
 	}
-	if _, exiting, err := procArgv(nil, unix.EPERM); exiting || !errors.Is(err, unix.EPERM) {
-		t.Errorf("EPERM: exiting %v err %v, want the error", exiting, err)
+	// EIO is the same window: a CI runner got it from kern.procargs2 while a
+	// killed child was exiting (#481), and a stop waiting for the process to go
+	// must not be told the table is unreadable.
+	if argv, exiting, err := procArgv(nil, unix.EIO); argv != nil || !exiting || err != nil {
+		t.Errorf("EIO: argv %q exiting %v err %v, want exiting and no error", argv, exiting, err)
+	}
+	// Any other errno is still a failure to read the table.
+	for _, errno := range []error{unix.EPERM, unix.ESRCH, unix.ENOMEM} {
+		if _, exiting, err := procArgv(nil, errno); exiting || !errors.Is(err, errno) {
+			t.Errorf("%v: exiting %v err %v, want the error", errno, exiting, err)
+		}
 	}
 	raw := append(binary.NativeEndian.AppendUint32(nil, 2), "/bin/sleep\x00\x00\x00sleep\x0060\x00HOME=/x\x00"...)
 	if argv, exiting, err := procArgv(raw, nil); err != nil || exiting || !slices.Equal(argv, []string{"sleep", "60"}) {

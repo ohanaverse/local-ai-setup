@@ -44,15 +44,17 @@ func realDescribeProc(pid int) (procInfo, bool, error) {
 }
 
 // procArgv turns kern.procargs2's answer for a pid kern.proc.pid just listed
-// into its argv. EINVAL there is not a failure to read the table: it is a
-// process with no arguments left to give, which the kernel is taking apart
-// (procInfo.exiting). That lasts as long as freeing its memory does — measured
-// at 7 to 13 ms per gigabyte, so a quarter of a second and more for an mtplx —
-// and a caller waiting for the process to go must be able to keep waiting
-// through it instead of being told the table is unreadable.
+// into its argv. EINVAL and EIO there are not failures to read the table: they
+// are a process with no arguments left to give, which the kernel is taking
+// apart (procInfo.exiting). EINVAL is the usual answer; EIO was seen once on a
+// CI runner in the same window (#481), and the two are treated alike. That
+// lasts as long as freeing the process's memory does — measured at 7 to 13 ms
+// per gigabyte, so a quarter of a second and more for an mtplx — and a caller
+// waiting for the process to go must be able to keep waiting through it
+// instead of being told the table is unreadable. Any other errno is an error.
 func procArgv(raw []byte, err error) (argv []string, exiting bool, _ error) {
 	switch {
-	case errors.Is(err, unix.EINVAL):
+	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.EIO):
 		return nil, true, nil
 	case err != nil:
 		return nil, false, fmt.Errorf("kern.procargs2: %w", err)
