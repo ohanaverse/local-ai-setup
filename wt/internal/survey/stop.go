@@ -37,6 +37,11 @@ type stopDeps struct {
 	// loading reads what the pidfile of a family's server says, for a family
 	// whose port refused (lifecycle.LoadingServer). It signals nothing.
 	loading func(cfg *config.Config, family string) lifecycle.Loading
+	// machine finds the running instance of a ScopeMachine family through the
+	// family's own readiness command, on whatever port it listens
+	// (lifecycle.MachineEntry): the registry-port probe cannot see one
+	// started by hand elsewhere (#457).
+	machine func(cfg *config.Config, snap localmodels.Snapshot, family string) (localmodels.Entry, bool)
 }
 
 // stopBatch is what the stop loop needs of a lifecycle.StopBatch.
@@ -82,6 +87,7 @@ func defaultStopDeps() stopDeps {
 		},
 		settle:  lifecycle.SettleRoutes,
 		loading: lifecycle.LoadingServer,
+		machine: lifecycle.MachineEntry,
 	}
 }
 
@@ -210,7 +216,13 @@ func stopState(cfg *config.Config, d stopDeps) StopState {
 	for fam := range snap.Providers {
 		if lifecycle.CanStop(fam) {
 			fs := FamilyState{Probed: true, Untrusted: !lifecycle.ProbeTrusted(snap, fam), Down: snap.Down[fam]}
-			if fs.Down {
+			if c, ok := machineCandidate(cfg, snap, fam, st.Candidates, d); ok {
+				// The family's one instance is up on a port the registry does
+				// not name: it is a candidate, and its registry port refusing
+				// (or not answering) says nothing about it.
+				st.Candidates = append(st.Candidates, c)
+				fs.Untrusted, fs.Down = false, false
+			} else if fs.Down {
 				// Nothing listens, which is not yet "nothing is there".
 				fs.Loading = d.loading(cfg, fam)
 			}
@@ -232,6 +244,26 @@ func stopState(cfg *config.Config, d stopDeps) StopState {
 		st.Families[fam] = fs
 	}
 	return st
+}
+
+// machineCandidate is the running instance of a ScopeMachine family that the
+// snapshot did not list (#457), as a stop candidate: ok only for a machine
+// family none of whose models is already a candidate. Its sessions are the
+// whole family's, as for any Exclusive provider.
+func machineCandidate(cfg *config.Config, snap localmodels.Snapshot, family string, have []Candidate, d stopDeps) (Candidate, bool) {
+	if !lifecycle.MachineScoped(family) {
+		return Candidate{}, false
+	}
+	for _, c := range have {
+		if localmodels.Family(c.Entry.ProviderID) == family {
+			return Candidate{}, false
+		}
+	}
+	en, ok := d.machine(cfg, snap, family)
+	if !ok {
+		return Candidate{}, false
+	}
+	return Candidate{Entry: en, Sessions: d.counts([]string{en.ModelID})[en.ModelID]}, true
 }
 
 // modelFamily is the provider family a session's model id belongs to: the
