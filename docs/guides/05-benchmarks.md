@@ -165,6 +165,8 @@ Results are written to `/tmp/<script>-<timestamp>.md`; archive into `benchmarks/
 cp /tmp/<script>-<timestamp>.md benchmarks/results/
 ```
 
+`benchmarks/mtplx-profile-matrix` is not a throughput script and is not superseded: it compares mtplx `--profile`s for refusals under a Claude Code slot's prompts (`benchmarks/mtplx-profile-matrix.md`).
+
 Reference docs: `benchmarks/qwen3.8-benchmark.md`, `benchmarks/ornith-1.5-benchmark.md`. For new work use `llmbench` — the legacy scripts do not feed `show-results`/spend tooling.
 
 ## Verification
