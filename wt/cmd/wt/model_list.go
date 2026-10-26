@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -83,6 +84,9 @@ type modelListRow struct {
 	Path      *string `json:"path"`
 	Target    string  `json:"target,omitempty"`
 	Draft     string  `json:"draft,omitempty"`
+	// ServeArgs is the registry's serve_args for the row (mtplx): extra argv
+	// wt appends to the spawn. Left out when the row has none.
+	ServeArgs []string `json:"serve_args,omitempty"`
 	// Malformed names each fetch or draft value the loader read as absent
 	// (config.Model.Malformed). Always an array, empty when there is none.
 	Malformed []string `json:"malformed"`
@@ -101,6 +105,7 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 				ID: r.ID, Family: r.Family, ProviderID: r.ProviderID, ModelName: r.ModelName, Location: r.Location,
 				Tags: append([]string{}, r.Tags...), Registered: r.Registered, Status: string(r.Status), Running: r.Running,
 				Target: r.Target, Draft: r.Draft, Malformed: append([]string{}, r.Malformed...),
+				ServeArgs: slices.Clone(r.ServeArgs),
 			}
 			if r.Size > 0 {
 				jr.SizeBytes = &r.Size
@@ -130,6 +135,13 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 	}
 	cols, cells, dropped := fitModelList(rows, width)
 	fmt.Fprintln(out, renderPlainTable(cols, cells, width))
+	// serve_args has no column: a registered mtplx model that carries any
+	// is named under the table, one line each.
+	for _, r := range rows {
+		if len(r.ServeArgs) > 0 {
+			fmt.Fprintf(out, "%s: serve_args %s\n", visibleID(r.ID), strings.Join(r.ServeArgs, " "))
+		}
+	}
 	if dropped != "" {
 		fmt.Fprintf(errOut, "(%s not shown at this width; `wt model list --json` has every column)\n", dropped)
 	}

@@ -13,6 +13,8 @@ package provider
 import (
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // Tenancy is how a provider's server holds models, which decides what a start
@@ -112,6 +114,11 @@ type FamilySpec struct {
 	// Process says how wt spawns, stops and recognises the family's server;
 	// nil when wt does not run it.
 	Process *ProcessSpec
+	// ServeArgs: a registry model of the family may carry `serve_args`, extra
+	// argv appended to the spawn (ProcessSpec.SpawnArgs). Only mtplx does:
+	// it has serve flags worth choosing per model (#432), while a family
+	// that serves one fixed model has none wt knows of.
+	ServeArgs bool
 }
 
 // Scope is the extent over which a family's servers exclude each other.
@@ -161,6 +168,45 @@ type ProcessSpec struct {
 	// is recognised; ModelFlag is the argv flag whose value is the model name.
 	Subcommand, DaemonModule, PortFlag, ModelFlag string
 	Ready                                         Ready
+}
+
+// ExpandArgs is an argv template with {model} and {port} replaced in every
+// element. The template itself is not changed.
+func ExpandArgs(tmpl []string, model string, port int) []string {
+	r := strings.NewReplacer("{model}", model, "{port}", strconv.Itoa(port))
+	out := make([]string, len(tmpl))
+	for i, a := range tmpl {
+		out[i] = r.Replace(a)
+	}
+	return out
+}
+
+// SpawnArgs is the argv of the family's server after the binary: Spawn with
+// {model} and {port} replaced, then extra (a model's serve_args) after wt's
+// own arguments. It is the one place that argv is built, so a spawn and
+// anything that prints or compares it cannot differ.
+func (p ProcessSpec) SpawnArgs(model string, port int, extra []string) []string {
+	return append(ExpandArgs(p.Spawn, model, port), extra...)
+}
+
+// OwnedFlags are the flags wt sets itself on a spawn, and so refuses in a
+// model's serve_args: every `--flag` of Spawn (their values are not flags),
+// and the port and model flags the spec names. wt's route, probes and stop
+// path assume the port, host and model name it passed, and reads the model's
+// name back from the model flag of a server still loading.
+func (p ProcessSpec) OwnedFlags() []string {
+	var out []string
+	add := func(f string) {
+		if strings.HasPrefix(f, "--") && !slices.Contains(out, f) {
+			out = append(out, f)
+		}
+	}
+	for _, a := range p.Spawn {
+		add(a)
+	}
+	add(p.PortFlag)
+	add(p.ModelFlag)
+	return out
 }
 
 func (p *ProcessSpec) clone() *ProcessSpec {
@@ -380,4 +426,11 @@ func ServedFamilies() []string {
 		}
 	}
 	return out
+}
+
+// AcceptsServeArgs reports whether a registry model of the family may carry
+// serve_args (FamilySpec.ServeArgs).
+func AcceptsServeArgs(family string) bool {
+	f, ok := families[family]
+	return ok && f.ServeArgs
 }

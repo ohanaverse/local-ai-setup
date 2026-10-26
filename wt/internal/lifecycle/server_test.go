@@ -661,3 +661,89 @@ func TestStartFailsFastWhenTheKeyCannotBeRead(t *testing.T) {
 		t.Errorf("stages reported = %v, want none", stages)
 	}
 }
+
+// serveArgsTarget is a start of the registered mtplx model Org/Model.
+func serveArgsTarget() Target {
+	return Target{ProviderID: "mtplx", ModelID: "mtplx/Org--Model", ModelName: "Org/Model"}
+}
+
+func argvOf(t *testing.T, argvFile string) string {
+	t.Helper()
+	raw, _ := os.ReadFile(argvFile)
+	lines := strings.SplitN(string(raw), "\n", 2)
+	if len(lines) != 2 {
+		t.Fatalf("nothing was spawned: argv file %q", raw)
+	}
+	return lines[1]
+}
+
+// TestMtplxStartAppendsTheRowsServeArgs pins #432: a registered model's
+// serve_args follow wt's own arguments, in order, whichever way the row is
+// found (by the target's id, or by provider and model name when the target
+// carries no id), and a model with no row, or none in it, spawns exactly the
+// argv the pinned test names. wt's arguments stay first so --model, --port and
+// --model-id are read as they always were.
+func TestMtplxStartAppendsTheRowsServeArgs(t *testing.T) {
+	for name, tc := range map[string]struct {
+		target Target
+		models []config.Model
+		suffix string
+	}{
+		"by id":         {serveArgsTarget(), []config.Model{{ID: "mtplx/Org--Model", ProviderID: "mtplx", ModelName: "Org/Model", ServeArgs: config.ServeArgs{Args: []string{"--profile", "turbo"}}}}, " --profile turbo"},
+		"by name":       {Target{ProviderID: "mtplx", ModelName: "Org/Model"}, []config.Model{{ID: "mtplx/Org--Model", ProviderID: "mtplx", ModelName: "Org/Model", ServeArgs: config.ServeArgs{Args: []string{"--verbose"}}}}, " --verbose"},
+		"order kept":    {serveArgsTarget(), []config.Model{{ID: "mtplx/Org--Model", ProviderID: "mtplx", ModelName: "Org/Model", ServeArgs: config.ServeArgs{Args: []string{"--b", "2", "--a"}}}}, " --b 2 --a"},
+		"row has none":  {serveArgsTarget(), []config.Model{{ID: "mtplx/Org--Model", ProviderID: "mtplx", ModelName: "Org/Model"}}, ""},
+		"no row at all": {serveArgsTarget(), nil, ""},
+		"another model": {serveArgsTarget(), []config.Model{{ID: "mtplx/Other", ProviderID: "mtplx", ModelName: "Other", ServeArgs: config.ServeArgs{Args: []string{"--profile", "turbo"}}}}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, cfg, port, argvFile := mtplxEnv(t, "serve", 0)
+			cfg.Models = tc.models
+			if err := (processServer{"mtplx"}).start(context.Background(), e, cfg, tc.target, func(Stage) {}); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			want := fmt.Sprintf("serve --model Org/Model --port %d --host 127.0.0.1 --model-id Org/Model", port) + tc.suffix
+			if got := argvOf(t, argvFile); got != want {
+				t.Errorf("argv = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestMtplxStartRefusesUnusableServeArgsBeforeSpawning verifies a row whose
+// serve_args cannot be used stops the start with *ServeArgsError naming the
+// problem, before the port is checked and before anything is spawned: a flag
+// wt sets itself (alone or as --flag=value), an empty argument, a value that
+// was not an array of strings (read as absent by the loader, and still
+// refused here, so a hand edit is not silently ignored), and a provider that
+// takes none.
+func TestMtplxStartRefusesUnusableServeArgsBeforeSpawning(t *testing.T) {
+	row := func(provider string, sa config.ServeArgs) []config.Model {
+		return []config.Model{{ID: "mtplx/Org--Model", ProviderID: provider, ModelName: "Org/Model", ServeArgs: sa}}
+	}
+	for name, tc := range map[string]struct {
+		models []config.Model
+		want   string
+	}{
+		"port":                {row("mtplx", config.ServeArgs{Args: []string{"--port", "9"}}), "names --port, which wt sets itself"},
+		"model id with =":     {row("mtplx", config.ServeArgs{Args: []string{"--model-id=x"}}), "names --model-id"},
+		"host":                {row("mtplx", config.ServeArgs{Args: []string{"--host", "0.0.0.0"}}), "names --host"},
+		"model":               {row("mtplx", config.ServeArgs{Args: []string{"--model", "x"}}), "names --model"},
+		"empty":               {row("mtplx", config.ServeArgs{Args: []string{""}}), "empty argument"},
+		"not an array":        {row("mtplx", config.ServeArgs{Malformed: true}), "not an array of strings"},
+		"provider takes none": {row("rec", config.ServeArgs{Args: []string{"--x"}}), "not used by provider rec"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, cfg, _, argvFile := mtplxEnv(t, "serve", 0)
+			cfg.Models = tc.models
+			err := (processServer{"mtplx"}).start(context.Background(), e, cfg, serveArgsTarget(), func(Stage) {})
+			var sae *ServeArgsError
+			if !errors.As(err, &sae) || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "mtplx/Org--Model") {
+				t.Fatalf("err = %v, want *ServeArgsError naming the model and %q", err, tc.want)
+			}
+			if _, statErr := os.Stat(argvFile); statErr == nil {
+				t.Error("a refused start spawned a process")
+			}
+		})
+	}
+}

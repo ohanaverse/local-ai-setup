@@ -44,7 +44,7 @@ var (
 		"auth": {"type", "secret_ref", "base_url"},
 	}
 	modelSchemas = map[string][]string{
-		"": {"id", "family", "provider_id", "model_name", "location", "source", "tags", "cost",
+		"": {"id", "family", "provider_id", "model_name", "location", "source", "tags", "serve_args", "cost",
 			"model_info", "fetch", "quantization", "pricing_updated_at", "draft"},
 		"cost": {"input_price_per_million", "cache_price_per_million", "output_price_per_million",
 			"subscription_price", "subscription_period", "time_prices"},

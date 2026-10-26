@@ -210,6 +210,19 @@ func (e *BinaryMissingError) Error() string {
 	return fmt.Sprintf("%s binary not found on PATH", e.Binary)
 }
 
+// ServeArgsError means the registry row of the model being started carries a
+// serve_args wt cannot use: not an array of strings, a flag wt sets itself, or
+// a provider that takes none (config.ServeArgsProblems). A start stops before
+// it spawns, so a bad hand edit is named and not silently ignored.
+type ServeArgsError struct {
+	ModelID  string
+	Problems []string
+}
+
+func (e *ServeArgsError) Error() string {
+	return fmt.Sprintf("model %s: %s; fix serve_args in the registry (`wt model edit %s --clear-serve-args` removes it)", e.ModelID, strings.Join(e.Problems, ", "), e.ModelID)
+}
+
 // PortBusyError means the provider's port still answers when a fresh server
 // needs it, and no known model explains it — wt never kills unknown processes.
 type PortBusyError struct{ Port int }

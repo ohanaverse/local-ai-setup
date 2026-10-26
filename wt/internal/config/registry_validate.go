@@ -93,8 +93,9 @@ func validateProviderRow(row *tomlw.Table) error {
 }
 
 // validateModelRow requires a non-empty id, family, provider_id and
-// model_name, a cost that passes validateCost and a well-formed fetch and
-// draft, then runs wt's typed decode.
+// model_name, a cost that passes validateCost, a well-formed fetch and
+// draft, and a serve_args that is an array of strings the provider accepts
+// (ServeArgsProblems), then runs wt's typed decode.
 func validateModelRow(row *tomlw.Table) error {
 	if err := requireStrings(row, "id", "family", "provider_id", "model_name"); err != nil {
 		return err
@@ -118,9 +119,40 @@ func validateModelRow(row *tomlw.Table) error {
 			}
 		}
 	}
+	if v, ok := row.Get("serve_args"); ok {
+		args, isStrings := stringList(v)
+		if !isStrings {
+			return errors.New("serve_args must be an array of strings")
+		}
+		providerID, _ := row.Get("provider_id")
+		id, _ := providerID.(string)
+		if problems := ServeArgsProblems(id, args); len(problems) > 0 {
+			return errors.New(problems[0])
+		}
+	}
 	return typedDecode("models", row, &struct {
 		Models []Model `toml:"models"`
 	}{})
+}
+
+// stringList reads an array of strings as the registry document holds it
+// (decoded: []any; set by wt: []string).
+func stringList(v any) ([]string, bool) {
+	switch a := v.(type) {
+	case []string:
+		return a, true
+	case []any:
+		out := make([]string, 0, len(a))
+		for _, e := range a {
+			s, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // validateArtifact checks a fetch or draft value against the shape wt reads

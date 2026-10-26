@@ -105,7 +105,7 @@ var families = map[string]FamilySpec{
 	},
 	"mtplx": {
 		Name: "mtplx", DefaultOrigin: mtplxOrigin, DefaultModelDir: mtplxModelDir,
-		WtPort: MtplxPort, Served: true, Tenancy: Exclusive, Scope: ScopePort,
+		WtPort: MtplxPort, Served: true, Tenancy: Exclusive, Scope: ScopePort, ServeArgs: true,
 		Process: &ProcessSpec{
 			Binary:         "mtplx",
 			Spawn:          []string{"serve", "--model", "{model}", "--port", "{port}", "--host", "127.0.0.1", "--model-id", "{model}"},

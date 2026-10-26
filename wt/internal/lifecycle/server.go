@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
@@ -57,15 +57,31 @@ func serverEndpoint(cfg *config.Config, family string) (origin, modelsURL string
 	return origin, modelsURL, port
 }
 
-// expandArgs is a spec's argv template with {model} and {port} replaced in
-// every element. The template itself is not changed.
+// expandArgs is provider.ExpandArgs, for the stop command's template.
 func expandArgs(tmpl []string, model string, port int) []string {
-	r := strings.NewReplacer("{model}", model, "{port}", strconv.Itoa(port))
-	out := make([]string, len(tmpl))
-	for i, a := range tmpl {
-		out[i] = r.Replace(a)
+	return provider.ExpandArgs(tmpl, model, port)
+}
+
+// serveArgsFor is the registry row's serve_args for the model t starts: the
+// row with t's id, else the one of the family that names the same model. nil
+// when there is no row (a discovered model) or it carries none. A row whose
+// serve_args cannot be used is a *ServeArgsError, whatever the family: a
+// provider that takes none is named too, not ignored.
+func serveArgsFor(cfg *config.Config, family string, t Target) ([]string, error) {
+	i := config.IndexModelByID(cfg.Models, t.ModelID)
+	if i < 0 {
+		i = slices.IndexFunc(cfg.Models, func(m config.Model) bool {
+			return provider.FamilyOr(m.ProviderID) == family && m.ModelName == t.ModelName
+		})
 	}
-	return out
+	if i < 0 {
+		return nil, nil
+	}
+	m := cfg.Models[i]
+	if problems := m.ServeArgsProblems(); len(problems) > 0 {
+		return nil, &ServeArgsError{ModelID: m.ID, Problems: problems}
+	}
+	return m.ServeArgs.Args, nil
 }
 
 // spec is the family's process spec; a family with none has no backend.
@@ -90,6 +106,10 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	if lerr != nil {
 		return &BinaryMissingError{Binary: spec.Binary}
 	}
+	serveArgs, serr := serveArgsFor(cfg, b.family, t)
+	if serr != nil {
+		return serr
+	}
 	origin, models, port, aerr := serverStartEndpoint(cfg, b.family)
 	if aerr != nil {
 		return aerr
@@ -112,9 +132,9 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	if !closed {
 		return &PortBusyError{Port: port}
 	}
-	sp, serr := e.spawn(proc, bin, expandArgs(spec.Spawn, t.ModelName, port))
-	if serr != nil {
-		return serr
+	sp, spawnErr := e.spawn(proc, bin, spec.SpawnArgs(t.ModelName, port, serveArgs))
+	if spawnErr != nil {
+		return spawnErr
 	}
 	// What a later `wt stop` identifies this process by while its port is
 	// still closed (server_loading.go).

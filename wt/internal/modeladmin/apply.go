@@ -78,6 +78,11 @@ func planAdd(req AddRequest) (addPlan, error) {
 	if err != nil {
 		return addPlan{}, err
 	}
+	if req.ServeArgs != nil {
+		if err := checkServeArgs(req.ProviderID, *req.ServeArgs); err != nil {
+			return addPlan{}, err
+		}
+	}
 	plan := addPlan{}
 	if pairing {
 		// The registry row names the pairing, and records each side where
@@ -397,6 +402,11 @@ func Edit(id string, f Fields) (changed bool, err error) {
 			return err
 		}
 		providerID = tableString(m, "provider_id")
+		if args, ok := set["serve_args"].([]string); ok {
+			if err := checkServeArgs(providerID, args); err != nil {
+				return err
+			}
+		}
 		if _, ok := set["source"]; ok {
 			// Judge the row as the patch leaves it: --location cloud
 			// --source manual on a local-tagged ollama row is one edit.

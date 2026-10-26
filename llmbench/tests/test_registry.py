@@ -242,3 +242,20 @@ id = "ollama"
     rec, oll = reg.provider("rec"), reg.provider("ollama")
     assert (rec.base_url, rec.secret_ref) == ("http://127.0.0.1:11500", "exec:echo k")
     assert (oll.base_url, oll.secret_ref) == ("", "")
+
+
+def test_a_model_row_with_serve_args_loads_and_the_key_is_ignored(home, tmp_path):
+    """wt's per-model mtplx `serve_args` (#432) is read by wt's start alone.
+
+    llmbench isolates and starts mtplx from its own spec and never applies a
+    model's serve_args, so the reader must not fail on the key (or keep it): a
+    benchmark run through llmbench measures mtplx without them.
+    """
+    text = MINIMAL + (
+        '\n[[models]]\nid = "mtplx/Org/T"\nfamily = "f"\nprovider_id = "mtplx"\n'
+        'model_name = "Org/T"\nserve_args = ["--profile", "turbo"]\n'
+    )
+    registry = load_registry(_write(tmp_path / "registry.toml", text))
+    tuned = next(m for m in registry.models if m.id == "mtplx/Org/T")
+    assert tuned.model_name == "Org/T"
+    assert not hasattr(tuned, "serve_args")

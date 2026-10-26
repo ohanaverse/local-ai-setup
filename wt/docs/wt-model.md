@@ -76,13 +76,17 @@ midnight). The listing itself shows no price.
 `--json` always has everything: `registry` (the file), `models` (each with
 `id`, `family`, `provider_id`, `model_name`, `location`, `tags`,
 `registered`, `status`, `running`, `size_bytes` and `path` — the last two
-`null` when wt does not know them — `target` and `draft` for a pairing, and
+`null` when wt does not know them — `target` and `draft` for a pairing,
+`serve_args` for an mtplx model that carries them (left out otherwise), and
 `malformed`, an array of the phrases above (`"fetch is not a table"`,
 `"draft.local_path is not a string"`, `"cost.time_prices[0]: windows[0]:
 start must be HH:MM, got 9:00"`) that is always there and empty for a
 row with nothing malformed), and `providers` (each probed provider's status:
 `ok`, `partial`, `unreachable`). Stdout is that one document; the stderr
 lines for malformed rows are printed in this mode too.
+
+The text listing names a model's `serve_args` under the table, one
+`<id>: serve_args <args>` line each, since the table has no column for them.
 
 It runs on a registry that has a gap in it (a model whose provider has no
 row, a mistyped location): that is what the list is for. Only a registry that
@@ -210,6 +214,34 @@ cloud model you added by hand before cloud-sync knew the mark, so the next sync
 does not offer to remove it. No flag at all is a usage error. It does not
 change `pricing_updated_at`. When nothing changes it says `no change` and
 syncs nothing.
+
+### `serve_args`: extra flags for an mtplx model
+
+`--serve-arg` sets the extra arguments `mtplx serve` gets for one model, after
+the ones wt passes itself; repeat it, **one argv element per flag**, so a flag
+and its value are two: `--serve-arg --profile --serve-arg turbo` (or
+`--serve-arg=--profile --serve-arg=turbo`). `--clear-serve-args` removes them.
+They are stored as `serve_args = ["--profile", "turbo"]` on the model's row,
+and `wt model add mtplx … --serve-arg …` writes them with the row.
+
+- **mtplx models only.** Any other provider refuses them, naming the provider.
+- **wt's own flags are refused**, alone or as `--flag=value`: `--model`,
+  `--port`, `--host` and `--model-id`. wt's route, probes and stop path assume
+  the port, host and model name it passed, and it reads the model's name back
+  from `--model-id` of a server still loading. An empty argument is refused
+  too.
+- **They apply from the next start.** wt cannot see the flags a running server
+  was started with, so a changed `serve_args` does not make it a different
+  server; the edit says so. `wt stop` then `wt start` picks them up.
+- **A row whose `serve_args` is unusable** (hand-edited: not an array of
+  strings, or one of wt's flags) loads, `wt model list` names the problem like
+  any other malformed value, and `wt start` of that model stops before
+  spawning, naming the row, rather than ignoring it.
+- **`--model-id` and turbo.** wt always passes `--model-id <name>`, which makes
+  mtplx skip its per-model promotion to the turbo profile, so a model that
+  mtplx would run in turbo runs in `sustained` under wt. Ask for it with
+  `--serve-arg --profile --serve-arg turbo`. llmbench starts mtplx from its own
+  spec and does not apply `serve_args`.
 
 Two things follow from an edit of a price or of a subscription field, and
 only from one. Clearing a model's last price removes its `[models.cost]`
