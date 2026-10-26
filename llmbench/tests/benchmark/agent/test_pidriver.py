@@ -126,6 +126,50 @@ def test_direct_route_can_override_the_launch_id(tmp_path):
     assert target.model_arg == "omlx/Qwen3.8-27B-4bit"
 
 
+def _rec_row() -> RowConfig:
+    return RowConfig(
+        label="r1", model_id="rec/flint", thinking="off", route="direct", provider_id="rec"
+    )
+
+
+def _rec_registry(secret_ref: str) -> None:
+    import os
+
+    Path(os.environ["WT_REGISTRY"]).write_text(
+        f'[[providers]]\nid = "rec"\nlocation = "local"\nauth = {{ secret_ref = "{secret_ref}" }}\n'
+    )
+
+
+def test_direct_route_of_a_keyed_provider_uses_its_key(tmp_path):
+    """rec refuses every route without its bearer key: pi's apiKey for a
+    direct rec row is the registry row's key, not the keyless placeholder."""
+    _rec_registry("rec-test-key")
+    routes_direct = {
+        "rec": DirectRouteConfig(base_url="http://127.0.0.1:11500/v1", api="openai-completions")
+    }
+    target = resolve_pi_target(
+        _rec_row(), "flint", routes_direct, live_models_path=tmp_path / "missing.json"
+    )
+    found = target.api_key == "rec-test-key"
+    assert found
+
+
+def test_direct_route_unreadable_key_is_a_row_error(tmp_path):
+    script = tmp_path / "keycmd"
+    script.write_text("#!/bin/sh\necho SECRETVALUE\nexit 1\n")
+    script.chmod(0o755)
+    _rec_registry(f"exec:{script}")
+    routes_direct = {
+        "rec": DirectRouteConfig(base_url="http://127.0.0.1:11500/v1", api="openai-completions")
+    }
+    with pytest.raises(BenchmarkError) as ei:
+        resolve_pi_target(
+            _rec_row(), "flint", routes_direct, live_models_path=tmp_path / "missing.json"
+        )
+    msg = str(ei.value)
+    assert ("cannot read the provider key" in msg, "SECRETVALUE" in msg) == (True, False)
+
+
 def test_direct_route_missing_config_block_raises(tmp_path):
     """A direct row with no matching [routes.direct.<provider>] block fails
     at resolution with the provider name, not a KeyError deep in dict access."""

@@ -8,20 +8,56 @@ description: Steps to add a new local-model backend to the benchmark scripts and
 Isolation logic lives in **one place**: `llmbench/src/llmbench/providers/lifecycle/`
 (issue #79 ported this from the old bash `bin/llm-isolate-provider`/
 `bin/llm-restore-providers` scripts, both deleted). `orchestrate.py` drives
-isolate/stop/stop-all/restore over a `BACKENDS` registry; each provider is
-one `Backend` subclass in `backends/<id>.py`. The bash benchmark scripts
+isolate/stop/stop-all/restore over a `BACKENDS` registry. ollama, omlx
+(both variants) and mlx_lm_server are hand-written `Backend` subclasses in
+`backends/<id>.py` (daemon, pool and target+draft protocols); every
+process-style provider (mtplx, rec) is an instance of the one spec-driven
+`ProcessServerBackend` in `backends/process_server.py`, built from its
+entry in `docs/contracts/process-providers.toml`. The bash benchmark scripts
 call the `llmbench provider` CLI over this
 (`uv run --directory llmbench llmbench provider isolate <id> <model>`, with
 `LLM_ISOLATE_*_MODEL` env overrides still honored as a fallback), and the
 benchmarks call `orchestrate.py` directly, in-process, via
 `llmbench/src/llmbench/benchmark/isolation.py`. Paths below are relative
 to `llmbench/` unless they start with another directory; a bare `backends/...` is under
-`src/llmbench/providers/lifecycle/`. Adding a backend:
+`src/llmbench/providers/lifecycle/`.
+
+### A process-style provider (a server binary llmbench spawns and stops)
+
+No backend module. A provider that is one backgrounded process with a
+spawn argv, a stop argv, a pidfile, a log and a readiness check is:
+
+1. **A wt provider table row** with a `Process` spec, its family facts
+   (`WtPort`, `Scope`, default origin, readiness) and a `Seed` in
+   `wt/internal/provider/table.go` — the `adding-a-provider` skill in
+   `wt/.claude/skills/`.
+2. **An entry in `docs/contracts/process-providers.toml`** with the same
+   values, in the same commit:
+   `TestProcessProvidersContractMatchesTheProviderTable`
+   (`wt/internal/config/process_providers_contract_test.go`) fails until
+   the file and the Go table agree in both directions.
+   `llmbench/src/llmbench/providers/process_spec.py` reads it and
+   `backends/__init__.py` registers a `ProcessServerBackend` for every
+   entry that has no instance yet (mtplx's lives in `backends/mtplx.py`
+   only because it passes `cleanup_on_failure=True`). A registry row with
+   `auth.secret_ref` gives every probe and the warmup a bearer key;
+   readiness is `models-list` (`/v1/models` lists the model) or
+   `command-json` (a status command's JSON, like `rec status`).
+3. Then steps 3–9 below as they apply: `DEFAULT_PROVIDER_IDS`, the
+   `_FAKE_BINARIES` guard in `tests/conftest.py` plus
+   `test_hermeticity.py` (the suite must never run the real binary), the
+   drift trip-wires, the benchmark scripts, LiteLLM, a smoke test. The
+   benchmark runners pass a positional model only for mtplx
+   (`benchmark/runner.py`); any other process provider resolves to its
+   single registry model.
+
+### A hand-written backend (a daemon, a pool, a pairing)
+
 
 1. **Add the backend module.** Create
    `src/llmbench/providers/lifecycle/backends/<id>.py` subclassing
    `Backend` (see `backends/base.py` for the interface, and
-   `backends/mtplx.py` or `backends/ollama.py` for a worked example) —
+   `backends/ollama.py` or `backends/mlx_lm_server.py` for a worked example) —
    implement start/stop/warmup and set `id`, `occupancy_key`, `env_var`,
    `default_model`, `health_url`, and `restore_action` ("restart", "stop",
    or "skip"; see `backends/base.py`'s docstring for what each means).
@@ -37,7 +73,7 @@ to `llmbench/` unless they start with another directory; a bare `backends/...` i
    its own two env vars defined in its own backend module instead — see
    `backends/mlx_lm_server.py`'s `TARGET_ENV_VAR`/`DRAFT_ENV_VAR`.
 4. **Add a test file.** Model it on
-   `tests/providers/lifecycle/backends/test_mtplx.py`. Follow this
+   `tests/providers/lifecycle/backends/test_mlx_lm_server.py`. Follow this
    package's established `unittest.mock.patch` convention: patch the
    module-attribute *as imported into your backend module's own
    namespace* (e.g. `patch("llmbench.providers.lifecycle.backends.<id>.subprocess.run")`,

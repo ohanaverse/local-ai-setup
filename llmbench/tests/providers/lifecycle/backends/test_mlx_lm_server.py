@@ -303,8 +303,8 @@ def test_wait_ready_polls_for_bare_target_watching_spawned_proc():
     mid-load crash (OOM, bad draft pairing) is detected via proc.poll()
     almost immediately, rather than being discovered only after warm()
     exhausts its full WARMUP_TIMEOUT against a dead port — the same
-    protection MtplxBackend.wait_ready() has for its structurally
-    identical single-process, pidfile-tracked case."""
+    protection ProcessServerBackend.wait_ready() (mtplx) has for its
+    structurally identical single-process, pidfile-tracked case."""
     plan = _plan()
 
     fake_proc = object()

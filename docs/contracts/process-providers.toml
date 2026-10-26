@@ -1,0 +1,61 @@
+# Process-provider facts: a mirror of the `Process` specs and family facts in
+# wt/internal/provider/table.go. It is pinned to that table by
+# TestProcessProvidersContractMatchesTheProviderTable
+# (wt/internal/config/process_providers_contract_test.go) and read by llmbench,
+# so it must change in the same commit as the Go table.
+#
+# Argv templates (spawn, stop) follow the binary and use {model} and {port}.
+# Empty string means "absent". restore_action is what `llmbench provider
+# restore` does to the family.
+
+[[process]]
+family = "mtplx"
+provider = "mtplx"
+binary = "mtplx"
+spawn = ["serve", "--model", "{model}", "--port", "{port}", "--host", "127.0.0.1", "--model-id", "{model}"]
+stop = ["stop", "--port", "{port}", "--grace-seconds", "10"]
+pidfile = "/tmp/local-ai-setup-mtplx.pid"
+log = "/tmp/local-ai-setup-mtplx.log"
+pidfile_env = "WT_MTPLX_PIDFILE"
+subcommand = "serve"
+daemon_module = "mtplx.server.openai"
+port_flag = "--port"
+model_flag = "--model-id"
+scope = "port"
+default_origin = "http://localhost:8003"
+wt_port = 8003
+restore_action = "stop"
+
+[process.ready]
+kind = "models-list"
+command = []
+path = ""
+equals = ""
+model_path = ""
+endpoint_path = ""
+
+[[process]]
+family = "rec"
+provider = "rec"
+binary = "rec"
+spawn = ["serve", "--port", "{port}"]
+stop = ["stop"]
+pidfile = "/tmp/local-ai-setup-rec.pid"
+log = "/tmp/local-ai-setup-rec.log"
+pidfile_env = "WT_REC_PIDFILE"
+subcommand = "serve"
+daemon_module = ""
+port_flag = "--port"
+model_flag = ""
+scope = "machine"
+default_origin = "http://127.0.0.1:11500"
+wt_port = 11500
+restore_action = "stop"
+
+[process.ready]
+kind = "command-json"
+command = ["status"]
+path = "ready"
+equals = "true"
+model_path = "model"
+endpoint_path = "endpoint"

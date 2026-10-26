@@ -241,5 +241,14 @@ the plist is installed, `launchctl unload` it by hand:
   `auth.secret_ref = "exec:rec auth token"` (its `Seed` in
   `wt/internal/provider/table.go`), and one model, `rec/flint`
   (`model_name = "flint"`). Guide: [02-providers-and-models.md](../guides/02-providers-and-models.md) Step 4.
-- llmbench has no rec backend yet, so `llmbench provider isolate` cannot
-  isolate it.
+- llmbench isolates it too: `llmbench provider isolate rec`, `provider stop
+  rec` and `provider restore` (which always stops it) run the same
+  `rec serve --port <port>` / `rec stop` argv with the same pidfile
+  (`/tmp/local-ai-setup-rec.pid`) and log (`/tmp/local-ai-setup-rec.log`),
+  read from `docs/contracts/process-providers.toml` — the mirror of wt's
+  process specs, pinned to `wt/internal/provider/table.go` by
+  `TestProcessProvidersContractMatchesTheProviderTable`
+  (`wt/internal/config/process_providers_contract_test.go`). llmbench uses
+  the file's fixed paths and does not read `WT_REC_PIDFILE`. One generic
+  backend, `llmbench/src/llmbench/providers/lifecycle/backends/process_server.py`,
+  serves rec and mtplx; there is no rec-specific module.

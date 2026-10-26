@@ -176,6 +176,13 @@ def _parse_pass_at_1(stdout: str) -> float | None:
         return None
 
 
+def _mask_key(text: str, api_key: str) -> str:
+    """`text` with a real provider key masked: EvalPlus's OpenAI client may
+    echo it into an auth-error message. The key-less placeholder ("ollama")
+    is not a secret and is left alone."""
+    return text.replace(api_key, "***") if api_key and api_key != "ollama" else text
+
+
 def run_coding_category(
     *,
     base_url: str,
@@ -220,15 +227,19 @@ def run_coding_category(
             return CodingResult(
                 dataset=dataset,
                 pass_at_1=None,
-                raw_output=result.stdout + result.stderr,
-                error=f"evalplus exited {result.returncode}: {result.stderr[-300:]}",
+                raw_output=_mask_key(result.stdout + result.stderr, api_key),
+                error=_mask_key(
+                    f"evalplus exited {result.returncode}: {result.stderr[-300:]}", api_key
+                ),
             )
         pass_at_1 = _parse_pass_at_1(result.stdout)
         if pass_at_1 is None:
             return CodingResult(
                 dataset=dataset,
                 pass_at_1=None,
-                raw_output=result.stdout,
+                raw_output=_mask_key(result.stdout, api_key),
                 error="could not parse pass@1 from evalplus output",
             )
-        return CodingResult(dataset=dataset, pass_at_1=pass_at_1, raw_output=result.stdout)
+        return CodingResult(
+            dataset=dataset, pass_at_1=pass_at_1, raw_output=_mask_key(result.stdout, api_key)
+        )

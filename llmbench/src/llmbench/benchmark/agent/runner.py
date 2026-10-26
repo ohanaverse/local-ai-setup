@@ -483,8 +483,8 @@ def run_suite(
                         row.draft_local_path,
                         row.draft_repo,
                     )
-                elif row.provider_id == "mtplx":
-                    # MTPLX is single-model-per-process; pass the repo id so
+                elif row.provider_id in isolation.POSITIONAL_MODEL_PROVIDERS:
+                    # mtplx/rec are single-model-per-process; pass the repo id so
                     # isolation starts the requested model.
                     # Pre-resolved onto the row at suite-load time (like the
                     # mlx_lm_server pairing fields above) rather than a live

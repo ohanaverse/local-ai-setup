@@ -4,8 +4,7 @@
 `bin/lib/mlx-lm-resolve.sh`'s `resolve_mlx_lm_bin` function — that shell
 script is NOT deleted by this port (`bin/mlx-quantize` still sources it
 directly), so this Python copy must be kept in lockstep by comment with
-the bash original (same convention as `MTPLX_PORT` being duplicated in
-`wt/internal/localmodels/inventory.go`).
+the bash original.
 """
 
 from __future__ import annotations

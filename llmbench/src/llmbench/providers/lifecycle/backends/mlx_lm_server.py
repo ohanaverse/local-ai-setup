@@ -135,8 +135,9 @@ class MlxLmServerBackend(PidfileTrackedBackend):
         # (bad draft pairing, OOM during weight load) went undetected until
         # warm()'s health-url poll exhausted its full WARMUP_TIMEOUT against
         # a dead port, instead of failing fast with the real exit code and
-        # log tail — the same gap MtplxBackend.wait_ready() closes for its
-        # structurally identical single-process, pidfile-tracked case.
+        # log tail — the same gap ProcessServerBackend.wait_ready() (mtplx)
+        # closes for its structurally identical single-process,
+        # pidfile-tracked case.
         probe.wait_for_model(
             self.health_url, plan.extra["target"], proc=self._proc, timeout=probe.MODEL_LOAD_TIMEOUT
         )

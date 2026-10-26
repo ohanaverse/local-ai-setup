@@ -55,8 +55,9 @@ _real_subprocess_run = subprocess.run
 # provider on this machine or bounces a real LaunchAgent. `launchctl`
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
-# an agent may be using mid-request; `wt warm` would load one.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "ollama", "wt"})
+# an agent may be using mid-request (`rec stop` / `rec serve` likewise:
+# rec is installed on the developer's machine); `wt warm` would load one.
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "ollama", "wt"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 

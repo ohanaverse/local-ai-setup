@@ -171,6 +171,42 @@ def test_resolve_row_endpoint_direct_route_uses_direct_model_override():
     assert api_key == "ollama"
 
 
+def _keyed_rec_registry(secret_ref: str = "rec-test-key") -> None:
+    import os
+    from pathlib import Path
+
+    Path(os.environ["WT_REGISTRY"]).write_text(
+        f'[[providers]]\nid = "rec"\nlocation = "local"\nauth = {{ secret_ref = "{secret_ref}" }}\n'
+    )
+
+
+def test_resolve_row_endpoint_direct_route_of_a_keyed_provider_returns_its_key():
+    # rec refuses every route without its bearer key; the direct route must
+    # send the registry row's key, not the keyless placeholder.
+    _keyed_rec_registry()
+    row = RowConfig(label="r", model_id="rec/flint", route="direct", provider_id="rec")
+    _, model, api_key = resolve_row_endpoint(
+        row, "flint", {"rec": DirectRouteConfig(base_url="http://127.0.0.1:11500/v1")}
+    )
+    assert model == "flint"
+    found = api_key == "rec-test-key"
+    assert found
+
+
+def test_resolve_row_endpoint_direct_route_unreadable_key_is_a_row_error(tmp_path):
+    script = tmp_path / "keycmd"
+    script.write_text("#!/bin/sh\necho SECRETVALUE\nexit 1\n")
+    script.chmod(0o755)
+    _keyed_rec_registry(f"exec:{script}")
+    row = RowConfig(label="r", model_id="rec/flint", route="direct", provider_id="rec")
+    with pytest.raises(BenchmarkError) as ei:
+        resolve_row_endpoint(
+            row, "flint", {"rec": DirectRouteConfig(base_url="http://127.0.0.1:11500/v1")}
+        )
+    msg = str(ei.value)
+    assert ("cannot read the provider key" in msg, "SECRETVALUE" in msg) == (True, False)
+
+
 def test_resolve_row_endpoint_litellm_route_reads_live_models_json(tmp_path):
     # LiteLLM routing reads base URL and key from the live pi models.json and sends the
     # full registry id (the LiteLLM model_list is keyed on it).

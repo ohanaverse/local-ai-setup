@@ -9,8 +9,8 @@ from llmbench.providers.lifecycle.backends.mtplx import (
     MTPLX_DIRECT_URL,
     MTPLX_LOG,
     MTPLX_PIDFILE,
-    MtplxBackend,
 )
+from llmbench.providers.lifecycle.backends.process_server import ProcessServerBackend
 from llmbench.providers.lifecycle.envelope import LifecycleError
 
 
@@ -32,7 +32,7 @@ def _mtplx_model_entry(model_name: str):
 
 
 def test_mtplx_registered_in_backends_registry():
-    """The bottom-of-module `MTPLX = MtplxBackend()` singleton must be the
+    """The bottom-of-module `MTPLX = ProcessServerBackend(...)` singleton must be the
     same object registered under "mtplx" in BACKENDS — a copy-paste bug
     that registers a fresh instance would silently diverge from the one
     __init__.py's isolate()/stop() actually call."""
@@ -66,7 +66,7 @@ def test_pidfile_and_log_paths_unchanged():
 
 def test_check_available_returns_none_when_binary_resolves():
     with patch(
-        "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+        "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
         return_value="/usr/local/bin/mtplx",
     ):
         assert MTPLX.check_available() is None
@@ -77,7 +77,7 @@ def test_check_available_returns_reason_when_binary_missing():
     None, never raising" — require_binary's LifecycleError must be caught
     and its message returned."""
     with patch(
-        "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+        "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
         side_effect=LifecycleError("mtplx binary not found on PATH"),
     ):
         assert MTPLX.check_available() == "mtplx binary not found on PATH"
@@ -90,7 +90,7 @@ def test_resolve_uses_explicit_model_over_registry():
     """An explicit model argument must be used verbatim, without even
     touching the registry — the positional arg is the only way a
     benchmark sweep selects which model gets served."""
-    with patch("llmbench.providers.lifecycle.backends.mtplx.load_registry") as mock_load:
+    with patch("llmbench.providers.lifecycle.backends.process_server.load_registry") as mock_load:
         plan = MTPLX.resolve("Some/Explicit-Model", ())
     mock_load.assert_not_called()
     assert plan.model == "Some/Explicit-Model"
@@ -100,7 +100,7 @@ def test_resolve_uses_explicit_model_over_registry():
 def test_resolve_falls_back_to_single_registry_match():
     entry = _mtplx_model_entry("Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")
     with patch(
-        "llmbench.providers.lifecycle.backends.mtplx.load_registry",
+        "llmbench.providers.lifecycle.backends.process_server.load_registry",
         return_value=_registry([entry]),
     ):
         plan = MTPLX.resolve(None, ())
@@ -110,7 +110,7 @@ def test_resolve_falls_back_to_single_registry_match():
 def test_resolve_no_model_in_registry_raises():
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.load_registry",
+            "llmbench.providers.lifecycle.backends.process_server.load_registry",
             return_value=_registry([]),
         ),
         pytest.raises(LifecycleError, match="no mtplx model in the registry"),
@@ -130,7 +130,7 @@ def test_resolve_uses_positional_extra_args_over_registry():
     precedence."""
     entries = [_mtplx_model_entry(f"Org/m{n}") for n in (1, 2)]
     with patch(
-        "llmbench.providers.lifecycle.backends.mtplx.load_registry",
+        "llmbench.providers.lifecycle.backends.process_server.load_registry",
         return_value=_registry(entries),
     ):
         plan = MTPLX.resolve(None, ("Org/m2",))
@@ -147,7 +147,7 @@ def test_resolve_ambiguous_registry_raises_exact_message():
     entries = [_mtplx_model_entry(f"Org/m{n}") for n in (1, 2)]
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.load_registry",
+            "llmbench.providers.lifecycle.backends.process_server.load_registry",
             return_value=_registry(entries),
         ),
         pytest.raises(
@@ -164,7 +164,7 @@ def test_resolve_ambiguous_registry_raises_exact_message():
 def test_already_serving_delegates_to_probe_serving_model():
     plan = MTPLX.resolve("Org/Model", ())
     with patch(
-        "llmbench.providers.lifecycle.backends.mtplx.probe.serving_model",
+        "llmbench.providers.lifecycle.backends.process_server.probe.serving_model",
         return_value=True,
     ) as mock_serving:
         assert MTPLX.already_serving(plan) is True
@@ -207,13 +207,13 @@ def test_start_waits_for_port_closed_then_spawns_with_pinned_model_id():
     proc = MagicMock()
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.probe.wait_for_port_closed"
+            "llmbench.providers.lifecycle.backends.process_server.probe.wait_for_port_closed"
         ) as mock_wait_closed,
-        patch("llmbench.providers.lifecycle.backends.mtplx._PROC") as mock_proc,
+        patch.object(MTPLX, "_pidproc") as mock_proc,
     ):
         mock_proc.spawn.return_value = proc
         MTPLX.start(plan)
@@ -240,13 +240,13 @@ def test_start_raises_when_binary_missing():
     plan = MTPLX.resolve("Org/Model", ())
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             side_effect=LifecycleError("mtplx binary not found on PATH"),
         ),
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.probe.wait_for_port_closed"
+            "llmbench.providers.lifecycle.backends.process_server.probe.wait_for_port_closed"
         ) as mock_wait,
-        patch("llmbench.providers.lifecycle.backends.mtplx._PROC") as mock_proc,
+        patch.object(MTPLX, "_pidproc") as mock_proc,
         pytest.raises(LifecycleError, match="mtplx binary not found on PATH"),
     ):
         MTPLX.start(plan)
@@ -258,14 +258,14 @@ def test_start_propagates_port_still_answering():
     plan = MTPLX.resolve("Org/Model", ())
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.probe.wait_for_port_closed",
+            "llmbench.providers.lifecycle.backends.process_server.probe.wait_for_port_closed",
             side_effect=LifecycleError("port still answering"),
         ),
-        patch("llmbench.providers.lifecycle.backends.mtplx._PROC") as mock_proc,
+        patch.object(MTPLX, "_pidproc") as mock_proc,
         pytest.raises(LifecycleError, match="port still answering"),
     ):
         MTPLX.start(plan)
@@ -283,17 +283,17 @@ def test_wait_ready_forwards_the_start_time_popen_handle():
     proc = MagicMock()
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
-        patch("llmbench.providers.lifecycle.backends.mtplx.probe.wait_for_port_closed"),
-        patch("llmbench.providers.lifecycle.backends.mtplx._PROC") as mock_proc,
+        patch("llmbench.providers.lifecycle.backends.process_server.probe.wait_for_port_closed"),
+        patch.object(MTPLX, "_pidproc") as mock_proc,
     ):
         mock_proc.spawn.return_value = proc
         MTPLX.start(plan)
 
     with patch(
-        "llmbench.providers.lifecycle.backends.mtplx.probe.wait_for_model"
+        "llmbench.providers.lifecycle.backends.process_server.probe.wait_for_model"
     ) as mock_wait_model:
         MTPLX.wait_ready(plan)
     mock_wait_model.assert_called_once_with(
@@ -309,7 +309,7 @@ def test_warm_uses_120s_timeout_not_the_shared_warmup_timeout():
     preserved unchanged from today's _warmup default; this must not be
     "simplified" back to the shared constant as part of the move."""
     plan = MTPLX.resolve("Org/Model", ())
-    with patch("llmbench.providers.lifecycle.backends.mtplx.probe.warmup") as mock_warmup:
+    with patch("llmbench.providers.lifecycle.backends.process_server.probe.warmup") as mock_warmup:
         MTPLX.warm(plan)
     mock_warmup.assert_called_once_with(
         MTPLX.chat_url, "Org/Model", health_url=MTPLX.health_url, timeout=120.0
@@ -323,12 +323,12 @@ def test_warm_uses_120s_timeout_not_the_shared_warmup_timeout():
 def test_stop_and_wait_returns_none_when_stop_succeeds_and_port_closes():
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
-        patch("llmbench.providers.lifecycle.backends.mtplx.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.process_server.subprocess.run") as mock_run,
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.probe.port_closed_within",
+            "llmbench.providers.lifecycle.backends.process_server.probe.port_closed_within",
             return_value=True,
         ) as mock_closed,
     ):
@@ -344,13 +344,13 @@ def test_stop_and_wait_returns_none_when_stop_succeeds_and_port_closes():
     assert mock_closed.call_args.kwargs["timeout"] == probe.STOP_WAIT_TIMEOUT
 
 
-def test_stop_and_wait_returns_reason_when_binary_missing():
+def test_stop_and_wait_is_none_when_binary_missing():
     with patch(
-        "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+        "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
         side_effect=LifecycleError("mtplx binary not found on PATH"),
     ):
         result = MTPLX.stop_and_wait()
-    assert result == "mtplx binary not found on PATH"
+    assert result is None
 
 
 def test_stop_and_wait_returns_stderr_when_stop_command_fails_and_port_stays_open():
@@ -359,12 +359,12 @@ def test_stop_and_wait_returns_stderr_when_stop_command_fails_and_port_stays_ope
     informative than the generic "still listening" message."""
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
-        patch("llmbench.providers.lifecycle.backends.mtplx.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.process_server.subprocess.run") as mock_run,
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.probe.port_closed_within",
+            "llmbench.providers.lifecycle.backends.process_server.probe.port_closed_within",
             return_value=False,
         ),
     ):
@@ -387,12 +387,12 @@ def test_stop_and_wait_succeeds_when_stop_command_fails_but_port_already_closed(
     command's own exit code."""
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
-        patch("llmbench.providers.lifecycle.backends.mtplx.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.process_server.subprocess.run") as mock_run,
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.probe.port_closed_within",
+            "llmbench.providers.lifecycle.backends.process_server.probe.port_closed_within",
             return_value=True,
         ),
     ):
@@ -413,12 +413,12 @@ def test_stop_and_wait_reports_failure_when_port_never_closes():
     of None when it never closes."""
     with (
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.binaries.require_binary",
+            "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
             return_value="/usr/local/bin/mtplx",
         ),
-        patch("llmbench.providers.lifecycle.backends.mtplx.subprocess.run") as mock_run,
+        patch("llmbench.providers.lifecycle.backends.process_server.subprocess.run") as mock_run,
         patch(
-            "llmbench.providers.lifecycle.backends.mtplx.probe.port_closed_within",
+            "llmbench.providers.lifecycle.backends.process_server.probe.port_closed_within",
             return_value=False,
         ),
     ):
@@ -435,8 +435,8 @@ def test_restore_is_the_inherited_no_op():
     orchestration task — this task does not add an mtplx-specific
     restore() override; calling it must be a no-op with no side effects."""
     with (
-        patch("llmbench.providers.lifecycle.backends.mtplx._PROC") as mock_proc,
-        patch("llmbench.providers.lifecycle.backends.mtplx.subprocess.run") as mock_run,
+        patch.object(MTPLX, "_pidproc") as mock_proc,
+        patch("llmbench.providers.lifecycle.backends.process_server.subprocess.run") as mock_run,
     ):
         MTPLX.restore()
     mock_proc.stop.assert_not_called()
@@ -445,9 +445,9 @@ def test_restore_is_the_inherited_no_op():
 
 
 def test_mtplx_backend_is_a_distinct_instance_type():
-    """Sanity check that MtplxBackend can be constructed independently of
+    """Sanity check that a ProcessServerBackend can be constructed independently of
     the module-level singleton (used by tests above via MTPLX directly);
     guards against an accidental shared-mutable-default bug in __init__."""
-    other = MtplxBackend()
+    other = ProcessServerBackend(MTPLX.spec, cleanup_on_failure=True)
     assert other is not MTPLX
     assert other._proc is None

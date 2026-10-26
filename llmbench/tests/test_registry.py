@@ -219,3 +219,26 @@ def test_load_registry_reads_the_written_contract_fixture():
     assert cloud.location == "cloud" and not is_model_local(
         cloud.location, cloud.provider_id, registry
     )
+
+
+def test_provider_auth_fields(tmp_path):
+    f = tmp_path / "r.toml"
+    f.write_text(
+        """\
+[[providers]]
+id = "rec"
+unknown_key = 1
+
+[providers.auth]
+base_url = "http://127.0.0.1:11500"
+secret_ref = "exec:echo k"
+other = "x"
+
+[[providers]]
+id = "ollama"
+"""
+    )
+    reg = load_registry(f)
+    rec, oll = reg.provider("rec"), reg.provider("ollama")
+    assert (rec.base_url, rec.secret_ref) == ("http://127.0.0.1:11500", "exec:echo k")
+    assert (oll.base_url, oll.secret_ref) == ("", "")
