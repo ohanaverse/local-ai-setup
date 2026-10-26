@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -67,6 +68,8 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 // default reaches each one's option, and --help describes each. A flow added
 // to the table without a provider, a way to select it or a line in --help
 // fails here, instead of being reachable some ways and not others.
+// (TestCloudSyncFlowsAreNamedForTheirProviders spells out the two flows'
+// help text, so it would not notice a third.)
 func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 	if len(cloudFlows) == 0 || len(cloudFlows) != len(cloudSyncFlows) {
 		t.Fatalf("cloudFlows has %d flows and cloudSyncFlows %v", len(cloudFlows), cloudSyncFlows)
@@ -78,7 +81,7 @@ func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 		}
 		seen[f.name] = true
 		if _, ok := provider.Lookup(f.name); !ok {
-			t.Errorf("flow %q names no provider of the table in internal/provider", f.name)
+			t.Errorf("flow %q: want a provider of the table in internal/provider that the flow is named for", f.name)
 		}
 
 		var only cloudSyncOpts
@@ -109,5 +112,31 @@ func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 		if !strings.Contains(help.String(), "\n  "+f.name+" ") {
 			t.Errorf("--help has no line describing the %s flow:\n%s", f.name, help.String())
 		}
+	}
+}
+
+// TestPendingFlowsFollowTheTableOrder pins #475's point: the lines that
+// concern every flow about to be applied ("not applied (declined)", the
+// error when the question cannot be asked) come out in cloudFlows' order, and
+// only for the flows that have something to apply. They used to be appended
+// by hand in an order that could disagree with the table's. The order is the
+// table's even when the table is reordered, which the test does.
+func TestPendingFlowsFollowTheTableOrder(t *testing.T) {
+	both := map[string]bool{flowOpenRouter: true, flowOllama: true}
+	if got := strings.Join(pendingFlows(both), ","); got != flowOpenRouter+","+flowOllama {
+		t.Errorf("pendingFlows(both) = %s, want the table's order", got)
+	}
+	if got := pendingFlows(map[string]bool{flowOllama: true}); len(got) != 1 || got[0] != flowOllama {
+		t.Errorf("pendingFlows(ollama only) = %v", got)
+	}
+	if got := pendingFlows(map[string]bool{flowOpenRouter: false, flowOllama: false}); got != nil {
+		t.Errorf("pendingFlows(none) = %v, want nil", got)
+	}
+
+	saved := slices.Clone(cloudFlows)
+	t.Cleanup(func() { cloudFlows = saved })
+	slices.Reverse(cloudFlows)
+	if got := strings.Join(pendingFlows(both), ","); got != flowOllama+","+flowOpenRouter {
+		t.Errorf("with the table reversed, pendingFlows = %s, want it to follow", got)
 	}
 }

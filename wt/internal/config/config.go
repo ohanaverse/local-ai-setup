@@ -1113,7 +1113,7 @@ func (c *Config) InCatalog(m Model) bool {
 // OpenRouter — the whole OpenRouterPriced rule. cloudsync aliases it, so the
 // rule's two readers (over the typed config and over registry rows) cannot
 // name different ids.
-const OpenRouterProvider = "openrouter"
+const OpenRouterProvider = provider.IDOpenRouter
 
 // OpenRouterPriced reports whether m's price comes from OpenRouter, which is
 // what `wt cloud-sync`'s openrouter flow refreshes and what the stale-pricing

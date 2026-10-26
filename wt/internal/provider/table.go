@@ -13,6 +13,13 @@ const MtplxPort = 8003
 // as its key: the name OpenRouter's own tools and this repo's LiteLLM setup use.
 const OpenRouterKeyEnv = "OPENROUTER_API_KEY"
 
+// The ids of the two providers `wt cloud-sync` syncs, named once so the
+// command and the pure core that plans against them do not spell them.
+const (
+	IDOllama     = "ollama"
+	IDOpenRouter = "openrouter"
+)
+
 // Default origins and model directories: each is named once and read by both a
 // family's facts and its provider's seed row, so the two cannot drift.
 const (
@@ -36,7 +43,7 @@ var openaiLocal = Policy{Prefix: "openai/", APIKey: "not-needed", V1Base: true}
 // are added. A provider with a Family must have a Policy (TestTableInvariants).
 var providers = []Spec{
 	{
-		ID: "ollama", Family: "ollama",
+		ID: IDOllama, Family: "ollama",
 		Policy: &Policy{Prefix: "ollama_chat/"},
 		Seed: &Seed{
 			Name: "Ollama", Location: "local", Protocols: []string{"anthropic", "openai-chat"},
@@ -84,7 +91,7 @@ var providers = []Spec{
 	},
 	{ID: "llamacpp", Policy: &Policy{Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"}},
 	{
-		ID:     "openrouter",
+		ID:     IDOpenRouter,
 		Policy: &Policy{Prefix: "openrouter/", SecretRef: true, Cloud: true},
 		Seed: &Seed{
 			Name: "OpenRouter", Location: "cloud", AuthType: "api_key",
