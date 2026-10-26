@@ -628,15 +628,48 @@ not a guarantee about omlx: in the same spike it rejected prompts of its
 own (400 `prefill_memory_exceeded`) while abandoned generations held its
 memory (#399).
 
+**Measured again on an idle machine, 2026-10-26 (#393).** Same Mac (64 GB),
+mtplx 2.12.2, the same 27B build on the `sonnet` and `haiku` slots, and
+nothing else local loaded (87 to 90 percent of memory free at the start of each
+run). Each run started a cold mtplx server and ran two Claude Code turns
+non-interactively: run the tests and fix a failing one, then add a test. The
+heavy variant first made Claude read 118 KB of notes, so prompts reached 40k
+to 47k tokens. One machine and a handful of runs, not a benchmark:
+
+| mtplx profile | runs | refused requests | tests passed | largest prompt served |
+|---|---|---|---|---|
+| `sustained` (what wt starts) | 1 light, 3 heavy | none | all | 46.6k tokens |
+| `turbo` | 1 light, 3 heavy | none | all | 45.6k tokens |
+| `stable` | 2 light | every request | none | none |
+
+- **`sustained` and `turbo` behaved alike**, with comparable turn times. The
+  refusals above did not recur on an idle machine, at larger prompts than
+  before. What produced them was most likely memory used by other things on
+  the Mac at the time, not the size of the prompt alone. That is a hypothesis:
+  it was not tested under memory pressure, so these runs do not show whether
+  `turbo` copes better than `sustained` when memory is tight.
+- **Do not use `stable` for a slot.** It does not chunk the prefill (mtplx's
+  log shows `prefill_chunk_requested: null`), and a 15k to 17k token prompt
+  needed 17 to 18.5 GiB of scratch memory on top of the 27.9 GiB of weights.
+  mtplx refused it before any reply, with `a retry cannot succeed at this memory
+  limit`. `sustained` and `turbo` chunk the prefill at 2048 tokens, and their
+  scratch stayed between 0.4 and 1.2 GiB even at 46k tokens.
+- wt starts every mtplx model with `--model-id`, which makes mtplx run
+  `sustained`; to try `turbo` for one model, give it the flag
+  ([serve_args](../wt-model.md#serve_args-extra-flags-for-an-mtplx-model)).
+
 **How to check your own sessions.** Most refused requests leave no
 failure row in the spend logs (only a few did in the runs above), and
 `wt stats` has no failure column: it counts every logged request alike, so it does not
-show refusals either way. Look in the proxy's logs instead
-(`~/.litellm.err.log` and `~/.litellm.log`, see
-[litellm-troubleshooting.md](litellm-troubleshooting.md#debugging-playbook-what-actually-worked))
+show refusals either way. Look in the proxy's error log, `~/.litellm.err.log`
+(on the machine above the refusals were there and not in `~/.litellm.log`; see
+[litellm-troubleshooting.md](litellm-troubleshooting.md#debugging-playbook-what-actually-worked)),
 for `insufficient memory`, and in the log of the mtplx server wt started,
-`/tmp/local-ai-setup-mtplx.log`, for its `memory guard` and `pressure_trim`
-lines. `wt litellm list` shows which local models the proxy routes.
+`/tmp/local-ai-setup-mtplx.log`, for its `memory guard` lines (`action`
+`prefill_admission_shed`, `allocation_failure_shed`, `prefill_system_abort`).
+Under each `Runtime contract verified — profile:` line the log says which
+profile that server ran. `wt litellm list` shows which local models the proxy
+routes.
 
 ## Limits
 
