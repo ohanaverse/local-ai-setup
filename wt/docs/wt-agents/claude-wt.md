@@ -124,19 +124,28 @@ context assumed to be 200k tokens` at startup. That notice is Claude Code's
 own message, not a wt fault.
 
 When the model's entry in `tiers.toml` (modeltiers' output, read-only here)
-has a `context`, wt also sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to it, so
-Claude Code compacts against the real window and the notice goes away.
-`tiers.toml` records a window for **cloud** models (from models.dev, as
-declared: the window a provider serves may be smaller) and none for a local
-build, whose served window modeltiers cannot know. A model with no recorded
-window gets nothing from wt: set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` yourself,
-in your shell or in a profile's `env`, to the window you serve.
+has a `context` **taken from the model's own host row**
+(`context_basis = "host"`), wt also sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to
+it, so Claude Code compacts against the real window and the notice goes away.
+`tiers.toml` records a window for **cloud** models from models.dev, and none
+for a local build, whose served window modeltiers cannot know. When the
+model's host has no row of its own, modeltiers still writes the largest
+window among the model's rows (the tier gate wants that optimistic read), but
+marks it `context_basis = "largest_row"`, and wt does not declare it: no host
+serves that window, and Claude Code would compact too late against one the
+provider rejects. A `tiers.toml` written before the key existed has no basis,
+so it declares nothing until the next `modeltiers run`. A model with no
+declarable window gets nothing from wt: set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+yourself, in your shell or in a profile's `env`, to the window you serve.
 
 The variable holds one value per session. A value already exported in your
 shell is left alone (unlike the slot variables above, wt does not remove it),
 and an applied profile's `env` value wins over wt's. For a
 [slot profile](slot-profiles.md#what-claude-code-is-given) the value is the
-default slot's window, and the other slots inherit it.
+smallest window among the slots that have one, provided the default slot has
+one (`/model` can move the session onto any slot). A slot with no window of
+its own, a local build for instance, is ignored and can still run past a
+smaller declared value: set the variable in the profile's `env` to override.
 
 wt sets nothing else for the slots: no `modelOverrides` (a slot profile
 may set its own under `config_content`, a table checked as in

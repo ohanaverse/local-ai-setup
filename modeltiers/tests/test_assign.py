@@ -228,17 +228,48 @@ def test_a_cloud_row_uses_its_host_rows_context() -> None:
     facts = assign.gather((_row(context=1_048_576),), location="cloud", host_row=host)
     # The host row need not have a canonical id; tool_call comes from the
     # key's rows, never from the host row.
-    assert facts == Facts(tool_call=True, context=512_000, notes=())
+    assert facts == Facts(
+        tool_call=True, context=512_000, notes=(), context_basis=assign.BASIS_HOST
+    )
 
 
 def test_a_cloud_row_with_no_host_row_and_a_candidate_use_the_largest_context() -> None:
     rows = (_row(context=131_072), _row(context=1_048_576), _row(context=None))
-    expected = Facts(tool_call=True, context=1_048_576, notes=(assign.NOTE_LARGEST,))
+    expected = Facts(
+        tool_call=True,
+        context=1_048_576,
+        notes=(assign.NOTE_LARGEST,),
+        context_basis=assign.BASIS_LARGEST_ROW,
+    )
     assert assign.gather(rows, location="cloud", host_row=None) == expected
     assert assign.gather(rows, location=None, host_row=None) == expected
     # A host row that gives no context is no better than none.
     blank = ModelsDevRow("openrouter", "v/m", "vendor/m", True, True, None)
     assert assign.gather(rows, location="cloud", host_row=blank) == expected
+
+
+def test_only_a_context_has_a_basis() -> None:
+    """`context_basis` says where a context came from (#470), so a reader that
+    declares a window as the host's can refuse the largest row's. A context
+    that is unknown has no basis, whatever made it unknown."""
+    host = ModelsDevRow("ollama-cloud", "m", None, True, True, 512_000)
+    cases = {
+        "host": assign.gather((_row(),), location="cloud", host_row=host),
+        "largest": assign.gather((_row(),), location="cloud", host_row=None),
+        "candidate": assign.gather((_row(),), location=None, host_row=None),
+        "local": assign.gather((_row(),), location="local", host_row=None),
+        "no rows": assign.gather((), location="cloud", host_row=host),
+        "no context": assign.gather((_row(context=None),), location=None, host_row=None),
+    }
+    assert {name: f.context_basis for name, f in cases.items()} == {
+        "host": assign.BASIS_HOST,
+        "largest": assign.BASIS_LARGEST_ROW,
+        "candidate": assign.BASIS_LARGEST_ROW,
+        "local": None,
+        "no rows": None,
+        "no context": None,
+    }
+    assert all((f.context is None) == (f.context_basis is None) for f in cases.values())
 
 
 def test_a_local_rows_context_is_unknown() -> None:

@@ -119,5 +119,15 @@ func TestContractFixtureReadsContext(t *testing.T) {
 		if e.Context != want {
 			t.Errorf("%s/%s: Context = %d, want %d", k[0], k[1], e.Context, want)
 		}
+		// A window comes with where it came from; a model with none has no
+		// basis. The fixture's models all have a host row (the largest-row
+		// basis is the fixture's candidates', which wt does not read).
+		wantBasis := ""
+		if want > 0 {
+			wantBasis = ContextBasisHost
+		}
+		if e.ContextBasis != wantBasis {
+			t.Errorf("%s/%s: ContextBasis = %q, want %q", k[0], k[1], e.ContextBasis, wantBasis)
+		}
 	}
 }

@@ -27,6 +27,13 @@ GATE_TOOL_CALL = "gate_tool_call"
 GATE_CONTEXT = "gate_context"
 NOT_APPLICABLE = "not_applicable"
 
+# Where a `context` came from (Facts.context_basis, written as
+# `context_basis`): the model's own host row, or the largest of the key's
+# rows. The tier gate wants the optimistic read and takes either; a reader that
+# declares a window as the one a host serves must take the first alone (#470).
+BASIS_HOST = "host"
+BASIS_LARGEST_ROW = "largest_row"
+
 NOTE_LARGEST = "context is the largest among the key's models.dev rows"
 NOTE_LOCAL = "local build: served context unknown; context gate skipped"
 NOTE_NO_ROWS = "key has no models.dev rows; tool-calling and context gates skipped"
@@ -148,6 +155,8 @@ class Facts:
     tool_call: bool | None  # None: the key has no models.dev rows
     context: int | None  # None: unknown, and the context gate is skipped
     notes: tuple[str, ...] = ()
+    # BASIS_HOST or BASIS_LARGEST_ROW when `context` is set, else None.
+    context_basis: str | None = None
 
 
 def gather(
@@ -162,11 +171,16 @@ def gather(
     if location == "local":
         return Facts(tool_call=tool_call, context=None, notes=(NOTE_LOCAL,))
     if host_row is not None and host_row.context is not None:
-        return Facts(tool_call=tool_call, context=host_row.context)
+        return Facts(tool_call=tool_call, context=host_row.context, context_basis=BASIS_HOST)
     contexts = [row.context for row in rows if row.context is not None]
     if not contexts:
         return Facts(tool_call=tool_call, context=None, notes=(NOTE_NO_CONTEXT,))
-    return Facts(tool_call=tool_call, context=max(contexts), notes=(NOTE_LARGEST,))
+    return Facts(
+        tool_call=tool_call,
+        context=max(contexts),
+        notes=(NOTE_LARGEST,),
+        context_basis=BASIS_LARGEST_ROW,
+    )
 
 
 @dataclass(frozen=True)

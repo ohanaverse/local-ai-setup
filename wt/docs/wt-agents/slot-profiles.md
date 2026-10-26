@@ -400,11 +400,15 @@ Claude Code 2.1.296: an inherited `ANTHROPIC_SMALL_FAST_MODEL` does not
 override `ANTHROPIC_DEFAULT_HAIKU_MODEL`; wt removes it all the same.
 
 The `--settings` env also carries `CLAUDE_CODE_MAX_CONTEXT_TOKENS` when the
-default slot's model has a `context` in `tiers.toml` (cloud models; a local
-build has none), so Claude Code does not assume 200K for an id it does not
-recognize. For `opusplan` it is the smaller of the `opus` and `sonnet` slots'
-windows, and nothing when either has none. It is one value per session, so
-the other slots inherit the default slot's. A value in the profile's `env` or
+default slot's model has a host `context` in `tiers.toml` (cloud models whose
+window comes from their own host row; a local build has none, and a window
+that is only models.dev's largest row is not declared), so Claude Code does
+not assume 200K for an id it does not recognize. For `opusplan` the anchor is
+the smaller of the `opus` and `sonnet` slots' windows, and nothing when
+either has none. The variable is one value per session and `/model` can move
+the session onto any slot, so the value is then lowered to the smallest window
+of any other slot that has one; a slot with none is ignored, not a veto. A
+value in the profile's `env` or
 `config_content.env`, or exported in your shell, is left as it is. See
 [claude-wt.md](claude-wt.md#context-window-of-a-gateway-model).
 
