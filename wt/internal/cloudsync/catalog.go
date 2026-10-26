@@ -580,10 +580,7 @@ func (p *CatalogPlan) Format() string {
 	}
 	lines = append(lines, graduatedLines(p.Graduations)...)
 	lines = append(lines, keptLines("ollama.com/pricing", p.Kept)...)
-	lines = append(lines, fmt.Sprintf("ollama rm — pulled, unregistered, off the page (%d):", len(p.StrayTags)))
-	for _, tag := range p.StrayTags {
-		lines = append(lines, "  "+tag)
-	}
+	lines = append(lines, idBlock(fmt.Sprintf("ollama rm — pulled, unregistered, off the page (%d):", len(p.StrayTags)), p.StrayTags)...)
 	if digest := p.RemovalDigest(); digest != "" {
 		lines = append(lines, digestLine(digest))
 	}

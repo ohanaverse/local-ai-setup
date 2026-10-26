@@ -252,19 +252,20 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				basePrice := api[base]
 				usable := basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
 					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil)
+				own := ownRateSuffix(suffix)
+				unpriced := e.Cost == nil || (e.Cost.Input == nil && e.Cost.Output == nil)
 				var note string
+				var change *PriceChange
 				switch {
-				case ownRateSuffix(suffix):
+				case own && unpriced:
+					note = fmt.Sprintf("left unpriced: :%s bills at its own rate, not %s's; set a price by hand", suffix, base)
+				case own:
 					note = fmt.Sprintf("kept at its current price: :%s bills at its own rate, not %s's", suffix, base)
+				case !usable && unpriced:
+					note = fmt.Sprintf("left unpriced: %s has no usable price; set a price by hand", base)
 				case !usable:
 					note = fmt.Sprintf("kept at its current price: %s has no usable price", base)
-				case suffix == "online":
-					note = fmt.Sprintf("kept and priced from %s (:online adds a per-request web-search fee that price does not include)", base)
 				default:
-					note = fmt.Sprintf("kept and priced from %s", base)
-				}
-				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
-				if !ownRateSuffix(suffix) && usable {
 					var after Cost
 					if e.Cost != nil {
 						after = *e.Cost
@@ -274,9 +275,22 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 						after.Cache = basePrice.Cache
 					}
 					after.TimePrices = withOpenRouterRows(after.TimePrices, basePrice.Rates)
-					plan.Matched = append(plan.Matched, PriceChange{
+					change = &PriceChange{
 						ModelID: e.ID, Before: e.Cost, After: after, Changed: !sameCost(e.Cost, after),
-					})
+					}
+					plan.Matched = append(plan.Matched, *change)
+					// An unchanged price priced from the base is the ordinary
+					// case and needs no line on every sync; the :online fee
+					// caveat and a price that moved are worth one.
+					switch {
+					case suffix == "online":
+						note = fmt.Sprintf("kept and priced from %s (:online adds a per-request web-search fee that price does not include)", base)
+					case change.Changed:
+						note = fmt.Sprintf("kept and priced from %s", base)
+					}
+				}
+				if note != "" {
+					plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
 				}
 			default:
 				plan.Removals = append(plan.Removals, e.ID)
@@ -365,10 +379,7 @@ func (p *PricePlan) Format() string {
 	lines = append(lines, changed...)
 	lines = append(lines, fmt.Sprintf("Unchanged prices: %d", unchanged))
 	if len(p.Removals) > 0 {
-		lines = append(lines, fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)))
-		for _, id := range p.Removals {
-			lines = append(lines, "  "+id)
-		}
+		lines = append(lines, idBlock(fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)), p.Removals)...)
 		// An alias or a redirect id has no `:` to tell it from a model that
 		// is gone, so it lands here like one. The hint is not part of the
 		// digest (RemovalDigest reads the ids), so the approval is unchanged.

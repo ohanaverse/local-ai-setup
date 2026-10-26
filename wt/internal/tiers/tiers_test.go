@@ -264,3 +264,40 @@ func TestEntryScore(t *testing.T) {
 		}
 	}
 }
+
+// TestParseReadsContextAsAPositiveWholeNumber verifies `context` reads as an
+// integer or a whole float, and as none (0) when it is missing, zero,
+// negative, fractional or not a number: the claude launch declares the value
+// as a window, and a bad one would size every compaction wrongly.
+func TestParseReadsContextAsAPositiveWholeNumber(t *testing.T) {
+	doc := func(v string) []byte {
+		line := ""
+		if v != "" {
+			line = "context = " + v + "\n"
+		}
+		return []byte("[[models]]\nprovider_id = \"p\"\nmodel_name = \"m\"\n" + line)
+	}
+	for name, tc := range map[string]struct {
+		val  string
+		want int
+	}{
+		"integer":    {"262144", 262144},
+		"whole":      {"262144.0", 262144},
+		"missing":    {"", 0},
+		"zero":       {"0", 0},
+		"negative":   {"-5", 0},
+		"fractional": {"1.5", 0},
+		"too large":  {"9000000000", 0},
+		"string":     {`"big"`, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ix, err := Parse(doc(tc.val))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e, _ := ix.Lookup("p", "m"); e.Context != tc.want {
+				t.Errorf("Context = %d, want %d", e.Context, tc.want)
+			}
+		})
+	}
+}

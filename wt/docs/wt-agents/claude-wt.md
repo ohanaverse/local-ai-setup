@@ -116,6 +116,28 @@ these variables under `config_content.env` (written to
 `.claude/settings.local.json`) is not decided by wt. Claude Code's own
 settings-over-environment rule decides, and wt does not test it.
 
+### Context window of a gateway model
+
+Claude Code knows the context window of Anthropic's own models only. For any
+other id it assumes 200K tokens and prints `Model "…" isn't recognized ·
+context assumed to be 200k tokens` at startup. That notice is Claude Code's
+own message, not a wt fault.
+
+When the model's entry in `tiers.toml` (modeltiers' output, read-only here)
+has a `context`, wt also sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to it, so
+Claude Code compacts against the real window and the notice goes away.
+`tiers.toml` records a window for **cloud** models (from models.dev, as
+declared: the window a provider serves may be smaller) and none for a local
+build, whose served window modeltiers cannot know. A model with no recorded
+window gets nothing from wt: set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` yourself,
+in your shell or in a profile's `env`, to the window you serve.
+
+The variable holds one value per session. A value already exported in your
+shell is left alone (unlike the slot variables above, wt does not remove it),
+and an applied profile's `env` value wins over wt's. For a
+[slot profile](slot-profiles.md#what-claude-code-is-given) the value is the
+default slot's window, and the other slots inherit it.
+
 wt sets nothing else for the slots: no `modelOverrides` (a slot profile
 may set its own under `config_content`, a table checked as in
 [slot-profiles.md](slot-profiles.md#a-modeloverrides-target-wt-does-not-route)), no

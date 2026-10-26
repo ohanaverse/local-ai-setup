@@ -62,6 +62,9 @@ type Entry struct {
 	// Sources is how many voting scores the aligned score was made from
 	// (len(aligned_sources)).
 	Sources int
+	// Context is the model's context window in tokens as the file records it
+	// (`context`, from models.dev, cloud models only); 0 when it has none.
+	Context int
 }
 
 // Rated reports whether the entry carries a tier the picker shows: a code of
@@ -216,6 +219,7 @@ type fileDoc struct {
 		Code           string   `toml:"code"`
 		Confidence     string   `toml:"confidence"`
 		AlignedScore   any      `toml:"aligned_score"`
+		Context        any      `toml:"context"`
 		AlignedSources []string `toml:"aligned_sources"`
 	} `toml:"models"`
 }
@@ -245,6 +249,19 @@ func Parse(data []byte) (Index, error) {
 			Code:       m.Code,
 			Confidence: m.Confidence,
 			Sources:    len(m.AlignedSources),
+		}
+		// context is the window models.dev gives a cloud model, in tokens; a
+		// local build carries none (the served window is unknown). A value
+		// that is not a positive whole number reads as none.
+		switch v := m.Context.(type) {
+		case int64:
+			if v > 0 && v <= math.MaxInt32 {
+				e.Context = int(v)
+			}
+		case float64:
+			if v >= 1 && v <= math.MaxInt32 && v == math.Trunc(v) {
+				e.Context = int(v)
+			}
 		}
 		switch v := m.AlignedScore.(type) {
 		case float64:

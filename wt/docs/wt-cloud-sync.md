@@ -61,16 +61,20 @@ fetched for, changed or warned about, whatever its name is.
   `warning: No OpenRouter match for <id> (<name>); its base model is listed,
   so it is …` line:
   - `kept and priced from <base>`: an ordinary suffix (`:thinking`, …) takes
-    the base model's price. `:online` also bills a per-request web-search fee
+    the base model's price. The line appears only when that price moved; a
+    row already at the base's price is refreshed silently, so a steady-state
+    sync does not repeat it. `:online` also bills a per-request web-search fee
     the base price does not include, so its stored price may understate the
-    cost, and the warning says so.
+    cost, and the warning says so on every sync.
   - `kept at its current price: :<suffix> bills at its own rate`: `:free`,
     `:nitro` and `:floor` are priced as the provider they route to, not as the
     base, so the row keeps the price it has (a `:free` row never turns into a
-    charge).
+    charge). A row with no stored price says `left unpriced: … set a price by
+    hand` instead, since there is no current price to keep.
   - `kept at its current price: <base> has no usable price`: the base is
-    listed but its price cannot be used (a `warning` for the base's own row
-    says why).
+    listed but its price cannot be used (if the registry also holds the base
+    model, a `warning` for its own row says why; otherwise the line above is
+    all the run says).
 
   A suffix OpenRouter has dropped, while its base is still listed, is **not**
   detected: wt cannot tell it from a routing suffix it never lists, and the

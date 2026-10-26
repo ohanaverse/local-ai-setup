@@ -13,7 +13,7 @@ import (
 // MODELTIERS_OUT itself (t.Setenv) to a file it wrote.
 //
 // It is called from the TestMain of every package whose tests build a model
-// table (cmd/wt, internal/tui). Production code never calls it.
+// table or a claude launch (cmd/wt, internal/tui, internal/agents). Production code never calls it.
 func IsolateForTest() {
 	os.Setenv(OutEnv, filepath.Join(os.TempDir(), "wt-test-no-tiers-dir-never-created", "tiers.toml"))
 }

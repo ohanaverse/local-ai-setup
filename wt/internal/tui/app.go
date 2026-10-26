@@ -147,6 +147,15 @@ type model struct {
 	// (worktree.PRSet.ForBranch), never with a stranger's fork PR of the same
 	// branch name.
 	ownRepos worktree.RepoSet
+	// stale is each worktree or local row's answer to "has the branch moved
+	// past its ended PR" (staleKey), resolved off the update goroutine by
+	// resolveStaleCmd and read by prFor. It is kept across an entry reload
+	// and each of its keys asked again there, so the tags do not flash back
+	// while the new answers are on their way (#451).
+	stale staleSet
+	// staleAsked holds the keys whose answer is on its way, so a listing
+	// arriving before the first answers return does not ask them again.
+	staleAsked map[staleKey]bool
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -229,6 +238,22 @@ func (m model) openNewWorktreePrompt() model {
 // Update handles messages and returns the new state plus optional commands.
 // Whatever the message did, the list on screen is then fitted to the lines its
 // screen prints around it (fitLists, layout.go).
+// askStale starts resolveStaleCmd for the jobs not already in flight and
+// marks them so; nil when none is left to ask.
+func (m *model) askStale(jobs []staleJob) tea.Cmd {
+	if m.staleAsked == nil {
+		m.staleAsked = map[staleKey]bool{}
+	}
+	fresh := jobs[:0:0]
+	for _, j := range jobs {
+		if !m.staleAsked[j.key] {
+			m.staleAsked[j.key] = true
+			fresh = append(fresh, j)
+		}
+	}
+	return resolveStaleCmd(fresh)
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	next.fitLists()
@@ -306,7 +331,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.ownRepos = msg.ownRepos
 		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
 		if m.prs.Loaded() {
-			applyPRs(&m.list, m.prs, m.ownRepos)
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
 		}
 		m.ready = true
 
@@ -337,6 +362,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return ei.label == "(current)"
 			})
 		}
+		// The branch tips were read again: ask every ended PR's question anew.
+		if m.prs.Loaded() {
+			m.staleAsked = nil
+			return m, m.askStale(staleJobs(m.list.Items(), m.prs, m.ownRepos, nil))
+		}
 		return m, nil
 	case prsLoadedMsg:
 		// One listing's pull requests arrived: merged with any listing
@@ -348,10 +378,25 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// that failed adds nothing: msg.prs is then empty.
 		m.prs = worktree.MergePRs(m.prs, msg.prs)
 		if m.ready {
-			applyPRs(&m.list, m.prs, m.ownRepos)
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
+			cmds := []tea.Cmd{m.askStale(staleJobs(m.list.Items(), m.prs, m.ownRepos, m.stale))}
 			if note := remoteTagsHidden(m.list.Items(), m.prs); note != "" {
-				return m, m.list.NewStatusMessage(note)
+				cmds = append(cmds, m.list.NewStatusMessage(note))
 			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, nil
+	case staleResolvedMsg:
+		// The git answers for the ended PRs on screen arrived: kept for later
+		// builds of the list, and a row whose branch moved past its PR loses
+		// the tag now.
+		var changed bool
+		m.stale, changed = m.stale.merge(msg.verdicts)
+		for k := range msg.verdicts {
+			delete(m.staleAsked, k)
+		}
+		if changed && m.ready && m.prs.Loaded() {
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
 		}
 		return m, nil
 	case selectedEntryMsg:
@@ -678,8 +723,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.list, cmd = m.list.Update(msg)
 		// A filter run a keystroke started before the latest tags arrived
 		// matched the items as they were then; its rows carry the old tags.
-		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos) {
-			applyPRs(&m.list, m.prs, m.ownRepos)
+		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos, m.stale) {
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
 		}
 		return m, cmd
 	}
