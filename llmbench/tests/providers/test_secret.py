@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -85,3 +86,66 @@ def test_literal():
     assert secret.resolve_secret("sk-abc123") == "sk-abc123"
     assert secret.resolve_secret("lower") == "lower"
     assert secret.resolve_secret("") == ""
+
+
+# --- provider_key: the key a registry provider row names ----------------------
+
+
+def _write_registry(text: str) -> None:
+    Path(os.environ["WT_REGISTRY"]).write_text(text)
+
+
+def test_secret_module_imports_first_in_a_fresh_interpreter(tmp_path):
+    """The benchmark runners import providers.secret, possibly before
+    anything imported the lifecycle package; the secret -> lifecycle ->
+    process_server -> secret cycle must not break that."""
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import llmbench.providers.secret"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-500:]
+
+
+def test_provider_key_without_a_registry_is_none():
+    assert secret.provider_key("rec") is None
+
+
+def test_provider_key_row_without_secret_ref_is_none():
+    _write_registry('[[providers]]\nid = "ollama"\nlocation = "local"\n')
+    assert secret.provider_key("ollama") is None
+    assert secret.provider_key("absent") is None
+
+
+def test_provider_key_resolves_the_rows_secret_ref():
+    _write_registry(
+        '[[providers]]\nid = "rec"\nlocation = "local"\nauth = { secret_ref = "lit-k" }\n'
+    )
+    found = secret.provider_key("rec") == "lit-k"
+    assert found
+
+
+def test_provider_key_empty_value_is_none(monkeypatch):
+    monkeypatch.delenv("REC_KEY_UNSET", raising=False)
+    _write_registry(
+        '[[providers]]\nid = "rec"\nlocation = "local"\nauth = { secret_ref = "REC_KEY_UNSET" }\n'
+    )
+    assert secret.provider_key("rec") is None
+
+
+def test_provider_key_failure_names_the_provider_never_the_value(tmp_path):
+    p = _script(tmp_path, "echo SECRETVALUE; exit 2")
+    _write_registry(
+        f'[[providers]]\nid = "rec"\nlocation = "local"\nauth = {{ secret_ref = "exec:{p}" }}\n'
+    )
+    with pytest.raises(secret.SecretError) as ei:
+        secret.provider_key("rec")
+    msg = str(ei.value)
+    assert (msg.startswith("rec: cannot read the provider key"), "SECRETVALUE" in msg) == (
+        True,
+        False,
+    )

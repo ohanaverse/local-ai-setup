@@ -28,8 +28,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .... import registry as _registry
 from ....registry import ProviderEntry, load_registry
+from ... import secret as _secret
 from ...process_spec import ProcessSpec, expand
-from ...secret import resolve_secret
 from .. import binaries, probe
 from ..envelope import LifecycleError
 from ..pidproc import PidfileProcess
@@ -50,6 +50,15 @@ INSTANCE_GONE_POLL = 1.0
 
 class _KeyArg(TypedDict, total=False):
     key: str
+
+
+def resolve_secret(ref: str) -> str:
+    """`providers.secret.resolve_secret`, looked up at call time. Importing
+    the module (not the name) breaks an import cycle: `providers.secret`
+    imports `lifecycle.envelope`, whose package imports these backends, so
+    whichever of the two is imported first must not need the other's names
+    at import time. Tests patch this name."""
+    return _secret.resolve_secret(ref)
 
 
 def _key_arg(key: str | None) -> _KeyArg:

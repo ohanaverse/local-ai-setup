@@ -32,6 +32,28 @@ def resolve_secret(ref: str) -> str:
     return ref
 
 
+def provider_key(provider_id: str) -> str | None:
+    """The bearer key the registry's `provider_id` row names in
+    `auth.secret_ref`, resolved now; None when the registry or the row is
+    absent, the row names no reference, or it resolves to "". A reference
+    that cannot be resolved raises SecretError naming the provider and the
+    reference, never a value. The benchmarks' direct routes send it, as the
+    lifecycle probes do (rec refuses every route without it)."""
+    from ..registry import RegistryError, load_registry
+
+    try:
+        row = load_registry().provider(provider_id)
+    except (RegistryError, KeyError):
+        return None
+    if not row.secret_ref:
+        return None
+    try:
+        key = resolve_secret(row.secret_ref)
+    except SecretError as exc:
+        raise SecretError(f"{provider_id}: cannot read the provider key: {exc}") from None
+    return key or None
+
+
 def _run(ref: str) -> str:
     argv = ref.removeprefix("exec:").split()
     if not argv:

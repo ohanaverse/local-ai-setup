@@ -440,6 +440,100 @@ def test_run_benchmark_isolates_a_rec_target_with_its_registry_model(tmp_path, m
     assert urls == ["http://127.0.0.1:11500/v1/chat/completions"]
 
 
+class _PostWorkload(_FakeWorkload):
+    """A workload that really POSTs through the runner's session, so the
+    headers the runner gives each route reach a real (fake) server."""
+
+    def run(self, session, url, payload):
+        from llmbench.benchmark.workloads.base import RawRun
+
+        resp = session.post(url, json=payload, timeout=5)
+        error = None if resp.status_code == 200 else f"HTTP {resp.status_code}"
+        return RawRun(start_time=0.0, end_time=0.0, first_token_time=None, chunks=[], error=error)
+
+
+def _keyed_registry_run(tmp_path, monkeypatch, fake, model_ids, routes):
+    import llmbench.benchmark.runner as runner_module
+    from llmbench.registry import load_registry
+
+    Path(os.environ["WT_REGISTRY"]).write_text(
+        '[[providers]]\nid = "rec"\nlocation = "local"\n'
+        f'auth = {{ base_url = "{fake.base_url}", secret_ref = "rec-test-key" }}\n'
+        '[[providers]]\nid = "ollama"\nlocation = "local"\n'
+        '[[models]]\nid = "rec/flint"\nfamily = "f"\nprovider_id = "rec"\nmodel_name = "no-reasoning"\n'
+        '[[models]]\nid = "ollama/a"\nfamily = "f"\nprovider_id = "ollama"\nmodel_name = "reasoning-field"\n'
+    )
+
+    def _fake_isolate(pid, *extra_args, env=None):
+        return type("I", (), {"ok": True, "direct_url": f"{fake.base_url}/chat/completions"})()
+
+    monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
+    monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(runner_module, "LITELLM_URL", f"{fake.base_url}/chat/completions")
+    return run_benchmark(
+        load_registry(), _PostWorkload(), model_ids=model_ids, routes=routes, results_dir=tmp_path
+    )
+
+
+def test_run_benchmark_direct_route_of_a_keyed_provider_carries_its_key(tmp_path, monkeypatch):
+    """rec refuses every route without `Authorization: Bearer <key>`. The
+    isolation warms it with the key; the benchmark's own direct requests
+    must carry it too, or every direct rec row is a 401."""
+    from tests.probe.conftest import serve_fake
+
+    with serve_fake() as fake:
+        fake.required_key = "rec-test-key"
+        run = _keyed_registry_run(tmp_path, monkeypatch, fake, ["rec/flint"], ["direct"])
+        sent = [r["headers"].get("Authorization") for r in fake.requests]
+    assert [r.error for r in run.results] == [None]
+    assert [s == "Bearer rec-test-key" for s in sent] == [True]
+
+
+def test_run_benchmark_key_less_provider_and_litellm_route_send_no_key(tmp_path, monkeypatch):
+    """ollama's direct route and every litellm route stay header-free: the
+    key goes per target, to the direct route of a keyed provider only."""
+    from tests.probe.conftest import serve_fake
+
+    with serve_fake() as fake:
+        run = _keyed_registry_run(
+            tmp_path, monkeypatch, fake, ["ollama/a", "rec/flint"], ["direct", "litellm"]
+        )
+        sent = [(r["body"]["model"], "Authorization" in r["headers"]) for r in fake.requests]
+    # The fake knows no registry id, so the litellm rows answer 404; only
+    # the headers they carried matter here.
+    assert [r.error for r in run.results if r.route == "direct"] == [None, None]
+    # Direct requests send the bare model_name, the litellm ones the
+    # registry id. Exactly one request — rec's direct one — carries a key.
+    assert sorted(sent) == [
+        ("no-reasoning", True),  # rec direct
+        ("ollama/a", False),  # ollama litellm
+        ("reasoning-field", False),  # ollama direct
+        ("rec/flint", False),  # rec litellm
+    ]
+
+
+def test_run_benchmark_unreadable_key_is_a_row_error_without_the_value(tmp_path, monkeypatch):
+    import llmbench.benchmark.runner as runner_module
+    from llmbench.providers.secret import SecretError
+
+    def _fail(provider_id):
+        raise SecretError(f"{provider_id}: cannot read the provider key: secret command failed")
+
+    monkeypatch.setattr(runner_module, "provider_key", _fail)
+    from tests.probe.conftest import serve_fake
+
+    with serve_fake() as fake:
+        run = _keyed_registry_run(tmp_path, monkeypatch, fake, ["rec/flint"], ["direct"])
+        requests_made = len(fake.requests)
+    assert requests_made == 0
+    assert len(run.results) == 1
+    error = run.results[0].error or ""
+    assert (error.startswith("rec: cannot read the provider key"), "rec-test-key" in error) == (
+        True,
+        False,
+    )
+
+
 def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_path, monkeypatch):
     """A mistakenly-registered mlx_lm_server model with no draft source must
     fail that single target with a clear error, not crash the whole run or

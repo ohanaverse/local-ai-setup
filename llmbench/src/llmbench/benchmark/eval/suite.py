@@ -26,6 +26,7 @@ from llmbench.benchmark._routes import (
 )
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.providers import lifecycle
+from llmbench.providers.secret import SecretError, provider_key
 from llmbench.registry import Registry
 
 JUDGE_ROUTES = ("litellm", "openrouter")
@@ -334,7 +335,14 @@ def resolve_row_endpoint(
                 f"row {row.label!r} uses route=direct for provider {row.provider_id!r} "
                 f"but no [routes.direct.{row.provider_id}] block is configured"
             )
-        return direct_cfg.base_url, (row.direct_model or model_name), "ollama"
+        # A keyed provider (rec refuses every route without its bearer key)
+        # gets the registry row's key; a key-less one the placeholder, since
+        # the OpenAI client refuses an empty api_key.
+        try:
+            key = provider_key(row.provider_id)
+        except SecretError as exc:
+            raise BenchmarkError(f"row {row.label!r}: {exc}") from None
+        return direct_cfg.base_url, (row.direct_model or model_name), key or "ollama"
     if row.route == "openrouter":
         key = openrouter_key(plist_path)
         if not key:

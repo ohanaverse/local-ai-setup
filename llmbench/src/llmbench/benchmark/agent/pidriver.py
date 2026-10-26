@@ -18,6 +18,7 @@ from statistics import median
 
 from llmbench.benchmark._routes import LIVE_PI_MODELS_PATH, load_live_models
 from llmbench.benchmark.errors import BenchmarkError
+from llmbench.providers.secret import SecretError, provider_key
 
 DEFAULT_CONTEXT_WINDOW = 262144
 
@@ -126,7 +127,14 @@ def resolve_pi_target(
         launch_id = row.direct_model or model_name
         base_url = direct_cfg.base_url
         api = direct_cfg.api
-        api_key = "ollama"  # pi rejects an empty apiKey even for keyless local backends
+        # A keyed provider (rec refuses every route without its bearer key)
+        # gets the registry row's key; pi rejects an empty apiKey even for
+        # keyless local backends, so they get the placeholder.
+        try:
+            key = provider_key(row.provider_id)
+        except SecretError as exc:
+            raise BenchmarkError(f"row {row.label!r}: {exc}") from None
+        api_key = key or "ollama"
     else:
         raise BenchmarkError(f"row {row.label!r} has unknown route: {row.route!r}")
 

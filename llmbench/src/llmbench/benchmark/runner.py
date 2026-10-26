@@ -20,6 +20,7 @@ from llmbench.benchmark.workloads import Workload
 from llmbench.benchmark.workloads.base import BenchmarkMetrics
 from llmbench.local_process import ENV_VAR_BY_PROVIDER
 from llmbench.providers.registry import ProviderRegistry
+from llmbench.providers.secret import SecretError, provider_key
 from llmbench.registry import DEFAULT_PROVIDER_IDS, Registry, is_model_local
 
 
@@ -133,6 +134,38 @@ def _run_route(
     )
 
 
+def _direct_session(
+    provider_id: str, plain: requests.Session, keyed: dict[str, requests.Session]
+) -> requests.Session:
+    """The session for `provider_id`'s direct route: `plain` when its
+    registry row names no key, else one session per provider carrying
+    `Authorization: Bearer <key>` (resolved once per run). Raises
+    SecretError (naming the provider, never the value) when the key cannot
+    be read."""
+    if provider_id in keyed:
+        return keyed[provider_id]
+    key = provider_key(provider_id)
+    if key is None:
+        return plain
+    keyed_session = requests.Session()
+    keyed_session.headers["Authorization"] = f"Bearer {key}"
+    keyed[provider_id] = keyed_session
+    return keyed_session
+
+
+def _error_result(target: Target, route: str, pass_number: int, error: str) -> TargetResult:
+    return TargetResult(
+        model_id=target.model_id,
+        provider_id=target.provider_id,
+        route=route,
+        pass_number=pass_number,
+        metrics=BenchmarkMetrics(
+            ttft_ms=None, total_ms=0, completion_tokens=None, prompt_tokens=None
+        ),
+        error=error,
+    )
+
+
 def run_benchmark(
     registry: Registry,
     workload: Workload,
@@ -161,6 +194,7 @@ def run_benchmark(
     )
 
     session = requests.Session()
+    keyed_sessions: dict[str, requests.Session] = {}
     # Isolation is keyed on (provider_id, positional args, warmed model):
     # consecutive targets on the same key reuse the running isolation instead
     # of paying another stop-others + warmup cycle (~a minute of polling per
@@ -227,14 +261,31 @@ def run_benchmark(
             # Reached only when isolation succeeded (fresh or reused), so
             # direct_url was assigned either above or on a prior iteration.
             assert direct_url is not None
+            # The direct route of a keyed provider (rec refuses every route
+            # without its bearer key) goes through a session of its own that
+            # carries the key; every other request — key-less providers, and
+            # every litellm route — stays on the plain, header-free session.
+            direct_session = session
+            key_error: str | None = None
+            if "direct" in routes:
+                try:
+                    direct_session = _direct_session(target.provider_id, session, keyed_sessions)
+                except SecretError as exc:
+                    key_error = str(exc)
             for pass_number in range(1, passes + 1):
                 for route in routes:
+                    if route == "direct" and key_error is not None:
+                        run.results.append(_error_result(target, route, pass_number, key_error))
+                        continue
                     url = direct_url if route == "direct" else LITELLM_URL
-                    result = _run_route(session, target, route, url, workload, pass_number)
+                    route_session = direct_session if route == "direct" else session
+                    result = _run_route(route_session, target, route, url, workload, pass_number)
                     run.results.append(result)
                 if pass_number < passes:
                     time.sleep(cooldown_seconds)
     finally:
+        for keyed in keyed_sessions.values():
+            keyed.close()
         restore_error: str | None = None
         try:
             restore_providers()
