@@ -252,9 +252,10 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				basePrice := api[base]
 				usable := basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
 					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil)
+				own := ownRateSuffix(suffix)
 				var note string
 				switch {
-				case ownRateSuffix(suffix):
+				case own:
 					note = fmt.Sprintf("kept at its current price: :%s bills at its own rate, not %s's", suffix, base)
 				case !usable:
 					note = fmt.Sprintf("kept at its current price: %s has no usable price", base)
@@ -264,7 +265,7 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 					note = fmt.Sprintf("kept and priced from %s", base)
 				}
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
-				if !ownRateSuffix(suffix) && usable {
+				if !own && usable {
 					var after Cost
 					if e.Cost != nil {
 						after = *e.Cost

@@ -69,8 +69,9 @@ fetched for, changed or warned about, whatever its name is.
     base, so the row keeps the price it has (a `:free` row never turns into a
     charge).
   - `kept at its current price: <base> has no usable price`: the base is
-    listed but its price cannot be used (a `warning` for the base's own row
-    says why).
+    listed but its price cannot be used (if the registry also holds the base
+    model, a `warning` for its own row says why; otherwise the line above is
+    all the run says).
 
   A suffix OpenRouter has dropped, while its base is still listed, is **not**
   detected: wt cannot tell it from a routing suffix it never lists, and the
