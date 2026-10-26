@@ -353,10 +353,7 @@ func (p *PricePlan) Format() string {
 	lines = append(lines, changed...)
 	lines = append(lines, fmt.Sprintf("Unchanged prices: %d", unchanged))
 	if len(p.Removals) > 0 {
-		lines = append(lines, fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)))
-		for _, id := range p.Removals {
-			lines = append(lines, "  "+id)
-		}
+		lines = append(lines, idBlock(fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)), p.Removals)...)
 		lines = append(lines, digestLine(p.RemovalDigest()))
 	}
 	lines = append(lines, graduatedLines(p.Graduations)...)
