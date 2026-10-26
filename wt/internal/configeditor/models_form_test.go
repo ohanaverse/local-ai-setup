@@ -156,9 +156,9 @@ func TestModelFormAddWritesAtOnce(t *testing.T) {
 	if f.mode != modelFormAdd || f.value(mfProvider) != "ollama" || f.cursor != mfProvider {
 		t.Fatalf("an add should open on the provider, set to ollama; got %q, cursor %d", f.value(mfProvider), f.cursor)
 	}
-	// ollama, omlx, openrouter and the seedable mtplx; right twice is
+	// ollama, omlx, openrouter and the seedable mtplx and rec; right twice is
 	// openrouter.
-	if got := strings.Join(f.providers, ","); got != "mtplx,ollama,omlx,openrouter" {
+	if got := strings.Join(f.providers, ","); got != "mtplx,ollama,omlx,openrouter,rec" {
 		t.Errorf("provider choices = %s", got)
 	}
 	m = keys(t, m, "right", "right")
@@ -637,7 +637,7 @@ func TestModelFormOnAnEmptyRegistry(t *testing.T) {
 	m := modelsEditor(t, tm, 80, 24)
 	m.opts.Models = deps
 	m = keys(t, m, "n")
-	if got := strings.Join(m.models.form.providers, ","); got != "mtplx,ollama,omlx,openrouter" {
+	if got := strings.Join(m.models.form.providers, ","); got != "mtplx,ollama,omlx,openrouter,rec" {
 		t.Fatalf("provider choices on an empty registry = %s", got)
 	}
 	m = keys(t, m, "right") // ollama -> omlx

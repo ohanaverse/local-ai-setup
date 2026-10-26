@@ -102,8 +102,11 @@ type FamilySpec struct {
 	// route exists while the artifact does, not while it is loaded.
 	RoutesFollowArtifact bool
 	// Served: the server reports what it serves (`wt served`).
-	Served  bool
-	Tenancy Tenancy
+	Served bool
+	// ServedOnly: the family's probe is GET /v1/models alone; wt lists no
+	// artifacts for it.
+	ServedOnly bool
+	Tenancy    Tenancy
 	// Scope is what one server of this family excludes: a port, or the machine.
 	Scope Scope
 	// Process says how wt spawns, stops and recognises the family's server;
@@ -142,6 +145,8 @@ type Ready struct {
 	Equals string
 	// ModelPath is the JSON path of the model the instance serves.
 	ModelPath string
+	// EndpointPath is the JSON path of the instance's endpoint URL.
+	EndpointPath string
 }
 
 // ProcessSpec is how wt runs a family's server as a process.

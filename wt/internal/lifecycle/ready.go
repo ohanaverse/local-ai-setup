@@ -14,10 +14,13 @@ import (
 )
 
 // readyState is one answer to "is the spawned server ready": Model is the
-// model the server says it serves, when its readiness check names one.
+// model the server says it serves, when its readiness check names one;
+// Endpoint is the URL the instance says it listens at, read from the spec's
+// Ready.EndpointPath ("" when the spec names no path or the answer lacks it).
 type readyState struct {
-	Ready bool
-	Model string
+	Ready    bool
+	Model    string
+	Endpoint string
 }
 
 // readyNow asks once whether a process family's server is ready to serve
@@ -65,6 +68,9 @@ func (e *env) readyNow(ctx context.Context, spec provider.ProcessSpec, bin, mode
 		st := readyState{Ready: true}
 		if spec.Ready.ModelPath != "" {
 			st.Model, _ = jsonScalarAt(doc, spec.Ready.ModelPath)
+		}
+		if spec.Ready.EndpointPath != "" {
+			st.Endpoint, _ = jsonScalarAt(doc, spec.Ready.EndpointPath)
 		}
 		return st, nil
 	default:

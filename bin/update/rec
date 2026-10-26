@@ -1,0 +1,89 @@
+#!/bin/bash
+# update/rec — update the rec binary (the engine wt serves the Flint model with).
+#
+# rec is a single self-updating binary (~/.local/bin/rec); `rec update -y`
+# replaces it with the latest GitHub release. The one thing that must not
+# happen is replacing it under a running server, so a live `rec status`
+# ("ready":true) turns the update into a manual step: `wt stop rec` first.
+# --check and --dry-run go through the common `run`/finish helpers, so they
+# change nothing.
+#
+# Usage: update/rec [--no-network] [--dry-run] [--check]
+
+set -e
+
+# shellcheck source=lib/update-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/update-common.sh"
+
+update_usage() {
+    cat <<'EOF'
+usage: update/rec [--no-network] [--dry-run] [--check]
+
+Report the installed rec version and the latest GitHub release
+(recursive-oss/rec), and run `rec update -y` when a newer one exists and no rec
+server is running.
+
+  --no-network  skip the release lookup (the status is then manual)
+  --dry-run     print `rec update -y` instead of running it
+  --check       report current, or manual when an update is available
+EOF
+}
+
+update_init rec "$@"
+
+for arg in "${UPDATE_ARGS[@]}"; do
+    case "$arg" in
+        --no-network) NO_NETWORK=1 ;;
+        *)
+            printf 'update/rec: unknown option %s\n' "$arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+require_cmd rec
+
+installed=$(rec --version 2> /dev/null | sed -n 's/^rec //p' | head -1)
+installed=${installed:-unknown}
+update_note "installed: $installed"
+
+# `v?` needs sed -E: BSD sed has no `\?` (see update/ollama).
+latest=""
+if [ -z "${NO_NETWORK:-}" ]; then
+    latest=$(curl -fsSL -m 8 https://api.github.com/repos/recursive-oss/rec/releases/latest 2> /dev/null |
+        sed -E -n 's/.*"tag_name": *"v?([^"]*)"?.*/\1/p' | head -1 || true)
+fi
+
+if [ -z "$latest" ]; then
+    update_note "latest: unknown (--no-network, or the release lookup failed)"
+    update_finish manual "$installed installed, latest: unknown — run 'rec update'"
+fi
+update_note "latest: $latest"
+
+if [ "$installed" != "unknown" ]; then
+    newest=$(printf '%s\n%s\n' "$installed" "$latest" | sort -V | tail -1)
+    if [ "$newest" = "$installed" ]; then
+        update_finish current "$installed"
+    fi
+fi
+
+# A running server must never be updated underneath.
+if rec status 2> /dev/null | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'; then
+    update_finish manual "$installed installed, $latest available, but a rec server is running — stop rec first (\`wt stop rec\`), then rerun"
+fi
+
+if [ "$UPDATE_CHECK" -eq 1 ]; then
+    update_finish manual "$installed installed, $latest available — run update/rec without --check"
+fi
+
+run rec update -y || update_fail "rec update failed"
+if dry_run_stop; then
+    update_finish dry-run "$installed -> $latest via rec update -y"
+fi
+
+after=$(rec --version 2> /dev/null | sed -n 's/^rec //p' | head -1)
+after=${after:-unknown}
+if [ "$after" = "$installed" ]; then
+    update_finish failed "rec update ran but rec is still $installed ($latest published)"
+fi
+update_finish updated "$installed -> $after"

@@ -36,7 +36,7 @@ func TestPoliciesPinned(t *testing.T) {
 func TestProvidersPinned(t *testing.T) {
 	want := map[string]bool{
 		"ollama": false, "omlx": false, "omlx-6bit": false, "mlx_lm_server": false,
-		"mtplx": false, "llamacpp": false, "openrouter": true,
+		"mtplx": false, "rec": false, "llamacpp": false, "openrouter": true,
 	}
 	got := Providers()
 	if len(got) != len(want) {

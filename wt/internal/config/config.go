@@ -275,18 +275,21 @@ func BaseOrigin(url string) string {
 }
 
 // MtplxPort is the port wt serves mtplx on when the registry's mtplx
-// base_url names none. mtplx is the one local server wt hands a port to
-// (`mtplx serve --port`, `mtplx stop --port`); omlx and ollama listen where
-// their own configuration says, and wt cannot start an mlx_lm_server.
+// base_url names none. wt hands mtplx its port (`mtplx serve --port`,
+// `mtplx stop --port`), as it hands rec its own WtPort; omlx and ollama
+// listen where their own configuration says, and wt cannot start an
+// mlx_lm_server.
 const MtplxPort = provider.MtplxPort
 
 // Origin is the address wt reaches provider p at: BaseOrigin of its
 // auth.base_url, with the port filled in where the url names none and wt is
-// what decides the port. That is one case only: the mtplx provider, an http
-// url, a host the server wt starts answers on (servesMtplxAt). `wt start`
-// spawns `mtplx serve --port MtplxPort --host 127.0.0.1` for such a url, so
-// that is where the server is, and a url read as written would mean port 80:
-// the start succeeded and every probe after it found nothing there (#348).
+// what decides the port. That is a provider whose family has a WtPort in
+// internal/provider (mtplx 8003, rec 11500), an http url, a host the server
+// wt starts answers on (servesMtplxAt): such a url with no port gets the
+// family's WtPort. `wt start` spawns the server on that port (`mtplx serve
+// --port 8003 --host 127.0.0.1`, `rec serve --port 11500`) for such a url,
+// so that is where the server is, and a url read as written would mean port
+// 80: the start succeeded and every probe after it found nothing there (#348).
 //
 // Every reader of the provider's address goes through here — the probes
 // (localmodels.FamilyOrigin), a direct route (ResolveRoute, pi's models.json)
@@ -298,8 +301,9 @@ const MtplxPort = provider.MtplxPort
 // the implicit port is what the user wrote (a name that only resolves to
 // this machine, an /etc/hosts alias, is such a host: nothing here resolves
 // names, so that url has to name its port; so are ::1 and 127.0.0.2, this
-// machine but not 127.0.0.1). `wt start` refuses an mtplx url left with no
-// port (lifecycle.PortlessAddressError); and every other provider — wt never
+// machine but not 127.0.0.1). `wt start` refuses such a url of a WtPort
+// family left with no port (lifecycle.PortlessAddressError); and every
+// provider whose family has no WtPort — wt never
 // tells omlx or ollama a port (they listen where their own settings say), so
 // there the address wt probes, the one a start waits on and the route's
 // api_base already agree, and a default port would be a guess.

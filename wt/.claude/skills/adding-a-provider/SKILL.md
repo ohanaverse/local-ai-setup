@@ -22,12 +22,23 @@ start and stop needs all of them.
    - `Family` names the server the id talks to (omlx-6bit shares omlx's), and
      a local family also needs a row in `families` — default origin and model
      directory, the port wt hands the server (`WtPort`, 0 if the server owns
-     it), the `RunningOnly` / `RoutesFollowArtifact` / `Served` flags, and the
+     it), the `RunningOnly` / `ServedOnly` / `RoutesFollowArtifact` / `Served`
+     flags (below), and the
      `Tenancy`: `Exclusive` (one model per process, a start replaces the
      occupant), `Shared` (models load on request) or `Pool` (models load side
      by side under a memory ceiling); `NoTenancy` when wt cannot start it.
    `go test ./internal/provider` checks the table agrees with itself (a
    family member without a policy fails there).
+
+   **Served-only families.** `ServedOnly` means the family's probe is
+   `GET /v1/models` alone and wt lists no artifacts for it: only registered
+   models appear, and running is what the server says it serves. Add
+   `RunningOnly` too only when wt cannot start the family (mlx_lm_server: a
+   stopped pairing has no row and a pin is blocked). `ServedOnly` without
+   `RunningOnly` (rec) is a family wt starts: its stopped registered model is
+   a start row. `probeFamily` selects the served-only probe by the flag, not
+   by name, so a new served-only family needs no inventory code beyond its
+   `isRunning` rule.
 2. **Inventory (local only).** `internal/localmodels` decides what is on disk
    and what is running. Add the family's probe in `probeFamily`
    (`inventory.go`) and its matching rules (`matchArtifact`, `isRunning`,
@@ -41,10 +52,14 @@ start and stop needs all of them.
    log defaults (`PidfileEnv` for a scratch override), how its running argv is
    recognised (`Subcommand`, `DaemonModule`, `PortFlag`, `ModelFlag`), a `Ready`
    check (`ReadyModelsList`, or `ReadyCommandJSON` with `Command`, `Path`,
-   `Equals`, `ModelPath`) and the family `Scope` (`ScopePort`, or
-   `ScopeMachine` for one instance on the whole machine, which needs a
-   `ReadyCommandJSON` check) — plus the provider's `Seed` and `Policy`. mtplx
-   is the model row. `lifecycle` registers `processServer` for every
+   `Equals`, `ModelPath`, `EndpointPath`) and the family `Scope` (`ScopePort`,
+   or `ScopeMachine` for one instance on the whole machine, which needs a
+   `ReadyCommandJSON` check; give it an `EndpointPath` so an instance is
+   adopted only at the registry's address) — plus the provider's `Seed` and
+   `Policy` (`SecretRef: true` when the server needs its key on every
+   request, as rec does). mtplx (`ScopePort`, one model per spawn) and rec
+   (`ScopeMachine`, one fixed model: `Spawn` without `{model}`) are the model
+   rows. `lifecycle` registers `processServer` for every
    `provider.ProcessFamilies()` family on its own. Until the registry overlay
    lands in a later change, such a provider is a data row in `table.go`, not a
    registry entry. Any other kind of server (ollama, omlx style) still needs a

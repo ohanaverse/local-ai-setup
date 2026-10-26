@@ -223,6 +223,51 @@ func TestBuildOverlayMatchedAgainstRealInventory(t *testing.T) {
 	}
 }
 
+// TestRecInventoryStoppedIsAStartRow runs a real inventory against a stopped
+// rec (refused connection, never a real server) and verifies its registered
+// rec/flint becomes a start row with unknown presence, neither blocked nor
+// hidden: rec lists no artifacts, but unlike mlx_lm_server wt can start it.
+// Hiding it would leave flint unstartable from the picker.
+func TestRecInventoryStoppedIsAStartRow(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	refused := gone.URL
+	gone.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "rec", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "api_key", BaseURL: refused + "/v1", SecretRef: "k"}}},
+		Models:    []config.Model{{ID: "rec/flint", ProviderID: "rec", ModelName: "flint"}},
+	}
+	snap := localmodels.Inventory(cfg)
+	rows := Build(Input{Config: cfg, Models: cfg.Models, Inventory: &snap})
+	if len(rows) != 1 || rows[0].Model.ID != "rec/flint" {
+		t.Fatalf("rows = %v, want rec/flint listed", rowIDs(rows))
+	}
+	if r := rows[0]; r.Action() != ActionStart || r.Status != StatusUnknown || r.Running {
+		t.Errorf("rec/flint row = %+v action %v, want a start row with status unknown", r, r.Action())
+	}
+}
+
+// TestMlxLmServerStillRunningOnly runs a real inventory against a stopped
+// mlx_lm_server and verifies its pairing is still not listed, and a row for
+// one is still blocked: generalising the served-only probe to rec must not
+// make mlx_lm_server startable, since wt has no engine for it.
+func TestMlxLmServerStillRunningOnly(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	refused := gone.URL
+	gone.Close()
+	cfg := &config.Config{
+		Providers: []config.Provider{{ID: "mlx_lm_server", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: refused}}},
+		Models:    []config.Model{{ID: "mlx_lm_server/p", ProviderID: "mlx_lm_server", ModelName: "p"}},
+	}
+	snap := localmodels.Inventory(cfg)
+	if rows := Build(Input{Config: cfg, Models: cfg.Models, Inventory: &snap}); len(rows) != 0 {
+		t.Errorf("rows = %v, want a stopped mlx_lm_server pairing hidden", rowIDs(rows))
+	}
+	r := Row{Location: config.LocationLocal, Status: StatusUnknown, Model: cfg.Models[0]}
+	if r.Action() != ActionBlock {
+		t.Errorf("mlx_lm_server row action = %v, want block", r.Action())
+	}
+}
+
 // TestBuildWithoutInventoryKeepsLocalRowsStartable verifies the documented
 // nil-Inventory contract: when no probe ran, a configured local row reads
 // status ok, running false, and stays startable — the fail-open behavior the

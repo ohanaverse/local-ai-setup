@@ -1,4 +1,4 @@
-# Provider artifacts — llama.cpp (retired), LiteLLM, oMLX
+# Provider artifacts — llama.cpp (retired), LiteLLM, oMLX, mlx_lm_server, rec
 
 > Use this to: restore or rebuild any provider on this machine from the
 > exact files it shipped with. Verified against the host on 2026-09-07.
@@ -215,3 +215,31 @@ the plist is installed, `launchctl unload` it by hand:
   file on disk.
   Cleanup of an abandoned experiment is a manual `rm -rf`.
 - Guide: [10-mlx-lm-quantization.md](../guides/10-mlx-lm-quantization.md).
+
+## rec — active, on-demand only (no standing artifact)
+
+- The engine serving the Flint model: one self-updating binary,
+  `~/.local/bin/rec` (installed by rec's own installer from the
+  `recursive-oss/rec` GitHub releases; `bin/update/rec` keeps it current).
+  Not a LaunchAgent: `wt start rec/flint` runs `rec serve --port 11500` as a
+  backgrounded process (pidfile `/tmp/local-ai-setup-rec.pid`, relocated by
+  `WT_REC_PIDFILE`; log `/tmp/local-ai-setup-rec.log`), and `wt stop rec`
+  runs `rec stop`. One instance per machine, whichever port it is on.
+- Everything else rec owns lives under `~/.local/share/rec` (or
+  `$XDG_DATA_HOME/rec`): `models/` (the downloaded weights, tens of GB),
+  `runtimes/` (the Python/MLX runtime rec serves with), `config/api-key`
+  (the local API key `rec auth token` prints — a secret: never paste or
+  commit it), `state/` (instance and launch locks, a launch log), plus
+  `releases/` and `clients/`. The key also ends up in the LiteLLM route's
+  `api_key` (`wt litellm sync`), so the live `config.yaml` holds it too.
+- **wt never deletes any of it**: `wt model rm rec/flint` removes the
+  registry entry only, and no wt command touches `~/.local/share/rec`.
+  `rec uninstall` (it asks; `-y` skips the question) removes rec, its models
+  and its settings; that is the one cleanup.
+- Registry: `[[providers]] id = "rec"` with
+  `auth.base_url = "http://127.0.0.1:11500/v1"` and
+  `auth.secret_ref = "exec:rec auth token"` (its `Seed` in
+  `wt/internal/provider/table.go`), and one model, `rec/flint`
+  (`model_name = "flint"`). Guide: [02-providers-and-models.md](../guides/02-providers-and-models.md) Step 4.
+- llmbench has no rec backend yet, so `llmbench provider isolate` cannot
+  isolate it.

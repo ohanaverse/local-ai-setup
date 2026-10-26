@@ -44,6 +44,10 @@ type machineHarness struct {
 	// stopIgnored makes the stop command succeed without stopping anything:
 	// status keeps reporting the instance ready.
 	stopIgnored bool
+	// port is the registry's port for recx (closed); endpoint is the URL the
+	// status command reports for the instance.
+	port     int
+	endpoint string
 }
 
 func (h *machineHarness) record(c string) {
@@ -107,8 +111,15 @@ func closedPort(t *testing.T) int {
 // runs), stop marks it stopped, and spawn is recorded and fails.
 func machineEnv(t *testing.T, serving string) (*env, *machineHarness) {
 	t.Helper()
-	stubFamily(t, "recx", machineSpec, provider.FamilySpec{Name: "recx", Tenancy: provider.Exclusive, Scope: provider.ScopeMachine, Process: &machineSpec}, closedPort(t))
-	h := &machineHarness{}
+	return machineEnvSpec(t, serving, machineSpec)
+}
+
+// machineEnvSpec is machineEnv with recx given the process spec spec.
+func machineEnvSpec(t *testing.T, serving string, spec provider.ProcessSpec) (*env, *machineHarness) {
+	t.Helper()
+	port := closedPort(t)
+	stubFamily(t, "recx", spec, provider.FamilySpec{Name: "recx", Tenancy: provider.Exclusive, Scope: provider.ScopeMachine, Process: &spec}, port)
+	h := &machineHarness{port: port, endpoint: "http://127.0.0.1:11500/v1"}
 	e := testEnv()
 	e.inventory = func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} }
 	e.backends["recx"] = processServer{"recx"}
@@ -125,7 +136,7 @@ func machineEnv(t *testing.T, serving string) (*env, *machineHarness) {
 			if serving == "" || h.stopped {
 				return []byte(`{"ready":false}`), errors.New("exit status 1")
 			}
-			return []byte(`{"ready":true,"model":"` + serving + `","endpoint":"http://127.0.0.1:11500/v1"}`), nil
+			return []byte(`{"ready":true,"model":"` + serving + `","endpoint":"` + h.endpoint + `"}`), nil
 		case "stop":
 			h.stopped = !h.stopIgnored
 			return nil, nil
@@ -309,5 +320,134 @@ func TestMachineScopeStopWaitsForALoadingProcessToExit(t *testing.T) {
 	alive = false
 	if err := b.stop(context.Background(), e, &config.Config{}); err != nil {
 		t.Errorf("stop after exit = %v, want nil", err)
+	}
+}
+
+// endpointSpec is machineSpec whose readiness reads the instance's endpoint,
+// as rec's does.
+func endpointSpec() provider.ProcessSpec {
+	spec := machineSpec
+	spec.Ready.EndpointPath = "endpoint"
+	return spec
+}
+
+// TestAdoptRequiresTheRegistryAddress verifies an instance serving the
+// requested model on another address than the registry's is not adopted: it
+// is an occupant, asked about first (nothing stopped) and, with AllowReplace,
+// stopped by the stop command before wt spawns on the registry's port. Every
+// route points at the registry's address, so adopting an instance elsewhere
+// would hand agents a model nothing reaches.
+func TestAdoptRequiresTheRegistryAddress(t *testing.T) {
+	e, h := machineEnvSpec(t, "flint", endpointSpec())
+	h.endpoint = "http://127.0.0.1:" + strconv.Itoa(h.port+1) + "/v1"
+	err := start(context.Background(), e, &config.Config{}, recxTarget("flint"), Options{Others: OthersAnswer{Decided: true}})
+	var occ *OccupiedError
+	if !errors.As(err, &occ) || len(occ.Occupants) != 1 || occ.Occupants[0].ModelName != "flint" {
+		t.Fatalf("start = %v, want *OccupiedError naming flint", err)
+	}
+	if got := h.seq(); !slices.Equal(got, []string{"status"}) {
+		t.Errorf("calls = %v, want only the readiness command (nothing stopped)", got)
+	}
+
+	e, h = machineEnvSpec(t, "flint", endpointSpec())
+	h.endpoint = "http://127.0.0.1:" + strconv.Itoa(h.port+1) + "/v1"
+	err = start(context.Background(), e, &config.Config{}, recxTarget("flint"), Options{AllowReplace: true, Others: OthersAnswer{Decided: true}})
+	if !errors.Is(err, errSpawnStub) {
+		t.Fatalf("start with AllowReplace = %v, want the stubbed spawn's error", err)
+	}
+	if got, want := h.seq(), []string{"status", "stop", "status", "spawn"}; !slices.Equal(got, want) {
+		t.Errorf("calls = %v, want %v", got, want)
+	}
+}
+
+// TestAdoptWhenTheEndpointMatches verifies an instance serving the requested
+// model at the registry's address is adopted: nil, nothing stopped or
+// spawned. That instance is exactly what the routes point at.
+func TestAdoptWhenTheEndpointMatches(t *testing.T) {
+	e, h := machineEnvSpec(t, "flint", endpointSpec())
+	h.endpoint = "http://127.0.0.1:" + strconv.Itoa(h.port) + "/v1"
+	if err := start(context.Background(), e, &config.Config{}, recxTarget("flint"), Options{}); err != nil {
+		t.Fatalf("start = %v, want nil (adopted)", err)
+	}
+	if got := h.seq(); !slices.Equal(got, []string{"status"}) {
+		t.Errorf("calls = %v, want only the readiness command", got)
+	}
+}
+
+// TestAdoptWithNoEndpointPath verifies a spec that reads no endpoint keeps
+// PR 2's rule: an instance serving the requested model is adopted whatever
+// address its status reports, since wt has no address to compare.
+func TestAdoptWithNoEndpointPath(t *testing.T) {
+	e, h := machineEnv(t, "flint")
+	h.endpoint = "http://127.0.0.1:" + strconv.Itoa(h.port+1) + "/v1"
+	if err := start(context.Background(), e, &config.Config{}, recxTarget("flint"), Options{}); err != nil {
+		t.Fatalf("start = %v, want nil (adopted)", err)
+	}
+	if got := h.seq(); !slices.Equal(got, []string{"status"}) {
+		t.Errorf("calls = %v, want only the readiness command", got)
+	}
+}
+
+// TestMachineOccupantUsesTheRegistryID verifies the occupant a machine-scope
+// start reports carries the registry id when the snapshot has a registered
+// entry for the model, and the discovered id only when it has none. The
+// occupant's route is dropped after a replace by its id, and the registry
+// id is the one config.yaml holds.
+func TestMachineOccupantUsesTheRegistryID(t *testing.T) {
+	registered := localmodels.Entry{ProviderID: "recx", ModelID: "recx-other", ModelName: "other"}
+	for name, tc := range map[string]struct {
+		snap localmodels.Snapshot
+		want string
+	}{
+		"registered":   {snap: localmodels.Snapshot{Entries: []localmodels.Entry{registered}}, want: "recx-other"},
+		"unregistered": {snap: localmodels.Snapshot{}, want: config.DiscoveredModelID("recx", "other")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, _ := machineEnv(t, "other")
+			e.inventory = func(*config.Config) localmodels.Snapshot { return tc.snap }
+			err := start(context.Background(), e, &config.Config{}, recxTarget("flint"), Options{Others: OthersAnswer{Decided: true}})
+			var occ *OccupiedError
+			if !errors.As(err, &occ) || len(occ.Occupants) != 1 {
+				t.Fatalf("start = %v, want *OccupiedError with one occupant", err)
+			}
+			if got := occ.Occupants[0]; got.ModelID != tc.want || !got.Running || got.Loading {
+				t.Errorf("occupant = %+v, want ModelID %q, Running, not Loading", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMachineScopeRefusesAPortlessRegistryOriginBeforeAsking verifies a
+// machine-scope start whose registry origin wt cannot serve at (no port, an
+// https or bracketed IPv6 URL, a hosts alias) fails with
+// *PortlessAddressError right after the readiness command finds the instance,
+// with or without AllowReplace: no question, no stop, no spawn. Asking would
+// make a correctly serving instance a victim the user approves stopping, only
+// for the spawn to fail on the same address afterwards, leaving no instance.
+func TestMachineScopeRefusesAPortlessRegistryOriginBeforeAsking(t *testing.T) {
+	for name, opts := range map[string]Options{
+		"ask":          {Others: OthersAnswer{Decided: true}},
+		"allowReplace": {AllowReplace: true, Others: OthersAnswer{Decided: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, h := machineEnvSpec(t, "flint", endpointSpec())
+			h.endpoint = "http://127.0.0.1:" + strconv.Itoa(h.port+1) + "/v1"
+			old := familyOriginPort
+			familyOriginPort = func(cfg *config.Config, f string) (string, int, error) {
+				if f == "recx" {
+					return "", 0, errors.New("no port")
+				}
+				return old(cfg, f)
+			}
+			t.Cleanup(func() { familyOriginPort = old })
+			err := start(context.Background(), e, &config.Config{}, recxTarget("flint"), opts)
+			var pe *PortlessAddressError
+			if !errors.As(err, &pe) || pe.Provider != "recx" {
+				t.Fatalf("start = %v, want *PortlessAddressError for recx", err)
+			}
+			if got := h.seq(); !slices.Equal(got, []string{"status"}) {
+				t.Errorf("calls = %v, want only the readiness command (nothing stopped or spawned)", got)
+			}
+		})
 	}
 }

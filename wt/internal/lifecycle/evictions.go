@@ -62,15 +62,20 @@ func evictions(ten Tenancy, family string, t Target, snap localmodels.Snapshot) 
 // machineOccupant is what a start of t finds of a ScopeMachine family's one
 // instance on this machine, through its readiness command (foreignInstance),
 // whatever port it is on and whoever started it. adopt: the instance already
-// serves t, so the start has nothing to do. Otherwise found reports an
-// instance serving another model, returned as occ in the shape every
-// occupant has, so the start asks before replacing it (OccupiedError) and
-// stops it with the family's stop. A family of any other scope runs no
+// serves t at the registry's address (atRegistryAddress), so the start has
+// nothing to do. Otherwise found reports an instance serving another model,
+// or t at another address, returned as occ in the shape every occupant has
+// (snap's registered entry for its model when there is one, serverEntry),
+// so the start asks before replacing it (OccupiedError) and stops it with
+// the family's stop. An instance found while the registry origin cannot be
+// served at (serverStartEndpoint) is *PortlessAddressError instead: the
+// replace could only end in that same error with the instance gone. A
+// family of any other scope runs no
 // command and finds nothing; so does one whose binary or key cannot be had,
 // which the backend's start then reports. An instance wt spawned that is
 // still loading answers "not ready" too; the pidfile finds it, and the start
 // fails with *LoadingInstanceError rather than spawn a second one.
-func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, family string, t Target) (occ localmodels.Entry, found, adopt bool, err error) {
+func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, snap localmodels.Snapshot, family string, t Target) (occ localmodels.Entry, found, adopt bool, err error) {
 	spec, ok := machineScoped(family)
 	if !ok {
 		return localmodels.Entry{}, false, false, nil
@@ -92,18 +97,34 @@ func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, family st
 		}
 		return localmodels.Entry{}, false, false, nil
 	}
-	if st.Model != "" && SameModel(family, st.Model, t.ModelName) {
+	if st.Model != "" && SameModel(family, st.Model, t.ModelName) && atRegistryAddress(cfg, family, st.Endpoint) {
 		return localmodels.Entry{}, false, true, nil
 	}
-	providerID := family
-	if ids := provider.FamilyProviderIDs(family); len(ids) > 0 {
-		providerID = ids[0]
+	// A registry origin wt cannot serve at fails now, before the question
+	// and any stop: the replace would stop the instance and the spawn would
+	// then fail on this same address, leaving nothing running.
+	if _, _, _, aerr := serverStartEndpoint(cfg, family); aerr != nil {
+		return localmodels.Entry{}, false, false, aerr
 	}
-	occ = localmodels.Entry{ProviderID: providerID, ModelID: family, ModelName: st.Model, Running: true}
-	if st.Model != "" {
-		occ.ModelID = config.DiscoveredModelID(family, st.Model)
+	// The occupant's entry is the snapshot's own registered one when there
+	// is one, so the route dropped after a replace is the registry id's.
+	return serverEntry(snap, family, st.Model, false), true, false, nil
+}
+
+// atRegistryAddress reports whether endpoint, the URL a machine-scope
+// instance says it listens at, is the registry's address for family: every
+// route points there, so only an instance there can be adopted. An empty
+// endpoint (the spec reads none, or the instance named none) counts as the
+// registry's: wt has nothing to compare and keeps adopting by model alone.
+func atRegistryAddress(cfg *config.Config, family, endpoint string) bool {
+	if endpoint == "" {
+		return true
 	}
-	return occ, true, false, nil
+	origin, _, err := familyOriginPort(cfg, family)
+	if err != nil {
+		origin = localmodels.FamilyOrigin(cfg, family)
+	}
+	return config.BaseOrigin(endpoint) == origin
 }
 
 // runningOthers lists the family's running models other than the target.
@@ -256,20 +277,31 @@ func (e *env) residents(cfg *config.Config, snap localmodels.Snapshot, family st
 }
 
 // loadingServerEntry is the entry of the model family's server still loading
-// is serving (model, the value of its spec's ModelFlag): the snapshot's own
-// entry for it, so the resident carries the registry id the picker shows,
-// else a discovered one. A server whose command line named no model is the
-// provider alone.
+// is serving (model, the value of its spec's ModelFlag): serverEntry, marked
+// loading.
 func loadingServerEntry(snap localmodels.Snapshot, family, model string) localmodels.Entry {
+	return serverEntry(snap, family, model, true)
+}
+
+// serverEntry is the entry of the model a family's server is serving: the
+// snapshot's own entry for it, so it carries the registry id the picker
+// shows and config.yaml routes, else a discovered one under the family's
+// first provider id. Either is Running, and Loading as loading says. A server
+// that names no model is the provider alone.
+func serverEntry(snap localmodels.Snapshot, family, model string, loading bool) localmodels.Entry {
 	if model != "" {
 		for _, en := range snap.Entries {
-			if localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, model) {
-				en.Running, en.Loading = true, true
+			if familyOf(en.ProviderID) == family && SameModel(family, en.ModelName, model) {
+				en.Running, en.Loading = true, loading
 				return en
 			}
 		}
 	}
-	en := localmodels.Entry{ProviderID: family, ModelID: family, ModelName: model, Running: true, Loading: true}
+	providerID := family
+	if ids := provider.FamilyProviderIDs(family); len(ids) > 0 {
+		providerID = ids[0]
+	}
+	en := localmodels.Entry{ProviderID: providerID, ModelID: family, ModelName: model, Running: true, Loading: loading}
 	if model != "" {
 		en.ModelID = config.DiscoveredModelID(family, model)
 	}

@@ -124,6 +124,10 @@ func BuildEntry(m config.Model, p config.Provider) (*yaml.Node, error) {
 		params = append(params, kv{"api_base", base})
 	}
 	switch {
+	case pol.SecretRef && pol.APIKey != "" && p.Auth.SecretRef == "":
+		// A row with no secret_ref falls back to the policy placeholder
+		// rather than an empty key LiteLLM would replace from OPENAI_API_KEY.
+		params = append(params, kv{"api_key", pol.APIKey})
 	case pol.SecretRef:
 		key, err := providerAPIKey(p)
 		if err != nil {

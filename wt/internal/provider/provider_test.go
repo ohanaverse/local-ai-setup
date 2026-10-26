@@ -55,8 +55,10 @@ func TestTableInvariants(t *testing.T) {
 			if pr.PidfileDefault == "" || pr.Subcommand == "" || pr.PortFlag == "" {
 				t.Errorf("family %q process needs PidfileDefault, Subcommand and PortFlag", f)
 			}
-			if !slices.Contains(pr.Spawn, "{model}") || !slices.Contains(pr.Spawn, "{port}") {
-				t.Errorf("family %q spawn %v must contain {model} and {port}", f, pr.Spawn)
+			// {model} is optional (rec serves one fixed model); {port} is
+			// required when wt hands the server a port.
+			if spec.WtPort != 0 && !slices.Contains(pr.Spawn, "{port}") {
+				t.Errorf("family %q has a WtPort but spawn %v has no {port}", f, pr.Spawn)
 			}
 			switch pr.Ready.Kind {
 			case ReadyModelsList:
@@ -99,9 +101,9 @@ func scopeProblems(f FamilySpec) []string {
 }
 
 // TestScopeProblems verifies the ScopeMachine rule TestTableInvariants
-// applies, on synthetic rows: no table row is machine-scoped yet, so without
-// this the rule would pass vacuously and could be wrong unnoticed until rec's
-// row lands.
+// applies, on synthetic rows: rec is the only machine-scoped table row and
+// satisfies the rule, so the table alone never shows that each broken shape
+// (pool tenancy, a models-list readiness) is caught; these rows do.
 func TestScopeProblems(t *testing.T) {
 	cmd := &ProcessSpec{Ready: Ready{Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true"}}
 	list := &ProcessSpec{Ready: Ready{Kind: ReadyModelsList}}
@@ -127,7 +129,7 @@ func TestScopeProblems(t *testing.T) {
 // cannot change what wt does.
 func TestAccessorsMatchLegacyTables(t *testing.T) {
 	families := map[string]string{
-		"ollama": "ollama", "omlx": "omlx", "omlx-6bit": "omlx", "mtplx": "mtplx",
+		"ollama": "ollama", "omlx": "omlx", "omlx-6bit": "omlx", "mtplx": "mtplx", "rec": "rec",
 		"mlx_lm_server": "mlx_lm_server", "llamacpp": "", "openrouter": "", "agy": "", "": "",
 	}
 	for id, want := range families {
@@ -141,7 +143,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	if got := FamilyOr("omlx-6bit"); got != "omlx" {
 		t.Errorf("FamilyOr(omlx-6bit) = %q, want omlx", got)
 	}
-	if got, want := Families(), []string{"mlx_lm_server", "mtplx", "ollama", "omlx"}; !slices.Equal(got, want) {
+	if got, want := Families(), []string{"mlx_lm_server", "mtplx", "ollama", "omlx", "rec"}; !slices.Equal(got, want) {
 		t.Errorf("Families() = %v, want %v", got, want)
 	}
 	if got, want := FamilyProviderIDs("omlx"), []string{"omlx", "omlx-6bit"}; !slices.Equal(got, want) {
@@ -153,6 +155,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 		"omlx-6bit":     {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"mlx_lm_server": {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"mtplx":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
+		"rec":           {Prefix: "openai/", APIKey: "not-needed", SecretRef: true, V1Base: true},
 		"llamacpp":      {Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"},
 		"openrouter":    {Prefix: "openrouter/", SecretRef: true, Cloud: true},
 	}
@@ -169,7 +172,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 			t.Errorf("PolicyFor(%q) found a policy, want none", id)
 		}
 	}
-	if got, want := SeedableLocalIDs(), []string{"ollama", "omlx", "mlx_lm_server", "mtplx"}; !slices.Equal(got, want) {
+	if got, want := SeedableLocalIDs(), []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec"}; !slices.Equal(got, want) {
 		t.Errorf("SeedableLocalIDs() = %v, want %v", got, want)
 	}
 	if got, want := SeedableCloudIDs(), []string{"openrouter"}; !slices.Equal(got, want) {
@@ -184,10 +187,10 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	if got := PathSuppressedBy("ollama"); got != "" {
 		t.Errorf("PathSuppressedBy(ollama) = %q, want empty", got)
 	}
-	if got, want := ServedFamilies(), []string{"mlx_lm_server", "mtplx", "omlx"}; !slices.Equal(got, want) {
+	if got, want := ServedFamilies(), []string{"mlx_lm_server", "mtplx", "omlx", "rec"}; !slices.Equal(got, want) {
 		t.Errorf("ServedFamilies() = %v, want %v", got, want)
 	}
-	for id, want := range map[string]int{"mtplx": 8003, "omlx": 0, "omlx-6bit": 0, "ollama": 0, "custom": 0, "": 0} {
+	for id, want := range map[string]int{"mtplx": 8003, "rec": 11500, "omlx": 0, "omlx-6bit": 0, "ollama": 0, "custom": 0, "": 0} {
 		if got := WtPortFor(id); got != want {
 			t.Errorf("WtPortFor(%q) = %d, want %d", id, got, want)
 		}
@@ -195,6 +198,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	flags := map[string][3]bool{ // running-only, routes-follow-artifact, served
 		"ollama": {false, true, false}, "omlx": {false, false, true},
 		"mtplx": {false, false, true}, "mlx_lm_server": {true, false, true},
+		"rec": {false, false, true},
 	}
 	for f, w := range flags {
 		spec, ok := FamilyByName(f)
@@ -202,7 +206,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 			t.Errorf("FamilyByName(%q) = %+v, %v; want running-only/routes-follow/served %v", f, spec, ok, w)
 		}
 	}
-	tenancy := map[string]Tenancy{"ollama": Shared, "omlx": Pool, "mtplx": Exclusive, "mlx_lm_server": NoTenancy}
+	tenancy := map[string]Tenancy{"ollama": Shared, "omlx": Pool, "mtplx": Exclusive, "rec": Exclusive, "mlx_lm_server": NoTenancy}
 	for f, want := range tenancy {
 		if spec, _ := FamilyByName(f); spec.Tenancy != want {
 			t.Errorf("family %q tenancy = %d, want %d", f, spec.Tenancy, want)
@@ -211,6 +215,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	defaults := map[string][2]string{ // origin, dir
 		"ollama": {"http://localhost:11434", ""}, "omlx": {"http://localhost:8000", "~/.omlx/models"},
 		"mtplx": {"http://localhost:8003", "~/.mtplx/models"}, "mlx_lm_server": {"http://localhost:8001", ""},
+		"rec": {"http://127.0.0.1:11500", ""},
 	}
 	for f, w := range defaults {
 		if spec, _ := FamilyByName(f); spec.DefaultOrigin != w[0] || spec.DefaultModelDir != w[1] {
@@ -240,6 +245,10 @@ func TestSeedRowsMatchLegacyLiterals(t *testing.T) {
 		"mtplx": {
 			"id": "mtplx", "name": "MTPLX", "location": "local", "model_dir": "~/.mtplx/models",
 			"auth": map[string]any{"type": "none", "base_url": "http://localhost:8003/v1"},
+		},
+		"rec": {
+			"id": "rec", "name": "rec", "location": "local",
+			"auth": map[string]any{"type": "none", "base_url": "http://127.0.0.1:11500/v1", "secret_ref": "exec:rec auth token"},
 		},
 		"openrouter": {
 			"id": "openrouter", "name": "OpenRouter", "location": "cloud",
@@ -302,6 +311,11 @@ func TestResultsAreCopies(t *testing.T) {
 	if again, _ := FamilyByName("mtplx"); again.Process.Stop[0] == "mutated" {
 		t.Error("FamilyByName shares Process.Stop with the table")
 	}
+	rf, _ := ProcessFor("rec")
+	rf.Ready.Command[0] = "mutated"
+	if again, _ := ProcessFor("rec"); again.Ready.Command[0] == "mutated" {
+		t.Error("ProcessFor shares Ready.Command with the table")
+	}
 	spec, _ := Lookup("ollama")
 	spec.Seed.Protocols[0] = "mutated"
 	if again, _ := Lookup("ollama"); again.Seed.Protocols[0] == "mutated" {
@@ -338,16 +352,103 @@ func TestProcessSpecMtplx(t *testing.T) {
 	}
 }
 
-// TestProcessFamilies checks only mtplx has process facts: the other families
+// TestProcessFamilies checks only mtplx and rec have process facts: the other families
 // are served by something wt does not spawn, and an engine that found a
 // process for them would try to.
 func TestProcessFamilies(t *testing.T) {
-	if got := ProcessFamilies(); !reflect.DeepEqual(got, []string{"mtplx"}) {
-		t.Errorf("ProcessFamilies() = %v, want [mtplx]", got)
+	if got := ProcessFamilies(); !reflect.DeepEqual(got, []string{"mtplx", "rec"}) {
+		t.Errorf("ProcessFamilies() = %v, want [mtplx rec]", got)
 	}
 	for _, f := range []string{"omlx", "ollama", "mlx_lm_server", ""} {
 		if _, ok := ProcessFor(f); ok {
 			t.Errorf("ProcessFor(%q) present, want absent", f)
+		}
+	}
+}
+
+// TestRecRows pins every value of rec's table rows: the provider order, the
+// process spec wt spawns and recognises it by, the family facts, the LiteLLM
+// policy and the seed written into users' registries. A drifted value would
+// start the wrong command, dial the wrong port or write a different row.
+func TestRecRows(t *testing.T) {
+	got, ok := ProcessFor("rec")
+	if !ok {
+		t.Fatal("ProcessFor(rec) absent")
+	}
+	want := ProcessSpec{
+		Binary:         "rec",
+		Spawn:          []string{"serve", "--port", "{port}"},
+		Stop:           []string{"stop"},
+		PidfileDefault: "/tmp/local-ai-setup-rec.pid",
+		LogDefault:     "/tmp/local-ai-setup-rec.log",
+		PidfileEnv:     "WT_REC_PIDFILE",
+		Subcommand:     "serve",
+		PortFlag:       "--port",
+		Ready: Ready{
+			Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true",
+			ModelPath: "model", EndpointPath: "endpoint",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ProcessFor(rec) = %+v, want %+v", got, want)
+	}
+	f, ok := FamilyByName("rec")
+	if !ok {
+		t.Fatal("family rec absent")
+	}
+	if f.Name != "rec" || f.Tenancy != Exclusive || f.Scope != ScopeMachine || f.WtPort != 11500 ||
+		f.DefaultOrigin != "http://127.0.0.1:11500" || !f.Served || !f.ServedOnly || f.RunningOnly ||
+		f.RoutesFollowArtifact || f.DefaultModelDir != "" {
+		t.Errorf("family rec = %+v", f)
+	}
+	if p, ok := PolicyFor("rec"); !ok || p != (Policy{Prefix: "openai/", APIKey: "not-needed", SecretRef: true, V1Base: true}) {
+		t.Errorf("PolicyFor(rec) = %+v, %v", p, ok)
+	}
+	spec, ok := Lookup("rec")
+	if !ok || spec.Family != "rec" || spec.Seed == nil {
+		t.Fatalf("Lookup(rec) = %+v, %v", spec, ok)
+	}
+	wantSeed := Seed{
+		Name: "rec", Location: "local", AuthType: "none", BaseURL: "http://127.0.0.1:11500/v1",
+		SecretRef: "exec:rec auth token",
+	}
+	if !reflect.DeepEqual(*spec.Seed, wantSeed) {
+		t.Errorf("rec seed = %+v, want %+v", *spec.Seed, wantSeed)
+	}
+	var order []string
+	for _, s := range All() {
+		order = append(order, s.ID)
+	}
+	if w := []string{"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec", "llamacpp", "openrouter"}; !slices.Equal(order, w) {
+		t.Errorf("provider order = %v, want %v", order, w)
+	}
+}
+
+// TestSeedRowRec pins the exact registry row wt writes for rec: it lands in
+// users' registry.toml, so a changed key or value is a visible change (no
+// protocols and no model_dir keys).
+func TestSeedRowRec(t *testing.T) {
+	want := map[string]any{
+		"id": "rec", "name": "rec", "location": "local",
+		"auth": map[string]any{"type": "none", "base_url": "http://127.0.0.1:11500/v1", "secret_ref": "exec:rec auth token"},
+	}
+	if got := SeedRow("rec"); !reflect.DeepEqual(got, want) {
+		t.Errorf("SeedRow(rec) = %#v, want %#v", got, want)
+	}
+}
+
+// TestServedOnlyFlags checks which families are served-only (probe is
+// GET /v1/models alone, no artifacts listed) and which are running-only:
+// mlx_lm_server is both, rec is served-only but wt can start it, and the
+// flags must not leak onto the other families.
+func TestServedOnlyFlags(t *testing.T) {
+	for _, f := range Families() {
+		spec, _ := FamilyByName(f)
+		if want := f == "mlx_lm_server" || f == "rec"; spec.ServedOnly != want {
+			t.Errorf("family %q ServedOnly = %v, want %v", f, spec.ServedOnly, want)
+		}
+		if want := f == "mlx_lm_server"; spec.RunningOnly != want {
+			t.Errorf("family %q RunningOnly = %v, want %v", f, spec.RunningOnly, want)
 		}
 	}
 }

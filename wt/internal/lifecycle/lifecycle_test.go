@@ -276,15 +276,17 @@ func TestTypedErrorMessages(t *testing.T) {
 //
 // maps.Equal compares interface values with ==, so a backend struct that gained
 // a non-comparable field (a slice, map or func) would make this guard panic
-// rather than fail. All three backends are empty structs today, so it is safe;
-// a new backend must stay comparable for this guard to work.
+// rather than fail. ollamaBackend and omlxBackend are empty structs and
+// processServer holds only a family name (a string), so every backend is
+// comparable today; a new backend must stay comparable for this guard to work.
 func TestEvictionsDeriveSingleModelFromBackendRegistry(t *testing.T) {
 	if !maps.Equal(defaultEnv().backends, map[string]backend{
 		"ollama": ollamaBackend{},
 		"omlx":   omlxBackend{},
 		"mtplx":  processServer{"mtplx"},
+		"rec":    processServer{"rec"},
 	}) {
-		t.Fatalf("defaultEnv's backends must be the registry wt can start: ollama, omlx and mtplx, each with its own backend")
+		t.Fatalf("defaultEnv's backends must be the registry wt can start: ollama, omlx, mtplx and rec, each with its own backend")
 	}
 	for family, b := range backendsByFamily {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}

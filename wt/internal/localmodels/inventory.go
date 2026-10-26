@@ -288,12 +288,21 @@ func (s *source) ownDirectory(m config.Model, path string) bool {
 	return filepath.Base(parent) == org || filepath.Clean(s.dir) == filepath.Clean(parent)
 }
 
+// servedOnly reports whether a family's probe is GET /v1/models alone
+// (provider.FamilySpec.ServedOnly): mlx_lm_server and rec. Its probe lists no
+// artifacts, and its running state is what the server says it serves.
+func servedOnly(family string) bool {
+	f, ok := provider.FamilyByName(family)
+	return ok && f.ServedOnly
+}
+
 // knowsArtifacts reports whether this family's probe could enumerate what is
-// pulled or on disk. False for a running-only family (RunningOnly) and for a
-// probe that failed outright (StatusUnreachable), in which case artifacts was
-// never populated — so an empty Artifact carries no information either way.
+// pulled or on disk. False for a served-only family (servedOnly, which covers
+// every RunningOnly one: its probe never lists artifacts) and for a probe that
+// failed outright (StatusUnreachable), in which case artifacts was never
+// populated — so an empty Artifact carries no information either way.
 func (s *source) knowsArtifacts() bool {
-	return !RunningOnly(s.family) && s.status != StatusUnreachable
+	return !RunningOnly(s.family) && !servedOnly(s.family) && s.status != StatusUnreachable
 }
 
 func (s *source) isRunning(name string) bool {
@@ -323,6 +332,16 @@ func (s *source) isRunning(name string) bool {
 			}
 		}
 		return len(s.loaded) > 0 && s.registered == 1
+	default:
+		// Any other served-only family wt can start (rec) serves one model
+		// under its own name: running when a served id name-matches it.
+		if servedOnly(s.family) {
+			for _, l := range s.loaded {
+				if NameMatches(l, name) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -521,13 +540,17 @@ func probeFamily(cfg *config.Config, client *http.Client, family string) *source
 			return s
 		}
 		s.dir, s.artifacts, s.paths = dir, names, paths
-	case "mlx_lm_server":
-		// Running state only: a target+draft pairing cannot be enumerated
-		// (knowsArtifacts stays false), but /v1/models still says whether the
-		// server is serving, with the same trust rules as omlx/mtplx — an
-		// answer is OK, a refused connection is Down (nothing listening), any
-		// other failure is Partial (Running untrustworthy). ServedIDs asks
-		// with the family's key when its registry row names one.
+	default:
+		if !servedOnly(family) {
+			break
+		}
+		// A served-only family (mlx_lm_server, rec): running state only. Its
+		// models cannot be enumerated (knowsArtifacts stays false), but
+		// /v1/models still says whether the server is serving, with the same
+		// trust rules as omlx/mtplx — an answer is OK, a refused connection is
+		// Down (nothing listening), any other failure is Partial (Running
+		// untrustworthy). ServedIDs asks with the family's key when its
+		// registry row names one.
 		loaded, err := ServedIDs(cfg, client, family)
 		if err != nil {
 			s.status = StatusPartial
