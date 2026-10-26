@@ -28,6 +28,8 @@ class ProviderEntry:
     id: str
     name: str = ""
     location: str | None = None  # "local" | "cloud"
+    base_url: str = ""  # auth.base_url
+    secret_ref: str = ""  # auth.secret_ref
 
 
 @dataclass
@@ -136,8 +138,15 @@ def registry_read_path(path: Path | None = None) -> Path:
 def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
     if "id" not in raw:
         raise RegistryError(f"Provider entry missing required `id` field: {raw}")
+    auth = raw.get("auth")
+    if not isinstance(auth, dict):
+        auth = {}
     return ProviderEntry(
-        id=raw["id"], name=raw.get("name", raw["id"]), location=raw.get("location")
+        id=raw["id"],
+        name=raw.get("name", raw["id"]),
+        location=raw.get("location"),
+        base_url=str(auth.get("base_url", "")),
+        secret_ref=str(auth.get("secret_ref", "")),
     )
 
 
