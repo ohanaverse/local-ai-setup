@@ -353,25 +353,11 @@ func (p *PricePlan) Format() string {
 	lines = append(lines, changed...)
 	lines = append(lines, fmt.Sprintf("Unchanged prices: %d", unchanged))
 	if len(p.Removals) > 0 {
-		lines = append(lines, fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)))
-		for _, id := range p.Removals {
-			lines = append(lines, "  "+id)
-		}
-		d := p.RemovalDigest()
-		lines = append(lines, fmt.Sprintf("Removal digest: %s (apply non-interactively with `--yes --approve-removals %s`)", d, d))
+		lines = append(lines, idBlock(fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)), p.Removals)...)
+		lines = append(lines, digestLine(p.RemovalDigest()))
 	}
-	if len(p.Graduations) > 0 {
-		lines = append(lines, fmt.Sprintf("Graduated (manual -> curated) (%d):", len(p.Graduations)))
-		for _, id := range p.Graduations {
-			lines = append(lines, "  "+id)
-		}
-	}
-	if len(p.Kept) > 0 {
-		lines = append(lines, fmt.Sprintf("Kept (manual, not on openrouter.ai) (%d):", len(p.Kept)))
-		for _, id := range p.Kept {
-			lines = append(lines, "  "+id)
-		}
-	}
+	lines = append(lines, graduatedLines(p.Graduations)...)
+	lines = append(lines, keptLines("openrouter.ai", p.Kept)...)
 	for _, w := range p.Warnings {
 		lines = append(lines, "warning: "+w)
 	}

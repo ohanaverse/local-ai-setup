@@ -217,44 +217,66 @@ func cloudSyncCmd(a *app) *cobra.Command {
 	return cmd
 }
 
+// flowOutcome is why a flow changed nothing: code is 2 to 5, or 0 when it did
+// not stop that way. why, when set, is the reason given in place of
+// cloudCodeMeaning's: exit 5 is also a plan that was approved and then found
+// changed under the registry lock (the ollama flow).
+type flowOutcome struct {
+	code int
+	why  string
+}
+
 // cloudSyncOutcome collects what the exit status is made of.
 type cloudSyncOutcome struct {
 	// failed: a step failed in either flow.
 	failed bool
-	// ollamaCode is 2 to 5 when the ollama flow changed nothing, else 0.
-	ollamaCode int
-	// ollamaWhy, when set, is the reason given for ollamaCode in place of
-	// ollamaCodeMeaning's: exit 5 is also a plan that was approved and then
-	// found changed under the registry lock.
-	ollamaWhy string
-	// openrouterCode is 4 or 5 when the openrouter flow changed nothing
-	// because its removals were refused, else 0.
-	openrouterCode int
+	// ollama is 2 to 5 when the ollama flow changed nothing (2 and 3 are
+	// ollama's alone), else zero.
+	ollama flowOutcome
+	// openrouter is 4 or 5 when the openrouter flow changed nothing because
+	// its removals were refused, else zero.
+	openrouter flowOutcome
 }
 
-var ollamaCodeMeaning = map[int]string{
+// cloudCodeMeaning is what each exit code 2 to 5 says about a flow that
+// changed nothing, for either flow.
+var cloudCodeMeaning = map[int]string{
 	2: "an input could not be read",
 	3: "the pricing page changed shape",
 	4: "mass removal refused",
 	5: "removals not approved",
 }
 
+// exitError is the command's result for a flow that changed nothing.
+func (o flowOutcome) exitError(flow string) error {
+	why := o.why
+	if why == "" {
+		why = cloudCodeMeaning[o.code]
+	}
+	return &exitCodeError{code: o.code, err: fmt.Errorf("cloud-sync: the %s flow changed nothing: %s", flow, why)}
+}
+
 // err is the command's result: nil, or an exitCodeError. An ollama-flow code wins
-// over a failed step, as the codes are documented.
+// over an openrouter one, and both over a failed step, as the codes are documented.
 func (r *cloudSyncOutcome) err() error {
 	switch {
-	case r.ollamaCode != 0:
-		why := r.ollamaWhy
-		if why == "" {
-			why = ollamaCodeMeaning[r.ollamaCode]
-		}
-		return &exitCodeError{code: r.ollamaCode, err: fmt.Errorf("cloud-sync: the ollama flow changed nothing: %s", why)}
-	case r.openrouterCode != 0:
-		return &exitCodeError{code: r.openrouterCode, err: fmt.Errorf("cloud-sync: the openrouter flow changed nothing: %s", ollamaCodeMeaning[r.openrouterCode])}
+	case r.ollama.code != 0:
+		return r.ollama.exitError("ollama")
+	case r.openrouter.code != 0:
+		return r.openrouter.exitError("openrouter")
 	case r.failed:
 		return &exitCodeError{code: 1, err: errors.New("cloud-sync: a step failed; see the error lines above")}
 	}
 	return nil
+}
+
+// graduatedClause is the summary's "; graduated N manual model(s) to curated"
+// for a flow that graduated any, else "".
+func graduatedClause(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; graduated %d manual model(s) to curated", n)
 }
 
 // prefixLines writes text to w with every line prefixed by "<flow>: ".
@@ -374,9 +396,9 @@ func removalGate(errOut io.Writer, plan removalPlan, flow string, o cloudSyncOpt
 // as ollamaGate does for the ollama flow: not a mass removal without
 // --force, and under --yes not a plan that removes anything without the
 // digest of a reviewed dry run. It reports false, with the reason printed
-// and res.openrouterCode set, when it may not.
+// and res.openrouter.code set, when it may not.
 func openrouterGate(errOut io.Writer, r *openRouterRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
-	return removalGate(errOut, r.plan, "openrouter", o, func(code int) { res.openrouterCode = code }, removalGateWording{
+	return removalGate(errOut, r.plan, "openrouter", o, func(code int) { res.openrouter.code = code }, removalGateWording{
 		massNoun:  "OpenRouter-priced models",
 		massTotal: r.plan.RemovableCandidates,
 		massCheck: "OpenRouter's list is complete",
@@ -501,9 +523,7 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 			res.failed = true
 		} else {
 			fmt.Fprintf(out, "openrouter: refreshed %d model(s); %d price(s) changed", applied.openrouter.Stamped, applied.openrouter.Changed)
-			if applied.openrouter.Graduated > 0 {
-				fmt.Fprintf(out, "; graduated %d manual model(s) to curated", applied.openrouter.Graduated)
-			}
+			fmt.Fprint(out, graduatedClause(applied.openrouter.Graduated))
 			if applied.openrouter.Removed > 0 {
 				fmt.Fprintf(out, "; removed %d", applied.openrouter.Removed)
 			}
@@ -513,12 +533,10 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 	if ollama != nil {
 		if applied.ollamaStale {
 			fmt.Fprintln(errOut, "ollama: error: the registry changed after the plan was printed, so this is no longer the plan that was approved; nothing was changed — run it again")
-			res.ollamaCode, res.ollamaWhy = 5, errPlanChanged.Error()
+			res.ollama = flowOutcome{code: 5, why: errPlanChanged.Error()}
 		} else {
 			fmt.Fprintf(out, "ollama: updated %d, added %d and removed %d model(s)", applied.ollama.Updated, applied.ollama.Added, applied.ollama.Removed)
-			if applied.ollama.Graduated > 0 {
-				fmt.Fprintf(out, "; graduated %d manual model(s) to curated", applied.ollama.Graduated)
-			}
+			fmt.Fprint(out, graduatedClause(applied.ollama.Graduated))
 			fmt.Fprintln(out)
 			runOllamaWork(ctx, out, errOut, ollama.origin, applied.ollama, &res)
 		}
