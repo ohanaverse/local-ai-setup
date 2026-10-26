@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // TestCloudSyncFlowsAreNamedForTheirProviders pins the flows' names: each is
@@ -55,5 +57,57 @@ func TestCloudSyncFlowsAreNamedForTheirProviders(t *testing.T) {
 	if err != nil || !strings.Contains(help, "\n  openrouter  OpenRouter's per-token prices") || !strings.Contains(help, "\n  ollama      https://ollama.com/pricing, mirrored") ||
 		!strings.Contains(help, "a comma list of openrouter, ollama") || strings.Contains(help, "catalog flow") || strings.Contains(help, "prices flow") {
 		t.Errorf("--help does not name the flows openrouter and ollama (err %v):\n%s", err, help)
+	}
+}
+
+// TestCloudFlowsMatchTheirProviders holds the flow table (cloudFlows) to what
+// the command line and the registry say of a flow (#453): each flow is named
+// for a provider of the table in internal/provider, a name is used once,
+// `--only <name>` selects that flow and no other, selecting every flow by
+// default reaches each one's option, and --help describes each. A flow added
+// to the table without a provider, a way to select it or a line in --help
+// fails here, instead of being reachable some ways and not others.
+func TestCloudFlowsMatchTheirProviders(t *testing.T) {
+	if len(cloudFlows) == 0 || len(cloudFlows) != len(cloudSyncFlows) {
+		t.Fatalf("cloudFlows has %d flows and cloudSyncFlows %v", len(cloudFlows), cloudSyncFlows)
+	}
+	seen := map[string]bool{}
+	for i, f := range cloudFlows {
+		if f.name == "" || seen[f.name] || cloudSyncFlows[i] != f.name {
+			t.Errorf("flow %d (%q): empty, repeated or out of order against cloudSyncFlows %v", i, f.name, cloudSyncFlows)
+		}
+		seen[f.name] = true
+		if _, ok := provider.Lookup(f.name); !ok {
+			t.Errorf("flow %q names no provider of the table in internal/provider", f.name)
+		}
+
+		var only cloudSyncOpts
+		if err := selectFlows(f.name, true, &only); err != nil {
+			t.Fatalf("--only %s: %v", f.name, err)
+		}
+		if got := selectedFlows(only); len(got) != 1 || got[0] != f.name {
+			t.Errorf("--only %s selected %v, want only that flow", f.name, got)
+		}
+	}
+	var all cloudSyncOpts
+	if err := selectFlows("", false, &all); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectedFlows(all); strings.Join(got, ",") != strings.Join(cloudSyncFlows, ",") {
+		t.Errorf("no --only selected %v, want every flow %v", got, cloudSyncFlows)
+	}
+
+	var help bytes.Buffer
+	cmd := cloudSyncCmd(&app{cfg: &config.Config{}})
+	cmd.SetArgs([]string{"--help"})
+	cmd.SetOut(&help)
+	cmd.SetErr(&help)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range cloudFlows {
+		if !strings.Contains(help.String(), "\n  "+f.name+" ") {
+			t.Errorf("--help has no line describing the %s flow:\n%s", f.name, help.String())
+		}
 	}
 }

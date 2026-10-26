@@ -71,7 +71,7 @@ func (c *ollamaRun) replan(entries []cloudsync.Entry) *cloudsync.CatalogPlan {
 // the row every catalog entry names, and the one that says which daemon the
 // ollama CLI is pinned to.
 func hasOllamaProvider(providers []cloudsync.Provider) bool {
-	return slices.ContainsFunc(providers, func(p cloudsync.Provider) bool { return p.ID == "ollama" })
+	return slices.ContainsFunc(providers, func(p cloudsync.Provider) bool { return p.ID == flowOllama })
 }
 
 // planOllamaFlow reads the page and `ollama list`, resolves the cloud tags
@@ -168,7 +168,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 		}
 	}
 	run.printed = run.plan.Format()
-	prefixLines(out, "ollama", run.printed)
+	prefixLines(out, flowOllama, run.printed)
 	return run
 }
 
@@ -204,7 +204,7 @@ func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncO
 	if gone := c.plan.EntriesGone(); gone != len(c.plan.Removals) {
 		massNote = " (re-tagged entries are not counted)"
 	}
-	return removalGate(errOut, c.plan, "ollama", o, func(code int) { res.ollama.code = code }, removalGateWording{
+	return removalGate(errOut, c.plan, flowOllama, o, func(code int) { res.ollama.code = code }, removalGateWording{
 		massNoun:  "ollama cloud entries",
 		massTotal: c.plan.CloudEntries,
 		massNote:  massNote,
