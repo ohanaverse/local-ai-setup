@@ -673,17 +673,40 @@ def test_stop_with_an_unreadable_secret_still_stops_and_polls_keyless():
     assert "key" not in closed.call_args.kwargs
 
 
+_STILL = "fake still reports an instance after stop (ready={}); it may still be shutting down"
+
+
+@pytest.fixture
+def short_gone_budget():
+    """A tiny budget and no pause for the wait until a command-json
+    provider's status command reports no instance, so a status stuck on a
+    value ends the wait in milliseconds."""
+    with (
+        patch(f"{PS}.INSTANCE_GONE_TIMEOUT", 0.05),
+        patch(f"{PS}.INSTANCE_GONE_POLL", 0.0),
+    ):
+        yield
+
+
 @pytest.mark.parametrize(
     ("closed", "ready", "code", "warning"),
     [
         (True, None, 0, None),
-        (True, False, 1, None),
-        (True, True, 0, "fake still listening on port 9100"),
+        (True, None, 1, None),
+        (True, False, 0, _STILL.format("false")),
+        (True, True, 0, _STILL.format("true")),
         (False, None, 0, "fake still listening on port 9100"),
         (True, True, 1, "fake stop failed"),
+        (True, False, 1, "fake stop failed"),
     ],
 )
-def test_stop_command_json_confirms_with_status_and_port(closed, ready, code, warning):
+def test_stop_command_json_confirms_with_status_and_port(
+    short_gone_budget, closed, ready, code, warning
+):
+    """A command-json stop is confirmed only when the port is closed AND the
+    status command reports no instance at all (it fails: None). A status
+    that still answers — ready false included — is an instance that has not
+    gone yet."""
     backend = _cj_backend()
     with (
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
@@ -693,6 +716,111 @@ def test_stop_command_json_confirms_with_status_and_port(closed, ready, code, wa
     ):
         assert backend.stop_and_wait() == warning
     assert run.call_args.args[0] == [BIN, "stop", "--port", "9100"]
+
+
+def test_stop_command_json_waits_until_status_reports_no_instance():
+    """rec's status exits 0 with ready:false while the instance shuts down
+    (and while it loads); the process still holds its memory then. The stop
+    is clean only once the status command fails, and not one poll sooner."""
+    backend = _cj_backend()
+    answers = iter([False, False, False, None])
+    with (
+        patch(f"{PS}.INSTANCE_GONE_POLL", 0.0),
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()),
+        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch(
+            f"{PS}.probe.command_json", side_effect=lambda argv, *, path, timeout=5.0: next(answers)
+        ) as cj,
+    ):
+        assert backend.stop_and_wait() is None
+    assert cj.call_count == 4
+
+
+def test_stop_command_json_status_gone_at_once_is_one_poll():
+    backend = _cj_backend()
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.subprocess.run", return_value=_run_result(1)),
+        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch(f"{PS}.probe.command_json", return_value=None) as cj,
+    ):
+        assert backend.stop_and_wait() is None
+    cj.assert_called_once_with([BIN, "status"], path="ready")
+
+
+def test_stop_a_loading_instance_is_not_reported_stopped(short_gone_budget):
+    """A loading instance has its port closed and a status of ready:false —
+    the exact reading the old check took for "stopped". It must warn."""
+    backend = _cj_backend()
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()),
+        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch(f"{PS}.probe.command_json", side_effect=_status({"ready": False})),
+    ):
+        warning = backend.stop_and_wait()
+    assert warning == _STILL.format("false")
+
+
+def test_stop_models_list_never_runs_a_status_command():
+    """mtplx's stop is unchanged: the port poll alone, with its old budget."""
+    backend = _mtplx()
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value="/b/mtplx"),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()),
+        patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+        patch(f"{PS}.probe.command_json") as cj,
+    ):
+        assert backend.stop_and_wait() is None
+    cj.assert_not_called()
+    closed.assert_called_once_with(
+        "http://localhost:8003/v1/models", timeout=probe.STOP_WAIT_TIMEOUT
+    )
+
+
+def test_start_command_json_waits_for_no_instance_before_spawning():
+    backend = _cj_backend()
+    answers = iter([False, None])
+    with (
+        patch(f"{PS}.INSTANCE_GONE_POLL", 0.0),
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch(
+            f"{PS}.probe.command_json", side_effect=lambda argv, *, path, timeout=5.0: next(answers)
+        ) as cj,
+        patch.object(backend, "_pidproc") as pidproc,
+    ):
+        backend.start(backend.resolve("m", ()))
+    assert cj.call_count == 2
+    pidproc.spawn.assert_called_once()
+
+
+def test_start_command_json_refuses_to_spawn_beside_a_lingering_instance(short_gone_budget):
+    """One instance per machine: spawning while the old one still reports
+    itself (shutting down or loading) would put two beside each other."""
+    backend = _cj_backend()
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch(f"{PS}.probe.command_json", side_effect=_status({"ready": False})),
+        patch.object(backend, "_pidproc") as pidproc,
+        pytest.raises(LifecycleError, match=r"^fake still reports an instance after stop"),
+    ):
+        backend.start(backend.resolve("m", ()))
+    pidproc.spawn.assert_not_called()
+
+
+def test_start_models_list_runs_no_status_command():
+    backend = _mtplx()
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value="/b/mtplx"),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch(f"{PS}.probe.command_json") as cj,
+        patch.object(backend, "_pidproc"),
+    ):
+        backend.start(backend.resolve("Org/M", ()))
+    cj.assert_not_called()
 
 
 def test_replace_own_occupant_raises_the_stop_warning():

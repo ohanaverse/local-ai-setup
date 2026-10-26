@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ipaddress
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import TypedDict
 from urllib.parse import urlsplit, urlunsplit
@@ -38,6 +39,13 @@ from .base import PidfileTrackedBackend, StartPlan
 WARM_TIMEOUT = 120.0
 # The pre-spawn wait for the previous occupant to release the port.
 PREBIND_TIMEOUT = 10.0
+# A command-json provider's instance is gone only when its status command
+# reports none at all (it fails). rec's status still answers, ready:false,
+# while an instance loads and while it shuts down, and an instance holding
+# several GB takes seconds to let go of them. The models-list kind keeps
+# probe.STOP_WAIT_TIMEOUT unchanged.
+INSTANCE_GONE_TIMEOUT = 30.0
+INSTANCE_GONE_POLL = 1.0
 
 
 class _KeyArg(TypedDict, total=False):
@@ -303,6 +311,14 @@ class ProcessServerBackend(PidfileTrackedBackend):
         # the new one may die at once and leave a stale pidfile. A fast poll
         # (returns as soon as the port is closed) kept as a safety net.
         probe.wait_for_port_closed(addr.health_url, timeout=PREBIND_TIMEOUT)
+        if self.spec.ready.kind == "command-json":
+            # A closed port is not enough: an instance that is still loading
+            # or still shutting down has its port closed too, and spawning
+            # beside it would put two instances (and their memory) side by
+            # side.
+            lingering = self._lingering_status(bin_path)
+            if lingering is not None:
+                raise LifecycleError(self._lingering_warning(lingering))
         self._proc = self._pidproc.spawn(
             [bin_path, *expand(self.spec.spawn, model=plan.model, port=addr.port)]
         )
@@ -358,7 +374,8 @@ class ProcessServerBackend(PidfileTrackedBackend):
     def stop_and_wait(self) -> str | None:
         """Run the spec's stop command, then confirm the server let go:
         `models-list` polls the port closed; `command-json` also needs the
-        status command to stop reporting ready.
+        status command to report no instance at all (`_lingering_status`):
+        ready:false still means an instance, shutting down or loading.
 
         The confirmation runs whatever the stop command's exit code: a stop
         command may exit non-zero when nothing is running (`mtplx stop` with
@@ -385,10 +402,34 @@ class ProcessServerBackend(PidfileTrackedBackend):
         stopped = probe.port_closed_within(
             addr.health_url, timeout=probe.STOP_WAIT_TIMEOUT, **_key_arg(key)
         )
+        lingering: object | None = None
         if stopped and self.spec.ready.kind == "command-json":
-            stopped = not self._reports_ready(bin_path)
+            lingering = self._lingering_status(bin_path)
+            stopped = lingering is None
         if stopped:
             return None
         if result.returncode != 0:
             return result.stderr.strip() or result.stdout.strip() or f"{binary} stop failed"
+        if lingering is not None:
+            return self._lingering_warning(lingering)
         return f"{binary} still listening on port {addr.port}"
+
+    def _lingering_status(self, bin_path: str) -> object | None:
+        """Poll the status command until it reports no instance (it fails:
+        `command_json` gives None) and return None; at INSTANCE_GONE_TIMEOUT
+        return the last value it still gave. Any answer — ready false
+        included — is an instance that is still there (loading, or shutting
+        down and holding its memory). A status binary that cannot run gives
+        None, which counts as gone."""
+        deadline = time.monotonic() + INSTANCE_GONE_TIMEOUT
+        while True:
+            value = self._status(bin_path, self.spec.ready.path)
+            if value is None or time.monotonic() >= deadline:
+                return value
+            time.sleep(INSTANCE_GONE_POLL)
+
+    def _lingering_warning(self, value: object) -> str:
+        return (
+            f"{self.spec.binary} still reports an instance after stop "
+            f"(ready={_as_text(value)}); it may still be shutting down"
+        )
