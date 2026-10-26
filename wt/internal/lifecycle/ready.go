@@ -30,11 +30,11 @@ type readyState struct {
 // a keyed request the server refuses is a *KeyRefusedError.
 //
 // ReadyCommandJSON: bin runs with spec.Ready.Command, bounded by
-// e.readyCmdTimeout; its stdout (stderr is ignored, #458) must be one JSON object whose value at the
-// dot-separated Path renders as Equals. A failed command, empty or invalid
-// output, a missing path or a timeout is not ready with a nil error — a
-// server still loading answers exactly that way (rec exits 1 while nothing
-// is reachable) and the wait goes on.
+// e.readyCmdTimeout; its stdout (stderr is ignored, #458) must be one JSON
+// object whose value at the dot-separated Path renders as Equals. A failed
+// command, empty or invalid output, a missing path or a timeout is not ready
+// with a nil error — a server still loading answers exactly that way (rec
+// exits 1 while nothing is reachable) and the wait goes on.
 func (e *env) readyNow(ctx context.Context, spec provider.ProcessSpec, bin, modelsURL, model, key string) (readyState, error) {
 	switch spec.Ready.Kind {
 	case provider.ReadyModelsList:

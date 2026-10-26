@@ -121,8 +121,9 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	return cmd.CombinedOutput()
 }
 
-// runCommandStdout is runCommand returning stdout alone; stderr is dropped,
-// including the stderr text of a failed command's *exec.ExitError.
+// runCommandStdout is runCommand returning stdout alone. Stderr is not part of
+// the returned bytes; exec's Output still keeps a capped copy in a failed
+// command's *exec.ExitError.Stderr, which the readiness check does not read.
 func runCommandStdout(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = commandWaitDelay
