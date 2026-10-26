@@ -87,6 +87,7 @@ basis = "measured"
 open_weights = true
 tool_call = true
 context = 1048576
+context_basis = "host"
 card_kind = "huggingface"
 card_url = "https://huggingface.co/zai-org/GLM-5.3"
 aligned_score = 44.3

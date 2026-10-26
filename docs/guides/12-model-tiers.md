@@ -631,7 +631,7 @@ MODELTIERS_OUT="$SCRATCH/tiers.toml" uv run --directory modeltiers modeltiers sh
 
 ## Gotchas
 
-- **Only wt reads the file.** Its picker shows the tier (the TIER column and the line under the table) and the score orders the picker's model rows, so it also sets the default row; a claude launch reads a cloud model's `context` and sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from it (that value is models.dev's: the largest among the key's rows when the model's own host has none, so a host that serves less is declared too much). No route depends on a tier, and a missing file just leaves every model unscored and every launch without a declared window.
+- **Only wt reads the file.** Its picker shows the tier (the TIER column and the line under the table) and the score orders the picker's model rows, so it also sets the default row; a claude launch reads a cloud model's `context` and sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from it (only a window from the model's own host row, `context_basis = "host"`: when the host has no row the file still records the largest among the key's rows, as `context_basis = "largest_row"`, for the tier gate, and a launch does not declare it). No route depends on a tier, and a missing file just leaves every model unscored and every launch without a declared window.
 - **A tier is a capability band, not a price or a speed.** Cost is a column in the wt picker beside it. No keyless source gives measured speed.
 - **Two rows of one model can differ.** The context gate uses the context the row's own host serves. Two hosts of one key can therefore end in different tiers.
 - **A local row's context is unknown,** so the context gate is skipped for it and the entry says so in a note.

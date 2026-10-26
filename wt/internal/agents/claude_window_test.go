@@ -14,8 +14,10 @@ import (
 
 // windowIndex is a tiers index with the given context windows by
 // "provider/model_name"; a window of 0 is an entry that has none, as a local
-// build has.
-func windowIndex(t *testing.T, windows map[string]int) tiers.Index {
+// build has. Each window is the model's host's (context_basis "host") except
+// for the ids named in largest, whose basis is "largest_row": models.dev's
+// largest row, which no host serves (#470).
+func windowIndex(t *testing.T, windows map[string]int, largest ...string) tiers.Index {
 	t.Helper()
 	doc := ""
 	for _, id := range slices.Sorted(maps.Keys(windows)) {
@@ -23,6 +25,11 @@ func windowIndex(t *testing.T, windows map[string]int) tiers.Index {
 		doc += "[[models]]\nprovider_id = \"" + provider + "\"\nmodel_name = \"" + name + "\"\n"
 		if w := windows[id]; w > 0 {
 			doc += "context = " + strconv.Itoa(w) + "\n"
+			if slices.Contains(largest, id) {
+				doc += "context_basis = \"largest_row\"\n"
+			} else {
+				doc += "context_basis = \"host\"\n"
+			}
 		}
 	}
 	ix, err := tiers.Parse([]byte(doc))
@@ -101,12 +108,14 @@ func TestClaudeWindowYieldsToTheUsersOwnValue(t *testing.T) {
 	}
 }
 
-// TestClaudeBuildSlotsDeclaresTheDefaultSlotsWindow pins the slot-profile
-// rule: the variable is one value per session, so it carries the default
-// slot's window and the other slots' are ignored; a profile's own env or
-// config_content.env value for it wins; and a default slot with no window
-// declares nothing even when another slot has one.
-func TestClaudeBuildSlotsDeclaresTheDefaultSlotsWindow(t *testing.T) {
+// TestClaudeBuildSlotsDeclaresTheSmallestSlotWindow pins the slot-profile
+// rule (#471): the variable is one value per session and /model can move the
+// session onto any slot, so it carries the smallest window among the slots
+// that have one, provided the default slot has one. A slot with no window (a
+// local build) is ignored and does not veto; a default slot with none
+// declares nothing even when another slot has one; and a profile's own env or
+// config_content.env value for it wins.
+func TestClaudeBuildSlotsDeclaresTheSmallestSlotWindow(t *testing.T) {
 	stubTiers(t, windowIndex(t, map[string]int{
 		"openrouter/big":   1000000,
 		"openrouter/small": 200000,
@@ -132,8 +141,11 @@ func TestClaudeBuildSlotsDeclaresTheDefaultSlotsWindow(t *testing.T) {
 		return slotSettings(t, sc.Args)["env"].(map[string]any)
 	}
 
-	if got := build(t, nil)[claudeContextVar]; got != "1000000" {
-		t.Errorf("default sonnet: %s = %v, want the sonnet slot's 1000000, not opus's", claudeContextVar, got)
+	if got := build(t, nil)[claudeContextVar]; got != "200000" {
+		t.Errorf("default sonnet 1M, opus 200K: %s = %v, want the smallest, 200000 (a /model opus must not keep 1M)", claudeContextVar, got)
+	}
+	if got := build(t, func(in *profiles.SlotBuildInput) { in.Models["opus"] = model("openrouter/big") })[claudeContextVar]; got != "1000000" {
+		t.Errorf("every slot with a window has 1M, one local slot beside them: %s = %v, want 1000000 (the local slot does not veto)", claudeContextVar, got)
 	}
 	if _, set := build(t, func(in *profiles.SlotBuildInput) { in.Default = "haiku" })[claudeContextVar]; set {
 		t.Error("default haiku (a local build, no window) declared a window from another slot")
@@ -146,6 +158,60 @@ func TestClaudeBuildSlotsDeclaresTheDefaultSlotsWindow(t *testing.T) {
 	})[claudeContextVar]
 	if got != "5151" {
 		t.Errorf("config_content.env value lost: %v", got)
+	}
+}
+
+// TestClaudeWindowDeclaresOnlyAHostsWindow pins #470: a window that is
+// models.dev's largest row for the model (context_basis "largest_row"), or
+// that comes from a tiers.toml written before the key existed (no basis), is
+// not what any host serves, so it is never declared: Claude Code would compact
+// against a window the provider rejects. A host window still is. This holds
+// for a single-model launch and for a slot profile alike.
+func TestClaudeWindowDeclaresOnlyAHostsWindow(t *testing.T) {
+	oldFile, err := tiers.Parse([]byte("[[models]]\nprovider_id = \"ollama\"\nmodel_name = \"glm-5.3:cloud\"\ncontext = 1048576\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		ix   tiers.Index
+		want []string
+	}{
+		"host":               {windowIndex(t, map[string]int{"ollama/glm-5.3:cloud": 1048576}), []string{"1048576"}},
+		"largest row":        {windowIndex(t, map[string]int{"ollama/glm-5.3:cloud": 1048576}, "ollama/glm-5.3:cloud"), nil},
+		"file with no basis": {oldFile, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubTiers(t, tc.ix)
+			m := config.Model{ID: "ollama/glm-5.3:cloud", ProviderID: "ollama", ModelName: "glm-5.3:cloud"}
+			if got := envValues(claudeDriver{}.Build(m, false, litellmRoute(m)).Env, claudeContextVar); !slices.Equal(got, tc.want) {
+				t.Errorf("single-model: %s entries = %v, want %v", claudeContextVar, got, tc.want)
+			}
+			in := slotTestInput(false)
+			for _, slot := range claudeSlots {
+				in.Models[slot] = m
+			}
+			sc, err := claudeDriver{}.BuildSlots(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, set := slotSettings(t, sc.Args)["env"].(map[string]any)[claudeContextVar].(string)
+			if (tc.want != nil) != set || (set && v != tc.want[0]) {
+				t.Errorf("slot profile: %s = %q (set %v), want %v", claudeContextVar, v, set, tc.want)
+			}
+		})
+	}
+	// A slot whose window is only the largest row is a slot with no window:
+	// ignored beside a host window, not lowering it and not vetoing it.
+	stubTiers(t, windowIndex(t, map[string]int{"openrouter/a": 1000000, "openrouter/b": 100000}, "openrouter/b"))
+	in := slotTestInput(false)
+	in.Models["sonnet"] = config.Model{ID: "openrouter/a", ProviderID: "openrouter", ModelName: "a"}
+	in.Models["haiku"] = config.Model{ID: "openrouter/b", ProviderID: "openrouter", ModelName: "b"}
+	sc, err := claudeDriver{}.BuildSlots(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := slotSettings(t, sc.Args)["env"].(map[string]any)[claudeContextVar]; got != "1000000" {
+		t.Errorf("a slot with only a largest-row window: %s = %v, want the host window 1000000", claudeContextVar, got)
 	}
 }
 
@@ -181,5 +247,19 @@ func TestClaudeBuildSlotsOpusplanTakesTheSmallerWindow(t *testing.T) {
 	}
 	if v, ok := run("openrouter/big", "ollama/local"); ok {
 		t.Errorf("one slot with no window declared %q, want nothing", v)
+	}
+	// And a slot outside the pair that has a smaller window lowers it, as for
+	// any default (#471): /model can still move the session there.
+	in := slotTestInput(false)
+	in.Default = claudeOpusplan
+	big := config.Model{ID: "openrouter/big", ProviderID: "openrouter", ModelName: "big"}
+	in.Models["opus"], in.Models["sonnet"] = big, big
+	in.Models["haiku"] = config.Model{ID: "openrouter/small", ProviderID: "openrouter", ModelName: "small"}
+	sc, err := claudeDriver{}.BuildSlots(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := slotSettings(t, sc.Args)["env"].(map[string]any)[claudeContextVar]; v != "200000" {
+		t.Errorf("opusplan with a smaller haiku: %v, want 200000", v)
 	}
 }

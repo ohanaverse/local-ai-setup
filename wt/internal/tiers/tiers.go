@@ -65,7 +65,17 @@ type Entry struct {
 	// Context is the model's context window in tokens as the file records it
 	// (`context`, from models.dev, cloud models only); 0 when it has none.
 	Context int
+	// ContextBasis says where Context came from (`context_basis`): ContextBasisHost,
+	// the model's own host row, or "largest_row", the largest of the key's rows
+	// (what the tier gate wants, and not a window any host serves). "" when the
+	// file has none, as one written before the key existed. A reader that
+	// declares Context as the window a host serves takes ContextBasisHost alone.
+	ContextBasis string
 }
+
+// ContextBasisHost is the ContextBasis of a window read from the model's own
+// host row.
+const ContextBasisHost = "host"
 
 // Rated reports whether the entry carries a tier the picker shows: a code of
 // M, D, S or Q on an entry whose tier is not unrated.
@@ -220,6 +230,7 @@ type fileDoc struct {
 		Confidence     string   `toml:"confidence"`
 		AlignedScore   any      `toml:"aligned_score"`
 		Context        any      `toml:"context"`
+		ContextBasis   any      `toml:"context_basis"`
 		AlignedSources []string `toml:"aligned_sources"`
 	} `toml:"models"`
 }
@@ -249,6 +260,11 @@ func Parse(data []byte) (Index, error) {
 			Code:       m.Code,
 			Confidence: m.Confidence,
 			Sources:    len(m.AlignedSources),
+		}
+		// A context_basis that is not a string reads as none, as a context
+		// that is not a number does: one odd key must not unrate every model.
+		if b, ok := m.ContextBasis.(string); ok {
+			e.ContextBasis = b
 		}
 		// context is the window models.dev gives a cloud model, in tokens; a
 		// local build carries none (the served window is unknown). A value

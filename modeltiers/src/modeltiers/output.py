@@ -30,8 +30,9 @@ def _rating(rated: Rated, contracts: Contracts, *, basis: str | None = None) -> 
     """The fields a `[[models]]` and a `[[candidates]]` entry share, from
     `tier` on. `basis` is an inventory row's alone. A field whose value is
     unknown is left out: `reason` on a rated entry, `open_weights` and
-    `tool_call` for a key with no models.dev rows, `context` when no row
-    gives one, `card_kind` with `card_url` when no link is known, and
+    `tool_call` for a key with no models.dev rows, `context` (and its
+    `context_basis`, "host" or "largest_row") when no row gives one,
+    `card_kind` with `card_url` when no link is known, and
     `aligned_score` with `aligned_sources` when no score could be aligned."""
     evidence, facts, verdict, aligned = rated.evidence, rated.facts, rated.verdict, rated.aligned
     entry: Document = {"tier": verdict.tier, "code": contracts.code(verdict.tier)}
@@ -46,6 +47,8 @@ def _rating(rated: Rated, contracts: Contracts, *, basis: str | None = None) -> 
         entry["tool_call"] = facts.tool_call
     if facts.context is not None:
         entry["context"] = facts.context
+        if facts.context_basis is not None:
+            entry["context_basis"] = facts.context_basis
     if rated.card is not None:
         entry["card_kind"] = rated.card.kind
         entry["card_url"] = rated.card.url

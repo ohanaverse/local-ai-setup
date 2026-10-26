@@ -87,6 +87,7 @@ def test_a_rated_model_entry_has_every_field(document: dict[str, Any]) -> None:
         "open_weights": True,
         "tool_call": True,
         "context": 1048576,
+        "context_basis": "host",
         "card_kind": "huggingface",
         "card_url": "https://huggingface.co/zai-org/GLM-5.3",
         "aligned_score": 44.3,
@@ -120,6 +121,7 @@ def test_a_rated_model_entry_has_every_field(document: dict[str, Any]) -> None:
         "open_weights",
         "tool_call",
         "context",
+        "context_basis",
         "card_kind",
         "card_url",
         "aligned_score",
@@ -239,6 +241,7 @@ def test_a_candidate_has_open_weights_and_no_inventory_fields(document: dict[str
         "open_weights",
         "tool_call",
         "context",
+        "context_basis",
         "card_kind",
         "card_url",
         "aligned_score",
@@ -253,7 +256,11 @@ def test_a_candidate_has_open_weights_and_no_inventory_fields(document: dict[str
         "marathon",
         "M",
     )
-    assert (opus["open_weights"], opus["context"]) == (False, 1000000)
+    assert (opus["open_weights"], opus["context"], opus["context_basis"]) == (
+        False,
+        1000000,
+        "largest_row",
+    )
     assert [c["canonical"] for c in document["candidates"]] == [
         "anthropic/claude-opus-5-5",
         "anthropic/claude-fable-5",
@@ -270,7 +277,7 @@ def test_a_key_with_no_models_dev_rows_has_no_tool_call_or_open_weights(
     assignment = pipeline.assign_all(pipeline.resolve_all(inventory, sources, declared), rule)
     document = output.build_document(assignment, inventory, sources, T0)
     (entry,) = [c for c in document["candidates"] if c["canonical"] == "alibaba/qwen3.8-max"]
-    assert not {"tool_call", "open_weights", "context"} & set(entry)
+    assert not {"tool_call", "open_weights", "context", "context_basis"} & set(entry)
     # Nothing unresolved is left at or above a floor: the array is absent.
     assert "unresolved" not in document
     assert "[[unresolved]]" not in output.render(document)
