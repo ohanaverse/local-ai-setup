@@ -1,7 +1,7 @@
 """Guards on the autouse suite-hermeticity fixtures in tests/conftest.py.
 
 The lifecycle backends drive real local-model binaries (`omlx stop`,
-`mtplx stop`, `mlx_lm.server`) and real LaunchAgents. Until one global
+`mtplx stop`, `rec stop`, `mlx_lm.server`) and real LaunchAgents. Until one global
 allow-listing wrapper covered all of them, only per-test stubbing stood
 between the suite and the developer's live models — one new test that
 forgot to stub would tear down a model an agent was mid-request against.
@@ -28,6 +28,11 @@ import pytest
         # resolve_mlx_lm_bin() both hand the backends a resolved path —
         # the allow-list has to match on the BASENAME, not argv[0] whole.
         ["/opt/homebrew/bin/mtplx", "stop"],
+        # rec is installed on the developer's machine; `rec stop` would tear
+        # down a live model and `rec serve` load one. A flag the real rec
+        # rejects, plus an absolute path, as for mtplx.
+        ["rec", "--llmbench-hermetic-no-such-flag"],
+        ["/Users/nobody/.local/bin/rec", "stop"],
         ["/opt/homebrew/Cellar/omlx/0.10.0/libexec/bin/mlx_lm.server", "--model", "x"],
     ],
 )
