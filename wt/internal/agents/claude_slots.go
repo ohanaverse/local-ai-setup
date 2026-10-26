@@ -261,6 +261,12 @@ func claudeSlotSettings(in profiles.SlotBuildInput) (string, error) {
 	if in.Default == claudeOpusplan {
 		env["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "1"
 	}
+	// Claude Code does not know the default slot's model and would assume a
+	// 200K window: declare the one tiers.toml records, unless the profile or
+	// the user named the variable themselves (#405).
+	if w, ok := claudeWindowSetting(env, in); ok {
+		env[claudeContextVar] = w
+	}
 	// Repeated here so an env block in the user's own settings files cannot
 	// redirect the session.
 	env["ANTHROPIC_BASE_URL"] = in.ProxyOrigin

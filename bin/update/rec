@@ -5,8 +5,9 @@
 # replaces it with the latest GitHub release. The one thing that must not
 # happen is replacing it under a running server, so a live `rec status`
 # ("ready":true) turns the update into a manual step: `wt stop rec` first.
-# --check and --dry-run go through the common `run`/finish helpers, so they
-# change nothing.
+# --check reports stale when a newer release exists (the update is available,
+# not applied), whether or not a server runs; --check and --dry-run go through
+# the common `run`/finish helpers, so they change nothing.
 #
 # Usage: update/rec [--no-network] [--dry-run] [--check]
 
@@ -25,7 +26,7 @@ server is running.
 
   --no-network  skip the release lookup (the status is then manual)
   --dry-run     print `rec update -y` instead of running it
-  --check       report current, or manual when an update is available
+  --check       report current, or stale when an update is available
 EOF
 }
 
@@ -67,13 +68,20 @@ if [ "$installed" != "unknown" ]; then
     fi
 fi
 
+# --check changes nothing, so a running server is no obstacle to saying an
+# update is available; the refusal below belongs to the update itself.
+if [ "$UPDATE_CHECK" -eq 1 ]; then
+    # An unreadable installed version cannot be compared, so "available" would
+    # be a guess (finish_against_published reports the same case as manual).
+    if [ "$installed" = "unknown" ]; then
+        update_finish manual "installed version unknown, $latest published — run 'rec update'"
+    fi
+    update_finish stale "$installed installed, $latest available"
+fi
+
 # A running server must never be updated underneath.
 if rec status 2> /dev/null | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'; then
     update_finish manual "$installed installed, $latest available, but a rec server is running — stop rec first (\`wt stop rec\`), then rerun"
-fi
-
-if [ "$UPDATE_CHECK" -eq 1 ]; then
-    update_finish manual "$installed installed, $latest available — run update/rec without --check"
 fi
 
 run rec update -y || update_fail "rec update failed"
@@ -83,6 +91,11 @@ fi
 
 after=$(rec --version 2> /dev/null | sed -n 's/^rec //p' | head -1)
 after=${after:-unknown}
+if [ "$after" = "unknown" ] || [ "$installed" = "unknown" ]; then
+    # rec update -y succeeded, but a version that cannot be read cannot show
+    # whether it moved; "still $installed" would be a false failure.
+    update_finish manual "rec update ran, but the version cannot be read (was $installed, now $after) — check 'rec --version'"
+fi
 if [ "$after" = "$installed" ]; then
     update_finish failed "rec update ran but rec is still $installed ($latest published)"
 fi

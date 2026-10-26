@@ -85,6 +85,12 @@ func (claudeDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 	// sets one of these still overrides wt's value.
 	lc.ClearEnv = claudeSlotKeys()
 	lc.Env = append(lc.Env, claudeSingleModelSlotEnv(r.ModelRef, m)...)
+	// Claude Code does not know this model's window and would assume 200K:
+	// declare the one tiers.toml records, when it has one and the user has
+	// not set their own (#405).
+	if w := claudeWindowEnv(m); w != "" {
+		lc.Env = append(lc.Env, w)
+	}
 	return lc
 }
 
