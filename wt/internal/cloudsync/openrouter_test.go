@@ -655,3 +655,59 @@ func TestPlanPricesRemovesWhatTheListLacksAndHintsAtAliases(t *testing.T) {
 		t.Errorf("a plan with no removal carries the alias note:\n%s", clean)
 	}
 }
+
+// TestBothPricePathsAgreeOnWhatIsUsable pins #474 part 1: the matched path
+// and the variant path ask one function (usablePrice) whether a listed price
+// can be stored, so a variant is never priced from a base that the matched
+// path would warn about. For each shape of price the plan for a listed model
+// stores it exactly when usablePrice says so (and warns exactly when it does
+// not), and the plan for a `:thinking` variant of that model is priced from
+// it exactly when usablePrice says so.
+func TestBothPricePathsAgreeOnWhatIsUsable(t *testing.T) {
+	for name, p := range map[string]APIPrice{
+		"input and output": {Input: f(1), Output: f(2)},
+		"input only":       {Input: f(1)},
+		"cache only":       {Cache: f(0.1)},
+		"free":             {Input: f(0), Output: f(0)},
+		"no price":         {},
+		"skipped":          {Skipped: []string{"prompt"}},
+		"unusable":         {Input: f(1), Output: f(2), Unusable: "windows overlap"},
+		"skipped and one":  {Input: f(1), Skipped: []string{"completion"}},
+	} {
+		api := healthyList()
+		api["vendor/m"] = p
+		usable := usablePrice(p)
+
+		matched := PlanPrices([]Entry{orEntry("m", nil)}, api)
+		if stored := len(matched.Matched) == 1; stored != usable {
+			t.Errorf("%s: the listed model was stored = %v, usablePrice = %v", name, stored, usable)
+		}
+		if warned := len(matched.Warnings) == 1; warned == usable {
+			t.Errorf("%s: warnings = %q for usablePrice = %v, want exactly one warning when it is not usable", name, matched.Warnings, usable)
+		}
+
+		variant := PlanPrices([]Entry{orEntry("m:thinking", nil)}, api)
+		if priced := len(variant.Matched) == 1; priced != usable {
+			t.Errorf("%s: the variant was priced from its base = %v, usablePrice = %v", name, priced, usable)
+		}
+	}
+}
+
+// TestUnusablePriceWarningKeepsItsOrderAndWording pins which reason is named
+// when a price has more than one fault, and the three messages themselves:
+// unreadable time-of-day pricing before a negative or non-numeric price
+// before no price at all. The first must not depend on the hour of the sync.
+func TestUnusablePriceWarningKeepsItsOrderAndWording(t *testing.T) {
+	for name, tc := range map[string]struct {
+		p    APIPrice
+		want string
+	}{
+		"unusable wins over skipped": {APIPrice{Unusable: "overlap", Skipped: []string{"prompt"}}, "Could not use OpenRouter's time-of-day pricing for openrouter/m: overlap"},
+		"skipped":                    {APIPrice{Skipped: []string{"prompt", "completion"}}, "Could not use OpenRouter's pricing for openrouter/m: its prompt and completion price is negative or not a number"},
+		"nothing":                    {APIPrice{}, "No pricing data for openrouter/m"},
+	} {
+		if got := unusablePriceWarning("openrouter/m", tc.p); got != tc.want {
+			t.Errorf("%s: warning = %q, want %q", name, got, tc.want)
+		}
+	}
+}
