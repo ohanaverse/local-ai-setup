@@ -32,7 +32,7 @@ def _mtplx_model_entry(model_name: str):
 
 
 def test_mtplx_registered_in_backends_registry():
-    """The bottom-of-module `MTPLX = MtplxBackend()` singleton must be the
+    """The bottom-of-module `MTPLX = ProcessServerBackend(...)` singleton must be the
     same object registered under "mtplx" in BACKENDS — a copy-paste bug
     that registers a fresh instance would silently diverge from the one
     __init__.py's isolate()/stop() actually call."""
@@ -445,7 +445,7 @@ def test_restore_is_the_inherited_no_op():
 
 
 def test_mtplx_backend_is_a_distinct_instance_type():
-    """Sanity check that MtplxBackend can be constructed independently of
+    """Sanity check that a ProcessServerBackend can be constructed independently of
     the module-level singleton (used by tests above via MTPLX directly);
     guards against an accidental shared-mutable-default bug in __init__."""
     other = ProcessServerBackend(MTPLX.spec, cleanup_on_failure=True)
