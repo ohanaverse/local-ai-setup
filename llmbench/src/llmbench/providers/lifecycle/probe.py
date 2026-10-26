@@ -3,11 +3,21 @@
 Port/model/warmup polling loops generalized from `bin/lib/*.sh` and
 today's mtplx-only helpers in `lifecycle/__init__.py`. Nothing here is
 provider-specific: callers pass in the URLs to poll.
+
+Every HTTP probe takes an optional `key`. With one, each request carries
+`Authorization: Bearer <key>` (rec refuses every route without it, health
+included); without one no header is sent and the request is exactly what it
+was before keys existed. A key never goes into an exception message.
+
+`command_json`/`wait_for_command_ready` read readiness from a command's JSON
+output instead of HTTP (`rec status`), for a server whose port is closed
+while it loads and whose /health answers before it is ready.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -41,14 +51,68 @@ MODEL_LOAD_TIMEOUT = 300.0
 RESTORE_WAIT_TIMEOUT = 90.0
 
 
-# The statuses that say "this request needs a key it did not carry".
+# The statuses that say "this request needs a key it did not carry" (or, with
+# a key, "this key is not the right one").
 _KEY_REFUSED = (401, 403)
 
 
 class WarmupRefusedError(LifecycleError):
-    """The server refused the warmup request for want of an API key (HTTP 401
-    or 403). Unlike every other warmup failure this one is final: polling
-    does not change the answer, so `warmup` raises it at once (#256)."""
+    """The server refused the request for want of an API key (HTTP 401 or
+    403), or refused the key the request carried. Unlike every other warmup
+    failure this one is final: polling does not change the answer, so
+    `warmup` (and a keyed `wait_for_model`) raises it at once (#256)."""
+
+
+def _target(url: str, key: str | None) -> str | urllib.request.Request:
+    """What to hand `urlopen` for a GET of `url`: the bare string without a
+    key (byte-identical to the key-less probes), a Request carrying the
+    bearer with one."""
+    if key is None:
+        return url
+    return urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+
+
+def _scrub(text: str, key: str | None) -> str:
+    """`text` with every occurrence of `key` masked: a server may echo the
+    request's Authorization header into an error body."""
+    return text.replace(key, "***") if key else text
+
+
+def _ids_from(data: object) -> list[str]:
+    """Model ids from a parsed OpenAI-compatible /v1/models body (the same
+    rule as `local_process.http_models_ids`)."""
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [
+        item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+
+
+def _model_ids(models_url: str, key: str | None, *, refused_is_final: bool) -> list[str]:
+    """Ids listed at `models_url`, [] on any failure. Without a key this is
+    `http_models_ids`, unchanged. With one, a 401/403 raises
+    `WarmupRefusedError` when `refused_is_final` (the key is wrong and
+    waiting will not change that) and reads as [] otherwise."""
+    if key is None:
+        return http_models_ids(models_url)
+    try:
+        with urllib.request.urlopen(_target(models_url, key), timeout=2.0) as resp:  # noqa: S310 — localhost probe
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        if refused_is_final and exc.code in _KEY_REFUSED:
+            raise WarmupRefusedError(
+                f"{models_url} refused the provider's key (HTTP {exc.code})"
+            ) from None
+        return []
+    except (OSError, ValueError):
+        return []
+    return _ids_from(data)
+
+
+def _lists(ids: list[str], model: str) -> bool:
+    """The lenient match: `model` itself, or any `org/`-prefixed spelling."""
+    return any(served == model or served.endswith("/" + model) for served in ids)
 
 
 def _deadline_loop(timeout: float):
@@ -71,7 +135,7 @@ def wait_for_port_closed(url: str, timeout: float = 6.0) -> None:
     raise LifecycleError(f"port still answering at {url} after {timeout}s")
 
 
-def port_closed_within(url: str, *, timeout: float) -> bool:
+def port_closed_within(url: str, *, timeout: float, key: str | None = None) -> bool:
     """Poll a localhost URL until it stops responding, returning True/False
     instead of raising on timeout — used directly by stop-and-wait helpers
     that want to warn rather than fail, and by `wait_for_port_closed` (the
@@ -86,11 +150,12 @@ def port_closed_within(url: str, *, timeout: float) -> bool:
     also NOT a closed port: the listener accepted the connection and then
     stalled (hung, or draining under load) — exactly the "still holds the
     port" case this poll exists to catch. Only a connection-level failure
-    (refused, reset, no route) means the port actually closed.
+    (refused, reset, no route) means the port actually closed. A 401/403 to
+    a keyed probe is an answer like any other: still open.
     """
     for _ in _deadline_loop(timeout):
         try:
-            with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310 — localhost probe
+            with urllib.request.urlopen(_target(url, key), timeout=1.0) as resp:  # noqa: S310 — localhost probe
                 resp.read()
         except urllib.error.HTTPError:
             pass  # server answered (with an error status) — still open
@@ -107,14 +172,16 @@ def port_closed_within(url: str, *, timeout: float) -> bool:
     return False
 
 
-def wait_for_port_open(url: str, *, timeout: float = 90.0, interval: float = 1.0) -> bool:
+def wait_for_port_open(
+    url: str, *, timeout: float = 90.0, interval: float = 1.0, key: str | None = None
+) -> bool:
     """Poll a localhost URL until it answers (any response, including an
     HTTP error status, counts as "up"), returning True once it does or
     False after `timeout` elapses. Mirrors bash's `poll_until_up`, which
     never raises — this matches that: non-raising, boolean return."""
     for _ in _deadline_loop(timeout):
         try:
-            with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310 — localhost probe
+            with urllib.request.urlopen(_target(url, key), timeout=1.0) as resp:  # noqa: S310 — localhost probe
                 resp.read()
             return True
         except urllib.error.HTTPError:
@@ -131,9 +198,11 @@ def wait_for_model(
     *,
     proc: subprocess.Popen | None = None,
     timeout: float = 300.0,
+    key: str | None = None,
 ) -> None:
     """Poll `models_url` until it lists `model`, the serve process dies
-    (when `proc` is given), or the deadline passes."""
+    (when `proc` is given), or the deadline passes. With a `key`, a 401/403
+    raises `WarmupRefusedError` at once: a refused key stays refused."""
     for _ in _deadline_loop(timeout):
         if proc is not None and proc.poll() is not None:
             # The serve process died mid-load (OOM kill, missing weights
@@ -141,22 +210,27 @@ def wait_for_model(
             # runs the full timeout against a dead port while the real
             # crash cause stays buried in the log.
             raise LifecycleError(f"serve process exited during model load (exit {proc.returncode})")
-        ids = http_models_ids(models_url)
-        if any(served == model or served.endswith("/" + model) for served in ids):
+        if _lists(_model_ids(models_url, key, refused_is_final=True), model):
             return
         time.sleep(1.0)
     raise LifecycleError(f"timed out waiting for {models_url} to serve {model}")
 
 
-def serving_model(models_url: str, model: str) -> bool:
+def serving_model(models_url: str, model: str, *, key: str | None = None) -> bool:
     """True when `models_url` already lists `model` (same lenient match as
-    `wait_for_model`). `http_models_ids` returns [] on any error, so a down
-    or wedged server reads as "not serving" — the safe fallback."""
-    ids = http_models_ids(models_url)
-    return any(served == model or served.endswith("/" + model) for served in ids)
+    `wait_for_model`). Any error — a down or wedged server, or a refused
+    key — reads as "not serving", the safe fallback; this never raises."""
+    return _lists(_model_ids(models_url, key, refused_is_final=False), model)
 
 
-def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0) -> None:
+def warmup(
+    chat_url: str,
+    model: str,
+    *,
+    health_url: str,
+    timeout: float = 300.0,
+    key: str | None = None,
+) -> None:
     """Warm a model into GPU/RAM: poll `health_url` for liveness (matching
     bash's `curl -m 2` probe), then POST a 1-token chat completion to
     `chat_url` and check for the chat.completion marker in the body.
@@ -175,9 +249,12 @@ def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0
             "stream": False,
         }
     ).encode()
+    chat_headers = {"Content-Type": "application/json"}
+    if key is not None:
+        chat_headers["Authorization"] = f"Bearer {key}"
     for _ in _deadline_loop(timeout):
         try:
-            urllib.request.urlopen(health_url, timeout=2.0)  # noqa: S310 — localhost probe
+            urllib.request.urlopen(_target(health_url, key), timeout=2.0)  # noqa: S310 — localhost probe
         except urllib.error.HTTPError as exc:
             # A server that wants a key for its liveness URL is up (an omlx
             # with an API key answers 401 on /v1/models); the chat below
@@ -190,11 +267,7 @@ def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0
             time.sleep(1.0)
             continue
         try:
-            req = urllib.request.Request(
-                chat_url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-            )
+            req = urllib.request.Request(chat_url, data=payload, headers=chat_headers)
             with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
                 body = resp.read().decode()
             # MTPLX (and others) may serialize with spaces between keys and
@@ -211,9 +284,76 @@ def warmup(chat_url: str, model: str, *, health_url: str, timeout: float = 300.0
             if exc.code in _KEY_REFUSED:
                 detail = " ".join(exc.read(300).decode(errors="replace").split())
                 raise WarmupRefusedError(
-                    f"{chat_url} refused the warmup for {model} (HTTP {exc.code}: {detail})"
+                    f"{chat_url} refused the warmup for {model} "
+                    f"(HTTP {exc.code}: {_scrub(detail, key)})"
                 ) from None
         except OSError:
             pass
         time.sleep(1.0)
     raise LifecycleError(f"failed to warm up model {model} at {chat_url}")
+
+
+def command_json(argv: list[str], *, path: str, timeout: float = 5.0) -> object | None:
+    """Run `argv`, parse its stdout as one JSON object and return the scalar
+    at the dot-separated `path` (`"ready"`, `"a.b"`).
+
+    None — never an exception — for every way the command can fail to
+    answer: the executable missing or not runnable, a timeout, a non-zero
+    exit (`rec status` with nothing running), empty or invalid output, a
+    root that is not an object, a missing path, or a path that ends on an
+    object or array instead of a scalar.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603 — argv comes from the provider contract
+            argv, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0 or not (result.stdout or "").strip():
+        return None
+    try:
+        node: object = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not isinstance(node, dict):
+        return None
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    if isinstance(node, dict | list):
+        return None
+    return node
+
+
+def _as_text(value: object) -> str | None:
+    """A JSON scalar as the text `equals` is compared with: JSON's own
+    spelling for booleans ("true"/"false"), str() for the rest; None stays
+    None (no answer never equals anything)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def wait_for_command_ready(
+    argv: list[str],
+    *,
+    path: str,
+    equals: str,
+    proc: subprocess.Popen | None = None,
+    timeout: float,
+) -> None:
+    """Poll `command_json(argv, path=path)` about once a second until its
+    value, rendered as text, equals `equals`. Raises the moment `proc` (when
+    given) has exited, and at the deadline with a message naming the
+    command's binary. A failing status command is "not ready yet"."""
+    binary = os.path.basename(argv[0]) if argv else "command"
+    for _ in _deadline_loop(timeout):
+        if proc is not None and proc.poll() is not None:
+            raise LifecycleError(f"serve process exited during model load: exit {proc.returncode}")
+        if _as_text(command_json(argv, path=path)) == equals:
+            return
+        time.sleep(1.0)
+    raise LifecycleError(f"timed out waiting for {binary} to report {path} = {equals}")

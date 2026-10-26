@@ -12,6 +12,7 @@ import json
 import socket
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -106,10 +107,17 @@ PENALTY_FIELDS = ("presence_penalty", "frequency_penalty", "repetition_penalty")
 REJECTED_FIELD_MESSAGE = "Unrecognized request argument supplied: {field}"
 
 
+# The models the fake lists on GET /v1/models (the lifecycle probe tests).
+LISTED_MODELS = ("flint",)
+
+
 @dataclass
 class FakeServer:
     base_url: str
     requests: list[dict[str, Any]] = field(default_factory=list)
+    # When set, every route answers 401 unless the request carries
+    # `Authorization: Bearer <required_key>` (rec's rule: health included).
+    required_key: str | None = None
 
 
 def _handler(fake: FakeServer, release: threading.Event) -> type[BaseHTTPRequestHandler]:
@@ -117,11 +125,43 @@ def _handler(fake: FakeServer, release: threading.Event) -> type[BaseHTTPRequest
         def log_message(self, *args: Any) -> None:  # keep pytest output clean
             pass
 
+        def _refused(self) -> bool:
+            """Answer 401 when a key is required and not carried."""
+            if fake.required_key is None:
+                return False
+            if self.headers.get("Authorization") == f"Bearer {fake.required_key}":
+                return False
+            self._send(401, json.dumps({"error": {"message": "API key required"}}))
+            return True
+
+        def _send(self, status: int, payload: str) -> None:
+            data = payload.encode()
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except OSError:  # the client gave up (the timeout case)
+                pass
+
+        def do_GET(self) -> None:  # noqa: N802 (stdlib name)
+            fake.requests.append({"path": self.path, "headers": dict(self.headers), "body": None})
+            if self._refused():
+                return
+            if self.path.endswith("/models"):
+                listed = [{"id": m, "object": "model"} for m in LISTED_MODELS]
+                self._send(200, json.dumps({"object": "list", "data": listed}))
+            else:
+                self._send(200, json.dumps({"status": "ok"}))
+
         def do_POST(self) -> None:  # noqa: N802 (stdlib name)
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length)
             body = json.loads(raw)
             fake.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
+            if self._refused():
+                return
             model = body.get("model", "")
             if model == "slow":
                 release.wait(SLOW_REPLY_S)
@@ -137,21 +177,15 @@ def _handler(fake: FakeServer, release: threading.Event) -> type[BaseHTTPRequest
                 status, reply = REPLIES.get(model, (404, {"error": f"unknown model {model}"}))
             payload = reply if isinstance(reply, str) else json.dumps(reply)
             payload = payload.replace(ECHO_AUTH, self.headers.get("Authorization", ""))
-            data = payload.encode()
-            try:
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-            except OSError:  # the client gave up (the timeout case)
-                pass
+            self._send(status, payload)
 
     return Handler
 
 
-@pytest.fixture
-def fake_openai() -> Iterator[FakeServer]:
+@contextmanager
+def serve_fake() -> Iterator[FakeServer]:
+    """The fake endpoint as a context manager, for test packages outside
+    tests/probe/ that cannot see this conftest's fixtures."""
     release = threading.Event()
     fake = FakeServer(base_url="")
     server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(fake, release))
@@ -166,6 +200,12 @@ def fake_openai() -> Iterator[FakeServer]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.fixture
+def fake_openai() -> Iterator[FakeServer]:
+    with serve_fake() as fake:
+        yield fake
 
 
 @pytest.fixture

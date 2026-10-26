@@ -1,3 +1,4 @@
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -282,3 +283,276 @@ def test_warmup_still_retries_other_http_errors():
     from llmbench.providers.lifecycle.probe import WarmupRefusedError
 
     assert not isinstance(excinfo.value, WarmupRefusedError)
+
+
+# --- keyed probes (rec needs a bearer on every route) -----------------------
+#
+# These run against the real stdlib fake endpoint from tests/probe/conftest.py,
+# so the header assertions are on what actually crossed the wire. The autouse
+# guard patches `urllib.request.urlopen` to raise; the fixture puts a real
+# opener back for the test's duration (no proxy handler: 127.0.0.1 only).
+
+PROBE = "llmbench.providers.lifecycle.probe"
+
+
+@pytest.fixture
+def endpoint(monkeypatch):
+    import urllib.request
+
+    from tests.probe.conftest import serve_fake
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    monkeypatch.setattr(f"{PROBE}.urllib.request.urlopen", opener.open)
+    with serve_fake() as fake:
+        yield fake
+
+
+def _probe_everything(base: str, key: str | None) -> None:
+    """Call each keyed probe once against a live endpoint serving `flint`."""
+    with (
+        patch(f"{PROBE}.time.monotonic", side_effect=[0.0, 0.0, 1000.0]),
+        patch(f"{PROBE}.time.sleep"),
+    ):
+        assert port_closed_within(f"{base}/models", timeout=1.0, key=key) is False
+    assert wait_for_port_open(f"{base}/models", timeout=5.0, key=key) is True
+    wait_for_model(f"{base}/models", "flint", timeout=5.0, key=key)
+    assert serving_model(f"{base}/models", "flint", key=key) is True
+    warmup(f"{base}/chat/completions", "no-reasoning", health_url=f"{base}/models", key=key)
+
+
+def test_probes_without_a_key_send_no_authorization_header(endpoint):
+    """A provider with no secret_ref (ollama, omlx, mtplx, mlx_lm_server)
+    must send no Authorization header on any probe: byte-identical to the
+    probes before keys existed."""
+    _probe_everything(endpoint.base_url, key=None)
+    assert len(endpoint.requests) == 6  # port x2, models x2, health + chat
+    carried = [r["path"] for r in endpoint.requests if "Authorization" in r["headers"]]
+    assert carried == []
+
+
+def test_probes_with_a_key_send_the_bearer_on_every_request(endpoint):
+    """rec answers 401 on every route, health and /v1/models included, unless
+    the request carries `Authorization: Bearer <key>`: every probe sends it."""
+    endpoint.required_key = "k"
+    _probe_everything(endpoint.base_url, key="k")
+    assert len(endpoint.requests) == 6
+    bearer_ok = [r["headers"].get("Authorization") == "Bearer k" for r in endpoint.requests]
+    assert all(bearer_ok)
+
+
+def test_wait_for_model_stops_at_once_when_the_key_is_refused(endpoint):
+    """A 401 to a request that carried a key is final: polling does not
+    change it, so wait_for_model raises WarmupRefusedError on the first
+    answer instead of polling out its timeout. The key never appears in
+    the message."""
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError
+
+    endpoint.required_key = "right-key"
+    with (
+        patch(f"{PROBE}.time.sleep", side_effect=AssertionError("must not poll again")),
+        pytest.raises(WarmupRefusedError, match="HTTP 401") as excinfo,
+    ):
+        wait_for_model(f"{endpoint.base_url}/models", "flint", timeout=300.0, key="wrong-key")
+    assert len(endpoint.requests) == 1
+    leaked = "wrong-key" in str(excinfo.value) or "right-key" in str(excinfo.value)
+    assert not leaked
+
+
+def test_wait_for_model_without_a_key_still_polls_a_401(endpoint):
+    """Without a key a 401 stays the ordinary "not serving yet" it always
+    was: the wait polls to its deadline and reports a timeout, not a
+    refusal (unchanged behavior for key-less providers)."""
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError
+
+    endpoint.required_key = "k"
+    with (
+        patch(f"{PROBE}.time.monotonic", side_effect=[0.0, 0.0, 0.5, 1000.0]),
+        patch(f"{PROBE}.time.sleep"),
+        pytest.raises(LifecycleError, match="timed out") as excinfo,
+    ):
+        wait_for_model(f"{endpoint.base_url}/models", "flint", timeout=1.0)
+    assert not isinstance(excinfo.value, WarmupRefusedError)
+    assert len(endpoint.requests) == 2
+
+
+def test_serving_model_with_a_refused_key_reads_as_not_serving(endpoint):
+    """serving_model never raises: a refused key is "not serving", the same
+    safe fallback as a down server."""
+    endpoint.required_key = "right-key"
+    assert serving_model(f"{endpoint.base_url}/models", "flint", key="wrong-key") is False
+
+
+def test_warmup_with_a_refused_key_raises_without_the_key(endpoint):
+    """warmup with a key the server refuses: the 401 on the liveness URL is
+    a server that is up, the 401 on the chat is final. The key appears
+    nowhere in the message."""
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError
+
+    endpoint.required_key = "right-key"
+    with (
+        patch(f"{PROBE}.time.sleep"),
+        pytest.raises(WarmupRefusedError, match="HTTP 401") as excinfo,
+    ):
+        warmup(
+            f"{endpoint.base_url}/chat/completions",
+            "no-reasoning",
+            health_url=f"{endpoint.base_url}/health",
+            timeout=600.0,
+            key="wrong-key",
+        )
+    assert len(endpoint.requests) == 2
+    sent = [r["headers"].get("Authorization") == "Bearer wrong-key" for r in endpoint.requests]
+    assert all(sent)
+    assert "wrong-key" not in str(excinfo.value)
+
+
+def test_warmup_scrubs_a_key_the_server_echoes_back():
+    """A server that echoes the request's Authorization header into its
+    refusal body must not get the key into the WarmupRefusedError text."""
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError
+
+    def urlopen(target, **kwargs):
+        if target.get_method() == "GET":
+            return MagicMock()
+        raise _http_error(401, b"bad header Bearer sekrit-value")
+
+    with (
+        patch(f"{PROBE}.urllib.request.urlopen", urlopen),
+        pytest.raises(WarmupRefusedError) as excinfo,
+    ):
+        warmup("http://x/chat", "m", health_url="http://x/health", key="sekrit-value")
+    assert "sekrit-value" not in str(excinfo.value)
+
+
+def test_port_probes_with_a_key_count_a_refusal_as_a_listener(endpoint):
+    """A 401 is still an HTTP answer: something listens on the port."""
+    endpoint.required_key = "right-key"
+    url = f"{endpoint.base_url}/models"
+    assert wait_for_port_open(url, timeout=5.0, key="wrong-key") is True
+    with (
+        patch(f"{PROBE}.time.monotonic", side_effect=[0.0, 0.0, 1000.0]),
+        patch(f"{PROBE}.time.sleep"),
+    ):
+        assert port_closed_within(url, timeout=1.0, key="wrong-key") is False
+
+
+# --- command-JSON readiness (`rec status`) ----------------------------------
+
+
+def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(["rec", "status"], returncode, stdout=stdout, stderr="")
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode", "path", "expected"),
+    [
+        ('{"ready":true,"model":"flint"}', 0, "ready", True),
+        ('{"ready":false}', 0, "ready", False),
+        ('{"ready":true,"model":"flint"}', 0, "model", "flint"),
+        ('{"a":{"b":7}}', 0, "a.b", 7),
+        ('{"a":{"b":"x"}}\n', 0, "a.b", "x"),
+        ('{"ready":true}', 1, "ready", None),  # exit non-zero
+        ("", 1, "ready", None),  # rec status with nothing running
+        ("", 0, "ready", None),  # empty output
+        ("not json", 0, "ready", None),
+        ("{}", 0, "ready", None),  # missing path
+        ("[1, 2]", 0, "ready", None),  # non-object root
+        ('{"a":1}', 0, "a.b", None),  # path through a scalar
+        ('{"a":{"b":1}}', 0, "a", None),  # not a scalar
+    ],
+)
+def test_command_json_reads_one_scalar_or_none(stdout, returncode, path, expected):
+    """command_json returns the scalar at the dot path, and None for every
+    way `rec status` can fail to say: exit non-zero, empty, invalid JSON, a
+    non-object root, a missing path. It never raises."""
+    from llmbench.providers.lifecycle.probe import command_json
+
+    with patch(f"{PROBE}.subprocess.run", return_value=_completed(stdout, returncode)) as run:
+        got = command_json(["rec", "status"], path=path)
+    assert got == expected
+    assert type(got) is type(expected)
+    assert run.call_args.args[0] == ["rec", "status"]
+    assert run.call_args.kwargs["timeout"] == 5.0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.TimeoutExpired(["rec", "status"], 5.0),
+        FileNotFoundError(2, "No such file or directory", "rec"),
+        PermissionError(13, "Permission denied", "rec"),
+    ],
+)
+def test_command_json_is_none_when_the_command_cannot_run(error):
+    """A hung command (timeout) or a missing/unrunnable executable is "no
+    answer", never an exception."""
+    from llmbench.providers.lifecycle.probe import command_json
+
+    with patch(f"{PROBE}.subprocess.run", side_effect=error):
+        assert command_json(["rec", "status"], path="ready", timeout=0.5) is None
+
+
+def test_wait_for_command_ready_polls_until_ready():
+    """Not ready twice (still loading, then nothing answering), then ready:
+    returns after three polls, one second apart."""
+    from llmbench.providers.lifecycle.probe import wait_for_command_ready
+
+    replies = [
+        _completed('{"ready":false,"model":"flint"}'),
+        _completed("", returncode=1),
+        _completed('{"ready":true,"model":"flint"}'),
+    ]
+    proc = MagicMock()
+    proc.poll.return_value = None
+    with (
+        patch(f"{PROBE}.subprocess.run", side_effect=replies) as run,
+        patch(f"{PROBE}.time.sleep") as sleep,
+    ):
+        wait_for_command_ready(
+            ["rec", "status"], path="ready", equals="true", proc=proc, timeout=60.0
+        )
+    assert run.call_count == 3
+    assert [c.args for c in sleep.call_args_list] == [(1.0,), (1.0,)]
+
+
+def test_wait_for_command_ready_renders_numbers_as_text():
+    """equals compares the scalar rendered as text: a number via str()."""
+    from llmbench.providers.lifecycle.probe import wait_for_command_ready
+
+    with patch(f"{PROBE}.subprocess.run", return_value=_completed('{"n":3}')):
+        wait_for_command_ready(["rec", "status"], path="n", equals="3", timeout=5.0)
+
+
+def test_wait_for_command_ready_fails_fast_when_the_process_dies():
+    """The serve process exiting mid-load ends the wait at once: no status
+    command is run against a process that is gone."""
+    from llmbench.providers.lifecycle.probe import wait_for_command_ready
+
+    proc = MagicMock()
+    proc.poll.return_value = 1
+    proc.returncode = 1
+    with (
+        patch(f"{PROBE}.subprocess.run", side_effect=AssertionError("must not poll")),
+        pytest.raises(LifecycleError, match=r"serve process exited during model load: exit 1"),
+    ):
+        wait_for_command_ready(
+            ["rec", "status"], path="ready", equals="true", proc=proc, timeout=300.0
+        )
+
+
+def test_wait_for_command_ready_times_out_naming_the_binary():
+    """A status that never reports ready times out with a message naming the
+    command's binary (the basename, not a resolved path)."""
+    from llmbench.providers.lifecycle.probe import wait_for_command_ready
+
+    with (
+        patch(f"{PROBE}.subprocess.run", return_value=_completed('{"ready":false}')) as run,
+        patch(f"{PROBE}.time.monotonic", side_effect=[0.0, 0.5, 1000.0]),
+        patch(f"{PROBE}.time.sleep"),
+        pytest.raises(LifecycleError, match=r"timed out waiting for rec ") as excinfo,
+    ):
+        wait_for_command_ready(
+            ["/Users/x/.local/bin/rec", "status"], path="ready", equals="true", timeout=1.0
+        )
+    assert run.call_count == 1
+    assert "/Users/x" not in str(excinfo.value)
