@@ -250,8 +250,7 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				// a wrong one, `:free` turned into a charge included.
 				base, suffix, _ := strings.Cut(e.ModelName, ":")
 				basePrice := api[base]
-				usable := basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
-					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil)
+				usable := usablePrice(basePrice)
 				own := ownRateSuffix(suffix)
 				unpriced := e.Cost == nil || (e.Cost.Input == nil && e.Cost.Output == nil)
 				var note string
@@ -301,23 +300,8 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 			// Listed is enough, whatever the price.
 			plan.Graduations = append(plan.Graduations, e.ID)
 		}
-		if price.Unusable != "" {
-			// Its top-level price is that of the window in force now. Stored,
-			// it would change with the hour the sync runs in. This is tested
-			// before Skipped, which is about those top-level prices: the
-			// warning must not depend on the hour either.
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("Could not use OpenRouter's time-of-day pricing for %s: %s", e.ID, price.Unusable))
-			continue
-		}
-		if len(price.Skipped) > 0 {
-			// The whole entry is refused: a model whose price "varies" has
-			// no per-token price to record.
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("Could not use OpenRouter's pricing for %s: its %s price is negative or not a number",
-				e.ID, strings.Join(price.Skipped, " and ")))
-			continue
-		}
-		if price.Input == nil && price.Output == nil && price.Cache == nil {
-			plan.Warnings = append(plan.Warnings, "No pricing data for "+e.ID)
+		if w, refused := priceWarning(e.ID, price); refused {
+			plan.Warnings = append(plan.Warnings, w)
 			continue
 		}
 		var after Cost
@@ -334,6 +318,37 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 		})
 	}
 	return plan
+}
+
+// usablePrice reports whether p carries a price wt can store: time-of-day
+// pricing it can read (Unusable empty), no top-level price that is negative
+// or not a number (Skipped empty), and at least one price. A listed model
+// that fails it is left as it is, and so is a variant row whose base fails
+// it; both paths of PlanPrices ask this one function, so a variant is never
+// priced from a base the main path would warn about.
+func usablePrice(p APIPrice) bool {
+	return p.Unusable == "" && len(p.Skipped) == 0 && (p.Input != nil || p.Output != nil || p.Cache != nil)
+}
+
+// priceWarning is the warning for a listed model whose price usablePrice
+// refuses, and false for one it accepts (so the refusal and its message cannot
+// drift apart). The reasons are tested in this order: time-of-day
+// pricing wt cannot read first (its top-level price is that of the window in
+// force now, which stored would change with the hour the sync runs in, so the
+// warning must not depend on the hour), then a price that is negative or not
+// a number (OpenRouter gives -1 for one that varies; the whole entry is
+// refused, since a model whose price varies has no per-token price to
+// record), then no price at all.
+func priceWarning(id string, p APIPrice) (string, bool) {
+	switch {
+	case usablePrice(p):
+		return "", false
+	case p.Unusable != "":
+		return fmt.Sprintf("Could not use OpenRouter's time-of-day pricing for %s: %s", id, p.Unusable), true
+	case len(p.Skipped) > 0:
+		return fmt.Sprintf("Could not use OpenRouter's pricing for %s: its %s price is negative or not a number", id, strings.Join(p.Skipped, " and ")), true
+	}
+	return "No pricing data for " + id, true
 }
 
 // ownRateSuffix reports whether a `:variant` routing suffix is billed at a rate
