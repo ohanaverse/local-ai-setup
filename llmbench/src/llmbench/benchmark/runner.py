@@ -11,6 +11,7 @@ import requests
 
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.benchmark.isolation import (
+    POSITIONAL_MODEL_PROVIDERS,
     isolate_provider,
     mlx_lm_server_pairing_args,
     restore_providers,
@@ -219,8 +220,8 @@ def run_benchmark(
                         target.draft_local_path,
                         target.draft_repo,
                     )
-                elif target.provider_id == "mtplx":
-                    # MTPLX is single-model-per-process; pass the repo id so
+                elif target.provider_id in POSITIONAL_MODEL_PROVIDERS:
+                    # mtplx/rec are single-model-per-process; pass the repo id so
                     # isolation starts the requested model.
                     extra_args = (target.model_name,)
                 else:

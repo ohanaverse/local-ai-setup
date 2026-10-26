@@ -32,13 +32,22 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from . import launchd, probe
-from .backends import BACKENDS, SUPPORTED_PROVIDER_IDS
+from .backends import BACKENDS, PROCESS_SPEC_ERROR, SUPPORTED_PROVIDER_IDS
 from .backends.base import Backend
 from .envelope import LifecycleResult
 
 # Replaces bash's "[llm-restore-providers]" prefix: these diagnostics come
 # from llmbench's own Python now, not from a shell script.
 RESTORE_LOG_PREFIX = "[llmbench provider restore]"
+
+
+def _unknown_provider(provider_id: str) -> str:
+    """The unknown-provider error, with the contract file's failure when that
+    is why the process providers (mtplx, rec) are not registered."""
+    message = f"unknown provider: {provider_id}"
+    if PROCESS_SPEC_ERROR is not None:
+        message += f" (process providers unavailable: {PROCESS_SPEC_ERROR})"
+    return message
 
 
 def _log(message: str) -> None:
@@ -157,9 +166,7 @@ def isolate(
     """
     backend = BACKENDS.get(provider_id)
     if backend is None:
-        return LifecycleResult(
-            provider_id, model or "", "", False, f"unknown provider: {provider_id}"
-        )
+        return LifecycleResult(provider_id, model or "", "", False, _unknown_provider(provider_id))
 
     started = False
     plan = None
@@ -266,7 +273,7 @@ def stop(provider_id: str) -> LifecycleResult:
     envelope such callers read).
     """
     if provider_id not in SUPPORTED_PROVIDER_IDS:
-        return LifecycleResult(provider_id, "", "", False, f"unknown provider: {provider_id}")
+        return LifecycleResult(provider_id, "", "", False, _unknown_provider(provider_id))
     backend = BACKENDS[provider_id]
     try:
         warning = backend.stop_and_wait()

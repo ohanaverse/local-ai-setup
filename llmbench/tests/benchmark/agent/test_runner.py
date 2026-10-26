@@ -304,7 +304,7 @@ def test_run_suite_isolates_a_rec_row_with_its_registry_model(tmp_path, monkeypa
         live_models_path=tmp_path / "missing.json",
         skip_judge=True,
     )
-    assert calls == [("rec",)]
+    assert calls == [("rec", "flint")]
     assert warmed == ["flint"]
     assert all(r.error is None for r in results)
 

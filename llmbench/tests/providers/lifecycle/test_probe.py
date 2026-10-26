@@ -681,3 +681,18 @@ def test_warmup_masks_an_echoed_key_that_straddles_the_detail_cut():
     message = str(excinfo.value)
     leaked = any(key[:n] in message for n in range(3, len(key) + 1))
     assert not leaked
+
+
+def test_command_object_is_one_run_read_many_ways():
+    from llmbench.providers.lifecycle.probe import command_object, scalar_at
+
+    out = subprocess.CompletedProcess([], 0, stdout='{"ready": true, "a": {"b": "x"}}')
+    with patch("llmbench.providers.lifecycle.probe.subprocess.run", return_value=out) as run:
+        outcome, root = command_object(["rec", "status"])
+    run.assert_called_once()
+    assert outcome == "answered"
+    assert root is not None
+    assert scalar_at(root, "ready") is True
+    assert scalar_at(root, "a.b") == "x"
+    assert scalar_at(root, "a") is None
+    assert scalar_at(root, "missing.path") is None

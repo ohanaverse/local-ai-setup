@@ -26,6 +26,12 @@ from ..registry import ModelEntry
 # ISOLATABLE_PROVIDERS) are unaffected.
 SUPPORTED_PROVIDER_IDS = lifecycle.SUPPORTED_PROVIDER_IDS
 
+# Process-style providers serve one model per process and take the registry
+# model_name as their positional isolate arg, so the model a row benchmarks is
+# the model that is served (rec: the only one it serves, checked rather than
+# guessed from a single-row registry).
+POSITIONAL_MODEL_PROVIDERS = frozenset({"mtplx", "rec"})
+
 # IsolateResult is llmbench.local_process.ProcessResult under its
 # established name here — shared with llmbench.providers.lifecycle
 # (imported there as LifecycleResult) so a future field addition applies to

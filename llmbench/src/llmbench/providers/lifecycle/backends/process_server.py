@@ -180,6 +180,10 @@ class ProcessServerBackend(PidfileTrackedBackend):
         # True after a resolution of a named `secret_ref` failed: nothing to
         # mask a log tail with, so the tail is withheld.
         self._key_unreadable = False
+        # The registry provider row read for the current isolate, so its
+        # address and key come from one read and cannot differ between steps.
+        # Dropped with the key (`_forget_key`) and at each stop.
+        self._row: tuple[ProviderEntry | None] | None = None
 
     # --- addresses and key -------------------------------------------------
 
@@ -191,7 +195,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
         would mean port 80, #348). Any other url is left exactly as written,
         and the port the argv gets is the one the probes use: the url's own,
         else its scheme's (80, 443)."""
-        row = _provider_row(self.id)
+        row = self._provider_row()
         for url in (row.base_url if row else "", self.spec.default_origin):
             if not url:
                 continue
@@ -238,7 +242,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
         either way marks the key unreadable for the log-tail rule."""
         if self._resolved_key is not None:
             return self._resolved_key[0]
-        row = _provider_row(self.id)
+        row = self._provider_row()
         if row is None or not row.secret_ref:
             self._resolved_key = (None,)
             return None
@@ -256,6 +260,15 @@ class ProcessServerBackend(PidfileTrackedBackend):
     def _forget_key(self) -> None:
         self._resolved_key = None
         self._key_unreadable = False
+        self._forget_row()
+
+    def _provider_row(self) -> ProviderEntry | None:
+        if self._row is None:
+            self._row = (_provider_row(self.id),)
+        return self._row[0]
+
+    def _forget_row(self) -> None:
+        self._row = None
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -289,13 +302,6 @@ class ProcessServerBackend(PidfileTrackedBackend):
                 )
         return StartPlan(model=resolved, direct_url=self.chat_url)
 
-    def _status(self, bin_path: str, path: str) -> object | None:
-        return probe.command_json([bin_path, *self.spec.ready.command], path=path)
-
-    def _reports_ready(self, bin_path: str) -> bool:
-        ready = self.spec.ready
-        return probe.as_text(self._status(bin_path, ready.path)) == ready.equals
-
     def already_serving(self, plan: StartPlan) -> bool:
         """`models-list`: /v1/models lists the model. `command-json`: the
         status command reports ready, with the requested model, and (when
@@ -313,15 +319,21 @@ class ProcessServerBackend(PidfileTrackedBackend):
             bin_path = binaries.require_binary(self.spec.binary)
         except LifecycleError:
             return False
-        if not self._reports_ready(bin_path):
+        # One run of the status command, read three ways: the fields cannot
+        # disagree the way three separate runs of a flapping status could.
+        _, snapshot = probe.command_object([bin_path, *ready.command])
+        if snapshot is None:
             return False
-        if (
-            ready.model_path
-            and probe.as_text(self._status(bin_path, ready.model_path)) != plan.model
-        ):
+
+        def field(path: str) -> str | None:
+            return probe.as_text(probe.scalar_at(snapshot, path))
+
+        if field(ready.path) != ready.equals:
+            return False
+        if ready.model_path and field(ready.model_path) != plan.model:
             return False
         if ready.endpoint_path:
-            endpoint = probe.as_text(self._status(bin_path, ready.endpoint_path))
+            endpoint = field(ready.endpoint_path)
             if endpoint is None or _origin_key(endpoint) != _origin_key(addr.origin):
                 return False
         return True
@@ -435,16 +447,19 @@ class ProcessServerBackend(PidfileTrackedBackend):
         on a first start, and that must read as success. The command's own
         stderr is surfaced only when the server genuinely stayed up.
 
-        An unreadable key does not block a teardown: the stop command needs
-        none, and a key-less port poll reads a 401 as still open.
+        No key is involved: the stop command needs none, and the port poll
+        counts any HTTP answer, a 401 included, as still open. A binary that
+        is not installed has nothing running to stop (None), so a teardown
+        fan-out over every backend does not warn about providers the machine
+        never had.
         """
         binary = self.spec.binary
         try:
             bin_path = binaries.require_binary(binary)
         except LifecycleError:
-            return f"{binary} binary not found on PATH"
+            return None
+        self._forget_row()
         addr = self._address()
-        key = self._key(strict=False)
         result = subprocess.run(
             [bin_path, *expand(self.spec.stop, port=addr.port)],
             capture_output=True,
@@ -452,9 +467,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
             check=False,
         )
         if self.spec.ready.kind != "command-json":
-            stopped = probe.port_closed_within(
-                addr.health_url, timeout=probe.STOP_WAIT_TIMEOUT, **_key_arg(key)
-            )
+            stopped = probe.port_closed_within(addr.health_url, timeout=probe.STOP_WAIT_TIMEOUT)
             if stopped:
                 return None
             if result.returncode != 0:
@@ -465,9 +478,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
         # port open for longer than probe.STOP_WAIT_TIMEOUT).
         deadline = time.monotonic() + INSTANCE_GONE_TIMEOUT
         lingering: _Lingering | None = None
-        stopped = probe.port_closed_within(
-            addr.health_url, timeout=INSTANCE_GONE_TIMEOUT, **_key_arg(key)
-        )
+        stopped = probe.port_closed_within(addr.health_url, timeout=INSTANCE_GONE_TIMEOUT)
         if stopped:
             lingering = self._lingering_status(bin_path, deadline=deadline)
             stopped = lingering is None

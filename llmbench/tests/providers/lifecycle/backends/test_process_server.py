@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from llmbench.providers.lifecycle import probe
-from llmbench.providers.lifecycle.backends import BACKENDS
+from llmbench.providers.lifecycle.backends import BACKENDS, process_server
 from llmbench.providers.lifecycle.backends.mtplx import MTPLX
 from llmbench.providers.lifecycle.backends.process_server import (
     INSTANCE_GONE_TIMEOUT,
@@ -210,8 +210,7 @@ def test_malformed_registry_still_gives_mtplx_envelopes():
         f"{PS}.binaries.require_binary", side_effect=LifecycleError("mtplx binary not found")
     ):
         stopped = orchestrate.stop("mtplx")
-    assert stopped.ok is False
-    assert stopped.error == "mtplx binary not found on PATH"
+    assert stopped.ok is True
     assert stopped.direct_url == "http://localhost:8003/v1/chat/completions"
 
 
@@ -401,9 +400,9 @@ def test_empty_secret_sends_no_key(monkeypatch):
 
 
 def _status(values: dict[str, object]):
-    def fake(argv, *, path, timeout=5.0):
+    def fake(argv, *, timeout=5.0):
         assert argv == [BIN, "status"]
-        return values.get(path)
+        return ("answered", values)
 
     return fake
 
@@ -429,7 +428,7 @@ def test_already_serving_command_json(values, expected):
     backend = _cj_backend()
     with (
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
-        patch(f"{PS}.probe.command_json", side_effect=_status(values)),
+        patch(f"{PS}.probe.command_object", side_effect=_status(values)),
     ):
         assert backend.already_serving(backend.resolve("m", ())) is expected
 
@@ -439,7 +438,7 @@ def test_already_serving_command_json_without_endpoint_path_ignores_the_endpoint
     with (
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(
-            f"{PS}.probe.command_json",
+            f"{PS}.probe.command_object",
             side_effect=_status({"ready": True, "model": "m", "endpoint": "http://x:1/v1"}),
         ),
     ):
@@ -691,7 +690,8 @@ def test_stop_missing_binary_warning():
         f"{PS}.binaries.require_binary",
         side_effect=LifecycleError("fake binary not found on PATH"),
     ):
-        assert backend.stop_and_wait() == "fake binary not found on PATH"
+        # Not installed: nothing can be running, so a teardown has nothing to say.
+        assert backend.stop_and_wait() is None
 
 
 @pytest.mark.parametrize(
@@ -718,7 +718,7 @@ def test_stop_legacy_mtplx_texts_are_byte_identical():
     with (
         patch(f"{PS}.binaries.require_binary", side_effect=LifecycleError("x")),
     ):
-        assert backend.stop_and_wait() == "mtplx binary not found on PATH"
+        assert backend.stop_and_wait() is None
     with (
         patch(f"{PS}.binaries.require_binary", return_value="/b/mtplx"),
         patch(f"{PS}.subprocess.run", return_value=_run_result(1)) as run,
@@ -767,32 +767,21 @@ def test_mtplx_spawn_argv_is_byte_identical():
     assert backend._pidproc.logfile == "/tmp/local-ai-setup-mtplx.log"
 
 
-def test_stop_passes_the_key_to_the_port_poll():
-    _registry(_provider_row(secret_ref="sekrit-value"))
-    backend = ProcessServerBackend(_spec())
-    with (
-        patch(f"{PS}.binaries.require_binary", return_value=BIN),
-        patch(f"{PS}.subprocess.run", return_value=_run_result()),
-        patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
-    ):
-        backend.stop_and_wait()
-    found = closed.call_args.kwargs.get("key") == "sekrit-value"
-    assert found
-
-
-def test_stop_with_an_unreadable_secret_still_stops_and_polls_keyless():
-    """A teardown must not be blocked by a broken key: the stop command needs
-    none, and a key-less port poll reads a 401 as "still open"."""
+def test_stop_resolves_no_key_and_polls_keyless():
+    """The stop command needs no key and the port poll reads any HTTP answer
+    (a 401 included) as still open, so a teardown never runs the secret
+    command, readable or not."""
     _registry(_provider_row(secret_ref="exec:fake-token"))
     backend = ProcessServerBackend(_spec())
     with (
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
-        patch(f"{PS}.resolve_secret", side_effect=SecretError("nope")),
+        patch(f"{PS}.resolve_secret", side_effect=SecretError("nope")) as secret,
         patch(f"{PS}.subprocess.run", return_value=_run_result()) as run,
         patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
     ):
         assert backend.stop_and_wait() is None
     run.assert_called_once()
+    secret.assert_not_called()
     assert "key" not in closed.call_args.kwargs
 
 
@@ -1032,3 +1021,25 @@ def test_synthetic_spec_helper_is_a_real_spec():
     assert {f.name for f in dataclasses.fields(real)} == {
         f.name for f in dataclasses.fields(_spec())
     }
+
+
+def test_already_serving_runs_the_status_command_once():
+    backend = _cj_backend()
+    values = {"ready": True, "model": "m", "endpoint": "http://127.0.0.1:9100/v1"}
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.command_object", side_effect=_status(values)) as status,
+    ):
+        assert backend.already_serving(backend.resolve("m", ())) is True
+    status.assert_called_once()
+
+
+def test_an_isolate_reads_the_registry_row_once():
+    """Address and key of one isolate come from one read of the registry."""
+    _registry(_provider_row(base_url="http://127.0.0.1:9100/v1", secret_ref="k"))
+    backend = ProcessServerBackend(_spec())
+    plan = backend.resolve("m", ())  # pure, outside the isolate's snapshot
+    with patch(f"{PS}._provider_row", wraps=process_server._provider_row) as read:
+        backend.already_serving(plan)
+        _ = backend.health_url, backend.chat_url
+    assert read.call_count == 1

@@ -105,7 +105,7 @@ def _row_isolation_spec(
     extra_args half is this suite's own, since only its rows carry the
     mlx_lm_server pairing fields:
 
-    * mlx_lm_server/mtplx take their model positionally.
+    * mlx_lm_server/mtplx/rec take their model positionally.
     * ollama/omlx name theirs through the LLM_ISOLATE_*_MODEL env dict, or
       warmup loads the backend's baked-in default instead.
 
@@ -123,11 +123,13 @@ def _row_isolation_spec(
             ),
             None,
         )
-    if row.provider_id == "mtplx":
+    if row.provider_id in isolation.POSITIONAL_MODEL_PROVIDERS:
         if row.mtplx_model_name is None:
             # BenchmarkError (not assert) so run_suite degrades this one row
             # to an error result instead of aborting the whole sweep.
-            raise BenchmarkError(f"mtplx row {row.label!r} has no model_name in the registry")
+            raise BenchmarkError(
+                f"{row.provider_id} row {row.label!r} has no model_name in the registry"
+            )
         return (row.mtplx_model_name,), None
     if row.provider_id in _ENV_VAR_BY_PROVIDER:
         try:

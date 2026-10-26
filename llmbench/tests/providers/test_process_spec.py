@@ -116,3 +116,19 @@ def test_unknown_ready_kind_raises(monkeypatch, tmp_path):
     _use(monkeypatch, tmp_path, GOOD.replace("models-list", "bogus"))
     with pytest.raises(ps.ProcessSpecError, match="bogus"):
         ps.process_specs()
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "key"),
+    [
+        ('spawn = ["serve", "{port}"]', 'spawn = "serve"', "spawn"),
+        ('stop = ["stop"]', 'stop = "stop"', "stop"),
+        ("command = []", 'command = "status"', "command"),
+        ('stop = ["stop"]', "stop = [1]", "stop"),
+    ],
+)
+def test_an_argv_must_be_a_list_of_strings(monkeypatch, tmp_path, old, new, key):
+    """A bare string would otherwise become a tuple of its characters."""
+    _use(monkeypatch, tmp_path, GOOD.replace(old, new))
+    with pytest.raises(ps.ProcessSpecError, match=f"`{key}` must be a list of strings"):
+        ps.process_specs()

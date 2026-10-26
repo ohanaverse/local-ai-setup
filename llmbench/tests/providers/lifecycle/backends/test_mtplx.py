@@ -344,13 +344,13 @@ def test_stop_and_wait_returns_none_when_stop_succeeds_and_port_closes():
     assert mock_closed.call_args.kwargs["timeout"] == probe.STOP_WAIT_TIMEOUT
 
 
-def test_stop_and_wait_returns_reason_when_binary_missing():
+def test_stop_and_wait_is_none_when_binary_missing():
     with patch(
         "llmbench.providers.lifecycle.backends.process_server.binaries.require_binary",
         side_effect=LifecycleError("mtplx binary not found on PATH"),
     ):
         result = MTPLX.stop_and_wait()
-    assert result == "mtplx binary not found on PATH"
+    assert result is None
 
 
 def test_stop_and_wait_returns_stderr_when_stop_command_fails_and_port_stays_open():

@@ -346,6 +346,20 @@ def command_status(
 
     Never raises.
     """
+    outcome, root = command_object(argv, timeout=timeout)
+    if root is None:
+        return (outcome, None)
+    value = scalar_at(root, path)
+    return ("answered", value) if value is not None else ("unknown", None)
+
+
+def command_object(
+    argv: list[str], *, timeout: float = 5.0
+) -> tuple[StatusOutcome, dict[str, object] | None]:
+    """Run `argv` once and parse stdout as one JSON object: `("answered",
+    root)`, or `("gone", None)` / `("unknown", None)` as `command_status`
+    defines them. One run answers several `scalar_at` reads, so a caller
+    needing more than one field sees one consistent snapshot. Never raises."""
     if not argv:
         return ("gone", None)
     try:
@@ -377,13 +391,20 @@ def command_status(
         return ("unknown", None)
     if not isinstance(node, dict):
         return ("unknown", None)
+    return ("answered", node)
+
+
+def scalar_at(root: dict[str, object], path: str) -> object | None:
+    """The scalar at the dot-separated `path` in `root`; None for a missing
+    path, a null, or an object or array."""
+    node: object = root
     for part in path.split("."):
         if not isinstance(node, dict) or part not in node:
-            return ("unknown", None)
+            return None
         node = node[part]
     if node is None or isinstance(node, dict | list):
-        return ("unknown", None)
-    return ("answered", node)
+        return None
+    return node
 
 
 def as_text(value: object) -> str | None:

@@ -875,10 +875,10 @@ def test_row_isolation_spec_mtplx_without_model_name_raises_benchmark_error():
 def test_run_suite_isolates_a_rec_row_with_its_registry_model(
     mock_resolve, mock_generate, tmp_path, monkeypatch
 ):
-    # rec is not mtplx: its row's isolation spec is ((), None), and the real
-    # isolate_provider -> orchestrate.isolate -> rec backend resolve() picks
-    # the registry's single rec model. Only the rec backend's process-touching
-    # steps are stubbed.
+    # Like mtplx, rec takes its row's model positionally, so the real
+    # isolate_provider -> orchestrate.isolate -> rec backend resolve() serves
+    # the row's own model rather than guessing the registry's single one.
+    # Only the rec backend's process-touching steps are stubbed.
     import os
 
     from llmbench.benchmark import isolation
@@ -906,8 +906,14 @@ def test_run_suite_isolates_a_rec_row_with_its_registry_model(
     mock_resolve.return_value = ("http://127.0.0.1:11500/v1", "flint", "k")
     mock_generate.return_value = _fake_category_result(50.0)
 
-    row = RowConfig(label="r", model_id="rec/flint", route="litellm", provider_id="rec")
-    assert _row_isolation_spec(row, registry) == ((), None)
+    row = RowConfig(
+        label="r",
+        model_id="rec/flint",
+        route="litellm",
+        provider_id="rec",
+        mtplx_model_name="flint",
+    )
+    assert _row_isolation_spec(row, registry) == (("flint",), None)
     suite = _suite()
     suite.rows = [row]
     _run_dir, results = run_suite(

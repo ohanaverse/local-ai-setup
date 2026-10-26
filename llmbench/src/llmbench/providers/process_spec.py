@@ -68,6 +68,15 @@ def _get(raw: dict[str, Any], key: str, where: str) -> Any:
     return raw[key]
 
 
+def _argv(raw: dict[str, Any], key: str, where: str) -> tuple[str, ...]:
+    """An argv template: a list of strings. A bare string would otherwise
+    become a tuple of its characters and run as `rec s t a t u s`."""
+    value = _get(raw, key, where)
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ProcessSpecError(f"{where}: `{key}` must be a list of strings")
+    return tuple(value)
+
+
 def _parse_ready(raw: Any, where: str) -> Ready:
     if not isinstance(raw, dict):
         raise ProcessSpecError(f"{where}: missing table `ready`")
@@ -77,7 +86,7 @@ def _parse_ready(raw: Any, where: str) -> Ready:
         raise ProcessSpecError(f"{w}: unknown kind `{kind}` (known: {', '.join(READY_KINDS)})")
     return Ready(
         kind=kind,
-        command=tuple(_get(raw, "command", w)),
+        command=_argv(raw, "command", w),
         path=str(_get(raw, "path", w)),
         equals=str(_get(raw, "equals", w)),
         model_path=str(_get(raw, "model_path", w)),
@@ -95,8 +104,8 @@ def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
         family=s("family"),
         provider=s("provider"),
         binary=s("binary"),
-        spawn=tuple(_get(raw, "spawn", where)),
-        stop=tuple(_get(raw, "stop", where)),
+        spawn=_argv(raw, "spawn", where),
+        stop=_argv(raw, "stop", where),
         pidfile=s("pidfile"),
         log=s("log"),
         pidfile_env=s("pidfile_env"),
