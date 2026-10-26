@@ -80,8 +80,8 @@ func TestCloudFlowsMatchTheirProviders(t *testing.T) {
 			t.Errorf("flow %d (%q): empty, repeated or out of order against cloudSyncFlows %v", i, f.name, cloudSyncFlows)
 		}
 		seen[f.name] = true
-		if _, ok := provider.Lookup(f.provider); !ok || f.provider != f.name {
-			t.Errorf("flow %q syncs provider %q: want a provider of the table in internal/provider that the flow is named for", f.name, f.provider)
+		if _, ok := provider.Lookup(f.name); !ok {
+			t.Errorf("flow %q: want a provider of the table in internal/provider that the flow is named for", f.name)
 		}
 
 		var only cloudSyncOpts

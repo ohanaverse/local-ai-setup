@@ -18,7 +18,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cloudsync"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -36,16 +35,16 @@ var (
 )
 
 // The flows' names: --only's spelling and the prefix of every line a flow
-// prints. Each is named for the provider it syncs (cloudFlow.provider, held to
-// a provider of the table by TestCloudFlowsMatchTheirProviders), but a flow
-// name is not a provider id: code that looks a provider up uses provider.ID*.
+// prints. Each is named for the provider it syncs (held to a provider of the
+// table by TestCloudFlowsMatchTheirProviders), but a flow name is not a
+// provider id: code that looks a provider up uses provider.ID*.
 const (
 	flowOpenRouter = "openrouter"
 	flowOllama     = "ollama"
 )
 
 // cloudFlow is what the command knows of a flow before it plans one: its
-// name, the registry provider it syncs, and a way to reach the --only choice
+// name (also the id of the registry provider it syncs) and a way to reach the --only choice
 // for it in cloudSyncOpts. The planners, gates and applies are typed per flow
 // (openRouterRun, ollamaRun) and stay in their files; this table is where a
 // flow is declared to the command line, so --only, its error text, the --only
@@ -58,14 +57,13 @@ const (
 // in internal/provider.
 type cloudFlow struct {
 	name     string
-	provider string
 	selected func(*cloudSyncOpts) *bool
 }
 
 // cloudFlows are the flows in the order they are planned and reported.
 var cloudFlows = []cloudFlow{
-	{flowOpenRouter, provider.IDOpenRouter, func(o *cloudSyncOpts) *bool { return &o.openrouter }},
-	{flowOllama, provider.IDOllama, func(o *cloudSyncOpts) *bool { return &o.ollama }},
+	{flowOpenRouter, func(o *cloudSyncOpts) *bool { return &o.openrouter }},
+	{flowOllama, func(o *cloudSyncOpts) *bool { return &o.ollama }},
 }
 
 // cloudSyncFlows are the flows' names, in cloudFlows' order: the flows
