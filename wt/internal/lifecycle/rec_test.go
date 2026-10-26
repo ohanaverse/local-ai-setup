@@ -382,3 +382,29 @@ func TestRecProcessIdentity(t *testing.T) {
 		})
 	}
 }
+
+// TestMachineEntryNeedsNoReadableKey verifies the stop side finds a running
+// rec although its registry secret_ref cannot be resolved: `rec status` and
+// `rec stop` take no key, so an unreadable one must not read as "nothing
+// running" and leave the instance up.
+func TestMachineEntryNeedsNoReadableKey(t *testing.T) {
+	h := &recHarness{}
+	e := recEnv(t, h)
+	h.status = func(int) (string, bool) {
+		return `{"ready":true,"model":"flint","endpoint":"` + h.url() + `/v1"}`, true
+	}
+	got, ok := e.machineEntry(recCfg(h.url(), "exec:/nonexistent/k"), localmodels.Snapshot{}, "rec")
+	if !ok || got.ModelName != "flint" || !got.Running {
+		t.Errorf("machineEntry = %+v, %v; want the running flint instance", got, ok)
+	}
+}
+
+// TestIsolateProcessesForTestClosesReadinessSeam pins that a default env built
+// after IsolateProcessesForTest cannot run a real readiness command (for rec,
+// `rec status`), so a test reaching the production stop-state read stays off a
+// machine that has rec installed.
+func TestIsolateProcessesForTestClosesReadinessSeam(t *testing.T) {
+	if _, err := defaultEnv().runOut(context.Background(), "rec", "status"); err == nil {
+		t.Fatal("defaultEnv().runOut ran a command; want the isolated seam to refuse")
+	}
+}

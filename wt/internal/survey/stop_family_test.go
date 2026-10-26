@@ -294,3 +294,69 @@ func TestProcessSeamsAreClosedInThisPackage(t *testing.T) {
 		t.Errorf("LoadingServer over a live pid = %+v, want the process seam's refusal", l)
 	}
 }
+
+// TestStopStateFindsAMachineInstanceOnAnotherPort verifies the stop state
+// lists a ScopeMachine family's instance the registry-port probe cannot see
+// (#457): rec started by hand on another port answers `rec status` but
+// refuses the registry port, so the snapshot has no running entry and marks
+// the family Down. Without the machine read `wt stop rec` said "nothing
+// running", and `wt stop --all` and the picker left it up. The instance is a
+// candidate with its sessions counted, and the family stops reading as Down.
+func TestStopStateFindsAMachineInstanceOnAnotherPort(t *testing.T) {
+	found := runningEntry("rec", "rec/flint", "flint")
+	h := &stopHarness{
+		snap: localmodels.Snapshot{
+			Providers: map[string]localmodels.Status{"rec": localmodels.StatusUnreachable},
+			Down:      map[string]bool{"rec": true},
+		},
+		counts:  map[string]int{"rec/flint": 2},
+		machine: map[string]localmodels.Entry{"rec": found},
+	}
+	st := stopState(&config.Config{}, h.deps())
+	if len(st.Candidates) != 1 || st.Candidates[0].Entry.ModelID != "rec/flint" || st.Candidates[0].Sessions != 2 {
+		t.Fatalf("candidates = %+v, want the rec instance with 2 sessions", st.Candidates)
+	}
+	if fs := st.Families["rec"]; fs.Down || fs.Untrusted || !fs.Probed {
+		t.Errorf("rec family = %+v, want probed, not down, not untrusted", fs)
+	}
+	if h.loadingAsked != nil {
+		t.Errorf("pidfile read for %v; an instance that was found needs no loading check", h.loadingAsked)
+	}
+}
+
+// TestStopStateAsksTheMachineOnlyWhereItCanHelp verifies the readiness
+// command (a process spawn) runs only for a ScopeMachine family the snapshot
+// lists no instance of: not for a port-scope family or ollama, and not for rec
+// when the registry-port probe already found it. A found instance must not be
+// listed twice, and an idle machine costs one `rec status`, not one per read
+// of every family.
+func TestStopStateAsksTheMachineOnlyWhereItCanHelp(t *testing.T) {
+	listed := runningEntry("rec", "rec/flint", "flint")
+	h := &stopHarness{
+		snap: localmodels.Snapshot{
+			Entries:   []localmodels.Entry{listed},
+			Providers: map[string]localmodels.Status{"rec": localmodels.StatusOK, "mtplx": localmodels.StatusOK, "ollama": localmodels.StatusOK},
+		},
+		machine: map[string]localmodels.Entry{"rec": listed},
+	}
+	st := stopState(&config.Config{}, h.deps())
+	if len(st.Candidates) != 1 {
+		t.Errorf("candidates = %+v, want the listed rec once", st.Candidates)
+	}
+	if h.machineAsked != nil {
+		t.Errorf("machine read for %v, want none", h.machineAsked)
+	}
+
+	// Nothing listed and nothing on the machine: asked for rec alone, still down.
+	h = &stopHarness{snap: localmodels.Snapshot{
+		Providers: map[string]localmodels.Status{"rec": localmodels.StatusUnreachable, "mtplx": localmodels.StatusUnreachable},
+		Down:      map[string]bool{"rec": true, "mtplx": true},
+	}}
+	st = stopState(&config.Config{}, h.deps())
+	if !slices.Equal(h.machineAsked, []string{"rec"}) {
+		t.Errorf("machine read for %v, want [rec]", h.machineAsked)
+	}
+	if len(st.Candidates) != 0 || !st.Families["rec"].Down {
+		t.Errorf("state = %+v, want no candidate and rec still down", st)
+	}
+}

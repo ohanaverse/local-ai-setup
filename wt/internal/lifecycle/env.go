@@ -86,7 +86,7 @@ func defaultEnv() *env {
 		chatClient:        &http.Client{},
 		lookPath:          exec.LookPath,
 		run:               runCommand,
-		runOut:            runCommandStdout,
+		runOut:            readyStdout,
 		runEnv:            runCommandEnv,
 		inventory:         localmodels.Inventory,
 		backends:          maps.Clone(backendsByFamily),

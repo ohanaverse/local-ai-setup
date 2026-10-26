@@ -111,6 +111,45 @@ func (e *env) machineOccupant(ctx context.Context, cfg *config.Config, snap loca
 	return serverEntry(snap, family, st.Model, false), true, false, nil
 }
 
+// MachineScoped reports whether family is a ScopeMachine process family: one
+// instance per machine, found through its readiness command whatever port it
+// listens on (machineScoped).
+func MachineScoped(family string) bool {
+	_, ok := machineScoped(family)
+	return ok
+}
+
+// MachineEntry is the running instance of a ScopeMachine family's one
+// instance on this machine, found through its readiness command (the stop
+// side of machineOccupant, #457): snap's registered entry for the model it
+// serves when there is one, else a discovered one (serverEntry). It reports
+// false for a family of any other scope, one whose binary cannot be had, and
+// one with nothing ready. Unlike machineOccupant it reads no key: the
+// readiness command takes none, and a stop must not depend on one.
+func MachineEntry(cfg *config.Config, snap localmodels.Snapshot, family string) (localmodels.Entry, bool) {
+	return defaultEnv().machineEntry(cfg, snap, family)
+}
+
+func (e *env) machineEntry(cfg *config.Config, snap localmodels.Snapshot, family string) (localmodels.Entry, bool) {
+	spec, ok := machineScoped(family)
+	if !ok {
+		return localmodels.Entry{}, false
+	}
+	bin, err := e.lookPath(spec.Binary)
+	if err != nil {
+		return localmodels.Entry{}, false
+	}
+	// No key: a ReadyCommandJSON check sends none, and `rec stop` needs none,
+	// so an unreadable secret_ref must not hide an instance the user can stop.
+	ctx, cancel := context.WithTimeout(context.Background(), e.readyCmdTimeout)
+	defer cancel()
+	st, running := e.foreignInstance(ctx, family, bin, "")
+	if !running {
+		return localmodels.Entry{}, false
+	}
+	return serverEntry(snap, family, st.Model, false), true
+}
+
 // atRegistryAddress reports whether endpoint, the URL a machine-scope
 // instance says it listens at, is the registry's address for family: every
 // route points there, so only an instance there can be adopted. An empty
