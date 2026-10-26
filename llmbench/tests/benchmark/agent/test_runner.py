@@ -257,6 +257,58 @@ def test_run_suite_isolates_mtplx_with_model_name(tmp_path, monkeypatch):
     assert calls == [("mtplx", "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality")]
 
 
+def test_run_suite_isolates_a_rec_row_with_its_registry_model(tmp_path, monkeypatch):
+    """rec is not mtplx: the row forwards no positional model, and the real
+    isolate_provider -> orchestrate.isolate -> rec backend resolve() picks the
+    registry's single rec model. Only the rec backend's process-touching
+    steps are stubbed."""
+    import os
+
+    from llmbench.providers.lifecycle import orchestrate
+    from llmbench.registry import load_registry
+
+    Path(os.environ["WT_REGISTRY"]).write_text(
+        '[[providers]]\nid = "rec"\nlocation = "local"\n'
+        'auth = { base_url = "http://127.0.0.1:11500/v1", secret_ref = "k" }\n'
+        '[[models]]\nid = "rec/flint"\nfamily = "f"\nprovider_id = "rec"\nmodel_name = "flint"\n'
+    )
+    rec = lifecycle.BACKENDS["rec"]
+    warmed: list[str] = []
+    calls: list[tuple] = []
+    real_isolate = isolation_module.isolate_provider
+
+    def _isolate(pid, *extra_args, **kwargs):
+        calls.append((pid, *extra_args))
+        return real_isolate(pid, *extra_args, **kwargs)
+
+    monkeypatch.setattr(orchestrate, "_stop_others", lambda keep="": None)
+    monkeypatch.setattr(rec, "check_available", lambda: None)
+    monkeypatch.setattr(rec, "already_serving", lambda plan: False)
+    monkeypatch.setattr(rec, "replace_own_occupant", lambda plan: None)
+    monkeypatch.setattr(rec, "start", lambda plan: None)
+    monkeypatch.setattr(rec, "wait_ready", lambda plan: None)
+    monkeypatch.setattr(rec, "warm", lambda plan: warmed.append(plan.model))
+    monkeypatch.setattr(isolation_module, "isolate_provider", _isolate)
+    monkeypatch.setattr(isolation_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(pidriver_module, "run_pi_process", _no_diff_run)
+
+    registry = load_registry()
+    body = _suite_toml(MINI_DRIFT, models='["rec/flint"]').replace(
+        "[routes.direct.ollama]", "[routes.direct.rec]", 1
+    )
+    suite = load_suite(_write_suite(tmp_path, body), registry)
+    _run_dir, results = run_suite(
+        suite,
+        registry,
+        results_dir=tmp_path / "results",
+        live_models_path=tmp_path / "missing.json",
+        skip_judge=True,
+    )
+    assert calls == [("rec",)]
+    assert warmed == ["flint"]
+    assert all(r.error is None for r in results)
+
+
 def test_diff_captured_before_hidden_tests_are_seeded(tmp_path, monkeypatch):
     """Gate 9 seeds the hidden tests into the workspace; the judge's diff must
     be captured before that seeding, or the frontier-model judge reads the exact

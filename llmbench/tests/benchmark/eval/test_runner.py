@@ -872,6 +872,58 @@ def test_row_isolation_spec_mtplx_without_model_name_raises_benchmark_error():
 
 @patch("llmbench.benchmark.eval.runner.judged_runner.generate_category")
 @patch("llmbench.benchmark.eval.runner.resolve_row_endpoint")
+def test_run_suite_isolates_a_rec_row_with_its_registry_model(
+    mock_resolve, mock_generate, tmp_path, monkeypatch
+):
+    # rec is not mtplx: its row's isolation spec is ((), None), and the real
+    # isolate_provider -> orchestrate.isolate -> rec backend resolve() picks
+    # the registry's single rec model. Only the rec backend's process-touching
+    # steps are stubbed.
+    import os
+
+    from llmbench.benchmark import isolation
+    from llmbench.benchmark.eval.runner import _row_isolation_spec
+    from llmbench.providers.lifecycle import orchestrate
+    from llmbench.providers.lifecycle.backends import BACKENDS
+    from llmbench.registry import load_registry
+
+    Path(os.environ["WT_REGISTRY"]).write_text(
+        '[[providers]]\nid = "rec"\nlocation = "local"\n'
+        'auth = { base_url = "http://127.0.0.1:11500/v1", secret_ref = "k" }\n'
+        '[[models]]\nid = "rec/flint"\nfamily = "f"\nprovider_id = "rec"\nmodel_name = "flint"\n'
+    )
+    registry = load_registry()
+    rec = BACKENDS["rec"]
+    warmed: list[str] = []
+    monkeypatch.setattr(orchestrate, "_stop_others", lambda keep="": None)
+    monkeypatch.setattr(rec, "check_available", lambda: None)
+    monkeypatch.setattr(rec, "already_serving", lambda plan: False)
+    monkeypatch.setattr(rec, "replace_own_occupant", lambda plan: None)
+    monkeypatch.setattr(rec, "start", lambda plan: None)
+    monkeypatch.setattr(rec, "wait_ready", lambda plan: None)
+    monkeypatch.setattr(rec, "warm", lambda plan: warmed.append(plan.model))
+    monkeypatch.setattr(isolation, "restore_providers", lambda: None)
+    mock_resolve.return_value = ("http://127.0.0.1:11500/v1", "flint", "k")
+    mock_generate.return_value = _fake_category_result(50.0)
+
+    row = RowConfig(label="r", model_id="rec/flint", route="litellm", provider_id="rec")
+    assert _row_isolation_spec(row, registry) == ((), None)
+    suite = _suite()
+    suite.rows = [row]
+    _run_dir, results = run_suite(
+        suite,
+        registry,
+        [_mini_review_category()],
+        results_dir=tmp_path,
+        judge_transport_factory=lambda suite: object(),
+    )
+
+    assert warmed == ["flint"]
+    assert [r.error for r in results] == [None]
+
+
+@patch("llmbench.benchmark.eval.runner.judged_runner.generate_category")
+@patch("llmbench.benchmark.eval.runner.resolve_row_endpoint")
 @patch("llmbench.benchmark.eval.runner.isolation")
 def test_run_suite_skips_cooldown_for_non_isolatable_provider_rows(
     mock_isolation, mock_resolve, mock_generate, tmp_path

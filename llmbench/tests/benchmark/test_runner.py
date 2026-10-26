@@ -388,6 +388,58 @@ def test_run_benchmark_reisolates_between_different_mtplx_models(tmp_path, monke
     assert calls == [("mtplx", "org/repo-1"), ("mtplx", "org/repo-2")]
 
 
+def _stub_rec_lifecycle(monkeypatch) -> list[str]:
+    """Write a registry with one rec model (`rec/flint`) and stub the rec
+    backend's process-touching steps, leaving the real isolate_provider ->
+    orchestrate.isolate -> rec.resolve path in place. Returns the models
+    warmed, in order."""
+    from llmbench.providers.lifecycle import orchestrate
+    from llmbench.providers.lifecycle.backends import BACKENDS
+
+    Path(os.environ["WT_REGISTRY"]).write_text(
+        '[[providers]]\nid = "rec"\nlocation = "local"\n'
+        'auth = { base_url = "http://127.0.0.1:11500/v1", secret_ref = "k" }\n'
+        '[[models]]\nid = "rec/flint"\nfamily = "f"\nprovider_id = "rec"\nmodel_name = "flint"\n'
+    )
+    rec = BACKENDS["rec"]
+    warmed: list[str] = []
+    monkeypatch.setattr(orchestrate, "_stop_others", lambda keep="": None)
+    monkeypatch.setattr(rec, "check_available", lambda: None)
+    monkeypatch.setattr(rec, "already_serving", lambda plan: False)
+    monkeypatch.setattr(rec, "replace_own_occupant", lambda plan: None)
+    monkeypatch.setattr(rec, "start", lambda plan: None)
+    monkeypatch.setattr(rec, "wait_ready", lambda plan: None)
+    monkeypatch.setattr(rec, "warm", lambda plan: warmed.append(plan.model))
+    return warmed
+
+
+def test_run_benchmark_isolates_a_rec_target_with_its_registry_model(tmp_path, monkeypatch):
+    """rec is not mtplx: the runner forwards no positional model, and the
+    real rec backend's resolve() picks the registry's single rec model; the
+    direct route then targets rec's registry address."""
+    import llmbench.benchmark.runner as runner_module
+    from llmbench.registry import load_registry
+
+    warmed = _stub_rec_lifecycle(monkeypatch)
+    registry = load_registry()
+    urls: list[str] = []
+
+    def _route(session, target, route, url, workload, pass_number):
+        urls.append(url)
+        return _fake_route(session, target, route, url, workload, pass_number)
+
+    monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
+    monkeypatch.setattr(runner_module, "_run_route", _route)
+
+    run = run_benchmark(
+        registry, _FakeWorkload(), model_ids=["rec/flint"], routes=["direct"], results_dir=tmp_path
+    )
+
+    assert warmed == ["flint"]
+    assert [r.error for r in run.results] == [None]
+    assert urls == ["http://127.0.0.1:11500/v1/chat/completions"]
+
+
 def test_run_benchmark_records_error_when_mlx_lm_server_pairing_incomplete(tmp_path, monkeypatch):
     """A mistakenly-registered mlx_lm_server model with no draft source must
     fail that single target with a clear error, not crash the whole run or
