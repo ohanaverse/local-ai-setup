@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -286,6 +287,9 @@ func staleJobs(items []list.Item, prs worktree.PRSet, own worktree.RepoSet, skip
 // staleResolvedMsg carries the answers one resolveStaleCmd found.
 type staleResolvedMsg struct{ verdicts staleSet }
 
+// staleParallelism bounds the git subprocesses resolveStaleCmd runs at once.
+const staleParallelism = 8
+
 // resolveStaleCmd answers jobs with PR.Stale, which runs git. It is a command
 // so those subprocesses run off the update goroutine (#451); jobs is read
 // here only, never the model.
@@ -295,9 +299,22 @@ func resolveStaleCmd(jobs []staleJob) tea.Cmd {
 	}
 	return func() tea.Msg {
 		verdicts := make(staleSet, len(jobs))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, staleParallelism)
 		for _, j := range jobs {
-			verdicts[j.key] = j.pr.Stale(j.key.branch, j.key.dir)
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(j staleJob) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				v := j.pr.Stale(j.key.branch, j.key.dir)
+				mu.Lock()
+				verdicts[j.key] = v
+				mu.Unlock()
+			}(j)
 		}
+		wg.Wait()
 		return staleResolvedMsg{verdicts: verdicts}
 	}
 }

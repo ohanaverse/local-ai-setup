@@ -1335,3 +1335,18 @@ func TestPRForUsesTheRowsTrackedRepository(t *testing.T) {
 		t.Errorf("main with no tracking = %v, want the any-of-yours fallback #9", pr)
 	}
 }
+
+func TestAskStaleSkipsKeysInFlight(t *testing.T) {
+	k1 := staleKey{dir: "/a", branch: "a", head: "1"}
+	k2 := staleKey{dir: "/b", branch: "b", head: "2"}
+	var m model
+	if m.askStale([]staleJob{{key: k1}}) == nil {
+		t.Fatal("first ask of k1 started nothing")
+	}
+	if cmd := m.askStale([]staleJob{{key: k1}}); cmd != nil {
+		t.Error("k1 asked again while in flight")
+	}
+	if m.askStale([]staleJob{{key: k1}, {key: k2}}) == nil {
+		t.Error("k2 was not asked")
+	}
+}
