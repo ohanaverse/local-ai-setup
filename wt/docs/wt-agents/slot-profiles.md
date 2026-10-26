@@ -399,6 +399,15 @@ never chose. A profile that wants a subagent model sets
 Claude Code 2.1.296: an inherited `ANTHROPIC_SMALL_FAST_MODEL` does not
 override `ANTHROPIC_DEFAULT_HAIKU_MODEL`; wt removes it all the same.
 
+The `--settings` env also carries `CLAUDE_CODE_MAX_CONTEXT_TOKENS` when the
+default slot's model has a `context` in `tiers.toml` (cloud models; a local
+build has none), so Claude Code does not assume 200K for an id it does not
+recognize. For `opusplan` it is the smaller of the `opus` and `sonnet` slots'
+windows, and nothing when either has none. It is one value per session, so
+the other slots inherit the default slot's. A value in the profile's `env` or
+`config_content.env`, or exported in your shell, is left as it is. See
+[claude-wt.md](claude-wt.md#context-window-of-a-gateway-model).
+
 Arguments: the yolo flag when `--yolo` is given, `--model <default slot>`
 (an alias such as `sonnet`, so `/model` inside the session switches between
 the profile's slots; `opusplan` for an [opusplan](#opusplan) profile, whose

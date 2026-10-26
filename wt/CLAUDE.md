@@ -162,6 +162,7 @@ Each agent registers a `Driver`; `BuildLaunchCmd(agent, m, worktreePath, yolo, c
 - An empty agent/provider wire-protocol intersection forces LiteLLM regardless of the toggle — so **codex always routes through LiteLLM**. Litellm/forced routes use the registry id (`m.ID`); direct routes the provider-side name (`m.ModelName`).
 - **copilot uses the chat-completions wire (`WIRE_API=completions`)** — its `responses` wire drops leading characters.
 - **claude maps all four model slots on every non-native single-model launch** (`claudeSlotVars`); an applied profile's `env` is appended later and wins.
+- **claude declares a gateway model's context window** (#405): `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from the `context` of its `tiers.toml` entry (`claudeWindowEnv`; cloud models only: a local build has none, and wt injects nothing for it). The single-model launch sets it unless the user's environment already has it; a slot profile sets it for the default slot (opusplan: the smaller of opus and sonnet, none if either is unknown) unless the profile's env, `config_content.env` or the user's environment names it. The `loadTiers` seam is stubbed by tests and `tiers.IsolateForTest` closes the real file.
 - agy is a native passthrough, not a command agent: `-A agy` without `-M` errors when more than one agy model is eligible.
 
 Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driver, `Route`, an optional capability (`Seeder`, `Syncer`, `ArgSetter`, …), or `ollamacheck.Check`. Per-agent env/args: [docs/wt-agents/](docs/wt-agents/). New driver: the `adding-a-wt-agent` skill.
@@ -245,7 +246,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and `EnsureForName` never consults remotes.
 
-> **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
+> **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup, and forks no git: staleness is answered off the update goroutine, #451). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 
