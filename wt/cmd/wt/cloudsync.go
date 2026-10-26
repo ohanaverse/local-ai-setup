@@ -34,9 +34,43 @@ var (
 	cloudSyncNow = time.Now
 )
 
-// cloudSyncFlows are the flows `--only` selects among, in the order they are
-// planned and reported.
-var cloudSyncFlows = []string{"openrouter", "ollama"}
+// The flows' names: --only's spelling, the prefix of every line a flow prints
+// and the registry provider each syncs.
+const (
+	flowOpenRouter = "openrouter"
+	flowOllama     = "ollama"
+)
+
+// cloudFlow is what the command knows of a flow before it plans one: its name
+// and a way to reach the --only choice for it in cloudSyncOpts. The planners,
+// gates and applies are typed per flow (openRouterRun, ollamaRun) and stay in
+// their files; this table is where a flow is declared to the command line, so
+// --only, its error text, the --only flag's help and the order of the flows
+// come from one place (#453). It does not yet drive cloudSyncOutcome, its
+// err(), runCloudSync's pending list or the flow descriptions in the command's
+// Long text: a new flow still edits those by hand.
+// TestCloudFlowsMatchTheirProviders holds each name to a provider of the table
+// in internal/provider and to a line in --help.
+type cloudFlow struct {
+	name     string
+	selected func(*cloudSyncOpts) *bool
+}
+
+// cloudFlows are the flows in the order they are planned and reported.
+var cloudFlows = []cloudFlow{
+	{flowOpenRouter, func(o *cloudSyncOpts) *bool { return &o.openrouter }},
+	{flowOllama, func(o *cloudSyncOpts) *bool { return &o.ollama }},
+}
+
+// cloudSyncFlows are the flows' names, in cloudFlows' order: the flows
+// `--only` selects among.
+var cloudSyncFlows = func() []string {
+	names := make([]string, len(cloudFlows))
+	for i, f := range cloudFlows {
+		names[i] = f.name
+	}
+	return names
+}()
 
 var cloudHTTP = &http.Client{Timeout: 30 * time.Second}
 
@@ -105,32 +139,31 @@ func approvedDigests(flag string) []string {
 // the variable unset) it is an error, never "every flow".
 func selectFlows(only string, given bool, o *cloudSyncOpts) error {
 	if !given {
-		o.openrouter, o.ollama = true, true
+		for _, f := range cloudFlows {
+			*f.selected(o) = true
+		}
 		return nil
 	}
 	if strings.TrimSpace(only) == "" {
 		return fmt.Errorf("--only: no flow named (valid: %s)", strings.Join(cloudSyncFlows, ", "))
 	}
 	for _, name := range strings.Split(only, ",") {
-		switch name = strings.TrimSpace(name); name {
-		case "openrouter":
-			o.openrouter = true
-		case "ollama":
-			o.ollama = true
-		default:
+		name = strings.TrimSpace(name)
+		i := slices.Index(cloudSyncFlows, name)
+		if i < 0 {
 			return fmt.Errorf("--only: unknown flow %q (valid: %s)", name, strings.Join(cloudSyncFlows, ", "))
 		}
+		*cloudFlows[i].selected(o) = true
 	}
 	return nil
 }
 
 // selectedFlows names the flows --only picked, in cloudSyncFlows' order.
 func selectedFlows(o cloudSyncOpts) []string {
-	picked := map[string]bool{"openrouter": o.openrouter, "ollama": o.ollama}
 	var names []string
-	for _, flow := range cloudSyncFlows {
-		if picked[flow] {
-			names = append(names, flow)
+	for _, f := range cloudFlows {
+		if *f.selected(&o) {
+			names = append(names, f.name)
 		}
 	}
 	return names
@@ -261,9 +294,9 @@ func (o flowOutcome) exitError(flow string) error {
 func (r *cloudSyncOutcome) err() error {
 	switch {
 	case r.ollama.code != 0:
-		return r.ollama.exitError("ollama")
+		return r.ollama.exitError(flowOllama)
 	case r.openrouter.code != 0:
-		return r.openrouter.exitError("openrouter")
+		return r.openrouter.exitError(flowOpenRouter)
 	case r.failed:
 		return &exitCodeError{code: 1, err: errors.New("cloud-sync: a step failed; see the error lines above")}
 	}
@@ -328,7 +361,7 @@ func planOpenRouterFlow(ctx context.Context, out, errOut io.Writer, doc *config.
 	}
 	run := &openRouterRun{api: api, plan: cloudsync.PlanPrices(entries, api)}
 	run.printed = run.plan.Format()
-	prefixLines(out, "openrouter", run.printed)
+	prefixLines(out, flowOpenRouter, run.printed)
 	if run.plan.Withheld != "" {
 		// Not part of run.printed: it explains an absence from the plan.
 		fmt.Fprintln(out, run.plan.Withheld)
@@ -398,7 +431,7 @@ func removalGate(errOut io.Writer, plan removalPlan, flow string, o cloudSyncOpt
 // digest of a reviewed dry run. It reports false, with the reason printed
 // and res.openrouter.code set, when it may not.
 func openrouterGate(errOut io.Writer, r *openRouterRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
-	return removalGate(errOut, r.plan, "openrouter", o, func(code int) { res.openrouter.code = code }, removalGateWording{
+	return removalGate(errOut, r.plan, flowOpenRouter, o, func(code int) { res.openrouter.code = code }, removalGateWording{
 		massNoun:  "OpenRouter-priced models",
 		massTotal: r.plan.RemovableCandidates,
 		massCheck: "OpenRouter's list is complete",
@@ -468,10 +501,10 @@ func runCloudSync(ctx context.Context, out, errOut io.Writer, cfg *config.Config
 	// The flows about to be applied, for the lines that concern all of them.
 	var pending []string
 	if openrouter != nil {
-		pending = append(pending, "openrouter")
+		pending = append(pending, flowOpenRouter)
 	}
 	if ollama != nil {
-		pending = append(pending, "ollama")
+		pending = append(pending, flowOllama)
 	}
 	notApplied := func(w io.Writer, format string, args ...any) {
 		for _, flow := range pending {

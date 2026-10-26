@@ -82,7 +82,7 @@ through LiteLLM while it runs.
 
 ## Non-goals
 
-- `wt cloud-sync` and the `Catalog` capability (issue #453).
+- `wt cloud-sync` and the `Catalog` capability (issue #453). *Status 2026-10-26: the shipped provider layer is a facts table (`internal/provider`), not a Go interface with capabilities, so #453 was reduced to a flow table inside `cmd/wt` (`cloudFlows`); a `Catalog` fact on the provider table was not added.*
 - Moving mlx_lm_server onto `processServer` (needs the target+draft pairing shape). It joins the core
   interface (identity, routing, running-only inventory) but stays llmbench-started.
 - Rewriting ollama/omlx logic, the omlx pool/eviction planner, or ollama's deferred stop.
