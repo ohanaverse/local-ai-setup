@@ -253,19 +253,19 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				usable := basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
 					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil)
 				own := ownRateSuffix(suffix)
+				unpriced := e.Cost == nil || (e.Cost.Input == nil && e.Cost.Output == nil)
 				var note string
+				var change *PriceChange
 				switch {
+				case own && unpriced:
+					note = fmt.Sprintf("left unpriced: :%s bills at its own rate, not %s's; set a price by hand", suffix, base)
 				case own:
 					note = fmt.Sprintf("kept at its current price: :%s bills at its own rate, not %s's", suffix, base)
+				case !usable && unpriced:
+					note = fmt.Sprintf("left unpriced: %s has no usable price; set a price by hand", base)
 				case !usable:
 					note = fmt.Sprintf("kept at its current price: %s has no usable price", base)
-				case suffix == "online":
-					note = fmt.Sprintf("kept and priced from %s (:online adds a per-request web-search fee that price does not include)", base)
 				default:
-					note = fmt.Sprintf("kept and priced from %s", base)
-				}
-				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
-				if !own && usable {
 					var after Cost
 					if e.Cost != nil {
 						after = *e.Cost
@@ -275,9 +275,22 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 						after.Cache = basePrice.Cache
 					}
 					after.TimePrices = withOpenRouterRows(after.TimePrices, basePrice.Rates)
-					plan.Matched = append(plan.Matched, PriceChange{
+					change = &PriceChange{
 						ModelID: e.ID, Before: e.Cost, After: after, Changed: !sameCost(e.Cost, after),
-					})
+					}
+					plan.Matched = append(plan.Matched, *change)
+					// An unchanged price priced from the base is the ordinary
+					// case and needs no line on every sync; the :online fee
+					// caveat and a price that moved are worth one.
+					switch {
+					case suffix == "online":
+						note = fmt.Sprintf("kept and priced from %s (:online adds a per-request web-search fee that price does not include)", base)
+					case change.Changed:
+						note = fmt.Sprintf("kept and priced from %s", base)
+					}
+				}
+				if note != "" {
+					plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
 				}
 			default:
 				plan.Removals = append(plan.Removals, e.ID)

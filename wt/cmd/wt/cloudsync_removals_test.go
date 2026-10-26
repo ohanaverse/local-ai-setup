@@ -353,7 +353,7 @@ func TestCloudSyncKeptVariantNeedsNoApprovalAndIsExplained(t *testing.T) {
 
 	dry, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
 	if code != 0 || stderr != "" ||
-		!strings.Contains(dry, "openrouter: warning: No OpenRouter match for openrouter/vendor--gpt:nitro (vendor/gpt:nitro); its base model is listed, so it is kept at its current price: :nitro bills at its own rate, not vendor/gpt's\n") ||
+		!strings.Contains(dry, "openrouter: warning: No OpenRouter match for openrouter/vendor--gpt:nitro (vendor/gpt:nitro); its base model is listed, so it is left unpriced: :nitro bills at its own rate, not vendor/gpt's; set a price by hand\n") ||
 		strings.Contains(dry, "Registry removals") {
 		t.Fatalf("dry run exit %d, stderr %q:\n%s", code, stderr, dry)
 	}
