@@ -300,8 +300,8 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 			// Listed is enough, whatever the price.
 			plan.Graduations = append(plan.Graduations, e.ID)
 		}
-		if !usablePrice(price) {
-			plan.Warnings = append(plan.Warnings, unusablePriceWarning(e.ID, price))
+		if w, refused := priceWarning(e.ID, price); refused {
+			plan.Warnings = append(plan.Warnings, w)
 			continue
 		}
 		var after Cost
@@ -330,22 +330,25 @@ func usablePrice(p APIPrice) bool {
 	return p.Unusable == "" && len(p.Skipped) == 0 && (p.Input != nil || p.Output != nil || p.Cache != nil)
 }
 
-// unusablePriceWarning is the warning for a listed model whose price
-// usablePrice refuses, in the order the reasons are tested: time-of-day
+// priceWarning is the warning for a listed model whose price usablePrice
+// refuses, and false for one it accepts (so the refusal and its message cannot
+// drift apart). The reasons are tested in this order: time-of-day
 // pricing wt cannot read first (its top-level price is that of the window in
 // force now, which stored would change with the hour the sync runs in, so the
 // warning must not depend on the hour), then a price that is negative or not
 // a number (OpenRouter gives -1 for one that varies; the whole entry is
 // refused, since a model whose price varies has no per-token price to
 // record), then no price at all.
-func unusablePriceWarning(id string, p APIPrice) string {
+func priceWarning(id string, p APIPrice) (string, bool) {
 	switch {
+	case usablePrice(p):
+		return "", false
 	case p.Unusable != "":
-		return fmt.Sprintf("Could not use OpenRouter's time-of-day pricing for %s: %s", id, p.Unusable)
+		return fmt.Sprintf("Could not use OpenRouter's time-of-day pricing for %s: %s", id, p.Unusable), true
 	case len(p.Skipped) > 0:
-		return fmt.Sprintf("Could not use OpenRouter's pricing for %s: its %s price is negative or not a number", id, strings.Join(p.Skipped, " and "))
+		return fmt.Sprintf("Could not use OpenRouter's pricing for %s: its %s price is negative or not a number", id, strings.Join(p.Skipped, " and ")), true
 	}
-	return "No pricing data for " + id
+	return "No pricing data for " + id, true
 }
 
 // ownRateSuffix reports whether a `:variant` routing suffix is billed at a rate

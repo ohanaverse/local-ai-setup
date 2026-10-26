@@ -699,11 +699,16 @@ func TestBothPricePathsAgreeOnWhatIsUsable(t *testing.T) {
 	}
 }
 
-// TestUnusablePriceWarningKeepsItsOrderAndWording pins which reason is named
-// when a price has more than one fault, and the three messages themselves:
+// TestPriceWarningKeepsItsOrderAndWording pins which reason is named when a
+// price has more than one fault, and the three messages themselves:
 // unreadable time-of-day pricing before a negative or non-numeric price
 // before no price at all. The first must not depend on the hour of the sync.
-func TestUnusablePriceWarningKeepsItsOrderAndWording(t *testing.T) {
+// A price usablePrice accepts gets no warning, so the function cannot report
+// a priced model as unpriced.
+func TestPriceWarningKeepsItsOrderAndWording(t *testing.T) {
+	if w, refused := priceWarning("openrouter/m", APIPrice{Input: f(1), Output: f(2)}); refused || w != "" {
+		t.Errorf("a usable price warned: %q, %v", w, refused)
+	}
 	for name, tc := range map[string]struct {
 		p    APIPrice
 		want string
@@ -712,8 +717,8 @@ func TestUnusablePriceWarningKeepsItsOrderAndWording(t *testing.T) {
 		"skipped":                    {APIPrice{Skipped: []string{"prompt", "completion"}}, "Could not use OpenRouter's pricing for openrouter/m: its prompt and completion price is negative or not a number"},
 		"nothing":                    {APIPrice{}, "No pricing data for openrouter/m"},
 	} {
-		if got := unusablePriceWarning("openrouter/m", tc.p); got != tc.want {
-			t.Errorf("%s: warning = %q, want %q", name, got, tc.want)
+		if got, refused := priceWarning("openrouter/m", tc.p); !refused || got != tc.want {
+			t.Errorf("%s: warning = %q (refused %v), want %q", name, got, refused, tc.want)
 		}
 	}
 }
