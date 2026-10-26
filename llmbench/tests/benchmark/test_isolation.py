@@ -127,6 +127,6 @@ def test_supported_provider_ids_matches_the_backends_registry_documented_list():
     retired the old bash helper's own "Supported:" header comment, which
     used to need the same update)."""
     assert (
-        frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx"})
+        frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec"})
         == isolation.SUPPORTED_PROVIDER_IDS
     )

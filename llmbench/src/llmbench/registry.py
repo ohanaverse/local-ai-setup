@@ -16,7 +16,7 @@ from typing import Any
 from ._env import env_first
 
 # The local providers the benchmarks can isolate and run against.
-DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx", "mlx_lm_server", "mtplx")
+DEFAULT_PROVIDER_IDS: tuple[str, ...] = ("ollama", "omlx", "mlx_lm_server", "mtplx", "rec")
 
 
 class RegistryError(Exception):

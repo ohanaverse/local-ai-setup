@@ -52,6 +52,7 @@ def test_provider_list_names_every_backend():
         "ollama",
         "omlx",
         "omlx-6bit",
+        "rec",
     ]
 
 
