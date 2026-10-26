@@ -78,6 +78,26 @@ def _scrub(text: str, key: str | None) -> str:
     return text.replace(key, "***") if key else text
 
 
+# How much of a refusal body goes into an error message.
+_DETAIL_LIMIT = 300
+
+
+def _refusal_detail(exc: urllib.error.HTTPError, key: str | None) -> str:
+    """The first `_DETAIL_LIMIT` characters of a refusal body, whitespace
+    collapsed, with `key` masked. The key is masked BEFORE the cut, and a
+    leading part of the key left at the cut's end is dropped, so an echoed
+    key straddling the limit leaves no fragment behind."""
+    extra = len(key) if key else 0
+    text = exc.read(_DETAIL_LIMIT + extra).decode(errors="replace")
+    text = _scrub(text, key)[:_DETAIL_LIMIT]
+    if key:
+        for n in range(len(key) - 1, 0, -1):
+            if text.endswith(key[:n]):
+                text = text[:-n]
+                break
+    return " ".join(text.split())
+
+
 def _ids_from(data: object) -> list[str]:
     """Model ids from a parsed OpenAI-compatible /v1/models body (the same
     rule as `local_process.http_models_ids`)."""
@@ -282,10 +302,9 @@ def warmup(
                 return
         except urllib.error.HTTPError as exc:
             if exc.code in _KEY_REFUSED:
-                detail = " ".join(exc.read(300).decode(errors="replace").split())
+                detail = _refusal_detail(exc, key)
                 raise WarmupRefusedError(
-                    f"{chat_url} refused the warmup for {model} "
-                    f"(HTTP {exc.code}: {_scrub(detail, key)})"
+                    f"{chat_url} refused the warmup for {model} (HTTP {exc.code}: {detail})"
                 ) from None
         except OSError:
             pass
@@ -303,17 +322,30 @@ def command_json(argv: list[str], *, path: str, timeout: float = 5.0) -> object 
     root that is not an object, a missing path, or a path that ends on an
     object or array instead of a scalar.
     """
+    if not argv:
+        return None
     try:
+        # stderr is discarded: progress or ANSI noise there must neither fail
+        # a decode nor spoil a valid answer on stdout. Undecodable stdout
+        # bytes are replaced rather than raised.
         result = subprocess.run(  # noqa: S603 — argv comes from the provider contract
-            argv, capture_output=True, text=True, timeout=timeout, check=False
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        # ValueError: a NUL byte in an argument.
         return None
     if result.returncode != 0 or not (result.stdout or "").strip():
         return None
     try:
         node: object = json.loads(result.stdout)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: deeply nested JSON (json.loads does not wrap it).
         return None
     if not isinstance(node, dict):
         return None

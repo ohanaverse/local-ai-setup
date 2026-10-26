@@ -556,3 +556,84 @@ def test_wait_for_command_ready_times_out_naming_the_binary():
         )
     assert run.call_count == 1
     assert "/Users/x" not in str(excinfo.value)
+
+
+# --- command_json never raises (fix round 1) --------------------------------
+#
+# Real child processes (the test interpreter itself, which the autouse guard
+# lets through), so the decoding and parsing run exactly as in production.
+
+
+def _py(code: str) -> list[str]:
+    import sys
+
+    return [sys.executable, "-c", code]
+
+
+def test_command_json_ignores_non_utf8_stderr_noise():
+    """A status command that prints undecodable progress/ANSI bytes to
+    stderr while printing a valid answer on stdout: the answer still
+    parses."""
+    from llmbench.providers.lifecycle.probe import command_json
+
+    argv = _py(
+        "import sys; sys.stderr.buffer.write(b'\\xff\\xfe\\x1b[0m'); "
+        "sys.stdout.write('{\"ready\": true}')"
+    )
+    assert command_json(argv, path="ready") is True
+
+
+def test_command_json_survives_non_utf8_stdout():
+    """Undecodable bytes on stdout are replaced, not raised: inside a string
+    value the rest of the answer still reads."""
+    from llmbench.providers.lifecycle.probe import command_json
+
+    argv = _py('import sys; sys.stdout.buffer.write(b\'{"ready": true, "m": "\\xff"}\')')
+    assert command_json(argv, path="ready") is True
+    garbage = _py("import sys; sys.stdout.buffer.write(b'\\xff\\xfe\\xfd')")
+    assert command_json(garbage, path="ready") is None
+
+
+def test_command_json_is_none_for_deeply_nested_json():
+    """json.loads raises RecursionError (not ValueError) on deep nesting."""
+    from llmbench.providers.lifecycle.probe import command_json
+
+    argv = _py("import sys; sys.stdout.write('{\"a\":' * 100000 + '1' + '}' * 100000)")
+    assert command_json(argv, path="a") is None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [[], ["/bin/echo", "nul\0byte"]],
+    ids=["empty-argv", "nul-in-argv"],
+)
+def test_command_json_is_none_for_an_argv_that_cannot_run(argv):
+    """An empty argv (IndexError) or a NUL byte in an argument (ValueError)
+    is "no answer", like a missing executable."""
+    from llmbench.providers.lifecycle.probe import command_json
+
+    assert command_json(argv, path="ready") is None
+
+
+def test_warmup_masks_an_echoed_key_that_straddles_the_detail_cut():
+    """The refusal detail is cut to 300 bytes. A key echoed across that cut
+    must not leave its leading part in the message: mask first, then cut."""
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError
+
+    key = "sekrit-value-0123456789"
+    # 286 + len(" Bearer ") = 294: the 300-byte cut falls 6 bytes into the key.
+    body = b"x" * 286 + b" Bearer " + key.encode() + b" trailing"
+
+    def urlopen(target, **kwargs):
+        if target.get_method() == "GET":
+            return MagicMock()
+        raise _http_error(401, body)
+
+    with (
+        patch(f"{PROBE}.urllib.request.urlopen", urlopen),
+        pytest.raises(WarmupRefusedError) as excinfo,
+    ):
+        warmup("http://x/chat", "m", health_url="http://x/health", key=key)
+    message = str(excinfo.value)
+    leaked = any(key[:n] in message for n in range(3, len(key) + 1))
+    assert not leaked
