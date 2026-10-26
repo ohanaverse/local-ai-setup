@@ -54,6 +54,33 @@ fetched for, changed or warned about, whatever its name is.
   and the run says `openrouter: OpenRouter's list has N models (fewer than
   20), so no removals are planned`. A model added by hand is
   [kept](#models-you-add-by-hand) instead.
+- **A `:variant` of a listed model is kept, not removed.** A registry
+  `model_name` such as `vendor/model:nitro` that the list does not carry as
+  an id, while `vendor/model` is listed, is still served, so it never shows
+  under `Registry removals`. The dry run says what happens to its price in a
+  `warning: No OpenRouter match for <id> (<name>); its base model is listed,
+  so it is …` line:
+  - `kept and priced from <base>`: an ordinary suffix (`:thinking`, …) takes
+    the base model's price. `:online` also bills a per-request web-search fee
+    the base price does not include, so its stored price may understate the
+    cost, and the warning says so.
+  - `kept at its current price: :<suffix> bills at its own rate`: `:free`,
+    `:nitro` and `:floor` are priced as the provider they route to, not as the
+    base, so the row keeps the price it has (a `:free` row never turns into a
+    charge).
+  - `kept at its current price: <base> has no usable price`: the base is
+    listed but its price cannot be used (a `warning` for the base's own row
+    says why).
+
+  A suffix OpenRouter has dropped, while its base is still listed, is **not**
+  detected: wt cannot tell it from a routing suffix it never lists, and the
+  row stays at its price. Remove such a row with `wt model rm`.
+- **An alias or a redirect id has no `:`** to tell it from a model that is
+  gone, so it is planned as a removal like one. The plan text says so under
+  `Registry removals` (a `Note:` line, outside what the digest covers), and
+  the approval is the check: look at each id before approving it, and protect
+  one OpenRouter still serves under another name with `wt model edit <id>
+  --source manual`.
 - A model OpenRouter lists with no price (`warning: No pricing data for …`), or lists with a
   price that is negative or not a number (`warning: Could not use
   OpenRouter's pricing for …`; OpenRouter gives `-1` for a price that

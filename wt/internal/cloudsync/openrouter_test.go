@@ -542,3 +542,85 @@ func TestPlanPricesKeepsAVariantOfAListedModel(t *testing.T) {
 		t.Errorf("warnings = %q, want one saying the row is kept", plan.Warnings)
 	}
 }
+
+// TestPlanPricesSaysWhatItDidWithAKeptVariant pins the warning each kept
+// variant gets (#449 item 1), since the dry run is the only place a user
+// learns why the row stays: an ordinary suffix is "priced from <base>", an
+// own-rate suffix (:free, :nitro, :floor) "kept at its current price" with
+// the reason, :online adds that it bills a search fee the base price omits,
+// and a base the list carries with no usable price says so. A warning that
+// said only "kept" left a stale price looking like a refreshed one.
+func TestPlanPricesSaysWhatItDidWithAKeptVariant(t *testing.T) {
+	api := healthyList("vendor/qwen3.8", "vendor/noprice")
+	api["vendor/noprice"] = APIPrice{Unusable: "varies"}
+	plan := PlanPrices([]Entry{
+		orEntry("qwen3.8:thinking", nil),
+		orEntry("qwen3.8:online", nil),
+		orEntry("qwen3.8:nitro", nil),
+		orEntry("noprice:thinking", nil),
+	}, api)
+	want := map[string]string{
+		"openrouter/qwen3.8:thinking": "so it is kept and priced from vendor/qwen3.8",
+		"openrouter/qwen3.8:online":   "(:online adds a per-request web-search fee that price does not include)",
+		"openrouter/qwen3.8:nitro":    "kept at its current price: :nitro bills at its own rate, not vendor/qwen3.8's",
+		"openrouter/noprice:thinking": "kept at its current price: vendor/noprice has no usable price",
+	}
+	for id, frag := range want {
+		found := false
+		for _, w := range plan.Warnings {
+			if strings.Contains(w, "No OpenRouter match for "+id+" ") && strings.Contains(w, frag) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no warning for %s containing %q in %q", id, frag, plan.Warnings)
+		}
+	}
+	wantIDs(t, "removals", plan.Removals)
+}
+
+// TestPlanPricesDroppedSuffixStaysKept documents the choice for #449 item 3:
+// a variant whose suffix OpenRouter no longer carries on any id is still kept
+// while its base is listed. wt cannot tell a dropped suffix from a routing
+// one it never lists, and a heuristic would turn a kept `:free` row into a
+// gated removal, reversing #450. The row keeps its price and a warning names
+// it; the test fails if someone adds the detection without deciding that.
+func TestPlanPricesDroppedSuffixStaysKept(t *testing.T) {
+	free := &Cost{Input: f(0), Output: f(0)}
+	plan := PlanPrices([]Entry{orEntry("here:free", free)}, healthyList("vendor/here"))
+	wantIDs(t, "removals", plan.Removals)
+	if len(plan.Matched) != 0 || len(plan.Warnings) != 1 {
+		t.Errorf("matched %d, warnings %q; want the row kept at its price with one warning", len(plan.Matched), plan.Warnings)
+	}
+}
+
+// TestPlanPricesRemovesWhatTheListLacksAndHintsAtAliases pins what lands in
+// Registry removals (#449 item 2): a base that is not listed, and an alias or
+// redirect id with no `:`, are both removals the approval gate decides; a
+// manual alias is kept instead. The plan text says an alias may be among
+// them, before the digest line, and the digest is a function of the ids
+// alone, so the hint cannot change what an approval covers.
+func TestPlanPricesRemovesWhatTheListLacksAndHintsAtAliases(t *testing.T) {
+	plan := PlanPrices([]Entry{
+		orEntry("gone:nitro", nil), // base not listed
+		orEntry("alias", nil),      // no colon, not listed
+		manualOR("manual-alias"),   // manual: kept
+	}, healthyList("vendor/other"))
+	wantIDs(t, "removals", plan.Removals, "openrouter/gone:nitro", "openrouter/alias")
+	wantIDs(t, "kept", plan.Kept, "openrouter/manual-alias")
+
+	text := plan.Format()
+	note := strings.Index(text, "Note: a model OpenRouter serves under another name")
+	digest := strings.Index(text, "Removal digest: ")
+	if note < 0 || digest < 0 || note > digest {
+		t.Errorf("want the alias note before the digest line:\n%s", text)
+	}
+	if got, want := plan.RemovalDigest(), digestOf([]string{"openrouter/alias", "openrouter/gone:nitro"}); got != want {
+		t.Errorf("digest = %s, want %s over the sorted ids alone", got, want)
+	}
+
+	// No removal, no note.
+	if clean := PlanPrices([]Entry{orEntry("here", nil)}, healthyList("vendor/here")).Format(); strings.Contains(clean, "Note:") {
+		t.Errorf("a plan with no removal carries the alias note:\n%s", clean)
+	}
+}

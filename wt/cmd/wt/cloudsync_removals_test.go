@@ -340,3 +340,58 @@ func TestRemovalGateAllowsAnApprovedRemovalAndANoRemovalPlan(t *testing.T) {
 		t.Error("removalGate = false, want true for a plan with nothing to remove")
 	}
 }
+
+// TestCloudSyncKeptVariantNeedsNoApprovalAndIsExplained pins the variant row
+// end to end (#449 item 4): the dry run says why the row stays and what price
+// it has, and `--yes` with no digest applies it, because a kept variant
+// removes nothing and so has nothing to approve. The row is still in the
+// registry afterwards.
+func TestCloudSyncKeptVariantNeedsNoApprovalAndIsExplained(t *testing.T) {
+	path, cfg := cloudSyncHome(t, vanishedRegistry("gpt:nitro"))
+	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stubRouteSync(t, "")
+
+	dry, stderr, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	if code != 0 || stderr != "" ||
+		!strings.Contains(dry, "openrouter: warning: No OpenRouter match for openrouter/vendor--gpt:nitro (vendor/gpt:nitro); its base model is listed, so it is kept at its current price: :nitro bills at its own rate, not vendor/gpt's\n") ||
+		strings.Contains(dry, "Registry removals") {
+		t.Fatalf("dry run exit %d, stderr %q:\n%s", code, stderr, dry)
+	}
+
+	_, stderr, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	if code != 0 || stderr != "" || final != "" {
+		t.Fatalf("--yes with a kept variant: exit %d, stderr %q, final %q; want no approval asked for", code, stderr, final)
+	}
+	if !strings.Contains(mustRead(t, path), `model_name = "vendor/gpt:nitro"`) {
+		t.Error("the kept variant row is gone from the registry")
+	}
+}
+
+// TestCloudSyncKeptVariantBesideARemovalStillNeedsTheDigest pins that a
+// variant in the plan does not loosen the gate for a model that is gone: with
+// both, `--yes` without the digest exits 5 and changes nothing, and with it
+// only the vanished model is removed while the variant stays.
+func TestCloudSyncKeptVariantBesideARemovalStillNeedsTheDigest(t *testing.T) {
+	path, cfg := cloudSyncHome(t, vanishedRegistry("gpt:nitro", "old"))
+	stubCloudFetch(t, map[string]string{cloudsync.OpenRouterModelsURL: healthyOpenRouterBody()})
+	stubRouteSync(t, "")
+
+	dry, _, code := runCS(t, cfg, cloudSyncOpts{openrouter: true, dryRun: true})
+	if code != 0 || !strings.Contains(dry, "openrouter:   openrouter/vendor--old\n") || strings.Contains(dry, "openrouter:   openrouter/vendor--gpt:nitro\n") ||
+		!strings.Contains(dry, "openrouter: Note: a model OpenRouter serves under another name") {
+		t.Fatalf("dry run exit %d:\n%s", code, dry)
+	}
+	digest := orDigestIn(t, dry)
+	before := mustRead(t, path)
+
+	_, _, final, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true})
+	if code != 5 || final != "cloud-sync: the openrouter flow changed nothing: removals not approved" || mustRead(t, path) != before {
+		t.Fatalf("unapproved run: exit %d, final %q, registry changed %v", code, final, mustRead(t, path) != before)
+	}
+
+	_, stderr, _, code := runCSFinal(t, cfg, cloudSyncOpts{openrouter: true, yes: true, approve: digest})
+	after := mustRead(t, path)
+	if code != 0 || stderr != "" || strings.Contains(after, "vendor--old") || !strings.Contains(after, `model_name = "vendor/gpt:nitro"`) {
+		t.Errorf("approved run: exit %d, stderr %q; want old removed and the variant kept:\n%s", code, stderr, after)
+	}
+}

@@ -250,9 +250,21 @@ func PlanPrices(entries []Entry, api map[string]APIPrice) *PricePlan {
 				// a wrong one, `:free` turned into a charge included.
 				base, suffix, _ := strings.Cut(e.ModelName, ":")
 				basePrice := api[base]
-				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is kept", e.ID, e.ModelName))
-				if !ownRateSuffix(suffix) && basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
-					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil) {
+				usable := basePrice.Unusable == "" && len(basePrice.Skipped) == 0 &&
+					(basePrice.Input != nil || basePrice.Output != nil || basePrice.Cache != nil)
+				var note string
+				switch {
+				case ownRateSuffix(suffix):
+					note = fmt.Sprintf("kept at its current price: :%s bills at its own rate, not %s's", suffix, base)
+				case !usable:
+					note = fmt.Sprintf("kept at its current price: %s has no usable price", base)
+				case suffix == "online":
+					note = fmt.Sprintf("kept and priced from %s (:online adds a per-request web-search fee that price does not include)", base)
+				default:
+					note = fmt.Sprintf("kept and priced from %s", base)
+				}
+				plan.Warnings = append(plan.Warnings, fmt.Sprintf("No OpenRouter match for %s (%s); its base model is listed, so it is %s", e.ID, e.ModelName, note))
+				if !ownRateSuffix(suffix) && usable {
 					var after Cost
 					if e.Cost != nil {
 						after = *e.Cost
@@ -357,6 +369,10 @@ func (p *PricePlan) Format() string {
 		for _, id := range p.Removals {
 			lines = append(lines, "  "+id)
 		}
+		// An alias or a redirect id has no `:` to tell it from a model that
+		// is gone, so it lands here like one. The hint is not part of the
+		// digest (RemovalDigest reads the ids), so the approval is unchanged.
+		lines = append(lines, "Note: a model OpenRouter serves under another name (an alias or a redirect id) is listed here too; check each before approving.")
 		lines = append(lines, digestLine(p.RemovalDigest()))
 	}
 	lines = append(lines, graduatedLines(p.Graduations)...)
