@@ -22,7 +22,9 @@ type procInfo struct {
 	// the kernel is taking it apart after a fatal signal, which for a server
 	// holding tens of gigabytes takes a noticeable part of a second, before it
 	// becomes a zombie or disappears. argv is then nil, so such a process is
-	// never identified as anything and never signalled.
+	// never identified as anything and never signalled. It is inferred from
+	// kern.procargs2's errno (EINVAL, or EIO confirmed against kern.proc.pid),
+	// not read from a field the kernel sets for the purpose.
 	exiting bool
 	// start is the process's start time, in a form that is only ever compared
 	// for equality. It survives exec, so it is the same before and after

@@ -166,6 +166,31 @@ func TestProcArgvTreatsNoArgumentsAsExiting(t *testing.T) {
 	}
 }
 
+// TestLeavingTable verifies which fresh kern.proc.pid answers confirm an EIO
+// from kern.procargs2 as a process on its way out.
+func TestLeavingTable(t *testing.T) {
+	live := func(stat int8, flag int32) []unix.KinfoProc {
+		var k unix.KinfoProc
+		k.Proc.P_pid = 42
+		k.Proc.P_stat = stat
+		k.Proc.P_flag = flag
+		return []unix.KinfoProc{k}
+	}
+	for name, c := range map[string]struct {
+		kps  []unix.KinfoProc
+		want bool
+	}{
+		"gone":               {nil, true},
+		"zombie":             {live(procZombie, 0), true},
+		"working on exiting": {live(2, procWExit), true},
+		"live":               {live(2, 0), false},
+	} {
+		if got := leavingTable(c.kps, 42); got != c.want {
+			t.Errorf("%s: leavingTable = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
 // TestLoadingMtplxOnTheRealProcessTable runs the whole path against real
 // processes the test started: a script named mtplx, run as wt runs the
 // server, is identified from a pidfile, stopped with SIGTERM and confirmed
