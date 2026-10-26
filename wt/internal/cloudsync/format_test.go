@@ -68,4 +68,7 @@ func TestIDBlock(t *testing.T) {
 	if got, want := idBlock("H (2):", []string{"b", "a"}), []string{"H (2):", "  b", "  a"}; !slices.Equal(got, want) {
 		t.Errorf("idBlock = %q, want %q", got, want)
 	}
+	if got, want := idBlock("H (1):", []string{""}), []string{"H (1):", "  "}; !slices.Equal(got, want) {
+		t.Errorf("idBlock with an empty id = %q, want %q", got, want)
+	}
 }

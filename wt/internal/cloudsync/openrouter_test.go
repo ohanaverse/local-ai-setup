@@ -690,6 +690,12 @@ func TestBothPricePathsAgreeOnWhatIsUsable(t *testing.T) {
 		if priced := len(variant.Matched) == 1; priced != usable {
 			t.Errorf("%s: the variant was priced from its base = %v, usablePrice = %v", name, priced, usable)
 		}
+		// A variant whose base cannot be stored says so, rather than being
+		// skipped silently.
+		noted := strings.Contains(strings.Join(variant.Warnings, "\n"), "vendor/m has no usable price")
+		if noted == usable {
+			t.Errorf("%s: variant warnings = %q for usablePrice = %v, want the 'has no usable price' note exactly when it is not usable", name, variant.Warnings, usable)
+		}
 	}
 }
 
