@@ -230,7 +230,7 @@ type fileDoc struct {
 		Confidence     string   `toml:"confidence"`
 		AlignedScore   any      `toml:"aligned_score"`
 		Context        any      `toml:"context"`
-		ContextBasis   string   `toml:"context_basis"`
+		ContextBasis   any      `toml:"context_basis"`
 		AlignedSources []string `toml:"aligned_sources"`
 	} `toml:"models"`
 }
@@ -261,7 +261,11 @@ func Parse(data []byte) (Index, error) {
 			Confidence: m.Confidence,
 			Sources:    len(m.AlignedSources),
 		}
-		e.ContextBasis = m.ContextBasis
+		// A context_basis that is not a string reads as none, as a context
+		// that is not a number does: one odd key must not unrate every model.
+		if b, ok := m.ContextBasis.(string); ok {
+			e.ContextBasis = b
+		}
 		// context is the window models.dev gives a cloud model, in tokens; a
 		// local build carries none (the served window is unknown). A value
 		// that is not a positive whole number reads as none.

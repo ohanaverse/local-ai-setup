@@ -31,7 +31,8 @@ def _rating(rated: Rated, contracts: Contracts, *, basis: str | None = None) -> 
     `tier` on. `basis` is an inventory row's alone. A field whose value is
     unknown is left out: `reason` on a rated entry, `open_weights` and
     `tool_call` for a key with no models.dev rows, `context` (and its
-    `context_basis`, "host" or "largest_row") when no row gives one, `card_kind` with `card_url` when no link is known, and
+    `context_basis`, "host" or "largest_row") when no row gives one,
+    `card_kind` with `card_url` when no link is known, and
     `aligned_score` with `aligned_sources` when no score could be aligned."""
     evidence, facts, verdict, aligned = rated.evidence, rated.facts, rated.verdict, rated.aligned
     entry: Document = {"tier": verdict.tier, "code": contracts.code(verdict.tier)}
