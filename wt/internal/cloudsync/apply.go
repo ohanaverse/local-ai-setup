@@ -144,12 +144,11 @@ func (p *CatalogPlan) Apply(doc *config.RegistryDoc, pulled []string, now time.T
 		}
 		done.Added++
 	}
-	for _, id := range p.Graduations {
-		if err := doc.PatchModel(id, map[string]any{"source": "curated"}, nil); err != nil {
-			return CatalogApplied{}, err
-		}
-		done.Graduated++
+	n, err := applyGraduations(doc, p.Graduations)
+	if err != nil {
+		return CatalogApplied{}, err
 	}
+	done.Graduated = n
 	var removedTags []string
 	for _, id := range p.Removals {
 		row, err := doc.RemoveModel(id)
@@ -217,17 +216,31 @@ func (p *PricePlan) Apply(doc *config.RegistryDoc, now time.Time) (PricesApplied
 			done.Changed++
 		}
 	}
-	for _, id := range p.Graduations {
-		if err := doc.PatchModel(id, map[string]any{"source": "curated"}, nil); err != nil {
-			return PricesApplied{}, err
-		}
-		done.Graduated++
+	n, err := applyGraduations(doc, p.Graduations)
+	if err != nil {
+		return PricesApplied{}, err
 	}
+	done.Graduated = n
 	for _, id := range p.Removals {
 		if _, err := doc.RemoveModel(id); err != nil {
 			return PricesApplied{}, err
 		}
 		done.Removed++
+	}
+	return done, nil
+}
+
+// applyGraduations marks each id's row `source = "curated"`: a manual model
+// its source now lists graduates (the plan's Graduations, shown as "Graduated
+// (manual -> curated)"). It returns how many rows it patched, and stops at the
+// first error. Both flows' Apply use it, so the write is the same in each.
+func applyGraduations(doc *config.RegistryDoc, ids []string) (int, error) {
+	done := 0
+	for _, id := range ids {
+		if err := doc.PatchModel(id, map[string]any{"source": "curated"}, nil); err != nil {
+			return done, err
+		}
+		done++
 	}
 	return done, nil
 }

@@ -86,7 +86,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 		if code == 1 {
 			res.failed = true
 		} else {
-			res.ollamaCode = code
+			res.ollama.code = code
 		}
 		return nil
 	}
@@ -198,13 +198,13 @@ func ollamaTouchedIDs(plan *cloudsync.CatalogPlan) []string {
 // mass removal without --force (its refusal prints the plan's EntriesGone,
 // the number the guard itself uses), and under --yes not a plan that deletes
 // anything without the digest of a reviewed dry run. It reports false, with
-// the reason printed and res.ollamaCode set, when it may not.
+// the reason printed and res.ollama.code set, when it may not.
 func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
 	massNote := ""
 	if gone := c.plan.EntriesGone(); gone != len(c.plan.Removals) {
 		massNote = " (re-tagged entries are not counted)"
 	}
-	return removalGate(errOut, c.plan, "ollama", o, func(code int) { res.ollamaCode = code }, removalGateWording{
+	return removalGate(errOut, c.plan, "ollama", o, func(code int) { res.ollama.code = code }, removalGateWording{
 		massNoun:  "ollama cloud entries",
 		massTotal: c.plan.CloudEntries,
 		massNote:  massNote,

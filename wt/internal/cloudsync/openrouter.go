@@ -357,21 +357,10 @@ func (p *PricePlan) Format() string {
 		for _, id := range p.Removals {
 			lines = append(lines, "  "+id)
 		}
-		d := p.RemovalDigest()
-		lines = append(lines, fmt.Sprintf("Removal digest: %s (apply non-interactively with `--yes --approve-removals %s`)", d, d))
+		lines = append(lines, digestLine(p.RemovalDigest()))
 	}
-	if len(p.Graduations) > 0 {
-		lines = append(lines, fmt.Sprintf("Graduated (manual -> curated) (%d):", len(p.Graduations)))
-		for _, id := range p.Graduations {
-			lines = append(lines, "  "+id)
-		}
-	}
-	if len(p.Kept) > 0 {
-		lines = append(lines, fmt.Sprintf("Kept (manual, not on openrouter.ai) (%d):", len(p.Kept)))
-		for _, id := range p.Kept {
-			lines = append(lines, "  "+id)
-		}
-	}
+	lines = append(lines, graduatedLines(p.Graduations)...)
+	lines = append(lines, keptLines("openrouter.ai", p.Kept)...)
 	for _, w := range p.Warnings {
 		lines = append(lines, "warning: "+w)
 	}

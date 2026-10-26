@@ -1138,3 +1138,16 @@ func TestCloudSyncUnreadableScheduleIsAWarningNotAFailure(t *testing.T) {
 		t.Errorf("the other model was not refreshed and stamped:\n%s", hy3)
 	}
 }
+
+// TestGraduatedClause pins the summary clause both flows print after their
+// counts: nothing when no manual model graduated, else "; graduated N manual
+// model(s) to curated". It is one function for both flows, so their summary
+// lines cannot drift apart.
+func TestGraduatedClause(t *testing.T) {
+	if got := graduatedClause(0); got != "" {
+		t.Errorf("graduatedClause(0) = %q, want none", got)
+	}
+	if got, want := graduatedClause(2), "; graduated 2 manual model(s) to curated"; got != want {
+		t.Errorf("graduatedClause(2) = %q, want %q", got, want)
+	}
+}

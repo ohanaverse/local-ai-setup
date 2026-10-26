@@ -578,24 +578,14 @@ func (p *CatalogPlan) Format() string {
 		}
 		lines = append(lines, line)
 	}
-	if len(p.Graduations) > 0 {
-		lines = append(lines, fmt.Sprintf("Graduated (manual -> curated) (%d):", len(p.Graduations)))
-		for _, id := range p.Graduations {
-			lines = append(lines, "  "+id)
-		}
-	}
-	if len(p.Kept) > 0 {
-		lines = append(lines, fmt.Sprintf("Kept (manual, not on ollama.com/pricing) (%d):", len(p.Kept)))
-		for _, id := range p.Kept {
-			lines = append(lines, "  "+id)
-		}
-	}
+	lines = append(lines, graduatedLines(p.Graduations)...)
+	lines = append(lines, keptLines("ollama.com/pricing", p.Kept)...)
 	lines = append(lines, fmt.Sprintf("ollama rm — pulled, unregistered, off the page (%d):", len(p.StrayTags)))
 	for _, tag := range p.StrayTags {
 		lines = append(lines, "  "+tag)
 	}
 	if digest := p.RemovalDigest(); digest != "" {
-		lines = append(lines, fmt.Sprintf("Removal digest: %s (apply non-interactively with `--yes --approve-removals %s`)", digest, digest))
+		lines = append(lines, digestLine(digest))
 	}
 	for _, w := range p.Warnings {
 		lines = append(lines, "warning: "+w)
