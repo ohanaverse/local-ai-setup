@@ -45,9 +45,12 @@ const (
 // and a way to reach the --only choice for it in cloudSyncOpts. The planners,
 // gates and applies are typed per flow (openRouterRun, ollamaRun) and stay in
 // their files; this table is where a flow is declared to the command line, so
-// --only, its error text, --help's list and the order of the flows come from
-// one place (#453). TestCloudFlowsMatchTheirProviders holds each name to a
-// provider of the table in internal/provider.
+// --only, its error text, the --only flag's help and the order of the flows
+// come from one place (#453). It does not yet drive cloudSyncOutcome, its
+// err(), runCloudSync's pending list or the flow descriptions in the command's
+// Long text: a new flow still edits those by hand.
+// TestCloudFlowsMatchTheirProviders holds each name to a provider of the table
+// in internal/provider and to a line in --help.
 type cloudFlow struct {
 	name     string
 	selected func(*cloudSyncOpts) *bool
