@@ -21,6 +21,27 @@ Source: all 14 open GitHub issues, each checked against `main` (0d923877) by a r
 | 393 | mtplx 507 in slot profile | owner at the machine; turbo/stable waits on PR-8 | runbook |
 | 399 | omlx abandoned generations | owner at the machine; no buildable work until measured | runbook |
 
+## Status (2026-10-26, end of day)
+
+Every build item below shipped, one PR each, in the planned order. The sections after this one are the plan as written; where the work differed, this table says how.
+
+| # | Result | PR | Differences from the plan |
+|---|--------|----|---------------------------|
+| 458 | done | #462 | none |
+| 457 | done | #463 | the `cmd/wt` test stubs the stop state, so the regression coverage is in the survey tests; `routeAfterStop` and the picker with a discovered, unregistered rec entry were not checked end to end |
+| 459 | done | #464 | `--check` answers before the running-server check |
+| 451 | done | #465 | staleness answers are kept across an entry reload and every key is asked again, as the critic advised |
+| 405 | done for cloud/gateway models | #466 | PR-5b (local slots) was not built; follow-ups #470 and #471 |
+| 447 | done | #467 | none |
+| 449 | done, item 3 not built | #468 | the owner chose to leave a dropped `:free`/`:nitro` suffix undetected; pinned by a test and documented |
+| 453 | done, reduced | #469 | a flow table in `cmd/wt`, not a provider `Catalog` capability; `internal/provider` untouched; follow-up #475 |
+| 432 | done | #472 | `model-list.sample.json` unchanged (omitempty key, like `target`/`draft`); the next-start note prints on every `serve_args` edit, not only for a running model; llmbench does not apply `serve_args` |
+| 389 | fixed on `main` by #450, issue still open | n/a | awaiting the owner's go-ahead to close |
+| 423 | fixed on `main`, issue still open | n/a | same |
+| 403, 393, 399 | open | n/a | owner-run measurements; #393's turbo/stable runs can now go through `wt model edit --serve-arg` |
+
+Follow-ups filed after the PRs merged, not part of this plan: #470, #471 (context window), #473, #474, #475 (cloud-sync).
+
 ## Order and why
 
 0. **Housekeeping, no code.** Run `cd wt && go test ./internal/lifecycle ./internal/localmodels -run 'Unregistered|ResidentOthers'`, and `go test ./internal/worktree -run PRStale`. If green, close #423 and #389 with comments citing #450. Closing is an action on shared state, so it waits for the owner's yes.
