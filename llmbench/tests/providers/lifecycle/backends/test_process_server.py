@@ -127,16 +127,95 @@ def test_registry_base_url_names_the_origin_and_port():
     assert backend.chat_url == "http://127.0.0.1:9200/v1/chat/completions"
 
 
-def test_base_url_without_a_port_uses_wt_port_for_the_argv():
+def test_base_url_without_a_port_uses_wt_port_for_the_argv_and_every_probe():
+    """wt's #348 rule: an http url on a host the spawned server answers on,
+    naming no port, means the family's wt_port, for the argv AND the probes
+    (a split would start on 9100 and poll :80)."""
     _registry(_provider_row(base_url="http://127.0.0.1/v1"))
     backend = ProcessServerBackend(_spec())
+    assert backend.health_url == "http://127.0.0.1:9100/v1/models"
+    assert backend.chat_url == "http://127.0.0.1:9100/v1/chat/completions"
     with (
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
-        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch(f"{PS}.probe.wait_for_port_closed") as wait_closed,
         patch.object(backend, "_pidproc") as pidproc,
     ):
         backend.start(backend.resolve("m", ()))
     assert pidproc.spawn.call_args.args[0][5] == "9100"
+    wait_closed.assert_called_once_with("http://127.0.0.1:9100/v1/models", timeout=10.0)
+
+
+@pytest.mark.parametrize(
+    ("base_url", "origin", "port"),
+    [
+        # wt fills in wt_port: http, no port, a host the server answers on.
+        ("http://localhost/v1", "http://localhost:9100", 9100),
+        ("http://LOCALHOST./v1", "http://LOCALHOST.:9100", 9100),
+        ("http://127.0.0.1", "http://127.0.0.1:9100", 9100),
+        ("http://localhost:/v1", "http://localhost:9100", 9100),
+        ("http://0.0.0.0/v1/", "http://0.0.0.0:9100", 9100),
+        ("http://[::]/v1", "http://[::]:9100", 9100),
+        # Everything else is left exactly as written.
+        ("https://localhost/v1", "https://localhost", 443),
+        ("http://gpu-box.lan/v1", "http://gpu-box.lan", 80),
+        ("http://[::1]/v1", "http://[::1]", 80),
+        ("http://127.0.0.2/v1", "http://127.0.0.2", 80),
+        ("http://localhost:9555/v1", "http://localhost:9555", 9555),
+        ("https://remote.example:8443/v1", "https://remote.example:8443", 8443),
+        # BaseOrigin normalisation: trailing slashes and a /v1 suffix go.
+        ("http://127.0.0.1:9200/v1/", "http://127.0.0.1:9200", 9200),
+        ("http://127.0.0.1:9200/", "http://127.0.0.1:9200", 9200),
+        ("http://127.0.0.1:9200", "http://127.0.0.1:9200", 9200),
+    ],
+)
+def test_origin_follows_wts_rule(base_url, origin, port):
+    _registry(_provider_row(base_url=base_url))
+    backend = ProcessServerBackend(_spec())
+    assert backend.health_url == f"{origin}/v1/models"
+    assert backend.chat_url == f"{origin}/v1/chat/completions"
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()) as run,
+        patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+    ):
+        backend.stop_and_wait()
+    assert run.call_args.args[0] == [BIN, "stop", "--port", str(port)]
+    assert closed.call_args.args[0] == f"{origin}/v1/models"
+
+
+def test_malformed_registry_falls_back_to_the_default_origin():
+    """A registry load_registry cannot parse (a model row whose fetch is not
+    a table raises AttributeError, not RegistryError) must not break the
+    best-effort address lookup."""
+    _registry(_provider_row(base_url="http://127.0.0.1:9200/v1") + _model_row_bad())
+    backend = ProcessServerBackend(_spec())
+    assert backend.health_url == "http://127.0.0.1:9100/v1/models"
+    assert backend.chat_url == "http://127.0.0.1:9100/v1/chat/completions"
+
+
+def test_malformed_registry_still_gives_mtplx_envelopes():
+    from llmbench.providers.lifecycle import orchestrate
+
+    _registry(
+        _provider_row(provider="mtplx", base_url="http://localhost:8003/v1") + _model_row_bad()
+    )
+    with patch(f"{PS}.binaries.require_binary", return_value="/b/mtplx"):
+        isolated = orchestrate.isolate("mtplx")
+    assert isolated.ok is False
+    assert isolated.direct_url == "http://localhost:8003/v1/chat/completions"
+    with patch(
+        f"{PS}.binaries.require_binary", side_effect=LifecycleError("mtplx binary not found")
+    ):
+        stopped = orchestrate.stop("mtplx")
+    assert stopped.ok is False
+    assert stopped.error == "mtplx binary not found on PATH"
+    assert stopped.direct_url == "http://localhost:8003/v1/chat/completions"
+
+
+def _model_row_bad() -> str:
+    return (
+        '[[models]]\nid = "x/y"\nfamily = "f"\nprovider_id = "x"\nmodel_name = "y"\nfetch = "x"\n'
+    )
 
 
 def test_check_available_reports_the_missing_binary():

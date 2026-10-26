@@ -19,13 +19,14 @@ the key: it must stay pure (an `exec:` reference runs a command).
 
 from __future__ import annotations
 
+import ipaddress
 import subprocess
 from dataclasses import dataclass
 from typing import TypedDict
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from .... import registry as _registry
-from ....registry import ProviderEntry, RegistryError, load_registry
+from ....registry import ProviderEntry, load_registry
 from ...process_spec import ProcessSpec, expand
 from ...secret import resolve_secret
 from .. import binaries, probe
@@ -51,13 +52,38 @@ def _key_arg(key: str | None) -> _KeyArg:
 
 def _provider_row(provider_id: str) -> ProviderEntry | None:
     """The registry row for `provider_id`, or None when the registry or the
-    row is missing or unreadable. Reads through the module (not the
-    `load_registry` name this module imports for model resolution) so an
-    address lookup is independent of the model lookup."""
+    row is missing or the file cannot be read or parsed. Best-effort by
+    design: the address falls back to the spec's default origin, and a
+    `chat_url` read inside orchestrate's envelope handler must never raise
+    (a malformed model row raises AttributeError, not RegistryError, from
+    `load_registry`). Reads through the module (not the `load_registry` name
+    this module imports for model resolution) so an address lookup is
+    independent of the model lookup."""
     try:
         return _registry.load_registry().provider(provider_id)
-    except (RegistryError, KeyError):
+    except Exception:  # noqa: BLE001 — best-effort lookup, see docstring
         return None
+
+
+def _base_origin(url: str) -> str:
+    """wt's config.BaseOrigin: trailing slashes and one `/v1` suffix off."""
+    return url.rstrip("/").removesuffix("/v1").rstrip("/")
+
+
+def _serves_at(host: str) -> bool:
+    """wt's servesMtplxAt: a host the server spawned with `--host 127.0.0.1`
+    answers on — "localhost" (any case, optional root dot), 127.0.0.1, or the
+    unspecified address (0.0.0.0, ::). Not ::1 nor the rest of 127/8."""
+    if host.removesuffix(".").lower() == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip == ipaddress.IPv4Address("127.0.0.1") or ip.is_unspecified
+
+
+_SCHEME_PORTS = {"http": 80, "https": 443}
 
 
 def _origin_key(url: str) -> tuple[str, str, int | None] | None:
@@ -87,7 +113,7 @@ def _as_text(value: object) -> str | None:
 
 @dataclass(frozen=True)
 class _Address:
-    origin: str  # scheme://host[:port], no path
+    origin: str  # wt's Provider.Origin(): BaseOrigin, port filled per #348
     port: int
 
     @property
@@ -122,17 +148,37 @@ class ProcessServerBackend(PidfileTrackedBackend):
     # --- addresses and key -------------------------------------------------
 
     def _address(self) -> _Address:
+        """Where this provider is: wt's `Provider.Origin()` of the row's
+        `auth.base_url`, else of the spec's `default_origin`. An http url
+        naming no port, on a host the spawned server answers on, gets the
+        spec's `wt_port` (the server is spawned there; read as written it
+        would mean port 80, #348). Any other url is left exactly as written,
+        and the port the argv gets is the one the probes use: the url's own,
+        else its scheme's (80, 443)."""
         row = _provider_row(self.id)
         for url in (row.base_url if row else "", self.spec.default_origin):
             if not url:
                 continue
+            origin = _base_origin(url)
             try:
-                parts = urlsplit(url)
+                parts = urlsplit(origin)
                 port = parts.port
             except ValueError:
                 continue
-            if parts.scheme and parts.netloc:
-                return _Address(f"{parts.scheme}://{parts.netloc}", port or self.spec.wt_port)
+            host = parts.hostname
+            if not parts.scheme or not host:
+                continue
+            if port is None and parts.scheme == "http" and _serves_at(host):
+                port = self.spec.wt_port
+                # The netloc as written (case kept, IPv6 brackets kept), as
+                # wt's u.Hostname() + JoinHostPort spells it.
+                userinfo, at, written = parts.netloc.rpartition("@")
+                origin = urlunsplit(
+                    parts._replace(netloc=f"{userinfo}{at}{written.rstrip(':')}:{port}")
+                )
+            if port is None:
+                port = _SCHEME_PORTS.get(parts.scheme.lower(), self.spec.wt_port)
+            return _Address(origin, port)
         raise LifecycleError(
             f"{self.id}: no usable address (default_origin {self.spec.default_origin!r})"
         )
