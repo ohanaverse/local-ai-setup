@@ -155,6 +155,15 @@ Full reference, for anything not covered here: `wt/docs/wt-cloud-sync.md`.
      <digest> …`, if there are any. No such line means that flow's plan
      deletes nothing. When both flows delete, a `removals: approve both with
      --yes --approve-removals <a>,<b>` line gives the two together.
+   - `warning: No OpenRouter match for <id> (<name>); its base model is
+     listed, so it is kept …` is a `:variant` row (`:nitro`, `:online`, …)
+     that stays: the rest of the line says whether it was priced from its
+     base or kept at its current price, and why. It removes nothing and
+     needs no approval. A suffix OpenRouter dropped is not detected: that
+     row stays until the user runs `wt model rm`.
+   - `Note: a model OpenRouter serves under another name …` under
+     `Registry removals` means an alias or a redirect id may be among the
+     ids: show the user each one before the yes.
    - `Kept (manual, …)` lines are models the user added by hand and the
      sync is leaving alone; `Graduated (manual -> curated)` lines are
      ones the source now lists. Neither needs a decision. A model the user
