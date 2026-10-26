@@ -398,3 +398,13 @@ func TestMachineEntryNeedsNoReadableKey(t *testing.T) {
 		t.Errorf("machineEntry = %+v, %v; want the running flint instance", got, ok)
 	}
 }
+
+// TestIsolateProcessesForTestClosesReadinessSeam pins that a default env built
+// after IsolateProcessesForTest cannot run a real readiness command (for rec,
+// `rec status`), so a test reaching the production stop-state read stays off a
+// machine that has rec installed.
+func TestIsolateProcessesForTestClosesReadinessSeam(t *testing.T) {
+	if _, err := defaultEnv().runOut(context.Background(), "rec", "status"); err == nil {
+		t.Fatal("defaultEnv().runOut ran a command; want the isolated seam to refuse")
+	}
+}
