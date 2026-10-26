@@ -255,7 +255,7 @@ func Parse(data []byte) (Index, error) {
 		// that is not a positive whole number reads as none.
 		switch v := m.Context.(type) {
 		case int64:
-			if v > 0 {
+			if v > 0 && v <= math.MaxInt32 {
 				e.Context = int(v)
 			}
 		case float64:

@@ -41,19 +41,28 @@ func claudeWindow(ix tiers.Index, models ...config.Model) (int, bool) {
 	return window, window > 0
 }
 
-// claudeWindowEnv is the "KEY=VALUE" entry that declares models' window, or
-// "" when there is none to declare or the user already set the variable in
-// the environment wt was started from: one value per session, and the user's
-// own always wins.
-func claudeWindowEnv(models ...config.Model) string {
+// claudeWindowValue is the window, as the variable's value, that models'
+// session should declare, or false when there is none to declare or the user
+// already set the variable in the environment wt was started from: one value
+// per session, and the user's own always wins.
+func claudeWindowValue(models ...config.Model) (string, bool) {
 	if os.Getenv(claudeContextVar) != "" {
-		return ""
+		return "", false
 	}
 	w, ok := claudeWindow(loadTiers(), models...)
 	if !ok {
-		return ""
+		return "", false
 	}
-	return claudeContextVar + "=" + strconv.Itoa(w)
+	return strconv.Itoa(w), true
+}
+
+// claudeWindowEnv is claudeWindowValue as a "KEY=VALUE" entry, or "" when
+// there is none.
+func claudeWindowEnv(models ...config.Model) string {
+	if w, ok := claudeWindowValue(models...); ok {
+		return claudeContextVar + "=" + w
+	}
+	return ""
 }
 
 // claudeActiveModels are the models whose window one session's variable has
@@ -68,16 +77,12 @@ func claudeActiveModels(in profiles.SlotBuildInput) []config.Model {
 	return []config.Model{in.Models[in.Default]}
 }
 
-// claudeWindowSetting is claudeWindowEnv's entry split into key and value for
-// a slot profile's settings env, set only when neither the profile's env nor
-// its config_content.env names the variable (env already holds both).
-func claudeWindowSetting(env map[string]any, in profiles.SlotBuildInput) (value string, ok bool) {
+// claudeWindowSetting is claudeWindowValue for a slot profile's settings env,
+// set only when neither the profile's env nor its config_content.env names the
+// variable (env already holds both).
+func claudeWindowSetting(env map[string]any, in profiles.SlotBuildInput) (string, bool) {
 	if _, set := env[claudeContextVar]; set {
 		return "", false
 	}
-	entry := claudeWindowEnv(claudeActiveModels(in)...)
-	if entry == "" {
-		return "", false
-	}
-	return entry[len(claudeContextVar)+1:], true
+	return claudeWindowValue(claudeActiveModels(in)...)
 }

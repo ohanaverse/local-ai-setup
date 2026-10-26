@@ -287,6 +287,7 @@ func TestParseReadsContextAsAPositiveWholeNumber(t *testing.T) {
 		"zero":       {"0", 0},
 		"negative":   {"-5", 0},
 		"fractional": {"1.5", 0},
+		"too large":  {"9000000000", 0},
 		"string":     {`"big"`, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
