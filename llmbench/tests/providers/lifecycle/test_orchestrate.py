@@ -620,6 +620,7 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
             BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None
         ) as mock_mlx_stop,
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None) as mock_mtplx_stop,
+        patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None) as mock_rec_stop,
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore()
@@ -628,6 +629,7 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
     mock_omlx6_restore.assert_not_called()
     mock_mlx_stop.assert_called_once()
     mock_mtplx_stop.assert_called_once()
+    mock_rec_stop.assert_called_once()
     assert result.ok is True
     assert result.provider == "restore"
 
@@ -651,6 +653,7 @@ def test_restore_unload_frees_the_models_ollama_and_omlx_still_hold():
         patch.object(OMLX_6BIT, "unload_models") as omlx6_unload,
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore(unload=True)
@@ -670,6 +673,7 @@ def test_restore_unload_warning_is_logged_and_never_fails_the_aggregate(capsys):
         patch.object(OMLX_4BIT, "restore"),
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore(unload=True)
@@ -688,6 +692,7 @@ def test_plain_restore_leaves_loaded_models_alone():
         patch.object(OMLX_4BIT, "restore"),
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         assert orchestrate.restore().ok is True
@@ -706,6 +711,7 @@ def test_restore_restart_failure_fails_the_aggregate():
         patch.object(OMLX_4BIT, "restore"),
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore()
@@ -726,6 +732,7 @@ def test_restore_stop_action_failure_never_fails_the_aggregate():
             return_value="mlx_lm_server still listening on port 8001",
         ),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", side_effect=OSError("mtplx exploded")),
+        patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore()
@@ -741,6 +748,7 @@ def test_restore_litellm_failure_fails_the_aggregate():
         patch.object(OMLX_4BIT, "restore"),
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value="litellm did not come back up"),
     ):
         result = orchestrate.restore()

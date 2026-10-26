@@ -23,6 +23,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from typing import Literal
 
 from ...local_process import http_models_ids
 from .envelope import LifecycleError
@@ -322,8 +323,31 @@ def command_json(argv: list[str], *, path: str, timeout: float = 5.0) -> object 
     root that is not an object, a missing path, or a path that ends on an
     object or array instead of a scalar.
     """
+    outcome, value = command_status(argv, path=path, timeout=timeout)
+    return value if outcome == "answered" else None
+
+
+StatusOutcome = Literal["gone", "answered", "unknown"]
+
+
+def command_status(
+    argv: list[str], *, path: str, timeout: float = 5.0
+) -> tuple[StatusOutcome, object | None]:
+    """`command_json`'s reading, keeping apart what "no value" means — for
+    deciding whether an instance is gone, where only one of them says so:
+
+    - `("gone", None)`: the command exited non-zero (`rec status` exits 1
+      with "no managed rec instance is reachable"), or it cannot run at all
+      (missing or not executable: there is nothing to report on);
+    - `("answered", value)`: a scalar at `path`;
+    - `("unknown", None)`: a timeout, or a zero exit with empty or invalid
+      output, a non-object root, or a missing, null or non-scalar `path` —
+      the command said nothing about the instance, which is not "gone".
+
+    Never raises.
+    """
     if not argv:
-        return None
+        return ("gone", None)
     try:
         # stderr is discarded: progress or ANSI noise there must neither fail
         # a decode nor spoil a valid answer on stdout. Undecodable stdout
@@ -337,25 +361,29 @@ def command_json(argv: list[str], *, path: str, timeout: float = 5.0) -> object 
             timeout=timeout,
             check=False,
         )
-    except (subprocess.TimeoutExpired, OSError, ValueError):
+    except subprocess.TimeoutExpired:
+        return ("unknown", None)
+    except (OSError, ValueError):
         # ValueError: a NUL byte in an argument.
-        return None
-    if result.returncode != 0 or not (result.stdout or "").strip():
-        return None
+        return ("gone", None)
+    if result.returncode != 0:
+        return ("gone", None)
+    if not (result.stdout or "").strip():
+        return ("unknown", None)
     try:
         node: object = json.loads(result.stdout)
     except (ValueError, RecursionError):
         # RecursionError: deeply nested JSON (json.loads does not wrap it).
-        return None
+        return ("unknown", None)
     if not isinstance(node, dict):
-        return None
+        return ("unknown", None)
     for part in path.split("."):
         if not isinstance(node, dict) or part not in node:
-            return None
+            return ("unknown", None)
         node = node[part]
-    if isinstance(node, dict | list):
-        return None
-    return node
+    if node is None or isinstance(node, dict | list):
+        return ("unknown", None)
+    return ("answered", node)
 
 
 def _as_text(value: object) -> str | None:

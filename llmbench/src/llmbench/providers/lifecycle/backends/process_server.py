@@ -47,6 +47,10 @@ PREBIND_TIMEOUT = 10.0
 INSTANCE_GONE_TIMEOUT = 30.0
 INSTANCE_GONE_POLL = 1.0
 
+# The last status outcome ("answered" or "unknown") and value of an instance
+# that had not gone by the deadline.
+_Lingering = tuple[str, object | None]
+
 
 class _KeyArg(TypedDict, total=False):
     key: str
@@ -439,12 +443,25 @@ class ProcessServerBackend(PidfileTrackedBackend):
             text=True,
             check=False,
         )
+        if self.spec.ready.kind != "command-json":
+            stopped = probe.port_closed_within(
+                addr.health_url, timeout=probe.STOP_WAIT_TIMEOUT, **_key_arg(key)
+            )
+            if stopped:
+                return None
+            if result.returncode != 0:
+                return result.stderr.strip() or result.stdout.strip() or f"{binary} stop failed"
+            return f"{binary} still listening on port {addr.port}"
+        # command-json: one INSTANCE_GONE_TIMEOUT deadline over both the port
+        # closing and the instance going (a draining instance may hold its
+        # port open for longer than probe.STOP_WAIT_TIMEOUT).
+        deadline = time.monotonic() + INSTANCE_GONE_TIMEOUT
+        lingering: _Lingering | None = None
         stopped = probe.port_closed_within(
-            addr.health_url, timeout=probe.STOP_WAIT_TIMEOUT, **_key_arg(key)
+            addr.health_url, timeout=INSTANCE_GONE_TIMEOUT, **_key_arg(key)
         )
-        lingering: object | None = None
-        if stopped and self.spec.ready.kind == "command-json":
-            lingering = self._lingering_status(bin_path)
+        if stopped:
+            lingering = self._lingering_status(bin_path, deadline=deadline)
             stopped = lingering is None
         if stopped:
             return None
@@ -454,22 +471,35 @@ class ProcessServerBackend(PidfileTrackedBackend):
             return self._lingering_warning(lingering)
         return f"{binary} still listening on port {addr.port}"
 
-    def _lingering_status(self, bin_path: str) -> object | None:
-        """Poll the status command until it reports no instance (it fails:
-        `command_json` gives None) and return None; at INSTANCE_GONE_TIMEOUT
-        return the last value it still gave. Any answer — ready false
-        included — is an instance that is still there (loading, or shutting
-        down and holding its memory). A status binary that cannot run gives
-        None, which counts as gone."""
-        deadline = time.monotonic() + INSTANCE_GONE_TIMEOUT
+    def _lingering_status(
+        self, bin_path: str, *, deadline: float | None = None
+    ) -> _Lingering | None:
+        """Poll the status command until it reports no instance and return
+        None; at the deadline (default: INSTANCE_GONE_TIMEOUT from now)
+        return the last outcome that did not say so. Only a failing command
+        (non-zero exit, or one that cannot run) is "gone": an answer — ready
+        false included — is an instance still loading or shutting down and
+        holding its memory, and a status that times out or says nothing
+        readable ("unknown") may be one too, so neither ends the wait."""
+        if deadline is None:
+            deadline = time.monotonic() + INSTANCE_GONE_TIMEOUT
+        argv = [bin_path, *self.spec.ready.command]
         while True:
-            value = self._status(bin_path, self.spec.ready.path)
-            if value is None or time.monotonic() >= deadline:
-                return value
+            outcome, value = probe.command_status(argv, path=self.spec.ready.path)
+            if outcome == "gone":
+                return None
+            if time.monotonic() >= deadline:
+                return (outcome, value)
             time.sleep(INSTANCE_GONE_POLL)
 
-    def _lingering_warning(self, value: object) -> str:
+    def _lingering_warning(self, lingering: _Lingering) -> str:
+        outcome, value = lingering
+        said = (
+            f"ready={_as_text(value)}"
+            if outcome == "answered"
+            else "the status command did not answer"
+        )
         return (
-            f"{self.spec.binary} still reports an instance after stop "
-            f"(ready={_as_text(value)}); it may still be shutting down"
+            f"{self.spec.binary} still reports an instance after stop ({said}); "
+            "it may still be shutting down"
         )

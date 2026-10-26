@@ -197,6 +197,9 @@ def fake_rec(monkeypatch, tmp_path):
     # Readiness and port polls sleep between attempts; a fake answers at once.
     monkeypatch.setattr("llmbench.providers.lifecycle.probe.time.sleep", lambda _s: None)
     monkeypatch.setattr(f"{PS}.probe.STOP_WAIT_TIMEOUT", 0.3)
+    # rec's stop waits one INSTANCE_GONE_TIMEOUT over its port and its status.
+    monkeypatch.setattr(f"{PS}.INSTANCE_GONE_TIMEOUT", 0.3)
+    monkeypatch.setattr(f"{PS}.INSTANCE_GONE_POLL", 0.0)
     monkeypatch.setattr(
         REC,
         "_pidproc",

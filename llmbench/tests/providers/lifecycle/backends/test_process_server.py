@@ -18,7 +18,10 @@ import pytest
 from llmbench.providers.lifecycle import probe
 from llmbench.providers.lifecycle.backends import BACKENDS
 from llmbench.providers.lifecycle.backends.mtplx import MTPLX
-from llmbench.providers.lifecycle.backends.process_server import ProcessServerBackend
+from llmbench.providers.lifecycle.backends.process_server import (
+    INSTANCE_GONE_TIMEOUT,
+    ProcessServerBackend,
+)
 from llmbench.providers.lifecycle.envelope import LifecycleError
 from llmbench.providers.process_spec import ProcessSpec, Ready, process_spec
 from llmbench.providers.secret import SecretError
@@ -542,8 +545,7 @@ def test_load_failure_tail_is_masked_with_the_key_resolved_at_the_start_of_the_i
     with (
         patch(f"{PS}.resolve_secret", side_effect=["sekrit-value", SecretError("nope")]),
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
-        patch(f"{PS}.probe.command_json", return_value=None),
-        patch(f"{PS}.probe.command_status", return_value=("gone", None), create=True),
+        patch(f"{PS}.probe.command_status", return_value=("gone", None)),
         patch(f"{PS}.probe.wait_for_port_closed"),
         patch(
             f"{PS}.probe.wait_for_command_ready",
@@ -778,6 +780,26 @@ def test_stop_with_an_unreadable_secret_still_stops_and_polls_keyless():
 
 
 _STILL = "fake still reports an instance after stop (ready={}); it may still be shutting down"
+_SILENT = (
+    "fake still reports an instance after stop (the status command did not answer); "
+    "it may still be shutting down"
+)
+
+
+def _outcome(ready: object):
+    """A `command_status` stand-in: None means the status command failed
+    (no instance); any other value is what it answered."""
+
+    def fake(argv, *, path, timeout=5.0):
+        assert (argv, path) == ([BIN, "status"], "ready")
+        return ("gone", None) if ready is None else ("answered", ready)
+
+    return fake
+
+
+def _sequence(*outcomes):
+    answers = iter(outcomes)
+    return lambda argv, *, path, timeout=5.0: next(answers)
 
 
 @pytest.fixture
@@ -808,15 +830,15 @@ def test_stop_command_json_confirms_with_status_and_port(
     short_gone_budget, closed, ready, code, warning
 ):
     """A command-json stop is confirmed only when the port is closed AND the
-    status command reports no instance at all (it fails: None). A status
-    that still answers — ready false included — is an instance that has not
-    gone yet."""
+    status command reports no instance at all (it fails). A status that
+    still answers — ready false included — is an instance that has not gone
+    yet."""
     backend = _cj_backend()
     with (
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.subprocess.run", return_value=_run_result(code)) as run,
         patch(f"{PS}.probe.port_closed_within", return_value=closed),
-        patch(f"{PS}.probe.command_json", side_effect=_status({"ready": ready})),
+        patch(f"{PS}.probe.command_status", side_effect=_outcome(ready)),
     ):
         assert backend.stop_and_wait() == warning
     assert run.call_args.args[0] == [BIN, "stop", "--port", "9100"]
@@ -827,18 +849,48 @@ def test_stop_command_json_waits_until_status_reports_no_instance():
     (and while it loads); the process still holds its memory then. The stop
     is clean only once the status command fails, and not one poll sooner."""
     backend = _cj_backend()
-    answers = iter([False, False, False, None])
     with (
         patch(f"{PS}.INSTANCE_GONE_POLL", 0.0),
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.subprocess.run", return_value=_run_result()),
         patch(f"{PS}.probe.port_closed_within", return_value=True),
         patch(
-            f"{PS}.probe.command_json", side_effect=lambda argv, *, path, timeout=5.0: next(answers)
-        ) as cj,
+            f"{PS}.probe.command_status",
+            side_effect=_sequence(*[("answered", False)] * 3, ("gone", None)),
+        ) as status,
     ):
         assert backend.stop_and_wait() is None
-    assert cj.call_count == 4
+    assert status.call_count == 4
+
+
+def test_stop_command_json_a_hung_status_is_not_gone_until_it_exits_1():
+    """A `rec status` that times out under a multi-GB teardown says nothing:
+    the stop keeps waiting through it and is clean only once the status
+    command exits non-zero."""
+    backend = _cj_backend()
+    with (
+        patch(f"{PS}.INSTANCE_GONE_POLL", 0.0),
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()),
+        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch(
+            f"{PS}.probe.command_status",
+            side_effect=_sequence(*[("unknown", None)] * 3, ("gone", None)),
+        ) as status,
+    ):
+        assert backend.stop_and_wait() is None
+    assert status.call_count == 4
+
+
+def test_stop_command_json_a_status_that_never_answers_warns_so(short_gone_budget):
+    backend = _cj_backend()
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()),
+        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch(f"{PS}.probe.command_status", return_value=("unknown", None)),
+    ):
+        assert backend.stop_and_wait() == _SILENT
 
 
 def test_stop_command_json_status_gone_at_once_is_one_poll():
@@ -847,10 +899,10 @@ def test_stop_command_json_status_gone_at_once_is_one_poll():
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.subprocess.run", return_value=_run_result(1)),
         patch(f"{PS}.probe.port_closed_within", return_value=True),
-        patch(f"{PS}.probe.command_json", return_value=None) as cj,
+        patch(f"{PS}.probe.command_status", return_value=("gone", None)) as status,
     ):
         assert backend.stop_and_wait() is None
-    cj.assert_called_once_with([BIN, "status"], path="ready")
+    status.assert_called_once_with([BIN, "status"], path="ready")
 
 
 def test_stop_a_loading_instance_is_not_reported_stopped(short_gone_budget):
@@ -861,10 +913,26 @@ def test_stop_a_loading_instance_is_not_reported_stopped(short_gone_budget):
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.subprocess.run", return_value=_run_result()),
         patch(f"{PS}.probe.port_closed_within", return_value=True),
-        patch(f"{PS}.probe.command_json", side_effect=_status({"ready": False})),
+        patch(f"{PS}.probe.command_status", side_effect=_outcome(False)),
     ):
         warning = backend.stop_and_wait()
     assert warning == _STILL.format("false")
+
+
+def test_stop_command_json_one_deadline_covers_the_port_and_the_instance():
+    """One INSTANCE_GONE_TIMEOUT budget covers both conditions: a rec whose
+    port stays open for 7 s while it drains is waited for, not reported
+    "still listening" after probe.STOP_WAIT_TIMEOUT (6 s)."""
+    backend = _cj_backend()
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.subprocess.run", return_value=_run_result()),
+        patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+        patch(f"{PS}.probe.command_status", return_value=("gone", None)),
+    ):
+        assert backend.stop_and_wait() is None
+    budget = closed.call_args.kwargs["timeout"]
+    assert 7.0 < budget <= INSTANCE_GONE_TIMEOUT
 
 
 def test_stop_models_list_never_runs_a_status_command():
@@ -874,9 +942,11 @@ def test_stop_models_list_never_runs_a_status_command():
         patch(f"{PS}.binaries.require_binary", return_value="/b/mtplx"),
         patch(f"{PS}.subprocess.run", return_value=_run_result()),
         patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+        patch(f"{PS}.probe.command_status") as status,
         patch(f"{PS}.probe.command_json") as cj,
     ):
         assert backend.stop_and_wait() is None
+    status.assert_not_called()
     cj.assert_not_called()
     closed.assert_called_once_with(
         "http://localhost:8003/v1/models", timeout=probe.STOP_WAIT_TIMEOUT
@@ -885,18 +955,18 @@ def test_stop_models_list_never_runs_a_status_command():
 
 def test_start_command_json_waits_for_no_instance_before_spawning():
     backend = _cj_backend()
-    answers = iter([False, None])
     with (
         patch(f"{PS}.INSTANCE_GONE_POLL", 0.0),
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.probe.wait_for_port_closed"),
         patch(
-            f"{PS}.probe.command_json", side_effect=lambda argv, *, path, timeout=5.0: next(answers)
-        ) as cj,
+            f"{PS}.probe.command_status",
+            side_effect=_sequence(("unknown", None), ("answered", False), ("gone", None)),
+        ) as status,
         patch.object(backend, "_pidproc") as pidproc,
     ):
         backend.start(backend.resolve("m", ()))
-    assert cj.call_count == 2
+    assert status.call_count == 3
     pidproc.spawn.assert_called_once()
 
 
@@ -907,7 +977,7 @@ def test_start_command_json_refuses_to_spawn_beside_a_lingering_instance(short_g
     with (
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.probe.wait_for_port_closed"),
-        patch(f"{PS}.probe.command_json", side_effect=_status({"ready": False})),
+        patch(f"{PS}.probe.command_status", side_effect=_outcome(False)),
         patch.object(backend, "_pidproc") as pidproc,
         pytest.raises(LifecycleError, match=r"^fake still reports an instance after stop"),
     ):
@@ -920,10 +990,12 @@ def test_start_models_list_runs_no_status_command():
     with (
         patch(f"{PS}.binaries.require_binary", return_value="/b/mtplx"),
         patch(f"{PS}.probe.wait_for_port_closed"),
+        patch(f"{PS}.probe.command_status") as status,
         patch(f"{PS}.probe.command_json") as cj,
         patch.object(backend, "_pidproc"),
     ):
         backend.start(backend.resolve("Org/M", ()))
+    status.assert_not_called()
     cj.assert_not_called()
 
 

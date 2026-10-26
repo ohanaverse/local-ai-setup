@@ -492,6 +492,50 @@ def test_command_json_is_none_when_the_command_cannot_run(error):
         assert command_json(["rec", "status"], path="ready", timeout=0.5) is None
 
 
+@pytest.mark.parametrize(
+    ("stdout", "returncode", "expected"),
+    [
+        ('{"ready":false}', 0, ("answered", False)),
+        ('{"ready":true}', 0, ("answered", True)),
+        ("", 1, ("gone", None)),  # rec: no managed rec instance is reachable
+        ('{"ready":true}', 1, ("gone", None)),  # any non-zero exit
+        ('{"ready":null}', 0, ("unknown", None)),
+        ("{}", 0, ("unknown", None)),  # missing path
+        ("", 0, ("unknown", None)),  # empty output
+        ("not json", 0, ("unknown", None)),
+        ("[1]", 0, ("unknown", None)),
+        ('{"ready":{"x":1}}', 0, ("unknown", None)),  # not a scalar
+    ],
+)
+def test_command_status_tells_gone_from_answered_from_unknown(stdout, returncode, expected):
+    """For "is the instance gone": only a failing status command (non-zero
+    exit) says gone; a value says it answered; a zero exit with nothing
+    readable at the path is unknown — never gone."""
+    from llmbench.providers.lifecycle.probe import command_status
+
+    with patch(f"{PROBE}.subprocess.run", return_value=_completed(stdout, returncode)) as run:
+        assert command_status(["rec", "status"], path="ready") == expected
+    assert run.call_args.kwargs["timeout"] == 5.0
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (subprocess.TimeoutExpired(["rec", "status"], 5.0), ("unknown", None)),
+        (FileNotFoundError(2, "No such file or directory", "rec"), ("gone", None)),
+        (PermissionError(13, "Permission denied", "rec"), ("gone", None)),
+    ],
+)
+def test_command_status_timeout_is_unknown_and_a_missing_binary_gone(error, expected):
+    """A hung status command says nothing about the instance (a slow `rec
+    status` under a multi-GB teardown is exactly the case); one that cannot
+    run at all has no instance to report."""
+    from llmbench.providers.lifecycle.probe import command_status
+
+    with patch(f"{PROBE}.subprocess.run", side_effect=error):
+        assert command_status(["rec", "status"], path="ready", timeout=0.5) == expected
+
+
 def test_wait_for_command_ready_polls_until_ready():
     """Not ready twice (still loading, then nothing answering), then ready:
     returns after three polls, one second apart."""
