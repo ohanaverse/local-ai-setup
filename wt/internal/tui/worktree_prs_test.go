@@ -97,7 +97,7 @@ func rowByBranch(t *testing.T, items []list.Item, branch string) entryItem {
 func TestApplyPRsTagsEveryKindOfRow(t *testing.T) {
 	groups, root := prGroups(t)
 	l := buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prMap(), nil)
+	applyPRs(&l, prMap(), nil, nil)
 	items := l.Items()
 	// Only a remote row drops its remote; a local fix/foo keeps its whole
 	// name, the name its PR was opened from.
@@ -138,7 +138,7 @@ func TestPRTagDroppedWhenTheBranchMoved(t *testing.T) {
 	groups[0].Entries[0].Branch = "main"
 	groups[0].Entries[0].Path = dir
 	l := buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prs, nil)
+	applyPRs(&l, prs, nil, nil)
 	if tag := rowByBranch(t, l.Items(), "main").prTag(); tag != "#384 merged" {
 		t.Fatalf("main tag = %q, want #384 merged (the PR head is the branch tip)", tag)
 	}
@@ -154,9 +154,163 @@ func TestPRTagDroppedWhenTheBranchMoved(t *testing.T) {
 		"main": {Number: 384, State: worktree.PRMerged, Title: "Current work", HeadRefOid: strings.TrimSpace(string(out))},
 	})
 	l = buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prs, nil)
+	// applyPRs runs on the update goroutine and forks no git (#451): with no
+	// answer yet it keeps the tag, and the resolved answer drops it.
+	applyPRs(&l, prs, nil, nil)
+	if tag := rowByBranch(t, l.Items(), "main").prTag(); tag != "#384 merged" {
+		t.Fatalf("main tag = %q before the staleness answer, want #384 merged (applyPRs must not run git)", tag)
+	}
+	stale := resolveStaleNow(t, l.Items(), prs)
+	applyPRs(&l, prs, nil, stale)
 	if tag := rowByBranch(t, l.Items(), "main").prTag(); tag != "" {
 		t.Errorf("main tag = %q, want none: the PR's head is not the branch tip", tag)
+	}
+}
+
+// resolveStaleNow answers every question items raise for prs, the way
+// resolveStaleCmd does off the update goroutine, and returns the answers.
+func resolveStaleNow(t *testing.T, items []list.Item, prs worktree.PRSet) staleSet {
+	t.Helper()
+	cmd := resolveStaleCmd(staleJobs(items, prs, nil, nil))
+	if cmd == nil {
+		t.Fatal("no staleness questions raised")
+	}
+	return cmd().(staleResolvedMsg).verdicts
+}
+
+// reusedBranchRepo is a repository whose main branch holds a different
+// history from the head of a merged PR #384 on main: the name was reused. It
+// returns the groups of a picker with that one worktree row, the root and the
+// PR listing.
+func reusedBranchRepo(t *testing.T) ([]worktree.EntryGroup, string, worktree.PRSet) {
+	t.Helper()
+	dir := t.TempDir()
+	gitInit(t, dir)
+	cmd := exec.Command("git", "commit-tree", "-m", "old PR work", "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := prsIn("o/base", map[string]worktree.PR{
+		"main": {Number: 384, State: worktree.PRMerged, Title: "Old work", HeadRefOid: strings.TrimSpace(string(out))},
+	})
+	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+		{Type: worktree.TypeCurrent, Branch: "main", Path: dir},
+	}}}
+	return groups, dir, prs
+}
+
+// stalesFrom runs cmd (a batch or a single command) and returns every
+// staleResolvedMsg it produced.
+func stalesFrom(cmd tea.Cmd) []staleResolvedMsg {
+	if cmd == nil {
+		return nil
+	}
+	switch msg := cmd().(type) {
+	case staleResolvedMsg:
+		return []staleResolvedMsg{msg}
+	case tea.BatchMsg:
+		var out []staleResolvedMsg
+		for _, c := range msg {
+			out = append(out, stalesFrom(c)...)
+		}
+		return out
+	}
+	return nil
+}
+
+// TestStaleAnswerArrivesAfterTheTagAndDropsIt pins #451's flow through Update:
+// the entries and the PR listing arrive, the row is tagged at once (no git ran
+// in Update), the listing's update returns a command that asks git, and the
+// answer, delivered as a message, drops the tag of a branch whose name was
+// reused. A regression either forks git in Update again (the tag would be
+// gone before the command ran) or never applies the answer.
+func TestStaleAnswerArrivesAfterTheTagAndDropsIt(t *testing.T) {
+	groups, dir, prs := reusedBranchRepo(t)
+	m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+	got, cmd := m.Update(entriesLoadedMsg{groups: groups, repoRoot: dir})
+	m = got.(model)
+	if cmd != nil {
+		t.Fatalf("entries load before any PR listing returned a command: nothing is known to ask yet")
+	}
+	got, cmd = m.Update(prsLoadedMsg{prs: prs})
+	m = got.(model)
+	if tag := rowByBranch(t, m.list.Items(), "main").prTag(); tag != "#384 merged" {
+		t.Fatalf("tag = %q right after the listing, want #384 merged: git must not run in Update", tag)
+	}
+	msgs := stalesFrom(cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("listing returned %d staleness answers, want 1", len(msgs))
+	}
+	got, _ = m.Update(msgs[0])
+	m = got.(model)
+	if tag := rowByBranch(t, m.list.Items(), "main").prTag(); tag != "" {
+		t.Errorf("tag = %q after the answer, want none", tag)
+	}
+	// Asked once: a second listing's arrival asks nothing already answered.
+	_, cmd = m.Update(prsLoadedMsg{prs: prs})
+	if got := stalesFrom(cmd); len(got) != 0 {
+		t.Errorf("answered key asked again after a listing: %d answers", len(got))
+	}
+}
+
+// TestEntryReloadKeepsTheAnswersAndAsksAgain verifies a reload of the entries
+// (after a create) keeps the staleness answers it has, so a tag already
+// dropped does not flash back while git answers again, and asks every ended
+// PR's question anew, since the branch tips were read again.
+func TestEntryReloadKeepsTheAnswersAndAsksAgain(t *testing.T) {
+	groups, dir, prs := reusedBranchRepo(t)
+	m := model{phase: phaseList, width: 80, height: 24, theme: themes.Default}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, repoRoot: dir})
+	m = got.(model)
+	got, cmd := m.Update(prsLoadedMsg{prs: prs})
+	m = got.(model)
+	got, _ = m.Update(stalesFrom(cmd)[0])
+	m = got.(model)
+
+	got, cmd = m.Update(entriesLoadedMsg{groups: groups, repoRoot: dir})
+	m = got.(model)
+	if tag := rowByBranch(t, m.list.Items(), "main").prTag(); tag != "" {
+		t.Errorf("tag = %q right after the reload, want none: the answer is kept", tag)
+	}
+	if got := stalesFrom(cmd); len(got) != 1 {
+		t.Errorf("reload asked %d questions, want 1: the tip may have moved", len(got))
+	}
+}
+
+// TestStaleJobsAskOnlyWhatGitCanAnswer verifies which rows raise a question:
+// a worktree or local row whose PR ended with a head commit, once per key.
+// Open and draft PRs, a PR with no head, a remote row and a key already
+// answered ask nothing, since PR.Stale answers false for them without git.
+func TestStaleJobsAskOnlyWhatGitCanAnswer(t *testing.T) {
+	groups := []worktree.EntryGroup{
+		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+			{Type: worktree.TypeWorktree, Branch: "merged", Path: "/w/merged"},
+			{Type: worktree.TypeWorktree, Branch: "open", Path: "/w/open"},
+			{Type: worktree.TypeWorktree, Branch: "draft", Path: "/w/draft"},
+			{Type: worktree.TypeWorktree, Branch: "nohead", Path: "/w/nohead"},
+			{Type: worktree.TypeWorktree, Branch: "done", Path: "/w/done"},
+		}},
+		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
+			{Type: worktree.TypeBranch, Branch: "origin/merged", RemoteRepo: "o/base", RemoteBranch: "merged"},
+		}},
+	}
+	prs := prsIn("o/base", map[string]worktree.PR{
+		"merged": {Number: 1, State: worktree.PRMerged, HeadRefOid: "aaa"},
+		"open":   {Number: 2, State: worktree.PROpen, HeadRefOid: "bbb"},
+		"draft":  {Number: 3, State: worktree.PRDraft, HeadRefOid: "ccc"},
+		"nohead": {Number: 4, State: worktree.PRClosed},
+		"done":   {Number: 5, State: worktree.PRClosed, HeadRefOid: "ddd"},
+	})
+	l := buildList(groups, "", t.TempDir(), themes.Default, 80, 24)
+	done := staleSet{{dir: "/w/done", branch: "done", head: "ddd"}: false}
+	jobs := staleJobs(l.Items(), prs, nil, done)
+	if len(jobs) != 1 || jobs[0].key != (staleKey{dir: "/w/merged", branch: "merged", head: "aaa"}) {
+		t.Fatalf("jobs = %+v, want only the merged worktree's question", jobs)
+	}
+	if all := staleJobs(l.Items(), prs, nil, nil); len(all) != 2 {
+		t.Errorf("with no answers kept, %d jobs, want 2 (merged and done)", len(all))
 	}
 }
 
@@ -195,7 +349,7 @@ func TestPRRowDescriptionAndFilterValue(t *testing.T) {
 func TestFilterByPRNumberFindsTheRow(t *testing.T) {
 	groups, root := prGroups(t)
 	l := buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prMap(), nil)
+	applyPRs(&l, prMap(), nil, nil)
 	l.SetFilterText("383")
 	found := false
 	for _, it := range l.VisibleItems() {
@@ -233,7 +387,7 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 		long:                         {Number: 12345, State: worktree.PRMerged, Title: "Long"},
 	})
 	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
-	applyPRs(&l, prs, nil)
+	applyPRs(&l, prs, nil, nil)
 
 	short := renderRow(l, 1)
 	first, second, _ := strings.Cut(short, "\n")
@@ -260,7 +414,7 @@ func TestPRTagRendersAfterTheTitleAndFits(t *testing.T) {
 func TestPRTagDroppedWhenTooNarrow(t *testing.T) {
 	groups := singleGroup(worktree.GroupLocalBranches, worktree.Entry{Type: worktree.TypeBranch, Branch: "fix/some-branch"})
 	l := buildList(groups, "", "/repo", themes.Default, 20, 24)
-	applyPRs(&l, prsIn("o/base", map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}}), nil)
+	applyPRs(&l, prsIn("o/base", map[string]worktree.PR{"fix/some-branch": {Number: 383, State: worktree.PROpen}}), nil, nil)
 	line, _, _ := strings.Cut(renderRow(l, 1), "\n")
 	if strings.TrimSpace(line) != "fix/some-branch" {
 		t.Errorf("narrow title line = %q, want the branch alone", line)
@@ -639,7 +793,7 @@ func basePRs() worktree.PRSet {
 // other way round.
 func TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR(t *testing.T) {
 	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
-	applyPRs(&l, basePRs(), nil)
+	applyPRs(&l, basePRs(), nil, nil)
 	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
 		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
 	}
@@ -648,7 +802,7 @@ func TestRemoteRowsFromASecondRemoteAreNotTaggedWithTheBaseReposPR(t *testing.T)
 	}
 	applyPRs(&l, withFork(basePRs(), "keith/fork", map[string]worktree.PR{
 		"feat-x": {Number: 77, State: worktree.PRMerged, Title: "Fork feat-x"},
-	}), nil)
+	}), nil, nil)
 	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
 		t.Errorf("origin/feat-x tag = %q with the fork's PR listed, want #4242 open", tag)
 	}
@@ -688,7 +842,7 @@ func TestRemoteRowUnknownRemoteIsUntagged(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := buildList(singleGroup(worktree.GroupRemoteBranches, tc.entry), "", "/repo", themes.Default, 80, 24)
-			applyPRs(&l, tc.prs, nil)
+			applyPRs(&l, tc.prs, nil, nil)
 			if ei := rowByBranch(t, l.Items(), tc.entry.Branch); ei.pr != nil {
 				t.Errorf("%s tagged %q", tc.entry.Branch, ei.prTag())
 			}
@@ -714,7 +868,7 @@ func TestRemoteRowsStayUntaggedUntilThePRsArriveThenTag(t *testing.T) {
 			}
 		}
 	}
-	applyPRs(&m.list, worktree.PRSet{}, nil)
+	applyPRs(&m.list, worktree.PRSet{}, nil, nil)
 	untagged("before any listing")
 
 	got, _ = m.Update(prsLoadedMsg{prs: worktree.PRSet{ByHead: map[worktree.PRKey]worktree.PR{}}})
@@ -741,7 +895,7 @@ func TestRemoteRepoMatchIgnoresCase(t *testing.T) {
 		worktree.Entry{Type: worktree.TypeBranch, Branch: "origin/feat-x", RemoteRepo: "O/Base", RemoteBranch: "feat-x"})
 	l := buildList(groups, "", "/repo", themes.Default, 80, 24)
 	stubPRList(t, `[{"number": 4242, "state": "OPEN", "headRefName": "feat-x", "isCrossRepository": false, "headRepository": {"nameWithOwner": "o/BASE"}}]`)
-	applyPRs(&l, worktree.PRs("/repo", worktree.PRListAll), nil)
+	applyPRs(&l, worktree.PRs("/repo", worktree.PRListAll), nil, nil)
 	if tag := rowByBranch(t, l.Items(), "origin/feat-x").prTag(); tag != "#4242 open" {
 		t.Errorf("origin/feat-x tag = %q, want #4242 open", tag)
 	}
@@ -756,7 +910,7 @@ func TestForkRowKeepsItsDisplayTitle(t *testing.T) {
 	if got := rowByBranch(t, l.Items(), "keith/feat-x").Title(); got != "feat-x" {
 		t.Errorf("Title before the PRs = %q, want feat-x", got)
 	}
-	applyPRs(&l, basePRs(), nil)
+	applyPRs(&l, basePRs(), nil, nil)
 	if got := rowByBranch(t, l.Items(), "keith/feat-x").Title(); got != "feat-x" {
 		t.Errorf("Title after the PRs = %q, want feat-x", got)
 	}
@@ -792,7 +946,7 @@ func TestStaleFilterRunWithRemoteRowsKeepsTheTags(t *testing.T) {
 	if ei := rowByBranch(t, vis, "keith/feat-x"); ei.pr != nil {
 		t.Errorf("keith/feat-x tagged %q after the stale run", ei.prTag())
 	}
-	if !prsCurrent(vis, m.prs, nil) {
+	if !prsCurrent(vis, m.prs, nil, nil) {
 		t.Error("prsCurrent = false on the rows applyPRs just tagged")
 	}
 }
@@ -803,7 +957,7 @@ func TestStaleFilterRunWithRemoteRowsKeepsTheTags(t *testing.T) {
 // the fork's branch under a PR it is not part of.
 func TestFilterByPRNumberDoesNotMatchAnUntaggedRemoteRow(t *testing.T) {
 	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
-	applyPRs(&l, basePRs(), nil)
+	applyPRs(&l, basePRs(), nil, nil)
 	l.SetFilterText("4242")
 	var visible []string
 	for _, it := range l.VisibleItems() {
@@ -858,7 +1012,7 @@ func TestForkWorkflowTagsEachRemoteRowFromItsOwnRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := buildList(groups, "main", repo, themes.Default, 80, 24)
-	applyPRs(&l, worktree.PRs(repo, worktree.PRListAll), nil)
+	applyPRs(&l, worktree.PRs(repo, worktree.PRListAll), nil, nil)
 	for branch, want := range map[string]string{
 		"origin/feat-x":   "#7 open",
 		"upstream/feat-y": "#9 open",
@@ -891,7 +1045,7 @@ func TestLocalRowPicksOnePRAcrossRepositories(t *testing.T) {
 	})
 	own := worktree.NewRepoSet("o/base", "me/fork")
 	l := buildList(groups, "", root, themes.Default, 80, 24)
-	applyPRs(&l, prs, own)
+	applyPRs(&l, prs, own, nil)
 	for branch, want := range map[string]string{
 		"feat/local":                 "#12 open",  // live beats merged
 		"fix/wt-ollama-stop-outcome": "#21 draft", // two live: the higher number
@@ -902,7 +1056,7 @@ func TestLocalRowPicksOnePRAcrossRepositories(t *testing.T) {
 			t.Errorf("%s tag = %q, want %q", branch, got, want)
 		}
 	}
-	if !prsCurrent(l.Items(), prs, own) {
+	if !prsCurrent(l.Items(), prs, own, nil) {
 		t.Error("prsCurrent = false on the rows applyPRs just tagged")
 	}
 }
@@ -971,7 +1125,7 @@ func TestLocalRowsShowNoStrangersForkPR(t *testing.T) {
 					t.Errorf("%s tag = %q, want %q", branch, got, want)
 				}
 			}
-			if !prsCurrent(m.list.Items(), m.prs, m.ownRepos) {
+			if !prsCurrent(m.list.Items(), m.prs, m.ownRepos, nil) {
 				t.Error("prsCurrent = false on the rows applyPRs just tagged")
 			}
 		})
@@ -1143,7 +1297,7 @@ func TestFilterByPRNumberFindsAForkRow(t *testing.T) {
 	l := buildList(forkGroups(), "", "/repo", themes.Default, 80, 24)
 	applyPRs(&l, withFork(basePRs(), "keith/fork", map[string]worktree.PR{
 		"feat-x": {Number: 77, State: worktree.PROpen, Title: "Fork feat-x"},
-	}), nil)
+	}), nil, nil)
 	l.SetFilterText("#77")
 	var visible []string
 	for _, it := range l.VisibleItems() {
@@ -1171,13 +1325,13 @@ func TestPRForUsesTheRowsTrackedRepository(t *testing.T) {
 	row := func(branch, track string) entryItem {
 		return entryItem{kind: kindEntry, prBranch: branch, entry: worktree.Entry{Branch: branch, TrackRepo: track}}
 	}
-	if pr := prFor(row("feat", "me/fork"), prs, own); pr == nil || pr.Number != 12 {
+	if pr := prFor(row("feat", "me/fork"), prs, own, nil); pr == nil || pr.Number != 12 {
 		t.Errorf("feat pushed to the fork = %v, want #12", pr)
 	}
-	if pr := prFor(row("main", "o/base"), prs, own); pr != nil {
+	if pr := prFor(row("main", "o/base"), prs, own, nil); pr != nil {
 		t.Errorf("main tracking upstream = #%d, want no tag (alice's PR is not its)", pr.Number)
 	}
-	if pr := prFor(row("main", ""), prs, own); pr == nil || pr.Number != 9 {
+	if pr := prFor(row("main", ""), prs, own, nil); pr == nil || pr.Number != 9 {
 		t.Errorf("main with no tracking = %v, want the any-of-yours fallback #9", pr)
 	}
 }

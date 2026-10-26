@@ -245,7 +245,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and `EnsureForName` never consults remotes.
 
-> **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
+> **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup, and forks no git: staleness is answered off the update goroutine, #451). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 

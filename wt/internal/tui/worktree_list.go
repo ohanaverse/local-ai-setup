@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -157,7 +158,7 @@ func (e entryItem) Description() string {
 // Update, against the new filter values, so the list is never drawn empty
 // while they are recomputed and typing a PR number before the tags arrived
 // finds the row once they do.
-func applyPRs(l *list.Model, prs worktree.PRSet, own worktree.RepoSet) {
+func applyPRs(l *list.Model, prs worktree.PRSet, own worktree.RepoSet, stale staleSet) {
 	selected, hadSelected := l.SelectedItem().(entryItem)
 	index := l.Index()
 
@@ -165,7 +166,7 @@ func applyPRs(l *list.Model, prs worktree.PRSet, own worktree.RepoSet) {
 	next := make([]list.Item, len(items))
 	for i, it := range items {
 		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry {
-			ei.pr = prFor(ei, prs, own)
+			ei.pr = prFor(ei, prs, own, stale)
 			it = ei
 		}
 		next[i] = it
@@ -192,38 +193,130 @@ func applyPRs(l *list.Model, prs worktree.PRSet, own worktree.RepoSet) {
 	}
 }
 
-// prFor is the pull request prs holds for ei, nil for none. A
-// remote-tracking row has the PR whose head is its own remote's repository
-// and branch (worktree.PRSet.ForRemote, compared without case): your fork's
-// branch shows the PR you opened from it, upstream's branch upstream's own,
-// and a remote whose repository is unknown is never guessed (#388, #387). A
-// worktree or local row has no repository of its own, so its branch name is
-// looked up under the repository of the remote it pushes to or tracks
-// (Entry.TrackRepo) alone; with none known, under the listed repository and
-// own, the repository's remotes' repositories, and one PR chosen
-// (worktree.PRSet.ForBranch: live over closed or merged, then the higher
-// number). A stranger's fork PR never tags it. prsCurrent asks this with the
-// same own, so the tags and the stale-filter check agree. A PR whose head
-// commit is no longer the branch's tip is stale — the branch has moved past
-// a PR that merged under a reused branch name — and tags nothing (#389).
-func prFor(ei entryItem, prs worktree.PRSet, own worktree.RepoSet) *worktree.PR {
+// prLookup is the pull request prs holds for ei, ignoring whether the branch
+// has moved past it. A remote-tracking row has the PR whose head is its own
+// remote's repository and branch (worktree.PRSet.ForRemote, compared without
+// case): your fork's branch shows the PR you opened from it, upstream's
+// branch upstream's own, and a remote whose repository is unknown is never
+// guessed (#388, #387). A worktree or local row has no repository of its own,
+// so its branch name is looked up under the repository of the remote it
+// pushes to or tracks (Entry.TrackRepo) alone; with none known, under the
+// listed repository and own, the repository's remotes' repositories, and one
+// PR chosen (worktree.PRSet.ForBranch: live over closed or merged, then the
+// higher number). A stranger's fork PR never tags it.
+func prLookup(ei entryItem, prs worktree.PRSet, own worktree.RepoSet) (worktree.PR, bool) {
 	if ei.prBranch == "" {
-		return nil
+		return worktree.PR{}, false
 	}
-	var pr worktree.PR
-	var found bool
 	if ei.remote {
-		pr, found = prs.ForRemote(ei.repo, ei.prBranch)
-	} else {
-		pr, found = prs.ForBranch(ei.prBranch, ei.entry.TrackRepo, own)
+		return prs.ForRemote(ei.repo, ei.prBranch)
 	}
+	return prs.ForBranch(ei.prBranch, ei.entry.TrackRepo, own)
+}
+
+// prFor is the pull request that tags ei, nil for none: prLookup's, unless
+// stale says the branch has moved past it. A PR whose head commit is no
+// longer the branch's tip is stale — the branch name was reused after the PR
+// merged — and tags nothing (#389). The answer is read from stale, resolved
+// off the update goroutine (resolveStaleCmd): prFor runs in Update, on every
+// filter keystroke, and must not fork git (#451). A key stale does not hold
+// yet reads as not stale, which is also how PR.Stale treats what git cannot
+// judge. prsCurrent asks this with the same own and stale, so the tags and
+// the stale-filter check agree.
+func prFor(ei entryItem, prs worktree.PRSet, own worktree.RepoSet, stale staleSet) *worktree.PR {
+	pr, found := prLookup(ei, prs, own)
 	if !found {
 		return nil
 	}
-	if !ei.remote && pr.Stale(ei.prBranch, ei.entry.Path) {
+	if !ei.remote && stale[staleKeyFor(ei, pr)] {
 		return nil
 	}
 	return &pr
+}
+
+// staleKey is one staleness question: whether the pull request whose head
+// commit is head still belongs to the local branch in dir. The branch's tip
+// is read when the question is asked, so a key is answered again whenever the
+// entries are reloaded (staleJobs).
+type staleKey struct{ dir, branch, head string }
+
+func staleKeyFor(ei entryItem, pr worktree.PR) staleKey {
+	return staleKey{dir: ei.entry.Path, branch: ei.prBranch, head: pr.HeadRefOid}
+}
+
+// staleSet holds the answer to each staleKey asked so far: present means
+// answered, true means stale. A nil set is valid and answers nothing.
+type staleSet map[staleKey]bool
+
+// staleJob is one question and the PR whose state and head it asks about.
+type staleJob struct {
+	key staleKey
+	pr  worktree.PR
+}
+
+// staleJobs lists the questions items raise that the git subprocesses of
+// PR.Stale can answer: a worktree or local row whose pull request ended
+// (merged or closed) with a head commit to compare. A remote row, an open or
+// draft PR and a PR with no head commit are never stale, so they ask nothing.
+// Keys already in skip are left out (nil skip: every key is asked, which is
+// what an entry reload does, since the branch tips were read again); a key
+// shared by several rows is asked once.
+func staleJobs(items []list.Item, prs worktree.PRSet, own worktree.RepoSet, skip staleSet) []staleJob {
+	var jobs []staleJob
+	seen := map[staleKey]bool{}
+	for _, it := range items {
+		ei, ok := it.(entryItem)
+		if !ok || ei.kind != kindEntry || ei.remote {
+			continue
+		}
+		pr, found := prLookup(ei, prs, own)
+		if !found || pr.HeadRefOid == "" || pr.State == worktree.PROpen || pr.State == worktree.PRDraft {
+			continue
+		}
+		key := staleKeyFor(ei, pr)
+		if _, done := skip[key]; done || seen[key] {
+			continue
+		}
+		seen[key] = true
+		jobs = append(jobs, staleJob{key: key, pr: pr})
+	}
+	return jobs
+}
+
+// staleResolvedMsg carries the answers one resolveStaleCmd found.
+type staleResolvedMsg struct{ verdicts staleSet }
+
+// resolveStaleCmd answers jobs with PR.Stale, which runs git. It is a command
+// so those subprocesses run off the update goroutine (#451); jobs is read
+// here only, never the model.
+func resolveStaleCmd(jobs []staleJob) tea.Cmd {
+	if len(jobs) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		verdicts := make(staleSet, len(jobs))
+		for _, j := range jobs {
+			verdicts[j.key] = j.pr.Stale(j.key.branch, j.key.dir)
+		}
+		return staleResolvedMsg{verdicts: verdicts}
+	}
+}
+
+// merge adds verdicts to s (allocating it when nil) and reports whether any
+// key's answer changed from what s gave for it before, an absent key counting
+// as not stale: only then do the tags on screen need applying again.
+func (s staleSet) merge(verdicts staleSet) (staleSet, bool) {
+	if s == nil {
+		s = staleSet{}
+	}
+	changed := false
+	for k, v := range verdicts {
+		if s[k] != v {
+			changed = true
+		}
+		s[k] = v
+	}
+	return s, changed
 }
 
 // remoteTagsHidden is the notice for a listing whose pull requests cannot
@@ -261,13 +354,13 @@ func remoteTagsHidden(items []list.Item, prs worktree.PRSet) string {
 // prsCurrent reports whether every entry row in items carries the tag prs
 // gives it. A filter run that a keystroke started before the latest tags
 // arrived matched the items as they were then, and its rows fail this.
-func prsCurrent(items []list.Item, prs worktree.PRSet, own worktree.RepoSet) bool {
+func prsCurrent(items []list.Item, prs worktree.PRSet, own worktree.RepoSet, stale staleSet) bool {
 	for _, it := range items {
 		ei, ok := it.(entryItem)
 		if !ok || ei.kind != kindEntry {
 			continue
 		}
-		want := prFor(ei, prs, own)
+		want := prFor(ei, prs, own, stale)
 		if (want == nil) != (ei.pr == nil) || (want != nil && *want != *ei.pr) {
 			return false
 		}

@@ -147,6 +147,12 @@ type model struct {
 	// (worktree.PRSet.ForBranch), never with a stranger's fork PR of the same
 	// branch name.
 	ownRepos worktree.RepoSet
+	// stale is each worktree or local row's answer to "has the branch moved
+	// past its ended PR" (staleKey), resolved off the update goroutine by
+	// resolveStaleCmd and read by prFor. It is kept across an entry reload
+	// and each of its keys asked again there, so the tags do not flash back
+	// while the new answers are on their way (#451).
+	stale staleSet
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -306,7 +312,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.ownRepos = msg.ownRepos
 		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
 		if m.prs.Loaded() {
-			applyPRs(&m.list, m.prs, m.ownRepos)
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
 		}
 		m.ready = true
 
@@ -337,6 +343,10 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return ei.label == "(current)"
 			})
 		}
+		// The branch tips were read again: ask every ended PR's question anew.
+		if m.prs.Loaded() {
+			return m, resolveStaleCmd(staleJobs(m.list.Items(), m.prs, m.ownRepos, nil))
+		}
 		return m, nil
 	case prsLoadedMsg:
 		// One listing's pull requests arrived: merged with any listing
@@ -348,10 +358,22 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// that failed adds nothing: msg.prs is then empty.
 		m.prs = worktree.MergePRs(m.prs, msg.prs)
 		if m.ready {
-			applyPRs(&m.list, m.prs, m.ownRepos)
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
+			cmds := []tea.Cmd{resolveStaleCmd(staleJobs(m.list.Items(), m.prs, m.ownRepos, m.stale))}
 			if note := remoteTagsHidden(m.list.Items(), m.prs); note != "" {
-				return m, m.list.NewStatusMessage(note)
+				cmds = append(cmds, m.list.NewStatusMessage(note))
 			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, nil
+	case staleResolvedMsg:
+		// The git answers for the ended PRs on screen arrived: kept for later
+		// builds of the list, and a row whose branch moved past its PR loses
+		// the tag now.
+		var changed bool
+		m.stale, changed = m.stale.merge(msg.verdicts)
+		if changed && m.ready && m.prs.Loaded() {
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
 		}
 		return m, nil
 	case selectedEntryMsg:
@@ -678,8 +700,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.list, cmd = m.list.Update(msg)
 		// A filter run a keystroke started before the latest tags arrived
 		// matched the items as they were then; its rows carry the old tags.
-		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos) {
-			applyPRs(&m.list, m.prs, m.ownRepos)
+		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos, m.stale) {
+			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
 		}
 		return m, cmd
 	}
