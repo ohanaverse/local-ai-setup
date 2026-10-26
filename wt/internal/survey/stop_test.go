@@ -48,6 +48,10 @@ type stopHarness struct {
 	// families the stop state read it for.
 	loading      map[string]lifecycle.Loading
 	loadingAsked []string
+	// machine is the instance each ScopeMachine family's readiness command
+	// finds on another port; machineAsked records the families asked.
+	machine      map[string]localmodels.Entry
+	machineAsked []string
 	// finishingOn names a modelName whose stop ollama accepted and has not
 	// carried out within the batch's wait (*lifecycle.StillFinishingError).
 	finishingOn string
@@ -133,6 +137,11 @@ func (h *stopHarness) deps() stopDeps {
 		loading: func(_ *config.Config, fam string) lifecycle.Loading {
 			h.loadingAsked = append(h.loadingAsked, fam)
 			return h.loading[fam]
+		},
+		machine: func(_ *config.Config, _ localmodels.Snapshot, fam string) (localmodels.Entry, bool) {
+			h.machineAsked = append(h.machineAsked, fam)
+			en, ok := h.machine[fam]
+			return en, ok
 		},
 	}
 }

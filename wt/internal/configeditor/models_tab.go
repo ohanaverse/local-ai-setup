@@ -327,7 +327,21 @@ func malformedLine(r modeladmin.Row) string {
 	if len(r.Malformed) == 0 {
 		return ""
 	}
-	return strings.Join(r.Malformed, ", ") + "; read as absent"
+	var absent []string
+	for _, p := range r.Malformed {
+		if !slices.Contains(r.ServeArgsRefused, p) {
+			absent = append(absent, p)
+		}
+	}
+	var parts []string
+	if len(absent) > 0 {
+		parts = append(parts, strings.Join(absent, ", ")+"; read as absent")
+	}
+	if len(r.ServeArgsRefused) > 0 {
+		// Kept, not read as absent: a start refuses the model.
+		parts = append(parts, strings.Join(r.ServeArgsRefused, ", ")+"; a start is refused until fixed")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // modelsDetail is the block under the table, in two parts: the selected

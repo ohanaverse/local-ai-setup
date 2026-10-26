@@ -144,6 +144,7 @@ func machineEnvSpec(t *testing.T, serving string, spec provider.ProcessSpec) (*e
 		t.Errorf("unexpected command %s %s", name, cmd)
 		return nil, errors.New("unexpected")
 	}
+	e.runOut = e.run
 	e.spawn = func(p pidProcess, bin string, args []string) (*spawned, error) {
 		h.record("spawn")
 		return nil, errSpawnStub
@@ -246,7 +247,7 @@ func TestPortScopeNeverRunsTheReadinessCommand(t *testing.T) {
 	e.serverProc["mtplx"] = pidProcess{name: "mtplx", pidfile: filepath.Join(dir, "mtplx.pid"), logfile: filepath.Join(dir, "mtplx.log")}
 	e.lookPath = func(string) (string, error) { return "/bin/mtplx", nil }
 	runs := 0
-	e.run = func(context.Context, string, ...string) ([]byte, error) {
+	e.runOut = func(context.Context, string, ...string) ([]byte, error) {
 		runs++
 		return []byte(`{"ready":true,"model":"other"}`), nil
 	}
@@ -449,5 +450,56 @@ func TestMachineScopeRefusesAPortlessRegistryOriginBeforeAsking(t *testing.T) {
 				t.Errorf("calls = %v, want only the readiness command (nothing stopped or spawned)", got)
 			}
 		})
+	}
+}
+
+// TestMachineEntryFindsTheInstanceTheStopSideCannotSee verifies the stop
+// side's read of a machine-scope family (#457): the readiness command's
+// instance comes back as a running entry, the snapshot's own registered one
+// when it names that model (so the route a stop drops is the registry id's)
+// and a discovered one otherwise, with nothing run beyond the one command.
+// The stop picker and `wt stop` used to look only at the registry port, so an
+// instance started by hand on another port read as "nothing running".
+func TestMachineEntryFindsTheInstanceTheStopSideCannotSee(t *testing.T) {
+	e, h := machineEnv(t, "flint")
+	discovered := localmodels.Entry{ProviderID: "recx", ModelID: config.DiscoveredModelID("recx", "flint"), ModelName: "flint", Running: true}
+	if got, ok := e.machineEntry(&config.Config{}, localmodels.Snapshot{}, "recx"); !ok || got != discovered {
+		t.Errorf("machineEntry = %+v, %v; want %+v, true", got, ok, discovered)
+	}
+	registered := localmodels.Entry{ProviderID: "recx", ModelID: "recx/flint-id", ModelName: "flint"}
+	snap := localmodels.Snapshot{Entries: []localmodels.Entry{registered}}
+	want := registered
+	want.Running = true
+	if got, ok := e.machineEntry(&config.Config{}, snap, "recx"); !ok || got != want {
+		t.Errorf("machineEntry with a registered row = %+v, %v; want %+v, true", got, ok, want)
+	}
+	if got := h.seq(); !slices.Equal(got, []string{"status", "status"}) {
+		t.Errorf("calls = %v, want one readiness command per read", got)
+	}
+}
+
+// TestMachineEntryFindsNothingWhereMachineOccupantFindsNothing verifies the
+// stop-side read reports no instance when nothing is ready, for a port-scope
+// family (it must not run a machine-wide command per read of mtplx) and when
+// the binary cannot be had (the backend's own stop then says so). A false
+// "running" here would offer a stop that cannot be carried out.
+func TestMachineEntryFindsNothingWhereMachineOccupantFindsNothing(t *testing.T) {
+	e, h := machineEnv(t, "")
+	if _, ok := e.machineEntry(&config.Config{}, localmodels.Snapshot{}, "recx"); ok {
+		t.Error("machineEntry found an instance although status says not ready")
+	}
+	e, h = machineEnv(t, "flint")
+	e.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	if _, ok := e.machineEntry(&config.Config{}, localmodels.Snapshot{}, "recx"); ok {
+		t.Error("machineEntry found an instance without a binary")
+	}
+	if got := h.seq(); len(got) != 0 {
+		t.Errorf("calls = %v, want none without a binary", got)
+	}
+	if MachineScoped("mtplx") || MachineScoped("ollama") || !MachineScoped("rec") {
+		t.Errorf("MachineScoped: mtplx %v, ollama %v, rec %v; want false, false, true", MachineScoped("mtplx"), MachineScoped("ollama"), MachineScoped("rec"))
+	}
+	if _, ok := e.machineEntry(&config.Config{}, localmodels.Snapshot{}, "mtplx"); ok {
+		t.Error("machineEntry found an instance for a port-scope family")
 	}
 }

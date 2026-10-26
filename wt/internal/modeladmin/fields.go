@@ -3,6 +3,7 @@ package modeladmin
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -26,6 +27,7 @@ const (
 	FieldSubscriptionPeriod = "subscription-period"
 	FieldDraft              = "draft"
 	FieldSource             = "source"
+	FieldServeArg           = "serve-arg"
 )
 
 // FieldError is a value the user gave that cannot be used. Field names the
@@ -54,12 +56,16 @@ type Fields struct {
 	SubscriptionPrice  *string
 	SubscriptionPeriod *string // month or year
 	Source             *string // manual or curated; edit only (add sets manual itself)
+	// ServeArgs is the model's serve_args, one argv element per entry (a
+	// flag and its value are two): nil is not given, an empty list clears
+	// the key. mtplx models only (config.ServeArgsProblems).
+	ServeArgs *[]string
 }
 
 // Empty reports whether no field was given.
 func (f Fields) Empty() bool {
 	return f.Family == nil && f.Tags == nil && f.Location == nil && f.InputPrice == nil && f.CachePrice == nil &&
-		f.OutputPrice == nil && f.SubscriptionPrice == nil && f.SubscriptionPeriod == nil && f.Source == nil
+		f.OutputPrice == nil && f.SubscriptionPrice == nil && f.SubscriptionPeriod == nil && f.Source == nil && f.ServeArgs == nil
 }
 
 // priceKeys maps each price field to its key in the model row.
@@ -144,7 +150,23 @@ func (f Fields) patch() (set map[string]any, unset []string, err error) {
 			return nil, nil, fieldErr(FieldSource, "source must be manual or curated, got %q", src)
 		}
 	}
+	if f.ServeArgs != nil {
+		if len(*f.ServeArgs) == 0 {
+			unset = append(unset, "serve_args")
+		} else {
+			set["serve_args"] = slices.Clone(*f.ServeArgs)
+		}
+	}
 	return set, unset, nil
+}
+
+// checkServeArgs refuses serve_args that provider cannot take, naming the
+// flag the way a user typed it (--serve-arg).
+func checkServeArgs(providerID string, args []string) error {
+	if problems := config.ServeArgsProblems(providerID, args); len(problems) > 0 {
+		return fieldErr(FieldServeArg, "%s", problems[0])
+	}
+	return nil
 }
 
 // ParsePrice reads a price a user typed: empty is "no price" (given false);

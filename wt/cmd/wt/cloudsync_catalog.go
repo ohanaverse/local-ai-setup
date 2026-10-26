@@ -71,7 +71,7 @@ func (c *ollamaRun) replan(entries []cloudsync.Entry) *cloudsync.CatalogPlan {
 // the row every catalog entry names, and the one that says which daemon the
 // ollama CLI is pinned to.
 func hasOllamaProvider(providers []cloudsync.Provider) bool {
-	return slices.ContainsFunc(providers, func(p cloudsync.Provider) bool { return p.ID == "ollama" })
+	return slices.ContainsFunc(providers, func(p cloudsync.Provider) bool { return p.ID == flowOllama })
 }
 
 // planOllamaFlow reads the page and `ollama list`, resolves the cloud tags
@@ -86,7 +86,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 		if code == 1 {
 			res.failed = true
 		} else {
-			res.ollamaCode = code
+			res.ollama.code = code
 		}
 		return nil
 	}
@@ -168,7 +168,7 @@ func planOllamaFlow(ctx context.Context, out, errOut io.Writer, cfg *config.Conf
 		}
 	}
 	run.printed = run.plan.Format()
-	prefixLines(out, "ollama", run.printed)
+	prefixLines(out, flowOllama, run.printed)
 	return run
 }
 
@@ -198,13 +198,13 @@ func ollamaTouchedIDs(plan *cloudsync.CatalogPlan) []string {
 // mass removal without --force (its refusal prints the plan's EntriesGone,
 // the number the guard itself uses), and under --yes not a plan that deletes
 // anything without the digest of a reviewed dry run. It reports false, with
-// the reason printed and res.ollamaCode set, when it may not.
+// the reason printed and res.ollama.code set, when it may not.
 func ollamaGate(errOut io.Writer, c *ollamaRun, o cloudSyncOpts, res *cloudSyncOutcome) bool {
 	massNote := ""
 	if gone := c.plan.EntriesGone(); gone != len(c.plan.Removals) {
 		massNote = " (re-tagged entries are not counted)"
 	}
-	return removalGate(errOut, c.plan, "ollama", o, func(code int) { res.ollamaCode = code }, removalGateWording{
+	return removalGate(errOut, c.plan, flowOllama, o, func(code int) { res.ollama.code = code }, removalGateWording{
 		massNoun:  "ollama cloud entries",
 		massTotal: c.plan.CloudEntries,
 		massNote:  massNote,

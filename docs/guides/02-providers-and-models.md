@@ -167,6 +167,8 @@ Removing only the entry — deleting its block; the artifact stays on disk until
 
 Download the artifact first (Step 5); the block is the optional overlay of Step 3, except for an `mlx_lm_server` pairing, which must have one. For oMLX and MTPLX, `wt model add omlx <model directory name> --family <family>` and `wt model add mtplx <org>/<name> --family <family>` (or `enter` on the model's `new` row in the Models tab) write the block shown, and `wt model add mlx_lm_server <target> --draft <draft> --family <family>` writes the pairing's (each side a Hugging Face repo id or a local path; the Models tab's form does not create a pairing, and edits the family, tags and prices of one that is there). `model_name` is spelled the way the provider lists the artifact, and `id` is `<provider family>/<model_name>`.
 
+**MTPLX serve flags.** To give one mtplx model its own `mtplx serve` flags (a profile, say), set them on its registry row: `wt model edit mtplx/<org>/<name> --serve-arg --profile --serve-arg turbo` (one argument per `--serve-arg`; `--clear-serve-args` removes them). wt appends them after its own arguments on the next `wt start`, refuses the flags it sets itself (`--model`, `--port`, `--host`, `--model-id`), and takes only mtplx models. Because wt always passes `--model-id`, mtplx does not promote a model to its turbo profile by itself under wt: ask for it this way. Reference: [`wt model edit`](../../wt/docs/wt-model.md#serve_args-extra-flags-for-an-mtplx-model).
+
 **oMLX** — the artifact is a directory under omlx's model directory, and its name is the model's name:
 
 ```toml

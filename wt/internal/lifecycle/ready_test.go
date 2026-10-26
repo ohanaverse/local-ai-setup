@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -80,7 +82,7 @@ func TestReadyNowCommandJSON(t *testing.T) {
 			e.readyCmdTimeout = 20 * time.Millisecond
 			var gotName string
 			var gotArgs []string
-			e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+			e.runOut = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 				gotName, gotArgs = n, args
 				if _, ok := ctx.Deadline(); !ok {
 					t.Error("readiness command ran without a deadline")
@@ -125,7 +127,7 @@ func TestReadyNowReadsTheEndpoint(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := testEnv()
-			e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte(tc.out), nil }
+			e.runOut = func(context.Context, string, ...string) ([]byte, error) { return []byte(tc.out), nil }
 			got, err := e.readyNow(context.Background(), tc.spec, "/bin/recx", "", "flint", "")
 			if err != nil || got != tc.want {
 				t.Errorf("readyNow = %+v, %v; want %+v, nil", got, err, tc.want)
@@ -142,7 +144,7 @@ func TestWaitReadyKeepsWaitingWhilePortClosed(t *testing.T) {
 	stubReadySpec(t)
 	e := testEnv()
 	var runs int32
-	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+	e.runOut = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		if atomic.AddInt32(&runs, 1) < 3 {
 			return []byte("rec: no managed rec instance is reachable"), errors.New("exit status 1")
 		}
@@ -164,7 +166,7 @@ func TestWaitReadyFailsFastWhenProcessDies(t *testing.T) {
 	stubReadySpec(t)
 	e := testEnv()
 	var runs int32
-	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+	e.runOut = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		atomic.AddInt32(&runs, 1)
 		return []byte(`{"ready":false}`), nil
 	}
@@ -187,14 +189,14 @@ func TestWaitReadyFailsFastWhenProcessDies(t *testing.T) {
 func TestWaitReadyRejectsAnInstanceServingAnotherModel(t *testing.T) {
 	stubReadySpec(t)
 	e := testEnv()
-	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+	e.runOut = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		return []byte(`{"ready":true,"model":"other"}`), nil
 	}
 	err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "recx reports an instance serving other, not flint") {
 		t.Fatalf("waitReady = %v, want a timeout naming the other model", err)
 	}
-	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+	e.runOut = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		return []byte(`{"ready":true,"model":"flint"}`), nil
 	}
 	if err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", time.Second); err != nil {
@@ -208,7 +210,7 @@ func TestWaitReadyRejectsAnInstanceServingAnotherModel(t *testing.T) {
 func TestWaitReadyTimeout(t *testing.T) {
 	stubReadySpec(t)
 	e := testEnv()
-	e.run = func(ctx context.Context, n string, args ...string) ([]byte, error) {
+	e.runOut = func(ctx context.Context, n string, args ...string) ([]byte, error) {
 		return []byte(`{"ready":false}`), nil
 	}
 	err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
@@ -229,9 +231,53 @@ func TestWaitReadyTimeout(t *testing.T) {
 func TestWaitReadyTreatsAReadyAnswerWithNoModelAsNotReady(t *testing.T) {
 	stubReadySpec(t)
 	e := testEnv()
-	e.run = func(context.Context, string, ...string) ([]byte, error) { return []byte(`{"ready":true}`), nil }
+	e.runOut = func(context.Context, string, ...string) ([]byte, error) { return []byte(`{"ready":true}`), nil }
 	err := e.waitReady(context.Background(), "recx", &countingProc{}, "/bin/recx", "http://127.0.0.1:1/v1/models", "flint", "", 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "names no model") {
 		t.Fatalf("waitReady = %v, want a timeout saying the instance names no model", err)
+	}
+}
+
+// TestReadyNowIgnoresStderrNoise verifies a readiness command that prints a
+// warning or update hint on stderr ahead of its JSON still reads ready: the
+// check parses stdout alone (#458). With the combined output the engine used
+// to parse, that stderr text broke the JSON, so a live rec read as not ready:
+// `start` spawned a second instance, `stop` reported a running one stopped,
+// and a healthy start timed out. It runs a real script through the real
+// runner, since only a real process has two streams.
+func TestReadyNowIgnoresStderrNoise(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "recx")
+	script := "#!/bin/sh\necho 'warning: update available' >&2\necho '{\"ready\":true,\"model\":\"flint\"}'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := testEnv()
+	e.runOut = runCommandStdout
+	e.run = func(context.Context, string, ...string) ([]byte, error) {
+		t.Error("readiness read the combined-output runner")
+		return nil, nil
+	}
+	got, err := e.readyNow(context.Background(), readySpec, bin, "", "flint", "")
+	if want := (readyState{Ready: true, Model: "flint"}); err != nil || got != want {
+		t.Errorf("readyNow = %+v, %v; want %+v, nil", got, err, want)
+	}
+}
+
+// TestRunCommandStdoutDropsStderr verifies the stdout-only runner returns
+// stdout alone on success and on a nonzero exit (the exit error still
+// surfaces), because the readiness check relies on neither stream leaking
+// into the other.
+func TestRunCommandStdoutDropsStderr(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho out\necho err >&2\n[ \"$1\" = fail ] && exit 3\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCommandStdout(context.Background(), bin)
+	if err != nil || string(out) != "out\n" {
+		t.Errorf("ok run = %q, %v; want %q, nil", out, err, "out\n")
+	}
+	out, err = runCommandStdout(context.Background(), bin, "fail")
+	if err == nil || string(out) != "out\n" {
+		t.Errorf("failing run = %q, %v; want %q and an error", out, err, "out\n")
 	}
 }

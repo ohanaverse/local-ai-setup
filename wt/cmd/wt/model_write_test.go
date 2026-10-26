@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -772,5 +773,71 @@ func TestModelEditSourceFlag(t *testing.T) {
 	}
 	if _, err := runWT(t, "model", "add", "openrouter", "x/y", "--family", "f", "--source", "manual"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 		t.Errorf("model add --source: err = %v, want an unknown-flag error", err)
+	}
+}
+
+// runEditCmd runs `wt model edit` through cobra, the way a user types it, so
+// the flag parsing is part of what is tested.
+func runEditCmd(t *testing.T, args ...string) (stdout string, err error) {
+	t.Helper()
+	cmd := modelEditCmd(nil)
+	var out bytes.Buffer
+	cmd.SetArgs(args)
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err = cmd.Execute()
+	return out.String(), err
+}
+
+// TestModelEditServeArgFlags pins the command line of #432 end to end:
+// `--serve-arg` is repeated, one argv element each, in either spelling (`--serve-arg
+// --profile --serve-arg turbo`, where the flag-looking value is taken as the
+// value, and `--serve-arg=--profile`), and reads back as the list; an edit
+// that sets them says they apply from the next start; `--clear-serve-args`
+// removes them; the two flags together are refused; and a refused value (a
+// flag wt sets itself) is named and writes nothing.
+func TestModelEditServeArgFlags(t *testing.T) {
+	registry, _ := redirectedRegistry(t, writeRegistry)
+	stubSeedEnv(t, config.SeedEnv{})
+	var out, errOut bytes.Buffer
+	if err := runModelAdd(&out, &errOut, nil, modeladmin.AddRequest{ProviderID: "mtplx", ModelName: "Org/T", Fields: modeladmin.Fields{Family: sp("f")}}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() []string {
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Models[config.IndexModelByID(cfg.Models, "mtplx/Org/T")].ServeArgs.Args
+	}
+
+	for name, args := range map[string][]string{
+		"separate values": {"mtplx/Org/T", "--serve-arg", "--profile", "--serve-arg", "turbo"},
+		"equals form":     {"mtplx/Org/T", "--serve-arg=--profile", "--serve-arg=turbo"},
+	} {
+		if _, err := runEditCmd(t, "mtplx/Org/T", "--clear-serve-args"); err != nil {
+			t.Fatal(err)
+		}
+		stdout, err := runEditCmd(t, args...)
+		if err != nil || !slices.Equal(read(), []string{"--profile", "turbo"}) {
+			t.Errorf("%s: err = %v, serve_args = %v, want [--profile turbo]", name, err, read())
+		}
+		if !strings.Contains(stdout, "updated model: mtplx/Org/T\n") || !strings.Contains(stdout, "note: serve_args apply the next time mtplx/Org/T starts") {
+			t.Errorf("%s: output %q lacks the update line and the next-start note", name, stdout)
+		}
+	}
+
+	if stdout, err := runEditCmd(t, "mtplx/Org/T", "--clear-serve-args"); err != nil || read() != nil || !strings.Contains(stdout, "note: serve_args apply") {
+		t.Errorf("--clear-serve-args: err = %v, serve_args = %v, output %q", err, read(), stdout)
+	}
+	if _, err := runEditCmd(t, "mtplx/Org/T", "--serve-arg", "--x", "--clear-serve-args"); err == nil || !strings.Contains(err.Error(), "contradict") {
+		t.Errorf("both flags: err = %v, want them refused as contradictory", err)
+	}
+	before := mustRead(t, registry)
+	if _, err := runEditCmd(t, "mtplx/Org/T", "--serve-arg=--port", "--serve-arg=9"); err == nil || !strings.Contains(err.Error(), "serve_args names --port, which wt sets itself") || mustRead(t, registry) != before {
+		t.Errorf("an owned flag: err = %v, registry changed: %v", err, mustRead(t, registry) != before)
+	}
+	if _, err := runEditCmd(t, "mtplx/Org/T"); err == nil || !strings.Contains(err.Error(), "--serve-arg") {
+		t.Errorf("no change given: err = %v, want the message to name --serve-arg", err)
 	}
 }

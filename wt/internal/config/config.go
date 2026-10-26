@@ -578,6 +578,11 @@ type Model struct {
 	// (ModelArtifact.UnmarshalTOML).
 	Fetch ModelArtifact `toml:"fetch,omitempty"`
 	Draft ModelArtifact `toml:"draft,omitempty"`
+	// ServeArgs is `serve_args`: extra argv a process-server family
+	// (provider.FamilySpec.ServeArgs; mtplx) appends to the spawn for this
+	// model (#432). Like Fetch and Draft it never fails a load: a malformed
+	// value reads as absent and Malformed() names it.
+	ServeArgs ServeArgs `toml:"serve_args,omitempty"`
 	// PricingUpdatedAt is the registry's pricing_updated_at, as written:
 	// the string `wt cloud-sync` stamps, or a TOML date-time a
 	// hand edit left. It is `any` so that neither spelling can fail the
@@ -629,6 +634,83 @@ type ArtifactFaults struct {
 	NotTable bool
 	// Repo and LocalPath: that key is there and is not a string.
 	Repo, LocalPath bool
+}
+
+// ServeArgs is a model's serve_args: the argv elements, one per array element
+// (a flag and its value are two). Malformed is set when the value was not an
+// array of strings; Args is then empty, as for an absent key.
+type ServeArgs struct {
+	Args      []string
+	Malformed bool `toml:"-" json:"-"`
+}
+
+// UnmarshalTOML reads a serve_args value and never fails, for the reason
+// ModelArtifact.UnmarshalTOML gives: a slip in a hand-edited registry must
+// not stop every wt command. A value that is not an array of strings reads
+// as absent and is recorded in Malformed.
+func (a *ServeArgs) UnmarshalTOML(v any) error {
+	*a = ServeArgs{}
+	arr, ok := v.([]any)
+	if !ok {
+		a.Malformed = true
+		return nil
+	}
+	for _, e := range arr {
+		s, isString := e.(string)
+		if !isString {
+			a.Args, a.Malformed = nil, true
+			return nil
+		}
+		a.Args = append(a.Args, s)
+	}
+	return nil
+}
+
+// ServeArgsProblems names why args cannot be the serve_args of a model of
+// providerID, as phrases for a person: nil when they can, or when there are
+// none. It is the one judge the loader (Model.Malformed), the registry writer
+// (validateModelRow), `wt model add|edit` and a start all ask. The provider
+// must take serve_args at all (provider.AcceptsServeArgs), no element may be
+// empty, and none may be a flag wt sets itself (ProcessSpec.OwnedFlags), alone
+// or as `--flag=value` or an abbreviation of it (mtplx's argparse takes
+// `--por` for `--port`): wt's route, probes and stop path assume those.
+func ServeArgsProblems(providerID string, args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	family := provider.FamilyOr(providerID)
+	if !provider.AcceptsServeArgs(family) {
+		return []string{"serve_args is not used by provider " + providerID + " (only mtplx models take it)"}
+	}
+	spec, _ := provider.ProcessFor(family)
+	var out []string
+	for _, a := range args {
+		if a == "" {
+			out = append(out, "serve_args has an empty argument")
+			continue
+		}
+		// argparse accepts any unambiguous prefix (--por for --port), so a
+		// flag name that is a prefix of an owned flag counts as naming it.
+		name, _, _ := strings.Cut(a, "=")
+		for _, f := range spec.OwnedFlags() {
+			if name == f || (len(name) > 2 && strings.HasPrefix(name, "--") && strings.HasPrefix(f, name)) {
+				out = append(out, "serve_args names "+f+", which wt sets itself")
+				break
+			}
+		}
+	}
+	return slices.Compact(out)
+}
+
+// ServeArgsProblems is what keeps this model's serve_args from being used:
+// a value that was not an array of strings (read as absent), then what
+// ServeArgsProblems says of the args it has. A start refuses a model with
+// any, so a bad hand edit is named and not silently ignored.
+func (m Model) ServeArgsProblems() []string {
+	if m.ServeArgs.Malformed {
+		return []string{"serve_args is not an array of strings"}
+	}
+	return ServeArgsProblems(m.ProviderID, m.ServeArgs.Args)
 }
 
 // artifactFields is the shape of a fetch or draft table as wt reads it: the
@@ -683,16 +765,30 @@ func (a ModelArtifact) problems(key string) []string {
 	return out
 }
 
+// ServeArgsRefused is the part of ServeArgsProblems the loader did NOT read as
+// absent: serve_args that is an array of strings the provider cannot take. The
+// args stay on the row and a start refuses the model, so a message about them
+// must not say "read as absent". nil when serve_args was not an array (that
+// one reads as absent) or has no problem.
+func (m Model) ServeArgsRefused() []string {
+	if m.ServeArgs.Malformed {
+		return nil
+	}
+	return ServeArgsProblems(m.ProviderID, m.ServeArgs.Args)
+}
+
 // Malformed names what the loader tolerated in this row instead of failing on
 // it, as phrases for a person. In its fetch and draft: "fetch is not a
 // table", "draft.local_path is not a string" (fetch before draft, repo
-// before local_path); each reads as absent. Then each cost.time_prices row
+// before local_path); each reads as absent. Then ServeArgsProblems (#432).
+// Then each cost.time_prices row
 // the registry's validator refuses (TimePrice.Problem), by its place in the
 // file: "cost.time_prices[0]: windows[0]: start must be HH:MM, got 9:00";
 // the model picker does not apply such a row. nil for a row with nothing
 // malformed, and for a Model that was not read from a registry file.
 func (m Model) Malformed() []string {
 	out := append(m.Fetch.problems("fetch"), m.Draft.problems("draft")...)
+	out = append(out, m.ServeArgsProblems()...)
 	for i, row := range m.Cost.TimePrices {
 		if problem := row.Problem(); problem != "" {
 			out = append(out, fmt.Sprintf("cost.time_prices[%d]: %s", i, problem))

@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,10 @@ var (
 	// signalProc sends sig to pid, or to the process group -pid when pid is
 	// negative (kill(2)).
 	signalProc = realSignalProc
+	// readyStdout runs a readiness command and returns its stdout. defaultEnv
+	// hands it to the engine as env.runOut; IsolateProcessesForTest closes it,
+	// so a test that reaches a real stop-state read never runs `rec status`.
+	readyStdout = runCommandStdout
 )
 
 func realSignalProc(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) }
@@ -77,7 +82,7 @@ func serverProcesses() map[string]pidProcess {
 }
 
 // IsolateProcessesForTest is for a package's TestMain: it makes the
-// process-table read and the signal fail for the rest of the process, and
+// process-table read, the signal and the readiness command fail for the rest of the process, and
 // points every process family's pidfile (its spec's PidfileEnv) at a
 // directory that does not exist. A test that reaches the production stop path
 // without stubbing it then reads no real pidfile and signals no real process.
@@ -89,6 +94,9 @@ func IsolateProcessesForTest() {
 	}
 	signalProc = func(pid int, sig syscall.Signal) error {
 		return fmt.Errorf("signalProc not stubbed in this test (pid %d, signal %d)", pid, sig)
+	}
+	readyStdout = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		return nil, fmt.Errorf("readiness command not stubbed in this test (%s)", name)
 	}
 	for _, family := range provider.ProcessFamilies() {
 		if spec, ok := processSpecFor(family); ok && spec.PidfileEnv != "" {

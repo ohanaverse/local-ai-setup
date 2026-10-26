@@ -242,7 +242,7 @@ func TestModelListFixtureMatchesTheDocumentTypes(t *testing.T) {
 // pairing has the fixture's top-level keys, and its rows carry the fixture's
 // row keys. The one difference allowed is a key the row type marks omitempty
 // (target and draft, which the fixture's rows do not have and a pairing's row
-// does). The printed document also passes the same shape check the fixture
+// does, and serve_args, which only an mtplx row with serve_args does). The printed document also passes the same shape check the fixture
 // passes.
 //
 // The types test above trusts that the command encodes modelListJSON as it
@@ -250,9 +250,10 @@ func TestModelListFixtureMatchesTheDocumentTypes(t *testing.T) {
 // a custom MarshalJSON, a second document type), which would leave the
 // fixture describing a shape modeltiers no longer receives.
 func TestModelListJSONOutputMatchesTheFixture(t *testing.T) {
-	stubProbeInventory(t, modelListSnapshot())
+	cfg, snap := modelListServeArgsConfig()
+	stubProbeInventory(t, snap)
 	var out, errOut bytes.Buffer
-	if err := runModelList(&out, &errOut, modelListConfig(), true, 80); err != nil {
+	if err := runModelList(&out, &errOut, cfg, true, 80); err != nil {
 		t.Fatal(err)
 	}
 	checkJSONShape(t, "output", out.Bytes(), reflect.TypeFor[modelListJSON]())

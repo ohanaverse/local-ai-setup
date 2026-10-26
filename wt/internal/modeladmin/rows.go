@@ -6,6 +6,7 @@ package modeladmin
 
 import (
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -66,6 +67,13 @@ type Row struct {
 	// repo or a path; both "" for any other model.
 	Target string
 	Draft  string
+	// ServeArgs is the registered row's serve_args (mtplx): extra argv wt
+	// appends to the spawn. Empty for a row with none, and for a discovered
+	// model, which has no row.
+	ServeArgs []string
+	// ServeArgsRefused is the part of Malformed that is not read as absent:
+	// serve_args the row keeps and a start refuses (config.Model.ServeArgsRefused).
+	ServeArgsRefused []string
 	// Malformed names what the loader tolerated in the registry row
 	// (config.Model.Malformed). In its fetch and draft: each reads as absent,
 	// which is why the row has no path or no pairing side. And each
@@ -116,7 +124,8 @@ func Rows(cfg *config.Config, snap localmodels.Snapshot) []Row {
 	for _, m := range cfg.Models {
 		r := Row{
 			ID: m.ID, Family: m.Family, ProviderID: m.ProviderID, ModelName: m.ModelName,
-			Tags: m.Tags, Registered: true, Cost: m.Cost, Malformed: m.Malformed(),
+			Tags: m.Tags, Registered: true, Cost: m.Cost, Malformed: m.Malformed(), ServeArgs: slices.Clone(m.ServeArgs.Args),
+			ServeArgsRefused: m.ServeArgsRefused(),
 		}
 		loc, err := cfg.ResolveLocation(m)
 		switch {

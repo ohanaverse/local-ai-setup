@@ -1065,3 +1065,33 @@ func TestStartDoesNotSayRunningForAServerThatIsGone(t *testing.T) {
 		t.Errorf("stdout = %q, want nothing: the model is not running", out.String())
 	}
 }
+
+// TestStopReachesAMachineInstanceTheRegistryPortDoesNotShow verifies `wt stop
+// rec` and `wt stop --all` stop a rec instance the stop state found through
+// rec's own readiness command (#457): started by hand on a port the registry
+// does not name, it is a candidate on a family whose registry port refused,
+// and neither command may read that refusal as "nothing running". Before the
+// fix `wt stop rec` said so and `--all` left it up.
+func TestStopReachesAMachineInstanceTheRegistryPortDoesNotShow(t *testing.T) {
+	// Only rec: `--all` halts an omlx service whatever the state says.
+	cfg := &config.Config{Providers: []config.Provider{{ID: "rec", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none"}}}}
+	found := cand("rec", config.DiscoveredModelID("rec", "flint"), "flint", 0)
+	state := survey.StopState{
+		Candidates: []survey.Candidate{found},
+		Families:   map[string]survey.FamilyState{"rec": {Probed: true}},
+	}
+	for name, run := range map[string]func() error{
+		"stop rec":   func() error { return runStop(io.Discard, cfg, "rec", false) },
+		"stop --all": func() error { return runStopAll(io.Discard, cfg, true) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			stopped := stubStopState(t, state)
+			if err := run(); err != nil {
+				t.Fatalf("%s = %v, want nil", name, err)
+			}
+			if len(*stopped) != 1 || (*stopped)[0].ModelID != found.Entry.ModelID {
+				t.Errorf("stopped = %v, want the rec instance", *stopped)
+			}
+		})
+	}
+}

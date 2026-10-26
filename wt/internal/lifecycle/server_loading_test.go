@@ -201,25 +201,27 @@ func TestIsMtplxServerMatchesOnlyTheServerWtSpawns(t *testing.T) {
 		argv []string
 		want bool
 	}{
-		"sh wrapper":                {wrapperArgv(8003), true},
-		"python wrapper":            {append([]string{"/v/bin/python3.14", "/Users/u/Library/Application Support/MTPLX/runtime-venv/bin/mtplx"}, wrapperArgv(8003)[2:]...), true},
-		"mtplx as argv[0]":          {wrapperArgv(8003)[1:], true},
-		"daemon":                    {daemonArgv(8003), true},
-		"daemon without -P":         {[]string{"python3", "-m", "mtplx.server.openai", "--port", "8003"}, true},
-		"framework Python daemon":   {[]string{"/opt/homebrew/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python", "-m", "mtplx.server.openai", "--port", "8003"}, true},
-		"framework Python wrapper":  {[]string{"/x/Python.app/Contents/MacOS/Python", "/b/mtplx", "serve", "--port", "8003"}, true},
-		"another port":              {wrapperArgv(8004), false},
-		"daemon on another port":    {daemonArgv(18003), false},
-		"port as one token":         {[]string{"/bin/sh", "/b/mtplx", "serve", "--port=8003"}, false},
-		"port before the server":    {[]string{"/bin/sh", "--port", "8003", "/b/mtplx", "serve"}, false},
-		"another subcommand":        {[]string{"/bin/sh", "/b/mtplx", "stop", "--port", "8003"}, false},
-		"words in one argument":     {[]string{"vim", "mtplx-serve-notes", "--port", "8003"}, false},
-		"words as editor arguments": {[]string{"vim", "mtplx", "serve", "--port", "8003"}, false},
-		"script not named mtplx":    {[]string{"/bin/sh", "/b/not-mtplx", "serve", "--port", "8003"}, false},
-		"module after a script":     {[]string{"python3", "run.py", "-m", "mtplx.server.openai", "--port", "8003"}, false},
-		"module as a substring":     {[]string{"python3", "-m", "mtplx.server.openai.tools", "--port", "8003"}, false},
-		"sleep":                     {[]string{"sleep", "60"}, false},
-		"nothing":                   {nil, false},
+		"sh wrapper":                    {wrapperArgv(8003), true},
+		"python wrapper":                {append([]string{"/v/bin/python3.14", "/Users/u/Library/Application Support/MTPLX/runtime-venv/bin/mtplx"}, wrapperArgv(8003)[2:]...), true},
+		"mtplx as argv[0]":              {wrapperArgv(8003)[1:], true},
+		"daemon":                        {daemonArgv(8003), true},
+		"daemon without -P":             {[]string{"python3", "-m", "mtplx.server.openai", "--port", "8003"}, true},
+		"framework Python daemon":       {[]string{"/opt/homebrew/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python", "-m", "mtplx.server.openai", "--port", "8003"}, true},
+		"framework Python wrapper":      {[]string{"/x/Python.app/Contents/MacOS/Python", "/b/mtplx", "serve", "--port", "8003"}, true},
+		"another port":                  {wrapperArgv(8004), false},
+		"daemon on another port":        {daemonArgv(18003), false},
+		"port as one token":             {[]string{"/bin/sh", "/b/mtplx", "serve", "--port=8003"}, false},
+		"port before the server":        {[]string{"/bin/sh", "--port", "8003", "/b/mtplx", "serve"}, false},
+		"another subcommand":            {[]string{"/bin/sh", "/b/mtplx", "stop", "--port", "8003"}, false},
+		"words in one argument":         {[]string{"vim", "mtplx-serve-notes", "--port", "8003"}, false},
+		"words as editor arguments":     {[]string{"vim", "mtplx", "serve", "--port", "8003"}, false},
+		"script not named mtplx":        {[]string{"/bin/sh", "/b/not-mtplx", "serve", "--port", "8003"}, false},
+		"module after a script":         {[]string{"python3", "run.py", "-m", "mtplx.server.openai", "--port", "8003"}, false},
+		"module as a substring":         {[]string{"python3", "-m", "mtplx.server.openai.tools", "--port", "8003"}, false},
+		"serve_args after the model id": {append(wrapperArgv(8003), "--profile", "turbo"), true},
+		"serve_args as one flag value":  {append(wrapperArgv(8003), "--profile=turbo"), true},
+		"sleep":                         {[]string{"sleep", "60"}, false},
+		"nothing":                       {nil, false},
 	} {
 		if got := serverArgvMatches(mtplxSpec, tc.argv, 8003); got != tc.want {
 			t.Errorf("%s: serverArgvMatches(%q) = %v, want %v", name, tc.argv, got, tc.want)
@@ -1039,5 +1041,34 @@ func TestProcessSeamsFailClosedHere(t *testing.T) {
 	}
 	if err := StopLoading(context.Background(), loadCfg(), "mtplx", os.Getpid()); err == nil {
 		t.Error("StopLoading succeeded with the seams closed")
+	}
+}
+
+// TestServeArgsDoNotHideTheModelIdOrThePort pins #432's constraint that a
+// model's serve_args (appended after wt's own arguments, SpawnArgs) must not
+// blind the two things wt reads back from a running command line: the model
+// name from --model-id (naming an mtplx still loading, evictions) and the
+// port (identifying the process before a signal). Extra flags on either side
+// of those two, in a flag's two-token form and in its --flag=value form, leave
+// both readable.
+func TestServeArgsDoNotHideTheModelIdOrThePort(t *testing.T) {
+	spawn := provider.ProcessSpec{Spawn: []string{"serve", "--model", "{model}", "--port", "{port}", "--host", "127.0.0.1", "--model-id", "{model}"}}
+	for name, extra := range map[string][]string{
+		"none":        nil,
+		"two tokens":  {"--profile", "turbo"},
+		"one token":   {"--profile=turbo"},
+		"many":        {"--profile", "stable", "--verbose", "--max-kv", "4096"},
+		"a lone flag": {"--verbose"},
+	} {
+		argv := append([]string{"/bin/sh", "/b/mtplx"}, spawn.SpawnArgs("org/m", 8003, extra)...)
+		if got := argAfter(argv, "--model-id"); got != "org/m" {
+			t.Errorf("%s: model id read as %q from %q, want org/m", name, got, argv)
+		}
+		if !serverArgvMatches(mtplxSpec, argv, 8003) {
+			t.Errorf("%s: serverArgvMatches refused %q, want it recognised on port 8003", name, argv)
+		}
+		if serverArgvMatches(mtplxSpec, argv, 8004) {
+			t.Errorf("%s: serverArgvMatches took %q for port 8004", name, argv)
+		}
 	}
 }

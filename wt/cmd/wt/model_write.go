@@ -47,6 +47,7 @@ func modelFieldFlags(c *cobra.Command) func() modeladmin.Fields {
 	f.String(modeladmin.FieldOutputPrice, "", "output price, $ per million tokens")
 	f.String(modeladmin.FieldSubscriptionPrice, "", "subscription price, $ per period")
 	f.String(modeladmin.FieldSubscriptionPeriod, "", "month or year")
+	f.StringArray(modeladmin.FieldServeArg, nil, "mtplx only: one argument for `mtplx serve`, appended after wt's own; repeat it, one element each (--serve-arg --profile --serve-arg turbo)")
 	return func() modeladmin.Fields {
 		get := func(name string) *string {
 			if !f.Changed(name) {
@@ -55,8 +56,14 @@ func modelFieldFlags(c *cobra.Command) func() modeladmin.Fields {
 			v, _ := f.GetString(name)
 			return &v
 		}
+		var serveArgs *[]string
+		if f.Changed(modeladmin.FieldServeArg) {
+			v, _ := f.GetStringArray(modeladmin.FieldServeArg)
+			serveArgs = &v
+		}
 		return modeladmin.Fields{
-			Family: get(modeladmin.FieldFamily), Tags: get(modeladmin.FieldTags), Location: get(modeladmin.FieldLocation),
+			ServeArgs: serveArgs,
+			Family:    get(modeladmin.FieldFamily), Tags: get(modeladmin.FieldTags), Location: get(modeladmin.FieldLocation),
 			InputPrice: get(modeladmin.FieldInputPrice), CachePrice: get(modeladmin.FieldCachePrice), OutputPrice: get(modeladmin.FieldOutputPrice),
 			SubscriptionPrice: get(modeladmin.FieldSubscriptionPrice), SubscriptionPeriod: get(modeladmin.FieldSubscriptionPeriod),
 		}
@@ -79,6 +86,9 @@ func modelAddCmd(a *app) *cobra.Command {
 			"name written \"--\" for any other provider. --id overrides it, with an id\n" +
 			"of that shape: <provider>/<name>, no spaces. The id, the provider and the\n" +
 			"name cannot be changed afterwards.\n\n" +
+			"An mtplx model may carry --serve-arg flags for `mtplx serve` (repeat the flag,\n" +
+			"one argument each: --serve-arg --profile --serve-arg turbo); see `wt model\n" +
+			"edit --help`.\n\n" +
 			"A missing default provider row (ollama, omlx, mtplx, rec, openrouter) is added\n" +
 			"in the same write; a provider wt has no default row for must have its\n" +
 			"[[providers]] block in registry.toml first. For an ollama model wt runs\n" +
@@ -229,6 +239,10 @@ func modelEditCmd(_ *app) *cobra.Command {
 			"leaves its field alone; an empty value clears it (--tags \"\", --input-price\n" +
 			"\"\"), and an empty --location makes the model inherit its provider's.\n" +
 			"Every other key of the row is kept as it is.\n\n" +
+			"--serve-arg (repeatable, one argument each) sets the extra arguments an\n" +
+			"mtplx model's `mtplx serve` gets after wt's own; --clear-serve-args removes\n" +
+			"them. wt refuses its own flags there (--model, --port, --host, --model-id),\n" +
+			"and a change applies from the model's next start.\n\n" +
 			"The id, the provider and the model name cannot be edited: usage history,\n" +
 			"rotation and launch profiles key on the id. Remove the model and add it\n" +
 			"again to change one.\n\n" +
@@ -241,8 +255,17 @@ func modelEditCmd(_ *app) *cobra.Command {
 	}
 	fields := modelFieldFlags(c)
 	c.Flags().String(modeladmin.FieldSource, "", "manual or curated: manual keeps a cloud model through wt cloud-sync until its source lists it")
+	c.Flags().Bool("clear-serve-args", false, "remove the model's serve_args")
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		f := fields()
+		if clear, _ := cmd.Flags().GetBool("clear-serve-args"); clear {
+			if f.ServeArgs != nil {
+				cmd.SilenceUsage = false
+				return errors.New("--serve-arg and --clear-serve-args contradict each other: pass one")
+			}
+			none := []string{}
+			f.ServeArgs = &none
+		}
 		if cmd.Flags().Changed(modeladmin.FieldSource) {
 			src, _ := cmd.Flags().GetString(modeladmin.FieldSource)
 			f.Source = &src
@@ -250,7 +273,7 @@ func modelEditCmd(_ *app) *cobra.Command {
 		if f.Empty() {
 			// A usage mistake, unlike every other failure here: show the flags.
 			cmd.SilenceUsage = false
-			return errors.New("nothing to change: pass at least one of --family, --tags, --location, --source or a price flag")
+			return errors.New("nothing to change: pass at least one of --family, --tags, --location, --source, --serve-arg, --clear-serve-args or a price flag")
 		}
 		return runModelEdit(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], f)
 	}
@@ -267,6 +290,11 @@ func runModelEdit(out, errOut io.Writer, id string, f modeladmin.Fields) error {
 		return nil
 	}
 	fmt.Fprintf(out, "updated model: %s\n", id)
+	if f.ServeArgs != nil {
+		// wt cannot see the flags a running server was started with, so a
+		// change is not a different server: it applies from the next start.
+		fmt.Fprintf(out, "note: serve_args apply the next time %s starts; a server already running keeps the flags it started with\n", id)
+	}
 	return syncAndWarn(out, errOut, nil)
 }
 

@@ -88,3 +88,36 @@ func TestContractFixtureParses(t *testing.T) {
 		t.Errorf("the fixture has %d [[models]] entries as read, want 7", got)
 	}
 }
+
+// TestContractFixtureReadsContext pins wt's reading of `context`, the window
+// claude's launch declares (#405): a cloud row carries models.dev's, and a
+// local build carries none, by modeltiers' own rule ("served context
+// unknown"), so wt has no window for it and says nothing. A format change in
+// modeltiers that moved or renamed the key would leave every cloud launch
+// with Claude Code's assumed 200K and no test failing.
+func TestContractFixtureReadsContext(t *testing.T) {
+	data, err := os.ReadFile(tiersFixture)
+	if err != nil {
+		t.Fatalf("read the contract fixture: %v", err)
+	}
+	ix, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse(%s): %v", tiersFixture, err)
+	}
+	for k, want := range map[[2]string]int{
+		{"ollama", "glm-5.3:cloud"}:    1048576,
+		{"ollama", "minimax-m3:cloud"}: 512000,
+		{"openrouter", "z-ai/glm-5.3"}: 1048576,
+		{"ollama", "qwen3.8:27b-mlx"}:  0,
+		{"ollama", "gemma4:31b-mlx"}:   0,
+	} {
+		e, ok := ix.Lookup(k[0], k[1])
+		if !ok {
+			t.Errorf("%s/%s: not in the fixture as read", k[0], k[1])
+			continue
+		}
+		if e.Context != want {
+			t.Errorf("%s/%s: Context = %d, want %d", k[0], k[1], e.Context, want)
+		}
+	}
+}
