@@ -672,7 +672,8 @@ func (a *ServeArgs) UnmarshalTOML(v any) error {
 // (validateModelRow), `wt model add|edit` and a start all ask. The provider
 // must take serve_args at all (provider.AcceptsServeArgs), no element may be
 // empty, and none may be a flag wt sets itself (ProcessSpec.OwnedFlags), alone
-// or as `--flag=value`: wt's route, probes and stop path assume those.
+// or as `--flag=value` or an abbreviation of it (mtplx's argparse takes
+// `--por` for `--port`): wt's route, probes and stop path assume those.
 func ServeArgsProblems(providerID string, args []string) []string {
 	if len(args) == 0 {
 		return nil
@@ -688,9 +689,13 @@ func ServeArgsProblems(providerID string, args []string) []string {
 			out = append(out, "serve_args has an empty argument")
 			continue
 		}
+		// argparse accepts any unambiguous prefix (--por for --port), so a
+		// flag name that is a prefix of an owned flag counts as naming it.
+		name, _, _ := strings.Cut(a, "=")
 		for _, f := range spec.OwnedFlags() {
-			if a == f || strings.HasPrefix(a, f+"=") {
+			if name == f || (len(name) > 2 && strings.HasPrefix(name, "--") && strings.HasPrefix(f, name)) {
 				out = append(out, "serve_args names "+f+", which wt sets itself")
+				break
 			}
 		}
 	}
@@ -758,6 +763,18 @@ func (a ModelArtifact) problems(key string) []string {
 		}
 	}
 	return out
+}
+
+// ServeArgsRefused is the part of ServeArgsProblems the loader did NOT read as
+// absent: serve_args that is an array of strings the provider cannot take. The
+// args stay on the row and a start refuses the model, so a message about them
+// must not say "read as absent". nil when serve_args was not an array (that
+// one reads as absent) or has no problem.
+func (m Model) ServeArgsRefused() []string {
+	if m.ServeArgs.Malformed {
+		return nil
+	}
+	return ServeArgsProblems(m.ProviderID, m.ServeArgs.Args)
 }
 
 // Malformed names what the loader tolerated in this row instead of failing on

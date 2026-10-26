@@ -736,3 +736,19 @@ func TestModelListShowsServeArgs(t *testing.T) {
 		t.Errorf("text listing:\n%s\nwant one serve_args line, for the mtplx model", out.String())
 	}
 }
+
+// TestNoteMalformedSaysARefusedServeArgsIsNotReadAsAbsent verifies a serve_args
+// wt keeps but cannot use (here a flag wt sets itself) is reported as a refused
+// start, not as "read as absent": the args stay on the row and `wt start`
+// stops on them, so the old wording sent the user hunting for a value that was
+// in fact still in force.
+func TestNoteMalformedSaysARefusedServeArgsIsNotReadAsAbsent(t *testing.T) {
+	cfg := &config.Config{Models: []config.Model{{ID: "mtplx/Org/M", ProviderID: "mtplx", ModelName: "Org/M",
+		ServeArgs: config.ServeArgs{Args: []string{"--port", "9"}}}}}
+	var errOut bytes.Buffer
+	noteMalformed(&errOut, cfg)
+	got := errOut.String()
+	if strings.Contains(got, "absent") || !strings.Contains(got, "refuses this model") || !strings.Contains(got, "--clear-serve-args") {
+		t.Errorf("note = %q, want a refused-start line and no \"absent\"", got)
+	}
+}

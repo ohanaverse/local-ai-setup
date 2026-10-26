@@ -139,7 +139,8 @@ func runModelList(out, errOut io.Writer, cfg *config.Config, asJSON bool, width 
 	// is named under the table, one line each.
 	for _, r := range rows {
 		if len(r.ServeArgs) > 0 {
-			fmt.Fprintf(out, "%s: serve_args %s\n", visibleID(r.ID), strings.Join(r.ServeArgs, " "))
+			// Registry text, like the id: no control sequence may reach the terminal.
+			fmt.Fprintf(out, "%s: serve_args %s\n", visibleID(r.ID), visibleID(strings.Join(r.ServeArgs, " ")))
 		}
 	}
 	if dropped != "" {
@@ -166,8 +167,16 @@ func noteMalformed(errOut io.Writer, cfg *config.Config) {
 	// the one function that words those.
 	hint := config.RegistryFixHint(config.ErrRegistryEntry)
 	for _, m := range cfg.Models {
-		if problems := m.Malformed(); len(problems) > 0 {
+		// serve_args wt keeps but cannot use is not read as absent: a start
+		// refuses the model. Say so apart from the values read as absent.
+		refused := m.ServeArgsRefused()
+		problems := slices.DeleteFunc(m.Malformed(), func(p string) bool { return slices.Contains(refused, p) })
+		if len(problems) > 0 {
 			fmt.Fprintf(errOut, "%s: %s; wt reads it as absent (%s)\n", visibleID(m.ID), strings.Join(problems, ", "), hint)
+		}
+		if len(refused) > 0 {
+			fmt.Fprintf(errOut, "%s: %s; `wt start` refuses this model until it is fixed (%s, or `wt model edit %s --clear-serve-args`)\n",
+				visibleID(m.ID), strings.Join(refused, ", "), hint, visibleID(m.ID))
 		}
 	}
 }

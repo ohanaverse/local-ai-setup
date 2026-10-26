@@ -105,6 +105,8 @@ func TestServeArgsProblems(t *testing.T) {
 		"model":                               {"mtplx", []string{"--model", "x"}, []string{"serve_args names --model, which wt sets itself"}},
 		"model-id":                            {"mtplx", []string{"--model-id=x"}, []string{"serve_args names --model-id, which wt sets itself"}},
 		"host":                                {"mtplx", []string{"--host", "0.0.0.0"}, []string{"serve_args names --host, which wt sets itself"}},
+		"abbreviated port":                    {"mtplx", []string{"--por=9"}, []string{"serve_args names --port, which wt sets itself"}},
+		"abbreviated host":                    {"mtplx", []string{"--hos", "x"}, []string{"serve_args names --host, which wt sets itself"}},
 		"a longer flag is not an owned one":   {"mtplx", []string{"--port-range", "1"}, nil},
 		"empty":                               {"mtplx", []string{"--ok", ""}, []string{"serve_args has an empty argument"}},
 		"rec":                                 {"rec", []string{"--x"}, []string{"serve_args is not used by provider rec (only mtplx models take it)"}},
