@@ -365,10 +365,7 @@ func (p *PricePlan) Format() string {
 	lines = append(lines, changed...)
 	lines = append(lines, fmt.Sprintf("Unchanged prices: %d", unchanged))
 	if len(p.Removals) > 0 {
-		lines = append(lines, fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)))
-		for _, id := range p.Removals {
-			lines = append(lines, "  "+id)
-		}
+		lines = append(lines, idBlock(fmt.Sprintf("Registry removals — not on openrouter.ai/api/v1/models (%d):", len(p.Removals)), p.Removals)...)
 		// An alias or a redirect id has no `:` to tell it from a model that
 		// is gone, so it lands here like one. The hint is not part of the
 		// digest (RemovalDigest reads the ids), so the approval is unchanged.
