@@ -39,8 +39,14 @@ metrics aren't reachable from the machine. The client-side transcript still reco
 - `usage.output_tokens` is the **final total**, repeated on every content block of a message. It is not a running count, so per-block speed can't be derived from it.
 - Timestamps are client-side. They were not checked against gateway logs.
 - Records are grouped by consecutive `message.id`; each is paired with the most recent preceding `api-request`.
-  Calls with no preceding `api-request` are dropped. A retried request overwrites the pending `api-request`,
-  so retry time is excluded and `tps_total` reads high for those calls.
+  Calls with no preceding `api-request` are dropped. On the author's data that was 39% of messages
+  (3,376 of 8,754), but the cause is the transcript format, not the kind of call: `api-request` records
+  first appear on 2026-10-14, so every older transcript contributes nothing. From 2026-10-15 on, at most a
+  handful of messages a day are dropped. Results therefore cover only recent sessions, and a Claude Code
+  version that predates `api-request` records yields an empty summary.
+- Retries are not a practical concern. Only 0.5% of requests (27 of 5,405) were followed by another request
+  before any response, about 5 minutes later (likely timeouts). The later request is the one that produced the
+  response, so the retried call is timed from its last send and `tps_total` is not inflated.
 - Percentiles use nearest-rank (`ceil(p·n)−1`). Lines that are not JSON objects, or have unparseable
   timestamps, are skipped.
 
