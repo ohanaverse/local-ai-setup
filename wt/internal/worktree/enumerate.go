@@ -236,6 +236,26 @@ func RootOf(dir string) (root string, ok bool) {
 	return primary, true
 }
 
+// CommonDirAt returns the absolute path of dir's repository's common git
+// directory (the .git every linked worktree shares).
+func CommonDirAt(dir string) (string, error) {
+	out, err := runGit(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// CurrentBranchAt returns the branch checked out in dir, or "" when HEAD is
+// detached or git cannot say.
+func CurrentBranchAt(dir string) string {
+	out, err := runGit(dir, "branch", "--show-current")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // RepoRoot is shorthand for RepoRootAt(".") — kept for existing callers.
 func RepoRoot() (string, error) {
 	return RepoRootAt(".")

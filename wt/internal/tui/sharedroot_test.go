@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -378,6 +379,9 @@ func TestNamedRootBranchIsCheckedAndClaimed(t *testing.T) {
 	if m.phase != phaseSharedRoot || cmd != nil {
 		t.Fatalf("phase %v, cmd %v; want the screen and nothing started", m.phase, cmd != nil)
 	}
+	// The person continues beside the session the screen showed, so the run
+	// asks nothing more.
+	updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	agent := exec.Command("sh", "-c", "test -f '"+myClaim(root)+"'")
 	agent.Dir = root
 	if done, ok := runAndWaitCmd(agent, "claude", config.Model{})().(launchDoneMsg); !ok || done.err != nil {
@@ -427,9 +431,103 @@ func TestClaimFailureIsANoteNotARefusal(t *testing.T) {
 		t.Fatal("an unwritable claims directory stopped the launch")
 	}
 	var out bytes.Buffer
-	release := holdRoot(root, "claude", &out)
+	release, held := holdRoot(root, "claude", strings.NewReader(""), &out)
 	release()
+	if !held {
+		t.Error("a claim failure stopped the launch")
+	}
 	if s := out.String(); !strings.Contains(s, "note: could not check other sessions") || strings.Count(s, "\n") != 1 {
 		t.Errorf("output %q; want a one-line note", s)
+	}
+}
+
+// TestHoldRootAsksAboutASessionThatCameLater checks the picker's race is
+// closed: with no other session when the picker looked, one that claims the
+// root before the agent starts is shown the menu. c continues beside it (and
+// claims), q declines (nothing claimed), w is refused with a note and asks
+// again.
+func TestHoldRootAsksAboutASessionThatCameLater(t *testing.T) {
+	cases := []struct {
+		name, input string
+		held        bool
+		claims      bool
+	}{
+		{"c", "c", true, true},
+		{"q", "q", false, false},
+		{"esc", "\x1b", false, false},
+		{"w then c", "wc", true, true},
+		{"w then q", "wq", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := rootRepo(t)
+			m, _, _ := pickRow(t, root)
+			if m.phase == phaseSharedRoot {
+				t.Fatal("the screen was shown with no other session")
+			}
+			liveOther(t, root, "codex")
+			var out bytes.Buffer
+			release, held := holdRoot(root, "claude", strings.NewReader(tc.input), &out)
+			if held != tc.held || claimExists(root) != tc.claims {
+				t.Errorf("held %v, claim %v; want %v, %v", held, claimExists(root), tc.held, tc.claims)
+			}
+			if s := out.String(); !strings.Contains(s, "codex") || !strings.Contains(s, "choose [c/w/q]") {
+				t.Errorf("output %q does not show the menu naming the new session", s)
+			}
+			if strings.Contains(tc.input, "w") && !strings.Contains(out.String(), "cannot be chosen now") {
+				t.Errorf("output %q does not say w is unavailable", out.String())
+			}
+			release()
+			if claimExists(root) {
+				t.Error("release left the claim")
+			}
+		})
+	}
+}
+
+// TestHoldRootDoesNotAskAgainAboutAnAcceptedSession checks a session the
+// screen showed and the person continued beside is not asked about a second
+// time at the run, while Allow never asks at all.
+func TestHoldRootDoesNotAskAgainAboutAnAcceptedSession(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		root := rootRepo(t)
+		liveOther(t, root, "codex")
+		setRootCheck(t, RootCheck{Allow: allow})
+		m, _, _ := pickRow(t, root)
+		if !allow {
+			if m.phase != phaseSharedRoot {
+				t.Fatal("no screen for a held root")
+			}
+			updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+		}
+		var out bytes.Buffer
+		release, held := holdRoot(root, "claude", strings.NewReader(""), &out)
+		if !held || out.Len() != 0 || !claimExists(root) {
+			t.Errorf("allow=%v: held %v, output %q, claim %v; want a silent claim", allow, held, out.String(), claimExists(root))
+		}
+		release()
+	}
+}
+
+// TestSharedRootScreenFitsASmallTerminal checks the screen is never taller
+// than the terminal: with many sessions at 80x24 the sessions in the middle
+// are cut, but the first line (the root) and the keys stay.
+func TestSharedRootScreenFitsASmallTerminal(t *testing.T) {
+	root := "/very/long/path/" + strings.Repeat("segment/", 6) + "repo"
+	var others []sessionclaim.Claim
+	for i := 1; i <= 40; i++ {
+		others = append(others, sessionclaim.Claim{PID: 1000 + i, Started: time.Now().Unix(), Path: root, Branch: "main", Agent: "codex"})
+	}
+	m := model{phase: phaseSharedRoot, width: 80, height: 24, sharedRoot: &sharedRootState{root: root, others: others, err: "boom"}}
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) > 24 {
+		t.Errorf("screen is %d lines at height 24", len(lines))
+	}
+	if !strings.Contains(lines[0], "the repository root") || !strings.Contains(view, "quit (Esc)") {
+		t.Errorf("screen %q lost its first line or its keys", view)
+	}
+	if !strings.Contains(view, "not shown") {
+		t.Errorf("screen %q does not say sessions were cut", view)
 	}
 }

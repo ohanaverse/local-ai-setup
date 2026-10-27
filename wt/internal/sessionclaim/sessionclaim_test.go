@@ -357,3 +357,35 @@ func TestStartTimeParsesEtime(t *testing.T) {
 		t.Fatalf("Self on a real process: %v", err)
 	}
 }
+
+// TestReleaseAfterContinueRemovesClaim checks the release Join returns after
+// the person continued past another session removes the claim written in the
+// second lock, so a continued root launch does not leave a stale claim behind.
+func TestReleaseAfterContinueRemovesClaim(t *testing.T) {
+	fakeProcs(t, map[int]int64{100: 1000})
+	dir := t.TempDir()
+	claimFile(t, dir, 100, body(100, 1000, root))
+	rel, _, err := Join(dir, self(), func([]Claim) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := filepath.Join(dir, "wt-sessions", "900")
+	if !exists(mine) {
+		t.Fatal("continue must write the claim")
+	}
+	rel()
+	if exists(mine) {
+		t.Fatal("claim survived release after continue")
+	}
+}
+
+// TestNonPositivePidIsMalformed checks a claim naming pid 0 or a negative pid
+// is stale: kill(0, 0) and kill(-1, 0) probe whole process groups, so such a
+// file would otherwise read as a live session that can never be pruned.
+func TestNonPositivePidIsMalformed(t *testing.T) {
+	for _, pid := range []string{"0", "-1"} {
+		if _, ok := parse([]byte("pid=" + pid + "\nstarted=1000\npath=" + root + "\n")); ok {
+			t.Errorf("pid=%s parsed as a valid claim", pid)
+		}
+	}
+}

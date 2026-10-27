@@ -227,7 +227,15 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 		if profileCleanup == nil {
 			profileCleanup = func() error { return nil }
 		}
-		release := holdRoot(dir, agent, os.Stderr)
+		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
+		if !held {
+			// The person quit at the root prompt: nothing runs, as when the
+			// profile fails above, but it is a choice, not an error.
+			_ = profileCleanup()
+			releaseSession()
+			pendingSummary = agents.Summary(agent, m, 0)
+			return launchDoneMsg{}
+		}
 		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
 		release()
 		// Capture (do not print) the summary line. Printing here would

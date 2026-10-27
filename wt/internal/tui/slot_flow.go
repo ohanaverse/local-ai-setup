@@ -417,6 +417,13 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		if cleanup == nil {
 			cleanup = func() error { return nil }
 		}
+		// A root another session now holds is asked about before anything is
+		// recorded, so quitting there leaves no trace of the launch.
+		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
+		if !held {
+			_ = cleanup()
+			return launchDoneMsg{}
+		}
 		// The commit point: the applier succeeded and the agent runs next.
 		// Both writes are best-effort, as launchAndRecord's are.
 		if err := rotation.New().RecordProfile(agent, row.Model.ID); err != nil {
@@ -432,7 +439,6 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		release := holdRoot(dir, agent, os.Stderr)
 		duration, runErr := agents.RunAndCleanup(cmd, cleanup)
 		release()
 		shown := config.Model{ID: row.Model.ID}

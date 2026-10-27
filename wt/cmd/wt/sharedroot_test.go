@@ -435,3 +435,50 @@ func TestPickerLaunchHandsTheTUIItsRootCheck(t *testing.T) {
 		})
 	}
 }
+
+// TestQuitAtTheRootMenuEndsTheLaunchWithoutAnError checks q at the shared-root
+// menu of a launch without the picker is a choice, not a failure: runLaunchPath
+// returns nil (wt exits 0, prints no "wt:" line) and nothing launches or is
+// claimed. The picker's q exits 0 the same way.
+func TestQuitAtTheRootMenuEndsTheLaunchWithoutAnError(t *testing.T) {
+	root := sharedRootRepo(t)
+	liveOtherClaim(t, root, "codex")
+	stubStdinTTY(t, true)
+	oldSweep, oldLaunch := sweepRefcounts, launchFiltered
+	sweepRefcounts = func() {}
+	launchFiltered = func(string, string, *config.Config, bool, string, string, string, bool, []string, []config.Model, *precomputedProfiles) error {
+		t.Error("the launch went ahead after q")
+		return nil
+	}
+	t.Cleanup(func() { sweepRefcounts, launchFiltered = oldSweep, oldLaunch })
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString("q"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	oldIn := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = oldIn; r.Close() })
+
+	cmd := launchCobraCmd()
+	cmd.Flags().Bool("allow-shared-root", false, "")
+	var runErr error
+	var out bytes.Buffer
+	oldErr := osStderr
+	osStderr = &out
+	t.Cleanup(func() { osStderr = oldErr })
+	runErr = runLaunchPath(cmd, &app{cfg: slotFixtureConfig()}, "shell", "", "", "", nil, root, root)
+	if runErr != nil {
+		t.Errorf("runLaunchPath = %v; want nil (exit 0)", runErr)
+	}
+	if strings.Contains(out.String(), "launch cancelled") {
+		t.Errorf("stderr %q says the launch was cancelled; quitting is silent", out.String())
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("quit claimed the root")
+	}
+}

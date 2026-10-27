@@ -178,6 +178,9 @@ func runLaunchPath(
 	// runAgentCmd releases it itself before its os.Exit.
 	launchHere := func(run func(dir string) error) error {
 		dir, err := holdSharedRoot(cmd, agent, launchPath)
+		if errors.Is(err, errCancelled) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

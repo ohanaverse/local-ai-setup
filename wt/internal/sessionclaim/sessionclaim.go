@@ -142,7 +142,7 @@ func parse(data []byte) (c Claim, ok bool) {
 		switch k {
 		case "pid":
 			n, err := strconv.Atoi(v)
-			if err != nil {
+			if err != nil || n <= 0 {
 				return Claim{}, false
 			}
 			c.PID, havePID = n, true
@@ -215,9 +215,15 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 		release = func() { _ = os.Remove(mine) }
 		return nil
 	}
+	// The parent chain costs a `ps` per generation, so it is walked before the
+	// lock, not under it, and only when there is a claim file to compare with.
+	var parents map[int]bool
+	if hasClaims(dir) {
+		parents = ancestors()
+	}
 	err = withLock(dir, func() error {
 		var err error
-		if others, err = scan(dir, c, true); err != nil || len(others) > 0 {
+		if others, err = scan(dir, c, parents, true); err != nil || len(others) > 0 {
 			return err
 		}
 		return write()
@@ -225,7 +231,10 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 	if err != nil || len(others) == 0 || !ask(others) {
 		return release, others, err
 	}
-	return release, others, withLock(dir, write)
+	// write sets release, so read it after the call: operand evaluation order
+	// between a variable and a call is unspecified.
+	err = withLock(dir, write)
+	return release, others, err
 }
 
 // Others returns the live claims in commonDir/wt-sessions on c.Path other than
@@ -233,23 +242,37 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 // ask before it claims (the picker's screen) reads first and joins after.
 // No wt-sessions directory means no others.
 func Others(commonDir string, c Claim) ([]Claim, error) {
-	others, err := scan(filepath.Join(commonDir, "wt-sessions"), c, false)
+	others, err := scan(filepath.Join(commonDir, "wt-sessions"), c, nil, false)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	return others, err
 }
 
+// hasClaims reports whether dir holds a claim file (a file named by a pid).
+func hasClaims(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // scan reads the claim files in dir and returns the live ones on c.Path other
 // than c's own. With prune it deletes the stale ones it finds. A claim by this
 // process or one of its parents, or one whose start time cannot be read, is
-// neither returned nor deleted.
-func scan(dir string, c Claim, prune bool) (others []Claim, err error) {
+// neither returned nor deleted. mine is this process and its parents
+// (ancestors); nil means scan walks the chain itself, when it first needs it.
+func scan(dir string, c Claim, mine map[int]bool, prune bool) (others []Claim, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	var mine map[int]bool
 	for _, e := range entries {
 		// Claim files are named by pid; skip .lock and rename temp files.
 		if _, err := strconv.Atoi(e.Name()); err != nil {

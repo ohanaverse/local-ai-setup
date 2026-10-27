@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -41,31 +42,15 @@ type sharedRootWorktreeMsg struct {
 	err  error
 }
 
-// rootSession is what a claim on dir needs. root is "" when dir is not a
-// repository's root (a linked worktree, a subdirectory, a bare repository, no
-// repository); then nothing else is set. err is a failure to read the common
-// directory or this process's start time, with root set so a note can name it.
-func rootSession(dir, agent string) (root, commonDir string, self sessionclaim.Claim, err error) {
-	root, ok := worktree.RootOf(dir)
-	if !ok {
-		return "", "", sessionclaim.Claim{}, nil
-	}
-	commonDir, err = gitOutput(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return root, "", sessionclaim.Claim{}, err
-	}
-	branch, err := gitOutput(root, "branch", "--show-current")
-	if err != nil || branch == "" {
-		branch = "(detached)"
-	}
-	self, err = sessionclaim.Self(root, branch, agent)
-	return root, commonDir, self, err
-}
-
-// gitOutput runs git in dir and returns its trimmed output.
-func gitOutput(dir string, args ...string) (string, error) {
-	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
-	return strings.TrimSpace(string(out)), err
+// rootChecked is what the last sharedRootCheck learned, for the run that
+// follows it: the root it looked up (so holdRoot does not ask git again) and
+// the PIDs of the sessions the person saw on the screen and chose to continue
+// beside (so holdRoot asks only about a session that came after). It is a
+// package var because the run commands are built without the model.
+var rootChecked struct {
+	dir      string
+	root     rootclaim.Root
+	accepted map[int]bool
 }
 
 // sharedRootCheck is the TUI's one shared-root check, made where every launch
@@ -78,15 +63,20 @@ func (m model) sharedRootCheck() *sharedRootState {
 	if SharedRoot.Allow {
 		return nil
 	}
-	root, commonDir, self, err := rootSession(m.selectedPath, "")
-	if root == "" || err != nil {
+	root, ok, err := rootclaim.Lookup(m.selectedPath)
+	if !ok || err != nil {
 		return nil
 	}
-	others, err := sessionclaim.Others(commonDir, self)
+	rootChecked.dir, rootChecked.root, rootChecked.accepted = m.selectedPath, root, nil
+	self, err := root.Self("")
+	if err != nil {
+		return nil
+	}
+	others, err := sessionclaim.Others(root.CommonDir, self)
 	if err != nil || len(others) == 0 {
 		return nil
 	}
-	return &sharedRootState{from: m.phase, root: root, others: others}
+	return &sharedRootState{from: m.phase, root: root.Path, others: others}
 }
 
 // handleSharedRootKey takes the screen's keys: c continues in the root, w
@@ -103,6 +93,10 @@ func (m model) handleSharedRootKey(msg tea.KeyMsg) (model, tea.Cmd) {
 	}
 	switch key {
 	case "c", "C":
+		rootChecked.accepted = map[int]bool{}
+		for _, o := range m.sharedRoot.others {
+			rootChecked.accepted[o.PID] = true
+		}
 		m.phase, m.sharedRoot = m.sharedRoot.from, nil
 		return m.proceedWithPath()
 	case "w", "W":
@@ -146,42 +140,86 @@ func (m model) handleSharedRootWorktree(msg sharedRootWorktreeMsg) (model, tea.C
 
 // sharedRootView is phaseSharedRoot's screen: the menu the launch without the
 // picker prints (sessionclaim.Menu), and the worktree being created or the
-// reason it could not be. It is wrapped, not cut, at the terminal's width, so
-// a long root path is shown whole.
+// reason it could not be. Its first line and its keys stay on screen at any
+// height (tuilayout.MessageAlone cuts the sessions in between when they do not
+// fit), and a long line is wrapped at the terminal's width, not cut, so a long
+// root path is shown whole.
 func (m model) sharedRootView() string {
 	st := m.sharedRoot
-	body := strings.TrimSuffix(sessionclaim.Menu(st.root, st.others, time.Now()), "\n")
+	lines := strings.Split(strings.TrimSuffix(sessionclaim.Menu(st.root, st.others, time.Now()), "\n"), "\n")
+	top, keys := lines[0], lines[len(lines)-1]
+	body := strings.Join(lines[1:len(lines)-1], "\n")
 	if st.creating {
 		body += "\n\ncreating a new worktree…"
 	}
 	if st.err != "" {
 		body += "\n\n" + ErrorStyle(m.theme).Render("new worktree: "+st.err)
 	}
-	return lipgloss.NewStyle().Width(m.width).Render(body)
+	// Wrapped first, so a long root path is shown whole instead of cut; the
+	// height cut then counts the wrapped lines.
+	wrap := lipgloss.NewStyle().Width(m.width)
+	if m.width > 0 {
+		top, body, keys = wrap.Render(top), wrap.Render(body), wrap.Render(keys)
+	}
+	return tuilayout.MessageAlone(top, body, keys, m.width, m.height, lipgloss.NewStyle())
 }
 
 // holdRoot claims the repository root for this session when dir is the root,
 // for the agent's run: the run commands call it just before the agent starts
 // and the returned release just after it exits. The person has already chosen
-// (the screen, or no other session when the picker looked, or Allow), so a
-// session that appeared since is accepted. Any other directory gets no claim. A claim that cannot be written is one note on w,
-// never a refusal. release is never nil.
-func holdRoot(dir, agent string, w io.Writer) (release func()) {
+// (the screen, or no other session when the picker looked, or Allow), so only
+// a session that appeared since is asked about: on the plain terminal the
+// alt screen has been released by then, as in a launch without the picker.
+// c continues beside it, q (or Esc) is ok == false and the run does not
+// start; w is not offered any more, the agent being built for this directory.
+// Any other directory gets no claim. A claim that cannot be written is one
+// note on w, never a refusal. release is never nil.
+func holdRoot(dir, agent string, in io.Reader, w io.Writer) (release func(), ok bool) {
 	release = func() {}
 	if dir == "" {
-		return release
+		return release, true
 	}
-	root, commonDir, self, err := rootSession(dir, agent)
-	if root == "" {
-		return release
-	}
-	if err == nil {
-		var held func()
-		held, _, err = sessionclaim.Join(commonDir, self, func([]sessionclaim.Claim) bool { return true })
-		if err == nil {
-			return held
+	root, found := rootChecked.root, dir == rootChecked.dir
+	if !found {
+		var isRoot bool
+		var err error
+		if root, isRoot, err = rootclaim.Lookup(dir); !isRoot {
+			return release, true
+		} else if err != nil {
+			fmt.Fprintf(w, "wt: note: %s\n", sessionclaim.CheckFailed(root.Path, err))
+			return release, true
 		}
 	}
-	fmt.Fprintf(w, "wt: note: %s\n", sessionclaim.CheckFailed(root, err))
-	return release
+	self, err := root.Self(agent)
+	if err == nil {
+		declined := false
+		var held func()
+		held, _, err = sessionclaim.Join(root.CommonDir, self, func(others []sessionclaim.Claim) bool {
+			var newcomers []sessionclaim.Claim
+			for _, o := range others {
+				if !SharedRoot.Allow && !rootChecked.accepted[o.PID] {
+					newcomers = append(newcomers, o)
+				}
+			}
+			if len(newcomers) == 0 {
+				return true
+			}
+			for {
+				switch rootclaim.Choose(root, newcomers, in, w) {
+				case 'c':
+					return true
+				case 'w':
+					fmt.Fprintln(w, "wt: a new worktree cannot be chosen now; c to continue here, q to quit")
+				default:
+					declined = true
+					return false
+				}
+			}
+		})
+		if err == nil {
+			return held, !declined
+		}
+	}
+	fmt.Fprintf(w, "wt: note: %s\n", sessionclaim.CheckFailed(root.Path, err))
+	return release, true
 }

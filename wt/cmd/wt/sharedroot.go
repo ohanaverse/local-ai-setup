@@ -5,18 +5,19 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // errCancelled is a quit (q or Esc) at the shared-root menu: nothing launched.
+// It is a choice, not a failure, so launchHere ends the run with status 0 and
+// no message, as quitting the picker does.
 var errCancelled = errors.New("launch cancelled")
 
 // rootClaimRelease removes this session's claim on the repository root. It is
@@ -60,29 +61,24 @@ func holdSharedRoot(cmd *cobra.Command, agent, launchPath string) (string, error
 // refusal. release removes the claim and is never nil.
 func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Writer, isTTY bool) (newDir string, release func(), err error) {
 	noop := func() {}
-	root, ok := worktree.RootOf(dir)
+	root, ok, err := rootclaim.Lookup(dir)
 	if !ok {
 		return dir, noop, nil
 	}
 	note := func(err error) (string, func(), error) {
-		fmt.Fprintf(out, "wt: note: %s\n", sessionclaim.CheckFailed(root, err))
+		fmt.Fprintf(out, "wt: note: %s\n", sessionclaim.CheckFailed(root.Path, err))
 		return dir, noop, nil
 	}
-	commonDir, err := gitOutput(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return note(err)
 	}
-	branch, err := gitOutput(root, "branch", "--show-current")
-	if err != nil || branch == "" {
-		branch = "(detached)"
-	}
-	self, err := sessionclaim.Self(root, branch, agent)
+	self, err := root.Self(agent)
 	if err != nil {
 		return note(err)
 	}
 
 	choice := byte('c')
-	release, others, err := sessionclaim.Join(commonDir, self, func(others []sessionclaim.Claim) bool {
+	release, others, err := sessionclaim.Join(root.CommonDir, self, func(others []sessionclaim.Claim) bool {
 		if allow {
 			return true
 		}
@@ -90,9 +86,7 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 			choice = 0
 			return false
 		}
-		fmt.Fprint(out, "wt: "+sessionclaim.Menu(root, others, time.Now())+"choose [c/w/q]: ")
-		choice = readChoice(in)
-		fmt.Fprintln(out)
+		choice = rootclaim.Choose(root, others, in, out)
 		return choice == 'c'
 	})
 	if err != nil {
@@ -106,10 +100,10 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 		for i, o := range others {
 			names[i] = sessionclaim.Describe(o, time.Now())
 		}
-		return "", noop, fmt.Errorf("the repository root %s is in use by %s; pass --allow-shared-root to launch there anyway, or -W <name> to use a worktree", root, strings.Join(names, ", "))
+		return "", noop, fmt.Errorf("the repository root %s is in use by %s; pass --allow-shared-root to launch there anyway, or -W <name> to use a worktree", root.Path, strings.Join(names, ", "))
 	case choice == 'w':
 		name := sessionclaim.NewWorktreeName(os.Getpid(), time.Now())
-		path, err := worktree.EnsureForName(root, name)
+		path, err := worktree.EnsureForName(root.Path, name)
 		if err != nil {
 			return "", noop, fmt.Errorf("new worktree: %w", err)
 		}
@@ -118,36 +112,4 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 	default:
 		return "", noop, errCancelled
 	}
-}
-
-// readChoice reads keys from in until one is c, w or q (Esc and Ctrl-C are
-// q), one key at a time on a terminal. End of input is q.
-func readChoice(in io.Reader) byte {
-	if f, ok := in.(*os.File); ok && term.IsTerminal(f.Fd()) {
-		if state, err := term.MakeRaw(f.Fd()); err == nil {
-			defer term.Restore(f.Fd(), state)
-		}
-	}
-	buf := make([]byte, 1)
-	for {
-		if n, err := in.Read(buf); n == 0 && err != nil {
-			return 'q'
-		} else if n == 0 {
-			continue
-		}
-		switch b := buf[0]; b {
-		case 'c', 'C':
-			return 'c'
-		case 'w', 'W':
-			return 'w'
-		case 'q', 'Q', 0x1b, 0x03:
-			return 'q'
-		}
-	}
-}
-
-// gitOutput runs git in dir and returns its trimmed output.
-func gitOutput(dir string, args ...string) (string, error) {
-	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
-	return strings.TrimSpace(string(out)), err
 }
