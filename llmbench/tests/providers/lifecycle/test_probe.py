@@ -258,6 +258,83 @@ def test_warmup_stops_at_once_when_the_server_wants_a_key():
     assert refused.call_count == 2
 
 
+def _chat_answering(*answers):
+    """A urlopen whose liveness probe succeeds and whose chat gets the next HTTP error
+    of `answers` ((status, body) pairs), then the last one for ever."""
+    chats = {"n": 0}
+
+    def urlopen(target, **kwargs):
+        if isinstance(target, str):  # the liveness probe
+            return MagicMock()
+        status, body = answers[min(chats["n"], len(answers) - 1)]
+        chats["n"] += 1
+        raise _http_error(status, body)
+
+    urlopen.chats = chats
+    return urlopen
+
+
+def test_warmup_stops_when_the_same_request_error_repeats():
+    """A server that answers the warmup chat with the same HTTP 400, body and all, ten
+    times running is not loading: omlx answered "Chat template error: unicode-escape" to
+    every request for as long as the warmup polled (ten minutes), and the real message
+    was only in the server's log. The warmup now stops after ten identical answers and
+    says what the server said."""
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError, WarmupRejectedError
+
+    urlopen = _chat_answering((400, b'{"error":{"message":"Chat template error: unicode-escape"}}'))
+    with (
+        patch("llmbench.providers.lifecycle.probe.urllib.request.urlopen", urlopen),
+        patch("llmbench.providers.lifecycle.probe.time.sleep"),
+        pytest.raises(
+            WarmupRejectedError, match=r"10 times in a row \(HTTP 400: .*unicode-escape"
+        ) as excinfo,
+    ):
+        warmup("http://x/chat", "org/repo", health_url="http://x/health", timeout=600.0)
+    assert urlopen.chats["n"] == 10
+    # Not the key refusal: omlx's backend answers that one by trying `wt warm`, which a 400 would not fix.
+    assert not isinstance(excinfo.value, WarmupRefusedError)
+
+
+def _warmup_for_attempts(urlopen, attempts):
+    """Run `warmup` for exactly `attempts` chat attempts, then let its deadline pass."""
+    with (
+        patch("llmbench.providers.lifecycle.probe.urllib.request.urlopen", urlopen),
+        patch(
+            "llmbench.providers.lifecycle.probe.time.monotonic",
+            side_effect=[0.0] + [1.0] * attempts + [1000.0],
+        ),
+        patch("llmbench.providers.lifecycle.probe.time.sleep"),
+        pytest.raises(LifecycleError, match="failed to warm up") as excinfo,
+    ):
+        warmup("http://x/chat", "org/repo", health_url="http://x/health", timeout=600.0)
+    return excinfo.value
+
+
+def test_warmup_keeps_polling_when_a_503_intervenes():
+    """The repeat count is the margin for a server that words "not ready" as a 400 for a
+    few seconds: any other status in between (a 503 while loading) starts the count again,
+    so nine 400s then a 503 then nine more never trip it."""
+    from llmbench.providers.lifecycle.probe import WarmupRejectedError
+
+    nine = [(400, b"loading weights")] * 9
+    urlopen = _chat_answering(*nine, (503, b"busy"), *nine)
+    error = _warmup_for_attempts(urlopen, 19)
+    assert not isinstance(error, WarmupRejectedError)
+    assert urlopen.chats["n"] == 19
+
+
+def test_warmup_keeps_polling_when_the_400_body_changes():
+    """Ten 400s only count when they are the same 400: bodies that differ attempt to attempt
+    (a server still working through its start) never reach the repeat count."""
+    from llmbench.providers.lifecycle.probe import WarmupRejectedError
+
+    urlopen = _chat_answering(*([(400, b"a"), (400, b"b")] * 10))
+    error = _warmup_for_attempts(urlopen, 20)
+    assert not isinstance(error, WarmupRejectedError)
+    assert urlopen.chats["n"] == 20
+
+
 def test_warmup_still_retries_other_http_errors():
     """Only 401/403 are final. A 404 or 503 while a model loads is the
     ordinary "not yet", retried until the deadline as before."""

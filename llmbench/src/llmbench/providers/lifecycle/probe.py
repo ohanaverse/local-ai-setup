@@ -57,6 +57,22 @@ RESTORE_WAIT_TIMEOUT = 90.0
 _KEY_REFUSED = (401, 403)
 
 
+# The statuses that say "this request is malformed", which waiting does not change, and how many
+# times in a row the warmup chat must get the same one (the same status and the same body) before
+# it stops polling. A server still loading answers 503 or refuses the connection, not 400; the
+# repeat count is the margin for one that words its "not ready" as a 400 for a few seconds.
+_REJECTED = (400, 422)
+_REJECTED_REPEATS = 10
+
+
+class WarmupRejectedError(LifecycleError):
+    """The server answered the warmup chat with the same HTTP 400 or 422, body
+    and all, `_REJECTED_REPEATS` times running. That is a request the server
+    will not render or accept (for omlx, a chat template that raises), not a
+    model still loading, so `warmup` stops with the server's own message
+    instead of polling out its whole (ten-minute) budget."""
+
+
 class WarmupRefusedError(LifecycleError):
     """The server refused the request for want of an API key (HTTP 401 or
     403), or refused the key the request carried. Unlike every other warmup
@@ -273,7 +289,13 @@ def warmup(
     chat_headers = {"Content-Type": "application/json"}
     if key is not None:
         chat_headers["Authorization"] = f"Bearer {key}"
+    rejected: tuple[int, str] | None = None
+    repeats = 0
     for _ in _deadline_loop(timeout):
+        # Only a 400/422 below sets `rejected` again, so any other outcome of this attempt (a
+        # failed liveness probe, a 503, a dropped connection, a 200 without the marker) breaks
+        # the run: the next 400 compares against None and starts the count over.
+        previous, rejected = rejected, None
         try:
             urllib.request.urlopen(_target(health_url, key), timeout=2.0)  # noqa: S310 — localhost probe
         except urllib.error.HTTPError as exc:
@@ -307,8 +329,14 @@ def warmup(
                 raise WarmupRefusedError(
                     f"{chat_url} refused the warmup for {model} (HTTP {exc.code}: {detail})"
                 ) from None
-        except OSError:
-            pass
+            if exc.code in _REJECTED:
+                rejected = (exc.code, _refusal_detail(exc, key))
+                repeats = repeats + 1 if rejected == previous else 1
+                if repeats >= _REJECTED_REPEATS:
+                    raise WarmupRejectedError(
+                        f"{chat_url} rejected the warmup for {model} {repeats} times in a row "
+                        f"(HTTP {rejected[0]}: {rejected[1]})"
+                    ) from None
         time.sleep(1.0)
     raise LifecycleError(f"failed to warm up model {model} at {chat_url}")
 
