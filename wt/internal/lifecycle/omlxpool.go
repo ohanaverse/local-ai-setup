@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"syscall"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -166,13 +167,36 @@ func omlxUnload(ctx context.Context, e *env, cfg *config.Config, modelName strin
 	default:
 		return fmt.Errorf("omlx could not unload %s: HTTP %d: %s", id, code, detail)
 	}
-	if pool, perr := localmodels.OmlxPool(cfg, e.probeClient); perr == nil {
+	return e.awaitOmlxUnloaded(ctx, cfg, id, modelName)
+}
+
+// awaitOmlxUnloaded waits, for up to e.stopTimeout, for the pool to stop
+// listing modelName as loaded after an unload omlx accepted. omlx carries the
+// unload out asynchronously ("Unloading pending model … after activity
+// drained", then "Unloaded model", about three quarters of a second later), so
+// a pool read made at once still sees the model and said "still has X loaded"
+// about an unload that was succeeding (#492). A model that is loading, not
+// loaded, is an immediate error: omlx will not unload it mid-load, and
+// waiting does not change that. A pool that cannot be read is not a failed
+// stop; the unload was accepted.
+func (e *env) awaitOmlxUnloaded(ctx context.Context, cfg *config.Config, id, modelName string) error {
+	deadline := time.Now().Add(e.stopTimeout)
+	for {
+		pool, err := localmodels.OmlxPool(cfg, e.probeClient)
+		if err != nil {
+			return nil
+		}
 		switch m, ok := pool.Find(modelName); {
 		case ok && m.Loading && !m.Loaded:
 			return fmt.Errorf("omlx is still loading %s and will not unload it mid-load; `wt stop omlx` stops the service and the load with it", id)
-		case ok && m.Loaded:
+		case !ok || !m.Loaded:
+			return nil
+		}
+		if !time.Now().Before(deadline) {
 			return fmt.Errorf("omlx still has %s loaded", id)
 		}
+		if err := e.sleep(ctx, e.pollInterval); err != nil {
+			return err
+		}
 	}
-	return nil
 }
