@@ -19,6 +19,7 @@ Timestamps are client-side and written per content block, so treat results as es
 Usage: transcript_speed.py [--min-tokens N] [--csv] PATH_OR_DIR...
   PATH_OR_DIR: a .jsonl transcript, or a directory searched recursively (e.g. ~/.claude/projects)
 """
+
 import argparse
 import csv
 import json
@@ -32,7 +33,7 @@ MIN_WINDOW_S = 1.0
 
 
 def parse_ts(s):
-    return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    return datetime.fromisoformat(s).timestamp()
 
 
 def calls_from_transcript(path):
@@ -60,9 +61,16 @@ def calls_from_transcript(path):
                 ts = parse_ts(d["timestamp"])
                 if cur is None or cur["id"] != mid:
                     yield from flush()
-                    cur = {"id": mid, "model": m.get("model", "?"), "req_ts": pending_req,
-                           "first_ts": ts, "last_ts": ts, "blocks": 0, "out": 0,
-                           "session": path.name}
+                    cur = {
+                        "id": mid,
+                        "model": m.get("model", "?"),
+                        "req_ts": pending_req,
+                        "first_ts": ts,
+                        "last_ts": ts,
+                        "blocks": 0,
+                        "out": 0,
+                        "session": path.name,
+                    }
                     pending_req = None
                 cur["last_ts"] = ts
                 cur["blocks"] += 1
@@ -74,29 +82,41 @@ def derive(c):
     total = c["last_ts"] - c["req_ts"]
     window = c["last_ts"] - c["first_ts"]
     return {
-        "session": c["session"], "model": c["model"], "out_tokens": c["out"],
+        "session": c["session"],
+        "model": c["model"],
+        "out_tokens": c["out"],
         "ttfb_s": round(c["first_ts"] - c["req_ts"], 2),
         "total_s": round(total, 2),
         "tps_total": round(c["out"] / total, 1) if total > 0 else None,
         "tps_window": round(c["out"] / window, 1)
-        if c["blocks"] > 1 and window >= MIN_WINDOW_S else None,
+        if c["blocks"] > 1 and window >= MIN_WINDOW_S
+        else None,
     }
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("paths", nargs="+")
-    ap.add_argument("--min-tokens", type=int, default=50,
-                    help="skip calls with fewer output tokens (default 50; tiny calls are latency-dominated)")
-    ap.add_argument("--csv", action="store_true", help="print per-call rows as CSV instead of the summary")
+    ap.add_argument(
+        "--min-tokens",
+        type=int,
+        default=50,
+        help="skip calls with fewer output tokens (default 50; tiny calls are latency-dominated)",
+    )
+    ap.add_argument(
+        "--csv", action="store_true", help="print per-call rows as CSV instead of the summary"
+    )
     args = ap.parse_args()
 
     files = []
     for p in map(Path, args.paths):
         files += sorted(p.rglob("*.jsonl")) if p.is_dir() else [p]
 
-    rows = [derive(c) for f in files for c in calls_from_transcript(f)
-            if c["out"] >= args.min_tokens]
+    rows = [
+        derive(c) for f in files for c in calls_from_transcript(f) if c["out"] >= args.min_tokens
+    ]
 
     if args.csv:
         if rows:
@@ -108,13 +128,18 @@ def main():
     by_model = defaultdict(list)
     for r in rows:
         by_model[r["model"]].append(r)
-    print(f"{len(files)} transcript(s), {len(rows)} calls with >= {args.min_tokens} output tokens\n")
+    print(
+        f"{len(files)} transcript(s), {len(rows)} calls with >= {args.min_tokens} output tokens\n"
+    )
 
     def stat(vals):
         vals = sorted(v for v in vals if v is not None)
         if not vals:
             return "n/a"
-        q = lambda p: vals[min(len(vals) - 1, int(p * len(vals)))]
+
+        def q(p):
+            return vals[min(len(vals) - 1, int(p * len(vals)))]
+
         return f"p50 {statistics.median(vals):7.1f}  p90 {q(0.9):7.1f}  (n={len(vals)})"
 
     for model, rs in sorted(by_model.items()):

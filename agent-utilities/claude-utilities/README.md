@@ -3,12 +3,12 @@
 ## transcript_speed.py — tokens/second from local session transcripts
 
 Estimates Claude Code output speed per API call using only files already on disk: the session
-transcripts in `~/.claude/projects/*/*.jsonl`. Read-only, stdlib-only Python, no setup.
+transcripts in `~/.claude/projects/*/*.jsonl`. Read-only, stdlib-only Python 3.13, managed with uv like the repo's other Python packages.
 
 ```bash
-python3 -I transcript_speed.py ~/.claude/projects            # summary per model
-python3 -I transcript_speed.py --csv path/to/session.jsonl   # per-call rows
-python3 -I transcript_speed.py --min-tokens 200 ~/.claude/projects
+uv run python transcript_speed.py ~/.claude/projects            # summary per model
+uv run python transcript_speed.py --csv path/to/session.jsonl   # per-call rows
+uv run python transcript_speed.py --min-tokens 200 ~/.claude/projects
 ```
 
 Arguments are `.jsonl` files or directories (searched recursively). `--min-tokens N` skips calls with

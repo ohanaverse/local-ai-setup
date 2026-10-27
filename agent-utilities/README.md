@@ -9,7 +9,7 @@ Small standalone utilities for working with specific coding agents, one director
 ## Conventions
 
 - Read-only: utilities read an agent's on-disk records and never modify them.
-- Stdlib-only Python, run with `python3 -I <script>`; no virtualenv or install step.
+- uv-managed Python 3.13, stdlib-only at runtime; run with `uv run python <script>` from the utility's directory, check with `make check test`.
 - Output derived from client-side data is an estimate; each README says which numbers to trust.
 
 See [`CLAUDE.md`](CLAUDE.md) for contributor notes and gotchas.
