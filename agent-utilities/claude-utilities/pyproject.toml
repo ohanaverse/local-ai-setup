@@ -1,0 +1,35 @@
+[project]
+name = "claude-utilities"
+version = "0.1.0"
+description = "Read-only helper scripts for Claude Code's local session transcripts"
+requires-python = "==3.13.*"
+dependencies = []
+
+[tool.uv]
+# Standalone scripts, not an installable package.
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
