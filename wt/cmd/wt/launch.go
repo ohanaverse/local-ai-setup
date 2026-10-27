@@ -506,11 +506,15 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 		// started. Survey and the stop picker are deliberately skipped:
 		// there is no session to ask "did it work?" about.
 		releaseSession()
+		releaseRootClaim()
 		fmt.Println("\n" + agents.Summary(agent, m, 0))
 		return perr
 	}
 
 	duration, err := agents.RunAndCleanup(cmd, profileCleanup)
+	// Explicit, not deferred, for the same reason as profileCleanup: the
+	// os.Exit below would skip a deferred release.
+	releaseRootClaim()
 	summary := agents.Summary(agent, m, duration)
 
 	releaseSession()

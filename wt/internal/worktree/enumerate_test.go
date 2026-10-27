@@ -789,3 +789,64 @@ func TestEnumerateOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TestRootOfPrimaryYes checks the primary checkout is the root, since that is
+// the one directory whose launches wt records and warns about.
+func TestRootOfPrimaryYes(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	want, _ := filepath.EvalSymlinks(dir)
+	root, ok := RootOf(dir)
+	if !ok || root != want {
+		t.Fatalf("RootOf(%s) = %q, %v; want %q, true", dir, root, ok, want)
+	}
+}
+
+// TestRootOfLinkedWorktreeNo checks a linked worktree is not the root, so a
+// launch there never shows the shared-root warning.
+func TestRootOfLinkedWorktreeNo(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	linked := filepath.Join(dir, ".worktrees", "feat")
+	if out, err := runGitCmd(dir, "worktree", "add", "-b", "feat", linked); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	if root, ok := RootOf(linked); ok {
+		t.Fatalf("RootOf(linked) = %q, true; want false", root)
+	}
+	if root, ok := RootOf(filepath.Join(dir, ".worktrees")); ok {
+		t.Fatalf("RootOf(subdirectory) = %q, true; want false", root)
+	}
+}
+
+// TestRootOfBareNo checks a bare repository and a plain directory have no
+// root, so the check is skipped rather than failing the launch.
+func TestRootOfBareNo(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "r.git")
+	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	if root, ok := RootOf(bare); ok {
+		t.Fatalf("RootOf(bare) = %q, true; want false", root)
+	}
+	if root, ok := RootOf(t.TempDir()); ok {
+		t.Fatalf("RootOf(non-repo) = %q, true; want false", root)
+	}
+}
+
+// TestRootOfSymlinkedRootYes checks a root reached through a symlink is still
+// the root and is reported by its physical path, so two launches through
+// different spellings of the path see each other's claims.
+func TestRootOfSymlinkedRootYes(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(dir)
+	root, ok := RootOf(link)
+	if !ok || root != want {
+		t.Fatalf("RootOf(%s) = %q, %v; want %q, true", link, root, ok, want)
+	}
+}

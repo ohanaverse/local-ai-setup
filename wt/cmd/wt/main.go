@@ -168,6 +168,19 @@ func runLaunchPath(
 
 	pinnedSupplied := cmd.Flags().Changed("model")
 
+	// A launch without the picker first asks whether another session holds
+	// the repository root (holdSharedRoot), which may move it to a new
+	// worktree. The claim it takes is released when the launch returns;
+	// runAgentCmd releases it itself before its os.Exit.
+	launchHere := func(run func(dir string) error) error {
+		dir, err := holdSharedRoot(cmd, agent, launchPath)
+		if err != nil {
+			return err
+		}
+		defer releaseRootClaim()
+		return run(dir)
+	}
+
 	// An unconfigured model-driven agent (no config.toml entry — including
 	// the extreme case of a wholly missing registry) has no model catalog
 	// to resolve a launch against; launch it bare instead of routing
@@ -180,7 +193,9 @@ func runLaunchPath(
 			return fmt.Errorf("agent %q is not configured; cannot pin model %q", agent, pinned)
 		}
 		fmt.Fprintf(os.Stderr, "wt: %s is not configured — launching it directly without a model\n", agent)
-		return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg, a.profileState())
+		return launchHere(func(dir string) error {
+			return launchPassthrough(agent, dir, yolo(cmd), args, a.cfg, a.profileState())
+		})
 	}
 
 	if needsModelPicker(agent, pinned) {
@@ -190,7 +205,9 @@ func runLaunchPath(
 		// it is not computed a second time.
 		m, eligible, err := resolveModel(agent, a.cfg, tags, family, pinned)
 		if err == nil && m.ID != "" {
-			return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState()))
+			return launchHere(func(dir string) error {
+				return printOnce(cmd, launchFiltered(agent, dir, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState()))
+			})
 		}
 		if !stdinTTY() {
 			return pickerNeedsTTYError(agent)
@@ -198,7 +215,9 @@ func runLaunchPath(
 		return runTUI()
 	}
 
-	return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))
+	return launchHere(func(dir string) error {
+		return printOnce(cmd, launchFiltered(agent, dir, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))
+	})
 }
 
 // printOnce leaves the error of a launch whose -M pin could not be started
@@ -519,6 +538,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
+	cmd.Flags().Bool("allow-shared-root", false, "Launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse)")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
 	// Register it as a hidden string flag so pflag parses the old arity
