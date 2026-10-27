@@ -73,6 +73,7 @@ All launchers support:
 | `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip the worktree picker |
 | `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
+| `--allow-shared-root` | Launch in the repository root without asking even when another wt session is running there (with no terminal the launch otherwise refuses) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |
 | `--version` | Print version and exit |
@@ -140,6 +141,10 @@ COPILOT_MODEL=<model-name>
 ```
 
 The base URL is the resolved route's origin plus `/v1`. On a direct route that origin is the ollama provider row's `auth.base_url` in `registry.toml` (a row with no `base_url` is an error, not a default); when the launch goes through LiteLLM it is the `[litellm]` url, and `COPILOT_MODEL` is the registry id. `WIRE_API=completions` (chat-completions) is deliberate — copilot's `responses` wire drops leading characters through the OpenAI-compatible bridge; see [docs/wt-agents/copilot-wt.md](docs/wt-agents/copilot-wt.md).
+
+## Two sessions in one checkout
+
+wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, wt names it (agent, pid, how long, branch) and asks: `c` continue here, `w` start in a new worktree (a fresh `session-<pid>-<time>` branch under `.worktrees/`), or `q` / Esc to quit without launching. Launching with `-W <name>` or from a worktree row never asks. `--allow-shared-root` continues without asking; with no terminal and no flag, wt refuses and says which session holds the root. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
 
 ## Main guard
 
