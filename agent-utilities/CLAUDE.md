@@ -4,6 +4,7 @@ Standalone utilities for working with specific coding agents, one subdirectory p
 
 ## Commands
 - `uv run --directory claude-utilities python transcript_speed.py [--min-tokens N] [--csv] ~/.claude/projects` — summary per model, or per-call CSV rows
+- `uv run --directory claude-utilities python transcript_speed.py --json ~/.claude/projects > X.json`, then `... transcript_speed.py --compare A.json B.json` — aggregate-only stats per model and output-size band, and a side-by-side of two machines' files (`claude-utilities/README.md`)
 - `uv run --directory claude-utilities python otel_receiver.py [--port 4318] [--out FILE]` — loopback OTLP/JSON trace receiver; then `... python otel_speed.py FILE` for TTFT and decode-rate percentiles (setup and caveats in `claude-utilities/README.md`)
 - `cd claude-utilities && make check test` — ruff lint + format check, then pytest
 

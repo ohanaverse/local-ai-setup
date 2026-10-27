@@ -61,6 +61,35 @@ metrics aren't reachable from the machine. The client-side transcript still reco
 
 Haiku has few calls and a slow median first block, so its row is likely dominated by a few odd calls.
 
+### Comparing two environments (`--json`, `--compare`)
+
+To test whether models run slower in one environment than another (say a gateway route against a direct
+subscription), run `--json` on each machine and compare the two files on either one.
+
+```bash
+uv run python transcript_speed.py --json ~/.claude/projects > machine-a.json   # on machine A
+uv run python transcript_speed.py --json ~/.claude/projects > machine-b.json   # on machine B
+uv run python transcript_speed.py --compare machine-a.json machine-b.json
+```
+
+`--json` holds only aggregates per model and output-size band (`<200`, `200-1000`, `1000+`; the unit is output
+tokens per call, thinking included, and calls under `--min-tokens` are dropped first, so `<200` means 50–199):
+call count, `tps_total` p50/p90, and `ttfb_s`/`total_s` p50. It has no session names or paths, so it is safe to
+copy between machines. `--compare` prints both sides with the percent difference of B against A, and lists
+model/band pairs that appear on only one side.
+
+Reading the result:
+
+- Compare within a band. `tps_total` includes prefill and network time, so short outputs look slow, and two
+  environments with different mixes of short and long calls differ for that reason alone.
+- Day-to-day spread on one machine was about 20% on the median (p50 79–102 for Sonnet 5.5 over two weeks), so a
+  smaller gap than that is noise. Treat bands with fewer than a few hundred calls on either side as anecdotal.
+- A gateway that buffers streaming makes `ttfb_s` approach `total_s`; compare `total_s` and `tps_total` first.
+- This shows that one side is slower, not why. Machine, network, gateway and server-side limits look the same
+  from client timestamps. Both sides need Claude Code versions that write `api-request` records.
+- The model name in transcripts can differ by route (for example a gateway alias); `--compare` matches names
+  exactly, so rows with different spellings show up under "only in A/B".
+
 ### What this can't give you
 
 True time-to-first-token and pure decode rate need data from the wire. Options, from least to most work:

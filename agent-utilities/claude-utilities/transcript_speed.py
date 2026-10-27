@@ -16,8 +16,12 @@ Per API call (one api-request record paired with the assistant message that foll
 
 Timestamps are client-side and written per content block, so treat results as estimates.
 
-Usage: transcript_speed.py [--min-tokens N] [--csv] PATH_OR_DIR...
+Usage: transcript_speed.py [--min-tokens N] [--csv | --json] PATH_OR_DIR...
+       transcript_speed.py --compare A.json B.json
   PATH_OR_DIR: a .jsonl transcript, or a directory searched recursively (e.g. ~/.claude/projects)
+  --json:      aggregate-only stats per (model, output-size band); carries no session names or
+               paths, so the file can be copied between machines
+  --compare:   side-by-side of two --json files, with the percent difference B vs A
 """
 
 import argparse
@@ -31,6 +35,11 @@ from datetime import datetime
 from pathlib import Path
 
 MIN_WINDOW_S = 1.0
+
+# tps_total includes prefill and network, so short outputs always look slower; comparing within
+# a band keeps two environments with different output-length mixes from skewing the result.
+BANDS = ((200, "<200"), (1000, "200-1000"))
+TOP_BAND = "1000+"
 
 
 def parse_ts(s):
@@ -109,11 +118,92 @@ def derive(c):
     }
 
 
+def band_of(out_tokens):
+    for upper, name in BANDS:
+        if out_tokens < upper:
+            return name
+    return TOP_BAND
+
+
+def aggregate(rows):
+    """Aggregate-only stats per (model, band). Deliberately drops session names."""
+    groups = defaultdict(list)
+    for r in rows:
+        groups[(r["model"], band_of(r["out_tokens"]))].append(r)
+
+    # p50 is the true median and p90 nearest-rank, matching the summary view's numbers.
+    def pct(rs, key, p):
+        vals = sorted(r[key] for r in rs if r[key] is not None)
+        if not vals:
+            return None
+        return round(statistics.median(vals) if p == 0.5 else percentile(vals, p), 2)
+
+    bands = [
+        {
+            "model": model,
+            "band": band,
+            "n": len(rs),
+            "tps_total_p50": pct(rs, "tps_total", 0.5),
+            "tps_total_p90": pct(rs, "tps_total", 0.9),
+            "ttfb_s_p50": pct(rs, "ttfb_s", 0.5),
+            "total_s_p50": pct(rs, "total_s", 0.5),
+        }
+        for (model, band), rs in sorted(groups.items())
+    ]
+    return {"band_unit": "output_tokens", "bands": bands}
+
+
+def load_aggregate(path):
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict) or not isinstance(data.get("bands"), list):
+        raise ValueError(f"{path}: not a transcript_speed --json file")
+    return {(b["model"], b["band"]): b for b in data["bands"]}
+
+
+def compare(path_a, path_b):
+    a, b = load_aggregate(path_a), load_aggregate(path_b)
+
+    def delta(x, y):
+        if not x or y is None:
+            return "n/a"
+        return f"{(y - x) / x * 100:+.1f}%"
+
+    lines = [
+        f"{'model':<24}{'band (out tok)':<16}{'n A':>6}{'n B':>6}"
+        f"{'p50 A':>8}{'p50 B':>8}{'diff':>8}{'p90 A':>8}{'p90 B':>8}{'diff':>8}"
+    ]
+    for key in sorted(a.keys() & b.keys()):
+        x, y = a[key], b[key]
+        lines.append(
+            f"{key[0]:<24}{key[1]:<16}{x['n']:>6}{y['n']:>6}"
+            f"{x['tps_total_p50']:>8}{y['tps_total_p50']:>8}"
+            f"{delta(x['tps_total_p50'], y['tps_total_p50']):>8}"
+            f"{x['tps_total_p90']:>8}{y['tps_total_p90']:>8}"
+            f"{delta(x['tps_total_p90'], y['tps_total_p90']):>8}"
+        )
+    for label, only in (("A", a.keys() - b.keys()), ("B", b.keys() - a.keys())):
+        if only:
+            lines.append(
+                f"\nonly in {label}: " + ", ".join(f"{m} [{bd}]" for m, bd in sorted(only))
+            )
+    return "\n".join(lines)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("paths", nargs="+")
+    ap.add_argument("paths", nargs="*")
+    ap.add_argument(
+        "--json", action="store_true", help="print aggregate-only stats per model and size band"
+    )
+    ap.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("A.json", "B.json"),
+        help="compare two --json files instead of reading transcripts",
+    )
     ap.add_argument(
         "--min-tokens",
         type=int,
@@ -125,6 +215,15 @@ def main():
     )
     args = ap.parse_args()
 
+    if args.compare:
+        try:
+            print(compare(*args.compare))
+        except (OSError, ValueError, KeyError) as e:
+            ap.error(str(e))
+        return
+    if not args.paths:
+        ap.error("give at least one transcript path, or use --compare A.json B.json")
+
     files = []
     for p in map(Path, args.paths):
         if not p.exists():
@@ -134,6 +233,10 @@ def main():
     rows = [
         derive(c) for f in files for c in calls_from_transcript(f) if c["out"] >= args.min_tokens
     ]
+
+    if args.json:
+        print(json.dumps(aggregate(rows), indent=2))
+        return
 
     if args.csv:
         if rows:
