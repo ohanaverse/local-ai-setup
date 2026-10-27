@@ -64,3 +64,48 @@ def test_single_block_call_has_no_window_rate(tmp_path):
     )
     (call,) = ts.calls_from_transcript(f)
     assert ts.derive(call)["tps_window"] is None
+
+
+def test_non_record_lines_and_bad_timestamps_are_skipped(tmp_path):
+    f = write_transcript(
+        tmp_path / "s.jsonl",
+        [
+            "null",
+            "[1]",
+            {"type": "api-request", "timestamp": "garbage"},
+            request("2026-01-01T00:00:00Z"),
+            assistant("2026-01-01T00:00:02Z", "m1", 200),
+        ],
+    )
+    (call,) = ts.calls_from_transcript(f)
+    assert ts.derive(call)["total_s"] == 2.0
+
+
+def test_assistant_line_with_null_message_does_not_crash(tmp_path):
+    f = write_transcript(
+        tmp_path / "s.jsonl",
+        [{"type": "assistant", "timestamp": "2026-01-01T00:00:01Z", "message": None}],
+    )
+    assert list(ts.calls_from_transcript(f)) == []
+
+
+def test_each_message_pairs_with_its_own_preceding_request(tmp_path):
+    f = write_transcript(
+        tmp_path / "s.jsonl",
+        [
+            request("2026-01-01T00:00:00Z"),
+            assistant("2026-01-01T00:00:02Z", "m1", 100),
+            request("2026-01-01T00:00:10Z"),
+            assistant("2026-01-01T00:00:15Z", "m2", 100),
+        ],
+    )
+    rows = [ts.derive(c) for c in ts.calls_from_transcript(f)]
+    assert [r["total_s"] for r in rows] == [2.0, 5.0]
+
+
+@pytest.mark.parametrize(
+    ("vals", "p", "want"),
+    [([1.0], 0.9, 1.0), (list(map(float, range(1, 11))), 0.9, 9.0), ([1.0, 2.0], 0.9, 2.0)],
+)
+def test_percentile_is_nearest_rank(vals, p, want):
+    assert ts.percentile(vals, p) == want

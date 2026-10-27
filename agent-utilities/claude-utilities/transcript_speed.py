@@ -23,6 +23,7 @@ Usage: transcript_speed.py [--min-tokens N] [--csv] PATH_OR_DIR...
 import argparse
 import csv
 import json
+import math
 import statistics
 import sys
 from collections import defaultdict
@@ -46,19 +47,28 @@ def calls_from_transcript(path):
             yield cur
         cur = None
 
-    with open(path, errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
                 d = json.loads(line)
             except ValueError:
                 continue
+            # A line can be valid JSON but not a record (null, a list), and Claude Code's
+            # format is not a stable API, so skip anything we cannot read rather than crash.
+            if not isinstance(d, dict):
+                continue
             t = d.get("type")
-            if t == "api-request" and d.get("timestamp"):
-                pending_req = parse_ts(d["timestamp"])
-            elif t == "assistant" and d.get("timestamp"):
-                m = d.get("message", {})
-                mid = m.get("id")
+            if t not in ("api-request", "assistant") or not d.get("timestamp"):
+                continue
+            try:
                 ts = parse_ts(d["timestamp"])
+            except (ValueError, TypeError):
+                continue
+            if t == "api-request":
+                pending_req = ts
+            else:
+                m = d.get("message") or {}
+                mid = m.get("id")
                 if cur is None or cur["id"] != mid:
                     yield from flush()
                     cur = {
@@ -76,6 +86,11 @@ def calls_from_transcript(path):
                 cur["blocks"] += 1
                 cur["out"] = (m.get("usage") or {}).get("output_tokens") or cur["out"]
     yield from flush()
+
+
+def percentile(sorted_vals, p):
+    """Nearest-rank percentile of an ascending, non-empty list."""
+    return sorted_vals[max(0, math.ceil(p * len(sorted_vals)) - 1)]
 
 
 def derive(c):
@@ -112,6 +127,8 @@ def main():
 
     files = []
     for p in map(Path, args.paths):
+        if not p.exists():
+            ap.error(f"no such file or directory: {p}")
         files += sorted(p.rglob("*.jsonl")) if p.is_dir() else [p]
 
     rows = [
@@ -137,10 +154,9 @@ def main():
         if not vals:
             return "n/a"
 
-        def q(p):
-            return vals[min(len(vals) - 1, int(p * len(vals)))]
-
-        return f"p50 {statistics.median(vals):7.1f}  p90 {q(0.9):7.1f}  (n={len(vals)})"
+        return (
+            f"p50 {statistics.median(vals):7.1f}  p90 {percentile(vals, 0.9):7.1f}  (n={len(vals)})"
+        )
 
     for model, rs in sorted(by_model.items()):
         print(model)

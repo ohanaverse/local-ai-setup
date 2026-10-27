@@ -38,15 +38,18 @@ metrics aren't reachable from the machine. The client-side transcript still reco
 
 - `usage.output_tokens` is the **final total**, repeated on every content block of a message. It is not a running count, so per-block speed can't be derived from it.
 - Timestamps are client-side. They were not checked against gateway logs.
-- Records are grouped by `message.id`; each is paired with the most recent preceding `api-request`.
-  Calls with no preceding `api-request` are dropped.
+- Records are grouped by consecutive `message.id`; each is paired with the most recent preceding `api-request`.
+  Calls with no preceding `api-request` are dropped. A retried request overwrites the pending `api-request`,
+  so retry time is excluded and `tps_total` reads high for those calls.
+- Percentiles use nearest-rank (`ceil(p·n)−1`). Lines that are not JSON objects, or have unparseable
+  timestamps, are skipped.
 
-### Sample result (2026-10-26, 958 transcripts, 5,250 calls ≥ 50 output tokens)
+### Sample result (2026-10-26, 961 transcripts, 5,307 calls ≥ 50 output tokens)
 
 | Model | Calls | `tps_total` p50 | `tps_total` p90 | `ttfb_s` p50 |
 |-------|------:|----------------:|----------------:|-------------:|
-| claude-sonnet-5-5 | 4,935 | 97.8 | 137.5 | 3.7 |
-| claude-opus-5-5 | 240 | 86.5 | 102.2 | 7.3 |
+| claude-sonnet-5-5 | 4,987 | 97.6 | 137.5 | 3.7 |
+| claude-opus-5-5 | 245 | 86.4 | 102.0 | 7.1 |
 | claude-haiku-5-5 | 34 | 189.8 | 207.4 | 16.8 |
 | claude-sonnet-5 | 41 | 53.1 | 91.5 | 4.0 |
 
