@@ -131,13 +131,13 @@ func TestReusedPidIsStale(t *testing.T) {
 	}
 }
 
-// TestStartedWithinTwoSecondsIsLive checks the 2-second tolerance both ways and
+// TestStartedWithinFiveSecondsIsLive checks the 5-second tolerance both ways and
 // its edge, since wt and the bash reader measure start time differently.
-func TestStartedWithinTwoSecondsIsLive(t *testing.T) {
+func TestStartedWithinFiveSecondsIsLive(t *testing.T) {
 	for _, tc := range []struct {
 		real int64
 		live bool
-	}{{1002, true}, {998, true}, {1003, false}, {997, false}} {
+	}{{1005, true}, {995, true}, {1006, false}, {994, false}, {1100, false}} {
 		fakeProcs(t, map[int]int64{100: tc.real})
 		dir := t.TempDir()
 		claimFile(t, dir, 100, body(100, 1000, root))

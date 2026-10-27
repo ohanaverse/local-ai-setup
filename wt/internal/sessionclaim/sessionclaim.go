@@ -30,8 +30,9 @@ type Claim struct {
 }
 
 // startTolerance is how far the recorded and actual start times may differ and
-// still match: wt (Go) and repo-cleanup (bash) compute it by different clocks.
-const startTolerance = 2
+// still match: wt (Go) and repo-cleanup (bash) each take now minus a whole-second
+// `ps -o etime=` reading, so the two can differ by up to 2 s from rounding alone.
+const startTolerance = 5
 
 // pidAlive reports whether pid is a running process (EPERM means alive).
 // Package-level var so tests can inject liveness without real processes.
