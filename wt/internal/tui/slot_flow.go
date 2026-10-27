@@ -392,6 +392,8 @@ func (m model) launchSlot() (model, tea.Cmd) {
 // runs nothing and records nothing, and comes back as a slotAbortMsg.
 func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 	return func() tea.Msg {
+		// Read before the applier can touch the command, as runAndWaitCmd does.
+		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			defer func() {
@@ -430,7 +432,9 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		release := holdRoot(dir, agent, os.Stderr)
 		duration, runErr := agents.RunAndCleanup(cmd, cleanup)
+		release()
 		shown := config.Model{ID: row.Model.ID}
 		pendingSummary = agents.Summary(agent, shown, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}

@@ -180,6 +180,9 @@ var buildPassthrough = agents.BuildPassthroughCmd
 // launchDoneMsg.
 func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 	return func() tea.Msg {
+		// The directory the agent was built for, read before a profile can
+		// touch the command: a root launch claims it for the run (holdRoot).
+		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			// defer the restore so a panic in cmd.Run() still returns
@@ -224,7 +227,9 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 		if profileCleanup == nil {
 			profileCleanup = func() error { return nil }
 		}
+		release := holdRoot(dir, agent, os.Stderr)
 		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
+		release()
 		// Capture (do not print) the summary line. Printing here would
 		// land inside the alt-screen buffer, which bubbletea discards at
 		// tea.Quit shutdown. Run() reads pendingSummary after p.Run()

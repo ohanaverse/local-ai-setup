@@ -11,6 +11,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
 // sharedRootRepo makes a repository with one commit on main and returns its
@@ -286,5 +290,52 @@ func TestCwdLaunchAllowSharedRootReleasesClaim(t *testing.T) {
 	}
 	if fileExists(ownClaim(root)) {
 		t.Error("the claim outlived the agent")
+	}
+}
+
+// pickerRootCheck launches through the picker (tuiRun stubbed) with args and
+// returns the shared-root mode the TUI was handed.
+func pickerRootCheck(t *testing.T, args ...string) tui.RootCheck {
+	t.Helper()
+	dir := initTestRepo(t)
+	t.Chdir(dir)
+	writeConfiguredAgent(t, t.TempDir(), "pi", "ollama")
+	t.Cleanup(func() { tui.SharedRoot = tui.RootCheck{} })
+	var got tui.RootCheck
+	called := false
+	old := tuiRun
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
+		got, called = tui.SharedRoot, true
+		return nil
+	}
+	t.Cleanup(func() { tuiRun = old })
+	stubStdinTTY(t, true)
+	if _, err := runWT(t, args...); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("the launch did not reach the TUI")
+	}
+	return got
+}
+
+// TestPickerLaunchHandsTheTUIItsRootCheck checks the TUI gets the same rules
+// as the launch without the picker: -W is never checked (Skip), and
+// --allow-shared-root continues without the screen (Allow).
+func TestPickerLaunchHandsTheTUIItsRootCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want tui.RootCheck
+	}{
+		{"cwd", []string{"--cwd", "-A", "pi"}, tui.RootCheck{}},
+		{"cwd allow", []string{"--cwd", "-A", "pi", "--allow-shared-root"}, tui.RootCheck{Allow: true}},
+		{"named worktree", []string{"-W", "my-feature", "-A", "pi"}, tui.RootCheck{Skip: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pickerRootCheck(t, tc.args...); got != tc.want {
+				t.Errorf("RootCheck = %+v; want %+v", got, tc.want)
+			}
+		})
 	}
 }
