@@ -296,26 +296,43 @@ def test_warmup_stops_when_the_same_request_error_repeats():
     assert not isinstance(excinfo.value, WarmupRefusedError)
 
 
-def test_warmup_keeps_polling_when_a_400_changes_or_a_503_intervenes():
-    """The repeat count is the margin for a server that words "not ready" as a 400 for a
-    few seconds: a changed body, or any other status in between (a 503 while loading), starts
-    the count again, so nine 400s then a 503 then nine more never trip it."""
-    nine = [(400, b"loading weights")] * 9
-    urlopen = _chat_answering(*nine, (503, b"busy"), *nine, (400, b"different"), (400, b"again"))
+def _warmup_for_attempts(urlopen, attempts):
+    """Run `warmup` for exactly `attempts` chat attempts, then let its deadline pass."""
     with (
         patch("llmbench.providers.lifecycle.probe.urllib.request.urlopen", urlopen),
         patch(
             "llmbench.providers.lifecycle.probe.time.monotonic",
-            side_effect=[0.0] + [1.0] * 19 + [1000.0],
+            side_effect=[0.0] + [1.0] * attempts + [1000.0],
         ),
         patch("llmbench.providers.lifecycle.probe.time.sleep"),
         pytest.raises(LifecycleError, match="failed to warm up") as excinfo,
     ):
         warmup("http://x/chat", "org/repo", health_url="http://x/health", timeout=600.0)
+    return excinfo.value
+
+
+def test_warmup_keeps_polling_when_a_503_intervenes():
+    """The repeat count is the margin for a server that words "not ready" as a 400 for a
+    few seconds: any other status in between (a 503 while loading) starts the count again,
+    so nine 400s then a 503 then nine more never trip it."""
     from llmbench.providers.lifecycle.probe import WarmupRejectedError
 
-    assert not isinstance(excinfo.value, WarmupRejectedError)
+    nine = [(400, b"loading weights")] * 9
+    urlopen = _chat_answering(*nine, (503, b"busy"), *nine)
+    error = _warmup_for_attempts(urlopen, 19)
+    assert not isinstance(error, WarmupRejectedError)
     assert urlopen.chats["n"] == 19
+
+
+def test_warmup_keeps_polling_when_the_400_body_changes():
+    """Ten 400s only count when they are the same 400: bodies that differ attempt to attempt
+    (a server still working through its start) never reach the repeat count."""
+    from llmbench.providers.lifecycle.probe import WarmupRejectedError
+
+    urlopen = _chat_answering(*([(400, b"a"), (400, b"b")] * 10))
+    error = _warmup_for_attempts(urlopen, 20)
+    assert not isinstance(error, WarmupRejectedError)
+    assert urlopen.chats["n"] == 20
 
 
 def test_warmup_still_retries_other_http_errors():

@@ -292,6 +292,10 @@ def warmup(
     rejected: tuple[int, str] | None = None
     repeats = 0
     for _ in _deadline_loop(timeout):
+        # Only a 400/422 below sets `rejected` again, so any other outcome of this attempt (a
+        # failed liveness probe, a 503, a dropped connection, a 200 without the marker) breaks
+        # the run: the next 400 compares against None and starts the count over.
+        previous, rejected = rejected, None
         try:
             urllib.request.urlopen(_target(health_url, key), timeout=2.0)  # noqa: S310 — localhost probe
         except urllib.error.HTTPError as exc:
@@ -326,18 +330,13 @@ def warmup(
                     f"{chat_url} refused the warmup for {model} (HTTP {exc.code}: {detail})"
                 ) from None
             if exc.code in _REJECTED:
-                seen = (exc.code, _refusal_detail(exc, key))
-                repeats = repeats + 1 if seen == rejected else 1
-                rejected = seen
+                rejected = (exc.code, _refusal_detail(exc, key))
+                repeats = repeats + 1 if rejected == previous else 1
                 if repeats >= _REJECTED_REPEATS:
                     raise WarmupRejectedError(
                         f"{chat_url} rejected the warmup for {model} {repeats} times in a row "
-                        f"(HTTP {seen[0]}: {seen[1]})"
+                        f"(HTTP {rejected[0]}: {rejected[1]})"
                     ) from None
-            else:
-                rejected, repeats = None, 0
-        except OSError:
-            rejected, repeats = None, 0
         time.sleep(1.0)
     raise LifecycleError(f"failed to warm up model {model} at {chat_url}")
 
