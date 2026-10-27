@@ -1,0 +1,207 @@
+// Package sessionclaim records which wt sessions are running in a repository's
+// root checkout, so a second launch there can warn the person first. A claim
+// is one key=value file per wt process in <git-common-dir>/wt-sessions/<pid>;
+// repo-cleanup (bash) reads the same files. The format is a cross-repo
+// contract: docs/contracts/session-claims.md at the monorepo root.
+package sessionclaim
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+)
+
+// Claim is one session's hold on a checkout. Started is the process start time
+// in epoch seconds; it is what tells a live claim from a reused pid.
+type Claim struct {
+	PID     int
+	Started int64
+	Path    string
+	Branch  string
+	Agent   string
+}
+
+// startTolerance is how far the recorded and actual start times may differ and
+// still match: wt (Go) and repo-cleanup (bash) compute it by different clocks.
+const startTolerance = 2
+
+// pidAlive reports whether pid is a running process (EPERM means alive).
+// Package-level var so tests can inject liveness without real processes.
+var pidAlive = func(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+// startTime returns pid's start time in epoch seconds: now minus the elapsed
+// time `ps -o etime=` reports, the same method repo-cleanup uses. Package-level
+// var so tests can inject start times.
+var startTime = func(pid int) (int64, error) {
+	out, err := exec.Command("ps", "-o", "etime=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, err
+	}
+	secs, err := parseEtime(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, err
+	}
+	return time.Now().Unix() - secs, nil
+}
+
+// parseEtime converts ps's [[dd-]hh:]mm:ss elapsed time to seconds.
+func parseEtime(s string) (int64, error) {
+	bad := fmt.Errorf("bad etime %q", s)
+	var days int64
+	if d, rest, ok := strings.Cut(s, "-"); ok {
+		n, err := strconv.ParseInt(d, 10, 64)
+		if err != nil || n < 0 {
+			return 0, bad
+		}
+		days, s = n, rest
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0, bad
+	}
+	total := int64(0)
+	for _, p := range parts {
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil || n < 0 {
+			return 0, bad
+		}
+		total = total*60 + n
+	}
+	return days*86400 + total, nil
+}
+
+// Self returns a claim for this process at path.
+func Self(path, branch, agent string) (Claim, error) {
+	pid := os.Getpid()
+	started, err := startTime(pid)
+	if err != nil {
+		return Claim{}, err
+	}
+	return Claim{PID: pid, Started: started, Path: path, Branch: branch, Agent: agent}, nil
+}
+
+func (c Claim) encode() []byte {
+	return []byte(fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=%s\nagent=%s\n",
+		c.PID, c.Started, c.Path, c.Branch, c.Agent))
+}
+
+// parse reads a claim file; ok is false when pid, started or path is missing or
+// malformed. Unknown keys are ignored.
+func parse(data []byte) (c Claim, ok bool) {
+	var havePID, haveStarted, havePath bool
+	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	for sc.Scan() {
+		k, v, found := strings.Cut(sc.Text(), "=")
+		if !found {
+			continue
+		}
+		switch k {
+		case "pid":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return Claim{}, false
+			}
+			c.PID, havePID = n, true
+		case "started":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return Claim{}, false
+			}
+			c.Started, haveStarted = n, true
+		case "path":
+			c.Path, havePath = v, v != ""
+		case "branch":
+			c.Branch = v
+		case "agent":
+			c.Agent = v
+		}
+	}
+	return c, havePID && haveStarted && havePath
+}
+
+// live reports whether c's process runs and started when the claim says.
+func live(c Claim) bool {
+	if !pidAlive(c.PID) {
+		return false
+	}
+	real, err := startTime(c.PID)
+	if err != nil {
+		return false
+	}
+	d := real - c.Started
+	return d >= -startTolerance && d <= startTolerance
+}
+
+// withLock runs fn holding an exclusive flock on dir/.lock, so two wt
+// processes launching at once cannot both see an empty directory.
+func withLock(dir string, fn func() error) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
+// Join checks commonDir/wt-sessions for live claims on c.Path, deleting stale
+// ones, and claims the path for c. Under one lock it returns the live others;
+// if there are any it calls ask, and a false answer writes nothing. Otherwise
+// c is written atomically and release removes it. release is never nil, so a
+// caller may defer it even when err is set.
+func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release func(), others []Claim, err error) {
+	release = func() {}
+	dir := filepath.Join(commonDir, "wt-sessions")
+	err = withLock(dir, func() error {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			// Claim files are named by pid; skip .lock and rename temp files.
+			if _, err := strconv.Atoi(e.Name()); err != nil {
+				continue
+			}
+			p := filepath.Join(dir, e.Name())
+			data, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			other, ok := parse(data)
+			if !ok || !live(other) {
+				_ = os.Remove(p)
+				continue
+			}
+			if other.Path == c.Path && other.PID != c.PID {
+				others = append(others, other)
+			}
+		}
+		if len(others) > 0 && !ask(others) {
+			return nil
+		}
+		mine := filepath.Join(dir, strconv.Itoa(c.PID))
+		if err := config.WriteFileAtomic(mine, c.encode(), 0o644); err != nil {
+			return err
+		}
+		release = func() { _ = os.Remove(mine) }
+		return nil
+	})
+	return release, others, err
+}
