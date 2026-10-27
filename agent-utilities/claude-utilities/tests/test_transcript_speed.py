@@ -109,3 +109,116 @@ def test_each_message_pairs_with_its_own_preceding_request(tmp_path):
 )
 def test_percentile_is_nearest_rank(vals, p, want):
     assert ts.percentile(vals, p) == want
+
+
+def row(model: str, out: int, tps: float) -> dict:
+    return {"model": model, "out_tokens": out, "tps_total": tps, "ttfb_s": 1.0, "total_s": 2.0}
+
+
+@pytest.mark.parametrize(
+    ("out", "band"),
+    [(10, "<200"), (199, "<200"), (200, "200-1000"), (999, "200-1000"), (1000, "1000+")],
+)
+def test_band_edges(out, band):
+    assert ts.band_of(out) == band
+
+
+def test_aggregate_groups_by_model_and_band():
+    rows = [row("a", 100, 10.0), row("a", 150, 30.0), row("a", 500, 50.0), row("b", 100, 5.0)]
+    by_key = {(b["model"], b["band"]): b for b in ts.aggregate(rows, 50)["bands"]}
+    assert set(by_key) == {("a", "<200"), ("a", "200-1000"), ("b", "<200")}
+    small = by_key[("a", "<200")]
+    assert small["n"] == 2
+    assert small["tps_total_p50"] == 20.0
+    assert small["tps_total_p90"] == 30.0
+
+
+def test_aggregate_carries_no_session_data():
+    r = row("a", 100, 10.0) | {"session": "secret-project.jsonl"}
+    assert "secret-project" not in json.dumps(ts.aggregate([r], 50))
+
+
+def agg_file(path: Path, bands: list[dict], min_tokens: int | None = 50) -> str:
+    data = {"bands": bands}
+    if min_tokens is not None:
+        data["min_tokens"] = min_tokens
+    path.write_text(json.dumps(data))
+    return str(path)
+
+
+def band(model: str, name: str, p50: float, p90: float) -> dict:
+    return {
+        "model": model,
+        "band": name,
+        "n": 100,
+        "tps_total_p50": p50,
+        "tps_total_p90": p90,
+        "ttfb_s_p50": 1.0,
+        "total_s_p50": 2.0,
+    }
+
+
+def test_compare_reports_percent_difference_and_unmatched_rows(tmp_path):
+    a = agg_file(
+        tmp_path / "a.json", [band("m", "<200", 100.0, 120.0), band("only-a", "<200", 1, 1)]
+    )
+    b = agg_file(
+        tmp_path / "b.json", [band("m", "<200", 80.0, 120.0), band("only-b", "200-1000", 1, 1)]
+    )
+    out = ts.compare(a, b)
+    assert "-20.0%" in out
+    assert "+0.0%" in out
+    assert "only in A" in out
+    assert "only-a" in out
+    assert "only in B" in out
+    assert "only-b" in out
+
+
+def test_compare_rejects_non_aggregate_file(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("[1, 2]")
+    good = agg_file(tmp_path / "g.json", [])
+    with pytest.raises(ValueError, match="not a transcript_speed --json file"):
+        ts.compare(str(bad), good)
+
+
+def test_compare_handles_long_model_names_and_null_percentiles(tmp_path):
+    name = "claude-haiku-4-5-20251001"
+    a = agg_file(tmp_path / "a.json", [band(name, "<200", None, None)])
+    b = agg_file(tmp_path / "b.json", [band(name, "<200", 12.0, 12.0)])
+    out = ts.compare(a, b)
+    assert f"{name}  <200" in out
+    assert "n/a" in out
+
+
+def test_compare_orders_bands_by_size(tmp_path):
+    bands = [band("m", n, 1.0, 1.0) for n in ("1000+", "<200", "200-1000")]
+    f = agg_file(tmp_path / "a.json", bands)
+    out = ts.compare(f, f)
+    assert out.index("<200") < out.index("200-1000") < out.index("1000+")
+
+
+def test_compare_rejects_malformed_band_entry(tmp_path):
+    bad = agg_file(tmp_path / "bad.json", [{"model": "m"}])
+    with pytest.raises(ValueError, match="bad band entry"):
+        ts.compare(bad, bad)
+
+
+def test_aggregate_records_min_tokens():
+    assert ts.aggregate([], 200)["min_tokens"] == 200
+
+
+def test_compare_warns_when_min_tokens_differ(tmp_path):
+    a = agg_file(tmp_path / "a.json", [band("m", "<200", 1.0, 1.0)], 50)
+    b = agg_file(tmp_path / "b.json", [band("m", "<200", 1.0, 1.0)], 200)
+    assert "--min-tokens differs (A=50, B=200)" in ts.compare(a, b)
+
+
+def test_compare_notes_missing_min_tokens_and_is_quiet_when_equal(tmp_path):
+    bands = [band("m", "<200", 1.0, 1.0)]
+    old = agg_file(tmp_path / "old.json", bands, None)
+    new = agg_file(tmp_path / "new.json", bands, 50)
+    assert "no min_tokens" in ts.compare(old, new)
+    out = ts.compare(new, new)
+    assert "WARNING" not in out
+    assert "no min_tokens" not in out
