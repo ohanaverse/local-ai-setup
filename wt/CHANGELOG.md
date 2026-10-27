@@ -6,8 +6,8 @@
 
 - A launch in a repository's root checkout now notices another live wt
   session there and asks `c` continue / `w` new worktree / `q` quit (Esc
-  quits), in both the plain launch and the picker. `-W` and linked-worktree
-  rows are never asked. `--allow-shared-root` continues without asking; with
+  quits), in both the plain launch and the picker. Launches in a linked
+  worktree (`-W` or a picker row) are never asked. `--allow-shared-root` continues without asking; with
   no terminal wt refuses instead. Each root session writes a claim file under
   `<git-common-dir>/wt-sessions/`, in the format
   `docs/contracts/session-claims.md` fixes so `repo-cleanup` can read it. A

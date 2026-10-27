@@ -144,7 +144,7 @@ The base URL is the resolved route's origin plus `/v1`. On a direct route that o
 
 ## Two sessions in one checkout
 
-wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, wt names it (agent, pid, how long, branch) and asks: `c` continue here, `w` start in a new worktree (a fresh `session-<pid>-<time>` branch under `.worktrees/`), or `q` / Esc to quit without launching. Launching with `-W <name>` or from a worktree row never asks. `--allow-shared-root` continues without asking; with no terminal and no flag, wt refuses and says which session holds the root. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
+wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, wt names it (agent, pid, how long, branch) and asks: `c` continue here, `w` start in a new worktree (a fresh `session-<pid>-<time>` branch under `.worktrees/`), or `q` / Esc to quit without launching. Launching in a linked worktree (`-W <name>` or a worktree row) never asks; `-W` naming the root's branch lands in the root and is checked like any root launch. A launch in a subdirectory of the root is not checked. `--allow-shared-root` continues without asking; with no terminal and no flag, wt refuses and says which session holds the root. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
 
 ## Main guard
 
