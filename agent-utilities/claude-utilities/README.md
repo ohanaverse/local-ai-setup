@@ -74,7 +74,9 @@ uv run python transcript_speed.py --compare machine-a.json machine-b.json
 
 `--json` holds only aggregates per model and output-size band (`<200`, `200-1000`, `1000+`; the unit is output
 tokens per call, thinking included, and calls under `--min-tokens` are dropped first, so `<200` means 50–199):
-call count, `tps_total` p50/p90, and `ttfb_s`/`total_s` p50. It has no session names or paths, so it is safe to
+call count, `tps_total` p50/p90, and `ttfb_s`/`total_s` p50, plus the `min_tokens` it was run with. `--compare`
+warns when the two files used different `--min-tokens` (the smallest band then covers different ranges), and
+notes it when a file from an older version has none. It has no session names or paths, so it is safe to
 copy between machines. `--compare` prints both sides with the percent difference of B against A, and lists
 model/band pairs that appear on only one side.
 

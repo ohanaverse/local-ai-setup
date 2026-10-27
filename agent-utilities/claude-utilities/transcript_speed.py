@@ -125,7 +125,7 @@ def band_of(out_tokens):
     return TOP_BAND
 
 
-def aggregate(rows):
+def aggregate(rows, min_tokens):
     """Aggregate-only stats per (model, band). Deliberately drops session names."""
     groups = defaultdict(list)
     for r in rows:
@@ -150,7 +150,11 @@ def aggregate(rows):
         }
         for (model, band), rs in sorted(groups.items())
     ]
-    return {"band_unit": "output_tokens", "bands": bands}
+    return {"band_unit": "output_tokens", "min_tokens": min_tokens, "bands": bands}
+
+
+BAND_ORDER = {name: i for i, name in enumerate([n for _, n in BANDS] + [TOP_BAND])}
+BAND_FIELDS = ("model", "band", "n", "tps_total_p50", "tps_total_p90")
 
 
 def load_aggregate(path):
@@ -158,34 +162,58 @@ def load_aggregate(path):
         data = json.load(fh)
     if not isinstance(data, dict) or not isinstance(data.get("bands"), list):
         raise ValueError(f"{path}: not a transcript_speed --json file")
-    return {(b["model"], b["band"]): b for b in data["bands"]}
+    for b in data["bands"]:
+        if not isinstance(b, dict) or any(f not in b for f in BAND_FIELDS):
+            raise ValueError(f"{path}: not a transcript_speed --json file (bad band entry)")
+    return data.get("min_tokens"), {(b["model"], b["band"]): b for b in data["bands"]}
 
 
 def compare(path_a, path_b):
-    a, b = load_aggregate(path_a), load_aggregate(path_b)
+    (min_a, a), (min_b, b) = load_aggregate(path_a), load_aggregate(path_b)
 
     def delta(x, y):
         if not x or y is None:
             return "n/a"
         return f"{(y - x) / x * 100:+.1f}%"
 
-    lines = [
-        f"{'model':<24}{'band (out tok)':<16}{'n A':>6}{'n B':>6}"
+    def num(v):
+        # A band whose calls all lacked a usable duration has a null percentile.
+        return "n/a" if v is None else str(v)
+
+    def order(key):
+        return (key[0], BAND_ORDER.get(key[1], len(BAND_ORDER)), key[1])
+
+    both = sorted(a.keys() & b.keys(), key=order)
+    model_w = max([len("model"), *(len(m) for m, _ in both)]) + 2
+    lines = []
+    if min_a is None or min_b is None:
+        lines.append(
+            "note: a file has no min_tokens (older --json output); "
+            "the bands are comparable only if both used the same --min-tokens\n"
+        )
+    elif min_a != min_b:
+        lines.append(
+            f"WARNING: --min-tokens differs (A={min_a}, B={min_b}); "
+            "the smallest band covers different token ranges and is not comparable\n"
+        )
+    lines.append(
+        f"{'model':<{model_w}}{'band (out tok)':<16}{'n A':>6}{'n B':>6}"
         f"{'p50 A':>8}{'p50 B':>8}{'diff':>8}{'p90 A':>8}{'p90 B':>8}{'diff':>8}"
-    ]
-    for key in sorted(a.keys() & b.keys()):
+    )
+    for key in both:
         x, y = a[key], b[key]
         lines.append(
-            f"{key[0]:<24}{key[1]:<16}{x['n']:>6}{y['n']:>6}"
-            f"{x['tps_total_p50']:>8}{y['tps_total_p50']:>8}"
+            f"{key[0]:<{model_w}}{key[1]:<16}{x['n']:>6}{y['n']:>6}"
+            f"{num(x['tps_total_p50']):>8}{num(y['tps_total_p50']):>8}"
             f"{delta(x['tps_total_p50'], y['tps_total_p50']):>8}"
-            f"{x['tps_total_p90']:>8}{y['tps_total_p90']:>8}"
+            f"{num(x['tps_total_p90']):>8}{num(y['tps_total_p90']):>8}"
             f"{delta(x['tps_total_p90'], y['tps_total_p90']):>8}"
         )
     for label, only in (("A", a.keys() - b.keys()), ("B", b.keys() - a.keys())):
         if only:
             lines.append(
-                f"\nonly in {label}: " + ", ".join(f"{m} [{bd}]" for m, bd in sorted(only))
+                f"\nonly in {label}: "
+                + ", ".join(f"{m} [{bd}]" for m, bd in sorted(only, key=order))
             )
     return "\n".join(lines)
 
@@ -215,7 +243,11 @@ def main():
     )
     args = ap.parse_args()
 
+    if args.json and args.csv:
+        ap.error("--json and --csv are mutually exclusive")
     if args.compare:
+        if args.paths or args.json or args.csv:
+            ap.error("--compare takes only the two --json files, no other paths or output flags")
         try:
             print(compare(*args.compare))
         except (OSError, ValueError, KeyError) as e:
@@ -235,7 +267,7 @@ def main():
     ]
 
     if args.json:
-        print(json.dumps(aggregate(rows), indent=2))
+        print(json.dumps(aggregate(rows, args.min_tokens), indent=2))
         return
 
     if args.csv:
