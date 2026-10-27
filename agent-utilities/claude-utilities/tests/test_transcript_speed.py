@@ -222,3 +222,15 @@ def test_compare_notes_missing_min_tokens_and_is_quiet_when_equal(tmp_path):
     out = ts.compare(new, new)
     assert "WARNING" not in out
     assert "no min_tokens" not in out
+
+
+def test_require_python_rejects_old_interpreter():
+    with pytest.raises(SystemExit) as e:
+        ts.require_python((3, 9, 6))
+    assert "needs Python >= 3.11, found 3.9.6" in str(e.value)
+    assert "uv run" in str(e.value)
+
+
+def test_require_python_accepts_current_interpreter():
+    ts.require_python()
+    ts.require_python((3, 11, 0))
