@@ -4,10 +4,11 @@ Standalone utilities for working with specific coding agents, one subdirectory p
 
 ## Commands
 - `uv run --directory claude-utilities python transcript_speed.py [--min-tokens N] [--csv] ~/.claude/projects` — summary per model, or per-call CSV rows
+- `uv run --directory claude-utilities python otel_receiver.py [--port 4318] [--out FILE]` — loopback OTLP/JSON trace receiver; then `... python otel_speed.py FILE` for TTFT and decode-rate percentiles (setup and caveats in `claude-utilities/README.md`)
 - `cd claude-utilities && make check test` — ruff lint + format check, then pytest
 
 ## Layout
-- `claude-utilities/` — Claude Code utilities. `transcript_speed.py` estimates output tokens/second per API call from the session transcripts in `~/.claude/projects/*/*.jsonl`. Usage, column definitions, caveats and a dated sample result live in `claude-utilities/README.md`.
+- `claude-utilities/` — Claude Code utilities. `transcript_speed.py` estimates output tokens/second per API call from the session transcripts in `~/.claude/projects/*/*.jsonl`. `otel_receiver.py` + `otel_speed.py` do the same from Claude Code OTLP traces (adds TTFT; untested end-to-end). Usage, column definitions, caveats and a dated sample result live in `claude-utilities/README.md`.
 
 ## Conventions
 - **Read-only against agent state.** A utility reads the agent's own on-disk records (transcripts, logs) and never writes to them, to `registry.toml`, or to any `wt`/LiteLLM config.
@@ -17,5 +18,6 @@ Standalone utilities for working with specific coding agents, one subdirectory p
 
 ## Gotchas
 - **Transcript format is Claude Code's, not a stable API.** `transcript_speed.py` relies on `api-request` records, one `assistant` line per content block, and `message.usage.output_tokens` being the final total repeated on every block. A Claude Code update can change this silently; if the call count drops to zero or looks wrong, check the record shapes first.
+- **OTel traces can be redirected by managed settings.** A managed `OTEL_EXPORTER_OTLP_ENDPOINT` makes Claude Code drop developer-set per-signal endpoints, so `otel_receiver.py` may receive nothing and spans may go to the managed collector. Never edit managed settings to get around it. The receiver binds 127.0.0.1 only.
 - **Transcripts are private session data.** Don't commit transcripts, CSV output from real sessions, or paths that expose project names. The README's sample result is aggregate-only; keep it that way.
 - **Not covered by the root `make test-all` or CI.** The root `test-all` and the Python CI jobs cover `llmbench/` and `modeltiers/` only, so run `make check test` in the utility's directory yourself. `make check-links` does cover the markdown here, so keep links repo-relative and valid.

@@ -65,9 +65,48 @@ Haiku has few calls and a slow median first block, so its row is likely dominate
 
 True time-to-first-token and pure decode rate need data from the wire. Options, from least to most work:
 
-1. **Claude Code OpenTelemetry**: set `OTEL_METRICS_EXPORTER=console` and `OTEL_LOGS_EXPORTER=console`
-   (or point `OTEL_EXPORTER_OTLP_ENDPOINT` at a local collector). Gives token counts, cost, and per-request
-   `duration_ms`. Not time-to-first-token. Not verified on this machine.
+1. **Claude Code OpenTelemetry traces**: the `claude_code.llm_request` span carries `ttft_ms`, `duration_ms`,
+   `output_tokens`, `attempt` and `success`. See [OpenTelemetry traces](#opentelemetry-traces-otel_receiverpy-otel_speedpy).
 2. **Local logging proxy**: run a proxy on localhost, set `ANTHROPIC_BASE_URL` to it, and have it forward to
    the gateway while logging time-to-first-byte, time-to-last-byte, and the SSE token events. This is the only
-   local route to true TTFT and decode rate, and it has to be built.
+   local route to true decode rate measured on the wire, and it has to be built.
+
+## OpenTelemetry traces: otel_receiver.py, otel_speed.py
+
+`otel_receiver.py` is a loopback-only OTLP/HTTP server that appends each trace export to a JSONL file
+(`~/.cache/claude-utilities/otel-traces.jsonl` by default). `otel_speed.py` reads that file and prints the same
+kind of percentile table as `transcript_speed.py`, with `ttft_s` and `tps_decode` added. Both are stdlib-only.
+
+```bash
+uv run python otel_receiver.py --port 4318            # terminal 1; Ctrl-C to stop
+
+# terminal 2: start Claude Code with traces pointed at the receiver
+CLAUDE_CODE_ENABLE_TELEMETRY=1 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1 \
+OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json \
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces claude
+
+uv run python otel_speed.py ~/.cache/claude-utilities/otel-traces.jsonl
+```
+
+The receiver answers 415 to anything that is not JSON, so a wrong `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` shows up
+on stderr instead of as an empty file. Traces are a Claude Code beta feature, so attribute names may change.
+
+| Column | Definition | Reliability |
+|--------|------------|-------------|
+| `ttft_s` | `ttft_ms` / 1000 | Client-measured time to first token. Not checked against gateway logs. |
+| `total_s` | `duration_ms` / 1000 | Wall time of the call. |
+| `tps_total` | `output_tokens` / `total_s` | Lower bound on decode speed (includes ttft). |
+| `tps_decode` | `output_tokens` / (`total_s` − `ttft_s`) | Closer to decode speed; the first token is counted without its time. Needs ≥ 1s after ttft. |
+
+Failed calls and calls with `attempt` > 1 are skipped, because their duration covers more than one request.
+
+### Status
+
+- **Not run end-to-end.** The unit tests use payloads shaped from the docs. Parsing a real OTLP export has not
+  been done. A console-exporter run on one machine did show a real `llm_request` span with all of these fields.
+- **Managed settings can block it.** If your organisation's managed settings set `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  Claude Code removes developer-set per-signal endpoints at startup (per the Claude Code docs), and spans may go to
+  the managed endpoint instead of the receiver. On the author's machine no trace reached a local receiver and
+  none was captured, so the path is unconfirmed. Do not override managed settings; ask whoever owns them.
+- **Spans include identity.** Resource and span attributes can carry `user.email`, `user.id` and `session.id`.
+  Treat the JSONL as private, and don't commit it.
