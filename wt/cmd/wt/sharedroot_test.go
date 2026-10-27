@@ -211,7 +211,7 @@ func TestConfirmNoTTYRefuses(t *testing.T) {
 	if err == nil {
 		t.Fatal("no error; want a refusal")
 	}
-	for _, want := range []string{"codex", "pid " + strconv.Itoa(pid), "--allow-shared-root"} {
+	for _, want := range []string{"codex", "pid " + strconv.Itoa(pid), "--allow-shared-root", "-W <name> to use a linked worktree"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}

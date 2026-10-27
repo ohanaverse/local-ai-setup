@@ -100,7 +100,7 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 		for i, o := range others {
 			names[i] = sessionclaim.Describe(o, time.Now())
 		}
-		return "", noop, fmt.Errorf("the repository root %s is in use by %s; pass --allow-shared-root to launch there anyway, or -W <name> to use a worktree", root.Path, strings.Join(names, ", "))
+		return "", noop, fmt.Errorf("the repository root %s is in use by %s; pass --allow-shared-root to launch there anyway, or -W <name> to use a linked worktree", root.Path, strings.Join(names, ", "))
 	case choice == 'w':
 		name := sessionclaim.NewWorktreeName(os.Getpid(), time.Now())
 		path, err := worktree.EnsureForName(root.Path, name)
