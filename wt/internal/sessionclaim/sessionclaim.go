@@ -170,28 +170,9 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 	release = func() {}
 	dir := filepath.Join(commonDir, "wt-sessions")
 	err = withLock(dir, func() error {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
+		var err error
+		if others, err = scan(dir, c, true); err != nil {
 			return err
-		}
-		for _, e := range entries {
-			// Claim files are named by pid; skip .lock and rename temp files.
-			if _, err := strconv.Atoi(e.Name()); err != nil {
-				continue
-			}
-			p := filepath.Join(dir, e.Name())
-			data, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			other, ok := parse(data)
-			if !ok || !live(other) {
-				_ = os.Remove(p)
-				continue
-			}
-			if other.Path == c.Path && other.PID != c.PID {
-				others = append(others, other)
-			}
 		}
 		if len(others) > 0 && !ask(others) {
 			return nil
@@ -204,4 +185,47 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 		return nil
 	})
 	return release, others, err
+}
+
+// Others returns the live claims in commonDir/wt-sessions on c.Path other than
+// c's own, without taking the lock or changing anything: a caller that must
+// ask before it claims (the picker's screen) reads first and joins after.
+// No wt-sessions directory means no others.
+func Others(commonDir string, c Claim) ([]Claim, error) {
+	others, err := scan(filepath.Join(commonDir, "wt-sessions"), c, false)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return others, err
+}
+
+// scan reads the claim files in dir and returns the live ones on c.Path other
+// than c's own. With prune it deletes the stale ones it finds.
+func scan(dir string, c Claim, prune bool) (others []Claim, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		// Claim files are named by pid; skip .lock and rename temp files.
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		other, ok := parse(data)
+		if !ok || !live(other) {
+			if prune {
+				_ = os.Remove(p)
+			}
+			continue
+		}
+		if other.Path == c.Path && other.PID != c.PID {
+			others = append(others, other)
+		}
+	}
+	return others, nil
 }

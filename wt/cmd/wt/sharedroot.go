@@ -68,7 +68,7 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 		return dir, noop, nil
 	}
 	note := func(err error) (string, func(), error) {
-		fmt.Fprintf(out, "wt: note: could not check other sessions in %s (%v); launching anyway\n", root, err)
+		fmt.Fprintf(out, "wt: note: %s\n", sessionclaim.CheckFailed(root, err))
 		return dir, noop, nil
 	}
 	commonDir, err := gitOutput(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
@@ -93,11 +93,7 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 			choice = 0
 			return false
 		}
-		fmt.Fprintf(out, "wt: the repository root %s is in use by another session:\n", root)
-		for _, o := range others {
-			fmt.Fprintf(out, "  %s\n", describeClaim(o))
-		}
-		fmt.Fprint(out, "  c  continue here    w  new worktree    q  quit (Esc)\nchoose [c/w/q]: ")
+		fmt.Fprint(out, "wt: "+sessionclaim.Menu(root, others, time.Now())+"choose [c/w/q]: ")
 		choice = readChoice(in)
 		fmt.Fprintln(out)
 		return choice == 'c'
@@ -111,11 +107,11 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 	case choice == 0:
 		names := make([]string, len(others))
 		for i, o := range others {
-			names[i] = describeClaim(o)
+			names[i] = sessionclaim.Describe(o, time.Now())
 		}
 		return "", noop, fmt.Errorf("the repository root %s is in use by %s; pass --allow-shared-root to launch there anyway, or -W <name> to use a worktree", root, strings.Join(names, ", "))
 	case choice == 'w':
-		name := fmt.Sprintf("session-%d-%s", os.Getpid(), time.Now().Format("150405"))
+		name := sessionclaim.NewWorktreeName(os.Getpid(), time.Now())
 		path, err := worktree.EnsureForName(root, name)
 		if err != nil {
 			return "", noop, fmt.Errorf("new worktree: %w", err)
@@ -125,12 +121,6 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 	default:
 		return "", noop, errCancelled
 	}
-}
-
-// describeClaim names one other session for the menu and the refusal.
-func describeClaim(c sessionclaim.Claim) string {
-	running := time.Since(time.Unix(c.Started, 0)).Round(time.Second)
-	return fmt.Sprintf("%s (pid %d, running %s, started on %s)", c.Agent, c.PID, running, c.Branch)
 }
 
 // readChoice reads keys from in until one is c, w or q (Esc and Ctrl-C are
