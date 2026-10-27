@@ -134,9 +134,10 @@ func omlxLoad(ctx context.Context, e *env, cfg *config.Config, modelName string)
 
 // omlxUnload unloads one model and leaves the service and every other loaded
 // model up. The goal is "not loaded", so omlx's "not loaded" (400) and "no
-// such model" (404) answers are success, and the pool is read afterwards: a
-// model it still shows loaded is a failed stop whatever the POST said. So is
-// one it shows loading: omlx answers an unload of a model mid-load "not
+// such model" (404) answers are success, and the pool is read afterwards
+// (awaitOmlxUnloaded, which allows omlx a moment to finish an accepted
+// unload): a model it still shows loaded at the bound is a failed stop
+// whatever the POST said. So is one it shows loading: omlx answers an unload of a model mid-load "not
 // loaded" and goes on loading it, and the error names that state and the
 // command that does call the load off.
 //
@@ -166,13 +167,53 @@ func omlxUnload(ctx context.Context, e *env, cfg *config.Config, modelName strin
 	default:
 		return fmt.Errorf("omlx could not unload %s: HTTP %d: %s", id, code, detail)
 	}
-	if pool, perr := localmodels.OmlxPool(cfg, e.probeClient); perr == nil {
-		switch m, ok := pool.Find(modelName); {
-		case ok && m.Loading && !m.Loaded:
-			return fmt.Errorf("omlx is still loading %s and will not unload it mid-load; `wt stop omlx` stops the service and the load with it", id)
-		case ok && m.Loaded:
+	return e.awaitOmlxUnloaded(ctx, cfg, id, modelName)
+}
+
+// awaitOmlxUnloaded waits, for up to e.omlxUnloadTimeout, for the pool to stop
+// listing modelName as loaded after an unload omlx accepted. omlx carries the
+// unload out asynchronously ("Unloading pending model … after activity
+// drained", then "Unloaded model", about three quarters of a second later, or
+// once a request in flight ends), so a pool read made at once still sees the
+// model and said "still has X loaded" about an unload that was succeeding
+// (#492). The bound is a count of pollInterval sleeps, as ollama's is.
+//
+// A model that is loading, not loaded, is an immediate error: omlx will not
+// unload it mid-load, and waiting does not change that. A pool that cannot be
+// read before the model was ever seen loaded is not a failed stop (the unload
+// was accepted); once it was seen loaded, an unreadable pool is not proof it
+// left, so the wait goes on and ends in an error if it never reads again.
+func (e *env) awaitOmlxUnloaded(ctx context.Context, cfg *config.Config, id, modelName string) error {
+	left := 0
+	if e.pollInterval > 0 {
+		left = int(e.omlxUnloadTimeout / e.pollInterval)
+	}
+	seenLoaded := false
+	for {
+		pool, err := localmodels.OmlxPool(cfg, e.probeClient)
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		if err == nil {
+			switch m, ok := pool.Find(modelName); {
+			case ok && m.Loading && !m.Loaded:
+				return fmt.Errorf("omlx is still loading %s and will not unload it mid-load; `wt stop omlx` stops the service and the load with it", id)
+			case !ok || !m.Loaded:
+				return nil
+			}
+			seenLoaded = true
+		} else if !seenLoaded {
+			return nil
+		}
+		if left <= 0 {
+			if err != nil {
+				return fmt.Errorf("could not confirm omlx unloaded %s: %w", id, err)
+			}
 			return fmt.Errorf("omlx still has %s loaded", id)
 		}
+		left--
+		if serr := e.sleep(ctx, e.pollInterval); serr != nil {
+			return serr
+		}
 	}
-	return nil
 }

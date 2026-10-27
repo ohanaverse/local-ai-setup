@@ -32,6 +32,7 @@ func testEnv() *env {
 	e.warmupTimeout = 300 * time.Millisecond
 	e.loadTimeout = 300 * time.Millisecond
 	e.stopTimeout = 200 * time.Millisecond
+	e.omlxUnloadTimeout = 200 * time.Millisecond
 	e.stopGrace = 100 * time.Millisecond
 	e.portUpTimeout = 300 * time.Millisecond
 	e.prebindTimeout = 200 * time.Millisecond
