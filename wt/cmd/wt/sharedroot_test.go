@@ -248,6 +248,9 @@ func TestConfirmClaimDirUnwritableProceedsWithNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
 	var out bytes.Buffer
 	dir, release, err := confirmSharedRoot(root, "claude", false, failReader{t}, &out, false)
 	if err != nil || dir != root {
@@ -288,9 +291,101 @@ func TestCwdLaunchAllowSharedRootReleasesClaim(t *testing.T) {
 	if res.agentDir != root {
 		t.Errorf("the agent ran in %q, want %q", res.agentDir, root)
 	}
+	if !res.claimSeen {
+		t.Error("the agent did not see the claim while it ran")
+	}
 	if fileExists(ownClaim(root)) {
 		t.Error("the claim outlived the agent")
 	}
+}
+
+// TestConfirmParentClaimIsNotAnotherSession checks a claim held by this
+// process's parent (the agent session a nested `wt --cwd` runs inside) neither
+// asks nor refuses, even with no terminal, and is left in place: a script an
+// agent runs at the root, such as `shell-wt --cwd -- npm test`, must not stop
+// on its own session.
+func TestConfirmParentClaimIsNotAnotherSession(t *testing.T) {
+	root := sharedRootRepo(t)
+	ppid := os.Getppid()
+	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(ppid)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := filepath.Join(root, ".git", "wt-sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(sessions, strconv.Itoa(ppid))
+	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", ppid, started.Unix(), root)
+	if err := os.WriteFile(parent, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var note bytes.Buffer
+	dir, release, err := confirmSharedRoot(root, "claude", false, failReader{t}, &note, false)
+	if err != nil || dir != root {
+		t.Fatalf("dir=%q err=%v; want %q, nil", dir, err, root)
+	}
+	release()
+	if note.Len() != 0 {
+		t.Errorf("unexpected output: %q", note.String())
+	}
+	if !fileExists(parent) {
+		t.Error("the parent's claim was deleted")
+	}
+}
+
+// TestNamedWorktreeLaunchDecidesOnTheResolvedDir checks -W is judged by the
+// directory it resolves to, not the flag: -W naming a linked worktree is
+// never checked or claimed; -W naming the root's branch lands in the root and
+// is refused without a terminal while another session holds it, and is
+// claimed for the agent's run when nobody does.
+func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
+	t.Run("linked worktree", func(t *testing.T) {
+		root := sharedRootRepo(t)
+		liveOtherClaim(t, root, "codex")
+		linked := filepath.Join(root, ".worktrees", "feat")
+		if out, err := exec.Command("git", "-C", root, "worktree", "add", "-q", "-b", "feat", linked).CombinedOutput(); err != nil {
+			t.Fatalf("worktree add: %v\n%s", err, out)
+		}
+		stubStdinTTY(t, false)
+		res := runPinnedLaunch(t, root, []string{"-W", "feat"})
+		if res.err != nil || res.agentDir != linked {
+			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, linked)
+		}
+		if res.claimSeen || fileExists(ownClaim(root)) {
+			t.Error("a linked-worktree launch claimed the root")
+		}
+	})
+	t.Run("root branch, held", func(t *testing.T) {
+		root := sharedRootRepo(t)
+		pid := liveOtherClaim(t, root, "codex")
+		stubStdinTTY(t, false)
+		res := runPinnedLaunch(t, root, []string{"-W", "main"})
+		if res.err == nil || !strings.Contains(res.err.Error(), "--allow-shared-root") || !strings.Contains(res.err.Error(), "pid "+strconv.Itoa(pid)) {
+			t.Fatalf("err = %v; want the shared-root refusal", res.err)
+		}
+		if res.agentDir != "" {
+			t.Errorf("the agent ran in %q despite the refusal", res.agentDir)
+		}
+	})
+	t.Run("root branch, free", func(t *testing.T) {
+		root := sharedRootRepo(t)
+		stubStdinTTY(t, false)
+		res := runPinnedLaunch(t, root, []string{"-W", "main"})
+		if res.err != nil || res.agentDir != root {
+			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, root)
+		}
+		if !res.claimSeen {
+			t.Error("the agent did not see the claim while it ran")
+		}
+		if fileExists(ownClaim(root)) {
+			t.Error("the claim outlived the agent")
+		}
+	})
 }
 
 // pickerRootCheck launches through the picker (tuiRun stubbed) with args and
@@ -320,8 +415,9 @@ func pickerRootCheck(t *testing.T, args ...string) tui.RootCheck {
 }
 
 // TestPickerLaunchHandsTheTUIItsRootCheck checks the TUI gets the same rules
-// as the launch without the picker: -W is never checked (Skip), and
-// --allow-shared-root continues without the screen (Allow).
+// as the launch without the picker: --allow-shared-root continues without the
+// screen (Allow), and -W carries nothing, since the TUI judges the directory
+// it resolves to.
 func TestPickerLaunchHandsTheTUIItsRootCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -330,7 +426,7 @@ func TestPickerLaunchHandsTheTUIItsRootCheck(t *testing.T) {
 	}{
 		{"cwd", []string{"--cwd", "-A", "pi"}, tui.RootCheck{}},
 		{"cwd allow", []string{"--cwd", "-A", "pi", "--allow-shared-root"}, tui.RootCheck{Allow: true}},
-		{"named worktree", []string{"-W", "my-feature", "-A", "pi"}, tui.RootCheck{Skip: true}},
+		{"named worktree", []string{"-W", "my-feature", "-A", "pi"}, tui.RootCheck{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := pickerRootCheck(t, tc.args...); got != tc.want {

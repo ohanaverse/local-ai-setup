@@ -55,6 +55,39 @@ var startTime = func(pid int) (int64, error) {
 	return time.Now().Unix() - secs, nil
 }
 
+// parentPID returns pid's parent pid from `ps -o ppid=`. Package-level var so
+// tests can inject a process tree.
+var parentPID = func(pid int) (int, error) {
+	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
+}
+
+// maxAncestors bounds the walk up the parent chain.
+const maxAncestors = 64
+
+// ancestors returns this process and its parents up to pid 1, the same set
+// repo-cleanup's pid_is_ancestor walks: a wt launched from inside a root
+// session must not count that session as another one.
+func ancestors() map[int]bool {
+	set := map[int]bool{}
+	p := os.Getpid()
+	for i := 0; i < maxAncestors && p > 0; i++ {
+		set[p] = true
+		if p <= 1 {
+			break
+		}
+		next, err := parentPID(p)
+		if err != nil {
+			break
+		}
+		p = next
+	}
+	return set
+}
+
 // parseEtime converts ps's [[dd-]hh:]mm:ss elapsed time to seconds.
 func parseEtime(s string) (int64, error) {
 	bad := fmt.Errorf("bad etime %q", s)
@@ -131,16 +164,18 @@ func parse(data []byte) (c Claim, ok bool) {
 }
 
 // live reports whether c's process runs and started when the claim says.
-func live(c Claim) bool {
+// known is false when the pid runs but its start time cannot be read: such a
+// claim is neither live nor stale.
+func live(c Claim) (alive, known bool) {
 	if !pidAlive(c.PID) {
-		return false
+		return false, true
 	}
 	real, err := startTime(c.PID)
 	if err != nil {
-		return false
+		return false, false
 	}
 	d := real - c.Started
-	return d >= -startTolerance && d <= startTolerance
+	return d >= -startTolerance && d <= startTolerance, true
 }
 
 // withLock runs fn holding an exclusive flock on dir/.lock, so two wt
@@ -162,29 +197,35 @@ func withLock(dir string, fn func() error) error {
 }
 
 // Join checks commonDir/wt-sessions for live claims on c.Path, deleting stale
-// ones, and claims the path for c. Under one lock it returns the live others;
-// if there are any it calls ask, and a false answer writes nothing. Otherwise
-// c is written atomically and release removes it. release is never nil, so a
-// caller may defer it even when err is set.
+// ones, and claims the path for c. With no live others the check and the
+// write happen under one lock, so of two launches at once only one sees an
+// empty directory. With live others it releases the lock, calls ask (which
+// may wait on the person for as long as it likes without blocking other
+// launches), and a false answer writes nothing; a true one locks again and
+// writes, without asking again. c is written atomically and release removes
+// it. release is never nil, so a caller may defer it even when err is set.
 func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release func(), others []Claim, err error) {
 	release = func() {}
 	dir := filepath.Join(commonDir, "wt-sessions")
-	err = withLock(dir, func() error {
-		var err error
-		if others, err = scan(dir, c, true); err != nil {
-			return err
-		}
-		if len(others) > 0 && !ask(others) {
-			return nil
-		}
-		mine := filepath.Join(dir, strconv.Itoa(c.PID))
+	mine := filepath.Join(dir, strconv.Itoa(c.PID))
+	write := func() error {
 		if err := config.WriteFileAtomic(mine, c.encode(), 0o644); err != nil {
 			return err
 		}
 		release = func() { _ = os.Remove(mine) }
 		return nil
+	}
+	err = withLock(dir, func() error {
+		var err error
+		if others, err = scan(dir, c, true); err != nil || len(others) > 0 {
+			return err
+		}
+		return write()
 	})
-	return release, others, err
+	if err != nil || len(others) == 0 || !ask(others) {
+		return release, others, err
+	}
+	return release, others, withLock(dir, write)
 }
 
 // Others returns the live claims in commonDir/wt-sessions on c.Path other than
@@ -200,12 +241,15 @@ func Others(commonDir string, c Claim) ([]Claim, error) {
 }
 
 // scan reads the claim files in dir and returns the live ones on c.Path other
-// than c's own. With prune it deletes the stale ones it finds.
+// than c's own. With prune it deletes the stale ones it finds. A claim by this
+// process or one of its parents, or one whose start time cannot be read, is
+// neither returned nor deleted.
 func scan(dir string, c Claim, prune bool) (others []Claim, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
+	var mine map[int]bool
 	for _, e := range entries {
 		// Claim files are named by pid; skip .lock and rename temp files.
 		if _, err := strconv.Atoi(e.Name()); err != nil {
@@ -217,7 +261,21 @@ func scan(dir string, c Claim, prune bool) (others []Claim, err error) {
 			continue
 		}
 		other, ok := parse(data)
-		if !ok || !live(other) {
+		if ok {
+			if mine == nil {
+				mine = ancestors()
+			}
+			if mine[other.PID] {
+				continue
+			}
+		}
+		var alive, known bool
+		if ok {
+			if alive, known = live(other); !known {
+				continue
+			}
+		}
+		if !alive {
 			if prune {
 				_ = os.Remove(p)
 			}

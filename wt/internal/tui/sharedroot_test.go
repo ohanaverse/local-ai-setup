@@ -364,22 +364,27 @@ func TestLinkedLaunchWritesNoClaim(t *testing.T) {
 	}
 }
 
-// TestNamedWorktreeSkipsCheckAndClaim checks a -W launch (RootCheck.Skip)
-// that names the root's branch runs no check and writes no claim, as the
-// launch without the picker does.
-func TestNamedWorktreeSkipsCheckAndClaim(t *testing.T) {
+// TestNamedRootBranchIsCheckedAndClaimed checks a -W that resolves to the
+// root (the preset path cmd/wt hands in for -W <root's branch>) is judged by
+// that directory: the screen while another session holds it, and a claim for
+// the agent's run, as for --cwd.
+func TestNamedRootBranchIsCheckedAndClaimed(t *testing.T) {
 	keepPendingPostExit(t)
-	setRootCheck(t, RootCheck{Skip: true})
+	t.Cleanup(stubInstalled("claude"))
 	root := rootRepo(t)
 	liveOther(t, root, "codex")
-	m, cmd, _ := pickRow(t, root)
-	if m.phase == phaseSharedRoot || cmd == nil {
-		t.Fatal("a -W launch met the shared-root screen")
+	m := model{cfg: testConfig(), width: 80, height: 24, initialAgent: "claude", prePath: root}
+	m, cmd := updateMsg(m, m.Init()())
+	if m.phase != phaseSharedRoot || cmd != nil {
+		t.Fatalf("phase %v, cmd %v; want the screen and nothing started", m.phase, cmd != nil)
 	}
-	agent := exec.Command("sh", "-c", "test ! -e '"+myClaim(root)+"'")
+	agent := exec.Command("sh", "-c", "test -f '"+myClaim(root)+"'")
 	agent.Dir = root
 	if done, ok := runAndWaitCmd(agent, "claude", config.Model{})().(launchDoneMsg); !ok || done.err != nil {
-		t.Fatal("a -W launch wrote a claim")
+		t.Fatal("the agent did not see the claim while it ran")
+	}
+	if claimExists(root) {
+		t.Error("the claim outlived the agent")
 	}
 }
 
@@ -414,6 +419,9 @@ func TestClaimFailureIsANoteNotARefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
 	m, cmd, _ := pickRow(t, root)
 	if m.phase == phaseSharedRoot || cmd == nil {
 		t.Fatal("an unwritable claims directory stopped the launch")

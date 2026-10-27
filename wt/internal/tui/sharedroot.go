@@ -14,12 +14,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
-// RootCheck is cmd/wt's word on the shared-root check for this run. Skip is a
-// -W launch: the person named the worktree, so nothing is checked or claimed,
-// as on the launch without the picker. Allow is --allow-shared-root: no screen,
-// and the root is claimed all the same.
+// RootCheck is cmd/wt's word on the shared-root check for this run. Allow is
+// --allow-shared-root: no screen, and the root is claimed all the same.
 type RootCheck struct {
-	Skip  bool
 	Allow bool
 }
 
@@ -78,7 +75,7 @@ func gitOutput(dir string, args ...string) (string, error) {
 // written when the agent starts (holdRoot). A claims directory that cannot be
 // read shows no screen; holdRoot then fails the same way and says so.
 func (m model) sharedRootCheck() *sharedRootState {
-	if SharedRoot.Skip || SharedRoot.Allow {
+	if SharedRoot.Allow {
 		return nil
 	}
 	root, commonDir, self, err := rootSession(m.selectedPath, "")
@@ -167,12 +164,11 @@ func (m model) sharedRootView() string {
 // for the agent's run: the run commands call it just before the agent starts
 // and the returned release just after it exits. The person has already chosen
 // (the screen, or no other session when the picker looked, or Allow), so a
-// session that appeared since is accepted. A -W launch (Skip) and any other
-// directory get no claim. A claim that cannot be written is one note on w,
+// session that appeared since is accepted. Any other directory gets no claim. A claim that cannot be written is one note on w,
 // never a refusal. release is never nil.
 func holdRoot(dir, agent string, w io.Writer) (release func()) {
 	release = func() {}
-	if dir == "" || SharedRoot.Skip {
+	if dir == "" {
 		return release
 	}
 	root, commonDir, self, err := rootSession(dir, agent)

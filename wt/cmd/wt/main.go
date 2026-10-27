@@ -137,9 +137,9 @@ func runLaunchPath(
 	// once the TUI has returned and the terminal is the user's.
 	runTUI := func() error {
 		// The TUI checks a root launch itself, by the same rules as
-		// holdSharedRoot: -W is never checked, --allow-shared-root continues.
+		// holdSharedRoot: --allow-shared-root continues.
 		allowShared, _ := cmd.Flags().GetBool("allow-shared-root")
-		tui.SharedRoot = tui.RootCheck{Skip: mustGetString(cmd, "worktree") != "", Allow: allowShared}
+		tui.SharedRoot = tui.RootCheck{Allow: allowShared}
 		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
 		printSlotNotes()
 		// tui.Run returns the agent's run error after its post-exit flow;
