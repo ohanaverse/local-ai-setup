@@ -19,6 +19,7 @@ Standalone utilities for working with specific coding agents, one subdirectory p
 
 ## Gotchas
 - **Transcript format is Claude Code's, not a stable API.** `transcript_speed.py` relies on `api-request` records, one `assistant` line per content block, and `message.usage.output_tokens` being the final total repeated on every block. A Claude Code update can change this silently; if the call count drops to zero or looks wrong, check the record shapes first.
+- **Run these scripts with `uv run`, never bare `python3`.** This machine's system `python3` is 3.9; `transcript_speed.py` needs >= 3.11 (`fromisoformat` and the transcripts' trailing `Z`) and exits with a message on older Pythons. An empty result on a version without that guard means the interpreter, not the format.
 - **`api-request` records only exist from 2026-10-14.** Older transcripts contribute zero calls to `transcript_speed.py` (about 39% of messages on the author's data); that is expected, not a parser bug. Check a transcript's date before debugging a low count.
 - **Inspecting real OTel spans:** `OTEL_TRACES_EXPORTER=console claude -p "..." >out.txt 2>&1` prints the full `llm_request` span (`ttft_ms`, `duration_ms`, `attempt`...). Redirect to a file rather than piping to `awk`/`head`, which exit early and leave `claude -p` hanging.
 - **Shell traps when testing:** macOS has no `timeout`, and `kill %1` does nothing in the non-interactive Bash tool. Start background servers with `&`, keep `$!`, and `kill` that PID. A leftover receiver makes the next run fail with "Address already in use".
