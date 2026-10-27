@@ -24,11 +24,20 @@ Usage: transcript_speed.py [--min-tokens N] [--csv | --json] PATH_OR_DIR...
   --compare:   side-by-side of two --json files, with the percent difference B vs A
 """
 
+import argparse
+import csv
+import json
+import math
+import statistics
 import sys
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 
 # datetime.fromisoformat only parses the transcripts' trailing "Z" from 3.11, and parse_ts's
 # error handler skips every record it cannot parse, so an old interpreter reports "0 calls"
-# instead of failing. pyproject.toml pins 3.13; uv run picks it up.
+# instead of failing. pyproject.toml pins 3.13; uv run picks it up. Checked in main(), not at
+# import, so otel_speed.py (which only imports percentile) is not blocked by it.
 REQUIRED_PYTHON = (3, 11)
 
 
@@ -39,20 +48,9 @@ def require_python(version=None):
         want = ".".join(str(v) for v in REQUIRED_PYTHON)
         sys.exit(
             f"transcript_speed.py needs Python >= {want}, found {have}. "
-            "Run it with uv: uv run --directory claude-utilities python transcript_speed.py ..."
+            "From agent-utilities/claude-utilities, run: uv run python transcript_speed.py ..."
         )
 
-
-require_python()
-
-import argparse  # noqa: E402
-import csv  # noqa: E402
-import json  # noqa: E402
-import math  # noqa: E402
-import statistics  # noqa: E402
-from collections import defaultdict  # noqa: E402
-from datetime import datetime  # noqa: E402
-from pathlib import Path  # noqa: E402
 
 MIN_WINDOW_S = 1.0
 
@@ -239,6 +237,7 @@ def compare(path_a, path_b):
 
 
 def main():
+    require_python()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
