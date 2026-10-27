@@ -57,6 +57,22 @@ RESTORE_WAIT_TIMEOUT = 90.0
 _KEY_REFUSED = (401, 403)
 
 
+# The statuses that say "this request is malformed", which waiting does not change, and how many
+# times in a row the warmup chat must get the same one (the same status and the same body) before
+# it stops polling. A server still loading answers 503 or refuses the connection, not 400; the
+# repeat count is the margin for one that words its "not ready" as a 400 for a few seconds.
+_REJECTED = (400, 422)
+_REJECTED_REPEATS = 10
+
+
+class WarmupRejectedError(LifecycleError):
+    """The server answered the warmup chat with the same HTTP 400 or 422, body
+    and all, `_REJECTED_REPEATS` times running. That is a request the server
+    will not render or accept (for omlx, a chat template that raises), not a
+    model still loading, so `warmup` stops with the server's own message
+    instead of polling out its whole (ten-minute) budget."""
+
+
 class WarmupRefusedError(LifecycleError):
     """The server refused the request for want of an API key (HTTP 401 or
     403), or refused the key the request carried. Unlike every other warmup
@@ -273,6 +289,8 @@ def warmup(
     chat_headers = {"Content-Type": "application/json"}
     if key is not None:
         chat_headers["Authorization"] = f"Bearer {key}"
+    rejected: tuple[int, str] | None = None
+    repeats = 0
     for _ in _deadline_loop(timeout):
         try:
             urllib.request.urlopen(_target(health_url, key), timeout=2.0)  # noqa: S310 — localhost probe
@@ -307,8 +325,19 @@ def warmup(
                 raise WarmupRefusedError(
                     f"{chat_url} refused the warmup for {model} (HTTP {exc.code}: {detail})"
                 ) from None
+            if exc.code in _REJECTED:
+                seen = (exc.code, _refusal_detail(exc, key))
+                repeats = repeats + 1 if seen == rejected else 1
+                rejected = seen
+                if repeats >= _REJECTED_REPEATS:
+                    raise WarmupRejectedError(
+                        f"{chat_url} rejected the warmup for {model} {repeats} times in a row "
+                        f"(HTTP {seen[0]}: {seen[1]})"
+                    ) from None
+            else:
+                rejected, repeats = None, 0
         except OSError:
-            pass
+            rejected, repeats = None, 0
         time.sleep(1.0)
     raise LifecycleError(f"failed to warm up model {model} at {chat_url}")
 
