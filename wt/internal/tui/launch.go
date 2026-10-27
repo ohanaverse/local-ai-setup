@@ -21,6 +21,9 @@ type launchDoneMsg struct {
 	// kept it from starting. Run returns either one, so wt exits as
 	// runAgentCmd does (#412).
 	err error
+	// status is what the launch's own state writes reported (record's
+	// errors), shown on the status line as launchAndRecord used to set it.
+	status string
 }
 
 // currentProgram holds the running tea.Program so runAndWaitCmd can
@@ -177,9 +180,25 @@ var buildPassthrough = agents.BuildPassthroughCmd
 // runAndWaitCmd releases the TUI, runs the agent with stdio wired to the
 // terminal, restores the TUI, captures the post-run summary line into
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
-// launchDoneMsg.
+// launchDoneMsg. It records nothing: a command or passthrough launch has no
+// model to record.
 func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
+	return runRecordAndWaitCmd(cmd, agent, m, nil)
+}
+
+// runRecordAndWaitCmd is runAndWaitCmd with the launch's state writes:
+// record, when non-nil, is called once the launch is committed (the root is
+// held and the agent starts next, or the profile failed, as it always did
+// after recording) and returns the status its errors make, "" for none. A
+// quit at the root prompt calls it never, so it leaves no trace.
+func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string) tea.Cmd {
+	if record == nil {
+		record = func() string { return "" }
+	}
 	return func() tea.Msg {
+		// The directory the agent was built for, read before a profile can
+		// touch the command: a root launch claims it for the run (holdRoot).
+		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			// defer the restore so a panic in cmd.Run() still returns
@@ -203,19 +222,20 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 			if perr != nil {
 				// Mirrors cmd/wt's runAgentCmd: a pre-launch profile
 				// application error (e.g. a wrapper profile naming a
-				// missing binary) must still release the refcount entry
-				// launchAndRecord already recorded before this command
-				// was returned, and still populate pendingSummary
+				// missing binary) is still recorded, and must still
+				// release the refcount entry that records, and still
+				// populate pendingSummary
 				// (duration 0) so Run() prints it exactly as on a real
 				// exit — but there is no session to survey or a stop
 				// picker to offer, since nothing ever ran, so
 				// pendingSurveyState is deliberately left at its zero
 				// value.
+				status := record()
 				releaseSession()
 				pendingSummary = agents.Summary(agent, m, 0)
 				// Run() returns perr, so main prints it once, as it does
 				// for runAgentCmd's return.
-				return launchDoneMsg{err: perr}
+				return launchDoneMsg{err: perr, status: status}
 			}
 		}
 		cmd.Stdin = os.Stdin
@@ -224,7 +244,17 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 		if profileCleanup == nil {
 			profileCleanup = func() error { return nil }
 		}
+		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
+		if !held {
+			// The person quit at the root prompt: nothing runs and nothing
+			// is recorded or summarised, as when quitting the picker.
+			_ = profileCleanup()
+			return launchDoneMsg{}
+		}
+		// The commit point: the agent runs next.
+		status := record()
 		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
+		release()
 		// Capture (do not print) the summary line. Printing here would
 		// land inside the alt-screen buffer, which bubbletea discards at
 		// tea.Quit shutdown. Run() reads pendingSummary after p.Run()
@@ -232,7 +262,7 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
 		// in the TUI lifecycle where stdout reaches the user's terminal.
 		pendingSummary = agents.Summary(agent, m, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: m}
-		return launchDoneMsg{err: err}
+		return launchDoneMsg{err: err, status: status}
 	}
 }
 

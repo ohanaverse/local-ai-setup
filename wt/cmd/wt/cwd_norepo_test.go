@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ import (
 type cwdLaunch struct {
 	err        error
 	agentDir   string   // the agent's own working directory, links resolved
+	claimSeen  bool     // the agent found this wt's root session claim while it ran
 	guarded    bool     // maybeInstallGuard was called
 	guardRoot  string   // the checkout root git reported when it was called, links resolved ("" if none)
 	released   int      // times releaseSession was called
@@ -33,6 +35,13 @@ type cwdLaunch struct {
 // the flag and the agent process, so the directory is the one the agent
 // really got, and the state files are the ones a real launch writes.
 func runCwdLaunch(t *testing.T, dir string, extra ...string) cwdLaunch {
+	t.Helper()
+	return runPinnedLaunch(t, dir, []string{"--cwd"}, extra...)
+}
+
+// runPinnedLaunch is runCwdLaunch with where (--cwd, or -W <name>) choosing
+// the launch directory.
+func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) cwdLaunch {
 	t.Helper()
 	t.Chdir(dir)
 	home := t.TempDir()
@@ -55,10 +64,14 @@ func runCwdLaunch(t *testing.T, dir string, extra ...string) cwdLaunch {
 		t.Fatal(err)
 	}
 
-	// A claude that writes where it was started and exits.
+	// A claude that writes where it was started, and whether this wt's claim
+	// is in its repository's wt-sessions while it runs, and exits.
 	binDir := t.TempDir()
 	pwdFile := filepath.Join(t.TempDir(), "pwd")
-	script := "#!/bin/sh\npwd -P > '" + pwdFile + "'\nexit 0\n"
+	claimFile := filepath.Join(t.TempDir(), "claim")
+	script := "#!/bin/sh\npwd -P > '" + pwdFile + "'\n" +
+		"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && test -f \"$d/wt-sessions/" + strconv.Itoa(os.Getpid()) + "\" && touch '" + claimFile + "'\n" +
+		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -87,12 +100,13 @@ func runCwdLaunch(t *testing.T, dir string, extra ...string) cwdLaunch {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := append([]string{"--cwd", "-A", "claude", "-M", "claude/opus"}, extra...)
+	args := append(append(append([]string{}, where...), "-A", "claude", "-M", "claude/opus"), extra...)
 	captureFile(t, &os.Stdout, func() { _, res.err = runWT(t, args...) })
 
 	if b, rerr := os.ReadFile(pwdFile); rerr == nil {
 		res.agentDir = strings.TrimSpace(string(b))
 	}
+	res.claimSeen = fileExists(claimFile)
 	after, err := os.ReadDir(cfgDir)
 	if err != nil {
 		t.Fatal(err)

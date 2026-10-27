@@ -392,6 +392,8 @@ func (m model) launchSlot() (model, tea.Cmd) {
 // runs nothing and records nothing, and comes back as a slotAbortMsg.
 func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 	return func() tea.Msg {
+		// Read before the applier can touch the command, as runAndWaitCmd does.
+		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			defer func() {
@@ -415,6 +417,13 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		if cleanup == nil {
 			cleanup = func() error { return nil }
 		}
+		// A root another session now holds is asked about before anything is
+		// recorded, so quitting there leaves no trace of the launch.
+		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
+		if !held {
+			_ = cleanup()
+			return launchDoneMsg{}
+		}
 		// The commit point: the applier succeeded and the agent runs next.
 		// Both writes are best-effort, as launchAndRecord's are.
 		if err := rotation.New().RecordProfile(agent, row.Model.ID); err != nil {
@@ -431,6 +440,7 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		duration, runErr := agents.RunAndCleanup(cmd, cleanup)
+		release()
 		shown := config.Model{ID: row.Model.ID}
 		pendingSummary = agents.Summary(agent, shown, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}

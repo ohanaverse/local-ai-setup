@@ -255,8 +255,8 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 // TestRunAndWaitCmdProfileApplierErrorSkipsRun is the regression lock for
 // the TUI-side equivalent of the non-TUI runAgentCmd fix (plan item #5): a
 // pre-launch profileApplier error must skip cmd.Run() entirely, still
-// release the refcount entry already recorded by launchAndRecord before
-// runAndWaitCmd was returned, still populate pendingSummary (duration 0),
+// release the refcount entry launchAndRecord's record writes (it is still
+// called for a profile error), still populate pendingSummary (duration 0),
 // and come back as a launchDoneMsg carrying the error — not print it — so
 // Run returns it once and main reports it as `wt: <error>` with exit 1
 // (#412). It must NOT populate pendingSurveyState, since nothing ran and

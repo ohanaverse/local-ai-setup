@@ -299,6 +299,8 @@ func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.C
 	cmd.Stderr = os.Stderr
 
 	duration, err := agents.RunAndCleanup(cmd, cleanup)
+	// Explicit, not deferred: the os.Exit below would skip a deferred release.
+	releaseRootClaim()
 
 	releaseSession()
 	runStopPicker(cfg)

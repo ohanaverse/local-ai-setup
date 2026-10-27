@@ -38,6 +38,7 @@ const (
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
+	phaseSharedRoot                  // another live session holds the repository root the launch resolved to; c/w/q
 )
 
 // model holds the entire UI state.
@@ -124,6 +125,10 @@ type model struct {
 	// while the profile's local model starts and on the replace dialog.
 	slot    *slotFlow // in-flight profile launch; nil when idle
 	slotRun int       // monotonically increasing run id; stale messages are dropped by id
+
+	// shared-root screen: the launch resolved to the repository root while
+	// another live session holds it (sharedroot.go).
+	sharedRoot *sharedRootState // phaseSharedRoot; nil when not shown
 
 	// new-worktree prompt
 	newInput         textinput.Model
@@ -418,7 +423,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		m.selectedPath = msg.path
 		return m.proceedFromSelectedPath()
+	case sharedRootWorktreeMsg:
+		return m.handleSharedRootWorktree(msg)
 	case launchDoneMsg:
+		if msg.status != "" {
+			m.status = msg.status
+		}
 		if msg.err != nil {
 			m.status = "agent exited: " + msg.err.Error()
 		}
@@ -449,6 +459,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// And a profile launch's route stage, for the same reason.
 		if m.phase == phaseSlot && m.slot != nil {
 			return m.handleSlotKey(msg)
+		}
+		// The shared-root screen takes its own keys (c, w, q, Esc), before
+		// the general q/esc handling below.
+		if m.phase == phaseSharedRoot && m.sharedRoot != nil {
+			return m.handleSharedRootKey(msg)
 		}
 		// A status that has the screen to itself (statusAlone) is taken down
 		// by the next key, which does nothing else: the table was not on
@@ -787,6 +802,12 @@ func (m model) View() string {
 		}
 		return clip(m.slotView(), m.width)
 	}
+	if m.phase == phaseSharedRoot && m.sharedRoot != nil {
+		if m.width <= 0 || m.height <= 0 {
+			return "shared root (waiting for window size)"
+		}
+		return m.sharedRootView()
+	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
 			return "replace confirm (waiting for window size)"
@@ -852,7 +873,25 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 // skips the picker and launches immediately, any other --agent jumps straight
 // to phaseModel. This keeps `wt --agent shell` and `wt --agent claude` exactly
 // as they behaved before PR 2 — only the unpinned path shows the picker.
+//
+// It is also where the shared-root check runs (sharedRootCheck): every launch
+// the TUI makes — a command, a passthrough agent, a model or a slot profile,
+// from a picker row or a preset path — learns its directory here, before
+// anything starts. A root another live session holds gets the shared-root
+// screen first, which continues in proceedWithPath.
 func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
+	if st := m.sharedRootCheck(); st != nil {
+		m.sharedRoot = st
+		m.phase = phaseSharedRoot
+		m.status = ""
+		return m, nil
+	}
+	return m.proceedWithPath()
+}
+
+// proceedWithPath is proceedFromSelectedPath once the shared-root check has
+// passed or the person chose to continue.
+func (m model) proceedWithPath() (model, tea.Cmd) {
 	if m.initialAgent != "" {
 		m.agent = m.initialAgent
 		if agents.IsCommand(m.agent) {
@@ -1324,28 +1363,30 @@ func (m model) launchSelected() (model, tea.Cmd) {
 	return m.launchAndRecord(cmd)
 }
 
-// launchAndRecord records the model as last-launched (so the next picker
-// entry advances rotation), records a live-session refcount entry for the
-// model picker's "in use" column, and then runs the agent. Recording
-// happens here — the single commit point reached only after the ollama
-// check has been satisfied — so a cancelled ollama warning or a failed
-// ollama check never advances the rotation or the refcount. Both state writes are
-// best-effort: a failure of either (or both) surfaces in m.status and the
-// launch still proceeds.
+// launchAndRecord runs the agent and has its run command record the model as
+// last-launched (so the next picker entry advances rotation) and a
+// live-session refcount entry for the model picker's "in use" column.
+// Recording is the single commit point, reached only after the ollama check
+// has been satisfied and, in the run command, once the root is held — so a
+// cancelled ollama warning, a failed ollama check or a quit at the root
+// prompt never advances the rotation or the refcount. Both state writes are
+// best-effort: a failure of either (or both) surfaces in m.status (through
+// launchDoneMsg) and the launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
-	var errs []string
-	if err := rotation.New().RecordFor(m.agent, m.launchModel.ID); err != nil {
-		// RecordFor's error names the file that failed (rotation.state, or
-		// last-picked.state, a write of its own).
-		errs = append(errs, err.Error())
+	agent, id := m.agent, m.launchModel.ID
+	record := func() string {
+		var errs []string
+		if err := rotation.New().RecordFor(agent, id); err != nil {
+			// RecordFor's error names the file that failed (rotation.state, or
+			// last-picked.state, a write of its own).
+			errs = append(errs, err.Error())
+		}
+		if err := refcount.NewStore().Record(os.Getpid(), id); err != nil {
+			errs = append(errs, "refcount state not saved: "+err.Error())
+		}
+		return strings.Join(errs, "; ")
 	}
-	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil {
-		errs = append(errs, "refcount state not saved: "+err.Error())
-	}
-	if len(errs) > 0 {
-		m.status = strings.Join(errs, "; ")
-	}
-	return m, runAndWaitCmd(cmd, m.agent, m.launchModel)
+	return m, runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record)
 }
 
 // findRepoRoot is the picker's `git rev-parse --show-toplevel`

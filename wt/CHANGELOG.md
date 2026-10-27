@@ -4,6 +4,14 @@
 
 ### Added
 
+- A launch in a repository's root checkout now notices another live wt
+  session there and asks `c` continue / `w` new worktree / `q` quit (Esc
+  quits), in both the plain launch and the picker. Launches in a linked
+  worktree (`-W` or a picker row) are never asked. `--allow-shared-root` continues without asking; with
+  no terminal wt refuses instead. Each root session writes a claim file under
+  `<git-common-dir>/wt-sessions/`, in the format
+  `docs/contracts/session-claims.md` fixes so `repo-cleanup` can read it. A
+  claims failure prints a note and never stops the launch.
 - `wt cloud-sync` now removes OpenRouter models that OpenRouter no longer
   lists, after the same approval ollama's removals need: the prompt, or
   `--yes` with `--approve-removals <digest>` from a dry run

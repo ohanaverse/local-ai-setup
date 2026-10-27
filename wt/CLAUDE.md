@@ -83,7 +83,7 @@ make -C .. test-all   # CI-equivalent: root lint + llmbench + wt
 
 ## Go module
 
-Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
 **Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
 
@@ -222,6 +222,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - `internal/guard` manages the `block-main-commit` hook (`Install` is idempotent and appends; `git rev-parse --git-common-dir` covers all worktrees).
 - `wt --init` seeds `AGENTS.md` and a pointer file (`cmd/wt/main.go`, before any agent-binary requirement); existing files are never overwritten.
 - wt launches a fresh agent every time and leaves session handling to the agent (#198, #204): continue with the agent's own flags after `--` (`claude-wt -- --continue`). Why the session lookup stays removed: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#sessions-go).
+- A launch in the repository root writes a claim under `<git-common-dir>/wt-sessions/<pid>` (`internal/sessionclaim`); a second live root launch gets the continue / new worktree / quit menu (`c`/`w`/`q`, Esc quits). A linked worktree (by `-W` or a row) skips the check — the check judges the resolved directory, so `-W <root's branch>` is checked — `--allow-shared-root` continues without asking, and with no terminal the launch refuses. A claims failure only prints a note. Where the check runs and when the claim is released: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#shared-root-check-internalsessionclaim); the file format `repo-cleanup` also reads: [docs/contracts/session-claims.md](../docs/contracts/session-claims.md).
 
 ## TUI (Go)
 

@@ -756,11 +756,13 @@ func TestLaunchAndRecordWritesLast(t *testing.T) {
 	if !ok {
 		t.Fatalf("items[0] is %T, want *modelItem", m.models.Items()[0])
 	}
-	// launchAndRecord records the model captured in m.launchModel, then
-	// returns a tea.Cmd that would run the agent. We discard that cmd so
-	// the test never execs anything; the recording is what we verify.
+	// launchAndRecord returns the command that records the model captured
+	// in m.launchModel and runs the agent (here `true`); the recording is
+	// what we verify.
+	keepPendingPostExit(t)
 	m.launchModel = first.model
-	m, _ = m.launchAndRecord(exec.Command("true"))
+	_, run := m.launchAndRecord(exec.Command("true"))
+	run()
 
 	data, err := os.ReadFile(filepath.Join(dir, "rotation.state"))
 	if err != nil {
@@ -795,8 +797,10 @@ func TestLaunchAndRecordWritesRefcount(t *testing.T) {
 	if !ok {
 		t.Fatalf("items[0] is %T, want *modelItem", m.models.Items()[0])
 	}
+	keepPendingPostExit(t)
 	m.launchModel = first.model
-	m, _ = m.launchAndRecord(exec.Command("true"))
+	_, run := m.launchAndRecord(exec.Command("true"))
+	run()
 
 	got := refcount.NewStoreAt(dir).Counts([]string{first.model.ID})
 	if got[first.model.ID] != 1 {
@@ -829,11 +833,12 @@ func TestNextEntryAfterLaunchAdvancesCursor(t *testing.T) {
 	}
 
 	// Commit the launch of gemma4:14b (the highlighted model) via the
-	// shared commit point. The returned tea.Cmd would run the agent; we
-	// discard it so the test never execs anything. Recording happens
-	// synchronously here, advancing the rotation to gemma4:14b.
+	// shared commit point. The returned tea.Cmd records the launch,
+	// advancing the rotation to gemma4:14b, and runs the agent (`true`).
+	keepPendingPostExit(t)
 	m.launchModel = m.models.Items()[m.models.Index()].(*modelItem).model
-	m, _ = m.launchAndRecord(exec.Command("true"))
+	_, run := m.launchAndRecord(exec.Command("true"))
+	run()
 
 	// Picker entry 2 (e.g., user backed out and picked again, or the app
 	// restarted). Drive selectedEntryMsg → phaseAgent → Enter; the
@@ -883,9 +888,11 @@ func TestNextEntryAfterManualPickAdvancesFromManualPick(t *testing.T) {
 	}
 
 	// Commit the launch of gemma4:9b (the manual pick) via the shared
-	// commit point. Discard the returned tea.Cmd so nothing execs.
+	// commit point. The returned tea.Cmd records it and runs `true`.
+	keepPendingPostExit(t)
 	m.launchModel = m.models.Items()[m.models.Index()].(*modelItem).model
-	m, _ = m.launchAndRecord(exec.Command("true"))
+	_, run := m.launchAndRecord(exec.Command("true"))
+	run()
 
 	// Picker entry 2: last-launched is gemma4:9b (the manual pick); the
 	// rotation's next in registry order is gemma4:14b.

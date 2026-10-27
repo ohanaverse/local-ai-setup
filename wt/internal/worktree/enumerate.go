@@ -202,6 +202,60 @@ func RepoRootAt(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// RootOf reports whether dir is its repository's primary checkout (the first
+// entry of `git worktree list`), returning that path with symlinks resolved.
+// It is false for a linked worktree, a subdirectory, a bare repository and a
+// directory outside any repository.
+func RootOf(dir string) (root string, ok bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", false
+	}
+	out, err := runGit(resolved, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", false
+	}
+	first, _, _ := strings.Cut(string(out), "\n\n")
+	var path string
+	for _, line := range strings.Split(first, "\n") {
+		if line == "bare" {
+			return "", false
+		}
+		if p, found := strings.CutPrefix(line, "worktree "); found {
+			path = p
+		}
+	}
+	primary, err := filepath.EvalSymlinks(path)
+	if path == "" || err != nil || primary != resolved {
+		return "", false
+	}
+	return primary, true
+}
+
+// CommonDirAt returns the absolute path of dir's repository's common git
+// directory (the .git every linked worktree shares).
+func CommonDirAt(dir string) (string, error) {
+	out, err := runGit(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// CurrentBranchAt returns the branch checked out in dir, or "" when HEAD is
+// detached or git cannot say.
+func CurrentBranchAt(dir string) string {
+	out, err := runGit(dir, "branch", "--show-current")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // RepoRoot is shorthand for RepoRootAt(".") — kept for existing callers.
 func RepoRoot() (string, error) {
 	return RepoRootAt(".")
