@@ -14,7 +14,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -529,5 +532,142 @@ func TestSharedRootScreenFitsASmallTerminal(t *testing.T) {
 	}
 	if !strings.Contains(view, "not shown") {
 		t.Errorf("screen %q does not say sessions were cut", view)
+	}
+}
+
+// answerOnStdio points os.Stdin at a file holding answer, for the run
+// commands' late prompt, and os.Stderr at a file whose text the returned func
+// reads, until the test ends.
+func answerOnStdio(t *testing.T, answer string) func() string {
+	t.Helper()
+	dir := t.TempDir()
+	in := filepath.Join(dir, "stdin")
+	if err := os.WriteFile(in, []byte(answer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.Create(filepath.Join(dir, "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldIn, oldErr := os.Stdin, os.Stderr
+	os.Stdin, os.Stderr = stdin, stderr
+	t.Cleanup(func() { os.Stdin, os.Stderr = oldIn, oldErr; stdin.Close(); stderr.Close() })
+	return func() string {
+		data, _ := os.ReadFile(stderr.Name())
+		return string(data)
+	}
+}
+
+// TestLatePromptQuitLeavesNoTraceOfTheLaunch checks every run command the
+// picker launches through, when a session that came after the picker's own
+// check holds the root: q at the late prompt runs nothing, writes no rotation,
+// usage or refcount state, queues no summary or survey and ends wt as quitting
+// the picker does, since no launch happened; c records and summarises exactly
+// as a launch with no prompt does. The model route used to record before the
+// prompt and every route queued a summary line for the launch that never ran.
+func TestLatePromptQuitLeavesNoTraceOfTheLaunch(t *testing.T) {
+	routes := []struct {
+		name string
+		// run builds the route's run command for agent (which must exit 0)
+		// and returns the id it records ("" for none).
+		run func(t *testing.T, agent *exec.Cmd) (tea.Cmd, string)
+	}{
+		{"model", func(t *testing.T, agent *exec.Cmd) (tea.Cmd, string) {
+			m := phaseModelWithList(t, testConfig(), "claude", "code")
+			m.launchModel = m.models.Items()[0].(*modelItem).model
+			_, cmd := m.launchAndRecord(agent)
+			return cmd, m.launchModel.ID
+		}},
+		{"command", func(t *testing.T, agent *exec.Cmd) (tea.Cmd, string) {
+			return runAndWaitCmd(agent, "shell", config.Model{}), ""
+		}},
+		{"slot profile", func(t *testing.T, agent *exec.Cmd) (tea.Cmd, string) {
+			stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
+			row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
+			return runSlotAndWaitCmd(agent, "claude", row), "profile/cloud"
+		}},
+	}
+	for _, r := range routes {
+		for _, answer := range []string{"q", "c"} {
+			t.Run(r.name+" "+answer, func(t *testing.T) {
+				keepPendingPostExit(t)
+				pendingSummary, pendingSurveyState = "", pendingSurvey{}
+				old := rootChecked
+				rootChecked.dir, rootChecked.accepted = "", nil
+				t.Cleanup(func() { rootChecked = old })
+				dir := tempStateDir(t)
+				root := rootRepo(t)
+				ran := filepath.Join(t.TempDir(), "ran")
+				agent := exec.Command("touch", ran)
+				agent.Dir = root
+				run, id := r.run(t, agent)
+				// The newcomer: it claims the root after the picker looked.
+				liveOther(t, root, "codex")
+				stderr := answerOnStdio(t, answer)
+
+				msg := run()
+
+				if !strings.Contains(stderr(), "choose [c/w/q]") {
+					t.Fatalf("stderr %q: the late prompt was not shown", stderr())
+				}
+				done, ok := msg.(launchDoneMsg)
+				if !ok || done.err != nil {
+					t.Fatalf("msg = %#v; want a clean launchDoneMsg", msg)
+				}
+				_, statErr := os.Stat(ran)
+				_, rotErr := os.Stat(filepath.Join(dir, "last-picked.state"))
+				// Read before the stores are opened below, which may create
+				// their files.
+				var written []string
+				for _, name := range []string{"rotation.state", "last-picked.state", "refcount.jsonl", "usage.jsonl"} {
+					if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+						written = append(written, name)
+					}
+				}
+				refs := refcount.NewStoreAt(dir).Counts([]string{id})[id]
+				uses := usage.NewStoreAt(dir).CountsForAgent("claude", []string{id})[id].ThirtyDay
+				if answer == "q" {
+					if statErr == nil {
+						t.Error("the agent ran after q")
+					}
+					if len(written) > 0 {
+						t.Errorf("%v written for a launch that never ran", written)
+					}
+					if refs != 0 || uses != 0 {
+						t.Errorf("refcount %d, usage %d; want nothing recorded", refs, uses)
+					}
+					if pendingSummary != "" || pendingSurveyState.agent != "" {
+						t.Errorf("summary %q, survey of %q queued for a launch that never ran", pendingSummary, pendingSurveyState.agent)
+					}
+					m, cmd := updateMsg(model{}, msg)
+					if cmd == nil || m.status != "" || runResult(m, nil) != nil {
+						t.Errorf("status %q, quit %v, result %v; want wt to quit quietly with status 0", m.status, cmd != nil, runResult(m, nil))
+					}
+					return
+				}
+				if statErr != nil {
+					t.Error("the agent did not run after c")
+				}
+				if pendingSummary == "" {
+					t.Error("no summary after the run")
+				}
+				if id == "" {
+					return
+				}
+				if rotErr != nil {
+					t.Errorf("last-picked.state not written: %v", rotErr)
+				}
+				if got, _ := rotation.NewAt(dir).LastPicked(); got != id {
+					t.Errorf("LastPicked = %q, want %q", got, id)
+				}
+				if r.name == "model" && (refs != 1 || uses != 1) {
+					t.Errorf("refcount %d, usage %d; want 1 and 1", refs, uses)
+				}
+			})
+		}
 	}
 }

@@ -426,6 +426,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	case sharedRootWorktreeMsg:
 		return m.handleSharedRootWorktree(msg)
 	case launchDoneMsg:
+		if msg.status != "" {
+			m.status = msg.status
+		}
 		if msg.err != nil {
 			m.status = "agent exited: " + msg.err.Error()
 		}
@@ -1360,28 +1363,30 @@ func (m model) launchSelected() (model, tea.Cmd) {
 	return m.launchAndRecord(cmd)
 }
 
-// launchAndRecord records the model as last-launched (so the next picker
-// entry advances rotation), records a live-session refcount entry for the
-// model picker's "in use" column, and then runs the agent. Recording
-// happens here — the single commit point reached only after the ollama
-// check has been satisfied — so a cancelled ollama warning or a failed
-// ollama check never advances the rotation or the refcount. Both state writes are
-// best-effort: a failure of either (or both) surfaces in m.status and the
-// launch still proceeds.
+// launchAndRecord runs the agent and has its run command record the model as
+// last-launched (so the next picker entry advances rotation) and a
+// live-session refcount entry for the model picker's "in use" column.
+// Recording is the single commit point, reached only after the ollama check
+// has been satisfied and, in the run command, once the root is held — so a
+// cancelled ollama warning, a failed ollama check or a quit at the root
+// prompt never advances the rotation or the refcount. Both state writes are
+// best-effort: a failure of either (or both) surfaces in m.status (through
+// launchDoneMsg) and the launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
-	var errs []string
-	if err := rotation.New().RecordFor(m.agent, m.launchModel.ID); err != nil {
-		// RecordFor's error names the file that failed (rotation.state, or
-		// last-picked.state, a write of its own).
-		errs = append(errs, err.Error())
+	agent, id := m.agent, m.launchModel.ID
+	record := func() string {
+		var errs []string
+		if err := rotation.New().RecordFor(agent, id); err != nil {
+			// RecordFor's error names the file that failed (rotation.state, or
+			// last-picked.state, a write of its own).
+			errs = append(errs, err.Error())
+		}
+		if err := refcount.NewStore().Record(os.Getpid(), id); err != nil {
+			errs = append(errs, "refcount state not saved: "+err.Error())
+		}
+		return strings.Join(errs, "; ")
 	}
-	if err := refcount.NewStore().Record(os.Getpid(), m.launchModel.ID); err != nil {
-		errs = append(errs, "refcount state not saved: "+err.Error())
-	}
-	if len(errs) > 0 {
-		m.status = strings.Join(errs, "; ")
-	}
-	return m, runAndWaitCmd(cmd, m.agent, m.launchModel)
+	return m, runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record)
 }
 
 // findRepoRoot is the picker's `git rev-parse --show-toplevel`

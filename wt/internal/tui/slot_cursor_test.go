@@ -202,9 +202,11 @@ func TestLaunchAndRecordMovesMarkerOffProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("items[0] is %T, want *modelItem", m.models.Items()[0])
 	}
+	keepPendingPostExit(t)
 	m.launchModel = first.model
-	// The returned command would run the agent; it is dropped, so nothing runs.
-	m, _ = m.launchAndRecord(exec.Command("true"))
+	// The returned command records the launch and runs the agent (`true`).
+	_, run := m.launchAndRecord(exec.Command("true"))
+	run()
 
 	for _, name := range []string{"rotation.state", "last-picked.state"} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
