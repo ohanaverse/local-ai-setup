@@ -50,13 +50,17 @@ type fakePool struct {
 	// drained") and for a moment still lists the model as loaded (#492).
 	unloadLag int
 	draining  map[string]int
-	onLoad    func()
-	loadCodes []int
-	loads     []string
-	unloads   []string
-	mgmtKey   string
-	refused   []string
-	chats     []string
+	// unreadableAfter makes every pool read (status and the model list) fail
+	// with HTTP 500 once that many status reads have been served; 0 never.
+	unreadableAfter int
+	statusReads     int
+	onLoad          func()
+	loadCodes       []int
+	loads           []string
+	unloads         []string
+	mgmtKey         string
+	refused         []string
+	chats           []string
 }
 
 // refuse answers a management request 401 when the pool wants a key the
@@ -94,6 +98,10 @@ func (f *fakePool) handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.unreadableAfter > 0 && f.statusReads >= f.unreadableAfter {
+			http.Error(w, `{"detail":"Internal Server Error"}`, http.StatusInternalServerError)
+			return
+		}
 		data := []map[string]string{}
 		for id := range f.loaded {
 			if a := f.alias[id]; a != "" {
@@ -109,6 +117,11 @@ func (f *fakePool) handler() http.Handler {
 		if f.refuse(w, r, "status") {
 			return
 		}
+		if f.unreadableAfter > 0 && f.statusReads >= f.unreadableAfter {
+			http.Error(w, `{"detail":"Internal Server Error"}`, http.StatusInternalServerError)
+			return
+		}
+		f.statusReads++
 		if f.statusFailsAfterLoad && len(f.loads) > 0 {
 			http.Error(w, `{"detail":"Internal Server Error"}`, http.StatusInternalServerError)
 			return
@@ -478,7 +491,7 @@ func TestStopModelOnALoadingModelSaysOmlxIsStillLoadingIt(t *testing.T) {
 // unload that was succeeding (exit status 1, a "failed" line in `wt stop`, a
 // warning on every llmbench model change). It now polls until the model is
 // gone. The sibling is untouched, and a model that never leaves (the bound is
-// e.stopTimeout) still fails with the same wording, after the whole wait.
+// e.omlxUnloadTimeout) still fails with the same wording, after the whole wait.
 func TestStopModelWaitsForAnUnloadOmlxCarriesOutLater(t *testing.T) {
 	fp := &fakePool{loaded: map[string]bool{"A": true, "B": true}, unloadLag: 3}
 	e, _ := poolEnv(t, localmodels.Snapshot{})
@@ -497,8 +510,8 @@ func TestStopModelWaitsForAnUnloadOmlxCarriesOutLater(t *testing.T) {
 	if err == nil || err.Error() != "omlx still has A loaded" {
 		t.Errorf("stop of a model that never leaves = %v, want \"omlx still has A loaded\"", err)
 	}
-	if took := time.Since(began); took < e.stopTimeout {
-		t.Errorf("failed after %v, want it to wait the whole bound (%v) first", took, e.stopTimeout)
+	if took := time.Since(began); took < e.omlxUnloadTimeout {
+		t.Errorf("failed after %v, want it to wait the whole bound (%v) first", took, e.omlxUnloadTimeout)
 	}
 
 	// A model that is loading, not loaded, is refused at once: waiting does not
@@ -508,8 +521,36 @@ func TestStopModelWaitsForAnUnloadOmlxCarriesOutLater(t *testing.T) {
 	if err := stopModel(context.Background(), e, provCfg("omlx", loading.serve(t)), "omlx", "B"); err == nil || !containsFold(err.Error(), "still loading B") {
 		t.Errorf("stop of a loading model = %v, want the still-loading message", err)
 	}
-	if took := time.Since(began); took >= e.stopTimeout {
-		t.Errorf("a loading model's stop took %v, want it to fail at once (bound %v)", took, e.stopTimeout)
+	if took := time.Since(began); took >= e.omlxUnloadTimeout {
+		t.Errorf("a loading model's stop took %v, want it to fail at once (bound %v)", took, e.omlxUnloadTimeout)
+	}
+}
+
+// TestStopModelDoesNotCallAnUnreadablePoolAnUnload pins the review of #492: a
+// pool that goes unreadable after a read showed the model loaded is not proof
+// the model left, so the stop keeps polling and ends in an error naming what
+// it could not confirm; unreadable from the first read stays the old
+// "accepted, nothing to judge" success. A context that ends during the
+// wait (Ctrl+C) is its error, never a success.
+func TestStopModelDoesNotCallAnUnreadablePoolAnUnload(t *testing.T) {
+	e, _ := poolEnv(t, localmodels.Snapshot{})
+
+	fp := &fakePool{loaded: map[string]bool{"A": true}, unloadLag: 1 << 20, unreadableAfter: 2}
+	err := stopModel(context.Background(), e, provCfg("omlx", fp.serve(t)), "omlx", "A")
+	if err == nil || !containsFold(err.Error(), "could not confirm omlx unloaded A") {
+		t.Errorf("stop after the pool went unreadable = %v, want a could-not-confirm error", err)
+	}
+
+	fp = &fakePool{loaded: map[string]bool{"A": true}, unreadableAfter: 1}
+	if err := stopModel(context.Background(), e, provCfg("omlx", fp.serve(t)), "omlx", "A"); err != nil {
+		t.Errorf("stop with a pool unreadable from the first read = %v, want nil", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), e.omlxUnloadTimeout/4)
+	defer cancel()
+	slow := &fakePool{loaded: map[string]bool{"A": true}, unloadLag: 1 << 20}
+	if err := stopModel(ctx, e, provCfg("omlx", slow.serve(t)), "omlx", "A"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("stop ended by its context mid-wait = %v, want context.DeadlineExceeded", err)
 	}
 }
 

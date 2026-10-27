@@ -75,6 +75,11 @@ type env struct {
 	// re-probes every pollInterval, ollamaUnloadTimeout/pollInterval times at
 	// most. A batch of stops shares one such bound (StopBatch).
 	ollamaUnloadTimeout time.Duration
+	// omlxUnloadTimeout bounds the wait for an omlx model to leave the pool
+	// after an unload omlx accepted: omlx holds a model with a request in
+	// flight until it ends, so the bound is ollama's, counted in the same
+	// pollInterval sleeps.
+	omlxUnloadTimeout time.Duration
 	// stopNoticeAfter is how long a stop waits for an unload before it says
 	// so (StopNotice): a line that sits open longer than this looks hung.
 	stopNoticeAfter time.Duration
@@ -105,6 +110,7 @@ func defaultEnv() *env {
 		readyCmdTimeout:   5 * time.Second,
 
 		ollamaUnloadTimeout: 3 * time.Minute,
+		omlxUnloadTimeout:   3 * time.Minute,
 		stopNoticeAfter:     2 * time.Second,
 	}
 }
