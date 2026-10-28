@@ -52,6 +52,9 @@ Flags, exit codes and behavior live in the guide named on each line.
 - **OpenRouter rows are N/A without an API key**: `qwen3.8-benchmark` (the only script with them) reads `OPENROUTER_API_KEY` from `~/Library/LaunchAgents/local.litellm.proxy.plist`.
 - **Guides never embed live model state**: no counts, routing snapshots, or "today that's X, Y" inventories in `docs/guides/`. Show the command that reveals the state (`wt litellm list`, `wt model list`); label captured output as an illustrative or dated example.
 - **Routing is derived, not stored**: no file marks a model as routed. `wt` builds `config.yaml`'s `model_list` from `registry.toml` plus live probes — a cloud model always, a local model while it runs (an ollama model while pulled). Whether a model is routed is `wt litellm list`.
+- **omlx CPU stays ~0% while it generates** (MLX runs on the GPU): judge "still generating" from `ioreg -r -d 1 -w0 -c IOAccelerator | grep 'Device Utilization'` (no sudo) and `~/.omlx/logs/server.log` — `Request <id> cancelled, aborting` is a non-streamed cancel, `[vlm_stream_generate] Aborting request` a streamed one, and `Chat completion … tokens in Ns` with neither means it ran to the end.
+- **`~/.litellm.log` / `~/.litellm.err.log` lines carry only `HH:MM:SS`, no date**: a time-of-day grep also matches every earlier day; bound it with `tail` or line numbers.
+- **A PR that must leave an issue open**: no `close`/`fix`/`resolve` followed by `#N` anywhere in the body, including a "then close #N" step (GitHub scans the whole text; #393 and #399 were closed early this way). Write `Refs #N`.
 
 ## Quick test commands
 
