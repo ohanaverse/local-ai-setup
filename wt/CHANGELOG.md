@@ -442,7 +442,10 @@
   wt write to an existing config adds the key and restarts the proxy once. A
   cancelled request shows in LiteLLM's logs as a failed `499` with no cost.
   The setting is proxy-wide, so a client that disconnects from a cloud route
-  now cancels that call too.
+  now cancels that call too. LiteLLM logs it with no cost, though the provider may still bill the
+  tokens already generated, so its spend logs can undercount cloud spend. When
+  `general_settings` is a YAML alias or comes from a root merge key, wt leaves
+  it alone and `wt litellm sync` warns that the key was not written.
 - A local branch or worktree in the picker now takes its pull request tag from
   the repository it pushes to (its `pushRemote`) or tracks, and from no other
   remote (#387). A collaborator's fork you added as a remote, or upstream's

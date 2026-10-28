@@ -280,6 +280,26 @@ func TestEnsureSettingsToleratesAMalformedGeneralSettings(t *testing.T) {
 	}
 }
 
+// TestEnsureSettingsKeepsTheAnchorOnAnEmptyBlock pins that an empty block
+// carrying a YAML anchor is filled in place: replacing the node would drop the
+// anchor and leave every alias that refers to it unresolvable.
+func TestEnsureSettingsKeepsTheAnchorOnAnEmptyBlock(t *testing.T) {
+	for _, key := range []string{"general_settings", "litellm_settings"} {
+		f, err := Open(writeConfig(t, key+": &blk\nother: *blk\nmodel_list: []\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.EnsureSettings()
+		out := enc(t, f)
+		if !strings.Contains(out, "&blk") || !strings.Contains(out, "*blk") {
+			t.Errorf("%s: anchor lost, the alias no longer resolves:\n%s", key, out)
+		}
+		if _, err := Open(writeConfig(t, out)); err != nil {
+			t.Errorf("%s: output does not reopen: %v\n%s", key, err, out)
+		}
+	}
+}
+
 // TestEnsureSettingsHonorsMergedGeneralSettings pins that general_settings
 // reached through YAML merge keys counts as present, like the database_url
 // lookup in dburl.go: an inherited cancel_on_disconnect: false is the opt-out
@@ -301,6 +321,44 @@ func TestEnsureSettingsHonorsMergedGeneralSettings(t *testing.T) {
 			f.EnsureSettings()
 			if f.Changed() {
 				t.Fatalf("EnsureSettings rewrote a config whose general_settings comes through a merge key:\n%s", enc(t, f))
+			}
+		})
+	}
+}
+
+// TestSettingsWarningsNameTheLayoutsThatSkipCancelOnDisconnect pins that the
+// two layouts EnsureSettings leaves alone (general_settings as a whole-value
+// alias, or supplied by a root merge key) are reported, so the user learns the
+// cancel protection is off, and that an ordinary layout reports nothing.
+func TestSettingsWarningsNameTheLayoutsThatSkipCancelOnDisconnect(t *testing.T) {
+	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	for name, tc := range map[string]struct {
+		body string
+		want string
+	}{
+		"alias":      {"base: &b {database_url: postgresql://u@localhost/db}\ngeneral_settings: *b\n" + settled, "is a YAML alias"},
+		"root merge": {"base: &b\n  general_settings:\n    database_url: postgresql://u@localhost/db\n<<: *b\n" + settled, "root merge key"},
+		"plain":      {"general_settings:\n  database_url: postgresql://u@localhost/db\n" + settled, ""},
+		"absent":     {settled, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := f.settingsWarnings()
+			if tc.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("settingsWarnings = %q, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 || !strings.Contains(got[0], tc.want) || !strings.Contains(got[0], "cancel_on_disconnect") {
+				t.Fatalf("settingsWarnings = %q, want one naming %q and cancel_on_disconnect", got, tc.want)
+			}
+			f.EnsureSettings()
+			if f.Changed() {
+				t.Fatalf("EnsureSettings wrote through a shared general_settings:\n%s", enc(t, f))
 			}
 		})
 	}
