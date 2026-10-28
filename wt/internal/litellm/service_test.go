@@ -937,9 +937,9 @@ func TestPlanSyncRejectsNonSequenceModelList(t *testing.T) {
 // the plan path would create it, flip File.Changed, and make a no-op sync write
 // config.yaml and restart the proxy, dropping in-flight requests.
 func TestPlanSyncAcceptsAbsentModelListWithoutTouchingIt(t *testing.T) {
-	// litellm_settings is seeded so EnsureSettings cannot add it and be the
-	// thing that changes the file.
-	const settings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	// litellm_settings and general_settings are seeded so EnsureSettings
+	// cannot add them and be the thing that changes the file.
+	const settings = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n"
 	empty := &config.Config{}
 	for _, body := range []string{settings, "model_list:\n" + settings} {
 		o, restarts, p := opts(t, body)
@@ -1392,6 +1392,8 @@ func TestApplyChangeAddMissingOnlyLeavesAnExistingRow(t *testing.T) {
 litellm_settings:
   drop_params: true
   use_chat_completions_url_for_anthropic_messages: true
+general_settings:
+  cancel_on_disconnect: true
 `
 	o, restarts, p := opts(t, body)
 	cfg := testConfig()
@@ -1413,5 +1415,30 @@ litellm_settings:
 	b, _ := os.ReadFile(p)
 	if !strings.Contains(string(b), "api_key: sk-the-proxy-has") || !strings.Contains(string(b), "model_name: ollama/gemma:9b") {
 		t.Fatalf("want the missing row added and the existing one kept:\n%s", b)
+	}
+}
+
+// TestSyncAddsCancelOnDisconnectToAnExistingConfigWithOneRestart pins what an
+// upgrade does to a config written before the key existed (#399): the first
+// write adds general_settings.cancel_on_disconnect and restarts the proxy once;
+// the next finds nothing to change. Every restart drops in-flight requests, so
+// "once, then never" is the contract.
+func TestSyncAddsCancelOnDisconnectToAnExistingConfigWithOneRestart(t *testing.T) {
+	const before = "model_list: []\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  database_url: postgresql://u@localhost/db\n"
+	empty := &config.Config{}
+	o, restarts, p := opts(t, before)
+	res, err := Sync(empty, nil, o)
+	if err != nil || !res.Changed || *restarts != 1 {
+		t.Fatalf("first Sync: err=%v changed=%v restarts=%d, want nil/true/1", err, res.Changed, *restarts)
+	}
+	after, _ := os.ReadFile(p)
+	for _, want := range []string{"cancel_on_disconnect: true", "database_url: postgresql://u@localhost/db"} {
+		if !strings.Contains(string(after), want) {
+			t.Fatalf("missing %q after the first Sync:\n%s", want, after)
+		}
+	}
+	res, err = Sync(empty, nil, o)
+	if err != nil || res.Changed || *restarts != 1 {
+		t.Fatalf("second Sync: err=%v changed=%v restarts=%d, want nil/false/1", err, res.Changed, *restarts)
 	}
 }

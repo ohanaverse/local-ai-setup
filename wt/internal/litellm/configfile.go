@@ -658,8 +658,35 @@ func (f *File) rowDigests() map[string]string {
 	return out
 }
 
+// ensureCancelOnDisconnect sets general_settings.cancel_on_disconnect: true
+// when the key is absent or an empty null. Without it LiteLLM never notices a
+// client that left a non-streamed request, so omlx keeps generating for nobody
+// until the proxy restarts (#399; streamed requests are cancelled either way).
+// A value written by hand, false included, is the one opt-out. Both lookups
+// look through YAML merge keys like dburl.go's database_url read: a false the
+// block inherits counts as written, and a general_settings the root merges in
+// is shared with whatever else merges it, so it is left alone rather than
+// shadowed by a literal block that would replace it wholesale.
+func ensureCancelOnDisconnect(root *yaml.Node) {
+	gs := mapGet(root, "general_settings")
+	if gs == nil && mergedGet(root, "general_settings") != nil {
+		return
+	}
+	if gs == nil || isNull(gs) {
+		gs, _ = mapping(nil) // nil pairs never fail
+		mapSet(root, "general_settings", gs)
+	}
+	if gs.Kind != yaml.MappingNode {
+		return
+	}
+	if v := aliasValue(mergedGet(gs, "cancel_on_disconnect")); v == nil || isNull(v) {
+		mapSet(gs, "cancel_on_disconnect", boolNode(true))
+	}
+}
+
 // EnsureSettings applies the launcher-required LiteLLM settings: two
-// value-enforced litellm_settings keys, plus presence-based per-row params
+// value-enforced litellm_settings keys, presence-based
+// general_settings.cancel_on_disconnect, and presence-based per-row params
 // (additional_drop_params on ollama_chat/ rows, use_chat_completions_api on
 // loopback openai/ rows). Tolerates hand-edited degenerate shapes.
 func (f *File) EnsureSettings() {
@@ -676,6 +703,7 @@ func (f *File) EnsureSettings() {
 			}
 		}
 	}
+	ensureCancelOnDisconnect(root)
 	ml := f.modelListSeq()
 	if ml == nil {
 		return

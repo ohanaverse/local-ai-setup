@@ -210,6 +210,102 @@ litellm_settings:
 	}
 }
 
+// TestEnsureSettingsWritesCancelOnDisconnect pins general_settings.cancel_on_disconnect:
+// without it LiteLLM never notices a client that left a non-streamed request,
+// so omlx keeps generating for nobody (issue #399). It is written when absent
+// (or an empty null), creates the general_settings block when missing, and
+// leaves every other general_settings key where it was.
+func TestEnsureSettingsWritesCancelOnDisconnect(t *testing.T) {
+	for name, body := range map[string]string{
+		"no block":     "model_list: []\nlitellm_settings:\n  drop_params: true\n",
+		"empty block":  "model_list: []\ngeneral_settings:\nlitellm_settings:\n  drop_params: true\n",
+		"null key":     "model_list: []\ngeneral_settings:\n  cancel_on_disconnect:\n",
+		"other keys":   "model_list: []\ngeneral_settings:\n  database_url: postgresql://u@localhost/db\n  coordination_redis:\n    host: localhost\n    port: 6379\n",
+		"flow mapping": "model_list: []\ngeneral_settings: {database_url: postgresql://u@localhost/db}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.EnsureSettings()
+			out := enc(t, f)
+			if !strings.Contains(out, "cancel_on_disconnect: true") {
+				t.Fatalf("cancel_on_disconnect not enabled:\n%s", out)
+			}
+			if strings.Count(out, "cancel_on_disconnect") != 1 || strings.Count(out, "general_settings:") != 1 {
+				t.Errorf("duplicate key or block:\n%s", out)
+			}
+			for _, keep := range []string{"database_url", "coordination_redis", "port: 6379"} {
+				if strings.Contains(body, keep) && !strings.Contains(out, keep) {
+					t.Errorf("lost %q:\n%s", keep, out)
+				}
+			}
+			f2, _ := Open(writeConfig(t, out))
+			f2.EnsureSettings()
+			if f2.Changed() {
+				t.Errorf("EnsureSettings is not idempotent for %q:\n%s", name, enc(t, f2))
+			}
+		})
+	}
+}
+
+// TestEnsureSettingsKeepsAnExplicitCancelOnDisconnect pins the one opt-out:
+// a hand-written value (false) survives, like the other presence-based keys.
+func TestEnsureSettingsKeepsAnExplicitCancelOnDisconnect(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: []\ngeneral_settings:\n  cancel_on_disconnect: false\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.EnsureSettings()
+	if f.Changed() {
+		t.Fatalf("an explicit cancel_on_disconnect: false was rewritten:\n%s", enc(t, f))
+	}
+	if out := enc(t, f); !strings.Contains(out, "cancel_on_disconnect: false") {
+		t.Fatalf("explicit false lost:\n%s", out)
+	}
+}
+
+// TestEnsureSettingsToleratesAMalformedGeneralSettings pins that a hand-edited
+// general_settings that is not a mapping is left alone instead of panicking or
+// being replaced (the same tolerance litellm_settings gets).
+func TestEnsureSettingsToleratesAMalformedGeneralSettings(t *testing.T) {
+	f, err := Open(writeConfig(t, "model_list: []\ngeneral_settings: [a, b]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.EnsureSettings()
+	if out := enc(t, f); strings.Contains(out, "cancel_on_disconnect") {
+		t.Fatalf("malformed general_settings was rewritten:\n%s", out)
+	}
+}
+
+// TestEnsureSettingsHonorsMergedGeneralSettings pins that general_settings
+// reached through YAML merge keys counts as present, like the database_url
+// lookup in dburl.go: an inherited cancel_on_disconnect: false is the opt-out
+// and is not overridden by a literal true, and a general_settings that a
+// root-level merge supplies is not shadowed by a fresh literal block (which
+// would replace it wholesale and drop its database_url).
+func TestEnsureSettingsHonorsMergedGeneralSettings(t *testing.T) {
+	const settled = "litellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	for name, body := range map[string]string{
+		"inherited false": "base: &b {cancel_on_disconnect: false}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n" + settled,
+		"inherited true":  "base: &b {cancel_on_disconnect: true}\ngeneral_settings:\n  <<: *b\n  database_url: postgresql://u@localhost/db\n" + settled,
+		"root merge":      "base: &b\n  general_settings:\n    database_url: postgresql://u@localhost/db\n<<: *b\n" + settled,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := Open(writeConfig(t, body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.EnsureSettings()
+			if f.Changed() {
+				t.Fatalf("EnsureSettings rewrote a config whose general_settings comes through a merge key:\n%s", enc(t, f))
+			}
+		})
+	}
+}
+
 // TestEnsureSettingsDropsFrequencyAndPresencePenaltyOnFreshOllamaChatRows
 // pins that a fresh (no additional_drop_params yet) ollama_chat/ row gets
 // frequency_penalty and presence_penalty dropped alongside reasoning_effort.
