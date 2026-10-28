@@ -141,6 +141,8 @@ const handWrittenLlama = `model_list:
 litellm_settings:
   drop_params: true
   use_chat_completions_url_for_anthropic_messages: true
+general_settings:
+  cancel_on_disconnect: true
 `
 
 // TestApplyChangeNeverReplacesHandWrittenDiscoveredName pins the Phase B
@@ -217,7 +219,7 @@ func TestPrepareModelRejectsFamilylessDiscoveredID(t *testing.T) {
 			t.Errorf("prepareModel(%q) = %v, %v; want a rejection", bad.ID, node, err)
 		}
 	}
-	const body = "model_list: []\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\n"
+	const body = "model_list: []\nlitellm_settings:\n  drop_params: true\n  use_chat_completions_url_for_anthropic_messages: true\ngeneral_settings:\n  cancel_on_disconnect: true\n"
 	o, restarts, p := opts(t, body)
 	res, err := ApplyChange(cfg, Change{Add: []config.Model{m}}, o)
 	if err != nil {
@@ -280,6 +282,8 @@ func TestApplyChangeIgnoresEmptyFamily(t *testing.T) {
 litellm_settings:
   drop_params: true
   use_chat_completions_url_for_anthropic_messages: true
+general_settings:
+  cancel_on_disconnect: true
 `
 	o, restarts, p := opts(t, body)
 	res, err := ApplyChange(cfg, Change{RemoveFamilies: []string{""}}, o)

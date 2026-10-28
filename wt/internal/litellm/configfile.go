@@ -658,17 +658,78 @@ func (f *File) rowDigests() map[string]string {
 	return out
 }
 
+// ensureMapping returns root's mapping under key, creating it when the key is
+// absent and turning an empty null into one. The null is converted in place,
+// not replaced, so a YAML anchor on it (`general_settings: &gs`) survives and
+// the aliases that refer to it still resolve.
+func ensureMapping(root *yaml.Node, key string) *yaml.Node {
+	n := mapGet(root, key)
+	switch {
+	case n == nil:
+		n, _ = mapping(nil) // nil pairs never fail
+		mapSet(root, key, n)
+	case isNull(n):
+		n.Kind, n.Tag, n.Value, n.Style = yaml.MappingNode, "!!map", "", 0
+	}
+	return n
+}
+
+// ensureCancelOnDisconnect sets general_settings.cancel_on_disconnect: true
+// when the key is absent or an empty null. Without it LiteLLM never notices a
+// client that left a non-streamed request, so omlx keeps generating for nobody
+// until the proxy restarts (#399; streamed requests are cancelled either way).
+// A value written by hand, false included, is the one opt-out. Both lookups
+// look through YAML merge keys like dburl.go's database_url read: a false the
+// block inherits counts as written, and a general_settings the root merges in
+// is shared with whatever else merges it, so it is left alone rather than
+// shadowed by a literal block that would replace it wholesale.
+func ensureCancelOnDisconnect(root *yaml.Node) {
+	if cancelOnDisconnectSkipped(root) != "" {
+		return
+	}
+	gs := ensureMapping(root, "general_settings")
+	if gs.Kind != yaml.MappingNode {
+		return
+	}
+	if v := aliasValue(mergedGet(gs, "cancel_on_disconnect")); v == nil || isNull(v) {
+		mapSet(gs, "cancel_on_disconnect", boolNode(true))
+	}
+}
+
+// cancelOnDisconnectSkipped says why ensureCancelOnDisconnect leaves the
+// document alone, or "" when it does not: general_settings is a whole-value
+// alias or comes from a root merge key, so a write would change a block other
+// keys share (or shadow it with a literal one).
+func cancelOnDisconnectSkipped(root *yaml.Node) string {
+	gs := mapGet(root, "general_settings")
+	switch {
+	case gs == nil && mergedGet(root, "general_settings") != nil:
+		return "comes from a root merge key (<<)"
+	case gs != nil && gs.Kind == yaml.AliasNode:
+		return "is a YAML alias"
+	}
+	return ""
+}
+
+// settingsWarnings reports the launcher-required settings EnsureSettings
+// could not write, so a sync tells the user the protection is off instead of
+// leaving it silent. Sync reports it beside ollamaServeWarnings.
+func (f *File) settingsWarnings() []string {
+	why := cancelOnDisconnectSkipped(f.root())
+	if why == "" {
+		return nil
+	}
+	return []string{"general_settings " + why + ", so wt did not write cancel_on_disconnect: true; set it there by hand or the proxy keeps generating for abandoned non-streamed requests (#399)"}
+}
+
 // EnsureSettings applies the launcher-required LiteLLM settings: two
-// value-enforced litellm_settings keys, plus presence-based per-row params
+// value-enforced litellm_settings keys, presence-based
+// general_settings.cancel_on_disconnect, and presence-based per-row params
 // (additional_drop_params on ollama_chat/ rows, use_chat_completions_api on
 // loopback openai/ rows). Tolerates hand-edited degenerate shapes.
 func (f *File) EnsureSettings() {
 	root := f.root()
-	ls := mapGet(root, "litellm_settings")
-	if ls == nil || isNull(ls) {
-		ls, _ = mapping(nil) // nil pairs never fail
-		mapSet(root, "litellm_settings", ls)
-	}
+	ls := ensureMapping(root, "litellm_settings")
 	if ls.Kind == yaml.MappingNode {
 		for _, k := range enforcedSettings {
 			if !isTrue(mapGet(ls, k)) {
@@ -676,6 +737,7 @@ func (f *File) EnsureSettings() {
 			}
 		}
 	}
+	ensureCancelOnDisconnect(root)
 	ml := f.modelListSeq()
 	if ml == nil {
 		return

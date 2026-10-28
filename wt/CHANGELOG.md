@@ -433,6 +433,19 @@
 
 ### Fixed
 
+- `wt` now writes `general_settings.cancel_on_disconnect: true` into LiteLLM's
+  `config.yaml` when the key is absent, so the proxy cancels the upstream call
+  when a client abandons a non-streamed request. Before, LiteLLM never noticed
+  the client had left: a local model (measured on oMLX) kept generating for
+  nobody until the proxy restarted, and the memory it held made oMLX refuse the
+  next prompt (#399). A hand-written value, `false` included, is kept. The first
+  wt write to an existing config adds the key and restarts the proxy once. A
+  cancelled request shows in LiteLLM's logs as a failed `499` with no cost.
+  The setting is proxy-wide, so a client that disconnects from a cloud route
+  now cancels that call too. LiteLLM logs it with no cost, though the provider may still bill the
+  tokens already generated, so its spend logs can undercount cloud spend. When
+  `general_settings` is a YAML alias or comes from a root merge key, wt leaves
+  it alone and `wt litellm sync` warns that the key was not written.
 - A local branch or worktree in the picker now takes its pull request tag from
   the repository it pushes to (its `pushRemote`) or tracks, and from no other
   remote (#387). A collaborator's fork you added as a remote, or upstream's
