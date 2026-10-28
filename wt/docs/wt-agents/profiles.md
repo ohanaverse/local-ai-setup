@@ -188,9 +188,12 @@ match = "location"
 location = "local"
 env = { MAX_THINKING_TOKENS = "4096", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1" }
 config_content = { env = { CLAUDE_CODE_ATTRIBUTION_HEADER = "0" } }
-# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 also starts Claude Code in auto
-# mode, whose classifier sends the local model a ~31k-token request on every
-# tool turn (#393); defaultMode = "default" keeps local sessions out of it.
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 was seen starting Claude Code in
+# auto mode on 2.1.300 (#393); on 2.1.312 `claude -p` starts in default mode
+# with it (checked 2026-10-28), and reaching auto took --permission-mode auto.
+# Auto mode's classifier sends the local model a ~31k-token request on every
+# tool turn, so defaultMode = "default" keeps local sessions out of it if a
+# version or setting starts one there.
 # A default, not an override: a defaultMode already in settings.local.json wins.
 config_defaults = { permissions = { defaultMode = "default" } }
 
@@ -249,12 +252,19 @@ config_content = { compaction = { auto = true, prune = false, reserved = 10000 }
   setting the optimization doc says must live in Claude Code's settings
   rather than the process environment, hence the `config_file` split.
   `permissions.defaultMode = "default"` goes to the same file, as a
-  `config_defaults` entry:
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also starts Claude Code in
-  auto mode (seen on 2.1.300), and auto mode's classifier then sends the
-  local model a non-streamed ~31k-token request on every turn that uses a
-  tool, which made turns 2–5x slower and added prefill memory pressure
-  (#393). Setting the default mode keeps the traffic setting without it.
+  `config_defaults` entry, as a guard against auto mode: its classifier sends
+  the local model a non-streamed request of about 31k tokens on every turn
+  that uses a tool, which in #393 made turns 2–5x slower and added prefill
+  memory pressure. Measured on 2026-10-28 against a local 27B model, one
+  trivial Bash command took about 3–5 minutes in auto mode; Claude Code gave
+  up on a classifier request after about a minute ("Classifier unavailable …
+  timed out") and retried it. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+  was seen starting auto mode on 2.1.300 (#393). On 2.1.312, `claude -p`
+  starts in default mode with it set (checked 2026-10-28; non-interactive
+  runs only, interactive sessions not tested), and reaching auto took
+  `--permission-mode auto`, so there the pin is a guard rather than a fix.
+  The request Claude Code abandons is cancelled in omlx by LiteLLM's
+  `general_settings.cancel_on_disconnect`, which wt writes (#399).
   Because it is a default, a `permissions.defaultMode` in
   `.claude/settings.local.json` wins; one set in `.claude/settings.json` or
   `~/.claude/settings.json` is still overridden for the session, and an
