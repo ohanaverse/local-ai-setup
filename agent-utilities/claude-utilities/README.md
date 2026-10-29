@@ -189,6 +189,8 @@ How a run is judged:
 - **Discards.** A run is dropped and counted by reason (`error`, `bad-json`, `timeout`, `no-transcript`,
   `no-call`, `extra-calls`). The measured call is the one answered by the pinned model; a side call to another
   model is ignored.
+- **Interrupted runs.** The `--out` directory is checked before the first call. Ctrl-C or an unexpected error
+  writes the runs finished so far with `meta.interrupted`, and `--compare` warns about such a file.
 
 | Column | Definition | Reliability |
 |--------|------------|-------------|

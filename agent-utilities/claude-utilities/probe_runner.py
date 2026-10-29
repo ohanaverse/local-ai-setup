@@ -13,6 +13,7 @@ Usage: probe_runner.py run --label NAME [--runs N] [--out FILE]
 import argparse
 import datetime
 import json
+import os
 import random
 import shutil
 import statistics
@@ -235,15 +236,21 @@ FIELDS = (
 )
 
 
+def _rounded(field, value):
+    """Token counts as whole numbers, everything else to 2 decimals; None stays None."""
+    if value is None:
+        return None
+    return round(value) if field == "ctx_tokens" else round(value, 2)
+
+
 def _percentiles(runs, field):
     """p50 (median) and p90 (nearest rank, as in transcript_speed) of a Run field, or None."""
     vals = sorted(v for r in runs if (v := getattr(r, field)) is not None)
     if not vals:
         return None
-    digits = 0 if field == "ctx_tokens" else 2
     return {
-        "p50": round(statistics.median(vals), digits or None),
-        "p90": round(ts.percentile(vals, 0.9), digits or None),
+        "p50": _rounded(field, statistics.median(vals)),
+        "p90": _rounded(field, ts.percentile(vals, 0.9)),
     }
 
 
@@ -278,7 +285,7 @@ def aggregate_runs(runs, meta):
                 "discarded": dict(Counter(r.discard_reason for r in rs if r.discard_reason)),
                 "cache_cold_warm": len(warm_all) - len(warm),
                 "cache_partial": partial,
-                "cold": {f: getattr(cold, f) for f in FIELDS} if cold else None,
+                "cold": {f: _rounded(f, getattr(cold, f)) for f in FIELDS} if cold else None,
                 "warm": {f: _percentiles(warm, f) for f in FIELDS},
             }
         )
@@ -345,6 +352,11 @@ def compare(path_a, path_b):
     for key, label in (("claude_version", "Claude Code versions"), ("runs", "run counts")):
         if meta_a.get(key) != meta_b.get(key):
             lines.append(f"WARNING: {label} differ (A={meta_a.get(key)}, B={meta_b.get(key)})")
+    for label, meta in (("A", meta_a), ("B", meta_b)):
+        if meta.get("interrupted"):
+            lines.append(
+                f"WARNING: {label} was interrupted; it holds only the runs finished by then"
+            )
 
     cells_a = {(c["case"], c["variant"]): c for c in a["cases"]}
     cells_b = {(c["case"], c["variant"]): c for c in b["cases"]}
@@ -482,29 +494,54 @@ def main(argv=None):
             f"probe_runner: cannot find '{args.claude_bin}'; install Claude Code or pass --claude-bin"
         )
 
+    out = Path(args.out) if args.out else Path(f"probe-{args.label}.json")
+    # A paid run must not be lost to a typo found only at the end, so check the output first.
+    if not out.parent.is_dir() or not os.access(out.parent, os.W_OK):
+        ap.error(f"cannot write {out}: directory {out.parent} is missing or not writable")
     probe_dir = Path(args.probe_dir).expanduser()
     probe_dir.mkdir(parents=True, exist_ok=True)
-    runs, max_gap = run_probe(
-        [CASES[n] for n in names],
-        variants,
-        args.runs,
-        run_fn=_logged_run,
-        model=args.model,
-        claude_bin=args.claude_bin,
-        probe_dir=probe_dir,
-        projects_dir=Path(args.projects_dir).expanduser(),
-    )
-    meta = {
-        "label": args.label,
-        "claude_version": _claude_version(args.claude_bin),
-        "model": args.model,
-        "runs": args.runs,
-        "variants": variants,
-        "date": datetime.date.today().isoformat(),
-        "max_gap_s": round(max_gap, 1),
-    }
-    out = Path(args.out) if args.out else Path(f"probe-{args.label}.json")
-    out.write_text(json.dumps(aggregate_runs(runs, meta), indent=2) + "\n")
+
+    version = _claude_version(args.claude_bin)  # before the loop: an auto-update must not change it
+    done = []
+
+    def record(case, variant, index, **kw):
+        done.append(_logged_run(case, variant, index, **kw))
+        return done[-1]
+
+    def write(runs, max_gap, interrupted):
+        meta = {
+            "label": args.label,
+            "claude_version": version,
+            "model": args.model,
+            "runs": args.runs,
+            "variants": variants,
+            "date": datetime.date.today().isoformat(),
+            "max_gap_s": None if max_gap is None else round(max_gap, 1),
+        }
+        if interrupted:
+            meta["interrupted"] = True
+        out.write_text(json.dumps(aggregate_runs(runs, meta), indent=2) + "\n")
+
+    try:
+        runs, max_gap = run_probe(
+            [CASES[n] for n in names],
+            variants,
+            args.runs,
+            run_fn=record,
+            model=args.model,
+            claude_bin=args.claude_bin,
+            probe_dir=probe_dir,
+            projects_dir=Path(args.projects_dir).expanduser(),
+        )
+    except KeyboardInterrupt:
+        write(done, None, True)
+        print(f"interrupted: wrote the {len(done)} finished runs to {out}", file=sys.stderr)
+        return 130
+    except Exception:
+        write(done, None, True)
+        print(f"failed: wrote the {len(done)} finished runs to {out}", file=sys.stderr)
+        raise
+    write(runs, max_gap, False)
     discarded = sum(1 for r in runs if r.discard_reason)
     print(f"wrote {out}: {len(runs)} runs, {discarded} discarded")
     return 0

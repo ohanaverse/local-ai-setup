@@ -542,3 +542,83 @@ def test_compare_command_prints_table_and_rejects_mismatch(tmp_path, capsys):
     with pytest.raises(SystemExit) as e:
         pr.main(["--compare", str(tmp_path / "a.json"), str(tmp_path / "b.json")])
     assert e.value.code == 2
+
+
+# --- review fixes ----------------------------------------------------------------------------
+
+
+def test_cold_figures_are_rounded_like_the_warm_percentiles():
+    runs = [good(index=0, client_overhead_s=0.04800000000000004, wall_s=5.123456)]
+    cold = cell(pr.aggregate_runs(runs, META))["cold"]
+    assert cold["client_overhead_s"] == 0.05
+    assert cold["wall_s"] == 5.12
+    assert cold["ctx_tokens"] == 30_000
+
+
+def test_compare_columns_use_rounded_cold_values(tmp_path):
+    runs = [good(index=0, client_overhead_s=0.04800000000000004), good(index=1)]
+    assert "0.04800000000000004" not in pr.compare(*pair(tmp_path, runs, runs))
+
+
+def test_unwritable_out_is_rejected_before_any_run(tmp_path):
+    kw = make_fake_claude(tmp_path)
+    invocation = kw["invocation"]
+    args = run_args(tmp_path, kw)
+    args[args.index("--out") + 1] = str(tmp_path / "missing-dir" / "out.json")
+    with pytest.raises(SystemExit) as e:
+        pr.main(args)
+    assert e.value.code == 2
+    with pytest.raises(FileNotFoundError):
+        invocation()  # the fake claude was never called
+
+
+def test_non_executable_claude_bin_gives_one_line_error(tmp_path):
+    kw = make_fake_claude(tmp_path)
+    plain = tmp_path / "plain-file"
+    plain.write_text("not executable")
+    kw["claude_bin"] = str(plain)
+    with pytest.raises(SystemExit) as e:
+        pr.main(run_args(tmp_path, kw))
+    assert "claude" in str(e.value) and "\n" not in str(e.value)
+
+
+def test_interrupt_writes_partial_results(tmp_path, monkeypatch):
+    kw = make_fake_claude(tmp_path)
+    calls = []
+
+    def flaky(case, variant, index, **kwargs):
+        calls.append(index)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return good(case.name, variant, index)
+
+    monkeypatch.setattr(pr, "run_once", flaky)
+    assert pr.main(run_args(tmp_path, kw)) == 130
+    data = json.loads((tmp_path / "out.json").read_text())
+    assert data["meta"]["interrupted"] is True
+    assert cell(data)["runs_ok"] == 1
+
+
+def test_unexpected_error_writes_partial_results_then_raises(tmp_path, monkeypatch):
+    kw = make_fake_claude(tmp_path)
+    calls = []
+
+    def broken(case, variant, index, **kwargs):
+        calls.append(index)
+        if len(calls) == 2:
+            raise RuntimeError("boom")
+        return good(case.name, variant, index)
+
+    monkeypatch.setattr(pr, "run_once", broken)
+    with pytest.raises(RuntimeError, match="boom"):
+        pr.main(run_args(tmp_path, kw))
+    data = json.loads((tmp_path / "out.json").read_text())
+    assert data["meta"]["interrupted"] is True
+    assert cell(data)["runs_ok"] == 1
+
+
+def test_compare_warns_when_a_file_was_interrupted(tmp_path):
+    a, b = pair(tmp_path, [good(index=1)], [good(index=1)], a_meta={"interrupted": True})
+    out = pr.compare(a, b)
+    assert "WARNING: A was interrupted" in out
+    assert "was interrupted" not in pr.compare(b, b)
