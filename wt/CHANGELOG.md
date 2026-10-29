@@ -284,7 +284,10 @@
   alphabetical by `profile/<name>` rather than in `slot-profiles.toml`
   order), local models that are running and ready, then every other model.
   Within the last two bands the TIER score orders the rows, highest first,
-  with unscored models last and ties alphabetical by id; price and 7-day
+  with ties alphabetical by family, then id, and a model with no score
+  (added since the last `modeltiers run`) placed by the best score among its
+  family's scored rows, right under the scored rows it borrows from; a model
+  whose family has no scored row stays last. Price and 7-day
   usage no longer order anything. The first row is still the default pick,
   so a bare Enter now launches the highest-scored model rather than the
   cheapest. `wt stats` still reports the survey answers already recorded.

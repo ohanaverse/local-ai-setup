@@ -295,7 +295,9 @@ a sample the modeltiers tests pin):
 - On a narrow terminal TIER is dropped after the usage columns and COST, and
   before LOC and FAMILY. When no model in the table has a tier or a score
   (no file yet), TIER is all dashes and is dropped first. The column is advisory: the score orders the
-  picker's model rows (higher first; models with no score last), but no route depends on it.
+  picker's model rows (higher first; a model with no score sits with its
+  family, placed by the best score among the family's scored rows, and one
+  whose family has no scored row last), but no route depends on it.
 - wt reads the file at `MODELTIERS_OUT` when it is set, exactly as
   `modeltiers run` writes it, so a scratch run (step 6) shows in a picker
   started with the same variable.
