@@ -265,3 +265,95 @@ def test_gap_over_cache_lifetime_warns_on_stderr_and_continues(capsys):
     assert max_gap == 301.0
     err = capsys.readouterr().err
     assert "cache" in err.lower() and "301" in err
+
+
+# --- aggregate -------------------------------------------------------------------------------
+
+META = {
+    "label": "t",
+    "claude_version": "2.1.312",
+    "model": MODEL,
+    "runs": 4,
+    "variants": ["default"],
+    "date": "2026-10-29",
+    "max_gap_s": 12.0,
+}
+
+
+def good(case="tiny", variant="default", index=0, **fields) -> "pr.Run":
+    base = {
+        "wall_s": 5.0,
+        "api_s": 2.0,
+        "client_overhead_s": 0.05,
+        "startup_s": 2.9,
+        "ttft_s": 1.5,
+        "ttfb_s": 1.5,
+        "total_s": 2.0,
+        "tps_total": 100.0,
+        "ctx_tokens": 30_000,
+        "cache_hit": 0.99,
+    }
+    return pr.Run(case, variant, index, **(base | fields))
+
+
+def bad(reason, case="tiny", variant="default", index=0) -> "pr.Run":
+    return pr.Run(case, variant, index, discard_reason=reason)
+
+
+def cell(out, case="tiny", variant="default"):
+    (c,) = [c for c in out["cases"] if (c["case"], c["variant"]) == (case, variant)]
+    return c
+
+
+def test_cold_is_run_zero_and_warm_percentiles_use_the_rest():
+    runs = [good(index=0, ttfb_s=9.0)] + [good(index=i, ttfb_s=float(i)) for i in (1, 2, 3)]
+    c = cell(pr.aggregate_runs(runs, META))
+    assert c["cold"]["ttfb_s"] == 9.0
+    assert c["warm"]["ttfb_s"] == {"p50": 2.0, "p90": 3.0}
+    assert c["runs_ok"] == 4
+
+
+def test_cache_cold_warm_runs_are_excluded_and_counted():
+    runs = [good(index=0), good(index=1, cache_hit=0.2), good(index=2, cache_hit=0.99)]
+    c = cell(pr.aggregate_runs(runs, META))
+    assert c["cache_cold_warm"] == 1
+    assert c["warm"]["cache_hit"] == {"p50": 0.99, "p90": 0.99}
+    assert c["runs_ok"] == 3
+
+
+def test_discarded_runs_are_counted_by_reason():
+    runs = [good(index=0), bad("timeout", index=1), bad("timeout", index=2), bad("error", index=3)]
+    c = cell(pr.aggregate_runs(runs, META))
+    assert c["discarded"] == {"timeout": 2, "error": 1}
+    assert c["runs_ok"] == 1
+
+
+def test_group_with_no_usable_warm_runs_has_none_percentiles():
+    runs = [good(index=0), bad("error", index=1)]
+    c = cell(pr.aggregate_runs(runs, META))
+    assert c["warm"] == {field: None for field in pr.FIELDS}
+    nothing = cell(pr.aggregate_runs([bad("error", index=0)], META))
+    assert nothing["cold"] is None
+    assert nothing["runs_ok"] == 0
+
+
+def test_startup_is_tiny_warm_context_per_variant():
+    runs = [
+        good(index=0, ctx_tokens=99_000),
+        good(index=1, ctx_tokens=30_000),
+        good(index=2, ctx_tokens=32_000),
+        good(case="count", index=1, ctx_tokens=77_000),
+        good(variant="lean", index=0),
+        good(variant="lean", index=1, ctx_tokens=9_000),
+        good(case="count", variant="bare", index=1),
+    ]
+    out = pr.aggregate_runs(runs, META)
+    assert out["startup"] == {"default": 31_000, "lean": 9_000, "bare": None}
+
+
+def test_output_has_no_session_ids_or_paths():
+    runs = [good(index=0), good(index=1)]
+    text = json.dumps(pr.aggregate_runs(runs, META))
+    assert "session" not in text
+    assert "/" not in text.replace("2026-10-29", "")
+    assert json.loads(text)["schema"] == pr.SCHEMA == 1

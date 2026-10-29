@@ -12,9 +12,11 @@ Usage: probe_runner.py run --label NAME [--runs N] [--out FILE]
 
 import json
 import random
+import statistics
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -208,3 +210,69 @@ def run_probe(cases, variants, runs, *, run_fn=run_once, clock=time.monotonic, *
                 last_start[key] = now
                 results.append(run_fn(case, variant, index, **run_kwargs))
     return results, max_gap
+
+
+# --- aggregate -------------------------------------------------------------------------------
+
+SCHEMA = 1
+COLD_HIT_THRESHOLD = 0.5  # a warm run that read less than this from cache was not warm
+FIELDS = (
+    "wall_s",
+    "api_s",
+    "client_overhead_s",
+    "startup_s",
+    "ttft_s",
+    "ttfb_s",
+    "total_s",
+    "tps_total",
+    "ctx_tokens",
+    "cache_hit",
+)
+
+
+def _percentiles(runs, field):
+    """p50 (median) and p90 (nearest rank, as in transcript_speed) of a Run field, or None."""
+    vals = sorted(v for r in runs if (v := getattr(r, field)) is not None)
+    if not vals:
+        return None
+    digits = 0 if field == "ctx_tokens" else 2
+    return {
+        "p50": round(statistics.median(vals), digits or None),
+        "p90": round(ts.percentile(vals, 0.9), digits or None),
+    }
+
+
+def aggregate_runs(runs, meta):
+    """Aggregate-only summary of a probe: carries no session ids, prompts or paths.
+
+    Per (case, variant): run 0 is the cold run, runs 1.. are warm, and a warm run whose cache hit
+    is under COLD_HIT_THRESHOLD is left out of the warm percentiles and counted. `startup` is the
+    context tokens a bare `tiny` call reads under each variant (the warm p50), i.e. how much the
+    variant's configuration injects before any prompt.
+    """
+    groups = {}
+    for r in runs:
+        groups.setdefault((r.case, r.variant), []).append(r)
+    cases = []
+    for (case, variant), rs in groups.items():
+        ok = [r for r in rs if r.discard_reason is None]
+        cold = next((r for r in ok if r.index == 0), None)
+        warm_all = [r for r in ok if r.index >= 1]
+        warm = [r for r in warm_all if r.cache_hit is None or r.cache_hit >= COLD_HIT_THRESHOLD]
+        cases.append(
+            {
+                "case": case,
+                "variant": variant,
+                "runs_ok": len(ok),
+                "discarded": dict(Counter(r.discard_reason for r in rs if r.discard_reason)),
+                "cache_cold_warm": len(warm_all) - len(warm),
+                "cold": {f: getattr(cold, f) for f in FIELDS} if cold else None,
+                "warm": {f: _percentiles(warm, f) for f in FIELDS},
+            }
+        )
+    startup = {}
+    for variant in dict.fromkeys(r.variant for r in runs):
+        tiny = next((c for c in cases if (c["case"], c["variant"]) == ("tiny", variant)), None)
+        ctx = tiny["warm"]["ctx_tokens"] if tiny else None
+        startup[variant] = ctx["p50"] if ctx else None
+    return {"schema": SCHEMA, "meta": meta, "startup": startup, "cases": cases}
