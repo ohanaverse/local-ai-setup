@@ -276,3 +276,112 @@ def aggregate_runs(runs, meta):
         ctx = tiny["warm"]["ctx_tokens"] if tiny else None
         startup[variant] = ctx["p50"] if ctx else None
     return {"schema": SCHEMA, "meta": meta, "startup": startup, "cases": cases}
+
+
+# --- compare ---------------------------------------------------------------------------------
+
+
+def _load(path):
+    data = json.loads(Path(path).read_text())
+    schema = data.get("schema") if isinstance(data, dict) else None
+    if schema != SCHEMA:
+        raise ValueError(f"{path}: not a probe_runner file (schema {schema}, expected {SCHEMA})")
+    return data
+
+
+def _num(v):
+    return "n/a" if v is None else str(v)
+
+
+def _delta(x, y):
+    if not x or y is None:
+        return "n/a"
+    return f"{(y - x) / x * 100:+.1f}%"
+
+
+def _warm_p50(data, case, variant, field):
+    for c in data["cases"]:
+        if (c["case"], c["variant"]) == (case, variant):
+            return (c["warm"].get(field) or {}).get("p50")
+    return None
+
+
+def _config_cost(data):
+    """default minus lean warm `wall_s` p50 for `tiny`: what the configuration costs per run."""
+    default, lean = (_warm_p50(data, "tiny", v, "wall_s") for v in ("default", "lean"))
+    return None if default is None or lean is None else default - lean
+
+
+def _size_slope(data, variant):
+    """Growth of `ttfb_s` per 10k context tokens between `tiny` and `fill80k`."""
+    t0, t1 = (_warm_p50(data, c, variant, "ttfb_s") for c in ("tiny", "fill80k"))
+    c0, c1 = (_warm_p50(data, c, variant, "ctx_tokens") for c in ("tiny", "fill80k"))
+    if None in (t0, t1, c0, c1) or c1 <= c0:
+        return None
+    return (t1 - t0) / ((c1 - c0) / 10_000)
+
+
+def compare(path_a, path_b):
+    a, b = _load(path_a), _load(path_b)
+    meta_a, meta_b = a["meta"], b["meta"]
+    if meta_a.get("model") != meta_b.get("model"):
+        raise ValueError(
+            f"pinned models differ (A={meta_a.get('model')}, B={meta_b.get('model')}); "
+            "compare runs of one model"
+        )
+    lines = []
+    for key, label in (("claude_version", "Claude Code versions"), ("runs", "run counts")):
+        if meta_a.get(key) != meta_b.get(key):
+            lines.append(f"WARNING: {label} differ (A={meta_a.get(key)}, B={meta_b.get(key)})")
+
+    cells_a = {(c["case"], c["variant"]): c for c in a["cases"]}
+    cells_b = {(c["case"], c["variant"]): c for c in b["cases"]}
+
+    def order(key):
+        known = list(CASES)
+        return (known.index(key[0]) if key[0] in known else len(known), key[0], key[1])
+
+    for key in sorted(cells_a.keys() & cells_b.keys(), key=order):
+        x, y = cells_a[key], cells_b[key]
+        lines.append(
+            f"\n{key[0]} / {key[1]}   ok runs A {x['runs_ok']} B {y['runs_ok']}   "
+            f"cache-cold warm A {x['cache_cold_warm']} B {y['cache_cold_warm']}"
+        )
+        lines.append(
+            f"  {'metric':<19}{'p50 A':>9}{'p50 B':>9}{'diff':>8}"
+            f"{'p90 A':>9}{'p90 B':>9}{'diff':>8}{'cold A':>9}{'cold B':>9}"
+        )
+        for f in FIELDS:
+            wa, wb = x["warm"].get(f) or {}, y["warm"].get(f) or {}
+            ca, cb = (x["cold"] or {}).get(f), (y["cold"] or {}).get(f)
+            lines.append(
+                f"  {f:<19}{_num(wa.get('p50')):>9}{_num(wb.get('p50')):>9}"
+                f"{_delta(wa.get('p50'), wb.get('p50')):>8}"
+                f"{_num(wa.get('p90')):>9}{_num(wb.get('p90')):>9}"
+                f"{_delta(wa.get('p90'), wb.get('p90')):>8}{_num(ca):>9}{_num(cb):>9}"
+            )
+    for label, only in (
+        ("A", cells_a.keys() - cells_b.keys()),
+        ("B", cells_b.keys() - cells_a.keys()),
+    ):
+        if only:
+            lines.append(
+                f"\nonly in {label}: " + ", ".join(f"{c}/{v}" for c, v in sorted(only, key=order))
+            )
+
+    def secs(v, unit="s"):
+        return "n/a" if v is None else f"{v:.2f}{unit}"
+
+    lines.append("")
+    lines.append(
+        "config cost (tiny wall_s, default - lean, estimate): "
+        f"A {secs(_config_cost(a))} B {secs(_config_cost(b))}"
+    )
+    variants = sorted({v for _, v in cells_a.keys() | cells_b.keys()})
+    for variant in variants:
+        lines.append(
+            f"prompt-size slope, {variant} (ttfb_s per 10k context tokens, tiny to fill80k, "
+            f"estimate): A {secs(_size_slope(a, variant), 's/10k')} "
+            f"B {secs(_size_slope(b, variant), 's/10k')}"
+        )
+    return "\n".join(lines)

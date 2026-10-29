@@ -357,3 +357,80 @@ def test_output_has_no_session_ids_or_paths():
     assert "session" not in text
     assert "/" not in text.replace("2026-10-29", "")
     assert json.loads(text)["schema"] == pr.SCHEMA == 1
+
+
+# --- compare ---------------------------------------------------------------------------------
+
+
+def probe_file(tmp_path: Path, name: str, run_list: list, **meta) -> str:
+    path = tmp_path / name
+    path.write_text(json.dumps(pr.aggregate_runs(run_list, META | meta)))
+    return str(path)
+
+
+def pair(tmp_path, a_runs, b_runs, a_meta=None, b_meta=None):
+    a = probe_file(tmp_path, "a.json", a_runs, **(a_meta or {}))
+    b = probe_file(tmp_path, "b.json", b_runs, **(b_meta or {}))
+    return a, b
+
+
+def test_compare_refuses_different_models(tmp_path):
+    a, b = pair(tmp_path, [good()], [good()], b_meta={"model": "claude-opus-5-5"})
+    with pytest.raises(ValueError, match="pinned models differ"):
+        pr.compare(a, b)
+
+
+def test_compare_refuses_unknown_schema(tmp_path):
+    a, b = pair(tmp_path, [good()], [good()])
+    data = json.loads(Path(b).read_text())
+    data["schema"] = 99
+    Path(b).write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="schema"):
+        pr.compare(a, b)
+
+
+def test_compare_warns_on_version_and_run_count_differences(tmp_path):
+    a, b = pair(tmp_path, [good()], [good()], b_meta={"claude_version": "2.1.400", "runs": 10})
+    out = pr.compare(a, b)
+    assert "WARNING: Claude Code versions differ (A=2.1.312, B=2.1.400)" in out
+    assert "WARNING: run counts differ (A=4, B=10)" in out
+    assert "tiny / default" in out
+
+
+def test_compare_uses_intersection_and_lists_one_sided_pairs(tmp_path):
+    a_runs = [good(index=1), good(case="count", index=1)]
+    b_runs = [good(index=1), good(case="fill20k", index=1)]
+    out = pr.compare(*pair(tmp_path, a_runs, b_runs))
+    assert "tiny / default" in out
+    assert "count / default" not in out
+    assert "only in A: count/default" in out
+    assert "only in B: fill20k/default" in out
+
+
+def test_compare_prints_percent_difference(tmp_path):
+    a_runs = [good(index=1, ttfb_s=2.0), good(index=2, ttfb_s=2.0)]
+    b_runs = [good(index=1, ttfb_s=3.0), good(index=2, ttfb_s=3.0)]
+    assert "+50.0%" in pr.compare(*pair(tmp_path, a_runs, b_runs))
+
+
+def test_compare_prints_config_cost_and_slope(tmp_path):
+    def runs(default_wall, lean_wall, ttfb_80k):
+        return [
+            good(index=1, wall_s=default_wall, ttfb_s=1.0, ctx_tokens=30_000),
+            good(variant="lean", index=1, wall_s=lean_wall),
+            good(case="fill80k", index=1, ttfb_s=ttfb_80k, ctx_tokens=110_000),
+        ]
+
+    out = pr.compare(*pair(tmp_path, runs(6.0, 4.0, 5.0), runs(9.0, 4.5, 9.0)))
+    assert "config cost" in out
+    assert "A 2.00s" in out and "B 4.50s" in out
+    assert "prompt-size slope, default" in out
+    assert "A 0.50s/10k" in out and "B 1.00s/10k" in out
+
+
+def test_compare_prints_na_for_none_percentiles(tmp_path):
+    a_runs = [good(index=0)]  # a cold run only: no warm percentiles
+    b_runs = [good(index=0), good(index=1)]
+    out = pr.compare(*pair(tmp_path, a_runs, b_runs))
+    assert "n/a" in out
+    assert "tiny / default" in out
