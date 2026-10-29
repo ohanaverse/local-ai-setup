@@ -521,8 +521,12 @@ def collect_files(paths, include_probes=False):
     files = []
     for p in map(Path, paths):
         if p.is_dir():
+            # Judge only the part below `p`: a directory named on the command line is wanted
+            # even if it is itself the probe project folder.
             files += [
-                f for f in sorted(p.rglob("*.jsonl")) if include_probes or not is_probe_path(f)
+                f
+                for f in sorted(p.rglob("*.jsonl"))
+                if include_probes or not is_probe_path(f.relative_to(p))
             ]
         else:
             files.append(p)

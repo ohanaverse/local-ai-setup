@@ -606,3 +606,10 @@ def test_include_probes_keeps_them(tmp_path):
 def test_file_named_directly_is_kept(tmp_path):
     probe = probe_tree(tmp_path) / PROBE_FOLDER / "s.jsonl"
     assert ts.collect_files([probe]) == [probe]
+
+
+def test_collect_files_keeps_an_explicitly_named_probe_folder(tmp_path):
+    folder = tmp_path / PROBE_FOLDER
+    folder.mkdir()
+    (folder / "s.jsonl").write_text("")
+    assert ts.collect_files([folder]) == [folder / "s.jsonl"]
