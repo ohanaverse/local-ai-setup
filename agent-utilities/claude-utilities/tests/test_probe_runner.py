@@ -331,7 +331,7 @@ def test_discarded_runs_are_counted_by_reason():
 def test_group_with_no_usable_warm_runs_has_none_percentiles():
     runs = [good(index=0), bad("error", index=1)]
     c = cell(pr.aggregate_runs(runs, META))
-    assert c["warm"] == {field: None for field in pr.FIELDS}
+    assert c["warm"] == dict.fromkeys(pr.FIELDS)
     nothing = cell(pr.aggregate_runs([bad("error", index=0)], META))
     assert nothing["cold"] is None
     assert nothing["runs_ok"] == 0
