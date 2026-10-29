@@ -94,6 +94,11 @@ uv run python transcript_speed.py --compare machine-a.json machine-b.json
   `[1m]` suffix, a `provider/` prefix, a trailing date and a bare alias (`sonnet` for `claude-sonnet-5-5`) are
   allowed for, and the requested → answered pairs. `<synthetic>` error turns are skipped. A planner alias such as
   `opusplan` still shows up as a pair; read the pairs before treating them as fallbacks.
+  A zero does not prove there were no fallbacks. On a corporate machine that reported overload fallbacks from
+  `claude-sonnet-5-5` to `claude-sonnet-5`, every `claude-sonnet-5` answer carried a matching `requestedModel`
+  (`claude-sonnet-5` or `claude-sonnet-5[1m]`), so Claude Code appears to record the model it used, not the one
+  first asked for. The only trace was the separate `claude-sonnet-5` rows in the bands, and those can also be a
+  deliberate model choice; the OTel `attempt` field or a gateway log tells the two apart.
 - **`min_tokens`** it was run with.
 
 `--compare` prints the output-band table first, then context tokens and cache hit per band, speed by context
