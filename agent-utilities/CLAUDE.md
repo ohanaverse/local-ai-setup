@@ -4,7 +4,7 @@ Standalone utilities for working with specific coding agents, one subdirectory p
 
 ## Commands
 - `uv run --directory claude-utilities python transcript_speed.py [--min-tokens N] [--csv] ~/.claude/projects` — summary per model, or per-call CSV rows
-- `uv run --directory claude-utilities python transcript_speed.py --json ~/.claude/projects > X.json`, then `... transcript_speed.py --compare A.json B.json` — aggregate-only stats per model and output-size band, and a side-by-side of two machines' files (`claude-utilities/README.md`)
+- `uv run --directory claude-utilities python transcript_speed.py --json ~/.claude/projects > X.json`, then `... transcript_speed.py --compare A.json B.json` — aggregate-only stats per model and output-size band, per context-size band, session startup size and requested-vs-answered model counts, and a side-by-side of two machines' files (`claude-utilities/README.md`)
 - `uv run --directory claude-utilities python otel_receiver.py [--port 4318] [--out FILE]` — loopback OTLP/JSON trace receiver; then `... python otel_speed.py FILE` for TTFT and decode-rate percentiles (setup and caveats in `claude-utilities/README.md`)
 - `cd claude-utilities && make check test` — ruff lint + format check, then pytest
 
@@ -19,6 +19,7 @@ Standalone utilities for working with specific coding agents, one subdirectory p
 
 ## Gotchas
 - **Transcript format is Claude Code's, not a stable API.** `transcript_speed.py` relies on `api-request` records, one `assistant` line per content block, and `message.usage.output_tokens` being the final total repeated on every block. A Claude Code update can change this silently; if the call count drops to zero or looks wrong, check the record shapes first.
+- **`--json` files carry a `schema` number; regenerate old ones before comparing.** Schema 2 split the top output band (`1000+` became `1000-3000` and `3000+`) and added the context, startup and fallback sections. `--compare` still loads an older file but prints `n/a` for what it lacks and lists the mismatched bands under "only in A/B". Compare a model-by-model table, never the overall summary: it mixes models, and Opus runs slower than Sonnet.
 - **Run these scripts with `uv run`, never bare `python3`.** This machine's system `python3` is 3.9; `transcript_speed.py` needs >= 3.11 (`fromisoformat` and the transcripts' trailing `Z`) and exits with a message on older Pythons. An empty result on a version without that guard means the interpreter, not the format.
 - **`api-request` records only exist from 2026-10-14.** Older transcripts contribute zero calls to `transcript_speed.py` (about 39% of messages on the author's data); that is expected, not a parser bug. Check a transcript's date before debugging a low count.
 - **Inspecting real OTel spans:** `OTEL_TRACES_EXPORTER=console claude -p "..." >out.txt 2>&1` prints the full `llm_request` span (`ttft_ms`, `duration_ms`, `attempt`...). Redirect to a file rather than piping to `awk`/`head`, which exit early and leave `claude -p` hanging.

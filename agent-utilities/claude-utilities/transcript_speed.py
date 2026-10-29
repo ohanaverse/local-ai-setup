@@ -14,13 +14,19 @@ Per API call (one api-request record paired with the assistant message that foll
                                                    were produced before first_ts; only when
                                                    the message has >1 block and window >= MIN_WINDOW_S)
 
+  ctx_tokens  = usage.input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+                (what the model read for this call; None when the transcript has no input_tokens)
+  cache_hit   = cache_read_input_tokens / ctx_tokens (None unless both cache fields are present;
+                0.0 on a route that returns them as zero, e.g. a gateway that drops prompt caching)
+
 Timestamps are client-side and written per content block, so treat results as estimates.
 
 Usage: transcript_speed.py [--min-tokens N] [--csv | --json] PATH_OR_DIR...
        transcript_speed.py --compare A.json B.json
   PATH_OR_DIR: a .jsonl transcript, or a directory searched recursively (e.g. ~/.claude/projects)
-  --json:      aggregate-only stats per (model, output-size band); carries no session names or
-               paths, so the file can be copied between machines
+  --json:      aggregate-only stats per (model, output-size band) and per (model, context-size
+               band), session startup size and requested-vs-answered model counts; carries no
+               session names or paths, so the file can be copied between machines
   --compare:   side-by-side of two --json files, with the percent difference B vs A
 """
 
@@ -28,9 +34,10 @@ import argparse
 import csv
 import json
 import math
+import re
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -56,8 +63,22 @@ MIN_WINDOW_S = 1.0
 
 # tps_total includes prefill and network, so short outputs always look slower; comparing within
 # a band keeps two environments with different output-length mixes from skewing the result.
-BANDS = ((200, "<200"), (1000, "200-1000"))
-TOP_BAND = "1000+"
+BANDS = ((200, "<200"), (1000, "200-1000"), (3000, "1000-3000"))
+TOP_BAND = "3000+"
+
+# Context size bands answer "is it slower at the same prompt size?", which separates a bigger
+# prompt (prefill) from a slower route (decode).
+CTX_BANDS = ((10_000, "<10k"), (30_000, "10k-30k"), (100_000, "30k-100k"))
+CTX_TOP_BAND = "100k+"
+
+SCHEMA = 2
+
+
+USAGE_FIELDS = (
+    ("input", "input_tokens"),
+    ("cache_read", "cache_read_input_tokens"),
+    ("cache_create", "cache_creation_input_tokens"),
+)
 
 
 def parse_ts(s):
@@ -67,11 +88,20 @@ def parse_ts(s):
 def calls_from_transcript(path):
     pending_req = None
     cur = None  # current assistant message accumulator
+    seen_main = set()  # models that have already answered a non-subagent call in this file
 
     def flush():
         nonlocal cur
-        if cur and cur["req_ts"] is not None:
-            yield cur
+        if cur:
+            # Counted per model, and whether or not the call is paired: a small side call (a
+            # title or topic check) must not stand in for the main model's startup, and a
+            # resumed file whose first call lost its api-request must not promote a later one.
+            first = not cur["sidechain"] and cur["model"] not in seen_main
+            if not cur["sidechain"]:
+                seen_main.add(cur["model"])
+            if cur["req_ts"] is not None:
+                cur["first_main"] = first
+                yield cur
         cur = None
 
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -106,12 +136,23 @@ def calls_from_transcript(path):
                         "last_ts": ts,
                         "blocks": 0,
                         "out": 0,
+                        "input": None,
+                        "cache_read": None,
+                        "cache_create": None,
+                        "requested": d["requestedModel"]
+                        if isinstance(d.get("requestedModel"), str)
+                        else None,
+                        "sidechain": bool(d.get("isSidechain")),
                         "session": path.name,
                     }
                     pending_req = None
                 cur["last_ts"] = ts
                 cur["blocks"] += 1
-                cur["out"] = (m.get("usage") or {}).get("output_tokens") or cur["out"]
+                usage = m.get("usage") or {}
+                cur["out"] = usage.get("output_tokens") or cur["out"]
+                for key, field in USAGE_FIELDS:
+                    if isinstance(usage.get(field), int):
+                        cur[key] = usage[field]
     yield from flush()
 
 
@@ -123,6 +164,10 @@ def percentile(sorted_vals, p):
 def derive(c):
     total = c["last_ts"] - c["req_ts"]
     window = c["last_ts"] - c["first_ts"]
+    ctx = None
+    if c["input"] is not None:
+        ctx = c["input"] + (c["cache_read"] or 0) + (c["cache_create"] or 0)
+    has_cache = c["cache_read"] is not None and c["cache_create"] is not None
     return {
         "session": c["session"],
         "model": c["model"],
@@ -133,45 +178,162 @@ def derive(c):
         "tps_window": round(c["out"] / window, 1)
         if c["blocks"] > 1 and window >= MIN_WINDOW_S
         else None,
+        "ctx_tokens": ctx,
+        "ctx_band": ctx_band_of(ctx) if ctx is not None else None,
+        "cache_hit": round(c["cache_read"] / ctx, 3) if has_cache and ctx else None,
+        "first_main": c["first_main"],
+        "requested_model": c["requested"],
     }
 
 
-def band_of(out_tokens):
-    for upper, name in BANDS:
-        if out_tokens < upper:
+def _band(value, bands, top):
+    for upper, name in bands:
+        if value < upper:
             return name
-    return TOP_BAND
+    return top
 
 
-def aggregate(rows, min_tokens):
-    """Aggregate-only stats per (model, band). Deliberately drops session names."""
+def band_of(out_tokens):
+    return _band(out_tokens, BANDS, TOP_BAND)
+
+
+def ctx_band_of(ctx_tokens):
+    return _band(ctx_tokens, CTX_BANDS, CTX_TOP_BAND)
+
+
+def base_model(name):
+    """Requested names can carry a context-window suffix (`claude-sonnet-5-5[1m]`) the answer lacks."""
+    return re.sub(r"\[[^\]]*\]$", "", name)
+
+
+def _canon(name):
+    """Lower-case, no `[1m]` suffix, no `provider/` prefix, no trailing `-YYYYMMDD` date."""
+    name = base_model(name).lower().rsplit("/", 1)[-1]
+    return re.sub(r"-\d{8}$", "", name)
+
+
+def same_model(requested, answered):
+    """True when the answer is the requested model under another spelling.
+
+    Slots routed through a gateway request a bare alias (`sonnet`) or a prefixed name and get a
+    canonical id back. A bare alias matches any id carrying its word; versioned ids must be equal,
+    so `claude-sonnet-5-5` answered as `claude-sonnet-5` stays a fallback.
+    """
+    a, b = _canon(requested), _canon(answered)
+    if a == b:
+        return True
+    for alias, full in ((a, b), (b, a)):
+        if re.fullmatch(r"[a-z]+", alias) and alias in full.split("-"):
+            return True
+    return False
+
+
+def _pct(rs, key, p, whole=False):
+    """p50 is the true median and p90 nearest-rank, matching the summary view's numbers.
+
+    `whole` rounds to an integer, for token counts."""
+    vals = sorted(r[key] for r in rs if r.get(key) is not None)
+    if not vals:
+        return None
+    v = statistics.median(vals) if p == 0.5 else percentile(vals, p)
+    return round(v) if whole else round(v, 2)
+
+
+def _group(rows, key):
+    """Rows by (model, key(row)); rows whose key is None are left out. Sorted by that pair."""
     groups = defaultdict(list)
     for r in rows:
-        groups[(r["model"], band_of(r["out_tokens"]))].append(r)
+        k = key(r)
+        if k is not None:
+            groups[(r["model"], k)].append(r)
+    return sorted(groups.items())
 
-    # p50 is the true median and p90 nearest-rank, matching the summary view's numbers.
-    def pct(rs, key, p):
-        vals = sorted(r[key] for r in rs if r[key] is not None)
-        if not vals:
-            return None
-        return round(statistics.median(vals) if p == 0.5 else percentile(vals, p), 2)
 
-    bands = [
-        {
-            "model": model,
-            "band": band,
-            "n": len(rs),
-            "tps_total_p50": pct(rs, "tps_total", 0.5),
-            "tps_total_p90": pct(rs, "tps_total", 0.9),
-            "ttfb_s_p50": pct(rs, "ttfb_s", 0.5),
-            "total_s_p50": pct(rs, "total_s", 0.5),
-        }
-        for (model, band), rs in sorted(groups.items())
+def _stats(rs, fields):
+    """`{name: percentile}` for (name, source key, p, whole) specs over the group's rows."""
+    return {name: _pct(rs, src, p, whole) for name, src, p, whole in fields}
+
+
+def fallbacks(rows):
+    """Calls answered by a different model than requested, allowing for aliases and id spellings.
+
+    Only calls that carry a requestedModel count as checked; older transcripts have none, and
+    `<synthetic>` messages (Claude Code's own error turns) were never answered by a model.
+    """
+    checked = [
+        r for r in rows if r.get("requested_model") is not None and r["model"] != "<synthetic>"
     ]
-    return {"band_unit": "output_tokens", "min_tokens": min_tokens, "bands": bands}
+    pairs = Counter(
+        (base_model(r["requested_model"]), r["model"])
+        for r in checked
+        if not same_model(r["requested_model"], r["model"])
+    )
+    return {
+        "checked": len(checked),
+        "mismatched": sum(pairs.values()),
+        "pairs": [
+            {"requested": req, "answered": ans, "n": n}
+            for (req, ans), n in sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+    }
+
+
+def aggregate(rows, min_tokens, all_rows=None):
+    """Aggregate-only stats. Deliberately drops session names.
+
+    `rows` are the calls at or above min_tokens. `all_rows` is every paired call: the first call
+    of a session is often a short tool-use turn, so startup size and fallbacks must not be
+    filtered by output length.
+    """
+    all_rows = rows if all_rows is None else all_rows
+
+    band_fields = (
+        ("tps_total_p50", "tps_total", 0.5, False),
+        ("tps_total_p90", "tps_total", 0.9, False),
+        ("ttfb_s_p50", "ttfb_s", 0.5, False),
+        ("ttfb_s_p90", "ttfb_s", 0.9, False),
+        ("total_s_p50", "total_s", 0.5, False),
+        ("total_s_p90", "total_s", 0.9, False),
+        ("ctx_tokens_p50", "ctx_tokens", 0.5, True),
+        ("ctx_tokens_p90", "ctx_tokens", 0.9, True),
+        ("cache_hit_p50", "cache_hit", 0.5, False),
+    )
+    ctx_band_fields = (
+        ("tps_total_p50", "tps_total", 0.5, False),
+        ("tps_total_p90", "tps_total", 0.9, False),
+        ("ttfb_s_p50", "ttfb_s", 0.5, False),
+        ("total_s_p50", "total_s", 0.5, False),
+    )
+    startup_fields = (
+        ("ctx_tokens_p50", "ctx_tokens", 0.5, True),
+        ("ctx_tokens_p90", "ctx_tokens", 0.9, True),
+    )
+    bands = [
+        {"model": model, "band": band, "n": len(rs)} | _stats(rs, band_fields)
+        for (model, band), rs in _group(rows, lambda r: band_of(r["out_tokens"]))
+    ]
+    ctx_bands = [
+        {"model": model, "band": band, "n": len(rs)} | _stats(rs, ctx_band_fields)
+        for (model, band), rs in _group(rows, lambda r: r.get("ctx_band"))
+    ]
+    first = [r for r in all_rows if r.get("first_main") and r.get("ctx_tokens")]
+    startup = [
+        {"model": model, "n": len(rs)} | _stats(rs, startup_fields)
+        for (model, _), rs in _group(first, lambda r: True)
+    ]
+    return {
+        "schema": SCHEMA,
+        "band_unit": "output_tokens",
+        "min_tokens": min_tokens,
+        "bands": bands,
+        "ctx_bands": ctx_bands,
+        "startup": startup,
+        "fallbacks": fallbacks(all_rows),
+    }
 
 
 BAND_ORDER = {name: i for i, name in enumerate([n for _, n in BANDS] + [TOP_BAND])}
+CTX_BAND_ORDER = {name: i for i, name in enumerate([n for _, n in CTX_BANDS] + [CTX_TOP_BAND])}
 BAND_FIELDS = ("model", "band", "n", "tps_total_p50", "tps_total_p90")
 
 
@@ -183,26 +345,51 @@ def load_aggregate(path):
     for b in data["bands"]:
         if not isinstance(b, dict) or any(f not in b for f in BAND_FIELDS):
             raise ValueError(f"{path}: not a transcript_speed --json file (bad band entry)")
-    return data.get("min_tokens"), {(b["model"], b["band"]): b for b in data["bands"]}
+    return data
+
+
+def _index(data, section, *keys):
+    """Section entries keyed by `keys`; a missing or malformed section is empty (older files)."""
+    entries = data.get(section)
+    if not isinstance(entries, list):
+        return {}
+    return {tuple(e.get(k) for k in keys): e for e in entries if isinstance(e, dict)}
+
+
+def _delta(x, y):
+    if not x or y is None:
+        return "n/a"
+    return f"{(y - x) / x * 100:+.1f}%"
+
+
+def _num(v):
+    # A band whose calls all lacked a usable duration has a null percentile.
+    return "n/a" if v is None else str(v)
+
+
+def _has(index, *fields):
+    return any(e.get(f) is not None for e in index.values() for f in fields)
 
 
 def compare(path_a, path_b):
-    (min_a, a), (min_b, b) = load_aggregate(path_a), load_aggregate(path_b)
-
-    def delta(x, y):
-        if not x or y is None:
-            return "n/a"
-        return f"{(y - x) / x * 100:+.1f}%"
-
-    def num(v):
-        # A band whose calls all lacked a usable duration has a null percentile.
-        return "n/a" if v is None else str(v)
+    data_a, data_b = load_aggregate(path_a), load_aggregate(path_b)
+    min_a, min_b = data_a.get("min_tokens"), data_b.get("min_tokens")
+    a, b = _index(data_a, "bands", "model", "band"), _index(data_b, "bands", "model", "band")
+    ctx_a = _index(data_a, "ctx_bands", "model", "band")
+    ctx_b = _index(data_b, "ctx_bands", "model", "band")
+    start_a, start_b = _index(data_a, "startup", "model"), _index(data_b, "startup", "model")
 
     def order(key):
         return (key[0], BAND_ORDER.get(key[1], len(BAND_ORDER)), key[1])
 
+    def ctx_order(key):
+        return (key[0], CTX_BAND_ORDER.get(key[1], len(CTX_BAND_ORDER)), key[1])
+
     both = sorted(a.keys() & b.keys(), key=order)
-    model_w = max([len("model"), *(len(m) for m, _ in both)]) + 2
+    ctx_both = sorted(ctx_a.keys() & ctx_b.keys(), key=ctx_order)
+    start_both = sorted(start_a.keys() & start_b.keys())
+    models = {k[0] for k in [*both, *ctx_both, *start_both]}
+    model_w = max([len("model"), *(len(m) for m in models)]) + 2
     lines = []
     if min_a is None or min_b is None:
         lines.append(
@@ -214,6 +401,19 @@ def compare(path_a, path_b):
             f"WARNING: --min-tokens differs (A={min_a}, B={min_b}); "
             "the smallest band covers different token ranges and is not comparable\n"
         )
+    for label, data in (("A", data_a), ("B", data_b)):
+        schema = data.get("schema")
+        if not isinstance(schema, int) or schema < SCHEMA:
+            lines.append(
+                f"note: {label} predates the context columns (older --json output); its context, "
+                "startup and fallback figures show n/a and its output bands may not match. "
+                "Regenerate it to compare them.\n"
+            )
+        elif schema > SCHEMA:
+            lines.append(
+                f"note: {label} is schema {schema}, newer than this script's {SCHEMA}; "
+                "update this script, as fields it does not know are ignored.\n"
+            )
     lines.append(
         f"{'model':<{model_w}}{'band (out tok)':<16}{'n A':>6}{'n B':>6}"
         f"{'p50 A':>8}{'p50 B':>8}{'diff':>8}{'p90 A':>8}{'p90 B':>8}{'diff':>8}"
@@ -221,11 +421,11 @@ def compare(path_a, path_b):
     for key in both:
         x, y = a[key], b[key]
         lines.append(
-            f"{key[0]:<{model_w}}{key[1]:<16}{x['n']:>6}{y['n']:>6}"
-            f"{num(x['tps_total_p50']):>8}{num(y['tps_total_p50']):>8}"
-            f"{delta(x['tps_total_p50'], y['tps_total_p50']):>8}"
-            f"{num(x['tps_total_p90']):>8}{num(y['tps_total_p90']):>8}"
-            f"{delta(x['tps_total_p90'], y['tps_total_p90']):>8}"
+            f"{key[0]:<{model_w}}{key[1]:<16}{x.get('n', 0):>6}{y.get('n', 0):>6}"
+            f"{_num(x.get('tps_total_p50')):>8}{_num(y.get('tps_total_p50')):>8}"
+            f"{_delta(x.get('tps_total_p50'), y.get('tps_total_p50')):>8}"
+            f"{_num(x.get('tps_total_p90')):>8}{_num(y.get('tps_total_p90')):>8}"
+            f"{_delta(x.get('tps_total_p90'), y.get('tps_total_p90')):>8}"
         )
     for label, only in (("A", a.keys() - b.keys()), ("B", b.keys() - a.keys())):
         if only:
@@ -233,6 +433,76 @@ def compare(path_a, path_b):
                 f"\nonly in {label}: "
                 + ", ".join(f"{m} [{bd}]" for m, bd in sorted(only, key=order))
             )
+
+    if _has(a, "ctx_tokens_p50", "cache_hit_p50") or _has(b, "ctx_tokens_p50", "cache_hit_p50"):
+        lines.append(
+            "\ncontext tokens read per call (input + cache read + cache creation), "
+            "and the share served from cache"
+        )
+        lines.append(
+            f"{'model':<{model_w}}{'band (out tok)':<16}"
+            f"{'ctx A':>9}{'ctx B':>9}{'diff':>8}{'p90 A':>9}{'p90 B':>9}{'hit A':>8}{'hit B':>8}"
+        )
+        for key in both:
+            x, y = a[key], b[key]
+            lines.append(
+                f"{key[0]:<{model_w}}{key[1]:<16}"
+                f"{_num(x.get('ctx_tokens_p50')):>9}{_num(y.get('ctx_tokens_p50')):>9}"
+                f"{_delta(x.get('ctx_tokens_p50'), y.get('ctx_tokens_p50')):>8}"
+                f"{_num(x.get('ctx_tokens_p90')):>9}{_num(y.get('ctx_tokens_p90')):>9}"
+                f"{_num(x.get('cache_hit_p50')):>8}{_num(y.get('cache_hit_p50')):>8}"
+            )
+
+    if (ctx_a or ctx_b) and not ctx_both:
+        lines.append("\nspeed by context size: n/a (no model and context band in both files)")
+    if ctx_both:
+        lines.append(
+            "\nspeed by context size (tokens/s): slower at equal context points at the route"
+        )
+        lines.append(
+            f"{'model':<{model_w}}{'context':<12}{'n A':>6}{'n B':>6}"
+            f"{'p50 A':>8}{'p50 B':>8}{'diff':>8}"
+        )
+        for key in ctx_both:
+            x, y = ctx_a[key], ctx_b[key]
+            lines.append(
+                f"{key[0]:<{model_w}}{key[1]:<12}{x.get('n', 0):>6}{y.get('n', 0):>6}"
+                f"{_num(x.get('tps_total_p50')):>8}{_num(y.get('tps_total_p50')):>8}"
+                f"{_delta(x.get('tps_total_p50'), y.get('tps_total_p50')):>8}"
+            )
+
+    if (start_a or start_b) and not start_both:
+        lines.append("\nsession startup: n/a (no model in both files)")
+    if start_both:
+        lines.append("\nsession startup (context tokens of each session's first main-thread call)")
+        lines.append(
+            f"{'model':<{model_w}}{'n A':>6}{'n B':>6}"
+            f"{'p50 A':>9}{'p50 B':>9}{'diff':>8}{'p90 A':>9}{'p90 B':>9}{'diff':>8}"
+        )
+        for key in start_both:
+            x, y = start_a[key], start_b[key]
+            lines.append(
+                f"{key[0]:<{model_w}}{x.get('n', 0):>6}{y.get('n', 0):>6}"
+                f"{_num(x.get('ctx_tokens_p50')):>9}{_num(y.get('ctx_tokens_p50')):>9}"
+                f"{_delta(x.get('ctx_tokens_p50'), y.get('ctx_tokens_p50')):>8}"
+                f"{_num(x.get('ctx_tokens_p90')):>9}{_num(y.get('ctx_tokens_p90')):>9}"
+                f"{_delta(x.get('ctx_tokens_p90'), y.get('ctx_tokens_p90')):>8}"
+            )
+
+    fb = {"A": data_a.get("fallbacks"), "B": data_b.get("fallbacks")}
+    if any(isinstance(v, dict) for v in fb.values()):
+        lines.append("\nrequested != answered (calls that recorded a requested model)")
+        for label, v in fb.items():
+            if not isinstance(v, dict):
+                lines.append(f"  {label}: n/a")
+                continue
+            lines.append(f"  {label}: {v.get('mismatched', 0)} of {v.get('checked', 0)}")
+            for p in v.get("pairs") or []:
+                if isinstance(p, dict):
+                    lines.append(
+                        f"      {p.get('requested', '?')} -> {p.get('answered', '?')} "
+                        f"({p.get('n', '?')})"
+                    )
     return "\n".join(lines)
 
 
@@ -281,12 +551,11 @@ def main():
             ap.error(f"no such file or directory: {p}")
         files += sorted(p.rglob("*.jsonl")) if p.is_dir() else [p]
 
-    rows = [
-        derive(c) for f in files for c in calls_from_transcript(f) if c["out"] >= args.min_tokens
-    ]
+    all_rows = [derive(c) for f in files for c in calls_from_transcript(f)]
+    rows = [r for r in all_rows if r["out_tokens"] >= args.min_tokens]
 
     if args.json:
-        print(json.dumps(aggregate(rows, args.min_tokens), indent=2))
+        print(json.dumps(aggregate(rows, args.min_tokens, all_rows=all_rows), indent=2))
         return
 
     if args.csv:
@@ -318,6 +587,7 @@ def main():
         print(f"  tps_window  {stat([r['tps_window'] for r in rs])}")
         print(f"  ttfb_s      {stat([r['ttfb_s'] for r in rs])}")
         print(f"  total_s     {stat([r['total_s'] for r in rs])}")
+        print(f"  ctx_tokens  {stat([r['ctx_tokens'] for r in rs])}")
         print()
 
 

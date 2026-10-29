@@ -34,6 +34,15 @@ metrics aren't reachable from the machine. The client-side transcript still reco
 
 `output_tokens` includes thinking tokens.
 
+Input side, from the same `message.usage` (also in `--csv` rows):
+
+| Column | Definition | Reliability |
+|--------|------------|-------------|
+| `ctx_tokens` | `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` | What the model read for the call. `None` when the transcript has no `input_tokens`. |
+| `cache_hit` | `cache_read_input_tokens` / `ctx_tokens` | `None` unless both cache fields are present. `0.0` means the route returned them as zero, which is what a gateway that drops prompt caching would look like (a guess until seen on real data). |
+| `first_main` | the first call of each model in a transcript that is not a subagent (`isSidechain`), if it is paired | Marks the call that approximates session startup size. Per model, so a small Haiku side call does not stand in for the main model. If a model's first call had no `api-request` record, none of its calls is flagged. |
+| `requested_model` | `requestedModel` on the assistant record | Absent in older transcripts. On the author's data it is either missing or equal to `message.model`. |
+
 ### Gotchas
 
 - `usage.output_tokens` is the **final total**, repeated on every content block of a message. It is not a running count, so per-block speed can't be derived from it.
@@ -72,23 +81,52 @@ uv run python transcript_speed.py --json ~/.claude/projects > machine-b.json   #
 uv run python transcript_speed.py --compare machine-a.json machine-b.json
 ```
 
-`--json` holds only aggregates per model and output-size band (`<200`, `200-1000`, `1000+`; the unit is output
-tokens per call, thinking included, and calls under `--min-tokens` are dropped first, so `<200` means 50–199):
-call count, `tps_total` p50/p90, and `ttfb_s`/`total_s` p50, plus the `min_tokens` it was run with. `--compare`
-warns when the two files used different `--min-tokens` (the smallest band then covers different ranges), and
-notes it when a file from an older version has none. It has no session names or paths, so it is safe to
-copy between machines. `--compare` prints both sides with the percent difference of B against A, and lists
-model/band pairs that appear on only one side.
+`--json` (`"schema": 2`) holds only aggregates, no session names or paths, so it is safe to copy between machines:
+
+- **`bands`**: per model and output-size band (`<200`, `200-1000`, `1000-3000`, `3000+`; the unit is output
+  tokens per call, thinking included, and calls under `--min-tokens` are dropped first, so `<200` means 50–199).
+  Call count, `tps_total` p50/p90, `ttfb_s` and `total_s` p50/p90, `ctx_tokens` p50/p90 and `cache_hit` p50.
+- **`ctx_bands`**: per model and context-size band (`<10k`, `10k-30k`, `30k-100k`, `100k+` tokens read per
+  call): call count and `tps_total` p50/p90, `ttfb_s`/`total_s` p50.
+- **`startup`**: per model, `ctx_tokens` p50/p90 of each session's first main-thread call, counted over every paired
+  call, not only those above `--min-tokens` (a session's first call is often a short tool-use turn).
+- **`fallbacks`**: how many calls recorded a `requestedModel`, how many were answered by a different model once a
+  `[1m]` suffix, a `provider/` prefix, a trailing date and a bare alias (`sonnet` for `claude-sonnet-5-5`) are
+  allowed for, and the requested → answered pairs. `<synthetic>` error turns are skipped. A planner alias such as
+  `opusplan` still shows up as a pair; read the pairs before treating them as fallbacks.
+  A zero does not prove there were no fallbacks. On a corporate machine that reported overload fallbacks from
+  `claude-sonnet-5-5` to `claude-sonnet-5`, every `claude-sonnet-5` answer carried a matching `requestedModel`
+  (`claude-sonnet-5` or `claude-sonnet-5[1m]`), so Claude Code appears to record the model it used, not the one
+  first asked for. The only trace was the separate `claude-sonnet-5` rows in the bands, and those can also be a
+  deliberate model choice; the OTel `attempt` field or a gateway log tells the two apart.
+- **`min_tokens`** it was run with.
+
+`--compare` prints the output-band table first, then context tokens and cache hit per band, speed by context
+size, session startup, and requested-vs-answered counts, with the percent difference of B against A. It warns when
+the two files used different `--min-tokens` (the smallest band then covers different ranges), notes a file with
+no `min_tokens`, notes a file from before `schema` 2 (its new figures show `n/a` and its output bands may not
+match the new ones; regenerate it), and lists model/band pairs that appear on only one side.
 
 Reading the result:
 
+- Compare within a model. An overall summary mixes models, and Opus runs slower than Sonnet, so a different
+  Opus share on one side moves the overall number by itself.
 - Compare within a band. `tps_total` includes prefill and network time, so short outputs look slow, and two
   environments with different mixes of short and long calls differ for that reason alone.
 - Day-to-day spread on one machine was about 20% on the median (p50 79–102 for Sonnet 5.5 over two weeks), so a
   smaller gap than that is noise. Treat bands with fewer than a few hundred calls on either side as anecdotal.
 - A gateway that buffers streaming makes `ttfb_s` approach `total_s`; compare `total_s` and `tps_total` first.
-- This shows that one side is slower, not why. Machine, network, gateway and server-side limits look the same
-  from client timestamps. Both sides need Claude Code versions that write `api-request` records.
+- Telling a bigger prompt from a slower route (these are readings to test, not established rules):
+  a bigger prompt adds time before the first block (`ttfb_s`, via prefill) and shows up as higher `ctx_tokens`
+  or a lower `cache_hit`; decode speed should barely depend on prompt size. So a gap that persists within one
+  context band, especially in the time after the first block, points at the route; a gap that closes within
+  a context band points at prompt size. Constant extra time before the first block in every output band fits
+  either a network hop or extra prefill, and only the context columns tell them apart.
+- Startup size is the cleanest bloat figure: it counts what plugins, MCP servers, skills and `CLAUDE.md` imports
+  inject before the first message. It is one call per session, so look at `n` before trusting a percentile.
+- This shows that one side is slower, and with the context columns, whether prompt size explains it. Machine,
+  network, gateway and server-side limits still look the same from client timestamps. Both sides need Claude
+  Code versions that write `api-request` records.
 - The model name in transcripts can differ by route (for example a gateway alias); `--compare` matches names
   exactly, so rows with different spellings show up under "only in A/B".
 
