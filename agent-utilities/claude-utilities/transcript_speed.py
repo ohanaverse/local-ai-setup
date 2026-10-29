@@ -506,6 +506,33 @@ def compare(path_a, path_b):
     return "\n".join(lines)
 
 
+# probe_runner.py runs its cases from one fixed directory whose encoded project folder name under
+# ~/.claude/projects carries this marker, so its sessions can be told apart from organic ones.
+PROBE_DIR_MARKER = "claude-utilities-probe-cwd"
+
+
+def is_probe_path(path):
+    return any(PROBE_DIR_MARKER in part for part in Path(path).parts)
+
+
+def collect_files(paths, include_probes=False):
+    """Transcripts under `paths`. A directory is scanned recursively and probe sessions are skipped
+    unless include_probes; a .jsonl file named directly is always kept."""
+    files = []
+    for p in map(Path, paths):
+        if p.is_dir():
+            # Judge only the part below `p`: a directory named on the command line is wanted
+            # even if it is itself the probe project folder.
+            files += [
+                f
+                for f in sorted(p.rglob("*.jsonl"))
+                if include_probes or not is_probe_path(f.relative_to(p))
+            ]
+        else:
+            files.append(p)
+    return files
+
+
 def main():
     require_python()
     ap = argparse.ArgumentParser(
@@ -530,6 +557,11 @@ def main():
     ap.add_argument(
         "--csv", action="store_true", help="print per-call rows as CSV instead of the summary"
     )
+    ap.add_argument(
+        "--include-probes",
+        action="store_true",
+        help="also read probe_runner.py sessions found while scanning a directory (skipped by default)",
+    )
     args = ap.parse_args()
 
     if args.json and args.csv:
@@ -545,11 +577,10 @@ def main():
     if not args.paths:
         ap.error("give at least one transcript path, or use --compare A.json B.json")
 
-    files = []
     for p in map(Path, args.paths):
         if not p.exists():
             ap.error(f"no such file or directory: {p}")
-        files += sorted(p.rglob("*.jsonl")) if p.is_dir() else [p]
+    files = collect_files(args.paths, include_probes=args.include_probes)
 
     all_rows = [derive(c) for f in files for c in calls_from_transcript(f)]
     rows = [r for r in all_rows if r["out_tokens"] >= args.min_tokens]

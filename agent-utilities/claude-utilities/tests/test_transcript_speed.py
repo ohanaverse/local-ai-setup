@@ -573,3 +573,43 @@ def test_fallbacks_keep_a_shorter_versioned_id_as_a_fallback():
     assert fb["pairs"] == [
         {"requested": "claude-sonnet-5-5", "answered": "claude-sonnet-5", "n": 1}
     ]
+
+
+# --- probe sessions are kept out of organic stats -------------------------------------------
+
+PROBE_FOLDER = "-Users-x--cache-claude-utilities-probe-cwd"
+
+
+def probe_tree(tmp_path: Path) -> Path:
+    for folder in ("-Users-x-github-proj", PROBE_FOLDER):
+        d = tmp_path / folder
+        d.mkdir()
+        (d / "s.jsonl").write_text("")
+    return tmp_path
+
+
+def test_is_probe_path_matches_marker_in_project_folder(tmp_path):
+    assert ts.is_probe_path(tmp_path / PROBE_FOLDER / "s.jsonl")
+    assert not ts.is_probe_path(tmp_path / "-Users-x-github-proj" / "s.jsonl")
+
+
+def test_directory_scan_skips_probe_sessions_by_default(tmp_path):
+    files = ts.collect_files([probe_tree(tmp_path)])
+    assert [f.parent.name for f in files] == ["-Users-x-github-proj"]
+
+
+def test_include_probes_keeps_them(tmp_path):
+    files = ts.collect_files([probe_tree(tmp_path)], include_probes=True)
+    assert {f.parent.name for f in files} == {"-Users-x-github-proj", PROBE_FOLDER}
+
+
+def test_file_named_directly_is_kept(tmp_path):
+    probe = probe_tree(tmp_path) / PROBE_FOLDER / "s.jsonl"
+    assert ts.collect_files([probe]) == [probe]
+
+
+def test_collect_files_keeps_an_explicitly_named_probe_folder(tmp_path):
+    folder = tmp_path / PROBE_FOLDER
+    folder.mkdir()
+    (folder / "s.jsonl").write_text("")
+    assert ts.collect_files([folder]) == [folder / "s.jsonl"]
