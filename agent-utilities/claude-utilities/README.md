@@ -140,6 +140,91 @@ True time-to-first-token and pure decode rate need data from the wire. Options, 
    the gateway while logging time-to-first-byte, time-to-last-byte, and the SSE token events. This is the only
    local route to true decode rate measured on the wire, and it has to be built.
 
+## Controlled probes: probe_runner.py
+
+Organic sessions cannot say *why* one environment is slower, because real calls carry different context
+sizes and output lengths. `probe_runner.py` runs the same fixed prompts through `claude -p` on any machine,
+reads each run's transcript back with `transcript_speed`'s call timing, and writes an aggregate-only JSON
+that can be copied between machines. It goes through `claude -p` on purpose, so Claude Code's own overhead
+(startup, hooks, plugin and MCP loading, prompt assembly) is part of what is measured. Design:
+[the spec](../../docs/superpowers/specs/2026-10-29-claude-code-environment-probes-design.md).
+
+```bash
+uv run python probe_runner.py run --label home                 # writes probe-home.json
+uv run python probe_runner.py run --label corp                 # on the other machine
+uv run python probe_runner.py --compare probe-home.json probe-corp.json
+```
+
+`run` options: `--runs N` (default 10 per case and variant), `--model` (default `claude-sonnet-5-5`, always
+passed so a default like `opusplan` cannot change what is measured), `--variants`, `--cases`, `--out`.
+Runs are sequential, interleaved as round → case → variant, and progress goes to stderr.
+
+| Case | What it isolates |
+|------|------------------|
+| `tiny` | Fixed overhead: startup context, hooks, plugin and MCP load, minimum call time. |
+| `count` | Decode speed at a known output length (about 630 tokens). |
+| `fill20k`, `fill80k` | How first-token time grows with prompt size: fixed synthetic filler, then a one-word answer. The size is *added* to the normal startup context; compare the `ctx_tokens` each run reports, not the name. |
+
+| Variant | Flags |
+|---------|-------|
+| `default` | The machine's normal configuration. |
+| `lean` | `--setting-sources project --strict-mcp-config --disable-slash-commands`, from the empty probe directory: no user plugins, MCP servers or skills. Managed settings still load and cannot be disabled. |
+
+`--bare` is not used: it never reads OAuth or keychain credentials, so a subscription login could not
+authenticate. The output's `startup` section gives each variant's `tiny` context tokens, so you can see how
+lean `lean` really got on that machine.
+
+How a run is judged:
+
+- **Unique request, same prefix.** Each prompt ends with a random `(ref N)` tag, so the gateway's response
+  cache cannot answer it (an identical request was seen replayed in about 0.15 s), while the filler prefix stays
+  identical and can still be prompt-cached. Every run uses one fixed empty directory, because the working
+  directory is part of the prompt Claude Code builds.
+- **Cold and warm.** Run 0 of each (case, variant) is reported as `cold`; runs 1.. drive the percentiles. A warm
+  run with `cache_hit` under 0.5 was not warm: it is left out of the percentiles and counted as
+  `cache_cold_warm`. If the *median* warm hit is itself under 0.5, the prompt changes every session (a hook
+  that injects the time, for example), so nothing would be left: every warm run is kept and the group is
+  flagged `cache_partial`, which `--compare` shows as "partial cache". Read such a cell as "a new session each
+  time", not as a cached steady state. A gap over 5 minutes between runs of one (case, variant) warns on stderr.
+- **Discards.** A run is dropped and counted by reason (`error`, `bad-json`, `timeout`, `no-transcript`,
+  `no-call`, `extra-calls`). The measured call is the one answered by the pinned model; a side call to another
+  model is ignored.
+
+| Column | Definition | Reliability |
+|--------|------------|-------------|
+| `wall_s` | the whole `claude -p` process, timed by the harness | Measured. |
+| `api_s` | `duration_api_ms` from the JSON | Claude Code's own figure. |
+| `client_overhead_s` | `duration_ms` − `duration_api_ms` | Per-turn overhead (prompt assembly). On one real run it was about 50 ms, equal to the JSON's `time_to_request_ms`, so it is *not* process startup. |
+| `startup_s` | `wall_s` − `duration_ms` | Estimate of process start, hooks, plugin and MCP loading. |
+| `ttft_s` | `ttft_ms` from the JSON | Time to first token as Claude Code measures it. |
+| `ttfb_s`, `total_s`, `tps_total` | as in the table above, from the transcript | Estimates, same caveats as `transcript_speed.py`. |
+| `ctx_tokens`, `cache_hit` | as above | From `message.usage`. |
+
+`--compare` refuses files with different pinned models or an unknown schema, warns (and still compares) when
+Claude Code versions or run counts differ, compares only the (case, variant) pairs both files have, and
+prints two derived estimates: `config cost` (default minus lean `wall_s` for `tiny`) and `prompt-size slope`
+(`ttfb_s` growth per 10k context tokens, `tiny` to `fill80k`). The route difference is the B-versus-A
+difference for the same case and variant.
+
+Readings to test, not established rules:
+
+| Pattern | Likely meaning |
+|---------|----------------|
+| `tiny` slower at one site under both variants | Fixed per-call route cost. |
+| `tiny` default much slower than lean on one machine | Configuration (hooks, plugins, MCP) costs time. |
+| One site's slope per 10k tokens is steeper | Large-context handling on that route. |
+| `count` slower with equal `ctx_tokens` | Streaming rate of the route. |
+| `startup_s` large and similar on both | Claude Code itself, not the route. |
+
+Running it on another machine: copy `probe_runner.py` and `transcript_speed.py` into one directory and run with
+any Python 3.11 or newer. Probe sessions are written to `~/.claude/projects` like any session, under a folder
+carrying `claude-utilities-probe-cwd`; `transcript_speed.py` skips them unless given `--include-probes`.
+
+On a managed or gateway machine, check once: the gateway accepts the pinned model name as passed to `--model`;
+the cases raise no permission prompts; the lean flags really shrink the reported `startup`. A default run is
+80 calls, mostly cached input, a few dollars at most, and it will show in the organisation's usage dashboards and
+managed telemetry. The prompts are synthetic and contain nothing sensitive.
+
 ## OpenTelemetry traces: otel_receiver.py, otel_speed.py
 
 `otel_receiver.py` is a loopback-only OTLP/HTTP server that appends each trace export to a JSONL file

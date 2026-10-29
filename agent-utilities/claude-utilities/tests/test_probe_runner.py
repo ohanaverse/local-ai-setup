@@ -36,11 +36,17 @@ def test_make_filler_is_deterministic_and_scales():
     assert 1.8 < ratio < 2.2
 
 
+def test_filler_length_matches_the_measured_chars_per_token():
+    # Measured 2026-10-29: 80,000 characters of this filler came to 36,080 tokens (about 2.2
+    # characters per token), so 20,000 tokens is about 44,000 characters.
+    assert abs(len(pr.make_filler(20_000)) - 44_000) < 100
+
+
 def test_filler_is_made_of_real_lines():
-    lines = pr.make_filler(200).splitlines()
+    lines = pr.make_filler(500).splitlines()
     assert len(lines) > 10
     assert all(line.startswith("record ") for line in lines[:-1])
-    assert "\\n" not in pr.make_filler(200)
+    assert "\\n" not in pr.make_filler(500)
 
 
 def test_prompt_ends_with_nonce():
@@ -77,6 +83,9 @@ FAKE_CLAUDE = """#!{python}
 import json, os, sys, time
 from pathlib import Path
 
+if sys.argv[1:] == ["--version"]:
+    print("9.9.9 (Claude Code)")
+    sys.exit(0)
 here = Path(__file__).parent
 spec = json.loads((here / "spec.json").read_text())
 (here / "invocation.json").write_text(
@@ -317,8 +326,20 @@ def test_cache_cold_warm_runs_are_excluded_and_counted():
     runs = [good(index=0), good(index=1, cache_hit=0.2), good(index=2, cache_hit=0.99)]
     c = cell(pr.aggregate_runs(runs, META))
     assert c["cache_cold_warm"] == 1
+    assert c["cache_partial"] is False
     assert c["warm"]["cache_hit"] == {"p50": 0.99, "p90": 0.99}
     assert c["runs_ok"] == 3
+
+
+def test_systematically_low_cache_hit_keeps_runs_and_flags_partial():
+    # A variant whose prompt changes every session (a hook injecting the time, say) never gets
+    # past ~0.4. Dropping every warm run would leave nothing to report, so keep them and flag it.
+    runs = [good(index=0), good(index=1, cache_hit=0.44), good(index=2, cache_hit=0.45)]
+    c = cell(pr.aggregate_runs(runs, META))
+    assert c["cache_partial"] is True
+    assert c["cache_cold_warm"] == 0
+    assert c["warm"]["ctx_tokens"] is not None
+    assert pr.aggregate_runs(runs, META)["startup"]["default"] == 30_000
 
 
 def test_discarded_runs_are_counted_by_reason():
@@ -407,6 +428,14 @@ def test_compare_uses_intersection_and_lists_one_sided_pairs(tmp_path):
     assert "only in B: fill20k/default" in out
 
 
+def test_compare_flags_partial_cache(tmp_path):
+    partial = [good(index=1, cache_hit=0.44), good(index=2, cache_hit=0.45)]
+    normal = [good(index=1), good(index=2)]
+    out = pr.compare(*pair(tmp_path, partial, normal))
+    assert "partial cache A yes B no" in out
+    assert "partial cache" not in pr.compare(*pair(tmp_path, normal, normal))
+
+
 def test_compare_prints_percent_difference(tmp_path):
     a_runs = [good(index=1, ttfb_s=2.0), good(index=2, ttfb_s=2.0)]
     b_runs = [good(index=1, ttfb_s=3.0), good(index=2, ttfb_s=3.0)]
@@ -434,3 +463,82 @@ def test_compare_prints_na_for_none_percentiles(tmp_path):
     out = pr.compare(*pair(tmp_path, a_runs, b_runs))
     assert "n/a" in out
     assert "tiny / default" in out
+
+
+# --- command line ----------------------------------------------------------------------------
+
+
+def run_args(tmp_path, kw, out="out.json", **extra):
+    args = [
+        "run",
+        "--label",
+        "t",
+        "--runs",
+        "2",
+        "--cases",
+        "tiny",
+        "--variants",
+        "default",
+        "--claude-bin",
+        kw["claude_bin"],
+        "--probe-dir",
+        str(kw["probe_dir"]),
+        "--projects-dir",
+        str(kw["projects_dir"]),
+        "--out",
+        str(tmp_path / out),
+    ]
+    for flag, value in extra.items():
+        args += [f"--{flag.replace('_', '-')}", value]
+    return args
+
+
+def test_run_writes_aggregate_json_with_fake_claude(tmp_path):
+    kw = make_fake_claude(tmp_path)
+    assert pr.main(run_args(tmp_path, kw)) == 0
+    data = json.loads((tmp_path / "out.json").read_text())
+    assert data["schema"] == pr.SCHEMA
+    assert data["meta"]["label"] == "t"
+    assert data["meta"]["claude_version"] == "9.9.9"
+    assert data["meta"]["model"] == MODEL
+    (c,) = data["cases"]
+    assert (c["case"], c["variant"], c["runs_ok"], c["discarded"]) == ("tiny", "default", 2, {})
+    assert c["cold"]["tps_total"] == 100.0
+    assert c["warm"]["tps_total"] == {"p50": 100.0, "p90": 100.0}
+
+
+def test_missing_claude_binary_gives_one_line_error(tmp_path):
+    kw = make_fake_claude(tmp_path)
+    kw["claude_bin"] = str(tmp_path / "no-such-claude")
+    with pytest.raises(SystemExit) as e:
+        pr.main(run_args(tmp_path, kw))
+    assert "claude" in str(e.value) and "\n" not in str(e.value)
+
+
+def test_probe_dir_is_created_if_missing(tmp_path):
+    kw = make_fake_claude(tmp_path)
+    kw["probe_dir"] = tmp_path / "new" / "probe-cwd"
+    assert pr.main(run_args(tmp_path, kw)) == 0
+    assert kw["probe_dir"].is_dir()
+
+
+@pytest.mark.parametrize(("flag", "value"), [("cases", "nope"), ("variants", "bare")])
+def test_unknown_case_or_variant_is_rejected(tmp_path, flag, value):
+    kw = make_fake_claude(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        pr.main(run_args(tmp_path, kw, **{flag: value}))
+    assert e.value.code == 2
+
+
+def test_compare_command_prints_table_and_rejects_mismatch(tmp_path, capsys):
+    kw = make_fake_claude(tmp_path)
+    pr.main(run_args(tmp_path, kw, out="a.json"))
+    pr.main(run_args(tmp_path, kw, out="b.json"))
+    assert pr.main(["--compare", str(tmp_path / "a.json"), str(tmp_path / "b.json")]) == 0
+    assert "tiny / default" in capsys.readouterr().out
+    bad = json.loads((tmp_path / "b.json").read_text())
+    bad["meta"]["model"] = "other"
+    (tmp_path / "b.json").write_text(json.dumps(bad))
+    with pytest.raises(SystemExit) as e:
+        pr.main(["--compare", str(tmp_path / "a.json"), str(tmp_path / "b.json")])
+    assert e.value.code == 2

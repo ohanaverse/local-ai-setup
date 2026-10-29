@@ -10,8 +10,11 @@ Usage: probe_runner.py run --label NAME [--runs N] [--out FILE]
        probe_runner.py --compare A.json B.json
 """
 
+import argparse
+import datetime
 import json
 import random
+import shutil
 import statistics
 import subprocess
 import sys
@@ -50,12 +53,14 @@ VARIANT_FLAGS = {
     "lean": ["--setting-sources", "project", "--strict-mcp-config", "--disable-slash-commands"],
 }
 
-CHARS_PER_TOKEN = 4  # rough; the real size is the ctx_tokens a run reports
+# Measured 2026-10-29: this numeric filler tokenizes at about 2.2 characters per token (80,000
+# characters came to 36,080 tokens). The real size is always the ctx_tokens a run reports.
+CHARS_PER_TOKEN = 2.2
 
 
 def make_filler(tokens):
     """Deterministic synthetic text of about `tokens` tokens. Nothing in it is sensitive."""
-    chars = tokens * CHARS_PER_TOKEN
+    chars = round(tokens * CHARS_PER_TOKEN)
     lines = []
     size = 0
     i = 0
@@ -246,9 +251,11 @@ def aggregate_runs(runs, meta):
     """Aggregate-only summary of a probe: carries no session ids, prompts or paths.
 
     Per (case, variant): run 0 is the cold run, runs 1.. are warm, and a warm run whose cache hit
-    is under COLD_HIT_THRESHOLD is left out of the warm percentiles and counted. `startup` is the
-    context tokens a bare `tiny` call reads under each variant (the warm p50), i.e. how much the
-    variant's configuration injects before any prompt.
+    is under COLD_HIT_THRESHOLD is left out of the warm percentiles and counted. If the median
+    warm hit is itself under the threshold, the prompt changes every session (a hook injecting
+    the time, say) and nothing would be left, so every warm run is kept and the group is flagged
+    `cache_partial`. `startup` is the context tokens a bare `tiny` call reads under each variant
+    (the warm p50), i.e. how much the variant's configuration injects before any prompt.
     """
     groups = {}
     for r in runs:
@@ -258,7 +265,11 @@ def aggregate_runs(runs, meta):
         ok = [r for r in rs if r.discard_reason is None]
         cold = next((r for r in ok if r.index == 0), None)
         warm_all = [r for r in ok if r.index >= 1]
-        warm = [r for r in warm_all if r.cache_hit is None or r.cache_hit >= COLD_HIT_THRESHOLD]
+        hits = [r.cache_hit for r in warm_all if r.cache_hit is not None]
+        partial = bool(hits) and statistics.median(hits) < COLD_HIT_THRESHOLD
+        warm = warm_all
+        if not partial:
+            warm = [r for r in warm_all if r.cache_hit is None or r.cache_hit >= COLD_HIT_THRESHOLD]
         cases.append(
             {
                 "case": case,
@@ -266,6 +277,7 @@ def aggregate_runs(runs, meta):
                 "runs_ok": len(ok),
                 "discarded": dict(Counter(r.discard_reason for r in rs if r.discard_reason)),
                 "cache_cold_warm": len(warm_all) - len(warm),
+                "cache_partial": partial,
                 "cold": {f: getattr(cold, f) for f in FIELDS} if cold else None,
                 "warm": {f: _percentiles(warm, f) for f in FIELDS},
             }
@@ -343,10 +355,17 @@ def compare(path_a, path_b):
 
     for key in sorted(cells_a.keys() & cells_b.keys(), key=order):
         x, y = cells_a[key], cells_b[key]
-        lines.append(
+        header = (
             f"\n{key[0]} / {key[1]}   ok runs A {x['runs_ok']} B {y['runs_ok']}   "
             f"cache-cold warm A {x['cache_cold_warm']} B {y['cache_cold_warm']}"
         )
+        if x.get("cache_partial") or y.get("cache_partial"):
+            yes_no = {True: "yes", False: "no"}
+            header += (
+                f"   partial cache A {yes_no[bool(x.get('cache_partial'))]} "
+                f"B {yes_no[bool(y.get('cache_partial'))]}"
+            )
+        lines.append(header)
         lines.append(
             f"  {'metric':<19}{'p50 A':>9}{'p50 B':>9}{'diff':>8}"
             f"{'p90 A':>9}{'p90 B':>9}{'diff':>8}{'cold A':>9}{'cold B':>9}"
@@ -385,3 +404,111 @@ def compare(path_a, path_b):
             f"B {secs(_size_slope(b, variant), 's/10k')}"
         )
     return "\n".join(lines)
+
+
+# --- command line ----------------------------------------------------------------------------
+
+DEFAULT_MODEL = "claude-sonnet-5-5"
+# The directory name carries transcript_speed.PROBE_DIR_MARKER, so organic stats skip these sessions.
+DEFAULT_PROBE_DIR = "~/.cache/claude-utilities/probe-cwd"
+DEFAULT_PROJECTS_DIR = "~/.claude/projects"
+
+
+def _claude_version(claude_bin):
+    try:
+        words = subprocess.run(
+            [claude_bin, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout.split()
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    return words[0] if words else "unknown"
+
+
+def _logged_run(case, variant, index, **kw):
+    r = run_once(case, variant, index, **kw)
+    outcome = f"discarded ({r.discard_reason})" if r.discard_reason else f"ok, {r.total_s:.1f}s"
+    print(f"{r.case}/{r.variant} run {r.index}: {outcome}", file=sys.stderr)
+    return r
+
+
+def main(argv=None):
+    ts.require_python()
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("A.json", "B.json"),
+        help="compare two probe files instead of running",
+    )
+    run = ap.add_subparsers(dest="command").add_parser("run", help="run the probe")
+    run.add_argument("--label", required=True, help="names the output file and its meta")
+    run.add_argument("--runs", type=int, default=10, help="runs per case and variant (default 10)")
+    run.add_argument(
+        "--model", default=DEFAULT_MODEL, help=f"pinned model (default {DEFAULT_MODEL})"
+    )
+    run.add_argument("--variants", default=",".join(VARIANT_FLAGS), help="default: all")
+    run.add_argument("--cases", default=",".join(CASES), help="default: all")
+    run.add_argument("--out", help="output file (default probe-<label>.json)")
+    run.add_argument("--claude-bin", default="claude")
+    run.add_argument("--probe-dir", default=DEFAULT_PROBE_DIR)
+    run.add_argument("--projects-dir", default=DEFAULT_PROJECTS_DIR)
+    args = ap.parse_args(argv)
+
+    if args.compare:
+        if args.command:
+            ap.error("--compare takes only the two files")
+        try:
+            print(compare(*args.compare))
+        except (OSError, ValueError, KeyError) as e:
+            ap.error(str(e))
+        return 0
+    if args.command != "run":
+        ap.error("give the run command, or --compare A.json B.json")
+
+    names = [n for n in args.cases.split(",") if n]
+    variants = [v for v in args.variants.split(",") if v]
+    for name in names:
+        if name not in CASES:
+            ap.error(f"unknown case {name!r} (choose from {', '.join(CASES)})")
+    for variant in variants:
+        if variant not in VARIANT_FLAGS:
+            ap.error(f"unknown variant {variant!r} (choose from {', '.join(VARIANT_FLAGS)})")
+    if args.runs < 1:
+        ap.error("--runs must be at least 1")
+    if shutil.which(args.claude_bin) is None:
+        sys.exit(
+            f"probe_runner: cannot find '{args.claude_bin}'; install Claude Code or pass --claude-bin"
+        )
+
+    probe_dir = Path(args.probe_dir).expanduser()
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    runs, max_gap = run_probe(
+        [CASES[n] for n in names],
+        variants,
+        args.runs,
+        run_fn=_logged_run,
+        model=args.model,
+        claude_bin=args.claude_bin,
+        probe_dir=probe_dir,
+        projects_dir=Path(args.projects_dir).expanduser(),
+    )
+    meta = {
+        "label": args.label,
+        "claude_version": _claude_version(args.claude_bin),
+        "model": args.model,
+        "runs": args.runs,
+        "variants": variants,
+        "date": datetime.date.today().isoformat(),
+        "max_gap_s": round(max_gap, 1),
+    }
+    out = Path(args.out) if args.out else Path(f"probe-{args.label}.json")
+    out.write_text(json.dumps(aggregate_runs(runs, meta), indent=2) + "\n")
+    discarded = sum(1 for r in runs if r.discard_reason)
+    print(f"wrote {out}: {len(runs)} runs, {discarded} discarded")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
