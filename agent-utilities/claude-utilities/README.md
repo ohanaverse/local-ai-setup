@@ -174,6 +174,27 @@ Runs are sequential, interleaved as round → case → variant, and progress goe
 authenticate. The output's `startup` section gives each variant's `tiny` context tokens, so you can see how
 lean `lean` really got on that machine.
 
+Example of what `lean` removes, from the `system`/`init` record of one `claude -p` run per variant
+(`--output-format stream-json --verbose`, Claude Code 2.1.312, a managed-settings machine, 2026-10-29):
+
+| | `default` | `lean` |
+|---|---|---|
+| plugins | 18 | 4 (one managed plugin plus 3 builtin) |
+| MCP servers | 13 | 0 |
+| slash commands and skills | 111 | 0 |
+| tools | 29 | 20 |
+
+`model` and `apiKeySource` were identical in both, so `lean` kept the machine's gateway route and credential
+helper: managed settings (base URL, `apiKeyHelper`, model pins) are not dropped by `--setting-sources project`.
+User-level hooks are dropped, since they come from the user settings file. The managed plugin stays, so a
+managed machine's `lean` is not quite the same as an unmanaged one's. That plugin had a `SessionStart` hook
+that ran on every fresh `claude -p`; one `lean` `tiny` call took about 2.9 s with it and about 1.6 s with
+`--settings '{"disableAllHooks": true}'` (one run each, so rough). The hook runs in both variants, so it cancels
+out of `config cost`, but it adds to every absolute `wall_s` and `startup_s` on that machine. Compare machines
+on `ttfb_s`, decode rate and `ctx_tokens`, not on `tiny` `wall_s`. To check your own machine, run
+`jq -c 'select(.subtype=="init") | {model, apiKeySource, plugins, mcp_servers, slash_commands, tools}'` on each
+variant's output.
+
 How a run is judged:
 
 - **Unique request, same prefix.** Each prompt ends with a random `(ref N)` tag, so the gateway's response

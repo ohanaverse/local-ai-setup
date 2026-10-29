@@ -46,9 +46,11 @@ CASES = {
     )
 }
 
-# Drops user-level plugins, MCP servers and skills. Never --bare: it ignores OAuth and keychain
-# credentials, so a subscription login could not authenticate. Never --no-session-persistence: the
-# transcript is the measurement.
+# Drops user-level plugins, MCP servers, skills and hooks. Managed settings still load, so the gateway
+# route and credential helper survive (checked 2026-10-29 on a managed machine: same model and apiKeySource;
+# plugins 18 -> 4, MCP servers 13 -> 0, slash commands 111 -> 0, tools 29 -> 20; see the README). Never
+# --bare: it ignores OAuth and keychain credentials, so a subscription login could not authenticate. Never
+# --no-session-persistence: the transcript is the measurement.
 VARIANT_FLAGS = {
     "default": [],
     "lean": ["--setting-sources", "project", "--strict-mcp-config", "--disable-slash-commands"],
