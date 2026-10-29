@@ -45,7 +45,7 @@ func stubSettleStart(t *testing.T, fn func(ctx context.Context, out io.Writer, c
 }
 
 // goroutineID is the goroutine's own ID, as debug.Stack prints it ("goroutine
-// 36 [running]:").
+// 36 [running]:"), or 0 when its header cannot be read.
 func goroutineID() uint64 {
 	fields := strings.Fields(string(debug.Stack()))
 	if len(fields) < 2 || fields[0] != "goroutine" {
@@ -143,10 +143,24 @@ func TestStartIsConfirmedOffTheUpdateGoroutine(t *testing.T) {
 	// stage that let it in — and read true, which is what the run under load
 	// tripped over.
 	settleGoroutine := goroutineID()
+	if settleGoroutine == 0 {
+		t.Fatal("could not read this test's goroutine id from debug.Stack")
+	}
 	entered, release := make(chan struct{}), make(chan struct{})
 	stubSettleStart(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
-		if goroutineID() == settleGoroutine {
-			t.Error("settleStart was called while Update was running")
+		// A failed read is a failure of its own, not a match. Either way the
+		// call returns at once: the handshake below is released only by this
+		// test's goroutine, so a call ON that goroutine would block it for
+		// good and the regression would reach the terminal as a package
+		// timeout instead of a failed test.
+		id := goroutineID()
+		if id == 0 {
+			t.Error("could not read the settle call's goroutine id from debug.Stack")
+			return goneQwen
+		}
+		if id == settleGoroutine {
+			t.Errorf("settleStart ran on goroutine %d, the one that drives Update in this test; want the start's own goroutine", id)
+			return goneQwen
 		}
 		mu.Lock()
 		calls++
