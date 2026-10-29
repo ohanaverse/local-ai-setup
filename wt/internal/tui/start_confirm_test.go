@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +42,20 @@ func stubSettleStart(t *testing.T, fn func(ctx context.Context, out io.Writer, c
 	old := settleStart
 	settleStart = fn
 	t.Cleanup(func() { settleStart = old })
+}
+
+// goroutineID is the goroutine's own ID, as debug.Stack prints it ("goroutine
+// 36 [running]:").
+func goroutineID() uint64 {
+	fields := strings.Fields(string(debug.Stack()))
+	if len(fields) < 2 || fields[0] != "goroutine" {
+		return 0
+	}
+	id, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 // TestStartWhoseServerIsGoneIsAFailedStartWithItsLines pins what the picker
@@ -118,36 +134,32 @@ func TestStartIsConfirmedOffTheUpdateGoroutine(t *testing.T) {
 		return nil
 	})
 	var mu sync.Mutex
-	var inUpdate bool
 	calls := 0
+	// The goroutine running this test is the one Update runs on here, so the
+	// goroutine ID is what tells the start's settle call apart from an Update
+	// dispatch: the check must run on the start's own goroutine, never here.
+	// A flag toggled around an update dispatch cannot — the start's goroutine
+	// reaches the check while the test goroutine may be mid-dispatch of the
+	// stage that let it in — and read true, which is what the run under load
+	// tripped over.
+	settleGoroutine := goroutineID()
 	entered, release := make(chan struct{}), make(chan struct{})
 	stubSettleStart(t, func(context.Context, io.Writer, *config.Config, lifecycle.Target) error {
-		mu.Lock()
-		calls++
-		first, called := calls == 1, inUpdate
-		mu.Unlock()
-		if called {
+		if goroutineID() == settleGoroutine {
 			t.Error("settleStart was called while Update was running")
 		}
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
 		if first {
 			close(entered)
 			<-release
 		}
 		return goneQwen
 	})
-	update := func(m model, msg tea.Msg) model {
-		mu.Lock()
-		inUpdate = true
-		mu.Unlock()
-		next, _ := updateMsg(m, msg)
-		mu.Lock()
-		inUpdate = false
-		mu.Unlock()
-		return next
-	}
-
 	got, _ := enterStartRow(t, m, "omlx/qwen3.8")
-	got = update(got, recvStart(t, got)) // the routing stage
+	got, _ = updateMsg(got, recvStart(t, got)) // the routing stage
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -159,8 +171,8 @@ func TestStartIsConfirmedOffTheUpdateGoroutine(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	// Update is not what the check holds up.
-	got = update(got, startTickMsg{id: got.start.id})
-	got = update(got, tea.KeyMsg{Type: tea.KeyEsc})
+	got, _ = updateMsg(got, startTickMsg{id: got.start.id})
+	got, _ = updateMsg(got, tea.KeyMsg{Type: tea.KeyEsc})
 	if got.phase != phaseStarting || got.start == nil {
 		t.Fatalf("phase = %v, start kept = %v; want the start screen still up while the check is held", got.phase, got.start != nil)
 	}
@@ -170,7 +182,7 @@ func TestStartIsConfirmedOffTheUpdateGoroutine(t *testing.T) {
 	if !ok || done.err != error(goneQwen) {
 		t.Fatalf("the start reported %#v, want a result carrying the check's error", msg)
 	}
-	got = update(got, msg)
+	got, _ = updateMsg(got, msg)
 	if got.status != goneStatus {
 		t.Errorf("status = %q, want %q", got.status, goneStatus)
 	}
