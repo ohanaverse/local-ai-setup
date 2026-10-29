@@ -565,3 +565,11 @@ def test_compare_newer_schema_gets_its_own_note(tmp_path):
     out = ts.compare(a, b)
     assert "newer than this script" in out
     assert "predates" not in out
+
+
+def test_fallbacks_keep_a_shorter_versioned_id_as_a_fallback():
+    rows = [crow(model="claude-sonnet-5", requested_model="claude-sonnet-5-5")]
+    fb = ts.fallbacks(rows)
+    assert fb["pairs"] == [
+        {"requested": "claude-sonnet-5-5", "answered": "claude-sonnet-5", "n": 1}
+    ]

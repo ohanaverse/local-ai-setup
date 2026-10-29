@@ -215,11 +215,17 @@ def _canon(name):
 def same_model(requested, answered):
     """True when the answer is the requested model under another spelling.
 
-    Slots routed through a gateway request an alias (`sonnet`) or a prefixed name and get a
-    canonical id back, so one name's dash-separated parts being within the other's count as the same model.
+    Slots routed through a gateway request a bare alias (`sonnet`) or a prefixed name and get a
+    canonical id back. A bare alias matches any id carrying its word; versioned ids must be equal,
+    so `claude-sonnet-5-5` answered as `claude-sonnet-5` stays a fallback.
     """
-    a, b = set(_canon(requested).split("-")), set(_canon(answered).split("-"))
-    return a <= b or b <= a
+    a, b = _canon(requested), _canon(answered)
+    if a == b:
+        return True
+    for alias, full in ((a, b), (b, a)):
+        if re.fullmatch(r"[a-z]+", alias) and alias in full.split("-"):
+            return True
+    return False
 
 
 def _pct(rs, key, p, whole=False):

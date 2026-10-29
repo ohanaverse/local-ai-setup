@@ -91,7 +91,7 @@ uv run python transcript_speed.py --compare machine-a.json machine-b.json
 - **`startup`**: per model, `ctx_tokens` p50/p90 of each session's first main-thread call, counted over every paired
   call, not only those above `--min-tokens` (a session's first call is often a short tool-use turn).
 - **`fallbacks`**: how many calls recorded a `requestedModel`, how many were answered by a different model once a
-  `[1m]` suffix, a `provider/` prefix, a trailing date and an alias (`sonnet` for `claude-sonnet-5-5`) are
+  `[1m]` suffix, a `provider/` prefix, a trailing date and a bare alias (`sonnet` for `claude-sonnet-5-5`) are
   allowed for, and the requested → answered pairs. `<synthetic>` error turns are skipped. A planner alias such as
   `opusplan` still shows up as a pair; read the pairs before treating them as fallbacks.
 - **`min_tokens`** it was run with.
