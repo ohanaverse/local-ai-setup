@@ -478,3 +478,90 @@ def test_compare_says_so_when_only_one_file_has_context_sections(tmp_path):
     out = ts.compare(old, new)
     assert "speed by context size: n/a" in out
     assert "session startup: n/a" in out
+
+
+# --- review fixes -------------------------------------------------------------------------------
+
+
+def test_first_main_is_per_model_so_a_side_call_does_not_hide_the_main_one(tmp_path):
+    def with_model(rec, model):
+        rec["message"]["model"] = model
+        return rec
+
+    f = write_transcript(
+        tmp_path / "s.jsonl",
+        [
+            request("2026-01-01T00:00:00Z"),
+            with_model(usage_assistant("2026-01-01T00:00:02Z", "m1", 10), "haiku"),
+            request("2026-01-01T00:00:10Z"),
+            with_model(usage_assistant("2026-01-01T00:00:12Z", "m2", 10), "sonnet"),
+        ],
+    )
+    rows = [ts.derive(c) for c in ts.calls_from_transcript(f)]
+    assert [(r["model"], r["first_main"]) for r in rows] == [("haiku", True), ("sonnet", True)]
+
+
+def test_unpaired_first_call_stops_a_later_call_becoming_first_main(tmp_path):
+    f = write_transcript(
+        tmp_path / "s.jsonl",
+        [
+            usage_assistant("2026-01-01T00:00:02Z", "m1", 10),
+            request("2026-01-01T00:00:10Z"),
+            usage_assistant("2026-01-01T00:00:12Z", "m2", 10),
+        ],
+    )
+    (row_,) = [ts.derive(c) for c in ts.calls_from_transcript(f)]
+    assert row_["first_main"] is False
+
+
+def test_non_string_requested_model_is_ignored(tmp_path):
+    f = write_transcript(
+        tmp_path / "s.jsonl",
+        [
+            request("2026-01-01T00:00:00Z"),
+            usage_assistant("2026-01-01T00:00:02Z", "m1", 10, requestedModel=["x"]),
+        ],
+    )
+    (call,) = ts.calls_from_transcript(f)
+    assert ts.derive(call)["requested_model"] is None
+
+
+def test_fallbacks_accept_aliases_prefixes_dates_and_skip_synthetic():
+    rows = [
+        crow(model="claude-sonnet-5-5", requested_model="sonnet"),
+        crow(model="qwen", requested_model="ollama/qwen"),
+        crow(model="claude-haiku-5-5-20260101", requested_model="claude-haiku-5-5"),
+        crow(model="<synthetic>", requested_model="sonnet"),
+        crow(model="claude-opus-5-5", requested_model="sonnet"),
+    ]
+    fb = ts.fallbacks(rows)
+    assert fb["checked"] == 4
+    assert fb["pairs"] == [{"requested": "sonnet", "answered": "claude-opus-5-5", "n": 1}]
+
+
+def test_compare_tolerates_section_entries_missing_fields(tmp_path):
+    a = ctx_file(
+        tmp_path / "a.json",
+        startup=[{"model": "m"}],
+        ctx_bands=[{"model": "m", "band": "<10k"}],
+        fallbacks={"pairs": [{}, "junk"]},
+    )
+    b = ctx_file(
+        tmp_path / "b.json",
+        startup=[{"model": "m"}],
+        ctx_bands=[{"model": "m", "band": "<10k"}],
+        fallbacks={"pairs": []},
+    )
+    out = ts.compare(a, b)
+    assert "n/a" in out
+
+
+def test_compare_newer_schema_gets_its_own_note(tmp_path):
+    a = ctx_file(tmp_path / "a.json")
+    b = ctx_file(tmp_path / "b.json")
+    data = json.loads(Path(b).read_text())
+    data["schema"] = 99
+    Path(b).write_text(json.dumps(data))
+    out = ts.compare(a, b)
+    assert "newer than this script" in out
+    assert "predates" not in out

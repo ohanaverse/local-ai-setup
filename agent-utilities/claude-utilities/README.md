@@ -40,7 +40,7 @@ Input side, from the same `message.usage` (also in `--csv` rows):
 |--------|------------|-------------|
 | `ctx_tokens` | `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` | What the model read for the call. `None` when the transcript has no `input_tokens`. |
 | `cache_hit` | `cache_read_input_tokens` / `ctx_tokens` | `None` unless both cache fields are present. `0.0` means the route returned them as zero, which is what a gateway that drops prompt caching would look like (a guess until seen on real data). |
-| `first_main` | the first paired call of a transcript that is not a subagent (`isSidechain`) | Marks the call that approximates session startup size. If a session's first request had no `api-request` record, its next call is flagged instead. |
+| `first_main` | the first call of each model in a transcript that is not a subagent (`isSidechain`), if it is paired | Marks the call that approximates session startup size. Per model, so a small Haiku side call does not stand in for the main model. If a model's first call had no `api-request` record, none of its calls is flagged. |
 | `requested_model` | `requestedModel` on the assistant record | Absent in older transcripts. On the author's data it is either missing or equal to `message.model`. |
 
 ### Gotchas
@@ -91,8 +91,9 @@ uv run python transcript_speed.py --compare machine-a.json machine-b.json
 - **`startup`**: per model, `ctx_tokens` p50/p90 of each session's first main-thread call, counted over every paired
   call, not only those above `--min-tokens` (a session's first call is often a short tool-use turn).
 - **`fallbacks`**: how many calls recorded a `requestedModel`, how many were answered by a different model once a
-  `[1m]`-style suffix is ignored, and the requested → answered pairs. An alias request such as `opusplan` shows
-  up as a pair too; read the pairs before treating them as fallbacks.
+  `[1m]` suffix, a `provider/` prefix, a trailing date and an alias (`sonnet` for `claude-sonnet-5-5`) are
+  allowed for, and the requested → answered pairs. `<synthetic>` error turns are skipped. A planner alias such as
+  `opusplan` still shows up as a pair; read the pairs before treating them as fallbacks.
 - **`min_tokens`** it was run with.
 
 `--compare` prints the output-band table first, then context tokens and cache hit per band, speed by context
