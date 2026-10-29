@@ -88,14 +88,20 @@ def parse_ts(s):
 def calls_from_transcript(path):
     pending_req = None
     cur = None  # current assistant message accumulator
-    seen_main = False  # a paired, non-subagent call has been yielded for this file
+    seen_main = set()  # models that have already answered a non-subagent call in this file
 
     def flush():
-        nonlocal cur, seen_main
-        if cur and cur["req_ts"] is not None:
-            cur["first_main"] = not cur["sidechain"] and not seen_main
-            seen_main = seen_main or cur["first_main"]
-            yield cur
+        nonlocal cur
+        if cur:
+            # Counted per model, and whether or not the call is paired: a small side call (a
+            # title or topic check) must not stand in for the main model's startup, and a
+            # resumed file whose first call lost its api-request must not promote a later one.
+            first = not cur["sidechain"] and cur["model"] not in seen_main
+            if not cur["sidechain"]:
+                seen_main.add(cur["model"])
+            if cur["req_ts"] is not None:
+                cur["first_main"] = first
+                yield cur
         cur = None
 
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -133,7 +139,9 @@ def calls_from_transcript(path):
                         "input": None,
                         "cache_read": None,
                         "cache_create": None,
-                        "requested": d.get("requestedModel"),
+                        "requested": d["requestedModel"]
+                        if isinstance(d.get("requestedModel"), str)
+                        else None,
                         "sidechain": bool(d.get("isSidechain")),
                         "session": path.name,
                     }
@@ -198,6 +206,28 @@ def base_model(name):
     return re.sub(r"\[[^\]]*\]$", "", name)
 
 
+def _canon(name):
+    """Lower-case, no `[1m]` suffix, no `provider/` prefix, no trailing `-YYYYMMDD` date."""
+    name = base_model(name).lower().rsplit("/", 1)[-1]
+    return re.sub(r"-\d{8}$", "", name)
+
+
+def same_model(requested, answered):
+    """True when the answer is the requested model under another spelling.
+
+    Slots routed through a gateway request a bare alias (`sonnet`) or a prefixed name and get a
+    canonical id back. A bare alias matches any id carrying its word; versioned ids must be equal,
+    so `claude-sonnet-5-5` answered as `claude-sonnet-5` stays a fallback.
+    """
+    a, b = _canon(requested), _canon(answered)
+    if a == b:
+        return True
+    for alias, full in ((a, b), (b, a)):
+        if re.fullmatch(r"[a-z]+", alias) and alias in full.split("-"):
+            return True
+    return False
+
+
 def _pct(rs, key, p, whole=False):
     """p50 is the true median and p90 nearest-rank, matching the summary view's numbers.
 
@@ -210,23 +240,33 @@ def _pct(rs, key, p, whole=False):
 
 
 def _group(rows, key):
+    """Rows by (model, key(row)); rows whose key is None are left out. Sorted by that pair."""
     groups = defaultdict(list)
     for r in rows:
-        if r.get(key) is not None:
-            groups[(r["model"], r[key])].append(r)
+        k = key(r)
+        if k is not None:
+            groups[(r["model"], k)].append(r)
     return sorted(groups.items())
 
 
-def fallbacks(rows):
-    """Calls whose answering model differs from the requested one, ignoring a `[1m]` suffix.
+def _stats(rs, fields):
+    """`{name: percentile}` for (name, source key, p, whole) specs over the group's rows."""
+    return {name: _pct(rs, src, p, whole) for name, src, p, whole in fields}
 
-    Only calls that carry a requestedModel count as checked; older transcripts have none.
+
+def fallbacks(rows):
+    """Calls answered by a different model than requested, allowing for aliases and id spellings.
+
+    Only calls that carry a requestedModel count as checked; older transcripts have none, and
+    `<synthetic>` messages (Claude Code's own error turns) were never answered by a model.
     """
-    checked = [r for r in rows if r.get("requested_model") is not None]
+    checked = [
+        r for r in rows if r.get("requested_model") is not None and r["model"] != "<synthetic>"
+    ]
     pairs = Counter(
         (base_model(r["requested_model"]), r["model"])
         for r in checked
-        if base_model(r["requested_model"]) != r["model"]
+        if not same_model(r["requested_model"], r["model"])
     )
     return {
         "checked": len(checked),
@@ -247,44 +287,39 @@ def aggregate(rows, min_tokens, all_rows=None):
     """
     all_rows = rows if all_rows is None else all_rows
 
+    band_fields = (
+        ("tps_total_p50", "tps_total", 0.5, False),
+        ("tps_total_p90", "tps_total", 0.9, False),
+        ("ttfb_s_p50", "ttfb_s", 0.5, False),
+        ("ttfb_s_p90", "ttfb_s", 0.9, False),
+        ("total_s_p50", "total_s", 0.5, False),
+        ("total_s_p90", "total_s", 0.9, False),
+        ("ctx_tokens_p50", "ctx_tokens", 0.5, True),
+        ("ctx_tokens_p90", "ctx_tokens", 0.9, True),
+        ("cache_hit_p50", "cache_hit", 0.5, False),
+    )
+    ctx_band_fields = (
+        ("tps_total_p50", "tps_total", 0.5, False),
+        ("tps_total_p90", "tps_total", 0.9, False),
+        ("ttfb_s_p50", "ttfb_s", 0.5, False),
+        ("total_s_p50", "total_s", 0.5, False),
+    )
+    startup_fields = (
+        ("ctx_tokens_p50", "ctx_tokens", 0.5, True),
+        ("ctx_tokens_p90", "ctx_tokens", 0.9, True),
+    )
     bands = [
-        {
-            "model": model,
-            "band": band,
-            "n": len(rs),
-            "tps_total_p50": _pct(rs, "tps_total", 0.5),
-            "tps_total_p90": _pct(rs, "tps_total", 0.9),
-            "ttfb_s_p50": _pct(rs, "ttfb_s", 0.5),
-            "ttfb_s_p90": _pct(rs, "ttfb_s", 0.9),
-            "total_s_p50": _pct(rs, "total_s", 0.5),
-            "total_s_p90": _pct(rs, "total_s", 0.9),
-            "ctx_tokens_p50": _pct(rs, "ctx_tokens", 0.5, whole=True),
-            "ctx_tokens_p90": _pct(rs, "ctx_tokens", 0.9, whole=True),
-            "cache_hit_p50": _pct(rs, "cache_hit", 0.5),
-        }
-        for (model, band), rs in _group([r | {"_b": band_of(r["out_tokens"])} for r in rows], "_b")
+        {"model": model, "band": band, "n": len(rs)} | _stats(rs, band_fields)
+        for (model, band), rs in _group(rows, lambda r: band_of(r["out_tokens"]))
     ]
     ctx_bands = [
-        {
-            "model": model,
-            "band": band,
-            "n": len(rs),
-            "tps_total_p50": _pct(rs, "tps_total", 0.5),
-            "tps_total_p90": _pct(rs, "tps_total", 0.9),
-            "ttfb_s_p50": _pct(rs, "ttfb_s", 0.5),
-            "total_s_p50": _pct(rs, "total_s", 0.5),
-        }
-        for (model, band), rs in _group(rows, "ctx_band")
+        {"model": model, "band": band, "n": len(rs)} | _stats(rs, ctx_band_fields)
+        for (model, band), rs in _group(rows, lambda r: r.get("ctx_band"))
     ]
-    first = [r | {"_k": 1} for r in all_rows if r.get("first_main") and r.get("ctx_tokens")]
+    first = [r for r in all_rows if r.get("first_main") and r.get("ctx_tokens")]
     startup = [
-        {
-            "model": model,
-            "n": len(rs),
-            "ctx_tokens_p50": _pct(rs, "ctx_tokens", 0.5, whole=True),
-            "ctx_tokens_p90": _pct(rs, "ctx_tokens", 0.9, whole=True),
-        }
-        for (model, _), rs in _group(first, "_k")
+        {"model": model, "n": len(rs)} | _stats(rs, startup_fields)
+        for (model, _), rs in _group(first, lambda r: True)
     ]
     return {
         "schema": SCHEMA,
@@ -367,11 +402,17 @@ def compare(path_a, path_b):
             "the smallest band covers different token ranges and is not comparable\n"
         )
     for label, data in (("A", data_a), ("B", data_b)):
-        if data.get("schema") != SCHEMA:
+        schema = data.get("schema")
+        if not isinstance(schema, int) or schema < SCHEMA:
             lines.append(
                 f"note: {label} predates the context columns (older --json output); its context, "
                 "startup and fallback figures show n/a and its output bands may not match. "
                 "Regenerate it to compare them.\n"
+            )
+        elif schema > SCHEMA:
+            lines.append(
+                f"note: {label} is schema {schema}, newer than this script's {SCHEMA}; "
+                "update this script, as fields it does not know are ignored.\n"
             )
     lines.append(
         f"{'model':<{model_w}}{'band (out tok)':<16}{'n A':>6}{'n B':>6}"
@@ -380,11 +421,11 @@ def compare(path_a, path_b):
     for key in both:
         x, y = a[key], b[key]
         lines.append(
-            f"{key[0]:<{model_w}}{key[1]:<16}{x['n']:>6}{y['n']:>6}"
-            f"{_num(x['tps_total_p50']):>8}{_num(y['tps_total_p50']):>8}"
-            f"{_delta(x['tps_total_p50'], y['tps_total_p50']):>8}"
-            f"{_num(x['tps_total_p90']):>8}{_num(y['tps_total_p90']):>8}"
-            f"{_delta(x['tps_total_p90'], y['tps_total_p90']):>8}"
+            f"{key[0]:<{model_w}}{key[1]:<16}{x.get('n', 0):>6}{y.get('n', 0):>6}"
+            f"{_num(x.get('tps_total_p50')):>8}{_num(y.get('tps_total_p50')):>8}"
+            f"{_delta(x.get('tps_total_p50'), y.get('tps_total_p50')):>8}"
+            f"{_num(x.get('tps_total_p90')):>8}{_num(y.get('tps_total_p90')):>8}"
+            f"{_delta(x.get('tps_total_p90'), y.get('tps_total_p90')):>8}"
         )
     for label, only in (("A", a.keys() - b.keys()), ("B", b.keys() - a.keys())):
         if only:
@@ -425,9 +466,9 @@ def compare(path_a, path_b):
         for key in ctx_both:
             x, y = ctx_a[key], ctx_b[key]
             lines.append(
-                f"{key[0]:<{model_w}}{key[1]:<12}{x['n']:>6}{y['n']:>6}"
-                f"{_num(x['tps_total_p50']):>8}{_num(y['tps_total_p50']):>8}"
-                f"{_delta(x['tps_total_p50'], y['tps_total_p50']):>8}"
+                f"{key[0]:<{model_w}}{key[1]:<12}{x.get('n', 0):>6}{y.get('n', 0):>6}"
+                f"{_num(x.get('tps_total_p50')):>8}{_num(y.get('tps_total_p50')):>8}"
+                f"{_delta(x.get('tps_total_p50'), y.get('tps_total_p50')):>8}"
             )
 
     if (start_a or start_b) and not start_both:
@@ -441,11 +482,11 @@ def compare(path_a, path_b):
         for key in start_both:
             x, y = start_a[key], start_b[key]
             lines.append(
-                f"{key[0]:<{model_w}}{x['n']:>6}{y['n']:>6}"
-                f"{_num(x['ctx_tokens_p50']):>9}{_num(y['ctx_tokens_p50']):>9}"
-                f"{_delta(x['ctx_tokens_p50'], y['ctx_tokens_p50']):>8}"
-                f"{_num(x['ctx_tokens_p90']):>9}{_num(y['ctx_tokens_p90']):>9}"
-                f"{_delta(x['ctx_tokens_p90'], y['ctx_tokens_p90']):>8}"
+                f"{key[0]:<{model_w}}{x.get('n', 0):>6}{y.get('n', 0):>6}"
+                f"{_num(x.get('ctx_tokens_p50')):>9}{_num(y.get('ctx_tokens_p50')):>9}"
+                f"{_delta(x.get('ctx_tokens_p50'), y.get('ctx_tokens_p50')):>8}"
+                f"{_num(x.get('ctx_tokens_p90')):>9}{_num(y.get('ctx_tokens_p90')):>9}"
+                f"{_delta(x.get('ctx_tokens_p90'), y.get('ctx_tokens_p90')):>8}"
             )
 
     fb = {"A": data_a.get("fallbacks"), "B": data_b.get("fallbacks")}
@@ -457,7 +498,11 @@ def compare(path_a, path_b):
                 continue
             lines.append(f"  {label}: {v.get('mismatched', 0)} of {v.get('checked', 0)}")
             for p in v.get("pairs") or []:
-                lines.append(f"      {p['requested']} -> {p['answered']} ({p['n']})")
+                if isinstance(p, dict):
+                    lines.append(
+                        f"      {p.get('requested', '?')} -> {p.get('answered', '?')} "
+                        f"({p.get('n', '?')})"
+                    )
     return "\n".join(lines)
 
 
