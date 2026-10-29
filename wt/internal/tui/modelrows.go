@@ -190,12 +190,18 @@ func (r *tableRow) rate(ratings tiers.Index) {
 //     by tier score, highest first;
 //  4. every other model, by tier score, highest first.
 //
+// A model with no score takes the best score of its family's scored rows for
+// its place only (its TIER cell still shows "-"), and sorts right after the
+// scored row it borrowed from, so a model added since the last modeltiers run
+// sits with its family instead of at the end of the list.
+//
 // Within bands 3 and 4 a model with a tied score, or with no score, sorts by
 // family (alphabetical, a model with no family after the named ones) and then
 // by id, so a family's models sit together instead of being split by provider
-// prefix; a model with no score sorts after every scored one. The score
-// compared is the one the TIER column shows (rounded), so rows that look tied
-// are ordered by family and id. Cost and usage no longer order anything.
+// prefix; a model whose family has no scored row still sorts after every
+// placed one. The score compared is the one the TIER column shows (rounded),
+// so rows that look tied are ordered by family and id. Cost and usage no
+// longer order anything.
 //
 // This order is also the pickers' default selection: newPickModel never calls
 // Select, so its highlighted row is index 0 (the first sorted row), and
@@ -216,14 +222,33 @@ func sortRows(rows []tableRow) {
 		}
 		return 3
 	}
+	// familyBest is the highest score among each family's scored rows, keyed
+	// by non-empty family only, so a row with no family never borrows.
+	familyBest := map[string]int{}
+	for _, r := range rows {
+		if sc, ok := r.tier.Score(); ok && r.Model.Family != "" {
+			if best, seen := familyBest[r.Model.Family]; !seen || sc > best {
+				familyBest[r.Model.Family] = sc
+			}
+		}
+	}
+	// place is the score a row sorts by, and whether the row's own tier gave
+	// it (false for a score borrowed from its family).
+	place := func(r tableRow) (score int, ok, own bool) {
+		if sc, has := r.tier.Score(); has {
+			return sc, true, true
+		}
+		sc, ok := familyBest[r.Model.Family]
+		return sc, ok, false
+	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		if ba, bb := band(a), band(b); ba != bb {
 			return ba < bb
 		}
 		if band(a) >= 2 {
-			sa, oka := a.tier.Score()
-			sb, okb := b.tier.Score()
+			sa, oka, owna := place(a)
+			sb, okb, ownb := place(b)
 			if oka != okb {
 				return oka
 			}
@@ -235,6 +260,9 @@ func sortRows(rows []tableRow) {
 					return fb == ""
 				}
 				return fa < fb
+			}
+			if owna != ownb {
+				return owna
 			}
 		}
 		return a.Model.ID < b.Model.ID

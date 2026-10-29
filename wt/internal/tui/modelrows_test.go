@@ -70,6 +70,9 @@ func sortCloud(id string, score float64) tableRow {
 	return tableRow{Row: catalog.Row{Location: config.LocationCloud, Model: config.Model{ID: id}}, tier: sortEntry(score)}
 }
 
+// fam tags a row with a model family, for the family-order tests.
+func fam(r tableRow, f string) tableRow { r.Model.Family = f; return r }
+
 // sortLocal is a local row, running and/or loading, with the given score.
 func sortLocal(id string, running, loading bool, score float64) tableRow {
 	return tableRow{Row: catalog.Row{Location: config.LocationLocal, Running: running, Loading: loading, Model: config.Model{ID: id}}, tier: sortEntry(score)}
@@ -173,7 +176,6 @@ func TestSortRowsByScoreThenID(t *testing.T) {
 // rows were interleaved with a mistral row), that a row with no family follows
 // the named ones, and that a higher score still outranks a family's grouping.
 func TestSortRowsTiedScoresGroupByFamily(t *testing.T) {
-	fam := func(r tableRow, f string) tableRow { r.Model.Family = f; return r }
 	rows := []tableRow{
 		fam(sortCloud("omlx/qwen", 34), "qwen3.8"),
 		fam(sortCloud("ollama/mistral", 34), "mistral-large-4"),
@@ -184,6 +186,29 @@ func TestSortRowsTiedScoresGroupByFamily(t *testing.T) {
 	}
 	sortRows(rows)
 	assertOrder(t, rows, "zz/qwen-top,ollama/mistral,mtplx/qwen,ollama/qwen,omlx/qwen,a-nofamily")
+}
+
+// TestSortRowsUnscoredFollowsItsFamily pins the family fallback: a row with no
+// score takes its family's best score for its place only (its TIER cell stays
+// "-"), lands right after the scored sibling it borrowed from and stays above
+// the family's lower-scored rows, and a family with no scored row, or a row
+// with no family, still sorts after every placed row.
+func TestSortRowsUnscoredFollowsItsFamily(t *testing.T) {
+	rows := []tableRow{
+		fam(sortCloud("openrouter/mm", -1), "mm"),
+		sortCloud("other", 40),
+		fam(sortCloud("ollama/mm", 60), "mm"),
+		fam(sortCloud("omlx/mm", 50), "mm"),
+		fam(sortCloud("a/lonely", -1), "lonely"),
+		sortCloud("a-nofamily", -1),
+	}
+	sortRows(rows)
+	assertOrder(t, rows, "ollama/mm,openrouter/mm,omlx/mm,other,a/lonely,a-nofamily")
+	for _, r := range rows {
+		if r.Model.ID == "openrouter/mm" && r.tier.Rated() {
+			t.Errorf("borrowing a family score for position must not rate the row")
+		}
+	}
 }
 
 // TestSortRowsIgnoresCostAndUsage pins that price and 7-day usage no longer
