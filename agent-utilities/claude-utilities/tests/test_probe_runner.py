@@ -215,3 +215,53 @@ def test_command_uses_variant_flags_and_stdin_prompt(tmp_path):
     assert seen["stdin"].startswith(pr.CASES["count"].body)
     assert seen["stdin"].rstrip().endswith(")") and "(ref " in seen["stdin"]
     assert Path(seen["cwd"]).resolve() == kw["probe_dir"].resolve()
+
+
+# --- rounds ----------------------------------------------------------------------------------
+
+
+def stub_run(calls=None):
+    def run_fn(case, variant, index, **kw):
+        if calls is not None:
+            calls.append((case.name, variant, index, kw))
+        return pr.Run(case.name, variant, index)
+
+    return run_fn
+
+
+def test_order_is_round_then_case_then_variant():
+    calls = []
+    cases = [pr.CASES["tiny"], pr.CASES["count"]]
+    runs, _ = pr.run_probe(
+        cases, ["default", "lean"], 2, run_fn=stub_run(calls), clock=lambda: 0.0, model="m"
+    )
+    assert [c[:3] for c in calls] == [
+        ("tiny", "default", 0),
+        ("tiny", "lean", 0),
+        ("count", "default", 0),
+        ("count", "lean", 0),
+        ("tiny", "default", 1),
+        ("tiny", "lean", 1),
+        ("count", "default", 1),
+        ("count", "lean", 1),
+    ]
+    assert all(c[3] == {"model": "m"} for c in calls)
+    assert len(runs) == 8
+
+
+def test_max_gap_is_largest_same_case_variant_gap():
+    times = iter([0.0, 5.0, 50.0, 20.0])  # one clock read per run: tiny, count, tiny, count
+    cases = [pr.CASES["tiny"], pr.CASES["count"]]
+    _, max_gap = pr.run_probe(cases, ["default"], 2, run_fn=stub_run(), clock=lambda: next(times))
+    assert max_gap == 50.0
+
+
+def test_gap_over_cache_lifetime_warns_on_stderr_and_continues(capsys):
+    times = iter([0.0, 301.0])
+    runs, max_gap = pr.run_probe(
+        [pr.CASES["tiny"]], ["default"], 2, run_fn=stub_run(), clock=lambda: next(times)
+    )
+    assert len(runs) == 2
+    assert max_gap == 301.0
+    err = capsys.readouterr().err
+    assert "cache" in err.lower() and "301" in err

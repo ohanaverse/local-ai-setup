@@ -13,6 +13,7 @@ Usage: probe_runner.py run --label NAME [--runs N] [--out FILE]
 import json
 import random
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -173,3 +174,37 @@ def run_once(
         ctx_tokens=r["ctx_tokens"],
         cache_hit=r["cache_hit"],
     )
+
+
+# --- rounds ----------------------------------------------------------------------------------
+
+CACHE_LIFETIME_S = 300.0  # prompt-cache lifetime we assume; a longer gap makes a "warm" run cold
+
+
+def run_probe(cases, variants, runs, *, run_fn=run_once, clock=time.monotonic, **run_kwargs):
+    """Run every case under every variant `runs` times, interleaved as round -> case -> variant.
+
+    Returns all Runs and the largest start-to-start gap in seconds between two runs of the same
+    (case, variant). A gap over CACHE_LIFETIME_S warns on stderr and the probe carries on; the
+    aggregate step excludes warm runs that turned out cache-cold. `clock` is read once per run.
+    """
+    results = []
+    last_start = {}
+    max_gap = 0.0
+    for index in range(runs):
+        for case in cases:
+            for variant in variants:
+                now = clock()
+                key = (case.name, variant)
+                if key in last_start:
+                    gap = now - last_start[key]
+                    max_gap = max(max_gap, gap)
+                    if gap > CACHE_LIFETIME_S:
+                        print(
+                            f"warning: {gap:.0f}s between runs of {case.name}/{variant}, over the "
+                            f"{CACHE_LIFETIME_S:.0f}s prompt-cache lifetime; this run may be cold",
+                            file=sys.stderr,
+                        )
+                last_start[key] = now
+                results.append(run_fn(case, variant, index, **run_kwargs))
+    return results, max_gap
