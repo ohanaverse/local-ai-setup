@@ -67,14 +67,14 @@ func writeTable(b *strings.Builder, t *Table, name string, inAOT bool) error {
 				}
 				continue
 			}
-			literals = append(literals, formatKey(k)+" = "+arrayLiteral(items, 0)+"\n")
+			literals = append(literals, FormatKey(k)+" = "+arrayLiteral(items, 0)+"\n")
 			continue
 		}
 		lit, err := literal(v, 0)
 		if err != nil {
 			return fmt.Errorf("%s: %w", k, err)
 		}
-		literals = append(literals, formatKey(k)+" = "+lit+"\n")
+		literals = append(literals, FormatKey(k)+" = "+lit+"\n")
 	}
 	wrote := false
 	if inAOT || (name != "" && (len(literals) > 0 || len(tables) == 0)) {
@@ -97,7 +97,7 @@ func writeTable(b *strings.Builder, t *Table, name string, inAOT bool) error {
 		} else {
 			wrote = true
 		}
-		display := formatKey(sub.key)
+		display := FormatKey(sub.key)
 		if name != "" {
 			display = name + "." + display
 		}
@@ -159,7 +159,7 @@ func literal(v any, nest int) (string, error) {
 		if !utf8.ValidString(x) {
 			return "", fmt.Errorf("tomlw: string %q is not valid UTF-8", x)
 		}
-		return formatString(x), nil
+		return FormatString(x), nil
 	case time.Time:
 		if err := checkTime(x); err != nil {
 			return "", err
@@ -190,7 +190,7 @@ func inlineTable(t *Table) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", k, err)
 		}
-		parts = append(parts, formatKey(k)+" = "+lit)
+		parts = append(parts, FormatKey(k)+" = "+lit)
 	}
 	return "{ " + strings.Join(parts, ", ") + " }", nil
 }
@@ -288,7 +288,7 @@ func checkTime(t time.Time) error {
 	return nil
 }
 
-// checkKey refuses a key that is not UTF-8: formatString would write U+FFFD
+// checkKey refuses a key that is not UTF-8: FormatString would write U+FFFD
 // in place of each bad byte, which is a different key.
 func checkKey(k string) error {
 	if !utf8.ValidString(k) {
@@ -309,16 +309,17 @@ func isBareKey(s string) bool {
 	return true
 }
 
-func formatKey(k string) string {
+// FormatKey writes a key bare when it can be, else as a basic string.
+func FormatKey(k string) string {
 	if isBareKey(k) {
 		return k
 	}
-	return formatString(k)
+	return FormatString(k)
 }
 
-// formatString writes a basic string as tomli-w does: the six short escapes,
+// FormatString writes a basic string as tomli-w does: the six short escapes,
 // \uXXXX for any other control character, a tab and everything else as is.
-func formatString(s string) string {
+func FormatString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
 	for _, r := range s {

@@ -9,7 +9,14 @@
 // the contiguous run of # lines directly above that line; a blank line ends
 // the run, so a file header followed by a blank line belongs to no entry.
 // An entry's block runs from its comment block to the line before the next
-// entry's comment block, or to the end of the file.
+// entry's comment block, or to the end of the file. Its content ends at its
+// last line that is neither blank nor a comment: a comment paragraph after
+// that (a divider, notes, a commented-out entry) belongs to no entry, and
+// Remove and Set leave it where it is. A comment inside the entry, directly
+// above one of its keys or tables, is part of the entry.
+//
+// The editor does not follow multi-line strings, so it refuses a file that
+// has one: a triple-quote delimiter, double or single, outside a comment.
 //
 // The package checks the text it edits, not the profile it describes:
 // whether the result is a valid profile is the caller's question
@@ -26,6 +33,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tomlw"
 )
 
 // Patch is a change to one entry. A nil or empty field changes nothing.
@@ -47,8 +55,11 @@ type line = string
 type entryBlock struct {
 	first  int // the first line of its comment block (== header when none)
 	header int // the [[profile]] line
-	end    int // one past its last line
-	name   string
+	end    int // one past its last line, before the next entry's comment block
+	// contentEnd is one past its last line that is neither blank nor a
+	// comment. What follows it up to end belongs to no entry.
+	contentEnd int
+	name       string
 }
 
 // splitLines splits src into lines that keep their "\n".
@@ -60,11 +71,20 @@ func splitLines(src []byte) []line {
 	return lines
 }
 
+// errMultiline is scan's refusal of a file with a multi-line string.
+var errMultiline = errors.New(`slotedit: the file has a multi-line string (""" or '''), which this editor does not follow; edit it by hand`)
+
 // scan is the one block scanner Add, Set, Remove and LeadingComments share.
-func scan(src []byte) ([]line, []entryBlock) {
+// It returns errMultiline, with the lines and entries it found anyway, for a
+// file that has a multi-line string delimiter outside a comment.
+func scan(src []byte) ([]line, []entryBlock, error) {
 	lines := splitLines(src)
 	var heads []int
+	var err error
 	for i, l := range lines {
+		if !isComment(l) && (strings.Contains(l, `"""`) || strings.Contains(l, "'''")) {
+			err = errMultiline
+		}
 		if isProfileHeader(l) {
 			heads = append(heads, i)
 		}
@@ -86,9 +106,16 @@ func scan(src []byte) ([]line, []entryBlock) {
 		if k+1 < len(entries) {
 			entries[k].end = entries[k+1].first
 		}
+		entries[k].contentEnd = entries[k].header + 1
+		for i := entries[k].end - 1; i > entries[k].header; i-- {
+			if !isBlank(lines[i]) && !isComment(lines[i]) {
+				entries[k].contentEnd = i + 1
+				break
+			}
+		}
 		entries[k].name = entryName(lines, entries[k])
 	}
-	return lines, entries
+	return lines, entries, err
 }
 
 // entryName is the value of the entry's first name = "..." line before its
@@ -216,45 +243,29 @@ func scanString(l line, i int) int {
 	return -1
 }
 
+// dottedRoot returns the first part of a dotted bare key (`env.K = "v"`
+// gives "env").
+func dottedRoot(l line) (string, bool) {
+	s := strings.TrimLeft(l, " \t")
+	j := 0
+	for j < len(s) && isBareChar(s[j]) {
+		j++
+	}
+	if j == 0 {
+		return "", false
+	}
+	rest := strings.TrimLeft(s[j:], " \t")
+	return s[:j], strings.HasPrefix(rest, ".")
+}
+
 func isBareChar(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_'
 }
 
-// formatKey and formatString write a key and a basic string as
-// internal/tomlw does.
-func formatKey(k string) string {
-	if k != "" && strings.IndexFunc(k, func(r rune) bool { return r > 127 || !isBareChar(byte(r)) }) < 0 {
-		return k
-	}
-	return formatString(k)
-}
-
-func formatString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch {
-		case r == '\b':
-			b.WriteString(`\b`)
-		case r == '\n':
-			b.WriteString(`\n`)
-		case r == '\f':
-			b.WriteString(`\f`)
-		case r == '\r':
-			b.WriteString(`\r`)
-		case r == '"':
-			b.WriteString(`\"`)
-		case r == '\\':
-			b.WriteString(`\\`)
-		case (r < 32 && r != '\t') || r == 127:
-			fmt.Fprintf(&b, `\u%04x`, r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}
+var (
+	formatKey    = tomlw.FormatKey
+	formatString = tomlw.FormatString
+)
 
 // keyLine writes `key = "value"\n` with the key padded to width columns.
 func keyLine(key, value string, width int) string {
@@ -316,7 +327,7 @@ func find(entries []entryBlock, name string) (entryBlock, error) {
 // without its "#" or "# " prefix, joined by "\n"; "" when it has none. A
 // name used twice keeps its first entry's comment.
 func LeadingComments(src []byte) map[string]string {
-	lines, entries := scan(src)
+	lines, entries, _ := scan(src) // best effort: a comment map is read-only
 	out := map[string]string{}
 	for _, e := range entries {
 		if e.name == "" {
@@ -349,7 +360,10 @@ func Add(src []byte, p profiles.SlotProfile, comment string) ([]byte, error) {
 	if len(p.Args) > 0 || len(p.ConfigContent) > 0 || p.Wrapper != nil {
 		return nil, fmt.Errorf("slotedit: profile %q has args, config_content or wrapper, which add does not write; edit the file by hand", p.Name)
 	}
-	lines, entries := scan(src)
+	lines, entries, err := scan(src)
+	if err != nil {
+		return nil, err
+	}
 	for _, e := range entries {
 		if e.name == p.Name {
 			return nil, fmt.Errorf("slotedit: a profile named %q already exists", p.Name)
@@ -420,6 +434,11 @@ func sections(lines []line, e entryBlock) (map[string]*section, error) {
 			out[n] = cur
 			continue
 		}
+		if cur == out[""] {
+			if root, ok := dottedRoot(lines[i]); ok && (root == "slots" || root == "env") {
+				return nil, fmt.Errorf("slotedit: profile %q writes %s as dotted keys; edit the file by hand", e.name, root)
+			}
+		}
 		if kv, ok := parseKV(lines[i]); ok {
 			cur.keys[kv.key] = i
 			cur.last = i
@@ -446,11 +465,15 @@ func (s *section) width() int {
 // Set applies patch to the one entry named name, changing only the lines it
 // targets: a key that exists has its value replaced in place (padding and a
 // trailing comment kept), a missing key is inserted after its table's last
-// key, a missing table is added at the end of the entry before its trailing
-// blank lines, and an unset env key loses its line. It refuses a name that
+// key, a missing table is added after the entry's last key or table (before
+// any blank lines and comment paragraph that follow it), and an unset env
+// key loses its line. It refuses a name that
 // matches no entry or more than one.
 func Set(src []byte, name string, patch Patch) ([]byte, error) {
-	lines, entries := scan(src)
+	lines, entries, err := scan(src)
+	if err != nil {
+		return nil, err
+	}
 	e, err := find(entries, name)
 	if err != nil {
 		return nil, err
@@ -544,10 +567,7 @@ func Set(src []byte, name string, patch Patch) ([]byte, error) {
 		drop[i] = true
 	}
 	if len(newTables) > 0 {
-		at := e.end - 1
-		for at > e.header && isBlank(lines[at]) {
-			at--
-		}
+		at := e.contentEnd - 1
 		insert[at] = append(insert[at], newTables...)
 	}
 
@@ -569,18 +589,27 @@ func Set(src []byte, name string, patch Patch) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// Remove deletes the one entry named name: its lines and the comment block
-// directly above it. When it was the last entry, the blank lines left at the
-// end of the file go too, so the file ends in one newline. It refuses a
+// Remove deletes the one entry named name: the comment block directly above
+// it, its lines up to its content's end, and the blank lines right after
+// them. A comment paragraph after the entry's content belongs to no entry
+// and stays. When nothing follows, the blank lines left at the end of the
+// file go too, so the file ends in one newline. It refuses a
 // name that matches no entry or more than one.
 func Remove(src []byte, name string) ([]byte, error) {
-	lines, entries := scan(src)
+	lines, entries, err := scan(src)
+	if err != nil {
+		return nil, err
+	}
 	e, err := find(entries, name)
 	if err != nil {
 		return nil, err
 	}
-	kept := append(slices.Clone(lines[:e.first]), lines[e.end:]...)
-	if e.end == len(lines) {
+	cut := e.contentEnd
+	for cut < len(lines) && isBlank(lines[cut]) {
+		cut++
+	}
+	kept := append(slices.Clone(lines[:e.first]), lines[cut:]...)
+	if cut == len(lines) {
 		for len(kept) > 0 && isBlank(kept[len(kept)-1]) {
 			kept = kept[:len(kept)-1]
 		}

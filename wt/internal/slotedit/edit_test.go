@@ -391,3 +391,156 @@ name = "c"
 		t.Errorf("fixture comments %q", fc)
 	}
 }
+
+// twoWithDivider has a divider paragraph between two entries and notes after
+// the last one: comment paragraphs that belong to no entry.
+const twoWithDivider = `# about a
+[[profile]]
+name = "a"
+agent = "claude"
+default = "opus"
+
+[profile.slots]
+opus = "x"
+
+# ---- cloud-only profiles below ----
+
+# about b
+[[profile]]
+name = "b"
+agent = "claude"
+default = "opus"
+
+[profile.slots]
+opus = "y"
+
+# Notes: a commented-out entry
+# [[profile]]
+# name = "c"
+`
+
+// TestRemoveKeepsDividerParagraph checks that removing the entry above a
+// divider paragraph removes the entry and the blank line after it, but not
+// the divider, which belongs to no entry.
+func TestRemoveKeepsDividerParagraph(t *testing.T) {
+	out, err := Remove([]byte(twoWithDivider), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := twoWithDivider[:strings.Index(twoWithDivider, "# ---- cloud")]
+	assertBytes(t, out, replaceOnce(t, twoWithDivider, a, ""))
+	mustParse(t, out)
+}
+
+// TestRemoveLastKeepsNotesAtEOF checks that removing the last entry keeps
+// the notes and commented-out entry that follow it, with one blank line
+// between them and what precedes.
+func TestRemoveLastKeepsNotesAtEOF(t *testing.T) {
+	out, err := Remove([]byte(twoWithDivider), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := twoWithDivider[strings.Index(twoWithDivider, "# about b"):strings.Index(twoWithDivider, "# Notes:")]
+	assertBytes(t, out, replaceOnce(t, twoWithDivider, b, ""))
+	if ps := mustParse(t, out); len(ps) != 1 || ps[0].Name != "a" {
+		t.Fatalf("parsed %+v", ps)
+	}
+}
+
+// TestSetAddsTableAboveDivider checks that a table Set adds goes right
+// after the entry's last key, above a divider paragraph that follows it.
+func TestSetAddsTableAboveDivider(t *testing.T) {
+	out, err := Set([]byte(twoWithDivider), "a", Patch{SetEnv: map[string]string{"K": "v"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, out, replaceOnce(t, twoWithDivider,
+		"opus = \"x\"\n\n# ----",
+		"opus = \"x\"\n\n[profile.env]\nK = \"v\"\n\n# ----"))
+	mustParse(t, out)
+
+	out, err = Set([]byte(twoWithDivider), "b", Patch{SetEnv: map[string]string{"K": "v"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, out, replaceOnce(t, twoWithDivider,
+		"opus = \"y\"\n\n# Notes",
+		"opus = \"y\"\n\n[profile.env]\nK = \"v\"\n\n# Notes"))
+	mustParse(t, out)
+}
+
+// TestRefusesMultilineStrings checks that Add, Set and Remove refuse a file
+// with a multi-line string, which the line-based scanner cannot follow, but
+// not a triple quote inside a comment.
+func TestRefusesMultilineStrings(t *testing.T) {
+	for _, delim := range []string{`"""`, `'''`} {
+		src := "[[profile]]\nname = \"a\"\n[profile.env]\nNOTE = " + delim + "\n[[profile]]\n" + delim + "\n"
+		if _, err := Set([]byte(src), "a", Patch{SetEnv: map[string]string{"K": "v"}}); err == nil {
+			t.Errorf("Set: expected an error for %s", delim)
+		}
+		if _, err := Remove([]byte(src), "a"); err == nil {
+			t.Errorf("Remove: expected an error for %s", delim)
+		}
+		if _, err := Add([]byte(src), sample, ""); err == nil {
+			t.Errorf("Add: expected an error for %s", delim)
+		}
+	}
+	if _, err := Remove([]byte("# a \"\"\" in a comment\n"+fixture), "alpha"); err != nil {
+		t.Errorf("a triple quote in a comment: %v", err)
+	}
+}
+
+// TestSetRefusesInlineAndDottedTables checks that Set refuses an entry that
+// writes slots or env as an inline table or as dotted keys, where adding a
+// [profile.slots] or [profile.env] table would redefine it.
+func TestSetRefusesInlineAndDottedTables(t *testing.T) {
+	for _, body := range []string{
+		"slots = { opus = \"x\" }\n",
+		"env = { K = \"v\" }\n",
+		"slots.opus = \"x\"\n",
+		"env . K = \"v\"\n",
+	} {
+		src := "[[profile]]\nname = \"a\"\nagent = \"claude\"\ndefault = \"opus\"\n" + body
+		if _, err := Set([]byte(src), "a", Patch{Slots: map[string]string{"opus": "y"}}); err == nil {
+			t.Errorf("expected an error for %q", body)
+		}
+	}
+}
+
+// TestSetRefusesBadPatches checks the patch errors: a key both set and
+// unset, and an empty slot id.
+func TestSetRefusesBadPatches(t *testing.T) {
+	if _, err := Set([]byte(fixture), "beta", Patch{SetEnv: map[string]string{"K": "v"}, UnsetEnv: []string{"K"}}); err == nil {
+		t.Error("expected an error for a key both set and unset")
+	}
+	if _, err := Set([]byte(fixture), "beta", Patch{Slots: map[string]string{"opus": ""}}); err == nil {
+		t.Error("expected an error for an empty slot id")
+	}
+}
+
+// TestSetReplacesLiteralString checks that a single-quoted literal value is
+// replaced in place (written back as a basic string), keeping its padding
+// and trailing comment.
+func TestSetReplacesLiteralString(t *testing.T) {
+	src := "[[profile]]\nname = \"a\"\n\n[profile.slots]\nopus  = 'C:\\x' # note\n"
+	out, err := Set([]byte(src), "a", Patch{Slots: map[string]string{"opus": "y"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBytes(t, out, replaceOnce(t, src, `opus  = 'C:\x' # note`, `opus  = "y" # note`))
+}
+
+// TestAddRefusesConfigContentAndWrapper complements the args case: Add
+// writes neither, so it must refuse rather than drop them.
+func TestAddRefusesConfigContentAndWrapper(t *testing.T) {
+	p := sample
+	p.ConfigContent = map[string]any{"k": "v"}
+	if _, err := Add(nil, p, ""); err == nil {
+		t.Error("expected an error for config_content")
+	}
+	p = sample
+	p.Wrapper = &profiles.WrapperSpec{}
+	if _, err := Add(nil, p, ""); err == nil {
+		t.Error("expected an error for wrapper")
+	}
+}
