@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/bash
+#!/usr/bin/env bash
 # qwen3.8-benchmark — Compare the four qwen3.8 backends (ISOLATED runs)
 #
 # Strategy: local MLX/GGUF models share Apple Silicon GPU/RAM and would

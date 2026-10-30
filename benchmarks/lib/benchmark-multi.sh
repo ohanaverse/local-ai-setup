@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/bash
+#!/usr/bin/env bash
 # benchmark-multi.sh — shared pass-loop/cooldown/results-listing logic for
 # the qwen3.8-benchmark-multi and ornith-1.5-benchmark-multi wrapper
 # scripts. Sourced, not executed directly.
