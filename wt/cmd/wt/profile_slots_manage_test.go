@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
 // slotsFixture points XDG_CONFIG_HOME at a scratch dir and returns an app
@@ -206,5 +210,252 @@ func TestSlotsWriteRefusedLeavesFileUnchanged(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(profiles.SlotPath() + ".bak-*"); len(m) != 0 {
 		t.Errorf("backup written: %v", m)
+	}
+}
+
+func TestSlotsSetWithNothingToChangeRefusesBeforeTouchingFile(t *testing.T) {
+	a := slotsFixture(t, slotsBase)
+	before := readSlotFile(t)
+	out, err := runProfileCmd(t, a, "slots", "set", "base")
+	if err == nil || !strings.Contains(err.Error(), "nothing to change") {
+		t.Fatalf("err = %v, out = %q", err, out)
+	}
+	if readSlotFile(t) != before {
+		t.Error("file changed")
+	}
+	entries, _ := os.ReadDir(filepath.Dir(profiles.SlotPath()))
+	if len(entries) != 1 {
+		t.Errorf("backup written: %v", entries)
+	}
+}
+
+const slotsTwo = `# the base note
+# second line
+[[profile]]
+name = "base"
+agent = "claude"
+default = "sonnet"
+
+[profile.slots]
+sonnet = "openrouter/a"
+haiku = "openrouter/b"
+
+[[profile]]
+name = "idle"
+agent = "claude"
+default = "sonnet"
+
+[profile.slots]
+sonnet = "omlx/q"
+`
+
+type usageTestRow struct {
+	Name        string            `json:"name"`
+	Launches30d int               `json:"launches_30d"`
+	LastLaunch  *string           `json:"last_launch"`
+	Comment     string            `json:"comment"`
+	Slots       map[string]string `json:"slots"`
+}
+
+func TestSlotsUsageCountsAndLastLaunch(t *testing.T) {
+	a := slotsFixture(t, slotsTwo)
+	st := usage.NewStoreAt(config.Dir())
+	for i := 0; i < 3; i++ {
+		if err := st.RecordFor("claude", "profile/base"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := runProfileCmd(t, a, "slots", "usage", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []usageTestRow
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(rows) != 2 || rows[0].Name != "base" || rows[1].Name != "idle" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if rows[0].Launches30d != 3 || rows[0].LastLaunch == nil || !strings.HasSuffix(*rows[0].LastLaunch, "Z") {
+		t.Errorf("base = %+v", rows[0])
+	}
+	if rows[0].Slots["haiku"] != "openrouter/b" {
+		t.Errorf("slots = %v", rows[0].Slots)
+	}
+	table, err := runProfileCmd(t, a, "slots", "usage")
+	if err != nil || !strings.Contains(table, "base") || !strings.Contains(table, "idle") {
+		t.Errorf("table = %q, %v", table, err)
+	}
+}
+
+func TestSlotsUsageNoLaunchesShowsZero(t *testing.T) {
+	a := slotsFixture(t, slotsTwo)
+	out, err := runProfileCmd(t, a, "slots", "usage", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []usageTestRow
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Launches30d != 0 || r.LastLaunch != nil {
+			t.Errorf("row = %+v", r)
+		}
+	}
+	if !strings.Contains(out, `"last_launch": null`) {
+		t.Errorf("want null last_launch: %s", out)
+	}
+}
+
+func TestSlotsUsageIgnoresRenamedProfileHistory(t *testing.T) {
+	a := slotsFixture(t, slotsTwo)
+	st := usage.NewStoreAt(config.Dir())
+	if err := st.RecordFor("claude", "profile/old-name"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runProfileCmd(t, a, "slots", "usage", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "old-name") {
+		t.Errorf("renamed profile reported: %s", out)
+	}
+}
+
+func TestSlotsUsageIncludesLeadingComment(t *testing.T) {
+	a := slotsFixture(t, slotsTwo)
+	out, err := runProfileCmd(t, a, "slots", "usage", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []usageTestRow
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].Comment != "the base note\nsecond line" || rows[1].Comment != "" {
+		t.Errorf("comments = %q, %q", rows[0].Comment, rows[1].Comment)
+	}
+}
+
+type candOut struct {
+	GeneratedAt *string  `json:"tiers_generated_at"`
+	Stale       []string `json:"stale_sources"`
+	Candidates  []struct {
+		ID    string   `json:"id"`
+		Score *float64 `json:"score"`
+		Flags []string `json:"flags"`
+	} `json:"candidates"`
+}
+
+const candTiers = `generated_at = "2026-10-12T15:58:00Z"
+
+[sources.arena]
+status = "stale"
+
+[[models]]
+provider_id = "openrouter"
+model_name = "a"
+tier = "deep"
+code = "D"
+confidence = "high"
+aligned_score = 60
+tool_call = true
+
+[[models]]
+provider_id = "omlx"
+model_name = "q"
+tier = "standard"
+code = "S"
+confidence = "high"
+aligned_score = 55
+tool_call = true
+
+[[models]]
+provider_id = "openrouter"
+model_name = "b"
+tier = "standard"
+code = "S"
+confidence = "high"
+aligned_score = 50
+tool_call = true
+`
+
+func TestSlotsCandidatesJSONIncludesFreshness(t *testing.T) {
+	a := slotsFixture(t, "")
+	f := filepath.Join(t.TempDir(), "tiers.toml")
+	if err := os.WriteFile(f, []byte(candTiers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MODELTIERS_OUT", f)
+	out, err := runProfileCmd(t, a, "slots", "candidates", "--json", "--provider", "openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r candOut
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if r.GeneratedAt == nil || *r.GeneratedAt != "2026-10-12T15:58:00Z" {
+		t.Errorf("generated = %v", r.GeneratedAt)
+	}
+	if len(r.Stale) != 1 || r.Stale[0] != "arena" {
+		t.Errorf("stale = %v", r.Stale)
+	}
+	if len(r.Candidates) != 2 || r.Candidates[0].ID != "openrouter/a" || r.Candidates[0].Score == nil {
+		t.Errorf("candidates = %+v", r.Candidates)
+	}
+	table, err := runProfileCmd(t, a, "slots", "candidates", "--provider", "openrouter")
+	if err != nil || !strings.HasPrefix(table, "tiers.toml: ") || !strings.Contains(table, "stale sources: arena") {
+		t.Errorf("table = %q, %v", table, err)
+	}
+}
+
+func TestSlotsCandidatesNoTiersFile(t *testing.T) {
+	a := slotsFixture(t, "")
+	t.Setenv("MODELTIERS_OUT", filepath.Join(t.TempDir(), "missing.toml"))
+	out, err := runProfileCmd(t, a, "slots", "candidates", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r candOut
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.GeneratedAt != nil || len(r.Candidates) != 3 {
+		t.Fatalf("result = %+v", r)
+	}
+	for _, c := range r.Candidates {
+		if c.Score != nil || !slices.Contains(c.Flags, "unrated") {
+			t.Errorf("candidate = %+v", c)
+		}
+	}
+	table, err := runProfileCmd(t, a, "slots", "candidates")
+	if err != nil || !strings.HasPrefix(table, "tiers.toml: not found") {
+		t.Errorf("table = %q, %v", table, err)
+	}
+}
+
+func TestSlotsCandidatesNearBothProviders(t *testing.T) {
+	a := slotsFixture(t, "")
+	f := filepath.Join(t.TempDir(), "tiers.toml")
+	if err := os.WriteFile(f, []byte(candTiers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MODELTIERS_OUT", f)
+	out, err := runProfileCmd(t, a, "slots", "candidates", "--json", "--near", "openrouter/a", "--per-provider", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r candOut
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range r.Candidates {
+		got = append(got, c.ID)
+	}
+	if !slices.Equal(got, []string{"omlx/q", "openrouter/b"}) {
+		t.Errorf("got %v", got)
 	}
 }

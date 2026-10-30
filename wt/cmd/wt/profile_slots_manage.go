@@ -4,15 +4,22 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/candidates"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/slotedit"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +35,7 @@ func slotsCmd(a *app) *cobra.Command {
 		Use:   "slots",
 		Short: "Add, change and remove slot profiles in slot-profiles.toml",
 	}
-	c.AddCommand(slotsAddCmd(a), slotsSetCmd(a), slotsRmCmd(a))
+	c.AddCommand(slotsAddCmd(a), slotsSetCmd(a), slotsRmCmd(a), slotsUsageCmd(a), slotsCandidatesCmd(a))
 	return c
 }
 
@@ -108,14 +115,7 @@ func applySlotEdit(w io.Writer, a *app, edit func([]byte) ([]byte, error), o slo
 		fmt.Fprintf(w, "backup: %s\n", backup)
 	}
 	// The write made the app's cached slot state stale.
-	store, loadErr := loadSlotStore()
-	a.slotLoadErr, a.slotChecks, a.slotUnknown = loadErr, nil, nil
-	if loadErr == nil {
-		if len(store.Profiles) > 0 {
-			a.slotChecks = profiles.ValidateSlots(store, agents.SlotDrivers())
-		}
-		a.slotUnknown = store.Unknown
-	}
+	a.slotChecks, a.slotUnknown, a.slotLoadErr = loadSlotState()
 	return writeSlotProfileList(w, a)
 }
 
@@ -172,6 +172,9 @@ func slotsSetCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if len(slots) == 0 && len(env) == 0 && len(unsetFlags) == 0 && !cmd.Flags().Changed("default") {
+				return fmt.Errorf("nothing to change: give at least one of --slot, --default, --env, --unset-env")
+			}
 			patch := slotedit.Patch{UnsetEnv: unsetFlags}
 			if len(slots) > 0 {
 				patch.Slots = slots
@@ -212,4 +215,189 @@ func slotsRmCmd(a *app) *cobra.Command {
 			}, o)
 		},
 	}
+}
+
+// slotUsageJSON is one `wt profile slots usage --json` element.
+type slotUsageJSON struct {
+	Name        string            `json:"name"`
+	Launches30d int               `json:"launches_30d"`
+	LastLaunch  *string           `json:"last_launch"`
+	Comment     string            `json:"comment"`
+	Slots       map[string]string `json:"slots"`
+}
+
+func writeJSON(w io.Writer, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(b))
+	return err
+}
+
+func slotsUsageCmd(a *app) *cobra.Command {
+	var asJSON bool
+	c := &cobra.Command{
+		Use: "usage", Short: "Show launches of each slot profile over the last 1, 7 and 30 days", Args: cobra.NoArgs, SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+			store, err := loadSlotStore()
+			if err != nil {
+				return err
+			}
+			var comments map[string]string
+			if src, rerr := os.ReadFile(profiles.SlotPath()); rerr == nil {
+				comments = slotedit.LeadingComments(src)
+			}
+			asOf := time.Now()
+			us := usage.NewStore()
+			counts, last := us.AllCounts("", asOf), us.LastLaunch("", asOf)
+			// Profiles in the file drive the rows: ids of a renamed or removed
+			// profile linger in usage.jsonl and are not reported.
+			var rows []slotUsageJSON
+			var all []usage.UsageCounts
+			for _, p := range store.Profiles {
+				id := p.ID()
+				r := slotUsageJSON{Name: p.Name, Launches30d: counts[id].ThirtyDay, Comment: comments[p.Name], Slots: p.Slots}
+				if t, ok := last[id]; ok {
+					s := t.UTC().Format(time.RFC3339)
+					r.LastLaunch = &s
+				}
+				rows = append(rows, r)
+				all = append(all, counts[id])
+			}
+			if asJSON {
+				if rows == nil {
+					rows = []slotUsageJSON{}
+				}
+				return writeJSON(w, rows)
+			}
+			if len(rows) == 0 {
+				fmt.Fprintln(w, "slot profiles: (none defined)")
+				return nil
+			}
+			tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "PROFILE\t1D\t7D\t30D\tLAST LAUNCH\tCOMMENT")
+			for i, r := range rows {
+				lastS := "-"
+				if r.LastLaunch != nil {
+					lastS = *r.LastLaunch
+				}
+				fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\t%s\n", r.Name, all[i].OneDay, all[i].SevenDay, all[i].ThirtyDay, lastS,
+					strings.ReplaceAll(r.Comment, "\n", " "))
+			}
+			return tw.Flush()
+		},
+	}
+	c.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return c
+}
+
+// candidateJSON is one candidate in `wt profile slots candidates --json`.
+type candidateJSON struct {
+	ID                 string   `json:"id"`
+	Provider           string   `json:"provider"`
+	Location           string   `json:"location"`
+	Tier               string   `json:"tier"`
+	Confidence         string   `json:"confidence"`
+	Score              *float64 `json:"score"`
+	Rated              bool     `json:"rated"`
+	OpenWeights        bool     `json:"open_weights"`
+	Context            int      `json:"context"`
+	OutputPerMillion   *float64 `json:"output_per_million"`
+	Subscription       *float64 `json:"subscription"`
+	SubscriptionPeriod string   `json:"subscription_period"`
+	Flags              []string `json:"flags"`
+}
+
+func toCandidateJSON(c candidates.Candidate) candidateJSON {
+	j := candidateJSON{
+		ID: c.ID, Provider: c.Provider, Location: c.Location, Tier: c.Tier, Confidence: c.Confidence,
+		Rated: c.Rated, OpenWeights: c.OpenWeights, Context: c.Context, OutputPerMillion: c.OutputPerMillion,
+		Subscription: c.Subscription, SubscriptionPeriod: c.SubscriptionPeriod, Flags: c.Flags,
+	}
+	if j.Flags == nil {
+		j.Flags = []string{}
+	}
+	if c.HasScore {
+		s := c.Score
+		j.Score = &s
+	}
+	return j
+}
+
+func fmtPrice(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%g", *p)
+}
+
+func slotsCandidatesCmd(a *app) *cobra.Command {
+	var asJSON, openOnly bool
+	var provider, near string
+	var perProvider int
+	c := &cobra.Command{
+		Use: "candidates", Short: "Rank registry models by tier score and price for a slot", Args: cobra.NoArgs, SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+			if a.cfg == nil {
+				return fmt.Errorf("no config loaded")
+			}
+			q := candidates.Query{OpenOnly: openOnly, Near: near, PerProvider: perProvider}
+			for _, p := range strings.Split(provider, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					q.Providers = append(q.Providers, p)
+				}
+			}
+			cs := candidates.Rank(a.cfg.Models, tiers.Load(), q)
+			fresh, haveFresh := tiers.ReadFreshness()
+			if asJSON {
+				out := struct {
+					GeneratedAt *string         `json:"tiers_generated_at"`
+					Stale       []string        `json:"stale_sources"`
+					Candidates  []candidateJSON `json:"candidates"`
+				}{Stale: []string{}, Candidates: []candidateJSON{}}
+				if haveFresh {
+					s := fresh.GeneratedAt.UTC().Format(time.RFC3339)
+					out.GeneratedAt = &s
+					if len(fresh.StaleSources) > 0 {
+						out.Stale = fresh.StaleSources
+					}
+				}
+				for _, c := range cs {
+					out.Candidates = append(out.Candidates, toCandidateJSON(c))
+				}
+				return writeJSON(w, out)
+			}
+			if haveFresh {
+				fmt.Fprintf(w, "tiers.toml: %s old\n", time.Since(fresh.GeneratedAt).Round(time.Minute))
+				if len(fresh.StaleSources) > 0 {
+					fmt.Fprintf(w, "stale sources: %s\n", strings.Join(fresh.StaleSources, ", "))
+				}
+			} else {
+				fmt.Fprintln(w, "tiers.toml: not found")
+			}
+			tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "MODEL\tTIER\tSCORE\tOPEN\tCONTEXT\tOUT $/M\tFLAGS")
+			for _, c := range cs {
+				score := "-"
+				if c.HasScore {
+					score = fmt.Sprintf("%.1f", c.Score)
+				}
+				open := ""
+				if c.OpenWeights {
+					open = "open"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", c.ID, c.Tier, score, open, c.Context, fmtPrice(c.OutputPerMillion), strings.Join(c.Flags, ","))
+			}
+			return tw.Flush()
+		},
+	}
+	c.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	c.Flags().BoolVar(&openOnly, "open-only", false, "only open-weights models")
+	c.Flags().StringVar(&provider, "provider", "", "comma-separated provider ids")
+	c.Flags().StringVar(&near, "near", "", "registry model id: list the nearest-scoring models per provider")
+	c.Flags().IntVar(&perProvider, "per-provider", 0, "with --near, models per provider (default 3)")
+	return c
 }
