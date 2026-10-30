@@ -413,11 +413,32 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 	}
 }
 
+// sentinelIn reports whether output contains the sentinel the prompt asked
+// for.
+//
+// The exact match comes first. A case-insensitive match is accepted only when
+// the prompt itself cannot produce one by echo: the default prompt carries
+// the sentinel's text in the opposite case (it asks the model to upper-case
+// it), so an agent that merely prints the prompt back would satisfy a
+// case-insensitive search — the false PASS #193 is about. A prompt that
+// never carries the sentinel (the tool check's nonce, which lives only in a
+// file) gains nothing from that guard, and a model that reproduces the nonce
+// in a different case still read it.
+func sentinelIn(output, prompt, sentinel string) bool {
+	if strings.Contains(output, sentinel) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(prompt), strings.ToLower(sentinel)) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(output), strings.ToLower(sentinel))
+}
+
 // RunRow runs agentName's one-shot prompt against model m and classifies
-// the result. sentinel is the exact string the default prompt asked the
-// model to produce (DefaultPrompt); pass "" when prompt was overridden by the caller (a
-// custom prompt was never asked to produce a sentinel), which degrades
-// verification to "exited 0 within timeout".
+// the result. sentinel is the exact string the prompt asked the model to
+// produce (DefaultPrompt, or ToolPrompt's nonce); pass "" when prompt was
+// overridden by the caller (a custom prompt was never asked to produce a
+// sentinel), which degrades verification to "exited 0 within timeout".
 //
 // profileApplier, when non-nil, is called after the launch command is built
 // but before execution to apply a local-model profile overlay (env, args,
@@ -478,16 +499,29 @@ func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.
 		res.Err = fmt.Errorf("exit code %d", out.ExitCode)
 		return res
 	}
-	if sentinel != "" && !strings.Contains(out.Output, sentinel) {
+	if sentinel != "" && !sentinelIn(out.Output, prompt, sentinel) {
 		res.Status = StatusFail
-		res.Err = fmt.Errorf("sentinel %q not found in output", sentinel)
 		if strings.TrimSpace(out.Output) == "" {
+			// A blank capture is a distinct failure from a wrong reply: the
+			// agent said nothing at all, which is what a model that cannot
+			// call a tool usually does.
 			res.Err = fmt.Errorf("empty response: sentinel %q not found", sentinel)
+		} else {
+			res.Err = fmt.Errorf("sentinel %q not found in output", sentinel)
 		}
 		return res
 	}
 	res.Status = StatusPass
 	return res
+}
+
+// randomHex returns n random bytes as a lowercase hex string. crypto/rand
+// never fails on the platforms wt runs on; a short read would only make the
+// value less unique, never wrong, so the error is ignored as elsewhere.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%x", b)
 }
 
 // NewRunID generates a run id for correlating one wt smoke invocation's
@@ -496,9 +530,7 @@ func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.
 // filter redacts — mirroring agents-smoke.sh's md5-based id for the same
 // reason.
 func NewRunID() string {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("run-%x", b)
+	return "run-" + randomHex(4)
 }
 
 // DefaultPrompt returns the smoke prompt and the sentinel RunRow should look
@@ -534,11 +566,7 @@ const nonceFile = "smoke-nonce.txt"
 // does not exercise.
 func ToolPrompt(agentName string, hops int) (prompt, sentinel string, files map[string]string) {
 	hops = max(hops, 1)
-	rnd := func() string {
-		b := make([]byte, 6)
-		_, _ = rand.Read(b)
-		return fmt.Sprintf("%x", b)
-	}
+	rnd := func() string { return randomHex(6) }
 	sentinel = fmt.Sprintf("wt-nonce-%s-%s", agentName, rnd())
 	names := []string{nonceFile}
 	for i := 1; i < hops; i++ {

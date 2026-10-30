@@ -1276,3 +1276,26 @@ func TestRunRowEmptyResponseIsNamed(t *testing.T) {
 		t.Fatalf("status=%v err=%v; want FAIL with an empty-response error", r.Status, r.Err)
 	}
 }
+
+// TestSentinelInAcceptsAnyCaseWhenThePromptCannotEchoIt pins the two
+// halves of the sentinel match. A case-insensitive match is allowed only
+// where the prompt itself cannot produce one by echo: the tool check's nonce
+// lives in a file, so a model that reproduces it in a different case still
+// read it and must pass. The default prompt carries the sentinel's text in
+// the opposite case, so an echo of it must still not pass (#193).
+func TestSentinelInAcceptsAnyCaseWhenThePromptCannotEchoIt(t *testing.T) {
+	toolPrompt, toolSentinel, _ := ToolPrompt("claude", 1)
+	if !sentinelIn("the value is "+strings.ToUpper(toolSentinel), toolPrompt, toolSentinel) {
+		t.Error("a nonce reproduced in a different case did not match: the tool prompt cannot echo it")
+	}
+	if !sentinelIn("the value is "+toolSentinel, toolPrompt, toolSentinel) {
+		t.Error("the exact nonce did not match")
+	}
+	defPrompt, defSentinel := DefaultPrompt("claude", "run-abcd1234")
+	if sentinelIn(strings.ToLower(defSentinel), defPrompt, defSentinel) {
+		t.Error("the echoed prompt matched the default sentinel: the #193 false PASS is back")
+	}
+	if !sentinelIn(defSentinel, defPrompt, defSentinel) {
+		t.Error("the default sentinel did not match its own reply")
+	}
+}

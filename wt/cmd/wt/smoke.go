@@ -100,6 +100,45 @@ func smokeCmd(a *app) *cobra.Command {
 // errSmokeInterrupted is what runSmoke returns for a run Ctrl+C cut short.
 var errSmokeInterrupted = errors.New("interrupted")
 
+// smokeToolFlags is the validated combination of the flags that decide what
+// a row asks the agent to do: the tool-call check, how many dependent reads
+// it chains, and the prompt override.
+type smokeToolFlags struct {
+	toolCheck bool
+	hops      int
+	prompt    string
+}
+
+// validateSmokeToolFlags checks the --tools/--hops/--prompt/--cwd
+// combination and returns it. It runs before anything else in a smoke run:
+// these are usage errors, known without a model, and a usage error must not
+// cost the user an interactive model pick (or a model start) first.
+func validateSmokeToolFlags(cmd *cobra.Command) (smokeToolFlags, error) {
+	f := smokeToolFlags{
+		toolCheck: mustGetBool(cmd, "tools"),
+		hops:      mustGetInt(cmd, "hops"),
+		prompt:    mustGetString(cmd, "prompt"),
+	}
+	inPlace := mustGetBool(cmd, "cwd")
+	if f.toolCheck && inPlace {
+		return f, errors.New("--tools and --cwd are mutually exclusive: the nonce file is written into the row's temporary directory, never your checkout")
+	}
+	if f.toolCheck && f.prompt != "" {
+		return f, errors.New("--tools and --prompt are mutually exclusive: a custom prompt has no nonce to verify")
+	}
+	// The range is checked first: an out-of-range value is wrong whatever
+	// else is on the command line.
+	if f.hops < 1 || f.hops > 10 {
+		return f, fmt.Errorf("--hops %d: must be between 1 and 10", f.hops)
+	}
+	// --hops is meaningful only with --tools: on its own it changes nothing.
+	// Flag.Changed tells an explicit --hops 1 apart from the default.
+	if cmd.Flags().Changed("hops") && !f.toolCheck {
+		return f, errors.New("--hops needs --tools")
+	}
+	return f, nil
+}
+
 // smokeSignalCtx is a test seam over signal.NotifyContext, as startSignalCtx
 // is for the start step: the context the rows run under, cancelled by Ctrl+C
 // or SIGTERM.
@@ -114,6 +153,15 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	if a.cfgErr != nil {
 		return false, configError(a.cfgErr)
 	}
+
+	// Flag validation comes before the model is resolved: these are usage
+	// errors, knowable without a model, and a usage error must not cost the
+	// user an interactive model pick first.
+	toolFlags, err := validateSmokeToolFlags(cmd)
+	if err != nil {
+		return false, err
+	}
+	toolCheck, hops, promptOverride := toolFlags.toolCheck, toolFlags.hops, toolFlags.prompt
 
 	var modelID string
 	if len(args) > 0 {
@@ -133,21 +181,6 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		return false, err
 	}
 
-	promptOverride := mustGetString(cmd, "prompt")
-	toolCheck, _ := cmd.Flags().GetBool("tools")
-	if inPlaceFlag, _ := cmd.Flags().GetBool("cwd"); toolCheck && inPlaceFlag {
-		return false, errors.New("--tools and --cwd are mutually exclusive: the nonce file is written into the row's temporary directory, never your checkout")
-	}
-	hops, _ := cmd.Flags().GetInt("hops")
-	if hops < 1 || hops > 10 {
-		return false, fmt.Errorf("--hops %d: must be between 1 and 10", hops)
-	}
-	if hops > 1 && !toolCheck {
-		return false, errors.New("--hops needs --tools")
-	}
-	if toolCheck && promptOverride != "" {
-		return false, errors.New("--tools and --prompt are mutually exclusive: a custom prompt has no nonce to verify")
-	}
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	// Validate only an explicit value: the unset flag is 0, meaning "pick the
 	// default for this model's location".

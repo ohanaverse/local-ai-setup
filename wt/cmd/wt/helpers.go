@@ -21,6 +21,20 @@ func mustGetString(cmd *cobra.Command, name string) string {
 	return v
 }
 
+// mustGetBool returns a bool flag value, ignoring the error. The flag is
+// always registered, so GetBool cannot fail here.
+func mustGetBool(cmd *cobra.Command, name string) bool {
+	v, _ := cmd.Flags().GetBool(name)
+	return v
+}
+
+// mustGetInt returns an int flag value, ignoring the error. The flag is
+// always registered, so GetInt cannot fail here.
+func mustGetInt(cmd *cobra.Command, name string) int {
+	v, _ := cmd.Flags().GetInt(name)
+	return v
+}
+
 // yolo reports whether the --yolo flag was set.
 func yolo(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("yolo")
