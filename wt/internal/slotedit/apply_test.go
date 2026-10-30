@@ -1,0 +1,153 @@
+package slotedit
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+)
+
+const applyBase = `# keep me
+[[profile]]
+name    = "alpha"
+agent   = "claude"
+default = "sonnet"
+
+[profile.slots]
+opus   = "m/b"
+sonnet = "m/c"
+`
+
+func applyOpts(target string) Options {
+	return Options{
+		Drivers:  agents.SlotDrivers(),
+		ModelIDs: []string{"m/a", "m/b", "m/c"},
+		Target:   target,
+		Now:      func() time.Time { return time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC) },
+	}
+}
+
+func setup(t *testing.T, content string) string {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	p := filepath.Join(t.TempDir(), "slot-profiles.toml")
+	if content != "" {
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return p
+}
+
+func replace(old, new string) func([]byte) ([]byte, error) {
+	return func(b []byte) ([]byte, error) {
+		return []byte(strings.Replace(string(b), old, new, 1)), nil
+	}
+}
+
+func assertUntouched(t *testing.T, p, want string) {
+	t.Helper()
+	got, _ := os.ReadFile(p)
+	if string(got) != want {
+		t.Errorf("file changed:\n%s", got)
+	}
+	if m, _ := filepath.Glob(p + ".bak-*"); len(m) != 0 {
+		t.Errorf("backup left behind: %v", m)
+	}
+}
+
+func TestApplyWritesBackupAndFile(t *testing.T) {
+	p := setup(t, applyBase)
+	bak, err := Apply(p, replace(`opus   = "m/b"`, `opus   = "m/a"`), applyOpts("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bak != p+".bak-20261030-120000" {
+		t.Errorf("backup = %q", bak)
+	}
+	if b, _ := os.ReadFile(bak); string(b) != applyBase {
+		t.Errorf("backup content differs")
+	}
+	if b, _ := os.ReadFile(p); !strings.Contains(string(b), `"m/a"`) || !strings.Contains(string(b), "# keep me") {
+		t.Errorf("file = %s", b)
+	}
+}
+
+func TestApplyRefusesUnknownModelID(t *testing.T) {
+	p := setup(t, applyBase)
+	_, err := Apply(p, replace(`"m/b"`, `"m/zzz"`), applyOpts("alpha"))
+	if err == nil || !strings.Contains(err.Error(), "m/zzz") {
+		t.Fatalf("err = %v", err)
+	}
+	assertUntouched(t, p, applyBase)
+}
+
+func TestApplyRefusesDefaultOnUnfilledSlot(t *testing.T) {
+	p := setup(t, applyBase)
+	_, err := Apply(p, replace(`default = "sonnet"`, `default = "haiku"`), applyOpts("alpha"))
+	if err == nil {
+		t.Fatal("want refusal")
+	}
+	assertUntouched(t, p, applyBase)
+}
+
+func TestApplyRefusesBreakingAnotherProfile(t *testing.T) {
+	two := applyBase + "\n[[profile]]\nname = \"beta\"\nagent = \"claude\"\ndefault = \"sonnet\"\n[profile.slots]\nsonnet = \"m/c\"\n"
+	p := setup(t, two)
+	// Target alpha stays fine; beta's default is broken.
+	_, err := Apply(p, replace("default = \"sonnet\"\n[profile.slots]\nsonnet = \"m/c\"\n", "default = \"haiku\"\n[profile.slots]\nsonnet = \"m/c\"\n"), applyOpts("alpha"))
+	if err == nil || !strings.Contains(err.Error(), "beta") {
+		t.Fatalf("err = %v", err)
+	}
+	assertUntouched(t, p, two)
+}
+
+func TestApplyRemoveDoesNotFailOnOwnAbsence(t *testing.T) {
+	p := setup(t, applyBase)
+	if _, err := Apply(p, func(b []byte) ([]byte, error) { return Remove(b, "alpha") }, applyOpts("")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyRefusesParseError(t *testing.T) {
+	p := setup(t, applyBase)
+	if _, err := Apply(p, replace("[profile.slots]", "[profile.slots"), applyOpts("alpha")); err == nil {
+		t.Fatal("want refusal")
+	}
+	assertUntouched(t, p, applyBase)
+}
+
+func TestApplyMissingFileCreatesWithoutBackup(t *testing.T) {
+	p := setup(t, "")
+	bak, err := Apply(p, func([]byte) ([]byte, error) { return []byte(applyBase), nil }, applyOpts("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bak != "" {
+		t.Errorf("backup = %q", bak)
+	}
+	if b, _ := os.ReadFile(p); string(b) != applyBase {
+		t.Errorf("file = %s", b)
+	}
+	if m, _ := filepath.Glob(p + ".bak-*"); len(m) != 0 {
+		t.Errorf("backups: %v", m)
+	}
+}
+
+func TestApplyBackupNamesDoNotCollideSameSecond(t *testing.T) {
+	p := setup(t, applyBase)
+	b1, err := Apply(p, replace(`"m/b"`, `"m/a"`), applyOpts("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := Apply(p, replace(`"m/a"`, `"m/b"`), applyOpts("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b2 != b1+"-2" {
+		t.Errorf("b1=%q b2=%q", b1, b2)
+	}
+}
