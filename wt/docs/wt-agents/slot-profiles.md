@@ -10,7 +10,7 @@ slot keeps an Anthropic id for the LiteLLM proxy to reject with
 `Invalid model name passed in model=claude-…`.
 
 A **slot profile** gives each slot its own model. It is a named,
-hand-written entry that assigns a registry model to each of an agent's model
+entry that assigns a registry model to each of an agent's model
 slots. It appears as a row in the model picker, and you choose it like a
 model. Claude Code is the only agent with slots today; its slots are
 `fable`, `opus`, `sonnet` and `haiku`.
@@ -34,7 +34,9 @@ launch of Claude Code, are outside that support.
 1. Configure the proxy once, if you have not: `wt litellm set --url … --api-key …`.
    A slot profile always uses the LiteLLM proxy, whatever `wt litellm status`
    says about the on/off toggle.
-2. Write `~/.config/agent-wt/slot-profiles.toml` (next section). Take the
+2. Add a profile: `wt profile slots add <name> --slot sonnet=<model-id> …`
+   ([Managing the file](#managing-the-file)), or write
+   `~/.config/agent-wt/slot-profiles.toml` by hand (next section). Take the
    ids from `wt model list`.
 3. Check it: `wt profile list`, then `wt profile show -A claude -M profile/<name>`.
 4. Launch it: pick the `profile/<name>` row in the claude model picker, or
@@ -42,8 +44,10 @@ launch of Claude Code, are outside that support.
 
 ## The file
 
-`~/.config/agent-wt/slot-profiles.toml`, beside `profiles.toml`. You write
-it by hand. wt reads it and never writes it. A missing file means no profile
+`~/.config/agent-wt/slot-profiles.toml`, beside `profiles.toml`. Editing it
+by hand is always valid. wt itself changes it only through
+`wt profile slots add|set|rm` ([Managing the file](#managing-the-file));
+every other command only reads it. A missing file means no profile
 rows. The array is `[[profile]]`, singular; `profiles.toml` uses
 `[[profiles]]`.
 
@@ -504,6 +508,57 @@ After the session: wt prints the summary line naming the profile, releases
 the refcount lines, and offers the stop picker as after any non-native
 launch. The stop picker is not limited to the profile's models. There is no
 survey and no price notice for a profile session.
+
+## Managing the file
+
+Five subcommands of `wt profile slots` manage the file. Editing it by hand
+stays valid; use the commands when you want a validated, backed-up edit, or
+let the `manage-slot-profiles` skill (`.claude/skills/manage-slot-profiles/`)
+drive them.
+
+```bash
+wt profile slots add <name> --slot <slot>=<model-id> [--slot …] [--default <slot>] [--env KEY=VALUE] [--comment "<text>"]
+wt profile slots set <name> [--slot <slot>=<model-id>] [--default <slot>] [--env KEY=VALUE] [--unset-env KEY]
+wt profile slots rm <name>
+wt profile slots usage [--json]
+wt profile slots candidates [--json] [--open-only] [--provider <id>[,<id>]] [--near <model-id>] [--per-provider N]
+```
+
+- `add` creates a profile for claude (`--default` defaults to `sonnet`) and
+  creates the file when it is missing. `set` changes only what you name;
+  `--slot` replaces that slot's model, `--env` sets a key, `--unset-env`
+  removes one. At least one of the four must be given. `rm` removes the
+  entry and the comment block directly above it. Each prints the backup path
+  (or `created <path>`), then the `wt profile list` slot section.
+- `usage` lists each profile in the file with its launches in the last 1, 7
+  and 30 days, its last launch and its leading comment. Usage history is
+  pruned at 30 days, so zero in the 30-day column means "not launched in 30
+  days", not "never".
+- `candidates` ranks registry models by `tiers.toml` score (open weights
+  first, then score, then price) and prints how old `tiers.toml` is. With
+  `--near <model-id>` it lists, per provider, the models scoring nearest to
+  that one. Advisory only: nothing routes on a rank. `--json` also reports
+  `tiers_generated_at` and `stale_sources`.
+
+What a write guarantees:
+
+- The old file is copied to `slot-profiles.toml.bak-<YYYYMMDD-HHMMSS>`
+  beside it first (a `-2`, `-3` suffix on a collision).
+- Every other entry and comment is kept byte for byte, and the file keeps
+  its mode. A symlinked file is written through the link.
+- The result is validated before it replaces the file. wt refuses, and
+  leaves the file and its backups alone, when the new text does not parse,
+  when the edited profile would not be usable, when a slot names an id that
+  is not in the registry, when a profile that was usable would stop being
+  usable, or when the edit introduces an unknown key.
+- `add` writes only `name`, `agent`, `default`, `slots` and `env`. A profile
+  that needs `args`, `wrapper` or `config_content` is written by hand.
+
+Where the editor will not follow the file, it stops with a message that says
+to edit by hand: a multi-line string (`"""` or `'''`) anywhere in the
+file, a profile whose `slots` or `env` are written as dotted keys or an
+inline table, a value that is not a one-line string, a name used by two
+profiles, or a name that does not exist (`set`, `rm`).
 
 ## Commands
 

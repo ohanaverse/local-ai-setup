@@ -24,7 +24,7 @@ None — this is a reference doc, not a procedure.
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `wt stats` | Launch log |
 | `~/.config/agent-wt/rotation.state` + `rotation-*.state` | `wt` | `wt` | Rotation position |
 | `~/.config/agent-wt/last-picked.state` | `wt` | `wt` | The row launched last, a model or a slot profile: the model picker's `> ` marker |
-| `~/.config/agent-wt/slot-profiles.toml` | you by hand; wt never writes it | `wt` | Slot profiles: named sets that map each of Claude Code's model slots to a registry model ([06-wt-agents-and-models](06-wt-agents-and-models.md) §10). Absent by default |
+| `~/.config/agent-wt/slot-profiles.toml` | you by hand, or `wt profile slots add\|set\|rm` (backs up, validates) | `wt` | Slot profiles: named sets that map each of Claude Code's model slots to a registry model ([06-wt-agents-and-models](06-wt-agents-and-models.md) §10). Absent by default |
 | `~/.config/agent-wt/profiles.toml` | you by hand; `wt profile on\|off` sets its `enabled` line | `wt` | Local-model launch profiles ([06-wt-agents-and-models](06-wt-agents-and-models.md) §9). Absent by default; `profile-backups/` beside it holds wt's snapshots of the files a profile rewrites |
 | `~/.config/agent-wt/survey.jsonl` | `wt` (the post-session survey, which is switched off) | `wt stats`, the model picker | Recorded survey answers ([07-usage-and-spend](07-usage-and-spend.md)) |
 | `~/.config/agent-wt/refcount.jsonl` | `wt` | `wt` | Which live wt sessions use which model; an entry lasts until its session's process is gone |
@@ -252,7 +252,7 @@ profile/<name>
 
 ### `~/.config/agent-wt/slot-profiles.toml`
 
-- **Owner:** you, by hand. wt reads it and never writes it. Absent by default; a missing file means no profile rows.
+- **Owner:** you, by hand, or `wt profile slots add|set|rm`, the only wt commands that write it (each keeps a `slot-profiles.toml.bak-<stamp>` backup and validates first). Absent by default; a missing file means no profile rows.
 - **Consumers:** `wt` (the claude model picker, `-M profile/<name>`, `wt profile list`, `wt profile show`).
 - **Purpose:** slot profiles. Each `[[profile]]` names an agent, assigns a registry model id to some or all of the agent's model slots, and names the slot the session starts on.
 
@@ -276,6 +276,8 @@ See what wt makes of the file:
 wt profile list                                # from: any dir, read-only
 wt profile show -A claude -M profile/<name>    # from: any dir; probes local providers, changes nothing
 ```
+
+Manage it with `wt profile slots add|set|rm|usage|candidates` (see [08 §8](08-maintenance-and-troubleshooting.md)).
 
 Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slot-profiles.md).
 

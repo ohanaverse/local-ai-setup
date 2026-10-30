@@ -572,6 +572,22 @@ and leaves the untracked ones (`modelman/.venv`, caches). If
 `git ls-files modelman | wc -l` prints `0`, remove the directory:
 `rm -r modelman`.
 
+### 8. Keeping slot profiles current
+
+Slot profiles (`~/.config/agent-wt/slot-profiles.toml`, [06 §10](06-wt-agents-and-models.md)) go stale: a model leaves the registry, a profile stops being launched, a better model appears. The project skill `manage-slot-profiles` (`.claude/skills/manage-slot-profiles/`) walks through it in Claude Code: it refreshes modeltiers when stale, offers to remove unused profiles, proposes better models per profile and confirms every write. Ask Claude to "manage my slot profiles" from this repo.
+
+The commands it runs, which you can also run yourself:
+
+```bash
+wt profile slots usage                       # launches per profile over 1/7/30 days, last launch, comment
+wt profile slots candidates [--near <model-id>]   # registry models ranked by tier score and price
+wt profile slots set <name> --slot <slot>=<model-id>
+wt profile slots rm <name>
+wt smoke                                     # prove a changed profile's models answer
+```
+
+Each write keeps a `slot-profiles.toml.bak-<stamp>` backup next to the file and is validated before it replaces it; `wt profile list` shows the result. Candidate scores are only as current as `tiers.toml`: refresh with `uv run --directory modeltiers modeltiers run` ([12-model-tiers](12-model-tiers.md)). Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slot-profiles.md#managing-the-file).
+
 ## Verification
 
 Everything this guide promises reduces to the TL;DR block being green — no destructive simulation is needed to verify it, and none was used. On the healthy 2026-08-29 stack, the block's verbatim output is pasted in TL;DR above; re-running it must reproduce: `401` on :4000, `200` on the two backend ports, five launchd rows with live PIDs (Ollama's row legitimately shows `-`), `accepting connections`, `PONG`.

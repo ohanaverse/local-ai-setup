@@ -107,7 +107,7 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 ├── themes.toml          # active theme (this feature)
 ├── rotation.state       # the last single-model launch: the rotation position
 ├── last-picked.state    # the row launched last, model or slot profile: the picker's marker
-├── slot-profiles.toml   # hand-written slot profiles; wt reads it and never writes it
+├── slot-profiles.toml   # slot profiles; hand-editable, written by wt only via `wt profile slots`
 └── ...                  # future subcommands land here
 ```
 

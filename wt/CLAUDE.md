@@ -83,7 +83,7 @@ make -C .. test-all   # CI-equivalent: root lint + llmbench + wt
 
 ## Go module
 
-Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
 **Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
 
@@ -176,7 +176,7 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (`profiles.Resolve`), ap
 - Call the `config_content` cleanup explicitly after the run — `runAgentCmd`'s `os.Exit` skips defers.
 - Apply order is env/args → `config_content` (with `config_defaults`) → wrapper; load/validate/apply errors degrade to an unprofiled launch with a warning.
 
-**Slot profiles** (hand-written `~/.config/agent-wt/slot-profiles.toml`, never written by wt; [docs/wt-agents/slot-profiles.md](docs/wt-agents/slot-profiles.md)) map an agent's model slots to registry models and are pinned with `-M profile/<name>`; claude is the only slot agent. A rule that belongs to one agent goes on that interface and is asked through `profiles.SlotDrivers` (warn-only: `agents.SlotConfigWarner`), never into `internal/profiles` or `internal/catalog`, which do not import `internal/agents` (#418).
+**Slot profiles** (`~/.config/agent-wt/slot-profiles.toml`, hand-editable and written by wt only through `wt profile slots add|set|rm` (`internal/slotedit`: backup, validate, comment-preserving); [docs/wt-agents/slot-profiles.md](docs/wt-agents/slot-profiles.md)) map an agent's model slots to registry models and are pinned with `-M profile/<name>`; claude is the only slot agent. A rule that belongs to one agent goes on that interface and is asked through `profiles.SlotDrivers` (warn-only: `agents.SlotConfigWarner`), never into `internal/profiles` or `internal/catalog`, which do not import `internal/agents` (#418).
 
 **No flag points a claude launch at another LiteLLM** (the URL comes only from `[litellm]` in `config.toml`). To A/B a proxy setting, run a scratch `litellm --config <scratch>.yaml --port 4001` and start `claude` directly with the env `claudeDriver.BuildSlots` builds (`internal/agents/claude_slots.go`: `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`, per-slot `ANTHROPIC_DEFAULT_*_MODEL` plus `_NAME` in the `--settings` env JSON, `--model`). The scratch config holds the omlx key, so delete it afterwards.
 
