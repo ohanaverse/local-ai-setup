@@ -14,8 +14,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -71,6 +73,12 @@ type Entry struct {
 	// file has none, as one written before the key existed. A reader that
 	// declares Context as the window a host serves takes ContextBasisHost alone.
 	ContextBasis string
+	// OpenWeights is the file's `open_weights`; false when absent or not a bool.
+	OpenWeights bool
+	// ToolCall is the file's `tool_call`; HasToolCall is false when the entry
+	// has none (or a non-bool), so "unknown" differs from "no".
+	ToolCall    bool
+	HasToolCall bool
 }
 
 // ContextBasisHost is the ContextBasis of a window read from the model's own
@@ -219,6 +227,21 @@ func (ix Index) Rating(providerID, modelName string) Entry {
 	return Entry{}
 }
 
+// Entries returns every entry sorted by ProviderID, then ModelName.
+func (ix Index) Entries() []Entry {
+	out := make([]Entry, 0, len(ix))
+	for _, e := range ix {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ProviderID != out[j].ProviderID {
+			return out[i].ProviderID < out[j].ProviderID
+		}
+		return out[i].ModelName < out[j].ModelName
+	})
+	return out
+}
+
 // fileDoc is the part of tiers.toml this package reads. aligned_score is
 // decoded as any so that an integer written for it reads as well as a float.
 type fileDoc struct {
@@ -232,6 +255,8 @@ type fileDoc struct {
 		Context        any      `toml:"context"`
 		ContextBasis   any      `toml:"context_basis"`
 		AlignedSources []string `toml:"aligned_sources"`
+		OpenWeights    any      `toml:"open_weights"`
+		ToolCall       any      `toml:"tool_call"`
 	} `toml:"models"`
 }
 
@@ -279,6 +304,12 @@ func Parse(data []byte) (Index, error) {
 				e.Context = int(v)
 			}
 		}
+		if b, ok := m.OpenWeights.(bool); ok {
+			e.OpenWeights = b
+		}
+		if b, ok := m.ToolCall.(bool); ok {
+			e.ToolCall, e.HasToolCall = b, true
+		}
 		switch v := m.AlignedScore.(type) {
 		case float64:
 			if !math.IsNaN(v) && !math.IsInf(v, 0) {
@@ -322,4 +353,63 @@ func LoadFile(path string) Index {
 		return nil
 	}
 	return ix
+}
+
+// Freshness is how current the file is: when modeltiers generated it and
+// which of its sources were not "ok" that run.
+type Freshness struct {
+	GeneratedAt  time.Time
+	StaleSources []string
+}
+
+// ParseFreshness reads generated_at and each [sources.<name>] status. A
+// generated_at that is missing or not a time leaves GeneratedAt zero.
+func ParseFreshness(data []byte) (Freshness, error) {
+	var doc struct {
+		GeneratedAt any `toml:"generated_at"`
+		Sources     map[string]struct {
+			Status any `toml:"status"`
+		} `toml:"sources"`
+	}
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		return Freshness{}, err
+	}
+	var f Freshness
+	switch v := doc.GeneratedAt.(type) {
+	case time.Time:
+		f.GeneratedAt = v
+	case string:
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.GeneratedAt = t
+		}
+	}
+	for name, src := range doc.Sources {
+		if s, _ := src.Status.(string); s != "ok" {
+			f.StaleSources = append(f.StaleSources, name)
+		}
+	}
+	sort.Strings(f.StaleSources)
+	return f, nil
+}
+
+// ReadFreshness reads the file at Path; false when it is missing, unreadable,
+// unparseable or has no generated_at.
+func ReadFreshness() (Freshness, bool) {
+	path := Path()
+	if path == "" {
+		return Freshness{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
+		return Freshness{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Freshness{}, false
+	}
+	f, err := ParseFreshness(data)
+	if err != nil || f.GeneratedAt.IsZero() {
+		return Freshness{}, false
+	}
+	return f, true
 }
