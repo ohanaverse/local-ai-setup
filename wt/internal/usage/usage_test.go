@@ -579,3 +579,26 @@ func TestAllCountsMeasuresAgainstTheInstantItIsGiven(t *testing.T) {
 		t.Errorf("AllCounts(\"\", %s)[m] = %+v, want %+v", later.Format(time.RFC3339), got, want)
 	}
 }
+
+// TestLastLaunch verifies LastLaunch reports the newest launch per model id
+// for one agent only: the slot-profile listing shows when each profile was
+// last used, and another agent's launches must not count.
+func TestLastLaunch(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+
+	writeEvents(t, store, []event{
+		{ModelID: "profile/a", Agent: "claude", Timestamp: fixed.Add(-5 * 24 * time.Hour)},
+		{ModelID: "profile/a", Agent: "claude", Timestamp: fixed.Add(-2 * time.Hour)},
+		{ModelID: "profile/a", Agent: "claude", Timestamp: fixed.Add(-30 * time.Hour)},
+		{ModelID: "profile/b", Agent: "pi", Timestamp: fixed.Add(-1 * time.Hour)},
+	})
+
+	got := store.LastLaunch("claude", fixed)
+	if len(got) != 1 {
+		t.Fatalf("LastLaunch(claude) = %+v, want only profile/a", got)
+	}
+	if want := fixed.Add(-2 * time.Hour); !got["profile/a"].Equal(want) {
+		t.Errorf("LastLaunch(claude)[profile/a] = %v, want %v", got["profile/a"], want)
+	}
+}
