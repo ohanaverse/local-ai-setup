@@ -90,6 +90,7 @@ func smokeCmd(a *app) *cobra.Command {
 	}
 	cmd.Flags().String("prompt", "", "Override the default sentinel prompt (weakens verification to exit-code-only)")
 	cmd.Flags().Bool("tools", false, "Ask each agent to read a nonce file with a tool call (catches models that cannot call tools; not with --cwd or --prompt)")
+	cmd.Flags().Int("hops", 1, "With --tools, chain this many dependent file reads (each file names the next)")
 	cmd.Flags().Duration("timeout", 0, "Per-agent timeout (default 3m for cloud models, 15m for local)")
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
@@ -136,6 +137,13 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	toolCheck, _ := cmd.Flags().GetBool("tools")
 	if inPlaceFlag, _ := cmd.Flags().GetBool("cwd"); toolCheck && inPlaceFlag {
 		return false, errors.New("--tools and --cwd are mutually exclusive: the nonce file is written into the row's temporary directory, never your checkout")
+	}
+	hops, _ := cmd.Flags().GetInt("hops")
+	if hops < 1 || hops > 10 {
+		return false, fmt.Errorf("--hops %d: must be between 1 and 10", hops)
+	}
+	if hops > 1 && !toolCheck {
+		return false, errors.New("--hops needs --tools")
 	}
 	if toolCheck && promptOverride != "" {
 		return false, errors.New("--tools and --prompt are mutually exclusive: a custom prompt has no nonce to verify")
@@ -232,10 +240,10 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
 	for _, agentName := range agentsToRun {
-		prompt, sentinel, nonce := promptOverride, "", ""
+		prompt, sentinel, planted := promptOverride, "", map[string]string(nil)
 		switch {
 		case toolCheck:
-			prompt, sentinel, nonce = smoke.ToolPrompt(agentName)
+			prompt, sentinel, planted = smoke.ToolPrompt(agentName, hops)
 		case promptOverride == "":
 			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
 		}
@@ -276,8 +284,8 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 				return dir, nil
 			}
 		}
-		if nonce != "" {
-			rowDir = smoke.WithNonceFile(rowDir, nonce)
+		if planted != nil {
+			rowDir = smoke.WithFiles(rowDir, planted)
 		}
 		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
 		removeRowDir()

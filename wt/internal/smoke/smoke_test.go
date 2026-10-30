@@ -1222,28 +1222,46 @@ func TestCandidatesNeverIncludeASlotProfile(t *testing.T) {
 	}
 }
 
-// TestToolPromptNonceIsOnlyInTheFile pins that the tool check's sentinel is
-// absent from the prompt and present in the planted file. It matters because
-// a prompt that holds its own sentinel passes on an echo (#193), and a tool
-// check must pass only when the agent really read the file.
-func TestToolPromptNonceIsOnlyInTheFile(t *testing.T) {
-	prompt, sentinel, content := ToolPrompt("claude")
-	if strings.Contains(prompt, sentinel) {
-		t.Fatalf("prompt %q contains the sentinel %q", prompt, sentinel)
-	}
-	if !strings.Contains(content, sentinel) {
-		t.Fatalf("file content %q lacks the sentinel %q", content, sentinel)
-	}
-	if _, other, _ := ToolPrompt("claude"); other == sentinel {
-		t.Fatalf("two calls returned the same sentinel %q", sentinel)
-	}
-	dir, err := WithNonceFile(FixedDir(t.TempDir()), content)()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(filepath.Join(dir, nonceFile))
-	if err != nil || string(got) != content {
-		t.Fatalf("nonce file = %q, %v; want %q", got, err, content)
+// TestToolPromptNonceIsOnlyInTheLastFile pins that the tool check's sentinel
+// is absent from the prompt, appears in exactly one planted file, and that the
+// files form one chain from smoke-nonce.txt to it. It matters because a prompt
+// that holds its own sentinel passes on an echo (#193), and a chain with a
+// break or a second copy of the sentinel would pass without the agent reading
+// every hop.
+func TestToolPromptNonceIsOnlyInTheLastFile(t *testing.T) {
+	for _, hops := range []int{1, 2, 4} {
+		prompt, sentinel, files := ToolPrompt("claude", hops)
+		if strings.Contains(prompt, sentinel) {
+			t.Fatalf("hops=%d: prompt %q contains the sentinel %q", hops, prompt, sentinel)
+		}
+		if len(files) != hops {
+			t.Fatalf("hops=%d: planted %d files", hops, len(files))
+		}
+		if _, other, _ := ToolPrompt("claude", hops); other == sentinel {
+			t.Fatalf("hops=%d: two calls returned the same sentinel", hops)
+		}
+		dir, err := WithFiles(FixedDir(t.TempDir()), files)()
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := nonceFile
+		for step := 1; ; step++ {
+			got, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("hops=%d step %d: %v", hops, step, err)
+			}
+			next, ok := strings.CutPrefix(strings.TrimSpace(string(got)), "next: ")
+			if !ok {
+				if step != hops || strings.TrimSpace(string(got)) != sentinel {
+					t.Fatalf("hops=%d: chain ended at step %d with %q", hops, step, got)
+				}
+				break
+			}
+			if strings.Contains(string(got), sentinel) {
+				t.Fatalf("hops=%d: a pointer file holds the sentinel", hops)
+			}
+			name = next
+		}
 	}
 }
 
