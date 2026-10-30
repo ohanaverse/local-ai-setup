@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -457,5 +458,48 @@ func TestSlotsCandidatesNearBothProviders(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"omlx/q", "openrouter/b"}) {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestSlotsCandidatesAgeInWholeDays(t *testing.T) {
+	cases := []struct {
+		age  time.Duration
+		want string
+	}{
+		{30*24*time.Hour + 37*time.Minute, "tiers.toml: 30 days old\n"},
+		{25 * time.Hour, "tiers.toml: 1 day old\n"},
+		{2 * time.Hour, "tiers.toml: less than a day old\n"},
+	}
+	for _, c := range cases {
+		a := slotsFixture(t, "")
+		f := filepath.Join(t.TempDir(), "tiers.toml")
+		gen := time.Now().Add(-c.age).UTC().Format(time.RFC3339)
+		if err := os.WriteFile(f, []byte(strings.Replace(candTiers, "2026-10-12T15:58:00Z", gen, 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MODELTIERS_OUT", f)
+		out, err := runProfileCmd(t, a, "slots", "candidates")
+		if err != nil || !strings.HasPrefix(out, c.want) {
+			t.Errorf("age %v: out = %q, %v", c.age, out, err)
+		}
+	}
+}
+
+func TestSlotsCandidatesPerProviderNeedsNear(t *testing.T) {
+	a := slotsFixture(t, "")
+	_, err := runProfileCmd(t, a, "slots", "candidates", "--per-provider", "2")
+	if err == nil || !strings.Contains(err.Error(), "--per-provider needs --near") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSlotsUsageJSONEmptySlotsIsObject(t *testing.T) {
+	a := slotsFixture(t, "[[profile]]\nname = \"bare\"\nagent = \"claude\"\ndefault = \"sonnet\"\n")
+	out, err := runProfileCmd(t, a, "slots", "usage", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"slots": {}`) || strings.Contains(out, `"slots": null`) {
+		t.Errorf("out = %s", out)
 	}
 }

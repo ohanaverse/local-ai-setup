@@ -43,6 +43,8 @@ func Apply(path string, edit func([]byte) ([]byte, error), o Options) (backup st
 		if st, serr := os.Stat(path); serr == nil {
 			mode = st.Mode().Perm()
 		}
+	} else if lst, lerr := os.Lstat(path); lerr == nil && lst.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s is a dangling symlink (its target does not exist); fix or remove the link first", path)
 	}
 	old, err := os.ReadFile(path)
 	existed := err == nil

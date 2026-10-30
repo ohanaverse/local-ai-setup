@@ -9,8 +9,7 @@ to the `--model` value (see
 slot keeps an Anthropic id for the LiteLLM proxy to reject with
 `Invalid model name passed in model=claude-…`.
 
-A **slot profile** gives each slot its own model. It is a named,
-entry that assigns a registry model to each of an agent's model
+A **slot profile** gives each slot its own model. It is a named entry that assigns a registry model to each of an agent's model
 slots. It appears as a row in the model picker, and you choose it like a
 model. Claude Code is the only agent with slots today; its slots are
 `fable`, `opus`, `sonnet` and `haiku`.
@@ -514,7 +513,8 @@ survey and no price notice for a profile session.
 Five subcommands of `wt profile slots` manage the file. Editing it by hand
 stays valid; use the commands when you want a validated, backed-up edit, or
 let the `manage-slot-profiles` skill (`.claude/skills/manage-slot-profiles/`)
-drive them.
+drive them. Every write leaves a `.bak-<stamp>` backup beside the file; old
+backups are not pruned, so delete them by hand.
 
 ```bash
 wt profile slots add <name> --slot <slot>=<model-id> [--slot …] [--default <slot>] [--env KEY=VALUE] [--comment "<text>"]

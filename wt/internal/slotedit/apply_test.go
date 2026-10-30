@@ -235,3 +235,23 @@ func TestApplyNilNowUsesClock(t *testing.T) {
 		t.Fatalf("bak=%q err=%v", bak, err)
 	}
 }
+
+func TestApplyRefusesDanglingSymlink(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	link := filepath.Join(dir, "slot-profiles.toml")
+	if err := os.Symlink(filepath.Join(dir, "missing.toml"), link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Apply(link, replace("x", "y"), applyOpts(""))
+	if err == nil || !strings.Contains(err.Error(), "dangling") {
+		t.Fatalf("err = %v", err)
+	}
+	if st, serr := os.Lstat(link); serr != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link replaced: %v %v", st, serr)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 1 {
+		t.Errorf("dir has %d entries, want only the link", len(ents))
+	}
+}

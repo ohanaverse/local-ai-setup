@@ -83,7 +83,8 @@ type SlotStore struct {
 }
 
 // SlotPath returns the slot-profiles.toml location, beside profiles.toml
-// in config.Dir(). wt reads the file and never writes it.
+// in config.Dir(). `wt profile slots` (internal/slotedit) is the only writer;
+// hand edits stay valid.
 func SlotPath() string { return filepath.Join(config.Dir(), "slot-profiles.toml") }
 
 // ParseSlots decodes the file's bytes. It checks nothing but the TOML and

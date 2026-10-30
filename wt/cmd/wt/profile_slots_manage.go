@@ -259,6 +259,9 @@ func slotsUsageCmd(a *app) *cobra.Command {
 			for _, p := range store.Profiles {
 				id := p.ID()
 				r := slotUsageJSON{Name: p.Name, Launches30d: counts[id].ThirtyDay, Comment: comments[p.Name], Slots: p.Slots}
+				if r.Slots == nil {
+					r.Slots = map[string]string{}
+				}
 				if t, ok := last[id]; ok {
 					s := t.UTC().Format(time.RFC3339)
 					r.LastLaunch = &s
@@ -333,6 +336,19 @@ func fmtPrice(p *float64) string {
 	return fmt.Sprintf("%g", *p)
 }
 
+// ageDays renders an age in whole days, so the table never shows a Go
+// duration such as 719h37m0s.
+func ageDays(d time.Duration) string {
+	switch days := int(d / (24 * time.Hour)); {
+	case days < 1:
+		return "less than a day"
+	case days == 1:
+		return "1 day"
+	default:
+		return fmt.Sprintf("%d days", days)
+	}
+}
+
 func slotsCandidatesCmd(a *app) *cobra.Command {
 	var asJSON, openOnly bool
 	var provider, near string
@@ -341,6 +357,9 @@ func slotsCandidatesCmd(a *app) *cobra.Command {
 		Use: "candidates", Short: "Rank registry models by tier score and price for a slot", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
+			if cmd.Flags().Changed("per-provider") && near == "" {
+				return fmt.Errorf("--per-provider needs --near")
+			}
 			if a.cfg == nil {
 				return fmt.Errorf("no config loaded")
 			}
@@ -371,7 +390,7 @@ func slotsCandidatesCmd(a *app) *cobra.Command {
 				return writeJSON(w, out)
 			}
 			if haveFresh {
-				fmt.Fprintf(w, "tiers.toml: %s old\n", time.Since(fresh.GeneratedAt).Round(time.Minute))
+				fmt.Fprintf(w, "tiers.toml: %s old\n", ageDays(time.Since(fresh.GeneratedAt)))
 				if len(fresh.StaleSources) > 0 {
 					fmt.Fprintf(w, "stale sources: %s\n", strings.Join(fresh.StaleSources, ", "))
 				}
