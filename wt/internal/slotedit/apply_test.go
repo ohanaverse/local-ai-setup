@@ -88,8 +88,8 @@ func TestApplyRefusesUnknownModelID(t *testing.T) {
 func TestApplyRefusesDefaultOnUnfilledSlot(t *testing.T) {
 	p := setup(t, applyBase)
 	_, err := Apply(p, replace(`default = "sonnet"`, `default = "haiku"`), applyOpts("alpha"))
-	if err == nil {
-		t.Fatal("want refusal")
+	if err == nil || !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "haiku") {
+		t.Fatalf("err = %v", err)
 	}
 	assertUntouched(t, p, applyBase)
 }
@@ -107,8 +107,15 @@ func TestApplyRefusesBreakingAnotherProfile(t *testing.T) {
 
 func TestApplyRemoveDoesNotFailOnOwnAbsence(t *testing.T) {
 	p := setup(t, applyBase)
-	if _, err := Apply(p, func(b []byte) ([]byte, error) { return Remove(b, "alpha") }, applyOpts("")); err != nil {
+	bak, err := Apply(p, func(b []byte) ([]byte, error) { return Remove(b, "alpha") }, applyOpts(""))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); strings.Contains(string(b), "alpha") {
+		t.Errorf("alpha still present: %s", b)
+	}
+	if b, _ := os.ReadFile(bak); string(b) != applyBase {
+		t.Errorf("backup missing or wrong: %q", bak)
 	}
 }
 
@@ -149,5 +156,82 @@ func TestApplyBackupNamesDoNotCollideSameSecond(t *testing.T) {
 	}
 	if b2 != b1+"-2" {
 		t.Errorf("b1=%q b2=%q", b1, b2)
+	}
+}
+
+func TestApplyKeepsFileModeAndBackupMode(t *testing.T) {
+	p := setup(t, applyBase)
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bak, err := Apply(p, replace(`"m/b"`, `"m/a"`), applyOpts("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{p, bak} {
+		if st, _ := os.Stat(f); st.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v", f, st.Mode().Perm())
+		}
+	}
+}
+
+func TestApplyWritesThroughSymlink(t *testing.T) {
+	real, _ := filepath.EvalSymlinks(setup(t, applyBase))
+	link := filepath.Join(t.TempDir(), "link.toml")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	bak, err := Apply(link, replace(`"m/b"`, `"m/a"`), applyOpts("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Lstat(link); st.Mode()&os.ModeSymlink == 0 {
+		t.Error("link replaced by a regular file")
+	}
+	if b, _ := os.ReadFile(real); !strings.Contains(string(b), `"m/a"`) {
+		t.Errorf("target not edited: %s", b)
+	}
+	if filepath.Dir(bak) != filepath.Dir(real) || !strings.HasPrefix(bak, real+".bak-") {
+		t.Errorf("backup %q not beside the target %q", bak, real)
+	}
+}
+
+func TestApplyRefusesNewUnknownKey(t *testing.T) {
+	p := setup(t, applyBase)
+	_, err := Apply(p, replace("[profile.slots]", "[profile.slotz]"), applyOpts("alpha"))
+	if err == nil {
+		t.Fatal("want refusal")
+	}
+	assertUntouched(t, p, applyBase)
+}
+
+func TestApplyKeepsExistingUnknownKey(t *testing.T) {
+	src := "[[profiles]]\nname = \"x\"\n\n" + applyBase
+	p := setup(t, src)
+	if _, err := Apply(p, replace(`"m/b"`, `"m/a"`), applyOpts("alpha")); err != nil {
+		t.Fatalf("a pre-existing unknown key must not block an edit: %v", err)
+	}
+}
+
+func TestApplyWhenExistingFileDoesNotParseTreatsBeforeAsEmpty(t *testing.T) {
+	broken := "[profile.slots\n"
+	p := setup(t, broken)
+	bak, err := Apply(p, func([]byte) ([]byte, error) { return []byte(applyBase), nil }, applyOpts("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(bak); string(b) != broken {
+		t.Errorf("backup = %q", b)
+	}
+}
+
+func TestApplyNilNowUsesClock(t *testing.T) {
+	p := setup(t, applyBase)
+	o := applyOpts("alpha")
+	o.Now = nil
+	bak, err := Apply(p, replace(`"m/b"`, `"m/a"`), o)
+	rp, _ := filepath.EvalSymlinks(p)
+	if err != nil || !strings.HasPrefix(bak, rp+".bak-") {
+		t.Fatalf("bak=%q err=%v", bak, err)
 	}
 }

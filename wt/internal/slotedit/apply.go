@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -32,8 +33,17 @@ type profKey struct{ agent, name string }
 // Apply refuses, leaving the file untouched and writing no backup, when the
 // new text does not parse; Target is not usable; a slot of Target names an id
 // outside ModelIDs; a profile still present (matched by agent and name) was
-// usable before and is not now; or Unknown has more keys than before.
+// usable before and is not now; or Unknown gains a key it did not have before.
 func Apply(path string, edit func([]byte) ([]byte, error), o Options) (backup string, err error) {
+	// Write through a symlink and keep the file's mode: WriteFileAtomic
+	// renames over its path, which would replace a link and reset the mode.
+	mode := os.FileMode(0o644)
+	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
+		path = resolved
+		if st, serr := os.Stat(path); serr == nil {
+			mode = st.Mode().Perm()
+		}
+	}
 	old, err := os.ReadFile(path)
 	existed := err == nil
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -56,11 +66,11 @@ func Apply(path string, edit func([]byte) ([]byte, error), o Options) (backup st
 		return "", err
 	}
 	if existed {
-		if backup, err = writeBackup(path, old, o); err != nil {
+		if backup, err = writeBackup(path, old, mode, o); err != nil {
 			return "", err
 		}
 	}
-	if err := config.WriteFileAtomic(path, newData, 0o644); err != nil {
+	if err := config.WriteFileAtomic(path, newData, mode); err != nil {
 		if backup != "" {
 			_ = os.Remove(backup)
 		}
@@ -95,21 +105,30 @@ func check(before, after profiles.SlotStore, o Options) error {
 			}
 		}
 		if usableBefore[profKey{p.Agent, p.Name}] && (!c.Usable || c.Err != nil) {
-			return fmt.Errorf("edit would make profile %q unusable: %v", p.Name, c.Err)
+			if c.Err == nil {
+				return fmt.Errorf("edit would make profile %q unusable", p.Name)
+			}
+			return fmt.Errorf("edit would make profile %q unusable: %w", p.Name, c.Err)
 		}
 	}
 	if o.Target != "" && !targetFound {
 		return fmt.Errorf("profile %q is not in the edited file", o.Target)
 	}
-	if len(after.Unknown) > len(before.Unknown) {
-		return fmt.Errorf("edit adds unknown keys: %v", after.Unknown)
+	var added []string
+	for _, k := range after.Unknown {
+		if !slices.Contains(before.Unknown, k) {
+			added = append(added, k)
+		}
+	}
+	if len(added) > 0 {
+		return fmt.Errorf("edit adds unknown keys: %v", added)
 	}
 	return nil
 }
 
 // writeBackup copies old to a fresh <path>.bak-<stamp> file, never
 // overwriting an existing one.
-func writeBackup(path string, old []byte, o Options) (string, error) {
+func writeBackup(path string, old []byte, mode os.FileMode, o Options) (string, error) {
 	now := time.Now
 	if o.Now != nil {
 		now = o.Now
@@ -120,14 +139,17 @@ func writeBackup(path string, old []byte, o Options) (string, error) {
 		if n > 1 {
 			name = fmt.Sprintf("%s-%d", base, n)
 		}
-		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
 		if err != nil {
 			return "", err
 		}
-		_, werr := f.Write(old)
+		werr := f.Chmod(mode) // O_CREATE honors the umask; the backup keeps the file's mode
+		if werr == nil {
+			_, werr = f.Write(old)
+		}
 		if cerr := f.Close(); werr == nil {
 			werr = cerr
 		}
