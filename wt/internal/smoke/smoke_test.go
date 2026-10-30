@@ -1221,3 +1221,81 @@ func TestCandidatesNeverIncludeASlotProfile(t *testing.T) {
 		}
 	}
 }
+
+// TestToolPromptNonceIsOnlyInTheLastFile pins that the tool check's sentinel
+// is absent from the prompt, appears in exactly one planted file, and that the
+// files form one chain from smoke-nonce.txt to it. It matters because a prompt
+// that holds its own sentinel passes on an echo (#193), and a chain with a
+// break or a second copy of the sentinel would pass without the agent reading
+// every hop.
+func TestToolPromptNonceIsOnlyInTheLastFile(t *testing.T) {
+	for _, hops := range []int{1, 2, 4} {
+		prompt, sentinel, files := ToolPrompt("claude", hops)
+		if strings.Contains(prompt, sentinel) {
+			t.Fatalf("hops=%d: prompt %q contains the sentinel %q", hops, prompt, sentinel)
+		}
+		if len(files) != hops {
+			t.Fatalf("hops=%d: planted %d files", hops, len(files))
+		}
+		if _, other, _ := ToolPrompt("claude", hops); other == sentinel {
+			t.Fatalf("hops=%d: two calls returned the same sentinel", hops)
+		}
+		dir, err := WithFiles(FixedDir(t.TempDir()), files)()
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := nonceFile
+		for step := 1; ; step++ {
+			got, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("hops=%d step %d: %v", hops, step, err)
+			}
+			next, ok := strings.CutPrefix(strings.TrimSpace(string(got)), "next: ")
+			if !ok {
+				if step != hops || strings.TrimSpace(string(got)) != sentinel {
+					t.Fatalf("hops=%d: chain ended at step %d with %q", hops, step, got)
+				}
+				break
+			}
+			if strings.Contains(string(got), sentinel) {
+				t.Fatalf("hops=%d: a pointer file holds the sentinel", hops)
+			}
+			name = next
+		}
+	}
+}
+
+// TestRunRowEmptyResponseIsNamed pins that a row whose agent exits 0 with no
+// output fails as an empty response rather than a bare missing sentinel. It
+// matters because an empty reply after a tool call is a distinct failure
+// from a wrong reply, and the report should say which one happened.
+func TestRunRowEmptyResponseIsNamed(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{Output: " \n"})
+	r := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "p/m"}, "p", "SENTINEL", time.Second, FixedDir(t.TempDir()), nil)
+	if r.Status != StatusFail || r.Err == nil || !strings.Contains(r.Err.Error(), "empty response") {
+		t.Fatalf("status=%v err=%v; want FAIL with an empty-response error", r.Status, r.Err)
+	}
+}
+
+// TestSentinelInAcceptsAnyCaseWhenThePromptCannotEchoIt pins the two
+// halves of the sentinel match. A case-insensitive match is allowed only
+// where the prompt itself cannot produce one by echo: the tool check's nonce
+// lives in a file, so a model that reproduces it in a different case still
+// read it and must pass. The default prompt carries the sentinel's text in
+// the opposite case, so an echo of it must still not pass (#193).
+func TestSentinelInAcceptsAnyCaseWhenThePromptCannotEchoIt(t *testing.T) {
+	toolPrompt, toolSentinel, _ := ToolPrompt("claude", 1)
+	if !sentinelIn("the value is "+strings.ToUpper(toolSentinel), toolPrompt, toolSentinel) {
+		t.Error("a nonce reproduced in a different case did not match: the tool prompt cannot echo it")
+	}
+	if !sentinelIn("the value is "+toolSentinel, toolPrompt, toolSentinel) {
+		t.Error("the exact nonce did not match")
+	}
+	defPrompt, defSentinel := DefaultPrompt("claude", "run-abcd1234")
+	if sentinelIn(strings.ToLower(defSentinel), defPrompt, defSentinel) {
+		t.Error("the echoed prompt matched the default sentinel: the #193 false PASS is back")
+	}
+	if !sentinelIn(defSentinel, defPrompt, defSentinel) {
+		t.Error("the default sentinel did not match its own reply")
+	}
+}

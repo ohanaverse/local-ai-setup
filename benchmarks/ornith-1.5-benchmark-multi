@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/bash
+#!/usr/bin/env bash
 # ornith-1.5-benchmark-multi — Run ornith-1.5-benchmark N times
 #
 # Usage:

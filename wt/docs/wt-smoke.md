@@ -36,6 +36,20 @@ wt smoke <model-id> --cwd        # run the agents in the current directory
   permission bypassed** (see "Tool-use permission" below) — an override
   prompt therefore runs whatever it asks for unsupervised, in a temporary
   directory by default and in your checkout with `--cwd`.
+- `--tools` — check tool calling. Each row's temporary directory gets a file
+  (`smoke-nonce.txt`) holding a random value, and the prompt asks the agent to
+  read it with a tool and reply with its contents. The value is never in the
+  prompt, so only a real tool call plus a result round trip passes; a model that
+  answers text prompts but breaks on tool calls fails (a row that produced no
+  output at all is named `empty response`). The reply is matched ignoring
+  case, since the nonce is in a file and the prompt cannot echo it. Not
+  combinable with `--prompt` (no nonce to verify) or `--cwd` (the file is
+  written only into a temporary directory).
+- `--hops N` — with `--tools`, chain N dependent reads (1–10, default 1). Every
+  file but the last says `next: <file>` with a random name; the nonce is in the
+  last. The agent needs N tool calls in a row, each fed by the previous result,
+  which exercises the multi-turn tool-result path a single read does not.
+  `--hops` on its own is an error: it changes nothing without `--tools`.
 - `--cwd` — run each agent in the current directory. Without it every row
   runs in its own fresh temporary git repository, removed when the row ends
   (see "Tool-use permission").

@@ -89,6 +89,8 @@ func smokeCmd(a *app) *cobra.Command {
 		},
 	}
 	cmd.Flags().String("prompt", "", "Override the default sentinel prompt (weakens verification to exit-code-only)")
+	cmd.Flags().Bool("tools", false, "Ask each agent to read a nonce file with a tool call (catches models that cannot call tools; not with --cwd or --prompt)")
+	cmd.Flags().Int("hops", 1, "With --tools, chain this many dependent file reads (each file names the next)")
 	cmd.Flags().Duration("timeout", 0, "Per-agent timeout (default 3m for cloud models, 15m for local)")
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
@@ -97,6 +99,45 @@ func smokeCmd(a *app) *cobra.Command {
 
 // errSmokeInterrupted is what runSmoke returns for a run Ctrl+C cut short.
 var errSmokeInterrupted = errors.New("interrupted")
+
+// smokeToolFlags is the validated combination of the flags that decide what
+// a row asks the agent to do: the tool-call check, how many dependent reads
+// it chains, and the prompt override.
+type smokeToolFlags struct {
+	toolCheck bool
+	hops      int
+	prompt    string
+}
+
+// validateSmokeToolFlags checks the --tools/--hops/--prompt/--cwd
+// combination and returns it. It runs before anything else in a smoke run:
+// these are usage errors, known without a model, and a usage error must not
+// cost the user an interactive model pick (or a model start) first.
+func validateSmokeToolFlags(cmd *cobra.Command) (smokeToolFlags, error) {
+	f := smokeToolFlags{
+		toolCheck: mustGetBool(cmd, "tools"),
+		hops:      mustGetInt(cmd, "hops"),
+		prompt:    mustGetString(cmd, "prompt"),
+	}
+	inPlace := mustGetBool(cmd, "cwd")
+	if f.toolCheck && inPlace {
+		return f, errors.New("--tools and --cwd are mutually exclusive: the nonce file is written into the row's temporary directory, never your checkout")
+	}
+	if f.toolCheck && f.prompt != "" {
+		return f, errors.New("--tools and --prompt are mutually exclusive: a custom prompt has no nonce to verify")
+	}
+	// The range is checked first: an out-of-range value is wrong whatever
+	// else is on the command line.
+	if f.hops < 1 || f.hops > 10 {
+		return f, fmt.Errorf("--hops %d: must be between 1 and 10", f.hops)
+	}
+	// --hops is meaningful only with --tools: on its own it changes nothing.
+	// Flag.Changed tells an explicit --hops 1 apart from the default.
+	if cmd.Flags().Changed("hops") && !f.toolCheck {
+		return f, errors.New("--hops needs --tools")
+	}
+	return f, nil
+}
 
 // smokeSignalCtx is a test seam over signal.NotifyContext, as startSignalCtx
 // is for the start step: the context the rows run under, cancelled by Ctrl+C
@@ -112,6 +153,15 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	if a.cfgErr != nil {
 		return false, configError(a.cfgErr)
 	}
+
+	// Flag validation comes before the model is resolved: these are usage
+	// errors, knowable without a model, and a usage error must not cost the
+	// user an interactive model pick first.
+	toolFlags, err := validateSmokeToolFlags(cmd)
+	if err != nil {
+		return false, err
+	}
+	toolCheck, hops, promptOverride := toolFlags.toolCheck, toolFlags.hops, toolFlags.prompt
 
 	var modelID string
 	if len(args) > 0 {
@@ -131,7 +181,6 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 		return false, err
 	}
 
-	promptOverride := mustGetString(cmd, "prompt")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	// Validate only an explicit value: the unset flag is 0, meaning "pick the
 	// default for this model's location".
@@ -224,8 +273,11 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
 	for _, agentName := range agentsToRun {
-		prompt, sentinel := promptOverride, ""
-		if promptOverride == "" {
+		prompt, sentinel, planted := promptOverride, "", map[string]string(nil)
+		switch {
+		case toolCheck:
+			prompt, sentinel, planted = smoke.ToolPrompt(agentName, hops)
+		case promptOverride == "":
 			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
 		}
 		logSmokeStart(stderr, agentName, m.ID)
@@ -264,6 +316,9 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 				rowDirs = append(append(rowDirs, dir), smoke.AgentStateDirs(agentName, dir)...)
 				return dir, nil
 			}
+		}
+		if planted != nil {
+			rowDir = smoke.WithFiles(rowDir, planted)
 		}
 		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
 		removeRowDir()

@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/bash
+#!/usr/bin/env bash
 # qwen3.8-benchmark-multi — Run qwen3.8-benchmark N times and aggregate results
 #
 # Usage:

@@ -918,3 +918,105 @@ func TestSmokeInheritsTheRootCwdFlag(t *testing.T) {
 		t.Errorf("--cwd usage %q does not say what it does for wt smoke (runs in the current directory)", f.Usage)
 	}
 }
+
+// TestSmokeToolFlagConflicts pins the usage errors the --tools/--hops flags
+// must refuse before anything runs: --tools needs a temporary directory for
+// its nonce file and a prompt it controls, and --hops is meaningless without
+// it. It matters because a conflict caught only after the model picker opens
+// costs the user an interactive round trip before telling them the run could
+// never have worked.
+func TestSmokeToolFlagConflicts(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"tools with cwd", []string{"--tools", "--cwd"}, "mutually exclusive"},
+		{"tools with prompt", []string{"--tools", "--prompt", "say ok"}, "mutually exclusive"},
+		{"hops without tools", []string{"--hops", "2"}, "needs --tools"},
+		{"hops out of range", []string{"--tools", "--hops", "11"}, "between 1 and 10"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := smokeFixtureConfig(t)
+			oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
+			t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY, smokeExit = oldRel, oldPick, oldTTY, oldExit })
+			releaseSession = func() {}
+			runStopPicker = func(*config.Config) {}
+			stdinTTY = func() bool { return false }
+			smokeExit = func(int) {}
+
+			cmd := smokeCmd(&app{cfg: cfg})
+			// A bare smokeCmd has no parent, so --cwd is registered here.
+			cmd.Flags().Bool("cwd", false, "")
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(c.args)
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("err = nil, want a %q error", c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, c.want)
+			}
+		})
+	}
+}
+
+// TestSmokeToolsPlantsTheNonceInTheRowDirectory pins the --tools wiring
+// end to end: the row's temporary directory holds the nonce file the prompt
+// names, and the prompt never carries the nonce itself. It matters because
+// the whole check rests on those two facts — the nonce in the file is what
+// forces a tool call, and its absence from the prompt is what stops an agent
+// that echoes its prompt from passing without reading anything.
+func TestSmokeToolsPlantsTheNonceInTheRowDirectory(t *testing.T) {
+	cfg := smokeFixtureConfig(t)
+	stubEnsureRoute(t)
+	oldRel, oldPick, oldTTY, oldExit := releaseSession, runStopPicker, stdinTTY, smokeExit
+	t.Cleanup(func() { releaseSession, runStopPicker, stdinTTY, smokeExit = oldRel, oldPick, oldTTY, oldExit })
+	releaseSession = func() {}
+	runStopPicker = func(*config.Config) {}
+	stdinTTY = func() bool { return false }
+	smokeExit = func(int) {}
+
+	var prompt, dir string
+	var files map[string]string
+	t.Cleanup(smoke.SetBuildAndRunForTest(func(_ *config.Config, _ string, _ config.Model, p string, cwd string, _ time.Duration, _ smoke.ProfileApplier, cleanup *func() error) smoke.ExecOutcome {
+		prompt, dir = p, cwd
+		files = map[string]string{}
+		entries, err := os.ReadDir(cwd)
+		if err != nil {
+			t.Errorf("reading the row directory: %v", err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(cwd, e.Name()))
+			if err != nil {
+				t.Errorf("reading %s: %v", e.Name(), err)
+				continue
+			}
+			files[e.Name()] = string(b)
+		}
+		*cleanup = func() error { return nil }
+		return smoke.StubOutcome("ok", 0)
+	}))
+
+	if _, _, err := runSmokeCmd(&app{cfg: cfg}, "ollama/qwen3.8:27b-mlx", "--tools"); err != nil {
+		t.Fatal(err)
+	}
+	if dir == "" {
+		t.Fatal("no row ran")
+	}
+	content, ok := files["smoke-nonce.txt"]
+	if !ok {
+		t.Fatalf("the row directory holds %v, want smoke-nonce.txt", files)
+	}
+	if !strings.Contains(prompt, "smoke-nonce.txt") {
+		t.Errorf("the prompt %q does not name the nonce file", prompt)
+	}
+	if strings.Contains(prompt, strings.TrimSpace(content)) {
+		t.Errorf("the prompt %q carries the nonce %q: the check must require a tool call", prompt, content)
+	}
+}

@@ -1,6 +1,12 @@
-#!/opt/homebrew/bin/bash
+#!/usr/bin/env bash
 # benchmark-common.sh — shared helpers for the qwen3.8-benchmark and
 # ornith-1.5-benchmark scripts. Sourced, not executed directly.
+#
+# Bash 4+ is required (this file and the sourcing scripts declare associative
+# arrays). macOS ships bash 3.2, so the guard below turns an opaque
+# "declare: -A: invalid option" into a message naming the fix. This file is
+# sourced before the sourcing scripts declare their own arrays, so the guard
+# covers them too.
 #
 # Expects the sourcing script to have already set MAX_TOKENS and PROMPT
 # (used by build_payload), and to set OUTFILE before calling run_streaming
@@ -12,6 +18,11 @@
 # more than one positional arg after the model (e.g. a draft-model repo);
 # every current backend leaves it unset, which isolate_one treats as no
 # extra args.
+
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    echo "[setup] error: bash 4+ required (found ${BASH_VERSION:-unknown}); run: brew install bash" >&2
+    exit 1
+fi
 
 BENCHMARK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLMBENCH_DIR="$(cd "$BENCHMARK_LIB_DIR/../../llmbench" && pwd)"

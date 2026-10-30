@@ -176,11 +176,13 @@ This section captures the bugs hit while getting the benchmark to work, so futur
 
 **Cause**: macOS ships `/bin/bash` as version 3.2.57, which predates bash 4.0 (released 2009). Associative arrays require 4.0+.
 
-**Fix**: Changed shebang to `/opt/homebrew/bin/bash` (Homebrew's bash 5.3).
+**Fix**: The shebang is `#!/usr/bin/env bash`, which resolves to Homebrew's bash 5.3 when that formula is installed (`brew install bash`). It was `/opt/homebrew/bin/bash` first, which hardcoded an Apple-Silicon Homebrew prefix and failed with `bad interpreter` on a machine without the formula.
 
 ```bash
-#!/opt/homebrew/bin/bash   # not /bin/bash
+#!/usr/bin/env bash   # not /bin/bash — needs bash 4+
 ```
+
+`benchmarks/lib/benchmark-common.sh` guards the version: under bash 3.2 it prints `bash 4+ required … run: brew install bash` and exits, instead of `declare: -A: invalid option`.
 
 ### 2. `declare -A X=(...)` doesn't reliably register string keys
 

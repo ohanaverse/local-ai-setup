@@ -413,11 +413,32 @@ func realBuildAndRun(ctx context.Context, cfg *config.Config, agentName string, 
 	}
 }
 
+// sentinelIn reports whether output contains the sentinel the prompt asked
+// for.
+//
+// The exact match comes first. A case-insensitive match is accepted only when
+// the prompt itself cannot produce one by echo: the default prompt carries
+// the sentinel's text in the opposite case (it asks the model to upper-case
+// it), so an agent that merely prints the prompt back would satisfy a
+// case-insensitive search — the false PASS #193 is about. A prompt that
+// never carries the sentinel (the tool check's nonce, which lives only in a
+// file) gains nothing from that guard, and a model that reproduces the nonce
+// in a different case still read it.
+func sentinelIn(output, prompt, sentinel string) bool {
+	if strings.Contains(output, sentinel) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(prompt), strings.ToLower(sentinel)) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(output), strings.ToLower(sentinel))
+}
+
 // RunRow runs agentName's one-shot prompt against model m and classifies
-// the result. sentinel is the exact string the default prompt asked the
-// model to produce (DefaultPrompt); pass "" when prompt was overridden by the caller (a
-// custom prompt was never asked to produce a sentinel), which degrades
-// verification to "exited 0 within timeout".
+// the result. sentinel is the exact string the prompt asked the model to
+// produce (DefaultPrompt, or ToolPrompt's nonce); pass "" when prompt was
+// overridden by the caller (a custom prompt was never asked to produce a
+// sentinel), which degrades verification to "exited 0 within timeout".
 //
 // profileApplier, when non-nil, is called after the launch command is built
 // but before execution to apply a local-model profile overlay (env, args,
@@ -478,13 +499,29 @@ func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.
 		res.Err = fmt.Errorf("exit code %d", out.ExitCode)
 		return res
 	}
-	if sentinel != "" && !strings.Contains(out.Output, sentinel) {
+	if sentinel != "" && !sentinelIn(out.Output, prompt, sentinel) {
 		res.Status = StatusFail
-		res.Err = fmt.Errorf("sentinel %q not found in output", sentinel)
+		if strings.TrimSpace(out.Output) == "" {
+			// A blank capture is a distinct failure from a wrong reply: the
+			// agent said nothing at all, which is what a model that cannot
+			// call a tool usually does.
+			res.Err = fmt.Errorf("empty response: sentinel %q not found", sentinel)
+		} else {
+			res.Err = fmt.Errorf("sentinel %q not found in output", sentinel)
+		}
 		return res
 	}
 	res.Status = StatusPass
 	return res
+}
+
+// randomHex returns n random bytes as a lowercase hex string. crypto/rand
+// never fails on the platforms wt runs on; a short read would only make the
+// value less unique, never wrong, so the error is ignored as elsewhere.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%x", b)
 }
 
 // NewRunID generates a run id for correlating one wt smoke invocation's
@@ -493,9 +530,7 @@ func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.
 // filter redacts — mirroring agents-smoke.sh's md5-based id for the same
 // reason.
 func NewRunID() string {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("run-%x", b)
+	return "run-" + randomHex(4)
 }
 
 // DefaultPrompt returns the smoke prompt and the sentinel RunRow should look
@@ -514,6 +549,60 @@ func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
 	sentinel = strings.ToUpper(text)
 	prompt = fmt.Sprintf("Reply with exactly this text converted to upper case and nothing else: %s", text)
 	return prompt, sentinel
+}
+
+// nonceFile is the file ToolPrompt asks the agent to read first.
+const nonceFile = "smoke-nonce.txt"
+
+// ToolPrompt returns a prompt that only real tool calls can satisfy, the
+// sentinel RunRow should look for, and the files to plant (see WithFiles).
+// The sentinel is random and lives only in the last file, never in the
+// prompt, so neither an echoed prompt nor a guess can produce it: the agent
+// must call its file-reading tool and carry the result into its reply.
+//
+// With hops > 1 each file but the last names the next one ("next: <file>"),
+// the names being random, so the agent needs hops dependent tool calls in a
+// row, each fed by the previous result: the multi-turn shape a single read
+// does not exercise.
+func ToolPrompt(agentName string, hops int) (prompt, sentinel string, files map[string]string) {
+	hops = max(hops, 1)
+	rnd := func() string { return randomHex(6) }
+	sentinel = fmt.Sprintf("wt-nonce-%s-%s", agentName, rnd())
+	names := []string{nonceFile}
+	for i := 1; i < hops; i++ {
+		names = append(names, fmt.Sprintf("part-%s.txt", rnd()))
+	}
+	files = make(map[string]string, hops)
+	for i, name := range names {
+		if i == hops-1 {
+			files[name] = sentinel + "\n"
+		} else {
+			files[name] = fmt.Sprintf("next: %s\n", names[i+1])
+		}
+	}
+	if hops == 1 {
+		prompt = fmt.Sprintf("Use a tool to read the file %s in the current directory. Reply with exactly the file's contents and nothing else.", nonceFile)
+	} else {
+		prompt = fmt.Sprintf("Use a tool to read the file %s in the current directory. Each file you read either names the next file to read (\"next: <file>\") or holds the final value. Keep reading until you reach the final value, then reply with exactly that value and nothing else.", nonceFile)
+	}
+	return prompt, sentinel, files
+}
+
+// WithFiles wraps rd so the directory it yields holds files (name to
+// content), written before the agent starts.
+func WithFiles(rd RowDir, files map[string]string) RowDir {
+	return func() (string, error) {
+		dir, err := rd()
+		if err != nil {
+			return "", err
+		}
+		for name, content := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+				return "", err
+			}
+		}
+		return dir, nil
+	}
 }
 
 // rowDirPrefix starts the name of every directory NewRowDir creates.
