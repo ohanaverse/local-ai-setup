@@ -481,6 +481,9 @@ func RunRow(ctx context.Context, cfg *config.Config, agentName string, m config.
 	if sentinel != "" && !strings.Contains(out.Output, sentinel) {
 		res.Status = StatusFail
 		res.Err = fmt.Errorf("sentinel %q not found in output", sentinel)
+		if strings.TrimSpace(out.Output) == "" {
+			res.Err = fmt.Errorf("empty response: sentinel %q not found", sentinel)
+		}
 		return res
 	}
 	res.Status = StatusPass
@@ -514,6 +517,37 @@ func DefaultPrompt(agentName, runID string) (prompt, sentinel string) {
 	sentinel = strings.ToUpper(text)
 	prompt = fmt.Sprintf("Reply with exactly this text converted to upper case and nothing else: %s", text)
 	return prompt, sentinel
+}
+
+// nonceFile is the file ToolPrompt asks the agent to read.
+const nonceFile = "smoke-nonce.txt"
+
+// ToolPrompt returns a prompt that only a real tool call can satisfy, the
+// sentinel RunRow should look for, and the file contents to plant (see
+// WithNonceFile). The sentinel is random and lives only in the file, never in
+// the prompt, so neither an echoed prompt nor a guess can produce it: the
+// agent must call its file-reading tool and carry the result into its reply.
+func ToolPrompt(agentName string) (prompt, sentinel, fileContent string) {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	sentinel = fmt.Sprintf("wt-nonce-%s-%x", agentName, b)
+	prompt = fmt.Sprintf("Use a tool to read the file %s in the current directory. Reply with exactly the file's contents and nothing else.", nonceFile)
+	return prompt, sentinel, sentinel + "\n"
+}
+
+// WithNonceFile wraps rd so the directory it yields holds the nonce file
+// ToolPrompt asks for, written before the agent starts.
+func WithNonceFile(rd RowDir, content string) RowDir {
+	return func() (string, error) {
+		dir, err := rd()
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, nonceFile), []byte(content), 0o600); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
 }
 
 // rowDirPrefix starts the name of every directory NewRowDir creates.

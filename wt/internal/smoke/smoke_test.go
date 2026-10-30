@@ -1221,3 +1221,40 @@ func TestCandidatesNeverIncludeASlotProfile(t *testing.T) {
 		}
 	}
 }
+
+// TestToolPromptNonceIsOnlyInTheFile pins that the tool check's sentinel is
+// absent from the prompt and present in the planted file. It matters because
+// a prompt that holds its own sentinel passes on an echo (#193), and a tool
+// check must pass only when the agent really read the file.
+func TestToolPromptNonceIsOnlyInTheFile(t *testing.T) {
+	prompt, sentinel, content := ToolPrompt("claude")
+	if strings.Contains(prompt, sentinel) {
+		t.Fatalf("prompt %q contains the sentinel %q", prompt, sentinel)
+	}
+	if !strings.Contains(content, sentinel) {
+		t.Fatalf("file content %q lacks the sentinel %q", content, sentinel)
+	}
+	if _, other, _ := ToolPrompt("claude"); other == sentinel {
+		t.Fatalf("two calls returned the same sentinel %q", sentinel)
+	}
+	dir, err := WithNonceFile(FixedDir(t.TempDir()), content)()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, nonceFile))
+	if err != nil || string(got) != content {
+		t.Fatalf("nonce file = %q, %v; want %q", got, err, content)
+	}
+}
+
+// TestRunRowEmptyResponseIsNamed pins that a row whose agent exits 0 with no
+// output fails as an empty response rather than a bare missing sentinel. It
+// matters because an empty reply after a tool call is a distinct failure
+// from a wrong reply, and the report should say which one happened.
+func TestRunRowEmptyResponseIsNamed(t *testing.T) {
+	withStubBuildAndRun(t, execOutcome{Output: " \n"})
+	r := RunRow(context.Background(), &config.Config{}, "claude", config.Model{ID: "p/m"}, "p", "SENTINEL", time.Second, FixedDir(t.TempDir()), nil)
+	if r.Status != StatusFail || r.Err == nil || !strings.Contains(r.Err.Error(), "empty response") {
+		t.Fatalf("status=%v err=%v; want FAIL with an empty-response error", r.Status, r.Err)
+	}
+}

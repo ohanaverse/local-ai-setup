@@ -89,6 +89,7 @@ func smokeCmd(a *app) *cobra.Command {
 		},
 	}
 	cmd.Flags().String("prompt", "", "Override the default sentinel prompt (weakens verification to exit-code-only)")
+	cmd.Flags().Bool("tools", false, "Ask each agent to read a nonce file with a tool call (catches models that cannot call tools; not with --cwd or --prompt)")
 	cmd.Flags().Duration("timeout", 0, "Per-agent timeout (default 3m for cloud models, 15m for local)")
 	cmd.Flags().String("only", "", "Comma-separated agents to restrict the run to")
 	cmd.Flags().Bool("json", false, "Emit machine-readable JSON instead of a table")
@@ -132,6 +133,13 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 
 	promptOverride := mustGetString(cmd, "prompt")
+	toolCheck, _ := cmd.Flags().GetBool("tools")
+	if inPlaceFlag, _ := cmd.Flags().GetBool("cwd"); toolCheck && inPlaceFlag {
+		return false, errors.New("--tools and --cwd are mutually exclusive: the nonce file is written into the row's temporary directory, never your checkout")
+	}
+	if toolCheck && promptOverride != "" {
+		return false, errors.New("--tools and --prompt are mutually exclusive: a custom prompt has no nonce to verify")
+	}
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	// Validate only an explicit value: the unset flag is 0, meaning "pick the
 	// default for this model's location".
@@ -224,8 +232,11 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 
 	rows := make([]smoke.RowResult, 0, len(agentsToRun))
 	for _, agentName := range agentsToRun {
-		prompt, sentinel := promptOverride, ""
-		if promptOverride == "" {
+		prompt, sentinel, nonce := promptOverride, "", ""
+		switch {
+		case toolCheck:
+			prompt, sentinel, nonce = smoke.ToolPrompt(agentName)
+		case promptOverride == "":
 			prompt, sentinel = smoke.DefaultPrompt(agentName, runID)
 		}
 		logSmokeStart(stderr, agentName, m.ID)
@@ -264,6 +275,9 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 				rowDirs = append(append(rowDirs, dir), smoke.AgentStateDirs(agentName, dir)...)
 				return dir, nil
 			}
+		}
+		if nonce != "" {
+			rowDir = smoke.WithNonceFile(rowDir, nonce)
 		}
 		r := smoke.RunRow(ctx, a.cfg, agentName, m, prompt, sentinel, timeout, rowDir, pa)
 		removeRowDir()
