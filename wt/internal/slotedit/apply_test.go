@@ -65,7 +65,7 @@ func TestApplyWritesBackupAndFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bak != p+".bak-20261030-120000" {
+	if rp, _ := filepath.EvalSymlinks(p); bak != rp+".bak-20261030-120000" {
 		t.Errorf("backup = %q", bak)
 	}
 	if b, _ := os.ReadFile(bak); string(b) != applyBase {
