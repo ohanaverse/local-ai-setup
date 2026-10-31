@@ -91,14 +91,26 @@ func mine(pid int, start string, argv []string) procInfo {
 
 func writePidfile(t *testing.T, e *env, content string) {
 	t.Helper()
-	if err := os.WriteFile(e.serverProc["mtplx"].pidfile, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writePidfileFor(t, e, "mtplx", content)
 }
 
 func writeStartRecord(t *testing.T, e *env, content string) {
 	t.Helper()
-	if err := os.WriteFile(e.serverProc["mtplx"].startfile(), []byte(content), 0o644); err != nil {
+	writeStartRecordFor(t, e, "mtplx", content)
+}
+
+// writePidfileFor writes family's pidfile (e.serverProc[family]) with content.
+func writePidfileFor(t *testing.T, e *env, family, content string) {
+	t.Helper()
+	if err := os.WriteFile(e.serverProc[family].pidfile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeStartRecordFor writes family's start record, beside its pidfile.
+func writeStartRecordFor(t *testing.T, e *env, family, content string) {
+	t.Helper()
+	if err := os.WriteFile(e.serverProc[family].startfile(), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -378,9 +390,12 @@ func loadingEnv(t *testing.T, recorded bool) (*procTable, *env) {
 	return pt, e
 }
 
-func filesLeft(e *env) (pidfile, record bool) {
-	_, perr := os.Stat(e.serverProc["mtplx"].pidfile)
-	_, rerr := os.Stat(e.serverProc["mtplx"].startfile())
+func filesLeft(e *env) (pidfile, record bool) { return filesLeftFor(e, "mtplx") }
+
+// filesLeftFor reports whether family's pidfile and start record exist.
+func filesLeftFor(e *env, family string) (pidfile, record bool) {
+	_, perr := os.Stat(e.serverProc[family].pidfile)
+	_, rerr := os.Stat(e.serverProc[family].startfile())
 	return perr == nil, rerr == nil
 }
 
@@ -897,6 +912,260 @@ func TestMtplxStopThatFailsLeavesThePidfile(t *testing.T) {
 	}
 	if pidfile, record := filesLeft(e); !pidfile || !record {
 		t.Errorf("pidfile left = %v, start record left = %v, want both left", pidfile, record)
+	}
+}
+
+// sigEnv is an env for a synthetic sushix family whose spec has no stop
+// command (Stop empty), so wt must stop it by signalling the verified pid. Its
+// server (pid 4242) answers on a real listener; the listener closes and the
+// process leaves the table when it is signalled (pt.onSignal). The pidfile
+// names 4242, and when recorded the start record says wt started it. Looking
+// up or running the binary fails the test: an empty stop must never run the
+// bare binary. It returns the table, the env, the config and the port.
+func sigEnv(t *testing.T, recorded bool) (*procTable, *env, *config.Config, int) {
+	t.Helper()
+	srv, addr := serveFree(t, chatHandler())
+	_, portStr, _ := net.SplitHostPort(addr)
+	port := mustAtoi(t, portStr)
+	spec := provider.ProcessSpec{
+		Binary: "sushix", Subcommand: "serve", PortFlag: "--port",
+		Spawn: []string{"serve", "--port", "{port}"}, Stop: nil,
+		Ready:         provider.Ready{Kind: provider.ReadyHTTP, Path: "/health"},
+		WarmupSeconds: 5,
+	}
+	stubFamily(t, "sushix", spec, provider.FamilySpec{Name: "sushix", Tenancy: provider.Exclusive, Scope: provider.ScopePort, Process: &spec}, port)
+	pt := &procTable{procs: map[int]procInfo{4242: mine(4242, "100.5", []string{"/opt/homebrew/bin/sushix", "serve", "--port", portStr, "--host", "127.0.0.1"})}}
+	pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) {
+		srv.Close()
+		delete(pt.procs, 4242)
+	}
+	e := pt.env(t)
+	dir := t.TempDir()
+	e.serverProc["sushix"] = pidProcess{name: "sushix", pidfile: filepath.Join(dir, "sushix.pid"), logfile: filepath.Join(dir, "sushix.log")}
+	e.lookPath = func(string) (string, error) {
+		t.Fatal("the binary must never be looked up or run")
+		return "", nil
+	}
+	e.run = func(context.Context, string, ...string) ([]byte, error) {
+		t.Fatal("the binary must never be looked up or run")
+		return nil, nil
+	}
+	writePidfileFor(t, e, "sushix", "4242")
+	if recorded {
+		writeStartRecordFor(t, e, "sushix", `{"pid":4242,"started":"100.5"}`)
+	}
+	return pt, e, provCfg("sushix", "http://"+addr+"/v1"), port
+}
+
+// TestEmptyStopSignalsTheVerifiedPid verifies a family with no stop command
+// is stopped by SIGTERM to the group of the server wt started and verified,
+// that the port is closed afterwards, and that the pidfile and start record
+// go once it is gone. Running the bare binary instead would start a server,
+// not stop one.
+func TestEmptyStopSignalsTheVerifiedPid(t *testing.T) {
+	pt, e, cfg, port := sigEnv(t, true)
+	if pidfile, record := filesLeftFor(e, "sushix"); !pidfile || !record {
+		t.Fatalf("precondition: pidfile = %v, start record = %v, want both", pidfile, record)
+	}
+	if err := (processServer{"sushix"}).stop(context.Background(), e, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pt.signals, []string{"-4242:15"}) {
+		t.Errorf("signals = %v, want [-4242:15]", pt.signals)
+	}
+	if responded, _ := e.probe(context.Background(), fmt.Sprintf("http://127.0.0.1:%d/v1/models", port), time.Second); responded {
+		t.Error("port still answers after the stop")
+	}
+	if pidfile, record := filesLeftFor(e, "sushix"); pidfile || record {
+		t.Errorf("pidfile left = %v, start record left = %v, want both removed", pidfile, record)
+	}
+}
+
+// TestEmptyStopWithPidOnlyPidfileSignalsThePid verifies a pidfile with no
+// start record (llmbench's, or an older wt's) is stopped by signalling the
+// pid alone once its argv and port check out. A documented consequence: `wt
+// stop` also stops a llmbench-started sushi, without start-time protection
+// against pid reuse (the argv and port checks still apply).
+func TestEmptyStopWithPidOnlyPidfileSignalsThePid(t *testing.T) {
+	pt, e, cfg, _ := sigEnv(t, false)
+	if pidfile, _ := filesLeftFor(e, "sushix"); !pidfile {
+		t.Fatal("precondition: no pidfile")
+	}
+	if err := (processServer{"sushix"}).stop(context.Background(), e, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pt.signals, []string{"4242:15"}) {
+		t.Errorf("signals = %v, want [4242:15]", pt.signals)
+	}
+	if pidfile, _ := filesLeftFor(e, "sushix"); pidfile {
+		t.Error("pidfile left after a confirmed stop")
+	}
+}
+
+// TestEmptyStopNeverKillsAWrongArgvPid verifies a pidfile naming a process
+// that is not a sushix server on this port (an editor whose arguments merely
+// mention it, or a server on another port) is left alone: an error, no
+// signal, and the files kept. A pid alone is never enough to signal.
+func TestEmptyStopNeverKillsAWrongArgvPid(t *testing.T) {
+	for name, argv := range map[string]func(port int) []string{
+		"editor args": func(port int) []string { return []string{"vim", "sushix", "serve", "--port", strconv.Itoa(port)} },
+		"other port":  func(port int) []string { return []string{"sushix", "serve", "--port", strconv.Itoa(port + 1)} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pt, e, cfg, port := sigEnv(t, true)
+			pt.procs[4242] = mine(4242, "100.5", argv(port))
+			err := (processServer{"sushix"}).stop(context.Background(), e, cfg)
+			if err == nil || !strings.Contains(err.Error(), "left alone") {
+				t.Fatalf("err = %v, want one saying the pid was left alone", err)
+			}
+			if len(pt.signals) != 0 {
+				t.Errorf("signals = %v, want none", pt.signals)
+			}
+			if pidfile, record := filesLeftFor(e, "sushix"); !pidfile || !record {
+				t.Errorf("pidfile left = %v, start record left = %v, want both kept", pidfile, record)
+			}
+		})
+	}
+}
+
+// TestEmptyStopRefusesAPidOfAnotherUserOrReusedStart verifies the pidfile's
+// pid is not signalled when another user owns it, or when its start time is
+// not the one wt recorded (the pid was reused by a later process).
+func TestEmptyStopRefusesAPidOfAnotherUserOrReusedStart(t *testing.T) {
+	for name, change := range map[string]func(info *procInfo){
+		"another user": func(info *procInfo) { info.uid = os.Getuid() + 1 },
+		"reused start": func(info *procInfo) { info.start = "999.9" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			pt, e, cfg, _ := sigEnv(t, true)
+			info := pt.procs[4242]
+			change(&info)
+			pt.procs[4242] = info
+			if err := (processServer{"sushix"}).stop(context.Background(), e, cfg); err == nil {
+				t.Fatal("stop = nil, want a refusal")
+			}
+			if len(pt.signals) != 0 {
+				t.Errorf("signals = %v, want none", pt.signals)
+			}
+			if pidfile, record := filesLeftFor(e, "sushix"); !pidfile || !record {
+				t.Errorf("pidfile left = %v, start record left = %v, want both kept", pidfile, record)
+			}
+		})
+	}
+}
+
+// TestEmptyStopRefusesPidOneAndWtItself verifies a pidfile naming pid 1, pid
+// 0 or wt's own pid signals nothing and returns an error: the signal helper
+// trusts its caller, so a corrupt or hostile pidfile must never reach it.
+func TestEmptyStopRefusesPidOneAndWtItself(t *testing.T) {
+	for _, content := range []string{"1", "0", strconv.Itoa(os.Getpid())} {
+		t.Run(content, func(t *testing.T) {
+			pt, e, cfg, _ := sigEnv(t, true)
+			writePidfileFor(t, e, "sushix", content)
+			if pidfile, record := filesLeftFor(e, "sushix"); !pidfile || !record {
+				t.Fatalf("precondition: pidfile = %v, start record = %v, want both", pidfile, record)
+			}
+			if err := (processServer{"sushix"}).stop(context.Background(), e, cfg); err == nil {
+				t.Fatal("stop = nil, want an error")
+			}
+			if len(pt.signals) != 0 {
+				t.Errorf("signals = %v, want none", pt.signals)
+			}
+			if pidfile, record := filesLeftFor(e, "sushix"); !pidfile || !record {
+				t.Errorf("pidfile left = %v, start record left = %v, want both kept", pidfile, record)
+			}
+		})
+	}
+}
+
+// TestEmptyStopWithoutAPidfileSaysNotStartedByWt verifies a server answering
+// on the port with no pidfile naming it is not wt's to signal: the stop is a
+// *NotStartedByWtError telling the user to stop it themselves, and nothing is
+// signalled.
+func TestEmptyStopWithoutAPidfileSaysNotStartedByWt(t *testing.T) {
+	pt, e, cfg, _ := sigEnv(t, false)
+	if err := os.Remove(e.serverProc["sushix"].pidfile); err != nil {
+		t.Fatal(err)
+	}
+	err := (processServer{"sushix"}).stop(context.Background(), e, cfg)
+	var nsw *NotStartedByWtError
+	if !errors.As(err, &nsw) || !strings.Contains(err.Error(), "not started by wt; stop it yourself") {
+		t.Fatalf("err = %v, want a *NotStartedByWtError", err)
+	}
+	if len(pt.signals) != 0 {
+		t.Errorf("signals = %v, want none", pt.signals)
+	}
+}
+
+// TestEmptyStopWithNothingRunningIsANoOp verifies a stop with no pidfile and
+// the port closed succeeds: there is nothing to stop, and stopping twice is
+// not an error.
+func TestEmptyStopWithNothingRunningIsANoOp(t *testing.T) {
+	pt, e, cfg, _ := sigEnv(t, false)
+	if err := os.Remove(e.serverProc["sushix"].pidfile); err != nil {
+		t.Fatal(err)
+	}
+	pt.onSignal(pt, 4242, syscall.SIGTERM) // the server exits: its port closes
+	if err := (processServer{"sushix"}).stop(context.Background(), e, cfg); err != nil {
+		t.Fatalf("stop = %v, want nil", err)
+	}
+	if len(pt.signals) != 0 {
+		t.Errorf("signals = %v, want none", pt.signals)
+	}
+}
+
+// TestEmptyStopEscalatesToKillOnlyTheSameProcess verifies a server that
+// ignores SIGTERM gets SIGKILL to the same group once the grace ends, only
+// because it is still the same verified process (the escalation rules of
+// TestStopLoadingMtplxKillsOnlyTheSameProcess).
+func TestEmptyStopEscalatesToKillOnlyTheSameProcess(t *testing.T) {
+	pt, e, cfg, _ := sigEnv(t, true)
+	exits := pt.onSignal
+	pt.onSignal = func(pt *procTable, pid int, sig syscall.Signal) {
+		if sig == syscall.SIGKILL {
+			exits(pt, pid, sig)
+		}
+	}
+	if err := (processServer{"sushix"}).stop(context.Background(), e, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pt.signals, []string{"-4242:15", "-4242:9"}) {
+		t.Errorf("signals = %v, want SIGTERM then SIGKILL to the group", pt.signals)
+	}
+}
+
+// TestEmptyStopThatLeavesThePortOpenFails verifies the stop is not reported
+// done while something still answers on the port: the verified process went,
+// but a foreign listener holds the port.
+func TestEmptyStopThatLeavesThePortOpenFails(t *testing.T) {
+	pt, e, cfg, _ := sigEnv(t, true)
+	pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) { delete(pt.procs, 4242) }
+	err := (processServer{"sushix"}).stop(context.Background(), e, cfg)
+	if err == nil || !strings.Contains(err.Error(), "still listening on port") {
+		t.Fatalf("err = %v, want still listening", err)
+	}
+}
+
+// TestNonEmptyStopStillRunsTheBinary verifies a family with a stop command
+// (mtplx) still stops through it, with its arguments, and signals nothing:
+// the empty-stop branch is for families that have none.
+func TestNonEmptyStopStillRunsTheBinary(t *testing.T) {
+	pt, e, cfg := stopEnv(t, true, func(pt *procTable, _ *env) { delete(pt.procs, 4242) })
+	var got []string
+	run := e.run
+	e.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		got = args
+		return run(ctx, name, args...)
+	}
+	if err := (processServer{"mtplx"}).stop(context.Background(), e, cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"stop", "--port", strconv.Itoa(serverPort(cfg, "mtplx")), "--grace-seconds", "10"}
+	if !slices.Equal(got, want) {
+		t.Errorf("run args = %q, want %q", got, want)
+	}
+	if len(pt.signals) != 0 {
+		t.Errorf("signals = %v, want none", pt.signals)
 	}
 }
 

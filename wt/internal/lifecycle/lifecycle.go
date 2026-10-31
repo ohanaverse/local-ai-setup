@@ -231,6 +231,25 @@ func (e *PortBusyError) Error() string {
 	return fmt.Sprintf("port %d is in use by another process — stop it before starting this model", e.Port)
 }
 
+// NotStartedByWtError means a provider stopped by signalling its pid (a
+// process family with no stop command) answers on its port, but no pidfile
+// names a process wt can verify as that server — wt never signals what it
+// cannot identify. Detail, when not empty, says what the pidfile named and why
+// it was left alone (Loading.Stray).
+type NotStartedByWtError struct {
+	Provider string
+	Port     int
+	Detail   string
+}
+
+func (e *NotStartedByWtError) Error() string {
+	msg := fmt.Sprintf("%s at port %d was not started by wt; stop it yourself", e.Provider, e.Port)
+	if e.Detail != "" {
+		msg += ": " + e.Detail
+	}
+	return msg
+}
+
 // PortlessAddressError means the registry's base_url for a process family
 // (Provider, e.g. mtplx) gives a start no address: it names no port and is
 // not a url wt puts its own on, or it does not parse. wt serves the family on

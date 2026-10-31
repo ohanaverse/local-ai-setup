@@ -389,6 +389,40 @@ func (e *env) forgetStopped(ctx context.Context, family string, id serverIdent) 
 	e.forgetServer(family, id.pid)
 }
 
+// stopByPid stops family's server — a family whose spec has no stop command —
+// by signalling the process its pidfile names, and only once loadingServer has
+// verified it (this user's own, the spec's exact argv on the provider's port,
+// the recorded start time). No verified pid: a port that does not answer is
+// nothing to stop (nil, the pidfile untouched); one that answers is a server
+// wt did not start, or cannot identify, and is left to the user
+// (*NotStartedByWtError). A signalled server must also free its port.
+func (e *env) stopByPid(ctx context.Context, cfg *config.Config, spec provider.ProcessSpec, family string) error {
+	_, models, port := serverEndpoint(cfg, family)
+	key := localmodels.FamilyAPIKey(cfg, family)
+	id, l := e.loadingServer(cfg, family)
+	if l.Err != nil {
+		return l.Err
+	}
+	if l.PID == 0 {
+		responded, timedOut := e.probeKeyed(ctx, models, key, e.stopTimeout)
+		if !responded && !timedOut {
+			return nil
+		}
+		return &NotStartedByWtError{Provider: family, Port: port, Detail: l.Stray}
+	}
+	if err := e.signalVerifiedServer(ctx, cfg, spec, family, id); err != nil {
+		return err
+	}
+	closed, err := e.portClosedWithin(ctx, models, key, e.stopTimeout)
+	if err != nil {
+		return err
+	}
+	if !closed {
+		return fmt.Errorf("%s still listening on port %d", spec.Binary, port)
+	}
+	return nil
+}
+
 // waitGone polls the process table until id's process is gone — no such pid,
 // a zombie, or a pid that now belongs to a process with another start time —
 // or the wait is over. A process that is exiting is still there. A process

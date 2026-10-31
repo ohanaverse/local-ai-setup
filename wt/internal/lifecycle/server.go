@@ -173,6 +173,12 @@ func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) err
 	if err != nil {
 		return err
 	}
+	// A family with no stop command (sushi) is stopped by signalling its
+	// verified pid. Running the binary with no arguments would start a
+	// server, not stop one, so it is neither looked up nor run.
+	if len(spec.Stop) == 0 {
+		return e.stopByPid(ctx, cfg, spec, b.family)
+	}
 	bin, lerr := e.lookPath(spec.Binary)
 	if lerr != nil {
 		return &BinaryMissingError{Binary: spec.Binary}
