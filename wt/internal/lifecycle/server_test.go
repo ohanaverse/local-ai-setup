@@ -31,6 +31,10 @@ func TestMain(m *testing.M) {
 		helperMtplx()
 		return
 	}
+	if os.Getenv("LIFECYCLE_HELPER") == "sushi" {
+		helperSushi()
+		return
+	}
 	// No test may read the real mtplx pidfile or signal a process it did not
 	// start: the production env's process seams fail and its pidfile is
 	// nowhere (TestProcessSeamsFailClosedHere).
@@ -54,6 +58,11 @@ func helperMtplx() {
 	}
 	if f := os.Getenv("LIFECYCLE_ARGV_FILE"); f != "" {
 		_ = os.WriteFile(f, []byte(strconv.Itoa(os.Getpid())+"\n"+strings.Join(args, " ")), 0o644)
+	}
+	// Opt-in, so a test can give the log a line without changing what any
+	// other mtplx test's log holds.
+	if line := os.Getenv("LIFECYCLE_HELPER_LOG_LINE"); line != "" {
+		fmt.Fprintln(os.Stderr, line)
 	}
 	switch os.Getenv("LIFECYCLE_HELPER_MODE") {
 	case "die-now":
@@ -84,6 +93,61 @@ func helperMtplx() {
 		addr = a
 	}
 	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	go func() { _ = http.Serve(l, mux) }()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM)
+	<-sig
+	os.Exit(0)
+}
+
+// helperSushi is the fake `sushi serve` process. Its argv has bare flags
+// (--no-update-check), so it scans for --port and --host instead of reading
+// flag/value pairs. It lists the one pack LIFECYCLE_SUSHI_PACK (loaded unless
+// LIFECYCLE_SUSHI_LOADED says otherwise), answers chat with
+// LIFECYCLE_HELPER_CHAT_STATUS (default 200; sushi's 503 body otherwise),
+// records each chat POST in LIFECYCLE_SUSHI_LOG, and exits 0 on SIGTERM. It
+// exits by itself after two minutes, so a test that dies before its cleanup
+// leaves no server behind.
+func helperSushi() {
+	args := os.Args[1:]
+	fmt.Fprintln(os.Stderr, "sushi helper ready") // the log tail is never empty
+	time.AfterFunc(2*time.Minute, func() { os.Exit(4) })
+	opt := map[string]string{}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--port" || args[i] == "--host" {
+			opt[strings.TrimPrefix(args[i], "--")] = args[i+1]
+		}
+	}
+	if f := os.Getenv("LIFECYCLE_ARGV_FILE"); f != "" {
+		_ = os.WriteFile(f, []byte(strconv.Itoa(os.Getpid())+"\n"+strings.Join(args, " ")), 0o644)
+	}
+	loaded := os.Getenv("LIFECYCLE_SUSHI_LOADED") != "false"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": os.Getenv("LIFECYCLE_SUSHI_PACK"), "loaded": loaded}}})
+	})
+	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if f := os.Getenv("LIFECYCLE_SUSHI_LOG"); f != "" {
+			if lf, err := os.OpenFile(f, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+				_, _ = lf.WriteString("chat\n")
+				_ = lf.Close()
+			}
+		}
+		if st, _ := strconv.Atoi(os.Getenv("LIFECYCLE_HELPER_CHAT_STATUS")); st != 0 && st != http.StatusOK {
+			w.WriteHeader(st)
+			_, _ = w.Write([]byte(`{"error":"No default model configured"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+	})
+	l, err := net.Listen("tcp", opt["host"]+":"+opt["port"])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

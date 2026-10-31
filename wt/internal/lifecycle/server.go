@@ -146,17 +146,36 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	}()
 	report(StageWaiting)
 	if err = e.waitReady(ctx, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
-		if tail := proc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
-			err = fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
-		}
-		return err
+		return withLogTail(proc, err)
 	}
 	report(StageWarming)
 	budget, berr := warmupBudget(spec)
 	if berr != nil {
 		return berr
 	}
-	return e.warmupFor(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, budget, budget)
+	// An http-get server (sushi) is ready before any model is: the pack is
+	// checked against its list first, and a failure here shows its log tail.
+	// Other families' warmup errors read as they always have.
+	httpReady := spec.Ready.Kind == provider.ReadyHTTP
+	if httpReady {
+		if err = e.requirePackListed(ctx, b.family, models, t.ModelName, key); err != nil {
+			return withLogTail(proc, err)
+		}
+	}
+	err = e.warmupFor(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, budget, budget)
+	if err != nil && httpReady {
+		return withLogTail(proc, err)
+	}
+	return err
+}
+
+// withLogTail appends the server's log tail to a failed start's err, unless
+// the start was cancelled (the server did not fail) or the log is empty.
+func withLogTail(proc pidProcess, err error) error {
+	if tail := proc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
+	}
+	return err
 }
 
 // warmupBudget is the spec's warmup time: the whole warmup window and the cap
