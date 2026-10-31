@@ -13,6 +13,10 @@ are shared via llmbench.benchmark._routes.
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,11 +29,12 @@ from llmbench.benchmark._routes import (
     openrouter_key,
 )
 from llmbench.benchmark.errors import BenchmarkError
+from llmbench.benchmark.judge_core import claude_cli_env
 from llmbench.providers import lifecycle
 from llmbench.providers.secret import SecretError, provider_key
 from llmbench.registry import Registry
 
-JUDGE_ROUTES = ("litellm", "openrouter")
+JUDGE_ROUTES = ("litellm", "openrouter", "claude-cli")
 ROW_ROUTES = ("direct", "litellm", "openrouter")
 
 
@@ -375,7 +380,9 @@ def preflight(
     actually runs a judged category (its needs_judge) and passes that here,
     so the judge key is demanded only when the judge will really be called
     (a coding-only EvalPlus run never invokes it). None keeps the
-    conservative default: a judge on route=openrouter implies the key."""
+    conservative default: a judge on route=openrouter implies the key, and
+    a judge on route=claude-cli implies the claude CLI is installed and
+    logged in (checked via `claude auth status`; no OpenRouter key)."""
     if rows is None:
         rows = suite.rows
     unavailable = []
@@ -411,3 +418,41 @@ def preflight(
             f"OPENROUTER_API_KEY not found (environment or {LITELLM_PLIST}); "
             "needed for the judge and/or an openrouter row"
         )
+
+    if suite.judge.route == "claude-cli" and judge_route_active is not False:
+        _require_claude_cli_login()
+
+
+def _require_claude_cli_login() -> None:
+    """The claude-cli judge runs on the logged-in subscription: the CLI must
+    be on PATH and `claude auth status` must report loggedIn. The output
+    carries account details, so it is parsed and discarded, never echoed."""
+    executable = shutil.which("claude")
+    if executable is None:
+        raise BenchmarkError(
+            "judge route=claude-cli needs the claude CLI on PATH; install Claude Code"
+        )
+    if not _claude_logged_in(executable):
+        raise BenchmarkError(
+            "judge route=claude-cli needs a logged-in Claude subscription; run: claude auth login"
+        )
+
+
+def _claude_logged_in(executable: str) -> bool:
+    # Scrubbed env and a scratch cwd, as for the judge calls themselves, so the
+    # status reflects the subscription rather than a stray ANTHROPIC_* override.
+    try:
+        with tempfile.TemporaryDirectory(prefix="llmbench-judge-") as cwd:
+            proc = subprocess.run(
+                [executable, "auth", "status"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=cwd,
+                env=claude_cli_env(),
+                check=False,
+            )
+        status = json.loads(proc.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return isinstance(status, dict) and status.get("loggedIn") is True
