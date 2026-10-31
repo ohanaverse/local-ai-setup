@@ -37,6 +37,7 @@ type processContractEntry struct {
 	DefaultOrigin string               `toml:"default_origin"`
 	WtPort        int                  `toml:"wt_port"`
 	RestoreAction string               `toml:"restore_action"`
+	WarmupSeconds int                  `toml:"warmup_seconds"`
 	Ready         processContractReady `toml:"ready"`
 }
 
@@ -113,6 +114,7 @@ func TestProcessProvidersContractMatchesTheProviderTable(t *testing.T) {
 		str("default_origin", e.DefaultOrigin, facts.DefaultOrigin)
 		str("wt_port", strconv.Itoa(e.WtPort), strconv.Itoa(facts.WtPort))
 		str("restore_action", e.RestoreAction, "stop")
+		str("warmup_seconds", strconv.Itoa(e.WarmupSeconds), strconv.Itoa(spec.WarmupSeconds))
 
 		wantScope := "port"
 		if facts.Scope == provider.ScopeMachine {

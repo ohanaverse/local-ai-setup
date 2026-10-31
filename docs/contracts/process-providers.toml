@@ -6,7 +6,8 @@
 #
 # Argv templates (spawn, stop) follow the binary and use {model} and {port}.
 # Empty string means "absent". restore_action is what `llmbench provider
-# restore` does to the family.
+# restore` does to the family. warmup_seconds is the per-spec budget for the
+# readiness and warmup request.
 
 [[process]]
 family = "mtplx"
@@ -25,6 +26,7 @@ scope = "port"
 default_origin = "http://localhost:8003"
 wt_port = 8003
 restore_action = "stop"
+warmup_seconds = 120
 
 [process.ready]
 kind = "models-list"
@@ -51,6 +53,7 @@ scope = "machine"
 default_origin = "http://127.0.0.1:11500"
 wt_port = 11500
 restore_action = "stop"
+warmup_seconds = 120
 
 [process.ready]
 kind = "command-json"

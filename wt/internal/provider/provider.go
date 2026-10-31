@@ -139,6 +139,8 @@ const (
 	ReadyModelsList ReadyKind = "models-list"
 	// ReadyCommandJSON: a command's JSON output holds the ready value.
 	ReadyCommandJSON ReadyKind = "command-json"
+	// ReadyHTTP: an HTTP GET of Path on the server's port answers 200.
+	ReadyHTTP ReadyKind = "http-get"
 )
 
 // Ready is a family's readiness check.
@@ -147,7 +149,8 @@ type Ready struct {
 	// Command is the argv after the binary for command-json.
 	Command []string
 	// Path is a dot-separated JSON path whose scalar, rendered as text, must
-	// equal Equals ("true" for a bool).
+	// equal Equals ("true" for a bool) for command-json, or the URL path
+	// (starting with /) for http-get.
 	Path   string
 	Equals string
 	// ModelPath is the JSON path of the model the instance serves.
@@ -168,6 +171,9 @@ type ProcessSpec struct {
 	// is recognised; ModelFlag is the argv flag whose value is the model name.
 	Subcommand, DaemonModule, PortFlag, ModelFlag string
 	Ready                                         Ready
+	// WarmupSeconds is the budget in seconds for the readiness-then-warmup
+	// request (contract key warmup_seconds). It must be positive.
+	WarmupSeconds int
 }
 
 // ExpandArgs is an argv template with {model} and {port} replaced in every

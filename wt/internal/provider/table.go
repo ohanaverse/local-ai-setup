@@ -125,6 +125,7 @@ var families = map[string]FamilySpec{
 			PortFlag:       "--port",
 			ModelFlag:      "--model-id",
 			Ready:          Ready{Kind: ReadyModelsList},
+			WarmupSeconds:  120,
 		},
 	},
 	// mlx_lm_server is NoTenancy: wt cannot start it (llmbench does), so
@@ -151,6 +152,7 @@ var families = map[string]FamilySpec{
 				Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true",
 				ModelPath: "model", EndpointPath: "endpoint",
 			},
+			WarmupSeconds: 120,
 		},
 	},
 }

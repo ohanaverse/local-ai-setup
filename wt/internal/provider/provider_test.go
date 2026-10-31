@@ -55,6 +55,9 @@ func TestTableInvariants(t *testing.T) {
 			if pr.PidfileDefault == "" || pr.Subcommand == "" || pr.PortFlag == "" {
 				t.Errorf("family %q process needs PidfileDefault, Subcommand and PortFlag", f)
 			}
+			for _, p := range processSpecProblems(*pr) {
+				t.Errorf("family %q: %s", f, p)
+			}
 			// {model} is optional (rec serves one fixed model); {port} is
 			// required when wt hands the server a port.
 			if spec.WtPort != 0 && !slices.Contains(pr.Spawn, "{port}") {
@@ -62,6 +65,7 @@ func TestTableInvariants(t *testing.T) {
 			}
 			switch pr.Ready.Kind {
 			case ReadyModelsList:
+			case ReadyHTTP:
 			case ReadyCommandJSON:
 				if len(pr.Ready.Command) == 0 || pr.Ready.Path == "" {
 					t.Errorf("family %q command-json ready needs Command and Path", f)
@@ -343,6 +347,7 @@ func TestProcessSpecMtplx(t *testing.T) {
 		PortFlag:       "--port",
 		ModelFlag:      "--model-id",
 		Ready:          Ready{Kind: ReadyModelsList},
+		WarmupSeconds:  120,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ProcessFor(mtplx) = %+v, want %+v", got, want)
@@ -388,6 +393,7 @@ func TestRecRows(t *testing.T) {
 			Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true",
 			ModelPath: "model", EndpointPath: "endpoint",
 		},
+		WarmupSeconds: 120,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ProcessFor(rec) = %+v, want %+v", got, want)
@@ -449,6 +455,66 @@ func TestServedOnlyFlags(t *testing.T) {
 		}
 		if want := f == "mlx_lm_server"; spec.RunningOnly != want {
 			t.Errorf("family %q RunningOnly = %v, want %v", f, spec.RunningOnly, want)
+		}
+	}
+}
+
+// processSpecProblems lists the ways a ProcessSpec breaks the engine's
+// invariants: a non-positive warm-up budget, a malformed http-get readiness,
+// or an empty Stop (signal the verified pid) without the facts needed to find
+// that pid.
+func processSpecProblems(pr ProcessSpec) []string {
+	var out []string
+	if pr.WarmupSeconds <= 0 {
+		out = append(out, "WarmupSeconds must be positive")
+	}
+	if pr.Ready.Kind == ReadyHTTP {
+		if !strings.HasPrefix(pr.Ready.Path, "/") {
+			out = append(out, "http-get ready needs a Path starting with /")
+		}
+		if len(pr.Ready.Command) != 0 {
+			out = append(out, "http-get ready takes no Command")
+		}
+	}
+	if len(pr.Stop) == 0 && (pr.PidfileDefault == "" || pr.Subcommand == "" || pr.PortFlag == "") {
+		out = append(out, "empty Stop needs PidfileDefault, Subcommand and PortFlag")
+	}
+	return out
+}
+
+// TestProcessSpecProblems exercises processSpecProblems on synthetic specs,
+// because no table row has an http-get readiness or an empty Stop yet: the
+// invariants must reject each malformed shape before such a row exists.
+func TestProcessSpecProblems(t *testing.T) {
+	ok := ProcessSpec{
+		WarmupSeconds: 400, PidfileDefault: "/tmp/x.pid", Subcommand: "serve", PortFlag: "--port",
+		Ready: Ready{Kind: ReadyHTTP, Path: "/health"},
+	}
+	mut := func(f func(*ProcessSpec)) ProcessSpec {
+		p := ok
+		f(&p)
+		return p
+	}
+	cases := []struct {
+		name string
+		p    ProcessSpec
+		want int
+	}{
+		{"valid", ok, 0},
+		{"zero warmup", mut(func(p *ProcessSpec) { p.WarmupSeconds = 0 }), 1},
+		{"empty path", mut(func(p *ProcessSpec) { p.Ready.Path = "" }), 1},
+		{"path without slash", mut(func(p *ProcessSpec) { p.Ready.Path = "health" }), 1},
+		{"command on http-get", mut(func(p *ProcessSpec) { p.Ready.Command = []string{"status"} }), 1},
+		{"empty stop, no pidfile", mut(func(p *ProcessSpec) { p.PidfileDefault = "" }), 1},
+		{"empty stop, no subcommand or port flag", mut(func(p *ProcessSpec) { p.Subcommand, p.PortFlag = "", "" }), 1},
+		{"explicit stop needs none of them", mut(func(p *ProcessSpec) {
+			p.Stop = []string{"stop"}
+			p.PidfileDefault, p.Subcommand, p.PortFlag = "", "", ""
+		}), 0},
+	}
+	for _, c := range cases {
+		if got := processSpecProblems(c.p); len(got) != c.want {
+			t.Errorf("%s: problems = %v, want %d", c.name, got, c.want)
 		}
 	}
 }
