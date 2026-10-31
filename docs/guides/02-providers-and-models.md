@@ -2,7 +2,7 @@
 
 > Use this to: register cloud providers and local models in the shared `registry.toml` — with `wt model add`, `edit` and `rm`, or the Models tab of `wt config` — and download them with each provider's own tool. Routing through the LiteLLM proxy on :4000 follows on its own: **add a cloud model and it is routed**, and a local model is routed while it runs (an ollama model while it is pulled) — with or without a registry entry.
 >
-> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live; the Sushi block in Step 4 is written from the code and wt's docs, and the Sushi install and pull were run once on this machine while it was built, not for this guide)
 
 ## Prerequisites
 
@@ -54,7 +54,7 @@ wt model rm ollama/qwen3:8b
 wt model list                    # 3. what the registry has, and what is on disk without an entry (STATUS new)
 ```
 
-1. **`wt model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`/`rec`, a provider a model or a configured agent names, a native row per configured agent — `wt model init --help` has the full list). It never changes a row that exists, so running it again is safe. `wt model add` adds a missing default row too, in the same write as the model.
+1. **`wt model init`** creates `registry.toml` when it is missing and appends the default `[[providers]]` row for each provider it finds a use for (an installed `ollama`/`omlx`/`mtplx`/`rec`/`sushi`, a provider a model or a configured agent names, a native row per configured agent — `wt model init --help` has the full list). It never changes a row that exists, so running it again is safe. `wt model add` adds a missing default row too, in the same write as the model.
 2. **Add, edit, remove.** `wt model add <provider> <name> --family <family>` registers a model under a derived id — the id wt already shows an unregistered local model under, or `<provider>/<name>` with `/` written `--` for a cloud model — and `--id` overrides it. `wt model edit <id>` changes family, tags, location and prices, and nothing else in the row; the id, the provider and the name are fixed. `wt model rm <id>` removes the row and prints where the weights are: wt never deletes them (Step 5). The Models tab does the same from a form. Every flag and key: `wt/docs/wt-model.md`.
 3. **Routes follow by themselves.** Each command syncs the LiteLLM routes once after its write, and the tab once when you quit (Step 6). A sync that could not run is a warning; the registry change stands.
 
@@ -159,11 +159,11 @@ supports_vision = true
 
 **`id` is the route name; `model_name` is what the provider is asked for.** The LiteLLM row wt builds uses the registry `id` as its `model_name` (the client-facing id) and the provider prefix plus the registry `model_name` as the upstream model. Keep the two in agreement: when they disagree (a stale suffix left on the id, a typo in either), the route table shows exactly that — wt rebuilds its rows from the registry on every sync, so a hand-correction in `config.yaml` no longer hides the mismatch. Fix it here, in the registry entry. Renaming an `id` renames the route, so anything that references the old id (agent configs, scripts) must follow.
 
-**A local registry entry is an optional overlay** (#179). `wt` lists the local models its live inventory finds — on disk, or running — whether or not `registry.toml` names them; it probes each local provider family (ollama, omlx, mtplx, and `mlx_lm_server` for running state) the registry has a local `[[providers]]` row (`location = "local"`) or a local model for. An entry adds family, tags, cost and `model_info` to the model whose provider family and `model_name` match it (ollama: the same name, with the implicit `:latest`; omlx and mtplx: the same name with or without its `org/` prefix). Without an entry the model still appears in `wt`'s picker — status `new`, no family or tags, so any `-T`/`-F` hides it — and is routed under its discovered id, `<family>/<artifact>`: `ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` (omlx and omlx-6bit are one server and share the `omlx` prefix). An `mlx_lm_server` pairing is the exception: it cannot be discovered, so it needs its entry. An entry whose artifact is confirmed missing from disk is not listed by wt at all until you download it (Step 5); `wt model list` still shows it, with STATUS `missing`.
+**A local registry entry is an optional overlay** (#179). `wt` lists the local models its live inventory finds — on disk, or running — whether or not `registry.toml` names them; it probes each local provider family (ollama, omlx, mtplx, sushi, and `mlx_lm_server` for running state) the registry has a local `[[providers]]` row (`location = "local"`) or a local model for. An entry adds family, tags, cost and `model_info` to the model whose provider family and `model_name` match it (ollama: the same name, with the implicit `:latest`; omlx and mtplx: the same name with or without its `org/` prefix). Without an entry the model still appears in `wt`'s picker — status `new`, no family or tags, so any `-T`/`-F` hides it — and is routed under its discovered id, `<family>/<artifact>`: `ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` (omlx and omlx-6bit are one server and share the `omlx` prefix). An `mlx_lm_server` pairing is the exception: it cannot be discovered, so it needs its entry. An entry whose artifact is confirmed missing from disk is not listed by wt at all until you download it (Step 5); `wt model list` still shows it, with STATUS `missing`.
 
 Removing only the entry — deleting its block; the artifact stays on disk until you remove it with the provider's tool (Step 5) — does not unroute a model that is still on disk and running: the next sync drops the row named after the old id and writes one under the discovered id (when the two ids are equal, the row simply stays). The exception is an `mlx_lm_server` pairing: it cannot be discovered, so with its entry gone nothing names it and the next sync removes its route even while the server is still up. Convention for a new local entry: `id = "<provider family>/<model_name>"` (the family is the provider id, except that `omlx-6bit` belongs to `omlx`). With `model_name` spelled the way the provider lists the artifact, that is the id wt already gives the model without an overlay, so its usage and survey history (keyed by id) carries over when the entry is added or removed. An entry whose id spells a `/` as `--` — the shape older registries hold for a name containing `/` on every provider except mtplx and the native ones (an omlx repo name became `omlx/mlx-community--<name>`), so an older registry may hold some — works, but adding or removing it starts a separate history key.
 
-### 4. Add a model from Hugging Face (oMLX, MTPLX, mlx_lm_server; llama.cpp retired — see [provider-artifacts.md](../reference/provider-artifacts.md)), or rec's Flint
+### 4. Add a model from Hugging Face (oMLX, MTPLX, mlx_lm_server; llama.cpp retired — see [provider-artifacts.md](../reference/provider-artifacts.md)), rec's Flint, or a Sushi pack
 
 Download the artifact first (Step 5); the block is the optional overlay of Step 3, except for an `mlx_lm_server` pairing, which must have one. For oMLX and MTPLX, `wt model add omlx <model directory name> --family <family>` and `wt model add mtplx <org>/<name> --family <family>` (or `enter` on the model's `new` row in the Models tab) write the block shown, and `wt model add mlx_lm_server <target> --draft <draft> --family <family>` writes the pairing's (each side a Hugging Face repo id or a local path; the Models tab's form does not create a pairing, and edits the family, tags and prices of one that is there). `model_name` is spelled the way the provider lists the artifact, and `id` is `<provider family>/<model_name>`.
 
@@ -256,6 +256,60 @@ tags = []
 - **One instance per machine.** A rec that is already serving `flint` at the registry's address (`127.0.0.1:11500`) — one you started with `rec serve`, say — is adopted: `wt start` spawns nothing. One on another port is asked about and replaced (`rec stop` reaches it wherever it is). Keep the seeded `127.0.0.1` in `base_url`: wt compares addresses as text, so a hand-written `localhost` makes it ask to replace an instance it could have adopted.
 - **OpenAI chat completions only.** The row has no `protocols`, so it serves `openai-chat`; an agent that speaks another protocol reaches it through LiteLLM ([06-wt-agents-and-models](06-wt-agents-and-models.md) §4). An agent uses it only when it lists `rec` in its `supported_providers` (guide 06).
 
+**Sushi** — a local MLX inference server (`sushi serve`) that serves every pack under `~/.sushi/models` and loads one on the first request that names it. The pack this repo is set up for is `beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`. Packs live at `~/.sushi/models/<org>/<dir>`, and Sushi calls a pack by that exact `<org>/<dir>`. Sushi is installed from a Homebrew tap and pulled with its own tool; wt registers and runs the pack, it does not discover or download it:
+
+```bash
+brew install beamivalice/tap/sushi                                  # Sushi 1.4.1 was installed this way on this machine
+sushi pull qwen3.8-flash-next:2.75bpw                                # downloads the pack into ~/.sushi/models; sushi list shows packs and whether they fit
+sudo sysctl iogpu.wired_limit_mb=59000                              # you run this; it resets on reboot (see the wired-limit bullet)
+wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>
+wt model init                       # adds the sushi provider row once `sushi` is on PATH (`wt model add` adds it too)
+wt start sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw   # spawns `sushi serve`, waits for /health, then loads the pack
+wt stop sushi                       # signals the server wt started; Sushi has no stop command
+```
+
+<!-- UNVERIFIED — `brew install beamivalice/tap/sushi` and `sushi pull` were run once on this machine while the Sushi provider was built (about 1 s; the pull exited 0 and left the pack under ~/.sushi/models), but they were not re-run for this guide, so their output is not quoted. The pull was run as `sushi pull qwen3.8-flash-next:2.75bpw`, which downloaded `beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; whether `sushi pull` also accepts the `<org>/<dir>` form was not tested. The `wt start sushi/…` load (46 GB resident) and `wt stop sushi` were not run for this guide. The register/start/stop semantics are from the code and wt's own docs: wt/docs/wt-model.md, wt/docs/wt-start-stop.md, wt/docs/internals/local-models.md ("sushi"). -->
+
+The pack is 75.9 GB on disk: 49.5 GB of safetensors (47,213 MiB resident once loaded) plus a 32 GB `ngram_table.bin` that Sushi streams from the internal SSD and never holds in memory. A cold load takes about 115 s at the slowest and about 10 s from cached files; wt waits up to 400 s.
+
+The provider row `wt model init` (or the first `wt model add sushi …`) writes:
+
+```toml
+[[providers]]
+id = "sushi"
+name = "Sushi"
+location = "local"
+model_dir = "~/.sushi/models"
+
+[providers.auth]
+type = "none"
+base_url = "http://127.0.0.1:12345/v1"
+```
+
+and the model block (the id wt derives is `sushi/<org>/<dir>`: a local id keeps the slash, only cloud ids spell it `--`):
+
+```toml
+[[models]]
+id = "sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
+family = "<family>"
+provider_id = "sushi"
+model_name = "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
+tags = []
+
+[models.model_info]
+supports_function_calling = true
+supports_vision = true
+```
+
+- **`model_name` must be Sushi's exact pack id, `org/dir`.** `wt model add` writes it exactly as you typed it. An id Sushi does not serve is answered with `503 No default model configured`, not a 404, so a typo shows up as a 503 rather than a "not found". wt checks the id against the server's `/v1/models` list before it warms the pack, and refuses with `… is not listed by sushi at … (it lists: …); register the pack's exact id as model_name` (guide 08 §3).
+- **`model_info` is yours to write.** wt only looks capabilities up for ollama models (`wt model add` does nothing for a Sushi pack), so the two flags above are set by hand; Sushi's `/v1/models` reports `tool_use` and `vision` capabilities. They are copied into the model's LiteLLM route.
+- **A discovered id is not available for Sushi.** wt scans no Sushi pack directory: a pack with no registry entry is not listed by `wt model list` or the picker. The entry is required, as for rec. A stopped registered pack is a start row; a pack is Running only while Sushi lists it with `loaded: true`.
+- **The context window is wt's, not Sushi's.** wt always starts the server as `sushi serve --port 12345 --host 127.0.0.1 --ctx-size 131072 --max-resident-models 1 --no-update-check --max-tokens 32768` (one server for any number of packs, so there is no model on the command line). A bare `sushi serve` runs at its own default of 4096 tokens, which is a trap for coding agents. A Sushi you started by hand is not touched: wt cannot see its flags, `wt start` of an already-loaded pack prints a warning saying so, `wt start` against an idle one ends in `port 12345 is in use by another process — stop it before starting this model`, and `llmbench provider isolate sushi` refuses it. To change the window, edit the `Spawn` literal in `wt/internal/provider/table.go` and `docs/contracts/process-providers.toml` in one commit and rebuild wt.
+- **The GPU wired-memory limit must allow the pack.** macOS lets the GPU wire a fraction of RAM; the pack needs 51,934 MiB (1.1 x the safetensors), and the macOS default of 75% of RAM is 49,152 MiB on a 64 GB Mac, so the default fails. `wt start` and `llmbench provider isolate` read the limit (`sysctl -n iogpu.wired_limit_mb hw.memsize`; 0 means the 75% default), and refuse before they stop or start anything, with `iogpu.wired_limit_mb is <n> MiB but <pack> needs about <n> MiB resident; raise it with: sudo sysctl iogpu.wired_limit_mb=59000 (resets on reboot)`. You run the sysctl, once per boot; wt and llmbench only read it and never set it. When wt cannot measure (no pack directory yet, no sysctl) it prints `wt: skipping the memory check (<why>)` and goes on.
+- **One pack at a time, and nothing else big beside it.** Sushi is started with `--max-resident-models 1` and is `Exclusive`: only one large model fits (46 GB of 64 GB). `wt start` asks before stopping other running local models, `llmbench provider isolate sushi` stops them, and every other `isolate` stops Sushi. A failed warmup whose error or log tail reads like a memory refusal (`out of memory`, `wired limit`, `iogpu`, and a few similar phrases) gets the wired-limit fix appended to the error.
+- **Agents.** Sushi serves OpenAI chat completions only (the row has no `protocols`). claude reaches it through the LiteLLM proxy, which maps its requests onto chat completions; pi can go direct or through the proxy. An agent sees the model only when it lists `sushi` in its `supported_providers` ([06-wt-agents-and-models](06-wt-agents-and-models.md) §6). pi is told a 262144-token window for it, larger than the 131072 wt starts Sushi with, until a registry `context_window` field exists (a separate change).
+- **Its files.** wt never deletes anything: `wt model rm sushi/<org>/<dir>` removes the registry entry only. Sushi keeps its data under `~/.sushi` (`models/`, `logs/`, `pi/`); [provider-artifacts.md](../reference/provider-artifacts.md#sushi--active-on-demand-only-no-standing-artifact) lists them.
+
 `[models.fetch]` also takes `files` and `quantizations` (lists) — they selected GGUF files for the retired llama.cpp provider; leave them out for the providers above.
 
 ### 5. Downloads
@@ -269,6 +323,7 @@ wt does not download models and has no download command. Use the provider's own 
 | mtplx | `mtplx pull <org>/<name>` | `<org>--<name>` under the mtplx provider row's `model_dir` (default `~/.mtplx/models`) | `rm -rf` that directory |
 | mlx_lm_server | `hf download <org>/<repo> --local-dir <directory>`, once per side | anywhere — name each directory as that side's `local_path` (Step 4) | `rm -rf` that directory |
 | rec | `rec pull` | rec's own data directory, `~/.local/share/rec` (wt does not scan it) | `rec uninstall` (rec, its models and its settings) |
+| sushi | `sushi pull <pack tag>` (Step 4) | `<org>/<dir>` under `~/.sushi/models` (wt does not scan it; the registry entry names the pack) | `rm -rf` that directory |
 
 <!-- UNVERIFIED — none of these downloads was run from this session (each fetches gigabytes). `ollama pull` and the omlx `hf download` line are the commands 01-initial-setup already uses; `mtplx pull` is from `mtplx pull --help` (mtplx 2.12.0), and the directories are the ones wt's inventory scans (`wt/internal/localmodels/inventory.go`). That `mlx_lm.server` fetches a `repo` side by itself is from the isolation code, which passes the repo id through unchanged (`llmbench/src/llmbench/benchmark/isolation.py`), not from a run. -->
 
@@ -302,7 +357,7 @@ wt litellm sync             # apply: writes config.yaml, restarts the proxy only
 To route a local model, start it (illustrative — use any `<provider>/<model>` id from `registry.toml`, or the discovered id of an on-disk model with no entry):
 
 ```bash
-wt start ollama/gpt-oss:20b    # ollama, omlx, mtplx, rec; `wt start` with no argument is a picker of every local model on disk
+wt start ollama/gpt-oss:20b    # ollama, omlx, mtplx, rec, sushi; `wt start` with no argument is a picker of every local model on disk
 ```
 
 `wt start` has no backend for an `mlx_lm_server` pairing: it prints the command that starts one, `llmbench provider isolate --solo mlx_lm_server <target> --draft <draft>` with the pairing's own target and draft ([10-mlx-lm-quantization](10-mlx-lm-quantization.md) Step 4). wt starts the others:
@@ -319,7 +374,7 @@ wt: ollama/gpt-oss:20b is running
 wt litellm list    # the routes config.yaml now holds — the authoritative answer
 ```
 
-`wt start <id>` also takes an on-disk model that has **no registry entry**, by its discovered id `<family>/<artifact>` (`ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` — mtplx keeps the `/`). It starts the model without registering it and routes it under that id, and `wt stop <that id>` stops it. `wt model list` prints the live inventory — every registry model with its STATUS (`ok`, or `missing` for a local one that is not on disk), and each unregistered artifact under its discovered id with STATUS `new` — with RUNNING `run` beside a model a probe finds serving. `wt served <provider>` prints what an omlx, mtplx, mlx_lm_server or rec server is serving now. To give such a model a family and tags, register it with `wt model add <provider> <name> --family <family>` (or `enter` on its row in the Models tab), which keeps its discovered id (`<family>/<artifact>` — the convention of Step 3): registering a running model that way keeps its route and its usage history. On a registry whose only omlx-family row is `omlx-6bit`, such a model is still listed and started as `omlx/<directory name>`, through that row.
+`wt start <id>` also takes an on-disk model that has **no registry entry**, by its discovered id `<family>/<artifact>` (`ollama/<name:tag>`, `omlx/<model directory name>`, `mtplx/<org>/<name>` — mtplx keeps the `/`). It starts the model without registering it and routes it under that id, and `wt stop <that id>` stops it. `wt model list` prints the live inventory — every registry model with its STATUS (`ok`, or `missing` for a local one that is not on disk), and each unregistered artifact under its discovered id with STATUS `new` — with RUNNING `run` beside a model a probe finds serving. `wt served <provider>` prints what an omlx, mtplx, mlx_lm_server, rec or sushi server is serving now (for sushi only the packs it has loaded). To give such a model a family and tags, register it with `wt model add <provider> <name> --family <family>` (or `enter` on its row in the Models tab), which keeps its discovered id (`<family>/<artifact>` — the convention of Step 3): registering a running model that way keeps its route and its usage history. On a registry whose only omlx-family row is `omlx-6bit`, such a model is still listed and started as `omlx/<directory name>`, through that row.
 
 `wt start` of an ollama model fails at once when the ollama daemon is not answering (`ollama is not answering at <origin> — start it first`) and writes no route: start the ollama app or service and run it again. A `wt litellm sync` run while the daemon refuses the connection reads it as "nothing is listening" and drops the ollama routes, with a warning; the next sync after the daemon is back writes them again.
 

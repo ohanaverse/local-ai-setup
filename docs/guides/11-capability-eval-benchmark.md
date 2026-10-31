@@ -42,6 +42,32 @@ uv run llmbench eval run --suite <path> --root ../benchmarks/tasks/eval \
 
 There is no `--skip-judge` flag here (unlike `llmbench agent run`): `coding` has no judge to skip, and the four judged categories always judge. Rows are grouped by provider and isolated once per group, same as `llmbench`/`llmbench agent` — see [05-benchmarks](05-benchmarks.md) Step 1.
 
+#### Sushi against ollama
+
+`benchmarks/suites/eval-sushi-vs-ollama.toml` compares the Sushi `beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` pack with `ollama/qwen3.8:27b-mlx` on the same categories. Set it up in this order:
+
+1. **Raise the GPU wired limit.** `sudo sysctl iogpu.wired_limit_mb=59000` (you run it; it resets on reboot). wt and llmbench refuse to start Sushi below 51,934 MiB and never set it themselves. See [02-providers-and-models](02-providers-and-models.md) Step 4.
+2. **Install Sushi and pull the pack, then register it with the wt that knows Sushi, before the suite is loaded.** A row naming an unknown model fails `load_suite`. `wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>` gives the pack the id the suite's sushi row names, `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; the other row needs `ollama/qwen3.8:27b-mlx` pulled and registered.
+3. **The judge route.** The shipped suite sets `[judge] route = "claude-cli"`, a route that arrives with the separate open PR #505. Until that PR is merged the suite does not load; edit the suite's `[judge] route` to `"openrouter"` or `"litellm"` (and have the matching key available, see Prerequisites).
+4. **Dry run first**, as for any suite:
+
+```bash
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
+uv run llmbench eval run --suite ../benchmarks/suites/eval-sushi-vs-ollama.toml \
+    --root ../benchmarks/tasks/eval --dry-run
+```
+
+5. **Then the run**, with `samples = 1` in `[judge]` the first time (the suite ships with it; raise it later):
+
+```bash
+uv run llmbench eval run --suite ../benchmarks/suites/eval-sushi-vs-ollama.toml \
+    --root ../benchmarks/tasks/eval
+```
+
+<!-- UNVERIFIED — the full run was not made for this guide: it loads the 46 GB pack and takes a long time. The dry-run command is the one the suite header describes. -->
+
+What to expect: rows are grouped by provider and isolated once per group, so the sushi row and the ollama row run serially (the suite lists sushi first); isolating one stops the other, and the final restore stops Sushi. Sushi is started by llmbench with wt's settings, context fixed at 131072 and `--max-tokens 32768` (the eval transport sends no `max_tokens` of its own, and Sushi's unflagged default would truncate every answer). Thinking is left at each side's defaults, and `[generation]` pins temperature, top_p and top_k so both rows are sampled the same way.
+
 ### 4. Read the report
 
 ```bash
@@ -130,6 +156,8 @@ Reading `report.md`: one table per prompt, one row per target, then the first 20
 - **`omlx` 4-bit/6-bit disambiguation is the same as every other suite here** — use a row's `provider =` override, and `direct_model =` for the server-side basename. See [05-benchmarks](05-benchmarks.md) Gotchas.
 - **A row's `categories =` narrows which categories that row runs**, independent of `--category`'s CLI-level narrowing — both apply, intersected.
 - **Thinking models can loop under greedy decoding.** Rows default to temperature 0; a Qwen3.x row can then repeat itself inside its thinking until the server's token cap cuts it off, and the judge scores the leftover thinking. When comparing such models, set the vendor's recommended sampling in `[generation]` for every row of the suite, and compare runs only when their `run.toml` `[suite.generation]` match. Engines also cap a request at different lengths (omlx: `sampling.max_tokens` and `max_context_window` in `~/.omlx/settings.json`), and the thinking counts against the cap.
+- **Sushi rows: keep worker counts low.** Sushi's own defaults are one request at a time (`--max-concurrent 1`) and a 300 s stall timeout; do not push it with parallel workers. <!-- UNVERIFIED: the two defaults are from `sushi serve --help` during the design, not re-run -->
+- **The eval's chat transport reads `message.content` only and raises on a null one** (`JudgeTransportError`, `judge_core.py`). Sushi puts a Qwen pack's thinking in `message.reasoning_content` and the answer in `message.content` (measured in a short probe with this pack), so the answer is what is scored; a reply whose `content` is null is a failed call, not an empty answer.
 - **Judging (and coding's EvalPlus grading) both cost real time/spend per item** — a 5-category sweep across many rows adds up; use `--category`/`--row` to scope a suite down while iterating on content or rubrics.
 - **`coding`'s shipped config runs the FULL dataset — keep it that way (or set `limit` to the full dataset size).** EvalPlus 0.3.1's grading step requires every problem in the FULL dataset (164 for humaneval) to have a sample before it computes pass@k — `--id-range`/`limit` only bounds what gets *generated*, not what grading demands — so a `limit` smaller than the dataset size makes the `coding` category fail cleanly with a `CodingResult.error` every time, not a score. The reference suite and the coding category both ship with no `limit` for exactly this reason; only set one (a follow-up may address the gap) if you accept an EVALPLUS_ERROR cell in the report.
 
