@@ -284,3 +284,97 @@ func TestIsolateProcessesForTestClosesTheSysctl(t *testing.T) {
 		t.Fatal("defaultEnv().wiredLimit() succeeded; want the isolated seam to refuse")
 	}
 }
+
+// TestLooksLikeMemoryRefusal verifies the heuristic that decides a warmup
+// failure is macOS refusing the memory: every phrase of memoryRefusalMarkers
+// matches (any case), and text that is not about memory does not. A false
+// positive tells the user to raise a limit that was never the problem.
+func TestLooksLikeMemoryRefusal(t *testing.T) {
+	for _, m := range memoryRefusalMarkers {
+		if !looksLikeMemoryRefusal("HTTP 500: " + strings.ToUpper(m) + " while loading") {
+			t.Errorf("marker %q did not match", m)
+		}
+	}
+	for msg, want := range map[string]bool{
+		"HTTP 500: Out of memory allocating Metal buffer": true,
+		"IOGPU command buffer":                            true,
+		"No default model configured":                     false,
+		"":                                                false,
+	} {
+		if got := looksLikeMemoryRefusal(msg); got != want {
+			t.Errorf("looksLikeMemoryRefusal(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}
+
+// sushiWarmup starts the synthetic sushix family with a chat that answers
+// status and body, and returns the start error and the env.
+func sushiWarmup(t *testing.T, status int, body string) (error, *env) {
+	t.Helper()
+	t.Setenv("LIFECYCLE_HELPER_CHAT_BODY", body)
+	e, cfg, _, _, _ := sushiEnv(t, "Org/Pack", status, 0)
+	err := processServer{"sushix"}.start(context.Background(), e, cfg, Target{ProviderID: "sushix", ModelName: "Org/Pack"}, func(Stage) {})
+	return err, e
+}
+
+// TestSushiWarmupMemoryRefusalAppendsTheHint verifies a sushi warmup that
+// fails with a memory-refusal body ends with the wired-limit fix, still names
+// the HTTP failure, and leaves no server behind: the user sees the command to
+// run instead of a bare 500.
+func TestSushiWarmupMemoryRefusalAppendsTheHint(t *testing.T) {
+	err, e := sushiWarmup(t, 500, `{"error":"out of memory"}`)
+	if err == nil {
+		t.Fatal("start succeeded, want a warmup failure")
+	}
+	for _, want := range []string{"sudo sysctl iogpu.wired_limit_mb=59000", "resets on reboot", "HTTP 500", "log tail"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, missing %q", err, want)
+		}
+	}
+	if !strings.HasSuffix(err.Error(), wiredLimitHint()) {
+		t.Errorf("err = %q, want it to end with the hint", err)
+	}
+	if pf, rec := filesLeftFor(e, "sushix"); pf || rec {
+		t.Errorf("files left = %v, %v, want none", pf, rec)
+	}
+}
+
+// TestSushiWarmupMemoryRefusalInTheLogTailGetsTheHint verifies the match runs
+// on the log tail too: the refusal may be only in the server's log while the
+// HTTP body is generic.
+func TestSushiWarmupMemoryRefusalInTheLogTailGetsTheHint(t *testing.T) {
+	t.Setenv("LIFECYCLE_HELPER_LOG_LINE", "wired limit too low")
+	err, _ := sushiWarmup(t, 500, `{"error":"load failed"}`)
+	if err == nil || !strings.Contains(err.Error(), "sudo sysctl iogpu.wired_limit_mb=59000") {
+		t.Errorf("err = %v, want the hint", err)
+	}
+}
+
+// TestSushiWarmup503GetsNoHint verifies sushi's ordinary 503 warmup failure
+// is not mistaken for a memory refusal.
+func TestSushiWarmup503GetsNoHint(t *testing.T) {
+	err, _ := sushiWarmup(t, 503, "")
+	if err == nil || strings.Contains(err.Error(), "sudo sysctl") {
+		t.Errorf("err = %v, want a failure without the hint", err)
+	}
+}
+
+// TestMtplxWarmupMemoryRefusalGetsNoHint verifies the hint is sushi's alone:
+// an mtplx warmup failing with the same words reads as it always has. The
+// spec is a copy of mtplx's at a 1 s budget to keep the test short.
+func TestMtplxWarmupMemoryRefusalGetsNoHint(t *testing.T) {
+	e, cfg, port, _ := mtplxEnv(t, "serve", 0)
+	t.Setenv("LIFECYCLE_HELPER_CHAT_STATUS", "500")
+	t.Setenv("LIFECYCLE_HELPER_CHAT_BODY", `{"error":"out of memory"}`)
+	spec, _ := provider.ProcessFor("mtplx")
+	spec.WarmupSeconds = 1
+	facts, _ := provider.FamilyByName("mtplx")
+	stubFamily(t, "mtplx", spec, facts, port)
+	err := processServer{"mtplx"}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "out of memory") {
+		t.Fatalf("err = %v, want a warmup failure carrying the body (else the check proves nothing)", err)
+	}
+	if strings.Contains(err.Error(), "sudo sysctl") {
+		t.Errorf("err = %v, want no hint on an mtplx warmup failure", err)
+	}
+}

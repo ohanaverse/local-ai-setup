@@ -164,9 +164,19 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	}
 	err = e.warmupFor(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, budget, budget)
 	if err != nil && httpReady {
-		return withLogTail(proc, err)
+		return withMemoryHint(withLogTail(proc, err))
 	}
 	return err
+}
+
+// withMemoryHint ends err with the wired-limit fix when its text (log tail
+// included) looks like macOS refusing the memory. A cancelled start is not a
+// refusal. %w keeps errors.Is/As working.
+func withMemoryHint(err error) error {
+	if errors.Is(err, context.Canceled) || !looksLikeMemoryRefusal(err.Error()) {
+		return err
+	}
+	return fmt.Errorf("%w\n%s", err, wiredLimitHint())
 }
 
 // withLogTail appends the server's log tail to a failed start's err, unless

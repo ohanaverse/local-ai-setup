@@ -83,6 +83,11 @@ func helperMtplx() {
 		if st, _ := strconv.Atoi(os.Getenv("LIFECYCLE_HELPER_CHAT_STATUS")); st != 0 && st != http.StatusOK {
 			w.WriteHeader(st)
 		}
+		// Opt-in body, so a test can put words in the warmup error.
+		if body := os.Getenv("LIFECYCLE_HELPER_CHAT_BODY"); body != "" {
+			_, _ = w.Write([]byte(body))
+			return
+		}
 		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
 	})
 	addr := opt["host"] + ":" + opt["port"]
@@ -109,12 +114,16 @@ func helperMtplx() {
 // flag/value pairs. It lists the one pack LIFECYCLE_SUSHI_PACK (loaded unless
 // LIFECYCLE_SUSHI_LOADED says otherwise), answers chat with
 // LIFECYCLE_HELPER_CHAT_STATUS (default 200; sushi's 503 body otherwise),
-// records each chat POST in LIFECYCLE_SUSHI_LOG, and exits 0 on SIGTERM. It
+// with LIFECYCLE_HELPER_CHAT_BODY as its error body (default: sushi's 503
+// text), records each chat POST in LIFECYCLE_SUSHI_LOG, and exits 0 on SIGTERM. It
 // exits by itself after two minutes, so a test that dies before its cleanup
 // leaves no server behind.
 func helperSushi() {
 	args := os.Args[1:]
 	fmt.Fprintln(os.Stderr, "sushi helper ready") // the log tail is never empty
+	if line := os.Getenv("LIFECYCLE_HELPER_LOG_LINE"); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	time.AfterFunc(2*time.Minute, func() { os.Exit(4) })
 	opt := map[string]string{}
 	for i := 0; i+1 < len(args); i++ {
@@ -142,7 +151,11 @@ func helperSushi() {
 		}
 		if st, _ := strconv.Atoi(os.Getenv("LIFECYCLE_HELPER_CHAT_STATUS")); st != 0 && st != http.StatusOK {
 			w.WriteHeader(st)
-			_, _ = w.Write([]byte(`{"error":"No default model configured"}`))
+			body := `{"error":"No default model configured"}`
+			if b := os.Getenv("LIFECYCLE_HELPER_CHAT_BODY"); b != "" {
+				body = b
+			}
+			_, _ = w.Write([]byte(body))
 			return
 		}
 		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))

@@ -48,12 +48,33 @@ type WiredLimitError struct {
 }
 
 func (e *WiredLimitError) Error() string {
-	return fmt.Sprintf("iogpu.wired_limit_mb is %d MiB but %s needs about %d MiB resident; raise it with: sudo sysctl iogpu.wired_limit_mb=59000 (it resets on reboot)", e.LimitMB, e.Pack, e.NeedMB)
+	return fmt.Sprintf("iogpu.wired_limit_mb is %d MiB but %s needs about %d MiB resident; raise it with: %s", e.LimitMB, e.Pack, e.NeedMB, wiredLimitHint())
 }
 
 // wiredLimitHint is the fix, for a caller that shows it apart from the error.
 func wiredLimitHint() string {
 	return "sudo sysctl iogpu.wired_limit_mb=59000 (resets on reboot)"
+}
+
+// memoryRefusalMarkers are the lower-case phrases that make a failed sushi
+// warmup look like macOS refusing the memory. A pinned heuristic: Sushi's real
+// wording is unmeasured, and llmbench's _MEMORY_REFUSAL holds the same list.
+var memoryRefusalMarkers = []string{
+	"out of memory", "insufficient memory", "not enough memory",
+	"cannot allocate", "failed to allocate", "memory limit",
+	"wired limit", "wired_limit", "iogpu",
+}
+
+// looksLikeMemoryRefusal reports whether msg contains a memory-refusal phrase,
+// in any case.
+func looksLikeMemoryRefusal(msg string) bool {
+	msg = strings.ToLower(msg)
+	for _, m := range memoryRefusalMarkers {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // packResidentBytes sums the sizes of the *.safetensors regular files directly
