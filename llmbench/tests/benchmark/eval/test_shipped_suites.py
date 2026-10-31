@@ -1,20 +1,36 @@
 """Loads the eval suites shipped under benchmarks/suites so a malformed one fails CI.
 
-Hermetic: an in-memory Registry (no registry file, HOME or network); the suite is
-only parsed and its rows resolved, never run.
+Hermetic: the suite is parsed against an in-memory Registry and its rows resolved,
+never run. resolve_row_endpoint on a direct row calls provider_key, which reads the
+registry from disk (not the in-memory one), so this module's autouse fixture points
+every registry env name at a nonexistent file under tmp_path; no HOME or network.
 """
 
 import tomllib
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
+
 from llmbench.benchmark.eval.suite import JUDGE_ROUTES, Suite, load_suite, resolve_row_endpoint
-from llmbench.registry import ModelEntry, ProviderEntry, Registry
+from llmbench.providers.secret import provider_key
+from llmbench.registry import ModelEntry, ProviderEntry, Registry, registry_path
 
 SUITE = Path(__file__).resolve().parents[4] / "benchmarks" / "suites" / "eval-sushi-vs-ollama.toml"
 SUSHI_ID = "sushi/beamster--Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
 SUSHI_NAME = "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
 OLLAMA_ID = "ollama/qwen3.8:27b-mlx"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_registry(monkeypatch, tmp_path):
+    # Independent of tests/conftest.py's global guard: WT_REGISTRY outranks the other
+    # names, which are cleared so none can win if WT_REGISTRY is ever removed.
+    missing = tmp_path / "no-registry.toml"
+    monkeypatch.setenv("WT_REGISTRY", str(missing))
+    monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert registry_path() == missing
 
 
 def _registry() -> Registry:
@@ -65,6 +81,8 @@ def test_rows_are_sushi_then_ollama_and_group_serially(tmp_path):
     assert [r.model_id for r in suite.rows] == [SUSHI_ID, OLLAMA_ID]
     assert [r.provider_id for r in suite.rows] == ["sushi", "ollama"]
     assert [r.route for r in suite.rows] == ["direct", "litellm"]
+    # One 59 GB wired-limit budget: only the two compared models may appear.
+    assert {r.model_id for r in suite.rows} == {SUSHI_ID, OLLAMA_ID}
 
 
 def test_both_rows_pin_the_same_explicit_sampling(tmp_path):
@@ -82,16 +100,10 @@ def test_both_rows_pin_the_same_explicit_sampling(tmp_path):
 def test_the_sushi_direct_route_sends_the_pack_id(tmp_path):
     # The direct route targets Sushi's listener and sends the registry model_name
     # verbatim (no direct_model override), which is the id Sushi serves.
+    assert provider_key("sushi") is None  # the registry read hits the scratch path
     suite = _suite(tmp_path)
     assert suite.routes_direct["sushi"].base_url == "http://localhost:12345/v1"
     row = suite.rows[0]
     assert row.direct_model is None
     _, model, _ = resolve_row_endpoint(row, SUSHI_NAME, suite.routes_direct)
     assert model == SUSHI_NAME
-
-
-def test_the_suite_never_names_a_second_big_model(tmp_path):
-    # One 59 GB wired-limit budget: only the two compared models may appear, so a
-    # third big row cannot be added to this suite by accident.
-    suite = _suite(tmp_path)
-    assert {r.model_id for r in suite.rows} == {SUSHI_ID, OLLAMA_ID}
