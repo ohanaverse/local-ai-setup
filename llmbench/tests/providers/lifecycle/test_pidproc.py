@@ -262,3 +262,97 @@ def test_log_tail_returns_empty_string_on_missing_file():
     unconditionally include it in an error message."""
     with patch("builtins.open", side_effect=OSError("no such file")):
         assert _proc().log_tail() == ""
+
+
+# --- live_pid: the read-only ownership check ----------------------------------
+
+PP = "llmbench.providers.lifecycle.pidproc"
+
+
+def _sushi(tmp_path, content: str | None = "4242"):
+    pidfile = tmp_path / "sushi.pid"
+    if content is not None:
+        pidfile.write_text(content)
+    return PidfileProcess(name="sushi", pidfile=str(pidfile), logfile=str(tmp_path / "sushi.log"))
+
+
+def test_live_pid_returns_the_pid_of_a_live_matching_process(tmp_path):
+    """A live pid whose `ps` line names the process is the verified pid; the
+    check is read-only, so the pidfile is still there afterwards."""
+    proc = _sushi(tmp_path, "4242\n")
+    with (
+        patch(f"{PP}.os.kill") as kill,
+        patch(f"{PP}.subprocess.run", _ps_matching("sushi")),
+    ):
+        assert proc.live_pid() == 4242
+    kill.assert_called_once_with(4242, 0)
+    assert os.path.exists(proc.pidfile)
+
+
+def test_live_pid_is_none_without_a_pidfile(tmp_path):
+    with patch(f"{PP}.os.kill") as kill:
+        assert _sushi(tmp_path, None).live_pid() is None
+    kill.assert_not_called()
+
+
+@pytest.mark.parametrize("content", ["", "abc", "0", "-7"])
+def test_live_pid_is_none_for_unusable_content(tmp_path, content):
+    """Unparsable or non-positive content never reaches os.kill (0 is this
+    process's group, a negative pid a broadcast) and the file is kept."""
+    proc = _sushi(tmp_path, content)
+    with patch(f"{PP}.os.kill") as kill:
+        assert proc.live_pid() is None
+    kill.assert_not_called()
+    assert os.path.exists(proc.pidfile)
+
+
+def test_live_pid_is_none_for_pid_one_and_this_process(tmp_path):
+    """pid 1 (launchd) and this process itself are never a server llmbench
+    started: refused before any os.kill, as wt refuses them."""
+    for content in ("1", str(os.getpid())):
+        proc = _sushi(tmp_path, content)
+        with (
+            patch(f"{PP}.os.kill") as kill,
+            patch(f"{PP}.subprocess.run", _ps_matching("sushi")),
+        ):
+            assert proc.live_pid() is None
+        kill.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError(), PermissionError()])
+def test_live_pid_is_none_when_the_pid_cannot_be_signalled(tmp_path, error):
+    proc = _sushi(tmp_path)
+    with patch(f"{PP}.os.kill", side_effect=error):
+        assert proc.live_pid() is None
+    assert os.path.exists(proc.pidfile)
+
+
+def test_live_pid_is_none_when_the_process_is_something_else(tmp_path):
+    """A recycled pid now held by another program is not ours."""
+    proc = _sushi(tmp_path)
+    ps_other = MagicMock(return_value=MagicMock(returncode=0, stdout="/usr/bin/sleep 60\n"))
+    with patch(f"{PP}.os.kill"), patch(f"{PP}.subprocess.run", ps_other):
+        assert proc.live_pid() is None
+    assert os.path.exists(proc.pidfile)
+
+
+# --- spawn's session ----------------------------------------------------------
+
+
+def _spawned_kwargs(tmp_path, **spawn_kw) -> dict:
+    proc = _sushi(tmp_path, None)
+    child = MagicMock(pid=4242, poll=MagicMock(return_value=None))
+    with (
+        patch(f"{PP}.subprocess.Popen", return_value=child) as popen,
+        patch(f"{PP}.time.sleep"),
+    ):
+        proc.spawn(["sushi", "serve"], **spawn_kw)
+    return popen.call_args.kwargs
+
+
+def test_spawn_new_session_starts_a_new_session(tmp_path):
+    assert _spawned_kwargs(tmp_path, new_session=True)["start_new_session"] is True
+
+
+def test_spawn_by_default_passes_no_session_kwarg(tmp_path):
+    assert set(_spawned_kwargs(tmp_path)) == {"stdout", "stderr"}

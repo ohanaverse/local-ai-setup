@@ -43,7 +43,7 @@ from ... import secret as _secret
 from ...process_spec import ProcessSpec, expand
 from .. import binaries, probe
 from ..envelope import LifecycleError
-from ..pidproc import PidfileProcess
+from ..pidproc import PidfileProcess, signalable
 from .base import PidfileTrackedBackend, StartPlan
 
 # The pre-spawn wait for the previous occupant to release the port.
@@ -55,6 +55,9 @@ PREBIND_TIMEOUT = 10.0
 # probe.STOP_WAIT_TIMEOUT unchanged.
 INSTANCE_GONE_TIMEOUT = 30.0
 INSTANCE_GONE_POLL = 1.0
+# A signal-stop server (empty `stop`) gets SIGTERM and this long to close
+# its port: wt's 10 s grace before SIGKILL, plus margin for the port to go.
+SIGNAL_STOP_TIMEOUT = 15.0
 
 # The last status outcome ("answered" or "unknown") and value of an instance
 # that had not gone by the deadline.
@@ -182,7 +185,9 @@ class ProcessServerBackend(PidfileTrackedBackend):
 
     `cleanup_on_failure` is a constructor argument, not a spec field: mtplx
     passes True and is the only backend that does (a failed start tears its
-    server back down); every other spec is registered with False.
+    server back down); every other spec is registered with False. A
+    signal-stop spec (empty `stop`) always cleans up, as wt does: its
+    half-loaded server and pidfile do not outlive a failed start.
     """
 
     env_var = None
@@ -194,7 +199,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
         self.id = spec.provider
         self.occupancy_key = spec.provider
         self.restore_action = spec.restore_action
-        self.cleanup_on_failure = cleanup_on_failure
+        self.cleanup_on_failure = cleanup_on_failure or not spec.stop
         self._pidproc = PidfileProcess(name=spec.provider, pidfile=spec.pidfile, logfile=spec.log)
         # The key resolved for the current isolate: `(key,)` once resolved,
         # None before. Reset by `already_serving`, the first key-using step
@@ -334,10 +339,26 @@ class ProcessServerBackend(PidfileTrackedBackend):
         the spec names an endpoint path) an endpoint at this backend's
         origin. The first key-using step of every isolate: forgets the
         previous isolate's key and resolves it afresh, so an unreadable one
-        fails an isolation before any teardown."""
+        fails an isolation before any teardown.
+
+        A signal-stop spec first refuses a server on its port with no
+        verified pidfile: neither llmbench nor wt started it, so the context
+        size it runs with is unknown. Raised here, before `isolate` stops
+        any other provider."""
         self._forget_key()
         key = self._key()
         addr = self._address()
+        if (
+            self._signal_stop
+            and probe.wait_for_port_open(
+                addr.health_url, timeout=1.0, interval=0.2, **_key_arg(key)
+            )
+            and self._pidproc.live_pid() is None
+        ):
+            raise LifecycleError(
+                f"{self._unowned(addr)}; its context size cannot be checked, so it is not "
+                "reused. Stop it yourself and retry"
+            )
         ready = self.spec.ready
         if ready.kind == "models-list":
             return probe.serving_model(addr.health_url, plan.model, **_key_arg(key))
@@ -391,10 +412,14 @@ class ProcessServerBackend(PidfileTrackedBackend):
             lingering = self._lingering_status(bin_path)
             if lingering is not None:
                 raise LifecycleError(self._lingering_warning(lingering))
+        argv = [bin_path, *expand(self.spec.spawn, model=plan.model, port=addr.port)]
         try:
-            self._proc = self._pidproc.spawn(
-                [bin_path, *expand(self.spec.spawn, model=plan.model, port=addr.port)]
-            )
+            # Only a signal-stop spec gets its own session (wt's Setsid): the
+            # other specs' spawn call is unchanged.
+            if self._signal_stop:
+                self._proc = self._pidproc.spawn(argv, new_session=True)
+            else:
+                self._proc = self._pidproc.spawn(argv)
         except LifecycleError as exc:
             # spawn()'s immediate-exit error carries the log's tail: mask the
             # key in it the way wait_ready() does.
@@ -527,6 +552,12 @@ class ProcessServerBackend(PidfileTrackedBackend):
                 f"at {addr.health_url}"
             )
 
+    def _unowned(self, addr: _Address) -> str:
+        return (
+            f"{self.id}: a server answers on port {addr.port} that was not started by "
+            f"llmbench or wt (no verified pidfile at {self.spec.pidfile})"
+        )
+
     def stop_and_wait(self) -> str | None:
         """Run the spec's stop command, then confirm the server let go:
         `models-list` polls the port closed; `command-json` also needs the
@@ -544,7 +575,11 @@ class ProcessServerBackend(PidfileTrackedBackend):
         is not installed has nothing running to stop (None), so a teardown
         fan-out over every backend does not warn about providers the machine
         never had.
+
+        An empty `stop` never runs the binary: `_signal_stop_and_wait`.
         """
+        if self._signal_stop:
+            return self._signal_stop_and_wait()
         binary = self.spec.binary
         try:
             bin_path = binaries.require_binary(binary)
@@ -581,6 +616,29 @@ class ProcessServerBackend(PidfileTrackedBackend):
         if lingering is not None:
             return self._lingering_warning(lingering)
         return f"{binary} still listening on port {addr.port}"
+
+    def _signal_stop_and_wait(self) -> str | None:
+        """Stop by the pidfile: SIGTERM the pid it names when that pid is a
+        live process that looks like this server (`PidfileProcess.stop`),
+        then wait up to SIGNAL_STOP_TIMEOUT for the port to close. A pidfile
+        naming pid 1 or this process is never handed to `stop()`. A server
+        still answering is reported as one llmbench cannot own when no
+        verified pid was found, else as one that did not let go.
+
+        Weaker than wt: identity is the name in the pid's `ps` line (and a
+        pid `ps` cannot describe counts as a match), SIGTERM only, no
+        process group, no SIGKILL."""
+        self._forget_row()
+        addr = self._address()
+        owned = self._pidproc.live_pid() is not None
+        pid = self._pidproc.read_pid()
+        if pid is None or signalable(pid):
+            self._pidproc.stop()
+        if probe.port_closed_within(addr.health_url, timeout=SIGNAL_STOP_TIMEOUT):
+            return None
+        if not owned:
+            return f"{self._unowned(addr)}; stop it yourself"
+        return f"{self.spec.binary} still listening on port {addr.port}"
 
     def _lingering_status(
         self, bin_path: str, *, deadline: float | None = None

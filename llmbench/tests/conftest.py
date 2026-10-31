@@ -56,8 +56,9 @@ _real_subprocess_run = subprocess.run
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request (`rec stop` / `rec serve` likewise:
-# rec is installed on the developer's machine); `wt warm` would load one.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "ollama", "wt"})
+# rec is installed on the developer's machine; and `sushi serve`, also
+# installed there, loads a 46 GB pack); `wt warm` would load one.
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "sushi", "ollama", "wt"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 
@@ -133,3 +134,37 @@ def _no_real_config(monkeypatch, tmp_path):
     monkeypatch.setenv("WT_REGISTRY", str(tmp_path / "no-registry.toml"))
     monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
     monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "no-latest.toml"))
+
+
+def redirect_signal_stop_pidfiles(backends, monkeypatch, tmp_path) -> None:
+    """Give every signal-stop backend (empty `stop`: stopped by signalling
+    the pid its pidfile names) a PidfileProcess over scratch files.
+
+    llmbench has no pidfile override variable (the contract's `pidfile_env`
+    is parsed but read nowhere in `src`), and the backends' PidfileProcess
+    is built at import from the contract's real path. An unpatched
+    `stop_and_wait`, `already_serving` or `live_pid` would read, and may
+    remove, that real pidfile."""
+    from llmbench.providers.lifecycle.pidproc import PidfileProcess
+
+    for backend in backends.values():
+        if getattr(backend, "_signal_stop", False):
+            name = backend.spec.provider
+            monkeypatch.setattr(
+                backend,
+                "_pidproc",
+                PidfileProcess(
+                    name=name,
+                    pidfile=str(tmp_path / f"{name}.pid"),
+                    logfile=str(tmp_path / f"{name}.log"),
+                ),
+            )
+
+
+@pytest.fixture(autouse=True)
+def _redirect_signal_stop_pidfiles(monkeypatch, tmp_path):
+    """No test reads or removes a real signal-stop pidfile. A test that
+    patches `_pidproc` itself still overrides this."""
+    from llmbench.providers.lifecycle.backends import BACKENDS
+
+    redirect_signal_stop_pidfiles(BACKENDS, monkeypatch, tmp_path)

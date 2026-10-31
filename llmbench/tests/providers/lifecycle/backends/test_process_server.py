@@ -21,9 +21,11 @@ from llmbench.providers.lifecycle.backends import BACKENDS, process_server
 from llmbench.providers.lifecycle.backends.mtplx import MTPLX
 from llmbench.providers.lifecycle.backends.process_server import (
     INSTANCE_GONE_TIMEOUT,
+    SIGNAL_STOP_TIMEOUT,
     ProcessServerBackend,
 )
 from llmbench.providers.lifecycle.envelope import LifecycleError
+from llmbench.providers.lifecycle.pidproc import PidfileProcess
 from llmbench.providers.process_spec import ProcessSpec, Ready, process_spec
 from llmbench.providers.secret import SecretError
 
@@ -681,8 +683,12 @@ def test_stop_returns_none_on_a_clean_stop_and_runs_the_expanded_argv():
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.subprocess.run", return_value=_run_result()) as run,
         patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+        patch.object(backend, "_pidproc") as pidproc,
     ):
         assert backend.stop_and_wait() is None
+    # A stop command is the stop: the pidfile is neither read nor signalled.
+    pidproc.stop.assert_not_called()
+    pidproc.live_pid.assert_not_called()
     run.assert_called_once_with(
         [BIN, "stop", "--port", "9100"], capture_output=True, text=True, check=False
     )
@@ -1098,7 +1104,10 @@ def test_already_serving_http_get_asks_the_loaded_aware_list(tmp_path):
     """A pack listed with loaded:false is not serving: http-get asks the
     loaded-only list, by the exact id (sushi loads only by its exact id)."""
     backend = _http_get(tmp_path)
-    with patch(f"{PS}.probe.serving_model", return_value=True) as serving:
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+    ):
         assert backend.already_serving(backend.resolve("org/pack", ())) is True
     serving.assert_called_once()
     assert serving.call_args.args == (MODELS, "org/pack")
@@ -1333,3 +1342,260 @@ def test_a_stop_command_warmup_failure_has_no_log_tail(tmp_path):
     with pytest.raises(LifecycleError) as exc:
         _warm(backend, warmup=original)
     assert exc.value is original
+
+
+# --- empty stop: the verified pid, ownership, start-failure parity ------------
+#
+# An empty `stop` means "signal the pid in the pidfile": the bare binary is
+# never run. A server on the port with no verified pidfile was started by
+# neither llmbench nor wt, so its context size is unknowable and it is refused
+# before anything else is stopped. Every probe and `_pidproc` is patched: no
+# test dials a real port or reads a real pidfile.
+
+UNOWNED = (
+    "fake: a server answers on port 9100 that was not started by llmbench or wt "
+    "(no verified pidfile at /tmp/fake.pid)"
+)
+
+
+def _signal_backend() -> ProcessServerBackend:
+    return ProcessServerBackend(_spec(kind="http-get", stop=(), warmup_seconds=400))
+
+
+def _pidproc_mock(live_pid: int | None = 4242, pid: int | None = 4242) -> MagicMock:
+    pidproc = MagicMock()
+    pidproc.live_pid.return_value = live_pid
+    pidproc.read_pid.return_value = pid
+    return pidproc
+
+
+def test_empty_stop_stops_through_the_pidfile_and_never_runs_the_binary():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.binaries.require_binary", side_effect=AssertionError("binary looked up")),
+        patch(f"{PS}.subprocess.run") as run,
+        patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+        patch.object(backend, "_pidproc", _pidproc_mock()) as pidproc,
+    ):
+        assert backend.stop_and_wait() is None
+    run.assert_not_called()
+    pidproc.stop.assert_called_once_with()
+    closed.assert_called_once_with(MODELS, timeout=SIGNAL_STOP_TIMEOUT)
+    assert SIGNAL_STOP_TIMEOUT == 15.0
+
+
+def test_empty_stop_with_nothing_running_is_a_clean_noop():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.subprocess.run") as run,
+        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)) as pidproc,
+    ):
+        assert backend.stop_and_wait() is None
+    run.assert_not_called()
+    pidproc.stop.assert_called_once_with()  # tolerates the missing pidfile
+
+
+def test_empty_stop_reports_a_server_it_cannot_own():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_closed_within", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)),
+    ):
+        assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
+
+
+def test_empty_stop_reports_a_server_that_did_not_let_go():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_closed_within", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        assert backend.stop_and_wait() == "fake still listening on port 9100"
+
+
+@pytest.mark.parametrize("pid", [1, os.getpid()])
+def test_empty_stop_never_signals_pid_one_or_this_process(pid):
+    """A pidfile naming launchd or llmbench itself is refused before
+    `PidfileProcess.stop()` could signal it (as wt refuses them)."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_closed_within", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, pid)) as pidproc,
+    ):
+        assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
+    pidproc.stop.assert_not_called()
+
+
+def test_empty_stop_refuses_pid_one_and_this_process_with_a_real_pidfile(tmp_path):
+    """The same guard end to end, over a real PidfileProcess: no os.kill."""
+    backend = _signal_backend()
+    pidfile = tmp_path / "fake.pid"
+    backend._pidproc = dataclasses.replace(backend._pidproc, pidfile=str(pidfile))
+    for pid in (1, os.getpid()):
+        pidfile.write_text(str(pid))
+        with (
+            patch("llmbench.providers.lifecycle.pidproc.os.kill") as kill,
+            patch(f"{PS}.probe.port_closed_within", return_value=True),
+        ):
+            assert backend.stop_and_wait() is None
+        kill.assert_not_called()
+
+
+def test_already_serving_refuses_a_server_nobody_verified():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True) as port_open,
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+        patch.object(backend, "_pidproc", _pidproc_mock(None)),
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.already_serving(backend.resolve("org/pack", ()))
+    assert str(exc.value) == (
+        f"{UNOWNED}; its context size cannot be checked, so it is not reused. "
+        "Stop it yourself and retry"
+    )
+    port_open.assert_called_once_with(MODELS, timeout=1.0, interval=0.2)
+    serving.assert_not_called()
+
+
+def test_already_serving_accepts_a_server_with_a_verified_pidfile():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True),
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        assert backend.already_serving(backend.resolve("org/pack", ())) is True
+    serving.assert_called_once_with(MODELS, "org/pack", exact=True)
+
+
+def test_already_serving_does_not_object_when_nothing_answers():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)) as pidproc,
+    ):
+        assert backend.already_serving(backend.resolve("org/pack", ())) is False
+    pidproc.live_pid.assert_not_called()
+
+
+def test_a_provider_with_a_stop_command_never_asks_about_ownership():
+    backend = ProcessServerBackend(_spec())
+    with (
+        patch(f"{PS}.probe.wait_for_port_open") as port_open,
+        patch(f"{PS}.probe.serving_model", return_value=True),
+        patch.object(backend, "_pidproc") as pidproc,
+    ):
+        assert backend.already_serving(backend.resolve("m", ())) is True
+    port_open.assert_not_called()
+    pidproc.live_pid.assert_not_called()
+
+
+def test_the_refusal_happens_before_any_other_provider_is_stopped():
+    backend = _signal_backend()
+    with (
+        patch.dict(orchestrate.BACKENDS, {"fake": backend}),
+        patch.object(orchestrate, "_stop_others") as stop_others,
+        patch.object(backend, "check_available", return_value=None),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True),
+        patch(f"{PS}.probe.serving_model", return_value=True),
+        patch(f"{PS}.subprocess.run") as run,
+        patch.object(backend, "_pidproc", _pidproc_mock(None)) as pidproc,
+    ):
+        result = orchestrate.isolate("fake", "org/pack")
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.startswith(UNOWNED)
+    stop_others.assert_not_called()
+    pidproc.stop.assert_not_called()
+    pidproc.spawn.assert_not_called()
+    run.assert_not_called()
+
+
+def _isolate_with_a_failed_warmup(backend: ProcessServerBackend):
+    with (
+        patch.dict(orchestrate.BACKENDS, {backend.id: backend}),
+        patch.object(orchestrate, "_stop_others"),
+        patch.object(backend, "check_available", return_value=None),
+        patch.object(backend, "already_serving", return_value=False),
+        patch.object(backend, "replace_own_occupant"),
+        patch.object(backend, "start"),
+        patch.object(backend, "wait_ready"),
+        patch.object(backend, "warm", side_effect=LifecycleError("warm failed")),
+        patch.object(backend, "stop_and_wait", return_value=None) as stop,
+    ):
+        result = orchestrate.isolate(backend.id, "org/pack")
+    return result, stop
+
+
+def test_a_failed_warmup_stops_a_signal_stop_backend():
+    """wt parity: a half-loaded server and its pidfile do not outlive a
+    failed start."""
+    backend = _signal_backend()
+    assert backend.cleanup_on_failure is True
+    result, stop = _isolate_with_a_failed_warmup(backend)
+    assert result.ok is False
+    stop.assert_called_once_with()
+
+
+def test_a_failed_warmup_does_not_stop_a_stop_command_backend():
+    rec = ProcessServerBackend(process_spec("rec"))
+    assert rec.cleanup_on_failure is False
+    result, stop = _isolate_with_a_failed_warmup(rec)
+    assert result.ok is False
+    stop.assert_not_called()
+    assert _mtplx().cleanup_on_failure is True
+    assert ProcessServerBackend(process_spec("mtplx")).cleanup_on_failure is False
+
+
+def _popen_kwargs(backend, tmp_path: Path) -> dict:
+    """Run `backend.start` over a scratch-file PidfileProcess with Popen
+    faked; the kwargs Popen got."""
+    backend._pidproc = dataclasses.replace(
+        backend._pidproc,
+        pidfile=str(tmp_path / "x.pid"),
+        logfile=str(tmp_path / "x.log"),
+    )
+    child = MagicMock(pid=4242, poll=MagicMock(return_value=None))
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch("llmbench.providers.lifecycle.pidproc.subprocess.Popen", return_value=child) as p,
+        patch("llmbench.providers.lifecycle.pidproc.time.sleep"),
+    ):
+        backend.start(backend.resolve("org/pack", ()))
+    return p.call_args.kwargs
+
+
+def test_signal_stop_spawn_starts_a_new_session(tmp_path):
+    """Setsid-equivalent, as wt spawns it: a terminal's SIGHUP cannot kill a
+    46 GB server llmbench started."""
+    assert _popen_kwargs(_signal_backend(), tmp_path)["start_new_session"] is True
+
+
+def test_mtplx_and_mlx_lm_server_spawn_pass_no_session_kwarg(tmp_path, monkeypatch):
+    assert "start_new_session" not in _popen_kwargs(_mtplx(), tmp_path)
+    from llmbench.providers.lifecycle.backends import mlx_lm_server
+
+    proc = PidfileProcess(
+        name="mlx_lm_server",
+        pidfile=str(tmp_path / "m.pid"),
+        logfile=str(tmp_path / "m.log"),
+    )
+    child = MagicMock(pid=4242, poll=MagicMock(return_value=None))
+    backend = mlx_lm_server.MLX_LM_SERVER
+    monkeypatch.setattr(backend, "_proc", backend._proc)  # start() replaces it
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
+            return_value="/bin/mlx_lm.server",
+        ),
+        patch.object(mlx_lm_server, "_PROC", proc),
+        patch.object(mlx_lm_server.probe, "port_closed_within", return_value=True),
+        patch("llmbench.providers.lifecycle.pidproc.subprocess.Popen", return_value=child) as p,
+        patch("llmbench.providers.lifecycle.pidproc.time.sleep"),
+    ):
+        backend.start(backend.resolve("target", ("target", "draft")))
+    assert "start_new_session" not in p.call_args.kwargs

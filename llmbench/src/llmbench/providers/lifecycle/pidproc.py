@@ -20,20 +20,34 @@ from dataclasses import dataclass
 from .envelope import LifecycleError
 
 
+def signalable(pid: int) -> bool:
+    """Whether a pidfile's `pid` may ever be signalled: not 0 or a negative
+    pid (this process's group, a broadcast), not 1 (launchd), not this
+    process itself (a recycled pid can name it)."""
+    return pid > 1 and pid != os.getpid()
+
+
 @dataclass(frozen=True)
 class PidfileProcess:
     name: str
     pidfile: str
     logfile: str
 
-    def spawn(self, argv: list[str]) -> subprocess.Popen:
+    def spawn(self, argv: list[str], *, new_session: bool = False) -> subprocess.Popen:
         """Open self.logfile for append, spawn argv with stdout=stderr=that
         file handle, write the child's pid to self.pidfile, sleep 0.2s, then
         check proc.poll() — if the process already exited, raise
         LifecycleError with a log tail (omitted if empty). Return the live
-        Popen on success."""
+        Popen on success.
+
+        `new_session` starts the child in its own session (wt's Setsid), so
+        a SIGHUP to the caller's terminal cannot kill it. Without it Popen
+        gets no session keyword at all."""
         with open(self.logfile, "ab") as log:
-            proc = subprocess.Popen(argv, stdout=log, stderr=log)
+            if new_session:
+                proc = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+            else:
+                proc = subprocess.Popen(argv, stdout=log, stderr=log)
         with open(self.pidfile, "w") as f:
             f.write(str(proc.pid))
         # Give the process a moment to fail (missing weights, port conflict,
@@ -89,6 +103,34 @@ class PidfileProcess:
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(self.pidfile)
+
+    def read_pid(self) -> int | None:
+        """The pid self.pidfile names, or None when the file is missing,
+        unreadable or does not hold an integer. Not validated: see
+        `signalable`."""
+        try:
+            with open(self.pidfile) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    def live_pid(self) -> int | None:
+        """The pidfile's pid when it is a live process that looks like this
+        one (`_looks_like_this_process`), else None. Read-only: never
+        unlinks the pidfile and never signals (`os.kill(pid, 0)` only, and
+        never for a pid `signalable` refuses).
+
+        As weak as `_looks_like_this_process`: `self.name` in the pid's `ps`
+        line, and a pid `ps` cannot describe counts as a match. There is no
+        uid, start-time or argv check, unlike wt's."""
+        pid = self.read_pid()
+        if pid is None or not signalable(pid):
+            return None
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return None
+        return pid if self._looks_like_this_process(pid) else None
 
     @staticmethod
     def _reap(pid: int, timeout: float = 2.0, interval: float = 0.1) -> None:
