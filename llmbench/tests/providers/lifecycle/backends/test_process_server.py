@@ -36,9 +36,13 @@ def _spec(
     kind: str = "models-list",
     endpoint_path: str = "endpoint",
     model_path: str = "model",
+    stop: tuple[str, ...] = ("stop", "--port", "{port}"),
+    warmup_seconds: int = 120,
 ) -> ProcessSpec:
     if kind == "models-list":
         ready = Ready(kind, (), "", "", "", "")
+    elif kind == "http-get":
+        ready = Ready("http-get", (), "/health", "", "", "")
     else:
         ready = Ready(kind, ("status",), "ready", "true", model_path, endpoint_path)
     return ProcessSpec(
@@ -46,7 +50,7 @@ def _spec(
         provider=provider,
         binary="fake",
         spawn=("serve", "-m", "{model}", "-p", "{port}", "--id", "{model}"),
-        stop=("stop", "--port", "{port}"),
+        stop=stop,
         pidfile="/tmp/fake.pid",
         log="/tmp/fake.log",
         pidfile_env="FAKE_PID",
@@ -58,6 +62,7 @@ def _spec(
         default_origin="http://127.0.0.1:9100",
         wt_port=9100,
         restore_action="stop",
+        warmup_seconds=warmup_seconds,
         ready=ready,
     )
 

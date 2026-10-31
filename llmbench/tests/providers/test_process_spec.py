@@ -26,6 +26,7 @@ scope = "machine"
 default_origin = "http://127.0.0.1:1"
 wt_port = 1
 restore_action = "stop"
+warmup_seconds = 120
 
 [process.ready]
 kind = "models-list"
@@ -131,4 +132,65 @@ def test_an_argv_must_be_a_list_of_strings(monkeypatch, tmp_path, old, new, key)
     """A bare string would otherwise become a tuple of its characters."""
     _use(monkeypatch, tmp_path, GOOD.replace(old, new))
     with pytest.raises(ps.ProcessSpecError, match=f"`{key}` must be a list of strings"):
+        ps.process_specs()
+
+
+def test_mtplx_and_rec_warm_for_120_seconds():
+    for provider in ("mtplx", "rec"):
+        s = ps.process_spec(provider)
+        assert s is not None
+        assert s.warmup_seconds == 120
+
+
+def test_missing_warmup_seconds_raises(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace("warmup_seconds = 120\n", ""))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\]: missing key `warmup_seconds`"):
+        ps.process_specs()
+
+
+@pytest.mark.parametrize("bad", ['"120"', "0", "-5", "true", "1.5", '"abc"'])
+def test_warmup_seconds_must_be_a_positive_integer(monkeypatch, tmp_path, bad):
+    _use(monkeypatch, tmp_path, GOOD.replace("warmup_seconds = 120", f"warmup_seconds = {bad}"))
+    with pytest.raises(
+        ps.ProcessSpecError, match=r"process\[0\]: `warmup_seconds` must be a positive integer"
+    ):
+        ps.process_specs()
+
+
+def test_wt_port_that_is_not_an_integer_is_a_spec_error_not_a_value_error(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace("wt_port = 1", 'wt_port = "abc"'))
+    with pytest.raises(
+        ps.ProcessSpecError, match=r"process\[0\]: `wt_port` must be a positive integer"
+    ):
+        ps.process_specs()
+
+
+def test_empty_stop_list_parses_to_an_empty_tuple(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace('stop = ["stop"]', "stop = []"))
+    assert ps.process_specs()["x"].stop == ()
+
+
+HTTP_GET = GOOD.replace(
+    'kind = "models-list"\ncommand = []\npath = ""',
+    'kind = "http-get"\ncommand = []\npath = "/health"',
+)
+
+
+def test_http_get_ready_kind_parses(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET)
+    ready = ps.process_specs()["x"].ready
+    assert ready.kind == "http-get"
+    assert ready.path == "/health"
+    assert ready.command == ()
+
+
+def test_http_get_needs_a_path(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET.replace('path = "/health"', 'path = ""'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\].ready: .*`path`"):
+        ps.process_specs()
+
+
+def test_http_get_takes_no_command(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET.replace("command = []", 'command = ["status"]'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\].ready: .*`command`"):
         ps.process_specs()
