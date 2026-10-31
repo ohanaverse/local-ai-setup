@@ -4,11 +4,12 @@
 
 ### Added
 
-- Sushi is a local provider: `wt start|stop|list` and `wt -A claude|pi -M
-  sushi/...` manage it. One model-less `sushi serve` runs on port 12345 with
+- Sushi is a local provider: `wt start|stop|list` manage it, and `wt -A
+  claude|pi -M sushi/...` launches on it once `sushi` is in that agent's
+  `supported_providers`. One model-less `sushi serve` runs on port 12345 with
   its context fixed at 131072 in the spawn command. A start waits for
   `GET /health`, then loads the pack with a 400 s warmup budget, and sushi
-  is listed Running only while `/v1/models` shows the pack `loaded: true`.
+  is listed Running unless `/v1/models` flags the pack `loaded: false`.
   `wt stop sushi` signals the verified pid, never runs the bare `sushi`, and
   never kills a server wt did not start. A start checks `iogpu.wired_limit_mb`
   against the pack and prints `sudo sysctl iogpu.wired_limit_mb=59000` when it
