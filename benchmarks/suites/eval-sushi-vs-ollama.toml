@@ -22,16 +22,18 @@
 #   - Start with samples = 1 (judge quota; see below), then raise it.
 #   - Context is fixed at 131072 by wt's Spawn literal for Sushi.
 #   - Thinking is left at the defaults on both sides (decision 15).
-#   - Sushi serves one request at a time (--max-concurrent 1, 300 s stall
-#     timeout); do not point other clients at it during a run.
+#   - Sushi is expected to serve one request at a time: its defaults read
+#     --max-concurrent 1 and a 300 s stall timeout in `sushi serve --help`
+#     during the design (UNVERIFIED, not re-run; guide 11 says the same).
+#     Do not point other clients at it during a run.
 #   - Rows run serially, Sushi first; its restore action stops Sushi before
 #     the claude-cli judge runs.
 name = "eval-sushi-vs-ollama"
 cooldown_s = 15.0
 
 # samples = 1: the claude-cli judge spends Claude-subscription quota, and the
-# guide advises starting with a single sample.
-# needs PR #505 (eval-judge-claude-cli): until it merges JUDGE_ROUTES only accepts litellm/openrouter and this suite fails to load. To run before then, set route = "openrouter" AND model = "anthropic/claude-opus-5" (see the header).
+# guide advises starting with a single sample. route = "claude-cli" needs
+# PR #505: see the header.
 [judge]
 model = "claude-opus-5-5"
 temperature = 0.0
