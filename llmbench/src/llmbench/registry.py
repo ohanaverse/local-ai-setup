@@ -32,6 +32,7 @@ class ProviderEntry:
     location: str | None = None  # "local" | "cloud"
     base_url: str = ""  # auth.base_url
     secret_ref: str = ""  # auth.secret_ref
+    model_dir: str = ""  # top-level model_dir, as written (not expanded)
 
 
 @dataclass
@@ -149,6 +150,7 @@ def _parse_provider(raw: dict[str, Any]) -> ProviderEntry:
         location=raw.get("location"),
         base_url=str(auth.get("base_url", "")),
         secret_ref=str(auth.get("secret_ref", "")),
+        model_dir=str(raw.get("model_dir", "")),
     )
 
 

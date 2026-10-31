@@ -31,9 +31,11 @@ from __future__ import annotations
 import ipaddress
 import re
 import subprocess
+import sys
 import time
 import urllib.error
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypedDict
 from urllib.parse import urlsplit, urlunsplit
 
@@ -148,6 +150,68 @@ _MEMORY_REFUSAL = re.compile(
     r"|memory limit|wired limit|wired_limit|iogpu",
     re.IGNORECASE,
 )
+
+
+# The wired-limit preflight (a signal-stop spec only; the same integer rule
+# as wt's wiredNeedMiB/parseWiredLimit). A pack loads only when macOS lets the
+# GPU wire about 1.1 x its safetensors; llmbench reads the sysctl and never
+# sets it (that needs sudo).
+_DEFAULT_PACK_DIR = "~/.sushi/models"
+
+
+def _models_root(row: ProviderEntry | None) -> Path:
+    """The directory holding the packs: the provider row's `model_dir`, else
+    the family default, `~` expanded."""
+    return Path((row.model_dir if row else "") or _DEFAULT_PACK_DIR).expanduser()
+
+
+def _safetensors_bytes(pack_dir: Path) -> int | None:
+    """The bytes of the `*.safetensors` files directly in `pack_dir` (what
+    stays resident; `ngram_table.bin` and the rest do not count). None when
+    the directory cannot be read or holds none."""
+    try:
+        sizes = [p.stat().st_size for p in pack_dir.glob("*.safetensors") if p.is_file()]
+    except OSError:
+        return None
+    return sum(sizes) if sizes else None
+
+
+def _need_mib(total_bytes: int) -> int:
+    """110% of the safetensors in MiB, floored. Integer only."""
+    return total_bytes * 11 // 10 // 1048576
+
+
+def _parse_wired_limit(out: str) -> int | None:
+    """`sysctl -n iogpu.wired_limit_mb hw.memsize` output to the limit in
+    MiB. A limit of 0 is macOS's default, 75% of RAM. None unless both
+    numbers are there."""
+    lines = out.strip().split("\n")
+    if len(lines) != 2:
+        return None
+    try:
+        limit, memsize = int(lines[0].strip()), int(lines[1].strip())
+    except ValueError:
+        return None
+    if limit < 0 or memsize <= 0:
+        return None
+    return memsize * 3 // 4 // 1048576 if limit == 0 else limit
+
+
+def _wired_limit_mb() -> int | None:
+    """The GPU wired limit in MiB, read in one sysctl call; None when it
+    cannot be read (not macOS, sysctl failed or answered oddly)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        done = subprocess.run(
+            ["sysctl", "-n", "iogpu.wired_limit_mb", "hw.memsize"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    return _parse_wired_limit(done.stdout) if done.returncode == 0 else None
 
 
 def _masked_tail(tail: str, key: str | None) -> str:
@@ -344,7 +408,8 @@ class ProcessServerBackend(PidfileTrackedBackend):
         A signal-stop spec first refuses a server on its port with no
         verified pidfile: neither llmbench nor wt started it, so the context
         size it runs with is unknown. Raised here, before `isolate` stops
-        any other provider."""
+        any other provider. Then, when the pack is not already loaded, the
+        wired-limit preflight (same reason, same place)."""
         self._forget_key()
         key = self._key()
         addr = self._address()
@@ -359,6 +424,14 @@ class ProcessServerBackend(PidfileTrackedBackend):
                 f"{self._unowned(addr)}; its context size cannot be checked, so it is not "
                 "reused. Stop it yourself and retry"
             )
+        serving = self._serving(plan, addr, key)
+        if self._signal_stop and not serving:
+            self._preflight_wired_limit(plan)
+        return serving
+
+    def _serving(self, plan: StartPlan, addr: _Address, key: str | None) -> bool:
+        """Whether the server already serves `plan.model` (see
+        `already_serving`)."""
         ready = self.spec.ready
         if ready.kind == "models-list":
             return probe.serving_model(addr.health_url, plan.model, **_key_arg(key))
@@ -386,6 +459,29 @@ class ProcessServerBackend(PidfileTrackedBackend):
             if endpoint is None or _origin_key(endpoint) != _origin_key(addr.origin):
                 return False
         return True
+
+    def _preflight_wired_limit(self, plan: StartPlan) -> None:
+        """Fail early, before anything is stopped, when the GPU wired limit
+        cannot hold the pack. What cannot be measured is not judged: one
+        skip line, and the isolate goes on."""
+
+        def skip(why: str) -> None:
+            print(f"{self.id}: skipping the memory check ({why})", file=sys.stderr)
+
+        pack_bytes = _safetensors_bytes(_models_root(self._provider_row()) / plan.model)
+        if pack_bytes is None:
+            skip(f"cannot read the safetensors of {plan.model}")
+            return
+        limit = _wired_limit_mb()
+        if limit is None:
+            skip("cannot read iogpu.wired_limit_mb")
+            return
+        need = _need_mib(pack_bytes)
+        if limit < need:
+            raise LifecycleError(
+                f"{self.id}: the GPU wired limit is {limit} MiB but {plan.model} needs about "
+                f"{need} MiB (1.1 x its safetensors); {_WIRED_LIMIT_HINT}"
+            )
 
     def replace_own_occupant(self, plan: StartPlan) -> None:
         stop_warning = self.stop_and_wait()

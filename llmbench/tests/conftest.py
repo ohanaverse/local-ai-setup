@@ -168,3 +168,14 @@ def _redirect_signal_stop_pidfiles(monkeypatch, tmp_path):
     from llmbench.providers.lifecycle.backends import BACKENDS
 
     redirect_signal_stop_pidfiles(BACKENDS, monkeypatch, tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pack_dir_or_sysctl(monkeypatch, tmp_path):
+    """The wired-limit preflight reads a model directory and a sysctl. No
+    test may reach the real `~/.sushi/models` or the real `sysctl`: the pack
+    root is an absent scratch directory and the limit is unreadable (so the
+    preflight skips). The preflight's own tests patch both explicitly."""
+    ps = "llmbench.providers.lifecycle.backends.process_server"
+    monkeypatch.setattr(f"{ps}._models_root", lambda row: tmp_path / "no-models")
+    monkeypatch.setattr(f"{ps}._wired_limit_mb", lambda: None)

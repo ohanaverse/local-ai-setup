@@ -24,6 +24,12 @@ from llmbench.providers.lifecycle.backends.process_server import (
     SIGNAL_STOP_TIMEOUT,
     ProcessServerBackend,
 )
+from llmbench.providers.lifecycle.backends.process_server import (
+    _models_root as REAL_MODELS_ROOT,
+)
+from llmbench.providers.lifecycle.backends.process_server import (
+    _wired_limit_mb as REAL_WIRED_LIMIT,
+)
 from llmbench.providers.lifecycle.envelope import LifecycleError
 from llmbench.providers.lifecycle.pidproc import PidfileProcess
 from llmbench.providers.process_spec import ProcessSpec, Ready, process_spec
@@ -1599,3 +1605,251 @@ def test_mtplx_and_mlx_lm_server_spawn_pass_no_session_kwarg(tmp_path, monkeypat
     ):
         backend.start(backend.resolve("target", ("target", "draft")))
     assert "start_new_session" not in p.call_args.kwargs
+
+
+# --- the wired-limit preflight -------------------------------------------------
+#
+# A sushi pack loads only when the GPU wired limit holds it. The check reads
+# the pack's safetensors and one sysctl (never set), and fails an isolate with
+# the fix before any other provider is stopped. tests/conftest.py makes the
+# pack root and the sysctl harmless for every test; these patch them back.
+
+PACK = "org/pack"
+FIX = "sudo sysctl iogpu.wired_limit_mb=59000"
+
+
+def _signal_backend_with_pack(tmp_path: Path, mib: int | None = 100) -> ProcessServerBackend:
+    """A signal-stop backend whose registry row names tmp/models; the pack
+    holds one `mib` MiB safetensors file (and a big ngram_table.bin that must
+    not count). `mib=None` leaves the pack dir absent."""
+    models = tmp_path / "models"
+    _registry(_provider_row() + f'model_dir = "{models}"\n')
+    if mib is not None:
+        pack = models / PACK
+        pack.mkdir(parents=True)
+        with open(pack / "model.safetensors", "wb") as f:
+            f.truncate(mib * 1048576)
+        with open(pack / "ngram_table.bin", "wb") as f:
+            f.truncate(10 * 1048576 * 1024)
+    return _signal_backend()
+
+
+def _serve_check(backend, *, limit, serving=False, port_open=False):
+    """already_serving with the roots real and the limit `limit`; returns
+    (result, limit mock)."""
+    with (
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", return_value=limit) as read_limit,
+        patch(f"{PS}.probe.wait_for_port_open", return_value=port_open),
+        patch(f"{PS}.probe.serving_model", return_value=serving),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        return backend.already_serving(backend.resolve(PACK, ())), read_limit
+
+
+def test_safetensors_bytes_sums_only_safetensors(tmp_path):
+    (tmp_path / "a.safetensors").write_bytes(b"x" * 10)
+    (tmp_path / "b.safetensors").write_bytes(b"x" * 5)
+    (tmp_path / "ngram_table.bin").write_bytes(b"x" * 1000)
+    (tmp_path / "config.json").write_bytes(b"x" * 1000)
+    assert process_server._safetensors_bytes(tmp_path) == 15
+
+
+def test_safetensors_bytes_is_none_when_unreadable_or_empty(tmp_path):
+    assert process_server._safetensors_bytes(tmp_path / "absent") is None
+    (tmp_path / "ngram_table.bin").write_bytes(b"x")
+    assert process_server._safetensors_bytes(tmp_path) is None
+
+
+def test_need_mib_is_one_point_one_times_the_bytes():
+    """The same figures as Go's TestWiredNeedIs110PercentFloored."""
+    assert process_server._need_mib(49_506_491_792) == 51934
+    assert process_server._need_mib(47213 * 1048576) == 51934
+    assert process_server._need_mib(0) == 0
+
+
+@pytest.mark.parametrize(
+    ("out", "expected"),
+    [
+        ("59000\n68719476736\n", 59000),
+        ("0\n68719476736\n", 49152),
+        ("59000\n", None),
+        ("", None),
+        ("x\ny\n", None),
+        ("-1\n68719476736\n", None),
+        ("59000\n0\n", None),
+    ],
+)
+def test_parse_wired_limit(out, expected):
+    assert process_server._parse_wired_limit(out) == expected
+
+
+def _sysctl(stdout="59000\n68719476736\n", returncode=0):
+    return MagicMock(returncode=returncode, stdout=stdout)
+
+
+def test_wired_limit_reads_one_sysctl_call():
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=_sysctl()) as run,
+    ):
+        assert REAL_WIRED_LIMIT() == 59000
+    run.assert_called_once_with(
+        ["sysctl", "-n", "iogpu.wired_limit_mb", "hw.memsize"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_wired_limit_zero_means_three_quarters_of_memory():
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=_sysctl("0\n68719476736\n")),
+    ):
+        assert REAL_WIRED_LIMIT() == 49152
+
+
+def test_wired_limit_is_unknown_off_darwin():
+    with (
+        patch(f"{PS}.sys.platform", "linux"),
+        patch(f"{PS}.subprocess.run") as run,
+    ):
+        assert REAL_WIRED_LIMIT() is None
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [_sysctl("", 1), _sysctl(""), _sysctl("x\ny\n"), _sysctl("59000\n")],
+)
+def test_wired_limit_unreadable_results_are_none(result):
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=result),
+    ):
+        assert REAL_WIRED_LIMIT() is None
+
+
+def test_wired_limit_oserror_is_none():
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", side_effect=OSError("no sysctl")),
+    ):
+        assert REAL_WIRED_LIMIT() is None
+
+
+def test_already_serving_fails_with_the_fix_command_when_the_limit_is_too_low(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)  # needs 110
+    with pytest.raises(LifecycleError) as err:
+        _serve_check(backend, limit=50)
+    message = str(err.value)
+    assert FIX in message
+    assert "resets on reboot" in message
+    assert "50 MiB" in message
+    assert "110 MiB" in message
+    assert message.startswith("fake: the GPU wired limit is 50 MiB but org/pack needs about")
+
+
+@pytest.mark.parametrize(("limit", "passes"), [(110, True), (109, False)])
+def test_the_limit_passes_at_the_exact_need(tmp_path, limit, passes):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    if passes:
+        assert _serve_check(backend, limit=limit)[0] is False
+    else:
+        with pytest.raises(LifecycleError):
+            _serve_check(backend, limit=limit)
+
+
+def test_a_zero_limit_reads_as_the_default_and_refuses_a_47213_mib_pack(tmp_path):
+    """The reader turns 0 into 49152 MiB (64 GiB machine); 47213 MiB of
+    safetensors need 51934 MiB, so that default refuses."""
+    backend = _signal_backend_with_pack(tmp_path, mib=47213)
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=_sysctl("0\n68719476736\n")),
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", REAL_WIRED_LIMIT),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+        pytest.raises(LifecycleError, match=r"49152 MiB.*51934 MiB"),
+    ):
+        backend.already_serving(backend.resolve(PACK, ()))
+
+
+def test_the_preflight_skips_when_the_pack_dir_is_unreadable(tmp_path, capsys):
+    backend = _signal_backend_with_pack(tmp_path, mib=None)
+    serving, read_limit = _serve_check(backend, limit=1)
+    assert serving is False
+    read_limit.assert_not_called()
+    assert "skipping the memory check" in capsys.readouterr().err
+
+
+def test_the_preflight_skips_when_the_limit_is_unknown(tmp_path, capsys):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    serving, _ = _serve_check(backend, limit=None)
+    assert serving is False
+    assert "skipping the memory check" in capsys.readouterr().err
+
+
+def test_a_row_without_model_dir_uses_the_default_pack_dir(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    pack = home / ".sushi" / "models" / PACK
+    pack.mkdir(parents=True)
+    with open(pack / "w.safetensors", "wb") as f:
+        f.truncate(100 * 1048576)
+    monkeypatch.setenv("HOME", str(home))
+    _registry(_provider_row())
+    backend = _signal_backend()
+    with pytest.raises(LifecycleError, match="110 MiB"):
+        _serve_check(backend, limit=50)
+
+
+def test_the_preflight_is_skipped_when_the_pack_is_already_loaded(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    serving, read_limit = _serve_check(backend, limit=1, serving=True, port_open=True)
+    assert serving is True
+    read_limit.assert_not_called()
+
+
+def test_a_provider_with_a_stop_command_never_runs_the_preflight(tmp_path):
+    _signal_backend_with_pack(tmp_path, mib=100)
+    backend = ProcessServerBackend(_spec(kind="http-get", warmup_seconds=400))
+    serving, read_limit = _serve_check(backend, limit=1)
+    assert serving is False
+    read_limit.assert_not_called()
+
+
+def test_the_unowned_refusal_comes_before_the_preflight(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    with (
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", return_value=1) as read_limit,
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True),
+        patch.object(backend, "_pidproc", _pidproc_mock(None)),
+        pytest.raises(LifecycleError, match="not started by llmbench or wt"),
+    ):
+        backend.already_serving(backend.resolve(PACK, ()))
+    read_limit.assert_not_called()
+
+
+def test_a_failed_preflight_stops_no_other_provider(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    with (
+        patch.dict(orchestrate.BACKENDS, {"fake": backend}),
+        patch.object(orchestrate, "_stop_others") as stop_others,
+        patch.object(backend, "check_available", return_value=None),
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", return_value=50),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()) as pidproc,
+    ):
+        result = orchestrate.isolate("fake", PACK)
+    assert result.ok is False
+    assert result.error is not None
+    assert "wired_limit_mb=59000" in result.error
+    stop_others.assert_not_called()
+    pidproc.stop.assert_not_called()
+    pidproc.spawn.assert_not_called()
