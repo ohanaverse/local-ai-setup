@@ -183,21 +183,37 @@ def port_closed_within(url: str, *, timeout: float, key: str | None = None) -> b
     a keyed probe is an answer like any other: still open.
     """
     for _ in _deadline_loop(timeout):
-        try:
-            with urllib.request.urlopen(_target(url, key), timeout=1.0) as resp:  # noqa: S310 — localhost probe
-                resp.read()
-        except urllib.error.HTTPError:
-            pass  # server answered (with an error status) — still open
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, TimeoutError):
-                pass
-            else:
-                return True  # refused / reset / no route — port closed
-        except TimeoutError:
-            pass  # accepted the connection, then stalled mid-read — still open
-        except ConnectionError:
-            return True  # reset at read time — the listener is dying or gone
+        if _closed_now(url, key):
+            return True
         time.sleep(0.2)
+    return False
+
+
+def port_answers(url: str, *, key: str | None = None) -> bool:
+    """One attempt, no waiting: whether something answers at a localhost
+    URL right now, by `port_closed_within`'s rules (an HTTP error status or
+    a stalled read is an answer; only a connection-level failure is not).
+    For a caller that has nothing to wait for, such as a server it did not
+    signal."""
+    return not _closed_now(url, key)
+
+
+def _closed_now(url: str, key: str | None) -> bool:
+    """One probe of `url`, classified as in `port_closed_within`: True when
+    the port is closed, False when something still holds it."""
+    try:
+        with urllib.request.urlopen(_target(url, key), timeout=1.0) as resp:  # noqa: S310 — localhost probe
+            resp.read()
+    except urllib.error.HTTPError:
+        return False  # server answered (with an error status) — still open
+    except urllib.error.URLError as exc:
+        # A connect timeout is a listener too busy to accept, not a closed
+        # port; refused / reset / no route is closed.
+        return not isinstance(exc.reason, TimeoutError)
+    except TimeoutError:
+        return False  # accepted the connection, then stalled mid-read — still open
+    except ConnectionError:
+        return True  # reset at read time — the listener is dying or gone
     return False
 
 

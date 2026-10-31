@@ -1,4 +1,4 @@
-"""The generic, spec-driven process-server backend (mtplx and rec run on it).
+"""The generic, spec-driven process-server backend (mtplx, rec and sushi run on it).
 
 Synthetic specs and fakes only: every probe, the binary lookup, the stop
 command and the pidfile process are patched where `process_server` imports
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import subprocess
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1420,7 +1421,7 @@ def test_empty_stop_with_nothing_running_is_a_clean_noop():
     backend = _signal_backend()
     with (
         patch(f"{PS}.subprocess.run") as run,
-        patch(f"{PS}.probe.port_closed_within", return_value=True),
+        patch(f"{PS}.probe.port_answers", return_value=False),
         patch.object(backend, "_pidproc", _pidproc_mock(None, None)) as pidproc,
     ):
         assert backend.stop_and_wait() is None
@@ -1431,10 +1432,45 @@ def test_empty_stop_with_nothing_running_is_a_clean_noop():
 def test_empty_stop_reports_a_server_it_cannot_own():
     backend = _signal_backend()
     with (
-        patch(f"{PS}.probe.port_closed_within", return_value=False),
+        patch(f"{PS}.probe.port_answers", return_value=True),
         patch.object(backend, "_pidproc", _pidproc_mock(None, None)),
     ):
         assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
+
+
+@pytest.mark.parametrize(("live", "pid"), [(None, None), (None, 4242)])
+def test_empty_stop_warns_about_an_unowned_server_at_once(live, pid):
+    """No verified pid means nothing of ours was signalled, so there is
+    nothing to wait for: one probe and the warning, never the
+    SIGNAL_STOP_TIMEOUT wait. Through `_stop_others` every other provider's
+    isolate would otherwise pay 15 s while a hand-started server is up.
+    The clock and the wait helper are patched so a regression fails fast
+    instead of waiting."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_answers", return_value=True) as answers,
+        patch(
+            f"{PS}.probe.port_closed_within",
+            side_effect=AssertionError("waited for a server it did not signal"),
+        ) as closed,
+        patch(f"{PS}.time.sleep", side_effect=AssertionError("slept")),
+        patch.object(backend, "_pidproc", _pidproc_mock(live, pid)),
+    ):
+        assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
+    answers.assert_called_once_with(MODELS)
+    closed.assert_not_called()
+
+
+def test_empty_stop_with_no_owned_server_and_a_closed_port_is_silent():
+    """The same single probe finding nothing listening: a clean no-op."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_answers", return_value=False),
+        patch(f"{PS}.probe.port_closed_within") as closed,
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)),
+    ):
+        assert backend.stop_and_wait() is None
+    closed.assert_not_called()
 
 
 def test_empty_stop_reports_a_server_that_did_not_let_go():
@@ -1452,7 +1488,7 @@ def test_empty_stop_never_signals_pid_one_or_this_process(pid):
     `PidfileProcess.stop()` could signal it (as wt refuses them)."""
     backend = _signal_backend()
     with (
-        patch(f"{PS}.probe.port_closed_within", return_value=False),
+        patch(f"{PS}.probe.port_answers", return_value=True),
         patch.object(backend, "_pidproc", _pidproc_mock(None, pid)) as pidproc,
     ):
         assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
@@ -1468,7 +1504,7 @@ def test_empty_stop_refuses_pid_one_and_this_process_with_a_real_pidfile(tmp_pat
         pidfile.write_text(str(pid))
         with (
             patch("llmbench.providers.lifecycle.pidproc.os.kill") as kill,
-            patch(f"{PS}.probe.port_closed_within", return_value=True),
+            patch(f"{PS}.probe.port_answers", return_value=False),
         ):
             assert backend.stop_and_wait() is None
         kill.assert_not_called()
@@ -1725,6 +1761,7 @@ def test_wired_limit_reads_one_sysctl_call():
         capture_output=True,
         text=True,
         check=False,
+        timeout=5.0,
     )
 
 
@@ -1817,6 +1854,37 @@ def test_the_preflight_skips_when_the_limit_is_unknown(tmp_path, capsys):
     serving, _ = _serve_check(backend, limit=None)
     assert serving is False
     assert "skipping the memory check" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(["sysctl"], 5.0),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    ],
+    ids=["hung-sysctl", "garbage-bytes"],
+)
+def test_the_preflight_skips_when_sysctl_hangs_or_answers_garbage(tmp_path, capsys, failure):
+    """A sysctl that hangs (the read is capped at 5 s, as in wt) or prints
+    bytes text=True cannot decode must not hang or raise out of
+    `already_serving` before any teardown: the preflight prints its skip
+    line and the isolate goes on (not serving, so a start follows)."""
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", side_effect=failure) as run,
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", REAL_WIRED_LIMIT),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        assert backend.already_serving(backend.resolve(PACK, ())) is False
+    assert run.call_args.kwargs["timeout"] == 5.0
+    assert (
+        "fake: skipping the memory check (cannot read iogpu.wired_limit_mb)"
+        in capsys.readouterr().err
+    )
 
 
 def test_a_row_without_model_dir_uses_the_default_pack_dir(tmp_path, monkeypatch):

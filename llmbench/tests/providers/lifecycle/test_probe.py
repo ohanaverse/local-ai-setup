@@ -1,11 +1,13 @@
 import subprocess
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError, URLError
 
 import pytest
 
 from llmbench.providers.lifecycle.envelope import LifecycleError
 from llmbench.providers.lifecycle.probe import (
     listed_ids,
+    port_answers,
     port_closed_within,
     serving_model,
     wait_for_http_ok,
@@ -96,6 +98,35 @@ def test_port_closed_within_returns_false_on_timeout():
         patch("llmbench.providers.lifecycle.probe.time.sleep"),
     ):
         assert port_closed_within("http://localhost:8003/v1/models", timeout=1.0) is False
+    mock_urlopen.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("effect", "answers"),
+    [
+        (None, True),  # a 200
+        (HTTPError("u", 404, "nf", None, None), True),  # type: ignore[arg-type]
+        (TimeoutError(), True),  # accepted, then stalled mid-read
+        (URLError(TimeoutError()), True),  # too busy to accept is not closed
+        (ConnectionRefusedError(), False),
+        (URLError(ConnectionRefusedError()), False),
+        (ConnectionResetError(), False),
+    ],
+    ids=["ok", "http-error", "read-stall", "connect-timeout", "refused", "url-refused", "reset"],
+)
+def test_port_answers_is_one_probe_by_port_closed_withins_rules(effect, answers):
+    """port_answers is a single attempt (no deadline loop, no sleep) that
+    classifies exactly as port_closed_within does: a caller with nothing to
+    wait for (a server it did not signal) asks once and moves on."""
+    mock_urlopen = _mock_urlopen(b"{}") if effect is None else MagicMock(side_effect=effect)
+    with (
+        patch("llmbench.providers.lifecycle.probe.urllib.request.urlopen", mock_urlopen),
+        patch(
+            "llmbench.providers.lifecycle.probe.time.sleep",
+            side_effect=AssertionError("port_answers must not wait"),
+        ),
+    ):
+        assert port_answers("http://localhost:8003/v1/models") is answers
     mock_urlopen.assert_called_once()
 
 

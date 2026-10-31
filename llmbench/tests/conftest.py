@@ -98,13 +98,46 @@ def _fake_provider_run(cmd, *args, **kwargs):
     return _real_subprocess_run(cmd, *args, **kwargs)
 
 
+_RealPopen = subprocess.Popen
+
+
+class _GuardedPopen(_RealPopen):  # type: ignore[type-arg,misc]
+    """`subprocess.Popen`, refusing to spawn a binary `_should_fake` names.
+
+    The subprocess.run fake never sees a direct Popen, and
+    `PidfileProcess.spawn` (pidproc.py) is one: a test that reached
+    `BACKENDS["sushi"].start(plan)` without patching `spawn` or `_pidproc`
+    would exec the real `sushi serve` (a 46 GB pack). Everything else
+    reaches the real Popen unchanged: fake scripts, git, and tests that
+    patch `PP.subprocess.Popen` themselves (theirs replaces this one).
+
+    A subclass, not a function, because it replaces `subprocess.Popen`
+    process-wide (one shared module object, like `subprocess.run` above):
+    tests subclass it (`_RecordingPopen` in test_pidriver.py), spec mocks
+    on it and subscript it (`subprocess.Popen[bytes]`), and subprocess.run
+    itself calls it.
+
+    PR #505 adds the same rule for `llmbench.benchmark.judge_core._popen`
+    (`_RealPopen` plus a `_guarded_popen` function, AssertionError on a
+    faked binary). Same `_should_fake` basename rule, same error: at that
+    merge keep this one `_RealPopen`, make `_guarded_popen` this class (a
+    drop-in callable), and keep both patches, since `judge_core._popen` is
+    bound at import and this patch does not reach it."""
+
+    def __init__(self, args: Any, *rest: Any, **kwargs: Any) -> None:
+        argv0 = str(args[0]) if isinstance(args, list | tuple) and args else str(args)
+        if _should_fake(argv0):
+            raise AssertionError(f"hermetic test tried to spawn blocked binary {argv0!r}")
+        super().__init__(args, *rest, **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _never_touch_live_providers(monkeypatch):
     """The suite must never poll a real localhost port, bounce a real
     LaunchAgent, signal a real pid, or drive a real provider binary."""
     # `urllib.request`, `subprocess` and `os` are each one shared module
-    # object: these three patches are process-wide, whatever dotted path
-    # reaches them.
+    # object: these patches are process-wide, whatever dotted path reaches
+    # them.
     monkeypatch.setattr(
         "llmbench.providers.lifecycle.probe.urllib.request.urlopen",
         MagicMock(side_effect=urllib.error.URLError("hermetic test")),
@@ -116,6 +149,10 @@ def _never_touch_live_providers(monkeypatch):
     monkeypatch.setattr(
         "llmbench.providers.lifecycle.pidproc.os.kill",
         lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "llmbench.providers.lifecycle.pidproc.subprocess.Popen",
+        _GuardedPopen,
     )
     monkeypatch.setattr(
         "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",

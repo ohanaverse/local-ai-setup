@@ -8,7 +8,8 @@ models — one new test that forgot to stub would tear down a model an agent
 was mid-request against. These tests fail loudly if that wrapper stops
 covering a binary, or if it ever stops delegating everything else to the
 real subprocess.run (which would silently neuter git/pi/pytest subprocess
-calls elsewhere in the suite).
+calls elsewhere in the suite). The same holds for a direct `subprocess.Popen`
+(`PidfileProcess.spawn`), guarded by the autouse `_GuardedPopen`.
 """
 
 from __future__ import annotations
@@ -108,3 +109,46 @@ def test_the_suite_redirects_the_sushi_pidfile(tmp_path):
     assert sushi._pidproc.pidfile == str(tmp_path / "sushi.pid")
     assert sushi._pidproc.logfile == str(tmp_path / "sushi.log")
     assert "local-ai-setup" not in sushi._pidproc.pidfile
+
+
+def test_pidproc_popen_refuses_a_faked_binary(tmp_path):
+    """`PidfileProcess.spawn` calls `subprocess.Popen` directly, which the
+    subprocess.run fake never sees: the autouse `_GuardedPopen` must refuse
+    it for every faked basename, so a test that forgot to patch `spawn`
+    cannot exec the real `sushi serve` (46 GB). The path does not exist:
+    were the guard ever gone this fails with FileNotFoundError, starting
+    nothing. No pidfile is written."""
+    from llmbench.providers.lifecycle.pidproc import PidfileProcess
+
+    proc = PidfileProcess(
+        name="sushi", pidfile=str(tmp_path / "sushi.pid"), logfile=str(tmp_path / "sushi.log")
+    )
+    for new_session in (True, False):
+        with pytest.raises(AssertionError, match="blocked binary"):
+            proc.spawn(
+                ["/Users/nobody/.local/bin/sushi", "serve", "--port", "12345"],
+                new_session=new_session,
+            )
+    assert not (tmp_path / "sushi.pid").exists()
+
+
+def test_pidproc_popen_still_spawns_a_binary_that_is_not_faked(tmp_path):
+    """The positive control: the guard delegates everything else to the real
+    Popen, so a fake-script test still gets a live child (and its pid in
+    the pidfile). The child exits on its own: `os.kill` is a no-op in this
+    suite, so `Popen.kill()` could not end it."""
+    from llmbench.providers.lifecycle.pidproc import PidfileProcess
+
+    script = tmp_path / "fake-server"
+    script.write_text("#!/bin/sh\nexec sleep 1\n")
+    script.chmod(0o755)
+    proc = PidfileProcess(
+        name="fake-server", pidfile=str(tmp_path / "f.pid"), logfile=str(tmp_path / "f.log")
+    )
+    child = proc.spawn([str(script)], new_session=True)
+    try:
+        assert isinstance(child, subprocess.Popen)
+        assert child.poll() is None
+        assert (tmp_path / "f.pid").read_text() == str(child.pid)
+    finally:
+        child.wait(timeout=10)

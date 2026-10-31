@@ -1,12 +1,13 @@
-"""One spec-driven backend for every process-style provider (mtplx, rec).
+"""One spec-driven backend for every process-style provider in the contract
+(mtplx, rec, sushi).
 
 A `ProcessSpec` from `docs/contracts/process-providers.toml` says how to run
 the server: the binary, the spawn and stop argv templates, the pidfile and
 log, the warmup budget (`warmup_seconds`), and how to tell it is ready
 (`models-list`: the model appears at /v1/models; `command-json`: a status
 command's JSON says so; `http-get`: a path answers 200, the model listed
-only once the first request loads it). The server is a plain backgrounded
-subprocess tracked by a pidfile, never a LaunchAgent.
+as loaded only once the first request loads it). The server is a plain
+backgrounded subprocess tracked by a pidfile, never a LaunchAgent.
 
 An `http-get` server lists every pack it can load, flagging the ones not in
 memory `loaded: false`: serving means listed as loaded, by the exact id, and
@@ -197,9 +198,16 @@ def _parse_wired_limit(out: str) -> int | None:
     return memsize * 3 // 4 // 1048576 if limit == 0 else limit
 
 
+# wt caps the same sysctl read at 5 s (internal/lifecycle/wiredlimit_darwin.go).
+_SYSCTL_TIMEOUT = 5.0
+
+
 def _wired_limit_mb() -> int | None:
     """The GPU wired limit in MiB, read in one sysctl call; None when it
-    cannot be read (not macOS, sysctl failed or answered oddly)."""
+    cannot be read (not macOS, sysctl failed, hung past _SYSCTL_TIMEOUT or
+    answered oddly, undecodable bytes included). It runs in
+    `already_serving`, before any teardown, so it must neither hang nor
+    raise: None prints the preflight's skip line instead."""
     if sys.platform != "darwin":
         return None
     try:
@@ -208,8 +216,10 @@ def _wired_limit_mb() -> int | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=_SYSCTL_TIMEOUT,
         )
-    except OSError:
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        # ValueError covers UnicodeDecodeError from text=True on garbage.
         return None
     return _parse_wired_limit(done.stdout) if done.returncode == 0 else None
 
@@ -721,6 +731,12 @@ class ProcessServerBackend(PidfileTrackedBackend):
         still answering is reported as one llmbench cannot own when no
         verified pid was found, else as one that did not let go.
 
+        With no verified pid nothing of ours was signalled, so there is
+        nothing to wait for: one probe (`probe.port_answers`) and the
+        "stop it yourself" warning at once. Otherwise every other
+        provider's isolate (`_stop_others`) would pay SIGNAL_STOP_TIMEOUT
+        while a hand-started server is up.
+
         Weaker than wt: identity is the name in the pid's `ps` line (and a
         pid `ps` cannot describe counts as a match), SIGTERM only, no
         process group, no SIGKILL."""
@@ -730,10 +746,12 @@ class ProcessServerBackend(PidfileTrackedBackend):
         pid = self._pidproc.read_pid()
         if pid is None or signalable(pid):
             self._pidproc.stop()
+        if not owned:
+            if probe.port_answers(addr.health_url):
+                return f"{self._unowned(addr)}; stop it yourself"
+            return None
         if probe.port_closed_within(addr.health_url, timeout=SIGNAL_STOP_TIMEOUT):
             return None
-        if not owned:
-            return f"{self._unowned(addr)}; stop it yourself"
         return f"{self.spec.binary} still listening on port {addr.port}"
 
     def _lingering_status(
