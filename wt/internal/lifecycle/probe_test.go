@@ -22,12 +22,14 @@ import (
 // config.yaml (the public wrappers are covered in wrappers_test.go instead).
 // runOut answers "not stubbed" so a readiness check never shells out to a
 // binary on the developer's machine; a test that reads one sets it.
+// wiredLimit reports no limit, so the preflight never reads the real sysctl.
 func testEnv() *env {
 	e := defaultEnv()
 	e.onOccupantStopped = nil
 	e.runOut = func(context.Context, string, ...string) ([]byte, error) {
 		return nil, errors.New("runOut not stubbed")
 	}
+	e.wiredLimit = func() (int64, bool, error) { return 0, false, nil }
 	e.pollInterval = 5 * time.Millisecond
 	e.warmupTimeout = 300 * time.Millisecond
 	e.loadTimeout = 300 * time.Millisecond

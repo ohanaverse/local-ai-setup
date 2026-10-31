@@ -519,6 +519,14 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	if adopt {
 		return nil
 	}
+	// A check that can refuse the start runs before anything is asked or
+	// stopped (wiredlimit.go): a start that cannot succeed must not first
+	// stop the user's other models.
+	if pf, ok := b.(preflighter); ok {
+		if err := pf.preflight(ctx, e, cfg, t); err != nil {
+			return err
+		}
+	}
 	// Residents are read only when there is a question to ask or an approved
 	// stop to make: a Decided answer with nothing to stop (every caller
 	// today) would throw them away, and reading them can cost a pidfile read
