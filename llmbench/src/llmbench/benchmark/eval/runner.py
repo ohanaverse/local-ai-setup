@@ -39,6 +39,7 @@ from llmbench.benchmark.eval.suite import (
 )
 from llmbench.benchmark.isolation import row_warm_env
 from llmbench.benchmark.judge_core import (
+    ClaudeCliJudgeTransport,
     JudgeOutcome,
     JudgeScore,
     JudgeTransport,
@@ -75,6 +76,9 @@ def _default_judge_transport_factory(judge_cfg) -> JudgeTransport:
     """Takes a JudgeConfig (not a full Suite) so both run_suite (passes
     suite.judge) and rejudge_run (passes a JudgeConfig reconstructed from a
     persisted run.toml, with no Suite in hand) can share this."""
+    if judge_cfg.route == "claude-cli":
+        # Subscription via the claude CLI: no OpenRouter key, no LiteLLM apiKey.
+        return ClaudeCliJudgeTransport(model=judge_cfg.model)
     if judge_cfg.route == "openrouter":
         key = openrouter_key(LITELLM_PLIST)
         if not key:

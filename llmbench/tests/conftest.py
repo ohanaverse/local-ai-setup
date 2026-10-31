@@ -56,8 +56,10 @@ _real_subprocess_run = subprocess.run
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request (`rec stop` / `rec serve` likewise:
-# rec is installed on the developer's machine); `wt warm` would load one.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "ollama", "wt"})
+# rec is installed on the developer's machine); `wt warm` would load one; `claude` would spend the developer's real
+# subscription (the eval judge's claude-cli route). Fake-CLI tests must
+# therefore name their stand-in script anything but `claude`.
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "ollama", "wt", "claude"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 
@@ -97,10 +99,23 @@ def _fake_provider_run(cmd, *args, **kwargs):
     return _real_subprocess_run(cmd, *args, **kwargs)
 
 
+_RealPopen = subprocess.Popen
+
+
+def _guarded_popen(argv, *args, **kwargs):
+    """judge_core spawns the claude CLI with Popen (it needs to kill the
+    process group on timeout), which the subprocess.run fake never sees."""
+    argv0 = str(argv[0]) if isinstance(argv, list | tuple) and argv else str(argv)
+    if _should_fake(argv0):
+        raise AssertionError(f"hermetic test tried to spawn blocked binary {argv0!r}")
+    return _RealPopen(argv, *args, **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _never_touch_live_providers(monkeypatch):
     """The suite must never poll a real localhost port, bounce a real
     LaunchAgent, signal a real pid, or drive a real provider binary."""
+    monkeypatch.setattr("llmbench.benchmark.judge_core._popen", _guarded_popen)
     # `urllib.request`, `subprocess` and `os` are each one shared module
     # object: these three patches are process-wide, whatever dotted path
     # reaches them.

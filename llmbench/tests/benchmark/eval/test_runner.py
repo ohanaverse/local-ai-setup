@@ -1069,3 +1069,45 @@ def test_run_suite_generates_rows_with_suite_sampling(
 
     assert mock_generate.call_args.kwargs["temperature"] == 0.6
     assert mock_transport.call_args.kwargs["extra_params"] == {"top_p": 0.95, "top_k": 20}
+
+
+def test_default_judge_factory_claude_cli_reads_no_credentials(monkeypatch):
+    # claude-cli runs on the subscription: it must not touch the OpenRouter key
+    # or ~/.pi/agent/models.json (the old fall-through would have).
+    from llmbench.benchmark.eval import runner as runner_mod
+    from llmbench.benchmark.judge_core import ClaudeCliJudgeTransport
+
+    def boom(*args, **kwargs):
+        raise AssertionError("credentials must not be read")
+
+    monkeypatch.setattr(runner_mod, "openrouter_key", boom)
+    monkeypatch.setattr(runner_mod, "litellm_credentials", boom)
+    cfg = JudgeConfig(
+        model="anthropic/claude-opus-5-5",
+        temperature=0.0,
+        samples=1,
+        max_attempts=1,
+        route="claude-cli",
+    )
+    transport = runner_mod._default_judge_transport_factory(cfg)
+    assert isinstance(transport, ClaudeCliJudgeTransport)
+    assert transport.model == "anthropic/claude-opus-5-5"  # normalised by the argv builder
+
+
+def test_default_judge_factory_litellm_route_unchanged(monkeypatch):
+    from llmbench.benchmark.eval import runner as runner_mod
+    from llmbench.benchmark.judge_core import LiteLLMJudgeTransport
+
+    monkeypatch.setattr(runner_mod, "litellm_credentials", lambda path: ("http://x/v1", "k"))
+    cfg = JudgeConfig(model="m", temperature=0.0, samples=1, max_attempts=1, route="litellm")
+    transport = runner_mod._default_judge_transport_factory(cfg)
+    assert isinstance(transport, LiteLLMJudgeTransport)
+
+
+def test_default_judge_factory_openrouter_needs_key(monkeypatch):
+    from llmbench.benchmark.eval import runner as runner_mod
+
+    monkeypatch.setattr(runner_mod, "openrouter_key", lambda plist: None)
+    cfg = JudgeConfig(model="m", temperature=0.0, samples=1, max_attempts=1, route="openrouter")
+    with pytest.raises(BenchmarkError, match="OPENROUTER_API_KEY"):
+        runner_mod._default_judge_transport_factory(cfg)

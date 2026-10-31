@@ -10,7 +10,8 @@ Design rationale: `docs/superpowers/specs/2026-09-17-capability-eval-benchmark-d
 
 - Everything in [05-benchmarks](05-benchmarks.md)'s Prerequisites (no other local model loaded, backends healthy, llmbench runnable via `uv run` — the provider lifecycle runs in-process in `llmbench eval`, no isolation helpers on PATH needed).
 - A working LiteLLM apiKey seeded into `~/.pi/agent/models.json` for any `route = "litellm"` row or judge — same requirement as [09-agent-benchmarks](09-agent-benchmarks.md).
-- `OPENROUTER_API_KEY` available if the suite's `[judge]` or any row uses `route = "openrouter"`.
+- `OPENROUTER_API_KEY` available if the suite's `[judge]` or any row uses `route = "openrouter"`. A `[judge]` with `route = "claude-cli"` does not use it.
+- For `[judge] route = "claude-cli"`: the `claude` CLI on `PATH`, logged in with a Claude subscription (`claude auth login`; check with `claude auth status`). No OpenRouter key and no LiteLLM apiKey are read for this route. A coding-only sweep never calls the judge, so it needs none of this.
 - `uv sync --extra eval` from `llmbench/` — the `coding` category needs EvalPlus, which is not installed by plain `make install`. `evalplus_runner` runs the `evalplus.evaluate` console script that sits next to the running interpreter (the venv's `bin/`), and falls back to a bare-name `PATH` lookup only when no such file exists — `uv sync --extra eval` puts it there (not `uvx`, which would bypass the extra entirely).
 
 ## TL;DR
@@ -32,6 +33,16 @@ A category lives under `benchmarks/tasks/eval/<name>/` — `items.toml` (the fix
 ### 2. Write or reuse a suite
 
 A suite (`benchmarks/suites/eval-*.toml`) picks a `[judge]`, an optional `[coding]` override (dataset/limit), an optional `[generation]` table (how the rows themselves are sampled: `temperature`, plus `top_p`/`top_k`, sent only when set; without it rows run greedy at temperature 0), and a `[[rows]]` list (model + route, optionally a per-row `categories =` narrowing). `eval-sweep.toml` is the reference suite. Always `--dry-run` a new/edited suite first.
+
+The `[judge]` table's `route` picks how the judge model is reached:
+
+| `route` | Credential | `temperature` | `model` naming |
+|---|---|---|---|
+| `litellm` | LiteLLM apiKey in `~/.pi/agent/models.json` | sent | LiteLLM model name |
+| `openrouter` | `OPENROUTER_API_KEY` | sent | OpenRouter id, e.g. `anthropic/claude-opus-5` |
+| `claude-cli` | the logged-in `claude` CLI (subscription), no key | **ignored** | `claude --model` value: an alias (`opus`, `sonnet`, `haiku`) or a full name such as `claude-opus-5-5`; a leading `anthropic/` is stripped |
+
+`claude-cli` exists for the eval judge only; the agent benchmark's judge does not offer it. It runs `claude -p` headless, one process per judge call, with the prompt on stdin, `--output-format json`, `--tools ""` (the judge cannot act), no session saved, and no host settings, MCP servers or slash commands loaded. It runs in a fresh empty temp directory so no `CLAUDE.md` is discovered. `--bare` is deliberately not used: it never reads the subscription login.
 
 ### 3. Run it
 
@@ -56,7 +67,7 @@ uv run llmbench eval show --latest
 uv run llmbench eval judge --latest --root ../benchmarks/tasks/eval [--row <row-dir>]...
 ```
 
-Re-scores every judged category's items from their persisted `response.txt` — no regeneration, no isolation. Coding has nothing to re-judge (EvalPlus's pass@1 is deterministic).
+Re-scores every judged category's items from their persisted `response.txt` — no regeneration, no isolation. Coding has nothing to re-judge (EvalPlus's pass@1 is deterministic). The judge route and model come from the run's `run.toml`, so a `claude-cli` run re-judges through `claude-cli`. If a run hit `JUDGE_FAIL` items part-way (a subscription usage limit, a logged-out session), fix the cause and run `eval judge --latest` to score them without regenerating. Unlike `eval run`, `eval judge` does not preflight the CLI, so a missing or logged-out `claude` shows up as `JUDGE_FAIL` anomalies for each judged category.
 
 ## Probing reasoning length across engines
 
@@ -130,6 +141,12 @@ Reading `report.md`: one table per prompt, one row per target, then the first 20
 - **`omlx` 4-bit/6-bit disambiguation is the same as every other suite here** — use a row's `provider =` override, and `direct_model =` for the server-side basename. See [05-benchmarks](05-benchmarks.md) Gotchas.
 - **A row's `categories =` narrows which categories that row runs**, independent of `--category`'s CLI-level narrowing — both apply, intersected.
 - **Thinking models can loop under greedy decoding.** Rows default to temperature 0; a Qwen3.x row can then repeat itself inside its thinking until the server's token cap cuts it off, and the judge scores the leftover thinking. When comparing such models, set the vendor's recommended sampling in `[generation]` for every row of the suite, and compare runs only when their `run.toml` `[suite.generation]` match. Engines also cap a request at different lengths (omlx: `sampling.max_tokens` and `max_context_window` in `~/.omlx/settings.json`), and the thinking counts against the cap.
+- **`claude-cli` ignores `temperature`.** The CLI has no temperature control; the `[judge] temperature` value is accepted and not used. `max_attempts` and `samples` still apply.
+- **`claude-cli` spends subscription usage, which has limits.** Every judge call counts against the account's usage limits, and `samples = 3` triples that. Start with `samples = 1`. When the limit is hit the CLI reports an error, the transport retries the call once after a short backoff, and then judging ends for the rest of that category: its unjudged items are marked `judge_fail`, the report shows `JUDGE_FAIL` for the cell, and `eval judge --latest` re-scores them.
+- **A `claude-cli` model alias can drift.** `opus`/`sonnet`/`haiku` resolve to whatever model the CLI currently maps them to, and the resolved name is not recorded in the results. Pin a full model name (e.g. `claude-opus-5-5`) in `[judge] model` so runs stay comparable; compare runs only when their `run.toml` `[suite.judge]` match.
+- **`claude-cli` sends the judged responses to Anthropic through the logged-in account.** Do not point it at a login that should not see the prompts and model answers.
+- **`claude-cli` scrubs the environment.** The `claude` child is started without any `ANTHROPIC_*` or `CLAUDE_CODE_*` variable (e.g. the `ANTHROPIC_BASE_URL` that `wt` sets for LiteLLM, or an `ANTHROPIC_API_KEY`), so it cannot be diverted off the subscription. Everything else (`HOME`, `PATH`, ...) is kept; the login lives in the macOS keychain.
+- **`claude-cli` failure modes.** A missing `claude` executable and a "Not logged in" reply fail at once (the message says to run `claude auth login`); a timeout (300 s), non-zero exit, or unparsable output is retried once. Error messages carry the CLI's own text (truncated), never the prompt.
 - **Judging (and coding's EvalPlus grading) both cost real time/spend per item** — a 5-category sweep across many rows adds up; use `--category`/`--row` to scope a suite down while iterating on content or rubrics.
 - **`coding`'s shipped config runs the FULL dataset — keep it that way (or set `limit` to the full dataset size).** EvalPlus 0.3.1's grading step requires every problem in the FULL dataset (164 for humaneval) to have a sample before it computes pass@k — `--id-range`/`limit` only bounds what gets *generated*, not what grading demands — so a `limit` smaller than the dataset size makes the `coding` category fail cleanly with a `CodingResult.error` every time, not a score. The reference suite and the coding category both ship with no `limit` for exactly this reason; only set one (a follow-up may address the gap) if you accept an EVALPLUS_ERROR cell in the report.
 

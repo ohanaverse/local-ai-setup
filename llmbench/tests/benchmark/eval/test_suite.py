@@ -371,3 +371,137 @@ def test_load_suite_refuses_bad_generation(tmp_path, table, message):
     )
     with pytest.raises(BenchmarkError, match=message):
         load_suite(_write(tmp_path, body), _registry())
+
+
+# --- claude-cli judge route -------------------------------------------------
+
+CLAUDE_CLI_BODY = SUITE_BODY.replace(
+    'route = "openrouter"\n\n[coding]', 'route = "claude-cli"\n\n[coding]'
+)
+
+
+def _claude_cli_suite(tmp_path):
+    return load_suite(_write(tmp_path, CLAUDE_CLI_BODY), _registry())
+
+
+def _local_row() -> RowConfig:
+    return RowConfig(
+        label="r", model_id="ollama/a", route="litellm", provider_id="ollama", categories=None
+    )
+
+
+def test_load_suite_accepts_claude_cli_judge_route(tmp_path):
+    assert _claude_cli_suite(tmp_path).judge.route == "claude-cli"
+
+
+def test_load_suite_rejects_unknown_judge_route_listing_claude_cli(tmp_path):
+    body = SUITE_BODY.replace('route = "openrouter"\n\n[coding]', 'route = "bogus"\n\n[coding]')
+    with pytest.raises(BenchmarkError, match=r"\[judge\] route must be one of.*claude-cli"):
+        load_suite(_write(tmp_path, body), _registry())
+
+
+def test_preflight_claude_cli_needs_no_openrouter_key(tmp_path, monkeypatch):
+    # The subscription route must not be blocked on (or read) an OpenRouter key.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("llmbench.benchmark.eval.suite.LITELLM_PLIST", tmp_path / "missing.plist")
+    monkeypatch.setattr("llmbench.benchmark.eval.suite.shutil.which", lambda name: "/x/claude")
+    monkeypatch.setattr("llmbench.benchmark.eval.suite._claude_logged_in", lambda exe: True)
+    suite = _claude_cli_suite(tmp_path)
+    preflight(suite, _registry(), rows=[_local_row()], judge_route_active=True)
+    preflight(suite, _registry(), rows=[_local_row()])  # None: conservatively active
+
+
+def test_preflight_claude_cli_missing_cli_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr("llmbench.benchmark.eval.suite.shutil.which", lambda name: None)
+    suite = _claude_cli_suite(tmp_path)
+    with pytest.raises(BenchmarkError, match="claude CLI on PATH"):
+        preflight(suite, _registry(), rows=[_local_row()], judge_route_active=True)
+
+
+def test_preflight_claude_cli_not_logged_in_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr("llmbench.benchmark.eval.suite.shutil.which", lambda name: "/x/claude")
+    monkeypatch.setattr("llmbench.benchmark.eval.suite._claude_logged_in", lambda exe: False)
+    suite = _claude_cli_suite(tmp_path)
+    with pytest.raises(BenchmarkError, match="claude auth login"):
+        preflight(suite, _registry(), rows=[_local_row()])
+
+
+def test_preflight_claude_cli_ignored_for_coding_only_selection(tmp_path, monkeypatch):
+    # A coding-only sweep never calls the judge, so it must not need the CLI.
+    def boom(*args, **kwargs):
+        raise AssertionError("claude CLI must not be consulted")
+
+    monkeypatch.setattr("llmbench.benchmark.eval.suite.shutil.which", boom)
+    suite = _claude_cli_suite(tmp_path)
+    preflight(suite, _registry(), rows=[_local_row()], judge_route_active=False)
+
+
+def test_preflight_claude_cli_judge_with_openrouter_row_still_needs_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("llmbench.benchmark.eval.suite.LITELLM_PLIST", tmp_path / "missing.plist")
+    monkeypatch.setattr("llmbench.benchmark.eval.suite.shutil.which", lambda name: "/x/claude")
+    monkeypatch.setattr("llmbench.benchmark.eval.suite._claude_logged_in", lambda exe: True)
+    suite = _claude_cli_suite(tmp_path)
+    row = RowConfig(
+        label="or", model_id="ollama/a", route="openrouter", provider_id="ollama", categories=None
+    )
+    with pytest.raises(BenchmarkError, match="OPENROUTER_API_KEY"):
+        preflight(suite, _registry(), rows=[row], judge_route_active=True)
+
+
+def _fake_status(tmp_path, body: str, *, mode: str = "echo"):
+    # A real executable (not named `claude`, which the hermetic guard fakes)
+    # standing in for `claude auth status`; records the env it was given.
+    script = tmp_path / "fake_cli.py"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys, time\n"
+        f"open({str(tmp_path / 'env.json')!r}, 'w').write(\n"
+        "    repr(sorted(k for k in os.environ if k.startswith(('ANTHROPIC_', 'CLAUDE_CODE_')))))\n"
+        f"if {mode!r} == 'slow':\n    time.sleep(30)\n"
+        f"sys.stdout.write({body!r})\n"
+        f"sys.exit({1 if mode == 'fail' else 0})\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return str(script)
+
+
+@pytest.mark.parametrize(
+    ("body", "mode", "expected"),
+    [
+        ('{"loggedIn": true, "authMethod": "claude.ai"}', "echo", True),
+        ('{"loggedIn": false}', "echo", False),
+        ("", "echo", False),
+        ("not json", "echo", False),
+        ("[1]", "echo", False),
+        ('{"loggedIn": "yes"}', "echo", False),
+    ],
+)
+def test_claude_logged_in_parses_auth_status(tmp_path, body, mode, expected):
+    from llmbench.benchmark.eval.suite import _claude_logged_in
+
+    assert _claude_logged_in(_fake_status(tmp_path, body, mode=mode)) is expected
+
+
+def test_claude_logged_in_scrubs_env_and_handles_missing_executable(tmp_path, monkeypatch):
+    from llmbench.benchmark.eval.suite import _claude_logged_in
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-not-real")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    exe = _fake_status(tmp_path, '{"loggedIn": true}')
+    assert _claude_logged_in(exe) is True
+    assert (tmp_path / "env.json").read_text() == "[]"
+    assert _claude_logged_in(str(tmp_path / "does-not-exist")) is False
+
+
+def test_claude_logged_in_timeout_is_not_logged_in(tmp_path, monkeypatch):
+    import subprocess
+    from unittest import mock
+
+    from llmbench.benchmark.eval import suite as suite_mod
+
+    with mock.patch.object(
+        suite_mod.subprocess, "run", side_effect=subprocess.TimeoutExpired("claude", 30)
+    ):
+        assert suite_mod._claude_logged_in("claude") is False

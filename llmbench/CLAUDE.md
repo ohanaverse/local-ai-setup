@@ -43,6 +43,7 @@ The suite runs in about 15 seconds and is safe to run while agents use the local
 | Results | `~/.config/local-ai/benchmarks/<run-id>/` | `--results-dir` |
 | Latest-run pointers | `~/.config/local-ai/benchmarks/latest.toml` | `LLMBENCH_LATEST` |
 | OpenRouter key | `OPENROUTER_API_KEY`, else the LiteLLM LaunchAgent plist | |
+| Claude subscription (eval judge `route = "claude-cli"`) | `claude` CLI login (`claude auth login`; credentials in the macOS keychain, checked with `claude auth status`); reads no key from this table; needs `claude` on `PATH` | |
 | LiteLLM url and key | `~/.pi/agent/models.json` | |
 
 - `registry.py` only reads (accepts unknown top-level keys; refuses a dangling registry symlink). `state.py` is the only reader of the four pointers in `latest.toml`; a corrupt file reads as no pointers.

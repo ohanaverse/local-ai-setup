@@ -16,9 +16,9 @@ One level up, in `providers/`: `process_spec.py` is llmbench's only reader of `.
 
 ## Benchmark subsystem module map (`benchmark/`)
 
-- `benchmark/` — `cli.py` (`benchmark_app`: `list-workloads`, `run`, `show-results`), `isolation.py`, `runner.py`, `results.py`, `workloads/`; shared helpers `runmeta.py` (`git_sha()`), `errors.py` (`RunSavedButRestoreFailed`), `judge_core.py` (strict-JSON rubric scoring, retry-on-malformed, multi-sample median), and `_routes.py` (OpenRouter key resolution, then the LiteLLM LaunchAgent plist; LiteLLM apiKey/baseUrl from `~/.pi/agent/models.json`).
+- `benchmark/` — `cli.py` (`benchmark_app`: `list-workloads`, `run`, `show-results`), `isolation.py`, `runner.py`, `results.py`, `workloads/`; shared helpers `runmeta.py` (`git_sha()`), `errors.py` (`RunSavedButRestoreFailed`), `judge_core.py` (strict-JSON rubric scoring, retry-on-malformed, multi-sample median; `ClaudeCliJudgeTransport` runs `claude -p` as a subprocess with the prompt on stdin, a scratch cwd and the env minus `ANTHROPIC_*`/`CLAUDE_CODE_*`, and uses nothing from `_routes.py`), and `_routes.py` (OpenRouter key resolution, then the LiteLLM LaunchAgent plist; LiteLLM apiKey/baseUrl from `~/.pi/agent/models.json`).
 - `benchmark/agent/` — `suite.py`, `task.py`, `workspace.py`, `pidriver.py`, `gates.py` (nine-gate taxonomy), `judge.py`, `report.py`, `runner.py`, `cli.py`. `gates.toml`'s `tests_dir` must name a real subdirectory, never `"."`/`""`: `task.py::load_task` rejects them because gates 6/7 compare `Path.parts` tuples and an empty tuple is a prefix of every path.
-- `benchmark/eval/` — `category.py`, `suite.py` (deliberately parallel to `agent/suite.py`, not shared), `judged_runner.py`, `evalplus_runner.py` (reports EvalPlus's "+"/hardened pass@1, not base), `runner.py` (incl. `rejudge_run` from persisted `response.txt`), `report.py`, `cli.py`.
+- `benchmark/eval/` — `category.py`, `suite.py` (deliberately parallel to `agent/suite.py`, not shared; its `JUDGE_ROUTES` includes `claude-cli`, which `runner.py`'s `_default_judge_transport_factory` handles in an explicit branch), `judged_runner.py`, `evalplus_runner.py` (reports EvalPlus's "+"/hardened pass@1, not base), `runner.py` (incl. `rejudge_run` from persisted `response.txt`), `report.py`, `cli.py`.
 
 ## Test layout
 
