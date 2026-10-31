@@ -96,13 +96,29 @@ cannot be read at all stops it.
 
 Creates the registry when it is missing and adds the provider rows wt needs
 and the registry lacks. It never changes a row that exists. `wt model init
---help` lists which rows, and why.
+--help` lists which rows, and why. The `sushi` row is written when the `sushi`
+command is on PATH:
+
+```toml
+[[providers]]
+id = "sushi"
+name = "Sushi"
+location = "local"
+model_dir = "~/.sushi/models"
+
+[providers.auth]
+type = "none"
+base_url = "http://127.0.0.1:12345/v1"
+```
+
+It has no `protocols` and no `secret_ref`.
 
 ## `wt model add <provider> <name> --family <family>`
 
 `<name>` is the model as its provider lists it: an ollama tag (`qwen3:8b`), the
-name of an omlx model directory, an mtplx `org/name`, or a cloud provider's
-model id. Pull or download a local model with its provider's own tool, before
+name of an omlx model directory, an mtplx `org/name`, a Sushi pack `org/pack`
+(`beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, written to `model_name`
+exactly as given), or a cloud provider's model id. Pull or download a local model with its provider's own tool, before
 or after adding it; `wt model list` shows what is on disk and unregistered as
 `STATUS new`.
 
@@ -122,14 +138,17 @@ and sets it to `curated` once it does ([wt-cloud-sync.md](wt-cloud-sync.md#model
 
 The id is derived: for a local provider it is the id wt already lists the
 model under when it finds it unregistered (`ollama/qwen3:8b`,
-`omlx/<directory>`, `mtplx/<org>/<name>`; an `omlx-6bit` model is `omlx/…`), so
+`omlx/<directory>`, `mtplx/<org>/<name>`, `sushi/<org>/<pack>`; an `omlx-6bit` model is `omlx/…`), so
 registering a model does not rename it. For any other provider it is
 `<provider>/<name>` with each `/` in the name written `--`
 (`openrouter/qwen--qwen3.8-27b`). The id, the provider and the name cannot be
 changed afterwards: usage history, rotation and launch profiles key on the id.
+A Sushi pack registered with `--id sushi/<org>--<pack>` (the `--` spelling a
+cloud id gets) is the id llmbench's `eval-sushi-vs-ollama` suite names for the
+Qwen3.8-Flash-Next pack.
 
 In the same write wt adds the default provider row the model needs when it is
-missing — for ollama, omlx, mtplx and openrouter (openrouter's holds no key,
+missing — for ollama, omlx, mtplx, rec, sushi and openrouter (openrouter's holds no key,
 only `auth.secret_ref = "OPENROUTER_API_KEY"`, the environment variable wt
 reads the key from) — and any other row `wt model init` would add. A provider
 wt has no default row for is refused: add its `[[providers]]` block to
@@ -141,7 +160,9 @@ For an ollama model wt runs `ollama show <name>` once, against the address of
 the registry's ollama provider, and records `model_info.supports_function_calling`
 and `model_info.supports_vision` when ollama lists the capability; wt copies
 `model_info` into the model's LiteLLM route. If the lookup fails the model is
-added without them and a warning says so.
+added without them and a warning says so. wt looks nothing up for any other
+provider, a Sushi pack included: a `model_info` table (such as
+`supports_function_calling`) is written by hand in `registry.toml`.
 
 ### An mlx_lm_server pairing
 
