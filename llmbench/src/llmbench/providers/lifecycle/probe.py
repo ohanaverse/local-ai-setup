@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from typing import Literal
 
-from ...local_process import http_models_ids
+from ...local_process import http_models_ids, models_body_ids
 from .envelope import LifecycleError
 
 # bash: wait_for_port_closed url 5 = 5 x (1s curl + 0.2s sleep)
@@ -115,24 +115,16 @@ def _refusal_detail(exc: urllib.error.HTTPError, key: str | None) -> str:
     return " ".join(text.split())
 
 
-def _ids_from(data: object) -> list[str]:
-    """Model ids from a parsed OpenAI-compatible /v1/models body (the same
-    rule as `local_process.http_models_ids`)."""
-    items = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(items, list):
-        return []
-    return [
-        item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ]
-
-
-def _model_ids(models_url: str, key: str | None, *, refused_is_final: bool) -> list[str]:
+def _model_ids(
+    models_url: str, key: str | None, *, refused_is_final: bool, loaded_only: bool = True
+) -> list[str]:
     """Ids listed at `models_url`, [] on any failure. Without a key this is
     `http_models_ids`, unchanged. With one, a 401/403 raises
     `WarmupRefusedError` when `refused_is_final` (the key is wrong and
-    waiting will not change that) and reads as [] otherwise."""
+    waiting will not change that) and reads as [] otherwise. `loaded_only`
+    is `models_body_ids`'s."""
     if key is None:
-        return http_models_ids(models_url)
+        return http_models_ids(models_url, loaded_only=loaded_only)
     try:
         with urllib.request.urlopen(_target(models_url, key), timeout=2.0) as resp:  # noqa: S310 — localhost probe
             data = json.loads(resp.read().decode())
@@ -144,7 +136,7 @@ def _model_ids(models_url: str, key: str | None, *, refused_is_final: bool) -> l
         return []
     except (OSError, ValueError):
         return []
-    return _ids_from(data)
+    return models_body_ids(data, loaded_only=loaded_only)
 
 
 def _lists(ids: list[str], model: str) -> bool:
@@ -253,11 +245,44 @@ def wait_for_model(
     raise LifecycleError(f"timed out waiting for {models_url} to serve {model}")
 
 
-def serving_model(models_url: str, model: str, *, key: str | None = None) -> bool:
-    """True when `models_url` already lists `model` (same lenient match as
-    `wait_for_model`). Any error — a down or wedged server, or a refused
-    key — reads as "not serving", the safe fallback; this never raises."""
-    return _lists(_model_ids(models_url, key, refused_is_final=False), model)
+def serving_model(
+    models_url: str, model: str, *, key: str | None = None, exact: bool = False
+) -> bool:
+    """True when `models_url` already lists `model` as loaded (same lenient
+    match as `wait_for_model`; `exact=True` tests plain membership instead).
+    Any error — a down or wedged server, or a refused key — reads as "not
+    serving", the safe fallback; this never raises."""
+    ids = _model_ids(models_url, key, refused_is_final=False)
+    return model in ids if exact else _lists(ids, model)
+
+
+def listed_ids(models_url: str, *, key: str | None = None) -> list[str]:
+    """Every id `models_url` lists, loaded or not ([] on any failure, never
+    raises): an unloaded pack still counts as listed."""
+    return _model_ids(models_url, key, refused_is_final=False, loaded_only=False)
+
+
+def wait_for_http_ok(
+    url: str,
+    *,
+    proc: subprocess.Popen | None = None,
+    timeout: float = MODEL_LOAD_TIMEOUT,
+    key: str | None = None,
+) -> None:
+    """Poll `url` until it answers 200, the serve process dies (when `proc`
+    is given), or the deadline passes. An HTTP error status or a connection
+    failure is retried."""
+    for _ in _deadline_loop(timeout):
+        if proc is not None and proc.poll() is not None:
+            raise LifecycleError(f"serve process exited during startup (exit {proc.returncode})")
+        try:
+            with urllib.request.urlopen(_target(url, key), timeout=2.0) as resp:  # noqa: S310 — localhost probe
+                resp.read()
+            return
+        except OSError:  # HTTPError is an OSError: not ready yet
+            pass
+        time.sleep(1.0)
+    raise LifecycleError(f"timed out waiting for {url} to answer 200")
 
 
 def warmup(
@@ -267,6 +292,7 @@ def warmup(
     health_url: str,
     timeout: float = 300.0,
     key: str | None = None,
+    request_timeout: float = 120.0,
 ) -> None:
     """Warm a model into GPU/RAM: poll `health_url` for liveness (matching
     bash's `curl -m 2` probe), then POST a 1-token chat completion to
@@ -276,6 +302,9 @@ def warmup(
     `/api/tags` while its chat completions go to `/v1/chat/completions`) —
     today's mtplx-only `_warmup` conflated the two because mtplx's health
     check was baked in elsewhere.
+
+    `timeout` bounds the whole poll; `request_timeout` caps each chat request
+    (a cold load can outlast the 120 s default).
     """
     payload = json.dumps(
         {
@@ -311,7 +340,7 @@ def warmup(
             continue
         try:
             req = urllib.request.Request(chat_url, data=payload, headers=chat_headers)
-            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=request_timeout) as resp:  # noqa: S310
                 body = resp.read().decode()
             # MTPLX (and others) may serialize with spaces between keys and
             # values (e.g. `"object": "chat.completion"`); tolerate
