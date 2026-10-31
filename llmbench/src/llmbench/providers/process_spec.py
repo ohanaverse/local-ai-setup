@@ -108,8 +108,8 @@ def _parse_ready(raw: Any, where: str) -> Ready:
         endpoint_path=str(_get(raw, "endpoint_path", w)),
     )
     if kind == "http-get":
-        if not ready.path:
-            raise ProcessSpecError(f"{w}: kind `http-get` needs a non-empty `path`")
+        if not ready.path.startswith("/"):
+            raise ProcessSpecError(f"{w}: kind `http-get` needs a `path` starting with /")
         if ready.command:
             raise ProcessSpecError(f"{w}: kind `http-get` takes an empty `command`")
     return ready
@@ -121,7 +121,7 @@ def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
     def s(key: str) -> str:
         return str(_get(raw, key, where))
 
-    return ProcessSpec(
+    spec = ProcessSpec(
         family=s("family"),
         provider=s("provider"),
         binary=s("binary"),
@@ -141,6 +141,13 @@ def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
         warmup_seconds=_int(raw, "warmup_seconds", where),
         ready=_parse_ready(raw.get("ready"), where),
     )
+    if "" in spec.stop:
+        raise ProcessSpecError(f"{where}: `stop` must not contain empty arguments")
+    if not spec.stop and not (spec.pidfile and spec.subcommand and spec.port_flag):
+        raise ProcessSpecError(
+            f"{where}: empty `stop` needs non-empty `pidfile`, `subcommand` and `port_flag`"
+        )
+    return spec
 
 
 def process_specs() -> dict[str, ProcessSpec]:

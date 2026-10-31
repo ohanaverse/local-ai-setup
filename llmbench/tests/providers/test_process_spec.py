@@ -194,3 +194,43 @@ def test_http_get_takes_no_command(monkeypatch, tmp_path):
     _use(monkeypatch, tmp_path, HTTP_GET.replace("command = []", 'command = ["status"]'))
     with pytest.raises(ps.ProcessSpecError, match=r"process\[0\].ready: .*`command`"):
         ps.process_specs()
+
+
+@pytest.mark.parametrize("path", ["health", "x"])
+def test_http_get_path_must_start_with_a_slash(monkeypatch, tmp_path, path):
+    _use(monkeypatch, tmp_path, HTTP_GET.replace('path = "/health"', f'path = "{path}"'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\].ready: .*starting with /"):
+        ps.process_specs()
+
+
+def test_http_get_path_with_a_slash_is_accepted(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET)
+    assert ps.process_specs()["x"].ready.path == "/health"
+
+
+EMPTY_STOP = GOOD.replace('stop = ["stop"]', "stop = []")
+
+
+@pytest.mark.parametrize(
+    "line, field",
+    [
+        ('pidfile = "/tmp/x.pid"', "pidfile"),
+        ('subcommand = "serve"', "subcommand"),
+        ('port_flag = "--port"', "port_flag"),
+    ],
+)
+def test_empty_stop_requires_pidfile_subcommand_and_port_flag(monkeypatch, tmp_path, line, field):
+    _use(monkeypatch, tmp_path, EMPTY_STOP.replace(line, f'{field} = ""'))
+    with pytest.raises(ps.ProcessSpecError, match=rf"process\[0\]: empty `stop` needs .*`{field}`"):
+        ps.process_specs()
+
+
+def test_empty_stop_with_its_companions_is_accepted(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, EMPTY_STOP)
+    assert ps.process_specs()["x"].stop == ()
+
+
+def test_stop_must_not_contain_empty_arguments(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace('stop = ["stop"]', 'stop = [""]'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\]: `stop` must not contain empty"):
+        ps.process_specs()

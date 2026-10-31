@@ -45,3 +45,15 @@ def test_one_malformed_entry_disables_every_process_provider(tmp_path):
         "unknown provider: rec (process providers unavailable: process[0]: "
         "`warmup_seconds` must be a positive integer"
     )
+
+
+def test_a_new_validation_error_also_disables_every_process_provider(tmp_path):
+    real = Path(__file__).resolve().parents[5] / "docs" / "contracts" / "process-providers.toml"
+    broken = tmp_path / "broken.toml"
+    broken.write_text(real.read_text().replace('stop = ["stop"]', 'stop = [""]', 1))
+    out = _run(broken)
+    assert out[0] == "['mlx_lm_server', 'ollama', 'omlx', 'omlx-6bit']"
+    assert out[2].startswith(
+        "unknown provider: rec (process providers unavailable: process[1]: "
+        "`stop` must not contain empty"
+    )
