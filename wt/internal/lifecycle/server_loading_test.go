@@ -1056,12 +1056,19 @@ func TestEmptyStopRefusesAPidOfAnotherUserOrReusedStart(t *testing.T) {
 
 // TestEmptyStopRefusesPidOneAndWtItself verifies a pidfile naming pid 1, pid
 // 0 or wt's own pid signals nothing and returns an error: the signal helper
-// trusts its caller, so a corrupt or hostile pidfile must never reach it.
+// trusts its caller, so a corrupt or hostile pidfile must never reach it. Pid
+// 1 and wt's own pid are put in the process table as a sushix server on this
+// port with a matching start record, so only the pid check refuses them.
 func TestEmptyStopRefusesPidOneAndWtItself(t *testing.T) {
-	for _, content := range []string{"1", "0", strconv.Itoa(os.Getpid())} {
-		t.Run(content, func(t *testing.T) {
-			pt, e, cfg, _ := sigEnv(t, true)
+	for _, pid := range []int{1, 0, os.Getpid()} {
+		t.Run(strconv.Itoa(pid), func(t *testing.T) {
+			pt, e, cfg, port := sigEnv(t, true)
+			content := strconv.Itoa(pid)
 			writePidfileFor(t, e, "sushix", content)
+			if pid > 0 {
+				pt.procs[pid] = mine(pid, "100.5", []string{"/opt/homebrew/bin/sushix", "serve", "--port", strconv.Itoa(port), "--host", "127.0.0.1"})
+				writeStartRecordFor(t, e, "sushix", `{"pid":`+content+`,"started":"100.5"}`)
+			}
 			if pidfile, record := filesLeftFor(e, "sushix"); !pidfile || !record {
 				t.Fatalf("precondition: pidfile = %v, start record = %v, want both", pidfile, record)
 			}
