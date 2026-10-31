@@ -143,9 +143,10 @@ registering a model does not rename it. For any other provider it is
 `<provider>/<name>` with each `/` in the name written `--`
 (`openrouter/qwen--qwen3.8-27b`). The id, the provider and the name cannot be
 changed afterwards: usage history, rotation and launch profiles key on the id.
-A Sushi pack registered with `--id sushi/<org>--<pack>` (the `--` spelling a
-cloud id gets) is the id llmbench's `eval-sushi-vs-ollama` suite names for the
-Qwen3.8-Flash-Next pack.
+`wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>`
+registers `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, the id
+llmbench's `eval-sushi-vs-ollama` suite names; only a cloud id spells its slash
+`--`.
 
 In the same write wt adds the default provider row the model needs when it is
 missing — for ollama, omlx, mtplx, rec, sushi and openrouter (openrouter's holds no key,

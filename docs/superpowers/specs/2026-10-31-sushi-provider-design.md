@@ -115,10 +115,11 @@ B fits because a process family is auto-registered in wt (`lifecycle`) and llmbe
 ## Model identity
 
 - Registry provider id `sushi`, `base_url = "http://localhost:12345/v1"`, `model_dir = "~/.sushi/models"`.
-- Registry model id `sushi/beamster--Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` (mtplx `--` convention, so the provider is the text before the first slash). `model_name = "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"`, exactly Sushi's served id; used verbatim for the warmup, direct requests, `openai/<model_name>` LiteLLM routes and the pi models.json key (pi splits on the first slash only).
+- Registry model id `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` (wt's derived id: a local id keeps the slash, `--` is the cloud spelling; the provider is the text before the first slash). `model_name = "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"`, exactly Sushi's served id; used verbatim for the warmup, direct requests, `openai/<model_name>` LiteLLM routes and the pi models.json key (pi splits on the first slash only).
 - `model_info`: `supports_function_calling = true`, `supports_vision = true` (hand-set; `/v1/models` reports tool_use and vision; `wt model add` only detects these for ollama).
 - ServedOnly: wt lists registered models only; a stopped registered pack is a start row. No inventory.go code, no artifact scan.
 - Ordering: the wt build with the table row is built and installed BEFORE any registry row names sushi.
+- Correction 2026-10-31: the first draft assumed a `--` spelling; wt's derived id keeps the slash (found when the docs were verified against `wt model add`).
 
 ## Context size
 
@@ -144,7 +145,7 @@ Running = pack listed with `loaded:true`. Stop = E3 for `wt stop`, `wt stop sush
 - No backend module: `backends/__init__.py` auto-registers it, so `provider list`, stop-all fan-out and restore include it.
 - `registry.py` `DEFAULT_PROVIDER_IDS += "sushi"` (otherwise `llmbench run` silently skips it).
 - `benchmark/isolation.py` `POSITIONAL_MODEL_PROVIDERS += "sushi"` (each row warms its own pack by name). Fix stale skill text claiming only mtplx is positional (rec is too).
-- Eval: rows reference `sushi/beamster--Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; `route = "direct"` needs `[routes.direct.sushi] base_url = "http://localhost:12345/v1"` in the suite (model sent = `model_name`, no `direct_model` needed); `route = "litellm"` also isolates by provider. Rows group by provider, so sushi and ollama run serially; `restore` stops Sushi; the claude-cli judge (PR #505) runs after restore, so no memory contention. Add `benchmarks/suites/eval-sushi-vs-ollama.toml` with a sushi row and an `ollama/qwen3.8:27b-mlx` row, pinning `[generation]` temperature, top_p, top_k explicitly for fairness.
+- Eval: rows reference `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; `route = "direct"` needs `[routes.direct.sushi] base_url = "http://localhost:12345/v1"` in the suite (model sent = `model_name`, no `direct_model` needed); `route = "litellm"` also isolates by provider. Rows group by provider, so sushi and ollama run serially; `restore` stops Sushi; the claude-cli judge (PR #505) runs after restore, so no memory contention. Add `benchmarks/suites/eval-sushi-vs-ollama.toml` with a sushi row and an `ollama/qwen3.8:27b-mlx` row, pinning `[generation]` temperature, top_p, top_k explicitly for fairness.
 - Agent benchmark: pi window comes from the live `~/.pi/agent/models.json` entry; direct rows need `[routes.direct.sushi]` with `api`. Until `context_window` ships, pi is told 262144.
 - Sushi has `--max-concurrent 1` and a 300 s stall timeout: run sushi rows with low worker counts.
 
@@ -221,7 +222,7 @@ Python (`ruff format --check`, B905 `zip(strict=)`, `make check`/mypy):
 
 1. Architecture B (model-less `sushi serve`, rec-style ServedOnly process family).
 2. `--ctx-size 131072`, `--max-resident-models 1`, `--no-update-check` as Spawn literals; override means editing both mirrors.
-3. Registry id `sushi/beamster--Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, `model_name` = Sushi's pack id.
+3. Registry id `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, `model_name` = Sushi's pack id.
 4. Seed protocols left default (claude via LiteLLM); `anthropic` not declared.
 5. Empty Stop means signal the verified pid; `/v1/unload-model` unused.
 6. Readiness is `http-get /health`; the warmup does the load with a 400 s budget (`warmup_seconds`, 120 for mtplx and rec).
