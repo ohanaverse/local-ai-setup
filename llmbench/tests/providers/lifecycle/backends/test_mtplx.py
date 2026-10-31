@@ -312,7 +312,11 @@ def test_warm_uses_120s_timeout_not_the_shared_warmup_timeout():
     with patch("llmbench.providers.lifecycle.backends.process_server.probe.warmup") as mock_warmup:
         MTPLX.warm(plan)
     mock_warmup.assert_called_once_with(
-        MTPLX.chat_url, "Org/Model", health_url=MTPLX.health_url, timeout=120.0
+        MTPLX.chat_url,
+        "Org/Model",
+        health_url=MTPLX.health_url,
+        timeout=120.0,
+        request_timeout=120.0,
     )
     assert mock_warmup.call_args.kwargs["timeout"] != probe.WARMUP_TIMEOUT
 

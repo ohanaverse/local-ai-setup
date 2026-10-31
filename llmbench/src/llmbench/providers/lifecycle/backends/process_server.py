@@ -2,9 +2,18 @@
 
 A `ProcessSpec` from `docs/contracts/process-providers.toml` says how to run
 the server: the binary, the spawn and stop argv templates, the pidfile and
-log, and how to tell it is ready (`models-list`: the model appears at
-/v1/models; `command-json`: a status command's JSON says so). The server is a
-plain backgrounded subprocess tracked by a pidfile, never a LaunchAgent.
+log, the warmup budget (`warmup_seconds`), and how to tell it is ready
+(`models-list`: the model appears at /v1/models; `command-json`: a status
+command's JSON says so; `http-get`: a path answers 200, the model listed
+only once the first request loads it). The server is a plain backgrounded
+subprocess tracked by a pidfile, never a LaunchAgent.
+
+An `http-get` server lists every pack it can load, flagging the ones not in
+memory `loaded: false`: serving means listed as loaded, by the exact id, and
+the warm checks the pack is listed before its chat and loaded after it. A
+spec with an empty `stop` (stopped by signalling its pid) gets the server
+log's tail on a failed warm, and the GPU wired-limit fix when the failure
+reads as macOS refusing the memory.
 
 Addresses come from the registry provider row's `auth.base_url` when it names
 one, else the spec's `default_origin`; the port in the argv is that URL's
@@ -20,8 +29,10 @@ the key: it must stay pure (an `exec:` reference runs a command).
 from __future__ import annotations
 
 import ipaddress
+import re
 import subprocess
 import time
+import urllib.error
 from dataclasses import dataclass
 from typing import TypedDict
 from urllib.parse import urlsplit, urlunsplit
@@ -35,8 +46,6 @@ from ..envelope import LifecycleError
 from ..pidproc import PidfileProcess
 from .base import PidfileTrackedBackend, StartPlan
 
-# The warmup budget mtplx always had; shorter than probe.WARMUP_TIMEOUT.
-WARM_TIMEOUT = 120.0
 # The pre-spawn wait for the previous occupant to release the port.
 PREBIND_TIMEOUT = 10.0
 # A command-json provider's instance is gone only when its status command
@@ -125,6 +134,18 @@ def _origin_key(url: str) -> tuple[str, str, int | None] | None:
 
 _TAIL_WITHHELD = "log tail withheld: provider key unreadable, cannot mask"
 
+# The fix for a warmup macOS refused the memory for, and the phrases that make
+# a failed warmup (its log tail included) read as one. A pinned heuristic, the
+# same list as wt's looksLikeMemoryRefusal.
+_WIRED_LIMIT_HINT = (
+    "raise the GPU wired limit with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot)"
+)
+_MEMORY_REFUSAL = re.compile(
+    r"out of memory|insufficient memory|not enough memory|cannot allocate|failed to allocate"
+    r"|memory limit|wired limit|wired_limit|iogpu",
+    re.IGNORECASE,
+)
+
 
 def _masked_tail(tail: str, key: str | None) -> str:
     """A log tail (already bounded by `PidfileProcess.log_tail`) with `key`
@@ -144,13 +165,16 @@ class _Address:
     origin: str  # wt's Provider.Origin(): BaseOrigin, port filled per #348
     port: int
 
+    def url(self, path: str) -> str:
+        return f"{self.origin}{path}"
+
     @property
     def health_url(self) -> str:
-        return f"{self.origin}/v1/models"
+        return self.url("/v1/models")
 
     @property
     def chat_url(self) -> str:
-        return f"{self.origin}/v1/chat/completions"
+        return self.url("/v1/chat/completions")
 
 
 class ProcessServerBackend(PidfileTrackedBackend):
@@ -303,7 +327,9 @@ class ProcessServerBackend(PidfileTrackedBackend):
         return StartPlan(model=resolved, direct_url=self.chat_url)
 
     def already_serving(self, plan: StartPlan) -> bool:
-        """`models-list`: /v1/models lists the model. `command-json`: the
+        """`models-list`: /v1/models lists the model. `http-get`: it lists
+        the exact id as loaded (a pack listed `loaded: false` is not
+        serving). `command-json`: the
         status command reports ready, with the requested model, and (when
         the spec names an endpoint path) an endpoint at this backend's
         origin. The first key-using step of every isolate: forgets the
@@ -315,6 +341,8 @@ class ProcessServerBackend(PidfileTrackedBackend):
         ready = self.spec.ready
         if ready.kind == "models-list":
             return probe.serving_model(addr.health_url, plan.model, **_key_arg(key))
+        if ready.kind == "http-get":
+            return probe.serving_model(addr.health_url, plan.model, exact=True, **_key_arg(key))
         try:
             bin_path = binaries.require_binary(self.spec.binary)
         except LifecycleError:
@@ -415,6 +443,14 @@ class ProcessServerBackend(PidfileTrackedBackend):
                 **_key_arg(key),
             )
             return
+        if ready.kind == "http-get":
+            probe.wait_for_http_ok(
+                self._address().url(ready.path),
+                proc=self._proc,
+                timeout=probe.MODEL_LOAD_TIMEOUT,
+                **_key_arg(self._key()),
+            )
+            return
         bin_path = binaries.require_binary(self.spec.binary)
         probe.wait_for_command_ready(
             [bin_path, *ready.command],
@@ -424,16 +460,72 @@ class ProcessServerBackend(PidfileTrackedBackend):
             timeout=probe.MODEL_LOAD_TIMEOUT,
         )
 
+    @property
+    def _signal_stop(self) -> bool:
+        """Stopped by signalling its verified pid: the spec names no stop
+        command."""
+        return not self.spec.stop
+
     def warm(self, plan: StartPlan) -> None:
+        """Warm the model within the spec's `warmup_seconds`. On a signal-stop
+        spec a failed warm carries the server log's tail (masked, as
+        `wait_ready`'s does), and the wired-limit fix when the combined text
+        reads as a memory refusal; the warmup's own error types are kept
+        unless the fix is added. Any other spec's failure is raised as it
+        is."""
+        try:
+            self._warm(plan)
+        except LifecycleError as exc:
+            if not self._signal_stop:
+                raise
+            message = self._with_log_tail(str(exc), self._pidproc.log_tail())
+            if _MEMORY_REFUSAL.search(message):
+                raise LifecycleError(f"{message}; {_WIRED_LIMIT_HINT}") from exc
+            if message == str(exc):
+                raise
+            raise type(exc)(message) from exc
+
+    def _warm(self, plan: StartPlan) -> None:
+        """The warmup chat. `http-get` first refuses a pack id a non-empty
+        list lacks (exact, against every listed id, loaded or not; a list
+        that cannot be read fails) and afterwards requires the pack listed
+        as loaded. A chat that outlasts the budget is a LifecycleError; any
+        other connection failure is raised as it is."""
         key = self._key()
         addr = self._address()
-        probe.warmup(
-            addr.chat_url,
-            plan.model,
-            health_url=addr.health_url,
-            timeout=WARM_TIMEOUT,
-            **_key_arg(key),
-        )
+        spec = self.spec
+        http_get = spec.ready.kind == "http-get"
+        budget = float(spec.warmup_seconds)
+        if http_get:
+            ids = probe.listed_ids(addr.health_url, strict=True, **_key_arg(key))
+            if ids and plan.model not in ids:
+                raise LifecycleError(
+                    f"{self.id}: {plan.model!r} is not listed by the server "
+                    f"(it lists: {', '.join(ids)})"
+                )
+        timed_out = f"{self.id}: warmup of {plan.model} timed out after {spec.warmup_seconds}s"
+        try:
+            probe.warmup(
+                addr.chat_url,
+                plan.model,
+                health_url=addr.health_url,
+                timeout=budget,
+                request_timeout=budget,
+                **_key_arg(key),
+            )
+        except TimeoutError as exc:
+            raise LifecycleError(timed_out) from exc
+        except urllib.error.URLError as exc:
+            if not isinstance(exc.reason, TimeoutError):
+                raise
+            raise LifecycleError(timed_out) from exc
+        if http_get and not probe.serving_model(
+            addr.health_url, plan.model, exact=True, **_key_arg(key)
+        ):
+            raise LifecycleError(
+                f"{self.id}: {plan.model} answered the warmup but is not listed as loaded "
+                f"at {addr.health_url}"
+            )
 
     def stop_and_wait(self) -> str | None:
         """Run the spec's stop command, then confirm the server let go:

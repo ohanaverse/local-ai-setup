@@ -810,6 +810,44 @@ def test_listed_ids_is_empty_on_a_dead_server(key):
             assert listed_ids(_MODELS, key=key) == []
 
 
+@pytest.mark.parametrize("key", [None, "k"])
+def test_listed_ids_strict_returns_the_unfiltered_list(key):
+    with patch(_URLOPEN, _mock_urlopen(BODY)):
+        assert listed_ids(_MODELS, key=key, strict=True) == ["org/a", "org/b", "org/c"]
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+@pytest.mark.parametrize(
+    "failure", [OSError("refused"), _http_error(503), TimeoutError("timed out")]
+)
+def test_listed_ids_strict_raises_when_the_list_cannot_be_read(key, failure):
+    """`strict` fails closed: a list that cannot be fetched is not an empty
+    one (a pack-id check must not pass on a dead or broken server)."""
+    with (
+        patch(_URLOPEN, MagicMock(side_effect=failure)),
+        pytest.raises(LifecycleError, match=f"cannot read the model list at {_MODELS}"),
+    ):
+        listed_ids(_MODELS, key=key, strict=True)
+
+
+def test_listed_ids_strict_raises_on_a_body_that_is_not_json():
+    with (
+        patch(_URLOPEN, _mock_urlopen(b"<html>")),
+        pytest.raises(LifecycleError, match="cannot read the model list"),
+    ):
+        listed_ids(_MODELS, strict=True)
+
+
+def test_listed_ids_strict_names_a_refused_key():
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError
+
+    with (
+        patch(_URLOPEN, MagicMock(side_effect=_http_error(401))),
+        pytest.raises(WarmupRefusedError, match=r"refused the provider's key \(HTTP 401\)"),
+    ):
+        listed_ids(_MODELS, key="k", strict=True)
+
+
 def test_serving_model_exact_rejects_a_suffix_match():
     """`exact=True` is plain membership: `a` is not `org/a`."""
     with patch(_URLOPEN, _mock_urlopen(BODY)):
@@ -818,16 +856,32 @@ def test_serving_model_exact_rejects_a_suffix_match():
         assert serving_model(_MODELS, "org/a", exact=True) is True
 
 
+def _answers(status: int) -> MagicMock:
+    """A urlopen mock whose response has `status`."""
+    m = _mock_urlopen(b"ok")
+    m.return_value.__enter__.return_value.status = status
+    return m
+
+
 def test_wait_for_http_ok_returns_on_200():
     """A 200 from the URL ends the wait."""
-    with patch(_URLOPEN, _mock_urlopen(b"ok")) as urlopen:
+    with patch(_URLOPEN, _answers(200)) as urlopen:
         wait_for_http_ok("http://x/health")
     assert urlopen.call_count == 1
 
 
+def test_wait_for_http_ok_keeps_polling_through_a_non_200_success():
+    """Only a 200 is ready, as in wt's ReadyHTTP: a 204 (or any other 2xx)
+    keeps polling."""
+    urlopen = MagicMock(side_effect=[_answers(204).return_value, _answers(200).return_value])
+    with patch(_URLOPEN, urlopen), patch("llmbench.providers.lifecycle.probe.time.sleep"):
+        wait_for_http_ok("http://x/health")
+    assert urlopen.call_count == 2
+
+
 def test_wait_for_http_ok_keeps_polling_through_a_503_then_succeeds():
     """A 503 while the server loads is retried, not fatal."""
-    ok = _mock_urlopen(b"ok").return_value
+    ok = _answers(200).return_value
     urlopen = MagicMock(side_effect=[_http_error(503), ok])
     with patch(_URLOPEN, urlopen), patch("llmbench.providers.lifecycle.probe.time.sleep") as sleep:
         wait_for_http_ok("http://x/health")
@@ -860,7 +914,7 @@ def test_wait_for_http_ok_times_out_naming_the_url():
 
 def test_wait_for_http_ok_sends_the_key_only_when_given():
     """The bearer header appears only with a key."""
-    with patch(_URLOPEN, _mock_urlopen(b"ok")) as urlopen:
+    with patch(_URLOPEN, _answers(200)) as urlopen:
         wait_for_http_ok("http://x/health")
         assert urlopen.call_args.args[0] == "http://x/health"
         wait_for_http_ok("http://x/health", key="k")

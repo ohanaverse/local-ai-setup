@@ -256,10 +256,29 @@ def serving_model(
     return model in ids if exact else _lists(ids, model)
 
 
-def listed_ids(models_url: str, *, key: str | None = None) -> list[str]:
-    """Every id `models_url` lists, loaded or not ([] on any failure, never
-    raises): an unloaded pack still counts as listed."""
-    return _model_ids(models_url, key, refused_is_final=False, loaded_only=False)
+def listed_ids(models_url: str, *, key: str | None = None, strict: bool = False) -> list[str]:
+    """Every id `models_url` lists, loaded or not: an unloaded pack still
+    counts as listed. [] on any failure, never raising, unless `strict`:
+    then a list that cannot be read raises LifecycleError (a refused key
+    `WarmupRefusedError`), so a caller can tell it from an empty one."""
+    if not strict:
+        return _model_ids(models_url, key, refused_is_final=False, loaded_only=False)
+    try:
+        with urllib.request.urlopen(_target(models_url, key), timeout=2.0) as resp:  # noqa: S310 — localhost probe
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code in _KEY_REFUSED:
+            raise WarmupRefusedError(
+                f"{models_url} refused the provider's key (HTTP {exc.code})"
+            ) from None
+        raise LifecycleError(
+            f"cannot read the model list at {models_url} (HTTP {exc.code})"
+        ) from None
+    except (OSError, ValueError) as exc:
+        raise LifecycleError(
+            f"cannot read the model list at {models_url} ({type(exc).__name__})"
+        ) from None
+    return models_body_ids(data, loaded_only=False)
 
 
 def wait_for_http_ok(
@@ -270,15 +289,17 @@ def wait_for_http_ok(
     key: str | None = None,
 ) -> None:
     """Poll `url` until it answers 200, the serve process dies (when `proc`
-    is given), or the deadline passes. An HTTP error status or a connection
-    failure is retried."""
+    is given), or the deadline passes. Only a 200 counts, as in wt's
+    ReadyHTTP: any other 2xx, an HTTP error status or a connection failure
+    is retried."""
     for _ in _deadline_loop(timeout):
         if proc is not None and proc.poll() is not None:
             raise LifecycleError(f"serve process exited during startup (exit {proc.returncode})")
         try:
             with urllib.request.urlopen(_target(url, key), timeout=2.0) as resp:  # noqa: S310 — localhost probe
                 resp.read()
-            return
+                if resp.status == 200:
+                    return
         except OSError:  # HTTPError is an OSError: not ready yet
             pass
         time.sleep(1.0)
