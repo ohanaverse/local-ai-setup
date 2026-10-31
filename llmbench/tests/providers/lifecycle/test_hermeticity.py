@@ -34,10 +34,12 @@ import pytest
         # rejects, plus an absolute path, as for mtplx.
         ["rec", "--llmbench-hermetic-no-such-flag"],
         ["/Users/nobody/.local/bin/rec", "stop"],
-        # sushi is installed on the developer's machine; `sushi serve` loads a
-        # 46 GB pack. A flag the real sushi rejects, plus its Homebrew path.
-        ["sushi", "--llmbench-hermetic-no-such-flag"],
-        ["/opt/homebrew/bin/sushi", "serve"],
+        # sushi is installed on the developer's machine and `sushi serve`
+        # loads a 46 GB pack, so no case may name a path that resolves to it:
+        # unfaked, a path that does not exist raises FileNotFoundError and
+        # the test fails without starting anything.
+        ["/Users/nobody/.local/bin/sushi", "serve"],
+        ["/Users/nobody/.local/bin/sushi", "--llmbench-hermetic-no-such-flag"],
         ["/opt/homebrew/Cellar/omlx/0.10.0/libexec/bin/mlx_lm.server", "--model", "x"],
     ],
 )

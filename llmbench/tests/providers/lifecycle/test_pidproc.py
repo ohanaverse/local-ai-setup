@@ -346,7 +346,9 @@ def _spawned_kwargs(tmp_path, **spawn_kw) -> dict:
         patch(f"{PP}.subprocess.Popen", return_value=child) as popen,
         patch(f"{PP}.time.sleep"),
     ):
-        proc.spawn(["sushi", "serve"], **spawn_kw)
+        # A path that does not exist: should the Popen patch ever miss, the
+        # spawn fails instead of starting the installed sushi.
+        proc.spawn(["/Users/nobody/.local/bin/sushi", "serve"], **spawn_kw)
     return popen.call_args.kwargs
 
 
