@@ -166,7 +166,18 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	if err != nil && httpReady {
 		return withMemoryHint(withLogTail(proc, err))
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// The server answered the chat; an http-get server must also list the
+	// pack as loaded, or the start failed as surely as a warmup that did not
+	// answer (same cleanup, same log tail).
+	if httpReady {
+		if err = e.confirmLoaded(ctx, models, t.ModelName, key); err != nil {
+			return withLogTail(proc, err)
+		}
+	}
+	return nil
 }
 
 // withMemoryHint ends err with the wired-limit fix when its text (log tail

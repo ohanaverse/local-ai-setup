@@ -287,15 +287,21 @@ func TestSushiPackCheckCountsUnloadedPacks(t *testing.T) {
 }
 
 // TestSushiPackCheckSkipsAnEmptyList verifies a server that lists nothing at
-// all is not judged by the pack check: the start goes on to the warmup, which
-// (with the later load check) still catches a bad id. Only a non-empty list
-// without the id is refused.
+// all is not judged by the pack check: the start goes on to the warmup, and it
+// is the later load check (confirmLoaded) that refuses a pack still not
+// listed as loaded. Only a non-empty list without the id is refused before
+// the warmup.
 func TestSushiPackCheckSkipsAnEmptyList(t *testing.T) {
 	e, cfg, _, _, chatLog := sushiEnv(t, "", 200, 0)
-	if err := (processServer{"sushix"}).start(context.Background(), e, cfg, Target{ProviderID: "sushix", ModelName: "Org/Pack"}, func(Stage) {}); err != nil {
-		t.Fatalf("start: %v", err)
+	err := (processServer{"sushix"}).start(context.Background(), e, cfg, Target{ProviderID: "sushix", ModelName: "Org/Pack"}, func(Stage) {})
+	var pnl *PackNotListedError
+	if errors.As(err, &pnl) {
+		t.Fatalf("start = %v, want no *PackNotListedError for an empty list", err)
 	}
 	if _, serr := os.Stat(chatLog); serr != nil {
 		t.Errorf("chat log stat err = %v, want the warmup to have run", serr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "does not list Org/Pack as loaded") {
+		t.Errorf("start = %v, want the load check to refuse the pack after the warmup", err)
 	}
 }
