@@ -17,7 +17,7 @@ from llmbench.providers.secret import provider_key
 from llmbench.registry import ModelEntry, ProviderEntry, Registry, registry_path
 
 SUITE = Path(__file__).resolve().parents[4] / "benchmarks" / "suites" / "eval-sushi-vs-ollama.toml"
-SUSHI_ID = "sushi/beamster--Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
+SUSHI_ID = "sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
 SUSHI_NAME = "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
 OLLAMA_ID = "ollama/qwen3.8:27b-mlx"
 
