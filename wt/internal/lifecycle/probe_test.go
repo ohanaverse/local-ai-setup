@@ -305,7 +305,7 @@ func TestTryChatReasonIsTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`))
+	ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`), chatRequestTimeout)
 	if ok {
 		t.Fatal("tryChat: want ok=false for a 500 response")
 	}
@@ -504,5 +504,29 @@ func TestWaitForModelWithKey(t *testing.T) {
 
 	if err := e.waitForModel(ctx, srv.URL, "Qwen3.8", nil, "", 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("waitForModel(no key) = %v, want timed out", err)
+	}
+}
+
+// TestTryChatHonoursItsTimeout pins that the per-request cap is the caller's
+// argument, not a hard-coded 120 s: a model that takes longer to answer than
+// the cap fails the attempt with a deadline reason, and the same server
+// succeeds under a roomier cap. Sushi's cold load needs a per-spec budget.
+func TestTryChatHonoursItsTimeout(t *testing.T) {
+	e := testEnv()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+	}))
+	defer srv.Close()
+
+	ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`), 50*time.Millisecond)
+	if ok {
+		t.Fatal("tryChat with a 50ms cap: want ok=false against a 300ms handler")
+	}
+	if !strings.Contains(reason, "deadline") && !strings.Contains(reason, "timeout") {
+		t.Errorf("reason = %q, want it to mention the deadline or timeout", reason)
+	}
+	if ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`), 5*time.Second); !ok {
+		t.Errorf("tryChat with a 5s cap: want ok=true, got reason %q", reason)
 	}
 }

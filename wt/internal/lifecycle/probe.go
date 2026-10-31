@@ -152,6 +152,16 @@ func (e *env) waitForModel(ctx context.Context, modelsURL, model string, proc pr
 // server that answers 401 or 403 ends the warmup at once with a
 // *KeyRefusedError (#256), since no amount of polling changes that answer.
 func (e *env) warmup(ctx context.Context, chatURL, model, healthURL, key string, timeout time.Duration) error {
+	return e.warmupFor(ctx, chatURL, model, healthURL, key, timeout, chatRequestTimeout)
+}
+
+// chatRequestTimeout caps one warmup chat request for the servers whose
+// warmup budget is not their own (ollama, omlx).
+const chatRequestTimeout = 120 * time.Second
+
+// warmupFor is warmup with the per-request cap requestTimeout, for a server
+// whose first chat request outlasts chatRequestTimeout (sushi's cold load).
+func (e *env) warmupFor(ctx context.Context, chatURL, model, healthURL, key string, timeout, requestTimeout time.Duration) error {
 	payload, _ := json.Marshal(map[string]any{
 		"model":       model,
 		"messages":    []map[string]string{{"role": "user", "content": "hi"}},
@@ -172,7 +182,7 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL, key string,
 			}
 			continue
 		}
-		ok, refused, reason := e.tryChat(ctx, chatURL, key, payload)
+		ok, refused, reason := e.tryChat(ctx, chatURL, key, payload, requestTimeout)
 		if ok {
 			return nil
 		}
@@ -195,8 +205,9 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL, key string,
 
 // tryChat sends one warmup request. refused is true when the server answered
 // 401 or 403: the request was understood and will be turned away every time.
-func (e *env) tryChat(ctx context.Context, chatURL, key string, payload []byte) (ok, refused bool, reason string) {
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+// timeout caps the request.
+func (e *env) tryChat(ctx context.Context, chatURL, key string, payload []byte, timeout time.Duration) (ok, refused bool, reason string) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(payload))
 	if err != nil {

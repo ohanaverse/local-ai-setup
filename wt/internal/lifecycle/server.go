@@ -152,7 +152,20 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 		return err
 	}
 	report(StageWarming)
-	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, 120*time.Second)
+	budget, berr := warmupBudget(spec)
+	if berr != nil {
+		return berr
+	}
+	return e.warmupFor(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, budget, budget)
+}
+
+// warmupBudget is the spec's warmup time: the whole warmup window and the cap
+// on each chat request. A spec without one fails closed rather than guessing.
+func warmupBudget(spec provider.ProcessSpec) (time.Duration, error) {
+	if spec.WarmupSeconds <= 0 {
+		return 0, fmt.Errorf("%s: process spec has no warmup_seconds", spec.Binary)
+	}
+	return time.Duration(spec.WarmupSeconds) * time.Second, nil
 }
 
 func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) error {

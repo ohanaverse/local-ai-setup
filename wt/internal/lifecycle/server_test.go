@@ -23,6 +23,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 func TestMain(m *testing.M) {
@@ -70,6 +71,9 @@ func helperMtplx() {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": opt["model-id"]}}})
 	})
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if st, _ := strconv.Atoi(os.Getenv("LIFECYCLE_HELPER_CHAT_STATUS")); st != 0 && st != http.StatusOK {
+			w.WriteHeader(st)
+		}
 		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
 	})
 	addr := opt["host"] + ":" + opt["port"]
@@ -745,5 +749,58 @@ func TestMtplxStartRefusesUnusableServeArgsBeforeSpawning(t *testing.T) {
 				t.Error("a refused start spawned a process")
 			}
 		})
+	}
+}
+
+// sushixEnv is mtplxEnv for the synthetic process family sushix: the same
+// helper binary answers as the server, the spec carries warmup seconds
+// warmup, and the helper's chat endpoint answers 503 so a warmup never
+// succeeds. It returns the env, cfg and pidfile.
+func sushixEnv(t *testing.T, warmup int) (*env, *config.Config, string) {
+	t.Helper()
+	e, _, port, _ := mtplxEnv(t, "serve", 0)
+	t.Setenv("LIFECYCLE_HELPER_CHAT_STATUS", "503")
+	spec := provider.ProcessSpec{
+		Binary: "sushix", Subcommand: "serve", PortFlag: "--port",
+		Spawn:         []string{"serve", "--model", "{model}", "--port", "{port}", "--host", "127.0.0.1", "--model-id", "{model}"},
+		Ready:         provider.Ready{Kind: provider.ReadyModelsList},
+		WarmupSeconds: warmup,
+	}
+	stubFamily(t, "sushix", spec, provider.FamilySpec{Name: "sushix", Tenancy: provider.Exclusive, Scope: provider.ScopePort}, port)
+	pidfile := filepath.Join(t.TempDir(), "sushix.pid")
+	e.serverProc["sushix"] = pidProcess{name: "sushix", pidfile: pidfile, logfile: filepath.Join(t.TempDir(), "sushix.log")}
+	e.backends = maps.Clone(e.backends)
+	e.backends["sushix"] = processServer{"sushix"}
+	return e, provCfg("sushix", "http://127.0.0.1:"+strconv.Itoa(port)+"/v1"), pidfile
+}
+
+// TestProcessServerWarmupBudgetComesFromTheSpec pins that the process-server
+// start path budgets its warmup from the spec's WarmupSeconds, not a fixed
+// 120 s (sushi's cold load is ~115 s), and that a spec with no budget fails
+// closed at warmup time and leaves nothing running or recorded.
+func TestProcessServerWarmupBudgetComesFromTheSpec(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	target := Target{ProviderID: "sushix", ModelName: "Org/Model"}
+
+	e, cfg, _ := sushixEnv(t, 1)
+	begin := time.Now()
+	err := e.backends["sushix"].start(ctx, e, cfg, target, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "failed to warm up model") {
+		t.Fatalf("1s budget: err = %v, want a 'failed to warm up model' error", err)
+	}
+	if d := time.Since(begin); d > 5*time.Second {
+		t.Errorf("1s budget took %v, want the spec's budget to end the warmup", d)
+	}
+
+	e, cfg, pidfile := sushixEnv(t, 0)
+	err = e.backends["sushix"].start(ctx, e, cfg, target, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "no warmup_seconds") {
+		t.Fatalf("0 budget: err = %v, want a 'no warmup_seconds' error", err)
+	}
+	for _, p := range []string{pidfile, pidfile + ".wt"} {
+		if _, serr := os.Stat(p); !os.IsNotExist(serr) {
+			t.Errorf("%s should not remain after a failed start, stat err = %v", p, serr)
+		}
 	}
 }
