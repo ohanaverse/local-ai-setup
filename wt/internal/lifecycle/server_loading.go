@@ -299,6 +299,17 @@ func (e *env) stopLoadingServer(ctx context.Context, cfg *config.Config, family 
 	if pid <= 0 || l.PID != pid {
 		return fmt.Errorf("pid %d is no longer the %s server wt found loading — nothing was signalled", pid, name)
 	}
+	return e.signalVerifiedServer(ctx, cfg, spec, family, id)
+}
+
+// signalVerifiedServer ends the verified server id (loadingServer) of family:
+// SIGTERM to its group when id.group, else to the pid alone, then the wait and
+// the SIGKILL escalation stopLoadingServer describes. It signals only what the
+// caller has just verified; a provider with no stop command of its own is
+// stopped by it directly.
+func (e *env) signalVerifiedServer(ctx context.Context, cfg *config.Config, spec provider.ProcessSpec, family string, id serverIdent) error {
+	name := spec.Binary
+	pid := id.pid
 	target := pid
 	if id.group {
 		target = -pid

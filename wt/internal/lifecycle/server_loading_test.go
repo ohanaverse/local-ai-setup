@@ -425,6 +425,29 @@ func TestStopLoadingMtplxTerminatesTheVerifiedServer(t *testing.T) {
 	}
 }
 
+// TestSignalVerifiedServerIsWhatStopLoadingServerRuns verifies that the helper
+// stopLoadingServer ends in signals exactly the group of a recorded verified
+// server and, once it is gone, removes the pidfile and the start record. A
+// provider with no stop command of its own is stopped by this helper alone.
+func TestSignalVerifiedServerIsWhatStopLoadingServerRuns(t *testing.T) {
+	pt, e := loadingEnv(t, true)
+	info := pt.procs[4242]
+	info.pgid = 4242
+	pt.procs[4242] = info
+	pt.onSignal = func(pt *procTable, _ int, _ syscall.Signal) { delete(pt.procs, 4242) }
+	id, _ := e.loadingServer(loadCfg(), "mtplx")
+	spec, _ := processSpecFor("mtplx")
+	if err := e.signalVerifiedServer(context.Background(), loadCfg(), spec, "mtplx", id); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pt.signals, []string{"-4242:15"}) {
+		t.Errorf("signals = %v, want [-4242:15]", pt.signals)
+	}
+	if pidfile, record := filesLeft(e); pidfile || record {
+		t.Errorf("pidfile left = %v, start record left = %v, want both removed after a confirmed stop", pidfile, record)
+	}
+}
+
 // TestStopLoadingMtplxKillsOnlyTheSameProcess verifies the escalation: a
 // server that outlives SIGTERM and the grace is re-read from the process
 // table, and SIGKILL goes only to the process that is still the one wt
