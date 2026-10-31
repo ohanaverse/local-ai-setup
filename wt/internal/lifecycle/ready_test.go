@@ -309,3 +309,143 @@ func TestRunCommandStdoutDropsStderr(t *testing.T) {
 		t.Errorf("failing run = %q, %v; want %q and an error", out, err, "out\n")
 	}
 }
+
+// httpSpec is an http-get process spec shaped like sushi's: ready as soon as
+// GET /health answers 200, whether or not any model is loaded.
+var httpSpec = provider.ProcessSpec{
+	Binary: "httpx",
+	Ready:  provider.Ready{Kind: provider.ReadyHTTP, Path: "/health"},
+}
+
+// stubHTTPSpec makes processSpecFor answer httpSpec for the httpx family.
+func stubHTTPSpec(t *testing.T) {
+	t.Helper()
+	old := processSpecFor
+	processSpecFor = func(family string) (provider.ProcessSpec, bool) {
+		if family == "httpx" {
+			return httpSpec, true
+		}
+		return old(family)
+	}
+	t.Cleanup(func() { processSpecFor = old })
+}
+
+// TestReadyNowHTTPGet verifies http-get readiness is exactly "GET <Path> on
+// the models URL's host answers 200": ready even when /v1/models lists
+// nothing, not ready on any other status or when only /v1/models is served,
+// not ready with a nil error when the port is closed, and the models URL's own
+// path and query never reach the request. A server that answers /health long
+// before it loads a model (sushi) must read as ready, and a still-starting one
+// must not abort the wait.
+func TestReadyNowHTTPGet(t *testing.T) {
+	var gotPath, gotQuery string
+	health := http.StatusOK
+	serveHealth := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" || !serveHealth {
+			http.NotFound(w, r)
+			return
+		}
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		w.WriteHeader(health)
+	}))
+	defer srv.Close()
+	e := testEnv()
+	ask := func(url string) readyState {
+		t.Helper()
+		got, err := e.readyNow(context.Background(), httpSpec, "/bin/httpx", url, "m", "")
+		if err != nil {
+			t.Fatalf("readyNow err = %v, want nil", err)
+		}
+		return got
+	}
+	if got := ask(srv.URL + "/v1/models?x=1#frag"); !got.Ready {
+		t.Errorf("/health 200: readyNow = %+v, want ready", got)
+	}
+	if gotPath != "/health" || gotQuery != "" {
+		t.Errorf("requested %q?%q, want /health with no query", gotPath, gotQuery)
+	}
+	health = http.StatusServiceUnavailable
+	if got := ask(srv.URL + "/v1/models"); got.Ready {
+		t.Errorf("/health 503: readyNow = %+v, want not ready", got)
+	}
+	serveHealth = false
+	if got := ask(srv.URL + "/v1/models"); got.Ready {
+		t.Errorf("/health 404: readyNow = %+v, want not ready", got)
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	url := closed.URL + "/v1/models"
+	closed.Close()
+	if got := ask(url); got.Ready {
+		t.Errorf("closed port: readyNow = %+v, want not ready", got)
+	}
+}
+
+// TestReadyNowHTTPGetSendsTheKey verifies the http-get probe sends
+// Authorization: Bearer <key> only when the registry names a key, and reads a
+// 401 to a keyed probe as a *KeyRefusedError like the models-list case. A key
+// leaked to (or missing from) the health path would break authenticated
+// servers or silently probe them as anonymous.
+func TestReadyNowHTTPGetSendsTheKey(t *testing.T) {
+	var auth string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	e := testEnv()
+	for key, want := range map[string]string{"k": "Bearer k", "": ""} {
+		auth = "unset"
+		if _, err := e.readyNow(context.Background(), httpSpec, "/bin/httpx", srv.URL+"/v1/models", "m", key); err != nil {
+			t.Fatalf("key %q: readyNow err = %v", key, err)
+		}
+		if auth != want {
+			t.Errorf("key %q: Authorization = %q, want %q", key, auth, want)
+		}
+	}
+	status = http.StatusUnauthorized
+	_, err := e.readyNow(context.Background(), httpSpec, "/bin/httpx", srv.URL+"/v1/models", "m", "k")
+	var kre *KeyRefusedError
+	if !errors.As(err, &kre) {
+		t.Errorf("401 with a key: err = %v, want *KeyRefusedError", err)
+	}
+	if got, err := e.readyNow(context.Background(), httpSpec, "/bin/httpx", srv.URL+"/v1/models", "m", ""); err != nil || got.Ready {
+		t.Errorf("401 without a key: got %+v, %v; want not ready, nil", got, err)
+	}
+}
+
+// TestWaitReadyHTTPGetPollsUntil200 verifies waitReady polls an http-get
+// family through 503s and returns nil at the first 200, and ends at once with
+// the "exited during model load" error when the process dies while /health
+// still answers 503. Without it a crashed server would be polled for the
+// whole warmup budget.
+func TestWaitReadyHTTPGetPollsUntil200(t *testing.T) {
+	stubHTTPSpec(t)
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	e := testEnv()
+	err := e.waitReady(context.Background(), "httpx", &countingProc{}, "/bin/httpx", srv.URL+"/v1/models", "m", "", time.Second)
+	if err != nil {
+		t.Fatalf("waitReady = %v, want nil", err)
+	}
+	if hits != 3 {
+		t.Errorf("/health hit %d times, want 3", hits)
+	}
+
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer down.Close()
+	err = e.waitReady(context.Background(), "httpx", &countingProc{exitAt: 2}, "/bin/httpx", down.URL+"/v1/models", "m", "", 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "serve process exited during model load") {
+		t.Errorf("waitReady = %v, want an exited-during-load error", err)
+	}
+}

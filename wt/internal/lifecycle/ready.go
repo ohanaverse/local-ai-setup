@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,6 +31,13 @@ type readyState struct {
 // ReadyModelsList: ready when modelsURL lists the model (lenient name match);
 // a keyed request the server refuses is a *KeyRefusedError.
 //
+// ReadyHTTP: GET spec.Ready.Path on modelsURL's host (the URL's own path,
+// query and fragment are dropped), with the bearer key when one is named;
+// exactly HTTP 200 is ready, any other status or a connection error is not
+// ready with a nil error (the server is still starting), and a 401/403 to a
+// keyed request is a *KeyRefusedError. It names no model: a server that
+// loads on first request (sushi) answers 200 long before any model is up.
+//
 // ReadyCommandJSON: bin runs with spec.Ready.Command, bounded by
 // e.readyCmdTimeout; its stdout (stderr is ignored, #458) must be one JSON
 // object whose value at the dot-separated Path renders as Equals. A failed
@@ -48,6 +57,27 @@ func (e *env) readyNow(ctx context.Context, spec provider.ProcessSpec, bin, mode
 			}
 		}
 		return readyState{}, nil
+	case provider.ReadyHTTP:
+		target, err := healthURL(modelsURL, spec.Ready.Path)
+		if err != nil {
+			return readyState{}, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return readyState{}, err
+		}
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		resp, err := e.probeClient.Do(req)
+		if err != nil {
+			return readyState{}, nil
+		}
+		defer resp.Body.Close()
+		if key != "" && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return readyState{}, &KeyRefusedError{URL: target, KeySent: true, Detail: resp.Status}
+		}
+		return readyState{Ready: resp.StatusCode == http.StatusOK}, nil
 	case provider.ReadyCommandJSON:
 		rctx, cancel := context.WithTimeout(ctx, e.readyCmdTimeout)
 		defer cancel()
@@ -76,6 +106,20 @@ func (e *env) readyNow(ctx context.Context, spec provider.ProcessSpec, bin, mode
 	default:
 		return readyState{}, fmt.Errorf("unknown readiness kind %q", spec.Ready.Kind)
 	}
+}
+
+// healthURL is modelsURL with its path replaced by path and its query and
+// fragment dropped: the readiness endpoint on the same listener.
+func healthURL(modelsURL, path string) (string, error) {
+	u, err := url.Parse(modelsURL)
+	if err != nil {
+		return "", err
+	}
+	u.Path = path
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
 }
 
 // jsonScalarAt is the scalar at a dot-separated path in doc rendered as
