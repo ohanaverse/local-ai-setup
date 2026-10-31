@@ -188,7 +188,7 @@ wt stop --all                    # stop every running local model, then the omlx
       renames its server module, wt prints the `left alone` note above and
       stops nothing: end the process by hand, and report it.
   - **`wt stop sushi`** has no stop command of Sushi's to call (running the
-    `sushi` binary with no arguments would start a server), so wt signals the
+    `sushi` binary with no arguments is not a stop), so wt signals the
     process the pidfile `/tmp/local-ai-setup-sushi.pid` names, once it has
     checked that process: the current user owns it, its arguments are
     `sushi serve ... --port 12345` (the port is the provider's), and, when wt
