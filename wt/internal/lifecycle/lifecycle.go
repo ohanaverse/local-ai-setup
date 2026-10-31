@@ -372,7 +372,7 @@ func targetIs(snap localmodels.Snapshot, family string, t Target, is func(localm
 		return false
 	}
 	for _, en := range snap.Entries {
-		if is(en) && localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
+		if is(en) && familyOf(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
 			return true
 		}
 	}
@@ -504,6 +504,7 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	}
 	snap := e.inventory(cfg)
 	if isRunning(snap, family, t) {
+		e.warnUnowned(ctx, cfg, family, t)
 		return nil
 	}
 	// A ScopeMachine family (rec) runs one instance on the whole machine, on
