@@ -89,12 +89,12 @@ func modelAddCmd(a *app) *cobra.Command {
 			"An mtplx model may carry --serve-arg flags for `mtplx serve` (repeat the flag,\n" +
 			"one argument each: --serve-arg --profile --serve-arg turbo); see `wt model\n" +
 			"edit --help`.\n\n" +
-			"A missing default provider row (ollama, omlx, mtplx, rec, sushi, openrouter)\n" +
-			"is added in the same write; a provider wt has no default row for must have\n" +
-			"its [[providers]] block in registry.toml first. For an ollama model wt runs\n" +
-			"`ollama show` once and records whether the model supports tools and\n" +
-			"vision; if that fails the model is added without them and a warning says\n" +
-			"so.\n\n" +
+			"A missing default provider row (ollama, omlx, mlx_lm_server, mtplx, rec,\n" +
+			"sushi, openrouter) is added in the same write; a provider wt has no default\n" +
+			"row for must have its [[providers]] block in registry.toml first. For an\n" +
+			"ollama model wt runs `ollama show` once and records whether the model\n" +
+			"supports tools and vision; if that fails the model is added without them\n" +
+			"and a warning says so.\n\n" +
 			"An mlx_lm_server model is a target+draft pairing: <name> is the target and\n" +
 			"--draft the draft, each a Hugging Face repo or a local path. A local path\n" +
 			"starts with /, ~, ./ or ../; anything else is taken for a repo. A ./ or ../\n" +

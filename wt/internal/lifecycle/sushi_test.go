@@ -194,9 +194,12 @@ func TestSushiWarmupFailureKillsOnlyItsOwnProcessAndCleans(t *testing.T) {
 // TestSushiCancelledStartTearsDown verifies a start cancelled during the
 // warmup (the user backed out of a ~2-minute cold load) kills the server wt
 // spawned and removes its pidfile and start record, and returns the
-// cancellation with no log tail: the server did not fail.
+// cancellation with no log tail: the server did not fail. The cancel is
+// triggered by the helper's first chat POST appearing in its chat log, not
+// by a fixed delay, and the warmup budget (60 s) outlasts any loaded
+// runner, so the cancel always lands inside the warmup.
 func TestSushiCancelledStartTearsDown(t *testing.T) {
-	e, cfg, _, argvFile, chatLog := sushiEnv(t, "Org/Pack", 503, 0)
+	e, cfg, _, argvFile, chatLog := sushiEnv(t, "Org/Pack", 503, 60)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var hadPidfile, hadRecord bool
@@ -204,7 +207,16 @@ func TestSushiCancelledStartTearsDown(t *testing.T) {
 	report := func(s Stage) {
 		atWarming(s)
 		if s == StageWarming {
-			go func() { time.Sleep(300 * time.Millisecond); cancel() }()
+			go func() {
+				// Cancel once the first chat POST is logged; past the
+				// deadline cancel anyway and let the chat-log check fail.
+				defer cancel()
+				for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+					if _, err := os.Stat(chatLog); err == nil {
+						return
+					}
+				}
+			}()
 		}
 	}
 	err := processServer{"sushix"}.start(ctx, e, cfg, Target{ProviderID: "sushix", ModelName: "Org/Pack"}, report)
