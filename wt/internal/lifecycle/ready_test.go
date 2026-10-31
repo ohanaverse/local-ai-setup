@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +104,32 @@ func TestReadyNowCommandJSON(t *testing.T) {
 			}
 			if gotName != "/bin/recx" || strings.Join(gotArgs, " ") != "status" {
 				t.Errorf("ran %q %q, want /bin/recx [status]", gotName, gotArgs)
+			}
+		})
+	}
+}
+
+// TestReadyNowModelsListIgnoresUnloadedEntries verifies models-list readiness
+// does not count a listed-but-unloaded entry as ready (sushi lists every
+// pack), while a loaded entry, or one with no flag, is ready and names the
+// listed id. Reading an unloaded pack as ready would hand an agent a server
+// that cannot answer yet.
+func TestReadyNowModelsListIgnoresUnloadedEntries(t *testing.T) {
+	spec := provider.ProcessSpec{Binary: "listx", Ready: provider.Ready{Kind: provider.ReadyModelsList}}
+	for name, tc := range map[string]struct {
+		body string
+		want readyState
+	}{
+		"unloaded": {`{"data":[{"id":"org/Qwen","loaded":false}]}`, readyState{}},
+		"loaded":   {`{"data":[{"id":"org/Qwen","loaded":true}]}`, readyState{Ready: true, Model: "org/Qwen"}},
+		"absent":   {`{"data":[{"id":"org/Qwen"}]}`, readyState{Ready: true, Model: "org/Qwen"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+			defer srv.Close()
+			got, err := testEnv().readyNow(context.Background(), spec, "", srv.URL, "Qwen", "")
+			if err != nil || got != tc.want {
+				t.Errorf("readyNow = %+v, %v; want %+v, nil", got, err, tc.want)
 			}
 		})
 	}

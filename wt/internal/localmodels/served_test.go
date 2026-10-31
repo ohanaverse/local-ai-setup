@@ -211,6 +211,36 @@ func TestServedIDsOtherFamiliesReadTheList(t *testing.T) {
 	}
 }
 
+// TestServedIDsLoadedFieldPerFamily pins that the loaded filter is generic, not
+// a sushi special case: any family whose /v1/models marks an entry
+// "loaded": false has that entry dropped, one with true or no field is
+// unchanged, and omlx keeps reading its own pool.
+func TestServedIDsLoadedFieldPerFamily(t *testing.T) {
+	for _, family := range []string{"mtplx", "mlx_lm_server", "rec", "ollama"} {
+		for name, tc := range map[string]struct {
+			body string
+			want []string
+		}{
+			"no loaded field": {`{"data":[{"id":"Org/Q"}]}`, []string{"Org/Q"}},
+			"loaded true":     {`{"data":[{"id":"Org/Q","loaded":true}]}`, []string{"Org/Q"}},
+			"loaded false":    {`{"data":[{"id":"Org/Q","loaded":false}]}`, []string{}},
+		} {
+			t.Run(family+" "+name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+				defer srv.Close()
+				cfg := &config.Config{Providers: []config.Provider{{ID: family, Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: srv.URL}}}}
+				if ids, err := ServedIDs(cfg, testClient, family); err != nil || !slices.Equal(ids, tc.want) {
+					t.Errorf("%s served = %v err = %v, want %v", family, ids, err, tc.want)
+				}
+			})
+		}
+	}
+	f := &fakeOmlx{listed: []string{"A"}, pool: map[string]bool{"A": true}}
+	if ids, err := ServedIDs(omlxCfgAt(f.serve(t), ""), testClient, "omlx"); err != nil || !slices.Equal(ids, []string{"A"}) {
+		t.Errorf("omlx served = %v err = %v, want [A]", ids, err)
+	}
+}
+
 // TestInventoryOmlxListedButUnloadedIsNotRunning pins #201 where users see it:
 // the inventory entry of an omlx model that is on disk and listed by a running
 // service, but not loaded, is not Running — so the picker offers to start it

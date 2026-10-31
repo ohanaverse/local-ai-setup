@@ -154,6 +154,37 @@ func TestWaitForModel(t *testing.T) {
 	}
 }
 
+// TestWaitForModelIgnoresUnloadedEntries verifies a model listed with
+// "loaded": false (sushi lists every pack while it loads one) does not end the
+// wait: only the loaded entry does, and a list that never loads it times out.
+func TestWaitForModelIgnoresUnloadedEntries(t *testing.T) {
+	e := testEnv()
+	ctx := context.Background()
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) < 3 {
+			_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":false,"state":"loading"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":true,"state":"ready"}]}`))
+	}))
+	defer srv.Close()
+	if err := e.waitForModel(ctx, srv.URL, "Qwen", nil, "", time.Second); err != nil {
+		t.Fatalf("waitForModel: %v", err)
+	}
+	if n := atomic.LoadInt32(&hits); n < 3 {
+		t.Errorf("hits = %d, want at least 3 (two unloaded answers first)", n)
+	}
+
+	never := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":false}]}`))
+	}))
+	defer never.Close()
+	if err := e.waitForModel(ctx, never.URL, "Qwen", nil, "", 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("never-loaded err = %v, want timed out", err)
+	}
+}
+
 // TestWarmupSendsOneTokenChatAndWaitsForCompletion verifies warmup polls the
 // health URL, POSTs a 1-token chat completion naming the model, and only
 // succeeds when the reply carries the chat.completion marker (an early error
