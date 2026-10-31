@@ -83,7 +83,7 @@ make -C .. test-all   # CI-equivalent: root lint + llmbench + wt
 
 ## Go module
 
-Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke}`.
 
 **Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
 
@@ -93,7 +93,7 @@ Every file and package in full: [docs/internals/packages.md](docs/internals/pack
 
 `~/.config/agent-wt/config.toml` is wt-owned and holds **only Agents, DefaultTag, and the `[litellm]` table**; Providers/Models live in the registry and this file's write path never touches them.
 
-- **Writers go through `(*Config).PatchSave` or `lockedApply`** (flock, re-read fresh, mutate only their own fields); `Save(cfg)` only for a known-fresh `Config`.
+- **Writers go through `(*Config).PatchSave` or `lockedApply`** (flock, re-read fresh, mutate only their own fields); `Save(cfg)` only for a known-fresh `Config`. **Any read-modify-write of a wt-owned file flocks via `config.WithFileLock`** — the one helper (`WithLock` for config.toml, `UpdateRegistry` for registry.toml, `slotedit.Apply` for slot-profiles.toml); a new write path without it can silently lose a concurrent edit.
 - `wt config` launches even when `config.toml` fails validation, so the editor can repair it.
 
 Read [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md) before changing config load/save, migrations, the `[litellm]` table, registry loading, catalog membership, or location validation.
@@ -176,7 +176,7 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (`profiles.Resolve`), ap
 - Call the `config_content` cleanup explicitly after the run — `runAgentCmd`'s `os.Exit` skips defers.
 - Apply order is env/args → `config_content` (with `config_defaults`) → wrapper; load/validate/apply errors degrade to an unprofiled launch with a warning.
 
-**Slot profiles** (hand-written `~/.config/agent-wt/slot-profiles.toml`, never written by wt; [docs/wt-agents/slot-profiles.md](docs/wt-agents/slot-profiles.md)) map an agent's model slots to registry models and are pinned with `-M profile/<name>`; claude is the only slot agent. A rule that belongs to one agent goes on that interface and is asked through `profiles.SlotDrivers` (warn-only: `agents.SlotConfigWarner`), never into `internal/profiles` or `internal/catalog`, which do not import `internal/agents` (#418).
+**Slot profiles** (`~/.config/agent-wt/slot-profiles.toml`, hand-editable and written by wt only through `wt profile slots add|set|rm` (`internal/slotedit`: dated backup, validate under a `config.WithFileLock` flock, comment-preserving); [docs/wt-agents/slot-profiles.md](docs/wt-agents/slot-profiles.md)) map an agent's model slots to registry models and are pinned with `-M profile/<name>`; claude is the only slot agent. A rule that belongs to one agent goes on that interface and is asked through `profiles.SlotDrivers` (warn-only: `agents.SlotConfigWarner`), never into `internal/profiles` or `internal/catalog`, which do not import `internal/agents` (#418).
 
 **No flag points a claude launch at another LiteLLM** (the URL comes only from `[litellm]` in `config.toml`). To A/B a proxy setting, run a scratch `litellm --config <scratch>.yaml --port 4001` and start `claude` directly with the env `claudeDriver.BuildSlots` builds (`internal/agents/claude_slots.go`: `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`, per-slot `ANTHROPIC_DEFAULT_*_MODEL` plus `_NAME` in the `--settings` env JSON, `--model`). The scratch config holds the omlx key, so delete it afterwards.
 
@@ -185,6 +185,7 @@ Opt-in overlays from `~/.config/agent-wt/profiles.toml` (`profiles.Resolve`), ap
 - **Fail closed, always the proxy, no file written**: nothing reads `cfg.IsLitellm()`; `config_content` travels only in inline `--settings`, the proxy token only in the process env.
 - **Automatic profiles are never applied to a slot-profile launch** (`applySlotProfile`, never `applyProfileForLaunch`).
 - **A default may be an agent alias** (`SlotCapable.DefaultAlias`, #391): use `SlotCheck.RestSlot()`/`FilledOrder()`, never `Profile.Default`.
+- **Read each input file once per command** (`wt profile slots usage|candidates`: `tiers.LoadWithFreshness`, `usage.AllActivity`): a second parse re-reads a file that may have changed between them, so a report can mix two generations — and the duplicated I/O buys nothing.
 
 Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-internalprofiles) before changing profiles, or its [slot-profile section](docs/internals/launch-flow.md#slot-profile-launch) before changing a slot-profile launch step.
 

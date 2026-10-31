@@ -14,8 +14,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -71,6 +73,12 @@ type Entry struct {
 	// file has none, as one written before the key existed. A reader that
 	// declares Context as the window a host serves takes ContextBasisHost alone.
 	ContextBasis string
+	// OpenWeights is the file's `open_weights`; false when absent or not a bool.
+	OpenWeights bool
+	// ToolCall is the file's `tool_call`; HasToolCall is false when the entry
+	// has none (or a non-bool), so "unknown" differs from "no".
+	ToolCall    bool
+	HasToolCall bool
 }
 
 // ContextBasisHost is the ContextBasis of a window read from the model's own
@@ -232,6 +240,8 @@ type fileDoc struct {
 		Context        any      `toml:"context"`
 		ContextBasis   any      `toml:"context_basis"`
 		AlignedSources []string `toml:"aligned_sources"`
+		OpenWeights    any      `toml:"open_weights"`
+		ToolCall       any      `toml:"tool_call"`
 	} `toml:"models"`
 }
 
@@ -279,6 +289,12 @@ func Parse(data []byte) (Index, error) {
 				e.Context = int(v)
 			}
 		}
+		if b, ok := m.OpenWeights.(bool); ok {
+			e.OpenWeights = b
+		}
+		if b, ok := m.ToolCall.(bool); ok {
+			e.ToolCall, e.HasToolCall = b, true
+		}
 		switch v := m.AlignedScore.(type) {
 		case float64:
 			if !math.IsNaN(v) && !math.IsInf(v, 0) {
@@ -306,15 +322,8 @@ func Load() Index {
 
 // LoadFile is Load for a named file.
 func LoadFile(path string) Index {
-	if path == "" {
-		return nil
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
+	data, ok := readBounded(path)
+	if !ok {
 		return nil
 	}
 	ix, err := Parse(data)
@@ -322,4 +331,80 @@ func LoadFile(path string) Index {
 		return nil
 	}
 	return ix
+}
+
+// readBounded is the one file reader of this package: the file's bytes, and
+// false when path is empty or the file is missing, unreadable, not a
+// regular file or larger than maxFileSize.
+func readBounded(path string) ([]byte, bool) {
+	if path == "" {
+		return nil, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// Freshness is how current the file is: when modeltiers generated it and
+// which of its sources were not "ok" that run.
+type Freshness struct {
+	GeneratedAt  time.Time
+	StaleSources []string
+}
+
+// ParseFreshness reads generated_at and each [sources.<name>] status. A
+// generated_at that is missing or not a time leaves GeneratedAt zero.
+func ParseFreshness(data []byte) (Freshness, error) {
+	var doc struct {
+		GeneratedAt any `toml:"generated_at"`
+		Sources     map[string]struct {
+			Status any `toml:"status"`
+		} `toml:"sources"`
+	}
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		return Freshness{}, err
+	}
+	var f Freshness
+	switch v := doc.GeneratedAt.(type) {
+	case time.Time:
+		f.GeneratedAt = v
+	case string:
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.GeneratedAt = t
+		}
+	}
+	for name, src := range doc.Sources {
+		if s, _ := src.Status.(string); s != "ok" {
+			f.StaleSources = append(f.StaleSources, name)
+		}
+	}
+	sort.Strings(f.StaleSources)
+	return f, nil
+}
+
+// LoadWithFreshness reads the file at Path once and returns both its
+// entries and its freshness, for a caller that wants both (Load plus a
+// separate freshness read would read and parse the file twice). ix follows
+// Load's rule (never nil; unparseable reads as empty); ok is false when
+// the file is missing, unreadable, unparseable or has no generated_at, so
+// a caller that only wants the entries ignores it.
+func LoadWithFreshness() (ix Index, f Freshness, ok bool) {
+	data, have := readBounded(Path())
+	if !have {
+		return nil, Freshness{}, false
+	}
+	if parsed, err := Parse(data); err == nil {
+		ix = parsed
+	}
+	f, err := ParseFreshness(data)
+	if err != nil || f.GeneratedAt.IsZero() {
+		return ix, Freshness{}, false
+	}
+	return ix, f, true
 }

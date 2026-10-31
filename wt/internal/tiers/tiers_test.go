@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestPathFollowsModeltiersRule pins the file's location to modeltiers' own
@@ -299,5 +301,100 @@ func TestParseReadsContextAsAPositiveWholeNumber(t *testing.T) {
 				t.Errorf("Context = %d, want %d", e.Context, tc.want)
 			}
 		})
+	}
+}
+
+// TestParseReadsToolCallAndOpenWeights pins that open_weights and tool_call
+// are read as booleans and that an entry without tool_call has HasToolCall
+// false, so a caller can tell "no tool calling" from "unknown".
+func TestParseReadsToolCallAndOpenWeights(t *testing.T) {
+	ix, err := Parse([]byte(`
+[[models]]
+provider_id = "p"
+model_name = "a"
+open_weights = true
+tool_call = true
+
+[[models]]
+provider_id = "p"
+model_name = "b"
+tool_call = false
+
+[[models]]
+provider_id = "p"
+model_name = "c"
+open_weights = "yes"
+tool_call = 1
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := ix.Lookup("p", "a")
+	if !a.OpenWeights || !a.ToolCall || !a.HasToolCall {
+		t.Errorf("a = %+v, want open weights and tool call set", a)
+	}
+	b, _ := ix.Lookup("p", "b")
+	if b.OpenWeights || b.ToolCall || !b.HasToolCall {
+		t.Errorf("b = %+v, want tool_call false but present", b)
+	}
+	c, _ := ix.Lookup("p", "c")
+	if c.OpenWeights || c.ToolCall || c.HasToolCall {
+		t.Errorf("c = %+v, want non-bool values read as none", c)
+	}
+}
+
+// TestParseFreshness pins the generation time and the stale-source list that
+// tells a caller how far to trust the file.
+func TestParseFreshness(t *testing.T) {
+	f, err := ParseFreshness([]byte(`
+generated_at = "2026-10-30T15:30:47Z"
+
+[sources.openrouter]
+status = "stale"
+
+[sources.arena]
+status = "ok"
+
+[sources.epoch]
+status = "failed"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.GeneratedAt.Equal(time.Date(2026, 10, 30, 15, 30, 47, 0, time.UTC)) {
+		t.Errorf("GeneratedAt = %v", f.GeneratedAt)
+	}
+	if strings.Join(f.StaleSources, ",") != "epoch,openrouter" {
+		t.Errorf("StaleSources = %v", f.StaleSources)
+	}
+}
+
+// TestLoadWithFreshness pins that no file means no freshness (and no
+// entries), not an error, and that a file with a generated_at reports both
+// halves from one read — the candidates command decides how much to trust a
+// ranking from this.
+func TestLoadWithFreshness(t *testing.T) {
+	t.Setenv(OutEnv, filepath.Join(t.TempDir(), "absent.toml"))
+	if ix, _, ok := LoadWithFreshness(); ok || ix != nil {
+		t.Errorf("LoadWithFreshness = %v, %v for a missing file, want no entries and not ok", ix, ok)
+	}
+	p := filepath.Join(t.TempDir(), "t.toml")
+	if err := os.WriteFile(p, []byte("generated_at = \"2026-10-30T15:30:47Z\"\n\n[[models]]\nprovider_id = \"p\"\nmodel_name = \"m\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(OutEnv, p)
+	ix, f, ok := LoadWithFreshness()
+	if !ok || f.GeneratedAt.IsZero() {
+		t.Errorf("LoadWithFreshness = %+v, %v", f, ok)
+	}
+	if len(ix) != 1 {
+		t.Errorf("LoadWithFreshness entries = %v", ix)
+	}
+	// A file with no generated_at has entries but no freshness.
+	if err := os.WriteFile(p, []byte("[[models]]\nprovider_id = \"p\"\nmodel_name = \"m\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ix, _, ok := LoadWithFreshness(); ok || len(ix) != 1 {
+		t.Errorf("LoadWithFreshness = %v, %v, want entries without freshness", ix, ok)
 	}
 }

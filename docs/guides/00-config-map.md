@@ -24,7 +24,7 @@ None — this is a reference doc, not a procedure.
 | `~/.config/agent-wt/usage.jsonl` | `wt` | `wt stats` | Launch log |
 | `~/.config/agent-wt/rotation.state` + `rotation-*.state` | `wt` | `wt` | Rotation position |
 | `~/.config/agent-wt/last-picked.state` | `wt` | `wt` | The row launched last, a model or a slot profile: the model picker's `> ` marker |
-| `~/.config/agent-wt/slot-profiles.toml` | you by hand; wt never writes it | `wt` | Slot profiles: named sets that map each of Claude Code's model slots to a registry model ([06-wt-agents-and-models](06-wt-agents-and-models.md) §10). Absent by default |
+| `~/.config/agent-wt/slot-profiles.toml` | you by hand, or `wt profile slots add\|set\|rm` (backs up, validates) | `wt` | Slot profiles: named sets that map each of Claude Code's model slots to a registry model ([06-wt-agents-and-models](06-wt-agents-and-models.md) §10). Absent by default |
 | `~/.config/agent-wt/profiles.toml` | you by hand; `wt profile on\|off` sets its `enabled` line | `wt` | Local-model launch profiles ([06-wt-agents-and-models](06-wt-agents-and-models.md) §9). Absent by default; `profile-backups/` beside it holds wt's snapshots of the files a profile rewrites |
 | `~/.config/agent-wt/survey.jsonl` | `wt` (the post-session survey, which is switched off) | `wt stats`, the model picker | Recorded survey answers ([07-usage-and-spend](07-usage-and-spend.md)) |
 | `~/.config/agent-wt/refcount.jsonl` | `wt` | `wt` | Which live wt sessions use which model; an entry lasts until its session's process is gone |
@@ -252,7 +252,7 @@ profile/<name>
 
 ### `~/.config/agent-wt/slot-profiles.toml`
 
-- **Owner:** you, by hand. wt reads it and never writes it. Absent by default; a missing file means no profile rows.
+- **Owner:** you, by hand, or `wt profile slots add|set|rm`, the only wt commands that write it (each keeps a `slot-profiles.toml.bak-<stamp>` backup and validates first). Absent by default; a missing file means no profile rows.
 - **Consumers:** `wt` (the claude model picker, `-M profile/<name>`, `wt profile list`, `wt profile show`).
 - **Purpose:** slot profiles. Each `[[profile]]` names an agent, assigns a registry model id to some or all of the agent's model slots, and names the slot the session starts on.
 
@@ -276,6 +276,8 @@ See what wt makes of the file:
 wt profile list                                # from: any dir, read-only
 wt profile show -A claude -M profile/<name>    # from: any dir; probes local providers, changes nothing
 ```
+
+Manage it with `wt profile slots add|set|rm|usage|candidates` (see [08 §8](08-maintenance-and-troubleshooting.md)).
 
 Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slot-profiles.md).
 
@@ -339,7 +341,7 @@ While the Ollama.app window is running, transient `application.com.electron.olla
 - **Legacy files are not config:** `~/.config/local-ai/config.yaml` and `~/.config/local-ai/families/*.yaml` are read by nothing (see "Left on disk, read by nothing" above), and `~/.config/agent-wt/models.conf` only by wt's first-run migration. Fix models in the new files, don't resurrect the old ones.
 - **Secrets on disk:** OpenRouter `api_key` values in `~/.config/litellm/config.yaml`; `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL` (the latter may embed the local Postgres password) in the litellm LaunchAgent plist; the LiteLLM API key in modelman's leftover `~/.config/local-ai/modelman.toml` ([08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md), "Files modelman left behind"). Redact before pasting any of them into issues, docs, or chats.
 - **Files appear on first run of their owner:** `themes.toml` only after the first `wt config theme set <name>`, `rotation*.state` / `usage.jsonl` after the first `wt` launch, `~/.config/local-ai/benchmarks/` after `llmbench run`, `tiers.toml` and `~/.cache/local-ai/modeltiers/` after `modeltiers run`. Don't create them by hand.
-- Stray siblings are uninteresting: `config.toml.bak`, `*.plist.qwen3.8.bak`, `config.yaml.qwen3.8.bak` are manual backups; `usage.jsonl.lock`, `survey.jsonl.lock`, `refcount.jsonl.lock` and `config.toml.lock` are wt's lock files.
+- Stray siblings are uninteresting: `config.toml.bak`, `*.plist.qwen3.8.bak`, `config.yaml.qwen3.8.bak` are manual backups; `usage.jsonl.lock`, `survey.jsonl.lock`, `refcount.jsonl.lock`, `config.toml.lock` and `slot-profiles.toml.lock` are wt's lock files.
 
 ## Going deeper
 

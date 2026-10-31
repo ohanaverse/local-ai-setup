@@ -95,10 +95,14 @@ func (c SlotCheck) Label() string {
 	return fmt.Sprintf("slot-profiles.toml[%d]", c.Index)
 }
 
-// slotNameRE is a well-formed profile name: lowercase letters, digits and
-// hyphens, starting with a letter or digit so `-M profile/<name>` can never
-// read as a flag.
+// slotNameRE is the one rule for a well-formed profile name: lowercase
+// letters, digits and hyphens, starting with a letter or digit so
+// `-M profile/<name>` can never read as a flag. SlotNameOK is its one
+// reading; `wt profile slots add` asks the same question.
 var slotNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// SlotNameOK reports whether name is a well-formed slot profile name.
+func SlotNameOK(name string) bool { return slotNameRE.MatchString(name) }
 
 // ValidateSlots returns one SlotCheck per profile, in file order. It reads
 // the file's content and the drivers' declarations only: whether a slot's
@@ -148,7 +152,7 @@ func slotIdentityErr(p SlotProfile, d SlotDrivers) error {
 	switch {
 	case p.Name == "":
 		return errors.New("name is missing")
-	case !slotNameRE.MatchString(p.Name):
+	case !SlotNameOK(p.Name):
 		return fmt.Errorf("name %q is malformed: use lowercase letters, digits and hyphens", p.Name)
 	case p.Agent == "":
 		return errors.New("agent is missing")

@@ -163,7 +163,7 @@ func profileCmd(a *app) *cobra.Command {
 		}
 	}
 
-	c.AddCommand(listC, showC, statusC, toggle("on", "Enable the profile layer", true), toggle("off", "Disable the profile layer", false))
+	c.AddCommand(listC, showC, statusC, slotsCmd(a), toggle("on", "Enable the profile layer", true), toggle("off", "Disable the profile layer", false))
 	return c
 }
 

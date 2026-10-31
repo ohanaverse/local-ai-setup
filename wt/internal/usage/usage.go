@@ -185,6 +185,33 @@ func (s *StoreImpl) AllCounts(agent string, asOf time.Time) map[string]UsageCoun
 	return out
 }
 
+// AllActivity returns, per model id, the 1/7/30-day launch counts and the
+// time of the newest launch recorded for agent within the 30 days ending
+// at asOf, from one scan of the file. The agent and window rules are
+// AllCounts's: a named agent matches only its own launches, an empty agent
+// every launch, a line with no model id is skipped, and a launch dated
+// after asOf is past the end of the window and not reported. A missing file
+// reads as two empty maps.
+//
+// Like AllCounts it is deliberately not part of Store; its one caller is
+// `wt profile slots usage`, which wants both halves of the same scan.
+func (s *StoreImpl) AllActivity(agent string, asOf time.Time) (counts map[string]UsageCounts, last map[string]time.Time) {
+	counts, last = map[string]UsageCounts{}, map[string]time.Time{}
+	s.scan(asOf, func(ev event, age time.Duration) {
+		if ev.ModelID == "" || (agent != "" && ev.Agent != agent) {
+			return
+		}
+		if age < 0 || age >= retentionWindow {
+			return
+		}
+		counts[ev.ModelID] = counts[ev.ModelID].add(age)
+		if t := ev.Timestamp.UTC(); t.After(last[ev.ModelID]) {
+			last[ev.ModelID] = t
+		}
+	})
+	return counts, last
+}
+
 // add returns c with one launch of the given age counted in every window
 // it falls inside.
 func (c UsageCounts) add(age time.Duration) UsageCounts {

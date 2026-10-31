@@ -81,7 +81,7 @@ func UpdateRegistry(apply func(*RegistryDoc) error) (changed bool, err error) {
 	if _, _, err := resolveRegistryFile(path); err != nil {
 		return false, err
 	}
-	err = withFileLock(path+".lock", func() error {
+	err = WithFileLock(path+".lock", func() error {
 		for range registryWriteAttempts {
 			var retry bool
 			var err error

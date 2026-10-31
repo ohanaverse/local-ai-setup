@@ -131,3 +131,25 @@ func TestContractFixtureReadsContext(t *testing.T) {
 		}
 	}
 }
+
+// TestContractFixtureCarriesCapabilityAndFreshness pins wt's reading of the
+// fixture's open_weights, tool_call, generated_at and source statuses, which
+// `wt profile slots` relies on.
+func TestContractFixtureCarriesCapabilityAndFreshness(t *testing.T) {
+	data, err := os.ReadFile(tiersFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, ok := ix.Lookup("ollama", "glm-5.3:cloud")
+	if !ok || !e.OpenWeights || !e.ToolCall || !e.HasToolCall {
+		t.Errorf("glm-5.3:cloud = %+v, want open weights and tool call", e)
+	}
+	f, err := ParseFreshness(data)
+	if err != nil || f.GeneratedAt.IsZero() || len(f.StaleSources) != 0 {
+		t.Errorf("freshness = %+v, %v", f, err)
+	}
+}

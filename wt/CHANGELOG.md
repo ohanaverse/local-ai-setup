@@ -4,6 +4,13 @@
 
 ### Added
 
+- `wt profile slots add|set|rm|usage|candidates` manage
+  `slot-profiles.toml`: edits keep other entries and comments byte for byte,
+  copy the old file to `slot-profiles.toml.bak-<stamp>`, serialize on a lock
+  beside the file and are validated
+  before they replace it; `usage` shows launches per profile and `candidates`
+  ranks registry models by tier score and price. Hand editing stays valid. See
+  `docs/wt-agents/slot-profiles.md` ("Managing the file").
 - A launch in a repository's root checkout now notices another live wt
   session there and asks `c` continue / `w` new worktree / `q` quit (Esc
   quits), in both the plain launch and the picker. Launches in a linked

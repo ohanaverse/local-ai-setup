@@ -579,3 +579,30 @@ func TestAllCountsMeasuresAgainstTheInstantItIsGiven(t *testing.T) {
 		t.Errorf("AllCounts(\"\", %s)[m] = %+v, want %+v", later.Format(time.RFC3339), got, want)
 	}
 }
+
+// TestAllActivity verifies that one scan reports both the per-id counts and
+// the newest launch for one agent only: the slot-profile listing shows how
+// often and when each profile was used, and another agent's launches must
+// not count.
+func TestAllActivity(t *testing.T) {
+	store := NewStoreAt(t.TempDir())
+	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+
+	writeEvents(t, store, []event{
+		{ModelID: "profile/a", Agent: "claude", Timestamp: fixed.Add(-5 * 24 * time.Hour)},
+		{ModelID: "profile/a", Agent: "claude", Timestamp: fixed.Add(-2 * time.Hour)},
+		{ModelID: "profile/a", Agent: "claude", Timestamp: fixed.Add(-30 * time.Hour)},
+		{ModelID: "profile/b", Agent: "pi", Timestamp: fixed.Add(-1 * time.Hour)},
+	})
+
+	counts, last := store.AllActivity("claude", fixed)
+	if len(last) != 1 || len(counts) != 1 {
+		t.Fatalf("AllActivity(claude) = %+v, %+v, want only profile/a", counts, last)
+	}
+	if want := fixed.Add(-2 * time.Hour); !last["profile/a"].Equal(want) {
+		t.Errorf("AllActivity(claude)[profile/a] last = %v, want %v", last["profile/a"], want)
+	}
+	if got := counts["profile/a"]; got.ThirtyDay != 3 || got.SevenDay != 3 || got.OneDay != 1 {
+		t.Errorf("AllActivity(claude)[profile/a] counts = %+v", got)
+	}
+}

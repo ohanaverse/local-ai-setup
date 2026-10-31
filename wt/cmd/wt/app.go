@@ -89,6 +89,20 @@ func agentRequiredMechanism(agent string, m profiles.Mechanism) (profiles.Mechan
 // ~/.config/agent-wt/slot-profiles.toml (profiles.LoadSlots).
 var loadSlotStore = profiles.LoadSlots
 
+// loadSlotState reads slot-profiles.toml and returns what the app caches
+// from it: the static checks (nil when the file is missing, empty or did not
+// load), the unknown keys, and the load error.
+func loadSlotState() (checks []profiles.SlotCheck, unknown []string, err error) {
+	store, err := loadSlotStore()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(store.Profiles) > 0 {
+		checks = profiles.ValidateSlots(store, agents.SlotDrivers())
+	}
+	return checks, store.Unknown, nil
+}
+
 // newApp loads the config (best-effort), the active theme, and the
 // profiles store. Config and profiles validation errors are stored in the
 // returned app rather than returned as a fatal error, so `wt config`/
@@ -119,15 +133,7 @@ func newApp() (*app, error) {
 	}
 	// Slot profiles load independently of profiles.toml: an error in either
 	// file never hides the other.
-	var slotChecks []profiles.SlotCheck
-	slotStore, slotLoadErr := loadSlotStore()
-	if slotLoadErr == nil && len(slotStore.Profiles) > 0 {
-		slotChecks = profiles.ValidateSlots(slotStore, agents.SlotDrivers())
-	}
-	var slotUnknown []string
-	if slotLoadErr == nil {
-		slotUnknown = slotStore.Unknown
-	}
+	slotChecks, slotUnknown, slotLoadErr := loadSlotState()
 	return &app{
 		cfg: cfg, cfgErr: cfgErr, loadErr: loadErr, theme: theme,
 		profiles: store, profilesLoadErr: profilesLoadErr, profilesValidateErr: profilesValidateErr,
