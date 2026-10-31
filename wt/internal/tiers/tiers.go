@@ -227,21 +227,6 @@ func (ix Index) Rating(providerID, modelName string) Entry {
 	return Entry{}
 }
 
-// Entries returns every entry sorted by ProviderID, then ModelName.
-func (ix Index) Entries() []Entry {
-	out := make([]Entry, 0, len(ix))
-	for _, e := range ix {
-		out = append(out, e)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].ProviderID != out[j].ProviderID {
-			return out[i].ProviderID < out[j].ProviderID
-		}
-		return out[i].ModelName < out[j].ModelName
-	})
-	return out
-}
-
 // fileDoc is the part of tiers.toml this package reads. aligned_score is
 // decoded as any so that an integer written for it reads as well as a float.
 type fileDoc struct {
@@ -337,15 +322,8 @@ func Load() Index {
 
 // LoadFile is Load for a named file.
 func LoadFile(path string) Index {
-	if path == "" {
-		return nil
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
+	data, ok := readBounded(path)
+	if !ok {
 		return nil
 	}
 	ix, err := Parse(data)
@@ -353,6 +331,24 @@ func LoadFile(path string) Index {
 		return nil
 	}
 	return ix
+}
+
+// readBounded is the one file reader of this package: the file's bytes, and
+// false when path is empty or the file is missing, unreadable, not a
+// regular file or larger than maxFileSize.
+func readBounded(path string) ([]byte, bool) {
+	if path == "" {
+		return nil, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	return data, true
 }
 
 // Freshness is how current the file is: when modeltiers generated it and
@@ -392,24 +388,23 @@ func ParseFreshness(data []byte) (Freshness, error) {
 	return f, nil
 }
 
-// ReadFreshness reads the file at Path; false when it is missing, unreadable,
-// unparseable or has no generated_at.
-func ReadFreshness() (Freshness, bool) {
-	path := Path()
-	if path == "" {
-		return Freshness{}, false
+// LoadWithFreshness reads the file at Path once and returns both its
+// entries and its freshness, for a caller that wants both (Load plus a
+// separate freshness read would read and parse the file twice). ix follows
+// Load's rule (never nil; unparseable reads as empty); ok is false when
+// the file is missing, unreadable, unparseable or has no generated_at, so
+// a caller that only wants the entries ignores it.
+func LoadWithFreshness() (ix Index, f Freshness, ok bool) {
+	data, have := readBounded(Path())
+	if !have {
+		return nil, Freshness{}, false
 	}
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxFileSize {
-		return Freshness{}, false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Freshness{}, false
+	if parsed, err := Parse(data); err == nil {
+		ix = parsed
 	}
 	f, err := ParseFreshness(data)
 	if err != nil || f.GeneratedAt.IsZero() {
-		return Freshness{}, false
+		return ix, Freshness{}, false
 	}
-	return f, true
+	return ix, f, true
 }

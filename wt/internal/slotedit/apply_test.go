@@ -59,6 +59,9 @@ func assertUntouched(t *testing.T, p, want string) {
 	}
 }
 
+// TestApplyWritesBackupAndFile checks the happy path end to end: a valid
+// edit replaces the file, and the old bytes land in a .bak-<stamp> beside
+// it — the backup is the user's undo for every write the CLI makes.
 func TestApplyWritesBackupAndFile(t *testing.T) {
 	p := setup(t, applyBase)
 	bak, err := Apply(p, replace(`opus   = "m/b"`, `opus   = "m/a"`), applyOpts("alpha"))
@@ -76,6 +79,9 @@ func TestApplyWritesBackupAndFile(t *testing.T) {
 	}
 }
 
+// TestApplyRefusesUnknownModelID checks that a slot naming an id the
+// registry does not hold is refused before any write: the file and its
+// backups stay untouched, so a typo can never break a launchable profile.
 func TestApplyRefusesUnknownModelID(t *testing.T) {
 	p := setup(t, applyBase)
 	_, err := Apply(p, replace(`"m/b"`, `"m/zzz"`), applyOpts("alpha"))
@@ -85,6 +91,9 @@ func TestApplyRefusesUnknownModelID(t *testing.T) {
 	assertUntouched(t, p, applyBase)
 }
 
+// TestApplyRefusesDefaultOnUnfilledSlot checks that a target profile whose
+// default names a slot it does not fill is refused: the edit's whole point
+// is that what lands on disk still validates.
 func TestApplyRefusesDefaultOnUnfilledSlot(t *testing.T) {
 	p := setup(t, applyBase)
 	_, err := Apply(p, replace(`default = "sonnet"`, `default = "haiku"`), applyOpts("alpha"))
@@ -94,6 +103,9 @@ func TestApplyRefusesDefaultOnUnfilledSlot(t *testing.T) {
 	assertUntouched(t, p, applyBase)
 }
 
+// TestApplyRefusesBreakingAnotherProfile checks that an edit which keeps its
+// target usable but breaks a different profile is refused: a surgical edit
+// must not damage entries it never names.
 func TestApplyRefusesBreakingAnotherProfile(t *testing.T) {
 	two := applyBase + "\n[[profile]]\nname = \"beta\"\nagent = \"claude\"\ndefault = \"sonnet\"\n[profile.slots]\nsonnet = \"m/c\"\n"
 	p := setup(t, two)
@@ -105,6 +117,9 @@ func TestApplyRefusesBreakingAnotherProfile(t *testing.T) {
 	assertUntouched(t, p, two)
 }
 
+// TestApplyRemoveDoesNotFailOnOwnAbsence checks that a removal succeeds even
+// though the removed profile is gone from the after-file: Target is "" for
+// a removal, so its own absence must not read as "target not found".
 func TestApplyRemoveDoesNotFailOnOwnAbsence(t *testing.T) {
 	p := setup(t, applyBase)
 	bak, err := Apply(p, func(b []byte) ([]byte, error) { return Remove(b, "alpha") }, applyOpts(""))
@@ -119,6 +134,9 @@ func TestApplyRemoveDoesNotFailOnOwnAbsence(t *testing.T) {
 	}
 }
 
+// TestApplyRefusesParseError checks that text that is no longer valid TOML
+// is refused before the file or a backup is touched — the write is the last
+// step, never the test of the edit.
 func TestApplyRefusesParseError(t *testing.T) {
 	p := setup(t, applyBase)
 	if _, err := Apply(p, replace("[profile.slots]", "[profile.slots"), applyOpts("alpha")); err == nil {
@@ -127,6 +145,9 @@ func TestApplyRefusesParseError(t *testing.T) {
 	assertUntouched(t, p, applyBase)
 }
 
+// TestApplyMissingFileCreatesWithoutBackup checks the first-write case:
+// `wt profile slots add` on a machine with no slot-profiles.toml creates
+// the file and writes no backup, since there is nothing to back up.
 func TestApplyMissingFileCreatesWithoutBackup(t *testing.T) {
 	p := setup(t, "")
 	bak, err := Apply(p, func([]byte) ([]byte, error) { return []byte(applyBase), nil }, applyOpts("alpha"))
@@ -144,6 +165,9 @@ func TestApplyMissingFileCreatesWithoutBackup(t *testing.T) {
 	}
 }
 
+// TestApplyBackupNamesDoNotCollideSameSecond checks the -2 suffix: two
+// writes inside one timestamp must both keep a distinct backup, never
+// overwrite the first.
 func TestApplyBackupNamesDoNotCollideSameSecond(t *testing.T) {
 	p := setup(t, applyBase)
 	b1, err := Apply(p, replace(`"m/b"`, `"m/a"`), applyOpts("alpha"))
@@ -159,6 +183,9 @@ func TestApplyBackupNamesDoNotCollideSameSecond(t *testing.T) {
 	}
 }
 
+// TestApplyKeepsFileModeAndBackupMode checks that neither the file nor its
+// backup drifts to a different permission mode: a hand-managed 0600 file
+// must stay private across wt's writes.
 func TestApplyKeepsFileModeAndBackupMode(t *testing.T) {
 	p := setup(t, applyBase)
 	if err := os.Chmod(p, 0o600); err != nil {
@@ -175,6 +202,10 @@ func TestApplyKeepsFileModeAndBackupMode(t *testing.T) {
 	}
 }
 
+// TestApplyWritesThroughSymlink checks that a symlinked slot-profiles.toml
+// stays a link and the entry behind it is edited: an atomic rename would
+// otherwise replace the link with a plain file and silently fork the user's
+// setup.
 func TestApplyWritesThroughSymlink(t *testing.T) {
 	real, _ := filepath.EvalSymlinks(setup(t, applyBase))
 	link := filepath.Join(t.TempDir(), "link.toml")
@@ -196,6 +227,9 @@ func TestApplyWritesThroughSymlink(t *testing.T) {
 	}
 }
 
+// TestApplyRefusesNewUnknownKey checks that an edit may not introduce a key
+// the schema does not name: wt warns about unknown keys at load, so a write
+// must never add one.
 func TestApplyRefusesNewUnknownKey(t *testing.T) {
 	p := setup(t, applyBase)
 	_, err := Apply(p, replace("[profile.slots]", "[profile.slotz]"), applyOpts("alpha"))
@@ -205,6 +239,9 @@ func TestApplyRefusesNewUnknownKey(t *testing.T) {
 	assertUntouched(t, p, applyBase)
 }
 
+// TestApplyKeepsExistingUnknownKey checks the other side of the unknown-key
+// rule: a key that was already there never blocks an otherwise-fine edit —
+// the file belongs to the user, and wt only refuses to make it worse.
 func TestApplyKeepsExistingUnknownKey(t *testing.T) {
 	src := "[[profiles]]\nname = \"x\"\n\n" + applyBase
 	p := setup(t, src)
@@ -213,6 +250,9 @@ func TestApplyKeepsExistingUnknownKey(t *testing.T) {
 	}
 }
 
+// TestApplyWhenExistingFileDoesNotParseTreatsBeforeAsEmpty checks that a
+// repair of an already-broken file is allowed: with nothing usable to
+// compare against, only the result is judged.
 func TestApplyWhenExistingFileDoesNotParseTreatsBeforeAsEmpty(t *testing.T) {
 	broken := "[profile.slots\n"
 	p := setup(t, broken)
@@ -225,6 +265,8 @@ func TestApplyWhenExistingFileDoesNotParseTreatsBeforeAsEmpty(t *testing.T) {
 	}
 }
 
+// TestApplyNilNowUsesClock checks the default timestamp: production passes
+// no Now, so the backup name must come from the real clock.
 func TestApplyNilNowUsesClock(t *testing.T) {
 	p := setup(t, applyBase)
 	o := applyOpts("alpha")
@@ -236,6 +278,9 @@ func TestApplyNilNowUsesClock(t *testing.T) {
 	}
 }
 
+// TestApplyRefusesDanglingSymlink checks that a link whose target is gone
+// is reported, not silently replaced by a fresh file that would strand
+// whatever the link was meant to become.
 func TestApplyRefusesDanglingSymlink(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := t.TempDir()

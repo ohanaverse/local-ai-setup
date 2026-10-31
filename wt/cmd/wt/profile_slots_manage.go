@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -25,8 +24,6 @@ import (
 
 // slotAgent is the agent `wt profile slots add` writes profiles for.
 const slotAgent = "claude"
-
-var slotProfileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // slotsCmd is `wt profile slots`. Subcommands are registered here, in one
 // place.
@@ -73,6 +70,9 @@ func parseSlotFlags(vals []string) (map[string]string, error) {
 	return slots, nil
 }
 
+// parseEnvFlags turns repeated --env KEY=VALUE flags into a map, refusing a
+// key given twice: like a repeated --slot, a duplicate is a mistake to
+// correct, not a value to silently overwrite.
 func parseEnvFlags(flag string, vals []string) (map[string]string, error) {
 	pairs, err := parseKV(flag, vals)
 	if err != nil {
@@ -80,6 +80,9 @@ func parseEnvFlags(flag string, vals []string) (map[string]string, error) {
 	}
 	env := map[string]string{}
 	for _, kv := range pairs {
+		if _, dup := env[kv[0]]; dup {
+			return nil, fmt.Errorf("--%s %s given twice", flag, kv[0])
+		}
 		env[kv[0]] = kv[1]
 	}
 	return env, nil
@@ -126,7 +129,7 @@ func slotsAddCmd(a *app) *cobra.Command {
 		Use: "add <name>", Short: "Add a slot profile for claude", Args: cobra.ExactArgs(1), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			if !slotProfileNameRe.MatchString(name) {
+			if !profiles.SlotNameOK(name) {
 				return fmt.Errorf("profile name %q: use lowercase letters, digits and hyphens, starting with a letter or digit", name)
 			}
 			slots, err := parseSlotFlags(slotFlags)
@@ -241,17 +244,20 @@ func slotsUsageCmd(a *app) *cobra.Command {
 		Use: "usage", Short: "Show launches of each slot profile over the last 1, 7 and 30 days", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
-			store, err := loadSlotStore()
+			// One read of the file feeds both halves of the report: the
+			// parsed profiles and their leading comments.
+			src, rerr := os.ReadFile(profiles.SlotPath())
+			if rerr != nil && !os.IsNotExist(rerr) {
+				return rerr
+			}
+			store, err := profiles.ParseSlots(src)
 			if err != nil {
 				return err
 			}
-			var comments map[string]string
-			if src, rerr := os.ReadFile(profiles.SlotPath()); rerr == nil {
-				comments = slotedit.LeadingComments(src)
-			}
+			comments := slotedit.LeadingComments(src)
 			asOf := time.Now()
 			us := usage.NewStore()
-			counts, last := us.AllCounts("", asOf), us.LastLaunch("", asOf)
+			counts, last := us.AllActivity("", asOf)
 			// Profiles in the file drive the rows: ids of a renamed or removed
 			// profile linger in usage.jsonl and are not reported.
 			var rows []slotUsageJSON
@@ -369,8 +375,8 @@ func slotsCandidatesCmd(a *app) *cobra.Command {
 					q.Providers = append(q.Providers, p)
 				}
 			}
-			cs := candidates.Rank(a.cfg.Models, tiers.Load(), q)
-			fresh, haveFresh := tiers.ReadFreshness()
+			ix, fresh, haveFresh := tiers.LoadWithFreshness()
+			cs := candidates.Rank(a.cfg.Models, ix, q)
 			if asJSON {
 				out := struct {
 					GeneratedAt *string         `json:"tiers_generated_at"`

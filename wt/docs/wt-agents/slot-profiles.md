@@ -543,7 +543,10 @@ wt profile slots candidates [--json] [--open-only] [--provider <id>[,<id>]] [--n
 What a write guarantees:
 
 - The old file is copied to `slot-profiles.toml.bak-<YYYYMMDD-HHMMSS>`
-  beside it first (a `-2`, `-3` suffix on a collision).
+  beside it first (a `-2`, `-3` suffix on a collision). The read-edit-write
+  holds `slot-profiles.toml.lock` beside the file, so two concurrent
+  `wt profile slots` commands serialize instead of silently dropping one
+  edit.
 - Every other entry and comment is kept byte for byte, and the file keeps
   its mode. A symlinked file is written through the link.
 - The result is validated before it replaces the file. wt refuses, and

@@ -49,6 +49,10 @@ sonnet = "openrouter/a"
 haiku = "openrouter/b"
 `
 
+// TestSlotsAddWritesProfile checks `slots add` end to end on a machine with
+// no file: the entry is created with the given slots and env, the comment is
+// written above it, and the command prints "created" plus the profile list
+// section, which is what the skill reads back to confirm the write.
 func TestSlotsAddWritesProfile(t *testing.T) {
 	a := slotsFixture(t, "")
 	out, err := runProfileCmd(t, a, "slots", "add", "mine", "--slot", "sonnet=openrouter/a", "--slot", "haiku=omlx/q", "--env", "FOO=bar", "--comment", "my note")
@@ -71,6 +75,9 @@ func TestSlotsAddWritesProfile(t *testing.T) {
 	}
 }
 
+// TestSlotsAddPrintsBackupPath checks that adding to an existing file
+// reports the .bak-<stamp> path rather than "created", so the user knows
+// where their previous file lives.
 func TestSlotsAddPrintsBackupPath(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	out, err := runProfileCmd(t, a, "slots", "add", "two", "--slot", "sonnet=openrouter/a")
@@ -85,6 +92,9 @@ func TestSlotsAddPrintsBackupPath(t *testing.T) {
 	}
 }
 
+// TestSlotsAddRejectsUnknownModel checks that a slot naming an id the
+// registry does not hold is refused and creates no file: the registry check
+// is what makes a written profile launchable.
 func TestSlotsAddRejectsUnknownModel(t *testing.T) {
 	a := slotsFixture(t, "")
 	_, err := runProfileCmd(t, a, "slots", "add", "mine", "--slot", "sonnet=nope/x")
@@ -96,6 +106,8 @@ func TestSlotsAddRejectsUnknownModel(t *testing.T) {
 	}
 }
 
+// TestSlotsAddRejectsBadName checks the name gate: a malformed name is
+// refused up front, since `-M profile/<name>` must never read as a flag.
 func TestSlotsAddRejectsBadName(t *testing.T) {
 	a := slotsFixture(t, "")
 	for _, n := range []string{"Bad", "-x", "a b", "a/b"} {
@@ -105,6 +117,9 @@ func TestSlotsAddRejectsBadName(t *testing.T) {
 	}
 }
 
+// TestSlotsAddRejectsBadSlotFlags checks the --slot/--env flag parsing: an
+// undeclared slot, a value without "=", and a default that names an unfilled
+// slot all error before the file is touched.
 func TestSlotsAddRejectsBadSlotFlags(t *testing.T) {
 	a := slotsFixture(t, "")
 	for _, args := range [][]string{
@@ -119,6 +134,9 @@ func TestSlotsAddRejectsBadSlotFlags(t *testing.T) {
 	}
 }
 
+// TestSlotsNoConfig checks that the write commands refuse to run without a
+// loaded registry: with no model ids to check slots against, a write could
+// not be validated.
 func TestSlotsNoConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if _, err := runProfileCmd(t, &app{}, "slots", "add", "x", "--slot", "sonnet=a"); err == nil {
@@ -126,6 +144,9 @@ func TestSlotsNoConfig(t *testing.T) {
 	}
 }
 
+// TestSlotsSetChangesOneSlot checks that `set --slot` changes only the named
+// slot's line: the other slots keep their ids, which is the surgical-edit
+// guarantee the docs promise.
 func TestSlotsSetChangesOneSlot(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	out, err := runProfileCmd(t, a, "slots", "set", "base", "--slot", "haiku=omlx/q")
@@ -142,6 +163,9 @@ func TestSlotsSetChangesOneSlot(t *testing.T) {
 	}
 }
 
+// TestSlotsSetUnsetEnv checks the env round trip: --env adds keys to
+// [profile.env] and --unset-env removes exactly the named one, so a swap
+// can also retire an env entry.
 func TestSlotsSetUnsetEnv(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	if _, err := runProfileCmd(t, a, "slots", "set", "base", "--env", "A=1", "--env", "B=2"); err != nil {
@@ -157,6 +181,8 @@ func TestSlotsSetUnsetEnv(t *testing.T) {
 	}
 }
 
+// TestSlotsSetDefault checks that --default rewrites the entry's default
+// and the write still validates (the new default names a filled slot).
 func TestSlotsSetDefault(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	if _, err := runProfileCmd(t, a, "slots", "set", "base", "--default", "haiku"); err != nil {
@@ -168,6 +194,8 @@ func TestSlotsSetDefault(t *testing.T) {
 	}
 }
 
+// TestSlotsSetUnknownName checks that `set` on a name the file does not
+// hold is an error, never a silent no-op.
 func TestSlotsSetUnknownName(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	if _, err := runProfileCmd(t, a, "slots", "set", "nope", "--default", "haiku"); err == nil {
@@ -175,6 +203,9 @@ func TestSlotsSetUnknownName(t *testing.T) {
 	}
 }
 
+// TestSlotsRmRemovesEntryKeepsOthers checks that `rm` deletes only the named
+// entry: its neighbours survive and the printed list no longer names the
+// removed profile.
 func TestSlotsRmRemovesEntryKeepsOthers(t *testing.T) {
 	a := slotsFixture(t, slotsBase+"\n[[profile]]\nname = \"other\"\nagent = \"claude\"\ndefault = \"sonnet\"\n\n[profile.slots]\nsonnet = \"openrouter/b\"\n")
 	out, err := runProfileCmd(t, a, "slots", "rm", "base")
@@ -190,6 +221,8 @@ func TestSlotsRmRemovesEntryKeepsOthers(t *testing.T) {
 	}
 }
 
+// TestSlotsRmUnknownName checks that `rm` of a name the file does not hold
+// errors and leaves every byte of the file alone.
 func TestSlotsRmUnknownName(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	if _, err := runProfileCmd(t, a, "slots", "rm", "nope"); err == nil {
@@ -200,6 +233,9 @@ func TestSlotsRmUnknownName(t *testing.T) {
 	}
 }
 
+// TestSlotsWriteRefusedLeavesFileUnchanged checks a refused `set` from the
+// CLI down to disk: the file is byte-identical and no backup was written,
+// because the backup must exist only when the file actually changed.
 func TestSlotsWriteRefusedLeavesFileUnchanged(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	_, err := runProfileCmd(t, a, "slots", "set", "base", "--slot", "haiku=nope/x")
@@ -214,6 +250,9 @@ func TestSlotsWriteRefusedLeavesFileUnchanged(t *testing.T) {
 	}
 }
 
+// TestSlotsSetWithNothingToChangeRefusesBeforeTouchingFile checks the
+// "nothing to change" guard: with no --slot/--default/--env/--unset-env,
+// `set` errors before Apply runs, so the config dir gains nothing.
 func TestSlotsSetWithNothingToChangeRefusesBeforeTouchingFile(t *testing.T) {
 	a := slotsFixture(t, slotsBase)
 	before := readSlotFile(t)
@@ -258,6 +297,10 @@ type usageTestRow struct {
 	Slots       map[string]string `json:"slots"`
 }
 
+// TestSlotsUsageCountsAndLastLaunch checks the usage report against a
+// seeded history: counts and the newest launch per profile in --json, and
+// a table that lists every profile in file order — the skill's removal and
+// review steps read exactly this.
 func TestSlotsUsageCountsAndLastLaunch(t *testing.T) {
 	a := slotsFixture(t, slotsTwo)
 	st := usage.NewStoreAt(config.Dir())
@@ -289,6 +332,10 @@ func TestSlotsUsageCountsAndLastLaunch(t *testing.T) {
 	}
 }
 
+// TestSlotsUsageNoLaunchesShowsZero checks that a profile with no recorded
+// launch reports zero and a null last_launch rather than being skipped or
+// erroring: zero means "not in the last 30 days", which is what cleanup
+// decides on.
 func TestSlotsUsageNoLaunchesShowsZero(t *testing.T) {
 	a := slotsFixture(t, slotsTwo)
 	out, err := runProfileCmd(t, a, "slots", "usage", "--json")
@@ -309,6 +356,9 @@ func TestSlotsUsageNoLaunchesShowsZero(t *testing.T) {
 	}
 }
 
+// TestSlotsUsageIgnoresRenamedProfileHistory checks that rows are driven by
+// the file, not the history: launches recorded under a profile name that no
+// longer exists are not reported, so a rename does not resurrect old usage.
 func TestSlotsUsageIgnoresRenamedProfileHistory(t *testing.T) {
 	a := slotsFixture(t, slotsTwo)
 	st := usage.NewStoreAt(config.Dir())
@@ -324,6 +374,9 @@ func TestSlotsUsageIgnoresRenamedProfileHistory(t *testing.T) {
 	}
 }
 
+// TestSlotsUsageIncludesLeadingComment checks that each row carries the
+// entry's leading comment verbatim: cleanup reads it to tell a one-off
+// test profile from one that is kept on purpose.
 func TestSlotsUsageIncludesLeadingComment(t *testing.T) {
 	a := slotsFixture(t, slotsTwo)
 	out, err := runProfileCmd(t, a, "slots", "usage", "--json")
@@ -382,6 +435,10 @@ aligned_score = 50
 tool_call = true
 `
 
+// TestSlotsCandidatesJSONIncludesFreshness checks that --json reports
+// tiers.toml's generation time and stale sources beside the ranking, ranked
+// open-weights-first: the skill refuses to trust a stale file it cannot see
+// the age of.
 func TestSlotsCandidatesJSONIncludesFreshness(t *testing.T) {
 	a := slotsFixture(t, "")
 	f := filepath.Join(t.TempDir(), "tiers.toml")
@@ -412,6 +469,9 @@ func TestSlotsCandidatesJSONIncludesFreshness(t *testing.T) {
 	}
 }
 
+// TestSlotsCandidatesNoTiersFile checks the missing-tiers.toml path: every
+// model is listed as unrated (score null, flagged) and the report says the
+// file was not found — a degraded ranking, never a failed command.
 func TestSlotsCandidatesNoTiersFile(t *testing.T) {
 	a := slotsFixture(t, "")
 	t.Setenv("MODELTIERS_OUT", filepath.Join(t.TempDir(), "missing.toml"))
@@ -437,6 +497,9 @@ func TestSlotsCandidatesNoTiersFile(t *testing.T) {
 	}
 }
 
+// TestSlotsCandidatesNearBothProviders checks --near across providers: one
+// nearest model per provider, providers sorted by name, nearest first —
+// the list the skill uses to build an ollama/openrouter twin pair.
 func TestSlotsCandidatesNearBothProviders(t *testing.T) {
 	a := slotsFixture(t, "")
 	f := filepath.Join(t.TempDir(), "tiers.toml")
@@ -461,6 +524,9 @@ func TestSlotsCandidatesNearBothProviders(t *testing.T) {
 	}
 }
 
+// TestSlotsCandidatesAgeInWholeDays checks that the file's age prints in
+// whole days, never as a raw Go duration, so the freshness line reads the
+// same wherever the skill shows it.
 func TestSlotsCandidatesAgeInWholeDays(t *testing.T) {
 	cases := []struct {
 		age  time.Duration
@@ -485,6 +551,8 @@ func TestSlotsCandidatesAgeInWholeDays(t *testing.T) {
 	}
 }
 
+// TestSlotsCandidatesPerProviderNeedsNear checks that --per-provider without
+// --near is refused: the count only means something with a reference model.
 func TestSlotsCandidatesPerProviderNeedsNear(t *testing.T) {
 	a := slotsFixture(t, "")
 	_, err := runProfileCmd(t, a, "slots", "candidates", "--per-provider", "2")
@@ -493,6 +561,9 @@ func TestSlotsCandidatesPerProviderNeedsNear(t *testing.T) {
 	}
 }
 
+// TestSlotsUsageJSONEmptySlotsIsObject checks that a profile with no slots
+// serializes `"slots": {}` in JSON, not null: a null breaks typed consumers
+// of the --json output.
 func TestSlotsUsageJSONEmptySlotsIsObject(t *testing.T) {
 	a := slotsFixture(t, "[[profile]]\nname = \"bare\"\nagent = \"claude\"\ndefault = \"sonnet\"\n")
 	out, err := runProfileCmd(t, a, "slots", "usage", "--json")

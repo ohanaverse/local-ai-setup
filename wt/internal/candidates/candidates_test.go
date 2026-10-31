@@ -44,6 +44,10 @@ func ids(cs []Candidate) []string {
 	return out
 }
 
+// TestRankOrdersOpenThenScoreThenPrice pins Rank's whole ordering — open
+// weights first, then score descending (no score last), then output price
+// ascending (no price last), then id — because the skill reads the top of
+// this list as its proposals.
 func TestRankOrdersOpenThenScoreThenPrice(t *testing.T) {
 	ix := mustParse(t, entry("openrouter", "closed-hi", "deep", "D", "high", 60, "open_weights = false\ntool_call = true")+
 		entry("openrouter", "open-lo", "quick", "Q", "high", 30, "open_weights = true\ntool_call = true")+
@@ -67,6 +71,9 @@ func TestRankOrdersOpenThenScoreThenPrice(t *testing.T) {
 	}
 }
 
+// TestRankExcludesToolCallFalse checks that a model tiers.toml says cannot
+// call tools is left out entirely: an agent slot needs tool calling, so
+// proposing it would waste the user's time.
 func TestRankExcludesToolCallFalse(t *testing.T) {
 	ix := mustParse(t, entry("p", "no", "deep", "D", "high", 50, "tool_call = false")+
 		entry("p", "yes", "deep", "D", "high", 50, "tool_call = true"))
@@ -76,6 +83,9 @@ func TestRankExcludesToolCallFalse(t *testing.T) {
 	}
 }
 
+// TestRankFlagsUnknownToolCall checks that a model with no tool_call key is
+// listed with a flag rather than hidden: "unknown" must stay visible so the
+// skill can name it and offer research or a smoke test.
 func TestRankFlagsUnknownToolCall(t *testing.T) {
 	ix := mustParse(t, entry("p", "m", "deep", "D", "low", 50, ""))
 	got := Rank([]config.Model{model("p", "m", nil)}, ix, Query{})
@@ -85,6 +95,10 @@ func TestRankFlagsUnknownToolCall(t *testing.T) {
 	}
 }
 
+// TestRankMissingTiersLeavesAllUnratedWithFlag checks the no-tiers.toml
+// path: every real model is still listed, flagged unrated, with profile/
+// and claude/ pseudo-ids and unrated embeddings skipped — a missing file
+// degrades the ranking, never the command.
 func TestRankMissingTiersLeavesAllUnratedWithFlag(t *testing.T) {
 	models := []config.Model{model("p", "b", nil), model("p", "a", nil),
 		{ID: "profile/x"}, {ID: "claude/y"}, {ID: "p/text-embed-1", ProviderID: "p", ModelName: "text-embed-1"}}
@@ -99,6 +113,9 @@ func TestRankMissingTiersLeavesAllUnratedWithFlag(t *testing.T) {
 	}
 }
 
+// TestRankSubscriptionFlag checks that a subscription-priced model keeps
+// both its per-token price and its subscription flag, so the skill can say
+// the two are not comparable instead of comparing them.
 func TestRankSubscriptionFlag(t *testing.T) {
 	m := model("p", "sub", f(3))
 	m.Cost.SubscriptionPrice = f(20)
@@ -112,6 +129,8 @@ func TestRankSubscriptionFlag(t *testing.T) {
 	}
 }
 
+// TestRankProvidersFilter checks that --provider narrows the ranking by
+// provider id, which is how the skill scopes a twin pair to two providers.
 func TestRankProvidersFilter(t *testing.T) {
 	ix := mustParse(t, entry("a", "m", "deep", "D", "high", 50, "tool_call = true")+
 		entry("b", "m", "deep", "D", "high", 50, "tool_call = true"))
@@ -121,6 +140,10 @@ func TestRankProvidersFilter(t *testing.T) {
 	}
 }
 
+// TestRankNearPerProvider checks --near: the rated models nearest in score
+// to the reference, per provider (nearest first, capped at PerProvider),
+// with the reference itself, unscored and unrated models left out — and an
+// unknown or unscored reference yields an empty list, not an error.
 func TestRankNearPerProvider(t *testing.T) {
 	doc := entry("ollama", "near", "standard", "S", "high", 44.8, "tool_call = true")
 	var models []config.Model

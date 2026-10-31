@@ -107,7 +107,7 @@ When a model the user is considering is `unrated` or `low-confidence`, or two ca
 
 ## 6 Verify
 
-`wt smoke` exercises one model, and a profile launch exercises only the `sonnet` slot, so trying the profile once proves nothing about the other slots. So after a write, offer to smoke each distinct model the profile names, one at a time:
+`wt smoke` exercises one model, and a profile launch exercises only its `default` slot (usually `sonnet`), so trying the profile once proves nothing about the other slots. So after a write, offer to smoke each distinct model the profile names, one at a time:
 
 ```bash
 wt smoke <model-id> --only claude --tools --hops 3

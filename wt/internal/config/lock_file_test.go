@@ -22,7 +22,7 @@ func TestWithFileLockSerializesCallersOnOneLockFile(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := withFileLock(lock, func() error {
+			err := WithFileLock(lock, func() error {
 				mu.Lock()
 				active++
 				maxActive = max(maxActive, active)
@@ -34,7 +34,7 @@ func TestWithFileLockSerializesCallersOnOneLockFile(t *testing.T) {
 				return nil
 			})
 			if err != nil {
-				t.Errorf("withFileLock: %v", err)
+				t.Errorf("WithFileLock: %v", err)
 			}
 		}()
 	}
@@ -46,7 +46,7 @@ func TestWithFileLockSerializesCallersOnOneLockFile(t *testing.T) {
 		t.Errorf("the lock file (and its directory) should have been created: %v", err)
 	}
 	sentinel := errors.New("from fn")
-	if err := withFileLock(lock, func() error { return sentinel }); !errors.Is(err, sentinel) {
-		t.Errorf("withFileLock should return fn's error, got %v", err)
+	if err := WithFileLock(lock, func() error { return sentinel }); !errors.Is(err, sentinel) {
+		t.Errorf("WithFileLock should return fn's error, got %v", err)
 	}
 }

@@ -580,10 +580,11 @@ func TestAllCountsMeasuresAgainstTheInstantItIsGiven(t *testing.T) {
 	}
 }
 
-// TestLastLaunch verifies LastLaunch reports the newest launch per model id
-// for one agent only: the slot-profile listing shows when each profile was
-// last used, and another agent's launches must not count.
-func TestLastLaunch(t *testing.T) {
+// TestAllActivity verifies that one scan reports both the per-id counts and
+// the newest launch for one agent only: the slot-profile listing shows how
+// often and when each profile was used, and another agent's launches must
+// not count.
+func TestAllActivity(t *testing.T) {
 	store := NewStoreAt(t.TempDir())
 	fixed := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
@@ -594,11 +595,14 @@ func TestLastLaunch(t *testing.T) {
 		{ModelID: "profile/b", Agent: "pi", Timestamp: fixed.Add(-1 * time.Hour)},
 	})
 
-	got := store.LastLaunch("claude", fixed)
-	if len(got) != 1 {
-		t.Fatalf("LastLaunch(claude) = %+v, want only profile/a", got)
+	counts, last := store.AllActivity("claude", fixed)
+	if len(last) != 1 || len(counts) != 1 {
+		t.Fatalf("AllActivity(claude) = %+v, %+v, want only profile/a", counts, last)
 	}
-	if want := fixed.Add(-2 * time.Hour); !got["profile/a"].Equal(want) {
-		t.Errorf("LastLaunch(claude)[profile/a] = %v, want %v", got["profile/a"], want)
+	if want := fixed.Add(-2 * time.Hour); !last["profile/a"].Equal(want) {
+		t.Errorf("AllActivity(claude)[profile/a] last = %v, want %v", last["profile/a"], want)
+	}
+	if got := counts["profile/a"]; got.ThirtyDay != 3 || got.SevenDay != 3 || got.OneDay != 1 {
+		t.Errorf("AllActivity(claude)[profile/a] counts = %+v", got)
 	}
 }

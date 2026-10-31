@@ -343,27 +343,6 @@ tool_call = 1
 	}
 }
 
-// TestIndexEntriesSorted pins Entries' order (provider, then model name),
-// which later commands rely on for stable output.
-func TestIndexEntriesSorted(t *testing.T) {
-	ix := Index{
-		{"b", "x"}: {ProviderID: "b", ModelName: "x"},
-		{"a", "z"}: {ProviderID: "a", ModelName: "z"},
-		{"a", "y"}: {ProviderID: "a", ModelName: "y"},
-	}
-	var got []string
-	for _, e := range ix.Entries() {
-		got = append(got, e.ProviderID+"/"+e.ModelName)
-	}
-	want := []string{"a/y", "a/z", "b/x"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("Entries order = %v, want %v", got, want)
-	}
-	if n := len(Index(nil).Entries()); n != 0 {
-		t.Errorf("nil Index has %d entries", n)
-	}
-}
-
 // TestParseFreshness pins the generation time and the stale-source list that
 // tells a caller how far to trust the file.
 func TestParseFreshness(t *testing.T) {
@@ -390,18 +369,32 @@ status = "failed"
 	}
 }
 
-// TestReadFreshnessMissingFile pins that no file means no freshness, not an error.
-func TestReadFreshnessMissingFile(t *testing.T) {
+// TestLoadWithFreshness pins that no file means no freshness (and no
+// entries), not an error, and that a file with a generated_at reports both
+// halves from one read — the candidates command decides how much to trust a
+// ranking from this.
+func TestLoadWithFreshness(t *testing.T) {
 	t.Setenv(OutEnv, filepath.Join(t.TempDir(), "absent.toml"))
-	if _, ok := ReadFreshness(); ok {
-		t.Error("ReadFreshness ok for a missing file")
+	if ix, _, ok := LoadWithFreshness(); ok || ix != nil {
+		t.Errorf("LoadWithFreshness = %v, %v for a missing file, want no entries and not ok", ix, ok)
 	}
 	p := filepath.Join(t.TempDir(), "t.toml")
-	if err := os.WriteFile(p, []byte("generated_at = \"2026-10-30T15:30:47Z\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("generated_at = \"2026-10-30T15:30:47Z\"\n\n[[models]]\nprovider_id = \"p\"\nmodel_name = \"m\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(OutEnv, p)
-	if f, ok := ReadFreshness(); !ok || f.GeneratedAt.IsZero() {
-		t.Errorf("ReadFreshness = %+v, %v", f, ok)
+	ix, f, ok := LoadWithFreshness()
+	if !ok || f.GeneratedAt.IsZero() {
+		t.Errorf("LoadWithFreshness = %+v, %v", f, ok)
+	}
+	if len(ix) != 1 {
+		t.Errorf("LoadWithFreshness entries = %v", ix)
+	}
+	// A file with no generated_at has entries but no freshness.
+	if err := os.WriteFile(p, []byte("[[models]]\nprovider_id = \"p\"\nmodel_name = \"m\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ix, _, ok := LoadWithFreshness(); ok || len(ix) != 1 {
+		t.Errorf("LoadWithFreshness = %v, %v, want entries without freshness", ix, ok)
 	}
 }

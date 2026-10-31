@@ -5,6 +5,7 @@ package candidates
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -66,7 +67,7 @@ func build(m config.Model, ix tiers.Index, q Query) (Candidate, bool) {
 	if strings.HasPrefix(m.ID, "profile/") || strings.HasPrefix(m.ID, "claude/") {
 		return Candidate{}, false
 	}
-	if len(q.Providers) > 0 && !contains(q.Providers, m.ProviderID) {
+	if len(q.Providers) > 0 && !slices.Contains(q.Providers, m.ProviderID) {
 		return Candidate{}, false
 	}
 	e, has := ix.Lookup(m.ProviderID, m.ModelName)
@@ -107,15 +108,6 @@ func isEmbedding(m config.Model) bool {
 	}
 	for _, t := range m.Tags {
 		if strings.EqualFold(t, "embedding") || strings.EqualFold(t, "embeddings") {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
 			return true
 		}
 	}

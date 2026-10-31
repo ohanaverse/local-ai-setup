@@ -30,6 +30,11 @@ type profKey struct{ agent, name string }
 // <path>.bak-<20060102-150405> (a "-2", "-3" ... suffix on a collision). It
 // returns the backup path, "" when there was nothing to back up.
 //
+// The whole read-edit-write runs under a flock on <path>.lock
+// (config.WithFileLock), like every other read-modify-write wt performs:
+// two concurrent `wt profile slots` edits otherwise both start from the
+// same bytes, and the second rename silently drops the first edit.
+//
 // Apply refuses, leaving the file untouched and writing no backup, when the
 // new text does not parse; Target is not usable; a slot of Target names an id
 // outside ModelIDs; a profile still present (matched by agent and name) was
@@ -46,39 +51,42 @@ func Apply(path string, edit func([]byte) ([]byte, error), o Options) (backup st
 	} else if lst, lerr := os.Lstat(path); lerr == nil && lst.Mode()&os.ModeSymlink != 0 {
 		return "", fmt.Errorf("%s is a dangling symlink (its target does not exist); fix or remove the link first", path)
 	}
-	old, err := os.ReadFile(path)
-	existed := err == nil
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-	newData, err := edit(old)
-	if err != nil {
-		return "", err
-	}
-	before, err := profiles.ParseSlots(old)
-	if err != nil {
-		// The existing file is already broken; nothing to compare against.
-		before = profiles.SlotStore{}
-	}
-	after, err := profiles.ParseSlots(newData)
-	if err != nil {
-		return "", fmt.Errorf("edited file does not parse: %w", err)
-	}
-	if err := check(before, after, o); err != nil {
-		return "", err
-	}
-	if existed {
-		if backup, err = writeBackup(path, old, mode, o); err != nil {
-			return "", err
+	err = config.WithFileLock(path+".lock", func() error {
+		old, err := os.ReadFile(path)
+		existed := err == nil
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
 		}
-	}
-	if err := config.WriteFileAtomic(path, newData, mode); err != nil {
-		if backup != "" {
-			_ = os.Remove(backup)
+		newData, err := edit(old)
+		if err != nil {
+			return err
 		}
-		return "", err
-	}
-	return backup, nil
+		before, err := profiles.ParseSlots(old)
+		if err != nil {
+			// The existing file is already broken; nothing to compare against.
+			before = profiles.SlotStore{}
+		}
+		after, err := profiles.ParseSlots(newData)
+		if err != nil {
+			return fmt.Errorf("edited file does not parse: %w", err)
+		}
+		if err := check(before, after, o); err != nil {
+			return err
+		}
+		if existed {
+			if backup, err = writeBackup(path, old, mode, o); err != nil {
+				return err
+			}
+		}
+		if err := config.WriteFileAtomic(path, newData, mode); err != nil {
+			if backup != "" {
+				_ = os.Remove(backup)
+			}
+			return err
+		}
+		return nil
+	})
+	return backup, err
 }
 
 func check(before, after profiles.SlotStore, o Options) error {
