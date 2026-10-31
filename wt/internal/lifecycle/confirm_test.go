@@ -44,7 +44,8 @@ func loadedSrv(t *testing.T, loaded map[string]bool) string {
 }
 
 // TestStartedGoneDecidesPerFamily verifies what "gone" means after a start,
-// family by family (#343): an mtplx whose port refuses or that no longer lists
+// family by family (#343): a sushi whose pack is listed but not loaded (it
+// lists every pack), or whose port refuses; an mtplx whose port refuses or that no longer lists
 // the model; an omlx that refuses or whose status shows the model unloaded; an
 // ollama daemon that refuses — and nothing else. In particular an ollama model
 // that was only unloaded is not gone (ollama loads a pulled model on request),
@@ -65,6 +66,9 @@ func TestStartedGoneDecidesPerFamily(t *testing.T) {
 		"mtplx answers with an error":    {"mtplx", errorSrv(t), "Y/Q35", ""},
 		"mtplx lists it loaded":          {"mtplx", loadedSrv(t, map[string]bool{"Y/Q35": true}), "Y/Q35", ""},
 		"mtplx lists it unloaded":        {"mtplx", loadedSrv(t, map[string]bool{"Y/Q35": false}), "Y/Q35", "is no longer serving it"},
+		"sushi pack loaded":              {"sushi", loadedSrv(t, map[string]bool{"p/Pack": true, "q/Other": false}), "p/Pack", ""},
+		"sushi pack listed unloaded":     {"sushi", loadedSrv(t, map[string]bool{"p/Pack": false, "q/Other": true}), "p/Pack", "is no longer serving it"},
+		"sushi port refuses":             {"sushi", closed, "p/Pack", "sushi no longer answers at " + closed},
 		"omlx has it loaded":             {"omlx", pool(&fakePool{loaded: map[string]bool{"A": true}}), "A", ""},
 		"omlx is loading it":             {"omlx", pool(&fakePool{loaded: map[string]bool{"A": false}, loading: map[string]bool{"A": true}}), "A", ""},
 		"omlx unloaded it":               {"omlx", pool(&fakePool{loaded: map[string]bool{"A": false, "B": true}}), "A", "omlx no longer has it loaded"},

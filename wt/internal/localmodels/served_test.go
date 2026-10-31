@@ -473,3 +473,14 @@ func TestInventoryShowsAKeyedFamilyPartialNotDown(t *testing.T) {
 		t.Errorf("unreadable key: status %q down %v failure %v; want partial, not down, *KeyUnreadableError{mtplx}", snap.Providers["mtplx"], snap.Down["mtplx"], snap.ProbeFailures["mtplx"])
 	}
 }
+
+// TestServedIDsSushiReturnsOnlyLoadedPacks pins what `wt served sushi` and the
+// route sync are given: sushi lists every pack, and only the one whose entry
+// says loaded is serving. An unloaded pack and a loading one are not.
+func TestServedIDsSushiReturnsOnlyLoadedPacks(t *testing.T) {
+	srv := sushiModelsServer(t, map[string]string{"p/a": "unloaded", "p/b": "ready", "p/c": "loading"})
+	cfg := &config.Config{Providers: []config.Provider{{ID: "sushi", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: srv.URL + "/v1"}}}}
+	if ids, err := ServedIDs(cfg, testClient, "sushi"); err != nil || !slices.Equal(ids, []string{"p/b"}) {
+		t.Errorf("sushi served = %v err = %v, want [p/b]", ids, err)
+	}
+}

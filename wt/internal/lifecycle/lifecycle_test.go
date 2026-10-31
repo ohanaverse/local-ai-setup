@@ -1,12 +1,16 @@
 package lifecycle
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -900,6 +904,72 @@ func TestStartLooksForOthersOnlyWhenItHasAQuestionOrAStop(t *testing.T) {
 			}
 			if len(pt.signals) != 0 {
 				t.Errorf("signals = %v, want none: the loading mtplx was never approved", pt.signals)
+			}
+		})
+	}
+}
+
+// TestStartIsANoOpOnlyWhenTheSushiPackIsLoaded pins, for the real sushi row,
+// when a start does nothing: only when the server's own list says the target
+// pack is loaded. Sushi lists every pack, so a pack that is listed but
+// unloaded (or loading) must not read as "already serving": that start goes on
+// to the port check and spawn (here it meets the listening sushi and is
+// refused with *PortBusyError, since wt has no verified pidfile for it). A
+// loaded pack is a no-op that spawns nothing. The server is an httptest
+// listener on the registry's free port, never 12345, and spawn is a counter
+// that never runs anything, so the installed sushi is untouched.
+func TestStartIsANoOpOnlyWhenTheSushiPackIsLoaded(t *testing.T) {
+	for name, tc := range map[string]struct {
+		loaded  bool
+		running bool // the inventory's verdict, the precondition
+	}{
+		"loaded":   {true, true},
+		"unloaded": {false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, e, cfg, port, argvFile, _ := realSushiEnv(t, tc.loaded)
+			cfg.Models = []config.Model{{ID: "sushi/qwen3.8-flash-next", ProviderID: "sushi", ModelName: sushiPack}}
+			srv := serveAt(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/models" {
+					_, _ = w.Write([]byte(`{"data":[{"id":"` + sushiPack + `","loaded":` + strconv.FormatBool(tc.loaded) + `}]}`))
+				}
+			}))
+			defer srv.Close()
+			snap := e.inventory(cfg)
+			en, found := localmodels.Entry{}, false
+			for _, c := range snap.Entries {
+				if c.ProviderID == "sushi" && c.ModelName == sushiPack {
+					en, found = c, true
+				}
+			}
+			if !found || en.Running != tc.running || !ProbeTrusted(snap, "sushi") {
+				t.Fatalf("precondition: entry = %+v (found %v) trusted %v, want Running %v from a trusted probe", en, found, ProbeTrusted(snap, "sushi"), tc.running)
+			}
+			spawns := 0
+			e.spawn = func(pidProcess, string, []string) (*spawned, error) {
+				spawns++
+				return nil, errors.New("spawn stubbed: nothing may run")
+			}
+			var out bytes.Buffer
+			err := start(withRouteOutput(context.Background(), &out), e, cfg, Target{ProviderID: "sushi", ModelName: sushiPack}, Options{})
+			if tc.loaded {
+				if err != nil || spawns != 0 {
+					t.Errorf("err = %v spawns = %d, want a no-op", err, spawns)
+				}
+				return
+			}
+			if err == nil && spawns == 0 {
+				t.Errorf("start returned nil without spawning: a listed-but-unloaded pack was treated as already serving")
+			}
+			if strings.Contains(out.String(), "is already serving") {
+				t.Errorf("output %q reports the unloaded pack as already serving", out.String())
+			}
+			var pb *PortBusyError
+			if err != nil && !errors.As(err, &pb) && spawns == 0 {
+				t.Errorf("err = %v, want it to reach the port check or the spawn", err)
+			}
+			if _, statErr := os.Stat(argvFile); statErr == nil {
+				t.Error("the server was spawned")
 			}
 		})
 	}
