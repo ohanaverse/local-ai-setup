@@ -83,6 +83,57 @@ def test_rec_values():
     assert (s.ready.model_path, s.ready.endpoint_path) == ("model", "endpoint")
 
 
+SUSHI_SPAWN = (
+    "serve",
+    "--port",
+    "{port}",
+    "--host",
+    "127.0.0.1",
+    "--ctx-size",
+    "131072",
+    "--max-resident-models",
+    "1",
+    "--no-update-check",
+    "--max-tokens",
+    "32768",
+)
+
+
+def test_sushi_values():
+    """Every value of the sushi contract block: a drifted value starts the
+    wrong command, runs the benchmark at the wrong context window, or stops
+    the wrong process. An empty stop means signal the verified pid."""
+    s = ps.process_spec("sushi")
+    assert s is not None
+    assert (s.family, s.provider, s.binary) == ("sushi", "sushi", "sushi")
+    assert s.spawn == SUSHI_SPAWN
+    assert not any("{model}" in a for a in s.spawn)
+    assert s.stop == ()
+    assert s.pidfile == "/tmp/local-ai-setup-sushi.pid"
+    assert s.log == "/tmp/local-ai-setup-sushi.log"
+    assert s.pidfile_env == "WT_SUSHI_PIDFILE"
+    assert (s.subcommand, s.daemon_module) == ("serve", "")
+    assert (s.port_flag, s.model_flag) == ("--port", "")
+    assert s.scope == "port"
+    assert s.default_origin == "http://127.0.0.1:12345"
+    assert s.wt_port == 12345
+    assert s.restore_action == "stop"
+    assert s.warmup_seconds == 400
+    assert (s.ready.kind, s.ready.path, s.ready.command) == ("http-get", "/health", ())
+    assert (s.ready.equals, s.ready.model_path, s.ready.endpoint_path) == ("", "", "")
+
+
+def test_expand_sushi_spawn_has_no_model_placeholder_left():
+    """sushi serve takes no model: expanding its spawn fills only the port,
+    and nothing names the model a row asked for."""
+    s = ps.process_spec("sushi")
+    assert s is not None
+    out = ps.expand(s.spawn, model="org/pack", port=12345)
+    assert out[:3] == ["serve", "--port", "12345"]
+    assert not any("{" in a for a in out)
+    assert "org/pack" not in out
+
+
 def test_unknown_provider_is_none():
     assert ps.process_spec("nope") is None
 

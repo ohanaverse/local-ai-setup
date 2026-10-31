@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from llmbench.registry import (
+    DEFAULT_PROVIDER_IDS,
     RegistryError,
     is_model_local,
     load_registry,
@@ -277,3 +278,10 @@ def test_a_model_row_with_serve_args_loads_and_the_key_is_ignored(home, tmp_path
     tuned = next(m for m in registry.models if m.id == "mtplx/Org/T")
     assert tuned.model_name == "Org/T"
     assert not hasattr(tuned, "serve_args")
+
+
+def test_sushi_is_a_default_provider():
+    """sushi is a local provider the benchmarks isolate and run against: a
+    sushi row left out of DEFAULT_PROVIDER_IDS would be treated as remote and
+    benchmarked without isolation."""
+    assert DEFAULT_PROVIDER_IDS == ("ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "sushi")

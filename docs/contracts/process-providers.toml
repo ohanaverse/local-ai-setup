@@ -7,7 +7,8 @@
 # Argv templates (spawn, stop) follow the binary and use {model} and {port}.
 # Empty string means "absent". restore_action is what `llmbench provider
 # restore` does to the family. warmup_seconds is the per-spec budget for the
-# readiness and warmup request.
+# readiness and warmup request. stop = [] means wt and llmbench stop the
+# family by signalling the verified pid.
 
 [[process]]
 family = "mtplx"
@@ -62,3 +63,30 @@ path = "ready"
 equals = "true"
 model_path = "model"
 endpoint_path = "endpoint"
+
+[[process]]
+family = "sushi"
+provider = "sushi"
+binary = "sushi"
+spawn = ["serve", "--port", "{port}", "--host", "127.0.0.1", "--ctx-size", "131072", "--max-resident-models", "1", "--no-update-check", "--max-tokens", "32768"]
+stop = []
+pidfile = "/tmp/local-ai-setup-sushi.pid"
+log = "/tmp/local-ai-setup-sushi.log"
+pidfile_env = "WT_SUSHI_PIDFILE"
+subcommand = "serve"
+daemon_module = ""
+port_flag = "--port"
+model_flag = ""
+scope = "port"
+default_origin = "http://127.0.0.1:12345"
+wt_port = 12345
+restore_action = "stop"
+warmup_seconds = 400
+
+[process.ready]
+kind = "http-get"
+command = []
+path = "/health"
+equals = ""
+model_path = ""
+endpoint_path = ""

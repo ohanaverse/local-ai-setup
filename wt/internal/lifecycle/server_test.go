@@ -708,8 +708,8 @@ func TestPortlessAddressErrorKeepsMtplxText(t *testing.T) {
 // backends and the families wt can start one set — and mtplx is built from
 // the provider table as processServer{"mtplx"}.
 func TestProcessServerIsComparable(t *testing.T) {
-	if !maps.Equal(defaultEnv().backends, map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}, "mtplx": processServer{"mtplx"}, "rec": processServer{"rec"}}) {
-		t.Errorf("defaultEnv().backends = %v, want ollama, omlx, processServer{mtplx} and processServer{rec}", defaultEnv().backends)
+	if !maps.Equal(defaultEnv().backends, map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}, "mtplx": processServer{"mtplx"}, "rec": processServer{"rec"}, "sushi": processServer{"sushi"}}) {
+		t.Errorf("defaultEnv().backends = %v, want ollama, omlx, processServer{mtplx}, processServer{rec} and processServer{sushi}", defaultEnv().backends)
 	}
 }
 

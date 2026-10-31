@@ -92,3 +92,19 @@ def test_signal_stop_backends_get_scratch_pidfiles(monkeypatch, tmp_path):
     for backend in BACKENDS.values():
         if getattr(backend, "_signal_stop", False):
             assert backend._pidproc.pidfile.startswith(str(tmp_path))
+
+
+def test_the_suite_redirects_the_sushi_pidfile(tmp_path):
+    """The registered sushi backend is a signal-stop backend whose pidfile
+    names the real `/tmp/local-ai-setup-sushi.pid` (shared with wt), and
+    llmbench has no override variable for it. The autouse
+    `_redirect_signal_stop_pidfiles` must swap its frozen `_pidproc` for one
+    under this test's tmp_path, so no unpatched test can read, signal by or
+    remove the developer's real sushi pidfile."""
+    from llmbench.providers.lifecycle.backends import BACKENDS
+
+    sushi = BACKENDS["sushi"]
+    assert sushi.spec.pidfile == "/tmp/local-ai-setup-sushi.pid"
+    assert sushi._pidproc.pidfile == str(tmp_path / "sushi.pid")
+    assert sushi._pidproc.logfile == str(tmp_path / "sushi.log")
+    assert "local-ai-setup" not in sushi._pidproc.pidfile

@@ -134,7 +134,7 @@ func TestScopeProblems(t *testing.T) {
 func TestAccessorsMatchLegacyTables(t *testing.T) {
 	families := map[string]string{
 		"ollama": "ollama", "omlx": "omlx", "omlx-6bit": "omlx", "mtplx": "mtplx", "rec": "rec",
-		"mlx_lm_server": "mlx_lm_server", "llamacpp": "", "openrouter": "", "agy": "", "": "",
+		"sushi": "sushi", "mlx_lm_server": "mlx_lm_server", "llamacpp": "", "openrouter": "", "agy": "", "": "",
 	}
 	for id, want := range families {
 		if got := FamilyOf(id); got != want {
@@ -147,7 +147,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	if got := FamilyOr("omlx-6bit"); got != "omlx" {
 		t.Errorf("FamilyOr(omlx-6bit) = %q, want omlx", got)
 	}
-	if got, want := Families(), []string{"mlx_lm_server", "mtplx", "ollama", "omlx", "rec"}; !slices.Equal(got, want) {
+	if got, want := Families(), []string{"mlx_lm_server", "mtplx", "ollama", "omlx", "rec", "sushi"}; !slices.Equal(got, want) {
 		t.Errorf("Families() = %v, want %v", got, want)
 	}
 	if got, want := FamilyProviderIDs("omlx"), []string{"omlx", "omlx-6bit"}; !slices.Equal(got, want) {
@@ -160,6 +160,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 		"mlx_lm_server": {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"mtplx":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"rec":           {Prefix: "openai/", APIKey: "not-needed", SecretRef: true, V1Base: true},
+		"sushi":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"llamacpp":      {Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"},
 		"openrouter":    {Prefix: "openrouter/", SecretRef: true, Cloud: true},
 	}
@@ -176,13 +177,13 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 			t.Errorf("PolicyFor(%q) found a policy, want none", id)
 		}
 	}
-	if got, want := SeedableLocalIDs(), []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec"}; !slices.Equal(got, want) {
+	if got, want := SeedableLocalIDs(), []string{"ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "sushi"}; !slices.Equal(got, want) {
 		t.Errorf("SeedableLocalIDs() = %v, want %v", got, want)
 	}
 	if got, want := SeedableCloudIDs(), []string{"openrouter"}; !slices.Equal(got, want) {
 		t.Errorf("SeedableCloudIDs() = %v, want %v", got, want)
 	}
-	if got, want := InstalledCommands(), map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx"}; !reflect.DeepEqual(got, want) {
+	if got, want := InstalledCommands(), map[string]string{"ollama": "ollama", "omlx": "omlx", "mtplx": "mtplx", "sushi": "sushi"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("InstalledCommands() = %v, want %v", got, want)
 	}
 	if got := PathSuppressedBy("omlx"); got != "omlx-6bit" {
@@ -191,10 +192,10 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	if got := PathSuppressedBy("ollama"); got != "" {
 		t.Errorf("PathSuppressedBy(ollama) = %q, want empty", got)
 	}
-	if got, want := ServedFamilies(), []string{"mlx_lm_server", "mtplx", "omlx", "rec"}; !slices.Equal(got, want) {
+	if got, want := ServedFamilies(), []string{"mlx_lm_server", "mtplx", "omlx", "rec", "sushi"}; !slices.Equal(got, want) {
 		t.Errorf("ServedFamilies() = %v, want %v", got, want)
 	}
-	for id, want := range map[string]int{"mtplx": 8003, "rec": 11500, "omlx": 0, "omlx-6bit": 0, "ollama": 0, "custom": 0, "": 0} {
+	for id, want := range map[string]int{"mtplx": 8003, "rec": 11500, "sushi": 12345, "omlx": 0, "omlx-6bit": 0, "ollama": 0, "custom": 0, "": 0} {
 		if got := WtPortFor(id); got != want {
 			t.Errorf("WtPortFor(%q) = %d, want %d", id, got, want)
 		}
@@ -202,7 +203,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	flags := map[string][3]bool{ // running-only, routes-follow-artifact, served
 		"ollama": {false, true, false}, "omlx": {false, false, true},
 		"mtplx": {false, false, true}, "mlx_lm_server": {true, false, true},
-		"rec": {false, false, true},
+		"rec": {false, false, true}, "sushi": {false, false, true},
 	}
 	for f, w := range flags {
 		spec, ok := FamilyByName(f)
@@ -210,7 +211,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 			t.Errorf("FamilyByName(%q) = %+v, %v; want running-only/routes-follow/served %v", f, spec, ok, w)
 		}
 	}
-	tenancy := map[string]Tenancy{"ollama": Shared, "omlx": Pool, "mtplx": Exclusive, "rec": Exclusive, "mlx_lm_server": NoTenancy}
+	tenancy := map[string]Tenancy{"ollama": Shared, "omlx": Pool, "mtplx": Exclusive, "rec": Exclusive, "sushi": Exclusive, "mlx_lm_server": NoTenancy}
 	for f, want := range tenancy {
 		if spec, _ := FamilyByName(f); spec.Tenancy != want {
 			t.Errorf("family %q tenancy = %d, want %d", f, spec.Tenancy, want)
@@ -219,7 +220,7 @@ func TestAccessorsMatchLegacyTables(t *testing.T) {
 	defaults := map[string][2]string{ // origin, dir
 		"ollama": {"http://localhost:11434", ""}, "omlx": {"http://localhost:8000", "~/.omlx/models"},
 		"mtplx": {"http://localhost:8003", "~/.mtplx/models"}, "mlx_lm_server": {"http://localhost:8001", ""},
-		"rec": {"http://127.0.0.1:11500", ""},
+		"rec": {"http://127.0.0.1:11500", ""}, "sushi": {"http://127.0.0.1:12345", "~/.sushi/models"},
 	}
 	for f, w := range defaults {
 		if spec, _ := FamilyByName(f); spec.DefaultOrigin != w[0] || spec.DefaultModelDir != w[1] {
@@ -253,6 +254,10 @@ func TestSeedRowsMatchLegacyLiterals(t *testing.T) {
 		"rec": {
 			"id": "rec", "name": "rec", "location": "local",
 			"auth": map[string]any{"type": "none", "base_url": "http://127.0.0.1:11500/v1", "secret_ref": "exec:rec auth token"},
+		},
+		"sushi": {
+			"id": "sushi", "name": "Sushi", "location": "local", "model_dir": "~/.sushi/models",
+			"auth": map[string]any{"type": "none", "base_url": "http://127.0.0.1:12345/v1"},
 		},
 		"openrouter": {
 			"id": "openrouter", "name": "OpenRouter", "location": "cloud",
@@ -357,12 +362,12 @@ func TestProcessSpecMtplx(t *testing.T) {
 	}
 }
 
-// TestProcessFamilies checks only mtplx and rec have process facts: the other families
+// TestProcessFamilies checks only mtplx, rec and sushi have process facts: the other families
 // are served by something wt does not spawn, and an engine that found a
 // process for them would try to.
 func TestProcessFamilies(t *testing.T) {
-	if got := ProcessFamilies(); !reflect.DeepEqual(got, []string{"mtplx", "rec"}) {
-		t.Errorf("ProcessFamilies() = %v, want [mtplx rec]", got)
+	if got := ProcessFamilies(); !reflect.DeepEqual(got, []string{"mtplx", "rec", "sushi"}) {
+		t.Errorf("ProcessFamilies() = %v, want [mtplx rec sushi]", got)
 	}
 	for _, f := range []string{"omlx", "ollama", "mlx_lm_server", ""} {
 		if _, ok := ProcessFor(f); ok {
@@ -425,7 +430,7 @@ func TestRecRows(t *testing.T) {
 	for _, s := range All() {
 		order = append(order, s.ID)
 	}
-	if w := []string{"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec", "llamacpp", "openrouter"}; !slices.Equal(order, w) {
+	if w := []string{"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec", "sushi", "llamacpp", "openrouter"}; !slices.Equal(order, w) {
 		t.Errorf("provider order = %v, want %v", order, w)
 	}
 }
@@ -443,14 +448,106 @@ func TestSeedRowRec(t *testing.T) {
 	}
 }
 
+// TestSushiRows pins every value of sushi's table rows: the process spec wt
+// spawns and recognises it by, the family facts, the LiteLLM policy and the
+// seed written into users' registries. A drifted value starts the wrong
+// command, a wrong --ctx-size silently runs the benchmark at the wrong
+// window, a wrong port dials the wrong server, and a wrong seed writes a
+// different row.
+func TestSushiRows(t *testing.T) {
+	got, ok := ProcessFor("sushi")
+	if !ok {
+		t.Fatal("ProcessFor(sushi) absent")
+	}
+	want := ProcessSpec{
+		Binary:         "sushi",
+		Spawn:          []string{"serve", "--port", "{port}", "--host", "127.0.0.1", "--ctx-size", "131072", "--max-resident-models", "1", "--no-update-check", "--max-tokens", "32768"},
+		PidfileDefault: "/tmp/local-ai-setup-sushi.pid",
+		LogDefault:     "/tmp/local-ai-setup-sushi.log",
+		PidfileEnv:     "WT_SUSHI_PIDFILE",
+		Subcommand:     "serve",
+		PortFlag:       "--port",
+		Ready:          Ready{Kind: ReadyHTTP, Path: "/health"},
+		WarmupSeconds:  400,
+	}
+	// An empty Stop means "signal the verified pid"; nil and [] read the same.
+	if len(got.Stop) != 0 {
+		t.Errorf("ProcessFor(sushi).Stop = %v, want empty", got.Stop)
+	}
+	got.Stop = nil
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ProcessFor(sushi) = %+v, want %+v", got, want)
+	}
+	if slices.Contains(got.Spawn, "{model}") {
+		t.Errorf("sushi spawn %v names {model}; sushi serve takes no model", got.Spawn)
+	}
+	if p := processSpecProblems(got); len(p) != 0 {
+		t.Errorf("processSpecProblems(sushi) = %v, want none", p)
+	}
+	owned := got.OwnedFlags()
+	for _, f := range []string{"--ctx-size", "--max-tokens", "--max-resident-models", "--no-update-check", "--host", "--port"} {
+		if !slices.Contains(owned, f) {
+			t.Errorf("sushi OwnedFlags() = %v, missing %s", owned, f)
+		}
+	}
+	f, ok := FamilyByName("sushi")
+	if !ok {
+		t.Fatal("family sushi absent")
+	}
+	if f.Name != "sushi" || f.Tenancy != Exclusive || f.Scope != ScopePort || f.WtPort != 12345 ||
+		f.DefaultOrigin != "http://127.0.0.1:12345" || f.DefaultModelDir != "~/.sushi/models" ||
+		!f.Served || !f.ServedOnly || f.RunningOnly || f.RoutesFollowArtifact || f.ServeArgs {
+		t.Errorf("family sushi = %+v", f)
+	}
+	if p, ok := PolicyFor("sushi"); !ok || p != (Policy{Prefix: "openai/", APIKey: "not-needed", V1Base: true}) {
+		t.Errorf("PolicyFor(sushi) = %+v, %v", p, ok)
+	}
+	spec, ok := Lookup("sushi")
+	if !ok || spec.Family != "sushi" || spec.Seed == nil {
+		t.Fatalf("Lookup(sushi) = %+v, %v", spec, ok)
+	}
+	wantSeed := Seed{
+		Name: "Sushi", Location: "local", AuthType: "none", BaseURL: "http://127.0.0.1:12345/v1",
+		ModelDir: "~/.sushi/models", Command: "sushi",
+	}
+	if !reflect.DeepEqual(*spec.Seed, wantSeed) {
+		t.Errorf("sushi seed = %+v, want %+v", *spec.Seed, wantSeed)
+	}
+	if spec.Seed.Protocols != nil || spec.Seed.SecretRef != "" {
+		t.Errorf("sushi seed protocols/secret_ref = %v/%q, want none", spec.Seed.Protocols, spec.Seed.SecretRef)
+	}
+}
+
+// TestSeedRowSushi pins the exact registry row wt writes for sushi: it lands
+// in users' registry.toml, so a changed key or value is a visible change (no
+// protocols and no secret_ref keys).
+func TestSeedRowSushi(t *testing.T) {
+	want := map[string]any{
+		"id": "sushi", "name": "Sushi", "location": "local", "model_dir": "~/.sushi/models",
+		"auth": map[string]any{"type": "none", "base_url": "http://127.0.0.1:12345/v1"},
+	}
+	got := SeedRow("sushi")
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SeedRow(sushi) = %#v, want %#v", got, want)
+	}
+	if _, ok := got["protocols"]; ok {
+		t.Error("SeedRow(sushi) has protocols")
+	}
+	if auth, _ := got["auth"].(map[string]any); auth != nil {
+		if _, ok := auth["secret_ref"]; ok {
+			t.Error("SeedRow(sushi) has a secret_ref")
+		}
+	}
+}
+
 // TestServedOnlyFlags checks which families are served-only (probe is
 // GET /v1/models alone, no artifacts listed) and which are running-only:
-// mlx_lm_server is both, rec is served-only but wt can start it, and the
+// mlx_lm_server is both, rec and sushi are served-only but wt can start them, and the
 // flags must not leak onto the other families.
 func TestServedOnlyFlags(t *testing.T) {
 	for _, f := range Families() {
 		spec, _ := FamilyByName(f)
-		if want := f == "mlx_lm_server" || f == "rec"; spec.ServedOnly != want {
+		if want := f == "mlx_lm_server" || f == "rec" || f == "sushi"; spec.ServedOnly != want {
 			t.Errorf("family %q ServedOnly = %v, want %v", f, spec.ServedOnly, want)
 		}
 		if want := f == "mlx_lm_server"; spec.RunningOnly != want {
@@ -482,9 +579,9 @@ func processSpecProblems(pr ProcessSpec) []string {
 	return out
 }
 
-// TestProcessSpecProblems exercises processSpecProblems on synthetic specs,
-// because no table row has an http-get readiness or an empty Stop yet: the
-// invariants must reject each malformed shape before such a row exists.
+// TestProcessSpecProblems exercises processSpecProblems on synthetic specs:
+// sushi, the one table row with an http-get readiness and an empty Stop, is
+// valid, so the table alone never shows that each malformed shape is rejected.
 func TestProcessSpecProblems(t *testing.T) {
 	ok := ProcessSpec{
 		WarmupSeconds: 400, PidfileDefault: "/tmp/x.pid", Subcommand: "serve", PortFlag: "--port",

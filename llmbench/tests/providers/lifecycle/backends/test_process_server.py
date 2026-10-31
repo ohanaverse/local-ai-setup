@@ -113,8 +113,14 @@ def test_attributes_come_from_the_spec_and_the_constructor():
     assert ProcessServerBackend(_spec(), cleanup_on_failure=True).cleanup_on_failure is True
 
 
-def test_mtplx_is_the_only_backend_that_cleans_up_on_failure():
-    assert [b.id for b in BACKENDS.values() if b.cleanup_on_failure] == ["mtplx"]
+def test_only_mtplx_and_signal_stop_backends_clean_up_on_failure():
+    """mtplx asks for it; a signal-stop backend (empty stop, sushi) gets it
+    from its spec, because a failed start must not leave a server nothing
+    else will stop. rec and every other backend leave a failed start alone."""
+    assert [b.id for b in BACKENDS.values() if b.cleanup_on_failure] == ["mtplx", "sushi"]
+    for backend in BACKENDS.values():
+        if backend.id not in ("mtplx", "sushi"):
+            assert backend.cleanup_on_failure is False, backend.id
 
 
 def test_rec_is_registered_generically():
@@ -124,6 +130,26 @@ def test_rec_is_registered_generically():
     assert rec.cleanup_on_failure is False
     assert rec.restore_action == "stop"
     assert rec.occupancy_key == "rec"
+
+
+def test_sushi_is_registered_generically_with_a_signal_stop():
+    """sushi has no module of its own: the contract entry registers it on the
+    generic backend, stopped by signalling the verified pid (its stop is
+    empty), and a failed start is cleaned up the same way."""
+    sushi = BACKENDS["sushi"]
+    assert type(sushi) is ProcessServerBackend
+    assert sushi.restore_action == "stop"
+    assert sushi.cleanup_on_failure is True
+    assert sushi._signal_stop is True
+    assert sushi.id == sushi.occupancy_key == "sushi"
+
+
+def test_no_other_backend_is_a_signal_stop():
+    """Only sushi's spec has an empty stop: mtplx and rec stop through their
+    own command, and a backend that wrongly read as signal-stop would have
+    its stop bypass that command."""
+    signal_stop = [b.id for b in BACKENDS.values() if getattr(b, "_signal_stop", False)]
+    assert signal_stop == ["sushi"]
 
 
 # --- addresses ---------------------------------------------------------------

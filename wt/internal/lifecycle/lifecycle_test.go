@@ -285,8 +285,9 @@ func TestEvictionsDeriveSingleModelFromBackendRegistry(t *testing.T) {
 		"omlx":   omlxBackend{},
 		"mtplx":  processServer{"mtplx"},
 		"rec":    processServer{"rec"},
+		"sushi":  processServer{"sushi"},
 	}) {
-		t.Fatalf("defaultEnv's backends must be the registry wt can start: ollama, omlx, mtplx and rec, each with its own backend")
+		t.Fatalf("defaultEnv's backends must be the registry wt can start: ollama, omlx, mtplx, rec and sushi, each with its own backend")
 	}
 	for family, b := range backendsByFamily {
 		snap := localmodels.Snapshot{Entries: []localmodels.Entry{running(family, family+"/occupant", "occupant")}}
