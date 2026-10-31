@@ -89,9 +89,9 @@ func modelAddCmd(a *app) *cobra.Command {
 			"An mtplx model may carry --serve-arg flags for `mtplx serve` (repeat the flag,\n" +
 			"one argument each: --serve-arg --profile --serve-arg turbo); see `wt model\n" +
 			"edit --help`.\n\n" +
-			"A missing default provider row (ollama, omlx, mtplx, rec, openrouter) is added\n" +
-			"in the same write; a provider wt has no default row for must have its\n" +
-			"[[providers]] block in registry.toml first. For an ollama model wt runs\n" +
+			"A missing default provider row (ollama, omlx, mtplx, rec, sushi, openrouter)\n" +
+			"is added in the same write; a provider wt has no default row for must have\n" +
+			"its [[providers]] block in registry.toml first. For an ollama model wt runs\n" +
 			"`ollama show` once and records whether the model supports tools and\n" +
 			"vision; if that fails the model is added without them and a warning says\n" +
 			"so.\n\n" +

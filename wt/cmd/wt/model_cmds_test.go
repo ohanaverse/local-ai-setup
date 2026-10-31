@@ -1078,6 +1078,23 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 	}
 }
 
+// TestHelpNamesSushiWhereItListsProviders pins the three help texts that
+// enumerate the providers wt seeds or stops (`wt model init`, `wt model add`
+// and `wt stop`): each must name sushi. Without it a built-in provider added
+// later is silently missing from the help the way sushi was.
+func TestHelpNamesSushiWhereItListsProviders(t *testing.T) {
+	root := rootCmd()
+	for _, path := range [][]string{{"model", "init"}, {"model", "add"}, {"stop"}} {
+		c, _, err := root.Find(path)
+		if err != nil || c == nil || c.Name() != path[len(path)-1] {
+			t.Fatalf("command %v not found: %v", path, err)
+		}
+		if !strings.Contains(c.Long, "sushi") {
+			t.Errorf("%s: Long does not name sushi:\n%s", c.CommandPath(), c.Long)
+		}
+	}
+}
+
 // TestStartDoesNotSayRunningForAServerThatIsGone runs `wt start` through the
 // real start driver for #343's sequence: the engine starts the model, and by
 // the end of the proxy wait its server is gone. The command must fail with the
