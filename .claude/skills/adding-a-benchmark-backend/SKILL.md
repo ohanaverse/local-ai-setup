@@ -11,7 +11,7 @@ Isolation logic lives in **one place**: `llmbench/src/llmbench/providers/lifecyc
 isolate/stop/stop-all/restore over a `BACKENDS` registry. ollama, omlx
 (both variants) and mlx_lm_server are hand-written `Backend` subclasses in
 `backends/<id>.py` (daemon, pool and target+draft protocols); every
-process-style provider (mtplx, rec) is an instance of the one spec-driven
+process-style provider (mtplx, rec, sushi) is an instance of the one spec-driven
 `ProcessServerBackend` in `backends/process_server.py`, built from its
 entry in `docs/contracts/process-providers.toml`. The bash benchmark scripts
 call the `llmbench provider` CLI over this
@@ -41,15 +41,31 @@ spawn argv, a stop argv, a pidfile, a log and a readiness check is:
    entry that has no instance yet (mtplx's lives in `backends/mtplx.py`
    only because it passes `cleanup_on_failure=True`). A registry row with
    `auth.secret_ref` gives every probe and the warmup a bearer key;
-   readiness is `models-list` (`/v1/models` lists the model) or
-   `command-json` (a status command's JSON, like `rec status`).
-3. Then steps 3–9 below as they apply: `DEFAULT_PROVIDER_IDS`, the
-   `_FAKE_BINARIES` guard in `tests/conftest.py` plus
-   `test_hermeticity.py` (the suite must never run the real binary), the
-   drift trip-wires, the benchmark scripts, LiteLLM, a smoke test. The
-   benchmark runners pass a positional model only for mtplx
-   (`benchmark/runner.py`); any other process provider resolves to its
-   single registry model.
+   readiness is `models-list` (`/v1/models` lists the model), `command-json`
+   (a status command's JSON, like `rec status`) or `http-get` (a `GET` of
+   `path` answers; no command). Every entry carries `warmup_seconds`, a
+   required positive integer (mtplx 120, rec 120, sushi 400). An empty
+   `stop = []` (sushi) means llmbench never runs the binary to stop it: it
+   signals the pid in the pidfile (`PidfileProcess`, the same bare pid wt
+   writes), and waits up to `SIGNAL_STOP_TIMEOUT` for the port to close.
+3. Then steps 3–9 below as they apply: `DEFAULT_PROVIDER_IDS`
+   (`src/llmbench/registry.py`), `POSITIONAL_MODEL_PROVIDERS`
+   (`benchmark/isolation.py`), the `_FAKE_BINARIES` guard in
+   `tests/conftest.py` plus `test_hermeticity.py` (the suite must never run
+   the real binary), the drift trip-wires, the benchmark scripts, LiteLLM, a
+   smoke test (sushi is the worked example for the first two). A signal-stop provider
+   (empty `stop`) needs one more thing from the tests: the autouse
+   `_redirect_signal_stop_pidfiles` fixture in `tests/conftest.py` points
+   every such backend's frozen `_pidproc` at a tmp path, because llmbench has
+   no pidfile env override and an unpatched stop would read, and may remove,
+   the real pidfile; it picks a new signal-stop backend up on its own.
+   The benchmark runners pass a positional model to the providers in
+   `POSITIONAL_MODEL_PROVIDERS` (`benchmark/isolation.py`): mtplx, rec and
+   sushi: the registry `model_name` is passed as the isolate call's
+   positional model, so the model a row benchmarks is the one served. Add a
+   new process provider there for the same behaviour; any other resolves to
+   its single registry model.
+   The contract entry and the wt table row change in one commit.
 
 ### A hand-written backend (a daemon, a pool, a pairing)
 

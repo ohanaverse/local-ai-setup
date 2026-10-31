@@ -51,23 +51,58 @@ start and stop needs all of them.
    — `Binary`, `Spawn`/`Stop` argv templates (`{model}`, `{port}`), pidfile and
    log defaults (`PidfileEnv` for a scratch override), how its running argv is
    recognised (`Subcommand`, `DaemonModule`, `PortFlag`, `ModelFlag`), a `Ready`
-   check (`ReadyModelsList`, or `ReadyCommandJSON` with `Command`, `Path`,
-   `Equals`, `ModelPath`, `EndpointPath`) and the family `Scope` (`ScopePort`,
+   check (`ReadyModelsList`; `ReadyHTTP`, contract kind `http-get`; or
+   `ReadyCommandJSON` with `Command`, `Path`, `Equals`, `ModelPath`,
+   `EndpointPath`), `WarmupSeconds` and the family `Scope` (`ScopePort`,
    or `ScopeMachine` for one instance on the whole machine, which needs a
    `ReadyCommandJSON` check; give it an `EndpointPath` so an instance is
    adopted only at the registry's address) — plus the provider's `Seed` and
    `Policy` (`SecretRef: true` when the server needs its key on every
-   request, as rec does). mtplx (`ScopePort`, one model per spawn) and rec
-   (`ScopeMachine`, one fixed model: `Spawn` without `{model}`) are the model
-   rows. `lifecycle` registers `processServer` for every
-   `provider.ProcessFamilies()` family on its own. Until the registry overlay
-   lands in a later change, such a provider is a data row in `table.go`, not a
-   registry entry. Any other kind of server (ollama, omlx style) still needs a
-   backend in `backendsByFamily` (`internal/lifecycle/lifecycle.go`) with a
-   `tenancy()` equal to the family's row (`TestBackendsMatchProviderTable`).
+   request, as rec does). mtplx (`ScopePort`, one model per spawn), rec
+   (`ScopeMachine`, one fixed model: `Spawn` without `{model}`) and sushi
+   (`ScopePort`, `ServedOnly`, one model-less `serve`, empty `Stop`, `http-get`
+   on `/health`) are the model rows. `lifecycle` registers `processServer` for
+   every `provider.ProcessFamilies()` family on its own. Until the registry
+   overlay lands in a later change, such a provider is a data row in
+   `table.go`, not a registry entry. Any other kind of server (ollama, omlx
+   style) still needs a backend in `backendsByFamily`
+   (`internal/lifecycle/lifecycle.go`) with a `tenancy()` equal to the family's
+   row (`TestBackendsMatchProviderTable`). The rules a process row must meet:
+   - **An empty `Stop` means wt signals the verified pid and never runs the
+     binary** (`stopByPid`, which ends in `signalVerifiedServer`). It needs
+     `PidfileDefault`, `Subcommand` and `PortFlag`: `TestTableInvariants`
+     fails without them, because they are how the pid is verified. With no
+     verified pid, a port that answers is a `*NotStartedByWtError` (wt never
+     signals a server it did not start). The pidfile holds a bare pid and is
+     shared with llmbench. Never leave a `Stop` that would run the bare
+     binary.
+   - **`ReadyHTTP` (`http-get`)** is for a server whose model loads on the
+     first request, so `/v1/models` cannot say it is ready: `GET` of
+     `Ready.Path` on the origin, exactly HTTP 200. `Path` must start with `/`
+     and the kind takes no `Command` (`TestTableInvariants`).
+   - **`WarmupSeconds` is required and positive** on every `Process`
+     (mtplx 120, rec 120, sushi 400; contract key `warmup_seconds`).
+   - **A served list that carries unloaded models.** `FetchModelIDsKeyed`
+     drops an entry only when its `loaded` is literally `false`; absent,
+     `null` or `true` keeps it. Use it for a family whose `/v1/models` lists
+     models it has not loaded (sushi).
+   - **A memory preflight is opt-in by family id**: add the id to
+     `wiredLimitFamilies` (`internal/lifecycle/wiredlimit.go`) only if the
+     family should have its start checked against `iogpu.wired_limit_mb`
+     (sushi is the one entry).
+   - **A local model's derived registry id keeps the slash**
+     (`<family>/<artifact>`, e.g. `sushi/<org>/<pack>`); `--` is the cloud
+     spelling.
+   - **Every process family's `PidfileEnv` is isolated** for tests by
+     `lifecycle.IsolateProcessesForTest`, called from `cmd/wt`'s `TestMain`;
+     a new family must keep `TestMainIsolatesEveryProcessPidfile` passing, so
+     give it a `PidfileEnv`.
 4. **Tests and docs.** Run `go test ./...` from `wt/` and extend the tests
    that fail. Add the provider to `docs/internals/local-models.md` and, for the
-   user, to `../docs/guides/02-providers-and-models.md`.
+   user, to `../docs/guides/02-providers-and-models.md`. A `Process` row is
+   mirrored in `../docs/contracts/process-providers.toml`: change the
+   contract entry and the table row in one commit
+   (`TestProcessProvidersContractMatchesTheProviderTable`).
 
 For the benchmarks (`llmbench provider isolate <id>`), a local provider also
 needs an llmbench backend: see the `adding-a-benchmark-backend` skill at the
