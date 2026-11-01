@@ -60,7 +60,12 @@ def apply_patches(max_new_tokens: int) -> None:
 
 
 def main() -> None:
-    apply_patches(int(os.environ[ENV]))
+    raw = os.environ.get(ENV)
+    if raw is None:
+        raise SystemExit(
+            f"{ENV} is not set; evalplus_runner sets it to the [coding] max_new_tokens"
+        )
+    apply_patches(int(raw))
     from evalplus.evaluate import main as evaluate_main
 
     evaluate_main()
