@@ -4,9 +4,9 @@
 # Qwen3.8-Flash-Next STQ 2.75bpw, ollama qwen3.8:27b-mlx, rec/flint, mtplx
 # Qwen3.8-27B Optimized-Quality and mtplx Qwen3.6-35B-A3B Optimized-Balance.
 # [coding] max_new_tokens lifts EvalPlus's 768-token reply cap, which a thinking
-# model spends on reasoning (guide 11, Gotchas). Rows use direct routes, so
-# the rec and mtplx rows need no LiteLLM route. The mtplx base_url is its
-# default port 8003. Register all five models in the registry before loading
+# model spends on reasoning (guide 11, Gotchas). The sushi, rec and mtplx rows
+# use direct routes and need no LiteLLM route; the ollama row goes through
+# LiteLLM. The mtplx base_url is its default port 8003. Register all five models in the registry before loading
 # the suite: a row naming an unknown model fails load_suite.
 #
 # Before running:
@@ -26,8 +26,9 @@
 #     --max-concurrent 1 and a 300 s stall timeout in `sushi serve --help`
 #     during the design (UNVERIFIED, not re-run; guide 11 says the same).
 #     Do not point other clients at it during a run.
-#   - Rows run serially, Sushi first; its restore action stops Sushi before
-#     the claude-cli judge runs.
+#   - Rows run serially, grouped by provider in sorted order (mtplx, ollama,
+#     rec, sushi), not file order; the final restore stops Sushi before the
+#     claude-cli judge runs.
 name = "eval-five-way"
 cooldown_s = 15.0
 
@@ -40,7 +41,7 @@ samples = 1
 max_attempts = 2
 route = "claude-cli"
 
-# Sampling is pinned explicitly so both rows run identically.
+# Sampling is pinned explicitly so every row runs identically.
 [generation]
 temperature = 1.0
 top_p = 0.95
@@ -51,6 +52,8 @@ dataset = "humaneval"
 # EvalPlus caps replies at 768 tokens, which a thinking model spends on its
 # reasoning (0% pass@1). Raised via evalplus_launcher.py.
 max_new_tokens = 16384
+# 164 problems of up to 16384 tokens per row can pass the 4 h default (guide 11, Gotchas).
+timeout_s = 28800
 
 [routes.direct.sushi]
 base_url = "http://localhost:12345/v1"
