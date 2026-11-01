@@ -330,14 +330,21 @@ def test_run_coding_category_passes_the_cap_through_the_environment():
 
 def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
     pytest.importorskip("evalplus")
+    import evalplus.gen.util.openai_request as openai_request
     from evalplus.provider.base import DecoderBase
     from evalplus.provider.openai import OpenAIChatDecoder
 
     from llmbench.benchmark.eval import evalplus_launcher
 
     init, codegen = DecoderBase.__init__, OpenAIChatDecoder.codegen
+    original_signal = openai_request.signal
     try:
         evalplus_launcher.apply_patches(4096)
+        # The 100 s per-request alarm is disabled: alarm(100) must not arm a timer.
+        import signal as real_signal
+
+        openai_request.signal.alarm(100)
+        assert real_signal.alarm(0) == 0
         dec = OpenAIChatDecoder(
             name="m", base_url="http://x/v1", temperature=0.0, instruction_prefix="Solve:"
         )
@@ -360,3 +367,4 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
             req.make_auto_request = orig
     finally:
         DecoderBase.__init__, OpenAIChatDecoder.codegen = init, codegen
+        openai_request.signal = original_signal

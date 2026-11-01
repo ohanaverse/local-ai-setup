@@ -8,6 +8,11 @@ sanitizer). This module is the EvalPlus CLI with two patches applied first:
 1. `DecoderBase.max_new_tokens` is the value of `LLMBENCH_EVALPLUS_MAX_NEW_TOKENS`.
 2. A reply whose `content` is null becomes an empty string, which sanitizes to
    empty code and fails that one problem instead of the whole run.
+3. EvalPlus's 100 s `SIGALRM` around each request is disabled. A reply of
+   thousands of tokens takes longer than that on a local model; the alarm would
+   abort the request, EvalPlus would resend it forever (queueing behind itself
+   on a one-request-at-a-time server), and the cap raise would never help. The
+   `[coding] timeout_s` limit on the whole subprocess still bounds the run.
 
 Run as `python -m llmbench.benchmark.eval.evalplus_launcher <evalplus args>`;
 `evalplus_runner` does so only when a suite sets `[coding] max_new_tokens`.
@@ -17,11 +22,14 @@ from __future__ import annotations
 
 import functools
 import os
+import signal
+import types
 
 ENV = "LLMBENCH_EVALPLUS_MAX_NEW_TOKENS"
 
 
 def apply_patches(max_new_tokens: int) -> None:
+    from evalplus.gen.util import openai_request
     from evalplus.provider.base import DecoderBase
     from evalplus.provider.openai import OpenAIChatDecoder
 
@@ -41,6 +49,14 @@ def apply_patches(max_new_tokens: int) -> None:
         return [out if out is not None else "" for out in original_codegen(self, *args, **kwargs)]
 
     OpenAIChatDecoder.codegen = codegen  # type: ignore[method-assign]
+
+    # openai_request only uses signal.signal/SIGALRM/alarm; keep the first two
+    # and make every alarm(n) a cancel.
+    openai_request.signal = types.SimpleNamespace(  # type: ignore[attr-defined]
+        SIGALRM=signal.SIGALRM,
+        signal=signal.signal,
+        alarm=lambda _seconds: signal.alarm(0),
+    )
 
 
 def main() -> None:
