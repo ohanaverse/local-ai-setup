@@ -260,7 +260,7 @@ the plist is installed, `launchctl unload` it by hand:
 ## sushi — active, on-demand only (no standing artifact)
 
 - The engine serving the Sushi packs: one Homebrew-tap binary, `sushi`
-  (`brew install beamivalice/tap/sushi`; Sushi 1.4.1 was installed here; `bin/update/sushi` keeps it current). Not
+  (`brew install beamivalice/tap/sushi`; Sushi 1.4.1 was installed here). Not
   a LaunchAgent, and no `bin/update` script keeps it current: `wt start
   sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` runs one model-less
   `sushi serve --port 12345 --host 127.0.0.1 --ctx-size 131072
