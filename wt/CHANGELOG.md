@@ -5,8 +5,9 @@
 ### Added
 
 - Sushi is a local provider: `wt start|stop|list` manage it, and `wt -A
-  claude|pi -M sushi/...` launches on it once `sushi` is in that agent's
-  `supported_providers`. One model-less `sushi serve` runs on port 12345 with
+  claude|pi -M sushi/...` launches on it. `wt model add sushi ...` adds
+  `sushi` to the `supported_providers` of claude and pi in config.toml when
+  they lack it. One model-less `sushi serve` runs on port 12345 with
   its context fixed at 131072 in the spawn command. A start waits for
   `GET /health`, then loads the pack with a 400 s warmup budget, and sushi
   is listed Running unless `/v1/models` flags the pack `loaded: false`.

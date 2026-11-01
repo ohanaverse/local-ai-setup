@@ -213,7 +213,31 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 		fmt.Fprintf(out, "no default row for provider: %s (an agent lists it; add it to registry.toml by hand)\n", p)
 	}
 	warnings = append(warnings, res.Warnings...)
+	warnings = append(warnings, enableSushiForAgents(out, req.ProviderID)...)
 	return syncAndWarn(out, errOut, warnings)
+}
+
+// sushiAgents are the agents that can run a Sushi model: claude (through
+// LiteLLM, as Sushi serves only openai-chat) and pi (direct). Sushi's
+// supported_providers entry is not in a stock config.toml, and without it
+// `wt smoke` and the pickers report no agent supports the model.
+var sushiAgents = []string{"claude", "pi"}
+
+// enableSushiForAgents lists sushi in sushiAgents' supported_providers after
+// a sushi model is registered, and says which agents it changed. A failure
+// is a warning: the model is registered, and the line to add by hand is in it.
+func enableSushiForAgents(out io.Writer, providerID string) []string {
+	if providerID != "sushi" {
+		return nil
+	}
+	changed, err := config.EnsureAgentProvider("sushi", sushiAgents...)
+	if err != nil {
+		return []string{fmt.Sprintf("could not add sushi to the agents' supported_providers in config.toml (%v); add it to claude and pi by hand", err)}
+	}
+	if len(changed) > 0 {
+		fmt.Fprintf(out, "added sushi to supported_providers of: %s\n", strings.Join(changed, ", "))
+	}
+	return nil
 }
 
 // syncAndWarn runs the one route sync that follows a registry write, prints
