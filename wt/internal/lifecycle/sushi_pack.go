@@ -25,12 +25,23 @@ func (e *PackNotListedError) Error() string {
 // listedPackIDs is every id modelsURL lists, whatever its "loaded" says: a
 // pack sushi has not loaded yet is still one it can serve. A 401/403 is a
 // *KeyRefusedError.
+// asKeyRefused is a refused key (localmodels.ErrKeyRefused) as the caller's
+// *KeyRefusedError for modelsURL; any other error back as it is. The one
+// translation of a refused models-list answer here (sushi_pack.go), shared by
+// listedPackIDs and confirmLoaded.
+func asKeyRefused(modelsURL, key string, err error) error {
+	if errors.Is(err, localmodels.ErrKeyRefused) {
+		return &KeyRefusedError{URL: modelsURL, KeySent: key != "", Detail: err.Error()}
+	}
+	return err
+}
+
 func listedPackIDs(client *http.Client, modelsURL, key string) ([]string, error) {
 	ids, err := localmodels.FetchModelIDsKeyed(client, modelsURL, key)
-	if errors.Is(err, localmodels.ErrKeyRefused) {
-		return nil, &KeyRefusedError{URL: modelsURL, KeySent: key != "", Detail: err.Error()}
+	if err != nil {
+		return nil, asKeyRefused(modelsURL, key, err)
 	}
-	return ids, err
+	return ids, nil
 }
 
 // requirePackListed fails a start whose model the server at modelsURL does
@@ -64,10 +75,7 @@ func (e *env) confirmLoaded(ctx context.Context, modelsURL, model, key string) e
 		return err
 	}
 	ids, err := localmodels.FetchLoadedModelIDsKeyed(e.probeClient, modelsURL, key)
-	if errors.Is(err, localmodels.ErrKeyRefused) {
-		return &KeyRefusedError{URL: modelsURL, KeySent: key != "", Detail: err.Error()}
-	}
-	if err != nil {
+	if err = asKeyRefused(modelsURL, key, err); err != nil {
 		return err
 	}
 	if slices.Contains(ids, model) {

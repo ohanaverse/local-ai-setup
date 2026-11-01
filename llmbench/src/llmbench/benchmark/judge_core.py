@@ -445,6 +445,10 @@ class ClaudeCliJudgeTransport:
             time.sleep(self.retry_backoff_s)
         try:
             return self._call(prompt)
+        except _ClaudeCliFatal as exc:
+            # A logout discovered only on the retry still stops the category
+            # (JudgeFatalError, never retried), like a fatal on the first call.
+            raise JudgeFatalError(str(exc)) from exc
         except _ClaudeCliError as exc:
             raise JudgeTransportError(f"claude CLI judge failed after retry: {exc}") from exc
 
