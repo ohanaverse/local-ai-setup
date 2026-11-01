@@ -70,6 +70,7 @@ Every `Test*` has a top-level `//` comment stating **what** it tests and **why**
 - **Test seams** are package-level vars (`var x = realX`) that tests swap; `internal/lifecycle` keeps its seams in one `env` struct.
 - **Tests stay off the developer's machine**: each package's `TestMain` isolates what it reaches — `lifecycle.IsolateProcessesForTest()` (every process family's pidfile, signals, the wired-limit read), `tiers.IsolateForTest` (model-table packages), `config.IsolateConfigHomeForTest` (anything reaching `config.Dir()`), `gitenv.IsolateForTest()` (anything that can run git; `TestEveryPackageThatRunsGitIsolatesIt`). A new package or launch path needs the same (route check via `stubEnsureRoute(t)`); no test runs `psql`; scratch registries go through `WT_REGISTRY`.
 - **Assert on unexported functions directly**; parsing rendered lipgloss output flakes under forced-color ANSI.
+- **A test's `WarmupSeconds` must outlast the helper server's first answer.** Each warmup request is capped at the time left in the window, so a 1 s budget on a loaded runner fails on the deadline, not on the response you meant to assert on. Use 3 s or more.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, runs git, starts a model, or touches routes.
 
