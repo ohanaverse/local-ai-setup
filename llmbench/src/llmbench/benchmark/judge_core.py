@@ -19,6 +19,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from statistics import median
 from typing import Protocol
@@ -37,6 +38,13 @@ class JudgeTransportError(Exception):
     judge_row's retry loop treats a network failure exactly like a
     malformed response: one more attempt, then judge_fail.
     """
+
+
+class JudgeFatalError(JudgeTransportError):
+    """A transport failure retrying cannot fix (logged out, CLI missing).
+
+    judge_row re-raises it instead of retrying, so the caller stops judging
+    that category rather than re-spawning a dead route for every item."""
 
 
 class JudgeTransport(Protocol):
@@ -201,6 +209,8 @@ def judge_row(
                 score = parse_response(raw, rubric)
                 last_error = None
                 break
+            except JudgeFatalError:
+                raise
             except (JudgeContractError, JudgeTransportError) as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 continue
@@ -325,8 +335,11 @@ CLAUDE_CLI_SYSTEM_PROMPT = (
 # Env var prefixes removed before spawning the claude CLI: a stray
 # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (wt sets the latter when it launches
 # claude through LiteLLM) or CLAUDE_CODE_* provider switch would divert the
-# call away from the logged-in subscription.
+# call away from the logged-in subscription. CLAUDE_CODE_OAUTH_TOKEN (from
+# `claude setup-token`) is the subscription credential itself, so it is kept:
+# it is the only login on a headless host with a locked keychain.
 _CLAUDE_CLI_ENV_DENY_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_")
+_CLAUDE_CLI_ENV_KEEP = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
 
 _CLAUDE_CLI_NOT_LOGGED_IN = "Not logged in"
 
@@ -338,11 +351,24 @@ _popen = subprocess.Popen
 
 
 def claude_cli_env() -> dict[str, str]:
-    """os.environ minus ANTHROPIC_* and CLAUDE_CODE_*. A denylist, not an
+    """os.environ minus ANTHROPIC_* and CLAUDE_CODE_* (except
+    CLAUDE_CODE_OAUTH_TOKEN, the subscription token). A denylist, not an
     allowlist: the CLI reads its OAuth credentials from the macOS keychain,
     which needs HOME/USER/LOGNAME/TMPDIR/PATH to stay in place (an empty
     env reports "Not logged in")."""
-    return {k: v for k, v in os.environ.items() if not k.startswith(_CLAUDE_CLI_ENV_DENY_PREFIXES)}
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k in _CLAUDE_CLI_ENV_KEEP or not k.startswith(_CLAUDE_CLI_ENV_DENY_PREFIXES)
+    }
+
+
+@contextlib.contextmanager
+def claude_cli_scratch() -> Iterator[tuple[str, dict[str, str]]]:
+    """A fresh empty cwd (no CLAUDE.md to discover) and the scrubbed env: the
+    setup every claude CLI spawn shares, judge calls and login preflight."""
+    with tempfile.TemporaryDirectory(prefix="llmbench-judge-") as cwd:
+        yield cwd, claude_cli_env()
 
 
 def claude_cli_argv(model: str, *, executable: str = "claude") -> list[str]:
@@ -414,7 +440,7 @@ class ClaudeCliJudgeTransport:
         try:
             return self._call(prompt)
         except _ClaudeCliFatal as exc:
-            raise JudgeTransportError(str(exc)) from exc
+            raise JudgeFatalError(str(exc)) from exc
         except _ClaudeCliRetryable:
             time.sleep(self.retry_backoff_s)
         try:
@@ -422,7 +448,9 @@ class ClaudeCliJudgeTransport:
         except _ClaudeCliError as exc:
             raise JudgeTransportError(f"claude CLI judge failed after retry: {exc}") from exc
 
-    def _run(self, argv: list[str], prompt: str, cwd: str) -> tuple[str, str, int]:
+    def _run(
+        self, argv: list[str], prompt: str, cwd: str, env: dict[str, str]
+    ) -> tuple[str, str, int]:
         # Own session so a timeout kills the whole process group: the CLI may
         # sit behind a launcher, and an orphan holding the pipes would make
         # communicate() block for the child's full runtime.
@@ -435,23 +463,27 @@ class ClaudeCliJudgeTransport:
             encoding="utf-8",
             errors="replace",  # lone surrogates / non-UTF-8 output must not escape as UnicodeError
             cwd=cwd,
-            env=claude_cli_env(),
+            env=env,
             start_new_session=True,
         ) as proc:
             try:
                 stdout, stderr = proc.communicate(prompt, timeout=self.timeout_s)
-            except subprocess.TimeoutExpired:
+            except BaseException as exc:
+                # Timeout or Ctrl-C: the child has its own session, so the
+                # terminal's SIGINT never reaches it and Popen.__exit__ would
+                # block until the CLI finished on its own.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(proc.pid, signal.SIGKILL)
-                proc.communicate()
+                if isinstance(exc, subprocess.TimeoutExpired):
+                    proc.communicate()
                 raise
             return stdout, stderr, proc.returncode
 
     def _call(self, prompt: str) -> str:
         argv = claude_cli_argv(self.model, executable=self.executable)
-        with tempfile.TemporaryDirectory(prefix="llmbench-judge-") as cwd:
+        with claude_cli_scratch() as (cwd, env):
             try:
-                stdout, stderr, returncode = self._run(argv, prompt, cwd)
+                stdout, stderr, returncode = self._run(argv, prompt, cwd, env)
             except FileNotFoundError as exc:
                 raise _ClaudeCliFatal(
                     f"claude CLI not found (executable {self.executable!r}); "

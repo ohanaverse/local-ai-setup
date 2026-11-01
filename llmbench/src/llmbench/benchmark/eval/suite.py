@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,7 +28,7 @@ from llmbench.benchmark._routes import (
     openrouter_key,
 )
 from llmbench.benchmark.errors import BenchmarkError
-from llmbench.benchmark.judge_core import claude_cli_env
+from llmbench.benchmark.judge_core import claude_cli_scratch
 from llmbench.providers import lifecycle
 from llmbench.providers.secret import SecretError, provider_key
 from llmbench.registry import Registry
@@ -442,14 +441,14 @@ def _claude_logged_in(executable: str) -> bool:
     # Scrubbed env and a scratch cwd, as for the judge calls themselves, so the
     # status reflects the subscription rather than a stray ANTHROPIC_* override.
     try:
-        with tempfile.TemporaryDirectory(prefix="llmbench-judge-") as cwd:
+        with claude_cli_scratch() as (cwd, env):
             proc = subprocess.run(
                 [executable, "auth", "status"],
                 capture_output=True,
                 text=True,
                 timeout=30,
                 cwd=cwd,
-                env=claude_cli_env(),
+                env=env,
                 check=False,
             )
         status = json.loads(proc.stdout)

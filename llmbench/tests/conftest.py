@@ -56,9 +56,10 @@ _real_subprocess_run = subprocess.run
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request (`rec stop` / `rec serve` likewise:
-# rec is installed on the developer's machine); `wt warm` would load one; `claude` would spend the developer's real
-# subscription (the eval judge's claude-cli route). Fake-CLI tests must
-# therefore name their stand-in script anything but `claude`.
+# rec is installed on the developer's machine); `wt warm` would load one;
+# `claude` would spend the developer's real subscription (the eval judge's
+# claude-cli route). Fake-CLI tests must therefore name their stand-in script
+# anything but `claude`.
 _FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "ollama", "wt", "claude"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 

@@ -20,6 +20,7 @@ import pytest
 from llmbench.benchmark.judge_core import (
     CLAUDE_CLI_SYSTEM_PROMPT,
     ClaudeCliJudgeTransport,
+    JudgeFatalError,
     JudgeTransportError,
     claude_cli_argv,
     claude_cli_env,
@@ -117,10 +118,17 @@ def test_env_is_scrubbed_of_anthropic_and_claude_code_but_keeps_the_rest(tmp_pat
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://localhost:4000")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.setenv("KEEP_ME", "yes")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
     t, log = _transport(tmp_path, "success")
     t.complete("p", temperature=0)
     env = _calls(log)[0]["env"]
-    assert not [k for k in env if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_"))]
+    assert not [
+        k
+        for k in env
+        if k.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) and k != "CLAUDE_CODE_OAUTH_TOKEN"
+    ]
+    # The subscription token from `claude setup-token` is the one exception.
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok"
     assert env["KEEP_ME"] == "yes"
     assert env["HOME"] == os.environ["HOME"]
     assert env["PATH"] == os.environ["PATH"]
@@ -212,14 +220,14 @@ def test_retry_recovers_from_a_transient_failure(tmp_path):
 
 def test_not_logged_in_fails_without_retry_and_points_at_login(tmp_path):
     t, log = _transport(tmp_path, "not_logged_in")
-    with pytest.raises(JudgeTransportError, match="claude auth login"):
+    with pytest.raises(JudgeFatalError, match="claude auth login"):
         t.complete("p", temperature=0)
     assert len(_calls(log)) == 1
 
 
 def test_missing_executable_fails_without_retry(tmp_path):
     t = ClaudeCliJudgeTransport("opus", executable=str(tmp_path / "nope"), retry_backoff_s=0)
-    with pytest.raises(JudgeTransportError, match="claude CLI not found"):
+    with pytest.raises(JudgeFatalError, match="claude CLI not found"):
         t.complete("p", temperature=0)
 
 
@@ -280,3 +288,19 @@ def test_lone_surrogate_prompt_does_not_raise_unicode_error(tmp_path):
 def test_non_utf8_output_is_still_parsed(tmp_path):
     t, _ = _transport(tmp_path, "badutf")
     assert t.complete("p", temperature=0) == "ECHO:p"
+
+
+def test_judge_row_stops_on_a_fatal_transport_error_without_retrying(tmp_path):
+    from llmbench.benchmark.judge_core import Rubric, judge_row
+
+    t, log = _transport(tmp_path, "not_logged_in")
+    with pytest.raises(JudgeFatalError):
+        judge_row(
+            t,
+            "p",
+            Rubric(dimensions={"a": 100}),
+            temperature=0,
+            samples=2,
+            max_attempts=3,
+        )
+    assert len(_calls(log)) == 1
