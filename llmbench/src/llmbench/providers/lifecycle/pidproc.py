@@ -15,9 +15,17 @@ import re
 import signal
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .envelope import LifecycleError
+
+
+def signalable(pid: int) -> bool:
+    """Whether a pidfile's `pid` may ever be signalled: not 0 or a negative
+    pid (this process's group, a broadcast), not 1 (launchd), not this
+    process itself (a recycled pid can name it)."""
+    return pid > 1 and pid != os.getpid()
 
 
 @dataclass(frozen=True)
@@ -26,14 +34,21 @@ class PidfileProcess:
     pidfile: str
     logfile: str
 
-    def spawn(self, argv: list[str]) -> subprocess.Popen:
+    def spawn(self, argv: list[str], *, new_session: bool = False) -> subprocess.Popen:
         """Open self.logfile for append, spawn argv with stdout=stderr=that
         file handle, write the child's pid to self.pidfile, sleep 0.2s, then
         check proc.poll() — if the process already exited, raise
         LifecycleError with a log tail (omitted if empty). Return the live
-        Popen on success."""
+        Popen on success.
+
+        `new_session` starts the child in its own session (wt's Setsid), so
+        a SIGHUP to the caller's terminal cannot kill it. Without it Popen
+        gets no session keyword at all."""
         with open(self.logfile, "ab") as log:
-            proc = subprocess.Popen(argv, stdout=log, stderr=log)
+            if new_session:
+                proc = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+            else:
+                proc = subprocess.Popen(argv, stdout=log, stderr=log)
         with open(self.pidfile, "w") as f:
             f.write(str(proc.pid))
         # Give the process a moment to fail (missing weights, port conflict,
@@ -89,6 +104,147 @@ class PidfileProcess:
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(self.pidfile)
+
+    def stop_verified(
+        self,
+        expect_argv: Sequence[str],
+        *,
+        grace: float = 10.0,
+        kill_wait: float = 5.0,
+    ) -> bool:
+        """Stop the process the pidfile names the way wt's signalVerifiedServer
+        does, and report whether it is gone. Only a process that passes the
+        strict identity check (`_matches_argv`: this user's, exactly
+        `expect_argv`) is signalled: SIGTERM, then SIGKILL after `grace`
+        seconds, then up to `kill_wait` more for it to go. The pidfile is
+        removed only once the process is gone (or was never ours: absent,
+        unusable, dead, or another process holding a recycled pid), so a
+        server that outlives the signals stays findable by the next
+        `isolate` / `stop`. False means it is still running.
+
+        A pid `signalable` refuses is never signalled; an unreadable or
+        non-positive pidfile is removed, as `stop()` does.
+        """
+        try:
+            with open(self.pidfile) as f:
+                content = f.read().strip()
+        except OSError:
+            return True
+        try:
+            pid = int(content)
+        except ValueError:
+            pid = 0
+        if pid <= 0:
+            with contextlib.suppress(OSError):
+                os.unlink(self.pidfile)
+            return True
+        if not signalable(pid):
+            return True
+        if not self._alive(pid) or not self._matches_argv(pid, expect_argv):
+            # Dead, or the pid now belongs to something else: the file is stale.
+            with contextlib.suppress(OSError):
+                os.unlink(self.pidfile)
+            return True
+        gone = self._signal_and_wait(pid, signal.SIGTERM, grace)
+        if not gone and self._matches_argv(pid, expect_argv):
+            gone = self._signal_and_wait(pid, signal.SIGKILL, kill_wait)
+        if gone:
+            with contextlib.suppress(OSError):
+                os.unlink(self.pidfile)
+        return gone
+
+    @staticmethod
+    def _alive(pid: int) -> bool:
+        """Whether `pid` is a live process. A child of this process that has
+        exited is reaped first (`os.kill(pid, 0)` succeeds on a zombie)."""
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                return False
+        except ChildProcessError:
+            pass
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _signal_and_wait(self, pid: int, sig: signal.Signals, timeout: float) -> bool:
+        """Send `sig` to `pid`; True once the process is gone within `timeout`."""
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self._alive(pid):
+                return True
+            time.sleep(0.1)
+        return not self._alive(pid)
+
+    def _matches_argv(self, pid: int, expect_argv: Sequence[str]) -> bool:
+        """Strict identity: `ps` reports this user as the owner and a command
+        line that is the binary (by file name) followed by exactly
+        `expect_argv`. A pid `ps` cannot describe is NOT a match, unlike the
+        loose `_looks_like_this_process`. The command line is split on
+        spaces, so an argument holding a space cannot match: the servers this
+        is used for have none."""
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "uid=,command="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return False
+        parts = result.stdout.split()
+        if result.returncode != 0 or len(parts) < 2:
+            return False
+        try:
+            uid = int(parts[0])
+        except ValueError:
+            return False
+        return (
+            uid == os.getuid()
+            and os.path.basename(parts[1]) == self.name
+            and (parts[2:] == list(expect_argv))
+        )
+
+    def read_pid(self) -> int | None:
+        """The pid self.pidfile names, or None when the file is missing,
+        unreadable or does not hold an integer. Not validated: see
+        `signalable`."""
+        try:
+            with open(self.pidfile) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    def live_pid(self, expect_argv: Sequence[str] | None = None) -> int | None:
+        """The pidfile's pid when it is a live process that looks like this
+        one, else None. Read-only: never unlinks the pidfile and never
+        signals (`os.kill(pid, 0)` only, and never for a pid `signalable`
+        refuses).
+
+        Without `expect_argv` the identity check is the loose
+        `_looks_like_this_process`: `self.name` in the pid's `ps` line, and a
+        pid `ps` cannot describe counts as a match. With it the check is the
+        strict `_matches_argv` (this user's process, exactly that argv) and
+        a pid `ps` cannot describe is not ours."""
+        pid = self.read_pid()
+        if pid is None or not signalable(pid):
+            return None
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return None
+        if expect_argv is None:
+            return pid if self._looks_like_this_process(pid) else None
+        return pid if self._matches_argv(pid, expect_argv) else None
 
     @staticmethod
     def _reap(pid: int, timeout: float = 2.0, interval: float = 0.1) -> None:

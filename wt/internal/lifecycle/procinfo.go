@@ -84,7 +84,8 @@ func serverProcesses() map[string]pidProcess {
 }
 
 // IsolateProcessesForTest is for a package's TestMain: it makes the
-// process-table read, the signal and the readiness command fail for the rest of the process, and
+// process-table read, the signal, the readiness command and the wired-limit
+// sysctl read fail for the rest of the process, and
 // points every process family's pidfile (its spec's PidfileEnv) at a
 // directory that does not exist. A test that reaches the production stop path
 // without stubbing it then reads no real pidfile and signals no real process.
@@ -99,6 +100,9 @@ func IsolateProcessesForTest() {
 	}
 	readyStdout = func(_ context.Context, name string, _ ...string) ([]byte, error) {
 		return nil, fmt.Errorf("readiness command not stubbed in this test (%s)", name)
+	}
+	readWiredLimit = func() (int64, bool, error) {
+		return 0, false, fmt.Errorf("readWiredLimit not stubbed in this test")
 	}
 	for _, family := range provider.ProcessFamilies() {
 		if spec, ok := processSpecFor(family); ok && spec.PidfileEnv != "" {

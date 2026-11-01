@@ -2,7 +2,7 @@
 
 > Use this to: keep the running stack healthy day-to-day — one health-check block, per-service restart/repair, crash-loop triage, and safe upgrades.
 >
-> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live; the Sushi entries quote messages from the code and were not reproduced against a running Sushi)
 
 ## Prerequisites
 
@@ -254,6 +254,7 @@ Log homes (all from live plists / on-disk checks, 2026-08-29):
 | Redis | `/opt/homebrew/var/log/redis.log` | single file |
 | Ollama | `/Users/keith/.ollama/logs/server.log`, `app.log` | app-managed; rotated as `server-1.log` … `server-5.log` |
 | rec | `/tmp/local-ai-setup-rec.log` (next to `WT_REC_PIDFILE` when set) | written while wt runs `rec serve`; also `~/.local/share/rec/state/launch-server.log` for rec's own launches |
+| Sushi | `/tmp/local-ai-setup-sushi.log` (next to `WT_SUSHI_PIDFILE` when set) | written while wt or llmbench runs `sushi serve` (they share the file); Sushi's own logs are under `~/.sushi/logs` |
 
 Crash-loop recognition — with `KeepAlive = true`, a service that dies on startup is relaunched by launchd immediately, forever. Look for the signature in `launchctl list`:
 
@@ -301,6 +302,29 @@ tail -50 /tmp/local-ai-setup-rec.log             # what the last wt-started rec 
 - `rec auth token` fails: wt stops the start before spawning anything, and `wt model list` shows rec `partial` rather than down. wt cannot start rec until that command works (a fresh install without a key is the likely case); fix it with rec's own tools (`rec doctor`), then retry.
 - `rec status` says ready with another `endpoint` than `http://127.0.0.1:11500/v1`, or with a model other than `flint`: another rec owns the machine (one instance per machine); `wt start` asks before replacing it (`--replace` answers yes), or stop it with `rec stop`.
 - The start sits on "waiting for the model to load": loading takes some seconds with the port closed; the start fails with the log's tail if `rec serve` exits during the load.
+
+**`wt start sushi/…` fails?** Sushi has no LaunchAgent; wt spawns one model-less `sushi serve` on port 12345, waits for `GET /health` to answer 200, checks the pack id against `/v1/models`, then sends a 1-token warmup request that performs the cold load (10 to 115 s; wt waits up to 400 s). Check, in this order:
+
+```bash
+sysctl -n iogpu.wired_limit_mb                  # the GPU wired-memory limit; needs >= 51934 for the shipped pack (0 means the macOS default, 75% of RAM)
+curl -s http://127.0.0.1:12345/health           # 200 once a server is up, before any pack is loaded
+curl -s http://127.0.0.1:12345/v1/models        # every pack Sushi can serve; "loaded": true on the one in memory
+tail -50 /tmp/local-ai-setup-sushi.log          # what the last wt-started Sushi printed
+ls ~/.sushi/models/beamster/                    # the pack directory on disk
+```
+
+<!-- UNVERIFIED — these commands were not run for this guide (no Sushi was started). The `/health` and `/v1/models` shapes are from the design's measurements of Sushi; the refusal and not-listed/not-loaded messages below are quoted from wt's and llmbench's code, while `503 No default model configured` and `400 exceeds ctx_size` are Sushi's own responses, taken from the design's measurements of the real server. -->
+
+- **`iogpu.wired_limit_mb is <n> MiB but <pack> needs about <n> MiB resident; raise it with: sudo sysctl iogpu.wired_limit_mb=59000 (resets on reboot)`.** The macOS default (75% of RAM, 49,152 MiB on a 64 GB Mac) is below the 51,934 MiB the shipped pack needs. Run the `sudo sysctl` yourself; wt and llmbench only read the limit and never set it. It resets on every reboot, so run it again after one. `llmbench provider isolate sushi` refuses before it stops anything too, in its own words: `sushi: the GPU wired limit is <n> MiB but <pack> needs about <n> MiB (1.1 x its safetensors); raise the GPU wired limit with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot)`.
+- **`port 12345 is in use by another process — stop it before starting this model`** (`PortBusyError`): something holds the port and wt cannot tell it is a Sushi it started. Also what a second `wt start` meets while the first is still loading the pack: until the pack is listed loaded, Sushi is not Running although its port is open. Wait for the first start to finish.
+- **`sushi at port 12345 was not started by wt; stop it yourself`** (from `wt stop sushi`): a Sushi that answers on the port has no pidfile wt can verify, i.e. you started it by hand. wt signals nothing it cannot identify; stop it yourself. wt also cannot see a hand-started server's flags, so with the pack loaded `wt start` is a no-op that warns that a long prompt may be refused or truncated, and `llmbench provider isolate sushi` refuses it. `llmbench provider stop sushi` of such a server says `sushi: a server answers on port 12345 that was not started by llmbench or wt (no verified pidfile at /tmp/local-ai-setup-sushi.pid); stop it yourself` and leaves it running.
+- **`<model> is not listed by sushi at <url> (it lists: <ids>); register the pack's exact id as model_name`**: the registry's `model_name` is not an id Sushi serves. Copy one of the listed ids (`beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`) into `model_name`, or `wt model rm` and `wt model add sushi <org>/<dir> --family <family>` again. A request with an unknown id that reaches Sushi anyway is answered `503 No default model configured`, not a 404.
+- **`/v1/models does not list <model> as loaded`** (the end of the start): Sushi answered the warmup but the pack is not loaded, so the load failed. Read `tail -50 /tmp/local-ai-setup-sushi.log` and Sushi's own logs in `~/.sushi/logs`.
+- **A failed warmup that reads like a memory refusal** (the error or the log tail mentions `out of memory`, `not enough memory`, `failed to allocate`, `wired limit`, `iogpu` and a few similar phrases) gets the wired-limit fix appended. wt adds a new line with `sudo sysctl iogpu.wired_limit_mb=59000 (resets on reboot)`; llmbench appends `; raise the GPU wired limit with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot)`. Check `sysctl -n iogpu.wired_limit_mb` first, then that no other large model is still resident.
+- **`wt: skipping the memory check (<why>)`**: wt could not measure (pack directory unreadable, no `*.safetensors`, sysctl unreadable) and went on without the check. It is not an error; if the start then fails in the warmup, the memory-refusal hint above applies.
+- **The start waits a long time in the warmup.** A cold load is 10 to 115 s, and wt waits up to 400 s before it gives up and kills the server it spawned (and only that one). Watch `tail -f /tmp/local-ai-setup-sushi.log`.
+- **A prompt longer than the context gets `400 exceeds ctx_size`.** wt starts Sushi with `--ctx-size 131072`. A Sushi you started by hand may run at its own, much smaller default (4096), and wt cannot see it.
+- **`sushi update` or `brew upgrade sushi` replaces the binary under a running server.** Stop it first (`wt stop sushi`), upgrade, start again. wt starts Sushi with `--no-update-check`, and no `bin/update` script covers Sushi. <!-- UNVERIFIED: what an upgrade does to a running server was not tested; this is the conservative order -->
 
 **Redaction rule:** err logs can echo API keys, `Authorization` headers, and request bodies. Before pasting any log excerpt into an issue, a repo, or an agent transcript: strip anything `sk-…`, `Bearer …`, or base64-ish that isn't obviously a path. The LiteLLM plist env values themselves never appear in these logs, but never quote plist contents either — its `EnvironmentVariables` block is the secret store (guide 01 §7).
 

@@ -26,6 +26,7 @@ scope = "machine"
 default_origin = "http://127.0.0.1:1"
 wt_port = 1
 restore_action = "stop"
+warmup_seconds = 120
 
 [process.ready]
 kind = "models-list"
@@ -82,6 +83,57 @@ def test_rec_values():
     assert (s.ready.model_path, s.ready.endpoint_path) == ("model", "endpoint")
 
 
+SUSHI_SPAWN = (
+    "serve",
+    "--port",
+    "{port}",
+    "--host",
+    "127.0.0.1",
+    "--ctx-size",
+    "131072",
+    "--max-resident-models",
+    "1",
+    "--no-update-check",
+    "--max-tokens",
+    "32768",
+)
+
+
+def test_sushi_values():
+    """Every value of the sushi contract block: a drifted value starts the
+    wrong command, runs the benchmark at the wrong context window, or stops
+    the wrong process. An empty stop means signal the verified pid."""
+    s = ps.process_spec("sushi")
+    assert s is not None
+    assert (s.family, s.provider, s.binary) == ("sushi", "sushi", "sushi")
+    assert s.spawn == SUSHI_SPAWN
+    assert not any("{model}" in a for a in s.spawn)
+    assert s.stop == ()
+    assert s.pidfile == "/tmp/local-ai-setup-sushi.pid"
+    assert s.log == "/tmp/local-ai-setup-sushi.log"
+    assert s.pidfile_env == "WT_SUSHI_PIDFILE"
+    assert (s.subcommand, s.daemon_module) == ("serve", "")
+    assert (s.port_flag, s.model_flag) == ("--port", "")
+    assert s.scope == "port"
+    assert s.default_origin == "http://127.0.0.1:12345"
+    assert s.wt_port == 12345
+    assert s.restore_action == "stop"
+    assert s.warmup_seconds == 400
+    assert (s.ready.kind, s.ready.path, s.ready.command) == ("http-get", "/health", ())
+    assert (s.ready.equals, s.ready.model_path, s.ready.endpoint_path) == ("", "", "")
+
+
+def test_expand_sushi_spawn_has_no_model_placeholder_left():
+    """sushi serve takes no model: expanding its spawn fills only the port,
+    and nothing names the model a row asked for."""
+    s = ps.process_spec("sushi")
+    assert s is not None
+    out = ps.expand(s.spawn, model="org/pack", port=12345)
+    assert out[:3] == ["serve", "--port", "12345"]
+    assert not any("{" in a for a in out)
+    assert "org/pack" not in out
+
+
 def test_unknown_provider_is_none():
     assert ps.process_spec("nope") is None
 
@@ -132,3 +184,136 @@ def test_an_argv_must_be_a_list_of_strings(monkeypatch, tmp_path, old, new, key)
     _use(monkeypatch, tmp_path, GOOD.replace(old, new))
     with pytest.raises(ps.ProcessSpecError, match=f"`{key}` must be a list of strings"):
         ps.process_specs()
+
+
+def test_mtplx_and_rec_warm_for_120_seconds():
+    for provider in ("mtplx", "rec"):
+        s = ps.process_spec(provider)
+        assert s is not None
+        assert s.warmup_seconds == 120
+
+
+def test_missing_warmup_seconds_raises(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace("warmup_seconds = 120\n", ""))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\]: missing key `warmup_seconds`"):
+        ps.process_specs()
+
+
+@pytest.mark.parametrize("bad", ['"120"', "0", "-5", "true", "1.5", '"abc"'])
+def test_warmup_seconds_must_be_a_positive_integer(monkeypatch, tmp_path, bad):
+    _use(monkeypatch, tmp_path, GOOD.replace("warmup_seconds = 120", f"warmup_seconds = {bad}"))
+    with pytest.raises(
+        ps.ProcessSpecError, match=r"process\[0\]: `warmup_seconds` must be a positive integer"
+    ):
+        ps.process_specs()
+
+
+def test_wt_port_that_is_not_an_integer_is_a_spec_error_not_a_value_error(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace("wt_port = 1", 'wt_port = "abc"'))
+    with pytest.raises(
+        ps.ProcessSpecError, match=r"process\[0\]: `wt_port` must be a positive integer"
+    ):
+        ps.process_specs()
+
+
+def test_empty_stop_list_parses_to_an_empty_tuple(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace('stop = ["stop"]', "stop = []"))
+    assert ps.process_specs()["x"].stop == ()
+
+
+HTTP_GET = GOOD.replace(
+    'kind = "models-list"\ncommand = []\npath = ""',
+    'kind = "http-get"\ncommand = []\npath = "/health"',
+)
+
+
+def test_http_get_ready_kind_parses(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET)
+    ready = ps.process_specs()["x"].ready
+    assert ready.kind == "http-get"
+    assert ready.path == "/health"
+    assert ready.command == ()
+
+
+def test_http_get_needs_a_path(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET.replace('path = "/health"', 'path = ""'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\].ready: .*`path`"):
+        ps.process_specs()
+
+
+def test_http_get_takes_no_command(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET.replace("command = []", 'command = ["status"]'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\].ready: .*`command`"):
+        ps.process_specs()
+
+
+@pytest.mark.parametrize("path", ["health", "x"])
+def test_http_get_path_must_start_with_a_slash(monkeypatch, tmp_path, path):
+    _use(monkeypatch, tmp_path, HTTP_GET.replace('path = "/health"', f'path = "{path}"'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\].ready: .*starting with /"):
+        ps.process_specs()
+
+
+def test_http_get_path_with_a_slash_is_accepted(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, HTTP_GET)
+    assert ps.process_specs()["x"].ready.path == "/health"
+
+
+EMPTY_STOP = GOOD.replace('stop = ["stop"]', "stop = []")
+
+
+@pytest.mark.parametrize(
+    "line, field",
+    [
+        ('pidfile = "/tmp/x.pid"', "pidfile"),
+        ('subcommand = "serve"', "subcommand"),
+        ('port_flag = "--port"', "port_flag"),
+    ],
+)
+def test_empty_stop_requires_pidfile_subcommand_and_port_flag(monkeypatch, tmp_path, line, field):
+    _use(monkeypatch, tmp_path, EMPTY_STOP.replace(line, f'{field} = ""'))
+    with pytest.raises(ps.ProcessSpecError, match=rf"process\[0\]: empty `stop` needs .*`{field}`"):
+        ps.process_specs()
+
+
+def test_empty_stop_with_its_companions_is_accepted(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, EMPTY_STOP)
+    assert ps.process_specs()["x"].stop == ()
+
+
+def test_stop_must_not_contain_empty_arguments(monkeypatch, tmp_path):
+    _use(monkeypatch, tmp_path, GOOD.replace('stop = ["stop"]', 'stop = [""]'))
+    with pytest.raises(ps.ProcessSpecError, match=r"process\[0\]: `stop` must not contain empty"):
+        ps.process_specs()
+
+
+def test_optional_family_facts_default_off(monkeypatch, tmp_path):
+    """A contract entry without `model_dir`, `loaded_only` or `wired_limit`
+    reads as no directory and both flags off."""
+    _use(monkeypatch, tmp_path, GOOD)
+    spec = ps.process_spec("x")
+    assert spec is not None
+    assert (spec.model_dir, spec.loaded_only, spec.wired_limit) == ("", False, False)
+
+
+@pytest.mark.parametrize("key", ["loaded_only", "wired_limit"])
+def test_a_flag_must_be_a_boolean(monkeypatch, tmp_path, key):
+    _use(
+        monkeypatch,
+        tmp_path,
+        GOOD.replace("warmup_seconds = 120", f'warmup_seconds = 120\n{key} = "yes"'),
+    )
+    with pytest.raises(ps.ProcessSpecError, match=f"`{key}` must be true or false"):
+        ps.process_specs()
+
+
+def test_real_contract_family_facts(monkeypatch):
+    """Only sushi lists unloaded packs and is checked against the wired limit;
+    its pack directory is the contract's copy of wt's family default."""
+    monkeypatch.delenv("LLMBENCH_PROCESS_PROVIDERS", raising=False)
+    facts = {
+        name: (s.loaded_only, s.wired_limit, s.model_dir) for name, s in ps.process_specs().items()
+    }
+    assert facts["sushi"] == (True, True, "~/.sushi/models")
+    assert facts["mtplx"] == (False, False, "~/.mtplx/models")
+    assert facts["rec"] == (False, False, "")

@@ -53,6 +53,32 @@ uv run llmbench eval run --suite <path> --root ../benchmarks/tasks/eval \
 
 There is no `--skip-judge` flag here (unlike `llmbench agent run`): `coding` has no judge to skip, and the four judged categories always judge. Rows are grouped by provider and isolated once per group, same as `llmbench`/`llmbench agent` — see [05-benchmarks](05-benchmarks.md) Step 1.
 
+#### Sushi against ollama
+
+`benchmarks/suites/eval-sushi-vs-ollama.toml` compares the Sushi `beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` pack with `ollama/qwen3.8:27b-mlx` on the same categories. Set it up in this order:
+
+1. **Raise the GPU wired limit.** `sudo sysctl iogpu.wired_limit_mb=59000` (you run it; it resets on reboot). wt and llmbench refuse to start Sushi below 51,934 MiB and never set it themselves. See [02-providers-and-models](02-providers-and-models.md) Step 4.
+2. **Install Sushi and pull the pack, then register it with the wt that knows Sushi, before the suite is loaded.** A row naming an unknown model fails `load_suite`. `wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>` gives the pack the id the suite's sushi row names, `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`; the other row needs `ollama/qwen3.8:27b-mlx` pulled and registered.
+3. **The judge route.** The shipped suite sets `[judge] route = "claude-cli"` with `model = "claude-opus-5-5"`, so the judge runs on your Claude subscription and needs no judge API key; run `claude auth login` first if you have not (see the `claude-cli` notes under Gotchas). To judge through a metered API instead, set `route` to `"openrouter"` or `"litellm"` and set `model` to match, because the model is passed through as written: for openrouter use `model = "anthropic/claude-opus-5"`, as `eval-sweep.toml` does; for litellm use a `model_name` your proxy's `config.yaml` serves. `--dry-run` does not call the judge, so a wrong judge model only shows up when the run reaches judging.
+4. **Dry run first**, as for any suite:
+
+```bash
+# from: /Users/keith/github/ohanaverse/local-ai-setup/llmbench
+uv run llmbench eval run --suite ../benchmarks/suites/eval-sushi-vs-ollama.toml \
+    --root ../benchmarks/tasks/eval --dry-run
+```
+
+5. **Then the run**, with `samples = 1` in `[judge]` the first time (the suite ships with it; raise it later):
+
+```bash
+uv run llmbench eval run --suite ../benchmarks/suites/eval-sushi-vs-ollama.toml \
+    --root ../benchmarks/tasks/eval
+```
+
+<!-- UNVERIFIED — the full run was not made for this guide: it loads the 46 GB pack and takes a long time. The dry-run command is the one the suite header describes. -->
+
+What to expect: rows are grouped by provider and isolated once per group, so the sushi row and the ollama row run serially (the suite lists sushi first); isolating one stops the other, and the final restore stops Sushi. Sushi is started by llmbench with wt's settings, context fixed at 131072 and `--max-tokens 32768` (the eval transport sends no `max_tokens` of its own, and Sushi's unflagged default would truncate every answer). Thinking is left at each side's defaults, and `[generation]` pins temperature, top_p and top_k so both rows are sampled the same way.
+
 ### 4. Read the report
 
 ```bash
@@ -147,6 +173,8 @@ Reading `report.md`: one table per prompt, one row per target, then the first 20
 - **`claude-cli` sends the judged responses to Anthropic through the logged-in account.** Do not point it at a login that should not see the prompts and model answers.
 - **`claude-cli` scrubs the environment.** The `claude` child is started without any `ANTHROPIC_*` or `CLAUDE_CODE_*` variable (e.g. the `ANTHROPIC_BASE_URL` that `wt` sets for LiteLLM, or an `ANTHROPIC_API_KEY`), so it cannot be diverted off the subscription. `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) is the one exception and is passed through, so a headless host with a locked keychain can judge. Everything else (`HOME`, `PATH`, ...) is kept; otherwise the login lives in the macOS keychain.
 - **`claude-cli` failure modes.** A missing `claude` executable and a "Not logged in" reply fail at once (the message says to run `claude auth login`); a timeout (300 s), non-zero exit, or unparsable output is retried once. Error messages carry the CLI's own text (truncated), never the prompt.
+- **Sushi serves one request at a time.** Sushi's own defaults are `--max-concurrent 1` and a 300 s stall timeout; llmbench sends its requests one at a time, so do not point other clients at Sushi during a run. <!-- UNVERIFIED: the two defaults are from `sushi serve --help` during the design, not re-run -->
+- **The eval's chat transport reads `message.content` only and raises on a null one** (`JudgeTransportError`, `judge_core.py`). Sushi puts a Qwen pack's thinking in `message.reasoning_content` and the answer in `message.content` (measured in a short probe with this pack), so the answer is what is scored; a reply whose `content` is null is a failed call, not an empty answer.
 - **Judging (and coding's EvalPlus grading) both cost real time/spend per item** — a 5-category sweep across many rows adds up; use `--category`/`--row` to scope a suite down while iterating on content or rubrics.
 - **`coding`'s shipped config runs the FULL dataset — keep it that way (or set `limit` to the full dataset size).** EvalPlus 0.3.1's grading step requires every problem in the FULL dataset (164 for humaneval) to have a sample before it computes pass@k — `--id-range`/`limit` only bounds what gets *generated*, not what grading demands — so a `limit` smaller than the dataset size makes the `coding` category fail cleanly with a `CodingResult.error` every time, not a score. The reference suite and the coding category both ship with no `limit` for exactly this reason; only set one (a follow-up may address the gap) if you accept an EVALPLUS_ERROR cell in the report.
 

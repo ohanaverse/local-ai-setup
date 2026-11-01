@@ -2,6 +2,10 @@
 
 `docs/contracts/process-providers.toml` mirrors the `Process` specs in
 wt/internal/provider/table.go; this module is llmbench's only reader of it.
+
+Ready kinds: `models-list` (the models listing answers), `command-json` (a
+status command prints JSON), `http-get` (GET `path` answers; takes no command).
+An empty `stop` means signal the verified pid instead of running a command.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-READY_KINDS: tuple[str, ...] = ("models-list", "command-json")
+READY_KINDS: tuple[str, ...] = ("models-list", "command-json", "http-get")
 
 
 class ProcessSpecError(Exception):
@@ -48,7 +52,14 @@ class ProcessSpec:
     default_origin: str
     wt_port: int
     restore_action: str
+    warmup_seconds: int
     ready: Ready
+    # The family's default model directory ("" when it has none).
+    model_dir: str = ""
+    # /v1/models lists packs the server has not loaded, flagged `loaded: false`.
+    loaded_only: bool = False
+    # A start is first checked against the GPU wired limit.
+    wired_limit: bool = False
 
 
 def contract_path() -> Path:
@@ -68,6 +79,24 @@ def _get(raw: dict[str, Any], key: str, where: str) -> Any:
     return raw[key]
 
 
+def _int(raw: dict[str, Any], key: str, where: str, *, minimum: int = 1) -> int:
+    """An integer of at least `minimum`. bool is an int subclass, so it is
+    rejected by type; a bad value must be a ProcessSpecError (the backends
+    package catches only that) rather than a raw ValueError."""
+    value = _get(raw, key, where)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ProcessSpecError(f"{where}: `{key}` must be a positive integer")
+    return value
+
+
+def _bool(raw: dict[str, Any], key: str, where: str) -> bool:
+    """An optional boolean, False when the key is absent."""
+    value = raw.get(key, False)
+    if not isinstance(value, bool):
+        raise ProcessSpecError(f"{where}: `{key}` must be true or false")
+    return value
+
+
 def _argv(raw: dict[str, Any], key: str, where: str) -> tuple[str, ...]:
     """An argv template: a list of strings. A bare string would otherwise
     become a tuple of its characters and run as `rec s t a t u s`."""
@@ -84,7 +113,7 @@ def _parse_ready(raw: Any, where: str) -> Ready:
     kind = str(_get(raw, "kind", w))
     if kind not in READY_KINDS:
         raise ProcessSpecError(f"{w}: unknown kind `{kind}` (known: {', '.join(READY_KINDS)})")
-    return Ready(
+    ready = Ready(
         kind=kind,
         command=_argv(raw, "command", w),
         path=str(_get(raw, "path", w)),
@@ -92,6 +121,12 @@ def _parse_ready(raw: Any, where: str) -> Ready:
         model_path=str(_get(raw, "model_path", w)),
         endpoint_path=str(_get(raw, "endpoint_path", w)),
     )
+    if kind == "http-get":
+        if not ready.path.startswith("/"):
+            raise ProcessSpecError(f"{w}: kind `http-get` needs a `path` starting with /")
+        if ready.command:
+            raise ProcessSpecError(f"{w}: kind `http-get` takes an empty `command`")
+    return ready
 
 
 def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
@@ -100,7 +135,7 @@ def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
     def s(key: str) -> str:
         return str(_get(raw, key, where))
 
-    return ProcessSpec(
+    spec = ProcessSpec(
         family=s("family"),
         provider=s("provider"),
         binary=s("binary"),
@@ -115,10 +150,21 @@ def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
         model_flag=s("model_flag"),
         scope=s("scope"),
         default_origin=s("default_origin"),
-        wt_port=int(_get(raw, "wt_port", where)),
+        wt_port=_int(raw, "wt_port", where),
         restore_action=s("restore_action"),
+        warmup_seconds=_int(raw, "warmup_seconds", where),
         ready=_parse_ready(raw.get("ready"), where),
+        model_dir=str(raw.get("model_dir", "")),
+        loaded_only=_bool(raw, "loaded_only", where),
+        wired_limit=_bool(raw, "wired_limit", where),
     )
+    if "" in spec.stop:
+        raise ProcessSpecError(f"{where}: `stop` must not contain empty arguments")
+    if not spec.stop and not (spec.pidfile and spec.subcommand and spec.port_flag):
+        raise ProcessSpecError(
+            f"{where}: empty `stop` needs non-empty `pidfile`, `subcommand` and `port_flag`"
+        )
+    return spec
 
 
 def process_specs() -> dict[str, ProcessSpec]:

@@ -152,6 +152,17 @@ func (e *env) waitForModel(ctx context.Context, modelsURL, model string, proc pr
 // server that answers 401 or 403 ends the warmup at once with a
 // *KeyRefusedError (#256), since no amount of polling changes that answer.
 func (e *env) warmup(ctx context.Context, chatURL, model, healthURL, key string, timeout time.Duration) error {
+	return e.warmupFor(ctx, chatURL, model, healthURL, key, timeout, chatRequestTimeout)
+}
+
+// chatRequestTimeout caps one warmup chat request for the servers whose
+// warmup budget is not their own (ollama, omlx).
+const chatRequestTimeout = 120 * time.Second
+
+// warmupFor is warmup with the per-request cap requestTimeout, for a server
+// whose first chat request outlasts chatRequestTimeout (sushi's cold load).
+// No request runs past timeout: each is capped at the time left.
+func (e *env) warmupFor(ctx context.Context, chatURL, model, healthURL, key string, timeout, requestTimeout time.Duration) error {
 	payload, _ := json.Marshal(map[string]any{
 		"model":       model,
 		"messages":    []map[string]string{{"role": "user", "content": "hi"}},
@@ -172,12 +183,20 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL, key string,
 			}
 			continue
 		}
-		ok, refused, reason := e.tryChat(ctx, chatURL, key, payload)
+		// A request begun late in the window may not outlast it: the budget
+		// is the whole warmup, not one more full request after it.
+		left := time.Until(deadline)
+		ok, refused, reason := e.tryChat(ctx, chatURL, key, payload, min(requestTimeout, left))
 		if ok {
 			return nil
 		}
 		if refused {
 			return &KeyRefusedError{URL: chatURL, KeySent: key != "", Detail: reason}
+		}
+		// A request cut short by the window says nothing new: keep the last
+		// real answer (an HTTP status and body) as the reason.
+		if left < requestTimeout && lastReason != "" && strings.Contains(reason, "context deadline exceeded") {
+			break
 		}
 		lastReason = reason
 		if err := e.sleep(ctx, e.pollInterval); err != nil {
@@ -195,8 +214,9 @@ func (e *env) warmup(ctx context.Context, chatURL, model, healthURL, key string,
 
 // tryChat sends one warmup request. refused is true when the server answered
 // 401 or 403: the request was understood and will be turned away every time.
-func (e *env) tryChat(ctx context.Context, chatURL, key string, payload []byte) (ok, refused bool, reason string) {
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+// timeout caps the request.
+func (e *env) tryChat(ctx context.Context, chatURL, key string, payload []byte, timeout time.Duration) (ok, refused bool, reason string) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(payload))
 	if err != nil {

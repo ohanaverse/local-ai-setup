@@ -22,12 +22,14 @@ import (
 // config.yaml (the public wrappers are covered in wrappers_test.go instead).
 // runOut answers "not stubbed" so a readiness check never shells out to a
 // binary on the developer's machine; a test that reads one sets it.
+// wiredLimit reports no limit, so the preflight never reads the real sysctl.
 func testEnv() *env {
 	e := defaultEnv()
 	e.onOccupantStopped = nil
 	e.runOut = func(context.Context, string, ...string) ([]byte, error) {
 		return nil, errors.New("runOut not stubbed")
 	}
+	e.wiredLimit = func() (int64, bool, error) { return 0, false, nil }
 	e.pollInterval = 5 * time.Millisecond
 	e.warmupTimeout = 300 * time.Millisecond
 	e.loadTimeout = 300 * time.Millisecond
@@ -154,6 +156,31 @@ func TestWaitForModel(t *testing.T) {
 	}
 }
 
+// TestWaitForModelCountsEveryListedEntry verifies the models-list wait reads a
+// family's listing as it always has: an entry flagged "loaded": false still
+// counts, since only a family that opts in (FamilySpec.LoadedOnly, sushi, which
+// is not waited on this way) reads that flag. A list without the model times
+// out.
+func TestWaitForModelCountsEveryListedEntry(t *testing.T) {
+	e := testEnv()
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":false}]}`))
+	}))
+	defer srv.Close()
+	if err := e.waitForModel(ctx, srv.URL, "Qwen", nil, "", time.Second); err != nil {
+		t.Fatalf("waitForModel: %v", err)
+	}
+
+	never := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"org/Other"}]}`))
+	}))
+	defer never.Close()
+	if err := e.waitForModel(ctx, never.URL, "Qwen", nil, "", 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("never-listed err = %v, want timed out", err)
+	}
+}
+
 // TestWarmupSendsOneTokenChatAndWaitsForCompletion verifies warmup polls the
 // health URL, POSTs a 1-token chat completion naming the model, and only
 // succeeds when the reply carries the chat.completion marker (an early error
@@ -274,7 +301,7 @@ func TestTryChatReasonIsTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`))
+	ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`), chatRequestTimeout)
 	if ok {
 		t.Fatal("tryChat: want ok=false for a 500 response")
 	}
@@ -473,5 +500,56 @@ func TestWaitForModelWithKey(t *testing.T) {
 
 	if err := e.waitForModel(ctx, srv.URL, "Qwen3.8", nil, "", 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("waitForModel(no key) = %v, want timed out", err)
+	}
+}
+
+// TestTryChatHonoursItsTimeout pins that the per-request cap is the caller's
+// argument, not a hard-coded 120 s: a model that takes longer to answer than
+// the cap fails the attempt with a deadline reason, and the same server
+// succeeds under a roomier cap. Sushi's cold load needs a per-spec budget.
+func TestTryChatHonoursItsTimeout(t *testing.T) {
+	e := testEnv()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+	}))
+	defer srv.Close()
+
+	ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`), 50*time.Millisecond)
+	if ok {
+		t.Fatal("tryChat with a 50ms cap: want ok=false against a 300ms handler")
+	}
+	if !strings.Contains(reason, "deadline") && !strings.Contains(reason, "timeout") {
+		t.Errorf("reason = %q, want it to mention the deadline or timeout", reason)
+	}
+	if ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`), 5*time.Second); !ok {
+		t.Errorf("tryChat with a 5s cap: want ok=true, got reason %q", reason)
+	}
+}
+
+// TestWarmupForNeverRunsPastItsWindow verifies a chat request begun late in
+// the warmup window is capped at the time left, so a budget of N seconds is
+// at most N seconds and not N plus one more full request. The server answers
+// the chat only after 3 s; with a 300 ms window and a 10 s request cap the
+// warmup must give up in about 300 ms.
+func TestWarmupForNeverRunsPastItsWindow(t *testing.T) {
+	e := testEnv()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			select {
+			case <-time.After(3 * time.Second):
+			case <-r.Context().Done():
+			}
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+	start := time.Now()
+	err := e.warmupFor(context.Background(), srv.URL+"/v1/chat/completions", "m", srv.URL+"/health", "", 300*time.Millisecond, 10*time.Second)
+	if err == nil {
+		t.Fatal("warmup of a server that never answers succeeded")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("warmup took %v with a 300ms window", took)
 	}
 }

@@ -28,8 +28,24 @@ func errorSrv(t *testing.T) string {
 	return s.URL
 }
 
+// loadedSrv is a provider server whose /v1/models lists every id in loaded
+// with its "loaded" flag, the way sushi lists every pack.
+func loadedSrv(t *testing.T, loaded map[string]bool) string {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		data := []map[string]any{}
+		for id, l := range loaded {
+			data = append(data, map[string]any{"id": id, "loaded": l})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(s.Close)
+	return s.URL
+}
+
 // TestStartedGoneDecidesPerFamily verifies what "gone" means after a start,
-// family by family (#343): an mtplx whose port refuses or that no longer lists
+// family by family (#343): a sushi whose pack is listed but not loaded (it
+// lists every pack), or whose port refuses; an mtplx whose port refuses or that no longer lists
 // the model; an omlx that refuses or whose status shows the model unloaded; an
 // ollama daemon that refuses — and nothing else. In particular an ollama model
 // that was only unloaded is not gone (ollama loads a pulled model on request),
@@ -48,6 +64,11 @@ func TestStartedGoneDecidesPerFamily(t *testing.T) {
 		"mtplx serving nothing":          {"mtplx", openaiSrv(t, nil), "Y/Q35", "is no longer serving it"},
 		"mtplx serving another model":    {"mtplx", openaiSrv(t, []string{"Y/Q27"}), "Y/Q35", "is no longer serving it"},
 		"mtplx answers with an error":    {"mtplx", errorSrv(t), "Y/Q35", ""},
+		"mtplx lists it loaded":          {"mtplx", loadedSrv(t, map[string]bool{"Y/Q35": true}), "Y/Q35", ""},
+		"mtplx lists it unloaded":        {"mtplx", loadedSrv(t, map[string]bool{"Y/Q35": false}), "Y/Q35", ""},
+		"sushi pack loaded":              {"sushi", loadedSrv(t, map[string]bool{"p/Pack": true, "q/Other": false}), "p/Pack", ""},
+		"sushi pack listed unloaded":     {"sushi", loadedSrv(t, map[string]bool{"p/Pack": false, "q/Other": true}), "p/Pack", "is no longer serving it"},
+		"sushi port refuses":             {"sushi", closed, "p/Pack", "sushi no longer answers at " + closed},
 		"omlx has it loaded":             {"omlx", pool(&fakePool{loaded: map[string]bool{"A": true}}), "A", ""},
 		"omlx is loading it":             {"omlx", pool(&fakePool{loaded: map[string]bool{"A": false}, loading: map[string]bool{"A": true}}), "A", ""},
 		"omlx unloaded it":               {"omlx", pool(&fakePool{loaded: map[string]bool{"A": false, "B": true}}), "A", "omlx no longer has it loaded"},

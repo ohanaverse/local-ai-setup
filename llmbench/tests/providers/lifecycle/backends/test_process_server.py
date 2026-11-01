@@ -1,4 +1,4 @@
-"""The generic, spec-driven process-server backend (mtplx and rec run on it).
+"""The generic, spec-driven process-server backend (mtplx, rec and sushi run on it).
 
 Synthetic specs and fakes only: every probe, the binary lookup, the stop
 command and the pidfile process are patched where `process_server` imports
@@ -10,19 +10,29 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import subprocess
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from llmbench.providers.lifecycle import probe
+from llmbench.providers.lifecycle import orchestrate, probe
 from llmbench.providers.lifecycle.backends import BACKENDS, process_server
 from llmbench.providers.lifecycle.backends.mtplx import MTPLX
 from llmbench.providers.lifecycle.backends.process_server import (
     INSTANCE_GONE_TIMEOUT,
+    SIGNAL_STOP_TIMEOUT,
     ProcessServerBackend,
 )
+from llmbench.providers.lifecycle.backends.process_server import (
+    _models_root as REAL_MODELS_ROOT,
+)
+from llmbench.providers.lifecycle.backends.process_server import (
+    _wired_limit_mb as REAL_WIRED_LIMIT,
+)
 from llmbench.providers.lifecycle.envelope import LifecycleError
+from llmbench.providers.lifecycle.pidproc import PidfileProcess
 from llmbench.providers.process_spec import ProcessSpec, Ready, process_spec
 from llmbench.providers.secret import SecretError
 
@@ -36,9 +46,16 @@ def _spec(
     kind: str = "models-list",
     endpoint_path: str = "endpoint",
     model_path: str = "model",
+    stop: tuple[str, ...] = ("stop", "--port", "{port}"),
+    warmup_seconds: int = 120,
+    wired_limit: bool = False,
+    loaded_only: bool = False,
+    model_dir: str = "",
 ) -> ProcessSpec:
     if kind == "models-list":
         ready = Ready(kind, (), "", "", "", "")
+    elif kind == "http-get":
+        ready = Ready("http-get", (), "/health", "", "", "")
     else:
         ready = Ready(kind, ("status",), "ready", "true", model_path, endpoint_path)
     return ProcessSpec(
@@ -46,7 +63,7 @@ def _spec(
         provider=provider,
         binary="fake",
         spawn=("serve", "-m", "{model}", "-p", "{port}", "--id", "{model}"),
-        stop=("stop", "--port", "{port}"),
+        stop=stop,
         pidfile="/tmp/fake.pid",
         log="/tmp/fake.log",
         pidfile_env="FAKE_PID",
@@ -58,7 +75,11 @@ def _spec(
         default_origin="http://127.0.0.1:9100",
         wt_port=9100,
         restore_action="stop",
+        warmup_seconds=warmup_seconds,
         ready=ready,
+        model_dir=model_dir,
+        loaded_only=loaded_only,
+        wired_limit=wired_limit,
     )
 
 
@@ -99,8 +120,14 @@ def test_attributes_come_from_the_spec_and_the_constructor():
     assert ProcessServerBackend(_spec(), cleanup_on_failure=True).cleanup_on_failure is True
 
 
-def test_mtplx_is_the_only_backend_that_cleans_up_on_failure():
-    assert [b.id for b in BACKENDS.values() if b.cleanup_on_failure] == ["mtplx"]
+def test_only_mtplx_and_signal_stop_backends_clean_up_on_failure():
+    """mtplx asks for it; a signal-stop backend (empty stop, sushi) gets it
+    from its spec, because a failed start must not leave a server nothing
+    else will stop. rec and every other backend leave a failed start alone."""
+    assert [b.id for b in BACKENDS.values() if b.cleanup_on_failure] == ["mtplx", "sushi"]
+    for backend in BACKENDS.values():
+        if backend.id not in ("mtplx", "sushi"):
+            assert backend.cleanup_on_failure is False, backend.id
 
 
 def test_rec_is_registered_generically():
@@ -110,6 +137,26 @@ def test_rec_is_registered_generically():
     assert rec.cleanup_on_failure is False
     assert rec.restore_action == "stop"
     assert rec.occupancy_key == "rec"
+
+
+def test_sushi_is_registered_generically_with_a_signal_stop():
+    """sushi has no module of its own: the contract entry registers it on the
+    generic backend, stopped by signalling the verified pid (its stop is
+    empty), and a failed start is cleaned up the same way."""
+    sushi = BACKENDS["sushi"]
+    assert type(sushi) is ProcessServerBackend
+    assert sushi.restore_action == "stop"
+    assert sushi.cleanup_on_failure is True
+    assert sushi._signal_stop is True
+    assert sushi.id == sushi.occupancy_key == "sushi"
+
+
+def test_no_other_backend_is_a_signal_stop():
+    """Only sushi's spec has an empty stop: mtplx and rec stop through their
+    own command, and a backend that wrongly read as signal-stop would have
+    its stop bypass that command."""
+    signal_stop = [b.id for b in BACKENDS.values() if getattr(b, "_signal_stop", False)]
+    assert signal_stop == ["sushi"]
 
 
 # --- addresses ---------------------------------------------------------------
@@ -491,6 +538,7 @@ def test_wait_ready_and_warm_models_list_pass_the_key():
     ]
     assert keyed == [True, True]
     assert warmup.call_args.kwargs["timeout"] == 120.0
+    assert warmup.call_args.kwargs["request_timeout"] == 120.0
 
 
 @pytest.mark.parametrize(
@@ -674,8 +722,12 @@ def test_stop_returns_none_on_a_clean_stop_and_runs_the_expanded_argv():
         patch(f"{PS}.binaries.require_binary", return_value=BIN),
         patch(f"{PS}.subprocess.run", return_value=_run_result()) as run,
         patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+        patch.object(backend, "_pidproc") as pidproc,
     ):
         assert backend.stop_and_wait() is None
+    # A stop command is the stop: the pidfile is neither read nor signalled.
+    pidproc.stop.assert_not_called()
+    pidproc.live_pid.assert_not_called()
     run.assert_called_once_with(
         [BIN, "stop", "--port", "9100"], capture_output=True, text=True, check=False
     )
@@ -1043,3 +1095,932 @@ def test_an_isolate_reads_the_registry_row_once():
         backend.already_serving(plan)
         _ = backend.health_url, backend.chat_url
     assert read.call_count == 1
+
+
+# --- http-get readiness, loaded-aware serving, the spec's warmup budget -------
+#
+# A sushi-style entry (no contract entry yet): ready when an HTTP path answers
+# 200, the model listed only once a request loads it, stopped by signalling
+# the pid (empty `stop`), with a 400 s warmup budget.
+
+MODELS = "http://127.0.0.1:9100/v1/models"
+CHAT = "http://127.0.0.1:9100/v1/chat/completions"
+HINT = "raise the GPU wired limit with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot)"
+
+
+def _http_get(tmp_path: Path, log: str = "", **kw) -> ProcessServerBackend:
+    """An http-get backend whose log is a scratch file holding `log`. The
+    defaults are sushi's: signal stop, 400 s budget."""
+    kw.setdefault("stop", ())
+    kw.setdefault("warmup_seconds", 400)
+    kw.setdefault("wired_limit", not kw["stop"])
+    kw.setdefault("loaded_only", not kw["stop"])
+    backend = ProcessServerBackend(_spec(kind="http-get", **kw))
+    _logged(backend, tmp_path, log)
+    return backend
+
+
+def _warm(
+    backend: ProcessServerBackend,
+    model: str = "org/pack",
+    *,
+    listed: list[str] | None = None,
+    warmup: Exception | None = None,
+    loaded: bool = True,
+):
+    """Run `backend.warm` with the list (default: just `org/pack`), the
+    warmup and the loaded check faked; returns the three mocks."""
+    with (
+        patch(
+            f"{PS}.probe.listed_ids", return_value=["org/pack"] if listed is None else listed
+        ) as listed_ids,
+        patch(f"{PS}.probe.warmup", side_effect=warmup) as warm,
+        patch(f"{PS}.probe.serving_model", return_value=loaded) as serving,
+    ):
+        backend.warm(backend.resolve(model, ()))
+    return listed_ids, warm, serving
+
+
+def test_already_serving_http_get_asks_the_loaded_aware_list(tmp_path):
+    """A pack listed with loaded:false is not serving: http-get asks the
+    loaded-only list, by the exact id (sushi loads only by its exact id)."""
+    backend = _http_get(tmp_path)
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+    ):
+        assert backend.already_serving(backend.resolve("org/pack", ())) is True
+    serving.assert_called_once()
+    assert serving.call_args.args == (MODELS, "org/pack")
+    assert serving.call_args.kwargs == {"exact": True, "loaded_only": True}
+
+
+def test_only_a_loaded_only_spec_reads_the_loaded_flag(tmp_path):
+    """The `loaded: false` filter is the spec's opt-in (sushi): a spec without
+    it asks the plain list, so no other server's listing changes meaning."""
+    backend = _http_get(tmp_path, loaded_only=False)
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+    ):
+        backend.already_serving(backend.resolve("org/pack", ()))
+    assert serving.call_args.kwargs == {"exact": True}
+
+
+def test_wait_ready_http_get_polls_the_ready_path_not_the_models_list(tmp_path):
+    """The model is not listed until the first request loads it, so readiness
+    is the ready path answering 200, not the model at /v1/models."""
+    backend = _http_get(tmp_path)
+    backend._proc = proc = MagicMock()
+    with (
+        patch(f"{PS}.probe.wait_for_http_ok") as ok,
+        patch(f"{PS}.probe.wait_for_model") as wait_model,
+        patch(f"{PS}.probe.wait_for_command_ready") as command_ready,
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+    ):
+        backend.wait_ready(backend.resolve("org/pack", ()))
+    ok.assert_called_once_with(
+        "http://127.0.0.1:9100/health", proc=proc, timeout=probe.MODEL_LOAD_TIMEOUT
+    )
+    wait_model.assert_not_called()
+    command_ready.assert_not_called()
+
+
+def test_wait_ready_http_get_passes_the_key_only_when_the_row_names_one(tmp_path):
+    backend = _http_get(tmp_path)
+    with patch(f"{PS}.probe.wait_for_http_ok") as ok:
+        backend.wait_ready(backend.resolve("org/pack", ()))
+        assert "key" not in ok.call_args.kwargs
+        _registry(_provider_row(secret_ref="sekrit-value"))
+        backend._forget_key()
+        backend.wait_ready(backend.resolve("org/pack", ()))
+        assert ok.call_args.kwargs["key"] == "sekrit-value"
+
+
+def test_warm_uses_the_spec_warmup_budget(tmp_path):
+    """The spec's warmup_seconds bounds the whole warmup and each chat."""
+    backend = _http_get(tmp_path)
+    _, warm, _ = _warm(backend)
+    warm.assert_called_once_with(
+        CHAT, "org/pack", health_url=MODELS, timeout=400.0, request_timeout=400.0
+    )
+
+
+def test_warm_refuses_a_pack_id_the_server_does_not_list(tmp_path):
+    """sushi answers an id it does not know with a 503 a warmup would only
+    retry: refuse before any chat, naming what it does list."""
+    backend = _http_get(tmp_path)
+    with (
+        patch(f"{PS}.probe.listed_ids", return_value=["org/other", "org/x"]) as listed,
+        patch(f"{PS}.probe.warmup") as warm,
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.warm(backend.resolve("org/pack", ()))
+    assert str(exc.value) == (
+        "fake: 'org/pack' is not listed by the server (it lists: org/other, org/x)"
+    )
+    listed.assert_called_once_with(MODELS, strict=True)
+    warm.assert_not_called()
+
+
+def test_warm_pack_check_is_exact(tmp_path):
+    """A bare `pack` does not match a listed `org/pack`: sushi loads only by
+    its exact id, so the lenient suffix match must not pass it."""
+    backend = _http_get(tmp_path)
+    with (
+        patch(f"{PS}.probe.listed_ids", return_value=["org/pack"]),
+        patch(f"{PS}.probe.warmup") as warm,
+        pytest.raises(LifecycleError, match=r"'pack' is not listed by the server"),
+    ):
+        backend.warm(backend.resolve("pack", ()))
+    warm.assert_not_called()
+
+
+def test_warm_skips_the_pack_check_when_the_list_is_empty(tmp_path):
+    """A server that lists nothing at all is not judged (wt's
+    requirePackListed): the warmup runs."""
+    backend = _http_get(tmp_path)
+    _, warm, serving = _warm(backend, listed=[])
+    warm.assert_called_once()
+    serving.assert_called_once_with(MODELS, "org/pack", exact=True, loaded_only=True)
+
+
+def test_warm_fails_closed_when_the_model_list_cannot_be_read(tmp_path):
+    """A list that cannot be fetched is not an empty one: the warm fails."""
+    backend = _http_get(tmp_path)
+    failure = LifecycleError(f"cannot read the model list at {MODELS}: refused")
+    with (
+        patch(f"{PS}.probe.listed_ids", side_effect=failure),
+        patch(f"{PS}.probe.warmup") as warm,
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.warm(backend.resolve("org/pack", ()))
+    assert exc.value is failure
+    warm.assert_not_called()
+
+
+def test_warm_requires_the_pack_to_be_listed_loaded_after_the_chat(tmp_path):
+    """A chat that answered while the pack still reads loaded:false did not
+    load the pack this isolate asked for."""
+    backend = _http_get(tmp_path)
+    with pytest.raises(LifecycleError) as exc:
+        _warm(backend, loaded=False)
+    assert str(exc.value) == (
+        f"fake: org/pack answered the warmup but is not listed as loaded at {MODELS}"
+    )
+
+
+def test_warm_models_list_kind_has_no_pack_check_and_no_loaded_check():
+    """mtplx's path: the warmup alone, with its 120 s budget from the spec."""
+    backend = _mtplx()
+    with (
+        patch(f"{PS}.probe.listed_ids") as listed,
+        patch(f"{PS}.probe.serving_model") as serving,
+        patch(f"{PS}.probe.warmup") as warm,
+    ):
+        backend.warm(backend.resolve("Org/M", ()))
+    listed.assert_not_called()
+    serving.assert_not_called()
+    warm.assert_called_once_with(
+        backend.chat_url,
+        "Org/M",
+        health_url=backend.health_url,
+        timeout=120.0,
+        request_timeout=120.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", [TimeoutError("timed out"), urllib.error.URLError(TimeoutError("timed out"))]
+)
+def test_warm_timeout_becomes_a_clear_lifecycle_error(tmp_path, failure):
+    backend = _http_get(tmp_path)
+    with pytest.raises(LifecycleError) as exc:
+        _warm(backend, warmup=failure)
+    assert str(exc.value) == "fake: warmup of org/pack timed out after 400s"
+    assert exc.value.__cause__ is failure
+
+
+def test_warm_connection_refused_is_not_called_a_timeout(tmp_path):
+    backend = _http_get(tmp_path)
+    failure = urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+    with pytest.raises(urllib.error.URLError) as exc:
+        _warm(backend, warmup=failure)
+    assert exc.value is failure
+
+
+def test_isolate_returns_an_ok_false_envelope_when_the_warmup_times_out(tmp_path):
+    backend = _http_get(tmp_path)
+    with (
+        patch.dict(orchestrate.BACKENDS, {"fake": backend}),
+        patch.object(orchestrate, "_stop_others"),
+        patch.object(backend, "check_available", return_value=None),
+        patch.object(backend, "already_serving", return_value=True),
+        patch(f"{PS}.probe.listed_ids", return_value=["org/pack"]),
+        patch(f"{PS}.probe.warmup", side_effect=TimeoutError("timed out")),
+    ):
+        result = orchestrate.isolate("fake", "org/pack")
+    assert result.ok is False
+    assert result.error == "fake: warmup of org/pack timed out after 400s"
+
+
+@pytest.mark.parametrize(
+    ("message", "log", "expected"),
+    [
+        # The phrase in the error itself.
+        ("metal: out of memory", "", f"metal: out of memory; {HINT}"),
+        # The phrase only in the log tail: matched on the combined text, the
+        # tail first and the hint last.
+        (
+            "failed to warm up model org/pack",
+            "Failed to allocate 48 GB\n",
+            f"failed to warm up model org/pack; log tail: Failed to allocate 48 GB; {HINT}",
+        ),
+    ],
+)
+def test_memory_refusal_in_a_signal_stop_warmup_gets_the_wired_limit_hint(
+    tmp_path, message, log, expected
+):
+    backend = _http_get(tmp_path, log)
+    with pytest.raises(LifecycleError) as exc:
+        _warm(backend, warmup=probe.WarmupRejectedError(message))
+    assert str(exc.value) == expected
+
+
+def test_the_hint_is_not_added_for_a_provider_with_a_stop_command(tmp_path):
+    backend = _http_get(tmp_path, "iogpu wired limit reached\n", stop=("stop", "{port}"))
+    original = LifecycleError("out of memory")
+    with pytest.raises(LifecycleError) as exc:
+        _warm(backend, warmup=original)
+    assert exc.value is original
+
+
+def test_a_non_memory_warmup_failure_keeps_its_text(tmp_path):
+    backend = _http_get(tmp_path)
+    original = LifecycleError(f"failed to warm up model org/pack at {CHAT}")
+    with pytest.raises(LifecycleError) as exc:
+        _warm(backend, warmup=original)
+    assert exc.value is original
+
+
+@pytest.mark.parametrize(
+    ("kw", "expected"),
+    [
+        ({"warmup": TimeoutError()}, "fake: warmup of org/pack timed out after 400s"),
+        (
+            {"warmup": probe.WarmupRejectedError("rejected")},
+            "rejected",
+        ),
+        ({"listed": ["org/x"]}, "fake: 'org/pack' is not listed by the server (it lists: org/x)"),
+        (
+            {"loaded": False},
+            f"fake: org/pack answered the warmup but is not listed as loaded at {MODELS}",
+        ),
+    ],
+)
+def test_a_signal_stop_warmup_failure_carries_the_log_tail(tmp_path, kw, expected):
+    """As wt does for a failed sushi start: the server's log says why."""
+    _registry(_provider_row(secret_ref="sekrit-value"))
+    backend = _http_get(tmp_path, "loading pack\nauth sekrit-value\n")
+    with pytest.raises(LifecycleError) as exc:
+        _warm(backend, **kw)
+    assert str(exc.value) == f"{expected}; log tail: loading pack\nauth ***"
+    if "warmup" in kw and isinstance(kw["warmup"], probe.WarmupRejectedError):
+        assert type(exc.value) is probe.WarmupRejectedError
+
+
+def test_a_stop_command_warmup_failure_has_no_log_tail(tmp_path):
+    backend = _http_get(tmp_path, "loading pack\n", stop=("stop", "{port}"))
+    original = LifecycleError("boom")
+    with pytest.raises(LifecycleError) as exc:
+        _warm(backend, warmup=original)
+    assert exc.value is original
+
+
+# --- empty stop: the verified pid, ownership, start-failure parity ------------
+#
+# An empty `stop` means "signal the pid in the pidfile": the bare binary is
+# never run. A server on the port with no verified pidfile was started by
+# neither llmbench nor wt, so its context size is unknowable and it is refused
+# before anything else is stopped. Every probe and `_pidproc` is patched: no
+# test dials a real port or reads a real pidfile.
+
+UNOWNED = (
+    "fake: a server answers on port 9100 that was not started by llmbench or wt "
+    "(no verified pidfile at /tmp/fake.pid)"
+)
+
+
+# What a spawned fake server runs with: the spec's spawn template at port 9100
+# with no model (a model-less server, as sushi is).
+EXPECT = ["serve", "-m", "", "-p", "9100", "--id", ""]
+
+
+def _signal_backend() -> ProcessServerBackend:
+    return ProcessServerBackend(
+        _spec(
+            kind="http-get",
+            stop=(),
+            warmup_seconds=400,
+            wired_limit=True,
+            loaded_only=True,
+            model_dir="~/.sushi/models",
+        )
+    )
+
+
+def _pidproc_mock(
+    live_pid: int | None = 4242, pid: int | None = 4242, gone: bool = True
+) -> MagicMock:
+    pidproc = MagicMock()
+    pidproc.live_pid.return_value = live_pid
+    pidproc.read_pid.return_value = pid
+    pidproc.stop_verified.return_value = gone
+    return pidproc
+
+
+def test_empty_stop_stops_through_the_pidfile_and_never_runs_the_binary():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.binaries.require_binary", side_effect=AssertionError("binary looked up")),
+        patch(f"{PS}.subprocess.run") as run,
+        patch(f"{PS}.probe.port_closed_within", return_value=True) as closed,
+        patch.object(backend, "_pidproc", _pidproc_mock()) as pidproc,
+    ):
+        assert backend.stop_and_wait() is None
+    run.assert_not_called()
+    pidproc.stop_verified.assert_called_once_with(EXPECT)
+    pidproc.live_pid.assert_called_once_with(EXPECT)
+    closed.assert_called_once_with(MODELS, timeout=SIGNAL_STOP_TIMEOUT)
+    assert SIGNAL_STOP_TIMEOUT == 15.0
+
+
+def test_empty_stop_with_nothing_running_is_a_clean_noop():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.subprocess.run") as run,
+        patch(f"{PS}.probe.port_answers", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)) as pidproc,
+    ):
+        assert backend.stop_and_wait() is None
+    run.assert_not_called()
+    pidproc.stop_verified.assert_called_once_with(EXPECT)  # tolerates the missing pidfile
+
+
+def test_empty_stop_reports_a_server_it_cannot_own():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_answers", return_value=True),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)),
+    ):
+        assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
+
+
+@pytest.mark.parametrize(("live", "pid"), [(None, None), (None, 4242)])
+def test_empty_stop_warns_about_an_unowned_server_at_once(live, pid):
+    """No verified pid means nothing of ours was signalled, so there is
+    nothing to wait for: one probe and the warning, never the
+    SIGNAL_STOP_TIMEOUT wait. Through `_stop_others` every other provider's
+    isolate would otherwise pay 15 s while a hand-started server is up.
+    The clock and the wait helper are patched so a regression fails fast
+    instead of waiting."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_answers", return_value=True) as answers,
+        patch(
+            f"{PS}.probe.port_closed_within",
+            side_effect=AssertionError("waited for a server it did not signal"),
+        ) as closed,
+        patch(f"{PS}.time.sleep", side_effect=AssertionError("slept")),
+        patch.object(backend, "_pidproc", _pidproc_mock(live, pid)),
+    ):
+        assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
+    answers.assert_called_once_with(MODELS)
+    closed.assert_not_called()
+
+
+def test_empty_stop_with_no_owned_server_and_a_closed_port_is_silent():
+    """The same single probe finding nothing listening: a clean no-op."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_answers", return_value=False),
+        patch(f"{PS}.probe.port_closed_within") as closed,
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)),
+    ):
+        assert backend.stop_and_wait() is None
+    closed.assert_not_called()
+
+
+def test_empty_stop_reports_a_server_that_did_not_let_go():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_closed_within", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        assert backend.stop_and_wait() == "fake still listening on port 9100"
+
+
+@pytest.mark.parametrize("pid", [1, os.getpid()])
+def test_empty_stop_never_signals_pid_one_or_this_process(pid):
+    """A pidfile naming launchd or llmbench itself is refused before
+    `PidfileProcess.stop()` could signal it (as wt refuses them)."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_answers", return_value=True),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, pid)) as pidproc,
+    ):
+        assert backend.stop_and_wait() == f"{UNOWNED}; stop it yourself"
+    pidproc.stop.assert_not_called()
+
+
+def test_empty_stop_refuses_pid_one_and_this_process_with_a_real_pidfile(tmp_path):
+    """The same guard end to end, over a real PidfileProcess: no os.kill."""
+    backend = _signal_backend()
+    pidfile = tmp_path / "fake.pid"
+    backend._pidproc = dataclasses.replace(backend._pidproc, pidfile=str(pidfile))
+    for pid in (1, os.getpid()):
+        pidfile.write_text(str(pid))
+        with (
+            patch("llmbench.providers.lifecycle.pidproc.os.kill") as kill,
+            patch(f"{PS}.probe.port_answers", return_value=False),
+        ):
+            assert backend.stop_and_wait() is None
+        kill.assert_not_called()
+
+
+def test_already_serving_refuses_a_server_nobody_verified():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True) as port_open,
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+        patch.object(backend, "_pidproc", _pidproc_mock(None)),
+        pytest.raises(LifecycleError) as exc,
+    ):
+        backend.already_serving(backend.resolve("org/pack", ()))
+    assert str(exc.value) == (
+        f"{UNOWNED}; its context size cannot be checked, so it is not reused. "
+        "Stop it yourself and retry"
+    )
+    port_open.assert_called_once_with(MODELS, timeout=1.0, interval=0.2)
+    serving.assert_not_called()
+
+
+def test_already_serving_accepts_a_server_with_a_verified_pidfile():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True),
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        assert backend.already_serving(backend.resolve("org/pack", ())) is True
+    serving.assert_called_once_with(MODELS, "org/pack", exact=True, loaded_only=True)
+
+
+def test_already_serving_does_not_object_when_nothing_answers():
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock(None, None)) as pidproc,
+    ):
+        assert backend.already_serving(backend.resolve("org/pack", ())) is False
+    pidproc.live_pid.assert_not_called()
+
+
+def test_a_provider_with_a_stop_command_never_asks_about_ownership():
+    backend = ProcessServerBackend(_spec())
+    with (
+        patch(f"{PS}.probe.wait_for_port_open") as port_open,
+        patch(f"{PS}.probe.serving_model", return_value=True),
+        patch.object(backend, "_pidproc") as pidproc,
+    ):
+        assert backend.already_serving(backend.resolve("m", ())) is True
+    port_open.assert_not_called()
+    pidproc.live_pid.assert_not_called()
+
+
+def test_the_refusal_happens_before_any_other_provider_is_stopped():
+    backend = _signal_backend()
+    with (
+        patch.dict(orchestrate.BACKENDS, {"fake": backend}),
+        patch.object(orchestrate, "_stop_others") as stop_others,
+        patch.object(backend, "check_available", return_value=None),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True),
+        patch(f"{PS}.probe.serving_model", return_value=True),
+        patch(f"{PS}.subprocess.run") as run,
+        patch.object(backend, "_pidproc", _pidproc_mock(None)) as pidproc,
+    ):
+        result = orchestrate.isolate("fake", "org/pack")
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.startswith(UNOWNED)
+    stop_others.assert_not_called()
+    pidproc.stop.assert_not_called()
+    pidproc.spawn.assert_not_called()
+    run.assert_not_called()
+
+
+def _isolate_with_a_failed_warmup(backend: ProcessServerBackend):
+    with (
+        patch.dict(orchestrate.BACKENDS, {backend.id: backend}),
+        patch.object(orchestrate, "_stop_others"),
+        patch.object(backend, "check_available", return_value=None),
+        patch.object(backend, "already_serving", return_value=False),
+        patch.object(backend, "replace_own_occupant"),
+        patch.object(backend, "start"),
+        patch.object(backend, "wait_ready"),
+        patch.object(backend, "warm", side_effect=LifecycleError("warm failed")),
+        patch.object(backend, "stop_and_wait", return_value=None) as stop,
+    ):
+        result = orchestrate.isolate(backend.id, "org/pack")
+    return result, stop
+
+
+def test_a_failed_warmup_stops_a_signal_stop_backend():
+    """wt parity: a half-loaded server and its pidfile do not outlive a
+    failed start."""
+    backend = _signal_backend()
+    assert backend.cleanup_on_failure is True
+    result, stop = _isolate_with_a_failed_warmup(backend)
+    assert result.ok is False
+    stop.assert_called_once_with()
+
+
+def test_a_failed_warmup_does_not_stop_a_stop_command_backend():
+    rec = ProcessServerBackend(process_spec("rec"))
+    assert rec.cleanup_on_failure is False
+    result, stop = _isolate_with_a_failed_warmup(rec)
+    assert result.ok is False
+    stop.assert_not_called()
+    assert _mtplx().cleanup_on_failure is True
+    assert ProcessServerBackend(process_spec("mtplx")).cleanup_on_failure is False
+
+
+def _popen_kwargs(backend, tmp_path: Path) -> dict:
+    """Run `backend.start` over a scratch-file PidfileProcess with Popen
+    faked; the kwargs Popen got."""
+    backend._pidproc = dataclasses.replace(
+        backend._pidproc,
+        pidfile=str(tmp_path / "x.pid"),
+        logfile=str(tmp_path / "x.log"),
+    )
+    child = MagicMock(pid=4242, poll=MagicMock(return_value=None))
+    with (
+        patch(f"{PS}.binaries.require_binary", return_value=BIN),
+        patch(f"{PS}.probe.wait_for_port_closed"),
+        patch("llmbench.providers.lifecycle.pidproc.subprocess.Popen", return_value=child) as p,
+        patch("llmbench.providers.lifecycle.pidproc.time.sleep"),
+    ):
+        backend.start(backend.resolve("org/pack", ()))
+    return p.call_args.kwargs
+
+
+def test_signal_stop_spawn_starts_a_new_session(tmp_path):
+    """Setsid-equivalent, as wt spawns it: a terminal's SIGHUP cannot kill a
+    46 GB server llmbench started."""
+    assert _popen_kwargs(_signal_backend(), tmp_path)["start_new_session"] is True
+
+
+def test_mtplx_and_mlx_lm_server_spawn_pass_no_session_kwarg(tmp_path, monkeypatch):
+    assert "start_new_session" not in _popen_kwargs(_mtplx(), tmp_path)
+    from llmbench.providers.lifecycle.backends import mlx_lm_server
+
+    proc = PidfileProcess(
+        name="mlx_lm_server",
+        pidfile=str(tmp_path / "m.pid"),
+        logfile=str(tmp_path / "m.log"),
+    )
+    child = MagicMock(pid=4242, poll=MagicMock(return_value=None))
+    backend = mlx_lm_server.MLX_LM_SERVER
+    monkeypatch.setattr(backend, "_proc", backend._proc)  # start() replaces it
+    with (
+        patch(
+            "llmbench.providers.lifecycle.backends.mlx_lm_server.binaries.resolve_mlx_lm_bin",
+            return_value="/bin/mlx_lm.server",
+        ),
+        patch.object(mlx_lm_server, "_PROC", proc),
+        patch.object(mlx_lm_server.probe, "port_closed_within", return_value=True),
+        patch("llmbench.providers.lifecycle.pidproc.subprocess.Popen", return_value=child) as p,
+        patch("llmbench.providers.lifecycle.pidproc.time.sleep"),
+    ):
+        backend.start(backend.resolve("target", ("target", "draft")))
+    assert "start_new_session" not in p.call_args.kwargs
+
+
+# --- the wired-limit preflight -------------------------------------------------
+#
+# A sushi pack loads only when the GPU wired limit holds it. The check reads
+# the pack's safetensors and one sysctl (never set), and fails an isolate with
+# the fix before any other provider is stopped. tests/conftest.py makes the
+# pack root and the sysctl harmless for every test; these patch them back.
+
+PACK = "org/pack"
+FIX = "sudo sysctl iogpu.wired_limit_mb=59000"
+
+
+def _signal_backend_with_pack(tmp_path: Path, mib: int | None = 100) -> ProcessServerBackend:
+    """A signal-stop backend whose registry row names tmp/models; the pack
+    holds one `mib` MiB safetensors file (and a big ngram_table.bin that must
+    not count). `mib=None` leaves the pack dir absent."""
+    models = tmp_path / "models"
+    _registry(_provider_row() + f'model_dir = "{models}"\n')
+    if mib is not None:
+        pack = models / PACK
+        pack.mkdir(parents=True)
+        with open(pack / "model.safetensors", "wb") as f:
+            f.truncate(mib * 1048576)
+        with open(pack / "ngram_table.bin", "wb") as f:
+            f.truncate(10 * 1048576 * 1024)
+    return _signal_backend()
+
+
+def _serve_check(backend, *, limit, serving=False, port_open=False):
+    """already_serving with the roots real and the limit `limit`; returns
+    (result, limit mock)."""
+    with (
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", return_value=limit) as read_limit,
+        patch(f"{PS}.probe.wait_for_port_open", return_value=port_open),
+        patch(f"{PS}.probe.serving_model", return_value=serving),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        return backend.already_serving(backend.resolve(PACK, ())), read_limit
+
+
+def test_safetensors_bytes_sums_only_safetensors(tmp_path):
+    (tmp_path / "a.safetensors").write_bytes(b"x" * 10)
+    (tmp_path / "b.safetensors").write_bytes(b"x" * 5)
+    (tmp_path / "ngram_table.bin").write_bytes(b"x" * 1000)
+    (tmp_path / "config.json").write_bytes(b"x" * 1000)
+    assert process_server._safetensors_bytes(tmp_path) == 15
+
+
+def test_safetensors_bytes_is_none_when_unreadable_or_empty(tmp_path):
+    assert process_server._safetensors_bytes(tmp_path / "absent") is None
+    (tmp_path / "ngram_table.bin").write_bytes(b"x")
+    assert process_server._safetensors_bytes(tmp_path) is None
+
+
+def test_need_mib_is_one_point_one_times_the_bytes():
+    """The same figures as Go's TestWiredNeedIs110PercentFloored."""
+    assert process_server._need_mib(49_506_491_792) == 51934
+    assert process_server._need_mib(47213 * 1048576) == 51934
+    assert process_server._need_mib(0) == 0
+
+
+@pytest.mark.parametrize(
+    ("out", "expected"),
+    [
+        ("59000\n68719476736\n", 59000),
+        ("0\n68719476736\n", 49152),
+        ("59000\n", None),
+        ("", None),
+        ("x\ny\n", None),
+        ("-1\n68719476736\n", None),
+        ("59000\n0\n", None),
+    ],
+)
+def test_parse_wired_limit(out, expected):
+    assert process_server._parse_wired_limit(out) == expected
+
+
+def _sysctl(stdout="59000\n68719476736\n", returncode=0):
+    return MagicMock(returncode=returncode, stdout=stdout)
+
+
+def test_wired_limit_reads_one_sysctl_call():
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=_sysctl()) as run,
+    ):
+        assert REAL_WIRED_LIMIT() == 59000
+    run.assert_called_once_with(
+        ["sysctl", "-n", "iogpu.wired_limit_mb", "hw.memsize"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5.0,
+    )
+
+
+def test_wired_limit_zero_means_three_quarters_of_memory():
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=_sysctl("0\n68719476736\n")),
+    ):
+        assert REAL_WIRED_LIMIT() == 49152
+
+
+def test_wired_limit_is_unknown_off_darwin():
+    with (
+        patch(f"{PS}.sys.platform", "linux"),
+        patch(f"{PS}.subprocess.run") as run,
+    ):
+        assert REAL_WIRED_LIMIT() is None
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [_sysctl("", 1), _sysctl(""), _sysctl("x\ny\n"), _sysctl("59000\n")],
+)
+def test_wired_limit_unreadable_results_are_none(result):
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=result),
+    ):
+        assert REAL_WIRED_LIMIT() is None
+
+
+def test_wired_limit_oserror_is_none():
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", side_effect=OSError("no sysctl")),
+    ):
+        assert REAL_WIRED_LIMIT() is None
+
+
+def test_already_serving_fails_with_the_fix_command_when_the_limit_is_too_low(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)  # needs 110
+    with pytest.raises(LifecycleError) as err:
+        _serve_check(backend, limit=50)
+    message = str(err.value)
+    assert FIX in message
+    assert "resets on reboot" in message
+    assert "50 MiB" in message
+    assert "110 MiB" in message
+    assert message.startswith("fake: the GPU wired limit is 50 MiB but org/pack needs about")
+
+
+@pytest.mark.parametrize(("limit", "passes"), [(110, True), (109, False)])
+def test_the_limit_passes_at_the_exact_need(tmp_path, limit, passes):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    if passes:
+        assert _serve_check(backend, limit=limit)[0] is False
+    else:
+        with pytest.raises(LifecycleError):
+            _serve_check(backend, limit=limit)
+
+
+def test_a_zero_limit_reads_as_the_default_and_refuses_a_47213_mib_pack(tmp_path):
+    """The reader turns 0 into 49152 MiB (64 GiB machine); 47213 MiB of
+    safetensors need 51934 MiB, so that default refuses."""
+    backend = _signal_backend_with_pack(tmp_path, mib=47213)
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", return_value=_sysctl("0\n68719476736\n")),
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", REAL_WIRED_LIMIT),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+        pytest.raises(LifecycleError, match=r"49152 MiB.*51934 MiB"),
+    ):
+        backend.already_serving(backend.resolve(PACK, ()))
+
+
+def test_the_preflight_skips_when_the_pack_dir_is_unreadable(tmp_path, capsys):
+    backend = _signal_backend_with_pack(tmp_path, mib=None)
+    serving, read_limit = _serve_check(backend, limit=1)
+    assert serving is False
+    read_limit.assert_not_called()
+    assert "skipping the memory check" in capsys.readouterr().err
+
+
+def test_the_preflight_skips_when_the_limit_is_unknown(tmp_path, capsys):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    serving, _ = _serve_check(backend, limit=None)
+    assert serving is False
+    assert "skipping the memory check" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(["sysctl"], 5.0),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    ],
+    ids=["hung-sysctl", "garbage-bytes"],
+)
+def test_the_preflight_skips_when_sysctl_hangs_or_answers_garbage(tmp_path, capsys, failure):
+    """A sysctl that hangs (the read is capped at 5 s, as in wt) or prints
+    bytes text=True cannot decode must not hang or raise out of
+    `already_serving` before any teardown: the preflight prints its skip
+    line and the isolate goes on (not serving, so a start follows)."""
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    with (
+        patch(f"{PS}.sys.platform", "darwin"),
+        patch(f"{PS}.subprocess.run", side_effect=failure) as run,
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", REAL_WIRED_LIMIT),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()),
+    ):
+        assert backend.already_serving(backend.resolve(PACK, ())) is False
+    assert run.call_args.kwargs["timeout"] == 5.0
+    assert (
+        "fake: skipping the memory check (cannot read iogpu.wired_limit_mb)"
+        in capsys.readouterr().err
+    )
+
+
+def test_a_row_without_model_dir_uses_the_default_pack_dir(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    pack = home / ".sushi" / "models" / PACK
+    pack.mkdir(parents=True)
+    with open(pack / "w.safetensors", "wb") as f:
+        f.truncate(100 * 1048576)
+    monkeypatch.setenv("HOME", str(home))
+    _registry(_provider_row())
+    backend = _signal_backend()
+    with pytest.raises(LifecycleError, match="110 MiB"):
+        _serve_check(backend, limit=50)
+
+
+def test_the_preflight_is_skipped_when_the_pack_is_already_loaded(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    serving, read_limit = _serve_check(backend, limit=1, serving=True, port_open=True)
+    assert serving is True
+    read_limit.assert_not_called()
+
+
+def test_a_provider_with_a_stop_command_never_runs_the_preflight(tmp_path):
+    _signal_backend_with_pack(tmp_path, mib=100)
+    backend = ProcessServerBackend(_spec(kind="http-get", warmup_seconds=400))
+    serving, read_limit = _serve_check(backend, limit=1)
+    assert serving is False
+    read_limit.assert_not_called()
+
+
+def test_the_unowned_refusal_comes_before_the_preflight(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    with (
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", return_value=1) as read_limit,
+        patch(f"{PS}.probe.wait_for_port_open", return_value=True),
+        patch.object(backend, "_pidproc", _pidproc_mock(None)),
+        pytest.raises(LifecycleError, match="not started by llmbench or wt"),
+    ):
+        backend.already_serving(backend.resolve(PACK, ()))
+    read_limit.assert_not_called()
+
+
+def test_a_failed_preflight_stops_no_other_provider(tmp_path):
+    backend = _signal_backend_with_pack(tmp_path, mib=100)
+    with (
+        patch.dict(orchestrate.BACKENDS, {"fake": backend}),
+        patch.object(orchestrate, "_stop_others") as stop_others,
+        patch.object(backend, "check_available", return_value=None),
+        patch(f"{PS}._models_root", REAL_MODELS_ROOT),
+        patch(f"{PS}._wired_limit_mb", return_value=50),
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=False),
+        patch.object(backend, "_pidproc", _pidproc_mock()) as pidproc,
+    ):
+        result = orchestrate.isolate("fake", PACK)
+    assert result.ok is False
+    assert result.error is not None
+    assert "wired_limit_mb=59000" in result.error
+    stop_others.assert_not_called()
+    pidproc.stop.assert_not_called()
+    pidproc.spawn.assert_not_called()
+
+
+def test_the_memory_refusal_markers_are_pinned():
+    """The same eight phrases as wt's memoryRefusalMarkers (pinned there too),
+    so the two heuristics cannot drift. The bare word "iogpu" is not one: it
+    shows up in unrelated startup lines and would send the user to raise a
+    limit that was never the problem."""
+    from llmbench.providers.lifecycle.backends.process_server import _MEMORY_REFUSAL
+
+    phrases = [
+        "out of memory",
+        "insufficient memory",
+        "not enough memory",
+        "cannot allocate",
+        "failed to allocate",
+        "memory limit",
+        "wired limit",
+        "wired_limit",
+    ]
+    assert _MEMORY_REFUSAL.pattern == "|".join(phrases)
+    for phrase in phrases:
+        assert _MEMORY_REFUSAL.search(f"HTTP 500: {phrase.upper()} while loading")
+    for unrelated in ("IOGPU command buffer", "iogpu family ready", "No default model configured"):
+        assert _MEMORY_REFUSAL.search(unrelated) is None
+
+
+def test_empty_stop_reports_a_server_that_outlived_sigterm_and_sigkill():
+    """A server that is still running after both signals keeps its pidfile and
+    says so, rather than reading as a clean stop or as one nobody owns."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_closed_within", side_effect=AssertionError("waited")),
+        patch.object(backend, "_pidproc", _pidproc_mock(gone=False)),
+    ):
+        message = backend.stop_and_wait()
+    assert message is not None
+    assert "pid 4242" in message
+    assert "did not exit" in message
+    assert "pidfile was kept" in message

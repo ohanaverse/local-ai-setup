@@ -66,6 +66,21 @@ def test_http_models_ids_skips_entries_without_a_string_id(monkeypatch):
     assert local_process.http_models_ids("http://127.0.0.1:8000/v1/models") == ["ok"]
 
 
+def test_http_models_ids_drops_only_entries_explicitly_not_loaded(monkeypatch):
+    """Only a literal `"loaded": false` drops an entry (the Go rule): absent,
+    null, and non-bool values such as "false" mean the server did not say the
+    pack is unloaded. Only `loaded_only=True` (a spec's opt-in, sushi) drops
+    anything; the default keeps every listed id."""
+    _serve(
+        monkeypatch,
+        b'{"data": [{"id": "a", "loaded": true}, {"id": "b", "loaded": false},'
+        b' {"id": "c"}, {"id": "d", "loaded": null}, {"id": "e", "loaded": "false"}]}',
+    )
+    url = "http://127.0.0.1:8000/v1/models"
+    assert local_process.http_models_ids(url, loaded_only=True) == ["a", "c", "d", "e"]
+    assert local_process.http_models_ids(url) == ["a", "b", "c", "d", "e"]
+
+
 @pytest.mark.parametrize(
     "exc",
     [urllib.error.URLError("refused"), ConnectionRefusedError(), TimeoutError()],

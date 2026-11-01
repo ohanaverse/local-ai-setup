@@ -56,11 +56,12 @@ _real_subprocess_run = subprocess.run
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request (`rec stop` / `rec serve` likewise:
-# rec is installed on the developer's machine); `wt warm` would load one;
-# `claude` would spend the developer's real subscription (the eval judge's
-# claude-cli route). Fake-CLI tests must therefore name their stand-in script
-# anything but `claude`.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "ollama", "wt", "claude"})
+# rec is installed on the developer's machine; `sushi serve`, also
+# installed there, loads a 46 GB pack; `wt warm` would load one; `claude`
+# would spend the developer's real subscription (the eval judge's claude-cli
+# route). Fake-CLI tests must therefore name their stand-in script anything
+# but `claude`.
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "sushi", "ollama", "wt", "claude"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 
@@ -103,23 +104,41 @@ def _fake_provider_run(cmd, *args, **kwargs):
 _RealPopen = subprocess.Popen
 
 
-def _guarded_popen(argv, *args, **kwargs):
-    """judge_core spawns the claude CLI with Popen (it needs to kill the
-    process group on timeout), which the subprocess.run fake never sees."""
-    argv0 = str(argv[0]) if isinstance(argv, list | tuple) and argv else str(argv)
-    if _should_fake(argv0):
-        raise AssertionError(f"hermetic test tried to spawn blocked binary {argv0!r}")
-    return _RealPopen(argv, *args, **kwargs)
+class _GuardedPopen(_RealPopen):  # type: ignore[type-arg,misc]
+    """`subprocess.Popen`, refusing to spawn a binary `_should_fake` names.
+
+    The subprocess.run fake never sees a direct Popen, and
+    `PidfileProcess.spawn` (pidproc.py) is one: a test that reached
+    `BACKENDS["sushi"].start(plan)` without patching `spawn` or `_pidproc`
+    would exec the real `sushi serve` (a 46 GB pack). Everything else
+    reaches the real Popen unchanged: fake scripts, git, and tests that
+    patch `PP.subprocess.Popen` themselves (theirs replaces this one).
+
+    A subclass, not a function, because it replaces `subprocess.Popen`
+    process-wide (one shared module object, like `subprocess.run` above):
+    tests subclass it (`_RecordingPopen` in test_pidriver.py), spec mocks
+    on it and subscript it (`subprocess.Popen[bytes]`), and subprocess.run
+    itself calls it.
+
+    `judge_core._popen` (the claude-cli judge's Popen seam) is bound at
+    import, so the process-wide patch does not reach it: the autouse fixture
+    patches it with this same class as well."""
+
+    def __init__(self, args: Any, *rest: Any, **kwargs: Any) -> None:
+        argv0 = str(args[0]) if isinstance(args, list | tuple) and args else str(args)
+        if _should_fake(argv0):
+            raise AssertionError(f"hermetic test tried to spawn blocked binary {argv0!r}")
+        super().__init__(args, *rest, **kwargs)
 
 
 @pytest.fixture(autouse=True)
 def _never_touch_live_providers(monkeypatch):
     """The suite must never poll a real localhost port, bounce a real
     LaunchAgent, signal a real pid, or drive a real provider binary."""
-    monkeypatch.setattr("llmbench.benchmark.judge_core._popen", _guarded_popen)
+    monkeypatch.setattr("llmbench.benchmark.judge_core._popen", _GuardedPopen)
     # `urllib.request`, `subprocess` and `os` are each one shared module
-    # object: these three patches are process-wide, whatever dotted path
-    # reaches them.
+    # object: these patches are process-wide, whatever dotted path reaches
+    # them.
     monkeypatch.setattr(
         "llmbench.providers.lifecycle.probe.urllib.request.urlopen",
         MagicMock(side_effect=urllib.error.URLError("hermetic test")),
@@ -131,6 +150,10 @@ def _never_touch_live_providers(monkeypatch):
     monkeypatch.setattr(
         "llmbench.providers.lifecycle.pidproc.os.kill",
         lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "llmbench.providers.lifecycle.pidproc.subprocess.Popen",
+        _GuardedPopen,
     )
     monkeypatch.setattr(
         "llmbench.providers.lifecycle.backends.ollama._loaded_model_names",
@@ -149,3 +172,48 @@ def _no_real_config(monkeypatch, tmp_path):
     monkeypatch.setenv("WT_REGISTRY", str(tmp_path / "no-registry.toml"))
     monkeypatch.delenv("MODELMAN_REGISTRY", raising=False)
     monkeypatch.setenv("LLMBENCH_LATEST", str(tmp_path / "no-latest.toml"))
+
+
+def redirect_signal_stop_pidfiles(backends, monkeypatch, tmp_path) -> None:
+    """Give every signal-stop backend (empty `stop`: stopped by signalling
+    the pid its pidfile names) a PidfileProcess over scratch files.
+
+    llmbench has no pidfile override variable (the contract's `pidfile_env`
+    is parsed but read nowhere in `src`), and the backends' PidfileProcess
+    is built at import from the contract's real path. An unpatched
+    `stop_and_wait`, `already_serving` or `live_pid` would read, and may
+    remove, that real pidfile."""
+    from llmbench.providers.lifecycle.pidproc import PidfileProcess
+
+    for backend in backends.values():
+        if getattr(backend, "_signal_stop", False):
+            name = backend.spec.provider
+            monkeypatch.setattr(
+                backend,
+                "_pidproc",
+                PidfileProcess(
+                    name=name,
+                    pidfile=str(tmp_path / f"{name}.pid"),
+                    logfile=str(tmp_path / f"{name}.log"),
+                ),
+            )
+
+
+@pytest.fixture(autouse=True)
+def _redirect_signal_stop_pidfiles(monkeypatch, tmp_path):
+    """No test reads or removes a real signal-stop pidfile. A test that
+    patches `_pidproc` itself still overrides this."""
+    from llmbench.providers.lifecycle.backends import BACKENDS
+
+    redirect_signal_stop_pidfiles(BACKENDS, monkeypatch, tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pack_dir_or_sysctl(monkeypatch, tmp_path):
+    """The wired-limit preflight reads a model directory and a sysctl. No
+    test may reach the real `~/.sushi/models` or the real `sysctl`: the pack
+    root is an absent scratch directory and the limit is unreadable (so the
+    preflight skips). The preflight's own tests patch both explicitly."""
+    ps = "llmbench.providers.lifecycle.backends.process_server"
+    monkeypatch.setattr(f"{ps}._models_root", lambda row, spec: tmp_path / "no-models")
+    monkeypatch.setattr(f"{ps}._wired_limit_mb", lambda: None)

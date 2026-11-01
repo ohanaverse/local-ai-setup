@@ -6,7 +6,14 @@
 #
 # Argv templates (spawn, stop) follow the binary and use {model} and {port}.
 # Empty string means "absent". restore_action is what `llmbench provider
-# restore` does to the family.
+# restore` does to the family. warmup_seconds is the per-spec budget for the
+# readiness and warmup request. stop = [] means wt and llmbench stop the
+# family by signalling the verified pid. model_dir is the family's default
+# model directory ("" when it has none). loaded_only = true means the server's
+# /v1/models lists packs it has not loaded, flagged `"loaded": false`, so only
+# the others count as served (FamilySpec.LoadedOnly). wired_limit = true means a
+# start is first checked against the GPU wired limit (pinned to
+# wiredLimitFamilies in wt/internal/lifecycle/wiredlimit.go).
 
 [[process]]
 family = "mtplx"
@@ -25,6 +32,10 @@ scope = "port"
 default_origin = "http://localhost:8003"
 wt_port = 8003
 restore_action = "stop"
+warmup_seconds = 120
+model_dir = "~/.mtplx/models"
+loaded_only = false
+wired_limit = false
 
 [process.ready]
 kind = "models-list"
@@ -51,6 +62,10 @@ scope = "machine"
 default_origin = "http://127.0.0.1:11500"
 wt_port = 11500
 restore_action = "stop"
+warmup_seconds = 120
+model_dir = ""
+loaded_only = false
+wired_limit = false
 
 [process.ready]
 kind = "command-json"
@@ -59,3 +74,33 @@ path = "ready"
 equals = "true"
 model_path = "model"
 endpoint_path = "endpoint"
+
+[[process]]
+family = "sushi"
+provider = "sushi"
+binary = "sushi"
+spawn = ["serve", "--port", "{port}", "--host", "127.0.0.1", "--ctx-size", "131072", "--max-resident-models", "1", "--no-update-check", "--max-tokens", "32768"]
+stop = []
+pidfile = "/tmp/local-ai-setup-sushi.pid"
+log = "/tmp/local-ai-setup-sushi.log"
+pidfile_env = "WT_SUSHI_PIDFILE"
+subcommand = "serve"
+daemon_module = ""
+port_flag = "--port"
+model_flag = ""
+scope = "port"
+default_origin = "http://127.0.0.1:12345"
+wt_port = 12345
+restore_action = "stop"
+warmup_seconds = 400
+model_dir = "~/.sushi/models"
+loaded_only = true
+wired_limit = true
+
+[process.ready]
+kind = "http-get"
+command = []
+path = "/health"
+equals = ""
+model_path = ""
+endpoint_path = ""

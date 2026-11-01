@@ -603,6 +603,56 @@ def test_stop_all_rejects_unknown_keep_id_instead_of_keeping_nothing(stub_stops)
         assert not stub_stops[backend_id].called, backend_id
 
 
+def test_isolating_another_provider_stops_sushi(stub_stops):
+    """sushi holds its pack in GPU memory like any other local provider, so an
+    isolation of another provider must stop it. Every stop is stubbed and
+    sushi's pidfile process is a stand-in: nothing reads the real pidfile or
+    dials port 12345."""
+    plan = _plan()
+    with (
+        patch.object(BACKENDS["sushi"], "_pidproc", MagicMock()),
+        patch.object(MTPLX, "check_available", return_value=None),
+        patch.object(MTPLX, "resolve", return_value=plan),
+        patch.object(MTPLX, "already_serving", return_value=False),
+        patch.object(MTPLX, "replace_own_occupant"),
+        patch.object(MTPLX, "start"),
+        patch.object(MTPLX, "wait_ready"),
+        patch.object(MTPLX, "warm"),
+    ):
+        result = orchestrate.isolate("mtplx", "some/model")
+    assert result.ok is True
+    stub_stops["sushi"].assert_called_once()
+    assert not stub_stops["mtplx"].called
+
+
+def test_isolating_sushi_stops_the_others_and_keeps_itself(stub_stops):
+    """Isolating sushi tears every other provider down and spares its own
+    occupancy key: the sibling teardown never stops the server the isolation
+    is about to start. Its availability, readiness, own-occupant stop and
+    pidfile process are stubbed, so the real binary, port 12345 and the real
+    pidfile are never reached."""
+    sushi = BACKENDS["sushi"]
+    plan = _plan("org/pack", "http://127.0.0.1:12345/v1")
+    with (
+        patch.object(sushi, "_pidproc", MagicMock()),
+        patch.object(sushi, "check_available", return_value=None),
+        patch.object(sushi, "resolve", return_value=plan),
+        patch.object(sushi, "already_serving", return_value=False),
+        patch.object(sushi, "replace_own_occupant") as mock_replace,
+        patch.object(sushi, "start") as mock_start,
+        patch.object(sushi, "wait_ready"),
+        patch.object(sushi, "warm") as mock_warm,
+    ):
+        result = orchestrate.isolate("sushi", "org/pack")
+    assert result.ok is True
+    assert not stub_stops["sushi"].called
+    for provider_id in ("ollama", "mlx_lm_server", "mtplx", "rec"):
+        assert stub_stops[provider_id].called, provider_id
+    mock_replace.assert_called_once_with(plan)
+    mock_start.assert_called_once_with(plan)
+    mock_warm.assert_called_once_with(plan)
+
+
 # --- restore() ---------------------------------------------------------
 
 
@@ -621,6 +671,7 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
         ) as mock_mlx_stop,
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None) as mock_mtplx_stop,
         patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None) as mock_rec_stop,
+        patch.object(BACKENDS["sushi"], "stop_and_wait", return_value=None) as mock_sushi_stop,
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore()
@@ -630,6 +681,7 @@ def test_restore_runs_restart_and_stop_actions_but_never_skip_actions():
     mock_mlx_stop.assert_called_once()
     mock_mtplx_stop.assert_called_once()
     mock_rec_stop.assert_called_once()
+    mock_sushi_stop.assert_called_once()
     assert result.ok is True
     assert result.provider == "restore"
 
@@ -654,6 +706,7 @@ def test_restore_unload_frees_the_models_ollama_and_omlx_still_hold():
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["sushi"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore(unload=True)
@@ -674,6 +727,7 @@ def test_restore_unload_warning_is_logged_and_never_fails_the_aggregate(capsys):
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["sushi"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore(unload=True)
@@ -693,6 +747,7 @@ def test_plain_restore_leaves_loaded_models_alone():
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["sushi"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         assert orchestrate.restore().ok is True
@@ -712,6 +767,7 @@ def test_restore_restart_failure_fails_the_aggregate():
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["sushi"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore()
@@ -733,6 +789,7 @@ def test_restore_stop_action_failure_never_fails_the_aggregate():
         ),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", side_effect=OSError("mtplx exploded")),
         patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["sushi"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value=None),
     ):
         result = orchestrate.restore()
@@ -749,6 +806,7 @@ def test_restore_litellm_failure_fails_the_aggregate():
         patch.object(BACKENDS["mlx_lm_server"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["mtplx"], "stop_and_wait", return_value=None),
         patch.object(BACKENDS["rec"], "stop_and_wait", return_value=None),
+        patch.object(BACKENDS["sushi"], "stop_and_wait", return_value=None),
         patch(f"{ORCH}._restore_litellm", return_value="litellm did not come back up"),
     ):
         result = orchestrate.restore()

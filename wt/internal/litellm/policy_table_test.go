@@ -15,6 +15,7 @@ func TestPoliciesPinned(t *testing.T) {
 		"omlx-6bit":     {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"mlx_lm_server": {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"mtplx":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
+		"sushi":         {Prefix: "openai/", APIKey: "not-needed", V1Base: true},
 		"llamacpp":      {Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"},
 		"openrouter":    {Prefix: "openrouter/", SecretRef: true, Cloud: true},
 	}
@@ -36,7 +37,7 @@ func TestPoliciesPinned(t *testing.T) {
 func TestProvidersPinned(t *testing.T) {
 	want := map[string]bool{
 		"ollama": false, "omlx": false, "omlx-6bit": false, "mlx_lm_server": false,
-		"mtplx": false, "rec": false, "llamacpp": false, "openrouter": true,
+		"mtplx": false, "rec": false, "sushi": false, "llamacpp": false, "openrouter": true,
 	}
 	got := Providers()
 	if len(got) != len(want) {

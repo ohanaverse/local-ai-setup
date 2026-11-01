@@ -2,7 +2,7 @@
 
 > Use this to: launch claude-wt (or any `*-wt` shim) in a git worktree on a chosen model, understand what the picker offers, where rotation state lives, and which flags skip which screens.
 >
-> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live)
+> Verified against: wt 0.1.0, LiteLLM 1.98.0, Ollama 0.33.2 on 2026-08-29 · revised 2026-10 (commands checked against `wt --help` and `llmbench --help`, not re-run live; the Sushi agent notes in §6 are from the code and the design, and no agent was launched on a Sushi pack for this guide)
 
 ## Prerequisites
 
@@ -194,6 +194,16 @@ Available Commands:
 ```bash
 grep -n 'supported_providers' ~/.config/agent-wt/config.toml
 ```
+
+**Sushi** (`sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`, [02-providers-and-models](02-providers-and-models.md) Step 4) is the exception: `wt model add sushi ...` adds `sushi` to the `supported_providers` of claude and pi, the two agents it is set up for, and prints `added sushi to supported_providers of: ...` when it changed one. An agent that is not in config.toml is skipped. Whenever the registry holds a sushi model, wt also treats `sushi` as listed for claude and pi in memory, so a pack registered through the `wt config` Models tab, by hand or on a restored registry works the same; to keep sushi away from one of them, remove the registry's sushi models (an agent with no `supported_providers` at all is left alone). Sushi speaks OpenAI chat completions only (its provider row declares no `protocols`, in particular no `anthropic`), so claude reaches it through the LiteLLM proxy (§4), which turns claude's requests into chat completions, and needs the proxy configured. pi can dial Sushi directly or go through the proxy. To check that the model really calls tools from an agent:
+
+```bash
+wt smoke --tools sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --only claude,pi
+```
+
+<!-- UNVERIFIED — this smoke run was not made for this guide: it loads the 46 GB pack. The flags are from wt/docs/wt-smoke.md (`--tools`, `--only`); `--only` must be a subset of the agents the model is eligible for, so it fails for an agent whose `supported_providers` lacks `sushi`. -->
+
+Start the model first (`wt start sushi/…`) or let the smoke run do it; either way the pack must fit the GPU wired limit (guide 02, Step 4). The context window Sushi serves is the 131072 wt starts it with.
 
 ### 7. Extras
 

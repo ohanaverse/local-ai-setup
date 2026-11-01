@@ -56,6 +56,10 @@ type env struct {
 	describe func(pid int) (info procInfo, found bool, err error)
 	signal   func(pid int, sig syscall.Signal) error
 
+	// wiredLimit reads the GPU wired-memory limit in MiB (readWiredLimit) for
+	// the wired-limit preflight (wiredlimit.go); a test injects the answer.
+	wiredLimit func() (mb int64, ok bool, err error)
+
 	pollInterval   time.Duration
 	warmupTimeout  time.Duration // ollama/omlx warmup budget
 	loadTimeout    time.Duration // wait for a spawned server to list the model
@@ -100,6 +104,7 @@ func defaultEnv() *env {
 		spawn:             pidProcess.spawn,
 		describe:          describeProc,
 		signal:            signalProc,
+		wiredLimit:        readWiredLimit,
 		pollInterval:      time.Second,
 		warmupTimeout:     600 * time.Second,
 		loadTimeout:       300 * time.Second,

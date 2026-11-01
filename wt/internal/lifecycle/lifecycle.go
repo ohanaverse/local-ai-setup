@@ -231,6 +231,25 @@ func (e *PortBusyError) Error() string {
 	return fmt.Sprintf("port %d is in use by another process — stop it before starting this model", e.Port)
 }
 
+// NotStartedByWtError means a provider stopped by signalling its pid (a
+// process family with no stop command) answers on its port, but no pidfile
+// names a process wt can verify as that server — wt never signals what it
+// cannot identify. Detail, when not empty, says what the pidfile named and why
+// it was left alone (Loading.Stray).
+type NotStartedByWtError struct {
+	Provider string
+	Port     int
+	Detail   string
+}
+
+func (e *NotStartedByWtError) Error() string {
+	msg := fmt.Sprintf("%s at port %d was not started by wt; stop it yourself", e.Provider, e.Port)
+	if e.Detail != "" {
+		msg += ": " + e.Detail
+	}
+	return msg
+}
+
 // PortlessAddressError means the registry's base_url for a process family
 // (Provider, e.g. mtplx) gives a start no address: it names no port and is
 // not a url wt puts its own on, or it does not parse. wt serves the family on
@@ -353,7 +372,7 @@ func targetIs(snap localmodels.Snapshot, family string, t Target, is func(localm
 		return false
 	}
 	for _, en := range snap.Entries {
-		if is(en) && localmodels.Family(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
+		if is(en) && familyOf(en.ProviderID) == family && SameModel(family, en.ModelName, t.ModelName) {
 			return true
 		}
 	}
@@ -485,6 +504,7 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	}
 	snap := e.inventory(cfg)
 	if isRunning(snap, family, t) {
+		e.warnUnowned(ctx, cfg, family, t)
 		return nil
 	}
 	// A ScopeMachine family (rec) runs one instance on the whole machine, on
@@ -499,6 +519,14 @@ func start(ctx context.Context, e *env, cfg *config.Config, t Target, opts Optio
 	}
 	if adopt {
 		return nil
+	}
+	// A check that can refuse the start runs before anything is asked or
+	// stopped (wiredlimit.go): a start that cannot succeed must not first
+	// stop the user's other models.
+	if pf, ok := b.(preflighter); ok {
+		if err := pf.preflight(ctx, e, cfg, t); err != nil {
+			return err
+		}
 	}
 	// Residents are read only when there is a question to ask or an approved
 	// stop to make: a Decided answer with nothing to stop (every caller

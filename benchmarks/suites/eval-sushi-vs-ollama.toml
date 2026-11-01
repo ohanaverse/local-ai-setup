@@ -1,0 +1,56 @@
+# benchmarks/suites/eval-sushi-vs-ollama.toml
+#
+# Compares the Sushi Qwen3.8-Flash-Next STQ 2.75bpw pack against ollama's
+# qwen3.8:27b-mlx on the llmbench eval categories.
+#
+# Before running:
+#   - sudo sysctl iogpu.wired_limit_mb=59000   (resets on reboot; wt and
+#     llmbench refuse to start Sushi below ~51,934 MiB)
+#   - install the wt built from this change and add the registry rows from
+#     guide 02 Step 4 BEFORE loading this suite: a row naming an unknown
+#     model fails load_suite. Register the pack with
+#     wt model add sushi beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw --family <family>
+#     which gives it the id this suite's sushi row names.
+#
+# Run notes:
+#   - Start with samples = 1 (judge quota; see below), then raise it.
+#   - Context is fixed at 131072 by wt's Spawn literal for Sushi.
+#   - Thinking is left at the defaults on both sides (decision 15).
+#   - Sushi is expected to serve one request at a time: its defaults read
+#     --max-concurrent 1 and a 300 s stall timeout in `sushi serve --help`
+#     during the design (UNVERIFIED, not re-run; guide 11 says the same).
+#     Do not point other clients at it during a run.
+#   - Rows run serially, Sushi first; its restore action stops Sushi before
+#     the claude-cli judge runs.
+name = "eval-sushi-vs-ollama"
+cooldown_s = 15.0
+
+# samples = 1: the claude-cli judge spends Claude-subscription quota, and the
+# guide advises starting with a single sample.
+[judge]
+model = "claude-opus-5-5"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "claude-cli"
+
+# Sampling is pinned explicitly so both rows run identically.
+[generation]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+
+[coding]
+dataset = "humaneval"
+
+[routes.direct.sushi]
+base_url = "http://localhost:12345/v1"
+
+[[rows]]
+model = "sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
+provider = "sushi"
+route = "direct"
+
+[[rows]]
+model = "ollama/qwen3.8:27b-mlx"
+route = "litellm"

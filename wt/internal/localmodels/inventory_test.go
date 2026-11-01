@@ -954,7 +954,7 @@ func TestUnregisteredAnsweringReportsOnlyAFamilyThatAnswers(t *testing.T) {
 	slow := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("i/o timeout")
 	})}
-	if got := UnregisteredAnswering(cfg, slow, Snapshot{}, "ollama"); !reflect.DeepEqual(got, []string{"mlx_lm_server", "mtplx", "omlx", "rec"}) {
+	if got := UnregisteredAnswering(cfg, slow, Snapshot{}, "ollama"); !reflect.DeepEqual(got, []string{"mlx_lm_server", "mtplx", "omlx", "rec", "sushi"}) {
 		t.Errorf("unreadable answers: answering = %v, want every family asked", got)
 	}
 }
@@ -1082,5 +1082,78 @@ func TestMlxLmServerStillRunningOnly(t *testing.T) {
 	}
 	if !RunningOnly("mlx_lm_server") || RunningOnly("rec") {
 		t.Errorf("RunningOnly(mlx_lm_server) = %v, RunningOnly(rec) = %v; want true, false", RunningOnly("mlx_lm_server"), RunningOnly("rec"))
+	}
+}
+
+// sushiPack is the registry's model_name for the real sushi pack.
+const sushiPack = "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"
+
+// sushiModelsServer serves a /v1/models body the way sushi does: every pack
+// it knows, each with loaded (true only for state "ready") and its state
+// (unloaded, loading or ready).
+func sushiModelsServer(t *testing.T, packs map[string]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data := []map[string]any{}
+		for id, state := range packs {
+			data = append(data, map[string]any{"id": id, "loaded": state == "ready", "state": state})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// sushiCfg is a registry with the sushi provider aimed at url and its one
+// model, sushi/qwen3.8-flash-next.
+func sushiCfg(url string) *config.Config {
+	return &config.Config{
+		Providers: []config.Provider{localProvider("sushi", url, "")},
+		Models:    []config.Model{{ID: "sushi/qwen3.8-flash-next", ProviderID: "sushi", ModelName: sushiPack}},
+	}
+}
+
+// TestInventorySushiRunningFollowsTheLoadedFlag pins what the loaded flag
+// means to a user for the real sushi family: sushi lists EVERY pack it has,
+// so being listed proves nothing; the registered pack is Running only when its
+// entry says loaded, and otherwise stays in the inventory as a start row
+// (present, not running, family still StatusOK). A pack that is loading is not
+// yet running, a different pack being loaded does not make ours running, and a
+// refused port is Down with the pack not running. Reading "listed" as
+// "running" would make wt skip the start of a sushi that serves nothing.
+func TestInventorySushiRunningFollowsTheLoadedFlag(t *testing.T) {
+	gone := sushiModelsServer(t, map[string]string{sushiPack: "ready"})
+	closedURL := gone.URL
+	gone.Close()
+	for name, tc := range map[string]struct {
+		packs   map[string]string // nil = the port refuses
+		running bool
+		down    bool
+	}{
+		"ours unloaded":                   {map[string]string{sushiPack: "unloaded"}, false, false},
+		"ours loading":                    {map[string]string{sushiPack: "loading"}, false, false},
+		"ours ready":                      {map[string]string{sushiPack: "ready"}, true, false},
+		"a foreign pack loaded, ours not": {map[string]string{"other/Pack": "ready", sushiPack: "unloaded"}, false, false},
+		"ours loaded among others":        {map[string]string{"other/Pack": "unloaded", sushiPack: "ready", "third/Pack": "loading"}, true, false},
+		"lists no packs":                  {map[string]string{}, false, false},
+		"port refuses":                    {nil, false, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			url := closedURL
+			if tc.packs != nil {
+				url = sushiModelsServer(t, tc.packs).URL
+			}
+			snap := inventory(sushiCfg(url), testClient)
+			if snap.Down["sushi"] != tc.down {
+				t.Errorf("Down = %v, want %v", snap.Down["sushi"], tc.down)
+			}
+			if !tc.down && snap.Providers["sushi"] != StatusOK {
+				t.Errorf("status = %q, want ok (a listed-but-unloaded pack is not a probe failure)", snap.Providers["sushi"])
+			}
+			e, ok := byModelID(snap, "sushi/qwen3.8-flash-next")
+			if !ok || e.Running != tc.running {
+				t.Errorf("entry = %+v (present %v), want present with Running %v", e, ok, tc.running)
+			}
+		})
 	}
 }

@@ -95,9 +95,11 @@ const OpenRouterKeyEnv = provider.OpenRouterKeyEnv
 // one seeding implementation in wt. It only ever appends rows: a row that
 // exists is never edited.
 //
-//   - A default local provider (ollama, omlx, mlx_lm_server, mtplx) gets its
-//     default row when a model references it, when an agent lists it, or —
-//     for the three that have a command — when that command is on PATH. An
+//   - A default local provider (ollama, omlx, mlx_lm_server, mtplx, rec,
+//     sushi) gets its default row when a model references it, when an agent
+//     lists it, or — for the four whose seed names a command (ollama, omlx,
+//     mtplx, sushi) — when that command is on PATH. mlx_lm_server has no
+//     command and rec deliberately none (SoX ships its own `rec`). An
 //     installed omlx gets no row when an `omlx-6bit` row exists: the two are
 //     one server, and a second row would change which one discovery uses.
 //   - A cloud provider with a default row (openrouter) gets it when a model

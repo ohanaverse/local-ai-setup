@@ -89,12 +89,12 @@ func modelAddCmd(a *app) *cobra.Command {
 			"An mtplx model may carry --serve-arg flags for `mtplx serve` (repeat the flag,\n" +
 			"one argument each: --serve-arg --profile --serve-arg turbo); see `wt model\n" +
 			"edit --help`.\n\n" +
-			"A missing default provider row (ollama, omlx, mtplx, rec, openrouter) is added\n" +
-			"in the same write; a provider wt has no default row for must have its\n" +
-			"[[providers]] block in registry.toml first. For an ollama model wt runs\n" +
-			"`ollama show` once and records whether the model supports tools and\n" +
-			"vision; if that fails the model is added without them and a warning says\n" +
-			"so.\n\n" +
+			"A missing default provider row (ollama, omlx, mlx_lm_server, mtplx, rec,\n" +
+			"sushi, openrouter) is added in the same write; a provider wt has no default\n" +
+			"row for must have its [[providers]] block in registry.toml first. For an\n" +
+			"ollama model wt runs `ollama show` once and records whether the model\n" +
+			"supports tools and vision; if that fails the model is added without them\n" +
+			"and a warning says so.\n\n" +
 			"An mlx_lm_server model is a target+draft pairing: <name> is the target and\n" +
 			"--draft the draft, each a Hugging Face repo or a local path. A local path\n" +
 			"starts with /, ~, ./ or ../; anything else is taken for a repo. A ./ or ../\n" +
@@ -213,7 +213,27 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 		fmt.Fprintf(out, "no default row for provider: %s (an agent lists it; add it to registry.toml by hand)\n", p)
 	}
 	warnings = append(warnings, res.Warnings...)
+	warnings = append(warnings, enableSushiForAgents(out, req.ProviderID)...)
 	return syncAndWarn(out, errOut, warnings)
+}
+
+// enableSushiForAgents lists sushi in config.SushiAgents' supported_providers
+// in config.toml after a sushi model is registered, and says which agents it
+// changed. config.Load also derives the entry in memory for any registry that
+// holds a sushi model, so this write only makes it durable. A failure
+// is a warning: the model is registered, and the line to add by hand is in it.
+func enableSushiForAgents(out io.Writer, providerID string) []string {
+	if providerID != "sushi" {
+		return nil
+	}
+	changed, err := config.EnsureAgentProvider("sushi", config.SushiAgents...)
+	if err != nil {
+		return []string{fmt.Sprintf("could not add sushi to the agents' supported_providers in config.toml (%v); add it to claude and pi by hand", err)}
+	}
+	if len(changed) > 0 {
+		fmt.Fprintf(out, "added sushi to supported_providers of: %s\n", strings.Join(changed, ", "))
+	}
+	return nil
 }
 
 // syncAndWarn runs the one route sync that follows a registry write, prints

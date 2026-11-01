@@ -71,8 +71,8 @@ func stopCmd(a *app) *cobra.Command {
 		Use:   "stop [model|provider]",
 		Short: "Stop a running local model, every model of a provider, or all of them",
 		Long: "Stop a running local model (<provider>/<name>) or every running model of a\n" +
-			"provider (ollama, omlx, omlx-6bit, mtplx, rec). With no argument, shows the\n" +
-			"stop picker (requires a TTY), which also lists models other wt sessions\n" +
+			"provider (ollama, omlx, omlx-6bit, mtplx, rec, sushi). With no argument, shows\n" +
+			"the stop picker (requires a TTY), which also lists models other wt sessions\n" +
 			"are using, marked with their session count. The picker lists running\n" +
 			"models, so it has no row for an mtplx that is still loading: wt says so\n" +
 			"and names \"wt stop mtplx\" and --all, which stop it.\n\n" +
