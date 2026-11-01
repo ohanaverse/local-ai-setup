@@ -3,12 +3,15 @@
 EvalPlus 0.3.1 hardcodes `max_new_tokens=768` in `DecoderBase` and exposes no
 flag for it. A thinking model spends that budget on its reasoning and returns
 an empty answer (scored 0 pass@1), or `content: null` (which crashes EvalPlus's
-sanitizer). This module is the EvalPlus CLI with two patches applied first:
+sanitizer). This module is the EvalPlus CLI with these patches applied first:
 
 1. `DecoderBase.max_new_tokens` is the value of `LLMBENCH_EVALPLUS_MAX_NEW_TOKENS`.
 2. A reply whose `content` is null becomes an empty string, which sanitizes to
    empty code and fails that one problem instead of the whole run.
-3. EvalPlus's 100 s `SIGALRM` around each request is disabled. A reply of
+3. The `openai` client's own 600 s read timeout (and its 2 retries) is lifted for the
+   same reason: a 16384-token non-streamed reply from a local model can outlast it,
+   and EvalPlus would resend the request forever.
+4. EvalPlus's 100 s `SIGALRM` around each request is disabled. A reply of
    thousands of tokens takes longer than that on a local model; the alarm would
    abort the request, EvalPlus would resend it forever (queueing behind itself
    on a one-request-at-a-time server), and the cap raise would never help. The
@@ -49,6 +52,16 @@ def apply_patches(max_new_tokens: int) -> None:
         return [out if out is not None else "" for out in original_codegen(self, *args, **kwargs)]
 
     OpenAIChatDecoder.codegen = codegen  # type: ignore[method-assign]
+
+    original_decoder_init = OpenAIChatDecoder.__init__
+
+    @functools.wraps(original_decoder_init)
+    def decoder_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        original_decoder_init(self, *args, **kwargs)
+        # The subprocess timeout (`[coding] timeout_s`) is the only bound.
+        self.client = self.client.with_options(timeout=None, max_retries=0)
+
+    OpenAIChatDecoder.__init__ = decoder_init  # type: ignore[method-assign]
 
     # openai_request only uses signal.signal/SIGALRM/alarm; keep the first two
     # and make every alarm(n) a cancel.

@@ -15,7 +15,7 @@
 # Run notes:
 #   - Start with samples = 1 (judge quota; see below), then raise it.
 #   - Context is fixed at 131072 by wt's Spawn literal for Sushi.
-#   - Thinking is left at the defaults on both sides (decision 15).
+#   - Thinking is left at the defaults on every row (decision 15).
 #   - Sushi is expected to serve one request at a time: its defaults read
 #     --max-concurrent 1 and a 300 s stall timeout in `sushi serve --help`
 #     during the design (UNVERIFIED, not re-run; guide 11 says the same).
@@ -34,7 +34,7 @@ samples = 1
 max_attempts = 2
 route = "claude-cli"
 
-# Sampling is pinned explicitly so both rows run identically.
+# Sampling is pinned explicitly so every row runs identically.
 [generation]
 temperature = 1.0
 top_p = 0.95
@@ -43,7 +43,9 @@ top_k = 20
 [coding]
 dataset = "humaneval"
 # EvalPlus caps replies at 768 tokens, which a thinking model spends on its
-# reasoning (0% pass@1). Raised via evalplus_launcher.py.
+# reasoning (0% pass@1). Raised via evalplus_launcher.py. 164 problems at this
+# cap can pass the 4 h default per row; raise timeout_s if a row reports
+# "evalplus timed out".
 max_new_tokens = 16384
 
 [routes.direct.sushi]

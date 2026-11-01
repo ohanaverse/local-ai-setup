@@ -125,6 +125,8 @@ MAX_NEW_TOKENS_ENV = "LLMBENCH_EVALPLUS_MAX_NEW_TOKENS"
 # scored pass@1 0.000. -1 makes EvalPlus skip its memory limits; the generated
 # code then runs without a memory cap. A caller's own value is kept.
 MEMORY_LIMIT_ENV = "EVALPLUS_MAX_MEMORY_BYTES"
+# Holds a sitecustomize.py that makes EvalPlus skip only the rlimits macOS refuses.
+RLIMIT_PATCH_DIR = Path(__file__).parent / "evalplus_rlimit"
 
 
 def _build_command(
@@ -231,7 +233,11 @@ def run_coding_category(
             max_new_tokens=max_new_tokens,
         )
         env = {**os.environ, "OPENAI_API_KEY": api_key}
-        env.setdefault(MEMORY_LIMIT_ENV, "-1")
+        if not env.get(MEMORY_LIMIT_ENV, "").strip():
+            env.pop(MEMORY_LIMIT_ENV, None)  # empty would crash EvalPlus's int()
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(RLIMIT_PATCH_DIR), env.get("PYTHONPATH")) if p
+        )
         if max_new_tokens is not None:
             env[MAX_NEW_TOKENS_ENV] = str(max_new_tokens)
         try:

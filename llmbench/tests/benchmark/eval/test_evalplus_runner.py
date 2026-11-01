@@ -337,6 +337,7 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
     from llmbench.benchmark.eval import evalplus_launcher
 
     init, codegen = DecoderBase.__init__, OpenAIChatDecoder.codegen
+    dec_init = OpenAIChatDecoder.__init__
     original_signal = openai_request.signal
     try:
         evalplus_launcher.apply_patches(4096)
@@ -349,6 +350,8 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
             name="m", base_url="http://x/v1", temperature=0.0, instruction_prefix="Solve:"
         )
         assert dec.max_new_tokens == 4096
+        assert dec.client.timeout is None
+        assert dec.client.max_retries == 0
 
         class Msg:
             def __init__(self, content):
@@ -367,6 +370,7 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
             req.make_auto_request = orig
     finally:
         DecoderBase.__init__, OpenAIChatDecoder.codegen = init, codegen
+        OpenAIChatDecoder.__init__ = dec_init
         openai_request.signal = original_signal
 
 
