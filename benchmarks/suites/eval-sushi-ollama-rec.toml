@@ -1,7 +1,9 @@
 # benchmarks/suites/eval-sushi-ollama-rec.toml
 #
-# Compares the Sushi Qwen3.8-Flash-Next STQ 2.75bpw pack against ollama's
-# qwen3.8:27b-mlx on the llmbench eval categories.
+# Compares the Sushi Qwen3.8-Flash-Next STQ 2.75bpw pack, ollama's
+# qwen3.8:27b-mlx and the rec Flint model on the llmbench eval categories.
+# Superseded by eval-five-way.toml, which adds two mtplx rows and raises the
+# EvalPlus reply cap; with this suite a thinking model scores 0% on coding.
 #
 # Before running:
 #   - sudo sysctl iogpu.wired_limit_mb=59000   (resets on reboot; wt and

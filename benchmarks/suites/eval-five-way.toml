@@ -1,11 +1,13 @@
 # benchmarks/suites/eval-five-way.toml
 #
-# Compares five rows on the llmbench eval categories:
-#   - sushi  Qwen3.8-Flash-Next STQ 2.75bpw pack
-#   - ollama qwen3.8:27b-mlx
-#   - rec    flint
-#   - mtplx  Qwen3.8-27B-MTPLX-Optimized-Quality
-#   - mtplx  Qwen3.6-35B-A3B-MTPLX-Optimized-Balance
+# Compares five local models on the llmbench eval categories: Sushi
+# Qwen3.8-Flash-Next STQ 2.75bpw, ollama qwen3.8:27b-mlx, rec/flint, mtplx
+# Qwen3.8-27B Optimized-Quality and mtplx Qwen3.6-35B-A3B Optimized-Balance.
+# [coding] max_new_tokens lifts EvalPlus's 768-token reply cap, which a thinking
+# model spends on reasoning (guide 11, Gotchas). Rows use direct routes, so
+# the rec and mtplx rows need no LiteLLM route. The mtplx base_url is its
+# default port 8003. Register all five models in the registry before loading
+# the suite: a row naming an unknown model fails load_suite.
 #
 # Before running:
 #   - sudo sysctl iogpu.wired_limit_mb=59000   (resets on reboot; wt and
