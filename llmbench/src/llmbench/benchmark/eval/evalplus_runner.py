@@ -119,6 +119,12 @@ def _evalplus_executable() -> str:
 
 LAUNCHER_MODULE = "llmbench.benchmark.eval.evalplus_launcher"
 MAX_NEW_TOKENS_ENV = "LLMBENCH_EVALPLUS_MAX_NEW_TOKENS"
+# EvalPlus's sandbox calls setrlimit(RLIMIT_AS, 4 GiB) in every test subprocess.
+# macOS 27 rejects it ("current limit exceeds maximum limit"), so every
+# subprocess crashed and EVERY solution, EvalPlus's own canonical ones too,
+# scored pass@1 0.000. -1 makes EvalPlus skip its memory limits; the generated
+# code then runs without a memory cap. A caller's own value is kept.
+MEMORY_LIMIT_ENV = "EVALPLUS_MAX_MEMORY_BYTES"
 
 
 def _build_command(
@@ -225,6 +231,7 @@ def run_coding_category(
             max_new_tokens=max_new_tokens,
         )
         env = {**os.environ, "OPENAI_API_KEY": api_key}
+        env.setdefault(MEMORY_LIMIT_ENV, "-1")
         if max_new_tokens is not None:
             env[MAX_NEW_TOKENS_ENV] = str(max_new_tokens)
         try:

@@ -368,3 +368,36 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
     finally:
         DecoderBase.__init__, OpenAIChatDecoder.codegen = init, codegen
         openai_request.signal = original_signal
+
+
+def _env_seen_by_run(monkeypatch, caller_value=None):
+    import subprocess
+
+    if caller_value is None:
+        monkeypatch.delenv("EVALPLUS_MAX_MEMORY_BYTES", raising=False)
+    else:
+        monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", caller_value)
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(cmd, 0, "pass@1:\t0.5\n", "")
+
+    run_coding_category(
+        base_url="http://x/v1",
+        model="m",
+        api_key="k",
+        dataset="humaneval",
+        limit=None,
+        run_cmd=fake_run,
+    )
+    return seen["env"]
+
+
+def test_run_disables_evalplus_memory_limit_macos_rejects(monkeypatch):
+    # Regression: without this EvalPlus scored every solution 0.000 on macOS 27.
+    assert _env_seen_by_run(monkeypatch)["EVALPLUS_MAX_MEMORY_BYTES"] == "-1"
+
+
+def test_run_keeps_a_memory_limit_the_caller_set(monkeypatch):
+    assert _env_seen_by_run(monkeypatch, "8589934592")["EVALPLUS_MAX_MEMORY_BYTES"] == "8589934592"
