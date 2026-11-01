@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 // ServedIDs asks a family's server which models it is serving now — the ids
@@ -40,6 +41,9 @@ func ServedIDs(cfg *config.Config, client *http.Client, family string) ([]string
 		return nil, err
 	}
 	origin := FamilyOrigin(cfg, family)
+	if spec, ok := provider.FamilyByName(family); ok && spec.LoadedOnly {
+		return FetchLoadedModelIDsKeyed(client, origin+"/v1/models", key)
+	}
 	return FetchModelIDsKeyed(client, origin+"/v1/models", key)
 }
 

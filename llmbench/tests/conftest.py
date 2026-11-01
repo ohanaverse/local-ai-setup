@@ -215,5 +215,5 @@ def _no_real_pack_dir_or_sysctl(monkeypatch, tmp_path):
     root is an absent scratch directory and the limit is unreadable (so the
     preflight skips). The preflight's own tests patch both explicitly."""
     ps = "llmbench.providers.lifecycle.backends.process_server"
-    monkeypatch.setattr(f"{ps}._models_root", lambda row: tmp_path / "no-models")
+    monkeypatch.setattr(f"{ps}._models_root", lambda row, spec: tmp_path / "no-models")
     monkeypatch.setattr(f"{ps}._wired_limit_mb", lambda: None)

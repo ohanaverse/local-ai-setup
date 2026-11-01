@@ -161,6 +161,7 @@ const chatRequestTimeout = 120 * time.Second
 
 // warmupFor is warmup with the per-request cap requestTimeout, for a server
 // whose first chat request outlasts chatRequestTimeout (sushi's cold load).
+// No request runs past timeout: each is capped at the time left.
 func (e *env) warmupFor(ctx context.Context, chatURL, model, healthURL, key string, timeout, requestTimeout time.Duration) error {
 	payload, _ := json.Marshal(map[string]any{
 		"model":       model,
@@ -182,12 +183,20 @@ func (e *env) warmupFor(ctx context.Context, chatURL, model, healthURL, key stri
 			}
 			continue
 		}
-		ok, refused, reason := e.tryChat(ctx, chatURL, key, payload, requestTimeout)
+		// A request begun late in the window may not outlast it: the budget
+		// is the whole warmup, not one more full request after it.
+		left := time.Until(deadline)
+		ok, refused, reason := e.tryChat(ctx, chatURL, key, payload, min(requestTimeout, left))
 		if ok {
 			return nil
 		}
 		if refused {
 			return &KeyRefusedError{URL: chatURL, KeySent: key != "", Detail: reason}
+		}
+		// A request cut short by the window says nothing new: keep the last
+		// real answer (an HTTP status and body) as the reason.
+		if left < requestTimeout && lastReason != "" && strings.Contains(reason, "context deadline exceeded") {
+			break
 		}
 		lastReason = reason
 		if err := e.sleep(ctx, e.pollInterval); err != nil {

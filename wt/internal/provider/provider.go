@@ -108,6 +108,10 @@ type FamilySpec struct {
 	// ServedOnly: the family's probe is GET /v1/models alone; wt lists no
 	// artifacts for it.
 	ServedOnly bool
+	// LoadedOnly: the family's /v1/models lists packs it has not loaded and
+	// flags them `"loaded": false` (sushi), so the served list drops those
+	// entries. A family without it reads every listed id as served.
+	LoadedOnly bool
 	Tenancy    Tenancy
 	// Scope is what one server of this family excludes: a port, or the machine.
 	Scope Scope

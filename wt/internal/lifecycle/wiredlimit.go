@@ -58,11 +58,14 @@ func wiredLimitHint() string {
 
 // memoryRefusalMarkers are the lower-case phrases that make a failed sushi
 // warmup look like macOS refusing the memory. A pinned heuristic: Sushi's real
-// wording is unmeasured, and llmbench's _MEMORY_REFUSAL holds the same list.
+// wording is unmeasured, and llmbench's _MEMORY_REFUSAL holds the same list
+// (each side's test pins it). The bare word "iogpu" is left out: it appears in
+// unrelated startup lines of the server log, and the advice would send the
+// user to raise a limit that was never the problem.
 var memoryRefusalMarkers = []string{
 	"out of memory", "insufficient memory", "not enough memory",
 	"cannot allocate", "failed to allocate", "memory limit",
-	"wired limit", "wired_limit", "iogpu",
+	"wired limit", "wired_limit",
 }
 
 // looksLikeMemoryRefusal reports whether msg contains a memory-refusal phrase,

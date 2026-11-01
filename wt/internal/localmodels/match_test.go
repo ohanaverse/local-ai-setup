@@ -126,13 +126,13 @@ func bodySrv(t *testing.T, body string) string {
 	return srv.URL
 }
 
-// TestFetchModelIDsKeyedLoadedFilter pins E1: an entry the server marks
+// TestFetchLoadedModelIDsKeyedLoadedFilter pins E1: an entry the server marks
 // "loaded": false is listed but not served (sushi lists every pack), while an
 // absent, null, true or non-boolean value keeps the entry, so mtplx, ollama
 // and omlx listings read exactly as before. An answer holding only unloaded
 // entries is an empty list with a nil error: the server answered and serves
 // nothing.
-func TestFetchModelIDsKeyedLoadedFilter(t *testing.T) {
+func TestFetchLoadedModelIDsKeyedLoadedFilter(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 	for name, tc := range map[string]struct {
 		body string
@@ -151,7 +151,7 @@ func TestFetchModelIDsKeyedLoadedFilter(t *testing.T) {
 		"loaded zero":              {`{"data":[{"id":"a","loaded":0}]}`, []string{"a"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ids, err := FetchModelIDsKeyed(client, bodySrv(t, tc.body), "")
+			ids, err := FetchLoadedModelIDsKeyed(client, bodySrv(t, tc.body), "")
 			if err != nil || ids == nil || !slices.Equal(ids, tc.want) {
 				t.Errorf("ids = %#v err = %v, want %v and nil", ids, err, tc.want)
 			}
@@ -159,29 +159,22 @@ func TestFetchModelIDsKeyedLoadedFilter(t *testing.T) {
 	}
 }
 
-// TestFetchModelIDsLoadedFilterReachesEveryWrapper verifies FetchModelIDs and
-// FetchModelIDsErr drop an unloaded entry too: every caller of the served list
-// goes through the one decoder, so none can mistake a listed-but-unloaded pack
-// for a serving one.
-func TestFetchModelIDsLoadedFilterReachesEveryWrapper(t *testing.T) {
-	client := &http.Client{Timeout: time.Second}
-	url := bodySrv(t, `{"data":[{"id":"on","loaded":true},{"id":"off","loaded":false}]}`)
-	if got := FetchModelIDs(client, url); !slices.Equal(got, []string{"on"}) {
-		t.Errorf("FetchModelIDs = %v, want [on]", got)
-	}
-	if got, err := FetchModelIDsErr(client, url); err != nil || !slices.Equal(got, []string{"on"}) {
-		t.Errorf("FetchModelIDsErr = %v, %v, want [on]", got, err)
-	}
-}
-
-// TestFetchAllModelIDsKeyedIgnoresTheLoadedFlag verifies the unfiltered list
-// names every listed id in order whatever "loaded" says: the pack-id check of
-// a later task needs it, otherwise an unloaded pack looks missing.
-func TestFetchAllModelIDsKeyedIgnoresTheLoadedFlag(t *testing.T) {
+// TestFetchModelIDsIgnoresTheLoadedFlag verifies the plain fetchers list every
+// id in order whatever "loaded" says: only a family that opts in
+// (FamilySpec.LoadedOnly, through FetchLoadedModelIDsKeyed) drops unloaded
+// entries, so no other server's listing changes meaning. It also serves the
+// pack-id check, where an unloaded pack must not look missing.
+func TestFetchModelIDsIgnoresTheLoadedFlag(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 	url := bodySrv(t, `{"data":[{"id":"a","loaded":false},{"id":"b","loaded":true},{"id":"c"},{"id":"d","loaded":null}]}`)
-	got, err := FetchAllModelIDsKeyed(client, url, "")
-	if err != nil || !slices.Equal(got, []string{"a", "b", "c", "d"}) {
-		t.Errorf("FetchAllModelIDsKeyed = %v, %v, want [a b c d] and nil", got, err)
+	want := []string{"a", "b", "c", "d"}
+	if got := FetchModelIDs(client, url); !slices.Equal(got, want) {
+		t.Errorf("FetchModelIDs = %v, want %v", got, want)
+	}
+	if got, err := FetchModelIDsErr(client, url); err != nil || !slices.Equal(got, want) {
+		t.Errorf("FetchModelIDsErr = %v, %v, want %v", got, err, want)
+	}
+	if got, err := FetchModelIDsKeyed(client, url, ""); err != nil || !slices.Equal(got, want) {
+		t.Errorf("FetchModelIDsKeyed = %v, %v, want %v and nil", got, err, want)
 	}
 }

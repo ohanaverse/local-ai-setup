@@ -32,11 +32,12 @@ ENV_VAR_BY_PROVIDER = {
 }
 
 
-def models_body_ids(data: object, *, loaded_only: bool = True) -> list[str]:
-    """Model ids from a parsed OpenAI-compatible /v1/models body. With
-    `loaded_only` (the default), an entry is dropped only when its `loaded`
-    is a literal `False` (Sushi lists every pack and flags the ones not in
-    memory); absent, null and non-bool values keep the entry, as in Go."""
+def models_body_ids(data: object, *, loaded_only: bool = False) -> list[str]:
+    """Model ids from a parsed OpenAI-compatible /v1/models body: every
+    listed id by default. With `loaded_only` (a spec's `loaded_only`, today
+    sushi, which lists every pack and flags the ones not in memory), an entry
+    is dropped only when its `loaded` is a literal `False`; absent, null and
+    non-bool values keep the entry, as in Go."""
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
@@ -49,7 +50,7 @@ def models_body_ids(data: object, *, loaded_only: bool = True) -> list[str]:
     ]
 
 
-def http_models_ids(url: str, timeout: float = 2.0, *, loaded_only: bool = True) -> list[str]:
+def http_models_ids(url: str, timeout: float = 2.0, *, loaded_only: bool = False) -> list[str]:
     """Model ids from an OpenAI-compatible /v1/models response, or [] on any
     error (connection refused, timeout, non-JSON body). `loaded_only` is
     `models_body_ids`'s."""

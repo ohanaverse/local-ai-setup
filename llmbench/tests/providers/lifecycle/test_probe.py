@@ -818,11 +818,22 @@ BODY = (
 
 @pytest.mark.parametrize("key", [None, "k"])
 @pytest.mark.parametrize(("model", "expected"), [("a", True), ("b", False), ("c", True)])
-def test_serving_model_ignores_a_pack_that_is_listed_but_not_loaded(key, model, expected):
-    """A pack the server lists with `loaded: false` is not serving, with or
-    without a key: the unloaded pack must not read as ready."""
+def test_serving_model_loaded_only_ignores_a_pack_that_is_listed_but_not_loaded(
+    key, model, expected
+):
+    """For a spec with `loaded_only` (sushi), a pack the server lists with
+    `loaded: false` is not serving, with or without a key: the unloaded pack
+    must not read as ready."""
     with patch(_URLOPEN, _mock_urlopen(BODY)):
-        assert serving_model(_MODELS, model, key=key) is expected
+        assert serving_model(_MODELS, model, key=key, loaded_only=True) is expected
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+def test_serving_model_counts_every_listed_id_by_default(key):
+    """No other server is read through the `loaded` flag: by default every
+    listed id is serving, an entry flagged `loaded: false` included."""
+    with patch(_URLOPEN, _mock_urlopen(BODY)):
+        assert serving_model(_MODELS, "b", key=key) is True
 
 
 @pytest.mark.parametrize("key", [None, "k"])
@@ -962,4 +973,24 @@ def test_warmup_request_timeout_defaults_to_120_and_is_overridable():
         warmup("http://x/chat", "m", health_url="http://x/health")
         warmup("http://x/chat", "m", health_url="http://x/health", request_timeout=400.0)
     chat = [c.kwargs["timeout"] for c in urlopen.call_args_list if c.kwargs["timeout"] != 2.0]
-    assert chat == [120, 400.0]
+    # The second call's 400 s cap is cut to the 300 s default window: no
+    # request may outlast the warmup.
+    assert chat[0] == 120
+    assert 299.0 < chat[1] <= 300.0
+
+
+def test_warmup_caps_a_request_at_the_time_left_in_the_window():
+    """A request is never allowed past the warmup's own window, and a window
+    wider than the cap leaves the cap alone."""
+    body = b'{"object": "chat.completion"}'
+    urlopen = _mock_urlopen(body)
+    with patch(_URLOPEN, urlopen):
+        warmup(
+            "http://x/chat", "m", health_url="http://x/health", timeout=5.0, request_timeout=400.0
+        )
+        warmup(
+            "http://x/chat", "m", health_url="http://x/health", timeout=600.0, request_timeout=400.0
+        )
+    chat = [c.kwargs["timeout"] for c in urlopen.call_args_list if c.kwargs["timeout"] != 2.0]
+    assert 4.0 < chat[0] <= 5.0
+    assert chat[1] == 400.0

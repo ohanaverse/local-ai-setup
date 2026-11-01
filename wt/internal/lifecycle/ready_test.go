@@ -109,18 +109,17 @@ func TestReadyNowCommandJSON(t *testing.T) {
 	}
 }
 
-// TestReadyNowModelsListIgnoresUnloadedEntries verifies models-list readiness
-// does not count a listed-but-unloaded entry as ready (sushi lists every
-// pack), while a loaded entry, or one with no flag, is ready and names the
-// listed id. Reading an unloaded pack as ready would hand an agent a server
-// that cannot answer yet.
-func TestReadyNowModelsListIgnoresUnloadedEntries(t *testing.T) {
+// TestReadyNowModelsListReadsEveryListedEntry verifies models-list readiness
+// counts a listed entry whatever its "loaded" flag says and names the listed
+// id: the flag is read only for a family that opts in (FamilySpec.LoadedOnly,
+// sushi, which is ready by ReadyHTTP and confirmed by confirmLoaded instead).
+func TestReadyNowModelsListReadsEveryListedEntry(t *testing.T) {
 	spec := provider.ProcessSpec{Binary: "listx", Ready: provider.Ready{Kind: provider.ReadyModelsList}}
 	for name, tc := range map[string]struct {
 		body string
 		want readyState
 	}{
-		"unloaded": {`{"data":[{"id":"org/Qwen","loaded":false}]}`, readyState{}},
+		"unloaded": {`{"data":[{"id":"org/Qwen","loaded":false}]}`, readyState{Ready: true, Model: "org/Qwen"}},
 		"loaded":   {`{"data":[{"id":"org/Qwen","loaded":true}]}`, readyState{Ready: true, Model: "org/Qwen"}},
 		"absent":   {`{"data":[{"id":"org/Qwen"}]}`, readyState{Ready: true, Model: "org/Qwen"}},
 	} {

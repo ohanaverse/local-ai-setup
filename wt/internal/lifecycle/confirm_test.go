@@ -65,7 +65,7 @@ func TestStartedGoneDecidesPerFamily(t *testing.T) {
 		"mtplx serving another model":    {"mtplx", openaiSrv(t, []string{"Y/Q27"}), "Y/Q35", "is no longer serving it"},
 		"mtplx answers with an error":    {"mtplx", errorSrv(t), "Y/Q35", ""},
 		"mtplx lists it loaded":          {"mtplx", loadedSrv(t, map[string]bool{"Y/Q35": true}), "Y/Q35", ""},
-		"mtplx lists it unloaded":        {"mtplx", loadedSrv(t, map[string]bool{"Y/Q35": false}), "Y/Q35", "is no longer serving it"},
+		"mtplx lists it unloaded":        {"mtplx", loadedSrv(t, map[string]bool{"Y/Q35": false}), "Y/Q35", ""},
 		"sushi pack loaded":              {"sushi", loadedSrv(t, map[string]bool{"p/Pack": true, "q/Other": false}), "p/Pack", ""},
 		"sushi pack listed unloaded":     {"sushi", loadedSrv(t, map[string]bool{"p/Pack": false, "q/Other": true}), "p/Pack", "is no longer serving it"},
 		"sushi port refuses":             {"sushi", closed, "p/Pack", "sushi no longer answers at " + closed},

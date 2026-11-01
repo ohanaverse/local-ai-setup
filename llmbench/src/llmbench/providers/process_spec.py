@@ -54,6 +54,12 @@ class ProcessSpec:
     restore_action: str
     warmup_seconds: int
     ready: Ready
+    # The family's default model directory ("" when it has none).
+    model_dir: str = ""
+    # /v1/models lists packs the server has not loaded, flagged `loaded: false`.
+    loaded_only: bool = False
+    # A start is first checked against the GPU wired limit.
+    wired_limit: bool = False
 
 
 def contract_path() -> Path:
@@ -80,6 +86,14 @@ def _int(raw: dict[str, Any], key: str, where: str, *, minimum: int = 1) -> int:
     value = _get(raw, key, where)
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ProcessSpecError(f"{where}: `{key}` must be a positive integer")
+    return value
+
+
+def _bool(raw: dict[str, Any], key: str, where: str) -> bool:
+    """An optional boolean, False when the key is absent."""
+    value = raw.get(key, False)
+    if not isinstance(value, bool):
+        raise ProcessSpecError(f"{where}: `{key}` must be true or false")
     return value
 
 
@@ -140,6 +154,9 @@ def _parse(raw: dict[str, Any], index: int) -> ProcessSpec:
         restore_action=s("restore_action"),
         warmup_seconds=_int(raw, "warmup_seconds", where),
         ready=_parse_ready(raw.get("ready"), where),
+        model_dir=str(raw.get("model_dir", "")),
+        loaded_only=_bool(raw, "loaded_only", where),
+        wired_limit=_bool(raw, "wired_limit", where),
     )
     if "" in spec.stop:
         raise ProcessSpecError(f"{where}: `stop` must not contain empty arguments")

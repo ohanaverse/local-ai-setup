@@ -16,8 +16,12 @@
   against the pack and prints `sudo sysctl iogpu.wired_limit_mb=59000` when it
   is too low (wt never sets it). Process specs gain a required
   `WarmupSeconds` (mtplx and rec stay 120 s), an `http-get` ready kind and an
-  empty `Stop` for stop-by-pid, and the served list ignores `loaded: false`
-  entries. Register a pack with `wt model add sushi <org>/<pack> --family
+  empty `Stop` for stop-by-pid, and the served list of a family flagged
+  `LoadedOnly` (sushi) ignores `loaded: false` entries. A start finding the port busy
+  with a sushi wt itself started (up, no pack loaded yet) reuses it and loads the
+  pack there instead of failing with `port in use`. `config.Load` lists sushi for
+  claude and pi in memory whenever the registry holds a sushi model, not only after
+  `wt model add`. Register a pack with `wt model add sushi <org>/<pack> --family
   <f>`; see `docs/guides/02-providers-and-models.md`.
 - `wt profile slots add|set|rm|usage|candidates` manage
   `slot-profiles.toml`: edits keep other entries and comments byte for byte,

@@ -48,6 +48,9 @@ def _spec(
     model_path: str = "model",
     stop: tuple[str, ...] = ("stop", "--port", "{port}"),
     warmup_seconds: int = 120,
+    wired_limit: bool = False,
+    loaded_only: bool = False,
+    model_dir: str = "",
 ) -> ProcessSpec:
     if kind == "models-list":
         ready = Ready(kind, (), "", "", "", "")
@@ -74,6 +77,9 @@ def _spec(
         restore_action="stop",
         warmup_seconds=warmup_seconds,
         ready=ready,
+        model_dir=model_dir,
+        loaded_only=loaded_only,
+        wired_limit=wired_limit,
     )
 
 
@@ -1107,6 +1113,8 @@ def _http_get(tmp_path: Path, log: str = "", **kw) -> ProcessServerBackend:
     defaults are sushi's: signal stop, 400 s budget."""
     kw.setdefault("stop", ())
     kw.setdefault("warmup_seconds", 400)
+    kw.setdefault("wired_limit", not kw["stop"])
+    kw.setdefault("loaded_only", not kw["stop"])
     backend = ProcessServerBackend(_spec(kind="http-get", **kw))
     _logged(backend, tmp_path, log)
     return backend
@@ -1144,6 +1152,18 @@ def test_already_serving_http_get_asks_the_loaded_aware_list(tmp_path):
         assert backend.already_serving(backend.resolve("org/pack", ())) is True
     serving.assert_called_once()
     assert serving.call_args.args == (MODELS, "org/pack")
+    assert serving.call_args.kwargs == {"exact": True, "loaded_only": True}
+
+
+def test_only_a_loaded_only_spec_reads_the_loaded_flag(tmp_path):
+    """The `loaded: false` filter is the spec's opt-in (sushi): a spec without
+    it asks the plain list, so no other server's listing changes meaning."""
+    backend = _http_get(tmp_path, loaded_only=False)
+    with (
+        patch(f"{PS}.probe.wait_for_port_open", return_value=False),
+        patch(f"{PS}.probe.serving_model", return_value=True) as serving,
+    ):
+        backend.already_serving(backend.resolve("org/pack", ()))
     assert serving.call_args.kwargs == {"exact": True}
 
 
@@ -1222,7 +1242,7 @@ def test_warm_skips_the_pack_check_when_the_list_is_empty(tmp_path):
     backend = _http_get(tmp_path)
     _, warm, serving = _warm(backend, listed=[])
     warm.assert_called_once()
-    serving.assert_called_once_with(MODELS, "org/pack", exact=True)
+    serving.assert_called_once_with(MODELS, "org/pack", exact=True, loaded_only=True)
 
 
 def test_warm_fails_closed_when_the_model_list_cannot_be_read(tmp_path):
@@ -1391,14 +1411,31 @@ UNOWNED = (
 )
 
 
+# What a spawned fake server runs with: the spec's spawn template at port 9100
+# with no model (a model-less server, as sushi is).
+EXPECT = ["serve", "-m", "", "-p", "9100", "--id", ""]
+
+
 def _signal_backend() -> ProcessServerBackend:
-    return ProcessServerBackend(_spec(kind="http-get", stop=(), warmup_seconds=400))
+    return ProcessServerBackend(
+        _spec(
+            kind="http-get",
+            stop=(),
+            warmup_seconds=400,
+            wired_limit=True,
+            loaded_only=True,
+            model_dir="~/.sushi/models",
+        )
+    )
 
 
-def _pidproc_mock(live_pid: int | None = 4242, pid: int | None = 4242) -> MagicMock:
+def _pidproc_mock(
+    live_pid: int | None = 4242, pid: int | None = 4242, gone: bool = True
+) -> MagicMock:
     pidproc = MagicMock()
     pidproc.live_pid.return_value = live_pid
     pidproc.read_pid.return_value = pid
+    pidproc.stop_verified.return_value = gone
     return pidproc
 
 
@@ -1412,7 +1449,8 @@ def test_empty_stop_stops_through_the_pidfile_and_never_runs_the_binary():
     ):
         assert backend.stop_and_wait() is None
     run.assert_not_called()
-    pidproc.stop.assert_called_once_with()
+    pidproc.stop_verified.assert_called_once_with(EXPECT)
+    pidproc.live_pid.assert_called_once_with(EXPECT)
     closed.assert_called_once_with(MODELS, timeout=SIGNAL_STOP_TIMEOUT)
     assert SIGNAL_STOP_TIMEOUT == 15.0
 
@@ -1426,7 +1464,7 @@ def test_empty_stop_with_nothing_running_is_a_clean_noop():
     ):
         assert backend.stop_and_wait() is None
     run.assert_not_called()
-    pidproc.stop.assert_called_once_with()  # tolerates the missing pidfile
+    pidproc.stop_verified.assert_called_once_with(EXPECT)  # tolerates the missing pidfile
 
 
 def test_empty_stop_reports_a_server_it_cannot_own():
@@ -1535,7 +1573,7 @@ def test_already_serving_accepts_a_server_with_a_verified_pidfile():
         patch.object(backend, "_pidproc", _pidproc_mock()),
     ):
         assert backend.already_serving(backend.resolve("org/pack", ())) is True
-    serving.assert_called_once_with(MODELS, "org/pack", exact=True)
+    serving.assert_called_once_with(MODELS, "org/pack", exact=True, loaded_only=True)
 
 
 def test_already_serving_does_not_object_when_nothing_answers():
@@ -1947,3 +1985,42 @@ def test_a_failed_preflight_stops_no_other_provider(tmp_path):
     stop_others.assert_not_called()
     pidproc.stop.assert_not_called()
     pidproc.spawn.assert_not_called()
+
+
+def test_the_memory_refusal_markers_are_pinned():
+    """The same eight phrases as wt's memoryRefusalMarkers (pinned there too),
+    so the two heuristics cannot drift. The bare word "iogpu" is not one: it
+    shows up in unrelated startup lines and would send the user to raise a
+    limit that was never the problem."""
+    from llmbench.providers.lifecycle.backends.process_server import _MEMORY_REFUSAL
+
+    phrases = [
+        "out of memory",
+        "insufficient memory",
+        "not enough memory",
+        "cannot allocate",
+        "failed to allocate",
+        "memory limit",
+        "wired limit",
+        "wired_limit",
+    ]
+    assert _MEMORY_REFUSAL.pattern == "|".join(phrases)
+    for phrase in phrases:
+        assert _MEMORY_REFUSAL.search(f"HTTP 500: {phrase.upper()} while loading")
+    for unrelated in ("IOGPU command buffer", "iogpu family ready", "No default model configured"):
+        assert _MEMORY_REFUSAL.search(unrelated) is None
+
+
+def test_empty_stop_reports_a_server_that_outlived_sigterm_and_sigkill():
+    """A server that is still running after both signals keeps its pidfile and
+    says so, rather than reading as a clean stop or as one nobody owns."""
+    backend = _signal_backend()
+    with (
+        patch(f"{PS}.probe.port_closed_within", side_effect=AssertionError("waited")),
+        patch.object(backend, "_pidproc", _pidproc_mock(gone=False)),
+    ):
+        message = backend.stop_and_wait()
+    assert message is not None
+    assert "pid 4242" in message
+    assert "did not exit" in message
+    assert "pidfile was kept" in message

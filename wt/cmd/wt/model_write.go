@@ -217,20 +217,16 @@ func runModelAdd(out, errOut io.Writer, cfg *config.Config, req modeladmin.AddRe
 	return syncAndWarn(out, errOut, warnings)
 }
 
-// sushiAgents are the agents that can run a Sushi model: claude (through
-// LiteLLM, as Sushi serves only openai-chat) and pi (direct). Sushi's
-// supported_providers entry is not in a stock config.toml, and without it
-// `wt smoke` and the pickers report no agent supports the model.
-var sushiAgents = []string{"claude", "pi"}
-
-// enableSushiForAgents lists sushi in sushiAgents' supported_providers after
-// a sushi model is registered, and says which agents it changed. A failure
+// enableSushiForAgents lists sushi in config.SushiAgents' supported_providers
+// in config.toml after a sushi model is registered, and says which agents it
+// changed. config.Load also derives the entry in memory for any registry that
+// holds a sushi model, so this write only makes it durable. A failure
 // is a warning: the model is registered, and the line to add by hand is in it.
 func enableSushiForAgents(out io.Writer, providerID string) []string {
 	if providerID != "sushi" {
 		return nil
 	}
-	changed, err := config.EnsureAgentProvider("sushi", sushiAgents...)
+	changed, err := config.EnsureAgentProvider("sushi", config.SushiAgents...)
 	if err != nil {
 		return []string{fmt.Sprintf("could not add sushi to the agents' supported_providers in config.toml (%v); add it to claude and pi by hand", err)}
 	}

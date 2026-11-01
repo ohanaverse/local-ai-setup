@@ -317,3 +317,53 @@ func TestSushiPackCheckSkipsAnEmptyList(t *testing.T) {
 		t.Errorf("start = %v, want the load check to refuse the pack after the warmup", err)
 	}
 }
+
+// TestSushiStartReusesTheServerWtStarted verifies the case a pack-less (or
+// still loading) sushi creates: /health answers but nothing shows running, so
+// a second start finds the port busy. When the pidfile names a server wt
+// verifies as its own, the start spawns nothing, signals nothing and warms
+// the pack in that server, where it used to fail with *PortBusyError.
+func TestSushiStartReusesTheServerWtStarted(t *testing.T) {
+	e, cfg, port, argvFile, chatLog := sushiEnv(t, "Org/Pack", 200, 0)
+	target := Target{ProviderID: "sushix", ModelName: "Org/Pack"}
+	if err := (processServer{"sushix"}).start(context.Background(), e, cfg, target, func(Stage) {}); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	first := helperPid(t, argvFile)
+	if err := os.Remove(chatLog); err != nil {
+		t.Fatalf("chat log of the first start: %v", err)
+	}
+	argv := append([]string{"sushix"}, strings.Fields(strings.SplitN(mustRead(t, argvFile), "\n", 2)[1])...)
+	e.describe = func(pid int) (procInfo, bool, error) {
+		return procInfo{uid: os.Getuid(), pgid: pid, start: "100.5", argv: argv}, true, nil
+	}
+	e.signal = func(int, syscall.Signal) error {
+		t.Error("a reused server must not be signalled")
+		return nil
+	}
+	var stages []Stage
+	if err := (processServer{"sushix"}).start(context.Background(), e, cfg, target, func(s Stage) { stages = append(stages, s) }); err != nil {
+		t.Fatalf("second start against the wt-owned server on port %d: %v", port, err)
+	}
+	if got := helperPid(t, argvFile); got != first {
+		t.Errorf("a second server was spawned (pid %d, first %d)", got, first)
+	}
+	if !reflect.DeepEqual(stages, []Stage{StageStarting, StageWarming}) {
+		t.Errorf("stages = %v, want starting then warming", stages)
+	}
+	if b, _ := os.ReadFile(chatLog); !strings.Contains(string(b), "chat") {
+		t.Errorf("the reused server was never asked to load the pack (chat log %q)", b)
+	}
+	if pid := first; pidGone(pid) {
+		t.Errorf("the reused server %d was killed", pid)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

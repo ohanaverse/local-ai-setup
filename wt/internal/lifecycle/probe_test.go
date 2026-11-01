@@ -156,34 +156,28 @@ func TestWaitForModel(t *testing.T) {
 	}
 }
 
-// TestWaitForModelIgnoresUnloadedEntries verifies a model listed with
-// "loaded": false (sushi lists every pack while it loads one) does not end the
-// wait: only the loaded entry does, and a list that never loads it times out.
-func TestWaitForModelIgnoresUnloadedEntries(t *testing.T) {
+// TestWaitForModelCountsEveryListedEntry verifies the models-list wait reads a
+// family's listing as it always has: an entry flagged "loaded": false still
+// counts, since only a family that opts in (FamilySpec.LoadedOnly, sushi, which
+// is not waited on this way) reads that flag. A list without the model times
+// out.
+func TestWaitForModelCountsEveryListedEntry(t *testing.T) {
 	e := testEnv()
 	ctx := context.Background()
-	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&hits, 1) < 3 {
-			_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":false,"state":"loading"}]}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":true,"state":"ready"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":false}]}`))
 	}))
 	defer srv.Close()
 	if err := e.waitForModel(ctx, srv.URL, "Qwen", nil, "", time.Second); err != nil {
 		t.Fatalf("waitForModel: %v", err)
 	}
-	if n := atomic.LoadInt32(&hits); n < 3 {
-		t.Errorf("hits = %d, want at least 3 (two unloaded answers first)", n)
-	}
 
 	never := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"org/Qwen","loaded":false}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"org/Other"}]}`))
 	}))
 	defer never.Close()
 	if err := e.waitForModel(ctx, never.URL, "Qwen", nil, "", 60*time.Millisecond); err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("never-loaded err = %v, want timed out", err)
+		t.Errorf("never-listed err = %v, want timed out", err)
 	}
 }
 
@@ -530,5 +524,32 @@ func TestTryChatHonoursItsTimeout(t *testing.T) {
 	}
 	if ok, _, reason := e.tryChat(context.Background(), srv.URL, "", []byte(`{}`), 5*time.Second); !ok {
 		t.Errorf("tryChat with a 5s cap: want ok=true, got reason %q", reason)
+	}
+}
+
+// TestWarmupForNeverRunsPastItsWindow verifies a chat request begun late in
+// the warmup window is capped at the time left, so a budget of N seconds is
+// at most N seconds and not N plus one more full request. The server answers
+// the chat only after 3 s; with a 300 ms window and a 10 s request cap the
+// warmup must give up in about 300 ms.
+func TestWarmupForNeverRunsPastItsWindow(t *testing.T) {
+	e := testEnv()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			select {
+			case <-time.After(3 * time.Second):
+			case <-r.Context().Done():
+			}
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+	start := time.Now()
+	err := e.warmupFor(context.Background(), srv.URL+"/v1/chat/completions", "m", srv.URL+"/health", "", 300*time.Millisecond, 10*time.Second)
+	if err == nil {
+		t.Fatal("warmup of a server that never answers succeeded")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("warmup took %v with a 300ms window", took)
 	}
 }

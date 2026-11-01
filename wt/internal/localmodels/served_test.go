@@ -211,19 +211,23 @@ func TestServedIDsOtherFamiliesReadTheList(t *testing.T) {
 	}
 }
 
-// TestServedIDsLoadedFieldPerFamily pins that the loaded filter is generic, not
-// a sushi special case: any family whose /v1/models marks an entry
-// "loaded": false has that entry dropped, one with true or no field is
-// unchanged, and omlx keeps reading its own pool.
+// TestServedIDsLoadedFieldPerFamily pins that the loaded filter is opt-in
+// (FamilySpec.LoadedOnly, only sushi): sushi drops an entry its /v1/models
+// marks "loaded": false, every other family reads each listed id as served, and
+// omlx keeps reading its own pool.
 func TestServedIDsLoadedFieldPerFamily(t *testing.T) {
-	for _, family := range []string{"mtplx", "mlx_lm_server", "rec", "ollama"} {
+	for _, family := range []string{"mtplx", "mlx_lm_server", "rec", "ollama", "sushi"} {
+		unloaded := []string{"Org/Q"}
+		if family == "sushi" {
+			unloaded = []string{}
+		}
 		for name, tc := range map[string]struct {
 			body string
 			want []string
 		}{
 			"no loaded field": {`{"data":[{"id":"Org/Q"}]}`, []string{"Org/Q"}},
 			"loaded true":     {`{"data":[{"id":"Org/Q","loaded":true}]}`, []string{"Org/Q"}},
-			"loaded false":    {`{"data":[{"id":"Org/Q","loaded":false}]}`, []string{}},
+			"loaded false":    {`{"data":[{"id":"Org/Q","loaded":false}]}`, unloaded},
 		} {
 			t.Run(family+" "+name, func(t *testing.T) {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))

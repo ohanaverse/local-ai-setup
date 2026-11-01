@@ -46,7 +46,7 @@ from ... import secret as _secret
 from ...process_spec import ProcessSpec, expand
 from .. import binaries, probe
 from ..envelope import LifecycleError
-from ..pidproc import PidfileProcess, signalable
+from ..pidproc import PidfileProcess
 from .base import PidfileTrackedBackend, StartPlan
 
 # The pre-spawn wait for the previous occupant to release the port.
@@ -142,28 +142,31 @@ _TAIL_WITHHELD = "log tail withheld: provider key unreadable, cannot mask"
 
 # The fix for a warmup macOS refused the memory for, and the phrases that make
 # a failed warmup (its log tail included) read as one. A pinned heuristic, the
-# same list as wt's looksLikeMemoryRefusal.
+# same list as wt's memoryRefusalMarkers (each side's test pins it). The bare
+# word "iogpu" is left out: it appears in unrelated startup lines of the
+# server log and would send the user to raise a limit that was never the
+# problem.
 _WIRED_LIMIT_HINT = (
     "raise the GPU wired limit with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on reboot)"
 )
 _MEMORY_REFUSAL = re.compile(
     r"out of memory|insufficient memory|not enough memory|cannot allocate|failed to allocate"
-    r"|memory limit|wired limit|wired_limit|iogpu",
+    r"|memory limit|wired limit|wired_limit",
     re.IGNORECASE,
 )
 
 
-# The wired-limit preflight (a signal-stop spec only; the same integer rule
-# as wt's wiredNeedMiB/parseWiredLimit). A pack loads only when macOS lets the
-# GPU wire about 1.1 x its safetensors; llmbench reads the sysctl and never
-# sets it (that needs sudo).
-_DEFAULT_PACK_DIR = "~/.sushi/models"
+# The wired-limit preflight (a spec with `wired_limit` only; the same integer
+# rule as wt's wiredNeedMiB/parseWiredLimit). A pack loads only when macOS
+# lets the GPU wire about 1.1 x its safetensors; llmbench reads the sysctl and
+# never sets it (that needs sudo).
 
 
-def _models_root(row: ProviderEntry | None) -> Path:
+def _models_root(row: ProviderEntry | None, spec: ProcessSpec) -> Path:
     """The directory holding the packs: the provider row's `model_dir`, else
-    the family default, `~` expanded."""
-    return Path((row.model_dir if row else "") or _DEFAULT_PACK_DIR).expanduser()
+    the spec's `model_dir` (the contract's copy of wt's family default), `~`
+    expanded."""
+    return Path((row.model_dir if row else "") or spec.model_dir).expanduser()
 
 
 def _safetensors_bytes(pack_dir: Path) -> int | None:
@@ -428,14 +431,14 @@ class ProcessServerBackend(PidfileTrackedBackend):
             and probe.wait_for_port_open(
                 addr.health_url, timeout=1.0, interval=0.2, **_key_arg(key)
             )
-            and self._pidproc.live_pid() is None
+            and self._pidproc.live_pid(self._expect_argv(addr)) is None
         ):
             raise LifecycleError(
                 f"{self._unowned(addr)}; its context size cannot be checked, so it is not "
                 "reused. Stop it yourself and retry"
             )
         serving = self._serving(plan, addr, key)
-        if self._signal_stop and not serving:
+        if self.spec.wired_limit and not serving:
             self._preflight_wired_limit(plan)
         return serving
 
@@ -443,10 +446,15 @@ class ProcessServerBackend(PidfileTrackedBackend):
         """Whether the server already serves `plan.model` (see
         `already_serving`)."""
         ready = self.spec.ready
+        # Only a spec that opts in passes the flag: every other spec's probe
+        # call stays exactly what it was.
+        loaded: dict[str, bool] = {"loaded_only": True} if self.spec.loaded_only else {}
         if ready.kind == "models-list":
-            return probe.serving_model(addr.health_url, plan.model, **_key_arg(key))
+            return probe.serving_model(addr.health_url, plan.model, **loaded, **_key_arg(key))
         if ready.kind == "http-get":
-            return probe.serving_model(addr.health_url, plan.model, exact=True, **_key_arg(key))
+            return probe.serving_model(
+                addr.health_url, plan.model, exact=True, **loaded, **_key_arg(key)
+            )
         try:
             bin_path = binaries.require_binary(self.spec.binary)
         except LifecycleError:
@@ -478,7 +486,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
         def skip(why: str) -> None:
             print(f"{self.id}: skipping the memory check ({why})", file=sys.stderr)
 
-        pack_bytes = _safetensors_bytes(_models_root(self._provider_row()) / plan.model)
+        pack_bytes = _safetensors_bytes(_models_root(self._provider_row(), self.spec) / plan.model)
         if pack_bytes is None:
             skip(f"cannot read the safetensors of {plan.model}")
             return
@@ -600,17 +608,20 @@ class ProcessServerBackend(PidfileTrackedBackend):
     def warm(self, plan: StartPlan) -> None:
         """Warm the model within the spec's `warmup_seconds`. On a signal-stop
         spec a failed warm carries the server log's tail (masked, as
-        `wait_ready`'s does), and the wired-limit fix when the combined text
+        `wait_ready`'s does), and, with `wired_limit`, the wired-limit fix when the combined text
         reads as a memory refusal; the warmup's own error types are kept
         unless the fix is added. Any other spec's failure is raised as it
         is."""
         try:
             self._warm(plan)
+        except probe.WarmupRefusedError:
+            # Not a load failure (as in wait_ready): no log tail, no memory hint.
+            raise
         except LifecycleError as exc:
             if not self._signal_stop:
                 raise
             message = self._with_log_tail(str(exc), self._pidproc.log_tail())
-            if _MEMORY_REFUSAL.search(message):
+            if self.spec.wired_limit and _MEMORY_REFUSAL.search(message):
                 raise LifecycleError(f"{message}; {_WIRED_LIMIT_HINT}") from exc
             if message == str(exc):
                 raise
@@ -651,7 +662,7 @@ class ProcessServerBackend(PidfileTrackedBackend):
                 raise
             raise LifecycleError(timed_out) from exc
         if http_get and not probe.serving_model(
-            addr.health_url, plan.model, exact=True, **_key_arg(key)
+            addr.health_url, plan.model, exact=True, loaded_only=True, **_key_arg(key)
         ):
             raise LifecycleError(
                 f"{self.id}: {plan.model} answered the warmup but is not listed as loaded "
@@ -723,13 +734,21 @@ class ProcessServerBackend(PidfileTrackedBackend):
             return self._lingering_warning(lingering)
         return f"{binary} still listening on port {addr.port}"
 
+    def _expect_argv(self, addr: _Address) -> list[str]:
+        """The arguments a server this backend spawned runs with (the spec's
+        spawn template at `addr`'s port): what the strict identity check
+        compares a pidfile's process against, as wt's serverArgvMatches does."""
+        return expand(self.spec.spawn, model="", port=addr.port)
+
     def _signal_stop_and_wait(self) -> str | None:
-        """Stop by the pidfile: SIGTERM the pid it names when that pid is a
-        live process that looks like this server (`PidfileProcess.stop`),
-        then wait up to SIGNAL_STOP_TIMEOUT for the port to close. A pidfile
-        naming pid 1 or this process is never handed to `stop()`. A server
-        still answering is reported as one llmbench cannot own when no
-        verified pid was found, else as one that did not let go.
+        """Stop by the pidfile: signal the pid it names when that pid is a
+        live process of this user running exactly this server's argv
+        (`PidfileProcess.stop_verified`: SIGTERM, SIGKILL after 10 s, the
+        pidfile kept until the process is gone), then wait up to
+        SIGNAL_STOP_TIMEOUT for the port to close. A pidfile naming pid 1 or
+        this process is never signalled. A server still answering is
+        reported as one llmbench cannot own when no verified pid was found,
+        else as one that did not let go.
 
         With no verified pid nothing of ours was signalled, so there is
         nothing to wait for: one probe (`probe.port_answers`) and the
@@ -737,19 +756,23 @@ class ProcessServerBackend(PidfileTrackedBackend):
         provider's isolate (`_stop_others`) would pay SIGNAL_STOP_TIMEOUT
         while a hand-started server is up.
 
-        Weaker than wt: identity is the name in the pid's `ps` line (and a
-        pid `ps` cannot describe counts as a match), SIGTERM only, no
-        process group, no SIGKILL."""
+        Identity is wt's: owner uid and exact argv (no start-time check: a
+        sushi llmbench starts has no `.wt` record), so a recycled pid whose
+        command line merely mentions sushi is never signalled."""
         self._forget_row()
         addr = self._address()
-        owned = self._pidproc.live_pid() is not None
-        pid = self._pidproc.read_pid()
-        if pid is None or signalable(pid):
-            self._pidproc.stop()
+        expect = self._expect_argv(addr)
+        owned = self._pidproc.live_pid(expect) is not None
+        gone = self._pidproc.stop_verified(expect)
         if not owned:
             if probe.port_answers(addr.health_url):
                 return f"{self._unowned(addr)}; stop it yourself"
             return None
+        if not gone:
+            return (
+                f"{self.spec.binary} (pid {self._pidproc.read_pid()}) did not exit after "
+                "SIGTERM and SIGKILL; its pidfile was kept"
+            )
         if probe.port_closed_within(addr.health_url, timeout=SIGNAL_STOP_TIMEOUT):
             return None
         return f"{self.spec.binary} still listening on port {addr.port}"

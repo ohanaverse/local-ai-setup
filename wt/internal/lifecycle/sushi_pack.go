@@ -26,7 +26,7 @@ func (e *PackNotListedError) Error() string {
 // pack sushi has not loaded yet is still one it can serve. A 401/403 is a
 // *KeyRefusedError.
 func listedPackIDs(client *http.Client, modelsURL, key string) ([]string, error) {
-	ids, err := localmodels.FetchAllModelIDsKeyed(client, modelsURL, key)
+	ids, err := localmodels.FetchModelIDsKeyed(client, modelsURL, key)
 	if errors.Is(err, localmodels.ErrKeyRefused) {
 		return nil, &KeyRefusedError{URL: modelsURL, KeySent: key != "", Detail: err.Error()}
 	}
@@ -63,7 +63,7 @@ func (e *env) confirmLoaded(ctx context.Context, modelsURL, model, key string) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ids, err := localmodels.FetchModelIDsKeyed(e.probeClient, modelsURL, key)
+	ids, err := localmodels.FetchLoadedModelIDsKeyed(e.probeClient, modelsURL, key)
 	if errors.Is(err, localmodels.ErrKeyRefused) {
 		return &KeyRefusedError{URL: modelsURL, KeySent: key != "", Detail: err.Error()}
 	}

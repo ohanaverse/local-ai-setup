@@ -116,25 +116,42 @@ def _refusal_detail(exc: urllib.error.HTTPError, key: str | None) -> str:
 
 
 def _model_ids(
-    models_url: str, key: str | None, *, refused_is_final: bool, loaded_only: bool = True
+    models_url: str,
+    key: str | None,
+    *,
+    refused_is_final: bool,
+    loaded_only: bool = False,
+    strict: bool = False,
 ) -> list[str]:
     """Ids listed at `models_url`, [] on any failure. Without a key this is
     `http_models_ids`, unchanged. With one, a 401/403 raises
     `WarmupRefusedError` when `refused_is_final` (the key is wrong and
     waiting will not change that) and reads as [] otherwise. `loaded_only`
-    is `models_body_ids`'s."""
-    if key is None:
+    is `models_body_ids`'s.
+
+    `strict` makes a list that cannot be read a `LifecycleError` (a refused
+    key still `WarmupRefusedError`), so a caller can tell it from an empty
+    one; every failure rule lives here, once."""
+    if key is None and not strict:
         return http_models_ids(models_url, loaded_only=loaded_only)
     try:
         with urllib.request.urlopen(_target(models_url, key), timeout=2.0) as resp:  # noqa: S310 — localhost probe
             data = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        if refused_is_final and exc.code in _KEY_REFUSED:
+        if (refused_is_final or strict) and exc.code in _KEY_REFUSED:
             raise WarmupRefusedError(
                 f"{models_url} refused the provider's key (HTTP {exc.code})"
             ) from None
+        if strict:
+            raise LifecycleError(
+                f"cannot read the model list at {models_url} (HTTP {exc.code})"
+            ) from None
         return []
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise LifecycleError(
+                f"cannot read the model list at {models_url} ({type(exc).__name__})"
+            ) from None
         return []
     return models_body_ids(data, loaded_only=loaded_only)
 
@@ -262,13 +279,20 @@ def wait_for_model(
 
 
 def serving_model(
-    models_url: str, model: str, *, key: str | None = None, exact: bool = False
+    models_url: str,
+    model: str,
+    *,
+    key: str | None = None,
+    exact: bool = False,
+    loaded_only: bool = False,
 ) -> bool:
-    """True when `models_url` already lists `model` as loaded (same lenient
-    match as `wait_for_model`; `exact=True` tests plain membership instead).
-    Any error — a down or wedged server, or a refused key — reads as "not
-    serving", the safe fallback; this never raises."""
-    ids = _model_ids(models_url, key, refused_is_final=False)
+    """True when `models_url` already lists `model` (same lenient match as
+    `wait_for_model`; `exact=True` tests plain membership instead). With
+    `loaded_only`, for a server that lists packs it has not loaded (sushi),
+    only an entry not flagged `loaded: false` counts. Any error — a down or
+    wedged server, or a refused key — reads as "not serving", the safe
+    fallback; this never raises."""
+    ids = _model_ids(models_url, key, refused_is_final=False, loaded_only=loaded_only)
     return model in ids if exact else _lists(ids, model)
 
 
@@ -277,24 +301,7 @@ def listed_ids(models_url: str, *, key: str | None = None, strict: bool = False)
     counts as listed. [] on any failure, never raising, unless `strict`:
     then a list that cannot be read raises LifecycleError (a refused key
     `WarmupRefusedError`), so a caller can tell it from an empty one."""
-    if not strict:
-        return _model_ids(models_url, key, refused_is_final=False, loaded_only=False)
-    try:
-        with urllib.request.urlopen(_target(models_url, key), timeout=2.0) as resp:  # noqa: S310 — localhost probe
-            data = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        if exc.code in _KEY_REFUSED:
-            raise WarmupRefusedError(
-                f"{models_url} refused the provider's key (HTTP {exc.code})"
-            ) from None
-        raise LifecycleError(
-            f"cannot read the model list at {models_url} (HTTP {exc.code})"
-        ) from None
-    except (OSError, ValueError) as exc:
-        raise LifecycleError(
-            f"cannot read the model list at {models_url} ({type(exc).__name__})"
-        ) from None
-    return models_body_ids(data, loaded_only=False)
+    return _model_ids(models_url, key, refused_is_final=False, strict=strict)
 
 
 def wait_for_http_ok(
@@ -341,8 +348,13 @@ def warmup(
     check was baked in elsewhere.
 
     `timeout` bounds the whole poll; `request_timeout` caps each chat request
-    (a cold load can outlast the 120 s default).
+    (a cold load can outlast the 120 s default). No request runs past
+    `timeout`: each is capped at the time left, so a 400 s budget is at most
+    400 s and not 400 s plus one more full request.
     """
+    # Its own clock, not `time.monotonic`: `_deadline_loop` owns that one's
+    # reads, and this only needs the time left to cap a request.
+    started = time.perf_counter()
     payload = json.dumps(
         {
             "model": model,
@@ -377,7 +389,8 @@ def warmup(
             continue
         try:
             req = urllib.request.Request(chat_url, data=payload, headers=chat_headers)
-            with urllib.request.urlopen(req, timeout=request_timeout) as resp:  # noqa: S310
+            left = max(timeout - (time.perf_counter() - started), 0.05)
+            with urllib.request.urlopen(req, timeout=min(request_timeout, left)) as resp:  # noqa: S310
                 body = resp.read().decode()
             # MTPLX (and others) may serialize with spaces between keys and
             # values (e.g. `"object": "chat.completion"`); tolerate

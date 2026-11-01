@@ -176,7 +176,7 @@ var families = map[string]FamilySpec{
 	// 131072) is a Spawn literal.
 	"sushi": {
 		Name: "sushi", DefaultOrigin: sushiOrigin, DefaultModelDir: sushiModelDir, WtPort: sushiPort,
-		Served: true, ServedOnly: true, Tenancy: Exclusive, Scope: ScopePort,
+		Served: true, ServedOnly: true, LoadedOnly: true, Tenancy: Exclusive, Scope: ScopePort,
 		Process: &ProcessSpec{
 			Binary:         "sushi",
 			Spawn:          []string{"serve", "--port", "{port}", "--host", "127.0.0.1", "--ctx-size", "131072", "--max-resident-models", "1", "--no-update-check", "--max-tokens", "32768"},

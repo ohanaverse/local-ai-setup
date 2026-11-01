@@ -129,24 +129,38 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	if cerr != nil {
 		return cerr
 	}
+	// A sushi that is up with no pack loaded (or still loading one) shows
+	// nothing running, so its port is busy with a server wt itself started:
+	// that one is reused, and the warmup chat below loads the pack into it.
+	// Spawning beside it is impossible and killing it would end whatever
+	// load is in flight. Any other busy port is a server wt cannot vouch for.
+	reuse := false
 	if !closed {
-		return &PortBusyError{Port: port}
-	}
-	sp, spawnErr := e.spawn(proc, bin, spec.SpawnArgs(t.ModelName, port, serveArgs))
-	if spawnErr != nil {
-		return spawnErr
-	}
-	// What a later `wt stop` identifies this process by while its port is
-	// still closed (server_loading.go).
-	e.recordStart(b.family, sp.cmd.Process.Pid)
-	defer func() {
-		if err != nil {
-			sp.kill() // never leave a half-started server holding the port
+		if spec.Ready.Kind == provider.ReadyHTTP {
+			_, l := e.loadingServer(cfg, b.family)
+			reuse = l.PID > 0
 		}
-	}()
-	report(StageWaiting)
-	if err = e.waitReady(ctx, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
-		return withLogTail(proc, err)
+		if !reuse {
+			return &PortBusyError{Port: port}
+		}
+	}
+	if !reuse {
+		sp, spawnErr := e.spawn(proc, bin, spec.SpawnArgs(t.ModelName, port, serveArgs))
+		if spawnErr != nil {
+			return spawnErr
+		}
+		// What a later `wt stop` identifies this process by while its port is
+		// still closed (server_loading.go).
+		e.recordStart(b.family, sp.cmd.Process.Pid)
+		defer func() {
+			if err != nil {
+				sp.kill() // never leave a half-started server holding the port
+			}
+		}()
+		report(StageWaiting)
+		if err = e.waitReady(ctx, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
+			return withLogTail(proc, err)
+		}
 	}
 	report(StageWarming)
 	budget, berr := warmupBudget(spec)

@@ -285,3 +285,35 @@ def test_stop_must_not_contain_empty_arguments(monkeypatch, tmp_path):
     _use(monkeypatch, tmp_path, GOOD.replace('stop = ["stop"]', 'stop = [""]'))
     with pytest.raises(ps.ProcessSpecError, match=r"process\[0\]: `stop` must not contain empty"):
         ps.process_specs()
+
+
+def test_optional_family_facts_default_off(monkeypatch, tmp_path):
+    """A contract entry without `model_dir`, `loaded_only` or `wired_limit`
+    reads as no directory and both flags off."""
+    _use(monkeypatch, tmp_path, GOOD)
+    spec = ps.process_spec("x")
+    assert spec is not None
+    assert (spec.model_dir, spec.loaded_only, spec.wired_limit) == ("", False, False)
+
+
+@pytest.mark.parametrize("key", ["loaded_only", "wired_limit"])
+def test_a_flag_must_be_a_boolean(monkeypatch, tmp_path, key):
+    _use(
+        monkeypatch,
+        tmp_path,
+        GOOD.replace("warmup_seconds = 120", f'warmup_seconds = 120\n{key} = "yes"'),
+    )
+    with pytest.raises(ps.ProcessSpecError, match=f"`{key}` must be true or false"):
+        ps.process_specs()
+
+
+def test_real_contract_family_facts(monkeypatch):
+    """Only sushi lists unloaded packs and is checked against the wired limit;
+    its pack directory is the contract's copy of wt's family default."""
+    monkeypatch.delenv("LLMBENCH_PROCESS_PROVIDERS", raising=False)
+    facts = {
+        name: (s.loaded_only, s.wired_limit, s.model_dir) for name, s in ps.process_specs().items()
+    }
+    assert facts["sushi"] == (True, True, "~/.sushi/models")
+    assert facts["mtplx"] == (False, False, "~/.mtplx/models")
+    assert facts["rec"] == (False, False, "")

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
@@ -297,9 +298,11 @@ func TestLooksLikeMemoryRefusal(t *testing.T) {
 	}
 	for msg, want := range map[string]bool{
 		"HTTP 500: Out of memory allocating Metal buffer": true,
-		"IOGPU command buffer":                            true,
-		"No default model configured":                     false,
-		"":                                                false,
+		// The bare word "iogpu" is not a refusal: it shows up in unrelated
+		// startup lines.
+		"IOGPU command buffer":        false,
+		"No default model configured": false,
+		"":                            false,
 	} {
 		if got := looksLikeMemoryRefusal(msg); got != want {
 			t.Errorf("looksLikeMemoryRefusal(%q) = %v, want %v", msg, got, want)
@@ -361,13 +364,15 @@ func TestSushiWarmup503GetsNoHint(t *testing.T) {
 
 // TestMtplxWarmupMemoryRefusalGetsNoHint verifies the hint is sushi's alone:
 // an mtplx warmup failing with the same words reads as it always has. The
-// spec is a copy of mtplx's at a 1 s budget to keep the test short.
+// spec is a copy of mtplx's at a 3 s budget to keep the test short (a request
+// is capped at the time left, so a budget under a loaded runner's first
+// answer would fail on the deadline instead of the body).
 func TestMtplxWarmupMemoryRefusalGetsNoHint(t *testing.T) {
 	e, cfg, port, _ := mtplxEnv(t, "serve", 0)
 	t.Setenv("LIFECYCLE_HELPER_CHAT_STATUS", "500")
 	t.Setenv("LIFECYCLE_HELPER_CHAT_BODY", `{"error":"out of memory"}`)
 	spec, _ := provider.ProcessFor("mtplx")
-	spec.WarmupSeconds = 1
+	spec.WarmupSeconds = 3
 	facts, _ := provider.FamilyByName("mtplx")
 	stubFamily(t, "mtplx", spec, facts, port)
 	err := processServer{"mtplx"}.start(context.Background(), e, cfg, Target{ProviderID: "mtplx", ModelName: "Org/Model"}, func(Stage) {})
@@ -376,5 +381,50 @@ func TestMtplxWarmupMemoryRefusalGetsNoHint(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "sudo sysctl") {
 		t.Errorf("err = %v, want no hint on an mtplx warmup failure", err)
+	}
+}
+
+// TestMemoryRefusalMarkersArePinned pins the phrase list that makes a failed
+// warmup read as macOS refusing the memory. llmbench's test pins the same
+// eight phrases (`_MEMORY_REFUSAL`), so the two heuristics cannot drift. The
+// bare word "iogpu" is not among them: it shows up in unrelated startup lines
+// and would send the user to raise a limit that was never the problem.
+func TestMemoryRefusalMarkersArePinned(t *testing.T) {
+	want := []string{
+		"out of memory", "insufficient memory", "not enough memory",
+		"cannot allocate", "failed to allocate", "memory limit",
+		"wired limit", "wired_limit",
+	}
+	if !reflect.DeepEqual(memoryRefusalMarkers, want) {
+		t.Errorf("memoryRefusalMarkers = %q, want %q", memoryRefusalMarkers, want)
+	}
+	for _, msg := range []string{"IOGPU init done", "iogpu family ready", "warmup timed out"} {
+		if looksLikeMemoryRefusal(msg) {
+			t.Errorf("looksLikeMemoryRefusal(%q) = true, want false", msg)
+		}
+	}
+}
+
+// TestWiredLimitFamiliesMatchTheContractFile pins the gate to the
+// `wired_limit` key of docs/contracts/process-providers.toml, which llmbench
+// reads, so the two sides check the same families.
+func TestWiredLimitFamiliesMatchTheContractFile(t *testing.T) {
+	data, err := os.ReadFile("../../../docs/contracts/process-providers.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Process []struct {
+			Family     string `toml:"family"`
+			WiredLimit bool   `toml:"wired_limit"`
+		} `toml:"process"`
+	}
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range doc.Process {
+		if wiredLimitFamilies[p.Family] != p.WiredLimit {
+			t.Errorf("family %q: wired_limit = %v in the contract file, gated = %v in wiredLimitFamilies", p.Family, p.WiredLimit, wiredLimitFamilies[p.Family])
+		}
 	}
 }

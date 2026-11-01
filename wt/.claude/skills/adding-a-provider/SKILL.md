@@ -82,14 +82,20 @@ start and stop needs all of them.
      and the kind takes no `Command` (`TestTableInvariants`).
    - **`WarmupSeconds` is required and positive** on every `Process`
      (mtplx 120, rec 120, sushi 400; contract key `warmup_seconds`).
-   - **A served list that carries unloaded models.** `FetchModelIDsKeyed`
-     drops an entry only when its `loaded` is literally `false`; absent,
-     `null` or `true` keeps it. Every served list goes through it, so a family
-     whose `/v1/models` lists unloaded models (sushi) needs no extra code.
+   - **A served list that carries unloaded models** is opt-in per family:
+     set `FamilySpec.LoadedOnly` (and `loaded_only = true` in
+     `docs/contracts/process-providers.toml`, pinned by the contract test) and
+     `ServedIDs` reads the list through `FetchLoadedModelIDsKeyed`, which drops
+     an entry only when its `loaded` is literally `false` (absent, `null` or
+     `true` keeps it). Every other family counts each listed id, so setting
+     the flag is what makes one whose `/v1/models` lists unloaded models
+     (sushi) read right.
    - **A memory preflight is opt-in by family id**: add the id to
      `wiredLimitFamilies` (`internal/lifecycle/wiredlimit.go`) only if the
      family should have its start checked against `iogpu.wired_limit_mb`
-     (sushi is the one entry).
+     (sushi is the one entry), and set `wired_limit = true` and `model_dir`
+     in the contract file (a lifecycle test pins `wired_limit`, the contract
+     test pins `model_dir`).
    - **A local model's derived registry id keeps the slash**
      (`<family>/<artifact>`, e.g. `sushi/<org>/<pack>`); `--` is the cloud
      spelling.
