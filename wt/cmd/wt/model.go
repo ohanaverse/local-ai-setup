@@ -76,9 +76,10 @@ func modelCmd(a *app) *cobra.Command {
 		Short: "Create registry.toml if it is missing and add the default provider rows",
 		Long: "Create the model registry if it does not exist, and add the provider rows wt\n" +
 			"needs and the registry lacks:\n\n" +
-			"  - ollama, omlx, mtplx, rec: when the command is installed, or a model or a\n" +
-			"                         configured agent uses it\n" +
-			"  - mlx_lm_server:       when a model or a configured agent uses it\n" +
+			"  - ollama, omlx, mtplx, sushi: when the command is installed, or a model\n" +
+			"                         or a configured agent uses it\n" +
+			"  - mlx_lm_server, rec:  when a model or a configured agent uses it (an\n" +
+			"                         installed `rec` proves nothing: SoX has one too)\n" +
 			"  - openrouter:          when a model or a configured agent uses it; the row\n" +
 			"                         holds no key, only auth.secret_ref =\n" +
 			"                         \"OPENROUTER_API_KEY\", the environment variable wt\n" +

@@ -43,7 +43,7 @@ RESTORE_LOG_PREFIX = "[llmbench provider restore]"
 
 def _unknown_provider(provider_id: str) -> str:
     """The unknown-provider error, with the contract file's failure when that
-    is why the process providers (mtplx, rec) are not registered."""
+    is why the process providers (mtplx, rec, sushi) are not registered."""
     message = f"unknown provider: {provider_id}"
     if PROCESS_SPEC_ERROR is not None:
         message += f" (process providers unavailable: {PROCESS_SPEC_ERROR})"

@@ -127,6 +127,15 @@ def test_supported_provider_ids_matches_the_backends_registry_documented_list():
     retired the old bash helper's own "Supported:" header comment, which
     used to need the same update)."""
     assert (
-        frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec"})
+        frozenset({"ollama", "omlx", "omlx-6bit", "mlx_lm_server", "mtplx", "rec", "sushi"})
         == isolation.SUPPORTED_PROVIDER_IDS
     )
+
+
+def test_positional_model_providers_are_pinned():
+    """The providers whose isolate takes the row's registry model_name as its
+    positional arg, so the model a row benchmarks is the one served. sushi is
+    one: it serves several packs and each row warms its own by name. A
+    provider missing here would isolate with no model and benchmark whatever
+    was loaded."""
+    assert frozenset({"mtplx", "rec", "sushi"}) == isolation.POSITIONAL_MODEL_PROVIDERS

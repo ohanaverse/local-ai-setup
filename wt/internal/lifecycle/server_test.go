@@ -23,11 +23,16 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv("LIFECYCLE_HELPER") == "mtplx" {
 		helperMtplx()
+		return
+	}
+	if os.Getenv("LIFECYCLE_HELPER") == "sushi" {
+		helperSushi()
 		return
 	}
 	// No test may read the real mtplx pidfile or signal a process it did not
@@ -54,6 +59,11 @@ func helperMtplx() {
 	if f := os.Getenv("LIFECYCLE_ARGV_FILE"); f != "" {
 		_ = os.WriteFile(f, []byte(strconv.Itoa(os.Getpid())+"\n"+strings.Join(args, " ")), 0o644)
 	}
+	// Opt-in, so a test can give the log a line without changing what any
+	// other mtplx test's log holds.
+	if line := os.Getenv("LIFECYCLE_HELPER_LOG_LINE"); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	switch os.Getenv("LIFECYCLE_HELPER_MODE") {
 	case "die-now":
 		os.Exit(1)
@@ -70,6 +80,14 @@ func helperMtplx() {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": opt["model-id"]}}})
 	})
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if st, _ := strconv.Atoi(os.Getenv("LIFECYCLE_HELPER_CHAT_STATUS")); st != 0 && st != http.StatusOK {
+			w.WriteHeader(st)
+		}
+		// Opt-in body, so a test can put words in the warmup error.
+		if body := os.Getenv("LIFECYCLE_HELPER_CHAT_BODY"); body != "" {
+			_, _ = w.Write([]byte(body))
+			return
+		}
 		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
 	})
 	addr := opt["host"] + ":" + opt["port"]
@@ -80,6 +98,69 @@ func helperMtplx() {
 		addr = a
 	}
 	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	go func() { _ = http.Serve(l, mux) }()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM)
+	<-sig
+	os.Exit(0)
+}
+
+// helperSushi is the fake `sushi serve` process. Its argv has bare flags
+// (--no-update-check), so it scans for --port and --host instead of reading
+// flag/value pairs. It lists the one pack LIFECYCLE_SUSHI_PACK (loaded unless
+// LIFECYCLE_SUSHI_LOADED says otherwise), answers chat with
+// LIFECYCLE_HELPER_CHAT_STATUS (default 200; sushi's 503 body otherwise),
+// with LIFECYCLE_HELPER_CHAT_BODY as its error body (default: sushi's 503
+// text), records each chat POST in LIFECYCLE_SUSHI_LOG, and exits 0 on SIGTERM. It
+// exits by itself after two minutes, so a test that dies before its cleanup
+// leaves no server behind.
+func helperSushi() {
+	args := os.Args[1:]
+	fmt.Fprintln(os.Stderr, "sushi helper ready") // the log tail is never empty
+	if line := os.Getenv("LIFECYCLE_HELPER_LOG_LINE"); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	time.AfterFunc(2*time.Minute, func() { os.Exit(4) })
+	opt := map[string]string{}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--port" || args[i] == "--host" {
+			opt[strings.TrimPrefix(args[i], "--")] = args[i+1]
+		}
+	}
+	if f := os.Getenv("LIFECYCLE_ARGV_FILE"); f != "" {
+		_ = os.WriteFile(f, []byte(strconv.Itoa(os.Getpid())+"\n"+strings.Join(args, " ")), 0o644)
+	}
+	loaded := os.Getenv("LIFECYCLE_SUSHI_LOADED") != "false"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": os.Getenv("LIFECYCLE_SUSHI_PACK"), "loaded": loaded}}})
+	})
+	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if f := os.Getenv("LIFECYCLE_SUSHI_LOG"); f != "" {
+			if lf, err := os.OpenFile(f, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+				_, _ = lf.WriteString("chat\n")
+				_ = lf.Close()
+			}
+		}
+		if st, _ := strconv.Atoi(os.Getenv("LIFECYCLE_HELPER_CHAT_STATUS")); st != 0 && st != http.StatusOK {
+			w.WriteHeader(st)
+			body := `{"error":"No default model configured"}`
+			if b := os.Getenv("LIFECYCLE_HELPER_CHAT_BODY"); b != "" {
+				body = b
+			}
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+	})
+	l, err := net.Listen("tcp", opt["host"]+":"+opt["port"])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -627,8 +708,8 @@ func TestPortlessAddressErrorKeepsMtplxText(t *testing.T) {
 // backends and the families wt can start one set — and mtplx is built from
 // the provider table as processServer{"mtplx"}.
 func TestProcessServerIsComparable(t *testing.T) {
-	if !maps.Equal(defaultEnv().backends, map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}, "mtplx": processServer{"mtplx"}, "rec": processServer{"rec"}}) {
-		t.Errorf("defaultEnv().backends = %v, want ollama, omlx, processServer{mtplx} and processServer{rec}", defaultEnv().backends)
+	if !maps.Equal(defaultEnv().backends, map[string]backend{"ollama": ollamaBackend{}, "omlx": omlxBackend{}, "mtplx": processServer{"mtplx"}, "rec": processServer{"rec"}, "sushi": processServer{"sushi"}}) {
+		t.Errorf("defaultEnv().backends = %v, want ollama, omlx, processServer{mtplx}, processServer{rec} and processServer{sushi}", defaultEnv().backends)
 	}
 }
 
@@ -745,5 +826,58 @@ func TestMtplxStartRefusesUnusableServeArgsBeforeSpawning(t *testing.T) {
 				t.Error("a refused start spawned a process")
 			}
 		})
+	}
+}
+
+// sushixEnv is mtplxEnv for the synthetic process family sushix: the same
+// helper binary answers as the server, the spec carries warmup seconds
+// warmup, and the helper's chat endpoint answers 503 so a warmup never
+// succeeds. It returns the env, cfg and pidfile.
+func sushixEnv(t *testing.T, warmup int) (*env, *config.Config, string) {
+	t.Helper()
+	e, _, port, _ := mtplxEnv(t, "serve", 0)
+	t.Setenv("LIFECYCLE_HELPER_CHAT_STATUS", "503")
+	spec := provider.ProcessSpec{
+		Binary: "sushix", Subcommand: "serve", PortFlag: "--port",
+		Spawn:         []string{"serve", "--model", "{model}", "--port", "{port}", "--host", "127.0.0.1", "--model-id", "{model}"},
+		Ready:         provider.Ready{Kind: provider.ReadyModelsList},
+		WarmupSeconds: warmup,
+	}
+	stubFamily(t, "sushix", spec, provider.FamilySpec{Name: "sushix", Tenancy: provider.Exclusive, Scope: provider.ScopePort}, port)
+	pidfile := filepath.Join(t.TempDir(), "sushix.pid")
+	e.serverProc["sushix"] = pidProcess{name: "sushix", pidfile: pidfile, logfile: filepath.Join(t.TempDir(), "sushix.log")}
+	e.backends = maps.Clone(e.backends)
+	e.backends["sushix"] = processServer{"sushix"}
+	return e, provCfg("sushix", "http://127.0.0.1:"+strconv.Itoa(port)+"/v1"), pidfile
+}
+
+// TestProcessServerWarmupBudgetComesFromTheSpec pins that the process-server
+// start path budgets its warmup from the spec's WarmupSeconds, not a fixed
+// 120 s (sushi's cold load is ~115 s), and that a spec with no budget fails
+// closed at warmup time and leaves nothing running or recorded.
+func TestProcessServerWarmupBudgetComesFromTheSpec(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	target := Target{ProviderID: "sushix", ModelName: "Org/Model"}
+
+	e, cfg, _ := sushixEnv(t, 1)
+	begin := time.Now()
+	err := e.backends["sushix"].start(ctx, e, cfg, target, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "failed to warm up model") {
+		t.Fatalf("1s budget: err = %v, want a 'failed to warm up model' error", err)
+	}
+	if d := time.Since(begin); d > 5*time.Second {
+		t.Errorf("1s budget took %v, want the spec's budget to end the warmup", d)
+	}
+
+	e, cfg, pidfile := sushixEnv(t, 0)
+	err = e.backends["sushix"].start(ctx, e, cfg, target, func(Stage) {})
+	if err == nil || !strings.Contains(err.Error(), "no warmup_seconds") {
+		t.Fatalf("0 budget: err = %v, want a 'no warmup_seconds' error", err)
+	}
+	for _, p := range []string{pidfile, pidfile + ".wt"} {
+		if _, serr := os.Stat(p); !os.IsNotExist(serr) {
+			t.Errorf("%s should not remain after a failed start, stat err = %v", p, serr)
+		}
 	}
 }

@@ -129,36 +129,109 @@ func (b processServer) start(ctx context.Context, e *env, cfg *config.Config, t 
 	if cerr != nil {
 		return cerr
 	}
+	// A sushi that is up with no pack loaded (or still loading one) shows
+	// nothing running, so its port is busy with a server wt itself started:
+	// that one is reused, and the warmup chat below loads the pack into it.
+	// Spawning beside it is impossible and killing it would end whatever
+	// load is in flight. Any other busy port is a server wt cannot vouch for.
+	reuse := false
 	if !closed {
-		return &PortBusyError{Port: port}
-	}
-	sp, spawnErr := e.spawn(proc, bin, spec.SpawnArgs(t.ModelName, port, serveArgs))
-	if spawnErr != nil {
-		return spawnErr
-	}
-	// What a later `wt stop` identifies this process by while its port is
-	// still closed (server_loading.go).
-	e.recordStart(b.family, sp.cmd.Process.Pid)
-	defer func() {
-		if err != nil {
-			sp.kill() // never leave a half-started server holding the port
+		if spec.Ready.Kind == provider.ReadyHTTP {
+			_, l := e.loadingServer(cfg, b.family)
+			reuse = l.PID > 0
 		}
-	}()
-	report(StageWaiting)
-	if err = e.waitReady(ctx, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
-		if tail := proc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
-			err = fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
+		if !reuse {
+			return &PortBusyError{Port: port}
 		}
-		return err
+	}
+	if !reuse {
+		sp, spawnErr := e.spawn(proc, bin, spec.SpawnArgs(t.ModelName, port, serveArgs))
+		if spawnErr != nil {
+			return spawnErr
+		}
+		// What a later `wt stop` identifies this process by while its port is
+		// still closed (server_loading.go).
+		e.recordStart(b.family, sp.cmd.Process.Pid)
+		defer func() {
+			if err != nil {
+				sp.kill() // never leave a half-started server holding the port
+			}
+		}()
+		report(StageWaiting)
+		if err = e.waitReady(ctx, b.family, sp, bin, models, t.ModelName, key, e.loadTimeout); err != nil {
+			return withLogTail(proc, err)
+		}
 	}
 	report(StageWarming)
-	return e.warmup(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, 120*time.Second)
+	budget, berr := warmupBudget(spec)
+	if berr != nil {
+		return berr
+	}
+	// An http-get server (sushi) is ready before any model is: the pack is
+	// checked against its list first, and a failure here shows its log tail.
+	// Other families' warmup errors read as they always have.
+	httpReady := spec.Ready.Kind == provider.ReadyHTTP
+	if httpReady {
+		if err = e.requirePackListed(ctx, b.family, models, t.ModelName, key); err != nil {
+			return withLogTail(proc, err)
+		}
+	}
+	err = e.warmupFor(ctx, origin+"/v1/chat/completions", t.ModelName, models, key, budget, budget)
+	if err != nil && httpReady {
+		return withMemoryHint(withLogTail(proc, err))
+	}
+	if err != nil {
+		return err
+	}
+	// The server answered the chat; an http-get server must also list the
+	// pack as loaded, or the start failed as surely as a warmup that did not
+	// answer (same cleanup, same log tail).
+	if httpReady {
+		if err = e.confirmLoaded(ctx, models, t.ModelName, key); err != nil {
+			return withLogTail(proc, err)
+		}
+	}
+	return nil
+}
+
+// withMemoryHint ends err with the wired-limit fix when its text (log tail
+// included) looks like macOS refusing the memory. A cancelled start is not a
+// refusal. %w keeps errors.Is/As working.
+func withMemoryHint(err error) error {
+	if errors.Is(err, context.Canceled) || !looksLikeMemoryRefusal(err.Error()) {
+		return err
+	}
+	return fmt.Errorf("%w\n%s", err, wiredLimitHint())
+}
+
+// withLogTail appends the server's log tail to a failed start's err, unless
+// the start was cancelled (the server did not fail) or the log is empty.
+func withLogTail(proc pidProcess, err error) error {
+	if tail := proc.logTailLines(512); tail != "" && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w; log tail: %s", err, strings.TrimSpace(tail))
+	}
+	return err
+}
+
+// warmupBudget is the spec's warmup time: the whole warmup window and the cap
+// on each chat request. A spec without one fails closed rather than guessing.
+func warmupBudget(spec provider.ProcessSpec) (time.Duration, error) {
+	if spec.WarmupSeconds <= 0 {
+		return 0, fmt.Errorf("%s: process spec has no warmup_seconds", spec.Binary)
+	}
+	return time.Duration(spec.WarmupSeconds) * time.Second, nil
 }
 
 func (b processServer) stop(ctx context.Context, e *env, cfg *config.Config) error {
 	spec, err := b.spec()
 	if err != nil {
 		return err
+	}
+	// A family with no stop command (sushi) is stopped by signalling its
+	// verified pid. Running the binary with no arguments would start a
+	// server, not stop one, so it is neither looked up nor run.
+	if len(spec.Stop) == 0 {
+		return e.stopByPid(ctx, cfg, spec, b.family)
 	}
 	bin, lerr := e.lookPath(spec.Binary)
 	if lerr != nil {

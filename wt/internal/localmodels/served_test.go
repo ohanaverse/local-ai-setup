@@ -211,6 +211,40 @@ func TestServedIDsOtherFamiliesReadTheList(t *testing.T) {
 	}
 }
 
+// TestServedIDsLoadedFieldPerFamily pins that the loaded filter is opt-in
+// (FamilySpec.LoadedOnly, only sushi): sushi drops an entry its /v1/models
+// marks "loaded": false, every other family reads each listed id as served, and
+// omlx keeps reading its own pool.
+func TestServedIDsLoadedFieldPerFamily(t *testing.T) {
+	for _, family := range []string{"mtplx", "mlx_lm_server", "rec", "ollama", "sushi"} {
+		unloaded := []string{"Org/Q"}
+		if family == "sushi" {
+			unloaded = []string{}
+		}
+		for name, tc := range map[string]struct {
+			body string
+			want []string
+		}{
+			"no loaded field": {`{"data":[{"id":"Org/Q"}]}`, []string{"Org/Q"}},
+			"loaded true":     {`{"data":[{"id":"Org/Q","loaded":true}]}`, []string{"Org/Q"}},
+			"loaded false":    {`{"data":[{"id":"Org/Q","loaded":false}]}`, unloaded},
+		} {
+			t.Run(family+" "+name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
+				defer srv.Close()
+				cfg := &config.Config{Providers: []config.Provider{{ID: family, Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: srv.URL}}}}
+				if ids, err := ServedIDs(cfg, testClient, family); err != nil || !slices.Equal(ids, tc.want) {
+					t.Errorf("%s served = %v err = %v, want %v", family, ids, err, tc.want)
+				}
+			})
+		}
+	}
+	f := &fakeOmlx{listed: []string{"A"}, pool: map[string]bool{"A": true}}
+	if ids, err := ServedIDs(omlxCfgAt(f.serve(t), ""), testClient, "omlx"); err != nil || !slices.Equal(ids, []string{"A"}) {
+		t.Errorf("omlx served = %v err = %v, want [A]", ids, err)
+	}
+}
+
 // TestInventoryOmlxListedButUnloadedIsNotRunning pins #201 where users see it:
 // the inventory entry of an omlx model that is on disk and listed by a running
 // service, but not loaded, is not Running — so the picker offers to start it
@@ -441,5 +475,16 @@ func TestInventoryShowsAKeyedFamilyPartialNotDown(t *testing.T) {
 	var ku *KeyUnreadableError
 	if snap.Providers["mtplx"] != StatusPartial || snap.Down["mtplx"] || !errors.As(snap.ProbeFailures["mtplx"], &ku) || ku.Family != "mtplx" {
 		t.Errorf("unreadable key: status %q down %v failure %v; want partial, not down, *KeyUnreadableError{mtplx}", snap.Providers["mtplx"], snap.Down["mtplx"], snap.ProbeFailures["mtplx"])
+	}
+}
+
+// TestServedIDsSushiReturnsOnlyLoadedPacks pins what `wt served sushi` and the
+// route sync are given: sushi lists every pack, and only the one whose entry
+// says loaded is serving. An unloaded pack and a loading one are not.
+func TestServedIDsSushiReturnsOnlyLoadedPacks(t *testing.T) {
+	srv := sushiModelsServer(t, map[string]string{"p/a": "unloaded", "p/b": "ready", "p/c": "loading"})
+	cfg := &config.Config{Providers: []config.Provider{{ID: "sushi", Location: config.LocationLocal, Auth: config.AuthConfig{Type: "none", BaseURL: srv.URL + "/v1"}}}}
+	if ids, err := ServedIDs(cfg, testClient, "sushi"); err != nil || !slices.Equal(ids, []string{"p/b"}) {
+		t.Errorf("sushi served = %v err = %v, want [p/b]", ids, err)
 	}
 }

@@ -53,6 +53,7 @@ def test_provider_list_names_every_backend():
         "omlx",
         "omlx-6bit",
         "rec",
+        "sushi",
     ]
 
 

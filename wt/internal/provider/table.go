@@ -35,6 +35,13 @@ const (
 	recOrigin = "http://127.0.0.1:11500"
 )
 
+// sushi's address and model directory, named once for the family and the seed.
+const (
+	sushiPort     = 12345
+	sushiOrigin   = "http://127.0.0.1:12345"
+	sushiModelDir = "~/.sushi/models"
+)
+
 var mtplxOrigin = "http://localhost:" + strconv.Itoa(MtplxPort)
 
 var openaiLocal = Policy{Prefix: "openai/", APIKey: "not-needed", V1Base: true}
@@ -89,6 +96,14 @@ var providers = []Spec{
 			SecretRef: "exec:rec auth token",
 		},
 	},
+	{
+		ID: "sushi", Family: "sushi",
+		Policy: &openaiLocal,
+		Seed: &Seed{
+			Name: "Sushi", Location: "local", AuthType: "none", BaseURL: sushiOrigin + "/v1",
+			ModelDir: sushiModelDir, Command: "sushi",
+		},
+	},
 	{ID: "llamacpp", Policy: &Policy{Prefix: "openai/local-model", FixedModel: true, APIKey: "dummy-key"}},
 	{
 		ID:     IDOpenRouter,
@@ -125,6 +140,7 @@ var families = map[string]FamilySpec{
 			PortFlag:       "--port",
 			ModelFlag:      "--model-id",
 			Ready:          Ready{Kind: ReadyModelsList},
+			WarmupSeconds:  120,
 		},
 	},
 	// mlx_lm_server is NoTenancy: wt cannot start it (llmbench does), so
@@ -151,6 +167,27 @@ var families = map[string]FamilySpec{
 				Kind: ReadyCommandJSON, Command: []string{"status"}, Path: "ready", Equals: "true",
 				ModelPath: "model", EndpointPath: "endpoint",
 			},
+			WarmupSeconds: 120,
+		},
+	},
+	// sushi: a model-less `sushi serve`, one process per machine, that loads
+	// a pack on the first request naming it. It has no stop command: wt stops
+	// it by signalling the verified pid. The context window (--ctx-size
+	// 131072) is a Spawn literal.
+	"sushi": {
+		Name: "sushi", DefaultOrigin: sushiOrigin, DefaultModelDir: sushiModelDir, WtPort: sushiPort,
+		Served: true, ServedOnly: true, LoadedOnly: true, Tenancy: Exclusive, Scope: ScopePort,
+		Process: &ProcessSpec{
+			Binary:         "sushi",
+			Spawn:          []string{"serve", "--port", "{port}", "--host", "127.0.0.1", "--ctx-size", "131072", "--max-resident-models", "1", "--no-update-check", "--max-tokens", "32768"},
+			Stop:           nil,
+			PidfileDefault: "/tmp/local-ai-setup-sushi.pid",
+			LogDefault:     "/tmp/local-ai-setup-sushi.log",
+			PidfileEnv:     "WT_SUSHI_PIDFILE",
+			Subcommand:     "serve",
+			PortFlag:       "--port",
+			Ready:          Ready{Kind: ReadyHTTP, Path: "/health"},
+			WarmupSeconds:  400,
 		},
 	},
 }

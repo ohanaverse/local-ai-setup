@@ -30,8 +30,10 @@ func OllamaNameMatches(have, want string) bool {
 	return !strings.Contains(want, ":") && have == want+":latest"
 }
 
-// FetchModelIDs GETs an OpenAI-compatible /v1/models endpoint and returns the
-// ids the server is serving, or nil on any failure. Because nil cannot
+// FetchModelIDs GETs an OpenAI-compatible /v1/models endpoint and returns every
+// id it lists, or nil on any failure. A "loaded" field is ignored here: a
+// family that lists packs it has not loaded (sushi, FamilySpec.LoadedOnly) is
+// read through FetchLoadedModelIDsKeyed instead. Because nil cannot
 // distinguish "nothing is serving" from "could not ask", callers that need
 // that distinction must use FetchModelIDsErr instead.
 func FetchModelIDs(client *http.Client, url string) []string {
@@ -59,8 +61,26 @@ var ErrKeyRefused = errors.New("refused for want of a valid API key")
 // FetchModelIDsKeyed is FetchModelIDsErr with key, when there is one, sent as
 // a Bearer token. With key "" the request carries no Authorization header at
 // all: a provider with no secret_ref is asked exactly as it always was. A 401
-// or 403 answer is an error wrapping ErrKeyRefused.
+// or 403 answer is an error wrapping ErrKeyRefused. Every listed id comes back
+// in listed order, whatever its "loaded" says: it answers "is this pack on the
+// server's list".
 func FetchModelIDsKeyed(client *http.Client, url, key string) ([]string, error) {
+	return fetchModelIDs(client, url, key, false)
+}
+
+// FetchLoadedModelIDsKeyed is FetchModelIDsKeyed for a family that lists
+// packs it has not loaded (FamilySpec.LoadedOnly, today sushi): an entry with
+// an explicit "loaded": false is dropped; absent, null, true or any other
+// value keeps it. An answer listing only unloaded entries is an empty list
+// with a nil error. It answers "is it serving".
+func FetchLoadedModelIDsKeyed(client *http.Client, url, key string) ([]string, error) {
+	return fetchModelIDs(client, url, key, true)
+}
+
+// fetchModelIDs is the one decoder of a /v1/models answer. With loadedOnly it
+// skips entries whose loaded value is literally false; the value is kept raw
+// so one malformed entry never fails the whole body.
+func fetchModelIDs(client *http.Client, url, key string, loadedOnly bool) ([]string, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -81,7 +101,8 @@ func FetchModelIDsKeyed(client *http.Client, url, key string) ([]string, error) 
 	}
 	var body struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID     string          `json:"id"`
+			Loaded json.RawMessage `json:"loaded"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -89,9 +110,10 @@ func FetchModelIDsKeyed(client *http.Client, url, key string) ([]string, error) 
 	}
 	ids := make([]string, 0, len(body.Data))
 	for _, d := range body.Data {
-		if d.ID != "" {
-			ids = append(ids, d.ID)
+		if d.ID == "" || (loadedOnly && strings.TrimSpace(string(d.Loaded)) == "false") {
+			continue
 		}
+		ids = append(ids, d.ID)
 	}
 	return ids, nil
 }

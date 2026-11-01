@@ -1,12 +1,16 @@
 import subprocess
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError, URLError
 
 import pytest
 
 from llmbench.providers.lifecycle.envelope import LifecycleError
 from llmbench.providers.lifecycle.probe import (
+    listed_ids,
+    port_answers,
     port_closed_within,
     serving_model,
+    wait_for_http_ok,
     wait_for_model,
     wait_for_port_closed,
     wait_for_port_open,
@@ -94,6 +98,35 @@ def test_port_closed_within_returns_false_on_timeout():
         patch("llmbench.providers.lifecycle.probe.time.sleep"),
     ):
         assert port_closed_within("http://localhost:8003/v1/models", timeout=1.0) is False
+    mock_urlopen.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("effect", "answers"),
+    [
+        (None, True),  # a 200
+        (HTTPError("u", 404, "nf", None, None), True),  # type: ignore[arg-type]
+        (TimeoutError(), True),  # accepted, then stalled mid-read
+        (URLError(TimeoutError()), True),  # too busy to accept is not closed
+        (ConnectionRefusedError(), False),
+        (URLError(ConnectionRefusedError()), False),
+        (ConnectionResetError(), False),
+    ],
+    ids=["ok", "http-error", "read-stall", "connect-timeout", "refused", "url-refused", "reset"],
+)
+def test_port_answers_is_one_probe_by_port_closed_withins_rules(effect, answers):
+    """port_answers is a single attempt (no deadline loop, no sleep) that
+    classifies exactly as port_closed_within does: a caller with nothing to
+    wait for (a server it did not signal) asks once and moves on."""
+    mock_urlopen = _mock_urlopen(b"{}") if effect is None else MagicMock(side_effect=effect)
+    with (
+        patch("llmbench.providers.lifecycle.probe.urllib.request.urlopen", mock_urlopen),
+        patch(
+            "llmbench.providers.lifecycle.probe.time.sleep",
+            side_effect=AssertionError("port_answers must not wait"),
+        ),
+    ):
+        assert port_answers("http://localhost:8003/v1/models") is answers
     mock_urlopen.assert_called_once()
 
 
@@ -773,3 +806,191 @@ def test_command_object_is_one_run_read_many_ways():
     assert scalar_at(root, "a.b") == "x"
     assert scalar_at(root, "a") is None
     assert scalar_at(root, "missing.path") is None
+
+
+_URLOPEN = "llmbench.providers.lifecycle.probe.urllib.request.urlopen"
+_MODELS = "http://localhost:12345/v1/models"
+BODY = (
+    b'{"data": [{"id": "org/a", "loaded": true}, {"id": "org/b", "loaded": false},'
+    b' {"id": "org/c"}]}'
+)
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+@pytest.mark.parametrize(("model", "expected"), [("a", True), ("b", False), ("c", True)])
+def test_serving_model_loaded_only_ignores_a_pack_that_is_listed_but_not_loaded(
+    key, model, expected
+):
+    """For a spec with `loaded_only` (sushi), a pack the server lists with
+    `loaded: false` is not serving, with or without a key: the unloaded pack
+    must not read as ready."""
+    with patch(_URLOPEN, _mock_urlopen(BODY)):
+        assert serving_model(_MODELS, model, key=key, loaded_only=True) is expected
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+def test_serving_model_counts_every_listed_id_by_default(key):
+    """No other server is read through the `loaded` flag: by default every
+    listed id is serving, an entry flagged `loaded: false` included."""
+    with patch(_URLOPEN, _mock_urlopen(BODY)):
+        assert serving_model(_MODELS, "b", key=key) is True
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+def test_listed_ids_is_unfiltered(key):
+    """listed_ids keeps the unloaded pack: a pack-id check needs to know the
+    pack exists even while it is not resident."""
+    with patch(_URLOPEN, _mock_urlopen(BODY)):
+        assert listed_ids(_MODELS, key=key) == ["org/a", "org/b", "org/c"]
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+def test_listed_ids_is_empty_on_a_dead_server(key):
+    """A dead server, or a refused key, reads as nothing listed; never raises."""
+    for exc in (OSError("refused"), _http_error(401)):
+        with patch(_URLOPEN, MagicMock(side_effect=exc)):
+            assert listed_ids(_MODELS, key=key) == []
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+def test_listed_ids_strict_returns_the_unfiltered_list(key):
+    with patch(_URLOPEN, _mock_urlopen(BODY)):
+        assert listed_ids(_MODELS, key=key, strict=True) == ["org/a", "org/b", "org/c"]
+
+
+@pytest.mark.parametrize("key", [None, "k"])
+@pytest.mark.parametrize(
+    "failure", [OSError("refused"), _http_error(503), TimeoutError("timed out")]
+)
+def test_listed_ids_strict_raises_when_the_list_cannot_be_read(key, failure):
+    """`strict` fails closed: a list that cannot be fetched is not an empty
+    one (a pack-id check must not pass on a dead or broken server)."""
+    with (
+        patch(_URLOPEN, MagicMock(side_effect=failure)),
+        pytest.raises(LifecycleError, match=f"cannot read the model list at {_MODELS}"),
+    ):
+        listed_ids(_MODELS, key=key, strict=True)
+
+
+def test_listed_ids_strict_raises_on_a_body_that_is_not_json():
+    with (
+        patch(_URLOPEN, _mock_urlopen(b"<html>")),
+        pytest.raises(LifecycleError, match="cannot read the model list"),
+    ):
+        listed_ids(_MODELS, strict=True)
+
+
+def test_listed_ids_strict_names_a_refused_key():
+    from llmbench.providers.lifecycle.probe import WarmupRefusedError
+
+    with (
+        patch(_URLOPEN, MagicMock(side_effect=_http_error(401))),
+        pytest.raises(WarmupRefusedError, match=r"refused the provider's key \(HTTP 401\)"),
+    ):
+        listed_ids(_MODELS, key="k", strict=True)
+
+
+def test_serving_model_exact_rejects_a_suffix_match():
+    """`exact=True` is plain membership: `a` is not `org/a`."""
+    with patch(_URLOPEN, _mock_urlopen(BODY)):
+        assert serving_model(_MODELS, "a") is True
+        assert serving_model(_MODELS, "a", exact=True) is False
+        assert serving_model(_MODELS, "org/a", exact=True) is True
+
+
+def _answers(status: int) -> MagicMock:
+    """A urlopen mock whose response has `status`."""
+    m = _mock_urlopen(b"ok")
+    m.return_value.__enter__.return_value.status = status
+    return m
+
+
+def test_wait_for_http_ok_returns_on_200():
+    """A 200 from the URL ends the wait."""
+    with patch(_URLOPEN, _answers(200)) as urlopen:
+        wait_for_http_ok("http://x/health")
+    assert urlopen.call_count == 1
+
+
+def test_wait_for_http_ok_keeps_polling_through_a_non_200_success():
+    """Only a 200 is ready, as in wt's ReadyHTTP: a 204 (or any other 2xx)
+    keeps polling."""
+    urlopen = MagicMock(side_effect=[_answers(204).return_value, _answers(200).return_value])
+    with patch(_URLOPEN, urlopen), patch("llmbench.providers.lifecycle.probe.time.sleep"):
+        wait_for_http_ok("http://x/health")
+    assert urlopen.call_count == 2
+
+
+def test_wait_for_http_ok_keeps_polling_through_a_503_then_succeeds():
+    """A 503 while the server loads is retried, not fatal."""
+    ok = _answers(200).return_value
+    urlopen = MagicMock(side_effect=[_http_error(503), ok])
+    with patch(_URLOPEN, urlopen), patch("llmbench.providers.lifecycle.probe.time.sleep") as sleep:
+        wait_for_http_ok("http://x/health")
+    assert urlopen.call_count == 2
+    sleep.assert_called_with(1.0)
+
+
+def test_wait_for_http_ok_raises_when_the_process_died():
+    """A dead serve process fails the wait at once, naming its exit code."""
+    proc = MagicMock(spec=subprocess.Popen)
+    proc.poll.return_value = 3
+    proc.returncode = 3
+    with (
+        patch(_URLOPEN, MagicMock(side_effect=OSError("refused"))),
+        pytest.raises(LifecycleError, match=r"serve process exited during startup \(exit 3\)"),
+    ):
+        wait_for_http_ok("http://x/health", proc=proc)
+
+
+def test_wait_for_http_ok_times_out_naming_the_url():
+    """A server that never answers 200 times out, naming the URL."""
+    with (
+        patch(_URLOPEN, MagicMock(side_effect=OSError("refused"))),
+        patch("llmbench.providers.lifecycle.probe.time.monotonic", side_effect=[0.0, 0.5, 1000.0]),
+        patch("llmbench.providers.lifecycle.probe.time.sleep"),
+        pytest.raises(LifecycleError, match="timed out waiting for http://x/health to answer 200"),
+    ):
+        wait_for_http_ok("http://x/health", timeout=1.0)
+
+
+def test_wait_for_http_ok_sends_the_key_only_when_given():
+    """The bearer header appears only with a key."""
+    with patch(_URLOPEN, _answers(200)) as urlopen:
+        wait_for_http_ok("http://x/health")
+        assert urlopen.call_args.args[0] == "http://x/health"
+        wait_for_http_ok("http://x/health", key="k")
+        req = urlopen.call_args.args[0]
+        assert req.get_header("Authorization") == "Bearer k"
+
+
+def test_warmup_request_timeout_defaults_to_120_and_is_overridable():
+    """The per-chat-request cap is 120 s unless the caller passes more (a cold
+    Sushi load can outlast it); the 2.0 s health probe is not the chat call."""
+    body = b'{"object": "chat.completion"}'
+    urlopen = _mock_urlopen(body)
+    with patch(_URLOPEN, urlopen):
+        warmup("http://x/chat", "m", health_url="http://x/health")
+        warmup("http://x/chat", "m", health_url="http://x/health", request_timeout=400.0)
+    chat = [c.kwargs["timeout"] for c in urlopen.call_args_list if c.kwargs["timeout"] != 2.0]
+    # The second call's 400 s cap is cut to the 300 s default window: no
+    # request may outlast the warmup.
+    assert chat[0] == 120
+    assert 299.0 < chat[1] <= 300.0
+
+
+def test_warmup_caps_a_request_at_the_time_left_in_the_window():
+    """A request is never allowed past the warmup's own window, and a window
+    wider than the cap leaves the cap alone."""
+    body = b'{"object": "chat.completion"}'
+    urlopen = _mock_urlopen(body)
+    with patch(_URLOPEN, urlopen):
+        warmup(
+            "http://x/chat", "m", health_url="http://x/health", timeout=5.0, request_timeout=400.0
+        )
+        warmup(
+            "http://x/chat", "m", health_url="http://x/health", timeout=600.0, request_timeout=400.0
+        )
+    chat = [c.kwargs["timeout"] for c in urlopen.call_args_list if c.kwargs["timeout"] != 2.0]
+    assert 4.0 < chat[0] <= 5.0
+    assert chat[1] == 400.0

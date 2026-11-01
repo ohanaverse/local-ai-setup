@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from llmbench.registry import (
+    DEFAULT_PROVIDER_IDS,
     RegistryError,
     is_model_local,
     load_registry,
@@ -244,6 +245,24 @@ id = "ollama"
     assert (oll.base_url, oll.secret_ref) == ("", "")
 
 
+def test_provider_model_dir_is_read_from_the_row(tmp_path):
+    f = tmp_path / "r.toml"
+    f.write_text(
+        """\
+[[providers]]
+id = "sushi"
+model_dir = "~/.sushi/models"
+
+[[providers]]
+id = "ollama"
+"""
+    )
+    reg = load_registry(f)
+    # Not expanded by the reader.
+    assert reg.provider("sushi").model_dir == "~/.sushi/models"
+    assert reg.provider("ollama").model_dir == ""
+
+
 def test_a_model_row_with_serve_args_loads_and_the_key_is_ignored(home, tmp_path):
     """wt's per-model mtplx `serve_args` (#432) is read by wt's start alone.
 
@@ -259,3 +278,10 @@ def test_a_model_row_with_serve_args_loads_and_the_key_is_ignored(home, tmp_path
     tuned = next(m for m in registry.models if m.id == "mtplx/Org/T")
     assert tuned.model_name == "Org/T"
     assert not hasattr(tuned, "serve_args")
+
+
+def test_sushi_is_a_default_provider():
+    """sushi is a local provider the benchmarks isolate and run against: a
+    sushi row left out of DEFAULT_PROVIDER_IDS would be treated as remote and
+    benchmarked without isolation."""
+    assert DEFAULT_PROVIDER_IDS == ("ollama", "omlx", "mlx_lm_server", "mtplx", "rec", "sushi")

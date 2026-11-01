@@ -105,7 +105,8 @@ wt stop --all                    # stop every running local model, then the omlx
   process, so stopping it stops the whole
   provider. On omlx it unloads that one model and leaves the service and the
   other loaded models up; use `wt stop omlx` to halt the service.
-- A bare provider (`ollama`, `omlx`, `omlx-6bit`, `mtplx`) stops all its
+- A bare provider (`ollama`, `omlx`, `omlx-6bit`, `mtplx`, `rec`, `sushi`: any provider
+  in the registry that wt can start and stop) stops all its
   running models; nothing running exits 0 with a note
   (`wt: nothing running on <provider>`). For omlx it halts the
   service itself. Other names are an
@@ -186,6 +187,29 @@ wt stop --all                    # stop every running local model, then the omlx
     - The command-line rule is the one mtplx 2.12.0 has. If a later mtplx
       renames its server module, wt prints the `left alone` note above and
       stops nothing: end the process by hand, and report it.
+  - **`wt stop sushi`** has no stop command of Sushi's to call (running the
+    `sushi` binary with no arguments is not a stop), so wt signals the
+    process the pidfile `/tmp/local-ai-setup-sushi.pid` names, once it has
+    checked that process: the current user owns it, its arguments are
+    `sushi serve ... --port 12345` (the port is the provider's), and, when wt
+    recorded the server's start time (the `.wt` record beside the pidfile),
+    it started at that time. A pid of 1 or wt's own is never signalled. wt
+    sends SIGTERM to the process group (to the pid alone when it has no start
+    record), waits up to 10 seconds, sends SIGKILL only if it is still the
+    same process, removes the pidfile and the record once the process is
+    gone, then waits up to 6 seconds for the port to close. Stopping Sushi unloads its pack: it
+    serves one model per process (`--max-resident-models 1`).
+    - A Sushi started by hand has no pidfile. If it answers on the port, wt
+      says `sushi at port 12345 was not started by wt; stop it yourself`
+      and signals nothing (exit 1); if the port is closed, nothing is
+      running (`wt: nothing running on sushi`, exit 0).
+    - A pidfile that llmbench wrote holds only the pid. It is accepted when
+      the process passes the same user and arguments checks, but with no start
+      time to compare and no process group to signal, so a pid reused by
+      another `sushi serve --port 12345` would be taken for it.
+    - Before Sushi has opened its port (the moments after a start) a pidfile
+      that verifies is stopped through the loading-server path described for
+      mtplx above, which signals the same way.
   - ollama's models are stopped one by one and its daemon is left up, so
     when ollama's probe gives no usable answer (and its port does not
     refuse) there is nothing wt can stop: `wt stop ollama` fails with

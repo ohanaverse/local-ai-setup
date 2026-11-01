@@ -15,6 +15,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/provider"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -377,6 +378,29 @@ func TestStopModelIDOfALoadingMtplxPointsAtTheProvider(t *testing.T) {
 	// Another family's model keeps the plain message.
 	if err := runStop(io.Discard, stopCfg(), "ollama/a:1", false); err == nil || err.Error() != `model "ollama/a:1" is not running` {
 		t.Errorf("err = %v, want the plain not-running error", err)
+	}
+}
+
+// TestMainIsolatesEveryProcessPidfile checks TestMain's
+// lifecycle.IsolateProcessesForTest() redirects every process family's
+// pidfile env var to a scratch path that is not the real
+// /tmp/local-ai-setup-* default: a cmd/wt test must never read or signal a
+// developer's real server, and sushi's stop reads its pidfile to find the pid
+// it signals.
+func TestMainIsolatesEveryProcessPidfile(t *testing.T) {
+	for _, family := range provider.ProcessFamilies() {
+		spec, ok := provider.ProcessFor(family)
+		if !ok || spec.PidfileEnv == "" {
+			t.Errorf("family %q has no pidfile env var", family)
+			continue
+		}
+		got := os.Getenv(spec.PidfileEnv)
+		if got == "" || got == spec.PidfileDefault || !strings.Contains(got, "wt-test-no-"+family+"-") {
+			t.Errorf("%s = %q, want a wt-test-no-%s- scratch path, not %q", spec.PidfileEnv, got, family, spec.PidfileDefault)
+		}
+	}
+	if os.Getenv("WT_SUSHI_PIDFILE") == "" {
+		t.Error("WT_SUSHI_PIDFILE is unset: TestMain does not isolate the sushi pidfile")
 	}
 }
 

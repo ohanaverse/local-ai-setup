@@ -545,6 +545,46 @@ func TestServedReportsWhatAKeyedOmlxHasLoaded(t *testing.T) {
 	}
 }
 
+// TestRunServedSushiListsOnlyLoadedPacks pins `wt served sushi` for the real
+// sushi family: sushi lists every pack it has, and only the loaded one is
+// serving, so only that id is printed (plain, and as JSON); when none is
+// loaded the JSON list is an empty array, never null, so a script reads
+// "nothing serving" rather than a decode error. The server is an httptest
+// listener the registry points at, never port 12345.
+func TestRunServedSushiListsOnlyLoadedPacks(t *testing.T) {
+	serve := func(body string) *config.Config {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, body) }))
+		t.Cleanup(srv.Close)
+		return &config.Config{Providers: []config.Provider{{
+			ID: "sushi", Location: config.LocationLocal,
+			Auth: config.AuthConfig{Type: "none", BaseURL: srv.URL + "/v1"},
+		}}}
+	}
+	mixed := serve(`{"data":[{"id":"p/a","loaded":false,"state":"unloaded"},{"id":"p/b","loaded":true,"state":"ready"},{"id":"p/c","loaded":false,"state":"loading"}]}`)
+	none := serve(`{"data":[{"id":"p/a","loaded":false,"state":"unloaded"},{"id":"p/c","loaded":false,"state":"loading"}]}`)
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+		json bool
+		want string
+	}{
+		{"plain, one loaded", mixed, false, "p/b\n"},
+		{"json, one loaded", mixed, true, `{"provider":"sushi","served":["p/b"]}` + "\n"},
+		{"json, none loaded", none, true, `{"provider":"sushi","served":[]}` + "\n"},
+		{"plain, none loaded", none, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := runServed(&out, tc.cfg, http.DefaultClient, "sushi", tc.json); err != nil {
+				t.Fatalf("runServed: %v", err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Errorf("output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestServedFailsRatherThanAnswerNothing: without the key the server will not
 // say which model is loaded, and that must be an error — an empty list with
 // exit 0 would read as "nothing is serving" and clear the flag of a model the
@@ -1035,6 +1075,23 @@ func TestNoHelpTextNamesModelman(t *testing.T) {
 	walk(rootCmd())
 	if seen < 20 {
 		t.Fatalf("walked %d commands, want the whole tree (wt has more than 20)", seen)
+	}
+}
+
+// TestHelpNamesSushiWhereItListsProviders pins the three help texts that
+// enumerate the providers wt seeds or stops (`wt model init`, `wt model add`
+// and `wt stop`): each must name sushi. Without it a built-in provider added
+// later is silently missing from the help the way sushi was.
+func TestHelpNamesSushiWhereItListsProviders(t *testing.T) {
+	root := rootCmd()
+	for _, path := range [][]string{{"model", "init"}, {"model", "add"}, {"stop"}} {
+		c, _, err := root.Find(path)
+		if err != nil || c == nil || c.Name() != path[len(path)-1] {
+			t.Fatalf("command %v not found: %v", path, err)
+		}
+		if !strings.Contains(c.Long, "sushi") {
+			t.Errorf("%s: Long does not name sushi:\n%s", c.CommandPath(), c.Long)
+		}
 	}
 }
 

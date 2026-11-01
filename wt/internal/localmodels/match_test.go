@@ -3,6 +3,7 @@ package localmodels
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 )
@@ -114,5 +115,66 @@ func TestFetchModelIDsErrDistinguishesEmptyFromFailure(t *testing.T) {
 	}
 	if _, err := FetchModelIDsErr(broken.Client(), "http://127.0.0.1:1/v1/models"); err == nil {
 		t.Error("a refused connection must be an error, not an empty model list")
+	}
+}
+
+// bodySrv serves one fixed /v1/models body.
+func bodySrv(t *testing.T, body string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// TestFetchLoadedModelIDsKeyedLoadedFilter pins E1: an entry the server marks
+// "loaded": false is listed but not served (sushi lists every pack), while an
+// absent, null, true or non-boolean value keeps the entry, so mtplx, ollama
+// and omlx listings read exactly as before. An answer holding only unloaded
+// entries is an empty list with a nil error: the server answered and serves
+// nothing.
+func TestFetchLoadedModelIDsKeyedLoadedFilter(t *testing.T) {
+	client := &http.Client{Timeout: time.Second}
+	for name, tc := range map[string]struct {
+		body string
+		want []string
+	}{
+		"no loaded field":          {`{"data":[{"id":"a"},{"id":"b"}]}`, []string{"a", "b"}},
+		"loaded true":              {`{"data":[{"id":"a","loaded":true}]}`, []string{"a"}},
+		"loaded false":             {`{"data":[{"id":"a","loaded":false}]}`, []string{}},
+		"mixed":                    {`{"data":[{"id":"a","loaded":false},{"id":"b","loaded":true},{"id":"c"},{"id":"","loaded":true}]}`, []string{"b", "c"}},
+		"false with state loading": {`{"data":[{"id":"a","loaded":false,"state":"loading"}]}`, []string{}},
+		"true with state ready":    {`{"data":[{"id":"a","loaded":true,"state":"ready"}]}`, []string{"a"}},
+		"false with state unload":  {`{"data":[{"id":"a","loaded":false,"state":"unloaded"}]}`, []string{}},
+		"state alone is ignored":   {`{"data":[{"id":"a","state":"unloaded"}]}`, []string{"a"}},
+		"loaded null":              {`{"data":[{"id":"a","loaded":null}]}`, []string{"a"}},
+		"loaded string false":      {`{"data":[{"id":"a","loaded":"false"}]}`, []string{"a"}},
+		"loaded zero":              {`{"data":[{"id":"a","loaded":0}]}`, []string{"a"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ids, err := FetchLoadedModelIDsKeyed(client, bodySrv(t, tc.body), "")
+			if err != nil || ids == nil || !slices.Equal(ids, tc.want) {
+				t.Errorf("ids = %#v err = %v, want %v and nil", ids, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestFetchModelIDsIgnoresTheLoadedFlag verifies the plain fetchers list every
+// id in order whatever "loaded" says: only a family that opts in
+// (FamilySpec.LoadedOnly, through FetchLoadedModelIDsKeyed) drops unloaded
+// entries, so no other server's listing changes meaning. It also serves the
+// pack-id check, where an unloaded pack must not look missing.
+func TestFetchModelIDsIgnoresTheLoadedFlag(t *testing.T) {
+	client := &http.Client{Timeout: time.Second}
+	url := bodySrv(t, `{"data":[{"id":"a","loaded":false},{"id":"b","loaded":true},{"id":"c"},{"id":"d","loaded":null}]}`)
+	want := []string{"a", "b", "c", "d"}
+	if got := FetchModelIDs(client, url); !slices.Equal(got, want) {
+		t.Errorf("FetchModelIDs = %v, want %v", got, want)
+	}
+	if got, err := FetchModelIDsErr(client, url); err != nil || !slices.Equal(got, want) {
+		t.Errorf("FetchModelIDsErr = %v, %v, want %v", got, err, want)
+	}
+	if got, err := FetchModelIDsKeyed(client, url, ""); err != nil || !slices.Equal(got, want) {
+		t.Errorf("FetchModelIDsKeyed = %v, %v, want %v and nil", got, err, want)
 	}
 }

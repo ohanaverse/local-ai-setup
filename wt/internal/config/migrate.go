@@ -426,3 +426,31 @@ func upsertAgent(cfg *Config, name string, providers []string, defaultProvider s
 	})
 	return true
 }
+
+// EnsureAgentProvider adds provider to the supported_providers of each named
+// agent that is in config.toml and does not list it yet, and returns the
+// agents it changed, in the order given. An agent config.toml does not name
+// is skipped, never created. It is a locked read-modify-write of the file
+// as it is now (lockedApply), written only when something changed, so a
+// concurrent `wt config` or `wt litellm set` is not reverted.
+//
+// `wt model add` calls it after the provider's registry row exists: an agent
+// naming a provider the registry lacks fails validation on the next Load.
+// It runs on an add, not on every Load, so a user who removes a provider from
+// an agent keeps it removed until they register another of its models.
+func EnsureAgentProvider(provider string, agents ...string) ([]string, error) {
+	var added []string
+	_, _, err := lockedApply(func(fresh *Config) (bool, error) {
+		added = nil
+		for _, name := range agents {
+			a, err := fresh.AgentByName(name)
+			if err != nil || slices.Contains(a.SupportedProviders, provider) {
+				continue
+			}
+			a.SupportedProviders = append(a.SupportedProviders, provider)
+			added = append(added, name)
+		}
+		return len(added) > 0, nil
+	})
+	return added, err
+}

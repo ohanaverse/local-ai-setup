@@ -262,3 +262,223 @@ def test_log_tail_returns_empty_string_on_missing_file():
     unconditionally include it in an error message."""
     with patch("builtins.open", side_effect=OSError("no such file")):
         assert _proc().log_tail() == ""
+
+
+# --- live_pid: the read-only ownership check ----------------------------------
+
+PP = "llmbench.providers.lifecycle.pidproc"
+
+
+def _sushi(tmp_path, content: str | None = "4242"):
+    pidfile = tmp_path / "sushi.pid"
+    if content is not None:
+        pidfile.write_text(content)
+    return PidfileProcess(name="sushi", pidfile=str(pidfile), logfile=str(tmp_path / "sushi.log"))
+
+
+def test_live_pid_returns_the_pid_of_a_live_matching_process(tmp_path):
+    """A live pid whose `ps` line names the process is the verified pid; the
+    check is read-only, so the pidfile is still there afterwards."""
+    proc = _sushi(tmp_path, "4242\n")
+    with (
+        patch(f"{PP}.os.kill") as kill,
+        patch(f"{PP}.subprocess.run", _ps_matching("sushi")),
+    ):
+        assert proc.live_pid() == 4242
+    kill.assert_called_once_with(4242, 0)
+    assert os.path.exists(proc.pidfile)
+
+
+def test_live_pid_is_none_without_a_pidfile(tmp_path):
+    with patch(f"{PP}.os.kill") as kill:
+        assert _sushi(tmp_path, None).live_pid() is None
+    kill.assert_not_called()
+
+
+@pytest.mark.parametrize("content", ["", "abc", "0", "-7"])
+def test_live_pid_is_none_for_unusable_content(tmp_path, content):
+    """Unparsable or non-positive content never reaches os.kill (0 is this
+    process's group, a negative pid a broadcast) and the file is kept."""
+    proc = _sushi(tmp_path, content)
+    with patch(f"{PP}.os.kill") as kill:
+        assert proc.live_pid() is None
+    kill.assert_not_called()
+    assert os.path.exists(proc.pidfile)
+
+
+def test_live_pid_is_none_for_pid_one_and_this_process(tmp_path):
+    """pid 1 (launchd) and this process itself are never a server llmbench
+    started: refused before any os.kill, as wt refuses them."""
+    for content in ("1", str(os.getpid())):
+        proc = _sushi(tmp_path, content)
+        with (
+            patch(f"{PP}.os.kill") as kill,
+            patch(f"{PP}.subprocess.run", _ps_matching("sushi")),
+        ):
+            assert proc.live_pid() is None
+        kill.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError(), PermissionError()])
+def test_live_pid_is_none_when_the_pid_cannot_be_signalled(tmp_path, error):
+    proc = _sushi(tmp_path)
+    with patch(f"{PP}.os.kill", side_effect=error):
+        assert proc.live_pid() is None
+    assert os.path.exists(proc.pidfile)
+
+
+def test_live_pid_is_none_when_the_process_is_something_else(tmp_path):
+    """A recycled pid now held by another program is not ours."""
+    proc = _sushi(tmp_path)
+    ps_other = MagicMock(return_value=MagicMock(returncode=0, stdout="/usr/bin/sleep 60\n"))
+    with patch(f"{PP}.os.kill"), patch(f"{PP}.subprocess.run", ps_other):
+        assert proc.live_pid() is None
+    assert os.path.exists(proc.pidfile)
+
+
+# --- spawn's session ----------------------------------------------------------
+
+
+def _spawned_kwargs(tmp_path, **spawn_kw) -> dict:
+    proc = _sushi(tmp_path, None)
+    child = MagicMock(pid=4242, poll=MagicMock(return_value=None))
+    with (
+        patch(f"{PP}.subprocess.Popen", return_value=child) as popen,
+        patch(f"{PP}.time.sleep"),
+    ):
+        # A path that does not exist: should the Popen patch ever miss, the
+        # spawn fails instead of starting the installed sushi.
+        proc.spawn(["/Users/nobody/.local/bin/sushi", "serve"], **spawn_kw)
+    return popen.call_args.kwargs
+
+
+def test_spawn_new_session_starts_a_new_session(tmp_path):
+    assert _spawned_kwargs(tmp_path, new_session=True)["start_new_session"] is True
+
+
+def test_spawn_by_default_passes_no_session_kwarg(tmp_path):
+    assert set(_spawned_kwargs(tmp_path)) == {"stdout", "stderr"}
+
+
+# --- stop_verified and the strict identity ------------------------------------
+
+ARGV = ["serve", "--port", "12345", "--host", "127.0.0.1"]
+
+
+def _ps_line(uid=None, command="/Users/u/.local/bin/sushi serve --port 12345 --host 127.0.0.1"):
+    """A subprocess.run mock for `ps -p <pid> -o uid=,command=`."""
+    uid = os.getuid() if uid is None else uid
+    return MagicMock(return_value=MagicMock(returncode=0, stdout=f"  {uid} {command}\n"))
+
+
+def test_strict_identity_wants_this_user_and_the_exact_argv(tmp_path):
+    """Owner, binary file name and the full argument list must all match:
+    a process that merely mentions sushi is not it."""
+    proc = _sushi(tmp_path)
+    with patch(f"{PP}.subprocess.run", _ps_line()):
+        assert proc._matches_argv(4242, ARGV) is True
+    wrong = {
+        "another user": _ps_line(uid=os.getuid() + 1),
+        "another port": _ps_line(command="/x/sushi serve --port 9 --host 127.0.0.1"),
+        "an extra argument": _ps_line(command="/x/sushi serve --port 12345 --host 127.0.0.1 -v"),
+        "a pager on its log": _ps_line(command="tail -f /tmp/local-ai-setup-sushi.log"),
+        "an editor on its models": _ps_line(command="vim /Users/u/.sushi/models/x/config.json"),
+        "ps cannot say": MagicMock(return_value=MagicMock(returncode=1, stdout="")),
+        "garbage": _ps_line(command=""),
+    }
+    for why, ps in wrong.items():
+        with patch(f"{PP}.subprocess.run", ps):
+            assert proc._matches_argv(4242, ARGV) is False, why
+
+
+def test_live_pid_with_an_argv_fails_closed_when_ps_cannot_answer(tmp_path):
+    """The loose check treats an unanswerable `ps` as a match; the strict one
+    must not, or a stale pidfile would make a foreign server look owned."""
+    proc = _sushi(tmp_path)
+    ps_down = MagicMock(return_value=MagicMock(returncode=1, stdout=""))
+    with patch(f"{PP}.os.kill"), patch(f"{PP}.subprocess.run", ps_down):
+        assert proc.live_pid() == 4242  # loose: inconclusive counts as ours
+        assert proc.live_pid(ARGV) is None  # strict: it does not
+    with patch(f"{PP}.os.kill"), patch(f"{PP}.subprocess.run", _ps_line()):
+        assert proc.live_pid(ARGV) == 4242
+
+
+def test_stop_verified_signals_a_matching_process_and_removes_the_pidfile_once_gone(tmp_path):
+    proc = _sushi(tmp_path)
+    alive = iter([True, False])  # alive for the identity check, gone after SIGTERM
+    sent = []
+    with (
+        patch.object(PidfileProcess, "_alive", side_effect=lambda pid: next(alive)),
+        patch(f"{PP}.os.kill", side_effect=lambda pid, sig: sent.append(sig)),
+        patch(f"{PP}.subprocess.run", _ps_line()),
+        patch(f"{PP}.time.sleep"),
+    ):
+        assert proc.stop_verified(ARGV) is True
+    assert [int(s) for s in sent] == [15]  # SIGTERM only: it went
+    assert not os.path.exists(proc.pidfile)
+
+
+def test_stop_verified_escalates_to_sigkill_when_sigterm_is_ignored(tmp_path):
+    proc = _sushi(tmp_path)
+    sent = []
+    state = {"killed": False}
+
+    def kill(pid, sig):
+        sent.append(int(sig))
+        state["killed"] = int(sig) == 9
+
+    with (
+        patch.object(PidfileProcess, "_alive", side_effect=lambda pid: not state["killed"]),
+        patch(f"{PP}.os.kill", side_effect=kill),
+        patch(f"{PP}.subprocess.run", _ps_line()),
+        patch(f"{PP}.time.sleep"),
+        patch(f"{PP}.time.monotonic", side_effect=iter([0.0, 0.0, 99.0, 100.0, 100.0, 100.5])),
+    ):
+        assert proc.stop_verified(ARGV, grace=10.0) is True
+    assert sent == [15, 9]
+    assert not os.path.exists(proc.pidfile)
+
+
+def test_stop_verified_keeps_the_pidfile_when_the_process_will_not_die(tmp_path):
+    """A server that outlives SIGTERM and SIGKILL stays findable: the next
+    isolate or stop still has its pidfile instead of an unowned-looking port."""
+    proc = _sushi(tmp_path)
+    ticks = iter(range(0, 10_000, 100))
+    with (
+        patch.object(PidfileProcess, "_alive", return_value=True),
+        patch(f"{PP}.os.kill"),
+        patch(f"{PP}.subprocess.run", _ps_line()),
+        patch(f"{PP}.time.sleep"),
+        patch(f"{PP}.time.monotonic", side_effect=lambda: float(next(ticks))),
+    ):
+        assert proc.stop_verified(ARGV, grace=1.0, kill_wait=1.0) is False
+    assert os.path.exists(proc.pidfile)
+
+
+def test_stop_verified_never_signals_a_recycled_pid(tmp_path):
+    """A pid now held by something else is a stale pidfile: removed, not killed."""
+    proc = _sushi(tmp_path)
+    with (
+        patch.object(PidfileProcess, "_alive", return_value=True),
+        patch(f"{PP}.os.kill") as kill,
+        patch(f"{PP}.subprocess.run", _ps_line(command="vim /Users/u/.sushi/models/x")),
+    ):
+        assert proc.stop_verified(ARGV) is True
+    kill.assert_not_called()
+    assert not os.path.exists(proc.pidfile)
+
+
+@pytest.mark.parametrize("content", ["", "x", "0", "-1"])
+def test_stop_verified_removes_an_unusable_pidfile_without_signalling(tmp_path, content):
+    proc = _sushi(tmp_path, content)
+    with patch(f"{PP}.os.kill") as kill:
+        assert proc.stop_verified(ARGV) is True
+    kill.assert_not_called()
+    assert not os.path.exists(proc.pidfile)
+
+
+def test_stop_verified_without_a_pidfile_has_nothing_to_do(tmp_path):
+    proc = _sushi(tmp_path, None)
+    with patch(f"{PP}.os.kill") as kill:
+        assert proc.stop_verified(ARGV) is True
+    kill.assert_not_called()

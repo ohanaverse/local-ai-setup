@@ -1,4 +1,4 @@
-# Provider artifacts — llama.cpp (retired), LiteLLM, oMLX, mlx_lm_server, rec
+# Provider artifacts — llama.cpp (retired), LiteLLM, oMLX, mlx_lm_server, rec, Sushi
 
 > Use this to: restore or rebuild any provider on this machine from the
 > exact files it shipped with. Verified against the host on 2026-09-07.
@@ -23,6 +23,10 @@
 The litellm plist's redacted keys — re-fill each from the live plist or a
 secret store at restore time: `OPENROUTER_API_KEY`, `LITELLM_MASTER_KEY`,
 `LITELLM_SALT_KEY`, `UI_PASSWORD`, `DATABASE_URL`.
+
+rec and Sushi have no row above: neither keeps a standing file in this repo or a
+LaunchAgent. Their sections near the end of this page say where each keeps its
+data and how wt and llmbench run it.
 
 The "Source on host" column records where each file lived on 2026-09-07, so the
 omlx row keeps that day's `homebrew.mxcl.omlx` name. Homebrew now labels its
@@ -252,3 +256,46 @@ the plist is installed, `launchctl unload` it by hand:
   the file's fixed paths and does not read `WT_REC_PIDFILE`. One generic
   backend, `llmbench/src/llmbench/providers/lifecycle/backends/process_server.py`,
   serves rec and mtplx; there is no rec-specific module.
+
+## sushi — active, on-demand only (no standing artifact)
+
+- The engine serving the Sushi packs: one Homebrew-tap binary, `sushi`
+  (`brew install beamivalice/tap/sushi`; Sushi 1.4.1 was installed here). Not
+  a LaunchAgent, and no `bin/update` script keeps it current: `wt start
+  sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` runs one model-less
+  `sushi serve --port 12345 --host 127.0.0.1 --ctx-size 131072
+  --max-resident-models 1 --no-update-check --max-tokens 32768` as a
+  backgrounded process (the `Spawn` literal in `wt/internal/provider/table.go`
+  and in `docs/contracts/process-providers.toml`; it names no model, the first
+  request does) with pidfile `/tmp/local-ai-setup-sushi.pid` (relocated by
+  `WT_SUSHI_PIDFILE`) and log `/tmp/local-ai-setup-sushi.log`.
+- Sushi has no stop command. `wt stop sushi` signals the process the pidfile
+  names after checking it (the user's own, `sushi serve … --port 12345`);
+  it never runs the bare `sushi` binary. Stopping the process unloads the
+  pack.
+- Everything else Sushi owns lives under `~/.sushi`: `models/<org>/<dir>`
+  (the packs; the one used here, `beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw`,
+  is 75.9 GB: 49.5 GB of safetensors, 47,213 MiB resident when loaded, plus a
+  32 GB `ngram_table.bin` streamed from the SSD and never resident), `logs/`
+  (Sushi's own logs) and `pi/`.
+- **wt never deletes any of it**: `wt model rm sushi/beamster/…` removes the
+  registry entry only, and no wt command touches `~/.sushi`. Removing a pack
+  is `rm -rf` of its directory under `~/.sushi/models`.
+- Registry: `[[providers]] id = "sushi"` with
+  `auth.base_url = "http://127.0.0.1:12345/v1"`, `model_dir = "~/.sushi/models"`
+  and no `secret_ref` (its `Seed` in `wt/internal/provider/table.go`), and one
+  model, `sushi/beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw` with
+  `model_name = "beamster/Qwen3.8-Flash-Next-Sushi-STQ-2.75bpw"`. Guide:
+  [02-providers-and-models.md](../guides/02-providers-and-models.md) Step 4.
+- Loading the pack needs the GPU wired limit raised (`sudo sysctl
+  iogpu.wired_limit_mb=59000`, which you run and which resets on reboot); wt
+  and llmbench only read it.
+- llmbench isolates it from the same contract entry: `llmbench provider
+  isolate sushi`, `provider stop sushi` and `provider restore` (which always
+  stops it) use the same `Spawn` argv, pidfile and log, read from
+  `docs/contracts/process-providers.toml`, pinned to
+  `wt/internal/provider/table.go` by
+  `TestProcessProvidersContractMatchesTheProviderTable`. It uses the file's
+  fixed paths and does not read `WT_SUSHI_PIDFILE`. There is no sushi-specific
+  module: the generic `backends/process_server.py` serves it with rec and
+  mtplx.
