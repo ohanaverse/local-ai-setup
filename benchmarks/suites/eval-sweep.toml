@@ -8,6 +8,12 @@ temperature = 0.0
 samples = 3
 max_attempts = 2
 route = "openrouter"
+# Alternative: judge on a Claude subscription (logged-in `claude` CLI, no
+# OpenRouter key). Temperature is ignored on this route; pin a full model
+# name and start with samples = 1 (subscription usage limits).
+#   model = "claude-opus-5-5"
+#   samples = 1
+#   route = "claude-cli"
 
 # No [coding] limit: EvalPlus 0.3.1's grading step requires every problem
 # in the FULL dataset (164 for humaneval) to have a sample before it

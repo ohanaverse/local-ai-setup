@@ -1,7 +1,7 @@
 """Guards on the autouse suite-hermeticity fixtures in tests/conftest.py.
 
 The lifecycle backends drive real local-model binaries (`omlx stop`,
-`mtplx stop`, `rec stop`, `sushi serve`, `mlx_lm.server`) and real
+`mtplx stop`, `rec stop`, `sushi serve`, `mlx_lm.server`, `claude -p`) and real
 LaunchAgents. Until one global allow-listing wrapper covered all of them,
 only per-test stubbing stood between the suite and the developer's live
 models — one new test that forgot to stub would tear down a model an agent
@@ -41,6 +41,9 @@ import pytest
         # the test fails without starting anything.
         ["/Users/nobody/.local/bin/sushi", "serve"],
         ["/Users/nobody/.local/bin/sushi", "--llmbench-hermetic-no-such-flag"],
+        # The eval judge's claude-cli route would spend the real subscription.
+        ["claude", "-p", "--model", "opus"],
+        ["/Users/nobody/.local/bin/claude", "auth", "status"],
         ["/opt/homebrew/Cellar/omlx/0.10.0/libexec/bin/mlx_lm.server", "--model", "x"],
     ],
 )

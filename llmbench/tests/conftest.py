@@ -56,9 +56,12 @@ _real_subprocess_run = subprocess.run
 # would restart the user's LiteLLM proxy; `omlx stop` / `mtplx stop` /
 # `mlx_lm.server` would tear down or spawn a real multi-GB local model
 # an agent may be using mid-request (`rec stop` / `rec serve` likewise:
-# rec is installed on the developer's machine; and `sushi serve`, also
-# installed there, loads a 46 GB pack); `wt warm` would load one.
-_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "sushi", "ollama", "wt"})
+# rec is installed on the developer's machine; `sushi serve`, also
+# installed there, loads a 46 GB pack; `wt warm` would load one; `claude`
+# would spend the developer's real subscription (the eval judge's claude-cli
+# route). Fake-CLI tests must therefore name their stand-in script anything
+# but `claude`.
+_FAKE_BINARIES = frozenset({"launchctl", "omlx", "mtplx", "rec", "sushi", "ollama", "wt", "claude"})
 _FAKE_BINARY_PREFIXES = ("mlx_lm.",)
 
 
@@ -117,12 +120,9 @@ class _GuardedPopen(_RealPopen):  # type: ignore[type-arg,misc]
     on it and subscript it (`subprocess.Popen[bytes]`), and subprocess.run
     itself calls it.
 
-    PR #505 adds the same rule for `llmbench.benchmark.judge_core._popen`
-    (`_RealPopen` plus a `_guarded_popen` function, AssertionError on a
-    faked binary). Same `_should_fake` basename rule, same error: at that
-    merge keep this one `_RealPopen`, make `_guarded_popen` this class (a
-    drop-in callable), and keep both patches, since `judge_core._popen` is
-    bound at import and this patch does not reach it."""
+    `judge_core._popen` (the claude-cli judge's Popen seam) is bound at
+    import, so the process-wide patch does not reach it: the autouse fixture
+    patches it with this same class as well."""
 
     def __init__(self, args: Any, *rest: Any, **kwargs: Any) -> None:
         argv0 = str(args[0]) if isinstance(args, list | tuple) and args else str(args)
@@ -135,6 +135,7 @@ class _GuardedPopen(_RealPopen):  # type: ignore[type-arg,misc]
 def _never_touch_live_providers(monkeypatch):
     """The suite must never poll a real localhost port, bounce a real
     LaunchAgent, signal a real pid, or drive a real provider binary."""
+    monkeypatch.setattr("llmbench.benchmark.judge_core._popen", _GuardedPopen)
     # `urllib.request`, `subprocess` and `os` are each one shared module
     # object: these patches are process-wide, whatever dotted path reaches
     # them.

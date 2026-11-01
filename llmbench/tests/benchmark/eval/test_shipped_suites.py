@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from llmbench.benchmark.eval.suite import JUDGE_ROUTES, Suite, load_suite, resolve_row_endpoint
+from llmbench.benchmark.eval.suite import Suite, load_suite, resolve_row_endpoint
 from llmbench.providers.secret import provider_key
 from llmbench.registry import ModelEntry, ProviderEntry, Registry, registry_path
 
@@ -48,26 +48,14 @@ def _registry() -> Registry:
     )
 
 
-def _loadable(tmp_path: Path) -> Path:
-    # The shipped suite judges through claude-cli (PR #505). While this branch's
-    # JUDGE_ROUTES lacks it, load a temp copy that judges through openrouter.
-    if "claude-cli" in JUDGE_ROUTES:
-        return SUITE
-    copy = tmp_path / SUITE.name
-    text = SUITE.read_text(encoding="utf-8")
-    assert 'route = "claude-cli"' in text
-    copy.write_text(text.replace('route = "claude-cli"', 'route = "openrouter"'), encoding="utf-8")
-    return copy
-
-
 def _suite(tmp_path: Path) -> Suite:
     assert SUITE.parent.is_dir()
-    return load_suite(_loadable(tmp_path), _registry())
+    return load_suite(SUITE, _registry())
 
 
 def test_the_suite_judges_through_the_claude_cli_route():
     # The shipped file must keep the subscription judge route with one sample (quota);
-    # the temp-copy substitution in _loadable must never leak into the shipped file.
+    # a test edit must never change the shipped file.
     judge = tomllib.loads(SUITE.read_text(encoding="utf-8"))["judge"]
     assert judge["route"] == "claude-cli"
     assert judge["samples"] == 1

@@ -586,3 +586,16 @@ def test_rejudge_run_keeps_existing_judge_json_when_rejudge_fails(tmp_path):
     # The reported outcome must show the retained score (77), not the failed
     # attempt's None, so the console agrees with the rebuilt summary.
     assert [o["total"] for o in outcomes] == [77]
+
+
+def test_judge_config_from_run_toml_round_trips_claude_cli_route(tmp_path):
+    from llmbench.benchmark.eval.runner import _judge_config_from_run_toml
+
+    (tmp_path / "run.toml").write_text(
+        '[suite.judge]\nmodel = "claude-opus-5-5"\ntemperature = 0.0\n'
+        'samples = 1\nmax_attempts = 2\nroute = "claude-cli"\n',
+        encoding="utf-8",
+    )
+    cfg = _judge_config_from_run_toml(tmp_path, samples_override=None)
+    assert cfg.route == "claude-cli"
+    assert cfg.model == "claude-opus-5-5"
