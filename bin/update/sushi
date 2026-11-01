@@ -115,7 +115,7 @@ fi
 
 # A running server must never be updated underneath.
 if pgrep -f 'sushi serve' > /dev/null 2>&1; then
-    update_finish manual "$installed installed; $offer, but a sushi server is running — stop it first (\`wt stop sushi\` where wt manages Sushi, otherwise the process itself), then rerun"
+    update_finish manual "$installed installed; $offer, but a sushi server is running — stop it first (\`wt stop sushi\`), then rerun"
 fi
 
 if [ "$via" = brew ]; then
