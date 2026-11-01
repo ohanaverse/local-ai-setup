@@ -7,11 +7,13 @@ the value, matching the real `evalplus==0.3.1` output confirmed live in
 Task 12 (`cprint(f"{k}:\\t{v:.3f}", ...)` in evalplus/evaluate.py).
 """
 
+import os
 from pathlib import Path
 
 import pytest
 
 from llmbench.benchmark.eval.evalplus_runner import (
+    RLIMIT_PATCH_DIR,
     _build_command,
     _parse_pass_at_1,
     run_coding_category,
@@ -337,21 +339,16 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
     from llmbench.benchmark.eval import evalplus_launcher
 
     init, codegen = DecoderBase.__init__, OpenAIChatDecoder.codegen
-    dec_init = OpenAIChatDecoder.__init__
-    original_signal = openai_request.signal
+    decoder_init = OpenAIChatDecoder.__init__
+    original_request = openai_request.make_auto_request
     try:
         evalplus_launcher.apply_patches(4096)
-        # The 100 s per-request alarm is disabled: alarm(100) must not arm a timer.
-        import signal as real_signal
-
-        openai_request.signal.alarm(100)
-        assert real_signal.alarm(0) == 0
         dec = OpenAIChatDecoder(
             name="m", base_url="http://x/v1", temperature=0.0, instruction_prefix="Solve:"
         )
         assert dec.max_new_tokens == 4096
+        # The OpenAI client's 600 s default would abort and resend a long reply forever.
         assert dec.client.timeout is None
-        assert dec.client.max_retries == 0
 
         class Msg:
             def __init__(self, content):
@@ -362,16 +359,15 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
 
         import evalplus.gen.util.openai_request as req
 
-        orig = req.make_auto_request
         req.make_auto_request = lambda *a, **k: Resp()
         try:
             assert dec.codegen("def f(): pass", do_sample=False, num_samples=1) == ["", "ok"]
         finally:
-            req.make_auto_request = orig
+            req.make_auto_request = evalplus_launcher._bounded_request
     finally:
         DecoderBase.__init__, OpenAIChatDecoder.codegen = init, codegen
-        OpenAIChatDecoder.__init__ = dec_init
-        openai_request.signal = original_signal
+        OpenAIChatDecoder.__init__ = decoder_init
+        openai_request.make_auto_request = original_request
 
 
 def _env_seen_by_run(monkeypatch, caller_value=None):
@@ -398,10 +394,89 @@ def _env_seen_by_run(monkeypatch, caller_value=None):
     return seen["env"]
 
 
-def test_run_disables_evalplus_memory_limit_macos_rejects(monkeypatch):
-    # Regression: without this EvalPlus scored every solution 0.000 on macOS 27.
-    assert _env_seen_by_run(monkeypatch)["EVALPLUS_MAX_MEMORY_BYTES"] == "-1"
+def test_run_leaves_the_memory_limit_to_evalplus_and_adds_the_rlimit_patch(monkeypatch):
+    seen = _env_seen_by_run(monkeypatch)
+    assert "EVALPLUS_MAX_MEMORY_BYTES" not in seen
+    assert str(RLIMIT_PATCH_DIR) in seen["PYTHONPATH"].split(os.pathsep)
+    assert (RLIMIT_PATCH_DIR / "sitecustomize.py").is_file()
 
 
 def test_run_keeps_a_memory_limit_the_caller_set(monkeypatch):
     assert _env_seen_by_run(monkeypatch, "8589934592")["EVALPLUS_MAX_MEMORY_BYTES"] == "8589934592"
+
+
+def test_run_drops_an_empty_memory_limit(monkeypatch):
+    # EvalPlus does int(value); an empty string would crash every solution.
+    assert "EVALPLUS_MAX_MEMORY_BYTES" not in _env_seen_by_run(monkeypatch, "")
+
+
+def test_rlimit_patch_skips_only_the_limits_the_os_refuses(monkeypatch):
+    import resource
+    import runpy
+
+    attempted = []
+
+    def fake_setrlimit(which, limits):
+        attempted.append(which)
+        if which == resource.RLIMIT_AS:
+            raise ValueError("current limit exceeds maximum limit")
+
+    monkeypatch.setattr(resource, "setrlimit", fake_setrlimit)
+    module = runpy.run_path(str(RLIMIT_PATCH_DIR / "sitecustomize.py"))
+    original_args = []
+    guard = module["make_guard"](lambda *a: original_args.append(a))
+
+    guard(4 * 1024**3)
+    assert resource.RLIMIT_AS in attempted and resource.RLIMIT_DATA in attempted
+    assert original_args == [(None,)]  # EvalPlus's own guard runs without a limit
+
+    attempted.clear()
+    guard(None)
+    assert attempted == []
+
+
+def _status_error(code):
+    import httpx
+    import openai
+
+    req = httpx.Request("POST", "http://x/v1/chat/completions")
+    return openai.APIStatusError("boom", response=httpx.Response(code, request=req), body=None)
+
+
+def test_bounded_request_fails_fast_on_4xx_and_caps_retries(monkeypatch):
+    pytest.importorskip("evalplus")
+    import evalplus.gen.util.openai_request as openai_request
+
+    from llmbench.benchmark.eval import evalplus_launcher as launcher
+
+    monkeypatch.setattr(launcher.time, "sleep", lambda _s: None)
+    calls = []
+
+    def make(code):
+        def fake(*a, **k):
+            calls.append(code)
+            raise _status_error(code)
+
+        return fake
+
+    monkeypatch.setattr(openai_request, "make_request", make(400))
+    with pytest.raises(Exception, match="boom"):
+        launcher._bounded_request()
+    assert calls == [400]
+
+    calls.clear()
+    monkeypatch.setattr(openai_request, "make_request", make(503))
+    with pytest.raises(RuntimeError, match="giving up"):
+        launcher._bounded_request()
+    assert len(calls) == launcher.MAX_RETRIES + 1
+
+    answers = iter([_status_error(429), "ok"])
+
+    def flaky(*a, **k):
+        r = next(answers)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(openai_request, "make_request", flaky)
+    assert launcher._bounded_request() == "ok"

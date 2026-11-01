@@ -13,17 +13,12 @@ those children. `evalplus_runner` puts this directory on `PYTHONPATH` for the
 EvalPlus subprocess only.
 """
 
+import contextlib
 import platform
 
 
-def _install() -> None:
-    try:
-        import evalplus.eval as evalplus_eval
-        import evalplus.eval.utils as evalplus_utils
-    except ImportError:
-        return
-
-    original = evalplus_utils.reliability_guard
+def make_guard(original):  # type: ignore[no-untyped-def]
+    """Return a `reliability_guard` that tolerates refused memory limits."""
 
     def reliability_guard(maximum_memory_bytes=None):  # type: ignore[no-untyped-def]
         if maximum_memory_bytes is not None:
@@ -33,16 +28,24 @@ def _install() -> None:
             if platform.uname().system != "Darwin":
                 names.append("RLIMIT_STACK")
             for name in names:
-                try:
+                with contextlib.suppress(ValueError, OSError):
                     resource.setrlimit(
                         getattr(resource, name), (maximum_memory_bytes, maximum_memory_bytes)
                     )
-                except (ValueError, OSError):
-                    pass
         original(None)
 
-    evalplus_utils.reliability_guard = reliability_guard
-    evalplus_eval.reliability_guard = reliability_guard
+    return reliability_guard
+
+
+def _install() -> None:
+    try:
+        import evalplus.eval as evalplus_eval
+        import evalplus.eval.utils as evalplus_utils
+    except ImportError:
+        return
+    guard = make_guard(evalplus_utils.reliability_guard)
+    evalplus_utils.reliability_guard = guard
+    evalplus_eval.reliability_guard = guard
 
 
 _install()
