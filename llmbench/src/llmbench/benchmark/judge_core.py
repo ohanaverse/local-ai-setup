@@ -10,10 +10,16 @@ diff-specific (anonymization, overclaim detection) to itself.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
+import os
 import re
+import signal
+import subprocess
+import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from statistics import median
 from typing import Protocol
@@ -32,6 +38,13 @@ class JudgeTransportError(Exception):
     judge_row's retry loop treats a network failure exactly like a
     malformed response: one more attempt, then judge_fail.
     """
+
+
+class JudgeFatalError(JudgeTransportError):
+    """A transport failure retrying cannot fix (logged out, CLI missing).
+
+    judge_row re-raises it instead of retrying, so the caller stops judging
+    that category rather than re-spawning a dead route for every item."""
 
 
 class JudgeTransport(Protocol):
@@ -196,6 +209,8 @@ def judge_row(
                 score = parse_response(raw, rubric)
                 last_error = None
                 break
+            except JudgeFatalError:
+                raise
             except (JudgeContractError, JudgeTransportError) as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 continue
@@ -310,3 +325,195 @@ class LiteLLMJudgeTransport:
                 f"{type(content).__name__}"
             )
         return content
+
+
+CLAUDE_CLI_SYSTEM_PROMPT = (
+    "You are a strict grading assistant. Follow the instructions in the user "
+    "message exactly and reply with only what they ask for."
+)
+
+# Env var prefixes removed before spawning the claude CLI: a stray
+# ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (wt sets the latter when it launches
+# claude through LiteLLM) or CLAUDE_CODE_* provider switch would divert the
+# call away from the logged-in subscription. CLAUDE_CODE_OAUTH_TOKEN (from
+# `claude setup-token`) is the subscription credential itself, so it is kept:
+# it is the only login on a headless host with a locked keychain.
+_CLAUDE_CLI_ENV_DENY_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_")
+_CLAUDE_CLI_ENV_KEEP = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
+
+_CLAUDE_CLI_NOT_LOGGED_IN = "Not logged in"
+
+
+# Seam for tests/conftest.py: its autouse guard swaps this for a wrapper that
+# refuses blocked binaries (`claude`), since subprocess.run's fake never sees
+# a Popen.
+_popen = subprocess.Popen
+
+
+def claude_cli_env() -> dict[str, str]:
+    """os.environ minus ANTHROPIC_* and CLAUDE_CODE_* (except
+    CLAUDE_CODE_OAUTH_TOKEN, the subscription token). A denylist, not an
+    allowlist: the CLI reads its OAuth credentials from the macOS keychain,
+    which needs HOME/USER/LOGNAME/TMPDIR/PATH to stay in place (an empty
+    env reports "Not logged in")."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k in _CLAUDE_CLI_ENV_KEEP or not k.startswith(_CLAUDE_CLI_ENV_DENY_PREFIXES)
+    }
+
+
+@contextlib.contextmanager
+def claude_cli_scratch() -> Iterator[tuple[str, dict[str, str]]]:
+    """A fresh empty cwd (no CLAUDE.md to discover) and the scrubbed env: the
+    setup every claude CLI spawn shares, judge calls and login preflight."""
+    with tempfile.TemporaryDirectory(prefix="llmbench-judge-") as cwd:
+        yield cwd, claude_cli_env()
+
+
+def claude_cli_argv(model: str, *, executable: str = "claude") -> list[str]:
+    """Headless judge invocation; the prompt goes on stdin, never argv.
+
+    No --bare (it never reads OAuth/keychain, so it can't use a
+    subscription). --tools "" keeps the judge from acting and cuts the input
+    from ~18k to well under 1k tokens per call; the other flags stop the
+    CLI loading settings, MCP servers, skills or a session from the host."""
+    if model.startswith("anthropic/"):
+        model = model[len("anthropic/") :]
+    return [
+        executable,
+        "-p",
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        "--setting-sources",
+        "local",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--tools",
+        "",
+        "--system-prompt",
+        CLAUDE_CLI_SYSTEM_PROMPT,
+    ]
+
+
+def parse_claude_cli_json(text: str) -> dict | None:
+    """The CLI's single JSON object, tolerating stray text around it."""
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start >= 0:
+        try:
+            obj, _ = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            return obj
+        start = text.find("{", start + 1)
+    return None
+
+
+class ClaudeCliJudgeTransport:
+    """Judge on the user's Claude subscription via headless `claude -p`
+    (a subscription can't be used as an API key). The prompt is sent on
+    stdin from a fresh empty temp directory with a scrubbed env.
+
+    `temperature` is accepted for JudgeTransport compatibility and IGNORED:
+    the CLI has no temperature control. The constructor does no I/O; login
+    is checked by eval preflight, not here."""
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        timeout_s: float = 300,
+        retry_backoff_s: float = 2.0,
+        executable: str = "claude",
+    ):
+        self.model = model
+        self.timeout_s = timeout_s
+        self.retry_backoff_s = retry_backoff_s
+        self.executable = executable
+
+    def complete(self, prompt: str, *, temperature: float) -> str:
+        try:
+            return self._call(prompt)
+        except _ClaudeCliFatal as exc:
+            raise JudgeFatalError(str(exc)) from exc
+        except _ClaudeCliRetryable:
+            time.sleep(self.retry_backoff_s)
+        try:
+            return self._call(prompt)
+        except _ClaudeCliError as exc:
+            raise JudgeTransportError(f"claude CLI judge failed after retry: {exc}") from exc
+
+    def _run(
+        self, argv: list[str], prompt: str, cwd: str, env: dict[str, str]
+    ) -> tuple[str, str, int]:
+        # Own session so a timeout kills the whole process group: the CLI may
+        # sit behind a launcher, and an orphan holding the pipes would make
+        # communicate() block for the child's full runtime.
+        with _popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",  # lone surrogates / non-UTF-8 output must not escape as UnicodeError
+            cwd=cwd,
+            env=env,
+            start_new_session=True,
+        ) as proc:
+            try:
+                stdout, stderr = proc.communicate(prompt, timeout=self.timeout_s)
+            except BaseException as exc:
+                # Timeout or Ctrl-C: the child has its own session, so the
+                # terminal's SIGINT never reaches it and Popen.__exit__ would
+                # block until the CLI finished on its own.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                if isinstance(exc, subprocess.TimeoutExpired):
+                    proc.communicate()
+                raise
+            return stdout, stderr, proc.returncode
+
+    def _call(self, prompt: str) -> str:
+        argv = claude_cli_argv(self.model, executable=self.executable)
+        with claude_cli_scratch() as (cwd, env):
+            try:
+                stdout, stderr, returncode = self._run(argv, prompt, cwd, env)
+            except FileNotFoundError as exc:
+                raise _ClaudeCliFatal(
+                    f"claude CLI not found (executable {self.executable!r}); "
+                    "install Claude Code and put it on PATH"
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise _ClaudeCliRetryable(f"claude CLI timed out after {self.timeout_s}s") from exc
+        data = parse_claude_cli_json(stdout or "")
+        result = data.get("result") if data else None
+        if returncode == 0 and data and data.get("is_error") is False:
+            if isinstance(result, str) and result:
+                return result
+            raise _ClaudeCliRetryable("claude CLI returned an empty or non-text result")
+        detail = result if isinstance(result, str) and result else None
+        if detail is None:
+            detail = (stderr or "").strip() or (stdout or "").strip()
+        detail = detail[:200]
+        message = f"claude CLI exited {returncode}: {detail}"
+        if _CLAUDE_CLI_NOT_LOGGED_IN in detail:
+            raise _ClaudeCliFatal(f"{message} (run: claude auth login)")
+        raise _ClaudeCliRetryable(message)
+
+
+class _ClaudeCliError(Exception):
+    """Internal: one failed claude CLI call."""
+
+
+class _ClaudeCliRetryable(_ClaudeCliError):
+    pass
+
+
+class _ClaudeCliFatal(_ClaudeCliError):
+    pass
