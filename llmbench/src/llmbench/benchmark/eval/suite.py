@@ -56,6 +56,10 @@ class CodingConfig:
     dataset: str | None = None
     limit: int | None = None
     timeout_s: int | None = None
+    # EvalPlus sends max_tokens=768, which a thinking model spends on its
+    # reasoning and then returns no answer. Set to raise it (see
+    # evalplus_launcher.py); unset keeps EvalPlus's own default.
+    max_new_tokens: int | None = None
 
 
 @dataclass
@@ -284,7 +288,17 @@ def load_suite(path: Path, registry: Registry) -> Suite:
         dataset=coding_raw.get("dataset"),
         limit=coding_raw.get("limit"),
         timeout_s=coding_raw.get("timeout_s"),
+        max_new_tokens=coding_raw.get("max_new_tokens"),
     )
+    if coding.max_new_tokens is not None and (
+        isinstance(coding.max_new_tokens, bool)
+        or not isinstance(coding.max_new_tokens, int)
+        or coding.max_new_tokens < 1
+    ):
+        raise BenchmarkError(
+            f"suite {path.name} [coding] max_new_tokens must be a positive integer, "
+            f"got {coding.max_new_tokens!r}"
+        )
     if coding.timeout_s is not None and (
         isinstance(coding.timeout_s, bool)
         or not isinstance(coding.timeout_s, int)
