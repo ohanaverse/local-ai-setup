@@ -7,11 +7,13 @@ the value, matching the real `evalplus==0.3.1` output confirmed live in
 Task 12 (`cprint(f"{k}:\\t{v:.3f}", ...)` in evalplus/evaluate.py).
 """
 
+import os
 from pathlib import Path
 
 import pytest
 
 from llmbench.benchmark.eval.evalplus_runner import (
+    RLIMIT_PATCH_DIR,
     _build_command,
     _parse_pass_at_1,
     run_coding_category,
@@ -366,6 +368,71 @@ def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
         DecoderBase.__init__, OpenAIChatDecoder.codegen = init, codegen
         OpenAIChatDecoder.__init__ = decoder_init
         openai_request.make_auto_request = original_request
+
+
+def _env_seen_by_run(monkeypatch, caller_value=None):
+    import subprocess
+
+    if caller_value is None:
+        monkeypatch.delenv("EVALPLUS_MAX_MEMORY_BYTES", raising=False)
+    else:
+        monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", caller_value)
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(cmd, 0, "pass@1:\t0.5\n", "")
+
+    run_coding_category(
+        base_url="http://x/v1",
+        model="m",
+        api_key="k",
+        dataset="humaneval",
+        limit=None,
+        run_cmd=fake_run,
+    )
+    return seen["env"]
+
+
+def test_run_leaves_the_memory_limit_to_evalplus_and_adds_the_rlimit_patch(monkeypatch):
+    seen = _env_seen_by_run(monkeypatch)
+    assert "EVALPLUS_MAX_MEMORY_BYTES" not in seen
+    assert str(RLIMIT_PATCH_DIR) in seen["PYTHONPATH"].split(os.pathsep)
+    assert (RLIMIT_PATCH_DIR / "sitecustomize.py").is_file()
+
+
+def test_run_keeps_a_memory_limit_the_caller_set(monkeypatch):
+    assert _env_seen_by_run(monkeypatch, "8589934592")["EVALPLUS_MAX_MEMORY_BYTES"] == "8589934592"
+
+
+def test_run_drops_an_empty_memory_limit(monkeypatch):
+    # EvalPlus does int(value); an empty string would crash every solution.
+    assert "EVALPLUS_MAX_MEMORY_BYTES" not in _env_seen_by_run(monkeypatch, "")
+
+
+def test_rlimit_patch_skips_only_the_limits_the_os_refuses(monkeypatch):
+    import resource
+    import runpy
+
+    attempted = []
+
+    def fake_setrlimit(which, limits):
+        attempted.append(which)
+        if which == resource.RLIMIT_AS:
+            raise ValueError("current limit exceeds maximum limit")
+
+    monkeypatch.setattr(resource, "setrlimit", fake_setrlimit)
+    module = runpy.run_path(str(RLIMIT_PATCH_DIR / "sitecustomize.py"))
+    original_args = []
+    guard = module["make_guard"](lambda *a: original_args.append(a))
+
+    guard(4 * 1024**3)
+    assert resource.RLIMIT_AS in attempted and resource.RLIMIT_DATA in attempted
+    assert original_args == [(None,)]  # EvalPlus's own guard runs without a limit
+
+    attempted.clear()
+    guard(None)
+    assert attempted == []
 
 
 def _status_error(code):
