@@ -325,6 +325,7 @@ def _run_row(
                     dataset=dataset,
                     limit=limit,
                     timeout_s=suite.coding.timeout_s,
+                    max_new_tokens=suite.coding.max_new_tokens,
                 )
             else:
                 results[category.name] = judged_runner.generate_category(

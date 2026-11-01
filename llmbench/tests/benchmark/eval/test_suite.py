@@ -337,6 +337,21 @@ def test_load_suite_reads_and_validates_coding_timeout(tmp_path):
         )
 
 
+def test_load_suite_reads_and_validates_coding_max_new_tokens(tmp_path):
+    unset = load_suite(_write(tmp_path, SUITE_BODY), _registry())
+    assert unset.coding.max_new_tokens is None
+    ok = load_suite(
+        _write(tmp_path, SUITE_BODY.replace("limit = 5", "max_new_tokens = 16384")), _registry()
+    )
+    assert ok.coding.max_new_tokens == 16384
+    for bad in ('"9"', "0", "true"):
+        with pytest.raises(BenchmarkError, match="max_new_tokens"):
+            load_suite(
+                _write(tmp_path, SUITE_BODY.replace("limit = 5", f"max_new_tokens = {bad}")),
+                _registry(),
+            )
+
+
 def test_load_suite_generation_defaults_to_greedy(tmp_path):
     # A suite with no [generation] table keeps the rows' historical greedy
     # sampling and sends no top_p/top_k, so older suites score as before.

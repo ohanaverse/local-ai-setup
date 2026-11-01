@@ -9,6 +9,8 @@ Task 12 (`cprint(f"{k}:\\t{v:.3f}", ...)` in evalplus/evaluate.py).
 
 from pathlib import Path
 
+import pytest
+
 from llmbench.benchmark.eval.evalplus_runner import (
     _build_command,
     _parse_pass_at_1,
@@ -278,3 +280,91 @@ def test_build_command_prefers_script_beside_the_running_interpreter(tmp_path, m
         dataset="humaneval", base_url="http://x/v1", model="m", limit=None, workdir="/tmp/x"
     )
     assert cmd[0] == str(script)
+
+
+def test_build_command_without_max_new_tokens_runs_the_plain_console_script():
+    cmd = _build_command(
+        dataset="humaneval", base_url="http://x/v1", model="m", limit=None, workdir="/tmp/x"
+    )
+    assert Path(cmd[0]).name == "evalplus.evaluate"
+
+
+def test_build_command_with_max_new_tokens_runs_the_launcher_module():
+    import sys
+
+    cmd = _build_command(
+        dataset="humaneval",
+        base_url="http://x/v1",
+        model="m",
+        limit=None,
+        workdir="/tmp/x",
+        max_new_tokens=16384,
+    )
+    assert cmd[:3] == [sys.executable, "-m", "llmbench.benchmark.eval.evalplus_launcher"]
+    assert "--greedy" in cmd
+
+
+def test_run_coding_category_passes_the_cap_through_the_environment():
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        import subprocess
+
+        seen["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(
+            cmd, 0, "humaneval+ (base + extra tests)\npass@1:\t0.5\n", ""
+        )
+
+    result = run_coding_category(
+        base_url="http://x/v1",
+        model="m",
+        api_key="k",
+        dataset="humaneval",
+        limit=None,
+        max_new_tokens=16384,
+        run_cmd=fake_run,
+    )
+    assert result.pass_at_1 == 0.5
+    assert seen["env"]["LLMBENCH_EVALPLUS_MAX_NEW_TOKENS"] == "16384"
+
+
+def test_launcher_raises_the_cap_and_turns_null_content_into_empty_text():
+    pytest.importorskip("evalplus")
+    import evalplus.gen.util.openai_request as openai_request
+    from evalplus.provider.base import DecoderBase
+    from evalplus.provider.openai import OpenAIChatDecoder
+
+    from llmbench.benchmark.eval import evalplus_launcher
+
+    init, codegen = DecoderBase.__init__, OpenAIChatDecoder.codegen
+    original_signal = openai_request.signal
+    try:
+        evalplus_launcher.apply_patches(4096)
+        # The 100 s per-request alarm is disabled: alarm(100) must not arm a timer.
+        import signal as real_signal
+
+        openai_request.signal.alarm(100)
+        assert real_signal.alarm(0) == 0
+        dec = OpenAIChatDecoder(
+            name="m", base_url="http://x/v1", temperature=0.0, instruction_prefix="Solve:"
+        )
+        assert dec.max_new_tokens == 4096
+
+        class Msg:
+            def __init__(self, content):
+                self.message = type("M", (), {"content": content})()
+
+        class Resp:
+            choices = [Msg(None), Msg("ok")]
+
+        import evalplus.gen.util.openai_request as req
+
+        orig = req.make_auto_request
+        req.make_auto_request = lambda *a, **k: Resp()
+        try:
+            assert dec.codegen("def f(): pass", do_sample=False, num_samples=1) == ["", "ok"]
+        finally:
+            req.make_auto_request = orig
+    finally:
+        DecoderBase.__init__, OpenAIChatDecoder.codegen = init, codegen
+        openai_request.signal = original_signal

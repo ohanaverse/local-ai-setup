@@ -117,8 +117,18 @@ def _evalplus_executable() -> str:
     return str(sibling) if sibling.is_file() else EVALPLUS_SCRIPT
 
 
+LAUNCHER_MODULE = "llmbench.benchmark.eval.evalplus_launcher"
+MAX_NEW_TOKENS_ENV = "LLMBENCH_EVALPLUS_MAX_NEW_TOKENS"
+
+
 def _build_command(
-    *, dataset: str, base_url: str, model: str, limit: int | None, workdir: str
+    *,
+    dataset: str,
+    base_url: str,
+    model: str,
+    limit: int | None,
+    workdir: str,
+    max_new_tokens: int | None = None,
 ) -> list[str]:
     # Console script (next to this interpreter, else via PATH), not `uvx --from evalplus`:
     # llmbench itself runs via `uv run` from within its own venv, which puts
@@ -130,8 +140,15 @@ def _build_command(
     # `[eval]` extra entirely — the extra is the deliberate opt-in gate for
     # local code execution (EvalPlus runs model-generated code), so `uvx`
     # would let anyone trigger a live EvalPlus run without it.
+    # EvalPlus has no flag for its 768-token cap, so a raised cap runs the same
+    # CLI through the launcher module, which patches the decoder first.
+    entry = (
+        [sys.executable, "-m", LAUNCHER_MODULE]
+        if max_new_tokens is not None
+        else [_evalplus_executable()]
+    )
     cmd = [
-        _evalplus_executable(),
+        *entry,
         "--dataset",
         dataset,
         "--backend",
@@ -191,6 +208,7 @@ def run_coding_category(
     dataset: str,
     limit: int | None,
     timeout_s: int | None = None,
+    max_new_tokens: int | None = None,
     run_cmd=_run_in_process_group,
 ) -> CodingResult:
     """Invoke EvalPlus against the row's resolved OpenAI-compatible endpoint
@@ -199,15 +217,23 @@ def run_coding_category(
     """
     with TemporaryDirectory(prefix="llmbench-evalplus-") as tmp:
         cmd = _build_command(
-            dataset=dataset, base_url=base_url, model=model, limit=limit, workdir=tmp
+            dataset=dataset,
+            base_url=base_url,
+            model=model,
+            limit=limit,
+            workdir=tmp,
+            max_new_tokens=max_new_tokens,
         )
+        env = {**os.environ, "OPENAI_API_KEY": api_key}
+        if max_new_tokens is not None:
+            env[MAX_NEW_TOKENS_ENV] = str(max_new_tokens)
         try:
             result = run_cmd(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout_s or DEFAULT_TIMEOUT_S,
-                env={**os.environ, "OPENAI_API_KEY": api_key},
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return CodingResult(

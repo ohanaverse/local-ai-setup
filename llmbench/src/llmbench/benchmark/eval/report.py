@@ -227,7 +227,11 @@ def write_run_toml(path: Path, suite: Suite, *, git_sha: str) -> None:
             # cannot serialize None).
             "coding": {
                 k: v
-                for k, v in {"dataset": suite.coding.dataset, "limit": suite.coding.limit}.items()
+                for k, v in {
+                    "dataset": suite.coding.dataset,
+                    "limit": suite.coding.limit,
+                    "max_new_tokens": suite.coding.max_new_tokens,
+                }.items()
                 if v is not None
             },
             # How the rows were sampled, so two runs' scores can be told
