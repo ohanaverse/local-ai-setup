@@ -323,6 +323,8 @@ def wait_for_http_ok(
                 resp.read()
                 if resp.status == 200:
                     return
+        except ValueError as exc:  # a malformed URL cannot become ready: fail now
+            raise LifecycleError(f"cannot probe {url}: {exc}") from None
         except OSError:  # HTTPError is an OSError: not ready yet
             pass
         time.sleep(1.0)
