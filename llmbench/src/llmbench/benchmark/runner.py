@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import requests
 
+from llmbench.benchmark._routes import litellm_credentials
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.benchmark.isolation import (
     POSITIONAL_MODEL_PROVIDERS,
@@ -196,6 +198,29 @@ def run_benchmark(
 
     session = requests.Session()
     keyed_sessions: dict[str, requests.Session] = {}
+    # The LiteLLM proxy answers 401 to a request without its key, so its route
+    # carries the apiKey wt seeds into pi's models.json (the key the eval's
+    # litellm route sends) and POSTs to the baseUrl that seed carries — a
+    # relocated proxy gets its traffic there, as eval/agent already do. With
+    # no apiKey seeded the route stays header-free (which a keyless proxy
+    # accepts) on the default endpoint; the seed is unreachable in that case,
+    # so the fallback URL is all there is.
+    litellm_session = session
+    litellm_url = LITELLM_URL
+    if "litellm" in routes:
+        try:
+            litellm_base_url, litellm_key = litellm_credentials()
+        except BenchmarkError:
+            print(
+                "llmbench: no LiteLLM apiKey seeded in ~/.pi/agent/models.json; "
+                "litellm rows send no key — if the proxy requires one, launch a wt "
+                "pi session in litellm mode at least once to seed it",
+                file=sys.stderr,
+            )
+        else:
+            litellm_session = requests.Session()
+            litellm_session.headers["Authorization"] = f"Bearer {litellm_key}"
+            litellm_url = f"{litellm_base_url.rstrip('/')}/chat/completions"
     # Isolation is keyed on (provider_id, positional args, warmed model):
     # consecutive targets on the same key reuse the running isolation instead
     # of paying another stop-others + warmup cycle (~a minute of polling per
@@ -264,8 +289,8 @@ def run_benchmark(
             assert direct_url is not None
             # The direct route of a keyed provider (rec refuses every route
             # without its bearer key) goes through a session of its own that
-            # carries the key; every other request — key-less providers, and
-            # every litellm route — stays on the plain, header-free session.
+            # carries the key; a key-less provider's direct requests stay on the
+            # plain, header-free session. The litellm route has its own session.
             direct_session = session
             key_error: str | None = None
             if "direct" in routes:
@@ -278,8 +303,8 @@ def run_benchmark(
                     if route == "direct" and key_error is not None:
                         run.results.append(_error_result(target, route, pass_number, key_error))
                         continue
-                    url = direct_url if route == "direct" else LITELLM_URL
-                    route_session = direct_session if route == "direct" else session
+                    url = direct_url if route == "direct" else litellm_url
+                    route_session = direct_session if route == "direct" else litellm_session
                     result = _run_route(route_session, target, route, url, workload, pass_number)
                     run.results.append(result)
                 if pass_number < passes:
@@ -287,6 +312,8 @@ def run_benchmark(
     finally:
         for keyed in keyed_sessions.values():
             keyed.close()
+        if litellm_session is not session:
+            litellm_session.close()
         restore_error: str | None = None
         try:
             restore_providers()
