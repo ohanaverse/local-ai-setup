@@ -489,9 +489,12 @@ def test_run_benchmark_direct_route_of_a_keyed_provider_carries_its_key(tmp_path
     assert [s == "Bearer rec-test-key" for s in sent] == [True]
 
 
-def test_run_benchmark_key_less_provider_and_litellm_route_send_no_key(tmp_path, monkeypatch):
-    """ollama's direct route and every litellm route stay header-free: the
-    key goes per target, to the direct route of a keyed provider only."""
+def test_run_benchmark_key_less_provider_and_unseeded_litellm_route_send_no_key(
+    tmp_path, monkeypatch
+):
+    """With no LiteLLM apiKey seeded, ollama's direct route and the litellm
+    route stay header-free: the provider key goes per target, to the direct
+    route of a keyed provider only."""
     from tests.probe.conftest import serve_fake
 
     with serve_fake() as fake:
@@ -509,6 +512,27 @@ def test_run_benchmark_key_less_provider_and_litellm_route_send_no_key(tmp_path,
         ("ollama/a", False),  # ollama litellm
         ("reasoning-field", False),  # ollama direct
         ("rec/flint", False),  # rec litellm
+    ]
+
+
+def test_run_benchmark_litellm_route_carries_the_litellm_key_and_direct_does_not(
+    tmp_path, monkeypatch
+):
+    """The proxy answers 401 to a keyless request: the litellm route sends the
+    apiKey from pi's models.json, and no direct route of a key-less provider does."""
+    import llmbench.benchmark.runner as runner_module
+    from tests.probe.conftest import serve_fake
+
+    monkeypatch.setattr(
+        runner_module, "litellm_credentials", lambda: ("http://x/v1", "litellm-test-key")
+    )
+    with serve_fake() as fake:
+        run = _keyed_registry_run(tmp_path, monkeypatch, fake, ["ollama/a"], ["direct", "litellm"])
+        sent = [(r["body"]["model"], r["headers"].get("Authorization")) for r in fake.requests]
+    assert [r.error for r in run.results if r.route == "direct"] == [None]
+    assert sorted(sent, key=str) == [
+        ("ollama/a", "Bearer litellm-test-key"),  # litellm route
+        ("reasoning-field", None),  # ollama direct
     ]
 
 
