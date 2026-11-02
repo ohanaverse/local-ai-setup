@@ -3,14 +3,18 @@
 # Compares four local models on the llmbench eval categories: ollama
 # qwen3.8:27b-mlx, rec/flint, mtplx Qwen3.8-27B Optimized-Quality and mtplx
 # Qwen3.6-35B-A3B Optimized-Balance. (The Sushi Qwen3.8-Flash-Next row of the
-# five-way version was dropped: slower than the alternatives and no better.)
+# five-way version was dropped after its pack was uninstalled and its registry
+# row removed, which left the suite failing load_suite.)
 # [coding] max_new_tokens lifts EvalPlus's 768-token reply cap, which a thinking
 # model spends on reasoning (guide 11, Gotchas). The rec and mtplx rows use
 # direct routes and need no LiteLLM route; the ollama row goes through
 # LiteLLM. The mtplx base_url is its default port 8003.
 #
 # Before running: register all four models in the registry (a row naming an
-# unknown model fails load_suite; guide 02 Step 4 for rec and mtplx).
+# unknown model fails load_suite; guide 02 Step 4 for rec and mtplx), and have
+# LiteLLM answering with the ollama model in its model_list: a route = "litellm"
+# row sends the registry model id to the proxy, which fails that row mid-sweep
+# when the route is missing (wt litellm list shows what is routed).
 #
 # Run notes:
 #   - Start with samples = 1 (judge quota; see below), then raise it.
@@ -39,11 +43,11 @@ top_k = 20
 [coding]
 dataset = "humaneval"
 # EvalPlus caps replies at 768 tokens, which a thinking model spends on its
-# reasoning (0% pass@1). Raised via evalplus_launcher.py. 164 problems at this
-# cap can pass the 4 h default per row; raise timeout_s if a row reports
-# "evalplus timed out".
+# reasoning (0% pass@1). Raised via evalplus_launcher.py.
 max_new_tokens = 16384
-# 164 problems of up to 16384 tokens per row can pass the 4 h default (guide 11, Gotchas).
+# 164 problems of up to 16384 tokens per row can outlast EvalPlus's 4 h default
+# (guide 11, Gotchas), so allow 8 h; raise this if a row still reports
+# "evalplus timed out".
 timeout_s = 28800
 
 [routes.direct.mtplx]
