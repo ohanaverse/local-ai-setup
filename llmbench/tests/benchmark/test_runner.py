@@ -1,3 +1,5 @@
+import contextlib
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -452,6 +454,23 @@ class _PostWorkload(_FakeWorkload):
         return RawRun(start_time=0.0, end_time=0.0, first_token_time=None, chunks=[], error=error)
 
 
+@contextlib.contextmanager
+def _seeded_litellm(base_url, api_key):
+    """Seed pi's models.json in scratch HOME with a litellm entry, unseeded
+    after — the file the runner reads credentials from via _routes."""
+    from llmbench.benchmark._routes import LIVE_PI_MODELS_PATH
+
+    LIVE_PI_MODELS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LIVE_PI_MODELS_PATH.write_text(
+        json.dumps({"providers": {"litellm": {"baseUrl": base_url, "apiKey": api_key}}}),
+        encoding="utf-8",
+    )
+    try:
+        yield
+    finally:
+        LIVE_PI_MODELS_PATH.unlink(missing_ok=True)
+
+
 def _keyed_registry_run(tmp_path, monkeypatch, fake, model_ids, routes):
     import llmbench.benchmark.runner as runner_module
     from llmbench.registry import load_registry
@@ -469,7 +488,6 @@ def _keyed_registry_run(tmp_path, monkeypatch, fake, model_ids, routes):
 
     monkeypatch.setattr(runner_module, "isolate_provider", _fake_isolate)
     monkeypatch.setattr(runner_module, "restore_providers", lambda: None)
-    monkeypatch.setattr(runner_module, "LITELLM_URL", f"{fake.base_url}/chat/completions")
     return run_benchmark(
         load_registry(), _PostWorkload(), model_ids=model_ids, routes=routes, results_dir=tmp_path
     )
@@ -490,14 +508,19 @@ def test_run_benchmark_direct_route_of_a_keyed_provider_carries_its_key(tmp_path
 
 
 def test_run_benchmark_key_less_provider_and_unseeded_litellm_route_send_no_key(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     """With no LiteLLM apiKey seeded, ollama's direct route and the litellm
     route stay header-free: the provider key goes per target, to the direct
-    route of a keyed provider only."""
+    route of a keyed provider only. A keyless proxy accepts this, but the
+    diagnostic for a key-requiring one must reach the user on stderr."""
+    import llmbench.benchmark.runner as runner_module
     from tests.probe.conftest import serve_fake
 
     with serve_fake() as fake:
+        # Only the keyless fallback path may pin the URL here; a seeded run
+        # follows the baseUrl from models.json instead (see the seed tests).
+        monkeypatch.setattr(runner_module, "LITELLM_URL", f"{fake.base_url}/chat/completions")
         run = _keyed_registry_run(
             tmp_path, monkeypatch, fake, ["ollama/a", "rec/flint"], ["direct", "litellm"]
         )
@@ -513,6 +536,27 @@ def test_run_benchmark_key_less_provider_and_unseeded_litellm_route_send_no_key(
         ("reasoning-field", False),  # ollama direct
         ("rec/flint", False),  # rec litellm
     ]
+    stderr = capsys.readouterr().err
+    assert "no LiteLLM apiKey" in stderr
+    assert "wt pi session" in stderr  # the seeding remedy, not the credential value
+    assert "litellm-test-key" not in stderr
+
+
+def test_run_benchmark_litellm_route_posts_to_the_seeded_base_url(tmp_path, monkeypatch):
+    """models.json seeds a (possibly relocated) baseUrl; the litellm route
+    must POST there like eval/agent do, not the hardcoded localhost default
+    the benchmark once ignored the seed in favor of."""
+    from tests.probe.conftest import serve_fake
+
+    with serve_fake() as fake, _seeded_litellm(fake.base_url, "litellm-test-key"):
+        run = _keyed_registry_run(tmp_path, monkeypatch, fake, ["ollama/a"], ["litellm"])
+        sent = [(r["body"]["model"], r["headers"].get("Authorization")) for r in fake.requests]
+    # The request only lands on the fake when the runner addressed the seeded
+    # URL — the seed's base_url names this very server. The 404 is the fake's
+    # unknown-model reply (it serves no registry id), proving delivery; a
+    # misaddressed request would instead fail to connect.
+    assert [r.error for r in run.results] == ["HTTP 404"]
+    assert sent == [("ollama/a", "Bearer litellm-test-key")]
 
 
 def test_run_benchmark_litellm_route_carries_the_litellm_key_and_direct_does_not(
@@ -520,13 +564,9 @@ def test_run_benchmark_litellm_route_carries_the_litellm_key_and_direct_does_not
 ):
     """The proxy answers 401 to a keyless request: the litellm route sends the
     apiKey from pi's models.json, and no direct route of a key-less provider does."""
-    import llmbench.benchmark.runner as runner_module
     from tests.probe.conftest import serve_fake
 
-    monkeypatch.setattr(
-        runner_module, "litellm_credentials", lambda: ("http://x/v1", "litellm-test-key")
-    )
-    with serve_fake() as fake:
+    with serve_fake() as fake, _seeded_litellm(fake.base_url, "litellm-test-key"):
         run = _keyed_registry_run(tmp_path, monkeypatch, fake, ["ollama/a"], ["direct", "litellm"])
         sent = [(r["body"]["model"], r["headers"].get("Authorization")) for r in fake.requests]
     assert [r.error for r in run.results if r.route == "direct"] == [None]

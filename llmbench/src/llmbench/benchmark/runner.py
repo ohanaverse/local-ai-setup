@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -199,17 +200,27 @@ def run_benchmark(
     keyed_sessions: dict[str, requests.Session] = {}
     # The LiteLLM proxy answers 401 to a request without its key, so its route
     # carries the apiKey wt seeds into pi's models.json (the key the eval's
-    # litellm route sends). With none seeded the route stays header-free, which
-    # a keyless proxy accepts.
+    # litellm route sends) and POSTs to the baseUrl that seed carries — a
+    # relocated proxy gets its traffic there, as eval/agent already do. With
+    # no apiKey seeded the route stays header-free (which a keyless proxy
+    # accepts) on the default endpoint; the seed is unreachable in that case,
+    # so the fallback URL is all there is.
     litellm_session = session
+    litellm_url = LITELLM_URL
     if "litellm" in routes:
         try:
-            _, litellm_key = litellm_credentials()
+            litellm_base_url, litellm_key = litellm_credentials()
         except BenchmarkError:
-            pass
+            print(
+                "llmbench: no LiteLLM apiKey seeded in ~/.pi/agent/models.json; "
+                "litellm rows send no key — if the proxy requires one, launch a wt "
+                "pi session in litellm mode at least once to seed it",
+                file=sys.stderr,
+            )
         else:
             litellm_session = requests.Session()
             litellm_session.headers["Authorization"] = f"Bearer {litellm_key}"
+            litellm_url = f"{litellm_base_url.rstrip('/')}/chat/completions"
     # Isolation is keyed on (provider_id, positional args, warmed model):
     # consecutive targets on the same key reuse the running isolation instead
     # of paying another stop-others + warmup cycle (~a minute of polling per
@@ -292,7 +303,7 @@ def run_benchmark(
                     if route == "direct" and key_error is not None:
                         run.results.append(_error_result(target, route, pass_number, key_error))
                         continue
-                    url = direct_url if route == "direct" else LITELLM_URL
+                    url = direct_url if route == "direct" else litellm_url
                     route_session = direct_session if route == "direct" else litellm_session
                     result = _run_route(route_session, target, route, url, workload, pass_number)
                     run.results.append(result)

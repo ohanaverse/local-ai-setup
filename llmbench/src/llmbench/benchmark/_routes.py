@@ -46,7 +46,11 @@ def load_live_models(path: Path = LIVE_PI_MODELS_PATH) -> dict:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except Exception:
+        # A file that exists but cannot be read (permissions) or decoded
+        # (invalid UTF-8) is the same "no live models" state; JSONDecodeError
+        # alone would let OSError/UnicodeDecodeError escape into callers that
+        # treat litellm_credentials() as optional (the throughput route).
         return {}
 
 
@@ -54,9 +58,11 @@ def litellm_credentials(
     live_models_path: Path = LIVE_PI_MODELS_PATH,
 ) -> tuple[str, str]:
     """(base_url, api_key) for the local LiteLLM gateway, from pi's
-    models.json litellm provider entry. Raises when the apiKey is absent —
-    every caller (judge transports on both benchmarks, eval's litellm
-    route) hard-requires it."""
+    models.json litellm provider entry. Raises when the apiKey is absent.
+    The judge transports on both benchmarks and eval's litellm route
+    hard-require it; the throughput benchmark's litellm route catches the
+    BenchmarkError and falls back to a header-free request instead (a
+    keyless proxy accepts it)."""
     live = load_live_models(live_models_path)
     litellm_entry = live.get("providers", {}).get("litellm", {})
     api_key = litellm_entry.get("apiKey")

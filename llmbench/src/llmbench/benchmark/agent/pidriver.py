@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 
-from llmbench.benchmark._routes import LIVE_PI_MODELS_PATH, load_live_models
+from llmbench.benchmark._routes import LIVE_PI_MODELS_PATH, litellm_credentials, load_live_models
 from llmbench.benchmark.errors import BenchmarkError
 from llmbench.providers.secret import SecretError, provider_key
 
@@ -101,15 +101,11 @@ def resolve_pi_target(
     if row.route == "litellm":
         pi_provider = "litellm"
         launch_id = row.model_id
-        litellm_entry = live.get("providers", {}).get("litellm", {})
-        base_url = litellm_entry.get("baseUrl", "http://localhost:4000/v1")
+        # _routes.py owns litellm credential parsing (single source per
+        # llmbench/CLAUDE.md); the raise when no apiKey is seeded already
+        # names the remedy.
+        base_url, api_key = litellm_credentials(live_models_path)
         api = "openai-completions"
-        api_key = litellm_entry.get("apiKey")
-        if not api_key:
-            raise BenchmarkError(
-                "no LiteLLM apiKey found in ~/.pi/agent/models.json; launch a wt "
-                "pi session in litellm mode at least once to seed it"
-            )
     elif row.route == "direct":
         direct_cfg = routes_direct.get(row.provider_id)
         if direct_cfg is None:
