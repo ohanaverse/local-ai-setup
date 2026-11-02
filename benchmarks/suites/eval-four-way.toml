@@ -1,0 +1,76 @@
+# benchmarks/suites/eval-four-way.toml
+#
+# Compares four local models on the llmbench eval categories: ollama
+# qwen3.8:27b-mlx, rec/flint, mtplx Qwen3.8-27B Optimized-Quality and mtplx
+# Qwen3.6-35B-A3B Optimized-Balance. (The Sushi Qwen3.8-Flash-Next row of the
+# five-way version was dropped after its pack was uninstalled and its registry
+# row removed, which left the suite failing load_suite.)
+# [coding] max_new_tokens lifts EvalPlus's 768-token reply cap, which a thinking
+# model spends on reasoning (guide 11, Gotchas). The rec and mtplx rows use
+# direct routes and need no LiteLLM route; the ollama row goes through
+# LiteLLM. The mtplx base_url is its default port 8003.
+#
+# Before running: register all four models in the registry (a row naming an
+# unknown model fails load_suite; guide 02 Step 4 for rec and mtplx), and have
+# LiteLLM answering with the ollama model in its model_list: a route = "litellm"
+# row sends the registry model id to the proxy, which fails that row mid-sweep
+# when the route is missing (wt litellm list shows what is routed).
+#
+# Run notes:
+#   - Start with samples = 1 (judge quota; see below), then raise it.
+#   - Thinking is left at the defaults on every row.
+#   - Rows run serially, grouped by provider in sorted order (mtplx, ollama,
+#     rec), not file order; the final restore stops the servers before the
+#     claude-cli judge runs.
+name = "eval-four-way"
+cooldown_s = 15.0
+
+# samples = 1: the claude-cli judge spends Claude-subscription quota, and the
+# guide advises starting with a single sample.
+[judge]
+model = "claude-opus-5-5"
+temperature = 0.0
+samples = 1
+max_attempts = 2
+route = "claude-cli"
+
+# Sampling is pinned explicitly so every row runs identically.
+[generation]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+
+[coding]
+dataset = "humaneval"
+# EvalPlus caps replies at 768 tokens, which a thinking model spends on its
+# reasoning (0% pass@1). Raised via evalplus_launcher.py.
+max_new_tokens = 16384
+# 164 problems of up to 16384 tokens per row can outlast EvalPlus's 4 h default
+# (guide 11, Gotchas), so allow 8 h; raise this if a row still reports
+# "evalplus timed out".
+timeout_s = 28800
+
+[routes.direct.mtplx]
+base_url = "http://localhost:8003/v1"
+
+[routes.direct.rec]
+base_url = "http://127.0.0.1:11500/v1"
+
+[[rows]]
+model = "ollama/qwen3.8:27b-mlx"
+route = "litellm"
+
+[[rows]]
+model = "rec/flint"
+provider = "rec"
+route = "direct"
+
+[[rows]]
+model = "mtplx/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
+provider = "mtplx"
+route = "direct"
+
+[[rows]]
+model = "mtplx/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"
+provider = "mtplx"
+route = "direct"
