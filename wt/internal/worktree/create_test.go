@@ -485,6 +485,41 @@ func TestEnsureForBranchCollisionErrors(t *testing.T) {
 	}
 }
 
+// On a case-insensitive volume (macOS default) feature/x and Feature/x
+// flatten to .worktrees/feature-x and .worktrees/Feature-x — one directory.
+// branchAtPath's EvalSymlinks compare keeps the typed case and misses it, so
+// the filesystem must be asked whether the two paths are the same file. The
+// test probes the volume first and skips on a case-sensitive one, where the
+// two names are different directories and no collision exists.
+func TestEnsureForNameCaseInsensitiveCollision(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	probe := filepath.Join(dir, "CaseProbe")
+	if err := os.WriteFile(probe, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "caseprobe")); err != nil {
+		t.Skip("case-sensitive filesystem: feature-x and Feature-x are different directories")
+	}
+
+	if _, err := EnsureForName(dir, "feature/x"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := EnsureForName(dir, "Feature/x")
+	if err == nil || !strings.Contains(err.Error(), "already in use by branch \"feature/x\"") {
+		t.Fatalf("EnsureForName(Feature/x) error = %v, want 'already in use by branch \"feature/x\"'", err)
+	}
+	// refExists would say yes here (the ref file resolves case-insensitively),
+	// so read the branch names git actually lists.
+	out, gerr := runGitCmd(dir, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if strings.Contains(string(out), "Feature/x") {
+		t.Errorf("branch Feature/x was created despite the collision; branches:\n%s", out)
+	}
+}
+
 // worktreeDirName is the one path-derivation rule behind every creation
 // path: path-hostile characters (separators on any platform, colon, ASCII
 // control characters) flatten to "-", everything else is kept (invalid

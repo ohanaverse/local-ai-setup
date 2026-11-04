@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -166,12 +167,24 @@ func branchAtPath(entries []Entry, path string) (string, bool) {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
+	// The same-file test catches what a string compare cannot: on a
+	// case-insensitive volume .worktrees/Feature-x and .worktrees/feature-x are
+	// one directory, but EvalSymlinks keeps the case it was given. The
+	// filesystem, not a case-folding guess, decides, so a case-sensitive volume
+	// keeps its two directories distinct. It needs the path to exist.
+	info, _ := os.Stat(path)
 	for _, e := range entries {
 		ep, err := filepath.EvalSymlinks(e.Path)
 		if err != nil {
 			ep = e.Path
 		}
-		if ep == path {
+		same := ep == path
+		if !same && info != nil {
+			if ei, err := os.Stat(ep); err == nil {
+				same = os.SameFile(info, ei)
+			}
+		}
+		if same {
 			if e.Branch == "(detached)" {
 				return "", true
 			}
