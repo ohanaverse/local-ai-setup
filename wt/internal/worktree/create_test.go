@@ -534,6 +534,86 @@ func TestEnsureForNameReusesDefaultBranchPrimary(t *testing.T) {
 	}
 }
 
+// EnsureForName must refuse the default branch's remote-tracking forms, not
+// only the bare name. -W origin/<default> previously passed the name-only
+// check and fell through to `git worktree add -b origin/<default>`, trying to
+// create the default branch in a linked worktree under a confusingly named
+// local branch — exactly the state the invariant forbids. The refusal must be
+// precise: a local branch ending in "/<default>" (e.g. feature/main) is a
+// feature branch and must NOT be refused — the name-only suffix match is
+// gated on the ref actually existing under refs/remotes/.
+func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
+	// Each case builds its own repo. A wrong success creates
+	// .worktrees/<db> (all three names base to <db>), and the collision
+	// guard then turns the later cases' failures into "path already in
+	// use" errors that point at the wrong code — observed against the
+	// pre-fix guard. Fresh repos keep every failure naming the missing
+	// refusal itself.
+	newRepo := func(t *testing.T) (string, string, func(...string)) {
+		t.Helper()
+		dir := t.TempDir()
+		gitInit(t, dir)
+		db := setupDefaultRemote(t, dir)
+		run := func(args ...string) {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		// Move the primary checkout off the default branch so it is
+		// "free" — the state where creating .worktrees/<db> would become
+		// the default's only checkout. "topic" (not "feature") so
+		// refs/heads/feature doesn't block creating the feature/<db>
+		// branch in the precision case below (git forbids a ref that is
+		// both a leaf and a directory).
+		run("checkout", "-b", "topic")
+		return dir, db, run
+	}
+
+	refusal := func(t *testing.T, dir, name string) {
+		t.Helper()
+		_, err := EnsureForName(dir, name)
+		if err == nil {
+			t.Fatalf("EnsureForName(%q) = nil error, want refusal", name)
+		}
+		if !strings.Contains(err.Error(), "default branch") {
+			t.Fatalf("EnsureForName(%q) error = %q, want it to mention 'default branch'", name, err)
+		}
+	}
+
+	t.Run("origin form", func(t *testing.T) {
+		dir, db, _ := newRepo(t)
+		refusal(t, dir, "origin/"+db)
+	})
+
+	t.Run("upstream form", func(t *testing.T) {
+		dir, db, run := newRepo(t)
+		// A second remote so refs/remotes/upstream/<db> exists too — the
+		// fork-workflow shape where the default branch is reachable via a
+		// non-origin remote.
+		upstreamDir := filepath.Join(dir, "upstream.git")
+		if err := exec.Command("git", "init", "--bare", upstreamDir).Run(); err != nil {
+			t.Fatal(err)
+		}
+		run("remote", "add", "upstream", upstreamDir)
+		run("push", "upstream", db)
+		refusal(t, dir, "upstream/"+db)
+	})
+
+	t.Run("feature branch is not the default", func(t *testing.T) {
+		dir, db, run := newRepo(t)
+		run("branch", "feature/"+db)
+		path, err := EnsureForName(dir, "feature/"+db)
+		if err != nil {
+			t.Fatalf("EnsureForName(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
+		}
+		if want := filepath.Join(dir, ".worktrees", db); path != want {
+			t.Errorf("path = %q, want %q", path, want)
+		}
+	})
+}
+
 // EnsureForBranch must refuse the default branch and its remote-tracking
 // form. The picker path must not create a linked worktree for the default
 // branch, even when it is reachable only as origin/<default>.

@@ -264,7 +264,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 
-> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it, and the picker skips bare default-branch rows.
+> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it when typed as the bare name or a remote-tracking form like `origin/<default>` (matched only while that ref lives under `refs/remotes/`), and the picker skips bare default-branch rows.
 
 ## Verification commands
 
