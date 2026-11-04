@@ -44,12 +44,10 @@ func EnsureForName(dir, name string) (string, error) {
 		return addTrackingWorktree(dir, name, short)
 	}
 
-	safeName, err := worktreeDirName(name)
+	path, err := worktreePath(dir, name)
 	if err != nil {
 		return "", err
 	}
-
-	path := filepath.Join(dir, ".worktrees", safeName)
 	// Idempotent: if the path is already a registered worktree for the same
 	// branch, reuse it. If it's registered for a DIFFERENT branch — a name
 	// that flattens to another's (feature/x and feature-x share
@@ -99,6 +97,16 @@ func worktreeDirName(name string) (string, error) {
 	return dirName, nil
 }
 
+// worktreePath is where branch name's linked worktree lives: the derived
+// directory name under <dir>/.worktrees. Every creation path goes through it.
+func worktreePath(dir, name string) (string, error) {
+	dirName, err := worktreeDirName(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ".worktrees", dirName), nil
+}
+
 // refExists reports whether the fully-qualified ref (e.g. refs/heads/main)
 // exists in dir.
 func refExists(dir, ref string) bool {
@@ -142,11 +150,10 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	case refExists(dir, "refs/heads/"+branch):
 		// Local branch (possibly with slashes) — the directory derives from
 		// the full name.
-		worktreeDir, err := worktreeDirName(branch)
+		path, err := worktreePath(dir, branch)
 		if err != nil {
 			return "", err
 		}
-		path := filepath.Join(dir, ".worktrees", worktreeDir)
 		if _, err := runGit(dir, "worktree", "add", path, branch); err != nil {
 			return "", fmt.Errorf("git worktree add: %w", err)
 		}
@@ -159,11 +166,10 @@ func EnsureForBranch(dir, branch string) (string, error) {
 
 	default:
 		// Brand-new branch.
-		worktreeDir, err := worktreeDirName(branch)
+		path, err := worktreePath(dir, branch)
 		if err != nil {
 			return "", err
 		}
-		path := filepath.Join(dir, ".worktrees", worktreeDir)
 		if _, err := runGit(dir, "worktree", "add", "-b", branch, path); err != nil {
 			return "", fmt.Errorf("git worktree add -b: %w", err)
 		}
@@ -174,14 +180,13 @@ func EnsureForBranch(dir, branch string) (string, error) {
 // addTrackingWorktree creates a worktree on a new local branch short that
 // tracks the remote-tracking ref remoteRef.
 func addTrackingWorktree(dir, remoteRef, short string) (string, error) {
-	worktreeDir, err := worktreeDirName(short)
+	path, err := worktreePath(dir, short)
 	if err != nil {
 		return "", err
 	}
 	if refExists(dir, "refs/heads/"+short) {
 		return "", fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)
 	}
-	path := filepath.Join(dir, ".worktrees", worktreeDir)
 	if _, err := runGit(dir, "worktree", "add", "-b", short, path, remoteRef); err != nil {
 		return "", fmt.Errorf("git worktree add -b %s %s: %w", short, remoteRef, err)
 	}
