@@ -52,7 +52,8 @@ PATH**).
 - **PRs 2–5: not started.** Everything below about worktrunk's behavior comes
   from docs and source reading — neither tool has been executed (the research's
   Gaps section says so explicitly). Kernel edge behavior (error paths, exact
-  reap triggers) is *inferred*; see Open questions for the optional spike.
+  reap triggers) is *inferred*; the worktrunk spike (PR 2 task T0, decided at
+  handoff 2026-11-04) pins these before any schema does.
 - **Source-doc status:** `docs/reference/worktrunk-comparison.md` exists only in
   the main checkout's working tree, uncommitted (written 2026-11-04; three
   post-PR-516 edits applied). A pickup session should: commit it; fill its
@@ -132,8 +133,11 @@ PR 516 change.
   (skippable with `--yes`), trash-rename + single background drain,
   `worktree lock` immunity.
 - Force scopes as flags from day one: `--force` (dirty worktree) and `-D`
-  (unmerged branch). Branch *deletion* is reporting-only in this PR: with
-  `-D` the outcome is `deferred`; without it, `not_attempted`.
+  (unmerged branch — its end state is the git `-d`/`-D` split, decided at
+  handoff 2026-11-04; see the matrix in PR 3). Branch *deletion* is
+  reporting-only in this PR: `deferred` when the removed worktree had a
+  branch (with or without `-D`), `not_attempted` when it had none
+  (detached HEAD).
 - JSON contract from day one: `--json` emits the versioned envelope with a
   published schema; the schema, its sample fixture, and the Go contract test
   land in the same change (`docs/contracts/`, following the
@@ -181,13 +185,21 @@ PR 516 change.
   are the one thing to pin at plan time against worktrunk's `list-v2.json`
   shape (adopt its envelope keys where they fit; the rules above are
   non-negotiable either way).
-- `--force` never deletes branches. PR 2 never deletes branches at all: it
-  reports the branch stage as `deferred`/`not_attempted`, with the exact
-  mapping pinned when open question #1 (`-D` semantics) is answered — the
-  two candidate readings imply different default paths.
+- `--force` never deletes branches. PR 2 never deletes branches at all: the
+  branch stage reports `deferred` when the worktree had a branch and
+  `not_attempted` when it had none — the git-parity answer to the `-D`
+  question (decided at handoff 2026-11-04) means even an integrated branch
+  is `deferred` here; PR 3 owns every `deleted`/`retained_*` verdict.
 
 ### Tasks (coarse — expand to steps with `superpowers:writing-plans`)
 
+- [ ] T0 Worktrunk spike — the decided prerequisite (2026-11-04): install
+      worktrunk in a scratch directory (never on PATH — binary-name
+      collision) and exercise `remove`/`prune`/tether against real error
+      paths (dirty-gate edges incl. ignored-only dirt and untracked
+      detection, lock immunity, trash-drain crash recovery, reap triggers).
+      Record observed semantics in this doc's Shared vocabulary section in
+      a small commit BEFORE any schema pins them.
 - [ ] T1 Remove kernel: dirty gate, confirmation, trash-rename + single
       background drain, lock immunity. Tests: `TestRemoveRefusesDirtyTracked`,
       `TestRemoveRefusesDirtyUntracked`, `TestRemoveAllowsGitignoredOnlyDirt`,
@@ -210,7 +222,8 @@ PR 516 change.
 - `--json` output validates against the published schema; the same shape is
   emitted on failure with the error inside the envelope.
 - No branch is ever deleted by this PR's code path; outcomes report
-  `deferred`/`not_attempted` exactly as the answered `-D` matrix requires.
+  `deferred` (branch present) / `not_attempted` (detached) exactly as the
+  git-parity matrix requires.
 
 ### Review focus (this PR)
 
@@ -229,7 +242,15 @@ roughly 2× the PR 516 change.
 
 **In:**
 - The 6-check integrated kernel, verbatim from the vocabulary section, with
-  the 500-commit walk cap. A branch is deleted only when every check passes.
+  the 500-commit walk cap. A branch is deleted when every check passes; with `-D`, behind its own
+  confirmation, the branch is deleted regardless of the kernel verdict.
+  The end-state matrix (git parity, decided at handoff 2026-11-04):
+  **without `-D`** — integrated → `deleted`; unmerged →
+  `retained_unmerged`; checks unable to prove (walk cap, CAS skip) →
+  `retained_capped` / the plan's chosen skip value. **With `-D`** —
+  `deleted` regardless of the merge verdict, with one carve-out: the CAS
+  identity skip stands (force never deletes a ref that moved). Force deletes *despite* a verdict, never *in
+  place of* one, so the kernel always runs and always reports.
 - CAS-raced deletion: the ref is deleted atomically against the OID the
   checks validated (`git update-ref -d <ref> <old-oid>` semantics) so a
   concurrent push can never turn a passed check into a wrong deletion.
@@ -281,7 +302,8 @@ roughly 2× the PR 516 change.
 ### Acceptance
 
 - A squash-merged branch (this repo's norm) is recognized as integrated and
-      deleted; a genuinely unmerged branch is `retained_*` and untouched.
+  deleted; a genuinely unmerged branch is `retained_unmerged` and untouched
+  without `-D`, deleted only with `-D` behind its own confirmation.
 - Concurrent ref movement between check and delete causes a safe skip, not a
       wrong deletion.
 
@@ -371,8 +393,8 @@ ported.
 ## PR 5 — tether / process teardown (small, conditional; port #6)
 
 **Depends on:** PR 2 (the "worktree died" event and the force-scope vocabulary
-it rides on). Alternative packaging: fold into PR 3 (it is small) — decide at
-pickup (Open questions).
+it rides on). Packaging decided at handoff 2026-11-04: **standalone PR 5** (signal
+handling gets its own review; PR 3 stays focused on the destructive core).
 
 ### Scope
 
@@ -443,14 +465,16 @@ layer:
 - A machine singleton (28 GB mtplx) dying because a worktree did — pinned by
   `TestReapExemptsMachineSingletons`.
 
-## Addressing shortcuts (port #5) — unassigned, open
+## Addressing shortcuts (port #5) — assigned to PR 6 (decided 2026-11-04)
 
 The remainder of the addressing port — `-` (previous worktree), `^`
-(default-branch-as-root), `pr:{N}`, PR web URL for `-W` and the picker — was
-left out of the 5-PR packaging (the remote-name half was overtaken when
-`-W origin/<name>` picker-parity resolution merged 2026-11-04). It is small and
-high-QoL. See Open questions: fold into PR 2's surface (`wt remove -`) or
-schedule a small PR 6 — the user decides at pickup.
+(default-branch-as-root), `pr:{N}`, PR web URL for `-W` and the picker —
+lands as a small **PR 6** after the series (the remote-name half was
+overtaken when `-W origin/<name>` picker-parity resolution merged
+2026-11-04; the rest is independent QoL surface and must not grow PR 2).
+Scope for that PR's own plan: the four address forms for `-W` and the
+picker, reusing `remoteRefParts`/`refuseDefaultBranch` for anything that
+resolves a name.
 
 ## Not ported (deliberate — do not rebuild these)
 
@@ -463,29 +487,26 @@ schedule a small PR 6 — the user decides at pickup.
   agent → model).
 - `wt step promote` — see PR 4 scope-out.
 
+## Decided at handoff (2026-11-04) — the builder-check questions raised to the user
+
+1. **`-D` end-state matrix → git parity.** The 6-check kernel gates the
+   default (integrated → `deleted`; unmerged → `retained_unmerged`; unable
+   to prove → `retained_capped`/skip) and `-D`, behind its own
+   confirmation, deletes the branch regardless of the kernel verdict. PR 2's
+   mapping follows: `deferred` whenever a branch exists, `not_attempted`
+   when detached. (The source material's "delete an unmerged branch" wins
+   over its "unmerged is retained and untouched" line, which now reads as
+   the no-`-D` default.)
+2. **Addressing-shortcut remainder → a small PR 6** after the series (its
+   scope is pinned in the port's section above).
+3. **PR 5 packaging → standalone PR 5.**
+4. **Worktrunk spike → run first:** it is PR 2's task T0, and its observed
+   semantics update this doc's Shared vocabulary before any schema pins
+   them.
+
 ## Open questions for the user at pickup
 
-1. **The `-D` end-state matrix** (the destructive core; raised by the
-   builder-check 2026-11-04 — the source material contradicts itself:
-   "`-D` = delete an unmerged branch (never conflated)" vs PR 3's "a branch
-   is deleted only when every check passes" and "a genuinely unmerged branch
-   is `retained_*` and untouched"). Two coherent readings: **(a) git
-   parity** — the 6-check kernel gates the default (an integrated branch is
-   deleted without any flag; an unmerged one is `retained_unmerged`) and
-   `-D` additionally force-deletes unmerged branches behind its own
-   confirmation; **(b) kernel-absolute** — only integrated branches are ever
-   deleted and the `-D` flag is dropped. The answer fixes PR 2's
-   `deferred`/`not_attempted` mapping, the `isIntegrated` call sites, and
-   the schema's outcome values. (Asked at handoff, 2026-11-04.)
-2. **Addressing-shortcut remainder** (port #5): fold into PR 2, or a small
-   PR 6? (Unassigned by the packaging.)
-3. **PR 5 packaging:** standalone, or folded into PR 3? (The packaging table
-   allows either; it is small and conditional on PR 2 either way.)
-4. **Worktrunk spike** (optional, recommended before PR 2/3 kernel coding):
-   scratch-dir install (never on PATH), exercise `remove`/`prune`/tether
-   against real error paths — the research inferred exact error/reap mechanics
-   from docs and source only.
-5. **Comparison-doc housekeeping:** commit
+1. **Comparison-doc housekeeping:** commit
    `docs/reference/worktrunk-comparison.md` from the main checkout, fill its
    "Decision (open)" section with this packaging, refresh its two stale
    "`-W` never consults remotes" rows.
