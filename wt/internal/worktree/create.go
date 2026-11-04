@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -44,22 +45,15 @@ func EnsureForName(dir, name string) (string, error) {
 		return addTrackingWorktree(dir, name, short)
 	}
 
-	safeName := filepath.Base(name)
-	if strings.ContainsAny(safeName, "/\\") {
-		return "", fmt.Errorf("worktree name must not contain path separators: %s", name)
+	path, err := worktreePath(dir, name)
+	if err != nil {
+		return "", err
 	}
-	// "." and ".." survive filepath.Base and would resolve to the repo root
-	// via filepath.Join (".worktrees/.." cleans to dir), silently creating
-	// nothing. Reject them explicitly.
-	if safeName == "." || safeName == ".." {
-		return "", fmt.Errorf("worktree name must not be %q", safeName)
-	}
-
-	path := filepath.Join(dir, ".worktrees", safeName)
 	// Idempotent: if the path is already a registered worktree for the same
-	// branch, reuse it. If it's registered for a DIFFERENT branch (e.g. the
-	// user typed "feature/x" but .worktrees/x already holds branch "x"),
-	// error rather than silently returning the wrong worktree.
+	// branch, reuse it. If it's registered for a DIFFERENT branch — a name
+	// that flattens to another's (feature/x and feature-x share
+	// .worktrees/feature-x), or a last-component worktree left by an older
+	// wt — error rather than silently returning the wrong worktree.
 	if branch, ok := branchAtPath(entries, path); ok {
 		if branch != "" && branch != name {
 			return "", fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
@@ -75,6 +69,82 @@ func EnsureForName(dir, name string) (string, error) {
 		if _, err := runGit(dir, "worktree", "add", "-b", name, path); err != nil {
 			return "", fmt.Errorf("git worktree add -b: %w", err)
 		}
+	}
+	return path, nil
+}
+
+// maxDirNameBytes is the filesystem's per-entry name limit (NAME_MAX on macOS
+// and Linux). Git's .git/worktrees/<basename> entry shares it.
+const maxDirNameBytes = 255
+
+// worktreeDirName derives a worktree directory name from a full branch name.
+// Every path-hostile character — path separators on any platform, colon, and
+// ASCII control characters — becomes "-", so feature/x and bug/x land in
+// distinct directories (.worktrees/feature-x, .worktrees/bug-x) instead of
+// racing for the last path component. Everything else is kept (invalid
+// UTF-8 bytes re-encode as U+FFFD). A derived "." or ".." is an error:
+// filepath.Join cleans ".." up to the repo root and "." to the .worktrees
+// container — the wrong path either way. A derived name over maxDirNameBytes
+// is an error too: git nests a ref's components as directories, so a long
+// branch can be valid while its flattened name, one directory entry, is not.
+func worktreeDirName(name string) (string, error) {
+	dirName := strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':':
+			return '-'
+		}
+		if r < 0x20 || r == 0x7f {
+			return '-'
+		}
+		return r
+	}, name)
+	if dirName == "." || dirName == ".." {
+		return "", fmt.Errorf("worktree name must not be %q", dirName)
+	}
+	if len(dirName) > maxDirNameBytes {
+		return "", fmt.Errorf("branch name %q is too long for a worktree directory (%d bytes after flattening, limit %d): shorten the branch name",
+			name, len(dirName), maxDirNameBytes)
+	}
+	return dirName, nil
+}
+
+// worktreePath is where branch name's linked worktree lives: the derived
+// directory name under <dir>/.worktrees. Every creation path goes through it.
+func worktreePath(dir, name string) (string, error) {
+	dirName, err := worktreeDirName(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ".worktrees", dirName), nil
+}
+
+// pathCollision errors when path is a registered worktree of a DIFFERENT
+// branch than name — the one "already in use" message for -W and the picker.
+// Flattening makes it easy to hit (feature/x and feature-x share
+// .worktrees/feature-x), and git's own "already exists" never names the
+// branch holding the path. A detached worktree or the same branch is not a
+// collision here; the caller decides what reusing it means.
+func pathCollision(entries []Entry, path, name string) error {
+	if branch, ok := branchAtPath(entries, path); ok && branch != "" && branch != name {
+		return fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
+	}
+	return nil
+}
+
+// newWorktreePath is worktreePath for the picker paths, which create a
+// worktree without the -W reuse loop: it also lists the registered worktrees
+// and refuses a path another branch holds.
+func newWorktreePath(dir, name string) (string, error) {
+	path, err := worktreePath(dir, name)
+	if err != nil {
+		return "", err
+	}
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		return "", err
+	}
+	if err := pathCollision(entries, path, name); err != nil {
+		return "", err
 	}
 	return path, nil
 }
@@ -97,12 +167,24 @@ func branchAtPath(entries []Entry, path string) (string, bool) {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
+	// The same-file test catches what a string compare cannot: on a
+	// case-insensitive volume .worktrees/Feature-x and .worktrees/feature-x are
+	// one directory, but EvalSymlinks keeps the case it was given. The
+	// filesystem, not a case-folding guess, decides, so a case-sensitive volume
+	// keeps its two directories distinct. It needs the path to exist.
+	info, _ := os.Stat(path)
 	for _, e := range entries {
 		ep, err := filepath.EvalSymlinks(e.Path)
 		if err != nil {
 			ep = e.Path
 		}
-		if ep == path {
+		same := ep == path
+		if !same && info != nil {
+			if ei, err := os.Stat(ep); err == nil {
+				same = os.SameFile(info, ei)
+			}
+		}
+		if same {
 			if e.Branch == "(detached)" {
 				return "", true
 			}
@@ -120,8 +202,12 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	}
 	switch {
 	case refExists(dir, "refs/heads/"+branch):
-		// Local branch (possibly with slashes) — use last component.
-		path := filepath.Join(dir, ".worktrees", filepath.Base(branch))
+		// Local branch (possibly with slashes) — the directory derives from
+		// the full name.
+		path, err := newWorktreePath(dir, branch)
+		if err != nil {
+			return "", err
+		}
 		if _, err := runGit(dir, "worktree", "add", path, branch); err != nil {
 			return "", fmt.Errorf("git worktree add: %w", err)
 		}
@@ -134,8 +220,10 @@ func EnsureForBranch(dir, branch string) (string, error) {
 
 	default:
 		// Brand-new branch.
-		worktreeDir := filepath.Base(branch)
-		path := filepath.Join(dir, ".worktrees", worktreeDir)
+		path, err := newWorktreePath(dir, branch)
+		if err != nil {
+			return "", err
+		}
 		if _, err := runGit(dir, "worktree", "add", "-b", branch, path); err != nil {
 			return "", fmt.Errorf("git worktree add -b: %w", err)
 		}
@@ -146,14 +234,13 @@ func EnsureForBranch(dir, branch string) (string, error) {
 // addTrackingWorktree creates a worktree on a new local branch short that
 // tracks the remote-tracking ref remoteRef.
 func addTrackingWorktree(dir, remoteRef, short string) (string, error) {
-	worktreeDir := filepath.Base(short)
-	if strings.ContainsAny(worktreeDir, "/\\") {
-		return "", fmt.Errorf("worktree name must not contain path separators: %s", short)
+	path, err := newWorktreePath(dir, short)
+	if err != nil {
+		return "", err
 	}
 	if refExists(dir, "refs/heads/"+short) {
 		return "", fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)
 	}
-	path := filepath.Join(dir, ".worktrees", worktreeDir)
 	if _, err := runGit(dir, "worktree", "add", "-b", short, path, remoteRef); err != nil {
 		return "", fmt.Errorf("git worktree add -b %s %s: %w", short, remoteRef, err)
 	}
