@@ -25,16 +25,23 @@ func EnsureForName(dir, name string) (string, error) {
 		}
 	}
 
-	// The default branch must never be a linked worktree. If it isn't
-	// already checked out (the reuse loop above found nothing), refuse
-	// rather than create .worktrees/<default> — when it is typed as the
-	// bare name or a remote-tracking form (origin/<default>,
-	// upstream/<default>, ...).
-	// The name-only match is gated on the ref really living under
-	// refs/remotes/ so a local branch like feature/<default> is not refused;
-	// this is the same check EnsureForBranch applies to picked branches.
-	if db := DefaultBranch(dir); db != "" && isDefaultBranchSelection(name, db, dir) {
-		return "", fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", name)
+	// The default branch must never be a linked worktree, whether typed as
+	// the bare name or as a remote-tracking form (origin/<default>,
+	// <remote>/HEAD, ...).
+	if err := refuseDefaultBranch(dir, name); err != nil {
+		return "", err
+	}
+
+	// A remote-tracking name (origin/feature) resolves like the picker does:
+	// reuse a worktree already on the local branch, else create one tracking
+	// the remote.
+	if _, short, ok := remoteRefParts(dir, name); ok {
+		for _, e := range entries {
+			if e.Branch == short && e.Path != "" {
+				return e.Path, nil
+			}
+		}
+		return addTrackingWorktree(dir, name, short)
 	}
 
 	safeName := filepath.Base(name)
@@ -108,13 +115,8 @@ func branchAtPath(entries []Entry, path string) (string, bool) {
 // EnsureForBranch creates (or reuses) a worktree for a picked branch.
 // Handles local, remote-tracking, and new branches.
 func EnsureForBranch(dir, branch string) (string, error) {
-	// The default branch must never be a linked worktree, so refuse both
-	// the local form and any remote-tracking form (origin/<default>,
-	// upstream/<default>, ...). isDefaultBranchSelection confirms the ref
-	// really lives under refs/remotes/ so a local branch that merely ends
-	// in "/<default>" (e.g. feature/main) is not falsely refused.
-	if db := DefaultBranch(dir); db != "" && isDefaultBranchSelection(branch, db, dir) {
-		return "", fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", db)
+	if err := refuseDefaultBranch(dir, branch); err != nil {
+		return "", err
 	}
 	switch {
 	case refExists(dir, "refs/heads/"+branch):
@@ -128,18 +130,7 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	case refExists(dir, "refs/remotes/"+branch):
 		// Remote-tracking branch — create a local branch tracking it.
 		short := branch[strings.IndexByte(branch, '/')+1:]
-		worktreeDir := filepath.Base(short)
-		if strings.ContainsAny(worktreeDir, "/\\") {
-			return "", fmt.Errorf("worktree name must not contain path separators: %s", short)
-		}
-		if refExists(dir, "refs/heads/"+short) {
-			return "", fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, branch)
-		}
-		path := filepath.Join(dir, ".worktrees", worktreeDir)
-		if _, err := runGit(dir, "worktree", "add", "-b", short, path, branch); err != nil {
-			return "", fmt.Errorf("git worktree add -b %s %s: %w", short, branch, err)
-		}
-		return path, nil
+		return addTrackingWorktree(dir, branch, short)
 
 	default:
 		// Brand-new branch.
@@ -152,17 +143,65 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	}
 }
 
+// addTrackingWorktree creates a worktree on a new local branch short that
+// tracks the remote-tracking ref remoteRef.
+func addTrackingWorktree(dir, remoteRef, short string) (string, error) {
+	worktreeDir := filepath.Base(short)
+	if strings.ContainsAny(worktreeDir, "/\\") {
+		return "", fmt.Errorf("worktree name must not contain path separators: %s", short)
+	}
+	if refExists(dir, "refs/heads/"+short) {
+		return "", fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)
+	}
+	path := filepath.Join(dir, ".worktrees", worktreeDir)
+	if _, err := runGit(dir, "worktree", "add", "-b", short, path, remoteRef); err != nil {
+		return "", fmt.Errorf("git worktree add -b %s %s: %w", short, remoteRef, err)
+	}
+	return path, nil
+}
+
+// refuseDefaultBranch is the one default-branch guard for both creation
+// paths. It errors when name selects the repo default branch, naming it as the
+// user typed it.
+func refuseDefaultBranch(dir, name string) error {
+	if db := DefaultBranch(dir); db != "" && isDefaultBranchSelection(name, db, dir) {
+		return fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", name)
+	}
+	return nil
+}
+
+// remoteRefParts splits name into (remote, branch) when it is a real
+// remote-tracking ref: refs/remotes/<name> exists, no local branch of that
+// exact name exists, and the prefix is a configured remote (longest wins, so
+// remotes with slashes work). A local branch such as feature/main is never
+// treated as remote.
+func remoteRefParts(dir, name string) (remote, short string, ok bool) {
+	if refExists(dir, "refs/heads/"+name) || !refExists(dir, "refs/remotes/"+name) {
+		return "", "", false
+	}
+	out, err := runGit(dir, "remote")
+	if err != nil {
+		return "", "", false
+	}
+	for _, r := range strings.Fields(string(out)) {
+		if strings.HasPrefix(name, r+"/") && len(r) > len(remote) {
+			remote = r
+		}
+	}
+	if remote == "" {
+		return "", "", false
+	}
+	return remote, name[len(remote)+1:], true
+}
+
 // isDefaultBranchSelection reports whether picking branch would create (or
-// reuse) a worktree on the repo default branch db — the situation the
-// default-branch invariant forbids for linked worktrees. It matches the bare
-// local default (db) or a real remote-tracking ref whose short name is db
-// (origin/db, upstream/db, ...). A local branch that merely ends in "/db"
-// (e.g. feature/main) is NOT a match: it is a feature branch, not the
-// default, so IsDefaultBranchForm's name-only match is gated on the ref
-// actually existing under refs/remotes/.
+// reuse) a worktree on the repo default branch db: the bare local default, or
+// a real remote-tracking ref (see remoteRefParts) whose branch is db or HEAD
+// (<remote>/HEAD is a symbolic alias for the default).
 func isDefaultBranchSelection(branch, db, dir string) bool {
 	if branch == db {
 		return true
 	}
-	return IsDefaultBranchForm(branch, db) && refExists(dir, "refs/remotes/"+branch)
+	_, short, ok := remoteRefParts(dir, branch)
+	return ok && (short == db || short == "HEAD")
 }

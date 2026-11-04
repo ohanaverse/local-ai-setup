@@ -534,21 +534,13 @@ func TestEnsureForNameReusesDefaultBranchPrimary(t *testing.T) {
 	}
 }
 
-// EnsureForName must refuse the default branch's remote-tracking forms, not
-// only the bare name. -W origin/<default> previously passed the name-only
-// check and fell through to `git worktree add -b origin/<default>`, trying to
-// create the default branch in a linked worktree under a confusingly named
-// local branch — exactly the state the invariant forbids. The refusal must be
-// precise: a local branch ending in "/<default>" (e.g. feature/main) is a
-// feature branch and must NOT be refused — the name-only suffix match is
-// gated on the ref actually existing under refs/remotes/.
+// EnsureForName must refuse every selectable form of the default branch (bare,
+// <remote>/<default>, <remote>/HEAD) and resolve other remote-tracking names
+// like the picker does. A local branch ending in "/<default>" is a feature
+// branch and must not be refused. Each case builds a fresh repo because a
+// wrong success creates .worktrees/<default>, and the path-collision guard
+// would then mask later cases' failures.
 func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
-	// Each case builds its own repo. A wrong success creates
-	// .worktrees/<db> (all three names base to <db>), and the collision
-	// guard then turns the later cases' failures into "path already in
-	// use" errors that point at the wrong code — observed against the
-	// pre-fix guard. Fresh repos keep every failure naming the missing
-	// refusal itself.
 	newRepo := func(t *testing.T) (string, string, func(...string)) {
 		t.Helper()
 		dir := t.TempDir()
@@ -601,6 +593,54 @@ func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
 		refusal(t, dir, "upstream/"+db)
 	})
 
+	t.Run("origin HEAD alias", func(t *testing.T) {
+		dir, _, _ := newRepo(t)
+		refusal(t, dir, "origin/HEAD")
+	})
+
+	t.Run("remote-tracking feature gets a tracking branch", func(t *testing.T) {
+		dir, _, run := newRepo(t)
+		run("branch", "feat")
+		run("push", "origin", "feat")
+		run("branch", "-D", "feat")
+		run("fetch", "origin")
+		path, err := EnsureForName(dir, "origin/feat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(dir, ".worktrees", "feat"); path != want {
+			t.Errorf("path = %q, want %q", path, want)
+		}
+		if !refExists(dir, "refs/heads/feat") || refExists(dir, "refs/heads/origin/feat") {
+			t.Error("want local branch feat tracking origin/feat, not a literal origin/feat branch")
+		}
+	})
+
+	t.Run("local branch named like a remote form is not refused", func(t *testing.T) {
+		dir, db, run := newRepo(t)
+		run("branch", "origin/"+db+"-x")
+		run("branch", "origin/"+db+"/y")
+		if _, err := EnsureForName(dir, "origin/"+db+"/y"); err != nil {
+			t.Fatalf("local branch origin/%s/y refused: %v", db, err)
+		}
+	})
+
+	t.Run("remote whose name ends in the default is matched exactly", func(t *testing.T) {
+		dir, db, run := newRepo(t)
+		other := filepath.Join(dir, "other.git")
+		if err := exec.Command("git", "init", "--bare", other).Run(); err != nil {
+			t.Fatal(err)
+		}
+		run("remote", "add", "rel/"+db, other)
+		run("push", "rel/"+db, "topic")
+		run("fetch", "rel/"+db)
+		// refs/remotes/rel/<db>/topic belongs to remote "rel/<db>" branch
+		// "topic": a feature branch, not the default.
+		if _, err := EnsureForName(dir, "rel/"+db+"/topic"); err != nil {
+			t.Fatalf("feature branch on remote rel/%s refused: %v", db, err)
+		}
+	})
+
 	t.Run("feature branch is not the default", func(t *testing.T) {
 		dir, db, run := newRepo(t)
 		run("branch", "feature/"+db)
@@ -622,7 +662,7 @@ func TestEnsureForBranchRefusesDefaultBranch(t *testing.T) {
 	gitInit(t, dir)
 	db := setupDefaultRemote(t, dir)
 
-	for _, branch := range []string{db, "origin/" + db} {
+	for _, branch := range []string{db, "origin/" + db, "origin/HEAD"} {
 		if _, err := EnsureForBranch(dir, branch); err == nil {
 			t.Errorf("EnsureForBranch(%q) = nil error, want refusal", branch)
 		}
