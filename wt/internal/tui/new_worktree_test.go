@@ -115,9 +115,9 @@ func TestEnsureNewWorktreeCmdSuccess(t *testing.T) {
 
 // TestEnsureNewWorktreeCmdGitError asserts that git errors are
 // surfaced to the caller rather than swallowed. The traversal
-// name is rejected (by EnsureForName's path-separator guard or by
-// git itself, depending on filepath.Base). Either path must
-// surface an error to the caller.
+// name flattens to a harmless directory name and git rejects the
+// branch name itself; either way the error must surface to the
+// caller.
 func TestEnsureNewWorktreeCmdGitError(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)

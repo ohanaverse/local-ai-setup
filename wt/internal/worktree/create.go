@@ -44,22 +44,17 @@ func EnsureForName(dir, name string) (string, error) {
 		return addTrackingWorktree(dir, name, short)
 	}
 
-	safeName := filepath.Base(name)
-	if strings.ContainsAny(safeName, "/\\") {
-		return "", fmt.Errorf("worktree name must not contain path separators: %s", name)
-	}
-	// "." and ".." survive filepath.Base and would resolve to the repo root
-	// via filepath.Join (".worktrees/.." cleans to dir), silently creating
-	// nothing. Reject them explicitly.
-	if safeName == "." || safeName == ".." {
-		return "", fmt.Errorf("worktree name must not be %q", safeName)
+	safeName, err := worktreeDirName(name)
+	if err != nil {
+		return "", err
 	}
 
 	path := filepath.Join(dir, ".worktrees", safeName)
 	// Idempotent: if the path is already a registered worktree for the same
-	// branch, reuse it. If it's registered for a DIFFERENT branch (e.g. the
-	// user typed "feature/x" but .worktrees/x already holds branch "x"),
-	// error rather than silently returning the wrong worktree.
+	// branch, reuse it. If it's registered for a DIFFERENT branch — a name
+	// that flattens to another's (feature/x and feature-x share
+	// .worktrees/feature-x), or a last-component worktree left by an older
+	// wt — error rather than silently returning the wrong worktree.
 	if branch, ok := branchAtPath(entries, path); ok {
 		if branch != "" && branch != name {
 			return "", fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
@@ -77,6 +72,31 @@ func EnsureForName(dir, name string) (string, error) {
 		}
 	}
 	return path, nil
+}
+
+// worktreeDirName derives a worktree directory name from a full branch name.
+// Every path-hostile character — path separators on any platform, colon, and
+// ASCII control characters — becomes "-", so feature/x and bug/x land in
+// distinct directories (.worktrees/feature-x, .worktrees/bug-x) instead of
+// racing for the last path component. Everything else is kept (invalid
+// UTF-8 bytes re-encode as U+FFFD). A derived "." or ".." is an error:
+// filepath.Join cleans ".." up to the repo root and "." to the .worktrees
+// container — the wrong path either way.
+func worktreeDirName(name string) (string, error) {
+	dirName := strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':':
+			return '-'
+		}
+		if r < 0x20 || r == 0x7f {
+			return '-'
+		}
+		return r
+	}, name)
+	if dirName == "." || dirName == ".." {
+		return "", fmt.Errorf("worktree name must not be %q", dirName)
+	}
+	return dirName, nil
 }
 
 // refExists reports whether the fully-qualified ref (e.g. refs/heads/main)
@@ -120,8 +140,13 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	}
 	switch {
 	case refExists(dir, "refs/heads/"+branch):
-		// Local branch (possibly with slashes) — use last component.
-		path := filepath.Join(dir, ".worktrees", filepath.Base(branch))
+		// Local branch (possibly with slashes) — the directory derives from
+		// the full name.
+		worktreeDir, err := worktreeDirName(branch)
+		if err != nil {
+			return "", err
+		}
+		path := filepath.Join(dir, ".worktrees", worktreeDir)
 		if _, err := runGit(dir, "worktree", "add", path, branch); err != nil {
 			return "", fmt.Errorf("git worktree add: %w", err)
 		}
@@ -134,7 +159,10 @@ func EnsureForBranch(dir, branch string) (string, error) {
 
 	default:
 		// Brand-new branch.
-		worktreeDir := filepath.Base(branch)
+		worktreeDir, err := worktreeDirName(branch)
+		if err != nil {
+			return "", err
+		}
 		path := filepath.Join(dir, ".worktrees", worktreeDir)
 		if _, err := runGit(dir, "worktree", "add", "-b", branch, path); err != nil {
 			return "", fmt.Errorf("git worktree add -b: %w", err)
@@ -146,9 +174,9 @@ func EnsureForBranch(dir, branch string) (string, error) {
 // addTrackingWorktree creates a worktree on a new local branch short that
 // tracks the remote-tracking ref remoteRef.
 func addTrackingWorktree(dir, remoteRef, short string) (string, error) {
-	worktreeDir := filepath.Base(short)
-	if strings.ContainsAny(worktreeDir, "/\\") {
-		return "", fmt.Errorf("worktree name must not contain path separators: %s", short)
+	worktreeDir, err := worktreeDirName(short)
+	if err != nil {
+		return "", err
 	}
 	if refExists(dir, "refs/heads/"+short) {
 		return "", fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)

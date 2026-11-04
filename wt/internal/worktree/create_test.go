@@ -52,11 +52,10 @@ func TestEnsureForNameIdempotent(t *testing.T) {
 	}
 }
 
-// EnsureForName must reject names that still contain path separators after
-// extraction, preventing traversal like "..". Note: filepath.Base strips the
-// separators, so the guard is defensive; in practice git itself rejects such
-// branch names. Either way the user-facing behavior is that traversal is
-// rejected.
+// EnsureForName must reject traversal-shaped names like "../evil". The
+// derived directory flattens separators ("..-evil", itself a harmless single
+// component) and git rejects the branch name itself, so the call errors
+// either way — the user-facing behavior is that traversal is rejected.
 func TestEnsureForNameRejectsTraversal(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -67,9 +66,9 @@ func TestEnsureForNameRejectsTraversal(t *testing.T) {
 	}
 }
 
-// EnsureForBranch must create a worktree for a brand-new branch, using the
-// last path component as the directory name. This is the picker path for a
-// branch that doesn't exist yet.
+// EnsureForBranch must create a worktree for a brand-new branch in a
+// directory derived from the full name, flattened. This is the picker path
+// for a branch that doesn't exist yet.
 func TestEnsureForBranchNewBranch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -78,7 +77,7 @@ func TestEnsureForBranchNewBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, ".worktrees", "x")
+	want := filepath.Join(dir, ".worktrees", "feature-x")
 	if path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
@@ -252,8 +251,11 @@ func TestEnsureForNameEmptyName(t *testing.T) {
 	}
 }
 
-// EnsureForName must use the last path component of a slash-containing branch
-// name as the worktree directory (.worktrees/my-branch for feature/my-branch).
+// EnsureForName must derive the worktree directory from the FULL branch
+// name with path-hostile characters flattened
+// (.worktrees/feature-my-branch for feature/my-branch): two branches sharing
+// a last component need distinct directories, which a last-component rule
+// cannot give them.
 func TestEnsureForNameSlashBranch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -262,14 +264,15 @@ func TestEnsureForNameSlashBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, ".worktrees", "my-branch")
+	want := filepath.Join(dir, ".worktrees", "feature-my-branch")
 	if path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
 }
 
 // EnsureForBranch must create a worktree for an existing local branch that
-// contains slashes, using the last component as the directory name.
+// contains slashes in a directory derived from the full name, flattened —
+// the same rule as every other creation path.
 func TestEnsureForBranchLocalWithSlash(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -287,15 +290,15 @@ func TestEnsureForBranchLocalWithSlash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, ".worktrees", "x")
+	want := filepath.Join(dir, ".worktrees", "feature-x")
 	if path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
 }
 
 // EnsureForBranch must create a local branch tracking a remote-tracking
-// branch whose name contains slashes, using the last component as the
-// worktree directory (origin/feature/x → .worktrees/x).
+// branch whose name contains slashes in a directory derived from the full
+// LOCAL name (origin/feature/x → local branch feature/x → .worktrees/feature-x).
 func TestEnsureForBranchRemoteWithSlash(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -305,7 +308,7 @@ func TestEnsureForBranchRemoteWithSlash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, ".worktrees", "x")
+	want := filepath.Join(dir, ".worktrees", "feature-x")
 	if path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
@@ -394,21 +397,23 @@ func TestRemoteConflictsWithLocal(t *testing.T) {
 	}
 }
 
-// EnsureForName must error when the typed name's base path collides with an
-// existing worktree for a DIFFERENT branch. Typing "feature/x" when
-// .worktrees/x already holds branch "x" previously returned x's worktree
-// silently, so the TUI's pendingHighlight found no match and the user landed
-// on the wrong branch believing they created "feature/x".
+// EnsureForName must error when the derived worktree path collides with an
+// existing worktree for a DIFFERENT branch. Full-name derivation flattens
+// slashes, so "feature/x" and "feature-x" share .worktrees/feature-x: typing
+// "feature/x" while feature-x's worktree sits there must error rather than
+// silently return the wrong worktree, so the TUI's pendingHighlight finds no
+// stale match and the user cannot land on the wrong branch believing they
+// created "feature/x".
 func TestEnsureForNameCollisionErrors(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	// Create a worktree for branch "x" at .worktrees/x.
-	wtDir := filepath.Join(dir, ".worktrees", "x")
-	cmd := exec.Command("git", "worktree", "add", "-b", "x", wtDir)
+	// Create a worktree for branch "feature-x" at .worktrees/feature-x.
+	wtDir := filepath.Join(dir, ".worktrees", "feature-x")
+	cmd := exec.Command("git", "worktree", "add", "-b", "feature-x", wtDir)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git worktree add -b x: %v\n%s", err, out)
+		t.Fatalf("git worktree add -b feature-x: %v\n%s", err, out)
 	}
 
 	_, err := EnsureForName(dir, "feature/x")
@@ -420,9 +425,75 @@ func TestEnsureForNameCollisionErrors(t *testing.T) {
 	}
 }
 
-// EnsureForName must still reuse a worktree whose path base matches a
-// slash-containing branch (".worktrees/x" for branch "feature/x"). This is
-// the legitimate idempotent-reuse case the collision guard must not break.
+// EnsureForName must give two branches sharing only their last component
+// distinct worktrees (feature/x and bug/x). Under the old last-component
+// derivation the second create errored "already in use" — the structural
+// limitation full-name derivation removes.
+func TestEnsureForNameBasenameCoexist(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	p1, err := EnsureForName(dir, "feature/x")
+	if err != nil {
+		t.Fatalf("EnsureForName(feature/x) = %v, want nil", err)
+	}
+	p2, err := EnsureForName(dir, "bug/x")
+	if err != nil {
+		t.Fatalf("EnsureForName(bug/x) = %v, want nil (shares only the last component with feature/x)", err)
+	}
+	if want := filepath.Join(dir, ".worktrees", "feature-x"); p1 != want {
+		t.Errorf("path 1 = %q, want %q", p1, want)
+	}
+	if want := filepath.Join(dir, ".worktrees", "bug-x"); p2 != want {
+		t.Errorf("path 2 = %q, want %q", p2, want)
+	}
+}
+
+// worktreeDirName is the one path-derivation rule behind every creation
+// path: path-hostile characters (separators on any platform, colon, ASCII
+// control characters) flatten to "-", everything else is kept (invalid
+// UTF-8 bytes re-encode as U+FFFD), and a derived "." or ".." is an error
+// because filepath.Join cleans those out of .worktrees (".." reaches the
+// repo root). The literal want values pin the mapping itself.
+func TestWorktreeDirName(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "plain", want: "plain"},
+		{in: "feature/x", want: "feature-x"},
+		{in: "a/b/c", want: "a-b-c"},
+		{in: `back\slash`, want: "back-slash"},
+		{in: "colon:name", want: "colon-name"},
+		{in: "ctrl\x01char", want: "ctrl-char"},
+		{in: "del\x7fchar", want: "del-char"},
+		{in: "keep.these", want: "keep.these"},
+		{in: ".", wantErr: true},
+		{in: "..", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := worktreeDirName(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("worktreeDirName(%q) = %q, want error", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("worktreeDirName(%q) error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("worktreeDirName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// EnsureForName must reuse a worktree that carries its branch under the OLD
+// last-component layout (".worktrees/x" holding "feature/x"): the reuse loop
+// matches by branch name, never by derived path, so pre-change worktrees keep
+// resolving with no migration.
 func TestEnsureForNameReusesSlashedBranchWorktree(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -446,10 +517,10 @@ func TestEnsureForNameReusesSlashedBranchWorktree(t *testing.T) {
 	}
 }
 
-// EnsureForName must reject "." and "..". filepath.Base leaves them intact
-// and filepath.Join(".worktrees", "..") cleans to the repo root, so without
-// this guard the call would return the repo root with no error and create
-// nothing.
+// EnsureForName must reject "." and "..": worktreeDirName keeps them intact
+// and filepath.Join then cleans ".." up to the repo root and "." to the
+// .worktrees container — the wrong path with no error. TestWorktreeDirName
+// pins the guard itself; this pins the entry point end to end.
 func TestEnsureForNameRejectsDot(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -648,7 +719,7 @@ func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnsureForName(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
 		}
-		if want := filepath.Join(dir, ".worktrees", db); path != want {
+		if want := filepath.Join(dir, ".worktrees", "feature-"+db); path != want {
 			t.Errorf("path = %q, want %q", path, want)
 		}
 	})
