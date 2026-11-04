@@ -117,6 +117,37 @@ func worktreePath(dir, name string) (string, error) {
 	return filepath.Join(dir, ".worktrees", dirName), nil
 }
 
+// pathCollision errors when path is a registered worktree of a DIFFERENT
+// branch than name — the one "already in use" message for -W and the picker.
+// Flattening makes it easy to hit (feature/x and feature-x share
+// .worktrees/feature-x), and git's own "already exists" never names the
+// branch holding the path. A detached worktree or the same branch is not a
+// collision here; the caller decides what reusing it means.
+func pathCollision(entries []Entry, path, name string) error {
+	if branch, ok := branchAtPath(entries, path); ok && branch != "" && branch != name {
+		return fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
+	}
+	return nil
+}
+
+// newWorktreePath is worktreePath for the picker paths, which create a
+// worktree without the -W reuse loop: it also lists the registered worktrees
+// and refuses a path another branch holds.
+func newWorktreePath(dir, name string) (string, error) {
+	path, err := worktreePath(dir, name)
+	if err != nil {
+		return "", err
+	}
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		return "", err
+	}
+	if err := pathCollision(entries, path, name); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // refExists reports whether the fully-qualified ref (e.g. refs/heads/main)
 // exists in dir.
 func refExists(dir, ref string) bool {
@@ -160,7 +191,7 @@ func EnsureForBranch(dir, branch string) (string, error) {
 	case refExists(dir, "refs/heads/"+branch):
 		// Local branch (possibly with slashes) — the directory derives from
 		// the full name.
-		path, err := worktreePath(dir, branch)
+		path, err := newWorktreePath(dir, branch)
 		if err != nil {
 			return "", err
 		}
@@ -176,7 +207,7 @@ func EnsureForBranch(dir, branch string) (string, error) {
 
 	default:
 		// Brand-new branch.
-		path, err := worktreePath(dir, branch)
+		path, err := newWorktreePath(dir, branch)
 		if err != nil {
 			return "", err
 		}
@@ -190,7 +221,7 @@ func EnsureForBranch(dir, branch string) (string, error) {
 // addTrackingWorktree creates a worktree on a new local branch short that
 // tracks the remote-tracking ref remoteRef.
 func addTrackingWorktree(dir, remoteRef, short string) (string, error) {
-	path, err := worktreePath(dir, short)
+	path, err := newWorktreePath(dir, short)
 	if err != nil {
 		return "", err
 	}

@@ -449,6 +449,42 @@ func TestEnsureForNameBasenameCoexist(t *testing.T) {
 	}
 }
 
+// The picker paths (EnsureForBranch local and new-branch cases, and the
+// remote-tracking case) must give the same "already in use by branch" error as
+// -W when the derived path belongs to another branch. Flattening makes the
+// collision easy to hit (feature/x vs feature-x), and git's own "already
+// exists" never names the branch holding the path.
+func TestEnsureForBranchCollisionErrors(t *testing.T) {
+	cases := map[string]func(t *testing.T, dir string) string{
+		"new branch": func(t *testing.T, dir string) string { return "feature-x" },
+		"local branch": func(t *testing.T, dir string) string {
+			if out, err := runGitCmd(dir, "branch", "feature-x"); err != nil {
+				t.Fatalf("git branch: %v\n%s", err, out)
+			}
+			return "feature-x"
+		},
+		"remote-tracking": func(t *testing.T, dir string) string {
+			setupRemote(t, dir, "seed", "feature-x")
+			return "origin/feature-x"
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			gitInit(t, dir)
+			// feature/x occupies .worktrees/feature-x.
+			if _, err := EnsureForName(dir, "feature/x"); err != nil {
+				t.Fatal(err)
+			}
+			pick := setup(t, dir)
+			_, err := EnsureForBranch(dir, pick)
+			if err == nil || !strings.Contains(err.Error(), "already in use by branch \"feature/x\"") {
+				t.Fatalf("EnsureForBranch(%q) error = %v, want 'already in use by branch \"feature/x\"'", pick, err)
+			}
+		})
+	}
+}
+
 // worktreeDirName is the one path-derivation rule behind every creation
 // path: path-hostile characters (separators on any platform, colon, ASCII
 // control characters) flatten to "-", everything else is kept (invalid
