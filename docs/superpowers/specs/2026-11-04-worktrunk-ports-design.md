@@ -54,12 +54,12 @@ PATH**).
   Gaps section says so explicitly). Kernel edge behavior (error paths, exact
   reap triggers) is *inferred*; the worktrunk spike (PR 2 task T0, decided at
   handoff 2026-11-04) pins these before any schema does.
-- **Source-doc status:** `docs/reference/worktrunk-comparison.md` exists only in
-  the main checkout's working tree, uncommitted (written 2026-11-04; three
-  post-PR-516 edits applied). A pickup session should: commit it; fill its
-  "Decision (open)" section with the 5-PR packaging below; and refresh its two
-  stale rows claiming "`-W` never consults remotes" (feature table +
-  "Deliberately absent") — `-W origin/<name>` resolution merged 2026-11-04.
+- **Source-doc status:** `docs/reference/worktrunk-comparison.md` is committed
+  in this PR (moved here from the main checkout's working tree on 2026-11-04),
+  with a filled-in "Decision" section and its stale claims refreshed — both
+  "`-W` never consults remotes" rows (now: `-W` resolves `origin/<name>` to
+  the local name, picker parity) and the "`-W origin/main` escapes the guard"
+  remnants (the remote-form guard merged 2026-11-04, PR 516).
 
 ## Global constraints (every PR inherits all of these)
 
@@ -506,10 +506,9 @@ resolves a name.
 
 ## Open questions for the user at pickup
 
-1. **Comparison-doc housekeeping:** commit
-   `docs/reference/worktrunk-comparison.md` from the main checkout, fill its
-   "Decision (open)" section with this packaging, refresh its two stale
-   "`-W` never consults remotes" rows.
+**None remaining** — the former item (comparison-doc housekeeping) was
+completed in this PR on 2026-11-04: the doc is committed here with its
+Decision section filled and its stale rows refreshed.
 
 Builder-check questions already settled in this document: what `remove` does
 about live sessions and claim records (PR 2 scope, warning-not-gate — my
