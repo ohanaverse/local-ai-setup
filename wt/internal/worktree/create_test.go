@@ -490,6 +490,50 @@ func TestWorktreeDirName(t *testing.T) {
 	}
 }
 
+// worktreeDirName must refuse a flattened name over 255 bytes. Git stores
+// refs/heads/a/b/c as nested directories, so a branch of many short components
+// is a valid ref, but the flattened name is ONE directory entry (and git's
+// .git/worktrees/<basename> entry), where the filesystem allows 255 bytes. Left
+// alone, git fails with a raw "File name too long" that never says to shorten
+// the branch. 255 bytes passes; 256 is refused, counting bytes not runes.
+func TestWorktreeDirNameRejectsOverlongName(t *testing.T) {
+	if _, err := worktreeDirName(strings.Repeat("a", 255)); err != nil {
+		t.Errorf("255-byte name: %v, want nil", err)
+	}
+	for _, name := range []string{
+		strings.Repeat("a", 256),
+		strings.Repeat("ab/", 100),    // 300 bytes, each component short
+		strings.Repeat("\u00e9", 128), // 128 runes = 256 bytes
+	} {
+		_, err := worktreeDirName(name)
+		if err == nil {
+			t.Errorf("worktreeDirName(%d bytes) = nil error, want too-long error", len(name))
+			continue
+		}
+		if !strings.Contains(err.Error(), "255") {
+			t.Errorf("error = %q, want it to name the 255-byte limit", err)
+		}
+	}
+}
+
+// EnsureForName and EnsureForBranch must surface the too-long error before
+// running git, so the user is told to shorten the branch name and no
+// half-created branch is left behind.
+func TestEnsureRefusesOverlongBranchName(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	name := strings.Repeat("ab/", 100) + "x"
+	if _, err := EnsureForName(dir, name); err == nil || !strings.Contains(err.Error(), "255") {
+		t.Errorf("EnsureForName error = %v, want the 255-byte limit", err)
+	}
+	if _, err := EnsureForBranch(dir, name); err == nil || !strings.Contains(err.Error(), "255") {
+		t.Errorf("EnsureForBranch error = %v, want the 255-byte limit", err)
+	}
+	if refExists(dir, "refs/heads/"+name) {
+		t.Error("a branch was created despite the refusal")
+	}
+}
+
 // EnsureForName must reuse a worktree that carries its branch under the OLD
 // last-component layout (".worktrees/x" holding "feature/x"): the reuse loop
 // matches by branch name, never by derived path, so pre-change worktrees keep

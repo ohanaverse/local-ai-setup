@@ -72,6 +72,10 @@ func EnsureForName(dir, name string) (string, error) {
 	return path, nil
 }
 
+// maxDirNameBytes is the filesystem's per-entry name limit (NAME_MAX on macOS
+// and Linux). Git's .git/worktrees/<basename> entry shares it.
+const maxDirNameBytes = 255
+
 // worktreeDirName derives a worktree directory name from a full branch name.
 // Every path-hostile character — path separators on any platform, colon, and
 // ASCII control characters — becomes "-", so feature/x and bug/x land in
@@ -79,7 +83,9 @@ func EnsureForName(dir, name string) (string, error) {
 // racing for the last path component. Everything else is kept (invalid
 // UTF-8 bytes re-encode as U+FFFD). A derived "." or ".." is an error:
 // filepath.Join cleans ".." up to the repo root and "." to the .worktrees
-// container — the wrong path either way.
+// container — the wrong path either way. A derived name over maxDirNameBytes
+// is an error too: git nests a ref's components as directories, so a long
+// branch can be valid while its flattened name, one directory entry, is not.
 func worktreeDirName(name string) (string, error) {
 	dirName := strings.Map(func(r rune) rune {
 		switch r {
@@ -93,6 +99,10 @@ func worktreeDirName(name string) (string, error) {
 	}, name)
 	if dirName == "." || dirName == ".." {
 		return "", fmt.Errorf("worktree name must not be %q", dirName)
+	}
+	if len(dirName) > maxDirNameBytes {
+		return "", fmt.Errorf("branch name %q is too long for a worktree directory (%d bytes after flattening, limit %d): shorten the branch name",
+			name, len(dirName), maxDirNameBytes)
 	}
 	return dirName, nil
 }
