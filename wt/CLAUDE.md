@@ -70,6 +70,7 @@ Every `Test*` has a top-level `//` comment stating **what** it tests and **why**
 - **Test seams** are package-level vars (`var x = realX`) that tests swap; `internal/lifecycle` keeps its seams in one `env` struct.
 - **Tests stay off the developer's machine**: each package's `TestMain` isolates what it reaches — `lifecycle.IsolateProcessesForTest()` (every process family's pidfile, signals, the wired-limit read), `tiers.IsolateForTest` (model-table packages), `config.IsolateConfigHomeForTest` (anything reaching `config.Dir()`), `gitenv.IsolateForTest()` (anything that can run git; `TestEveryPackageThatRunsGitIsolatesIt`). A new package or launch path needs the same (route check via `stubEnsureRoute(t)`); no test runs `psql`; scratch registries go through `WT_REGISTRY`.
 - **Assert on unexported functions directly**; parsing rendered lipgloss output flakes under forced-color ANSI.
+- **A test that creates worktrees builds a fresh repo per case** (`t.TempDir()` + `gitInit`): one wrong success leaves `.worktrees/<name>`, and the path-collision error then masks every later case. Use a branch name like `topic`, not `feature`, when a case also needs `feature/<x>` (git forbids a ref that is both a leaf and a directory).
 - **A test's `WarmupSeconds` must outlast the helper server's first answer.** Each warmup request is capped at the time left in the window, so a 1 s budget on a loaded runner fails on the deadline, not on the response you meant to assert on. Use 3 s or more.
 
 Read [docs/internals/testing.md](docs/internals/testing.md) before adding a seam, a `TestMain`, or a test that launches, runs git, starts a model, or touches routes.
@@ -258,13 +259,13 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **A launch that has a directory needs no repository**: the repo root handed to `runLaunchPath` gates the guard install and nothing else (state is keyed by model, agent and pid). Only `-W` and the worktree picker refuse outside one; don't key new launch state on the repository. [Details](docs/internals/launch-flow.md#launch-directory-and-the-repository).
 
-> **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and `EnsureForName` never consults remotes.
+> **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and `EnsureForName` never fetches (it reads only the remote-tracking refs already present).
 
 > **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup, and forks no git: staleness is answered off the update goroutine, #451). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 
-> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it, and the picker skips bare default-branch rows.
+> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it when typed as the bare name or a remote-tracking form like `origin/<default>` or `<remote>/HEAD` (one `refuseDefaultBranch` guard; matched only while that ref lives under `refs/remotes/` and no local branch has the same name), and `-W origin/feature` resolves like the picker (a local `feature` tracking it). The picker skips bare default-branch rows.
 
 ## Verification commands
 
