@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +89,84 @@ func TestClassifyUnknownUnpushedIsMinusOne(t *testing.T) {
 		if got := findRow(t, r, KindBranch, name).Losses.Unpushed; got != -1 {
 			t.Errorf("%s: Losses.Unpushed = %d, want -1", name, got)
 		}
+	}
+}
+
+// TestClassifyWorktreeRefIsForEachRefSpelling builds snapshots whose worktree
+// spells its branch differently from the head for-each-ref listed, one with
+// a slashed name, and one whose branch has no head at all. Why: the removal
+// engine deletes the branch with a compare-and-swap on Row.Ref; on a
+// case-insensitive volume the worktree's spelling is not the ref git holds,
+// and a branch with no head has no tip to compare, so its unknowns must stay
+// unknown.
+func TestClassifyWorktreeRefIsForEachRefSpelling(t *testing.T) {
+	tip := strings.Repeat("c", 40)
+	primary := WorktreeState{Fact: WorktreeFact{Path: "/r", Branch: "refs/heads/main", Primary: true}}
+	build := func(wtBranch string, heads ...RefFact) Snapshot {
+		s := handSnapshot()
+		s.Worktrees = []WorktreeState{primary, {Fact: WorktreeFact{Path: "/w/x", Branch: wtBranch, Head: tip}}}
+		s.Heads = heads
+		s.Proofs[tip] = Proof{Evidence: EvMergeAddsNothing, Verdict: Merged}
+		for _, h := range heads {
+			s.PRs[h.Name] = PRResult{Lookup: LookupNone}
+		}
+		return s
+	}
+	cases := []struct {
+		name, wtBranch string
+		heads          []RefFact
+		rowName        string
+		wantRef        string
+		wantTip        string
+		wantUnpushed   int
+		wantProven     bool
+	}{
+		{"case differs", "refs/heads/Topic", []RefFact{{Ref: "refs/heads/topic", Name: "topic", Tip: tip, Created: old}},
+			"Topic", "refs/heads/topic", tip, 0, true},
+		{"slashed name, case differs", "refs/heads/Feature/Topic", []RefFact{{Ref: "refs/heads/feature/topic", Name: "feature/topic", Tip: tip, Created: old}},
+			"Feature/Topic", "refs/heads/feature/topic", tip, 0, true},
+		{"no matching head", "refs/heads/ghost", nil, "ghost", "refs/heads/ghost", "", -1, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := Classify(build(c.wtBranch, c.heads...), Options{Now: later()})
+			row := findRow(t, r, KindWorktree, c.rowName)
+			if row.Ref != c.wantRef || row.Tip != c.wantTip || row.Losses.Unpushed != c.wantUnpushed || row.BranchProven != c.wantProven {
+				t.Fatalf("row ref %q tip %q unpushed %d branchProven %v, want %q %q %d %v%s",
+					row.Ref, row.Tip, row.Losses.Unpushed, row.BranchProven, c.wantRef, c.wantTip, c.wantUnpushed, c.wantProven, dumpRows(r.Rows))
+			}
+		})
+	}
+}
+
+// TestClassifyGatesUnknownLoss classifies a worktree whose gates failed to
+// read and one whose gates read clean. Why: with a gates error Dirty and the
+// ignored counts are zero only because nothing was read; the removal approval
+// must see "unknown", not "nothing to lose", or a possibly dirty worktree
+// would be removed without --force.
+func TestClassifyGatesUnknownLoss(t *testing.T) {
+	tip := strings.Repeat("c", 40)
+	build := func(gatesErr string) Snapshot {
+		s := handSnapshot()
+		s.Heads = []RefFact{{Ref: "refs/heads/topic", Name: "topic", Tip: tip, Created: old}}
+		s.Proofs[tip] = Proof{Evidence: EvMergeAddsNothing, Verdict: Merged}
+		s.PRs["topic"] = PRResult{Lookup: LookupNone}
+		s.Worktrees = []WorktreeState{
+			{Fact: WorktreeFact{Path: "/r", Branch: "refs/heads/main", Primary: true}},
+			{Fact: WorktreeFact{Path: "/w/topic", Branch: "refs/heads/topic", Head: tip}, GatesErr: gatesErr},
+		}
+		return s
+	}
+	row := findRow(t, Classify(build("boom"), Options{Now: later()}), KindWorktree, "topic")
+	if !row.Losses.GatesUnknown {
+		t.Errorf("gates error: Losses = %+v, want GatesUnknown", row.Losses)
+	}
+	if !slices.Contains(LossLines(row), "could not read the worktree's state; uncommitted or ignored files may be lost") {
+		t.Errorf("gates error: LossLines = %q, want the could-not-read line", LossLines(row))
+	}
+	row = findRow(t, Classify(build(""), Options{Now: later()}), KindWorktree, "topic")
+	if row.Losses != (Losses{}) || len(LossLines(row)) != 0 {
+		t.Errorf("clean gates: Losses = %+v, LossLines = %q, want none", row.Losses, LossLines(row))
 	}
 }
 
@@ -192,7 +271,7 @@ func TestLossLinesWording(t *testing.T) {
 		{"three unpushed", Row{Losses: Losses{Unpushed: 3}}, []string{"3 commits exist only on this machine"}},
 		{"unpushed unknown", Row{Losses: Losses{Unpushed: -1}}, []string{"could not count the commits that exist only on this machine; some may be lost"}},
 		{"detached", Row{Losses: Losses{DetachedUnique: true}}, []string{"the detached HEAD's commits are on no branch and will be lost"}},
-		{"gates unreadable", Row{Reasons: []Reason{{ReasonGatesUnavailable, "boom\x1b]0;x\x07"}}},
+		{"gates unreadable", Row{Losses: Losses{GatesUnknown: true}},
 			[]string{"could not read the worktree's state; uncommitted or ignored files may be lost"}},
 		{"everything, in order", Row{Losses: Losses{Dirty: true, IgnoredEntries: 2, IgnoredBytes: 1_300_000_000, Unpushed: 2, DetachedUnique: true}}, []string{
 			"uncommitted changes will be lost",

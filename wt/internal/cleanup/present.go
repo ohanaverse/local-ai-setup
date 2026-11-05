@@ -273,11 +273,8 @@ func LossLines(r Row) []string {
 	if l.Dirty {
 		out = append(out, "uncommitted changes will be lost")
 	}
-	for _, re := range r.Reasons {
-		if re.Code == ReasonGatesUnavailable {
-			out = append(out, "could not read the worktree's state; uncommitted or ignored files may be lost")
-			break
-		}
+	if l.GatesUnknown {
+		out = append(out, "could not read the worktree's state; uncommitted or ignored files may be lost")
 	}
 	if n := l.IgnoredEntries; n > 0 {
 		s := fmt.Sprintf("%d ignored %s", n, plural(n, "entry", "entries"))

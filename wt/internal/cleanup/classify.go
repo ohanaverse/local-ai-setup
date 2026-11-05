@@ -119,17 +119,22 @@ type Row struct {
 }
 
 // Losses is what removing a row would lose. A zero Losses loses nothing that
-// exists only here.
+// exists only here; any other value names a loss, and GatesUnknown or a
+// negative Unpushed say a loss could not be ruled out.
 type Losses struct {
 	Dirty          bool  // tracked changes or non-ignored untracked files
 	IgnoredEntries int   // ignored entries deleted with the directory
 	IgnoredBytes   int64 // their size on disk
-	// Unpushed is the count of the branch's commits that no remote-tracking
-	// ref reaches, when it was counted (no proof, or a tree-equality proof;
-	// a branch otherwise proven has its commits in the base: 0). -1 when the
-	// count failed or the branch's tip has no proof at all.
+	// Unpushed: 0 = the content is in the base; >0 counts commits reachable
+	// from no remote-tracking ref (only counted for trees-match /
+	// no-added-changes proofs and unproven branches); -1 when the count
+	// failed or the branch's tip has no proof at all.
 	Unpushed       int
 	DetachedUnique bool // a detached HEAD the base does not reach
+	// GatesUnknown: the worktree's gates could not be read (GatesErr), so
+	// Dirty, IgnoredEntries, IgnoredBytes and DetachedUnique are zero only
+	// because nothing was read, not because nothing would be lost.
+	GatesUnknown bool
 }
 
 // Report is a classified snapshot.
@@ -271,10 +276,10 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 	j.blockers = append(j.blockers, g.Blockers...)
 	if ws.GatesErr != "" {
 		j.unsure(ReasonGatesUnavailable, ws.GatesErr)
+		row.Losses.GatesUnknown = true
 	} else {
 		// Only gates that read cleanly say what is lost; a gates error
-		// leaves them zero and the row carries ReasonGatesUnavailable,
-		// which LossLines states as a possible loss.
+		// leaves them zero and sets GatesUnknown instead.
 		row.Losses.Dirty = g.Dirty
 		row.Losses.IgnoredEntries = g.IgnoredCount
 		row.Losses.IgnoredBytes = g.IgnoredBytes
@@ -377,10 +382,11 @@ func (c *classifier) branchProven(h RefFact) bool {
 	return j.status() == StatusProven
 }
 
-// unpushedOf is Losses.Unpushed for local head h: the counted commits no
-// remote-tracking ref reaches; 0 when a git proof (not a tree-equality one)
-// puts its commits in the base, where the count is not taken; -1 when the
-// count failed or the tip has no proof.
+// unpushedOf is Losses.Unpushed for local head h: 0 when a proof other than
+// trees-match / no-added-changes puts the content in the base (the count is
+// not taken then); otherwise the counted commits reachable from no
+// remote-tracking ref (trees-match / no-added-changes proofs and unproven
+// branches); -1 when the count failed or the tip has no proof.
 func (c *classifier) unpushedOf(h RefFact) int {
 	p, ok := c.s.Proofs[h.Tip]
 	switch {

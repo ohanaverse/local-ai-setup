@@ -365,7 +365,7 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 	}
 	full := slices.Clone(bare)
 	full[0].Ref, full[0].Tip, full[0].Head, full[0].BranchProven = "refs/heads/topic", tip, tip, true
-	full[0].Losses = Losses{Dirty: true, IgnoredEntries: 2, IgnoredBytes: 10, DetachedUnique: true}
+	full[0].Losses = Losses{Dirty: true, IgnoredEntries: 2, IgnoredBytes: 10, DetachedUnique: true, GatesUnknown: true}
 	full[1].Ref, full[1].Tip = "refs/heads/solo", tip
 	full[1].Losses = Losses{Unpushed: 3}
 	rep := func(rows []Row) Report {
