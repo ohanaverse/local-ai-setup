@@ -24,6 +24,11 @@ func gitErrText(s string) string {
 	return capRunes(flat(s), gitErrMax)
 }
 
+// OneLine is error text from outside the classifier (the registry load, the
+// OS) as a header line or row detail shows it: one sanitised line, at most
+// gitErrMax runes. It is gitErrText, exported for cmd/wt.
+func OneLine(s string) string { return gitErrText(s) }
+
 // gitError is a gitFailure: its text is already one sanitised line with
 // only git's stderr capped, so it is never cut again.
 type gitError struct{ msg string }

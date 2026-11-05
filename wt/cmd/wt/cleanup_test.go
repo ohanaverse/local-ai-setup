@@ -136,7 +136,15 @@ func TestCleanupCmdPlainGroupsInOrder(t *testing.T) {
 	cleanupCommit(t, dir, "r", "rescue work")
 	cgit(t, dir, "checkout", "main")
 
-	stdout, stderr, err := runCleanup(t, a, dir, "--plain", "--min-age", "1ns")
+	// The branches are seconds old and --min-age has a 1m floor: classify
+	// an hour from now so "merged" is old enough to be proven.
+	old := cleanupClassify
+	cleanupClassify = func(s cleanup.Snapshot, o cleanup.Options) cleanup.Report {
+		o.Now = o.Now.Add(time.Hour)
+		return old(s, o)
+	}
+	t.Cleanup(func() { cleanupClassify = old })
+	stdout, stderr, err := runCleanup(t, a, dir, "--plain")
 	if err != nil {
 		t.Fatal(err)
 	}

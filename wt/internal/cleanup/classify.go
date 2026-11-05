@@ -74,6 +74,12 @@ const (
 // minute ago looks merged.
 const DefaultMinAge = 10 * time.Minute
 
+// MinAgeFloor is the smallest MinAge `wt cleanup --min-age` accepts. Any
+// positive value used to be taken, and 1ns turns the fresh-branch rule off:
+// a branch made a second ago reads as proven merged. Classify itself does not
+// enforce it (a test may pass any Options); the command refuses a lower value.
+const MinAgeFloor = time.Minute
+
 // Options are Classify's only inputs besides the Snapshot.
 type Options struct {
 	Now    time.Time     // zero: every same-commit branch counts as fresh
@@ -144,6 +150,12 @@ type Report struct {
 	Fetch FetchResult
 	GH    GHState
 	Rows  []Row
+	// MinAge is the Options.MinAge Classify used (DefaultMinAge when none
+	// was given). Not part of the JSON contract.
+	MinAge time.Duration
+	// Notes are extra header lines the caller adds (HeaderLines appends
+	// them, one sanitised line each). Not part of the JSON contract.
+	Notes []string
 }
 
 // judge collects one row's findings; status applies the precedence.
@@ -204,7 +216,7 @@ func Classify(s Snapshot, o Options) Report {
 	if c.gh == GHUnavailable {
 		c.ghNote = "gh answered for no branch"
 	}
-	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh}
+	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, MinAge: o.MinAge}
 	held := map[string]bool{}
 	for _, ws := range s.Worktrees {
 		r.Rows = append(r.Rows, c.worktree(ws))

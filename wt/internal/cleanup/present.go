@@ -371,7 +371,8 @@ func ghCauseText(r Report) string {
 
 // HeaderLines are the lines above the groups: the repository, the base (and
 // whether it is a local fallback), the fetch result and how fresh the base
-// is, and what gh could answer.
+// is, and what gh could answer; then a note when MinAge was lowered below
+// DefaultMinAge, and the caller's Notes, one sanitised line each.
 func HeaderLines(r Report, now time.Time) []string {
 	lines := []string{"repo:  " + r.Repo}
 
@@ -409,5 +410,25 @@ func HeaderLines(r Report, now time.Time) []string {
 	default:
 		lines = append(lines, "gh:    "+string(r.GH))
 	}
+
+	// A zero MinAge is a Report not built by Classify: nothing was lowered.
+	if r.MinAge > 0 && r.MinAge < DefaultMinAge {
+		lines = append(lines, "min-age: lowered to "+shortDuration(r.MinAge)+" (default "+shortDuration(DefaultMinAge)+"): fresh branches may read as merged")
+	}
+	for _, n := range r.Notes {
+		lines = append(lines, flat(n))
+	}
 	return lines
+}
+
+// shortDuration is d as the user would type it: "2m", not "2m0s".
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }

@@ -286,9 +286,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 **Before `wt cleanup` deletes anything** (PR B carries, settle first):
 
-- a floor for `--min-age` (today any positive value, 1ns, turns the fresh-branch rule off), or a header line when it is lowered;
-- a header note when the registry failed to load (protected `local_path` artifacts are then not protected);
-- `config.ExpandHome` for protected paths (today only `~/` is expanded);
+- settled: `--min-age` floor `cleanup.MinAgeFloor` (1m) with a header note below 10m; `protectedPaths` fails closed (`errRegistryUnavailable`, a malformed or unresolvable `local_path` names the model; `~` expanded, relative against the primary worktree) and the listing then says "artifact protection is OFF and removal is refused" in the header;
 - extend the banlist test (refspec push `:topic`, `gh api -X DELETE`) as removal code arrives;
 - a ticked less_sure or unique_work row goes through a confirmation that states what would be lost, with `-D` behind its own confirmation;
 - a `remote` row is tickable only when proven;

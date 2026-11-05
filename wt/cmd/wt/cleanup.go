@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
@@ -49,8 +51,10 @@ func cleanupCmd(a *app) *cobra.Command {
 			"not be classified at all (not a repository, no default branch). With --json\n" +
 			"the one JSON document is printed on failure too.\n\n" +
 			"On a terminal the list is interactive; --plain, --json and a pipe print text.\n" +
-			"A branch younger than --min-age (default 10m) that sits at or behind the base\n" +
-			"is never proven merged: a brand-new branch looks merged.",
+			"A branch younger than --min-age (default 10m, at least 1m) that sits at or\n" +
+			"behind the base is never proven merged: a brand-new branch looks merged. A\n" +
+			"value below 10m is named in the header, as is a registry wt could not read\n" +
+			"(registered local_path artifacts are then not marked).",
 		Example:      "  wt cleanup\n  wt cleanup --plain --no-fetch\n  wt cleanup --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -60,13 +64,16 @@ func cleanupCmd(a *app) *cobra.Command {
 			if cmd.Flags().Changed("min-age") && minAge <= 0 {
 				return fmt.Errorf("--min-age must be a positive duration such as 10m, got %s (a zero threshold would let a brand-new branch look merged)", minAge)
 			}
+			if cmd.Flags().Changed("min-age") && minAge < cleanup.MinAgeFloor {
+				return fmt.Errorf("--min-age must be at least 1m, got %s (a shorter threshold lets a brand-new branch look merged)", minAge)
+			}
 			return executeCleanup(cmd, a, cleanupFlags{json: asJSON, noFetch: noFetch, plain: plain, minAge: minAge})
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
 	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune origin first")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
-	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; must be positive)")
+	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
 }
 
@@ -87,10 +94,21 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		// claim that could not be timed at worst makes the root look held.
 		claim = sessionclaim.Claim{PID: os.Getpid()}
 	}
-	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanup.GatherInputs{
+	repo := cleanup.Git{Dir: cwd}
+	// The primary worktree, which a relative local_path is resolved against.
+	// A listing that fails leaves it unknown (a relative path then fails
+	// protectedPaths); Gather lists again and reports that failure.
+	var repoRoot string
+	if facts, err := cleanup.ListWorktrees(repo, cwd); err == nil && len(facts) > 0 {
+		repoRoot = facts[0].Path
+	}
+	// Listing only reads, so a registry that cannot be read does not stop
+	// it: the header says protection is off (and a removal refuses).
+	protected, protErr := protectedPaths(a, repoRoot)
+	snap, err := cleanup.Gather(repo, cleanup.GatherInputs{
 		CWD:            cwd,
 		Fetch:          !f.noFetch,
-		ProtectedPaths: protectedPaths(a),
+		ProtectedPaths: protected,
 		Claim:          claim,
 		Parallel:       4,
 	})
@@ -102,6 +120,9 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		return cleanupFail(out, f.json, repo, err)
 	}
 	report := cleanupClassify(snap, cleanup.Options{Now: time.Now(), MinAge: f.minAge})
+	if protErr != nil {
+		report.Notes = append(report.Notes, cleanupRegistryNote(protErr))
+	}
 
 	switch {
 	case f.json:
@@ -133,31 +154,79 @@ func cleanupFail(out io.Writer, asJSON bool, repo string, err error) error {
 	return &exitCodeError{code: 1, err: err, quiet: true}
 }
 
-// protectedPaths are the registry's local_path artifacts as absolute paths:
-// wt never deletes them, so a worktree holding one is in use. A registry that
-// did not load simply names none.
-func protectedPaths(a *app) []string {
+// errRegistryUnavailable is protectedPaths' error when the registry did not
+// load: the artifacts it names are unknown, so none can be protected.
+var errRegistryUnavailable = errors.New("the registry failed to load")
+
+// cleanupRegistryNote is the header line `wt cleanup` adds when protectedPaths
+// failed: the list still shows, but nothing is marked protected_artifact and
+// a removal must refuse.
+func cleanupRegistryNote(err error) string {
+	return "registry: could not be read (" + cleanup.OneLine(err.Error()) + "); artifact protection is OFF and removal is refused"
+}
+
+// protectedPaths are the registry's local_path artifacts (fetch and draft of
+// every model) as absolute, cleaned paths, sorted and each once: wt never
+// deletes them, so a worktree holding one is in use. "~" and "~/..." are
+// expanded (config.ExpandHome); a relative path is resolved against repoRoot,
+// the primary worktree, never the working directory, which differs between
+// a linked worktree and a subdirectory. It fails closed: a registry that did
+// not load is errRegistryUnavailable, and a local_path the loader read as
+// absent because it was malformed (config.ArtifactFaults: not a string, or
+// its fetch/draft not a table), or one that cannot be resolved (no home
+// directory, a relative path with no repoRoot), is an error naming the
+// model. A path wt cannot enumerate is a path it cannot protect.
+func protectedPaths(a *app, repoRoot string) ([]string, error) {
 	if a == nil || a.cfg == nil {
-		return nil
+		return nil, errRegistryUnavailable
+	}
+	if a.loadErr != nil {
+		return nil, fmt.Errorf("%w: %v", errRegistryUnavailable, a.loadErr)
 	}
 	var out []string
 	for _, m := range a.cfg.Models {
-		for _, p := range []string{m.Fetch.LocalPath, m.Draft.LocalPath} {
-			if p == "" {
+		for _, side := range []struct {
+			key string
+			art config.ModelArtifact
+		}{{"fetch", m.Fetch}, {"draft", m.Draft}} {
+			switch {
+			case side.art.Malformed.NotTable:
+				return nil, fmt.Errorf("model %s: %s is not a table, so its local_path cannot be protected", m.ID, side.key)
+			case side.art.Malformed.LocalPath:
+				return nil, fmt.Errorf("model %s: %s.local_path is not a string, so it cannot be protected", m.ID, side.key)
+			case side.art.LocalPath == "":
 				continue
 			}
-			if rest, ok := strings.CutPrefix(p, "~/"); ok {
-				if home, err := os.UserHomeDir(); err == nil {
-					p = filepath.Join(home, rest)
-				}
-			}
-			if abs, err := filepath.Abs(p); err == nil {
-				p = abs
+			p, err := resolveLocalPath(side.art.LocalPath, repoRoot)
+			if err != nil {
+				return nil, fmt.Errorf("model %s: %s.local_path %q: %w", m.ID, side.key, side.art.LocalPath, err)
 			}
 			out = append(out, p)
 		}
 	}
-	return out
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
+// resolveLocalPath is one local_path as an absolute, cleaned path: home
+// expanded, a relative path joined to repoRoot.
+func resolveLocalPath(lp, repoRoot string) (string, error) {
+	p, err := config.ExpandHome(lp)
+	if err != nil {
+		return "", fmt.Errorf("cannot find the home directory: %w", err)
+	}
+	if strings.HasPrefix(p, "~") {
+		// ExpandHome left it: an empty $HOME, or a "~user" form wt does not
+		// expand. Joined to repoRoot it would name the wrong directory.
+		return "", errors.New("cannot expand ~ (no home directory, or a ~user form)")
+	}
+	if !filepath.IsAbs(p) {
+		if repoRoot == "" || !filepath.IsAbs(repoRoot) {
+			return "", errors.New("relative, and the repository root is unknown")
+		}
+		p = filepath.Join(repoRoot, p)
+	}
+	return filepath.Clean(p), nil
 }
 
 // printCleanupPlain writes the header and the groups as text. Same groups,
