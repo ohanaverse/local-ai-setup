@@ -280,12 +280,6 @@ from the repo root reads `.worktrees/feat/README.md`, the checkout you asked
 for, so there is no note — unless the file is missing there (untracked, or not
 on that branch). Paths in the note have their symbolic links resolved.
 
-## Repository commands
-
-| Command | Flags | What it does |
-|---|---|---|
-| `wt cleanup` | `--json`, `--no-fetch`, `--min-age <duration>` (default `10m`), `--plain` | Lists the repository's worktrees, local branches and `origin` branches in four groups (proven merged, less sure, has unique work, in use), each row with its evidence. Read-only in this release: it removes nothing. Exit 0 when a list was produced, 1 when the repository could not be classified. JSON shape: [cleanup-list.schema.json](../../../docs/contracts/cleanup-list.schema.json). Guide: [08 §9](../../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches). |
-
 ## Post-run summary line
 
 After the launched subprocess exits, `wt` prints a single summary line to

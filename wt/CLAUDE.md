@@ -274,7 +274,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 ## Cleanup classifier (`wt cleanup`)
 
-`internal/cleanup` classifies every worktree, local branch and `origin` branch into proven / less_sure / unique_work / in_use from one read-only snapshot; `cmd/wt/cleanup.go` prints it (`--json`, `--plain`) or shows the tick list (`internal/tui/cleanup_list.go`). Design: [../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md](../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md); operator pointer: guide 08 §9.
+`internal/cleanup` classifies every worktree, local branch and `origin` branch into proven / less_sure / unique_work / in_use from one read-only snapshot; `cmd/wt/cleanup.go` prints it (`--json`, `--plain`) or shows the tick list (`internal/tui/cleanup_list.go`). Design: [../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md](../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md); command reference: [docs/wt-cleanup.md](docs/wt-cleanup.md); operator pointer: guide 08 §9.
 
 - **Fail closed.** A git error, an unresolved default branch, an unknown PR state or an unavailable gate is Unknown, never proven. `LookupUnknown` is the zero value of `Lookup`, so a missing map entry reads Unknown.
 - **No deletion code in `internal/cleanup` or `cmd/wt/cleanup*.go`**: `TestCleanupCmdContainsNoDeletion` scans both for a banlist.
