@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"errors"
 	"strings"
 	"unicode"
 )
@@ -12,14 +13,33 @@ const noPRLookupDetail = "no PR lookup for this branch"
 // fetchErrMax caps a fetch error's length in runes.
 const fetchErrMax = 200
 
-// gitErrMax caps a failed git command's error text in runes.
+// gitErrMax caps, in runes, git's stderr in a failed git command's error
+// (the command and exit code before it are never cut), and any other error
+// text a row detail shows.
 const gitErrMax = 200
 
-// gitErrText is a failed tool command's error text as a row detail shows
-// it: one sanitised line (flat), at most gitErrMax runes. The command and
-// exit code lead the text, so the cap cuts git's stderr, not them.
+// gitErrText is error text that did not come from gitFailure as a row
+// detail shows it: one sanitised line (flat), at most gitErrMax runes.
 func gitErrText(s string) string {
 	return capRunes(flat(s), gitErrMax)
+}
+
+// gitError is a gitFailure: its text is already one sanitised line with
+// only git's stderr capped, so it is never cut again.
+type gitError struct{ msg string }
+
+func (e *gitError) Error() string { return e.msg }
+
+// gitDetail is err's text as a row detail (GatesErr, ClaimsErr, the
+// unpushed texts) shows it. Text holding a gitFailure is only sanitised
+// (flat): capping it again would cut the exit code and stderr off a long
+// command line. Any other text is sanitised and capped (gitErrText).
+func gitDetail(err error) string {
+	var ge *gitError
+	if errors.As(err, &ge) {
+		return flat(err.Error())
+	}
+	return gitErrText(err.Error())
 }
 
 // printable is s with a tab, newline or carriage return turned into a space

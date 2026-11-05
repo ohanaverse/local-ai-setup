@@ -2,6 +2,7 @@ package cleanup
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,8 +137,8 @@ func TestGitFailureIsOneSanitisedLine(t *testing.T) {
 	if !strings.HasPrefix(got, "cleanup: git status --porcelain: exit 128: fatal: x]0;pwn evil word") {
 		t.Errorf("gitFailure = %q", got)
 	}
-	if n := len([]rune(got)); n > gitErrMax {
-		t.Errorf("gitFailure is %d runes, want <= %d", n, gitErrMax)
+	if n := len([]rune(stderrPart(t, got, "128"))); n > gitErrMax {
+		t.Errorf("gitFailure's stderr part is %d runes, want <= %d", n, gitErrMax)
 	}
 }
 
@@ -145,12 +146,15 @@ func TestGitFailureIsOneSanitisedLine(t *testing.T) {
 // git status there fails with several lines of stderr ("error: bad
 // signature ..." then "fatal: index file corrupt"), then gathers and
 // classifies for real. Why: that stderr went whole into the row's
-// gates_unavailable detail and from there to the terminal.
+// gates_unavailable detail and from there to the terminal. git never
+// echoes the index bytes, so the index holds plain bytes: this test covers
+// the multi-line shape only (TestGitFailureIsOneSanitisedLine covers
+// control and bidi runes).
 func TestGatesFailureDetailIsOneSanitisedLine(t *testing.T) {
 	f := newFixture(t)
 	p := f.Worktree("topic")
 	index := strings.TrimSpace(gitIn(t, p, "rev-parse", "--path-format=absolute", "--git-path", "index"))
-	if err := os.WriteFile(index, []byte(strings.Repeat("not an index\x1b]0;pwn\x07\n", 8)), 0o644); err != nil {
+	if err := os.WriteFile(index, []byte(strings.Repeat("not an index\n", 8)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	noGh(t)
@@ -175,8 +179,8 @@ func TestGatesFailureDetailIsOneSanitisedLine(t *testing.T) {
 	if !strings.Contains(detail, "exit 128: error: bad signature") {
 		t.Errorf("gates detail lost git's words: %q", detail)
 	}
-	if n := len([]rune(detail)); n > gitErrMax {
-		t.Errorf("gates detail is %d runes, want <= %d", n, gitErrMax)
+	if n := len([]rune(stderrPart(t, detail, "128"))); n > gitErrMax {
+		t.Errorf("gates detail's stderr part is %d runes, want <= %d", n, gitErrMax)
 	}
 }
 
@@ -203,5 +207,144 @@ func TestFetchErrTextFlattensAndCaps(t *testing.T) {
 	assertClean(t, "fetch line", fetchLine)
 	if !strings.Contains(fetchLine, "FAILED (x y);") {
 		t.Errorf("fetch line = %q", fetchLine)
+	}
+}
+
+// longArgvCases are the two git commands whose message prefix (command line
+// and exit code) alone is longer than gitErrMax: operationsInProgress's
+// rev-parse (built from operationMarkers, as the code builds it) and
+// readRefs's for-each-ref.
+func longArgvCases() map[string][]string {
+	ops := []string{"rev-parse", "--path-format=absolute", "--show-toplevel"}
+	for _, m := range operationMarkers {
+		ops = append(ops, "--git-path", m)
+	}
+	return map[string][]string{
+		"operationsInProgress": ops,
+		"readRefs":             {"for-each-ref", "--format=" + refFormat, "refs/heads", "refs/remotes"},
+	}
+}
+
+// stderrPart is what follows the ": exit <code>: " that gitFailure writes.
+func stderrPart(t *testing.T, msg, code string) string {
+	t.Helper()
+	sep := ": exit " + code + ": "
+	i := strings.Index(msg, sep)
+	if i < 0 {
+		t.Fatalf("no %q in %q", sep, msg)
+	}
+	return msg[i+len(sep):]
+}
+
+// TestGitFailureKeepsLongCommandAndExit calls gitFailure with the real
+// operationsInProgress and readRefs argument lists, whose command and exit
+// code alone exceed gitErrMax. Why: the cap once covered the whole message,
+// so for these commands the exit code and git's stderr were cut off, and a
+// gates_unavailable row or a failed Gather named only part of a command
+// line, not why it failed.
+func TestGitFailureKeepsLongCommandAndExit(t *testing.T) {
+	for name, args := range longArgvCases() {
+		if n := len([]rune("cleanup: git " + strings.Join(args, " ") + ": exit 128: ")); n <= gitErrMax {
+			t.Fatalf("%s prefix is %d runes, not longer than gitErrMax: the case no longer covers the regression", name, n)
+		}
+		got := gitFailure(Out{Code: 128, Stderr: "fatal: not a git repository\n"}, args...).Error()
+		assertClean(t, name, got)
+		if !strings.HasPrefix(got, "cleanup: git "+strings.Join(args, " ")+": ") {
+			t.Errorf("%s: command line cut: %q", name, got)
+		}
+		if !strings.HasSuffix(got, ": exit 128: fatal: not a git repository") {
+			t.Errorf("%s: exit code or stderr lost: %q", name, got)
+		}
+		if n := len([]rune(stderrPart(t, got, "128"))); n > gitErrMax {
+			t.Errorf("%s: stderr part is %d runes, want <= %d", name, n, gitErrMax)
+		}
+	}
+}
+
+// TestGitFailureCapsOnlyStderr feeds 500 runes of stderr behind the long
+// operationsInProgress command. Why: the cap bounds git's text, which can be
+// any length, and must never eat the command or exit code that lead it.
+func TestGitFailureCapsOnlyStderr(t *testing.T) {
+	args := longArgvCases()["operationsInProgress"]
+	got := gitFailure(Out{Code: 128, Stderr: strings.Repeat("x", 500)}, args...).Error()
+	prefix := "cleanup: git " + strings.Join(args, " ") + ": exit 128: "
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("prefix cut: %q", got)
+	}
+	tail := strings.TrimPrefix(got, prefix)
+	if n := len([]rune(tail)); n != gitErrMax || !strings.HasSuffix(tail, "…") {
+		t.Errorf("stderr part is %d runes (%q), want %d ending in …", n, tail, gitErrMax)
+	}
+}
+
+// TestGitDetailKeepsGitFailureIntact passes the operationsInProgress failure
+// through gitDetail, the wrapper that builds GatesErr, ClaimsErr and the
+// unpushed texts, bare and wrapped with %w, and a non-git error too. Why:
+// those wrappers once re-cut an already capped gitFailure message at
+// gitErrMax, dropping its exit code and stderr again; other text must still
+// be sanitised and capped.
+func TestGitDetailKeepsGitFailureIntact(t *testing.T) {
+	err := gitFailure(Out{Code: 128, Stderr: "fatal: not a git repository"}, longArgvCases()["operationsInProgress"]...)
+	if got := gitDetail(err); got != err.Error() {
+		t.Errorf("gitDetail changed a gitFailure message:\n got %q\nwant %q", got, err.Error())
+	}
+	wrapped := fmt.Errorf("cleanup: gates: %w", err)
+	if got := gitDetail(wrapped); got != wrapped.Error() {
+		t.Errorf("gitDetail changed a wrapped gitFailure message:\n got %q\nwant %q", got, wrapped.Error())
+	}
+	other := gitDetail(errors.New("a\x1b\n" + strings.Repeat("y", 500)))
+	assertClean(t, "other", other)
+	if n := len([]rune(other)); n != gitErrMax {
+		t.Errorf("other error is %d runes, want the cap %d", n, gitErrMax)
+	}
+}
+
+// TestGatesDetailKeepsOperationsFailureEndToEnd points a linked worktree's
+// .git file at a git dir that does not exist, so the operationsInProgress
+// rev-parse there exits 128, then gathers and classifies for real. Why: the
+// gates_unavailable detail for that command once named only part of its
+// command line, not the exit code or git's reason.
+func TestGatesDetailKeepsOperationsFailureEndToEnd(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	gitdir := "gitdir: " + filepath.Join(t.TempDir(), "nowhere") + "\n"
+	if err := os.WriteFile(filepath.Join(p, ".git"), []byte(gitdir), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noGh(t)
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gatesErr string
+	for _, ws := range s.Worktrees {
+		if resolve(ws.Fact.Path) == resolve(p) {
+			gatesErr = ws.GatesErr
+		}
+	}
+	if !strings.Contains(gatesErr, "--git-path sequencer: exit 128: fatal:") {
+		t.Fatalf("GatesErr lost the command end, exit code or stderr: %q", gatesErr)
+	}
+	r := Classify(s, Options{Now: later()})
+	row := findRow(t, r, KindWorktree, "topic")
+	var detail string
+	for _, re := range row.Reasons {
+		if re.Code == ReasonGatesUnavailable {
+			detail = re.Detail
+		}
+	}
+	if detail != gatesErr {
+		t.Errorf("row detail %q, want GatesErr %q", detail, gatesErr)
+	}
+	assertClean(t, "gates detail", detail)
+}
+
+// TestFetchErrTextJoinsSecondLine pins that fetchErrText keeps the words of
+// git's second line. Why: "Could not read from remote repository" often says
+// more than the first line, so the lines are joined, not dropped.
+func TestFetchErrTextJoinsSecondLine(t *testing.T) {
+	got := fetchErrText("fatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n")
+	if !strings.Contains(got, "repository fatal: Could not read from remote repository.") {
+		t.Errorf("fetchErrText dropped the second line: %q", got)
 	}
 }

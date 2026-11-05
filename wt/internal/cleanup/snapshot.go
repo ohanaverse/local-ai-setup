@@ -161,7 +161,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	claim := in.Claim
 	claim.Path = resolve(s.Repo)
 	if s.Claims, err = sessionclaim.Others(s.CommonDir, claim); err != nil {
-		s.ClaimsErr = gitErrText(err.Error()) // a row detail: one sanitised line
+		s.ClaimsErr = gitDetail(err) // a row detail: one sanitised line
 	}
 	held := func(p string) bool { return len(s.Claims) > 0 && resolve(p) == claim.Path }
 
@@ -172,7 +172,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		if ws.Gates, err = CheckGates(g, w, gin); err != nil {
 			// Gates still holds the blockers found before it. The text is a
 			// row detail: one sanitised line.
-			ws.GatesErr = gitErrText(err.Error())
+			ws.GatesErr = gitDetail(err)
 		}
 		s.Worktrees = append(s.Worktrees, ws)
 	}
@@ -363,7 +363,7 @@ func unpushed(g Git, tip string) (int, string) {
 	args := []string{"rev-list", "--count", tip, "--not", "--remotes"}
 	o, err := g.Run(args...)
 	if err != nil {
-		return -1, gitErrText(err.Error())
+		return -1, gitDetail(err)
 	}
 	if o.Code != 0 {
 		return -1, gitFailure(o, args...).Error()

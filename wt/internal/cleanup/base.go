@@ -37,12 +37,15 @@ func refExists(g Git, ref string) (bool, error) {
 }
 
 // gitFailure wraps a fatal git exit (not the "absent" exit 1) with the
-// command, exit code and stderr, as one sanitised line (gitErrText): it
-// becomes a row's detail and reaches the terminal, and git's stderr is
-// several lines that may hold anything. It is never ErrNoDefaultBranch: a
-// broken repo is not a repo without a default.
+// command, exit code and stderr, as one sanitised line (flat): it becomes a
+// row's detail and reaches the terminal, and git's stderr is several lines
+// that may hold anything. Only the stderr is capped (gitErrMax runes): a
+// command line can be longer than the cap by itself (operationsInProgress,
+// readRefs), and the exit code and git's reason must survive. It is never
+// ErrNoDefaultBranch: a broken repo is not a repo without a default.
 func gitFailure(o Out, args ...string) error {
-	return errors.New(gitErrText(fmt.Sprintf("cleanup: git %s: exit %d: %s", strings.Join(args, " "), o.Code, o.Stderr)))
+	return &gitError{msg: fmt.Sprintf("cleanup: git %s: exit %d: %s",
+		flat(strings.Join(args, " ")), o.Code, capRunes(flat(o.Stderr), gitErrMax))}
 }
 
 // ResolveBase finds the default branch and the ref to compare against. The
