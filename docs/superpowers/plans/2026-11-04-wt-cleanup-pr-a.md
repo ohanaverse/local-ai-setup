@@ -15,9 +15,9 @@
 - TDD with red-green-revert: no production code without a failing test watched first; revert the change once and see the test fail again. Fresh worktree per PR.
 - **This PR contains no deletion, no `git worktree remove`, no `update-ref -d`, no `branch -d/-D`, no `push --delete`.** A review check greps for them.
 - Any `docs/contracts/` fixture change rides in the same change as the code that reads or writes it, held by a Go contract test (pattern: `docs/contracts/model-list.sample.json` + `cmd/wt/model_list_contract_test.go`).
-- Guides document the command, never live state (no counts or snapshots in `docs/guides/`). A user-visible change updates `wt/CLAUDE.md` and the matching `wt/docs/wt-agents/*.md` page in the same PR.
+- Guides document the command, never live state (no counts or snapshots in `docs/guides/`). A user-visible change updates `wt/CLAUDE.md` and the command's reference page (`wt/docs/wt-cleanup.md`, linked from `wt/CLAUDE.md` like `wt-smoke.md`; `wt/docs/wt-agents/` documents agents, not subcommands) in the same PR.
 - `wt` Go tests: a top-level `//` what-and-why comment on every `Test*`; a test that creates worktrees builds a fresh repo per case; branch name `topic`, not `feature`, when a case needs `feature/<x>`; `gitenv.IsolateForTest()` in `TestMain`; `gh` is stubbed (a real call from a test binary must fail, as `internal/worktree.realListPRs` does).
-- Fail closed: any git error, unresolved default branch, or unknown PR state yields `Unknown`, never `Merged`/`proven`. Exit code 1 is exactly "could not classify at all" (spec, "Exit codes").
+- Fail closed: any git error or unknown PR state yields `Unknown`, never `Merged`/`proven`; an unresolved default branch yields no report at all (exit 1). `proven` always needs a holding ladder rung, never a fall-through. Exit code 1 is exactly "could not classify at all" (spec, "Exit codes").
 - This repo squash-merges PRs; PR bodies never contain `close`/`fix`/`resolve` followed by `#N` — write `Refs #N`.
 - Commits end `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`; PR bodies end `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Verification before any commit: `go test ./...`, `go vet ./...`, `make check` in `wt/`; `make test-all` at the repo root before the PR; `make check-links` whenever a `.md` changes.
@@ -28,7 +28,7 @@ Most likely to bite first. Each line names the test that pins it.
 
 1. A branch squash-merged and then **reverted on main** must not read as proven merged (`TestProveSquashThenRevertIsNotMerged`, Task 3).
 2. `gh` missing, failing, or timing out must show `unknown`, never "no PR" (`TestPRLookupFailureIsUnknown`, Task 5; `TestClassifyUnknownPRIsNeverProven`, Task 6).
-3. An unresolved default branch must make every row unknown, not silently skip guards (`TestClassifyNoDefaultBranchAllUnknown`, Task 6; `TestCleanupCmdExit1WithoutDefaultBranch`, Task 8).
+3. An unresolved default branch must stop classification (exit 1), not silently skip guards (`TestGatherNoDefaultBranchIsError`, Task 6; `TestCleanupCmdExit1WithoutDefaultBranch`, Task 8).
 4. Ignored files (`.env`, `.superpowers/`) and untracked files in an otherwise merged worktree must demote it (`TestGatesIgnoredFilesDemoteToLessSure`, `TestClassifyDirtyMergedIsUniqueWork`, Tasks 4/6).
 5. A brand-new branch sitting on the base, and a `feature/x` / `feature-x` flatten collision, must not classify one thing and show another (`TestClassifyFreshBranchNotProven`, `TestRowsMapWorktreeToBranchByPorcelain`, Task 6).
 
@@ -68,7 +68,7 @@ Most likely to bite first. Each line names the test that pins it.
 - [ ] **Step 1: Write `TestRunReportsExitCodeWithoutError`** — `git merge-base --is-ancestor <a> <b>` on a non-ancestor returns `Out.Code == 1` and `err == nil`; a bad revision returns `Code == 128`, `err == nil`.
 - [ ] **Step 2: Write `TestRunTimeoutIsAnError`** — `Git{Timeout: 50*time.Millisecond}` running a `git` alias `!sleep 5` returns a non-nil error.
 - [ ] **Step 3:** Run `go test ./internal/cleanup -run 'TestRun' -v`; expect FAIL (package does not compile).
-- [ ] **Step 4: Implement `Git.Run`** with `exec.CommandContext`, `cmd.Dir = g.Dir`, separate stdout/stderr buffers; extract the code with `errors.As(*exec.ExitError)`.
+- [ ] **Step 4: Implement `Git.Run`** with `exec.CommandContext`, `cmd.Dir = g.Dir`, separate stdout/stderr buffers; set `cmd.WaitDelay` (as `internal/worktree/prs.go` does, so a grandchild holding the pipes cannot outlive the timeout) and `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat` in the environment; extract the code with `errors.As(*exec.ExitError)`.
 - [ ] **Step 5: Implement `fixture`** in `fixture_test.go`; `TestMain` calls `gitenv.IsolateForTest()`; no `gh` seam yet (Task 5 adds it).
 - [ ] **Step 6:** Run the tests; expect PASS. Revert `Run`'s exit-code extraction, see `TestRunReportsExitCodeWithoutError` fail, restore.
 - [ ] **Step 7: Commit** `feat(wt): cleanup git runner and test fixture`.
@@ -85,7 +85,7 @@ Most likely to bite first. Each line names the test that pins it.
 - Produces:
   - `type Base struct { Default string; Ref string; Fallback bool; FetchedAt time.Time }` — `Ref` is `origin/<Default>` when it exists, else the local default with `Fallback: true`.
   - `func ResolveBase(g Git) (Base, error)` — chain: `refs/remotes/origin/HEAD`, local `main`, `master`, then `origin/main`, `origin/master`. Returns `ErrNoDefaultBranch` when none resolves.
-  - `type FetchResult struct { OK bool; Err string; At time.Time }`; `func Fetch(g Git) FetchResult` — `fetch --prune` with `g.Timeout`; failure is a value, never swallowed.
+  - `type FetchResult struct { OK bool; Err string; At time.Time }`; `func Fetch(g Git) FetchResult` — `fetch --all --prune` with `g.Timeout` (the spec's "pushed" reads every `refs/remotes/*`); failure is a value, never swallowed.
   - `var ErrNoDefaultBranch = errors.New(...)`
 
 - [ ] **Step 1: Write tests** (each in a fresh `newFixture`):
@@ -140,7 +140,7 @@ Most likely to bite first. Each line names the test that pins it.
 - Produces:
   - `type WorktreeFact struct { Path, Branch, Head string; Detached, Bare, Primary, Locked, Prunable, Current bool }` — `Branch` is the full ref name from porcelain, `""` when detached.
   - `func ListWorktrees(g Git, cwd string) ([]WorktreeFact, error)` — `worktree list --porcelain -z`; `Primary` is the first entry; `Current` is cwd inside it (after `EvalSymlinks`, as `internal/worktree` does).
-  - `type Gates struct { Blockers []Reason; Dirty bool; IgnoredCount int; IgnoredBytes int64; DetachedUnique bool }`
+  - `type Gates struct { Blockers []Reason; Dirty bool; IgnoredCount int; IgnoredBytes int64; DetachedUnique, HiddenChanges bool }`
   - `type Reason struct { Code string; Detail string }`
   - `type GateInputs struct { Base string; HeldBy func(path string) bool; ProtectedPaths []string }`
   - `func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error)`
@@ -151,9 +151,10 @@ Most likely to bite first. Each line names the test that pins it.
   - `TestGatesBlockers` — table: primary, current dir inside, `git worktree lock`, a worktree nested inside another, a rebase stopped mid-way (`operation_in_progress`), `ProtectedPaths` containing a path under the worktree, `HeldBy` returning true → expected blocker code each.
   - `TestGatesDirtyUsesPinnedStatus` — `status.showUntrackedFiles=no` and a submodule config set in the repo config must not hide an untracked file: `Dirty == true`.
   - `TestGatesIgnoredFilesDemoteToLessSure` — an ignored `.env` gives `IgnoredCount == 1`, `Dirty == false`.
+  - `TestGatesSkipWorktreeFileIsSoft` — a file marked `git update-index --skip-worktree` and edited sets `Gates.HiddenChanges`, which `Classify` treats as a soft demotion.
   - `TestGatesDetachedReachableVsUnique` — detached at a commit that is an ancestor of `Base` → `DetachedUnique == false`; detached on a commit on no branch → `true`.
 - [ ] **Step 2:** Run; expect FAIL.
-- [ ] **Step 3: Implement.** Dirty: `status --porcelain -z --untracked-files=normal --ignore-submodules=none`; ignored: `ls-files --others --ignored --exclude-standard --directory` (sum sizes with `os.Lstat`, count only); operation in progress via `rev-parse --git-path` for `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_LOG`; nested = another worktree path has this path as a prefix.
+- [ ] **Step 3: Implement.** Dirty: `status --porcelain -z --untracked-files=normal --ignore-submodules=none`; ignored: `ls-files --others --ignored --exclude-standard --directory` (sum sizes with `os.Lstat`, count only); operation in progress via `rev-parse --git-path` for `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_LOG`; nested = another worktree path has this path as a prefix; hidden changes = `ls-files -v` tags `S`/lowercase paths differing from the index (skip-worktree / assume-unchanged).
 - [ ] **Step 4:** Run; expect PASS; revert-cycle the pinned `--untracked-files=normal`.
 - [ ] **Step 5: Commit** `feat(wt): cleanup worktree gates`.
 
@@ -170,7 +171,7 @@ Most likely to bite first. Each line names the test that pins it.
   - `type Lookup int` with `LookupKnown`, `LookupNone`, `LookupUnknown`.
   - `type PRResult struct { Lookup Lookup; PRs []PRInfo; Err string }`
   - `var ghPRList = realGhPRList` — `func(dir, branch string) ([]byte, error)`; the real one runs `gh pr list --head <branch> --state all --json number,state,headRefOid,baseRefName,mergeCommit,headRepository`, refuses inside a test binary (`errGhUnderTest`), and has a timeout.
-  - `func LookupPRs(dir, branch, ownRepo string, parallel int) map[string]PRResult` — keyed by branch; filters to PRs whose head repository is `ownRepo`.
+  - `func LookupPRs(dir string, branches []string, ownRepo string, parallel int) map[string]PRResult` — keyed by branch; filters to PRs whose head repository is `ownRepo`. `Gather` passes every local and remote branch (not only candidates) so a remote row's `base_of_open_pr` veto can be answered from the other branches' open PRs' `BaseRef`. `ownRepo` comes from `gh repo view --json nameWithOwner`; if that fails every lookup is `LookupUnknown` (an empty `ownRepo` would filter every PR away and read as "none").
 
 - [ ] **Step 1: Write tests** with `ghPRList` stubbed per case:
   - `TestPRLookupFailureIsUnknown` — stub returns an error → `LookupUnknown`, `Err != ""`.
@@ -189,11 +190,11 @@ Most likely to bite first. Each line names the test that pins it.
 - Create: `wt/internal/cleanup/snapshot.go`, `classify.go`, `snapshot_test.go`, `classify_test.go`
 
 **Interfaces:**
-- Consumes: everything above; `sessionclaim.Others(commonDir, sessionclaim.Claim)` (read-only; never `Join`, never writes).
+- Consumes: everything above; `Gather` runs every git-touching step (`Prove`, `WeakSignals`, `CheckGates`, the pushed-reachability test, branch creation time) and stores the results in `Snapshot`, so `Classify` stays pure over it; `sessionclaim.Others(commonDir, sessionclaim.Claim)` (read-only; never `Join`, never writes).
 - Produces:
   - `type Kind string` with `KindWorktree`, `KindBranch`, `KindRemote`.
   - `type Status string` with `StatusProven`, `StatusLessSure`, `StatusUniqueWork`, `StatusInUse`.
-  - `type Row struct { Kind Kind; Name string; Path string; Branch string; Remote string; Status Status; Evidence Evidence; Unknown bool; Reasons []Reason; Blockers []Reason; PR *PRInfo; AgeDays int }`
+  - `type Row struct { Kind Kind; Name string; Path string; Branch string; Remote string; Status Status; Evidence Evidence; Unknown bool; Reasons []Reason; Blockers []Reason; PR *PRInfo; Age time.Duration }`
   - `type Report struct { Repo string; Base Base; Fetch FetchResult; GH GHState; Rows []Row }` where `GHState` is `ok`, `unavailable`, or `partial`.
   - `type GatherInputs struct { CWD string; Fetch bool; OwnRepo string; ProtectedPaths []string; Claim sessionclaim.Claim; Parallel int }`
   - `func Gather(g Git, in GatherInputs) (Snapshot, error)` — error only when classification is impossible (not a repo; no default branch → `ErrNoDefaultBranch`).
@@ -206,11 +207,11 @@ Rules the tests pin (all from the spec; first match wins: `in_use` → `unique_w
 - weak signals only → `less_sure`; any `Unknown` → `less_sure` with `Unknown: true` and a reason naming the cause;
 - tracked-modified or untracked (non-ignored) files, unpushed commits (no `refs/remotes/*` ref reaches them), a MERGED PR whose head moved on, or `DetachedUnique` → `unique_work`;
 - ignored-only files, or a proof that needs `gh` while `GH != ok` → `less_sure`;
-- a tip equal to the base and younger than `MinAge` is never `proven`;
+- a branch with no commits of its own (tip is the base or an ancestor of it) younger than `MinAge`, measured from the ref's creation time and never the tip commit's date, is never `proven`; a branch with no rung, no weak signal and all commits pushed is `less_sure` (`no_proof`); `unique_work` for unpushed commits applies only when no rung holds (dirty files stay `unique_work` even when proven); `<remote>/HEAD` symbolic refs are never rows; a prunable worktree is `less_sure` (`prunable`) with no gates run;
 - the default branch in any form is never a row.
 
 - [ ] **Step 1: Write `TestClassify` as a table over fixture scenarios**, mirroring repo-cleanup's fixtures in `/Users/keith/github/ohanaverse/repo-cleanup-skill/bin/repo-cleanup-lib.sh:865-1044` (`setup_test_repo`) — one subtest per fixture, each asserting `(Kind, Status, Evidence)` and the reason codes: true merge; fast-forward; 1:1 rebase; multi-commit squash with main advanced; squash-then-revert (`less_sure`, **not** `proven`); reused branch name with an old MERGED PR (head OID ≠ tip → not `EvPRTip`); fresh empty branch; detached with unique commits; dirty; ignored-only; locked; nested; merge commit with unique content; git failure → `Unknown`.
-- [ ] **Step 2: Write the named review-focus tests:** `TestClassifyNoDefaultBranchAllUnknown`, `TestClassifyUnknownPRIsNeverProven`, `TestClassifyDirtyMergedIsUniqueWork`, `TestClassifyFreshBranchNotProven`, `TestRowsMapWorktreeToBranchByPorcelain` (branches `topic/x` and `topic-x` each in a worktree; both directory names flatten to the same `topic-x` basename style yet each row keeps its own branch), `TestClassifyOrderIsInUseFirst`, `TestClassifyRemoteRowRules` (merged PR + no open PR on head or as base → tickable-class `proven`; merged into main without a PR → not `proven`; open PR using it as base → `in_use`-class blocker `base_of_open_pr`; `GH != ok` → `less_sure`, reason `cannot_verify`).
+- [ ] **Step 2: Write the named review-focus tests:** `TestGatherNoDefaultBranchIsError`, `TestClassifyUnknownPRIsNeverProven`, `TestClassifySquashMergedWithDeletedRemoteIsProven`, `TestClassifyPushedUnmergedIsLessSure`, `TestGatherSkipsRemoteHEAD`, `TestClassifyDirtyMergedIsUniqueWork`, `TestClassifyFreshBranchNotProven`, `TestRowsMapWorktreeToBranchByPorcelain` (branches `topic/x` and `topic-x` each in a worktree; both directory names flatten to the same `topic-x` basename style yet each row keeps its own branch), `TestClassifyOrderIsInUseFirst`, `TestClassifyRemoteRowRules` (merged PR + no open PR on head or as base → tickable-class `proven`; merged into main without a PR → not `proven`; open PR using it as base → `in_use`-class blocker `base_of_open_pr`; `GH != ok` → `less_sure`, reason `cannot_verify`).
 - [ ] **Step 3: Write `TestGatherReadsClaimsReadOnly`** — a live claim on the root makes the root row `in_use` with blocker `held`, and the claim directory is byte-identical afterwards.
 - [ ] **Step 4:** Run; expect FAIL.
 - [ ] **Step 5: Implement** `Gather` (one `for-each-ref` over `refs/heads` and `refs/remotes` for tips and upstream/gone; `ListWorktrees`; `LookupPRs`; claims) and `Classify` per the rules. Reason codes are stable strings; pin the ones the tests use and document them in the schema (Task 7).
@@ -234,7 +235,7 @@ Rules: `evidence` is **absent** when none was found and `null`/`"unknown"` is ne
 
 - [ ] **Step 1: Write the tests:**
   - `TestEnvelopeVersioned`; `TestEnvelopeAbsentVersusUnknown` (a `less_sure` row from a failed `merge-tree` has `unknown:true` and no `evidence` key); `TestEnvelopeErrorIsOneDocument`; `TestStatusAndEvidenceEnumsStable` (the exact strings from this plan).
-  - In `cleanup_contract_test.go`: `TestCleanupFixtureMatchesEnvelopeShape` — reflect over `cleanup.Envelope` and compare to the keys of `docs/contracts/cleanup-list.sample.json` (copy the approach of `model_list_contract_test.go`: `jsonFieldSpecs`, `rawJSONKind`), and validate the fixture against `cleanup-list.schema.json` (enum values included).
+  - In `cleanup_contract_test.go`: `TestCleanupFixtureMatchesEnvelopeShape` — reflect over `cleanup.Envelope` and compare to the keys of `docs/contracts/cleanup-list.sample.json` (copy the approach of `model_list_contract_test.go`: `jsonFieldSpecs`, `rawJSONKind`), and check the fixture's enum values against the `enum` lists in `cleanup-list.schema.json` with a small stdlib check (go.mod has no JSON-schema validator and no schema file exists in `docs/contracts/` yet; adding a dependency is a separate decision).
 - [ ] **Step 2:** Run; expect FAIL. **Step 3: Implement** `Envelope`, `Encode`, `EncodeError`; write the schema and a sample fixture covering one row of each status.
 - [ ] **Step 4:** Run; expect PASS; rename one key in the Go struct and see the contract test fail, restore.
 - [ ] **Step 5: Commit** `feat(wt): cleanup --json envelope and contract`.
@@ -274,7 +275,7 @@ Behavior: runs `Fetch` unless `--no-fetch`, prints the header (base ref and its 
 Behavior (layout A from the design): four group headings in the spec's order; a checkbox column showing the default ticks (only `proven` rows ticked; `in_use` rows show `[-]` and cannot be toggled); `space` toggles, `a` ticks all proven, `q` quits; a footer line explains the highlighted row (evidence, or what is missing); `enter` prints `view only — would remove N items: …` and exits 0 (**nothing is removed**; PR B replaces this). Truncate the name column, never the evidence.
 
 - [ ] **Step 1: Write model-level tests:** `TestCleanupListGroupOrder`; `TestCleanupListDefaultTicksOnlyProven`; `TestCleanupListInUseRowsNotToggleable`; `TestCleanupListEnterIsViewOnly` (no command is returned that touches git); `TestCleanupListNarrowWidthKeepsEvidence` (render at width 80).
-- [ ] **Step 2:** Run; expect FAIL. **Step 3: Implement** with the existing `list`/delegate styling in `internal/tui/delegate.go` as the pattern.
+- [ ] **Step 2:** Run; expect FAIL. **Step 3: Implement** with the existing `list`/delegate styling in `internal/tui/delegate.go` as the pattern, rendered through `internal/tuilayout`'s `listFrame` and sized only by `fitTo` in `Update` (wt/CLAUDE.md, "A view fits the terminal"); add the screen to `TestEveryListPhaseFitsTheTerminal`.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5: Check the real screen at 80x24** through the pty driver (see `memory/tui-screens-via-pty`) in a scratch repo; paste the capture into the PR body.
 - [ ] **Step 6: Commit** `feat(wt): wt cleanup list view`.
@@ -284,10 +285,10 @@ Behavior (layout A from the design): four group headings in the spec's order; a 
 ### Task 10: Comparison, docs, review, PR
 
 **Files:**
-- Modify: `wt/CLAUDE.md`, `wt/docs/wt-agents/README.md` (command table), `docs/guides/08-maintenance-and-troubleshooting.md` (a short "Cleaning up worktrees and branches" pointer to the command, no live state)
+- Create: `wt/docs/wt-cleanup.md` (command reference). Modify: `wt/CLAUDE.md` (invariant block, link to the new page), `docs/guides/08-maintenance-and-troubleshooting.md` (a short "Cleaning up worktrees and branches" pointer to the command, no live state)
 
 - [ ] **Step 1: Comparison run.** In this repo and in a scratch repo built to cover the Task 6 fixtures, run `wt cleanup --json --no-fetch` and `repo-cleanup --dry-run`; list every row where the two disagree and the reason. Disagreements are expected where `merge-tree` proves more than `git cherry`, or where wt demotes on ignored files; any other disagreement is a bug to fix before the PR. Put the table in the PR body (the spec's acceptance).
-- [ ] **Step 2: Docs** — `wt/CLAUDE.md` gets a "Cleanup classifier" invariant block (fail closed; no deletion in `internal/cleanup`; base is `origin/<default>`; weak signals are not proofs); update the command table; run `make check-links`.
+- [ ] **Step 2: Docs** — `wt/CLAUDE.md` gets a "Cleanup classifier" invariant block (fail closed; no deletion in `internal/cleanup`; base is `origin/<default>`; weak signals are not proofs); link `wt/docs/wt-cleanup.md`; run `make check-links`.
 - [ ] **Step 3: Verification** — `go test ./...`, `go vet ./...`, `make check` in `wt/`; `make test-all` at the repo root.
 - [ ] **Step 4: Three-lens review** (`/code-review` scoped with the PR number, as the repo does), fix findings.
 - [ ] **Step 5: Open the PR** from the worktree; the body uses `Refs`, never a closing keyword, and ends with the attribution line.

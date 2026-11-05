@@ -68,9 +68,9 @@ PROVEN MERGED (ticked by default)
 LOOKS MERGED, LESS SURE
  [ ] branch    spike-picker             patch-id match only (no PR)
  [ ] worktree  old-experiment           merged, but 3 ignored files (.env …)
+ [ ] branch    rescue-notes             open PR #498, not merged
 HAS WORK THAT EXISTS NOWHERE ELSE
  [ ] worktree  mtplx-profiles           4 unpushed commits, 2 dirty files
- [ ] branch    rescue-notes             open PR #498
 IN USE / LOCKED (cannot remove)
  [-] worktree  current directory        you are here
 ── spike-picker ────────────────────────────────────────
@@ -92,20 +92,26 @@ stored (matches "routing is derived, not stored"). It never mutates.
 
 ### Snapshot (facts)
 
-One `for-each-ref` (heads and remotes, with upstream and gone state);
+One `for-each-ref` (heads and remotes, with upstream and gone state; the
+synthetic `<remote>/HEAD` symbolic refs are skipped, as
+`internal/worktree/enumerate.go` does);
 `git worktree list --porcelain` including `locked` and `prunable`; the default
 branch; the base ref; PR facts; live session claims; the caller's cwd; and
 whether a fetch ran and when.
 
 - **Default branch:** try `origin/HEAD`, then local `main`, `master`, then
   `origin/main`, `origin/master` (repo-cleanup's chain). If none resolves,
-  every row is UNKNOWN. Today's `DefaultBranch` returns `""` silently
+  nothing is classified: no snapshot is built and `wt cleanup` exits 1 with
+  the cause (see Exit codes). Today's `DefaultBranch` returns `""` silently
   (`internal/worktree/enumerate.go`); a deleter must treat `""` as a refusal.
 - **Base = `origin/<default>`**, never the local default (a local main with
   unpushed commits must not make work look merged). Local default only as a
   fallback, and then every verdict is capped at "less sure".
-- **Fetch:** `wt cleanup` runs an explicit `fetch --prune` and reports its
-  result in the header. Failure is shown, not swallowed (the picker's silent
+- **Fetch:** `wt cleanup` runs an explicit `fetch --all --prune` (every remote,
+  because "pushed" below reads all of `refs/remotes/*`) and reports its
+  result in the header. The fetch is the one thing the command writes, and it
+  writes only remote-tracking refs. It runs with `GIT_TERMINAL_PROMPT=0` so a
+  credential prompt cannot hang the screen. Failure is shown, not swallowed (the picker's silent
   5s fetch is not reused). A stale base only under-detects merges, so skipping
   is the safe direction; the header says how old the base is.
 - **PR facts are tri-state** per branch: known (open / merged / closed, number,
@@ -141,14 +147,23 @@ is still present. Cherry also ignores merge commits.
 - **PROVEN** — an ladder rung holds; no blocker applies.
 - **LESS SURE** — only a non-proof signal, or a proof exists but a soft issue
   does (ignored files present, gh unavailable where a rung needs it).
-- **UNIQUE WORK** — commits not in the base and not on any pushed ref, a merged
-  PR whose head moved on, or uncommitted/untracked files, or detached commits
-  on no branch.
+- **UNIQUE WORK** — commits whose content is not in the base (no ladder rung
+  holds) and that are on no pushed ref, a merged PR whose head moved on, or
+  uncommitted/untracked files, or detached commits on no branch. A proven rung
+  clears the commit test (a squash-merged branch whose remote branch was
+  deleted has unpushed commits by ancestry and is still PROVEN); it never
+  clears the dirty-file test.
+- **No proof, nothing unique** — no rung holds, no weak signal, and every
+  commit is on a pushed ref (e.g. an open PR): LESS SURE, reason
+  `no_proof`. PROVEN is never a fall-through: it requires a holding rung.
 - **IN USE** — hard blockers; the row cannot be ticked.
 - **UNKNOWN** — any git error, unresolved default, or unknown PR state where a
   proof needs it. Shown in LESS SURE with the cause; never PROVEN.
 
 ### Worktree gates (independent of the branch)
+
+A **prunable** worktree (directory gone) runs no gates against the missing
+path: its row is LESS SURE with reason `prunable`.
 
 Hard blockers (not tickable, not overridable): primary worktree · cwd is
 inside it · root held by another live `wt` session · locked · contains
@@ -179,9 +194,12 @@ main). Without `gh`, rows say "can't verify" and are not tickable.
 
 ### Safety rules that apply everywhere
 
-- **Min-age:** a branch whose tip equals the base and is younger than a
-  non-zero threshold is never PROVEN (a brand-new branch looks merged).
-  Default decided at plan time (non-zero).
+- **Min-age:** a branch with no commits of its own (its tip is the base or an
+  ancestor of it) that is younger than a non-zero threshold is never PROVEN (a
+  brand-new branch looks merged). Age is the ref's creation time (the oldest
+  reflog entry; a worktree's `gitdir` file mtime for its branch), never the tip
+  commit's date, which is the base's. No readable creation time counts as
+  young. Default decided at plan time (non-zero).
 - Never classify or delete by name alone: map worktree→branch from the
   porcelain list (feature/x and feature-x flatten to the same directory), and
   compare full refnames from `for-each-ref` (case-insensitive volumes resolve
@@ -242,9 +260,9 @@ checks them while reading.
 ## Series
 
 Each PR: TDD red-green-revert, fresh worktree, three-lens review, contracts
-fixture in the same change, docs in the same PR (`wt/CLAUDE.md`,
-`wt/docs/wt-agents/README.md`; guides document the command, never live
-state). Branch names in tests: `topic`, not `feature`.
+fixture in the same change, docs in the same PR (`wt/CLAUDE.md` and a
+`wt/docs/wt-cleanup.md` command reference, like `wt-smoke.md`; guides
+document the command, never live state). Branch names in tests: `topic`, not `feature`.
 
 ### PR A — read-only `wt cleanup` (and `--json`)
 
@@ -256,8 +274,9 @@ PR.** Without `gh` it still works; PR rungs report "needs gh".
 
 - `--json`: versioned envelope with published schema + sample fixture in
   `docs/contracts/` + a Go contract test, same change. Rows carry
-  `kind`, `name`, `status`, `evidence`, `reasons[]`, `blockers[]`; absent vs
-  `null` distinguishes "nothing" from "not determined"; one structured result
+  `kind`, `name`, `status`, `evidence`, `unknown`, `reasons[]`, `blockers[]`;
+  an absent `evidence` is "no proof", `"unknown": true` is "not determined"
+  (never `null`); one structured result
   even on nonzero exit; stable enums. Envelope keys pinned at plan time
   against worktrunk's `list-v2.json` where they fit.
 - **Acceptance:** a table of cases ported from repo-cleanup's
