@@ -481,14 +481,18 @@ func ageGated(ev Evidence) bool { return ev == EvSameCommit || ev == EvAncestor 
 // minAge demotes an age-gated proof on a branch younger than MinAge, or of
 // unknown age (no creation time): a brand-new branch looks merged.
 func (c *classifier) minAge(j *judge, r RefFact) {
-	if !ageGated(j.ev) {
-		return
+	if !ageGated(j.ev) || r.AgeSource == AgeOld {
+		return // AgeOld: no reflog, logging on, packed only (refAge)
 	}
 	if r.Created.IsZero() || c.o.Now.IsZero() {
 		j.weak(ReasonFreshBranch, "no commits outside the base, and its age is unknown")
 		return
 	}
-	if age := c.o.Now.Sub(born(r)); age < c.o.MinAge {
+	b := born(r)
+	if r.AgeSource == AgeFromMtime {
+		b = r.Created // the ref file's last write is the ref's own age
+	}
+	if age := c.o.Now.Sub(b); age < c.o.MinAge {
 		j.weak(ReasonFreshBranch, fmt.Sprintf("no commits outside the base, and only %s old (under %s)", age.Round(time.Second), c.o.MinAge))
 	}
 }

@@ -192,6 +192,13 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 		block(BlockLocked, w.Path)
 	}
 	self := resolve(w.Path)
+	// Every check that needs no git runs before the first git call, so its
+	// blocker is in the partial Gates whatever fails later.
+	for _, p := range in.ProtectedPaths {
+		if within(resolve(p), self) {
+			block(BlockProtectedArtifact, p)
+		}
+	}
 	all, err := listWorktrees(g)
 	if err != nil {
 		return partial(), err
@@ -199,11 +206,6 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	for _, o := range all {
 		if op := resolve(o.Path); op != self && within(op, self) {
 			block(BlockNested, o.Path)
-		}
-	}
-	for _, p := range in.ProtectedPaths {
-		if within(resolve(p), self) {
-			block(BlockProtectedArtifact, p)
 		}
 	}
 	if w.Bare {

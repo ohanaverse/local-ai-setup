@@ -443,6 +443,75 @@ func TestClassifyFreshAncestorNotProven(t *testing.T) {
 	}
 }
 
+// ancestorTopic makes topic, then advances and pushes main, so topic's tip is
+// a strict ancestor of the base (evidence "ancestor", age-gated).
+func ancestorTopic(f *fixture) {
+	f.Branch("topic")
+	f.Commit("m", "m", "m")
+	f.Push("main")
+}
+
+// TestClassifyAgeWithoutReflog classifies an ancestor branch whose reflog is
+// gone, right now. Why: git gc expires reflogs, so an old merged branch has
+// none; reading that as "age unknown" would keep it out of PROVEN forever.
+// With ref logging on, a packed ref with no log has not moved since gc, so it
+// is old; a loose one is as old as its file. With logging off nothing tells
+// a new branch from an old one, so it stays fresh (fail closed).
+func TestClassifyAgeWithoutReflog(t *testing.T) {
+	cases := []struct {
+		name   string
+		setup  func(t *testing.T, f *fixture)
+		proven bool
+	}{
+		{"expired and packed", func(t *testing.T, f *fixture) {
+			ancestorTopic(f)
+			f.git("reflog", "expire", "--expire=now", "--all")
+			f.git("pack-refs", "--all")
+		}, true},
+		{"logging off, even with an old file", func(t *testing.T, f *fixture) {
+			f.git("config", "core.logAllRefUpdates", "false")
+			ancestorTopic(f)
+			// Old mtime: only the logging check keeps it fresh.
+			if err := os.Chtimes(filepath.Join(f.Dir, ".git", "refs", "heads", "topic"), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"loose, no log, recent file", func(t *testing.T, f *fixture) {
+			ancestorTopic(f)
+			if err := os.Remove(filepath.Join(f.Dir, ".git", "logs", "refs", "heads", "topic")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"loose, no log, old file", func(t *testing.T, f *fixture) {
+			ancestorTopic(f)
+			if err := os.Remove(filepath.Join(f.Dir, ".git", "logs", "refs", "heads", "topic")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(filepath.Join(f.Dir, ".git", "refs", "heads", "topic"), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			c.setup(t, f)
+			noGh(t)
+			r := Classify(gather(t, f), Options{Now: time.Now()})
+			row := findRow(t, r, KindBranch, "topic")
+			if row.Evidence != EvAncestor {
+				t.Fatalf("evidence %q, want %q", row.Evidence, EvAncestor)
+			}
+			if c.proven && row.Status != StatusProven {
+				t.Fatalf("status %s %v, want proven", row.Status, reasonCodes(row.Reasons))
+			}
+			if !c.proven && (row.Status != StatusLessSure || !slices.Contains(reasonCodes(row.Reasons), ReasonFreshBranch)) {
+				t.Fatalf("status %s %v, want less_sure with %q", row.Status, reasonCodes(row.Reasons), ReasonFreshBranch)
+			}
+		})
+	}
+}
+
 // TestClassifyGatesErrorKeepsBlockers breaks the git link of a worktree
 // (prunable, so its gates fail) that holds a registered model artifact, and
 // of one that holds a nested worktree. Why: the gates found those hard

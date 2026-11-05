@@ -3,6 +3,9 @@ package cleanup
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,8 +34,20 @@ type RefFact struct {
 	Upstream string    // local head: the upstream's full refname ("" none)
 	Gone     bool      // local head: the upstream ref no longer exists
 	TipTime  time.Time // committer date of the tip
-	Created  time.Time // oldest reflog entry; zero when unknown or not read
+	Created  time.Time // when the ref was made (see AgeSource); zero when unknown or not read
+	// AgeSource says what Created is. The zero value is the reflog (or
+	// unknown, when Created is zero); see refAge for the rule.
+	AgeSource AgeSource
 }
+
+// AgeSource is where a ref's age came from.
+type AgeSource string
+
+const (
+	AgeFromReflog AgeSource = ""       // Created is the oldest reflog entry
+	AgeFromMtime  AgeSource = "mtime"  // no reflog, logging on: the loose ref file's mtime
+	AgeOld        AgeSource = "packed" // no reflog, logging on, packed only: unmoved since gc packed it, so old
+)
 
 // Proof is the git-only verdict for one tip, computed once per commit.
 type Proof struct {
@@ -259,6 +274,13 @@ func (s *Snapshot) prove(g Git) {
 		s.Proofs[tip] = p
 		return p
 	}
+	var logOn, logRead bool
+	logging := func() bool { // read once, only if some ref is age-gated
+		if !logRead {
+			logOn, logRead = refLogging(g), true
+		}
+		return logOn
+	}
 	counted := map[string]bool{}
 	for i := range s.Heads {
 		h := &s.Heads[i]
@@ -269,13 +291,13 @@ func (s *Snapshot) prove(g Git) {
 			s.Proofs[h.Tip] = p
 		}
 		if ageGated(p.Evidence) {
-			h.Created = reflogTime(g, h.Ref, true)
+			h.Created, h.AgeSource = refAge(g, s.CommonDir, h.Ref, logging())
 		}
 	}
 	for i := range s.Remotes {
 		r := &s.Remotes[i]
 		if ageGated(run(r.Tip).Evidence) {
-			r.Created = reflogTime(g, r.Ref, true)
+			r.Created, r.AgeSource = refAge(g, s.CommonDir, r.Ref, logging())
 		}
 	}
 	for i := range s.Worktrees {
@@ -313,24 +335,116 @@ func unpushed(g Git, tip string) (int, string) {
 // oldest false, its newest (its last move); zero when there is no reflog or
 // git fails (an unknown age never counts as old).
 func reflogTime(g Git, ref string, oldest bool) time.Time {
-	o, err := g.Run("reflog", "show", "--date=unix", "--format=%gd", ref, "--")
-	if err != nil || o.Code != 0 {
+	t, _, ok := reflogEntry(g, ref, oldest)
+	if !ok {
 		return time.Time{}
 	}
-	lines := strings.Split(strings.TrimSpace(o.Stdout), "\n")
+	return t
+}
+
+// reflogEntry reads ref's oldest (or newest) reflog entry. empty is true when
+// git answered with no entries (no reflog, or an expired one); ok is false on
+// any failure to read or parse.
+func reflogEntry(g Git, ref string, oldest bool) (t time.Time, empty, ok bool) {
+	o, err := g.Run("reflog", "show", "--date=unix", "--format=%gd", ref, "--")
+	if err != nil || o.Code != 0 {
+		return time.Time{}, false, false
+	}
+	out := strings.TrimSpace(o.Stdout)
+	if out == "" {
+		return time.Time{}, true, true
+	}
+	lines := strings.Split(out, "\n")
 	last := lines[0]
 	if oldest {
 		last = lines[len(lines)-1]
 	}
 	i, j := strings.LastIndex(last, "@{"), strings.LastIndex(last, "}")
 	if i < 0 || j < i {
-		return time.Time{}
+		return time.Time{}, false, false
 	}
 	secs, err := strconv.ParseInt(last[i+2:j], 10, 64)
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, false, false
 	}
-	return time.Unix(secs, 0)
+	return time.Unix(secs, 0), false, true
+}
+
+// refAge is when a ref was made, for the min-age rule. The rule:
+//
+//  1. A non-empty reflog: its oldest entry (the ref's creation).
+//  2. An empty or absent reflog, with ref logging off (core.logAllRefUpdates
+//     false, or unset in a bare repository): nothing tells a new ref from an
+//     old one, so the age is unknown and the ref counts as fresh.
+//  3. An empty or absent reflog with logging on: any ref made or moved
+//     recently would have an entry, so the log was expired (git gc,
+//     gc.reflogExpire). A loose ref file is as old as its mtime (its last
+//     write); a ref only in packed-refs has not moved since gc packed it, so
+//     it is old (AgeOld).
+//
+// Any read error is an unknown age (fresh). Known gap, accepted: a user who
+// expires reflogs by hand and packs refs within MinAge of making a branch
+// makes it read old.
+func refAge(g Git, commonDir, ref string, logging bool) (time.Time, AgeSource) {
+	t, empty, ok := reflogEntry(g, ref, true)
+	switch {
+	case !ok:
+		return time.Time{}, AgeFromReflog
+	case !empty:
+		return t, AgeFromReflog
+	case !logging:
+		return time.Time{}, AgeFromReflog
+	}
+	fi, err := os.Lstat(filepath.Join(commonDir, filepath.FromSlash(ref)))
+	switch {
+	case err == nil && fi.Mode().IsRegular():
+		return fi.ModTime(), AgeFromMtime
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return time.Time{}, AgeFromReflog
+	}
+	if packed(commonDir, ref) {
+		return time.Time{}, AgeOld
+	}
+	return time.Time{}, AgeFromReflog // neither loose nor packed (reftable?): unknown
+}
+
+// packed reports whether packed-refs in commonDir lists ref. A read error is
+// false (unknown, so fresh).
+func packed(commonDir, ref string) bool {
+	b, err := os.ReadFile(filepath.Join(commonDir, "packed-refs"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if _, name, ok := strings.Cut(strings.TrimSpace(line), " "); ok && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "^") && name == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// refLogging reports whether git logs ref updates here
+// (core.logAllRefUpdates): unset means on for a non-bare repository and off
+// for a bare one; "always" is on. Any read failure is off (fail closed: an
+// unlogged ref's age is unknown).
+func refLogging(g Git) bool {
+	o, err := g.Run("config", "--get", "core.logAllRefUpdates")
+	if err != nil {
+		return false
+	}
+	switch o.Code {
+	case 1: // unset
+		b, err := g.Run("rev-parse", "--is-bare-repository")
+		return err == nil && b.Code == 0 && strings.TrimSpace(b.Stdout) == "false"
+	case 0:
+	default:
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(o.Stdout), "always") {
+		return true
+	}
+	o, err = g.Run("config", "--type=bool", "--get", "core.logAllRefUpdates")
+	return err == nil && o.Code == 0 && strings.TrimSpace(o.Stdout) == "true"
 }
 
 // branchNames is every head and remote branch name, once each: the names gh

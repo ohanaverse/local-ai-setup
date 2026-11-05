@@ -393,3 +393,22 @@ func TestGatesFailClosed(t *testing.T) {
 		}
 	})
 }
+
+// TestGatesListFailureKeepsProtectedArtifact makes the repository-wide
+// worktree list fail (the runner points at a directory that is not a
+// repository) for a worktree holding a registered model artifact. Why: the
+// artifact check needs no list; a failure after it must still report the
+// blocker with the error, or the row could be offered for removal.
+func TestGatesListFailureKeepsProtectedArtifact(t *testing.T) {
+	f := newFixture(t)
+	wt := f.Worktree("topic")
+	w := factFor(t, f, t.TempDir(), wt)
+	in := GateInputs{Base: baseRef, ProtectedPaths: []string{filepath.Join(wt, "models", "m")}}
+	g, err := CheckGates(Git{Dir: t.TempDir()}, w, in)
+	if err == nil {
+		t.Fatalf("want an error from the worktree list, got %+v", g)
+	}
+	if !slices.Contains(codes(g), BlockProtectedArtifact) {
+		t.Fatalf("blockers %v with error %v, want %q", codes(g), err, BlockProtectedArtifact)
+	}
+}
