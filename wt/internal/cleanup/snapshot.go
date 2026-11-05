@@ -18,7 +18,7 @@ import (
 // GatherInputs are what Gather cannot learn from git.
 type GatherInputs struct {
 	CWD            string             // the caller's directory (Current worktrees)
-	Fetch          bool               // run `git fetch --prune` first
+	Fetch          bool               // run `git fetch --prune origin` first
 	OwnRepo        string             // owner/repo for PR filtering; "" parses origin's URL
 	ProtectedPaths []string           // registered local_path model artifacts
 	Claim          sessionclaim.Claim // this process's claim (its PID); Path is set to the root

@@ -42,11 +42,12 @@ func cleanupCmd(a *app) *cobra.Command {
 			"groups, by how sure wt is that each can go: PROVEN MERGED, LOOKS MERGED (LESS\n" +
 			"SURE), HAS WORK THAT EXISTS NOWHERE ELSE, and IN USE / LOCKED. Each row says\n" +
 			"why. This command only reads: it removes nothing.\n\n" +
-			"It runs `git fetch --prune` first (--no-fetch skips it) and says in the header\n" +
-			"how that went. A failed fetch, a missing gh and a row wt could not judge are\n" +
-			"shown, never an exit status. Exit 0 means a list was produced; exit 1 means the\n" +
-			"repository could not be classified at all (not a repository, no default\n" +
-			"branch). With --json the one JSON document is printed on failure too.\n\n" +
+			"It runs `git fetch --prune origin` first (--no-fetch skips it) and says in the\n" +
+			"header how that went (a repository with no origin remote skips it). A failed\n" +
+			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
+			"status. Exit 0 means a list was produced; exit 1 means the repository could\n" +
+			"not be classified at all (not a repository, no default branch). With --json\n" +
+			"the one JSON document is printed on failure too.\n\n" +
 			"On a terminal the list is interactive; --plain, --json and a pipe print text.\n" +
 			"A branch younger than --min-age (default 10m) that sits at or behind the base\n" +
 			"is never proven merged: a brand-new branch looks merged.",
@@ -63,7 +64,7 @@ func cleanupCmd(a *app) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
-	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune first")
+	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune origin first")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; must be positive)")
 	return c

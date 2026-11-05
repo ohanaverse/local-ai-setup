@@ -32,7 +32,7 @@ type BaseJSON struct {
 	FetchedAt string `json:"fetched_at,omitempty"`
 }
 
-// FetchJSON is FetchResult: whether `git fetch --prune` worked. Error is the
+// FetchJSON is FetchResult: whether `git fetch --prune origin` worked. Error is the
 // failure text and is absent on success; At is RFC 3339 UTC.
 type FetchJSON struct {
 	OK    bool   `json:"ok"`

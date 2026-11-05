@@ -627,7 +627,7 @@ After a few PRs merge, run `wt cleanup` from anywhere inside the repository to s
 
 ```bash
 wt cleanup                     # tick list on a terminal; text through a pipe or with --plain
-wt cleanup --no-fetch          # skip the `git fetch --prune` it runs first
+wt cleanup --no-fetch          # skip the `git fetch --prune origin` it runs first
 wt cleanup --json              # one JSON document (docs/contracts/cleanup-list.schema.json)
 wt cleanup --min-age 30m       # how old a branch at or behind main must be to count as merged (default 10m)
 ```

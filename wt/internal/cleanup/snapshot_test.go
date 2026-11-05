@@ -149,6 +149,36 @@ func TestGatherSetsFetchedAtAndParsesOwnRepo(t *testing.T) {
 	}
 }
 
+// TestGatherWithoutOriginSkipsFetch gathers, with a fetch asked for, in a
+// repository that has no origin remote. Why: the base is then the local
+// fallback and there is nothing to fetch; the header must say the fetch was
+// skipped and why, and the JSON must leave `fetch` out as for no fetch at
+// all, never print a failure or an ok.
+func TestGatherWithoutOriginSkipsFetch(t *testing.T) {
+	f := newFixture(t)
+	f.git("remote", "remove", "origin")
+	noGh(t)
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Base.Fallback || s.Fetch.Skipped == "" || !s.Base.FetchedAt.IsZero() {
+		t.Fatalf("base %+v fetch %+v, want fallback base, skipped fetch, no fetched_at", s.Base, s.Fetch)
+	}
+	r := Classify(s, Options{Now: later()})
+	header := strings.Join(HeaderLines(r, time.Now()), "\n")
+	if !strings.Contains(header, "fetch: skipped (no origin remote)") || strings.Contains(header, "FAILED") {
+		t.Fatalf("header:\n%s", header)
+	}
+	raw, err := Encode(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"fetch"`) || strings.Contains(string(raw), `"fetched_at"`) {
+		t.Fatalf("JSON carries a fetch or fetched_at for a skipped fetch:\n%s", raw)
+	}
+}
+
 // TestOwnRepoFromURL checks the github owner/repo forms of an origin URL.
 // Why: the own repo filters fork PRs out; a wrong parse would keep a fork's
 // PR as evidence or drop the repo's own open-PR veto.

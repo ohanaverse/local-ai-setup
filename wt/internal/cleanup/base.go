@@ -1,8 +1,10 @@
 package cleanup
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -100,13 +102,39 @@ func ResolveBase(g Git) (Base, error) {
 type FetchResult struct {
 	OK  bool
 	Err string
-	At  time.Time
+	At  time.Time // zero when no fetch ran (not asked for, or Skipped)
+	// Skipped is why no fetch was attempted although one was asked for
+	// ("no origin remote"); "" otherwise. A skip is neither ok nor a failure.
+	Skipped string
 }
 
-// Fetch runs `git fetch --prune`. It only updates remote-tracking refs.
+// fetchTimeout bounds the fetch when g.Timeout is zero: a fetch over the
+// network takes longer than the 30s every other git call gets.
+const fetchTimeout = 120 * time.Second
+
+// Fetch runs `git fetch --prune origin`. It only updates remote-tracking refs.
+// It names origin because the base is origin's: a bare `git fetch` fetches
+// the current branch's upstream remote, which may not be origin. With no
+// origin remote nothing is fetched and the result says why (Skipped).
 func Fetch(g Git) FetchResult {
+	o, err := g.Run("remote")
+	if err != nil {
+		return FetchResult{Err: err.Error(), At: time.Now()}
+	}
+	if o.Code != 0 {
+		return FetchResult{Err: gitFailure(o, "remote").Error(), At: time.Now()}
+	}
+	if !slices.Contains(strings.Fields(o.Stdout), "origin") {
+		return FetchResult{Skipped: "no origin remote"}
+	}
+	if g.Timeout == 0 {
+		g.Timeout = fetchTimeout
+	}
 	at := time.Now()
-	o, err := g.Run("fetch", "--prune")
+	o, err = g.Run("fetch", "--prune", "origin")
+	if errors.Is(err, context.DeadlineExceeded) {
+		return FetchResult{Err: fmt.Sprintf("git fetch --prune origin timed out after %s", g.Timeout), At: at}
+	}
 	if err != nil {
 		return FetchResult{Err: err.Error(), At: at}
 	}
