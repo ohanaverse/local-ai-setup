@@ -156,24 +156,9 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 
-	// Claims: read-only, on the root's physical path.
-	claim := in.Claim
-	claim.Path = resolve(s.Repo)
-	if s.Claims, err = sessionclaim.Others(s.CommonDir, claim); err != nil {
-		s.ClaimsErr = gitDetail(err) // a row detail: one sanitised line
-	}
-	held := func(p string) bool { return len(s.Claims) > 0 && resolve(p) == claim.Path }
-
-	gin := GateInputs{Base: s.BaseTip, HeldBy: held, ProtectedPaths: in.ProtectedPaths}
+	gin := s.readClaims(in)
 	for _, w := range facts {
-		ws := WorktreeState{Fact: w}
-		var err error
-		if ws.Gates, err = CheckGates(g, w, gin); err != nil {
-			// Gates still holds the blockers found before it. The text is a
-			// row detail: one sanitised line.
-			ws.GatesErr = gitDetail(err)
-		}
-		s.Worktrees = append(s.Worktrees, ws)
+		s.Worktrees = append(s.Worktrees, gateState(g, w, gin))
 	}
 
 	s.Proofs = map[string]Proof{}
@@ -192,6 +177,38 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel)
 	s.checkMerges(g)
 	return s, nil
+}
+
+// readClaims fills Claims and ClaimsErr (read-only, on the root's physical
+// path; s.Repo must be set) and returns the gate inputs that use them. Gather
+// and Rescan both read claims through it.
+func (s *Snapshot) readClaims(in GatherInputs) GateInputs {
+	claim := in.Claim
+	claim.Path = resolve(s.Repo)
+	var err error
+	if s.Claims, err = sessionclaim.Others(s.CommonDir, claim); err != nil {
+		s.ClaimsErr = gitDetail(err) // a row detail: one sanitised line
+	}
+	claims := s.Claims
+	held := func(p string) bool { return len(claims) > 0 && resolve(p) == claim.Path }
+	return GateInputs{Base: s.BaseTip, HeldBy: held, ProtectedPaths: in.ProtectedPaths}
+}
+
+// checkGates is CheckGates; a seam so a test can count the gate checks a
+// rescan runs (TestRescanCostIsScoped).
+var checkGates = CheckGates
+
+// gateState is one worktree's state as Gather and Rescan both read it: its
+// gates, or the blockers found before a gate error and that error's text.
+func gateState(g Git, w WorktreeFact, gin GateInputs) WorktreeState {
+	ws := WorktreeState{Fact: w}
+	var err error
+	if ws.Gates, err = checkGates(g, w, gin); err != nil {
+		// Gates still holds the blockers found before it. The text is a
+		// row detail: one sanitised line.
+		ws.GatesErr = gitDetail(err)
+	}
+	return ws
 }
 
 // qualifiedBase is the base as a full refname (Prove accepts no short name).
@@ -221,34 +238,23 @@ func (s *Snapshot) readRefs(g Git) error {
 		if line == "" {
 			continue
 		}
-		f := strings.Split(line, "\x00")
-		if len(f) != 8 {
-			return fmt.Errorf("cleanup: for-each-ref: unexpected record %q", line)
+		r, head, ok, err := parseRefRecord(line)
+		if err != nil {
+			return err
 		}
-		if f[2] != "commit" || f[3] != "" {
+		if !ok {
 			continue
 		}
-		r := RefFact{Ref: f[0], Tip: f[1]}
-		if secs, err := strconv.ParseInt(f[7], 10, 64); err == nil {
-			r.TipTime = time.Unix(secs, 0)
-		}
-		if name, ok := strings.CutPrefix(f[0], "refs/heads/"); ok {
-			r.Name, r.Upstream, r.Remote, r.Gone = name, f[4], f[5], f[6] == "[gone]"
+		if head {
 			if r.Remote != "" && r.Remote != "." {
 				remotes[r.Remote] = true
 			}
-			if !s.isDefault(name) {
+			if !s.isDefault(r.Name) {
 				s.Heads = append(s.Heads, r)
 			}
 			continue
 		}
-		rest := strings.TrimPrefix(f[0], "refs/remotes/")
-		remote, name, ok := strings.Cut(rest, "/")
-		if !ok {
-			continue
-		}
-		r.Remote, r.Name = remote, name
-		if !s.isDefault(name) {
+		if !s.isDefault(r.Name) {
 			remoteRefs = append(remoteRefs, r)
 		}
 	}
@@ -258,6 +264,33 @@ func (s *Snapshot) readRefs(g Git) error {
 		}
 	}
 	return nil
+}
+
+// parseRefRecord parses one refFormat record. head is true for a
+// refs/heads/* ref. ok is false for a record to leave out: a symbolic ref
+// (origin/HEAD), a non-commit, or a remote ref with no <remote>/<name> split.
+func parseRefRecord(line string) (r RefFact, head, ok bool, err error) {
+	f := strings.Split(line, "\x00")
+	if len(f) != 8 {
+		return RefFact{}, false, false, fmt.Errorf("cleanup: for-each-ref: unexpected record %q", line)
+	}
+	if f[2] != "commit" || f[3] != "" {
+		return RefFact{}, false, false, nil
+	}
+	r = RefFact{Ref: f[0], Tip: f[1]}
+	if secs, err := strconv.ParseInt(f[7], 10, 64); err == nil {
+		r.TipTime = time.Unix(secs, 0)
+	}
+	if name, isHead := strings.CutPrefix(f[0], "refs/heads/"); isHead {
+		r.Name, r.Upstream, r.Remote, r.Gone = name, f[4], f[5], f[6] == "[gone]"
+		return r, true, true, nil
+	}
+	remote, name, split := strings.Cut(strings.TrimPrefix(f[0], "refs/remotes/"), "/")
+	if !split {
+		return RefFact{}, false, false, nil
+	}
+	r.Remote, r.Name = remote, name
+	return r, false, true, nil
 }
 
 // isDefault reports whether name is the default branch's own name. Only the
