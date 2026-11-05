@@ -282,6 +282,16 @@ func TestCleanupCmdGhFailureKeepsRowsOneLine(t *testing.T) {
 	if strings.Contains(plain, "Alternatively") {
 		t.Errorf("gh's login speech reached the rows:\n%s", plain)
 	}
+	// The header's gh line is where the cause shows, on that one line.
+	var ghLine string
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.HasPrefix(line, "gh:") {
+			ghLine = line
+		}
+	}
+	if !strings.Contains(ghLine, "unavailable (") || !strings.Contains(ghLine, "gh auth login") {
+		t.Errorf("gh line does not name the cause: %q", ghLine)
+	}
 
 	stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch")
 	if err != nil {

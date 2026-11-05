@@ -682,6 +682,12 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		{"cleanup list, wrapped row highlighted", func(t *testing.T, width, height int) string {
 			return moveTo(t, newSizedCleanupList(t, longRowsFixture(), width, height), "many-reasons").View()
 		}},
+		{"cleanup list, gh down with a long cause", func(t *testing.T, width, height int) string {
+			return newSizedCleanupList(t, ghDownFixture(), width, height).View()
+		}},
+		{"cleanup list, gh down, wrapped row highlighted", func(t *testing.T, width, height int) string {
+			return moveTo(t, newSizedCleanupList(t, ghDownFixture(), width, height), "many-reasons").View()
+		}},
 		{"cleanup list, empty report", func(t *testing.T, width, height int) string {
 			r := cleanupFixture()
 			r.Rows = nil

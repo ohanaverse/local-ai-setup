@@ -215,8 +215,9 @@ func RowText(rep Report, row Row) string {
 		}
 		detail := r.Detail
 		if rep.GH == GHUnavailable && (r.Code == ReasonPRUnknown || r.Code == ReasonCannotVerify) {
-			// gh answered for no branch: the header says so and why; gh's
-			// own text under every row only repeats it.
+			// gh answered for no branch: the header's gh line says so and
+			// names the distinct causes (ghCauseText); gh's own text under
+			// every row only repeats it. The JSON keeps it per row.
 			detail = ghUnavailableDetail
 		}
 		parts = append(parts, ReasonText(r.Code, detail))
@@ -281,6 +282,41 @@ func agoText(at, now time.Time) string {
 	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 }
 
+const (
+	ghCausesShown = 2   // distinct causes the gh line names
+	ghCauseMax    = 100 // runes of one cause on the gh line
+)
+
+// ghCauseText is why gh answered nothing: the distinct one-line details of
+// the rows' PR-lookup reasons, first-seen order, at most ghCausesShown of
+// them joined with "; " and the rest counted as "(+N more)". "" when no row
+// carries one.
+func ghCauseText(r Report) string {
+	var causes []string
+	seen := map[string]bool{}
+	for _, row := range r.Rows {
+		for _, re := range row.Reasons {
+			if re.Code != ReasonPRUnknown && re.Code != ReasonCannotVerify {
+				continue
+			}
+			c := strings.TrimSpace(re.Detail)
+			if c == "" || seen[c] {
+				continue
+			}
+			seen[c] = true
+			if rs := []rune(c); len(rs) > ghCauseMax {
+				c = string(rs[:ghCauseMax-1]) + "…"
+			}
+			causes = append(causes, c)
+		}
+	}
+	if len(causes) > ghCausesShown {
+		more := fmt.Sprintf("(+%d more)", len(causes)-ghCausesShown)
+		return strings.Join(causes[:ghCausesShown], "; ") + " " + more
+	}
+	return strings.Join(causes, "; ")
+}
+
 // HeaderLines are the lines above the groups: the repository, the base (and
 // whether it is a local fallback), the fetch result and how fresh the base
 // is, and what gh could answer.
@@ -313,7 +349,11 @@ func HeaderLines(r Report, now time.Time) []string {
 	case GHPartial:
 		lines = append(lines, "gh:    partial; some branches could not be checked against their PRs")
 	case GHUnavailable:
-		lines = append(lines, "gh:    unavailable; PR evidence is missing and rows that need it say so")
+		why := ""
+		if c := ghCauseText(r); c != "" {
+			why = " (" + c + ")"
+		}
+		lines = append(lines, "gh:    unavailable"+why+"; PR evidence is missing and rows that need it say so")
 	default:
 		lines = append(lines, "gh:    "+string(r.GH))
 	}
