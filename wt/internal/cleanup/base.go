@@ -37,10 +37,12 @@ func refExists(g Git, ref string) (bool, error) {
 }
 
 // gitFailure wraps a fatal git exit (not the "absent" exit 1) with the
-// command and stderr. It is never ErrNoDefaultBranch: a broken repo is not a
-// repo without a default.
+// command, exit code and stderr, as one sanitised line (gitErrText): it
+// becomes a row's detail and reaches the terminal, and git's stderr is
+// several lines that may hold anything. It is never ErrNoDefaultBranch: a
+// broken repo is not a repo without a default.
 func gitFailure(o Out, args ...string) error {
-	return fmt.Errorf("cleanup: git %s: exit %d: %s", strings.Join(args, " "), o.Code, strings.TrimSpace(o.Stderr))
+	return errors.New(gitErrText(fmt.Sprintf("cleanup: git %s: exit %d: %s", strings.Join(args, " "), o.Code, o.Stderr)))
 }
 
 // ResolveBase finds the default branch and the ref to compare against. The

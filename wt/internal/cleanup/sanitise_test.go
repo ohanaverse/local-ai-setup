@@ -2,6 +2,7 @@ package cleanup
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,9 +82,101 @@ func TestFetchFailureIsOneSanitisedLine(t *testing.T) {
 		t.Fatalf("got %+v, want a failure", r)
 	}
 	assertClean(t, "fetch error", r.Err)
-	// The temp path is long, so the cap may cut the second line short.
-	if !strings.Contains(r.Err, "repository fatal: Could not read") {
-		t.Errorf("later lines of git's text were lost: %q", r.Err)
+	// Only the first line's start is asserted: the temp path in it varies
+	// in length, so the cap may cut anything after it.
+	if !strings.HasPrefix(r.Err, "fatal:") {
+		t.Errorf("fetch error does not start with git's first line: %q", r.Err)
+	}
+	if n := len([]rune(r.Err)); n > fetchErrMax {
+		t.Errorf("fetch error is %d runes, want <= %d: %q", n, fetchErrMax, r.Err)
+	}
+}
+
+// hostileGitDetail is git stderr as it reaches a row detail: a terminal
+// title escape (ESC ] ... BEL), a right-to-left override, a carriage return
+// and a second line.
+const hostileGitDetail = "cleanup: git status: exit 128: fatal: x\x1b]0;pwn\x07 ‮evil\rmore\nline2"
+
+// hostileDetailReport is a hand-built report with one row per reason whose
+// detail is built from git's stderr or an error's text.
+func hostileDetailReport() Report {
+	r := Report{Base: Base{Ref: "origin/main"}, GH: GHOK}
+	for _, code := range []string{ReasonUnpushedUnknown, ReasonGatesUnavailable, ReasonClaimsUnavailable} {
+		r.Rows = append(r.Rows, Row{Kind: KindBranch, Name: "topic", Status: StatusLessSure, Unknown: true,
+			Reasons: []Reason{{Code: code, Detail: hostileGitDetail}}})
+	}
+	return r
+}
+
+// TestRowTextSanitisesToolDetails pins that ReasonText and RowText drop
+// ESC/BEL, bidi controls, CR and LF from the unpushed, gates and claims
+// unavailable details, keeping the words on one line. Why: those details
+// carry git's stderr, and RowText is what --plain and the TUI print, so a
+// hostile or garbled message could retitle the terminal or split the row.
+func TestRowTextSanitisesToolDetails(t *testing.T) {
+	r := hostileDetailReport()
+	for _, row := range r.Rows {
+		got := RowText(r, row)
+		assertClean(t, "RowText "+row.Reasons[0].Code, got)
+		if !strings.Contains(got, "fatal: x]0;pwn evil more line2") {
+			t.Errorf("RowText %s lost the words: %q", row.Reasons[0].Code, got)
+		}
+		assertClean(t, "ReasonText", ReasonText(row.Reasons[0].Code, row.Reasons[0].Detail))
+	}
+}
+
+// TestGitFailureIsOneSanitisedLine pins that a failed git command's error is
+// one printable line that keeps the command and exit code and is capped.
+// Why: it becomes a row detail (unpushed count, gates) and reaches the
+// terminal; git's stderr is several lines and may hold anything.
+func TestGitFailureIsOneSanitisedLine(t *testing.T) {
+	o := Out{Code: 128, Stderr: "fatal: x\x1b]0;pwn\x07\n‮evil\r\n" + strings.Repeat("word ", 100)}
+	got := gitFailure(o, "status", "--porcelain").Error()
+	assertClean(t, "gitFailure", got)
+	if !strings.HasPrefix(got, "cleanup: git status --porcelain: exit 128: fatal: x]0;pwn evil word") {
+		t.Errorf("gitFailure = %q", got)
+	}
+	if n := len([]rune(got)); n > gitErrMax {
+		t.Errorf("gitFailure is %d runes, want <= %d", n, gitErrMax)
+	}
+}
+
+// TestGatesFailureDetailIsOneSanitisedLine corrupts a worktree's index so
+// git status there fails with several lines of stderr ("error: bad
+// signature ..." then "fatal: index file corrupt"), then gathers and
+// classifies for real. Why: that stderr went whole into the row's
+// gates_unavailable detail and from there to the terminal.
+func TestGatesFailureDetailIsOneSanitisedLine(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	index := strings.TrimSpace(gitIn(t, p, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+	if err := os.WriteFile(index, []byte(strings.Repeat("not an index\x1b]0;pwn\x07\n", 8)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noGh(t)
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Classify(s, Options{Now: later()})
+	row := findRow(t, r, KindWorktree, "topic")
+	var detail string
+	for _, re := range row.Reasons {
+		if re.Code == ReasonGatesUnavailable {
+			detail = re.Detail
+		}
+	}
+	if detail == "" {
+		t.Fatalf("no %s reason: %v%s", ReasonGatesUnavailable, reasonCodes(row.Reasons), dumpRows(r.Rows))
+	}
+	assertClean(t, "gates detail", detail)
+	// git's first line ("error: bad signature ...") precedes the long
+	// index path, so it survives the cap whatever the temp directory is.
+	if !strings.Contains(detail, "exit 128: error: bad signature") {
+		t.Errorf("gates detail lost git's words: %q", detail)
+	}
+	if n := len([]rune(detail)); n > gitErrMax {
+		t.Errorf("gates detail is %d runes, want <= %d", n, gitErrMax)
 	}
 }
 

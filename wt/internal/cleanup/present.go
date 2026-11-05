@@ -116,8 +116,11 @@ var detailIsSentence = map[string]bool{
 
 // ReasonText is one reason or blocker as a phrase. A code with no wording
 // reads as the bare code, so an unforeseen reason is still shown. A detail
-// that only repeats the wording is said once.
+// that only repeats the wording is said once. The detail is made one
+// printable line (flat) whatever its source: tool text reaches it, and
+// every row sink (--plain, the TUI) prints it.
 func ReasonText(code, detail string) string {
+	detail = flat(detail)
 	w, ok := reasonWording[code]
 	if !ok {
 		w = code

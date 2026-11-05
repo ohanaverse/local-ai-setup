@@ -161,7 +161,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	claim := in.Claim
 	claim.Path = resolve(s.Repo)
 	if s.Claims, err = sessionclaim.Others(s.CommonDir, claim); err != nil {
-		s.ClaimsErr = err.Error()
+		s.ClaimsErr = gitErrText(err.Error()) // a row detail: one sanitised line
 	}
 	held := func(p string) bool { return len(s.Claims) > 0 && resolve(p) == claim.Path }
 
@@ -170,7 +170,9 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		ws := WorktreeState{Fact: w}
 		var err error
 		if ws.Gates, err = CheckGates(g, w, gin); err != nil {
-			ws.GatesErr = err.Error() // Gates still holds the blockers found before it
+			// Gates still holds the blockers found before it. The text is a
+			// row detail: one sanitised line.
+			ws.GatesErr = gitErrText(err.Error())
 		}
 		s.Worktrees = append(s.Worktrees, ws)
 	}
@@ -356,19 +358,19 @@ func netZero(g Git, base, tip string, ev Evidence) Tri {
 }
 
 // unpushed counts the commits on tip that no remote-tracking ref reaches.
-// -1 and a message when git fails.
+// -1 and a message (a row detail: one sanitised line) when git fails.
 func unpushed(g Git, tip string) (int, string) {
 	args := []string{"rev-list", "--count", tip, "--not", "--remotes"}
 	o, err := g.Run(args...)
 	if err != nil {
-		return -1, err.Error()
+		return -1, gitErrText(err.Error())
 	}
 	if o.Code != 0 {
 		return -1, gitFailure(o, args...).Error()
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(o.Stdout))
 	if err != nil {
-		return -1, "rev-list --count: " + err.Error()
+		return -1, gitErrText("rev-list --count: " + err.Error())
 	}
 	return n, ""
 }

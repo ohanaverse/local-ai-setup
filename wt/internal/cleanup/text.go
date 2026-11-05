@@ -12,6 +12,16 @@ const noPRLookupDetail = "no PR lookup for this branch"
 // fetchErrMax caps a fetch error's length in runes.
 const fetchErrMax = 200
 
+// gitErrMax caps a failed git command's error text in runes.
+const gitErrMax = 200
+
+// gitErrText is a failed tool command's error text as a row detail shows
+// it: one sanitised line (flat), at most gitErrMax runes. The command and
+// exit code lead the text, so the cap cuts git's stderr, not them.
+func gitErrText(s string) string {
+	return capRunes(flat(s), gitErrMax)
+}
+
 // printable is s with a tab, newline or carriage return turned into a space
 // and every other control rune (C0, C1, ESC, BEL) and bidi control (U+202A–
 // U+202E, U+2066–U+2069, U+200E/U+200F, U+061C) dropped. Tool stderr shown
