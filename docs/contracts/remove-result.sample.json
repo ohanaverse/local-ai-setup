@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "repo": "/Users/me/src/app",
+  "dry_run": false,
+  "items": [
+    {
+      "kind": "worktree",
+      "name": "topic",
+      "path": "/Users/me/src/app/.worktrees/topic",
+      "ref": "refs/heads/topic",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "deleted",
+      "reason": "deleted refs/heads/topic (was 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345; restore: git branch topic 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345)",
+      "warnings": ["the commit survives only until git gc prunes it, possibly the next gc"],
+      "losses": [],
+      "branch_tip": "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+    },
+    {
+      "kind": "worktree",
+      "name": "spike",
+      "path": "/Users/me/src/app/.worktrees/spike",
+      "ref": "refs/heads/spike",
+      "saw": "less_sure",
+      "worktree": "removed",
+      "branch": "retained_unmerged",
+      "reason": "branch refs/heads/spike kept: not proven merged; -D deletes it",
+      "warnings": ["1 process running in the worktree: node"],
+      "losses": ["2 ignored entries, 14.2 MB will be deleted"]
+    },
+    {
+      "kind": "worktree",
+      "name": "fix-login",
+      "path": "/Users/me/src/app/.worktrees/fix-login",
+      "ref": "refs/heads/fix-login",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "retained_checked_out",
+      "reason": "branch refs/heads/fix-login (was 0a1b2c3d4e5f60718293a4b5c6d7e8f901234567) restored: a worktree took it while it was being deleted",
+      "warnings": ["held by worktree /Users/me/src/app/.worktrees/late"],
+      "losses": [],
+      "branch_tip": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+    },
+    {
+      "kind": "worktree",
+      "name": "docs",
+      "path": "/Users/me/src/app/.worktrees/docs",
+      "ref": "refs/heads/docs",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "retained_moved",
+      "reason": "branch refs/heads/docs moved since it was re-checked (now 9e8d7c6, was 5a4b3c2)",
+      "warnings": [],
+      "losses": []
+    },
+    {
+      "kind": "worktree",
+      "name": "fix-main",
+      "path": "/Users/me/src/app/.worktrees/fix-main",
+      "ref": "refs/heads/fix/main",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "retained_default",
+      "reason": "branch refs/heads/fix/main kept: it is the default branch",
+      "warnings": [],
+      "losses": []
+    },
+    {
+      "kind": "worktree",
+      "name": "refactor",
+      "path": "/Users/me/src/app/.worktrees/refactor",
+      "ref": "refs/heads/refactor",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "retained_unknown",
+      "reason": "branch refs/heads/refactor (was 1122334455667788990011223344556677889900) deleted and not restored; restore: git branch refactor 1122334455667788990011223344556677889900",
+      "warnings": ["held by worktree /Users/me/src/app/.worktrees/late2", "restoring it failed: exit 1: fatal: cannot lock ref 'refs/heads/refactor'", "the commit survives only until git gc prunes it, possibly the next gc"],
+      "losses": [],
+      "branch_tip": "1122334455667788990011223344556677889900"
+    },
+    {
+      "kind": "worktree",
+      "name": "bisect-scratch",
+      "path": "/Users/me/src/app/.worktrees/bisect-scratch",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "not_attempted",
+      "reason": "detached HEAD: no branch to delete",
+      "warnings": [],
+      "losses": []
+    },
+    {
+      "kind": "worktree",
+      "name": "experiment",
+      "path": "/Users/me/src/app/.worktrees/experiment",
+      "ref": "refs/heads/experiment",
+      "saw": "less_sure",
+      "worktree": "skipped_changed",
+      "branch": "not_attempted",
+      "reason": "what would be lost changed since it was listed",
+      "warnings": [],
+      "losses": ["uncommitted changes will be lost"]
+    },
+    {
+      "kind": "worktree",
+      "name": "wip",
+      "path": "/Users/me/src/app/.worktrees/wip",
+      "ref": "refs/heads/wip",
+      "saw": "unique_work",
+      "worktree": "refused",
+      "branch": "not_attempted",
+      "reason": "uncommitted changes; --force required",
+      "warnings": [],
+      "losses": ["uncommitted changes will be lost", "3 commits exist only on this machine"]
+    },
+    {
+      "kind": "worktree",
+      "name": "big-assets",
+      "path": "/Users/me/src/app/.worktrees/big-assets",
+      "ref": "refs/heads/big-assets",
+      "saw": "proven",
+      "worktree": "failed",
+      "branch": "not_attempted",
+      "reason": "the worktree may be partly removed: the directory is still there and still registered (exit 128: fatal: cannot remove '.venv/lib': Permission denied)",
+      "warnings": [],
+      "losses": []
+    },
+    {
+      "kind": "branch",
+      "name": "old-release",
+      "ref": "refs/heads/old-release",
+      "saw": "proven",
+      "worktree": "not_requested",
+      "branch": "deleted",
+      "reason": "deleted refs/heads/old-release (was 7f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d4c; restore: git branch old-release 7f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d4c)",
+      "warnings": ["the commit survives only until git gc prunes it, possibly the next gc"],
+      "losses": [],
+      "branch_tip": "7f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d4c"
+    }
+  ]
+}

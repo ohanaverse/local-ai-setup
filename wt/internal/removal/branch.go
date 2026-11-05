@@ -76,6 +76,15 @@ type branchResult struct {
 	Out      BranchOutcome
 	Reason   string
 	Warnings []string
+	// DeletedTip is the full commit id when this stage deleted the branch,
+	// or may have (Outcome.DeletedTip, Ruling J): set through deletedTip.
+	DeletedTip string
+}
+
+// deletedTip is r recording tip as the deleted commit.
+func (r branchResult) deletedTip(tip string) branchResult {
+	r.DeletedTip = tip
+	return r
 }
 
 func result(out BranchOutcome, reason string, warnings ...string) branchResult {
@@ -253,8 +262,6 @@ func refHeld(held []string, ref string) bool {
 // branch back if one now holds it (or that cannot be read).
 func (e Engine) casDelete(ref, tip string) branchResult {
 	was := fmt.Sprintf("%s (was %s)", ref, tip)
-	name := strings.TrimPrefix(ref, "refs/heads/")
-	restoreCmd := fmt.Sprintf("restore: git branch %s %s", name, tip)
 
 	beforeUpdateRef()
 	out, err := runRefGit(e.G, "update-ref", "--no-deref", "-d", ref, tip)
@@ -264,14 +271,27 @@ func (e Engine) casDelete(ref, tip string) branchResult {
 	now, exists, rerr := e.readRef(ref)
 	switch {
 	case rerr != nil:
-		return result(BrRetainedUnknown, "branch "+was+": git reported it deleted but it could not be re-read", rerr.Error())
+		// git reported the delete: it may have happened, so keep the tip.
+		return result(BrRetainedUnknown, "branch "+was+": git reported it deleted but it could not be re-read", rerr.Error()).deletedTip(tip)
 	case exists:
 		return result(BrRetainedUnknown, fmt.Sprintf("branch %s still exists (at %s) although git reported it deleted", was, abbrev(now)))
 	}
 
 	// A worktree that checked the branch out (or started a rebase or bisect
-	// on it) in the window: put the branch back, create-only.
+	// on it) in the window: put the branch back, create-only. From here on
+	// the ref is known gone after this run's update-ref, so every result
+	// records the tip (Ruling J).
 	afterUpdateRef()
+	return e.afterDelete(ref, tip).deletedTip(tip)
+}
+
+// afterDelete is casDelete's result once the delete is confirmed: deleted,
+// or the branch put back (or not) because a worktree now holds it or that
+// cannot be read.
+func (e Engine) afterDelete(ref, tip string) branchResult {
+	was := fmt.Sprintf("%s (was %s)", ref, tip)
+	name := strings.TrimPrefix(ref, "refs/heads/")
+	restoreCmd := fmt.Sprintf("restore: git branch %s %s", name, tip)
 	h := e.checkHolders(ref, "")
 	if h.Out == "" {
 		return result(BrDeleted, fmt.Sprintf("deleted %s (was %s; %s)", ref, tip, restoreCmd), gcCaveat)
@@ -313,7 +333,7 @@ func (e Engine) deleteFailed(ref, tip, gitErr string) branchResult {
 		// Someone else deleted it, or git did before it failed (a timeout
 		// after the write): fail closed, but say so and give the tip.
 		return result(BrRetainedMoved, "branch "+was+" gone after git error; it may have been deleted by this run",
-			"git update-ref: "+gitErr)
+			"git update-ref: "+gitErr).deletedTip(tip)
 	case now != tip:
 		return result(BrRetainedMoved, fmt.Sprintf("branch %s moved since it was re-checked (now %s, was %s)", ref, abbrev(now), abbrev(tip)))
 	}

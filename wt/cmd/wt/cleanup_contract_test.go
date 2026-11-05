@@ -295,25 +295,34 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	// Every key of every struct reachable from Envelope (not just rows) must
 	// appear in a fixture or in the live error document, so an omitempty
 	// key nobody shows cannot be renamed unnoticed.
+	checkEveryKeyAppears(t, schema, reflect.TypeFor[cleanup.Envelope](), fixtureDoc, fetchFailedDoc, errV)
+}
+
+// checkEveryKeyAppears fails for every json key of every struct reachable
+// from typ (through schema) that none of docs carries: an omitempty key no
+// sample shows could otherwise be renamed unnoticed. Shared by the cleanup
+// and removal contracts.
+func checkEveryKeyAppears(t *testing.T, schema map[string]any, typ reflect.Type, docs ...any) {
+	t.Helper()
 	seenKeys := map[reflect.Type]map[string]bool{}
 	reachable := map[reflect.Type]bool{}
-	walkTyped(t, schema, schema, reflect.TypeFor[cleanup.Envelope](), nil, "envelope",
-		func(_ string, typ reflect.Type, _ map[string]any, _ map[string]any) { reachable[typ] = true })
-	for _, d := range []any{fixtureDoc, fetchFailedDoc, errV} {
-		walkTyped(t, schema, schema, reflect.TypeFor[cleanup.Envelope](), d, "envelope",
-			func(_ string, typ reflect.Type, _ map[string]any, obj map[string]any) {
-				if seenKeys[typ] == nil {
-					seenKeys[typ] = map[string]bool{}
+	walkTyped(t, schema, schema, typ, nil, "envelope",
+		func(_ string, st reflect.Type, _ map[string]any, _ map[string]any) { reachable[st] = true })
+	for _, d := range docs {
+		walkTyped(t, schema, schema, typ, d, "envelope",
+			func(_ string, st reflect.Type, _ map[string]any, obj map[string]any) {
+				if seenKeys[st] == nil {
+					seenKeys[st] = map[string]bool{}
 				}
 				for k := range obj {
-					seenKeys[typ][k] = true
+					seenKeys[st][k] = true
 				}
 			})
 	}
-	for typ := range reachable {
-		for key := range jsonFieldSpecs(t, typ) {
-			if !seenKeys[typ][key] {
-				t.Errorf("no fixture value (or live error document) carries %s.%s", typ.Name(), key)
+	for st := range reachable {
+		for key := range jsonFieldSpecs(t, st) {
+			if !seenKeys[st][key] {
+				t.Errorf("no fixture value (or live error document) carries %s.%s", st.Name(), key)
 			}
 		}
 	}
@@ -381,8 +390,19 @@ func walkTyped(t *testing.T, root, node map[string]any, typ reflect.Type, val an
 // fixture edited around it, or a schema property outlive its field.
 func TestCleanupSchemaPropertiesMatchGoTags(t *testing.T) {
 	schema := readJSONFile(t, cleanupSchema).(map[string]any)
+	if visited := checkSchemaMatchesGoTags(t, schema, reflect.TypeFor[cleanup.Envelope]()); visited < 5 {
+		t.Errorf("only %d structs reached from Envelope; the walk is not following the schema", visited)
+	}
+}
+
+// checkSchemaMatchesGoTags checks, for every struct reachable from typ, that
+// the schema's `properties` key set equals the struct's json field set and
+// `required` is exactly the always-written keys; it returns how many structs
+// it reached. Shared by the cleanup and removal contracts.
+func checkSchemaMatchesGoTags(t *testing.T, schema map[string]any, typ reflect.Type) int {
+	t.Helper()
 	visited := 0
-	walkTyped(t, schema, schema, reflect.TypeFor[cleanup.Envelope](), nil, "envelope",
+	walkTyped(t, schema, schema, typ, nil, "envelope",
 		func(path string, typ reflect.Type, node map[string]any, _ map[string]any) {
 			visited++
 			props, _ := node["properties"].(map[string]any)
@@ -411,9 +431,7 @@ func TestCleanupSchemaPropertiesMatchGoTags(t *testing.T) {
 				t.Errorf("%s (%s): schema required %v, Go always-written keys %v", path, typ.Name(), gotReq, wantReq)
 			}
 		})
-	if visited < 5 {
-		t.Errorf("only %d structs reached from Envelope; the walk is not following the schema", visited)
-	}
+	return visited
 }
 
 // TestCleanupSchemaValidatorIsLoud is the validator's own test. Why: the
@@ -481,14 +499,72 @@ func TestCleanupSchemaValidatorIsLoud(t *testing.T) {
 // else. Why: a new reason code reaching users without a schema and fixture
 // update would otherwise pass every test.
 func TestCleanupSchemaEnumsCoverEveryCode(t *testing.T) {
+	got := map[string][]string{}
+	for _, c := range stringConsts(t, cleanupPkgDir) {
+		switch {
+		case c.typ == "Evidence":
+			got["evidence"] = append(got["evidence"], c.val)
+		case c.typ == "Status":
+			got["status"] = append(got["status"], c.val)
+		case c.typ == "Kind":
+			got["kind"] = append(got["kind"], c.val)
+		case c.typ == "GHState":
+			got["gh"] = append(got["gh"], c.val)
+		case c.typ == "" && strings.HasPrefix(c.name, "Reason"):
+			got["reasons"] = append(got["reasons"], c.val)
+		case c.typ == "" && strings.HasPrefix(c.name, "Block"):
+			got["blockers"] = append(got["blockers"], c.val)
+		}
+	}
+	schema := readJSONFile(t, cleanupSchema).(map[string]any)
+	enumOf := func(def string, path ...string) []string {
+		t.Helper()
+		return schemaDefEnum(t, schema, def, path...)
+	}
+	want := map[string][]string{
+		"status":   enumOf("row", "properties", "status"),
+		"kind":     enumOf("row", "properties", "kind"),
+		"evidence": enumOf("row", "properties", "evidence"),
+		"reasons":  enumOf("row", "properties", "reasons", "items", "properties", "code"),
+		"blockers": enumOf("row", "properties", "blockers", "items", "properties", "code"),
+		"gh":       schemaEnum2(schema),
+	}
+	checkEnumsEqual(t, got, want)
+}
+
+// checkEnumsEqual fails for every name whose source constants (got) and
+// schema enum (want) differ as sets, or have no constants at all.
+func checkEnumsEqual(t *testing.T, got, want map[string][]string) {
+	t.Helper()
+	for name, w := range want {
+		g := slices.Clone(got[name])
+		w = slices.Clone(w)
+		slices.Sort(g)
+		slices.Sort(w)
+		if len(g) == 0 || !slices.Equal(g, w) {
+			t.Errorf("%s: source constants %v, schema enum %v", name, g, w)
+		}
+	}
+}
+
+// stringConst is one string constant declared in a package's source.
+type stringConst struct {
+	name, typ, val string // typ: the declared type's name, "" when untyped
+}
+
+// stringConsts are the string-literal constants declared in the non-test
+// .go files of the package in dir, read from source (so a constant added
+// later is seen). Shared by the cleanup and removal enum checks.
+func stringConsts(t *testing.T, dir string) []stringConst {
+	t.Helper()
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, cleanupPkgDir, func(fi os.FileInfo) bool {
+	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string][]string{}
+	var out []stringConst
 	for _, pkg := range pkgs {
 		for _, f := range pkg.Files {
 			for _, d := range f.Decls {
@@ -511,59 +587,32 @@ func TestCleanupSchemaEnumsCoverEveryCode(t *testing.T) {
 						if id, ok := vs.Type.(*ast.Ident); ok {
 							typ = id.Name
 						}
-						switch {
-						case typ == "Evidence":
-							got["evidence"] = append(got["evidence"], val)
-						case typ == "Status":
-							got["status"] = append(got["status"], val)
-						case typ == "Kind":
-							got["kind"] = append(got["kind"], val)
-						case typ == "GHState":
-							got["gh"] = append(got["gh"], val)
-						case typ == "" && strings.HasPrefix(n.Name, "Reason"):
-							got["reasons"] = append(got["reasons"], val)
-						case typ == "" && strings.HasPrefix(n.Name, "Block"):
-							got["blockers"] = append(got["blockers"], val)
-						}
+						out = append(out, stringConst{name: n.Name, typ: typ, val: val})
 					}
 				}
 			}
 		}
 	}
-	schema := readJSONFile(t, cleanupSchema).(map[string]any)
+	return out
+}
+
+// schemaDefEnum is the enum at $defs.<def> followed by path (each step a
+// key; a $ref met on the way is followed).
+func schemaDefEnum(t *testing.T, schema map[string]any, def string, path ...string) []string {
+	t.Helper()
 	defs := schema["$defs"].(map[string]any)
-	enumOf := func(def string, path ...string) []string {
-		t.Helper()
-		cur := defs[def].(map[string]any)
-		for _, p := range path {
-			cur = cur[p].(map[string]any)
-			if ref, ok := cur["$ref"].(string); ok {
-				cur = defs[strings.TrimPrefix(ref, "#/$defs/")].(map[string]any)
-			}
-		}
-		var out []string
-		for _, e := range cur["enum"].([]any) {
-			out = append(out, e.(string))
-		}
-		return out
-	}
-	want := map[string][]string{
-		"status":   enumOf("row", "properties", "status"),
-		"kind":     enumOf("row", "properties", "kind"),
-		"evidence": enumOf("row", "properties", "evidence"),
-		"reasons":  enumOf("row", "properties", "reasons", "items", "properties", "code"),
-		"blockers": enumOf("row", "properties", "blockers", "items", "properties", "code"),
-		"gh":       schemaEnum2(schema),
-	}
-	for name, w := range want {
-		g := slices.Clone(got[name])
-		w = slices.Clone(w)
-		slices.Sort(g)
-		slices.Sort(w)
-		if len(g) == 0 || !slices.Equal(g, w) {
-			t.Errorf("%s: source constants %v, schema enum %v", name, g, w)
+	cur := defs[def].(map[string]any)
+	for _, p := range path {
+		cur = cur[p].(map[string]any)
+		if ref, ok := cur["$ref"].(string); ok {
+			cur = defs[strings.TrimPrefix(ref, "#/$defs/")].(map[string]any)
 		}
 	}
+	var out []string
+	for _, e := range cur["enum"].([]any) {
+		out = append(out, e.(string))
+	}
+	return out
 }
 
 func schemaEnum2(schema map[string]any) []string {

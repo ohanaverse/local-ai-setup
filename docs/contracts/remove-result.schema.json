@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "remove-result.schema.json",
+  "title": "wt removal result",
+  "description": "The one document a wt removal prints in JSON mode, on success and on failure (nothing else goes to stdout). `items` is always present (`[]`, never null), one per item in the order wt acted on them; `dry_run` is always written (true: nothing was changed and every outcome says what a run would do). An item's `path` is ABSENT for a branch item and `ref` is ABSENT for a detached worktree; `saw` is the status the user saw when confirming; `worktree` and `branch` are the outcome enums (a branch item's `worktree` is `not_requested`); `reason` is one sanitised line (at most 200 characters, so it may be cut); `warnings` and `losses` are always arrays of sanitised lines (`losses`: what the engine's fresh re-check said removing it would lose; [] when nothing, or when it was refused before a re-check existed). `branch_tip` is the FULL 40-hex commit id of a branch this run deleted or may have deleted (deleted; deleted then restored because a worktree took it; deleted and not restored; git failed and the branch was gone): restore it with `git branch <name> <branch_tip>` while git keeps the commit. It is absent in a dry run and for every branch the run did not touch. On failure `error` is set (a nil error is reported as \"unknown error\"), `items` is empty and `dry_run` is false. Pinned to wt/internal/removal/json.go by wt/cmd/wt/remove_contract_test.go; an outcome or key added there must be added here and in remove-result.sample.json (or remove-result.dry-run.sample.json) in the same change.",
+  "type": "object",
+  "required": ["version", "repo", "dry_run", "items"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "repo": {"type": "string"},
+    "dry_run": {"type": "boolean"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "error": {
+      "type": "object",
+      "required": ["message"],
+      "additionalProperties": false,
+      "properties": {"message": {"type": "string"}}
+    }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "required": ["kind", "name", "saw", "worktree", "branch", "reason", "warnings", "losses"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string", "enum": ["worktree", "branch", "remote"]},
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "ref": {"type": "string"},
+        "saw": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use"]},
+        "worktree": {"type": "string", "enum": ["removed", "skipped_changed", "refused", "failed", "not_requested"]},
+        "branch": {"type": "string", "enum": ["deleted", "not_attempted", "retained_unmerged", "retained_moved", "retained_checked_out", "retained_default", "retained_unknown"]},
+        "reason": {"type": "string"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "losses": {"type": "array", "items": {"type": "string"}},
+        "branch_tip": {"type": "string"}
+      }
+    }
+  }
+}

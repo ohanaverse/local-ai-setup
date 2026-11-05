@@ -129,6 +129,20 @@ type Outcome struct {
 	Branch   BranchOutcome
 	Reason   string
 	Warnings []string
+	// LossLines are what removing the item would lose as the engine saw it
+	// fresh when it decided (cleanup.LossLines of the re-check, one
+	// sanitised line each); empty when the item was refused or skipped
+	// before a fresh row existed.
+	LossLines []string
+	// DeletedTip is the full commit id of the branch when this run deleted
+	// it, or may have (Ruling J): set whenever the branch stage's
+	// update-ref -d was issued and the ref was gone afterwards, whatever
+	// came next (deleted; restored after a worktree took it; restore
+	// failed; re-created by someone else), and when a failed update-ref -d
+	// left the ref gone. Never capped, unlike Reason: it is the one
+	// reliable record of the commit. Empty for dry runs and for every
+	// branch this run did not touch.
+	DeletedTip string
 }
 
 // NewOutcome is an Outcome for it with reason sanitised to one line.

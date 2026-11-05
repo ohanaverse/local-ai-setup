@@ -115,9 +115,18 @@ func needsOf(k cleanup.Kind, fresh cleanup.Row) Needs {
 	}
 }
 
+// stopWith is a gate's final answer o; with a fresh row (has), o carries
+// its loss lines, so a refusal or skip still says what was at stake.
 func stopWith(o Outcome, fresh cleanup.Row, has bool) gated {
+	if has {
+		o.LossLines = lossLines(fresh)
+	}
 	return gated{stop: &o, fresh: fresh, hasFresh: has}
 }
+
+// lossLines are fresh's loss lines (cleanup.LossLines), one sanitised line
+// each: Outcome.LossLines.
+func lossLines(fresh cleanup.Row) []string { return oneLines(cleanup.LossLines(fresh)) }
 
 // gate runs every check for it in its fixed order (worktreeGate,
 // branchGate); an item of any other kind is refused.
@@ -271,6 +280,7 @@ func unapproved(it Item, fresh cleanup.Row, need Needs) string {
 func (e Engine) worktreeAct(it Item, g gated, dry bool) (Outcome, []string) {
 	fresh := g.fresh
 	o := NewOutcome(it, WtRemoved, BrNotAttempted, "")
+	o.LossLines = lossLines(fresh)
 	for _, w := range procWarnings(g.procs, g.procErr) {
 		o.AddWarning(w)
 	}
@@ -310,6 +320,7 @@ func oneLines(ws []string) []string {
 // reason and its warnings (each one sanitised line).
 func (o Outcome) applyBranch(r branchResult) Outcome {
 	o.Branch = r.Out
+	o.DeletedTip = r.DeletedTip
 	o.SetReason(r.Reason)
 	for _, w := range r.Warnings {
 		o.AddWarning(w)
@@ -376,7 +387,9 @@ func (e Engine) branchGate(it Item) gated {
 // through; a dry run decides without writing.
 func (e Engine) branchAct(it Item, g gated, dry bool) (Outcome, []string) {
 	r := e.deleteBranch(itemCtx{item: it, fresh: g.fresh, considerBranch: true, dry: dry}, g.fresh)
-	return NewOutcome(it, WtNotRequested, BrNotAttempted, "").applyBranch(r), oneLines(r.Warnings)
+	o := NewOutcome(it, WtNotRequested, BrNotAttempted, "")
+	o.LossLines = lossLines(g.fresh)
+	return o.applyBranch(r), oneLines(r.Warnings)
 }
 
 // invalidBranchItem says why a branch item cannot be acted on before
