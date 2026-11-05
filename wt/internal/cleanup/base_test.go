@@ -6,17 +6,82 @@ import (
 	"testing"
 )
 
-// TestResolveBaseUsesOriginHEAD checks that origin/HEAD names the default and
-// the comparison base is the remote-tracking ref. Why: a local main with
-// unpushed commits must not make work look merged.
+// TestResolveBaseUsesOriginHEAD checks that origin/HEAD, not the local main,
+// names the default and the base is the remote-tracking ref. Why: the remote's
+// idea of the default is authoritative; origin/HEAD points at develop while a
+// local main also exists, so skipping that step picks the wrong branch.
 func TestResolveBaseUsesOriginHEAD(t *testing.T) {
 	f := newFixture(t)
+	f.Branch("develop")
+	f.Push("develop")
+	f.git("remote", "set-head", "origin", "develop")
+	b, err := ResolveBase(Git{Dir: f.Dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Default != "develop" || b.Ref != "origin/develop" || b.Fallback {
+		t.Fatalf("got %+v", b)
+	}
+}
+
+// TestResolveBaseDanglingOriginHEAD checks that an origin/HEAD naming a
+// deleted remote-tracking branch is skipped, not trusted. Why: a stale symref
+// must fall through the chain rather than yield a base that does not exist.
+func TestResolveBaseDanglingOriginHEAD(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("develop")
+	f.Push("develop")
+	f.git("remote", "set-head", "origin", "develop")
+	f.git("update-ref", "-d", "refs/remotes/origin/develop")
 	b, err := ResolveBase(Git{Dir: f.Dir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if b.Default != "main" || b.Ref != "origin/main" || b.Fallback {
 		t.Fatalf("got %+v", b)
+	}
+}
+
+// TestResolveBaseRemoteOnly checks that with no local main or master but an
+// origin/main, the remote branch is the base. Why: a clone that checked out
+// only a topic branch still has a default to compare against.
+func TestResolveBaseRemoteOnly(t *testing.T) {
+	f := newFixture(t)
+	f.git("checkout", "-b", "topic")
+	f.git("branch", "-D", "main")
+	f.git("remote", "set-head", "origin", "-d")
+	b, err := ResolveBase(Git{Dir: f.Dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Default != "main" || b.Ref != "origin/main" || b.Fallback {
+		t.Fatalf("got %+v", b)
+	}
+}
+
+// TestResolveBasePrefersMainOverMaster checks that a repo with both local
+// branches and no origin/HEAD resolves main. Why: the chain order is the
+// spec's and must be deterministic.
+func TestResolveBasePrefersMainOverMaster(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("master")
+	f.git("remote", "set-head", "origin", "-d")
+	b, err := ResolveBase(Git{Dir: f.Dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Default != "main" || b.Ref != "origin/main" || b.Fallback {
+		t.Fatalf("got %+v", b)
+	}
+}
+
+// TestResolveBaseGitErrorIsNotNoDefault checks that a fatal git failure (not a
+// repository) is returned as its own error. Why: reading it as "no default
+// branch" would blame the repo layout for a broken or missing repository.
+func TestResolveBaseGitErrorIsNotNoDefault(t *testing.T) {
+	_, err := ResolveBase(Git{Dir: t.TempDir()})
+	if err == nil || errors.Is(err, ErrNoDefaultBranch) {
+		t.Fatalf("err = %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package cleanup
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -24,7 +25,20 @@ func refExists(g Git, ref string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return o.Code == 0, nil
+	switch o.Code {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil // --quiet: the ref is absent
+	}
+	return false, gitFailure(o, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+}
+
+// gitFailure wraps a fatal git exit (not the "absent" exit 1) with the
+// command and stderr. It is never ErrNoDefaultBranch: a broken repo is not a
+// repo without a default.
+func gitFailure(o Out, args ...string) error {
+	return fmt.Errorf("cleanup: git %s: exit %d: %s", strings.Join(args, " "), o.Code, strings.TrimSpace(o.Stderr))
 }
 
 // ResolveBase finds the default branch and the ref to compare against. The
@@ -37,6 +51,9 @@ func ResolveBase(g Git) (Base, error) {
 	if err != nil {
 		return Base{}, err
 	}
+	if o.Code > 1 {
+		return Base{}, gitFailure(o, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	}
 	if o.Code == 0 {
 		if name := strings.TrimPrefix(strings.TrimSpace(o.Stdout), "origin/"); name != "" {
 			if ok, err := refExists(g, "refs/remotes/origin/"+name); err != nil {
@@ -46,7 +63,8 @@ func ResolveBase(g Git) (Base, error) {
 			}
 		}
 	}
-	// local main, master
+	// local main, master. A local master beats origin/main only when no local
+	// main exists; the chain order is the spec's.
 	for _, name := range []string{"main", "master"} {
 		ok, err := refExists(g, "refs/heads/"+name)
 		if err != nil {
