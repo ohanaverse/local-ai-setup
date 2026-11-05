@@ -149,6 +149,15 @@ func resolve(p string) string {
 	}
 }
 
+// ResolvePath is p as every comparison here sees it: absolute, symlinks
+// resolved (through its nearest existing ancestor when p is gone). Removal
+// compares paths with it so /var and /private/var are one directory.
+func ResolvePath(p string) string { return resolve(p) }
+
+// Within reports whether child is parent or below it, separator-safe and
+// case-folded (an over-match only blocks more). Both should be resolved.
+func Within(child, parent string) bool { return within(child, parent) }
+
 // within reports whether child is parent or below it. Case is folded: on a
 // case-insensitive volume (the macOS default) Foo and foo are one directory,
 // and an over-match only blocks more.
