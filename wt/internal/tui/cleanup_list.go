@@ -1,0 +1,488 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+)
+
+// The `wt cleanup` tick list (layout A of the design): the report's header,
+// its rows in cleanup.Groups' four groups with a checkbox column, and a
+// detail line under the list that explains the highlighted row. The words —
+// headings, the evidence sentence, the header lines, which rows are tickable
+// — are all internal/cleanup/present.go's; this file only lays them out and
+// styles them.
+//
+// A row's sentence is never cut: when it does not fit beside the name it
+// wraps onto continuation lines under the evidence column, so a row is as
+// many lines as its sentence needs. That is why this screen is a small list
+// of its own rather than a bubbles list, whose delegate gives every item the
+// same height. The name column is what gives way to the width.
+//
+// It is VIEW ONLY: enter prints what would be removed, after the alt screen
+// is gone, and exits. Nothing here runs git or removes anything.
+
+// cleanupItem is one entry of the list: a group heading or a row.
+type cleanupItem struct {
+	heading string // set on a heading; the rest is then unset
+	row     cleanup.Row
+	text    string // cleanup.RowText for the row
+	locked  bool   // can never be ticked: drawn [-], space does nothing
+}
+
+// cleanupLocked reports whether a row can never be ticked: an in-use row, a
+// row with any hard blocker, and a remote row that is not proven (only a
+// merged PR puts an origin branch up for removal). Every other row may be
+// ticked by the user; only Tickable rows are ticked for them (by default and
+// by `a`).
+//
+// Binding for PR B (Ruling 14), which makes enter remove: a ticked row that
+// is less sure or has unique work must go through a confirmation that states
+// what would be lost — and a branch deleted with -D through a confirmation of
+// its own — before anything is removed. If PR B instead locks unique-work
+// rows, this function is the one place to change.
+func cleanupLocked(r cleanup.Row) bool {
+	return r.Status == cleanup.StatusInUse || len(r.Blockers) > 0 ||
+		(r.Kind == cleanup.KindRemote && r.Status != cleanup.StatusProven)
+}
+
+// Row geometry: "> " cursor, "[x] " box, the kind padded to 8, then the name
+// and the sentence, two spaces apart. The name column narrows to
+// cleanupMinNameW so sentences fit on one line, and below that (a terminal
+// too narrow to give the sentence cleanupMinTextW columns beside it) to
+// cleanupFloorNameW.
+const (
+	cleanupKindW      = 8
+	cleanupFixedW     = 2 + 4 + cleanupKindW + 2 + 2
+	cleanupMinNameW   = 16
+	cleanupMinTextW   = 24
+	cleanupFloorNameW = 4
+)
+
+// cleanupListModel is the tick list's Bubble Tea model.
+type cleanupListModel struct {
+	report        cleanup.Report
+	theme         themes.Theme
+	now           time.Time
+	items         []cleanupItem
+	ticked        map[int]bool // by item index
+	cursor        int          // item index of the highlighted row; -1 with no rows
+	offset        int          // the first list line on screen
+	rows          int          // number of row items (headings excluded)
+	maxName       int          // the longest display name
+	maxText       int          // the longest sentence (with its age)
+	width, height int
+	done          bool
+	message       string // printed after the program ends; "" for a plain quit
+}
+
+// newCleanupList builds the list for r: every group's heading and rows in
+// cleanup.Groups' order, Tickable rows ticked, the cursor on the first row.
+func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupListModel {
+	m := cleanupListModel{report: r, theme: th, now: now, ticked: map[int]bool{}, cursor: -1}
+	for _, g := range cleanup.Groups(r) {
+		m.items = append(m.items, cleanupItem{heading: g.Heading})
+		for _, row := range g.Rows {
+			it := cleanupItem{row: row, text: cleanup.RowText(r, row), locked: cleanupLocked(row)}
+			if row.Tickable() && !it.locked {
+				m.ticked[len(m.items)] = true
+			}
+			if m.cursor < 0 {
+				m.cursor = len(m.items)
+			}
+			m.maxName = max(m.maxName, lipgloss.Width(cleanup.DisplayName(row)))
+			m.maxText = max(m.maxText, lipgloss.Width(rowSentence(it)))
+			m.items = append(m.items, it)
+			m.rows++
+		}
+	}
+	return m
+}
+
+// RunCleanupList shows r as the tick list on the alt screen. enter is view
+// only: once the screen is gone it prints what would have been removed.
+// Nothing is removed and no git command is run.
+func RunCleanupList(r cleanup.Report, th themes.Theme) error {
+	final, err := tea.NewProgram(newCleanupList(r, th, time.Now()), tea.WithAltScreen()).Run()
+	if err != nil {
+		return err
+	}
+	if fm, ok := final.(cleanupListModel); ok && fm.message != "" {
+		_, err = fmt.Fprintln(os.Stdout, fm.message)
+	}
+	return err
+}
+
+func (m cleanupListModel) Init() tea.Cmd { return nil }
+
+func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+	case tea.KeyMsg:
+		if m.done {
+			return m, nil
+		}
+		if m.rows == 0 {
+			// "nothing to clean up": any key leaves.
+			m.done = true
+			return m, tea.Quit
+		}
+		switch msg.String() {
+		case "q", "esc", "ctrl+c":
+			m.done = true
+			return m, tea.Quit
+		case "enter":
+			m.done = true
+			m.message = m.viewOnlyMessage()
+			return m, tea.Quit
+		case " ":
+			if it := m.items[m.cursor]; !it.locked {
+				m.ticked[m.cursor] = !m.ticked[m.cursor]
+			}
+		case "a":
+			for i, it := range m.items {
+				if it.heading == "" && !it.locked && it.row.Tickable() {
+					m.ticked[i] = true
+				}
+			}
+		case "up", "k":
+			m.move(-1, 1)
+		case "down", "j":
+			m.move(1, 1)
+		case "pgup", "b":
+			m.move(-1, max(1, m.layout().listH/2))
+		case "pgdown", "f":
+			m.move(1, max(1, m.layout().listH/2))
+		case "home", "g":
+			m.move(-1, len(m.items))
+		case "end", "G":
+			m.move(1, len(m.items))
+		}
+	}
+	if m.rows > 0 {
+		m.offset = m.layout().offset
+	}
+	return m, nil
+}
+
+// move moves the cursor n rows in direction dir, skipping headings and
+// stopping at either end.
+func (m *cleanupListModel) move(dir, n int) {
+	for ; n > 0; n-- {
+		next := -1
+		for j := m.cursor + dir; j >= 0 && j < len(m.items); j += dir {
+			if m.items[j].heading == "" {
+				next = j
+				break
+			}
+		}
+		if next < 0 {
+			return
+		}
+		m.cursor = next
+	}
+}
+
+// rowSentence is a row's sentence with its age after it.
+func rowSentence(it cleanupItem) string {
+	if age := cleanup.AgeText(it.row); age != "" {
+		return it.text + "  " + age
+	}
+	return it.text
+}
+
+// nameWidth is the name column's width: as wide as the longest name when
+// every sentence fits beside it on one line, otherwise narrower, down to
+// cleanupMinNameW (sentences longer than that leaves wrap); on a terminal
+// too narrow to leave a sentence cleanupMinTextW columns, narrower still.
+func (m *cleanupListModel) nameWidth() int {
+	if m.width <= 0 {
+		return m.maxName
+	}
+	nw := max(cleanupMinNameW, m.width-cleanupFixedW-m.maxText)
+	if m.width-cleanupFixedW-nw < cleanupMinTextW {
+		nw = max(cleanupFloorNameW, m.width-cleanupFixedW-cleanupMinTextW)
+	}
+	return min(m.maxName, nw)
+}
+
+// itemLines renders item i: a heading is one line; a row is its first line
+// (cursor, box, kind, the name cut to the name column, the sentence's first
+// part) and the rest of its sentence wrapped under the sentence column.
+func (m *cleanupListModel) itemLines(i int) []string {
+	it := m.items[i]
+	if it.heading != "" {
+		style := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader)).Bold(true)
+		return []string{style.Render(clip(it.heading, m.width))}
+	}
+	nameW := m.nameWidth()
+	name := cleanup.DisplayName(it.row)
+	if lipgloss.Width(name) > nameW {
+		name = cutLines(name, nameW)
+	}
+	cursor := "  "
+	if i == m.cursor {
+		cursor = "> "
+	}
+	prefix := cursor + m.box(i) + " " + tuilayout.PadRunes(string(it.row.Kind), cleanupKindW) + "  " + padCols(name, nameW) + "  "
+	textW := 0 // no width yet: one line
+	if m.width > 0 {
+		textW = max(1, m.width-lipgloss.Width(prefix))
+	}
+	parts := strings.Split(tuilayout.WrapText(rowSentence(it), textW), "\n")
+	indent := strings.Repeat(" ", lipgloss.Width(prefix))
+	style := m.rowStyle(it, i == m.cursor)
+	out := make([]string, len(parts))
+	for k, p := range parts {
+		lead := indent
+		if k == 0 {
+			lead = prefix
+		}
+		out[k] = style.Render(clip(strings.TrimRight(lead+p, " "), m.width))
+	}
+	return out
+}
+
+func (m *cleanupListModel) box(i int) string {
+	switch {
+	case m.items[i].locked:
+		return "[-]"
+	case m.ticked[i]:
+		return "[x]"
+	}
+	return "[ ]"
+}
+
+func (m *cleanupListModel) rowStyle(it cleanupItem, selected bool) lipgloss.Style {
+	switch {
+	case selected:
+		return lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
+	case it.locked:
+		return lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	}
+	return lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenUnselected))
+}
+
+// padCols pads s with spaces to w display columns.
+func padCols(s string, w int) string {
+	if n := lipgloss.Width(s); n < w {
+		return s + strings.Repeat(" ", w-n)
+	}
+	return s
+}
+
+// cleanupLayout is one frame of the screen: what goes above and below the
+// list, how many list lines fit between, and the list's lines and offset.
+type cleanupLayout struct {
+	top, bottom string
+	listH       int // list lines shown, the scroll hint not counted
+	lines       []string
+	offset      int
+	hint        bool // the list is taller than listH: a scroll hint line follows it
+}
+
+// layout fits the screen to the terminal. The frames, fullest first: title,
+// header and detail; title and detail; detail alone; nothing. The first that
+// leaves room for the whole highlighted row is used, so a short terminal
+// loses the report header first, then the title, and the detail line only
+// when even the row alone barely fits. The offset keeps the whole
+// highlighted row on screen (its top line when it is taller than the room),
+// with its group heading when it is the group's first row and there is room.
+// A list taller than its room gives one of its lines to a scroll hint.
+func (m *cleanupListModel) layout() cleanupLayout {
+	var lines []string
+	start := make([]int, len(m.items)+1)
+	for i := range m.items {
+		start[i] = len(lines)
+		lines = append(lines, m.itemLines(i)...)
+	}
+	start[len(m.items)] = len(lines)
+	cs, ce := start[m.cursor], start[m.cursor+1]
+
+	title := clip(m.titleLine(), m.width) + "\n"
+	header := m.headerBlock() + "\n\n"
+	detail := "\n" + m.detail()
+	frames := [][2]string{{title + header, detail}, {title, detail}, {"", detail}, {"", ""}}
+	l := cleanupLayout{lines: lines}
+	for k, f := range frames {
+		l.top, l.bottom = f[0], f[1]
+		if m.height <= 0 {
+			l.listH = len(lines)
+			break
+		}
+		avail := m.height - (lipgloss.Height(f[0]+"x"+f[1]) - 1)
+		l.hint = len(lines) > avail && avail > 1
+		l.listH = avail
+		if l.hint {
+			l.listH--
+		}
+		if l.listH >= ce-cs || k == len(frames)-1 {
+			l.listH = max(1, l.listH)
+			break
+		}
+	}
+
+	off := min(m.offset, max(0, len(lines)-l.listH))
+	if ce > off+l.listH {
+		off = ce - l.listH
+	}
+	if cs < off {
+		off = cs
+	}
+	if m.cursor > 0 && m.items[m.cursor-1].heading != "" {
+		if hs := start[m.cursor-1]; hs < off && ce-hs <= l.listH {
+			off = hs
+		}
+	}
+	// Never open the list on the tail of a wrapped row: start at the next
+	// item instead, while that still shows the highlighted row.
+	for k := 0; k < len(m.items); k++ {
+		if start[k] < off && off < start[k+1] {
+			if start[k+1] <= cs {
+				off = start[k+1]
+			}
+			break
+		}
+	}
+	l.offset = max(0, off)
+	return l
+}
+
+func (m *cleanupListModel) titleLine() string {
+	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter show ticked (view only) · q quit")
+}
+
+// headerBlock is cleanup.HeaderLines, wrapped: the fetch failure ends in
+// what it means for the list.
+func (m *cleanupListModel) headerBlock() string {
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	text := tuilayout.WrapText(strings.Join(cleanup.HeaderLines(m.report, m.now), "\n"), m.width)
+	return clip(dim.Render(text), m.width)
+}
+
+// detail explains the highlighted row: a rule with its name, then its whole
+// sentence and age, wrapped, never cut. A row that can never be ticked says
+// so first.
+func (m *cleanupListModel) detail() string {
+	it := m.items[m.cursor]
+	rule := "── " + cleanup.DisplayName(it.row) + " "
+	if m.width > 0 {
+		rule = cutLines(rule, m.width)
+		rule += strings.Repeat("─", max(0, m.width-lipgloss.Width(rule)))
+	}
+	text := it.text
+	if age := cleanup.AgeText(it.row); age != "" {
+		text += " [" + age + "]"
+	}
+	if it.locked {
+		text = "cannot be ticked: " + text
+	}
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	out := dim.Render(rule) + "\n" + clip(tuilayout.WrapText(text, m.width), m.width)
+	// The sentence counts the worktrees inside this one; their paths are
+	// named here only when they all fit on one line (the JSON has them).
+	if paths := cleanup.NestedPaths(it.row); len(paths) > 0 {
+		if line := "worktrees inside: " + strings.Join(paths, ", "); m.width <= 0 || lipgloss.Width(line) <= m.width {
+			out += "\n" + line
+		}
+	}
+	return out
+}
+
+func (m cleanupListModel) View() string {
+	if m.done {
+		return ""
+	}
+	if m.rows == 0 {
+		body := m.headerBlock() + "\n\nnothing to clean up: no other worktree or branch\n\npress any key to quit"
+		return capLines(clip(body, m.width), m.height)
+	}
+	l := m.layout()
+	end := min(len(l.lines), l.offset+l.listH)
+	view := l.top + strings.Join(l.lines[l.offset:end], "\n")
+	if l.hint {
+		var more []string
+		if l.offset > 0 {
+			more = append(more, "↑ more above")
+		}
+		if end < len(l.lines) {
+			more = append(more, "↓ more below")
+		}
+		dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+		view += "\n" + dim.Render(clip("  "+strings.Join(more, " · "), m.width))
+	}
+	view += l.bottom
+	return capLines(view, m.height)
+}
+
+// capLines keeps the first height lines of s: the last resort for a
+// terminal too short for even the sparest frame. A height that is not
+// positive keeps everything.
+func capLines(s string, height int) string {
+	if height <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= height {
+		return s
+	}
+	return strings.Join(lines[:height], "\n")
+}
+
+// selectedRow is the highlighted row; false on an empty list.
+func (m cleanupListModel) selectedRow() (cleanup.Row, bool) {
+	if m.cursor < 0 {
+		return cleanup.Row{}, false
+	}
+	return m.items[m.cursor].row, true
+}
+
+// tickedItems are the ticked rows in list order.
+func (m cleanupListModel) tickedItems() []cleanupItem {
+	var out []cleanupItem
+	for i, it := range m.items {
+		if it.heading == "" && m.ticked[i] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// tickedNames are the ticked rows' display names, in list order.
+func (m cleanupListModel) tickedNames() []string {
+	var out []string
+	for _, it := range m.tickedItems() {
+		out = append(out, cleanup.DisplayName(it.row))
+	}
+	return out
+}
+
+// viewOnlyMessage is enter's sentence in PR A: what would be removed.
+func (m cleanupListModel) viewOnlyMessage() string {
+	items := m.tickedItems()
+	if len(items) == 0 {
+		return "view only — nothing is removed; nothing ticked"
+	}
+	names := make([]string, len(items))
+	for i, it := range items {
+		names[i] = string(it.row.Kind) + " " + cleanup.DisplayName(it.row)
+	}
+	noun := "items"
+	if len(items) == 1 {
+		noun = "item"
+	}
+	return fmt.Sprintf("view only — nothing is removed; would remove %d %s: %s", len(items), noun, strings.Join(names, ", "))
+}
+
+// exitMessage is what RunCleanupList prints after the program ends.
+func (m cleanupListModel) exitMessage() string { return m.message }
