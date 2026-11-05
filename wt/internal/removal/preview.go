@@ -61,7 +61,11 @@ const (
 )
 
 // ItemPreview is what a confirmation shows for one item, decided by the
-// engine's own gates (the ones Run uses) and changing nothing.
+// engine's own gates (the ones Run uses) and changing nothing. Engine.Preview
+// is its only constructor (Ruling N): Confirmed and ConfirmedDeletingBranch
+// refuse a preview built by hand, or one whose Item identity, Fresh status,
+// tip or losses, Needs, CanDeleteBranch or Approval was edited after
+// Preview returned it. A value copy of an unedited preview stays valid.
 type ItemPreview struct {
 	Item Item
 	// Fresh is the item's re-classification now (zero when the item was
@@ -93,6 +97,38 @@ type ItemPreview struct {
 	// Plan is what Run does with Approved == Needs (a dry-run outcome); for
 	// a refused item, the refusal or skip.
 	Plan Outcome
+
+	// basis is set only by Preview: a copy of what the constructors trust.
+	basis previewBasis
+}
+
+// previewBasis is what Confirmed and ConfirmedDeletingBranch read from a
+// preview, as scalars (Fresh holds slices, so the Item ItemFromRow derives
+// from it stands for it: its status, tip and losses): the input Item's
+// identity, the shown Item, Needs, CanDeleteBranch and Approval.
+type previewBasis struct {
+	set       bool
+	kind      cleanup.Kind
+	path, ref string
+	name      string
+	shown     itemSeal
+	needs     Needs
+	canDelete bool
+	approval  Approval
+}
+
+// basisOf is p's basis as its exported fields now stand.
+func basisOf(p ItemPreview) previewBasis {
+	return previewBasis{set: true, kind: p.Item.Kind, path: p.Item.Path, ref: p.Item.Ref, name: p.Item.Name,
+		shown: sealOf(ItemFromRow(p.Fresh)), needs: p.Needs, canDelete: p.CanDeleteBranch, approval: p.Approval}
+}
+
+// genuine says why p cannot be confirmed as Preview made it, or nil.
+func (p ItemPreview) genuine() error {
+	if !p.basis.set || p.basis != basisOf(p) {
+		return fmt.Errorf("%s: preview was not produced by Preview or was edited", cleanup.OneLine(p.Item.Name))
+	}
+	return nil
 }
 
 // Confirmed is the Item Run must receive once the user confirmed this
@@ -120,6 +156,9 @@ func (p ItemPreview) Confirmed(approved Needs) (Item, error) {
 // it from a batch-wide flag: a CLI -D may apply only to the items whose
 // preview offers it, by calling this method for each of them.
 func (p ItemPreview) ConfirmedDeletingBranch(approved Needs) (Item, error) {
+	if err := p.genuine(); err != nil {
+		return Item{}, err
+	}
 	name := cleanup.OneLine(p.Item.Name)
 	if !approved.Delete {
 		return Item{}, fmt.Errorf("%s: deleting the branch needs the Delete approval", name)
@@ -135,6 +174,9 @@ func (p ItemPreview) ConfirmedDeletingBranch(approved Needs) (Item, error) {
 // confirm builds the sealed Item for p when approved covers p.Needs and
 // holds nothing outside allowed.
 func (p ItemPreview) confirm(approved, allowed Needs) (Item, error) {
+	if err := p.genuine(); err != nil {
+		return Item{}, err
+	}
 	name := cleanup.OneLine(p.Item.Name)
 	if p.Approval == ApprovalRefused {
 		return Item{}, fmt.Errorf("%s: refused: %s", name, p.Reason)
@@ -175,7 +217,9 @@ func (e Engine) Preview(items []Item) []ItemPreview {
 	}
 	out := make([]ItemPreview, 0, len(items))
 	for _, it := range items {
-		out = append(out, e.safePreview(it))
+		p := e.safePreview(it)
+		p.basis = basisOf(p)
+		out = append(out, p)
 	}
 	return out
 }

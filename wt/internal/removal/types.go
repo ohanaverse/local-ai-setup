@@ -19,9 +19,10 @@ const DefaultRemoveTimeout = 10 * time.Minute
 // Item is one row the user ticked, as they saw it, with the approvals they
 // gave it. Run must only receive Items built by ItemPreview.Confirmed (or,
 // for an item the user opted in to delete the unmerged branch of,
-// ItemPreview.ConfirmedDeletingBranch) from the preview the user was shown (ItemFromRow builds a Preview input, not a
-// Run input): Saw, SawTip and SawLosses are then what the confirmation
-// showed, and Approved is what the user granted this item (Ruling K).
+// ItemPreview.ConfirmedDeletingBranch) from the preview the user was shown
+// (ItemFromRow builds a Preview input, not a Run input): Saw, SawTip and
+// SawLosses are then what the confirmation showed, and Approved is what the
+// user granted this item (Ruling K).
 type Item struct {
 	Kind cleanup.Kind
 	Path string // worktree items: the worktree's path
