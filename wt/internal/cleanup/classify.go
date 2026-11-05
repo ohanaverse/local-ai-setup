@@ -55,7 +55,7 @@ const (
 	ReasonNotMerged             = "not_merged"              // no proof and no signal (pushed local branch: less sure; remote: unique)
 	ReasonIgnoredFiles          = "ignored_files"           // soft: ignored files die with the directory
 	ReasonWeakSignal            = "weak_signal"             // soft: cherry or patch-id only, never a proof
-	ReasonFreshBranch           = "fresh_branch"            // soft: tip is the base and younger than MinAge (or of unknown age)
+	ReasonFreshBranch           = "fresh_branch"            // soft: same-commit or ancestor, younger than MinAge (or of unknown age)
 	ReasonBaseIsLocal           = "base_is_local"           // soft: no remote default; the base is the local one
 	ReasonNoMergedPR            = "no_merged_pr"            // soft (remote rows): merged content but no merged PR
 	ReasonClaimsUnavailable     = "claims_unavailable"      // the session claims could not be read
@@ -68,8 +68,9 @@ const (
 	BlockBaseOfOpenPR  = "base_of_open_pr" // remote rows: an open PR targets this branch
 )
 
-// DefaultMinAge is how old a branch whose tip is the base must be before that
-// equality proves anything: a branch made a minute ago looks merged.
+// DefaultMinAge is how old a branch (or detached HEAD) at or behind the base
+// must be before same-commit or ancestor proves anything: a branch made a
+// minute ago looks merged.
 const DefaultMinAge = 10 * time.Minute
 
 // Options are Classify's only inputs besides the Snapshot.
@@ -230,22 +231,12 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		row.Name = filepath.Base(w.Path)
 	}
 	var j judge
+	g := ws.Gates
+	// The blockers found before a gates error still block: in use wins.
+	j.blockers = append(j.blockers, g.Blockers...)
 	if ws.GatesErr != "" {
-		// The gates did not finish; the flags the porcelain list gives still
-		// block, so an unreadable locked worktree stays in use.
-		if w.Primary {
-			j.block(BlockPrimary, w.Path)
-		}
-		if w.Current {
-			j.block(BlockCurrent, w.Path)
-		}
-		if w.Locked {
-			j.block(BlockLocked, w.Path)
-		}
 		j.unsure(ReasonGatesUnavailable, ws.GatesErr)
 	} else {
-		g := ws.Gates
-		j.blockers = append(j.blockers, g.Blockers...)
 		if g.Dirty {
 			j.uniq(ReasonDirty, "uncommitted or untracked files")
 		}
@@ -281,6 +272,9 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		case p.Verdict == Merged:
 			j.ev = p.Evidence
 		}
+		// A detached HEAD's age is when it last moved there.
+		c.minAge(&j, RefFact{Created: ws.HeadSince})
+		row.AgeDays = c.ageDays(RefFact{Created: ws.HeadSince})
 	}
 	c.capFallback(&j)
 	j.fill(&row)
@@ -377,9 +371,12 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 		j.fill(&row)
 		return row
 	}
-	res := c.s.PRs[rf.Name]
-	if c.gh != GHOK {
-		j.unsure(ReasonCannotVerify, cmp.Or(res.Err, c.ghNote))
+	res := c.s.PRs[rf.Name] // a miss is LookupUnknown
+	switch {
+	case res.Lookup == LookupUnknown:
+		j.unsure(ReasonCannotVerify, cmp.Or(res.Err, "no PR lookup for this branch"))
+	case c.gh != GHOK:
+		j.unsure(ReasonCannotVerify, c.ghNote)
 	}
 	p, ok := c.s.Proofs[rf.Tip]
 	switch {
@@ -400,10 +397,13 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 		j.block(BlockBaseOfOpenPR, fmt.Sprintf("open PR #%d targets this branch", n))
 	}
 	if j.ev != "" {
+		// Proven needs a MERGED PR for the head; an unknown lookup is already
+		// unsure above, so the soft reason is only for an answered "none".
 		merged := findPR(res, func(pr PRInfo) bool { return pr.State == "MERGED" })
-		if res.Lookup == LookupNone || (res.Lookup == LookupKnown && merged == nil) {
+		switch {
+		case merged == nil && res.Lookup != LookupUnknown:
 			j.weak(ReasonNoMergedPR, "content is in the base, but no PR for this branch merged")
-		} else if merged != nil && j.pr == nil {
+		case merged != nil && j.pr == nil:
 			j.pr = merged
 		}
 	} else if ok && p.Verdict == NotMerged {
@@ -473,18 +473,23 @@ func findPR(res PRResult, match func(PRInfo) bool) *PRInfo {
 	return nil
 }
 
-// minAge demotes a same-commit proof on a branch younger than MinAge, or of
-// unknown age: a brand-new branch sits on the base and looks merged.
+// ageGated is the evidence min-age applies to: a tip at or behind the base,
+// so it has no commits outside it. A branch just made from a local main that
+// lags the base is an ancestor and would otherwise read proven.
+func ageGated(ev Evidence) bool { return ev == EvSameCommit || ev == EvAncestor }
+
+// minAge demotes an age-gated proof on a branch younger than MinAge, or of
+// unknown age (no creation time): a brand-new branch looks merged.
 func (c *classifier) minAge(j *judge, r RefFact) {
-	if j.ev != EvSameCommit {
+	if !ageGated(j.ev) {
 		return
 	}
 	if r.Created.IsZero() || c.o.Now.IsZero() {
-		j.weak(ReasonFreshBranch, "the tip is the base and the branch's age is unknown")
+		j.weak(ReasonFreshBranch, "no commits outside the base, and its age is unknown")
 		return
 	}
 	if age := c.o.Now.Sub(born(r)); age < c.o.MinAge {
-		j.weak(ReasonFreshBranch, fmt.Sprintf("the tip is the base and the branch is %s old (under %s)", age.Round(time.Second), c.o.MinAge))
+		j.weak(ReasonFreshBranch, fmt.Sprintf("no commits outside the base, and only %s old (under %s)", age.Round(time.Second), c.o.MinAge))
 	}
 }
 

@@ -58,8 +58,11 @@ const (
 // WorktreeState is one worktree's facts and gates.
 type WorktreeState struct {
 	Fact     WorktreeFact
-	Gates    Gates
+	Gates    Gates  // with GatesErr set, only Blockers (those found before the error)
 	GatesErr string // CheckGates failed: nothing about the worktree is known clean
+	// HeadSince is when a detached HEAD last moved (the newest entry of the
+	// worktree's HEAD reflog); zero when unknown or not read. Min-age needs it.
+	HeadSince time.Time
 }
 
 // Snapshot is every fact Classify reads. Gather fills it with git, gh and
@@ -142,10 +145,9 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	gin := GateInputs{Base: s.BaseTip, HeldBy: held, ProtectedPaths: in.ProtectedPaths}
 	for _, w := range facts {
 		ws := WorktreeState{Fact: w}
-		if gates, err := CheckGates(g, w, gin); err != nil {
-			ws.GatesErr = err.Error()
-		} else {
-			ws.Gates = gates
+		var err error
+		if ws.Gates, err = CheckGates(g, w, gin); err != nil {
+			ws.GatesErr = err.Error() // Gates still holds the blockers found before it
 		}
 		s.Worktrees = append(s.Worktrees, ws)
 	}
@@ -266,19 +268,25 @@ func (s *Snapshot) prove(g Git) {
 			p.Unpushed, p.UnpushedErr = unpushed(g, h.Tip)
 			s.Proofs[h.Tip] = p
 		}
-		if p.Evidence == EvSameCommit {
-			h.Created = created(g, h.Ref)
+		if ageGated(p.Evidence) {
+			h.Created = reflogTime(g, h.Ref, true)
 		}
 	}
 	for i := range s.Remotes {
 		r := &s.Remotes[i]
-		if run(r.Tip).Evidence == EvSameCommit {
-			r.Created = created(g, r.Ref)
+		if ageGated(run(r.Tip).Evidence) {
+			r.Created = reflogTime(g, r.Ref, true)
 		}
 	}
-	for _, w := range s.Worktrees {
-		if w.Fact.Detached && fullCommitID.MatchString(w.Fact.Head) {
-			run(w.Fact.Head)
+	for i := range s.Worktrees {
+		ws := &s.Worktrees[i]
+		if !ws.Fact.Detached || !fullCommitID.MatchString(ws.Fact.Head) {
+			continue
+		}
+		// Only for a worktree whose gates read cleanly: git -C on a broken
+		// one would answer with an enclosing repository's HEAD.
+		if ageGated(run(ws.Fact.Head).Evidence) && ws.GatesErr == "" {
+			ws.HeadSince = reflogTime(Git{Dir: ws.Fact.Path, Timeout: g.Timeout}, "HEAD", false)
 		}
 	}
 }
@@ -301,15 +309,19 @@ func unpushed(g Git, tip string) (int, string) {
 	return n, ""
 }
 
-// created is the time of ref's oldest reflog entry; zero when there is no
-// reflog or git fails (an unknown age never counts as old).
-func created(g Git, ref string) time.Time {
+// reflogTime is the time of ref's oldest reflog entry (its creation) or, with
+// oldest false, its newest (its last move); zero when there is no reflog or
+// git fails (an unknown age never counts as old).
+func reflogTime(g Git, ref string, oldest bool) time.Time {
 	o, err := g.Run("reflog", "show", "--date=unix", "--format=%gd", ref, "--")
 	if err != nil || o.Code != 0 {
 		return time.Time{}
 	}
 	lines := strings.Split(strings.TrimSpace(o.Stdout), "\n")
-	last := lines[len(lines)-1]
+	last := lines[0]
+	if oldest {
+		last = lines[len(lines)-1]
+	}
 	i, j := strings.LastIndex(last, "@{"), strings.LastIndex(last, "}")
 	if i < 0 || j < i {
 		return time.Time{}

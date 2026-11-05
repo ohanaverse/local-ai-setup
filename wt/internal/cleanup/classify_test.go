@@ -409,6 +409,173 @@ func TestRowsMapWorktreeToBranchByPorcelain(t *testing.T) {
 	}
 }
 
+// TestClassifyFreshAncestorNotProven makes a branch on an older main commit
+// (as `git worktree add -b` from a lagging local main does: its tip is a
+// strict ancestor of the base) and a detached worktree on the base, and
+// classifies them now and an hour later. Why: both have no commits outside
+// the base, so a just-made one reads "ancestor"/"same-commit" and would be
+// ticked by default; only age tells it from an old, merged one.
+func TestClassifyFreshAncestorNotProven(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Commit("m", "m", "m")
+	f.Push("main")
+	p := filepath.Join(filepath.Dir(f.Dir), "wt-detached")
+	f.git("worktree", "add", "--detach", p, "main")
+	noGh(t)
+	s := gather(t, f)
+
+	now := Classify(s, Options{Now: time.Now()})
+	if row := findRow(t, now, KindBranch, "topic"); row.Evidence != EvAncestor || row.Status != StatusLessSure ||
+		!slices.Contains(reasonCodes(row.Reasons), ReasonFreshBranch) {
+		t.Fatalf("branch now: %s ev %q %v, want less_sure ancestor with %q", row.Status, row.Evidence, reasonCodes(row.Reasons), ReasonFreshBranch)
+	}
+	if row := findRow(t, now, KindWorktree, "wt-detached"); row.Status != StatusLessSure ||
+		!slices.Contains(reasonCodes(row.Reasons), ReasonFreshBranch) {
+		t.Fatalf("detached now: %s ev %q %v, want less_sure with %q", row.Status, row.Evidence, reasonCodes(row.Reasons), ReasonFreshBranch)
+	}
+	hour := Classify(s, Options{Now: later()})
+	if row := findRow(t, hour, KindBranch, "topic"); row.Status != StatusProven || row.Evidence != EvAncestor {
+		t.Fatalf("branch an hour later: %s ev %q %v, want proven ancestor", row.Status, row.Evidence, reasonCodes(row.Reasons))
+	}
+	if row := findRow(t, hour, KindWorktree, "wt-detached"); row.Status != StatusProven {
+		t.Fatalf("detached an hour later: %s %v, want proven", row.Status, reasonCodes(row.Reasons))
+	}
+}
+
+// TestClassifyGatesErrorKeepsBlockers breaks the git link of a worktree
+// (prunable, so its gates fail) that holds a registered model artifact, and
+// of one that holds a nested worktree. Why: the gates found those hard
+// blockers before they failed; dropping them would put a worktree whose
+// removal deletes an artifact or another worktree in tickable less_sure.
+func TestClassifyGatesErrorKeepsBlockers(t *testing.T) {
+	cases := []struct {
+		name    string
+		blocker string
+		setup   func(f *fixture, p string) []string // returns protected paths
+	}{
+		{"protected artifact", BlockProtectedArtifact, func(f *fixture, p string) []string {
+			return []string{filepath.Join(p, "models", "m")}
+		}},
+		{"nested worktree", BlockNested, func(f *fixture, p string) []string {
+			f.NestedWorktree(p, "inner")
+			return nil
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			p := f.Worktree("topic")
+			protected := c.setup(f, p)
+			if err := os.Remove(filepath.Join(p, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			noGh(t)
+			s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", ProtectedPaths: protected})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := Classify(s, Options{Now: later()})
+			row := findRow(t, r, KindWorktree, "topic")
+			if row.Status != StatusInUse || !row.Unknown || !slices.Contains(reasonCodes(row.Blockers), c.blocker) ||
+				!slices.Contains(reasonCodes(row.Reasons), ReasonGatesUnavailable) {
+				t.Fatalf("row %s unknown %v blockers %v reasons %v, want in_use, unknown, %q and %q%s",
+					row.Status, row.Unknown, reasonCodes(row.Blockers), reasonCodes(row.Reasons), c.blocker, ReasonGatesUnavailable, dumpRows(r.Rows))
+			}
+		})
+	}
+}
+
+// old is a creation time well before any MinAge.
+var old = time.Now().Add(-48 * time.Hour)
+
+// TestClassifyFailClosedRules runs one hand-built snapshot per fail-closed
+// rule. Why: each rule stops a row from reading proven when something it
+// needs is missing or contrary (a local base, a merge commit not known to be
+// in the base, a PR into another branch, unreadable gates, an open PR, an
+// unmerged remote, a remote with no PR answer); deleting any of them would
+// offer a removal the spec forbids.
+func TestClassifyFailClosedRules(t *testing.T) {
+	tip := strings.Repeat("c", 40)
+	mc := strings.Repeat("d", 40)
+	primary := WorktreeState{Fact: WorktreeFact{Path: "/r", Branch: "refs/heads/main", Primary: true}}
+	branch := func(p Proof, prs ...PRInfo) Snapshot {
+		s := handSnapshot()
+		s.Worktrees = []WorktreeState{primary}
+		s.Heads = []RefFact{{Ref: "refs/heads/topic", Name: "topic", Tip: tip, Created: old}}
+		s.Proofs[tip] = p
+		s.PRs["topic"] = PRResult{Lookup: LookupNone}
+		if len(prs) > 0 {
+			s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: prs}
+		}
+		return s
+	}
+	merged := Proof{Evidence: EvAncestor, Verdict: Merged}
+	unmerged := Proof{Verdict: NotMerged}
+	prAt := func(base string) PRInfo {
+		return PRInfo{Number: 3, State: "MERGED", HeadRefOid: tip, BaseRef: base, MergeCommit: mc}
+	}
+	withMerge := func(s Snapshot, t Tri, set bool) Snapshot {
+		if set {
+			s.Merges[mc] = t
+		}
+		return s
+	}
+	cases := []struct {
+		name    string
+		s       Snapshot
+		kind    Kind
+		status  Status
+		unknown bool
+		code    string // a reason the row must carry ("" none required)
+	}{
+		{"fallback base caps at less sure", func() Snapshot {
+			s := branch(merged)
+			s.Base = Base{Default: "main", Ref: "main", Fallback: true}
+			return s
+		}(), KindBranch, StatusLessSure, false, ReasonBaseIsLocal},
+		{"pr-tip with merge commit in base is proven (control)", withMerge(branch(unmerged, prAt("main")), TriYes, true), KindBranch, StatusProven, false, ""},
+		{"pr-tip merge commit not in base", withMerge(branch(unmerged, prAt("main")), TriNo, true), KindBranch, StatusLessSure, false, ""},
+		{"pr-tip merge commit unknown", withMerge(branch(unmerged, prAt("main")), TriUnknown, true), KindBranch, StatusLessSure, true, ReasonPRMergeUnknown},
+		{"pr-tip merge commit missing", branch(unmerged, prAt("main")), KindBranch, StatusLessSure, true, ReasonPRMergeUnknown},
+		{"merged PR into another branch is not pr-tip", withMerge(branch(unmerged, prAt("release")), TriYes, true), KindBranch, StatusLessSure, false, ReasonNotMerged},
+		{"gates error", func() Snapshot {
+			s := branch(merged)
+			s.Worktrees = append(s.Worktrees, WorktreeState{Fact: WorktreeFact{Path: "/w/topic", Branch: "refs/heads/topic", Head: tip}, GatesErr: "boom"})
+			return s
+		}(), KindWorktree, StatusLessSure, true, ReasonGatesUnavailable},
+		{"open PR on a local branch", branch(merged, PRInfo{Number: 4, State: "OPEN", HeadRefOid: tip, BaseRef: "main"}), KindBranch, StatusUniqueWork, false, ReasonOpenPR},
+		{"unmerged remote", func() Snapshot {
+			s := handSnapshot()
+			s.Worktrees = []WorktreeState{primary}
+			s.Remotes = []RefFact{{Ref: "refs/remotes/origin/topic", Name: "topic", Remote: "origin", Tip: tip, Created: old}}
+			s.Proofs[tip] = unmerged
+			s.PRs["topic"] = PRResult{Lookup: LookupNone}
+			return s
+		}(), KindRemote, StatusUniqueWork, false, ReasonNotMerged},
+		{"remote with no PR entry", func() Snapshot {
+			s := handSnapshot()
+			s.Worktrees = []WorktreeState{primary}
+			s.Remotes = []RefFact{{Ref: "refs/remotes/origin/topic", Name: "topic", Remote: "origin", Tip: tip, Created: old}}
+			s.Proofs[tip] = merged
+			return s // PRs empty: GH reads ok, the miss is LookupUnknown
+		}(), KindRemote, StatusLessSure, true, ReasonCannotVerify},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := Classify(c.s, Options{Now: later()})
+			name := "topic"
+			row := findRow(t, r, c.kind, name)
+			if row.Status != c.status || row.Unknown != c.unknown {
+				t.Fatalf("row = (%s, unknown %v), want (%s, unknown %v)%s", row.Status, row.Unknown, c.status, c.unknown, dumpRows(r.Rows))
+			}
+			if c.code != "" && !slices.Contains(reasonCodes(row.Reasons), c.code) {
+				t.Fatalf("reasons %v lack %q", reasonCodes(row.Reasons), c.code)
+			}
+		})
+	}
+}
+
 // handSnapshot is a resolved base with one known commit, for pure Classify
 // tests that need no git.
 func handSnapshot() Snapshot {
@@ -431,7 +598,7 @@ func TestClassifyOrderIsInUseFirst(t *testing.T) {
 	tip := strings.Repeat("c", 40)
 	build := func(g Gates) Snapshot {
 		s := handSnapshot()
-		s.Heads = []RefFact{{Ref: "refs/heads/topic", Name: "topic", Tip: tip}}
+		s.Heads = []RefFact{{Ref: "refs/heads/topic", Name: "topic", Tip: tip, Created: old}}
 		s.Proofs[tip] = Proof{Evidence: EvAncestor, Verdict: Merged}
 		s.PRs["topic"] = PRResult{Lookup: LookupNone}
 		s.Worktrees = []WorktreeState{
@@ -471,7 +638,7 @@ func TestClassifyRemoteRowRules(t *testing.T) {
 	build := func(topic PRResult, others map[string]PRResult) Snapshot {
 		s := handSnapshot()
 		s.Worktrees = []WorktreeState{{Fact: WorktreeFact{Path: "/r", Branch: "refs/heads/main", Primary: true}}}
-		s.Remotes = []RefFact{{Ref: "refs/remotes/origin/topic", Name: "topic", Remote: "origin", Tip: tip}}
+		s.Remotes = []RefFact{{Ref: "refs/remotes/origin/topic", Name: "topic", Remote: "origin", Tip: tip, Created: old}}
 		s.Proofs[tip] = Proof{Evidence: EvAncestor, Verdict: Merged}
 		s.PRs["topic"] = topic
 		for k, v := range others {

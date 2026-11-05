@@ -170,10 +170,14 @@ var operationMarkers = []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "C
 
 // CheckGates evaluates w's hard blockers and soft facts. g runs in the
 // repository (any of its worktrees); the status checks run in w.Path. Any
-// gate it cannot evaluate is an error, never a clean answer. It reads only.
+// gate it cannot evaluate is an error, never a clean answer. With an error
+// the Gates hold only the hard blockers found before it (the soft facts are
+// zero, never read as clean): a blocker found is a blocker whatever failed
+// after it. It reads only.
 func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	var out Gates
 	block := func(code, detail string) { out.Blockers = append(out.Blockers, Reason{code, detail}) }
+	partial := func() Gates { return Gates{Blockers: out.Blockers} }
 
 	if w.Primary {
 		block(BlockPrimary, w.Path)
@@ -190,7 +194,7 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	self := resolve(w.Path)
 	all, err := listWorktrees(g)
 	if err != nil {
-		return Gates{}, err
+		return partial(), err
 	}
 	for _, o := range all {
 		if op := resolve(o.Path); op != self && within(op, self) {
@@ -209,27 +213,27 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 		// Its .git link is broken: git -C on a directory that is still
 		// there walks up into an enclosing repository and would answer
 		// for that one.
-		return Gates{}, fmt.Errorf("cleanup: worktree %s is prunable: its git link is broken, so its state cannot be read", w.Path)
+		return partial(), fmt.Errorf("cleanup: worktree %s is prunable: its git link is broken, so its state cannot be read", w.Path)
 	}
 
 	wg := Git{Dir: w.Path, Timeout: g.Timeout}
 	ops, err := operationsInProgress(wg, self)
 	if err != nil {
-		return Gates{}, err
+		return partial(), err
 	}
 	for _, op := range ops {
 		block(BlockOperation, op)
 	}
 
 	if out.Dirty, err = dirty(wg); err != nil {
-		return Gates{}, err
+		return partial(), err
 	}
 	if out.IgnoredCount, out.IgnoredBytes, err = ignored(wg); err != nil {
-		return Gates{}, err
+		return partial(), err
 	}
 	if w.Detached {
 		if out.DetachedUnique, err = detachedUnique(g, w.Head, in.Base); err != nil {
-			return Gates{}, err
+			return partial(), err
 		}
 	}
 	return out, nil
