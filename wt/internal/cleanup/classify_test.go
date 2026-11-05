@@ -175,6 +175,31 @@ func TestClassify(t *testing.T) {
 			f.Commit("m", "m", "m")
 			f.Push("main")
 		}, want: want{kind: KindBranch, name: "topic", status: StatusProven, ev: EvNoAddedChanges}},
+		// Ruling 17: commits that undo each other and exist nowhere else are
+		// proven only "equal trees", not "in the base"; they stay less sure.
+		{name: "commit then revert on the branch, never pushed", setup: func(t *testing.T, f *fixture) {
+			f.Branch("topic")
+			f.Checkout("topic")
+			f.Commit("secret.txt", "s", "add secret")
+			f.Revert("HEAD")
+			f.Checkout("main")
+			f.Commit("m", "m", "m")
+			f.Push("main")
+		}, want: want{kind: KindBranch, name: "topic", status: StatusLessSure, ev: EvNoAddedChanges, reasons: []string{ReasonNetZeroUnpushed}}},
+		{name: "commit then revert on the branch, main not advanced, never pushed", setup: func(t *testing.T, f *fixture) {
+			f.Branch("topic")
+			f.Checkout("topic")
+			f.Commit("secret.txt", "s", "add secret")
+			f.Revert("HEAD")
+			f.Checkout("main")
+		}, want: want{kind: KindBranch, name: "topic", status: StatusLessSure, ev: EvTreesMatch, reasons: []string{ReasonNetZeroUnpushed}}},
+		{name: "commit then revert in a worktree, never pushed", setup: func(t *testing.T, f *fixture) {
+			p := f.Worktree("topic")
+			commitIn(t, p, "secret.txt", "s", "add secret")
+			gitIn(t, p, "revert", "--no-edit", "HEAD")
+			f.Commit("m", "m", "m")
+			f.Push("main")
+		}, want: want{kind: KindWorktree, name: "topic", status: StatusLessSure, ev: EvNoAddedChanges, reasons: []string{ReasonNetZeroUnpushed}}},
 		{name: "squash then revert", setup: func(t *testing.T, f *fixture) {
 			f.Branch("topic")
 			f.Checkout("topic")
@@ -701,6 +726,16 @@ func TestClassifyFailClosedRules(t *testing.T) {
 			s.Worktrees = append(s.Worktrees, WorktreeState{Fact: WorktreeFact{Path: "/w/topic", Branch: "refs/heads/topic", Head: tip}, GatesErr: "boom"})
 			return s
 		}(), KindWorktree, StatusLessSure, true, ReasonGatesUnavailable},
+		{"trees-match, net-zero unknown, unpushed commits", branch(Proof{Evidence: EvTreesMatch, Verdict: Merged, Unpushed: 2}),
+			KindBranch, StatusLessSure, true, ReasonMergeProofUnavailable},
+		{"net-zero, unpushed count failed", branch(Proof{Evidence: EvNoAddedChanges, Verdict: Merged, NetZero: TriYes, Unpushed: -1, UnpushedErr: "boom"}),
+			KindBranch, StatusLessSure, true, ReasonUnpushedUnknown},
+		{"net-zero, unpushed commits", branch(Proof{Evidence: EvNoAddedChanges, Verdict: Merged, NetZero: TriYes, Unpushed: 2}),
+			KindBranch, StatusLessSure, false, ReasonNetZeroUnpushed},
+		{"net-zero, every commit pushed (control)", branch(Proof{Evidence: EvNoAddedChanges, Verdict: Merged, NetZero: TriYes}),
+			KindBranch, StatusProven, false, ""},
+		{"trees-match, a real squash with unpushed commits (control)", branch(Proof{Evidence: EvTreesMatch, Verdict: Merged, NetZero: TriNo, Unpushed: 2}),
+			KindBranch, StatusProven, false, ""},
 		{"open PR on a local branch", branch(merged, PRInfo{Number: 4, State: "OPEN", HeadRefOid: tip, BaseRef: "main"}), KindBranch, StatusUniqueWork, false, ReasonOpenPR},
 		{"unmerged remote", func() Snapshot {
 			s := handSnapshot()
@@ -730,6 +765,34 @@ func TestClassifyFailClosedRules(t *testing.T) {
 				t.Fatalf("reasons %v lack %q", reasonCodes(row.Reasons), c.code)
 			}
 		})
+	}
+}
+
+// TestClassifyNetZeroUnpushedHealsOnPush makes a branch that commits a file
+// and reverts it, never pushed, then pushes it and gathers again. Why
+// (Ruling 17): before the push its commits exist only on this machine and
+// the proof is only "the trees are equal", so it must not be ticked; once a
+// remote-tracking ref holds them nothing is lost by deleting it, and it is
+// proven. A pushed branch staying less sure would be the rule overreaching.
+func TestClassifyNetZeroUnpushedHealsOnPush(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Checkout("topic")
+	f.Commit("secret.txt", "s", "add secret")
+	f.Revert("HEAD")
+	f.Checkout("main")
+	f.Commit("m", "m", "m")
+	f.Push("main")
+	noGh(t)
+
+	row := findRow(t, Classify(gather(t, f), Options{Now: later()}), KindBranch, "topic")
+	if row.Status != StatusLessSure || !slices.Contains(reasonCodes(row.Reasons), ReasonNetZeroUnpushed) {
+		t.Fatalf("never pushed: %s %v, want less_sure with %q", row.Status, reasonCodes(row.Reasons), ReasonNetZeroUnpushed)
+	}
+	f.Push("topic")
+	r := Classify(gather(t, f), Options{Now: later()})
+	if row := findRow(t, r, KindBranch, "topic"); row.Status != StatusProven || row.Evidence != EvNoAddedChanges {
+		t.Fatalf("pushed: %s ev %q %v, want proven no-added-changes%s", row.Status, row.Evidence, reasonCodes(row.Reasons), dumpRows(r.Rows))
 	}
 }
 

@@ -81,6 +81,7 @@ var reasonWording = map[string]string{
 	ReasonUnpushedUnknown:       "could not count unpushed commits",
 	ReasonCannotVerify:          "needs gh",
 	ReasonUnpushed:              "unpushed commits",
+	ReasonNetZeroUnpushed:       "commits that undo each other exist only on this machine",
 	ReasonPRHeadMoved:           "branch moved on after its PR merged",
 	ReasonOpenPR:                "open PR",
 	ReasonDirty:                 "uncommitted or untracked files",

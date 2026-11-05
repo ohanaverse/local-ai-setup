@@ -66,7 +66,7 @@
             "properties": {
               "code": {
                 "type": "string",
-                "enum": ["no_default_branch", "merge_proof_unavailable", "gates_unavailable", "branch_unknown", "pr_unknown", "pr_merge_unknown", "unpushed_unknown", "cannot_verify", "unpushed", "pr_head_moved", "open_pr", "dirty", "detached_unique", "not_merged", "ignored_files", "weak_signal", "fresh_branch", "base_is_local", "no_merged_pr", "claims_unavailable"]
+                "enum": ["no_default_branch", "merge_proof_unavailable", "gates_unavailable", "branch_unknown", "pr_unknown", "pr_merge_unknown", "unpushed_unknown", "cannot_verify", "unpushed", "net_zero_unpushed", "pr_head_moved", "open_pr", "dirty", "detached_unique", "not_merged", "ignored_files", "weak_signal", "fresh_branch", "base_is_local", "no_merged_pr", "claims_unavailable"]
               },
               "detail": {"type": "string"}
             }

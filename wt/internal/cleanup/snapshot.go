@@ -54,10 +54,16 @@ type Proof struct {
 	Verdict  Verdict
 	Weak     []Evidence // only read when Verdict is NotMerged
 	// Unpushed is the count of commits on the tip that no refs/remotes/* ref
-	// reaches; -1 when the count failed. Read only for a local head with no
-	// git proof (ruling: unpushed matters only when nothing proves a merge).
+	// reaches; -1 when the count failed. Counted for a local head with no
+	// git proof (Ruling 1: unpushed matters only when nothing proves a
+	// merge), and for one proven by trees-match or no-added-changes (Ruling
+	// 17: those prove equal trees, not that the commits are anywhere else).
 	Unpushed    int
 	UnpushedErr string
+	// NetZero is whether the tip's tree is its merge-base's tree (the branch
+	// changes nothing overall); read only for trees-match and no-added-changes
+	// evidence. TriUnknown when not determined.
+	NetZero Tri
 }
 
 // Tri is a yes / no / could-not-tell answer.
@@ -260,9 +266,10 @@ func (s *Snapshot) isDefault(name string) bool {
 }
 
 // prove runs the ladder once per distinct tip (heads, remotes, detached
-// worktree HEADs), the weak signals where nothing proves, the unpushed count
-// for local heads with no proof, and the creation time of refs whose tip is
-// the base (the min-age rule needs it).
+// worktree HEADs), the weak signals where nothing proves, whether a
+// tree-equality proof nets to nothing, the unpushed count for local heads
+// with no proof or a tree-equality proof, and the creation time of refs
+// whose tip is the base (the min-age rule needs it).
 func (s *Snapshot) prove(g Git) {
 	run := func(tip string) Proof {
 		if p, ok := s.Proofs[tip]; ok {
@@ -272,6 +279,9 @@ func (s *Snapshot) prove(g Git) {
 		p.Evidence, p.Verdict = Prove(g, s.BaseTip, tip)
 		if p.Verdict == NotMerged {
 			p.Weak = WeakSignals(g, s.BaseTip, tip)
+		}
+		if treeProof(p.Evidence) {
+			p.NetZero = netZero(g, s.BaseTip, tip, p.Evidence)
 		}
 		s.Proofs[tip] = p
 		return p
@@ -287,7 +297,7 @@ func (s *Snapshot) prove(g Git) {
 	for i := range s.Heads {
 		h := &s.Heads[i]
 		p := run(h.Tip)
-		if p.Verdict != Merged && !counted[h.Tip] {
+		if (p.Verdict != Merged || treeProof(p.Evidence)) && !counted[h.Tip] {
 			counted[h.Tip] = true
 			p.Unpushed, p.UnpushedErr = unpushed(g, h.Tip)
 			s.Proofs[h.Tip] = p
@@ -313,6 +323,36 @@ func (s *Snapshot) prove(g Git) {
 			ws.HeadSince = reflogTime(Git{Dir: ws.Fact.Path, Timeout: g.Timeout}, "HEAD", false)
 		}
 	}
+}
+
+// treeProof is the evidence that proves only that two trees are equal, not
+// that the branch's commits are in the base (Ruling 17): trees-match and
+// no-added-changes.
+func treeProof(ev Evidence) bool { return ev == EvTreesMatch || ev == EvNoAddedChanges }
+
+// netZero answers whether tip's tree is the tree of its merge-base with base:
+// the branch changes nothing overall. no-added-changes is that very check,
+// so it is yes without asking git again. Any git failure is TriUnknown.
+func netZero(g Git, base, tip string, ev Evidence) Tri {
+	if ev == EvNoAddedChanges {
+		return TriYes
+	}
+	mb, ok := mergeBase(g, base, tip)
+	if !ok {
+		return TriUnknown
+	}
+	mt, ok := treeOf(g, mb)
+	if !ok {
+		return TriUnknown
+	}
+	tt, ok := treeOf(g, tip)
+	if !ok {
+		return TriUnknown
+	}
+	if mt == tt {
+		return TriYes
+	}
+	return TriNo
 }
 
 // unpushed counts the commits on tip that no remote-tracking ref reaches.

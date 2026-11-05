@@ -48,6 +48,7 @@ const (
 	ReasonUnpushedUnknown       = "unpushed_unknown"        // Unknown: counting unpushed commits failed
 	ReasonCannotVerify          = "cannot_verify"           // gh did not answer for every branch, and this row needs it
 	ReasonUnpushed              = "unpushed"                // unique: commits no remote-tracking ref reaches
+	ReasonNetZeroUnpushed       = "net_zero_unpushed"       // soft: proven only by equal trees, the branch nets to nothing, and its commits are on no remote-tracking ref
 	ReasonPRHeadMoved           = "pr_head_moved"           // unique: a merged PR's head is not the tip
 	ReasonOpenPR                = "open_pr"                 // unique (local rows): a PR on this head is open
 	ReasonDirty                 = "dirty"                   // unique: tracked changes or non-ignored untracked files
@@ -332,6 +333,7 @@ func (c *classifier) local(j *judge, h RefFact) {
 		j.unsure(ReasonMergeProofUnavailable, mergeProofDetail)
 	case p.Verdict == Merged:
 		j.ev = p.Evidence
+		c.netZeroUnpushed(j, p)
 	default:
 		c.prTip(j, h, res)
 	}
@@ -370,6 +372,31 @@ func (c *classifier) local(j *judge, h RefFact) {
 		}
 	}
 	c.minAge(j, h)
+}
+
+// netZeroUnpushed is Ruling 17. trees-match and no-added-changes prove only
+// that two trees are equal. When the tip's tree is its merge-base's (the
+// branch nets to nothing: say a commit and its revert) and some of its
+// commits are on no remote-tracking ref, those commits exist only here, so
+// the row is less sure, never proven. A real squash changes the tree
+// (NetZero no) and is untouched. An unknown NetZero or unpushed count with
+// commits possibly unpushed is Unknown (fail closed).
+func (c *classifier) netZeroUnpushed(j *judge, p Proof) {
+	if !treeProof(p.Evidence) || p.NetZero == TriNo || p.Unpushed == 0 {
+		return
+	}
+	switch {
+	case p.Unpushed < 0:
+		j.unsure(ReasonUnpushedUnknown, p.UnpushedErr)
+	case p.NetZero == TriUnknown:
+		j.unsure(ReasonMergeProofUnavailable, "could not tell whether the branch's commits undo each other")
+	default:
+		noun := "commits"
+		if p.Unpushed == 1 {
+			noun = "commit"
+		}
+		j.weak(ReasonNetZeroUnpushed, fmt.Sprintf("%d %s on no remote-tracking ref; together they change nothing", p.Unpushed, noun))
+	}
 }
 
 // remoteRow judges a remote-tracking branch. Proven needs a complete gh
