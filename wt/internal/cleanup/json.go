@@ -59,8 +59,8 @@ type PRJSON struct {
 
 // RowJSON is a Row. Evidence is absent when no proof was found; Unknown is
 // the separate "could not be determined" flag and is always written. Reasons
-// and Blockers are always arrays. AgeDays is Row.AgeDays (whole days, 0 when
-// the age is unknown).
+// and Blockers are always arrays. AgeDays is Row.AgeDays (whole days, 0 for a
+// known age under a day) and is absent when the age is unknown.
 type RowJSON struct {
 	Kind     string       `json:"kind"`
 	Name     string       `json:"name"`
@@ -70,7 +70,7 @@ type RowJSON struct {
 	Status   string       `json:"status"`
 	Evidence string       `json:"evidence,omitempty"`
 	Unknown  bool         `json:"unknown"`
-	AgeDays  int          `json:"age_days"`
+	AgeDays  *int         `json:"age_days,omitempty"`
 	Reasons  []ReasonJSON `json:"reasons"`
 	Blockers []ReasonJSON `json:"blockers"`
 	PR       *PRJSON      `json:"pr,omitempty"`
@@ -107,20 +107,30 @@ func Encode(r Report) ([]byte, error) {
 	e := Envelope{
 		Version: EnvelopeVersion,
 		Repo:    r.Repo,
-		Base: &BaseJSON{
+		GH:      string(r.GH),
+		Rows:    make([]RowJSON, 0, len(r.Rows)),
+	}
+	// base is absent when no default branch was found; fetch is absent when
+	// no fetch ran ("not attempted"), a zero At being the sign of that.
+	if r.Base.Default != "" {
+		e.Base = &BaseJSON{
 			Default: r.Base.Default, Ref: r.Base.Ref, Fallback: r.Base.Fallback,
 			FetchedAt: timeJSON(r.Base.FetchedAt),
-		},
-		Fetch: &FetchJSON{OK: r.Fetch.OK, Error: r.Fetch.Err, At: timeJSON(r.Fetch.At)},
-		GH:    string(r.GH),
-		Rows:  make([]RowJSON, 0, len(r.Rows)),
+		}
+	}
+	if !r.Fetch.At.IsZero() {
+		e.Fetch = &FetchJSON{OK: r.Fetch.OK, Error: r.Fetch.Err, At: timeJSON(r.Fetch.At)}
 	}
 	for _, row := range r.Rows {
 		rj := RowJSON{
 			Kind: string(row.Kind), Name: row.Name, Path: row.Path, Branch: row.Branch,
 			Remote: row.Remote, Status: string(row.Status), Evidence: string(row.Evidence),
-			Unknown: row.Unknown, AgeDays: row.AgeDays,
+			Unknown: row.Unknown,
 			Reasons: reasonsJSON(row.Reasons), Blockers: reasonsJSON(row.Blockers),
+		}
+		if row.AgeKnown {
+			days := row.AgeDays
+			rj.AgeDays = &days
 		}
 		if row.PR != nil {
 			rj.PR = &PRJSON{Number: row.PR.Number, State: row.PR.State}
@@ -131,12 +141,17 @@ func Encode(r Report) ([]byte, error) {
 }
 
 // EncodeError renders the failure envelope: the same document with Error
-// set, no rows, and no base, fetch or gh.
+// set, no rows, and no base, fetch or gh. A nil err is reported as
+// "unknown error".
 func EncodeError(repo string, err error) ([]byte, error) {
+	msg := "unknown error" // a nil err still yields one document
+	if err != nil {
+		msg = err.Error()
+	}
 	return marshal(Envelope{
 		Version: EnvelopeVersion,
 		Repo:    repo,
 		Rows:    []RowJSON{},
-		Error:   &ErrorJSON{Message: err.Error()},
+		Error:   &ErrorJSON{Message: msg},
 	})
 }

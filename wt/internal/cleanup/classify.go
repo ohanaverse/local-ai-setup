@@ -93,6 +93,7 @@ type Row struct {
 	Blockers []Reason
 	PR       *PRInfo // the PR the verdict rests on, if any
 	AgeDays  int
+	AgeKnown bool // AgeDays is a real age (0 then means under a day), not "could not tell"
 }
 
 // Report is a classified snapshot.
@@ -263,7 +264,7 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 			break
 		}
 		c.local(&j, h)
-		row.AgeDays = c.ageDays(h)
+		c.setAge(&row, h)
 	case w.Detached:
 		p, ok := c.s.Proofs[w.Head]
 		switch {
@@ -274,7 +275,7 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		}
 		// A detached HEAD's age is when it last moved there.
 		c.minAge(&j, RefFact{Created: ws.HeadSince})
-		row.AgeDays = c.ageDays(RefFact{Created: ws.HeadSince})
+		c.setAge(&row, RefFact{Created: ws.HeadSince})
 	}
 	c.capFallback(&j)
 	j.fill(&row)
@@ -304,7 +305,7 @@ func (c *classifier) branchRow(h RefFact) Row {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
 	} else {
 		c.local(&j, h)
-		row.AgeDays = c.ageDays(h)
+		c.setAge(&row, h)
 	}
 	c.capFallback(&j)
 	j.fill(&row)
@@ -513,12 +514,15 @@ func born(r RefFact) time.Time {
 	return r.TipTime
 }
 
-func (c *classifier) ageDays(r RefFact) int {
+// setAge records the row's age in whole days. It stays unknown (AgeKnown
+// false) with no clock, no birth time, or a birth in the future.
+func (c *classifier) setAge(row *Row, r RefFact) {
 	b := born(r)
 	if c.o.Now.IsZero() || b.IsZero() || !c.o.Now.After(b) {
-		return 0
+		return
 	}
-	return int(c.o.Now.Sub(b) / (24 * time.Hour))
+	row.AgeDays = int(c.o.Now.Sub(b) / (24 * time.Hour))
+	row.AgeKnown = true
 }
 
 func weakDetail(ws []Evidence) string {

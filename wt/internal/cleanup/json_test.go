@@ -142,3 +142,137 @@ func TestStatusAndEvidenceEnumsStable(t *testing.T) {
 		string(EvMergeAddsNothing), string(EvPRTip), string(EvCherryEquivalent), string(EvPatchID)},
 		[]string{"same-commit", "ancestor", "trees-match", "no-added-changes", "merge-adds-nothing", "pr-tip", "cherry-equivalent", "patch-id"})
 }
+
+// TestEncodeWeakOnlyRowHasNoEvidence classifies a real branch whose only
+// signal is weak (a squash that was then reverted, so cherry/patch-id
+// match) and encodes it. Why: Row.Evidence only ever holds a proof, so the
+// JSON row must carry no `evidence` key and a `weak_signal` reason; a
+// weak signal shown as evidence would read as a proof to a consumer.
+func TestEncodeWeakOnlyRowHasNoEvidence(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Checkout("topic")
+	f.Commit("a", "a", "a")
+	f.Push("topic")
+	f.Squash("topic")
+	f.Revert("HEAD")
+	f.Push("main")
+	noGh(t)
+	r := Classify(gather(t, f), Options{Now: later(), MinAge: DefaultMinAge})
+	raw, err := Encode(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]json.RawMessage
+	for _, c := range doc.Rows {
+		if string(c["name"]) == `"topic"` {
+			row = c
+		}
+	}
+	if row == nil {
+		t.Fatalf("no topic row: %s", raw)
+	}
+	if _, has := row["evidence"]; has {
+		t.Errorf("weak-only row carries evidence: %s", row["evidence"])
+	}
+	if !strings.Contains(string(row["reasons"]), `"weak_signal"`) {
+		t.Errorf("reasons = %s; want a weak_signal", row["reasons"])
+	}
+}
+
+// TestEncodeFetchAbsentUnlessAttempted pins `fetch` as "absent = no fetch
+// ran": a report whose Fetch is zero has no `fetch` key, and a failed fetch
+// reads {"ok":false,"error":...}. Why: {"ok":false} for a run that never
+// fetched would tell a consumer the base may be stale when nothing was tried.
+func TestEncodeFetchAbsentUnlessAttempted(t *testing.T) {
+	raw, _ := Encode(Report{Repo: "/r", Base: Base{Default: "main", Ref: "origin/main"}})
+	if _, has := decodeDoc(t, raw)["fetch"]; has {
+		t.Errorf("no fetch ran, yet fetch is present: %s", raw)
+	}
+	at := time.Date(2026, 11, 4, 1, 2, 3, 0, time.UTC)
+	raw, _ = Encode(Report{Repo: "/r", Fetch: FetchResult{Err: "no network", At: at}})
+	var doc struct {
+		Fetch map[string]json.RawMessage `json:"fetch"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if string(doc.Fetch["ok"]) != "false" || string(doc.Fetch["error"]) != `"no network"` {
+		t.Errorf("failed fetch = %v", doc.Fetch)
+	}
+}
+
+// TestEncodeAgeAbsentWhenUnknown pins that age_days is left out when the
+// age could not be determined and written (as 0) for a known age under a
+// day. Why: 0 for both would let a consumer read "unknown" as "brand new".
+func TestEncodeAgeAbsentWhenUnknown(t *testing.T) {
+	raw, _ := Encode(Report{Repo: "/r", Rows: []Row{
+		{Kind: KindRemote, Name: "u", Status: StatusUniqueWork},
+		{Kind: KindBranch, Name: "k", Status: StatusUniqueWork, AgeKnown: true},
+	}})
+	var doc struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := doc.Rows[0]["age_days"]; has {
+		t.Errorf("unknown age written: %s", doc.Rows[0]["age_days"])
+	}
+	if string(doc.Rows[1]["age_days"]) != "0" {
+		t.Errorf("known age under a day = %s; want 0", doc.Rows[1]["age_days"])
+	}
+}
+
+// TestClassifySetsAgeKnown pins where the classifier marks an age known: a
+// local branch with a clock is known; with a zero Now it is not. Why: the
+// JSON contract depends on this flag to tell "under a day" from "unknown".
+func TestClassifySetsAgeKnown(t *testing.T) {
+	f := newFixture(t)
+	ancestorTopic(f)
+	noGh(t)
+	s := gather(t, f)
+	if row := findRow(t, Classify(s, Options{Now: later(), MinAge: DefaultMinAge}), KindBranch, "topic"); !row.AgeKnown {
+		t.Error("local branch with a clock: AgeKnown = false")
+	}
+	if row := findRow(t, Classify(s, Options{MinAge: DefaultMinAge}), KindBranch, "topic"); row.AgeKnown {
+		t.Error("zero Now: AgeKnown = true")
+	}
+}
+
+// TestEncodeBaseAbsentWithoutDefault pins that `base` is left out when no
+// default branch was found, rather than printing empty strings. Why: "" for
+// default and ref would look like a real base.
+func TestEncodeBaseAbsentWithoutDefault(t *testing.T) {
+	raw, _ := Encode(Report{Repo: "/r"})
+	if _, has := decodeDoc(t, raw)["base"]; has {
+		t.Errorf("base present without a default branch: %s", raw)
+	}
+	raw, _ = Encode(Report{Repo: "/r", Base: Base{Default: "main", Ref: "main", Fallback: true}})
+	if _, has := decodeDoc(t, raw)["base"]; !has {
+		t.Error("base missing with a default branch")
+	}
+}
+
+// TestEncodeErrorNilError pins that EncodeError(repo, nil) neither panics
+// nor emits an empty message: it writes the fixed text "unknown error". Why:
+// a caller's bug must not turn the single-document guarantee into a panic.
+func TestEncodeErrorNilError(t *testing.T) {
+	raw, err := EncodeError("/r", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Error == nil || env.Error.Message != "unknown error" {
+		t.Errorf("error = %+v", env.Error)
+	}
+}
