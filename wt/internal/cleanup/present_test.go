@@ -202,6 +202,26 @@ func TestReasonTextDetailSameAsWording(t *testing.T) {
 	}
 }
 
+// TestRowTextShortPRDetailWhenGHUnavailable pins that, when gh answered for
+// no branch, a row's PR reasons read "PR lookup failed" without gh's own
+// text, and that with gh partial the cause is still shown. Why: the header
+// already says "gh: unavailable"; gh's error under every row repeated it
+// (an unauthenticated gh's login speech, once per row).
+func TestRowTextShortPRDetailWhenGHUnavailable(t *testing.T) {
+	row := Row{Kind: KindBranch, Status: StatusLessSure, Unknown: true, Reasons: []Reason{
+		{Code: ReasonPRUnknown, Detail: "gh pr list: exit status 4: To get started with GitHub CLI"},
+		{Code: ReasonCannotVerify, Detail: "gh pr list: exit status 4: To get started with GitHub CLI"},
+	}}
+	rep := Report{Base: Base{Ref: "origin/main"}, GH: GHUnavailable}
+	if got, want := RowText(rep, row), "PR lookup failed; needs gh (PR lookup failed)"; got != want {
+		t.Errorf("unavailable: RowText = %q, want %q", got, want)
+	}
+	rep.GH = GHPartial
+	if got := RowText(rep, row); !strings.Contains(got, "To get started") {
+		t.Errorf("partial: RowText = %q, want gh's cause kept", got)
+	}
+}
+
 // nestedPrimary is a primary-checkout row holding n other worktrees, each
 // a nested blocker naming its path, as CheckGates makes them.
 func nestedPrimary(n int) Row {

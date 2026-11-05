@@ -239,6 +239,38 @@ func TestPRLookupSchemaDriftIsUnknown(t *testing.T) {
 	}
 }
 
+// ghLoginSpeech is what an unauthenticated gh prints on stderr: several
+// lines, the second starting at column 0.
+const ghLoginSpeech = "To get started with GitHub CLI, please run:  gh auth login\n" +
+	"Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"
+
+// TestGhFailureIsOneLine checks that gh's multi-line stderr becomes a
+// one-line error: its first line, whitespace collapsed, capped. Why: the
+// error is every affected row's detail; a raw paste put gh's login speech
+// under every row, its continuation lines at column 0 in --plain.
+func TestGhFailureIsOneLine(t *testing.T) {
+	got := ghFailure(errors.New("exit status 4"), []byte("\n  "+ghLoginSpeech)).Error()
+	want := "gh pr list: exit status 4: To get started with GitHub CLI, please run: gh auth login"
+	if got != want {
+		t.Fatalf("ghFailure = %q, want %q", got, want)
+	}
+	long := ghFailure(errors.New("exit status 1"), []byte(strings.Repeat("word ", 100))).Error()
+	if n := len([]rune(long)); n > ghErrMax || !strings.HasSuffix(long, "…") {
+		t.Fatalf("long error: %d runes %q, want at most %d ending in …", n, long, ghErrMax)
+	}
+}
+
+// TestPRLookupErrorIsOneLine checks that a lookup failure's Err is one line
+// whatever error the gh call returned. Why: Err is a reason's detail in the
+// list, the plain output and the JSON; a newline in it breaks the row.
+func TestPRLookupErrorIsOneLine(t *testing.T) {
+	stubGh(t, func(string, string) ([]byte, error) { return nil, errors.New(ghLoginSpeech) })
+	r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+	if r.Lookup != LookupUnknown || strings.ContainsAny(r.Err, "\r\n") || !strings.HasPrefix(r.Err, "To get started") {
+		t.Fatalf("got %+v, want Unknown with a one-line Err", r)
+	}
+}
+
 func realGhPRListRefuses(t *testing.T) {
 	if _, err := realGhPRList("", "topic"); !errors.Is(err, errGhUnderTest) {
 		t.Fatalf("err = %v", err)

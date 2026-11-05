@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +239,71 @@ func TestCleanupCmdFetchFailureExits0(t *testing.T) {
 	}
 	if !strings.Contains(plain, "fetch: FAILED") {
 		t.Errorf("header does not say the fetch failed:\n%s", plain)
+	}
+}
+
+// TestCleanupCmdGhFailureKeepsRowsOneLine makes every gh call fail with an
+// unauthenticated gh's multi-line message, in a repository whose origin
+// names a GitHub repo (so gh is asked), and prints --plain and --json. Why:
+// the message was pasted into every row, so --plain grew lines at column 0
+// ("Alternatively, populate the GH_TOKEN...") under each row and the JSON
+// detail held newlines; the header already says gh is unavailable.
+func TestCleanupCmdGhFailureKeepsRowsOneLine(t *testing.T) {
+	a, _ := newTestApp(t)
+	speech := "To get started with GitHub CLI, please run:  gh auth login\n" +
+		"Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"
+	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) {
+		return nil, errors.New(speech)
+	}))
+	dir := cleanupRepo(t)
+	cgit(t, dir, "checkout", "-b", "topic")
+	cleanupCommit(t, dir, "t", "topic work")
+	cgit(t, dir, "push", "-u", "origin", "topic")
+	cgit(t, dir, "checkout", "main")
+	// A GitHub origin URL so the PR lookup runs; --no-fetch keeps it offline.
+	cgit(t, dir, "remote", "set-url", "origin", "https://github.com/o/r.git")
+
+	plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plain, "gh:    unavailable") || !strings.Contains(plain, "PR lookup failed") {
+		t.Fatalf("plain output lacks the gh header or the short row detail:\n%s", plain)
+	}
+	headings := []string{"PROVEN MERGED", "LOOKS MERGED, LESS SURE", "HAS WORK THAT EXISTS NOWHERE ELSE", "IN USE / LOCKED (cannot remove)"}
+	for _, line := range strings.Split(strings.TrimRight(plain, "\n"), "\n") {
+		switch {
+		case line == "", strings.HasPrefix(line, "  "), slices.Contains(headings, line):
+		case strings.HasPrefix(line, "repo:"), strings.HasPrefix(line, "base:"), strings.HasPrefix(line, "fetch:"), strings.HasPrefix(line, "gh:"):
+		default:
+			t.Errorf("line at column 0 that is no header or heading: %q\n%s", line, plain)
+		}
+	}
+	if strings.Contains(plain, "Alternatively") {
+		t.Errorf("gh's login speech reached the rows:\n%s", plain)
+	}
+
+	stdout, _, err := runCleanup(t, a, dir, "--json", "--no-fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env cleanup.Envelope
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, r := range env.Rows {
+		for _, re := range r.Reasons {
+			if re.Code == cleanup.ReasonPRUnknown || re.Code == cleanup.ReasonCannotVerify {
+				seen = true
+			}
+			if strings.ContainsAny(re.Detail, "\r\n") {
+				t.Errorf("row %s reason %s detail is not one line: %q", r.Name, re.Code, re.Detail)
+			}
+		}
+	}
+	if !seen {
+		t.Errorf("no row carries a PR lookup reason:\n%s", stdout)
 	}
 }
 

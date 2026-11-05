@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,11 +81,42 @@ func realGhPRList(dir, branch string) ([]byte, error) {
 		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return nil, fmt.Errorf("gh pr list: %v: %s", err, strings.TrimSpace(string(ee.Stderr)))
+			return nil, ghFailure(err, ee.Stderr)
 		}
 		return nil, err
 	}
 	return out, nil
+}
+
+// ghErrMax caps a gh error's length in runes.
+const ghErrMax = 120
+
+// ghFailure is a failed gh call as a one-line error: the exit and the first
+// non-empty line of gh's stderr. It becomes every affected row's detail, so
+// gh's multi-line text (an unauthenticated gh prints a login speech) must not
+// be pasted whole.
+func ghFailure(err error, stderr []byte) error {
+	return errors.New(oneLine(fmt.Sprintf("gh pr list: %v: %s", err, firstLine(string(stderr)))))
+}
+
+// firstLine is s's first line that is not blank.
+func firstLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+// oneLine is the first non-blank line of s with its whitespace runs
+// collapsed to single spaces, cut to ghErrMax runes (ending in "…").
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(firstLine(s)), " ")
+	if r := []rune(s); len(r) > ghErrMax {
+		s = string(r[:ghErrMax-1]) + "…"
+	}
+	return s
 }
 
 type ghPRRow struct {
@@ -124,7 +156,8 @@ func (r ghPRRow) headRepo() string {
 func lookupOne(dir, branch, ownRepo string) PRResult {
 	out, err := ghPRList(dir, branch)
 	if err != nil {
-		return PRResult{Lookup: LookupUnknown, Err: err.Error()}
+		// One line whatever the error held: it is a row's detail.
+		return PRResult{Lookup: LookupUnknown, Err: cmp.Or(oneLine(err.Error()), "gh pr list failed")}
 	}
 	var rows []ghPRRow
 	if err := json.Unmarshal(out, &rows); err != nil {

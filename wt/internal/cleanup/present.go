@@ -213,7 +213,13 @@ func RowText(rep Report, row Row) string {
 		if r.Code == ReasonWeakSignal && r.Detail == "" && weakEvidence {
 			continue
 		}
-		parts = append(parts, ReasonText(r.Code, r.Detail))
+		detail := r.Detail
+		if rep.GH == GHUnavailable && (r.Code == ReasonPRUnknown || r.Code == ReasonCannotVerify) {
+			// gh answered for no branch: the header says so and why; gh's
+			// own text under every row only repeats it.
+			detail = ghUnavailableDetail
+		}
+		parts = append(parts, ReasonText(r.Code, detail))
 	}
 	if ev := evidenceText(row, rep.Base.Ref); ev != "" {
 		parts = append(parts, ev)
@@ -223,6 +229,10 @@ func RowText(rep Report, row Row) string {
 	}
 	return strings.Join(parts, "; ")
 }
+
+// ghUnavailableDetail is a PR reason's shown detail when gh answered for no
+// branch (the JSON keeps gh's one-line error).
+const ghUnavailableDetail = "PR lookup failed"
 
 // nestedText is the nested-worktree blockers as one phrase.
 func nestedText(n int) string {
