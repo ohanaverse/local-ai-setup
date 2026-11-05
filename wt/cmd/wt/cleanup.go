@@ -14,7 +14,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -27,11 +27,9 @@ var (
 		f, ok := w.(*os.File)
 		return ok && term.IsTerminal(f.Fd())
 	}
-	// runCleanupList shows the report as the tick list. The list itself is a
-	// later task, which replaces this; until then it prints the plain output.
-	runCleanupList = func(r cleanup.Report, _ themes.Theme) error {
-		return printCleanupPlain(os.Stdout, r, time.Now())
-	}
+	// runCleanupList shows the report as the tick list (view only: enter
+	// prints what would be removed and removes nothing).
+	runCleanupList = tui.RunCleanupList
 )
 
 func cleanupCmd(a *app) *cobra.Command {
