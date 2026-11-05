@@ -463,11 +463,44 @@ func TestClassifyAgeWithoutReflog(t *testing.T) {
 		setup  func(t *testing.T, f *fixture)
 		proven bool
 	}{
-		{"expired and packed", func(t *testing.T, f *fixture) {
+		{"expired and packed, packed-refs old", func(t *testing.T, f *fixture) {
 			ancestorTopic(f)
 			f.git("reflog", "expire", "--expire=now", "--all")
 			f.git("pack-refs", "--all")
+			if err := os.Chtimes(filepath.Join(f.Dir, ".git", "packed-refs"), old, old); err != nil {
+				t.Fatal(err)
+			}
 		}, true},
+		{"expired and packed just now", func(t *testing.T, f *fixture) {
+			ancestorTopic(f)
+			f.git("reflog", "expire", "--expire=now", "--all")
+			f.git("pack-refs", "--all")
+		}, false},
+		{"loose ref is a symlink over an old packed entry, no log", func(t *testing.T, f *fixture) {
+			// The ref is also in an old packed-refs, so only the
+			// "not a regular file is unknown" rule keeps it fresh.
+			ancestorTopic(f)
+			sha := f.git("rev-parse", "refs/heads/topic")
+			f.git("reflog", "expire", "--expire=now", "--all")
+			f.git("pack-refs", "--all")
+			if err := os.Chtimes(filepath.Join(f.Dir, ".git", "packed-refs"), old, old); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "topic-sha")
+			if err := os.WriteFile(target, []byte(sha+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(target, old, old); err != nil {
+				t.Fatal(err)
+			}
+			ref := filepath.Join(f.Dir, ".git", "refs", "heads", "topic")
+			if err := os.MkdirAll(filepath.Dir(ref), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, ref); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
 		{"logging off, even with an old file", func(t *testing.T, f *fixture) {
 			f.git("config", "core.logAllRefUpdates", "false")
 			ancestorTopic(f)
@@ -509,6 +542,44 @@ func TestClassifyAgeWithoutReflog(t *testing.T) {
 				t.Fatalf("status %s %v, want less_sure with %q", row.Status, reasonCodes(row.Reasons), ReasonFreshBranch)
 			}
 		})
+	}
+}
+
+// TestClassifyFreshCloneRemoteNotProven clones a repository whose origin has
+// topic at main's tip (with a merged PR at that tip, so only age can keep it
+// out of PROVEN) and classifies origin/topic right after the clone. Why: a
+// clone writes its remote-tracking refs straight into packed-refs; if that
+// leaves no reflog, a "packed only, so old" rule would call a branch made a
+// minute ago proven.
+func TestClassifyFreshCloneRemoteNotProven(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	tip := f.git("rev-parse", "main")
+	mergedPRStub(t, "topic", 8, tip, tip)
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	if b, err := exec.Command("git", "clone", f.Origin, dir).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v\n%s", err, b)
+	}
+	logs, _ := os.ReadDir(filepath.Join(dir, ".git", "logs", "refs", "remotes", "origin"))
+	var names []string
+	for _, e := range logs {
+		names = append(names, e.Name())
+	}
+	packedRefs, _ := os.ReadFile(filepath.Join(dir, ".git", "packed-refs"))
+	t.Logf("clone reflogs under logs/refs/remotes/origin: %v", names)
+	t.Logf("clone packed-refs:\n%s", packedRefs)
+
+	s, err := Gather(Git{Dir: dir}, GatherInputs{CWD: dir, OwnRepo: "o/r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Classify(s, Options{Now: time.Now()})
+	row := findRow(t, r, KindRemote, "topic")
+	if row.Status == StatusProven || !slices.Contains(reasonCodes(row.Reasons), ReasonFreshBranch) {
+		t.Fatalf("origin/topic right after clone: %s ev %q %v, want not proven, %q%s",
+			row.Status, row.Evidence, reasonCodes(row.Reasons), ReasonFreshBranch, dumpRows(r.Rows))
 	}
 }
 

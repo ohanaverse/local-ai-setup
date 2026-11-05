@@ -44,9 +44,8 @@ type RefFact struct {
 type AgeSource string
 
 const (
-	AgeFromReflog AgeSource = ""       // Created is the oldest reflog entry
-	AgeFromMtime  AgeSource = "mtime"  // no reflog, logging on: the loose ref file's mtime
-	AgeOld        AgeSource = "packed" // no reflog, logging on, packed only: unmoved since gc packed it, so old
+	AgeFromReflog AgeSource = ""      // Created is the oldest reflog entry
+	AgeFromMtime  AgeSource = "mtime" // no reflog, logging on: the mtime of the loose ref file or of packed-refs
 )
 
 // Proof is the git-only verdict for one tip, computed once per commit.
@@ -376,15 +375,21 @@ func reflogEntry(g Git, ref string, oldest bool) (t time.Time, empty, ok bool) {
 //  2. An empty or absent reflog, with ref logging off (core.logAllRefUpdates
 //     false, or unset in a bare repository): nothing tells a new ref from an
 //     old one, so the age is unknown and the ref counts as fresh.
-//  3. An empty or absent reflog with logging on: any ref made or moved
-//     recently would have an entry, so the log was expired (git gc,
-//     gc.reflogExpire). A loose ref file is as old as its mtime (its last
-//     write); a ref only in packed-refs has not moved since gc packed it, so
-//     it is old (AgeOld).
+//  3. An empty or absent reflog with logging on: the log was expired (git gc,
+//     gc.reflogExpire) or the ref was written without one (git clone writes
+//     its remote-tracking refs straight into packed-refs and logs none of
+//     them). The age is then the file that holds the ref: a loose ref file's
+//     mtime (its last write), or, for a ref only in packed-refs, that file's
+//     mtime. Clone, pack-refs, gc and ref deletion all rewrite packed-refs,
+//     so its mtime is at or after the moment any packed ref entered it: this
+//     fails closed.
 //
-// Any read error is an unknown age (fresh). Known gap, accepted: a user who
-// expires reflogs by hand and packs refs within MinAge of making a branch
-// makes it read old.
+// Cost, accepted: an old ref whose reflog expired reads fresh for MinAge after
+// any rewrite of the file holding it (clone, gc, a `fetch --prune` deleting a
+// packed ref), then heals by itself. A loose ref that is not a regular file
+// (a symlink), a ref in neither place (reftable), or any read error is an
+// unknown age (fresh). Known gap, accepted: a user who expires reflogs by
+// hand and then backdates the ref file makes a new branch read old.
 func refAge(g Git, commonDir, ref string, logging bool) (time.Time, AgeSource) {
 	t, empty, ok := reflogEntry(g, ref, true)
 	switch {
@@ -399,13 +404,17 @@ func refAge(g Git, commonDir, ref string, logging bool) (time.Time, AgeSource) {
 	switch {
 	case err == nil && fi.Mode().IsRegular():
 		return fi.ModTime(), AgeFromMtime
-	case err != nil && !errors.Is(err, fs.ErrNotExist):
+	case err == nil, !errors.Is(err, fs.ErrNotExist):
+		return time.Time{}, AgeFromReflog // not a regular file, or unreadable: unknown
+	}
+	if !packed(commonDir, ref) {
+		return time.Time{}, AgeFromReflog // neither loose nor packed (reftable?): unknown
+	}
+	fi, err = os.Stat(filepath.Join(commonDir, "packed-refs"))
+	if err != nil {
 		return time.Time{}, AgeFromReflog
 	}
-	if packed(commonDir, ref) {
-		return time.Time{}, AgeOld
-	}
-	return time.Time{}, AgeFromReflog // neither loose nor packed (reftable?): unknown
+	return fi.ModTime(), AgeFromMtime
 }
 
 // packed reports whether packed-refs in commonDir lists ref. A read error is
