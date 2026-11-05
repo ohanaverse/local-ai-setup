@@ -200,13 +200,23 @@ func itemOf(row cleanup.Row) Item {
 	if tip == "" {
 		tip = row.Head
 	}
-	return Item{Kind: row.Kind, Path: row.Path, Ref: row.Ref, Name: row.Name, Saw: row.Status, SawTip: tip, SawLosses: row.Losses,
-		Approved: Needs{Confirm: true}}
+	return seal(Item{Kind: row.Kind, Path: row.Path, Ref: row.Ref, Name: row.Name, Saw: row.Status, SawTip: tip, SawLosses: row.Losses,
+		Approved: Needs{Confirm: true}})
 }
 
 // approve is it confirmed with this item's own --force and -D approvals
-// (Ruling K: the flags the old run-wide Options carried).
+// (Ruling K: the flags the old run-wide Options carried), re-sealed.
 func approve(it Item, force, del bool) Item {
 	it.Approved = Needs{Confirm: true, Force: force, Delete: del}
+	return seal(it)
+}
+
+// seal is it sealed as it stands, as Confirmed seals what it builds. Tests
+// use it to hand the engine items Confirmed would not build (to test the
+// engine's own checks behind the seal); production code can only seal
+// through ItemPreview.Confirmed. Tests of the seal itself use the real
+// Preview -> Confirmed -> Run path.
+func seal(it Item) Item {
+	it.seal = sealOf(it)
 	return it
 }

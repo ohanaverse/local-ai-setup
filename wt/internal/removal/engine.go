@@ -66,7 +66,13 @@ func (e Engine) safeItem(it Item, dry bool) (o Outcome) {
 	return e.item(it, dry)
 }
 
+// item is Run's and Plan's path for one item. The first check: it must have
+// come unmodified from ItemPreview.Confirmed (Ruling L). Preview, which
+// takes ItemFromRow items as input, does not come through here.
 func (e Engine) item(it Item, dry bool) Outcome {
+	if !it.confirmed() {
+		return refuse(it, "invalid target: not confirmed")
+	}
 	g := e.gate(it)
 	if g.stop != nil {
 		return *g.stop

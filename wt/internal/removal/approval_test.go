@@ -109,12 +109,15 @@ func TestConfirmedCopiesWhatThePreviewShowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := previewOne(t, f.engine(s, f.inputs(), Options{}), listed)
-	it, err := p.Confirmed(Needs{Confirm: true})
+	if p.Needs != (Needs{}) {
+		t.Fatalf("precondition: needs %+v, want none (clean now)", p.Needs)
+	}
+	it, err := p.Confirmed(Needs{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Item{Kind: listed.Kind, Path: listed.Path, Ref: listed.Ref, Name: listed.Name,
-		Saw: p.Fresh.Status, SawTip: p.Fresh.Tip, SawLosses: p.Fresh.Losses, Approved: Needs{Confirm: true}}
+	want := seal(Item{Kind: listed.Kind, Path: listed.Path, Ref: listed.Ref, Name: listed.Name,
+		Saw: p.Fresh.Status, SawTip: p.Fresh.Tip, SawLosses: p.Fresh.Losses})
 	if !reflect.DeepEqual(it, want) || it.Saw == listed.Saw || it.SawLosses == listed.SawLosses {
 		t.Errorf("confirmed %+v\nwant %+v (listed saw %s %+v)", it, want, listed.Saw, listed.SawLosses)
 	}
@@ -310,6 +313,10 @@ func TestPreviewNeedsAreExactlyWhatRunRequires(t *testing.T) {
 			}
 			short := it
 			w.drop(&short.Approved)
+			// Confirmed would not build this item (it does not cover
+			// Needs); sealed by hand to test the engine's own rule behind
+			// Confirmed. Production code can only seal through Confirmed.
+			short = seal(short)
 			before := f.state()
 			o := one(t, e, short)
 			if o.Worktree == WtRemoved || o.Branch == BrDeleted || !strings.Contains(o.Reason, w.reason) {

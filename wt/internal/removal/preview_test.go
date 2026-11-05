@@ -26,9 +26,10 @@ func previewOne(t *testing.T, e Engine, it Item) ItemPreview {
 // allNeeds is every approval.
 var allNeeds = Needs{Confirm: true, Force: true, Delete: true}
 
-// granted is it with Approved set to n (bypassing Confirmed, to test what
-// Run does with an item whatever its approvals).
-func granted(it Item, n Needs) Item { it.Approved = n; return it }
+// granted is it with Approved set to n, re-sealed (bypassing Confirmed, to
+// test what Run does with an item whatever its approvals; production code
+// can only seal through Confirmed).
+func granted(it Item, n Needs) Item { it.Approved = n; return seal(it) }
 
 // wantApproval fails unless p asks for approval a with needs n.
 func wantApproval(t *testing.T, p ItemPreview, a Approval, n Needs) {

@@ -229,6 +229,7 @@ func runBlockerCases(t *testing.T, grant Needs) {
 			it := itemOf(row)
 			it.Saw = cleanup.StatusProven
 			it.Approved = grant
+			it = seal(it) // edited after building; only Confirmed seals in production
 			o := one(t, f.engine(s, in, Options{}), it)
 			if o.Worktree != WtRefused || !strings.Contains(o.Reason, c.code) {
 				t.Fatalf("outcome %+v, want refused naming %s", o, c.code)
@@ -563,6 +564,7 @@ func TestEngineComparesPathsAfterEvalSymlinks(t *testing.T) {
 	}
 	it := itemOf(row)
 	it.Path = alt
+	it = seal(it) // edited after building; only Confirmed seals in production
 	calls := recordRemoves(t)
 	o := one(t, f.engine(s, f.inputs(), Options{}), it)
 	if o.Worktree != WtRemoved || exists(t, p) {
@@ -594,6 +596,7 @@ func TestPlanMutatesNothing(t *testing.T) {
 		itemOf(f.row(r, cleanup.KindBranch, "loose")),
 	}
 	items[2].Saw = cleanup.StatusProven // a row ticked proven, locked since: refused by its blocker
+	items[2] = seal(items[2])           // edited after building; only Confirmed seals in production
 	state := func() string {
 		return f.git("worktree", "list", "--porcelain") + "\n" + f.git("for-each-ref") + "\n" + f.git("status", "--porcelain", "--ignored")
 	}
@@ -642,7 +645,7 @@ func TestRunProgressCalledPerItem(t *testing.T) {
 	items := []Item{
 		itemOf(f.row(r, cleanup.KindWorktree, "topic")),
 		itemOf(f.row(r, cleanup.KindBranch, "loose")),
-		{Kind: cleanup.KindWorktree, Path: "relative"},
+		seal(Item{Kind: cleanup.KindWorktree, Path: "relative"}),
 	}
 	var got []Outcome
 	out := f.engine(s, f.inputs(), Options{DryRun: true}).Run(items, func(o Outcome) { got = append(got, o) })

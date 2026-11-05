@@ -96,7 +96,10 @@ func TestLsofFinderMatchesAnotherSpellingOfTheDir(t *testing.T) {
 // escapes (probed on macOS: a newline and a tab as \n and \t, a backslash as
 // \\, non-ASCII bytes as \xNN under LC_ALL=C), in lsof's escaped form: each
 // is decoded before the comparison, or a process in such a worktree would
-// never be found. A malformed escape is an error, not a silent miss.
+// never be found. A malformed escape is an error, not a silent miss. The
+// "octal" case is SYNTHETIC: the probed lsof prints other control bytes as
+// ^A (ambiguous, not decoded), never as an octal escape; it pins the
+// decoder's octal branch in case another lsof build emits one.
 func TestLsofFinderDecodesEscapedPaths(t *testing.T) {
 	base := mustResolve(t, t.TempDir())
 	for name, c := range map[string]struct{ dir, lsof string }{
@@ -104,7 +107,7 @@ func TestLsofFinderDecodesEscapedPaths(t *testing.T) {
 		"tab":       {"tab\tx", `tab\tx`},
 		"backslash": {`back\slash`, `back\\slash`},
 		"non-ascii": {"caf\xc3\xa9", `caf\xc3\xa9`},
-		"octal":     {"o\x01x", `o\001x`},
+		"octal":     {"o\x01x", `o\001x`}, // synthetic, see above
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := filepath.Join(base, c.dir)

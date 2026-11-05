@@ -44,7 +44,36 @@ type Item struct {
 	// to do anything; on a worktree item it means "also delete its unmerged
 	// branch"). No approval overrides a hard blocker or an unknown.
 	Approved Needs
+
+	// seal is set only by ItemPreview.Confirmed (Ruling L): a copy of every
+	// exported field as Confirmed set it. Run and Plan refuse an item whose
+	// seal is missing or no longer matches ("invalid target: not
+	// confirmed"), so a hand-built Item, or a confirmed one edited
+	// afterwards, never reaches a removal. Being unexported, it cannot be
+	// set from another package; copying a whole Item value keeps it.
+	seal itemSeal
 }
+
+// itemSeal is the exported fields of an Item, plus whether it was set.
+type itemSeal struct {
+	set       bool
+	kind      cleanup.Kind
+	path, ref string
+	name      string
+	saw       cleanup.Status
+	sawTip    string
+	sawLosses cleanup.Losses
+	approved  Needs
+}
+
+// sealOf is it's exported fields as a set seal.
+func sealOf(it Item) itemSeal {
+	return itemSeal{set: true, kind: it.Kind, path: it.Path, ref: it.Ref, name: it.Name,
+		saw: it.Saw, sawTip: it.SawTip, sawLosses: it.SawLosses, approved: it.Approved}
+}
+
+// confirmed reports whether it came unmodified from Confirmed.
+func (it Item) confirmed() bool { return it.seal.set && it.seal == sealOf(it) }
 
 // Needs is a set of approvals: what an item needs (ItemPreview.Needs) or
 // what the user gave it (Item.Approved). Confirm is the typed confirmation

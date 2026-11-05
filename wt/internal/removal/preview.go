@@ -98,20 +98,30 @@ type ItemPreview struct {
 // preview with approved: Kind, Path, Ref and Name from the preview's item,
 // and what the preview SHOWED (Saw, SawTip, SawLosses from Fresh, so a loss
 // that appears after the confirmation is worse and skipped), with Approved
-// = approved. It is an error for a refused preview or when approved does not
-// cover Needs. approved may add Delete on a worktree item (CanDeleteBranch).
+// = approved, sealed (Ruling L: Run and Plan refuse any Item that did not
+// come unmodified from here). It is an error for a refused preview, when
+// approved does not cover Needs, or when approved holds an approval this
+// item neither needs nor offers (only Needs, plus Delete when
+// CanDeleteBranch): a union of approvals across items is refused, so one
+// item's -D or --force never reaches another.
 func (p ItemPreview) Confirmed(approved Needs) (Item, error) {
+	name := cleanup.OneLine(p.Item.Name)
 	if p.Approval == ApprovalRefused {
-		return Item{}, fmt.Errorf("%s: refused: %s", p.Item.Name, p.Reason)
+		return Item{}, fmt.Errorf("%s: refused: %s", name, p.Reason)
 	}
 	if p.Fresh.Status == "" {
-		return Item{}, fmt.Errorf("%s: the preview has no re-check to confirm", p.Item.Name)
+		return Item{}, fmt.Errorf("%s: the preview has no re-check to confirm", name)
 	}
 	if !approved.covers(p.Needs) {
-		return Item{}, fmt.Errorf("%s: approvals %+v do not cover what it needs %+v", p.Item.Name, approved, p.Needs)
+		return Item{}, fmt.Errorf("%s: approvals %+v do not cover what it needs %+v", name, approved, p.Needs)
+	}
+	allowed := p.Needs
+	allowed.Delete = allowed.Delete || p.CanDeleteBranch
+	if !allowed.covers(approved) {
+		return Item{}, fmt.Errorf("%s: approval not required for this item: %+v given, %+v allowed", name, approved, allowed)
 	}
 	shown := ItemFromRow(p.Fresh)
-	return Item{
+	it := Item{
 		Kind:      p.Item.Kind,
 		Path:      p.Item.Path,
 		Ref:       p.Item.Ref,
@@ -120,7 +130,9 @@ func (p ItemPreview) Confirmed(approved Needs) (Item, error) {
 		SawTip:    shown.SawTip,
 		SawLosses: shown.SawLosses,
 		Approved:  approved,
-	}, nil
+	}
+	it.seal = sealOf(it)
+	return it, nil
 }
 
 // Preview decides every item as Run would, through the same gates, with
