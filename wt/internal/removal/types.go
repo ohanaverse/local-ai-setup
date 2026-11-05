@@ -17,8 +17,9 @@ import (
 const DefaultRemoveTimeout = 10 * time.Minute
 
 // Item is one row the user ticked, as they saw it, with the approvals they
-// gave it. Run must only receive Items built by ItemPreview.Confirmed from
-// the preview the user was shown (ItemFromRow builds a Preview input, not a
+// gave it. Run must only receive Items built by ItemPreview.Confirmed (or,
+// for an item the user opted in to delete the unmerged branch of,
+// ItemPreview.ConfirmedDeletingBranch) from the preview the user was shown (ItemFromRow builds a Preview input, not a
 // Run input): Saw, SawTip and SawLosses are then what the confirmation
 // showed, and Approved is what the user granted this item (Ruling K).
 type Item struct {
@@ -42,11 +43,13 @@ type Item struct {
 	// Force for uncommitted changes or a detached HEAD's unique commits,
 	// Delete to delete a branch not proven merged (a branch item needs it
 	// to do anything; on a worktree item it means "also delete its unmerged
-	// branch"). No approval overrides a hard blocker or an unknown.
+	// branch", given only through ConfirmedDeletingBranch, Ruling M). No
+	// approval overrides a hard blocker or an unknown.
 	Approved Needs
 
-	// seal is set only by ItemPreview.Confirmed (Ruling L): a copy of every
-	// exported field as Confirmed set it. Run and Plan refuse an item whose
+	// seal is set only by ItemPreview.Confirmed and ConfirmedDeletingBranch
+	// (Ruling L): a copy of every exported field, Approved included, as they
+	// set it. Run and Plan refuse an item whose
 	// seal is missing or no longer matches ("invalid target: not
 	// confirmed"), so a hand-built Item, or a confirmed one edited
 	// afterwards, never reaches a removal. Being unexported, it cannot be
@@ -72,7 +75,8 @@ func sealOf(it Item) itemSeal {
 		saw: it.Saw, sawTip: it.SawTip, sawLosses: it.SawLosses, approved: it.Approved}
 }
 
-// confirmed reports whether it came unmodified from Confirmed.
+// confirmed reports whether it came unmodified from Confirmed or
+// ConfirmedDeletingBranch.
 func (it Item) confirmed() bool { return it.seal.set && it.seal == sealOf(it) }
 
 // Needs is a set of approvals: what an item needs (ItemPreview.Needs) or

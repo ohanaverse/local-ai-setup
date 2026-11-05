@@ -15,8 +15,8 @@ import (
 // compares for it). It carries no approvals.
 //
 // Run must not receive it: pass it to Engine.Preview, show the preview, and
-// hand Run the Item ItemPreview.Confirmed builds from what the user
-// confirmed (Ruling K; Tasks 9 and 10 depend on this).
+// hand Run the Item ItemPreview.Confirmed (or ConfirmedDeletingBranch)
+// builds from what the user confirmed (Ruling K; Tasks 9 and 10 depend on this).
 //
 // Every kind converts, a remote row included: the engine refuses a remote
 // item ("not removable"), so a caller that lets one through gets a refusal,
@@ -81,7 +81,8 @@ type ItemPreview struct {
 	// enforces); every approval a refused item would need is false.
 	Needs Needs
 	// CanDeleteBranch: a worktree item whose branch is not proven merged and
-	// would be deleted if the user also grants Approved.Delete; without it
+	// would be deleted if the user individually opts in to it
+	// (ConfirmedDeletingBranch; plain Confirmed refuses Delete); without it
 	// the branch is kept (see Notes). An optional extra approval, not a need.
 	CanDeleteBranch bool
 	// Reason is the engine's reason for a refused item; "" otherwise.
@@ -99,12 +100,41 @@ type ItemPreview struct {
 // and what the preview SHOWED (Saw, SawTip, SawLosses from Fresh, so a loss
 // that appears after the confirmation is worse and skipped), with Approved
 // = approved, sealed (Ruling L: Run and Plan refuse any Item that did not
-// come unmodified from here). It is an error for a refused preview, when
-// approved does not cover Needs, or when approved holds an approval this
-// item neither needs nor offers (only Needs, plus Delete when
-// CanDeleteBranch): a union of approvals across items is refused, so one
-// item's -D or --force never reaches another.
+// come unmodified from here or ConfirmedDeletingBranch). It is an error for
+// a refused preview, when approved does not cover Needs, or when approved
+// holds anything Needs does not (Ruling M: approved must equal what the
+// item needs, so Delete only for a branch-only item that needs it). A
+// union of approvals across items is therefore refused, and one item's -D
+// or --force never reaches another. Deleting the unmerged branch a worktree
+// item's preview merely offers (CanDeleteBranch) is not done here: see
+// ConfirmedDeletingBranch.
 func (p ItemPreview) Confirmed(approved Needs) (Item, error) {
+	return p.confirm(approved, p.Needs)
+}
+
+// ConfirmedDeletingBranch is Confirmed for an item whose unmerged branch the
+// USER individually opted in to delete as well: approved must hold Delete,
+// and the preview must offer it (CanDeleteBranch) or need it (a branch-only
+// item); otherwise it has Confirmed's checks and seal. A caller makes this
+// call per item, only for an item the user opted in for, and never derives
+// it from a batch-wide flag: a CLI -D may apply only to the items whose
+// preview offers it, by calling this method for each of them.
+func (p ItemPreview) ConfirmedDeletingBranch(approved Needs) (Item, error) {
+	name := cleanup.OneLine(p.Item.Name)
+	if !approved.Delete {
+		return Item{}, fmt.Errorf("%s: deleting the branch needs the Delete approval", name)
+	}
+	if !p.CanDeleteBranch && !p.Needs.Delete {
+		return Item{}, fmt.Errorf("%s: its preview offers no branch to delete", name)
+	}
+	allowed := p.Needs
+	allowed.Delete = true
+	return p.confirm(approved, allowed)
+}
+
+// confirm builds the sealed Item for p when approved covers p.Needs and
+// holds nothing outside allowed.
+func (p ItemPreview) confirm(approved, allowed Needs) (Item, error) {
 	name := cleanup.OneLine(p.Item.Name)
 	if p.Approval == ApprovalRefused {
 		return Item{}, fmt.Errorf("%s: refused: %s", name, p.Reason)
@@ -115,8 +145,6 @@ func (p ItemPreview) Confirmed(approved Needs) (Item, error) {
 	if !approved.covers(p.Needs) {
 		return Item{}, fmt.Errorf("%s: approvals %+v do not cover what it needs %+v", name, approved, p.Needs)
 	}
-	allowed := p.Needs
-	allowed.Delete = allowed.Delete || p.CanDeleteBranch
 	if !allowed.covers(approved) {
 		return Item{}, fmt.Errorf("%s: approval not required for this item: %+v given, %+v allowed", name, approved, allowed)
 	}

@@ -211,8 +211,9 @@ func TestPreviewUnmergedBranchItemNeedsDelete(t *testing.T) {
 
 // TestPreviewWorktreeUnprovenBranchCanBeDeleted previews a worktree on an
 // unmerged branch: removing the worktree keeps the branch, so -D is not a
-// need; it is an optional extra approval (CanDeleteBranch). Confirmed with
-// Delete, Run deletes that branch, and only because THIS item has it.
+// need; it is an optional extra approval (CanDeleteBranch). Opted in with
+// ConfirmedDeletingBranch, Run deletes that branch, and only because THIS
+// item has it.
 func TestPreviewWorktreeUnprovenBranchCanBeDeleted(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -224,7 +225,7 @@ func TestPreviewWorktreeUnprovenBranchCanBeDeleted(t *testing.T) {
 	if !p.CanDeleteBranch || p.Plan.Branch != BrRetainedUnmerged {
 		t.Fatalf("can delete %v plan %+v, want deletable and kept without Delete", p.CanDeleteBranch, p.Plan)
 	}
-	it, err := p.Confirmed(Needs{Confirm: true, Delete: true})
+	it, err := p.ConfirmedDeletingBranch(Needs{Confirm: true, Delete: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,8 @@ func TestPreviewWorktreeKeepsUnprovenBranchWithoutDelete(t *testing.T) {
 
 // TestPreviewDirtyWorktreeOnUnprovenBranch previews a dirty worktree on an
 // unmerged branch: it needs Force (summary needs_force) and may also be
-// given Delete; Confirmed with both, Run removes it and deletes the branch.
+// opted in to Delete; with both (ConfirmedDeletingBranch), Run removes it
+// and deletes the branch.
 func TestPreviewDirtyWorktreeOnUnprovenBranch(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -263,7 +265,7 @@ func TestPreviewDirtyWorktreeOnUnprovenBranch(t *testing.T) {
 	if !p.CanDeleteBranch {
 		t.Fatal("CanDeleteBranch false for an unmerged branch")
 	}
-	it, err := p.Confirmed(Needs{Confirm: true, Force: true, Delete: true})
+	it, err := p.ConfirmedDeletingBranch(Needs{Confirm: true, Force: true, Delete: true})
 	if err != nil {
 		t.Fatal(err)
 	}

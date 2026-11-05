@@ -67,7 +67,8 @@ func (e Engine) safeItem(it Item, dry bool) (o Outcome) {
 }
 
 // item is Run's and Plan's path for one item. The first check: it must have
-// come unmodified from ItemPreview.Confirmed (Ruling L). Preview, which
+// come unmodified from ItemPreview.Confirmed or ConfirmedDeletingBranch
+// (Ruling L). Preview, which
 // takes ItemFromRow items as input, does not come through here.
 func (e Engine) item(it Item, dry bool) Outcome {
 	if !it.confirmed() {

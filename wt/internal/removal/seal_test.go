@@ -133,10 +133,11 @@ func TestConfirmedRefusesApprovalsNotNeededOrOffered(t *testing.T) {
 }
 
 // TestConfirmedOffersDeleteOnlyWhereItWouldDelete checks CanDeleteBranch:
-// true for a worktree on an unmerged branch (-D would delete it, so
-// Confirmed accepts Delete there), false for a proven branch (it goes
-// anyway) and for a branch another worktree holds (-D could not delete it),
-// where Confirmed refuses Delete.
+// true for a worktree on an unmerged branch (-D would delete it, so the
+// explicit opt-in ConfirmedDeletingBranch accepts Delete there), false for a
+// proven branch (it goes anyway) and for a branch another worktree holds
+// (-D could not delete it), where the opt-in errors. Plain Confirmed refuses
+// Delete on every worktree item (Ruling M).
 func TestConfirmedOffersDeleteOnlyWhereItWouldDelete(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -168,8 +169,11 @@ func TestConfirmedOffersDeleteOnlyWhereItWouldDelete(t *testing.T) {
 		}
 		withD := p.Needs
 		withD.Delete = true
-		if _, err := p.Confirmed(withD); (err == nil) != want {
-			t.Errorf("%s: Confirmed with Delete err %v, want accepted %v", p.Item.Name, err, want)
+		if _, err := p.ConfirmedDeletingBranch(withD); (err == nil) != want {
+			t.Errorf("%s: ConfirmedDeletingBranch err %v, want accepted %v", p.Item.Name, err, want)
+		}
+		if _, err := p.Confirmed(withD); err == nil {
+			t.Errorf("%s: plain Confirmed accepted Delete for a worktree item", p.Item.Name)
 		}
 	}
 }
