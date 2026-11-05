@@ -92,7 +92,7 @@ func recordRemoves(t *testing.T) *[][]string {
 
 // TestEngineRemovesProvenWorktree removes a squash-merged, clean worktree the
 // user ticked as proven: the basic path must delete the directory and its
-// registration and leave the branch to the branch stage.
+// registration, and the branch stage then deletes its proven branch.
 func TestEngineRemovesProvenWorktree(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -112,8 +112,8 @@ func TestEngineRemovesProvenWorktree(t *testing.T) {
 	if exists(t, p) || f.registered(p) {
 		t.Errorf("worktree %s still on disk (%v) or registered (%v)", p, exists(t, p), f.registered(p))
 	}
-	if o.Branch != BrNotAttempted {
-		t.Errorf("branch outcome %s, want not_attempted until the branch stage exists", o.Branch)
+	if o.Branch != BrDeleted {
+		t.Errorf("branch outcome %s (%s), want deleted", o.Branch, o.Reason)
 	}
 }
 
@@ -619,7 +619,8 @@ func TestPlanMutatesNothing(t *testing.T) {
 		if plan[i].Worktree != run[i].Worktree || plan[i].Branch != run[i].Branch {
 			t.Errorf("item %s: plan %s/%s, run %s/%s", items[i].Name, plan[i].Worktree, plan[i].Branch, run[i].Worktree, run[i].Branch)
 		}
-		if run[i].Worktree != WtRemoved && plan[i].Reason != run[i].Reason {
+		// A plan's reason differs from the run's only where the run acted.
+		if run[i].Worktree != WtRemoved && run[i].Branch != BrDeleted && plan[i].Reason != run[i].Reason {
 			t.Errorf("item %s: plan reason %q, run reason %q", items[i].Name, plan[i].Reason, run[i].Reason)
 		}
 	}
@@ -650,8 +651,8 @@ func TestRunProgressCalledPerItem(t *testing.T) {
 	if out2 := f.engine(s, f.inputs(), Options{DryRun: true}).Run(items, nil); len(out2) != len(items) {
 		t.Fatalf("nil progress: %d outcomes", len(out2))
 	}
-	if out[1].Worktree != WtNotRequested || out[1].Branch != BrNotAttempted {
-		t.Errorf("branch item %+v, want not_requested / not_attempted", out[1])
+	if out[1].Worktree != WtNotRequested || out[1].Branch != BrDeleted {
+		t.Errorf("branch item %+v, want not_requested / deleted (dry run)", out[1])
 	}
 }
 

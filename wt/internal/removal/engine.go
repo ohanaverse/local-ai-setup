@@ -25,12 +25,9 @@ type itemCtx struct {
 	// succeeded, or there was no worktree). It never deletes anything when
 	// false.
 	considerBranch bool
-}
-
-// deleteBranch is the branch stage; it is filled in by the branch-deletion
-// task. Until then it deletes nothing.
-func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) (BranchOutcome, string) {
-	return BrNotAttempted, "branch handling arrives in the next task"
+	// dry: decide only (Plan / DryRun); the worktree at removedPath is
+	// still there.
+	dry bool
 }
 
 // Run acts on items one at a time, in the order given, re-classifying each
@@ -74,7 +71,7 @@ func (e Engine) item(it Item, dry bool) Outcome {
 	case cleanup.KindWorktree:
 		return e.worktreeItem(it, dry)
 	case cleanup.KindBranch:
-		return NewOutcome(it, WtNotRequested, BrNotAttempted, "branch items are handled in the branch stage")
+		return e.branchItem(it, dry)
 	}
 	return NewOutcome(it, WtRefused, BrNotAttempted, fmt.Sprintf("invalid target: kind %q is not removable", it.Kind))
 }
@@ -188,9 +185,14 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 		o.AddWarning(w)
 	}
 
-	// 10. Dry run stops here.
+	ic := itemCtx{item: it, fresh: fresh, removedPath: fresh.Path, considerBranch: true, dry: dry}
+
+	// 10. A dry run removes nothing; it still decides the branch stage, as
+	// the run would after a removal.
 	if dry {
-		o.SetReason("dry run: would remove")
+		br, reason := e.deleteBranch(ic, fresh)
+		o.Branch = br
+		o.SetReason("dry run: would remove; " + strings.TrimPrefix(reason, "dry run: "))
 		return o
 	}
 
@@ -202,10 +204,80 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 	}
 
 	// 12. The branch stage.
-	br, reason := e.deleteBranch(itemCtx{item: it, fresh: fresh, removedPath: fresh.Path, considerBranch: true}, fresh)
+	br, reason := e.deleteBranch(ic, fresh)
 	o.Branch = br
 	o.SetReason(reason)
 	return o
+}
+
+// branchItem runs the gates for one branch-only item (a local branch with
+// no worktree) in the worktree item's order, then hands it to the branch
+// stage. A refused or skipped item's branch is not_attempted.
+func (e Engine) branchItem(it Item, dry bool) Outcome {
+	refuseB := func(reason string) Outcome { return NewOutcome(it, WtRefused, BrNotAttempted, reason) }
+	skipB := func(reason string) Outcome { return NewOutcome(it, WtSkippedChanged, BrNotAttempted, reason) }
+
+	// 1. A target no row could have produced.
+	if why := invalidBranchItem(it); why != "" {
+		return refuseB("invalid target: " + why)
+	}
+
+	// 2. Re-classify it now. A branch a worktree now holds is an error here
+	// (Rescan gives no branch row for it): refused.
+	fresh, err := rescan(e.G, e.Prior, e.In, e.classifyOpts(), cleanup.Target{Kind: cleanup.KindBranch, Ref: it.Ref})
+	if errors.Is(err, cleanup.ErrTargetGone) {
+		return skipB("no longer exists")
+	}
+	if err != nil {
+		return refuseB("could not re-check: " + err.Error())
+	}
+
+	// 3. Exact identity: refs/heads/Topic and refs/heads/topic can be two
+	// branches.
+	if fresh.Ref != it.Ref {
+		return refuseB(fmt.Sprintf("branch spelling changed: %s is now %s", it.Ref, fresh.Ref))
+	}
+
+	// 4. Hard blockers.
+	if len(fresh.Blockers) > 0 {
+		return refuseB(blockerReason(fresh.Blockers))
+	}
+	if fresh.Status == cleanup.StatusInUse {
+		return refuseB("in use")
+	}
+
+	// 5. Changed since the user saw it.
+	if fresh.Status.WorseThan(it.Saw) {
+		return skipB(fmt.Sprintf("status changed since it was listed (%s, was %s)", fresh.Status, it.Saw))
+	}
+	if fresh.Tip != it.SawTip {
+		return skipB("branch moved since it was listed")
+	}
+	if lossesWorse(fresh.Losses, it.SawLosses) {
+		return skipB("what would be lost changed since it was listed")
+	}
+
+	// 6. (No live-process check: a branch has no directory.)
+	// 7, 8. The branch stage; a dry run decides without writing.
+	br, reason := e.deleteBranch(itemCtx{item: it, fresh: fresh, considerBranch: true, dry: dry}, fresh)
+	return NewOutcome(it, WtNotRequested, br, reason)
+}
+
+// invalidBranchItem says why a branch item cannot be acted on before
+// anything is read, or "": the ref must be a well-formed refs/heads/ name,
+// there is no path, Saw is a tickable status and SawTip a full commit id.
+func invalidBranchItem(it Item) string {
+	switch {
+	case !strings.HasPrefix(it.Ref, "refs/heads/") || len(it.Ref) == len("refs/heads/"):
+		return fmt.Sprintf("branch ref %q is not a refs/heads/ name", it.Ref)
+	case it.Path != "":
+		return "a branch item has no path"
+	case !slices.Contains(tickable, it.Saw):
+		return fmt.Sprintf("unknown status seen %q", it.Saw)
+	case !commitID.MatchString(it.SawTip):
+		return fmt.Sprintf("commit seen %q is not a full commit id", it.SawTip)
+	}
+	return ""
 }
 
 // tickable are the statuses a user can tick; Saw must be one of them, or
