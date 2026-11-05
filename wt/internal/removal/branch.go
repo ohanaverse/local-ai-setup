@@ -59,6 +59,29 @@ var knownNotUnknown = map[string]bool{
 	cleanup.ReasonClaimsUnavailable: true,
 }
 
+// gcCaveat is the warning on every deletion: the restore command works only
+// while git keeps the unreachable commit.
+const gcCaveat = "the commit survives only until git gc prunes it, possibly the next gc"
+
+// branchResult is the branch stage's answer: the outcome, one reason line,
+// and warnings (paths, git's errors, caveats) kept out of the reason.
+//
+// A reason is capped at 200 runes (Outcome.SetReason). Every reason for a
+// branch this stage deleted, or deleted and could not restore, therefore
+// names the full commit id immediately after the ref, "<ref> (was <sha>)",
+// keeps the rest short, and puts a restore command last: a cut loses only
+// prose, never the one record of the commit. Paths and git's text go to
+// Warnings.
+type branchResult struct {
+	Out      BranchOutcome
+	Reason   string
+	Warnings []string
+}
+
+func result(out BranchOutcome, reason string, warnings ...string) branchResult {
+	return branchResult{Out: out, Reason: reason, Warnings: warnings}
+}
+
 // deleteBranch is the branch stage for one item: it deletes the local branch
 // fresh names, or says why not. It runs only after the worktree stage
 // succeeded (ic.considerBranch) or for a branch-only item. The rules, first
@@ -67,9 +90,12 @@ var knownNotUnknown = map[string]bool{
 //  1. no branch (a detached worktree): not_attempted;
 //  2. the default branch (any case, or a <remote>/<default> spelling), or
 //     no default branch resolved: retained_default (fail closed);
-//  3. the ref is not refs/heads/ or its tip is not a commit id; or the row
-//     is Unknown, except (with -D) when every Unknown code only answers "is
-//     it merged?" (verdictOnlyUnknown, Ruling H): retained_unknown;
+//  3. the ref is not refs/heads/ or its tip is not a 40-hex commit id
+//     (sha256 repositories are not supported for branch deletion in this
+//     release: "object format not supported"); or the row is Unknown,
+//     except (with -D) when its Unknown codes are verdict-only (at least one
+//     in verdictOnlyUnknown, none outside it and knownNotUnknown; Ruling H):
+//     retained_unknown;
 //  4. the branch alone is not proven (Row.BranchProven, Ruling A; never the
 //     combined worktree Status) and -D was not given: retained_unmerged;
 //  5. a fresh worktree list (read now, after the removal) shows a worktree
@@ -90,32 +116,38 @@ var knownNotUnknown = map[string]bool{
 //
 // With ic.dry it runs rules 1 to 5 and reports what rule 6 would do,
 // running nothing that writes.
-func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) (BranchOutcome, string) {
+func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) branchResult {
 	if !ic.considerBranch {
-		return BrNotAttempted, "the worktree was not removed, so its branch was not considered"
+		return result(BrNotAttempted, "the worktree was not removed, so its branch was not considered")
 	}
 	ref := fresh.Ref
 	// 1.
 	if ref == "" {
-		return BrNotAttempted, "detached HEAD: no branch to delete"
+		return result(BrNotAttempted, "detached HEAD: no branch to delete")
 	}
 	// 2.
 	if e.Prior.NoDefault || e.Prior.Base.Default == "" {
-		return BrRetainedDefault, fmt.Sprintf("branch %s kept: the default branch could not be resolved", ref)
+		return result(BrRetainedDefault, fmt.Sprintf("branch %s kept: the default branch could not be resolved", ref))
 	}
 	if isDefaultForm(ref, e.Prior.Base.Default) {
-		return BrRetainedDefault, fmt.Sprintf("branch %s kept: it is the default branch", ref)
+		return result(BrRetainedDefault, fmt.Sprintf("branch %s kept: it is the default branch", ref))
 	}
 	// 3.
-	if !strings.HasPrefix(ref, "refs/heads/") || !commitID.MatchString(fresh.Tip) {
-		return BrRetainedUnknown, fmt.Sprintf("branch %s kept: its commit could not be read", ref)
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: not a local branch ref", ref))
+	}
+	if !commitID.MatchString(fresh.Tip) {
+		if sha256ID(fresh.Tip) {
+			return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: object format not supported (sha256 repositories are not supported for branch deletion in this release)", ref))
+		}
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: its commit could not be read", ref))
 	}
 	if fresh.Unknown && !(e.Opts.DeleteUnmerged && onlyVerdictUnknown(fresh)) {
-		return BrRetainedUnknown, fmt.Sprintf("branch %s kept: its state could not be read (%s)", ref, unknownCodes(fresh))
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: its state could not be read (%s)", ref, unknownCodes(fresh)))
 	}
 	// 4.
 	if !fresh.BranchProven && !e.Opts.DeleteUnmerged {
-		return BrRetainedUnmerged, fmt.Sprintf("branch %s kept: not proven merged; -D deletes it", ref)
+		return result(BrRetainedUnmerged, fmt.Sprintf("branch %s kept: not proven merged; -D deletes it", ref))
 	}
 	// 5.
 	removed := ""
@@ -123,44 +155,57 @@ func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) (BranchOutcome, stri
 		// A dry run has not removed the item's worktree; the run will have.
 		removed = ic.removedPath
 	}
-	if out, reason := e.checkHolders(ref, removed); out != "" {
-		return out, reason
+	if h := e.checkHolders(ref, removed); h.Out != "" {
+		return h
 	}
 	// 6.
 	if ic.dry {
-		return BrDeleted, "dry run: would delete " + ref
+		return result(BrDeleted, "dry run: would delete "+ref)
 	}
 	return e.casDelete(ref, fresh.Tip)
 }
 
-// onlyVerdictUnknown reports whether every reason code of r that can make a
-// row Unknown is in verdictOnlyUnknown.
+// onlyVerdictUnknown reports whether r's Unknown is only about the merge
+// verdict: at least one code in verdictOnlyUnknown and every code in it or
+// in knownNotUnknown. An Unknown row with no codes is not.
 func onlyVerdictUnknown(r cleanup.Row) bool {
+	verdict := false
 	for _, x := range r.Reasons {
-		if !verdictOnlyUnknown[x.Code] && !knownNotUnknown[x.Code] {
+		switch {
+		case verdictOnlyUnknown[x.Code]:
+			verdict = true
+		case !knownNotUnknown[x.Code]:
 			return false
 		}
 	}
-	return true
+	return verdict
+}
+
+// sha256ID reports a 64-hex object id.
+func sha256ID(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	return strings.Trim(s, "0123456789abcdef") == ""
 }
 
 // checkHolders lists the worktrees afresh and returns retained_checked_out
-// when one holds ref, retained_unknown when that cannot be read, or "" when
-// none holds it. The worktree at removed (a dry run's own) is skipped.
-func (e Engine) checkHolders(ref, removed string) (BranchOutcome, string) {
+// when one holds ref, retained_unknown when that cannot be read, or a zero
+// result when none holds it. The worktree at removed (a dry run's own) is
+// skipped. Paths and errors go to warnings.
+func (e Engine) checkHolders(ref, removed string) branchResult {
 	facts, err := listWorktrees(e.G, e.In.CWD)
 	if err != nil {
-		return BrRetainedUnknown, fmt.Sprintf("branch %s kept: could not list worktrees: %v", ref, err)
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: could not list worktrees", ref), "could not list worktrees: "+err.Error())
 	}
 	at, err := holderOf(e.G, facts, ref, removed)
 	switch {
 	case err != nil:
-		return BrRetainedUnknown, fmt.Sprintf("branch %s kept: %v", ref, err)
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: could not tell which branches a worktree holds", ref), err.Error())
 	case at != "":
-		// The path before the explanation: the line cap must not cut it.
-		return BrRetainedCheckedOut, fmt.Sprintf("branch %s kept: held by worktree %s (checked out, or a rebase or bisect there)", ref, at)
+		return result(BrRetainedCheckedOut, fmt.Sprintf("branch %s kept: held by another worktree (checked out, or a rebase or bisect there)", ref), "held by worktree "+at)
 	}
-	return "", ""
+	return branchResult{}
 }
 
 // holderOf is the path of a listed worktree that holds ref (heldRefs), or
@@ -205,79 +250,99 @@ func refHeld(held []string, ref string) bool {
 // casDelete runs `git update-ref --no-deref -d ref tip` and judges the
 // result by re-reading the ref: git's exit status alone is never taken for
 // it. After a confirmed delete it re-checks the worktrees and puts the
-// branch back if one now holds it.
-func (e Engine) casDelete(ref, tip string) (BranchOutcome, string) {
+// branch back if one now holds it (or that cannot be read).
+func (e Engine) casDelete(ref, tip string) branchResult {
+	was := fmt.Sprintf("%s (was %s)", ref, tip)
+	name := strings.TrimPrefix(ref, "refs/heads/")
+	restoreCmd := fmt.Sprintf("restore: git branch %s %s", name, tip)
+
 	beforeUpdateRef()
 	out, err := runRefGit(e.G, "update-ref", "--no-deref", "-d", ref, tip)
 	if err != nil || out.Code != 0 {
-		return e.deleteFailed(ref, tip, err, out)
+		return e.deleteFailed(ref, tip, gitErrText(err, out))
 	}
 	now, exists, rerr := e.readRef(ref)
 	switch {
 	case rerr != nil:
-		return BrRetainedUnknown, fmt.Sprintf("branch %s: git reported it deleted but it could not be re-read (was %s): %v", ref, tip, rerr)
+		return result(BrRetainedUnknown, "branch "+was+": git reported it deleted but it could not be re-read", rerr.Error())
 	case exists:
-		return BrRetainedUnknown, fmt.Sprintf("branch %s still exists (at %s) although git reported it deleted", ref, abbrev(now))
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s still exists (at %s) although git reported it deleted", was, abbrev(now)))
 	}
 
 	// A worktree that checked the branch out (or started a rebase or bisect
 	// on it) in the window: put the branch back, create-only.
 	afterUpdateRef()
-	if br, why := e.checkHolders(ref, ""); br != "" {
-		if rerr := e.restoreRef(ref, tip); rerr != "" {
-			return BrRetainedUnknown, fmt.Sprintf("branch %s deleted, then a worktree held it or that could not be checked (%s), and restoring it failed: %s; restore with: git branch %s %s",
-				ref, why, rerr, strings.TrimPrefix(ref, "refs/heads/"), tip)
-		}
-		if br == BrRetainedCheckedOut {
-			return BrRetainedCheckedOut, fmt.Sprintf("branch %s: a worktree checked it out while it was being deleted; restored at %s", ref, abbrev(tip))
-		}
-		return BrRetainedUnknown, fmt.Sprintf("branch %s restored at %s: after deleting it, the worktrees could not be re-checked (%s)", ref, abbrev(tip), why)
+	h := e.checkHolders(ref, "")
+	if h.Out == "" {
+		return result(BrDeleted, fmt.Sprintf("deleted %s (was %s; %s)", ref, tip, restoreCmd), gcCaveat)
 	}
-	name := strings.TrimPrefix(ref, "refs/heads/")
-	return BrDeleted, fmt.Sprintf("deleted %s (was %s; restore with: git branch %s %s until git gc prunes it, possibly the next gc)", ref, tip, name, tip)
+	restored, recreated, why := e.restoreRef(ref, tip)
+	switch {
+	case restored && h.Out == BrRetainedCheckedOut:
+		return result(BrRetainedCheckedOut, "branch "+was+" restored: a worktree took it while it was being deleted", h.Warnings...)
+	case restored:
+		return result(BrRetainedUnknown, "branch "+was+" restored: the worktrees could not be re-checked after deleting it", h.Warnings...)
+	case recreated != "":
+		// A create-only restore, or `git branch`, would fail: say what is
+		// there now and which commit was deleted.
+		return result(BrRetainedUnknown,
+			fmt.Sprintf("branch %s deleted; %s was re-created at %s; the deleted commit was %s", was, name, abbrev(recreated), tip),
+			append(h.Warnings, gcCaveat)...)
+	}
+	return result(BrRetainedUnknown, fmt.Sprintf("branch %s deleted and not restored; %s", was, restoreCmd),
+		append(h.Warnings, "restoring it failed: "+why, gcCaveat)...)
+}
+
+// gitErrText is a failed git call's error as one line.
+func gitErrText(err error, out cleanup.Out) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("exit %d: %s", out.Code, cleanup.OneLine(out.Stderr))
 }
 
 // deleteFailed judges a delete git did not confirm by re-reading the ref.
-func (e Engine) deleteFailed(ref, tip string, err error, out cleanup.Out) (BranchOutcome, string) {
-	gitErr := ""
-	if err != nil {
-		gitErr = err.Error()
-	} else {
-		gitErr = fmt.Sprintf("exit %d: %s", out.Code, cleanup.OneLine(out.Stderr))
-	}
+func (e Engine) deleteFailed(ref, tip, gitErr string) branchResult {
+	was := fmt.Sprintf("%s (was %s)", ref, tip)
 	now, exists, rerr := e.readRef(ref)
 	switch {
 	case rerr != nil:
-		return BrRetainedUnknown, fmt.Sprintf("branch %s kept: git update-ref failed (%s) and it could not be re-read (was %s): %v", ref, gitErr, tip, rerr)
+		return result(BrRetainedUnknown, "branch "+was+": git update-ref failed and it could not be re-read",
+			"git update-ref: "+gitErr, "re-read: "+rerr.Error())
 	case !exists:
 		// Someone else deleted it, or git did before it failed (a timeout
 		// after the write): fail closed, but say so and give the tip.
-		return BrRetainedMoved, fmt.Sprintf("branch %s gone after git error; it may have been deleted by this run (was %s; %s)", ref, tip, gitErr)
+		return result(BrRetainedMoved, "branch "+was+" gone after git error; it may have been deleted by this run",
+			"git update-ref: "+gitErr)
 	case now != tip:
-		return BrRetainedMoved, fmt.Sprintf("branch %s moved since it was re-checked (now %s, was %s)", ref, abbrev(now), abbrev(tip))
+		return result(BrRetainedMoved, fmt.Sprintf("branch %s moved since it was re-checked (now %s, was %s)", ref, abbrev(now), abbrev(tip)))
 	}
-	return BrRetainedUnknown, fmt.Sprintf("branch %s kept: git update-ref failed: %s", ref, gitErr)
+	return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: git update-ref failed", ref), "git update-ref: "+gitErr)
 }
 
 // restoreRef recreates ref at tip only if it does not exist (the all-zero
-// old value, as long as the tip's object format), and confirms it by
-// re-reading. It returns "" or why it failed.
-func (e Engine) restoreRef(ref, tip string) string {
+// old value, as long as the tip's object format) and judges the result by
+// re-reading the ref, never by git's exit alone: restored when it is at tip;
+// recreated (its commit) when it exists at another commit; otherwise why
+// it is not back.
+func (e Engine) restoreRef(ref, tip string) (restored bool, recreated, why string) {
 	out, err := runRefGit(e.G, "update-ref", ref, tip, strings.Repeat("0", len(tip)))
-	switch {
-	case err != nil:
-		return err.Error()
-	case out.Code != 0:
-		return fmt.Sprintf("exit %d: %s", out.Code, cleanup.OneLine(out.Stderr))
+	gitErr := ""
+	if err != nil || out.Code != 0 {
+		gitErr = gitErrText(err, out)
 	}
 	now, exists, rerr := e.readRef(ref)
 	switch {
 	case rerr != nil:
-		return rerr.Error()
-	case !exists || now != tip:
-		return "git reported it restored but it is not at " + tip
+		return false, "", "could not re-read it: " + rerr.Error()
+	case exists && now == tip:
+		return true, "", ""
+	case exists:
+		return false, now, ""
+	case gitErr != "":
+		return false, "", gitErr
 	}
-	return ""
+	return false, "", "git reported it restored but it is not there"
 }
 
 // readRef reads ref's tip with one for-each-ref naming it, matching the

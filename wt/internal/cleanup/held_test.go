@@ -62,6 +62,14 @@ func TestHeldRefs(t *testing.T) {
 			f.mustFail(p, "", "rebase", "--apply", "main")
 		}, []string{"refs/heads/topic"}},
 		{"stopped am holds only HEAD's branch", func(f *fixture, p string) { f.StoppedAm(p) }, []string{"refs/heads/topic"}},
+		{"rebase-apply with head-name and no applying file", func(_ *fixture, p string) {
+			gitIn(t, p, "checkout", "--detach")
+			writeState(t, p, "rebase-apply/head-name", "refs/heads/topic\n")
+		}, []string{"refs/heads/topic"}},
+		{"rebase-apply of git am (applying) holds nothing", func(_ *fixture, p string) {
+			gitIn(t, p, "checkout", "--detach")
+			writeState(t, p, "rebase-apply/applying", "")
+		}, nil},
 		{"bisect from the branch, detached", func(f *fixture, p string) {
 			for i := range 3 {
 				commitIn(t, p, "b", strings.Repeat("x", i+1), "b")
@@ -113,6 +121,7 @@ func TestHeldRefsFailsClosed(t *testing.T) {
 		{"rebase-merge without head-name", map[string]string{"rebase-merge/msgnum": "1\n"}},
 		{"head-name not a ref", map[string]string{"rebase-merge/head-name": "topic\n"}},
 		{"rebasing apply without head-name", map[string]string{"rebase-apply/rebasing": ""}},
+		{"rebase-apply, not am, without head-name", map[string]string{"rebase-apply/msgnum": "1\n"}},
 		{"moves file not in records of three", map[string]string{"rebase-merge/head-name": "refs/heads/topic\n", rebaseMovesFile: "refs/heads/a\n" + z + "\n"}},
 		{"moves file naming a non-ref", map[string]string{"rebase-merge/head-name": "refs/heads/topic\n", rebaseMovesFile: "a\n" + z + "\n" + z + "\n"}},
 		{"empty BISECT_START", map[string]string{"BISECT_START": "\n"}},
@@ -149,6 +158,27 @@ func TestHeldRefsPrunableWorktree(t *testing.T) {
 	got, err := HeldRefs(Git{Dir: f.Dir}, w)
 	if err != nil || !slices.Equal(got, []string{"refs/heads/topic"}) {
 		t.Fatalf("HeldRefs = %q, %v; want the rebase's branch", got, err)
+	}
+}
+
+// TestHeldRefsNestedWorktreeLostGitFile: a linked worktree nested in the
+// primary checkout, with a stopped rebase holding topic, loses its .git file
+// (prunable, directory still there). Running git in that directory reaches
+// the OUTER repository and its state, which holds nothing; the worktree's
+// own state lives in its admin directory, which still holds topic (git
+// branch -D refuses it). HeldRefs must report topic from the admin dir.
+func TestHeldRefsNestedWorktreeLostGitFile(t *testing.T) {
+	f := newFixture(t)
+	p := filepath.Join(f.Dir, "nested")
+	f.git("worktree", "add", "-b", "topic", p)
+	f.StoppedRebase(p)
+	if err := os.Remove(filepath.Join(p, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	w := factAt(t, f, p)
+	got, err := HeldRefs(Git{Dir: f.Dir}, w)
+	if err != nil || !slices.Equal(got, []string{"refs/heads/topic"}) {
+		t.Fatalf("HeldRefs = %q, %v; want the rebase's branch from the admin dir", got, err)
 	}
 }
 

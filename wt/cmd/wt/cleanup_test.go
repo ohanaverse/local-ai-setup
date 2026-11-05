@@ -522,9 +522,17 @@ func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The one exemption: the sequencer state file HeldRefs reads (a
-		// read-only path whose name contains "update-ref"), exact spelling.
-		src := strings.ReplaceAll(string(b), "rebase-merge/update-refs", "")
+		// The one exemption: in held.go only, the sequencer state file
+		// HeldRefs reads (a read-only path whose name contains "update-ref"),
+		// exact spelling. Every "update-ref" there must be that spelling.
+		src := string(b)
+		if filepath.Base(f) == "held.go" && strings.Contains(filepath.ToSlash(f), "internal/cleanup/") {
+			const stateFile = "rebase-merge/update-refs"
+			if n, m := strings.Count(src, "update-ref"), strings.Count(src, stateFile); n != m {
+				t.Errorf("%s: %d \"update-ref\" but only %d %q", f, n, m, stateFile)
+			}
+			src = strings.ReplaceAll(src, stateFile, "")
+		}
 		for _, s := range banned {
 			if strings.Contains(src, s) {
 				t.Errorf("%s contains %q", f, s)

@@ -680,8 +680,9 @@ func TestEngineWarnsAboutLiveProcesses(t *testing.T) {
 	if o.Worktree != WtRemoved || exists(t, p) {
 		t.Fatalf("outcome %+v, want removed", o)
 	}
-	if len(o.Warnings) != 1 {
-		t.Fatalf("warnings %q, want one", o.Warnings)
+	// The process warning, then the branch deletion's gc caveat.
+	if len(o.Warnings) != 2 || o.Warnings[1] != gcCaveat {
+		t.Fatalf("warnings %q, want the process warning and the gc caveat", o.Warnings)
 	}
 	w := o.Warnings[0]
 	for _, s := range []string{"4", "vim", "node", "zsh"} {
@@ -710,7 +711,7 @@ func TestEngineIgnoresProcessFinderError(t *testing.T) {
 	if o.Worktree != WtRemoved || exists(t, p) {
 		t.Fatalf("outcome %+v, want removed", o)
 	}
-	if len(o.Warnings) != 1 || !strings.Contains(o.Warnings[0], "could not check for running processes") {
+	if len(o.Warnings) != 2 || !strings.Contains(o.Warnings[0], "could not check for running processes") || o.Warnings[1] != gcCaveat {
 		t.Errorf("warnings %q", o.Warnings)
 	}
 }

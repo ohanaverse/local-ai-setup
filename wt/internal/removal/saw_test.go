@@ -232,7 +232,7 @@ func TestEngineChecksProcessesBeforeRescan(t *testing.T) {
 	if strings.Join(order, ",") != "procs,rescan" {
 		t.Errorf("order %v, want procs then rescan", order)
 	}
-	if o.Worktree != WtRemoved || len(o.Warnings) != 1 || !strings.Contains(o.Warnings[0], "1 process running") {
+	if o.Worktree != WtRemoved || len(o.Warnings) != 2 || !strings.Contains(o.Warnings[0], "1 process running") || o.Warnings[1] != gcCaveat {
 		t.Errorf("outcome %+v, want removed with the process warning", o)
 	}
 }

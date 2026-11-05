@@ -190,9 +190,9 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 	// 10. A dry run removes nothing; it still decides the branch stage, as
 	// the run would after a removal.
 	if dry {
-		br, reason := e.deleteBranch(ic, fresh)
-		o.Branch = br
-		o.SetReason("dry run: would remove; " + strings.TrimPrefix(reason, "dry run: "))
+		r := e.deleteBranch(ic, fresh)
+		r.Reason = "dry run: would remove; " + strings.TrimPrefix(r.Reason, "dry run: ")
+		o.applyBranch(r)
 		return o
 	}
 
@@ -204,10 +204,18 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 	}
 
 	// 12. The branch stage.
-	br, reason := e.deleteBranch(ic, fresh)
-	o.Branch = br
-	o.SetReason(reason)
+	o.applyBranch(e.deleteBranch(ic, fresh))
 	return o
+}
+
+// applyBranch records the branch stage's result on o: its outcome, its
+// reason and its warnings (each one sanitised line).
+func (o *Outcome) applyBranch(r branchResult) {
+	o.Branch = r.Out
+	o.SetReason(r.Reason)
+	for _, w := range r.Warnings {
+		o.AddWarning(w)
+	}
 }
 
 // branchItem runs the gates for one branch-only item (a local branch with
@@ -259,8 +267,9 @@ func (e Engine) branchItem(it Item, dry bool) Outcome {
 
 	// 6. (No live-process check: a branch has no directory.)
 	// 7, 8. The branch stage; a dry run decides without writing.
-	br, reason := e.deleteBranch(itemCtx{item: it, fresh: fresh, considerBranch: true, dry: dry}, fresh)
-	return NewOutcome(it, WtNotRequested, br, reason)
+	o := NewOutcome(it, WtNotRequested, BrNotAttempted, "")
+	o.applyBranch(e.deleteBranch(itemCtx{item: it, fresh: fresh, considerBranch: true, dry: dry}, fresh))
+	return o
 }
 
 // invalidBranchItem says why a branch item cannot be acted on before

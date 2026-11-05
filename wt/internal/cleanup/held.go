@@ -18,11 +18,14 @@ import (
 // (BISECT_START). A rebase or bisect leaves HEAD detached, so the worktree
 // list alone does not show these. Callers compare case-folded.
 //
-// The state files are found through w's own git dir (`rev-parse --git-path`
-// run in w, as the operation gate does); for a prunable worktree, whose
-// directory is gone, through its administrative directory under the common
-// dir. An operation marker whose holder file cannot be read or parsed is an
-// error, as is any read that fails: callers fail closed. It reads only.
+// The state files are read from w's own git dir: for the primary, the common
+// dir; for a linked worktree, its administrative directory
+// (<common>/worktrees/<id>, found by its gitdir registration), never by
+// running git in w.Path, which for a worktree that lost its .git file and
+// sits inside another checkout would answer for that outer repository. An
+// administrative directory that cannot be found, an operation marker whose
+// holder file cannot be read or parsed, and any failed read are errors:
+// callers fail closed. It reads only.
 func HeldRefs(g Git, w WorktreeFact) ([]string, error) {
 	var refs []string
 	if w.Branch != "" {
@@ -54,13 +57,13 @@ func HeldRefs(g Git, w WorktreeFact) ([]string, error) {
 	if ok, err := present(rebaseApply); err != nil {
 		return nil, err
 	} else if ok {
-		// rebase-apply is also `git am`'s; only a rebase there holds a
-		// branch (git checks the "rebasing" file the same way).
-		rebasing, err := present(filepath.Join(rebaseApply, "rebasing"))
+		// rebase-apply is also `git am`'s, marked by an "applying" file;
+		// anything else there is a rebase, as git itself decides.
+		applying, err := present(filepath.Join(rebaseApply, "applying"))
 		if err != nil {
 			return nil, err
 		}
-		if rebasing {
+		if !applying {
 			ref, err := headName(filepath.Join(rebaseApply, "head-name"))
 			if err != nil {
 				return nil, err
@@ -93,43 +96,28 @@ const rebaseMovesFile = "rebase-merge/update-refs"
 // heldStateNames are the state paths HeldRefs reads, in its order.
 var heldStateNames = []string{"rebase-merge", "rebase-apply", "BISECT_START"}
 
-// heldStatePaths resolves heldStateNames in w's git dir.
+// heldStatePaths resolves heldStateNames in w's git dir: the common dir for
+// the primary, the administrative directory for a linked worktree.
 func heldStatePaths(g Git, w WorktreeFact) ([]string, error) {
-	if _, err := os.Lstat(w.Path); errors.Is(err, fs.ErrNotExist) {
-		admin, err := adminDir(g, w.Path)
-		if err != nil {
-			return nil, err
-		}
-		var out []string
-		for _, n := range heldStateNames {
-			out = append(out, filepath.Join(admin, n))
-		}
-		return out, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("cleanup: %s: %w", flat(w.Path), err)
-	}
-	args := []string{"rev-parse", "--path-format=absolute"}
-	for _, n := range heldStateNames {
-		args = append(args, "--git-path", n)
-	}
-	o, err := Git{Dir: w.Path, Timeout: g.Timeout}.Run(args...)
+	common, err := commonDir(g)
 	if err != nil {
 		return nil, err
 	}
-	if o.Code != 0 {
-		return nil, gitFailure(o, args...)
+	dir := common
+	if !w.Primary {
+		if dir, err = adminDir(common, w.Path); err != nil {
+			return nil, err
+		}
 	}
-	lines := strings.Split(strings.TrimRight(o.Stdout, "\n"), "\n")
-	if len(lines) != len(heldStateNames) {
-		return nil, fmt.Errorf("cleanup: rev-parse --git-path in %s: %d lines for %d paths", flat(w.Path), len(lines), len(heldStateNames))
+	var out []string
+	for _, n := range heldStateNames {
+		out = append(out, filepath.Join(dir, n))
 	}
-	return lines, nil
+	return out, nil
 }
 
-// adminDir finds the administrative directory (<common>/worktrees/<id>) of
-// the worktree registered at path, whose directory no longer exists: the
-// one whose gitdir file names <path>/.git.
-func adminDir(g Git, path string) (string, error) {
+// commonDir is the repository's absolute git common dir, read where g runs.
+func commonDir(g Git) (string, error) {
 	args := []string{"rev-parse", "--path-format=absolute", "--git-common-dir"}
 	o, err := g.Run(args...)
 	if err != nil {
@@ -139,21 +127,44 @@ func adminDir(g Git, path string) (string, error) {
 		return "", gitFailure(o, args...)
 	}
 	common := strings.TrimSpace(o.Stdout)
+	if common == "" || !filepath.IsAbs(common) {
+		return "", fmt.Errorf("cleanup: rev-parse --git-common-dir gave %q", flat(common))
+	}
+	return common, nil
+}
+
+// adminDir finds the administrative directory (<common>/worktrees/<id>) of
+// the linked worktree registered at path: the one whose gitdir file names
+// <path>/.git (absolute, or relative to the administrative directory). None,
+// or more than one, is an error.
+func adminDir(common, path string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(common, "worktrees", "*", "gitdir"))
 	if err != nil {
 		return "", err
 	}
-	want := resolve(path)
+	want, wantClean := resolve(path), filepath.Clean(path)
+	var found []string
 	for _, m := range matches {
 		b, err := os.ReadFile(m)
 		if err != nil {
 			return "", fmt.Errorf("cleanup: %s: %w", flat(m), err)
 		}
-		if resolve(filepath.Dir(strings.TrimSpace(string(b)))) == want {
-			return filepath.Dir(m), nil
+		gd := strings.TrimSpace(string(b))
+		if !filepath.IsAbs(gd) {
+			gd = filepath.Join(filepath.Dir(m), gd)
+		}
+		wt := filepath.Dir(gd)
+		if resolve(wt) == want || filepath.Clean(wt) == wantClean {
+			found = append(found, filepath.Dir(m))
 		}
 	}
-	return "", fmt.Errorf("cleanup: no administrative directory found for the worktree %s", flat(path))
+	switch len(found) {
+	case 1:
+		return found[0], nil
+	case 0:
+		return "", fmt.Errorf("cleanup: no administrative directory found for the worktree %s", flat(path))
+	}
+	return "", fmt.Errorf("cleanup: %d administrative directories claim the worktree %s", len(found), flat(path))
 }
 
 // present reports whether p exists; any error but not-exist is an error.
