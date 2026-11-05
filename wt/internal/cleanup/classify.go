@@ -459,26 +459,41 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 }
 
 // prTip is the PR rung: a MERGED PR into the default branch whose head is the
-// tip and whose merge commit is in the base.
+// tip and whose merge commit is in the base. Several merged PRs can share a
+// head: a verifiable one proves the rung whoever comes first, so the
+// unverifiable ones are named only when none is verifiable — leaving their
+// reason in would keep a proven row in LESS SURE for a check the other PR
+// already answered.
 func (c *classifier) prTip(j *judge, r RefFact, res PRResult) {
 	if res.Lookup != LookupKnown {
 		return
 	}
+	var merged *PRInfo
+	var unknown []string
 	for _, pr := range res.PRs {
 		if pr.State != "MERGED" || pr.BaseRef != c.s.Base.Default || pr.HeadRefOid != r.Tip {
 			continue
 		}
 		switch c.s.Merges[pr.MergeCommit] {
 		case TriYes:
-			j.ev = EvPRTip
-			j.pr = &pr
-			if c.gh != GHOK {
-				j.weak(ReasonCannotVerify, c.ghNote)
+			if merged == nil {
+				p := pr
+				merged = &p
 			}
-			return
 		case TriUnknown:
-			j.unsure(ReasonPRMergeUnknown, fmt.Sprintf("PR #%d's merge commit could not be checked against the base", pr.Number))
+			unknown = append(unknown, fmt.Sprintf("PR #%d", pr.Number))
 		}
+	}
+	if merged != nil {
+		j.ev = EvPRTip
+		j.pr = merged
+		if c.gh != GHOK {
+			j.weak(ReasonCannotVerify, c.ghNote)
+		}
+		return
+	}
+	if len(unknown) > 0 {
+		j.unsure(ReasonPRMergeUnknown, fmt.Sprintf("%s's merge commit could not be checked against the base", strings.Join(unknown, ", ")))
 	}
 }
 
