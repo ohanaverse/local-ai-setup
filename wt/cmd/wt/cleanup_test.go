@@ -501,13 +501,17 @@ func TestCleanupCmdRegisteredOnRoot(t *testing.T) {
 }
 
 // TestCleanupCmdContainsNoDeletion scans the non-test sources of the cleanup
-// package and of this command for any deletion call. PR A is read-only by
-// design: a removal belongs to a later PR and must not slip in unreviewed.
+// package and of this command for any deletion call. The classifier is
+// read-only by design: removal lives in internal/removal alone (held module-
+// wide by TestDeletionStringsOnlyInRemovalPackage), and must not slip in here
+// unreviewed. Besides worktree and branch deletion it bans the two ways to
+// delete a remote branch: a push (refspec ":<branch>") and `gh api -X DELETE`.
 func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 	files, _ := filepath.Glob("../../internal/cleanup/*.go")
 	more, _ := filepath.Glob("cleanup*.go")
 	files = append(files, more...)
-	banned := []string{"worktree remove", `"worktree", "remove"`, `"worktree", "prune"`, "update-ref", `branch", "-d`, `branch", "-D`, "--delete", "os.RemoveAll", "os.Remove("}
+	banned := []string{"worktree remove", `"worktree", "remove"`, `"worktree", "prune"`, "update-ref", `branch", "-d`, `branch", "-D`, "--delete", "os.RemoveAll", "os.Remove(",
+		`":"+`, `":" +`, `"push"`, "-X DELETE", `"-X", "DELETE"`, `"--method", "DELETE"`, "-XDELETE"}
 	scanned := 0
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
