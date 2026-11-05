@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -48,9 +49,28 @@ func (v Verdict) String() string {
 // patchIDWalkCap bounds the base commits WeakSignals hashes for patch-id.
 const patchIDWalkCap = 500
 
-// commitOf resolves ref to a commit sha. ok is false for an absent ref and for
-// any git failure alike: either way the caller cannot judge.
+var fullCommitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// qualified reports whether ref is a full 40-hex commit id or a plain
+// refs/heads/<b> or refs/remotes/<r>/<b> name (no revision syntax). A short
+// name is refused: git resolves `t2` to a tag t2 before the branch t2, so a
+// branch could be judged by another object entirely.
+func qualified(ref string) bool {
+	if fullCommitID.MatchString(ref) {
+		return true
+	}
+	if !strings.HasPrefix(ref, "refs/heads/") && !strings.HasPrefix(ref, "refs/remotes/") {
+		return false
+	}
+	return !strings.ContainsAny(ref, "^~:?*[\\ \t\n") && !strings.Contains(ref, "@{") && !strings.Contains(ref, "..")
+}
+
+// commitOf resolves ref to a commit sha. ok is false for an unqualified ref,
+// an absent one and any git failure alike: the caller cannot judge.
 func commitOf(g Git, ref string) (string, bool) {
+	if !qualified(ref) {
+		return "", false
+	}
 	o, err := g.Run("rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil || o.Code != 0 {
 		return "", false
@@ -80,11 +100,34 @@ func mergeBase(g Git, a, b string) (string, bool) {
 	return sha, sha != ""
 }
 
+// mergeDriverConfigured reports whether any `merge.<name>.driver` is set. A
+// custom driver can drop one side's change and still exit 0, which would make
+// merge-tree's "adds nothing" a lie. err is set for an unexpected exit.
+func mergeDriverConfigured(g Git) (bool, error) {
+	o, err := g.Run("config", "--get-regexp", `^merge\..*\.driver$`)
+	if err != nil {
+		return false, err
+	}
+	switch o.Code {
+	case 0:
+		return strings.TrimSpace(o.Stdout) != "", nil
+	case 1:
+		return false, nil // no such key
+	}
+	return false, gitFailure(o, "config", "--get-regexp", `^merge\..*\.driver$`)
+}
+
 // Prove runs the evidence ladder for tip against base; the first proof wins.
+//
+// base and tip must each be a fully-qualified branch ref (refs/heads/<b> or
+// refs/remotes/<r>/<b>) or a full 40-hex commit id; anything else, including
+// a short name, which git may resolve to a same-named tag, is Undetermined.
+//
 // Every rung reads git's exit code: 0 and 1 are answers, anything else (or a
 // failure to run git) is Undetermined at once — the ladder never goes on to a
 // later rung as if an erroring one had said "no". A false Merged loses work,
-// so only a clean proof returns Merged.
+// so only a clean proof returns Merged. A configured merge driver makes the
+// merge-tree rung unanswerable, so it is Undetermined too.
 func Prove(g Git, base, tip string) (Evidence, Verdict) {
 	b, ok := commitOf(g, base)
 	if !ok {
@@ -146,6 +189,13 @@ func Prove(g Git, base, tip string) (Evidence, Verdict) {
 
 	// 5. merging tip into base adds nothing: the merged tree is base's tree.
 	// Unlike git cherry, this fails safe when the change was later reverted.
+	// merge-tree honours .gitattributes merge drivers, and a driver can keep
+	// base's side and exit 0; with any driver configured (or the check
+	// failing) the rung cannot be trusted. Earlier rungs only prove, so
+	// Undetermined here loses no answer.
+	if driver, err := mergeDriverConfigured(g); err != nil || driver {
+		return "", Undetermined
+	}
 	o, err = g.Run("merge-tree", "--write-tree", b, t)
 	if err != nil {
 		return "", Undetermined
@@ -166,8 +216,13 @@ func Prove(g Git, base, tip string) (Evidence, Verdict) {
 // WeakSignals reports the signals that suggest, but never prove, tip's work is
 // in base: git cherry calls every commit equivalent, or the branch's whole
 // diff has the patch-id of one base commit since the merge-base. A git error
-// omits that signal; so does a base walk longer than patchIDWalkCap.
+// omits that signal; so does a base walk longer than patchIDWalkCap. base and
+// tip follow Prove's contract (qualified refs or full commit ids); anything
+// else gets no signals.
 func WeakSignals(g Git, base, tip string) []Evidence {
+	if !qualified(base) || !qualified(tip) {
+		return nil
+	}
 	var out []Evidence
 	if cherryAllEquivalent(g, base, tip) {
 		out = append(out, EvCherryEquivalent)
