@@ -151,7 +151,7 @@ func TestBranchRetainedUnmergedWithoutD(t *testing.T) {
 }
 
 // TestBranchDeletedWithDOnUnmerged removes the same unmerged worktree with
-// -D (DeleteUnmerged): the branch is deleted, the reason carries the full
+// -D (Approved.Delete): the branch is deleted, the reason carries the full
 // tip right after the ref and the restore command last, and a warning says
 // no more than git keeps: the commits live only in the object store until a
 // gc prunes them, which can be the next one.
@@ -161,7 +161,7 @@ func TestBranchDeletedWithDOnUnmerged(t *testing.T) {
 	f.unmergedPushed("topic")
 	s, r := f.report()
 	row := f.row(r, cleanup.KindWorktree, "topic")
-	o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 	if o.Worktree != WtRemoved || o.Branch != BrDeleted {
 		t.Fatalf("outcome %+v, want removed / deleted", o)
 	}
@@ -189,7 +189,7 @@ func TestBranchWithDStillHonoursOtherRules(t *testing.T) {
 		row := f.row(r, cleanup.KindWorktree, "topic")
 		other := filepath.Join(f.Dir, ".worktrees", "other")
 		f.git("worktree", "add", "--force", other, "topic")
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtRemoved || o.Branch != BrRetainedCheckedOut {
 			t.Fatalf("outcome %+v, want removed / retained_checked_out", o)
 		}
@@ -202,8 +202,8 @@ func TestBranchWithDStillHonoursOtherRules(t *testing.T) {
 		f := newFixture(t)
 		s, _ := f.report()
 		mainTip, _ := f.refTip("refs/heads/main")
-		e := f.engine(s, f.inputs(), Options{DeleteUnmerged: true})
-		br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, cleanup.Row{Ref: "refs/heads/main", Tip: mainTip}))
+		e := f.engine(s, f.inputs(), Options{})
+		br, reason := brOf(e.deleteBranch(itemCtx{item: withD, considerBranch: true}, cleanup.Row{Ref: "refs/heads/main", Tip: mainTip}))
 		if br != BrRetainedDefault {
 			t.Fatalf("got %s (%s), want retained_default", br, reason)
 		}
@@ -342,8 +342,8 @@ func TestBranchRetainedDefault(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, d := range []bool{false, true} {
-				e := f.engine(c.snap(s), f.inputs(), Options{DeleteUnmerged: d})
-				br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, cleanup.Row{Ref: c.ref, Tip: c.tip, BranchProven: true}))
+				e := f.engine(c.snap(s), f.inputs(), Options{})
+				br, reason := brOf(e.deleteBranch(itemCtx{item: Item{Approved: Needs{Confirm: true, Delete: d}}, considerBranch: true}, cleanup.Row{Ref: c.ref, Tip: c.tip, BranchProven: true}))
 				if br != BrRetainedDefault {
 					t.Fatalf("-D=%v: got %s (%s), want retained_default", d, br, reason)
 				}
@@ -358,7 +358,7 @@ func TestBranchRetainedDefault(t *testing.T) {
 		r2 := cleanup.Classify(s2, cleanup.Options{Now: later()})
 		row := f.row(r2, cleanup.KindBranch, "topic")
 		it := itemOf(row)
-		o := one(t, f.engine(s2, f.inputs(), Options{DeleteUnmerged: true}), it)
+		o := one(t, f.engine(s2, f.inputs(), Options{}), approve(it, false, true))
 		if o.Worktree != WtNotRequested || o.Branch != BrRetainedDefault {
 			t.Fatalf("outcome %+v, want not_requested / retained_default", o)
 		}
@@ -381,7 +381,7 @@ func TestBranchNotAttemptedForDetached(t *testing.T) {
 	s, r := f.report()
 	row := f.row(r, cleanup.KindWorktree, "loose")
 	before := f.git("for-each-ref")
-	o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 	if o.Worktree != WtRemoved || o.Branch != BrNotAttempted || !strings.Contains(o.Reason, "detached") {
 		t.Fatalf("outcome %+v, want removed / not_attempted naming the detached HEAD", o)
 	}
@@ -424,7 +424,7 @@ func TestBranchOnlyItem(t *testing.T) {
 			f.git("worktree", "remove", p)
 			s, r := f.report()
 			row := f.row(r, cleanup.KindBranch, "topic")
-			o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: d}), itemOf(row))
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, d))
 			if o.Worktree != WtNotRequested || o.Branch != want {
 				t.Fatalf("outcome %+v, want not_requested / %s", o, want)
 			}
@@ -453,7 +453,7 @@ func TestBranchOnlyItemIdentityIsEnforced(t *testing.T) {
 			return fr, err
 		}
 		t.Cleanup(func() { rescan = old })
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtRefused || o.Branch != BrNotAttempted || !strings.Contains(o.Reason, "spelling") {
 			t.Fatalf("outcome %+v, want refused naming the spelling", o)
 		}
@@ -468,7 +468,7 @@ func TestBranchOnlyItemIdentityIsEnforced(t *testing.T) {
 		s, r := f.report()
 		it := itemOf(f.row(r, cleanup.KindBranch, "topic"))
 		it.Ref = "refs/heads/Topic"
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), it)
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, false, true))
 		if o.Branch != BrNotAttempted || (o.Worktree != WtRefused && o.Worktree != WtSkippedChanged) {
 			t.Fatalf("outcome %+v, want refused or skipped, branch not attempted", o)
 		}
@@ -483,7 +483,7 @@ func TestBranchOnlyItemIdentityIsEnforced(t *testing.T) {
 		s, r := f.report()
 		row := f.row(r, cleanup.KindBranch, "topic")
 		f.git("worktree", "add", filepath.Join(f.Dir, ".worktrees", "topic"), "topic")
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtRefused || o.Branch != BrNotAttempted || !strings.Contains(o.Reason, "checked out") {
 			t.Fatalf("outcome %+v, want refused naming the checkout", o)
 		}
@@ -535,7 +535,7 @@ func TestBranchNetZeroUnpushedNeedsD(t *testing.T) {
 			if row.BranchProven || !hasReason(row, cleanup.ReasonNetZeroUnpushed) {
 				t.Fatalf("precondition: row %+v, want net_zero_unpushed and not proven", row)
 			}
-			o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: d}), itemOf(row))
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, d))
 			if o.Worktree != WtRemoved || o.Branch != want {
 				t.Fatalf("outcome %+v, want removed / %s", o, want)
 			}
@@ -567,7 +567,7 @@ func TestBranchProvenIsTheBranchVerdictNotTheWorktreeStatus(t *testing.T) {
 	if row.Status == cleanup.StatusProven || !row.BranchProven {
 		t.Fatalf("precondition: status %s branch proven %v", row.Status, row.BranchProven)
 	}
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), true, false))
 	if o.Worktree != WtRemoved || o.Branch != BrDeleted {
 		t.Fatalf("outcome %+v, want removed / deleted", o)
 	}
@@ -654,7 +654,7 @@ func TestBranchDeletionRefusedOnStaleSawFields(t *testing.T) {
 			calls := recordRefGit(t)
 			it := base
 			c.mod(&it)
-			o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), it)
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, false, true))
 			if o.Worktree != WtRefused || o.Branch != BrNotAttempted || !strings.Contains(o.Reason, "invalid target") {
 				t.Fatalf("outcome %+v, want refused as an invalid target", o)
 			}
@@ -680,7 +680,7 @@ func TestBranchItemSkippedWhenChanged(t *testing.T) {
 		row := f.row(r, cleanup.KindBranch, "topic")
 		newTip := f.git("commit-tree", "-p", row.Tip, "-m", "later", row.Tip+"^{tree}")
 		f.git("update-ref", "refs/heads/topic", newTip)
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtSkippedChanged || o.Branch != BrNotAttempted {
 			t.Fatalf("outcome %+v, want skipped_changed / not_attempted", o)
 		}
@@ -717,16 +717,20 @@ func TestBranchItemSkippedWhenChanged(t *testing.T) {
 			return fresh, nil
 		}
 		t.Cleanup(func() { rescan = old })
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), it)
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, false, true))
 		if o.Worktree != WtSkippedChanged || !strings.Contains(o.Reason, "lost") {
 			t.Fatalf("outcome %+v, want skipped_changed naming the loss", o)
 		}
 	})
 }
 
+// withD is an item approved for -D, for calls straight into the branch
+// stage (the approval is per item, Ruling K).
+var withD = Item{Approved: Needs{Confirm: true, Delete: true}}
+
 // branchCase is a fresh repository with a proven local branch topic, the
-// engine over it (-D), and topic's tip: one per subtest, so a wrong deletion
-// in one case cannot mask another.
+// engine over it (callers pass withD for -D), and topic's tip: one per
+// subtest, so a wrong deletion in one case cannot mask another.
 func branchCase(t *testing.T) (*fixture, Engine, cleanup.Row) {
 	t.Helper()
 	noGh(t)
@@ -734,7 +738,7 @@ func branchCase(t *testing.T) (*fixture, Engine, cleanup.Row) {
 	f.Branch("topic")
 	s, _ := f.report()
 	tip, _ := f.refTip("refs/heads/topic")
-	return f, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), cleanup.Row{Ref: "refs/heads/topic", Tip: tip, BranchProven: true}
+	return f, f.engine(s, f.inputs(), Options{}), cleanup.Row{Ref: "refs/heads/topic", Tip: tip, BranchProven: true}
 }
 
 // TestBranchRetainedUnknown: anything the branch stage cannot read keeps the
@@ -745,7 +749,7 @@ func branchCase(t *testing.T) (*fixture, Engine, cleanup.Row) {
 func TestBranchRetainedUnknown(t *testing.T) {
 	check := func(t *testing.T, f *fixture, e Engine, fresh cleanup.Row, tip, want string) {
 		t.Helper()
-		r := e.deleteBranch(itemCtx{considerBranch: true}, fresh)
+		r := e.deleteBranch(itemCtx{item: withD, considerBranch: true}, fresh)
 		// The detail may be in the reason or, with a path or git's text,
 		// in a warning.
 		text := r.Reason + "\n" + strings.Join(r.Warnings, "\n")
@@ -853,7 +857,7 @@ func TestBranchHeldByRebaseOrBisect(t *testing.T) {
 		s, r := f.report()
 		row := f.row(r, cleanup.KindWorktree, "topic")
 		stoppedRebase(t, f.forcedWorktreeOn("other", "topic"))
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtRemoved || o.Branch != BrRetainedCheckedOut {
 			t.Fatalf("outcome %+v, want removed / retained_checked_out", o)
 		}
@@ -876,7 +880,7 @@ func TestBranchHeldByRebaseOrBisect(t *testing.T) {
 		if b := gitIn(t, other, "worktree", "list", "--porcelain"); !strings.Contains(b, "detached") {
 			t.Fatalf("precondition: bisect did not detach:\n%s", b)
 		}
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtRemoved || o.Branch != BrRetainedCheckedOut {
 			t.Fatalf("outcome %+v, want removed / retained_checked_out", o)
 		}
@@ -897,7 +901,7 @@ func TestBranchHeldByRebaseOrBisect(t *testing.T) {
 		if err := os.Remove(filepath.Join(other, ".git")); err != nil {
 			t.Fatal(err)
 		}
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtRemoved || o.Branch != BrRetainedCheckedOut {
 			t.Fatalf("outcome %+v, want removed / retained_checked_out", o)
 		}
@@ -911,7 +915,7 @@ func TestBranchHeldByRebaseOrBisect(t *testing.T) {
 		stoppedRebase(t, f.mergedWorktree("topic"))
 		s, r := f.report()
 		row := f.row(r, cleanup.KindBranch, "topic")
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 		if o.Worktree != WtRefused || o.Branch != BrNotAttempted || !strings.Contains(o.Reason, "rebased or bisected") {
 			t.Fatalf("outcome %+v, want refused naming the rebase", o)
 		}
@@ -930,13 +934,13 @@ func TestBranchHeldByRebaseOrBisect(t *testing.T) {
 		if err := os.MkdirAll(marker, 0o755); err != nil { // a rebase with no head-name
 			t.Fatal(err)
 		}
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(f.row(r, cleanup.KindWorktree, "topic")))
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(f.row(r, cleanup.KindWorktree, "topic")), false, true))
 		if o.Worktree != WtRemoved || o.Branch != BrRetainedUnknown {
 			t.Fatalf("worktree item %+v, want removed / retained_unknown", o)
 		}
 		f.Branch("topic2")
 		s2, r2 := f.report()
-		o = one(t, f.engine(s2, f.inputs(), Options{DeleteUnmerged: true}), itemOf(f.row(r2, cleanup.KindBranch, "topic2")))
+		o = one(t, f.engine(s2, f.inputs(), Options{}), approve(itemOf(f.row(r2, cleanup.KindBranch, "topic2")), false, true))
 		if o.Worktree != WtRefused || o.Branch != BrNotAttempted {
 			t.Fatalf("branch item %+v, want refused", o)
 		}
@@ -976,7 +980,7 @@ func TestBranchDWhenOnlyMergeVerdictUnknown(t *testing.T) {
 			if !row.Unknown || !hasReason(row, cleanup.ReasonPRUnknown) {
 				t.Fatalf("precondition: row %+v, want Unknown with pr_unknown", row)
 			}
-			o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: d}), itemOf(row))
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, d))
 			if o.Worktree != WtNotRequested || o.Branch != want {
 				t.Fatalf("outcome %+v, want not_requested / %s", o, want)
 			}
@@ -988,7 +992,7 @@ func TestBranchDWhenOnlyMergeVerdictUnknown(t *testing.T) {
 			u := good
 			u.Unknown = true
 			u.Reasons = []cleanup.Reason{{Code: cleanup.ReasonPRUnknown}, {Code: code}}
-			if br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, u)); br != BrRetainedUnknown {
+			if br, reason := brOf(e.deleteBranch(itemCtx{item: withD, considerBranch: true}, u)); br != BrRetainedUnknown {
 				t.Fatalf("got %s %q, want retained_unknown", br, reason)
 			}
 			if _, ok := f.refTip("refs/heads/topic"); !ok {
@@ -1015,7 +1019,7 @@ func TestBranchItemTipAndStatusChecksPinned(t *testing.T) {
 		it.SawLosses = cleanup.Losses{Unpushed: 99} // nor loses more
 		newTip := f.git("commit-tree", "-p", row.Tip, "-m", "later", row.Tip+"^{tree}")
 		f.git("update-ref", "refs/heads/topic", newTip)
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), it)
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, false, true))
 		if o.Worktree != WtSkippedChanged || !strings.Contains(o.Reason, "moved") {
 			t.Fatalf("outcome %+v, want skipped_changed naming the move", o)
 		}
@@ -1033,7 +1037,7 @@ func TestBranchItemTipAndStatusChecksPinned(t *testing.T) {
 			t.Fatalf("precondition: %s", row.Status)
 		}
 		// The run's clock is now: the branch is younger than the min age.
-		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true, Now: time.Now}), itemOf(row))
+		o := one(t, f.engine(s, f.inputs(), Options{Now: time.Now}), approve(itemOf(row), false, true))
 		if o.Worktree != WtSkippedChanged || !strings.Contains(o.Reason, "status changed") {
 			t.Fatalf("outcome %+v, want skipped_changed naming the status", o)
 		}
@@ -1051,7 +1055,7 @@ func TestBranchDeleteDoesNotDeref(t *testing.T) {
 	f.git("symbolic-ref", "refs/heads/alias", "refs/heads/topic")
 	alias := good
 	alias.Ref = "refs/heads/alias"
-	br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, alias))
+	br, reason := brOf(e.deleteBranch(itemCtx{item: withD, considerBranch: true}, alias))
 	if tip, ok := f.refTip("refs/heads/topic"); !ok || tip != good.Tip {
 		t.Fatalf("the symref's target was deleted (%s %q)", br, reason)
 	}
@@ -1082,7 +1086,7 @@ func TestBranchRestoredWhenCheckedOutDuringDelete(t *testing.T) {
 	t.Run("restored", func(t *testing.T) {
 		f, e, good := branchCase(t)
 		hookAfterUpdateRef(t, checkout(f))
-		br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, good))
+		br, reason := brOf(e.deleteBranch(itemCtx{item: withD, considerBranch: true}, good))
 		if br != BrRetainedCheckedOut || !strings.Contains(reason, "restored") {
 			t.Fatalf("got %s %q, want retained_checked_out, restored", br, reason)
 		}
@@ -1101,7 +1105,7 @@ func TestBranchRestoredWhenCheckedOutDuringDelete(t *testing.T) {
 			}
 			return cleanup.Out{Code: 1, Stderr: "fatal: cannot lock"}, nil
 		})
-		br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, good))
+		br, reason := brOf(e.deleteBranch(itemCtx{item: withD, considerBranch: true}, good))
 		if br != BrRetainedUnknown || !strings.Contains(reason, "git branch topic "+good.Tip) {
 			t.Fatalf("got %s %q, want retained_unknown with the full tip", br, reason)
 		}
@@ -1120,7 +1124,7 @@ func TestBranchRestoredWhenCheckedOutDuringDelete(t *testing.T) {
 			}
 			return cleanup.Out{}, nil // claims the restore, writes nothing
 		})
-		br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, good))
+		br, reason := brOf(e.deleteBranch(itemCtx{item: withD, considerBranch: true}, good))
 		if br != BrRetainedUnknown || !strings.Contains(reason, good.Tip) {
 			t.Fatalf("got %s %q, want retained_unknown with the full tip", br, reason)
 		}
@@ -1134,7 +1138,7 @@ func TestBranchRestoredWhenCheckedOutDuringDelete(t *testing.T) {
 			checkout(f)()
 			f.git("update-ref", "refs/heads/topic", other)
 		})
-		br, reason := brOf(e.deleteBranch(itemCtx{considerBranch: true}, good))
+		br, reason := brOf(e.deleteBranch(itemCtx{item: withD, considerBranch: true}, good))
 		if br != BrRetainedUnknown || !strings.Contains(reason, "re-created at "+other[:7]) ||
 			!strings.Contains(reason, "the deleted commit was "+good.Tip) || strings.Contains(reason, "git branch") {
 			t.Fatalf("got %s %q, want retained_unknown naming the re-creation and the deleted commit, no restore command", br, reason)

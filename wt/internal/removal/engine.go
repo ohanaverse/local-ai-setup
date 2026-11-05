@@ -71,7 +71,8 @@ func (e Engine) item(it Item, dry bool) Outcome {
 	if g.stop != nil {
 		return *g.stop
 	}
-	return e.act(it, g, dry)
+	o, _ := e.act(it, g, dry)
+	return o
 }
 
 // gated is the engine's decision about one item before anything is touched:
@@ -86,9 +87,25 @@ type gated struct {
 	// procs and procErr are the live-process check's answer (worktree items).
 	procs   []Proc
 	procErr error
-	// needForce: a loss only Force approves (uncommitted changes, a detached
-	// HEAD's unique commits). gitForce: git must be passed --force (dirty).
-	needForce, gitForce bool
+	// need is what the fresh row needs approved (needsOf); gitForce: git
+	// must be passed --force (dirty, and the item has Approved.Force).
+	need     Needs
+	gitForce bool
+}
+
+// needsOf is what removing an item of kind k whose fresh row is fresh needs
+// approved, the one rule Run enforces and Preview reports: Confirm when it
+// is not proven or would lose anything (a loss line); Force for uncommitted
+// changes or a detached HEAD's unique commits; Delete for a branch item
+// whose branch is not proven merged (it does nothing without deleting it).
+// A worktree item's unproven branch is not a need: without Approved.Delete
+// it is kept.
+func needsOf(k cleanup.Kind, fresh cleanup.Row) Needs {
+	return Needs{
+		Confirm: fresh.Status != cleanup.StatusProven || len(cleanup.LossLines(fresh)) > 0,
+		Force:   fresh.Losses.Dirty || fresh.Losses.DetachedUnique,
+		Delete:  k == cleanup.KindBranch && !fresh.BranchProven,
+	}
 }
 
 func stopWith(o Outcome, fresh cleanup.Row, has bool) gated {
@@ -108,8 +125,9 @@ func (e Engine) gate(it Item) gated {
 }
 
 // act carries out an item gate let through (dry: decide the branch stage
-// only, change nothing).
-func (e Engine) act(it Item, g gated, dry bool) Outcome {
+// only, change nothing). It also returns the branch stage's warnings, which
+// the Outcome holds after any process warnings.
+func (e Engine) act(it Item, g gated, dry bool) (Outcome, []string) {
 	if it.Kind == cleanup.KindWorktree {
 		return e.worktreeAct(it, g, dry)
 	}
@@ -205,21 +223,12 @@ func (e Engine) worktreeGate(it Item) gated {
 		return stop(skipped(it, "what would be lost changed since it was listed"))
 	}
 
-	// 8. Losses only a flag approves.
-	g := gated{fresh: fresh, hasFresh: true, procs: procs, procErr: procErr}
-	if fresh.Losses.Dirty {
-		g.needForce = true
-		g.gitForce = true // git refuses a dirty worktree without it
-		if !e.Opts.Force {
-			return stop(refuse(it, "uncommitted changes; --force required"))
-		}
+	// 8. What only this item's own approvals allow (Ruling K).
+	g := gated{fresh: fresh, hasFresh: true, procs: procs, procErr: procErr, need: needsOf(it.Kind, fresh)}
+	if why := unapproved(it, fresh, g.need); why != "" {
+		return stop(refuse(it, why))
 	}
-	if fresh.Losses.DetachedUnique && fresh.Ref == "" {
-		g.needForce = true
-		if !e.Opts.Force {
-			return stop(refuse(it, "commits that exist only in this worktree; --force required"))
-		}
-	}
+	g.gitForce = fresh.Losses.Dirty // git refuses a dirty worktree without it
 
 	// 9. Defence in depth at the deletion site: git is handed only a valid
 	// path that is the one the user ticked.
@@ -232,9 +241,27 @@ func (e Engine) worktreeGate(it Item) gated {
 	return g
 }
 
+// unapproved says why it's own approvals do not cover need, or "": Force
+// first (uncommitted changes, then a detached HEAD's unique commits), then
+// Confirm. Delete is the branch stage's (a branch not approved for deletion
+// is kept, never refused here).
+func unapproved(it Item, fresh cleanup.Row, need Needs) string {
+	switch {
+	case need.Force && !it.Approved.Force && fresh.Losses.Dirty:
+		return "uncommitted changes; --force required"
+	case need.Force && !it.Approved.Force:
+		return "commits that exist only in this worktree; --force required"
+	case need.Confirm && !it.Approved.Confirm:
+		return fmt.Sprintf("needs confirmation: %s, not proven (or something would be lost)", fresh.Status)
+	}
+	return ""
+}
+
 // worktreeAct removes a worktree item worktreeGate let through, then runs
-// the branch stage; dry decides the branch stage and removes nothing.
-func (e Engine) worktreeAct(it Item, g gated, dry bool) Outcome {
+// the branch stage; dry decides the branch stage and removes nothing. It
+// returns the branch stage's warnings apart too (the Outcome carries the
+// process warnings first, then those).
+func (e Engine) worktreeAct(it Item, g gated, dry bool) (Outcome, []string) {
 	fresh := g.fresh
 	o := NewOutcome(it, WtRemoved, BrNotAttempted, "")
 	for _, w := range procWarnings(g.procs, g.procErr) {
@@ -248,30 +275,39 @@ func (e Engine) worktreeAct(it Item, g gated, dry bool) Outcome {
 	if dry {
 		r := e.deleteBranch(ic, fresh)
 		r.Reason = "dry run: would remove; " + strings.TrimPrefix(r.Reason, "dry run: ")
-		o.applyBranch(r)
-		return o
+		return o.applyBranch(r), oneLines(r.Warnings)
 	}
 
 	// 11. Remove and verify.
 	if wt, reason := e.removeWorktree(fresh.Path, g.gitForce); wt != WtRemoved {
 		o.Worktree = wt
 		o.SetReason(reason)
-		return o
+		return o, nil
 	}
 
 	// 12. The branch stage.
-	o.applyBranch(e.deleteBranch(ic, fresh))
-	return o
+	r := e.deleteBranch(ic, fresh)
+	return o.applyBranch(r), oneLines(r.Warnings)
+}
+
+// oneLines is ws, each as one sanitised line.
+func oneLines(ws []string) []string {
+	var out []string
+	for _, w := range ws {
+		out = append(out, cleanup.OneLine(w))
+	}
+	return out
 }
 
 // applyBranch records the branch stage's result on o: its outcome, its
 // reason and its warnings (each one sanitised line).
-func (o *Outcome) applyBranch(r branchResult) {
+func (o Outcome) applyBranch(r branchResult) Outcome {
 	o.Branch = r.Out
 	o.SetReason(r.Reason)
 	for _, w := range r.Warnings {
 		o.AddWarning(w)
 	}
+	return o
 }
 
 // branchGate runs the gates for one branch-only item (a local branch with
@@ -320,15 +356,20 @@ func (e Engine) branchGate(it Item) gated {
 		return skipB("what would be lost changed since it was listed")
 	}
 	// 6. (No live-process check: a branch has no directory.)
-	return gated{fresh: fresh, hasFresh: true}
+	// 7. What only this item's own approvals allow (Ruling K): Confirm here;
+	// Delete in the branch stage (without it the branch is kept).
+	g := gated{fresh: fresh, hasFresh: true, need: needsOf(it.Kind, fresh)}
+	if why := unapproved(it, fresh, g.need); why != "" {
+		return refuseB(why)
+	}
+	return g
 }
 
-// branchAct is the branch stage (7, 8) for a branch item branchGate let
+// branchAct is the branch stage (8, 9) for a branch item branchGate let
 // through; a dry run decides without writing.
-func (e Engine) branchAct(it Item, g gated, dry bool) Outcome {
-	o := NewOutcome(it, WtNotRequested, BrNotAttempted, "")
-	o.applyBranch(e.deleteBranch(itemCtx{item: it, fresh: g.fresh, considerBranch: true, dry: dry}, g.fresh))
-	return o
+func (e Engine) branchAct(it Item, g gated, dry bool) (Outcome, []string) {
+	r := e.deleteBranch(itemCtx{item: it, fresh: g.fresh, considerBranch: true, dry: dry}, g.fresh)
+	return NewOutcome(it, WtNotRequested, BrNotAttempted, "").applyBranch(r), oneLines(r.Warnings)
 }
 
 // invalidBranchItem says why a branch item cannot be acted on before

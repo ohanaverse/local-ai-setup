@@ -191,12 +191,22 @@ func (f *fixture) row(r cleanup.Report, k cleanup.Kind, name string) cleanup.Row
 	return got[0]
 }
 
-// itemOf is the Item a user ticking row would hand the engine: what they saw
-// (status, and the tip: the branch tip, or HEAD for a detached worktree).
+// itemOf is the Item a user ticking row and confirming it would hand the
+// engine: what they saw (status, and the tip: the branch tip, or HEAD for a
+// detached worktree) and the typed confirmation (Approved.Confirm), no
+// flag. Tests of the confirmation itself build Approved explicitly.
 func itemOf(row cleanup.Row) Item {
 	tip := row.Tip
 	if tip == "" {
 		tip = row.Head
 	}
-	return Item{Kind: row.Kind, Path: row.Path, Ref: row.Ref, Name: row.Name, Saw: row.Status, SawTip: tip, SawLosses: row.Losses}
+	return Item{Kind: row.Kind, Path: row.Path, Ref: row.Ref, Name: row.Name, Saw: row.Status, SawTip: tip, SawLosses: row.Losses,
+		Approved: Needs{Confirm: true}}
+}
+
+// approve is it confirmed with this item's own --force and -D approvals
+// (Ruling K: the flags the old run-wide Options carried).
+func approve(it Item, force, del bool) Item {
+	it.Approved = Needs{Confirm: true, Force: force, Delete: del}
+	return it
 }

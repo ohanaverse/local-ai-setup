@@ -68,6 +68,43 @@ func runLsof(ctx context.Context, args ...string) ([]byte, error) {
 
 // InDir lists the processes whose cwd is dir or below it.
 func (f lsofFinder) InDir(dir string) ([]Proc, error) {
+	entries, err := f.list()
+	if err != nil {
+		return nil, err
+	}
+	return matchCwd(entries, dir, f.self), nil
+}
+
+// batchFinder is a ProcFinder that can take one machine-wide listing and
+// answer every directory from it (Preview asks once per call, not once per
+// item).
+type batchFinder interface {
+	snapshot() ProcFinder
+}
+
+// snapshot runs lsof once; the finder it returns answers every InDir from
+// that listing, or with its error.
+func (f lsofFinder) snapshot() ProcFinder {
+	entries, err := f.list()
+	return listedProcs{entries: entries, err: err, self: f.self}
+}
+
+// listedProcs answers InDir from one lsof listing.
+type listedProcs struct {
+	entries []lsofEntry
+	err     error
+	self    int
+}
+
+func (l listedProcs) InDir(dir string) ([]Proc, error) {
+	if l.err != nil {
+		return nil, l.err
+	}
+	return matchCwd(l.entries, dir, l.self), nil
+}
+
+// list runs lsof once, bounded by f.timeout, and parses its listing.
+func (f lsofFinder) list() ([]lsofEntry, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), f.timeout)
 	defer cancel()
 	type answer struct {
@@ -92,11 +129,7 @@ func (f lsofFinder) InDir(dir string) ([]Proc, error) {
 	if a.err != nil {
 		return nil, fmt.Errorf("lsof: %v", a.err)
 	}
-	entries, err := parseLsof(a.out)
-	if err != nil {
-		return nil, err
-	}
-	return matchCwd(entries, dir, f.self), nil
+	return parseLsof(a.out)
 }
 
 // lsofEntry is one process's cwd from lsof's field output.
@@ -145,10 +178,71 @@ func parseLsof(b []byte) ([]lsofEntry, error) {
 			if cur == nil {
 				return nil, errors.New("lsof: path before any process")
 			}
-			cur.cwd = val
+			cwd, err := unescapeLsof(val)
+			if err != nil {
+				return nil, err
+			}
+			cur.cwd = cwd
 		}
 	}
 	return out, nil
+}
+
+// unescapeLsof undoes lsof's escaping of a name: \n \t \r \b \f \\ for the
+// control characters and backslash, \xNN for any other byte it would not
+// print as is (non-ASCII bytes under LC_ALL=C, other controls), and \NNN
+// octal. Without it a worktree path holding a newline or a non-ASCII
+// character never matches. A malformed escape is an error.
+func unescapeLsof(s string) (string, error) {
+	if !strings.Contains(s, `\`) {
+		return s, nil
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			return "", fmt.Errorf("lsof: unreadable escape in %q", cleanup.OneLine(s))
+		}
+		i++
+		switch c := s[i]; c {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case 'r':
+			b.WriteByte('\r')
+		case 'b':
+			b.WriteByte('\b')
+		case 'f':
+			b.WriteByte('\f')
+		case '\\':
+			b.WriteByte('\\')
+		case 'x':
+			if i+3 > len(s) {
+				return "", fmt.Errorf("lsof: unreadable escape in %q", cleanup.OneLine(s))
+			}
+			v, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			if err != nil {
+				return "", fmt.Errorf("lsof: unreadable escape in %q", cleanup.OneLine(s))
+			}
+			b.WriteByte(byte(v))
+			i += 2
+		default:
+			if c < '0' || c > '7' || i+2 >= len(s) {
+				return "", fmt.Errorf("lsof: unreadable escape in %q", cleanup.OneLine(s))
+			}
+			v, err := strconv.ParseUint(s[i:i+3], 8, 8)
+			if err != nil {
+				return "", fmt.Errorf("lsof: unreadable escape in %q", cleanup.OneLine(s))
+			}
+			b.WriteByte(byte(v))
+			i += 2
+		}
+	}
+	return b.String(), nil
 }
 
 // evalSymlinks is filepath.EvalSymlinks; tests use it to spell a temp dir

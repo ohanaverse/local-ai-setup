@@ -16,7 +16,11 @@ import (
 // (.venv, node_modules) takes a while to delete.
 const DefaultRemoveTimeout = 10 * time.Minute
 
-// Item is one row the user ticked, as they saw it.
+// Item is one row the user ticked, as they saw it, with the approvals they
+// gave it. Run must only receive Items built by ItemPreview.Confirmed from
+// the preview the user was shown (ItemFromRow builds a Preview input, not a
+// Run input): Saw, SawTip and SawLosses are then what the confirmation
+// showed, and Approved is what the user granted this item (Ruling K).
 type Item struct {
 	Kind cleanup.Kind
 	Path string // worktree items: the worktree's path
@@ -33,6 +37,27 @@ type Item struct {
 	// worse; the zero value means they saw nothing to lose, so any loss is
 	// then a skip.
 	SawLosses cleanup.Losses
+	// Approved are the approvals the user gave THIS item (never a run-wide
+	// flag): Confirm for an item that is not proven or loses something,
+	// Force for uncommitted changes or a detached HEAD's unique commits,
+	// Delete to delete a branch not proven merged (a branch item needs it
+	// to do anything; on a worktree item it means "also delete its unmerged
+	// branch"). No approval overrides a hard blocker or an unknown.
+	Approved Needs
+}
+
+// Needs is a set of approvals: what an item needs (ItemPreview.Needs) or
+// what the user gave it (Item.Approved). Confirm is the typed confirmation
+// (TUI) or --accept-loss (CLI); Force is --force; Delete is -D.
+type Needs struct {
+	Confirm bool
+	Force   bool
+	Delete  bool
+}
+
+// covers reports whether every approval need asks for is in n.
+func (n Needs) covers(need Needs) bool {
+	return (n.Confirm || !need.Confirm) && (n.Force || !need.Force) && (n.Delete || !need.Delete)
 }
 
 // WorktreeOutcome is what happened to an item's worktree. The values are wire
@@ -98,14 +123,13 @@ type Proc struct {
 	Command string
 }
 
-// Options are the user's choices for one removal run.
+// Options are the run's settings. Approvals are per item (Item.Approved),
+// never run-wide: a flag one item needed must not reach another.
 type Options struct {
-	Force          bool             // remove a dirty worktree (after the user approved the loss); never overrides a hard blocker
-	DeleteUnmerged bool             // -D: delete a branch not proven merged; never overrides a hard blocker
-	DryRun         bool             // decide every item, change nothing
-	Now            func() time.Time // the clock for re-classification; nil means time.Now
-	Procs          ProcFinder       // nil: no live-process check
-	RemoveTimeout  time.Duration    // one `git worktree remove`; zero means DefaultRemoveTimeout
+	DryRun        bool             // decide every item, change nothing
+	Now           func() time.Time // the clock for re-classification; nil means time.Now
+	Procs         ProcFinder       // nil: no live-process check
+	RemoveTimeout time.Duration    // one `git worktree remove`; zero means DefaultRemoveTimeout
 }
 
 // Engine removes items from one repository. Prior is the snapshot the user's

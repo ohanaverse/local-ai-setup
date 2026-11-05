@@ -49,7 +49,7 @@ func TestEngineRefusesUnknownSawStatus(t *testing.T) {
 			it := itemOf(row)
 			it.Saw = saw
 			n := countRescans(t)
-			o := one(t, f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true}), it)
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, true, true))
 			if o.Worktree != WtRefused || !strings.Contains(o.Reason, "invalid target: unknown status seen") {
 				t.Fatalf("outcome %+v, want refused: unknown status seen", o)
 			}
@@ -91,7 +91,7 @@ func TestEngineRefusesInvalidSawTip(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			it := good
 			it.SawTip = tip
-			o := one(t, f.engine(s, f.inputs(), Options{Force: true}), it)
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, true, false))
 			if o.Worktree != WtRefused || !strings.Contains(o.Reason, "invalid target") {
 				t.Fatalf("outcome %+v, want refused: invalid target", o)
 			}
@@ -203,7 +203,7 @@ func TestEngineRechecksPathAtDeletion(t *testing.T) {
 				return row, err
 			})
 			calls := recordRemoves(t)
-			o := one(t, f.engine(s, f.inputs(), Options{Force: true}), itemOf(f.row(r, cleanup.KindWorktree, "topic")))
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(f.row(r, cleanup.KindWorktree, "topic")), true, false))
 			if o.Worktree != WtRefused || !strings.Contains(o.Reason, c.want) {
 				t.Fatalf("outcome %+v, want refused: %s", o, c.want)
 			}

@@ -130,7 +130,7 @@ func TestEngineSkipsItemThatChanged(t *testing.T) {
 		t.Fatalf("precondition: status %s, want proven", row.Status)
 	}
 	f.Dirty(p, "new.txt")
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), true, false))
 	if o.Worktree != WtSkippedChanged || !strings.Contains(o.Reason, "status changed") {
 		t.Fatalf("outcome %+v, want skipped_changed naming the status change", o)
 	}
@@ -154,7 +154,7 @@ func TestEngineSkipsWhenTipMoved(t *testing.T) {
 	if now := f.row(r2, cleanup.KindWorktree, "topic").Status; now.WorseThan(row.Status) {
 		t.Fatalf("precondition: status went %s -> %s; this case needs it no worse", row.Status, now)
 	}
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), true, true))
 	if o.Worktree != WtSkippedChanged || !strings.Contains(o.Reason, "moved") {
 		t.Fatalf("outcome %+v, want skipped_changed naming the moved tip", o)
 	}
@@ -217,7 +217,7 @@ func blockerCases() []blockerCase {
 
 // runBlockerCases removes each blocked target with opts and requires a
 // refusal naming the blocker, the worktree untouched.
-func runBlockerCases(t *testing.T, opts Options) {
+func runBlockerCases(t *testing.T, grant Needs) {
 	for _, c := range blockerCases() {
 		t.Run(c.code, func(t *testing.T) {
 			noGh(t)
@@ -228,7 +228,8 @@ func runBlockerCases(t *testing.T, opts Options) {
 			// The most permissive thing a user could have ticked: proven.
 			it := itemOf(row)
 			it.Saw = cleanup.StatusProven
-			o := one(t, f.engine(s, in, opts), it)
+			it.Approved = grant
+			o := one(t, f.engine(s, in, Options{}), it)
 			if o.Worktree != WtRefused || !strings.Contains(o.Reason, c.code) {
 				t.Fatalf("outcome %+v, want refused naming %s", o, c.code)
 			}
@@ -246,13 +247,13 @@ func runBlockerCases(t *testing.T, opts Options) {
 // engine: primary, current dir, locked, nested, operation in progress,
 // protected artifact and a default-branch worktree must each be refused with
 // its code, whatever status the user saw.
-func TestEngineRefusesEveryHardBlocker(t *testing.T) { runBlockerCases(t, Options{}) }
+func TestEngineRefusesEveryHardBlocker(t *testing.T) { runBlockerCases(t, Needs{}) }
 
 // TestForceNeverOverridesHardBlockers repeats the blocker table with Force
-// and DeleteUnmerged both set: those flags approve a loss (dirty files, an
+// and Delete both approved on the item: those approvals approve a loss (dirty files, an
 // unmerged branch), never a hard blocker (plan call 4).
 func TestForceNeverOverridesHardBlockers(t *testing.T) {
-	runBlockerCases(t, Options{Force: true, DeleteUnmerged: true})
+	runBlockerCases(t, Needs{Confirm: true, Force: true, Delete: true})
 }
 
 // TestEngineNeverRemovesTheMainCheckout passes the primary checkout with
@@ -264,7 +265,7 @@ func TestEngineNeverRemovesTheMainCheckout(t *testing.T) {
 	row := f.row(r, cleanup.KindWorktree, "main")
 	it := itemOf(row)
 	it.Saw = cleanup.StatusProven
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true}), it)
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, true, true))
 	if o.Worktree != WtRefused || !strings.Contains(o.Reason, cleanup.BlockPrimary) {
 		t.Fatalf("outcome %+v, want refused naming primary", o)
 	}
@@ -283,7 +284,7 @@ func TestEngineRefusesDirtyWithoutForce(t *testing.T) {
 	f.Dirty(p, "wip.txt")
 	s, r := f.report()
 	row := f.row(r, cleanup.KindWorktree, "topic")
-	o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 	if o.Worktree != WtRefused || !strings.Contains(o.Reason, "--force required") {
 		t.Fatalf("outcome %+v, want refused asking for --force", o)
 	}
@@ -303,7 +304,7 @@ func TestEngineForceRemovesDirtyAfterApproval(t *testing.T) {
 	s, r := f.report()
 	row := f.row(r, cleanup.KindWorktree, "topic")
 	calls := recordRemoves(t)
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), true, false))
 	if o.Worktree != WtRemoved {
 		t.Fatalf("outcome %+v, want removed", o)
 	}
@@ -346,7 +347,7 @@ func TestEngineForcesOnlyApprovedDirtyRemoval(t *testing.T) {
 			s, r := f.report()
 			row := f.row(r, cleanup.KindWorktree, "topic")
 			calls := recordRemoves(t)
-			o := one(t, f.engine(s, f.inputs(), Options{Force: true}), itemOf(row))
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), true, false))
 			if o.Worktree != WtRemoved {
 				t.Fatalf("outcome %+v, want removed", o)
 			}
@@ -379,14 +380,14 @@ func TestEngineRefusesDetachedUniqueWithoutForce(t *testing.T) {
 	if !row.Losses.DetachedUnique {
 		t.Fatalf("precondition: losses %+v, want DetachedUnique", row.Losses)
 	}
-	o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
 	if o.Worktree != WtRefused || !strings.Contains(o.Reason, "only in this worktree") {
 		t.Fatalf("outcome %+v, want refused naming the unique commits", o)
 	}
 	if !exists(t, p) {
 		t.Fatal("worktree removed")
 	}
-	o = one(t, f.engine(s, f.inputs(), Options{Force: true}), itemOf(row))
+	o = one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), true, false))
 	if o.Worktree != WtRemoved || exists(t, p) {
 		t.Fatalf("with Force: outcome %+v, on disk %v; want removed", o, exists(t, p))
 	}
@@ -411,7 +412,7 @@ func TestEngineRefusesUnknownGatesEvenWithForce(t *testing.T) {
 	if !row.Losses.GatesUnknown {
 		t.Fatalf("precondition: losses %+v, want GatesUnknown", row.Losses)
 	}
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true}), itemOf(row))
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), true, true))
 	if o.Worktree != WtRefused || !strings.Contains(o.Reason, "could not read") {
 		t.Fatalf("outcome %+v, want refused: state unreadable", o)
 	}
@@ -431,7 +432,7 @@ func TestEngineRefusesCaseOnlyBranchSpellingChange(t *testing.T) {
 	s, r := f.report()
 	it := itemOf(f.row(r, cleanup.KindWorktree, "topic"))
 	it.Ref = "refs/heads/Topic"
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true}), it)
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, true, true))
 	if o.Worktree != WtRefused || !strings.Contains(o.Reason, "spelling") {
 		t.Fatalf("outcome %+v, want refused: branch spelling changed", o)
 	}
@@ -451,7 +452,7 @@ func TestEngineRefusesWorktreeOnAnotherBranch(t *testing.T) {
 	it := itemOf(f.row(r, cleanup.KindWorktree, "topic"))
 	f.Branch("other")
 	f.Switch(p, "other")
-	o := one(t, f.engine(s, f.inputs(), Options{Force: true}), it)
+	o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, true, false))
 	if o.Worktree != WtRefused || !strings.Contains(o.Reason, "now on refs/heads/other") {
 		t.Fatalf("outcome %+v, want refused naming the switch", o)
 	}
@@ -498,7 +499,7 @@ func TestEngineRefusesInvalidTargets(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			it := good
 			mut(&it)
-			o := one(t, f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true}), it)
+			o := one(t, f.engine(s, f.inputs(), Options{}), approve(it, true, true))
 			if o.Worktree != WtRefused || !strings.Contains(o.Reason, "invalid target") {
 				t.Fatalf("outcome %+v, want refused: invalid target", o)
 			}

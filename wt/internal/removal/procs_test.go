@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -33,17 +34,18 @@ func cannedLsof(out string, args *[]string) lsofFinder {
 	}
 }
 
-// TestLsofFinderParsesCwdEntries feeds a canned `lsof -F0` listing: a process
-// whose cwd is the worktree itself, one in a subdirectory, one outside, a
-// sibling sharing the name prefix (/a/b vs /a/bc) and command names with a
-// space and a newline. Only the two inside match, by a separator-safe prefix
-// (a substring match would warn about the sibling's process), and the names
-// come back as one printable line each.
+// TestLsofFinderParsesCwdEntries feeds a canned `lsof -F0` listing in the
+// real format: a process whose cwd is the worktree itself, one in a
+// subdirectory, one outside, a sibling sharing the name prefix (/a/b vs
+// /a/bc) and command names with a space and lsof's escaped newline (the two
+// characters \n: lsof never prints a raw control character). Only the two
+// inside match, by a separator-safe prefix (a substring match would warn
+// about the sibling's process), and the names come back as printable lines.
 func TestLsofFinderParsesCwdEntries(t *testing.T) {
 	dir := t.TempDir()
 	dir = mustResolve(t, dir)
 	out := lsofRecord(101, 1, "Google Chrome Helper", dir) +
-		lsofRecord(102, 1, "evil\nname", dir+"/sub/deeper") +
+		lsofRecord(102, 1, `evil\nname`, dir+"/sub/deeper") +
 		lsofRecord(103, 1, "outside", "/") +
 		lsofRecord(104, 1, "sibling", dir+"c") +
 		lsofRecord(105, 1, "parent", dir[:strings.LastIndex(dir, "/")])
@@ -52,7 +54,7 @@ func TestLsofFinderParsesCwdEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Proc{{101, "Google Chrome Helper"}, {102, "evil name"}}
+	want := []Proc{{101, "Google Chrome Helper"}, {102, `evil\nname`}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("procs %+v, want %+v", got, want)
 	}
@@ -87,6 +89,35 @@ func TestLsofFinderMatchesAnotherSpellingOfTheDir(t *testing.T) {
 	got, err := cannedLsof(lsofRecord(7, 1, "vim", resolved+"/x"), nil).InDir(dir)
 	if err != nil || len(got) != 1 || got[0].PID != 7 {
 		t.Fatalf("procs %+v, err %v; want pid 7", got, err)
+	}
+}
+
+// TestLsofFinderDecodesEscapedPaths gives worktree directories names lsof
+// escapes (probed on macOS: a newline and a tab as \n and \t, a backslash as
+// \\, non-ASCII bytes as \xNN under LC_ALL=C), in lsof's escaped form: each
+// is decoded before the comparison, or a process in such a worktree would
+// never be found. A malformed escape is an error, not a silent miss.
+func TestLsofFinderDecodesEscapedPaths(t *testing.T) {
+	base := mustResolve(t, t.TempDir())
+	for name, c := range map[string]struct{ dir, lsof string }{
+		"newline":   {"nl\nx", `nl\nx`},
+		"tab":       {"tab\tx", `tab\tx`},
+		"backslash": {`back\slash`, `back\\slash`},
+		"non-ascii": {"caf\xc3\xa9", `caf\xc3\xa9`},
+		"octal":     {"o\x01x", `o\001x`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(base, c.dir)
+			got, err := cannedLsof(lsofRecord(9, 1, "zsh", base+"/"+c.lsof+"/sub"), nil).InDir(dir)
+			if err != nil || !reflect.DeepEqual(got, []Proc{{9, "zsh"}}) {
+				t.Fatalf("procs %+v, err %v; want zsh found", got, err)
+			}
+		})
+	}
+	for _, bad := range []string{`a\`, `a\xg1`, `a\x1`, `a\q`, `a\08`} {
+		if _, err := cannedLsof(lsofRecord(9, 1, "zsh", base+"/"+bad), nil).InDir(base); err == nil {
+			t.Errorf("no error for the malformed escape %q", bad)
+		}
 	}
 }
 

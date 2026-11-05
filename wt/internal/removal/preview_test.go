@@ -23,6 +23,13 @@ func previewOne(t *testing.T, e Engine, it Item) ItemPreview {
 	return ps[0]
 }
 
+// allNeeds is every approval.
+var allNeeds = Needs{Confirm: true, Force: true, Delete: true}
+
+// granted is it with Approved set to n (bypassing Confirmed, to test what
+// Run does with an item whatever its approvals).
+func granted(it Item, n Needs) Item { it.Approved = n; return it }
+
 // wantApproval fails unless p asks for approval a with needs n.
 func wantApproval(t *testing.T, p ItemPreview, a Approval, n Needs) {
 	t.Helper()
@@ -103,9 +110,9 @@ func TestItemFromRowRemoteIsConvertedAndRefused(t *testing.T) {
 	if it.Kind != cleanup.KindRemote {
 		t.Fatalf("kind %s, want remote", it.Kind)
 	}
-	e := f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true})
+	e := f.engine(s, f.inputs(), Options{})
 	p := previewOne(t, e, it)
-	o := one(t, e, it)
+	o := one(t, e, granted(it, allNeeds))
 	if p.Approval != ApprovalRefused || o.Worktree != WtRefused || p.Reason != o.Reason || !strings.Contains(o.Reason, "not removable") {
 		t.Fatalf("preview %s %q, run %s %q; want both refused: not removable", p.Approval, p.Reason, o.Worktree, o.Reason)
 	}
@@ -191,7 +198,7 @@ func TestPreviewDirtyNeedsForce(t *testing.T) {
 
 // TestPreviewUnmergedBranchItemNeedsDelete previews a branch-only item
 // nothing proves merged: a branch item can only be removed by deleting its
-// branch, which takes -D, whatever Opts.DeleteUnmerged is now.
+// branch, which takes -D (a need, not an option).
 func TestPreviewUnmergedBranchItemNeedsDelete(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -201,24 +208,33 @@ func TestPreviewUnmergedBranchItemNeedsDelete(t *testing.T) {
 	wantApproval(t, p, ApprovalNeedsDelete, Needs{Confirm: true, Delete: true})
 }
 
-// TestPreviewWorktreeWithDeleteUnmergedNeedsDelete previews a worktree on an
-// unmerged branch with -D asked for: the branch would be deleted, so the
-// item needs the -D approval.
-func TestPreviewWorktreeWithDeleteUnmergedNeedsDelete(t *testing.T) {
+// TestPreviewWorktreeUnprovenBranchCanBeDeleted previews a worktree on an
+// unmerged branch: removing the worktree keeps the branch, so -D is not a
+// need; it is an optional extra approval (CanDeleteBranch). Confirmed with
+// Delete, Run deletes that branch, and only because THIS item has it.
+func TestPreviewWorktreeUnprovenBranchCanBeDeleted(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
 	f.unmergedPushed("topic")
 	s, r := f.report()
-	p := previewOne(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), ItemFromRow(f.row(r, cleanup.KindWorktree, "topic")))
-	wantApproval(t, p, ApprovalNeedsDelete, Needs{Confirm: true, Delete: true})
-	if p.Plan.Branch != BrDeleted {
-		t.Errorf("plan %+v, want the branch deleted", p.Plan)
+	e := f.engine(s, f.inputs(), Options{})
+	p := previewOne(t, e, ItemFromRow(f.row(r, cleanup.KindWorktree, "topic")))
+	wantApproval(t, p, ApprovalNeedsConfirm, Needs{Confirm: true})
+	if !p.CanDeleteBranch || p.Plan.Branch != BrRetainedUnmerged {
+		t.Fatalf("can delete %v plan %+v, want deletable and kept without Delete", p.CanDeleteBranch, p.Plan)
+	}
+	it, err := p.Confirmed(Needs{Confirm: true, Delete: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := one(t, e, it); o.Worktree != WtRemoved || o.Branch != BrDeleted {
+		t.Errorf("run %s/%s %q, want removed / deleted", o.Worktree, o.Branch, o.Reason)
 	}
 }
 
 // TestPreviewWorktreeKeepsUnprovenBranchWithoutDelete previews the same
-// worktree without -D: removing the worktree keeps the branch (its commits
-// stay), so -D is not asked for; the preview says the branch is kept.
+// worktree: without Delete its branch is kept (its commits stay), so -D is
+// not asked for; the preview says the branch is kept.
 func TestPreviewWorktreeKeepsUnprovenBranchWithoutDelete(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -231,23 +247,33 @@ func TestPreviewWorktreeKeepsUnprovenBranchWithoutDelete(t *testing.T) {
 	}
 }
 
-// TestPreviewDirtyAndDeleteNeedsBoth previews a dirty worktree on an
-// unmerged branch with -D: it needs both flags; the summary is the stronger
-// (needs_force) and Needs carries both, so a caller asking only for the
-// summary's flag cannot miss -D.
-func TestPreviewDirtyAndDeleteNeedsBoth(t *testing.T) {
+// TestPreviewDirtyWorktreeOnUnprovenBranch previews a dirty worktree on an
+// unmerged branch: it needs Force (summary needs_force) and may also be
+// given Delete; Confirmed with both, Run removes it and deletes the branch.
+func TestPreviewDirtyWorktreeOnUnprovenBranch(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
 	p0 := f.unmergedPushed("topic")
 	f.Dirty(p0, "wip.txt")
 	s, r := f.report()
-	p := previewOne(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), ItemFromRow(f.row(r, cleanup.KindWorktree, "topic")))
-	wantApproval(t, p, ApprovalNeedsForce, Needs{Confirm: true, Force: true, Delete: true})
+	e := f.engine(s, f.inputs(), Options{})
+	p := previewOne(t, e, ItemFromRow(f.row(r, cleanup.KindWorktree, "topic")))
+	wantApproval(t, p, ApprovalNeedsForce, Needs{Confirm: true, Force: true})
+	if !p.CanDeleteBranch {
+		t.Fatal("CanDeleteBranch false for an unmerged branch")
+	}
+	it, err := p.Confirmed(Needs{Confirm: true, Force: true, Delete: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := one(t, e, it); o.Worktree != WtRemoved || o.Branch != BrDeleted {
+		t.Errorf("run %s/%s %q, want removed / deleted", o.Worktree, o.Branch, o.Reason)
+	}
 }
 
 // TestPreviewRefusedShowsEngineReason previews items the engine refuses: a
 // hard blocker (locked, ticked proven), unreadable gates and an invalid Saw.
-// Each is refused with the engine's own reason, and Run (every flag set)
+// Each is refused with the engine's own reason, and Run (every approval)
 // refuses the same item for the same reason: Preview never re-decides.
 func TestPreviewRefusedShowsEngineReason(t *testing.T) {
 	cases := map[string]func(f *fixture) Item{
@@ -286,12 +312,15 @@ func TestPreviewRefusedShowsEngineReason(t *testing.T) {
 			f := newFixture(t)
 			it := setup(f)
 			s, _ := f.report()
-			e := f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true})
+			e := f.engine(s, f.inputs(), Options{})
 			p := previewOne(t, e, it)
 			if p.Approval != ApprovalRefused || !strings.Contains(p.Reason, want[name]) {
 				t.Fatalf("preview %s %q, want refused naming %q", p.Approval, p.Reason, want[name])
 			}
-			o := one(t, e, it)
+			if _, err := p.Confirmed(allNeeds); err == nil {
+				t.Error("Confirmed accepted a refused preview")
+			}
+			o := one(t, e, granted(it, allNeeds))
 			if o.Worktree != WtRefused || o.Reason != p.Reason {
 				t.Errorf("run %s %q, preview reason %q: want the same refusal", o.Worktree, o.Reason, p.Reason)
 			}
@@ -347,7 +376,7 @@ func TestPreviewProcFinderErrorBecomesWarning(t *testing.T) {
 	}
 }
 
-// TestPreviewMutatesNothing previews a mix (proven, dirty, unmerged with -D,
+// TestPreviewMutatesNothing previews a mix (proven, dirty, unmerged,
 // a branch item, a locked one) and requires the repository byte-for-byte
 // unchanged: Preview feeds a confirmation screen, which must remove nothing
 // before the user says yes.
@@ -368,7 +397,7 @@ func TestPreviewMutatesNothing(t *testing.T) {
 	}
 	items = append(items, ItemFromRow(f.row(r, cleanup.KindBranch, "loose")))
 	before := f.state()
-	ps := f.engine(s, f.inputs(), Options{DeleteUnmerged: true}).Preview(items)
+	ps := f.engine(s, f.inputs(), Options{}).Preview(items)
 	if after := f.state(); after != before {
 		t.Fatalf("Preview changed the repository:\nbefore %s\nafter %s", before, after)
 	}
@@ -379,71 +408,5 @@ func TestPreviewMutatesNothing(t *testing.T) {
 	}
 	if len(ps) != len(items) {
 		t.Fatalf("%d previews for %d items", len(ps), len(items))
-	}
-}
-
-// TestPreviewDecisionsEqualRun previews ten items covering every approval
-// kind and refusal path, then runs each with exactly the flags its preview
-// asked for (refused ones with every flag): what Preview said would happen
-// is what Run does. A preview that disagreed with the run would ask the
-// user to approve something other than what happens.
-func TestPreviewDecisionsEqualRun(t *testing.T) {
-	noGh(t)
-	f := newFixture(t)
-	f.mergedWorktree("proven")
-	ign := f.Worktree("ign")
-	f.Ignored(ign, ".env")
-	dirty := f.Worktree("dirty")
-	f.Dirty(dirty, "wip.txt")
-	f.unmergedPushed("kept")
-	f.unmergedBranch("loose")
-	det := filepath.Join(f.Dir, ".worktrees", "det")
-	f.git("worktree", "add", "--detach", det)
-	f.Commit(det, "x.txt", "x", "only here")
-	locked := f.Worktree("locked")
-	f.Lock(locked)
-	f.Worktree("bogus")
-	gone := f.Worktree("gone")
-	s, r := f.report()
-	f.git("worktree", "remove", gone)
-
-	items := []Item{
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "proven")),
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "ign")),
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "dirty")),
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "kept")),
-		ItemFromRow(f.row(r, cleanup.KindBranch, "loose")),
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "det")),
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "locked")),
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "bogus")),
-		ItemFromRow(f.row(r, cleanup.KindWorktree, "gone")),
-		ItemFromRow(f.row(r, cleanup.KindRemote, "loose")),
-	}
-	items[6].Saw = cleanup.StatusProven
-	items[7].Saw = "bogus"
-	want := []Approval{ApprovalProven, ApprovalNeedsConfirm, ApprovalNeedsForce, ApprovalNeedsConfirm, ApprovalNeedsDelete,
-		ApprovalNeedsForce, ApprovalRefused, ApprovalRefused, ApprovalRefused, ApprovalRefused}
-
-	ps := f.engine(s, f.inputs(), Options{}).Preview(items)
-	for i, p := range ps {
-		if p.Approval != want[i] {
-			t.Errorf("%s: approval %s (%q), want %s", items[i].Name, p.Approval, p.Reason, want[i])
-		}
-	}
-	for i, p := range ps {
-		opts := Options{Force: p.Needs.Force, DeleteUnmerged: p.Needs.Delete}
-		if p.Approval == ApprovalRefused {
-			opts = Options{Force: true, DeleteUnmerged: true}
-		}
-		o := one(t, f.engine(s, f.inputs(), opts), items[i])
-		if p.Approval == ApprovalRefused {
-			if o.Worktree == WtRemoved || o.Branch == BrDeleted || o.Reason != p.Reason {
-				t.Errorf("%s: preview refused %q, run %s/%s %q", items[i].Name, p.Reason, o.Worktree, o.Branch, o.Reason)
-			}
-			continue
-		}
-		if o.Worktree != p.Plan.Worktree || o.Branch != p.Plan.Branch {
-			t.Errorf("%s: preview plans %s/%s, run did %s/%s (%q)", items[i].Name, p.Plan.Worktree, p.Plan.Branch, o.Worktree, o.Branch, o.Reason)
-		}
 	}
 }

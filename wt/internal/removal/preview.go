@@ -7,12 +7,16 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
 
-// ItemFromRow is the one way a caller builds an Item from the row the user
-// saw: what they ticked (kind, path, ref, name) and what they saw (status,
-// commit, and the row's whole Losses, an unknown unpushed count and
-// unreadable gates included; never a zero or recomputed value, Ruling G).
-// The commit is the branch tip, or for a detached worktree its HEAD (the
-// commit the engine compares for it).
+// ItemFromRow builds the PREVIEW INPUT for a listed row: what the user
+// ticked (kind, path, ref, name) and what the list showed (status, commit,
+// and the row's whole Losses, an unknown unpushed count and unreadable gates
+// included; never a zero or recomputed value, Ruling G). The commit is the
+// branch tip, or for a detached worktree its HEAD (the commit the engine
+// compares for it). It carries no approvals.
+//
+// Run must not receive it: pass it to Engine.Preview, show the preview, and
+// hand Run the Item ItemPreview.Confirmed builds from what the user
+// confirmed (Ruling K; Tasks 9 and 10 depend on this).
 //
 // Every kind converts, a remote row included: the engine refuses a remote
 // item ("not removable"), so a caller that lets one through gets a refusal,
@@ -33,39 +37,28 @@ func ItemFromRow(r cleanup.Row) Item {
 	}
 }
 
-// Approval is what a caller must obtain from the user before passing an item
-// to Run (Ruling B). The values are wire strings; never rename one.
+// Approval is the summary of what a caller must obtain from the user before
+// confirming an item (Ruling B). The values are wire strings; never rename
+// one.
 type Approval string
 
 const (
 	// ApprovalProven: proven with nothing to lose; a plain yes (--yes).
 	ApprovalProven Approval = "proven"
-	// ApprovalNeedsConfirm: not proven, but nothing it loses needs a flag
+	// ApprovalNeedsConfirm: not proven, or loses something no flag covers
 	// (ignored files only, fresh_branch, pr_unknown, a kept unproven
 	// branch...); a typed confirmation in the TUI, --accept-loss on the CLI.
 	ApprovalNeedsConfirm Approval = "needs_confirm"
 	// ApprovalNeedsForce: uncommitted changes, or a detached HEAD's unique
 	// commits; --force plus the typed confirmation.
 	ApprovalNeedsForce Approval = "needs_force"
-	// ApprovalNeedsDelete: the branch would be deleted although not proven
-	// merged; -D plus the typed confirmation.
+	// ApprovalNeedsDelete: a branch item whose branch is not proven merged;
+	// -D plus the typed confirmation.
 	ApprovalNeedsDelete Approval = "needs_delete"
 	// ApprovalRefused: Run would refuse it, skip it, or do nothing to it;
 	// ItemPreview.Reason is the engine's reason. No approval removes it.
 	ApprovalRefused Approval = "refused"
 )
-
-// Needs is every approval an item needs (it can need more than one: a dirty
-// worktree whose unmerged branch -D would delete needs Force and Delete).
-// Confirm is the typed confirmation (TUI) or --accept-loss (CLI), needed by
-// every item that is not plain proven; Force is --force; Delete is -D. A
-// refused item needs nothing (nothing approves it). The caller must obtain
-// all of them; ItemPreview.Approval only summarises.
-type Needs struct {
-	Confirm bool
-	Force   bool
-	Delete  bool
-}
 
 // ItemPreview is what a confirmation shows for one item, decided by the
 // engine's own gates (the ones Run uses) and changing nothing.
@@ -81,28 +74,65 @@ type ItemPreview struct {
 	// Warnings: the process check could not run, and the branch stage's
 	// warnings. One sanitised line each.
 	Warnings []string
-	// Approval is the strongest of Needs (needs_force over needs_delete over
-	// needs_confirm over proven), or refused.
+	// Approval summarises Needs: needs_force over needs_delete over
+	// needs_confirm over proven; or refused.
 	Approval Approval
-	Needs    Needs
+	// Needs are the approvals Confirmed requires (needsOf, the rule Run
+	// enforces); every approval a refused item would need is false.
+	Needs Needs
+	// CanDeleteBranch: a worktree item whose branch is not proven merged and
+	// would be deleted if the user also grants Approved.Delete; without it
+	// the branch is kept (see Notes). An optional extra approval, not a need.
+	CanDeleteBranch bool
 	// Reason is the engine's reason for a refused item; "" otherwise.
 	Reason string
 	// Notes are lines for the confirmation that ask nothing, such as
-	// "branch topic will be kept: not proven merged".
+	// "branch topic will be kept: not proven merged". One sanitised line each.
 	Notes []string
-	// Plan is what Run would do given the approvals in Needs (Plan's dry-run
-	// outcome); for a refused item, the refusal or skip.
+	// Plan is what Run does with Approved == Needs (a dry-run outcome); for
+	// a refused item, the refusal or skip.
 	Plan Outcome
 }
 
-// Preview decides every item as Run would, through the same gates, and
-// says what each needs approved; it changes nothing. A worktree item is
-// judged with Force (Force never overrides a refusal, so this only shows
-// whether it needs --force); a branch item with DeleteUnmerged (it can only
-// be removed by deleting its branch). A worktree item's branch is judged
-// with Opts.DeleteUnmerged as given: without it an unproven branch is kept,
-// a note and not an approval question.
+// Confirmed is the Item Run must receive once the user confirmed this
+// preview with approved: Kind, Path, Ref and Name from the preview's item,
+// and what the preview SHOWED (Saw, SawTip, SawLosses from Fresh, so a loss
+// that appears after the confirmation is worse and skipped), with Approved
+// = approved. It is an error for a refused preview or when approved does not
+// cover Needs. approved may add Delete on a worktree item (CanDeleteBranch).
+func (p ItemPreview) Confirmed(approved Needs) (Item, error) {
+	if p.Approval == ApprovalRefused {
+		return Item{}, fmt.Errorf("%s: refused: %s", p.Item.Name, p.Reason)
+	}
+	if p.Fresh.Status == "" {
+		return Item{}, fmt.Errorf("%s: the preview has no re-check to confirm", p.Item.Name)
+	}
+	if !approved.covers(p.Needs) {
+		return Item{}, fmt.Errorf("%s: approvals %+v do not cover what it needs %+v", p.Item.Name, approved, p.Needs)
+	}
+	shown := ItemFromRow(p.Fresh)
+	return Item{
+		Kind:      p.Item.Kind,
+		Path:      p.Item.Path,
+		Ref:       p.Item.Ref,
+		Name:      p.Item.Name,
+		Saw:       shown.Saw,
+		SawTip:    shown.SawTip,
+		SawLosses: shown.SawLosses,
+		Approved:  approved,
+	}, nil
+}
+
+// Preview decides every item as Run would, through the same gates, with
+// every approval granted (so it reports what is needed and never masks a
+// refusal), and says what each needs approved; it changes nothing. A
+// worktree item's unproven branch is judged without Delete (kept; a note,
+// and CanDeleteBranch when Delete would delete it). One live-process
+// listing serves every item when the finder supports it (LsofFinder).
 func (e Engine) Preview(items []Item) []ItemPreview {
+	if b, ok := e.Opts.Procs.(batchFinder); ok {
+		e.Opts.Procs = b.snapshot()
+	}
 	out := make([]ItemPreview, 0, len(items))
 	for _, it := range items {
 		out = append(out, e.safePreview(it))
@@ -122,41 +152,31 @@ func (e Engine) safePreview(it Item) (p ItemPreview) {
 }
 
 func (e Engine) previewItem(it Item) ItemPreview {
-	pe := e
-	pe.Opts.Force = true
-	pe.Opts.DryRun = true
-	if it.Kind == cleanup.KindBranch {
-		pe.Opts.DeleteUnmerged = true
-	}
-	g := pe.gate(it)
+	full := it
+	full.Approved = Needs{Confirm: true, Force: true, Delete: it.Kind == cleanup.KindBranch}
+	g := e.gate(full)
 	p := ItemPreview{Item: it, Procs: g.procs, Fresh: g.fresh}
-	procLines := procWarnings(nil, g.procErr)
-	p.Warnings = append(p.Warnings, procLines...)
+	p.Warnings = oneLines(procWarnings(nil, g.procErr))
 	if g.hasFresh {
 		p.LossLines = cleanup.LossLines(g.fresh)
 	}
 	if g.stop != nil {
 		p.Approval, p.Reason, p.Plan = ApprovalRefused, g.stop.Reason, *g.stop
+		p.Plan.Item = it
 		return p
 	}
 
-	plan := pe.act(it, g, true)
+	plan, branchWarnings := e.act(full, g, true)
+	plan.Item = it
 	p.Plan = plan
-	// The branch stage's warnings follow the process lines act put first.
-	if n := len(procWarnings(g.procs, g.procErr)); n <= len(plan.Warnings) {
-		p.Warnings = append(p.Warnings, plan.Warnings[n:]...)
-	}
-	fresh := g.fresh
+	p.Warnings = append(p.Warnings, branchWarnings...)
 	if it.Kind == cleanup.KindBranch && plan.Branch != BrDeleted {
 		// A branch item whose branch would stay does nothing at all.
 		p.Approval, p.Reason = ApprovalRefused, plan.Reason
 		return p
 	}
 
-	p.Needs.Force = g.needForce
-	p.Needs.Delete = plan.Branch == BrDeleted && !fresh.BranchProven
-	plain := fresh.Status == cleanup.StatusProven && fresh.Losses == (cleanup.Losses{})
-	p.Needs.Confirm = !plain || p.Needs.Force || p.Needs.Delete
+	p.Needs = g.need
 	switch {
 	case p.Needs.Force:
 		p.Approval = ApprovalNeedsForce
@@ -168,18 +188,25 @@ func (e Engine) previewItem(it Item) ItemPreview {
 		p.Approval = ApprovalProven
 	}
 
-	if it.Kind == cleanup.KindWorktree && plan.Branch != BrDeleted && plan.Branch != BrNotAttempted {
+	fresh := g.fresh
+	if it.Kind == cleanup.KindWorktree && fresh.Ref != "" && plan.Branch != BrDeleted {
+		if !fresh.BranchProven {
+			withDelete := full
+			withDelete.Approved.Delete = true
+			alt, _ := e.act(withDelete, g, true)
+			p.CanDeleteBranch = alt.Branch == BrDeleted
+		}
 		p.Notes = append(p.Notes, keptNote(fresh.Ref, plan))
 	}
 	return p
 }
 
-// keptNote is the preview line for a worktree item's branch that Run would
-// keep.
+// keptNote is the preview line, one sanitised line, for a worktree item's
+// branch that Run would keep.
 func keptNote(ref string, plan Outcome) string {
 	name := strings.TrimPrefix(ref, "refs/heads/")
 	if plan.Branch == BrRetainedUnmerged {
-		return "branch " + name + " will be kept: not proven merged"
+		return cleanup.OneLine("branch " + name + " will be kept: not proven merged")
 	}
-	return "branch " + name + " will be kept: " + strings.TrimPrefix(plan.Reason, "dry run: would remove; ")
+	return cleanup.OneLine("branch " + name + " will be kept: " + strings.TrimPrefix(plan.Reason, "dry run: would remove; "))
 }

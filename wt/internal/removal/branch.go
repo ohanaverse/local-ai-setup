@@ -29,7 +29,7 @@ var (
 
 // verdictOnlyUnknown are the Unknown reason codes that only answer "is the
 // branch merged?" (Ruling H). -D deletes regardless of that answer, so with
-// DeleteUnmerged they do not keep a branch. Every other Unknown code, about
+// Approved.Delete they do not keep a branch. Every other Unknown code, about
 // identity or about what would be lost (branch_unknown, gates_unavailable,
 // no_default_branch, unpushed_unknown), still does.
 var verdictOnlyUnknown = map[string]bool{
@@ -142,11 +142,11 @@ func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) branchResult {
 		}
 		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: its commit could not be read", ref))
 	}
-	if fresh.Unknown && !(e.Opts.DeleteUnmerged && onlyVerdictUnknown(fresh)) {
+	if fresh.Unknown && !(ic.item.Approved.Delete && onlyVerdictUnknown(fresh)) {
 		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: its state could not be read (%s)", ref, unknownCodes(fresh)))
 	}
 	// 4.
-	if !fresh.BranchProven && !e.Opts.DeleteUnmerged {
+	if !fresh.BranchProven && !ic.item.Approved.Delete {
 		return result(BrRetainedUnmerged, fmt.Sprintf("branch %s kept: not proven merged; -D deletes it", ref))
 	}
 	// 5.
