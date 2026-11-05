@@ -342,6 +342,16 @@ func (m *cleanupListModel) layout() cleanupLayout {
 			off = hs
 		}
 	}
+	// Never open the list on the tail of a wrapped row: start at the next
+	// item instead, while that still shows the highlighted row.
+	for k := 0; k < len(m.items); k++ {
+		if start[k] < off && off < start[k+1] {
+			if start[k+1] <= cs {
+				off = start[k+1]
+			}
+			break
+		}
+	}
 	l.offset = max(0, off)
 	return l
 }
@@ -378,7 +388,15 @@ func (m *cleanupListModel) detail() string {
 		text = "cannot be ticked: " + text
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	return dim.Render(rule) + "\n" + clip(tuilayout.WrapText(text, m.width), m.width)
+	out := dim.Render(rule) + "\n" + clip(tuilayout.WrapText(text, m.width), m.width)
+	// The sentence counts the worktrees inside this one; their paths are
+	// named here only when they all fit on one line (the JSON has them).
+	if paths := cleanup.NestedPaths(it.row); len(paths) > 0 {
+		if line := "worktrees inside: " + strings.Join(paths, ", "); m.width <= 0 || lipgloss.Width(line) <= m.width {
+			out += "\n" + line
+		}
+	}
+	return out
 }
 
 func (m cleanupListModel) View() string {

@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -198,5 +199,37 @@ func TestReasonTextDetailSameAsWording(t *testing.T) {
 	}
 	if got := ReasonText(ReasonDirty, "2 modified"); got != "uncommitted or untracked files (2 modified)" {
 		t.Errorf("ReasonText with a real detail = %q", got)
+	}
+}
+
+// nestedPrimary is a primary-checkout row holding n other worktrees, each
+// a nested blocker naming its path, as CheckGates makes them.
+func nestedPrimary(n int) Row {
+	row := Row{Kind: KindWorktree, Name: "main", Path: "/r", Branch: "main", Status: StatusInUse,
+		Blockers: []Reason{{Code: BlockPrimary, Detail: "/r"}, {Code: BlockCurrent}}}
+	for i := 0; i < n; i++ {
+		row.Blockers = append(row.Blockers, Reason{Code: BlockNested, Detail: fmt.Sprintf("/r/.claude/worktrees/agent-%02d", i)})
+	}
+	row.Blockers = append(row.Blockers, Reason{Code: BlockDefaultBranch, Detail: "main"})
+	return row
+}
+
+// TestRowTextCollapsesNestedWorktrees pins that the nested-worktree
+// blockers are one phrase with a count: the primary checkout holds every
+// agent worktree, and one full path per worktree made its row grow past the
+// screen. The paths stay in the JSON (TestEncodeKeepsEveryNestedPath).
+func TestRowTextCollapsesNestedWorktrees(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want string
+	}{
+		{30, "primary checkout (/r); you are here; contains 30 other worktrees; the default branch (main)"},
+		{1, "primary checkout (/r); you are here; contains 1 other worktree; the default branch (main)"},
+	} {
+		row := nestedPrimary(c.n)
+		rep := Report{Base: Base{Ref: "origin/main"}, Rows: []Row{row}}
+		if got := RowText(rep, row); got != c.want {
+			t.Errorf("n=%d: RowText = %q\nwant           %q", c.n, got, c.want)
+		}
 	}
 }

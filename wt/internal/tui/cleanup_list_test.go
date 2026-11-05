@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -369,6 +370,14 @@ func TestCleanupListSaysWhenRowsAreOffScreen(t *testing.T) {
 	if !strings.Contains(view, "↑ more above") || strings.Contains(view, "↓ more below") {
 		t.Errorf("end of a long list: want only the above hint:\n%s", view)
 	}
+	// Scrolled, the list opens on a heading or a row's first line, never on
+	// the tail of a wrapped row.
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "gh:") && i+2 < len(lines) && strings.HasPrefix(lines[i+2], "    ") {
+			t.Errorf("list opens on a continuation line %q:\n%s", lines[i+2], view)
+		}
+	}
 	if h := lipgloss.Height(view); h > 24 {
 		t.Errorf("view is %d lines at 24", h)
 	}
@@ -497,5 +506,92 @@ func TestCleanupListCursorSkipsHeadings(t *testing.T) {
 		if _, ok := m.selectedRow(); !ok {
 			t.Fatalf("cursor on a heading after %d ups", i)
 		}
+	}
+}
+
+// nestedReport is cleanupFixture with its primary checkout holding n other
+// worktrees (one nested blocker each, as CheckGates makes them) and being
+// the only Current worktree.
+func nestedReport(n int) cleanup.Report {
+	r := cleanupFixture()
+	r.Rows[8].Blockers = []cleanup.Reason{{Code: cleanup.BlockLocked}}
+	bl := []cleanup.Reason{{Code: cleanup.BlockPrimary, Detail: "/repo"}, {Code: cleanup.BlockCurrent}}
+	for i := 0; i < n; i++ {
+		bl = append(bl, cleanup.Reason{Code: cleanup.BlockNested, Detail: fmt.Sprintf("/repo/.claude/worktrees/agent-%02d", i)})
+	}
+	r.Rows[0].Blockers = append(bl, cleanup.Reason{Code: cleanup.BlockDefaultBranch, Detail: "main"})
+	return r
+}
+
+// TestCleanupListNestedPrimaryRowIsShort pins Ruling 16: the primary
+// checkout holding 30 worktrees is a short row ("contains 30 other
+// worktrees", no paths) at 80 columns, and highlighting it at 80x24 keeps
+// the title, the header and the detail on screen. One path per worktree
+// made the row taller than the terminal.
+func TestCleanupListNestedPrimaryRowIsShort(t *testing.T) {
+	m := newSizedCleanupList(t, nestedReport(30), 80, 60)
+	block := rowBlock(t, m.View(), "main")
+	if n := strings.Count(block, "\n") + 1; n > 4 {
+		t.Errorf("primary row is %d lines at 80 columns, want <= 4:\n%s", n, block)
+	}
+	if !strings.Contains(squash(block), squash("contains 30 other worktrees")) || strings.Contains(block, "agent-") {
+		t.Errorf("primary row does not collapse its nested worktrees:\n%s", block)
+	}
+
+	m = moveTo(t, newSizedCleanupList(t, nestedReport(30), 80, 24), "main")
+	view := m.View()
+	if h := lipgloss.Height(view); h > 24 {
+		t.Errorf("view is %d lines at 24", h)
+	}
+	for _, want := range []string{"wt cleanup", "q quit", "base:  origin/main", "── main ─", "contains 30 other worktrees"} {
+		if !strings.Contains(strings.Join(strings.Fields(view), " "), strings.Join(strings.Fields(want), " ")) {
+			t.Errorf("highlighted primary at 80x24 lacks %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "agent-") {
+		t.Errorf("30 nested paths do not fit one line, yet the detail lists them:\n%s", view)
+	}
+}
+
+// TestCleanupListDetailNamesNestedPathsThatFit pins the other half of
+// Ruling 16: when the nested worktrees' paths fit on one line, the
+// highlighted row's detail names them; the row itself never does.
+func TestCleanupListDetailNamesNestedPathsThatFit(t *testing.T) {
+	m := moveTo(t, newSizedCleanupList(t, nestedReport(1), 120, 40), "main")
+	view := m.View()
+	if !strings.Contains(view, "/repo/.claude/worktrees/agent-00") {
+		t.Errorf("detail lacks the one nested path:\n%s", view)
+	}
+	if block := rowBlock(t, view, "main"); strings.Contains(block, "agent-00") || !strings.Contains(block, "contains 1 other worktree") {
+		t.Errorf("row should carry the count, not the path:\n%s", block)
+	}
+}
+
+// TestCleanupListFortyRowsAllReachable pins scrolling with many rows: at
+// 80x24, `j` reaches each of 40 worktree rows in turn, and each, the last
+// included, is on screen whole with the cursor on it.
+func TestCleanupListFortyRowsAllReachable(t *testing.T) {
+	r := cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, GH: cleanup.GHOK}
+	for i := 0; i < 40; i++ {
+		name := fmt.Sprintf("wt-%02d", i)
+		r.Rows = append(r.Rows, cleanup.Row{Kind: cleanup.KindWorktree, Name: name, Path: "/repo/.worktrees/" + name,
+			Branch: name, Status: cleanup.StatusProven, Evidence: cleanup.EvAncestor})
+	}
+	m := newSizedCleanupList(t, r, 80, 24)
+	for i := 0; i < 40; i++ {
+		name := fmt.Sprintf("wt-%02d", i)
+		row, ok := m.selectedRow()
+		if !ok || row.Name != name {
+			t.Fatalf("after %d j: highlighted %q, want %q", i, row.Name, name)
+		}
+		view := m.View()
+		if h := lipgloss.Height(view); h > 24 {
+			t.Fatalf("%s: view is %d lines", name, h)
+		}
+		block := rowBlock(t, view, name)
+		if !strings.HasPrefix(block, "> ") || !strings.Contains(block, "ancestor of origin/main") {
+			t.Fatalf("%s not whole and highlighted on screen:\n%s", name, view)
+		}
+		m = cleanupSend(t, m, keyRunes("j"))
 	}
 }

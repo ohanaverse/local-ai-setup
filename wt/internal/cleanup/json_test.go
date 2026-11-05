@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -274,5 +275,25 @@ func TestEncodeErrorNilError(t *testing.T) {
 	}
 	if env.Error == nil || env.Error.Message != "unknown error" {
 		t.Errorf("error = %+v", env.Error)
+	}
+}
+
+// TestEncodeKeepsEveryNestedPath pins that collapsing the nested-worktree
+// blockers into a count is wording only: the JSON still carries one blocker
+// per nested worktree, with its path, for a tool that wants them.
+func TestEncodeKeepsEveryNestedPath(t *testing.T) {
+	row := nestedPrimary(30)
+	raw, err := Encode(Report{Repo: "/r", GH: GHOK, Rows: []Row{row}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		p := fmt.Sprintf("/r/.claude/worktrees/agent-%02d", i)
+		if !strings.Contains(string(raw), `"`+p+`"`) {
+			t.Errorf("JSON lacks nested path %s", p)
+		}
+	}
+	if n := strings.Count(string(raw), `"`+BlockNested+`"`); n != 30 {
+		t.Errorf("JSON has %d nested blockers, want 30", n)
 	}
 }

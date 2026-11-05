@@ -245,7 +245,14 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 			j.uniq(ReasonDetachedUnique, "detached HEAD "+short(w.Head)+" is not in the base")
 		}
 		if g.IgnoredCount > 0 {
-			j.weak(ReasonIgnoredFiles, fmt.Sprintf("%d ignored entries, %d bytes", g.IgnoredCount, g.IgnoredBytes))
+			entryWord, byteWord := "entries", "bytes"
+			if g.IgnoredCount == 1 {
+				entryWord = "entry"
+			}
+			if g.IgnoredBytes == 1 {
+				byteWord = "byte"
+			}
+			j.weak(ReasonIgnoredFiles, fmt.Sprintf("%d ignored %s, %d %s", g.IgnoredCount, entryWord, g.IgnoredBytes, byteWord))
 		}
 	}
 	if w.Primary && c.s.ClaimsErr != "" {

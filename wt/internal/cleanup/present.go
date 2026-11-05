@@ -185,7 +185,18 @@ func deepestCurrent(r Report) string {
 func RowText(rep Report, row Row) string {
 	var parts []string
 	here := deepestCurrent(rep)
+	nested := len(NestedPaths(row))
 	for _, b := range row.Blockers {
+		if b.Code == BlockNested {
+			// One phrase for them all, where the first one stood: the
+			// primary checkout holds every worktree under it, and a path
+			// each made its line grow with them. The JSON keeps the paths.
+			if nested > 0 {
+				parts = append(parts, nestedText(nested))
+				nested = 0
+			}
+			continue
+		}
 		if b.Code == BlockCurrent {
 			if row.Path == here {
 				parts = append(parts, "you are here")
@@ -210,6 +221,26 @@ func RowText(rep Report, row Row) string {
 		return "no evidence"
 	}
 	return strings.Join(parts, "; ")
+}
+
+// nestedText is the nested-worktree blockers as one phrase.
+func nestedText(n int) string {
+	if n == 1 {
+		return "contains 1 other worktree"
+	}
+	return fmt.Sprintf("contains %d other worktrees", n)
+}
+
+// NestedPaths are the paths of the worktrees inside row's (its nested
+// blockers' details), in blocker order. RowText only counts them.
+func NestedPaths(row Row) []string {
+	var out []string
+	for _, b := range row.Blockers {
+		if b.Code == BlockNested {
+			out = append(out, b.Detail)
+		}
+	}
+	return out
 }
 
 // AgeText is a row's age as "today" or "3d ago"; "" when it is not known.

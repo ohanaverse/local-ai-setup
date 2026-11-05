@@ -867,3 +867,29 @@ func TestClassifyUnpushedCountWording(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyIgnoredCountWording pins the ignored-files detail's grammar:
+// "1 ignored entry, N bytes" for one, "entries" for more, as the unpushed
+// count says "1 commit".
+func TestClassifyIgnoredCountWording(t *testing.T) {
+	f := newFixture(t)
+	one := f.Worktree("one")
+	f.IgnoredIn(one, ".env")
+	two := f.Worktree("two")
+	f.IgnoredIn(two, ".env")
+	f.IgnoredIn(two, ".cache")
+	noGh(t)
+	r := Classify(gather(t, f), Options{Now: later()})
+	for name, want := range map[string]string{"one": "1 ignored entry, ", "two": "2 ignored entries, "} {
+		row := findRow(t, r, KindWorktree, name)
+		got := ""
+		for _, re := range row.Reasons {
+			if re.Code == ReasonIgnoredFiles {
+				got = re.Detail
+			}
+		}
+		if !strings.HasPrefix(got, want) || strings.HasSuffix(got, " 1 bytes") {
+			t.Errorf("%s: ignored detail = %q, want prefix %q%s", name, got, want, dumpRows(r.Rows))
+		}
+	}
+}
