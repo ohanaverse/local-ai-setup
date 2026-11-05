@@ -11,9 +11,10 @@ import (
 // not in `git worktree list`, or its ref is not among the refs.
 var ErrTargetGone = errors.New("cleanup: the target no longer exists")
 
-// Target names one row to rescan: a worktree by Path (Ref is its branch, if
-// any, and only informs), a branch or remote-tracking branch by its full
-// refname Ref.
+// Target names one row to rescan: a worktree by Path, a local branch by its
+// full refname Ref (refs/heads/<b>). For a worktree, Ref is the identity the
+// caller saw and is enforced: its branch's full refname, or "" for a
+// detached worktree. Remote rows are not rescannable in PR B.
 type Target struct {
 	Kind Kind
 	Path string
@@ -32,20 +33,30 @@ const notReadByRescan = "not read by a rescan"
 // the merge-commit checks of its PRs, and the session claims (read-only). It
 // re-resolves the base ref's tip locally, so a fetch another process made
 // since the list is honoured; it never fetches and never runs gh. From prior
-// it reuses only Base, OwnRepo, Fetch, NoDefault and PRs.
+// it reuses Base, CommonDir, OwnRepo, Fetch, NoDefault and PRs, and the
+// non-target Heads and Remotes entries (whose rows are discarded). The PR
+// facts are therefore as of the first Gather: a PR opened after the list is
+// not seen (the spec accepts this); a merged PR still proves only the head it
+// merged, so a tip that moved past it stops counting.
 //
 // The snapshot handed to the pure Classify is prior's with the target's
 // entries replaced: the other heads and remotes stay as listed, and the other
-// worktrees are the fresh list's entries with no gates read. That is enough
-// for Classify to judge the target exactly as a full run would: a worktree
-// row reads only its own gates, its branch's head and that head's proof; a
-// branch row additionally depends on which worktrees hold branches (fresh
-// here); a remote row on every PR lookup (reused). Proofs hold the target's
-// tips only, so every other row is Unknown and is discarded.
+// worktrees are the fresh list's entries with no gates read (their rows are
+// discarded too). That is enough for Classify to judge the target exactly as
+// a full run would: a worktree row reads only its own gates, its branch's
+// head and that head's proof; a branch row additionally depends on which
+// worktrees hold branches (fresh here). Proofs hold the target's tips only,
+// so every other row is Unknown and is discarded.
 //
-// A target that no longer exists is ErrTargetGone. A failure to list the
-// worktrees or read the refs, a base that no longer resolves, or a branch a
-// worktree now holds is another error: never a clean row. A gate that cannot
+// A worktree target whose worktree is now on a different branch, or on a
+// branch when it was detached (or detached when it was on one), is an error
+// naming the change: Target.Ref is enforced, never re-read as whatever the
+// path holds now.
+//
+// A target that no longer exists is ErrTargetGone. A malformed or remote
+// target, a failure to list the worktrees or read the refs, a ref that is
+// symbolic, a base that no longer resolves, or a branch a worktree now holds
+// is another error: never a clean row. A gate that cannot
 // be read is not an error: the row carries it (gates_unavailable,
 // Losses.GatesUnknown) as the full run's would. Rescan writes nothing.
 func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, error) {
@@ -83,6 +94,19 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 			return Row{}, ErrTargetGone
 		}
 		w := facts[i]
+		// Identity: the branch (or detached HEAD) the caller saw. A worktree
+		// now on another branch would give a correct row for a branch nobody
+		// approved.
+		switch {
+		case t.Ref == "" && w.Branch != "":
+			return Row{}, fmt.Errorf("cleanup: worktree %s is now on %s (was detached)", flat(w.Path), flat(w.Branch))
+		case t.Ref != "" && !strings.EqualFold(w.Branch, t.Ref):
+			now := "detached"
+			if w.Branch != "" {
+				now = "on " + w.Branch
+			}
+			return Row{}, fmt.Errorf("cleanup: worktree %s is now %s (was %s)", flat(w.Path), flat(now), flat(t.Ref))
+		}
 		mini.Worktrees = []WorktreeState{gateState(g, w, gin)}
 		if w.Branch != "" {
 			// The worktree's spelling and, on a case-insensitive volume, the
@@ -95,8 +119,13 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 				}
 			}
 		}
-	case KindBranch, KindRemote:
+	case KindBranch:
+		if !strings.HasPrefix(t.Ref, "refs/heads/") || !qualified(t.Ref) {
+			return Row{}, fmt.Errorf("cleanup: rescan: branch target %q is not a refs/heads/ name", flat(t.Ref))
+		}
 		refs = []string{t.Ref}
+	case KindRemote:
+		return Row{}, fmt.Errorf("cleanup: rescan: unsupported target kind %q", flat(string(t.Kind)))
 	default:
 		return Row{}, fmt.Errorf("cleanup: rescan: unknown target kind %q", flat(string(t.Kind)))
 	}
@@ -115,7 +144,7 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 				mini.Remotes = append(mini.Remotes, r)
 			}
 		}
-		if t.Kind == KindBranch && len(heads) == 0 || t.Kind == KindRemote && len(remotes) == 0 {
+		if t.Kind == KindBranch && len(heads) == 0 {
 			return Row{}, ErrTargetGone
 		}
 		if t.Kind != KindWorktree && len(mini.Heads)+len(mini.Remotes) == 0 {
@@ -179,7 +208,15 @@ func readNamedRefs(g Git, names []string) (heads, remotes []RefFact, err error) 
 		if err != nil {
 			return nil, nil, err
 		}
-		if !ok || !slices.Contains(names, r.Ref) {
+		if !ok {
+			// A named ref that exists but is a symbolic ref or names a
+			// non-commit is not a branch with its own tip: an error, not gone.
+			if name, _, _ := strings.Cut(line, "\x00"); slices.Contains(names, name) {
+				return nil, nil, fmt.Errorf("cleanup: %s is not a branch on a commit (a symbolic ref or a non-commit)", flat(name))
+			}
+			continue
+		}
+		if !slices.Contains(names, r.Ref) {
 			continue
 		}
 		if head {

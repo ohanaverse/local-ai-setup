@@ -90,28 +90,23 @@ func TestRescanReflectsMovedTip(t *testing.T) {
 }
 
 // TestRescanGoneTarget removes a listed worktree and deletes a listed branch
-// and a listed remote-tracking ref (by hand, in the test) before rescanning
-// each. Why: something removed between the list and the act is not a row to
+// (by hand, in the test) before rescanning each. Why: something removed between the list and the act is not a row to
 // judge; ErrTargetGone lets the removal report it as already gone instead of
 // acting on a stale row or calling it a git failure.
 func TestRescanGoneTarget(t *testing.T) {
 	f := newFixture(t)
 	f.Worktree("topic")
 	f.Branch("solo")
-	f.Branch("shared")
-	f.Push("shared")
 	noGh(t)
 	o := Options{Now: later()}
 	s := gather(t, f)
 	r := Classify(s, o)
 	w := findRow(t, r, KindWorktree, "topic")
 	b := findRow(t, r, KindBranch, "solo")
-	rm := findRow(t, r, KindRemote, "shared")
 
 	f.git("worktree", "remove", w.Path)
 	f.git("branch", "-D", "solo")
-	f.git("update-ref", "-d", "refs/remotes/origin/shared")
-	for _, row := range []Row{w, b, rm} {
+	for _, row := range []Row{w, b} {
 		_, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, targetOf(row))
 		if !errors.Is(err, ErrTargetGone) {
 			t.Errorf("Rescan(%s %s) error = %v, want ErrTargetGone", row.Kind, row.Name, err)
@@ -160,7 +155,7 @@ func TestRescanDoesNotCallGhOrFetch(t *testing.T) {
 // after the list and rescans an untouched one. Why: a change elsewhere in
 // the repository must not leak into the target's verdict, and with the
 // target itself unchanged the rescan must give exactly the row the list
-// showed: the removal compares the two and refuses on any difference.
+// showed, or a verdict the user saw would not be the one acted on.
 func TestRescanMatchesGatherForUnchangedTarget(t *testing.T) {
 	f := newFixture(t)
 	f.Worktree("topic")
@@ -176,12 +171,15 @@ func TestRescanMatchesGatherForUnchangedTarget(t *testing.T) {
 
 // TestRescanMatchesGatherForEveryTarget builds a repository with a proven
 // squash-merged worktree, a dirty worktree, an unmerged branch, a locked
-// worktree, a detached worktree and a just-created branch (plus the primary
-// and a remote row), then rescans every row of the full run. Why: Rescan
-// reuses the per-worktree and per-ref pieces of Gather on a mini snapshot;
-// any drift between the two paths (a missed proof input, the held-branch
-// filter, the default-branch exclusion, the age) would make the re-check
-// disagree with the list and refuse, or worse, pass a row the list did not.
+// worktree, a detached worktree, a young detached worktree at the base tip
+// (min-age reads its HEAD's reflog time) and a just-created branch (plus the
+// primary), then rescans every worktree and branch row of the full run
+// (remote rows are not rescannable in PR B). Why: Rescan reuses the
+// per-worktree and per-ref pieces of Gather on a mini snapshot; any drift
+// between the two paths (a missed proof input, the held-branch filter, the
+// default-branch exclusion, the age, a detached HEAD's time) would make the
+// re-check disagree with the list and refuse, or worse, pass a row the list
+// did not.
 func TestRescanMatchesGatherForEveryTarget(t *testing.T) {
 	f := newFixture(t)
 	merged := f.Worktree("merged")
@@ -196,6 +194,7 @@ func TestRescanMatchesGatherForEveryTarget(t *testing.T) {
 	locked := f.Worktree("held")
 	f.git("worktree", "lock", locked)
 	f.DetachOrphan(f.Worktree("loose"))
+	f.git("worktree", "add", "--detach", filepath.Join(filepath.Dir(f.Dir), "wt-at-base"), "refs/remotes/origin/main")
 	f.Branch("fresh")
 	noGh(t)
 
@@ -209,6 +208,9 @@ func TestRescanMatchesGatherForEveryTarget(t *testing.T) {
 	}
 	statuses := map[Status]bool{}
 	for _, want := range r.Rows {
+		if want.Kind == KindRemote {
+			continue
+		}
 		statuses[want.Status] = true
 		sameRow(t, mustRescan(t, f, s, o, targetOf(want)), want)
 	}
@@ -360,5 +362,115 @@ func TestRescanBranchNowCheckedOutIsAnError(t *testing.T) {
 	_, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, targetOf(b))
 	if err == nil || errors.Is(err, ErrTargetGone) || !strings.Contains(err.Error(), "checked out") {
 		t.Fatalf("Rescan of a branch now checked out: error %v, want a \"checked out\" error", err)
+	}
+}
+
+// TestRescanWorktreeIdentityIsEnforced lists a worktree on topic and a
+// detached worktree, then switches the first to another branch and puts the
+// second on a new branch before rescanning both; a listed branch left alone
+// is rescanned too. Why: a worktree target is its path AND the branch (or
+// detached HEAD) the user approved; a fresh row for a different branch would
+// carry that branch's Ref and Tip, and a removal acting on it would delete a
+// branch nobody approved. Rescan must refuse, saying what changed, while an
+// unchanged target still rescans.
+func TestRescanWorktreeIdentityIsEnforced(t *testing.T) {
+	f := newFixture(t)
+	wt := f.Worktree("topic")
+	det := f.Worktree("loose")
+	f.DetachOrphan(det)
+	f.Branch("solo")
+	noGh(t)
+	o := Options{Now: later()}
+	s := gather(t, f)
+	r := Classify(s, o)
+	w := findRow(t, r, KindWorktree, "topic")
+	d := findRow(t, r, KindWorktree, "wt-loose")
+	b := findRow(t, r, KindBranch, "solo")
+
+	gitIn(t, wt, "switch", "-c", "other")
+	gitIn(t, det, "switch", "-c", "later")
+	for _, c := range []struct {
+		row  Row
+		want string
+	}{{w, "now on refs/heads/other (was refs/heads/topic)"}, {d, "now on refs/heads/later (was detached)"}} {
+		_, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, targetOf(c.row))
+		if err == nil || errors.Is(err, ErrTargetGone) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("Rescan(%s): error %v, want one saying %q", c.row.Name, err, c.want)
+		}
+	}
+	if row := mustRescan(t, f, s, o, targetOf(b)); row.Ref != b.Ref || row.Tip != b.Tip {
+		t.Errorf("unchanged branch rescanned as %q %q, want %q %q", row.Ref, row.Tip, b.Ref, b.Tip)
+	}
+}
+
+// TestRescanMergesFollowTheMovedBase lists a branch whose merged PR's merge
+// commit is in the base, then rewinds the base locally below the merge; and
+// the other way round. Why: the PR rung is part of the ladder; with the base
+// tip re-resolved, a merge-commit answer reused from the list would be about
+// the old base, keeping a proof the current base no longer gives, or missing
+// one it now gives.
+func TestRescanMergesFollowTheMovedBase(t *testing.T) {
+	t.Run("rewound", func(t *testing.T) {
+		f := newFixture(t)
+		tip, squash := squashThenEditSameLine(f)
+		mergedPRStub(t, "topic", 7, tip, squash)
+		o := Options{Now: later()}
+		s := gather(t, f)
+		before := findRow(t, Classify(s, o), KindBranch, "topic")
+		if before.Evidence != EvPRTip {
+			t.Fatalf("listed evidence %q, want %q", before.Evidence, EvPRTip)
+		}
+		f.git("update-ref", "refs/remotes/origin/main", squash+"^")
+		row := mustRescan(t, f, s, o, targetOf(before))
+		if row.Evidence == EvPRTip || row.Status == StatusProven {
+			t.Fatalf("rescanned row %s evidence %q after the base lost the merge, want no pr-tip proof", row.Status, row.Evidence)
+		}
+	})
+	t.Run("advanced", func(t *testing.T) {
+		f := newFixture(t)
+		tip, squash := squashThenEditSameLine(f)
+		mergedPRStub(t, "topic", 7, tip, squash)
+		head := f.git("rev-parse", "refs/remotes/origin/main")
+		f.git("update-ref", "refs/remotes/origin/main", squash+"^")
+		o := Options{Now: later()}
+		s := gather(t, f)
+		before := findRow(t, Classify(s, o), KindBranch, "topic")
+		if before.Evidence == EvPRTip {
+			t.Fatalf("listed evidence %q before the base holds the merge", before.Evidence)
+		}
+		f.git("update-ref", "refs/remotes/origin/main", head)
+		row := mustRescan(t, f, s, o, targetOf(before))
+		if row.Evidence != EvPRTip || row.Status != StatusProven {
+			t.Fatalf("rescanned row %s evidence %q after the base gained the merge, want proven by %q", row.Status, row.Evidence, EvPRTip)
+		}
+	})
+}
+
+// TestRescanRejectsMalformedTarget rescans branch targets whose Ref is not a
+// refs/heads/ name (a short name, an option-looking value, a tag, a remote
+// ref), a remote target, and a branch name that is a symbolic ref. Why: Ref
+// reaches git's argv and names what a removal deletes; anything but a local
+// branch is a caller error, never "gone" (which reads as nothing to do), and
+// a symbolic ref exists but is not a branch with its own tip.
+func TestRescanRejectsMalformedTarget(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	f.git("symbolic-ref", "refs/heads/alias", "refs/heads/topic")
+	noGh(t)
+	o := Options{Now: later()}
+	s := gather(t, f)
+	for _, tg := range []Target{
+		{Kind: KindBranch, Ref: "topic"},
+		{Kind: KindBranch, Ref: "--all"},
+		{Kind: KindBranch, Ref: "refs/tags/v1"},
+		{Kind: KindBranch, Ref: "refs/remotes/origin/topic"},
+		{Kind: KindRemote, Ref: "refs/remotes/origin/topic"},
+		{Kind: KindBranch, Ref: "refs/heads/alias"},
+	} {
+		_, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, tg)
+		if err == nil || errors.Is(err, ErrTargetGone) {
+			t.Errorf("Rescan(%+v): error %v, want a plain error", tg, err)
+		}
 	}
 }
