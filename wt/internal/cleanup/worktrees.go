@@ -164,7 +164,9 @@ func within(child, parent string) bool {
 }
 
 // operationMarkers are the git-dir entries of an operation stopped midway.
-var operationMarkers = []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"}
+// sequencer outlives CHERRY_PICK_HEAD/REVERT_HEAD: a multi-commit pick
+// resumed by a plain commit still has commits queued there.
+var operationMarkers = []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "sequencer"}
 
 // CheckGates evaluates w's hard blockers and soft facts. g runs in the
 // repository (any of its worktrees); the status checks run in w.Path. Any
@@ -203,9 +205,15 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	if w.Bare {
 		return out, nil // no working tree to inspect
 	}
+	if w.Prunable {
+		// Its .git link is broken: git -C on a directory that is still
+		// there walks up into an enclosing repository and would answer
+		// for that one.
+		return Gates{}, fmt.Errorf("cleanup: worktree %s is prunable: its git link is broken, so its state cannot be read", w.Path)
+	}
 
 	wg := Git{Dir: w.Path, Timeout: g.Timeout}
-	ops, err := operationsInProgress(wg)
+	ops, err := operationsInProgress(wg, self)
 	if err != nil {
 		return Gates{}, err
 	}
@@ -228,9 +236,11 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 }
 
 // operationsInProgress names each operation marker present in the
-// worktree's own git dir.
-func operationsInProgress(wg Git) ([]string, error) {
-	args := []string{"rev-parse", "--path-format=absolute"}
+// worktree's own git dir. It first checks that git's top level for wg.Dir is
+// self (the resolved worktree path): otherwise git found an enclosing
+// repository, and every later answer would be about that one.
+func operationsInProgress(wg Git, self string) ([]string, error) {
+	args := []string{"rev-parse", "--path-format=absolute", "--show-toplevel"}
 	for _, m := range operationMarkers {
 		args = append(args, "--git-path", m)
 	}
@@ -241,10 +251,14 @@ func operationsInProgress(wg Git) ([]string, error) {
 	if o.Code != 0 {
 		return nil, gitFailure(o, args...)
 	}
-	paths := strings.Split(strings.TrimRight(o.Stdout, "\n"), "\n")
-	if len(paths) != len(operationMarkers) {
-		return nil, fmt.Errorf("cleanup: rev-parse --git-path: %d paths for %d markers", len(paths), len(operationMarkers))
+	lines := strings.Split(strings.TrimRight(o.Stdout, "\n"), "\n")
+	if len(lines) != 1+len(operationMarkers) {
+		return nil, fmt.Errorf("cleanup: rev-parse --show-toplevel --git-path: %d lines for %d markers", len(lines), len(operationMarkers))
 	}
+	if top := resolve(lines[0]); top != self {
+		return nil, fmt.Errorf("cleanup: %s is not a worktree top level (git found %s)", wg.Dir, top)
+	}
+	paths := lines[1:]
 	var ops []string
 	for i, p := range paths {
 		_, err := os.Lstat(p)
@@ -264,7 +278,10 @@ func operationsInProgress(wg Git) ([]string, error) {
 // fsmonitor is off so a stale daemon answer cannot either.
 var statusArgs = []string{"-c", "core.fsmonitor=false", "status", "--porcelain", "-z", "--untracked-files=normal", "--ignore-submodules=none"}
 
-// dirty reports tracked changes or non-ignored untracked files.
+// dirty reports tracked changes, non-ignored untracked files, or any index
+// entry flagged skip-worktree or assume-unchanged: status does not see edits
+// to those, so their presence counts as dirty (a sparse checkout, which sets
+// skip-worktree on purpose, over-reports; that fails closed).
 func dirty(wg Git) (bool, error) {
 	o, err := wg.Run(statusArgs...)
 	if err != nil {
@@ -273,7 +290,32 @@ func dirty(wg Git) (bool, error) {
 	if o.Code != 0 {
 		return false, gitFailure(o, statusArgs...)
 	}
-	return o.Stdout != "", nil
+	if o.Stdout != "" {
+		return true, nil
+	}
+	return hiddenIndexFlags(wg)
+}
+
+// hiddenIndexFlags reports whether `ls-files -v` tags any entry `S`
+// (skip-worktree) or with a lowercase letter (assume-unchanged).
+func hiddenIndexFlags(wg Git) (bool, error) {
+	args := []string{"ls-files", "-v", "-z"}
+	o, err := wg.Run(args...)
+	if err != nil {
+		return false, err
+	}
+	if o.Code != 0 {
+		return false, gitFailure(o, args...)
+	}
+	for _, e := range strings.Split(o.Stdout, "\x00") {
+		if e == "" {
+			continue
+		}
+		if tag := e[0]; tag == 'S' || (tag >= 'a' && tag <= 'z') {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ignored counts the ignored entries (a wholly ignored directory once) and

@@ -145,12 +145,82 @@ func (f *fixture) NestedWorktree(parent, branch string) string {
 // stopped on a conflict: dir and main both change file "conflict".
 func (f *fixture) StoppedRebase(dir string) {
 	f.t.Helper()
+	f.conflictPair(dir)
+	f.mustFail(dir, "", "rebase", "main")
+}
+
+// conflictPair commits file "conflict" as "ours" in dir and as "theirs" on
+// main (in the primary checkout), and returns main's commit.
+func (f *fixture) conflictPair(dir string) string {
+	f.t.Helper()
 	commitIn(f.t, dir, "conflict", "ours", "ours")
-	f.Commit("conflict", "theirs", "theirs") // on main, in the primary checkout
-	cmd := exec.Command("git", "-C", dir, "rebase", "main")
-	if b, err := cmd.CombinedOutput(); err == nil {
-		f.t.Fatalf("rebase: expected a conflict, got none\n%s", b)
+	return f.Commit("conflict", "theirs", "theirs")
+}
+
+// mustFail runs git in dir with stdin input and fails the test if git
+// succeeds: the caller wants an operation stopped on a conflict.
+func (f *fixture) mustFail(dir, input string, args ...string) {
+	f.t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
 	}
+	if b, err := cmd.CombinedOutput(); err == nil {
+		f.t.Fatalf("git %s: expected a conflict, got none\n%s", strings.Join(args, " "), b)
+	}
+}
+
+// StoppedMerge leaves dir in a merge of main stopped on a conflict.
+func (f *fixture) StoppedMerge(dir string) {
+	f.t.Helper()
+	f.conflictPair(dir)
+	f.mustFail(dir, "", "merge", "--no-edit", "main")
+}
+
+// StoppedCherryPick leaves dir in a cherry-pick of one main commit stopped on
+// a conflict.
+func (f *fixture) StoppedCherryPick(dir string) {
+	f.t.Helper()
+	f.mustFail(dir, "", "cherry-pick", f.conflictPair(dir))
+}
+
+// ResumedCherryPick runs a three-commit cherry-pick in dir that stops on the
+// second, then resolves and commits it: CHERRY_PICK_HEAD is gone, but the
+// sequencer still holds the third commit.
+func (f *fixture) ResumedCherryPick(dir string) {
+	f.t.Helper()
+	a := f.Commit("pick-a", "a", "pick a")
+	b := f.conflictPair(dir)
+	c := f.Commit("pick-c", "c", "pick c")
+	f.mustFail(dir, "", "cherry-pick", a, b, c)
+	if err := os.WriteFile(filepath.Join(dir, "conflict"), []byte("resolved"), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	gitIn(f.t, dir, "add", "conflict")
+	gitIn(f.t, dir, "commit", "--no-edit")
+}
+
+// StoppedRevert leaves dir in a revert stopped on a conflict: the reverted
+// commit created a file that a later commit changed.
+func (f *fixture) StoppedRevert(dir string) {
+	f.t.Helper()
+	x := commitIn(f.t, dir, "rev", "1", "rev 1")
+	commitIn(f.t, dir, "rev", "2", "rev 2")
+	f.mustFail(dir, "", "revert", "--no-edit", x)
+}
+
+// StartedBisect starts a bisect in dir.
+func (f *fixture) StartedBisect(dir string) {
+	f.t.Helper()
+	gitIn(f.t, dir, "bisect", "start")
+}
+
+// StoppedAm leaves dir in `git am` stopped on a patch that does not apply.
+func (f *fixture) StoppedAm(dir string) {
+	f.t.Helper()
+	sha := f.conflictPair(dir)
+	patch := f.git("format-patch", "-1", "--stdout", sha)
+	f.mustFail(dir, patch+"\n", "am")
 }
 
 // DetachOrphan detaches HEAD in dir and commits there, leaving HEAD on a

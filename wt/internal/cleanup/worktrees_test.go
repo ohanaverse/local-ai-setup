@@ -133,10 +133,6 @@ func TestGatesBlockers(t *testing.T) {
 			f.NestedWorktree(wt, "inner")
 			return wt, t.TempDir(), GateInputs{}
 		}, "nested"},
-		{"operation in progress", func(t *testing.T, f *fixture, wt string) (string, string, GateInputs) {
-			f.StoppedRebase(wt)
-			return wt, t.TempDir(), GateInputs{}
-		}, "operation_in_progress"},
 		{"protected artifact", func(t *testing.T, f *fixture, wt string) (string, string, GateInputs) {
 			return wt, t.TempDir(), GateInputs{ProtectedPaths: []string{filepath.Join(wt, "models", "m")}}
 		}, "protected_artifact"},
@@ -154,6 +150,110 @@ func TestGatesBlockers(t *testing.T) {
 			}
 			if got := codes(g); !slices.Equal(got, []string{c.want}) {
 				t.Errorf("blockers = %v, want [%s] (%+v)", got, c.want, g.Blockers)
+			}
+		})
+	}
+}
+
+// TestGatesOperationInProgress stops each kind of multi-step git operation
+// midway in a linked worktree and checks the operation_in_progress blocker.
+// Why: removing the worktree throws away the half-done operation (and, for a
+// resumed multi-commit cherry-pick, the commits still queued in the
+// sequencer); every kind leaves a different marker.
+func TestGatesOperationInProgress(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(f *fixture, wt string)
+	}{
+		{"rebase", (*fixture).StoppedRebase},
+		{"merge conflict", (*fixture).StoppedMerge},
+		{"cherry-pick conflict", (*fixture).StoppedCherryPick},
+		{"multi-commit cherry-pick resumed", (*fixture).ResumedCherryPick},
+		{"revert conflict", (*fixture).StoppedRevert},
+		{"bisect start", (*fixture).StartedBisect},
+		{"am", (*fixture).StoppedAm},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			wt := f.Worktree("topic")
+			c.setup(f, wt)
+			w := factFor(t, f, t.TempDir(), wt)
+			g, err := CheckGates(Git{Dir: f.Dir}, w, GateInputs{Base: baseRef})
+			if err != nil {
+				t.Fatalf("CheckGates: %v", err)
+			}
+			if !slices.Contains(codes(g), "operation_in_progress") {
+				t.Errorf("blockers = %v, want operation_in_progress", g.Blockers)
+			}
+		})
+	}
+}
+
+// TestGatesPrunableWithDirectoryFailsClosed removes a nested linked
+// worktree's .git file but keeps its directory, inside the primary checkout.
+// Why: git -C on that directory walks up into the enclosing repository and
+// would report its status, ignored files and operation markers as this
+// worktree's; the gate must be an error, never an answer about another repo.
+func TestGatesPrunableWithDirectoryFailsClosed(t *testing.T) {
+	f := newFixture(t)
+	wt := filepath.Join(f.Dir, ".claude", "worktrees", "topic")
+	f.git("worktree", "add", "-b", "topic", wt)
+	if err := os.Remove(filepath.Join(wt, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	// The primary tracks the directory's file, so every git call there
+	// succeeds and answers "clean" about the primary. (Left untracked,
+	// `ls-files --directory` from inside it dies with "directory entry not
+	// superset of prefix", which would fail closed by accident.)
+	f.git("add", "-f", ".claude/worktrees/topic/README")
+	f.git("commit", "-m", "track")
+	w := factFor(t, f, t.TempDir(), wt)
+	if !w.Prunable {
+		t.Fatalf("want a prunable worktree: %+v", w)
+	}
+	if g, err := CheckGates(Git{Dir: f.Dir}, w, GateInputs{Base: baseRef}); err == nil {
+		t.Errorf("want an error, got %+v", g)
+	}
+}
+
+// TestGatesToplevelMismatchFailsClosed hands CheckGates a fact (not marked
+// prunable) whose directory is not a worktree top level but sits inside the
+// primary checkout. Why: whatever the porcelain says, the status checks must
+// run in this worktree's own repository, never an enclosing one.
+func TestGatesToplevelMismatchFailsClosed(t *testing.T) {
+	f := newFixture(t)
+	sub := filepath.Join(f.Dir, "sub")
+	f.DirtyIn(f.Dir, "sub/x")
+	w := WorktreeFact{Path: sub, Branch: "refs/heads/topic"}
+	if g, err := CheckGates(Git{Dir: f.Dir}, w, GateInputs{Base: baseRef}); err == nil {
+		t.Errorf("want an error, got %+v", g)
+	}
+}
+
+// TestGatesHiddenIndexFlagsAreDirty edits a tracked file flagged
+// skip-worktree or assume-unchanged. Why: status does not report those
+// edits, so the worktree would read clean while removal destroys them;
+// either flag counts as dirty (fail closed, sparse checkouts included).
+func TestGatesHiddenIndexFlagsAreDirty(t *testing.T) {
+	for _, flag := range []string{"--skip-worktree", "--assume-unchanged"} {
+		t.Run(flag, func(t *testing.T) {
+			f := newFixture(t)
+			wt := f.Worktree("topic")
+			gitIn(t, wt, "update-index", flag, "README")
+			if err := os.WriteFile(filepath.Join(wt, "README"), []byte("edited"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out := gitIn(t, wt, "status", "--porcelain"); out != "" {
+				t.Fatalf("setup: status should hide the edit, got %q", out)
+			}
+			w := factFor(t, f, t.TempDir(), wt)
+			g, err := CheckGates(Git{Dir: f.Dir}, w, GateInputs{Base: baseRef})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !g.Dirty {
+				t.Errorf("edit hidden by %s: %+v", flag, g)
 			}
 		})
 	}
