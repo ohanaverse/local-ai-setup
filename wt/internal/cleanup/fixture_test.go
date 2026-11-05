@@ -95,17 +95,32 @@ func (f *fixture) Worktree(branch string) string {
 }
 
 // Dirty leaves an uncommitted untracked file at path (relative to the repo).
-func (f *fixture) Dirty(path string) {
+func (f *fixture) Dirty(path string) { f.t.Helper(); f.DirtyIn(f.Dir, path) }
+
+// DirtyIn leaves an untracked file at path relative to dir, a checkout of
+// this repo (the primary or a linked worktree).
+func (f *fixture) DirtyIn(dir, path string) {
 	f.t.Helper()
-	if err := os.WriteFile(filepath.Join(f.Dir, path), []byte("dirty"), 0o644); err != nil {
+	p := filepath.Join(dir, path)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("dirty"), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
 }
 
 // Ignored creates a git-ignored file at path, ignored through info/exclude.
-func (f *fixture) Ignored(path string) {
+func (f *fixture) Ignored(path string) { f.t.Helper(); f.IgnoredIn(f.Dir, path) }
+
+// IgnoredIn creates a git-ignored file at path relative to dir. The pattern
+// goes to info/exclude, which every worktree of the repo shares.
+func (f *fixture) IgnoredIn(dir, path string) {
 	f.t.Helper()
-	ex := filepath.Join(f.Dir, ".git", "info", "exclude")
+	ex := gitIn(f.t, dir, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+	if err := os.MkdirAll(filepath.Dir(ex), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
 	fh, err := os.OpenFile(ex, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		f.t.Fatal(err)
@@ -114,7 +129,48 @@ func (f *fixture) Ignored(path string) {
 	if _, err := fh.WriteString(path + "\n"); err != nil {
 		f.t.Fatal(err)
 	}
-	f.Dirty(path)
+	f.DirtyIn(dir, path)
+}
+
+// NestedWorktree adds a linked worktree on a new branch inside parent (a
+// worktree directory) and returns its path.
+func (f *fixture) NestedWorktree(parent, branch string) string {
+	f.t.Helper()
+	p := filepath.Join(parent, "nested-"+strings.ReplaceAll(branch, "/", "-"))
+	f.git("worktree", "add", "-b", branch, p)
+	return p
+}
+
+// StoppedRebase leaves the worktree at dir (on its own branch) in a rebase
+// stopped on a conflict: dir and main both change file "conflict".
+func (f *fixture) StoppedRebase(dir string) {
+	f.t.Helper()
+	commitIn(f.t, dir, "conflict", "ours", "ours")
+	f.Commit("conflict", "theirs", "theirs") // on main, in the primary checkout
+	cmd := exec.Command("git", "-C", dir, "rebase", "main")
+	if b, err := cmd.CombinedOutput(); err == nil {
+		f.t.Fatalf("rebase: expected a conflict, got none\n%s", b)
+	}
+}
+
+// DetachOrphan detaches HEAD in dir and commits there, leaving HEAD on a
+// commit no branch or remote ref reaches. It returns that commit.
+func (f *fixture) DetachOrphan(dir string) string {
+	f.t.Helper()
+	gitIn(f.t, dir, "checkout", "--detach")
+	return commitIn(f.t, dir, "orphan", "orphan", "orphan")
+}
+
+// commitIn writes file in dir, commits it on dir's current HEAD and returns
+// the sha.
+func commitIn(t *testing.T, dir, file, content, msg string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "add", file)
+	gitIn(t, dir, "commit", "-m", msg)
+	return gitIn(t, dir, "rev-parse", "HEAD")
 }
 
 // Merge merges branch into the current branch with a merge commit (--no-ff).
