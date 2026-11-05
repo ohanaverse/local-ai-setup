@@ -59,8 +59,9 @@ func TestInterruptedRemoveLeavesPrunableAndIsReported(t *testing.T) {
 	}
 }
 
-// TestRemoveFailureLeavesWorktreeAndIsReported has git refuse the removal and
-// leave everything in place: failed, with git's stderr on one line.
+// TestRemoveFailureLeavesWorktreeAndIsReported has git fail the removal with
+// the directory still there: failed, with git's stderr on one line, and no
+// claim that the tree is intact (git may have deleted part of it first).
 func TestRemoveFailureLeavesWorktreeAndIsReported(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -70,7 +71,7 @@ func TestRemoveFailureLeavesWorktreeAndIsReported(t *testing.T) {
 		return cleanup.Out{Code: 128, Stderr: "fatal: cannot remove\n\x1b[31mred\n"}, nil
 	})
 	o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(f.row(r, cleanup.KindWorktree, "topic")))
-	if o.Worktree != WtFailed || !strings.Contains(o.Reason, "fatal: cannot remove") || !strings.Contains(o.Reason, "still there") {
+	if o.Worktree != WtFailed || !strings.Contains(o.Reason, "fatal: cannot remove") || !strings.Contains(o.Reason, "may be partly removed") {
 		t.Fatalf("outcome %+v, want failed with git's error", o)
 	}
 	if strings.ContainsAny(o.Reason, "\n\x1b") {
@@ -95,7 +96,7 @@ func TestRemoveTimeoutIsFailed(t *testing.T) {
 	})
 	e := f.engine(s, f.inputs(), Options{RemoveTimeout: 7e9})
 	o := one(t, e, itemOf(f.row(r, cleanup.KindWorktree, "topic")))
-	if o.Worktree != WtFailed || !strings.Contains(o.Reason, "deadline") {
+	if o.Worktree != WtFailed || !strings.Contains(o.Reason, "deadline") || !strings.Contains(o.Reason, "may be partly removed") {
 		t.Fatalf("outcome %+v, want failed naming the timeout", o)
 	}
 	if got.Timeout != 7e9 || got.Dir != f.Dir {
@@ -104,5 +105,54 @@ func TestRemoveTimeoutIsFailed(t *testing.T) {
 	f.engine(s, f.inputs(), Options{}).Run([]Item{itemOf(f.row(r, cleanup.KindWorktree, "topic"))}, nil)
 	if got.Timeout != DefaultRemoveTimeout {
 		t.Errorf("zero RemoveTimeout gave %v, want %v", got.Timeout, DefaultRemoveTimeout)
+	}
+}
+
+// TestRemoveVerifiesGitSuccess has git report success (exit 0) without
+// finishing the job: the engine must not take git's word for it. A
+// directory still there, or a registration left behind, is failed; only
+// both gone is removed.
+func TestRemoveVerifiesGitSuccess(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		act   func(t *testing.T, g cleanup.Git, p string, args []string)
+		want  WorktreeOutcome
+		words []string
+	}{
+		{"directory remains", func(*testing.T, cleanup.Git, string, []string) {}, WtFailed,
+			[]string{"git reported success", "the directory is still there"}},
+		{"registration remains", func(t *testing.T, _ cleanup.Git, p string, _ []string) {
+			if err := os.RemoveAll(p); err != nil {
+				t.Fatal(err)
+			}
+		}, WtFailed, []string{"git reported success", "prunable registration"}},
+		{"both gone", func(t *testing.T, g cleanup.Git, _ string, args []string) {
+			if o, err := g.Run(args...); err != nil || o.Code != 0 {
+				t.Fatalf("real removal: %v %+v", err, o)
+			}
+		}, WtRemoved, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			noGh(t)
+			f := newFixture(t)
+			p := f.Worktree("topic")
+			s, r := f.report()
+			stubRunGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+				c.act(t, g, p, args)
+				return cleanup.Out{}, nil
+			})
+			o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(f.row(r, cleanup.KindWorktree, "topic")))
+			if o.Worktree != c.want {
+				t.Fatalf("outcome %+v, want %s", o, c.want)
+			}
+			for _, w := range c.words {
+				if !strings.Contains(o.Reason, w) {
+					t.Errorf("reason %q does not say %q", o.Reason, w)
+				}
+			}
+			if c.want == WtFailed && o.Branch != BrNotAttempted {
+				t.Errorf("branch outcome %s after an unverified removal, want not_attempted", o.Branch)
+			}
+		})
 	}
 }

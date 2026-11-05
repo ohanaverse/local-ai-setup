@@ -38,7 +38,7 @@ func (e Engine) removeWorktree(path string, force bool) (WorktreeOutcome, string
 		gitErr = fmt.Sprintf("git worktree remove: exit %d: %s", out.Code, cleanup.OneLine(out.Stderr))
 	}
 
-	left, verr := e.leftOver(path)
+	left, verr := e.leftOver(path, gitErr != "")
 	switch {
 	case verr != "" && gitErr != "":
 		return WtFailed, gitErr + "; " + verr
@@ -48,6 +48,7 @@ func (e Engine) removeWorktree(path string, force bool) (WorktreeOutcome, string
 		// What is left first: the cap may cut git's text, never this.
 		return WtFailed, left + " (" + gitErr + ")"
 	case left != "":
+		// git said it was done; it is not: never take its word for it.
 		return WtFailed, "git reported success but " + left
 	case gitErr != "":
 		// Gone from disk and from the list, yet git failed: fail closed, so
@@ -58,8 +59,10 @@ func (e Engine) removeWorktree(path string, force bool) (WorktreeOutcome, string
 }
 
 // leftOver describes what of the worktree at path remains ("" nothing), or
-// returns why that could not be checked (a non-empty second value).
-func (e Engine) leftOver(path string) (left, verifyErr string) {
+// returns why that could not be checked (a non-empty second value). After a
+// git failure (gitFailed: an exit, a timeout, a kill) a directory still there
+// may be partly deleted, and the text says so.
+func (e Engine) leftOver(path string, gitFailed bool) (left, verifyErr string) {
 	onDisk := true
 	if _, err := os.Lstat(path); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -79,11 +82,15 @@ func (e Engine) leftOver(path string) (left, verifyErr string) {
 			break
 		}
 	}
+	partly := ""
+	if gitFailed && onDisk {
+		partly = "the worktree may be partly removed: "
+	}
 	switch {
 	case onDisk && listed:
-		return "the worktree is still there", ""
+		return partly + "the directory is still there and still registered", ""
 	case onDisk:
-		return "the directory remains but git no longer lists it as a worktree", ""
+		return partly + "the directory is still there but git no longer lists it as a worktree", ""
 	case listed:
 		return "the directory is gone but a prunable registration remains; run git worktree prune", ""
 	}

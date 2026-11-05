@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -89,14 +91,30 @@ func skipped(it Item, reason string) Outcome {
 
 // worktreeItem runs the gates for one worktree item in their fixed order,
 // then (unless dry) removes it and hands over to the branch stage.
+//
+// What the re-check cannot close. The last fresh read is the rescan; between
+// it and `git worktree remove` (the compare window: Rescan to git) the tree
+// can change. git itself still refuses a tree that became dirty (unless
+// --force was passed, on the approved dirty path), a worktree locked or a
+// worktree nested in it since, and the primary checkout. git does NOT
+// protect against, in that window: ignored files added (they go with the
+// directory), a merge or rebase started, a commit made on a detached HEAD
+// (orphaned), or, on the dirty+Force path, any new file at all. The slow
+// live-process check therefore runs before the rescan, to keep the window
+// as short as the rescan's own gates allow.
 func (e Engine) worktreeItem(it Item, dry bool) Outcome {
-	// 1. A target no row could have produced.
-	if why := e.invalidPath(it.Path); why != "" {
+	// 1. A target no row could have produced, or a "saw" nothing could be
+	// compared with.
+	if why := e.invalidItem(it); why != "" {
 		return refuse(it, "invalid target: "+why)
 	}
 
-	// 2. Re-classify it now.
-	fresh, err := cleanup.Rescan(e.G, e.Prior, e.In, e.classifyOpts(), cleanup.Target{Kind: cleanup.KindWorktree, Path: it.Path, Ref: it.Ref})
+	// 2. Live processes: a warning, never a refusal. Before the rescan, so
+	// it stays out of the compare window.
+	warnings := e.procWarnings(it.Path)
+
+	// 3. Re-classify it now.
+	fresh, err := rescan(e.G, e.Prior, e.In, e.classifyOpts(), cleanup.Target{Kind: cleanup.KindWorktree, Path: it.Path, Ref: it.Ref})
 	if errors.Is(err, cleanup.ErrTargetGone) {
 		return skipped(it, "no longer exists")
 	}
@@ -104,7 +122,7 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 		return refuse(it, "could not re-check: "+err.Error())
 	}
 
-	// 3. Exact identity: Rescan folds case, but refs/heads/Topic and
+	// 4. Exact identity: Rescan folds case, but refs/heads/Topic and
 	// refs/heads/topic can be two branches.
 	if it.Ref != "" && fresh.Ref != it.Ref {
 		return refuse(it, fmt.Sprintf("branch spelling changed: %s is now %s", it.Ref, fresh.Ref))
@@ -113,7 +131,7 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 		return refuse(it, "worktree is now on "+fresh.Ref+" (was detached)")
 	}
 
-	// 4. Hard blockers: no option overrides them.
+	// 5. Hard blockers: no option overrides them.
 	if len(fresh.Blockers) > 0 {
 		return refuse(it, blockerReason(fresh.Blockers))
 	}
@@ -121,12 +139,12 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 		return refuse(it, "in use")
 	}
 
-	// 5. An unknown is never approved, Force or not.
+	// 6. An unknown is never approved, Force or not.
 	if fresh.Losses.GatesUnknown {
 		return refuse(it, "could not read the worktree's state")
 	}
 
-	// 6. Changed since the user saw it.
+	// 7. Changed since the user saw it: status, commit, what would be lost.
 	if fresh.Status.WorseThan(it.Saw) {
 		return skipped(it, fmt.Sprintf("status changed since it was listed (%s, was %s)", fresh.Status, it.Saw))
 	}
@@ -140,8 +158,11 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 	if tip != it.SawTip {
 		return skipped(it, "branch moved since it was listed")
 	}
+	if lossesWorse(fresh.Losses, it.SawLosses) {
+		return skipped(it, "what would be lost changed since it was listed")
+	}
 
-	// 7. Losses only a flag approves.
+	// 8. Losses only a flag approves.
 	force := false
 	if fresh.Losses.Dirty {
 		if !e.Opts.Force {
@@ -153,30 +174,94 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 		return refuse(it, "commits that exist only in this worktree; --force required")
 	}
 
+	// 9. Defence in depth at the deletion site: git is handed only a valid
+	// path that is the one the user ticked.
+	if why := e.invalidPath(fresh.Path); why != "" {
+		return refuse(it, "invalid target: "+why)
+	}
+	if cleanup.ResolvePath(fresh.Path) != cleanup.ResolvePath(it.Path) {
+		return refuse(it, "path changed: the re-check found "+fresh.Path)
+	}
+
 	o := NewOutcome(it, WtRemoved, BrNotAttempted, "")
+	for _, w := range warnings {
+		o.AddWarning(w)
+	}
 
-	// 8. Live processes: a warning, never a refusal.
-	e.warnProcs(&o, fresh.Path)
-
-	// 9. Dry run stops here.
+	// 10. Dry run stops here.
 	if dry {
 		o.SetReason("dry run: would remove")
 		return o
 	}
 
-	// 10. Remove and verify.
+	// 11. Remove and verify.
 	if wt, reason := e.removeWorktree(fresh.Path, force); wt != WtRemoved {
 		o.Worktree = wt
 		o.SetReason(reason)
 		return o
 	}
 
-	// 11. The branch stage.
+	// 12. The branch stage.
 	br, reason := e.deleteBranch(itemCtx{item: it, fresh: fresh, removedPath: fresh.Path, considerBranch: true}, fresh)
 	o.Branch = br
 	o.SetReason(reason)
 	return o
 }
+
+// tickable are the statuses a user can tick; Saw must be one of them, or
+// "worse than what the user saw" cannot be judged (an unknown status ranks
+// worst, so nothing would ever be worse than it).
+var tickable = []cleanup.Status{cleanup.StatusProven, cleanup.StatusLessSure, cleanup.StatusUniqueWork}
+
+// commitID is a full commit id as git prints it (cleanup's fullCommitID).
+var commitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// invalidItem says why a worktree item cannot be acted on before anything
+// is read, or "": its path (invalidPath), its Saw (a tickable status,
+// exactly) and its SawTip (a full commit id; empty only for a detached
+// worktree, whose tip check then fails as moved).
+func (e Engine) invalidItem(it Item) string {
+	if why := e.invalidPath(it.Path); why != "" {
+		return why
+	}
+	if !slices.Contains(tickable, it.Saw) {
+		return fmt.Sprintf("unknown status seen %q", it.Saw)
+	}
+	switch {
+	case it.SawTip == "" && it.Ref != "":
+		return "no commit seen for " + it.Ref
+	case it.SawTip != "" && !commitID.MatchString(it.SawTip):
+		return fmt.Sprintf("commit seen %q is not a full commit id", it.SawTip)
+	}
+	return ""
+}
+
+// lossesWorse reports whether fresh would lose something saw did not show
+// (Ruling G: the user approved a specific loss): newly dirty, newly a unique
+// detached HEAD, newly unreadable gates, more ignored entries or bytes, or
+// more unpushed commits (a count that became unknown is more; an unknown
+// that became a positive count is more too, failing closed).
+func lossesWorse(fresh, saw cleanup.Losses) bool {
+	switch {
+	case fresh.Dirty && !saw.Dirty,
+		fresh.DetachedUnique && !saw.DetachedUnique,
+		fresh.GatesUnknown && !saw.GatesUnknown,
+		fresh.IgnoredEntries > saw.IgnoredEntries,
+		fresh.IgnoredBytes > saw.IgnoredBytes:
+		return true
+	}
+	if fresh.Unpushed < 0 {
+		return saw.Unpushed >= 0
+	}
+	if saw.Unpushed < 0 {
+		return fresh.Unpushed > 0
+	}
+	return fresh.Unpushed > saw.Unpushed
+}
+
+// rescan is cleanup.Rescan; a seam so tests can hand the engine a row
+// Rescan would not.
+var rescan = cleanup.Rescan
 
 // classifyOpts are the Classify options for a rescan: the run's clock
 // (Opts.Now, else the wall clock) with the list's other options.
@@ -238,19 +323,18 @@ func blockerReason(bs []cleanup.Reason) string {
 // maxProcNames is how many command names a live-process warning names.
 const maxProcNames = 3
 
-// warnProcs adds a warning to o when live processes run in dir, or when the
-// check could not run. It never refuses.
-func (e Engine) warnProcs(o *Outcome, dir string) {
+// procWarnings are the warnings for live processes running in dir, or for a
+// check that could not run (none without Opts.Procs). It never refuses.
+func (e Engine) procWarnings(dir string) []string {
 	if e.Opts.Procs == nil {
-		return
+		return nil
 	}
 	ps, err := e.Opts.Procs.InDir(dir)
 	if err != nil {
-		o.AddWarning("could not check for running processes: " + err.Error())
-		return
+		return []string{"could not check for running processes: " + err.Error()}
 	}
 	if len(ps) == 0 {
-		return
+		return nil
 	}
 	var names []string
 	for _, p := range ps {
@@ -267,5 +351,5 @@ func (e Engine) warnProcs(o *Outcome, dir string) {
 	if len(ps) == 1 {
 		word = "process"
 	}
-	o.AddWarning(fmt.Sprintf("%d %s running in the worktree: %s%s", len(ps), word, strings.Join(names, ", "), more))
+	return []string{fmt.Sprintf("%d %s running in the worktree: %s%s", len(ps), word, strings.Join(names, ", "), more)}
 }

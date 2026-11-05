@@ -225,7 +225,10 @@ func runBlockerCases(t *testing.T, opts Options) {
 			in, p, name := c.setup(f)
 			s, r := f.reportWith(in)
 			row := f.row(r, cleanup.KindWorktree, name)
-			o := one(t, f.engine(s, in, opts), itemOf(row))
+			// The most permissive thing a user could have ticked: proven.
+			it := itemOf(row)
+			it.Saw = cleanup.StatusProven
+			o := one(t, f.engine(s, in, opts), it)
 			if o.Worktree != WtRefused || !strings.Contains(o.Reason, c.code) {
 				t.Fatalf("outcome %+v, want refused naming %s", o, c.code)
 			}
@@ -260,7 +263,7 @@ func TestEngineNeverRemovesTheMainCheckout(t *testing.T) {
 	s, r := f.report()
 	row := f.row(r, cleanup.KindWorktree, "main")
 	it := itemOf(row)
-	it.Saw = cleanup.StatusInUse
+	it.Saw = cleanup.StatusProven
 	o := one(t, f.engine(s, f.inputs(), Options{Force: true, DeleteUnmerged: true}), it)
 	if o.Worktree != WtRefused || !strings.Contains(o.Reason, cleanup.BlockPrimary) {
 		t.Fatalf("outcome %+v, want refused naming primary", o)
@@ -589,6 +592,7 @@ func TestPlanMutatesNothing(t *testing.T) {
 		itemOf(f.row(r, cleanup.KindWorktree, "topic3")),
 		itemOf(f.row(r, cleanup.KindBranch, "loose")),
 	}
+	items[2].Saw = cleanup.StatusProven // a row ticked proven, locked since: refused by its blocker
 	state := func() string {
 		return f.git("worktree", "list", "--porcelain") + "\n" + f.git("for-each-ref") + "\n" + f.git("status", "--porcelain", "--ignored")
 	}

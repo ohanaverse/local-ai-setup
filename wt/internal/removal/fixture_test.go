@@ -198,5 +198,5 @@ func itemOf(row cleanup.Row) Item {
 	if tip == "" {
 		tip = row.Head
 	}
-	return Item{Kind: row.Kind, Path: row.Path, Ref: row.Ref, Name: row.Name, Saw: row.Status, SawTip: tip}
+	return Item{Kind: row.Kind, Path: row.Path, Ref: row.Ref, Name: row.Name, Saw: row.Status, SawTip: tip, SawLosses: row.Losses}
 }
