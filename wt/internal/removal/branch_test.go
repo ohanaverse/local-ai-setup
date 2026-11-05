@@ -2,10 +2,13 @@ package removal
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
@@ -105,12 +108,12 @@ func TestBranchDeletedAfterWorktreeRemoval(t *testing.T) {
 	if _, ok := f.refTip("refs/heads/topic"); ok {
 		t.Error("refs/heads/topic still exists")
 	}
-	want := [][]string{{"update-ref", "-d", "refs/heads/topic", row.Tip}}
+	want := [][]string{{"update-ref", "--no-deref", "-d", "refs/heads/topic", row.Tip}}
 	if !reflect.DeepEqual(*calls, want) {
 		t.Errorf("git calls %q, want %q", *calls, want)
 	}
-	if !strings.Contains(o.Reason, "deleted refs/heads/topic (was "+row.Tip[:7]) {
-		t.Errorf("reason %q lacks the deletion and short tip", o.Reason)
+	if !strings.Contains(o.Reason, "deleted refs/heads/topic (was "+row.Tip+";") {
+		t.Errorf("reason %q lacks the deletion and full tip", o.Reason)
 	}
 }
 
@@ -144,8 +147,10 @@ func TestBranchRetainedUnmergedWithoutD(t *testing.T) {
 }
 
 // TestBranchDeletedWithDOnUnmerged removes the same unmerged worktree with
-// -D (DeleteUnmerged): the branch is deleted, and the reason carries the short
-// tip, since the commits now live only in the object store until gc.
+// -D (DeleteUnmerged): the branch is deleted, and the reason carries the full
+// tip and how to restore it, without promising more than git keeps: the
+// commits live only in the object store until a gc prunes them, which can be
+// the next one.
 func TestBranchDeletedWithDOnUnmerged(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -159,8 +164,8 @@ func TestBranchDeletedWithDOnUnmerged(t *testing.T) {
 	if _, ok := f.refTip("refs/heads/topic"); ok {
 		t.Error("refs/heads/topic still exists")
 	}
-	if !strings.Contains(o.Reason, row.Tip[:7]) || !strings.Contains(o.Reason, "git branch topic "+row.Tip[:7]) {
-		t.Errorf("reason %q lacks the short tip and how to restore it", o.Reason)
+	if !strings.Contains(o.Reason, "git branch topic "+row.Tip+" until git gc prunes it, possibly the next gc") {
+		t.Errorf("reason %q lacks the full tip and an honest restore hint", o.Reason)
 	}
 }
 
@@ -226,7 +231,8 @@ func TestBranchCASLosesRace(t *testing.T) {
 
 // TestBranchCASRefGoneIsMoved deletes the branch in the same window: the
 // compare-and-swap fails, the re-read finds nothing, and that is also
-// retained_moved (someone else changed it), never deleted or unknown.
+// retained_moved (fail closed: it cannot tell whether git deleted it before
+// failing, as after a timeout), saying so and giving the full tip.
 func TestBranchCASRefGoneIsMoved(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
@@ -237,6 +243,9 @@ func TestBranchCASRefGoneIsMoved(t *testing.T) {
 	o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
 	if o.Worktree != WtRemoved || o.Branch != BrRetainedMoved {
 		t.Fatalf("outcome %+v, want removed / retained_moved", o)
+	}
+	if !strings.Contains(o.Reason, "gone after git error; it may have been deleted by this run") || !strings.Contains(o.Reason, row.Tip) {
+		t.Errorf("reason %q, want the gone-after-error wording and the full tip", o.Reason)
 	}
 }
 
@@ -293,12 +302,11 @@ func TestCheckedOutElsewhereIsCaseFolded(t *testing.T) {
 		t.Error("refs/heads/feature/x was deleted")
 	}
 
-	facts := []cleanup.WorktreeFact{{Path: "/r", Branch: "refs/heads/main"}, {Path: "/r/.worktrees/y", Branch: "refs/heads/Feature/X"}}
-	if got := checkedOutIn(facts, "refs/heads/feature/x", ""); got != "/r/.worktrees/y" {
-		t.Errorf("checkedOutIn = %q, want the folded match", got)
+	if !refHeld([]string{"refs/heads/main", "refs/heads/Feature/X"}, "refs/heads/feature/x") {
+		t.Error("refHeld does not fold case")
 	}
-	if got := checkedOutIn(facts, "refs/heads/feature/x", "/r/.worktrees/y"); got != "" {
-		t.Errorf("checkedOutIn with the removed path excluded = %q, want none", got)
+	if refHeld([]string{"", "refs/heads/feature/y"}, "refs/heads/feature/x") {
+		t.Error("refHeld matched another branch")
 	}
 }
 
@@ -708,19 +716,26 @@ func TestBranchItemSkippedWhenChanged(t *testing.T) {
 	})
 }
 
-// TestBranchRetainedUnknown: anything the branch stage cannot read keeps the
-// branch: an Unknown fresh row, a tip that is not a commit id, a worktree
-// list that fails, a delete git refuses with the ref unmoved (its stderr is
-// the reason), and a delete git reports done that left the ref in place.
-func TestBranchRetainedUnknown(t *testing.T) {
+// branchCase is a fresh repository with a proven local branch topic, the
+// engine over it (-D), and topic's tip: one per subtest, so a wrong deletion
+// in one case cannot mask another.
+func branchCase(t *testing.T) (*fixture, Engine, cleanup.Row) {
+	t.Helper()
 	noGh(t)
 	f := newFixture(t)
 	f.Branch("topic")
 	s, _ := f.report()
 	tip, _ := f.refTip("refs/heads/topic")
-	good := cleanup.Row{Ref: "refs/heads/topic", Tip: tip, BranchProven: true}
-	e := f.engine(s, f.inputs(), Options{DeleteUnmerged: true})
-	check := func(t *testing.T, fresh cleanup.Row, want string) {
+	return f, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), cleanup.Row{Ref: "refs/heads/topic", Tip: tip, BranchProven: true}
+}
+
+// TestBranchRetainedUnknown: anything the branch stage cannot read keeps the
+// branch: an Unknown fresh row, a tip that is not a commit id, a worktree
+// list that fails, a worktree whose holders cannot be read, a delete git
+// refuses with the ref unmoved (its stderr is the reason), and a delete git
+// reports done that left the ref in place. Each case has its own repository.
+func TestBranchRetainedUnknown(t *testing.T) {
+	check := func(t *testing.T, f *fixture, e Engine, fresh cleanup.Row, tip, want string) {
 		t.Helper()
 		br, reason := e.deleteBranch(itemCtx{considerBranch: true}, fresh)
 		if br != BrRetainedUnknown || !strings.Contains(reason, want) {
@@ -731,35 +746,323 @@ func TestBranchRetainedUnknown(t *testing.T) {
 		}
 	}
 	t.Run("unknown row", func(t *testing.T) {
+		f, e, good := branchCase(t)
 		u := good
 		u.Unknown = true
-		check(t, u, "could not be read")
+		u.Reasons = []cleanup.Reason{{Code: cleanup.ReasonBranchUnknown}}
+		check(t, f, e, u, good.Tip, "could not be read")
 	})
 	t.Run("no tip", func(t *testing.T) {
+		f, e, good := branchCase(t)
 		u := good
 		u.Tip = ""
-		check(t, u, "commit")
+		check(t, f, e, u, good.Tip, "commit")
 	})
 	t.Run("list fails", func(t *testing.T) {
+		f, e, good := branchCase(t)
 		old := listWorktrees
 		listWorktrees = func(cleanup.Git, string) ([]cleanup.WorktreeFact, error) { return nil, errors.New("list boom") }
 		t.Cleanup(func() { listWorktrees = old })
-		check(t, good, "list boom")
+		check(t, f, e, good, good.Tip, "list boom")
+	})
+	t.Run("holders unreadable", func(t *testing.T) {
+		f, e, good := branchCase(t)
+		old := heldRefs
+		heldRefs = func(cleanup.Git, cleanup.WorktreeFact) ([]string, error) { return nil, errors.New("holder boom") }
+		t.Cleanup(func() { heldRefs = old })
+		check(t, f, e, good, good.Tip, "holder boom")
 	})
 	t.Run("git refuses, ref unmoved", func(t *testing.T) {
+		f, e, good := branchCase(t)
 		stubRefGit(t, func(cleanup.Git, ...string) (cleanup.Out, error) {
 			return cleanup.Out{Code: 1, Stderr: "fatal: lock\x1b boom\nsecond line\n"}, nil
 		})
-		check(t, good, "lock boom second line") // one sanitised line
+		check(t, f, e, good, good.Tip, "lock boom second line") // one sanitised line
 	})
 	t.Run("git says done, ref still there", func(t *testing.T) {
+		f, e, good := branchCase(t)
 		stubRefGit(t, func(cleanup.Git, ...string) (cleanup.Out, error) { return cleanup.Out{}, nil })
-		check(t, good, "still exists")
+		check(t, f, e, good, good.Tip, "still exists")
 	})
 	t.Run("not considered", func(t *testing.T) {
-		br, _ := e.deleteBranch(itemCtx{}, good)
-		if br != BrNotAttempted {
+		_, e, good := branchCase(t)
+		if br, _ := e.deleteBranch(itemCtx{}, good); br != BrNotAttempted {
 			t.Fatalf("got %s, want not_attempted when the worktree stage did not succeed", br)
+		}
+	})
+}
+
+// detachedOn adds a worktree at name that has branch checked out (forced:
+// another worktree may hold it too) and returns its path.
+func (f *fixture) detachedOn(name, branch string) string {
+	f.t.Helper()
+	p := filepath.Join(f.Dir, ".worktrees", name)
+	f.git("worktree", "add", "--force", p, branch)
+	return p
+}
+
+// stoppedRebase leaves the worktree at p (on its branch, which has at least
+// one commit of its own) in a rebase stopped by a failing --exec: HEAD is
+// detached and rebase-merge/head-name holds the branch.
+func stoppedRebase(t *testing.T, p string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", p, "rebase", "--force-rebase", "--exec", "false", "HEAD~1")
+	cmd.Env = append(os.Environ(), "GIT_EDITOR=true")
+	if b, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("rebase did not stop:\n%s", b)
+	}
+	if b := gitIn(t, p, "status"); !strings.Contains(b, "rebas") {
+		t.Fatalf("precondition: no rebase in progress:\n%s", b)
+	}
+}
+
+// TestBranchHeldByRebaseOrBisect: a branch a stopped rebase or a bisect in
+// another worktree will write back is held there although that worktree's
+// HEAD is detached (git branch -D refuses it). The worktree item's branch is
+// retained_checked_out, a branch item is refused by the re-check, and a
+// rebase whose holder cannot be read keeps the branch (fail closed).
+func TestBranchHeldByRebaseOrBisect(t *testing.T) {
+	t.Run("worktree item, rebase elsewhere", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		f.mergedWorktree("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindWorktree, "topic")
+		stoppedRebase(t, f.detachedOn("other", "topic"))
+		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		if o.Worktree != WtRemoved || o.Branch != BrRetainedCheckedOut {
+			t.Fatalf("outcome %+v, want removed / retained_checked_out", o)
+		}
+		if _, ok := f.refTip("refs/heads/topic"); !ok {
+			t.Error("topic deleted")
+		}
+	})
+	t.Run("worktree item, bisect elsewhere", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		for i := range 3 {
+			f.Commit(p, "b.txt", strings.Repeat("x", i+1), "b")
+		}
+		f.Push("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindWorktree, "topic")
+		other := f.detachedOn("other", "topic")
+		gitIn(t, other, "bisect", "start", "HEAD", "main")
+		if b := gitIn(t, other, "worktree", "list", "--porcelain"); !strings.Contains(b, "detached") {
+			t.Fatalf("precondition: bisect did not detach:\n%s", b)
+		}
+		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		if o.Worktree != WtRemoved || o.Branch != BrRetainedCheckedOut {
+			t.Fatalf("outcome %+v, want removed / retained_checked_out", o)
+		}
+		if _, ok := f.refTip("refs/heads/topic"); !ok {
+			t.Error("topic deleted")
+		}
+	})
+	t.Run("branch item, rebase in its worktree", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		stoppedRebase(t, f.mergedWorktree("topic"))
+		s, r := f.report()
+		row := f.row(r, cleanup.KindBranch, "topic")
+		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(row))
+		if o.Worktree != WtRefused || o.Branch != BrNotAttempted || !strings.Contains(o.Reason, "rebased or bisected") {
+			t.Fatalf("outcome %+v, want refused naming the rebase", o)
+		}
+		if _, ok := f.refTip("refs/heads/topic"); !ok {
+			t.Error("topic deleted")
+		}
+	})
+	t.Run("unreadable holder", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		f.mergedWorktree("topic")
+		s, r := f.report()
+		other := filepath.Join(f.Dir, ".worktrees", "other")
+		f.git("worktree", "add", "--detach", other)
+		marker := gitIn(t, other, "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge")
+		if err := os.MkdirAll(marker, 0o755); err != nil { // a rebase with no head-name
+			t.Fatal(err)
+		}
+		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), itemOf(f.row(r, cleanup.KindWorktree, "topic")))
+		if o.Worktree != WtRemoved || o.Branch != BrRetainedUnknown {
+			t.Fatalf("worktree item %+v, want removed / retained_unknown", o)
+		}
+		f.Branch("topic2")
+		s2, r2 := f.report()
+		o = one(t, f.engine(s2, f.inputs(), Options{DeleteUnmerged: true}), itemOf(f.row(r2, cleanup.KindBranch, "topic2")))
+		if o.Worktree != WtRefused || o.Branch != BrNotAttempted {
+			t.Fatalf("branch item %+v, want refused", o)
+		}
+		for _, ref := range []string{"refs/heads/topic", "refs/heads/topic2"} {
+			if _, ok := f.refTip(ref); !ok {
+				t.Errorf("%s deleted", ref)
+			}
+		}
+	})
+}
+
+// ghDown stubs gh pr list to fail for every branch, for the rest of the
+// test: no PR state can be known.
+func ghDown(t *testing.T) {
+	t.Helper()
+	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") }))
+}
+
+// TestBranchDWhenOnlyMergeVerdictUnknown (Ruling H): -D deletes whatever the
+// merge verdict, so an Unknown that only answers "is it merged?" (gh down:
+// pr_unknown) does not keep a branch under -D; without -D it does. An
+// Unknown about what would be lost (unpushed_unknown) or one the engine does
+// not know keeps it even with -D.
+func TestBranchDWhenOnlyMergeVerdictUnknown(t *testing.T) {
+	for _, d := range []bool{true, false} {
+		want := BrRetainedUnknown
+		if d {
+			want = BrDeleted
+		}
+		t.Run("gh down, -D="+map[bool]string{true: "yes", false: "no"}[d], func(t *testing.T) {
+			ghDown(t)
+			f := newFixture(t)
+			p := f.unmergedPushed("topic")
+			f.git("worktree", "remove", p)
+			s, r := f.report()
+			row := f.row(r, cleanup.KindBranch, "topic")
+			if !row.Unknown || !hasReason(row, cleanup.ReasonPRUnknown) {
+				t.Fatalf("precondition: row %+v, want Unknown with pr_unknown", row)
+			}
+			o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: d}), itemOf(row))
+			if o.Worktree != WtNotRequested || o.Branch != want {
+				t.Fatalf("outcome %+v, want not_requested / %s", o, want)
+			}
+		})
+	}
+	for _, code := range []string{cleanup.ReasonUnpushedUnknown, cleanup.ReasonBranchUnknown, "a_code_added_later"} {
+		t.Run(code+" keeps it under -D", func(t *testing.T) {
+			f, e, good := branchCase(t)
+			u := good
+			u.Unknown = true
+			u.Reasons = []cleanup.Reason{{Code: cleanup.ReasonPRUnknown}, {Code: code}}
+			if br, reason := e.deleteBranch(itemCtx{considerBranch: true}, u); br != BrRetainedUnknown {
+				t.Fatalf("got %s %q, want retained_unknown", br, reason)
+			}
+			if _, ok := f.refTip("refs/heads/topic"); !ok {
+				t.Error("topic deleted")
+			}
+		})
+	}
+}
+
+// TestBranchItemTipAndStatusChecksPinned pins the two "changed since it was
+// listed" checks of a branch item one at a time, under -D (so the proven
+// check cannot stand in for them): a tip that moved with nothing else
+// worse, and a status that got worse on the same tip (the branch became too
+// young to prove at the run's clock).
+func TestBranchItemTipAndStatusChecksPinned(t *testing.T) {
+	t.Run("tip moved, status not worse", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		f.Branch("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindBranch, "topic")
+		it := itemOf(row)
+		it.Saw = cleanup.StatusUniqueWork           // nothing ranks worse
+		it.SawLosses = cleanup.Losses{Unpushed: 99} // nor loses more
+		newTip := f.git("commit-tree", "-p", row.Tip, "-m", "later", row.Tip+"^{tree}")
+		f.git("update-ref", "refs/heads/topic", newTip)
+		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true}), it)
+		if o.Worktree != WtSkippedChanged || !strings.Contains(o.Reason, "moved") {
+			t.Fatalf("outcome %+v, want skipped_changed naming the move", o)
+		}
+		if tip, _ := f.refTip("refs/heads/topic"); tip != newTip {
+			t.Error("topic deleted or moved")
+		}
+	})
+	t.Run("status worse, same tip", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		f.Branch("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindBranch, "topic")
+		if row.Status != cleanup.StatusProven {
+			t.Fatalf("precondition: %s", row.Status)
+		}
+		// The run's clock is now: the branch is younger than the min age.
+		o := one(t, f.engine(s, f.inputs(), Options{DeleteUnmerged: true, Now: time.Now}), itemOf(row))
+		if o.Worktree != WtSkippedChanged || !strings.Contains(o.Reason, "status changed") {
+			t.Fatalf("outcome %+v, want skipped_changed naming the status", o)
+		}
+		if _, ok := f.refTip("refs/heads/topic"); !ok {
+			t.Error("topic deleted")
+		}
+	})
+}
+
+// TestBranchDeleteDoesNotDeref: a ref that is (or became) a symbolic ref is
+// deleted itself, never its target: --no-deref. Without it git deletes the
+// branch the symref points at.
+func TestBranchDeleteDoesNotDeref(t *testing.T) {
+	f, e, good := branchCase(t)
+	f.git("symbolic-ref", "refs/heads/alias", "refs/heads/topic")
+	alias := good
+	alias.Ref = "refs/heads/alias"
+	br, reason := e.deleteBranch(itemCtx{considerBranch: true}, alias)
+	if tip, ok := f.refTip("refs/heads/topic"); !ok || tip != good.Tip {
+		t.Fatalf("the symref's target was deleted (%s %q)", br, reason)
+	}
+}
+
+// hookAfterUpdateRef runs fn between a confirmed delete and the re-check of
+// the worktrees, for the rest of the test.
+func hookAfterUpdateRef(t *testing.T, fn func()) {
+	t.Helper()
+	old := afterUpdateRef
+	afterUpdateRef = fn
+	t.Cleanup(func() { afterUpdateRef = old })
+}
+
+// TestBranchRestoredWhenCheckedOutDuringDelete: a worktree that checks the
+// branch out in the window around the update-ref would be left on a deleted
+// branch. The re-check after the delete sees it and puts the branch back,
+// create-only, at its tip (retained_checked_out); if that restore fails the
+// outcome is retained_unknown with the full tip to restore by hand.
+func TestBranchRestoredWhenCheckedOutDuringDelete(t *testing.T) {
+	checkout := func(f *fixture) func() {
+		return func() {
+			p := filepath.Join(f.Dir, ".worktrees", "late")
+			f.git("worktree", "add", "--detach", p)
+			gitIn(f.t, p, "symbolic-ref", "HEAD", "refs/heads/topic")
+		}
+	}
+	t.Run("restored", func(t *testing.T) {
+		f, e, good := branchCase(t)
+		hookAfterUpdateRef(t, checkout(f))
+		br, reason := e.deleteBranch(itemCtx{considerBranch: true}, good)
+		if br != BrRetainedCheckedOut || !strings.Contains(reason, "restored") {
+			t.Fatalf("got %s %q, want retained_checked_out, restored", br, reason)
+		}
+		if tip, ok := f.refTip("refs/heads/topic"); !ok || tip != good.Tip {
+			t.Errorf("topic = %q (exists %v), want restored at %s", tip, ok, good.Tip)
+		}
+	})
+	t.Run("restore fails", func(t *testing.T) {
+		f, e, good := branchCase(t)
+		hookAfterUpdateRef(t, checkout(f))
+		var calls [][]string
+		stubRefGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+			calls = append(calls, args)
+			if len(calls) == 1 {
+				return g.Run(args...)
+			}
+			return cleanup.Out{Code: 1, Stderr: "fatal: cannot lock"}, nil
+		})
+		br, reason := e.deleteBranch(itemCtx{considerBranch: true}, good)
+		if br != BrRetainedUnknown || !strings.Contains(reason, "git branch topic "+good.Tip) {
+			t.Fatalf("got %s %q, want retained_unknown with the full tip", br, reason)
+		}
+		want := []string{"update-ref", "refs/heads/topic", good.Tip, strings.Repeat("0", 40)}
+		if len(calls) != 2 || !reflect.DeepEqual(calls[1], want) {
+			t.Errorf("calls %q, want a create-only restore %q", calls, want)
 		}
 	})
 }

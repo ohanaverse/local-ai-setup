@@ -522,8 +522,11 @@ func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The one exemption: the sequencer state file HeldRefs reads (a
+		// read-only path whose name contains "update-ref"), exact spelling.
+		src := strings.ReplaceAll(string(b), "rebase-merge/update-refs", "")
 		for _, s := range banned {
-			if strings.Contains(string(b), s) {
+			if strings.Contains(src, s) {
 				t.Errorf("%s contains %q", f, s)
 			}
 		}

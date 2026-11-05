@@ -123,6 +123,20 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		if !strings.HasPrefix(t.Ref, "refs/heads/") || !qualified(t.Ref) {
 			return Row{}, fmt.Errorf("cleanup: rescan: branch target %q is not a refs/heads/ name", flat(t.Ref))
 		}
+		// A branch a worktree holds (checked out, or held by a rebase or
+		// bisect there, whose HEAD is then detached) is not deletable;
+		// what a worktree holds unreadably fails closed.
+		for _, w := range facts {
+			held, err := HeldRefs(g, w)
+			if err != nil {
+				return Row{}, fmt.Errorf("cleanup: could not tell which branches worktree %s holds: %w", flat(w.Path), err)
+			}
+			for _, h := range held {
+				if strings.EqualFold(h, t.Ref) {
+					return Row{}, fmt.Errorf("cleanup: %s is now checked out, rebased or bisected in worktree %s", flat(t.Ref), flat(w.Path))
+				}
+			}
+		}
 		refs = []string{t.Ref}
 	case KindRemote:
 		return Row{}, fmt.Errorf("cleanup: rescan: unsupported target kind %q", flat(string(t.Kind)))
