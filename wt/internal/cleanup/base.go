@@ -18,7 +18,7 @@ type Base struct {
 	Default   string    // default branch name, e.g. "main"
 	Ref       string    // origin/<Default> when it exists, else the local Default
 	Fallback  bool      // true when Ref is the local default, not the remote's
-	FetchedAt time.Time // set by the caller that fetched; ResolveBase leaves it zero
+	FetchedAt time.Time // set by the caller after a fetch that worked; ResolveBase leaves it zero
 }
 
 // refExists reports whether ref resolves to a commit.

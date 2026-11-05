@@ -24,7 +24,8 @@ type Envelope struct {
 	Error   *ErrorJSON `json:"error,omitempty"`
 }
 
-// BaseJSON is Base. FetchedAt is RFC 3339 UTC, absent when never fetched.
+// BaseJSON is Base. FetchedAt is RFC 3339 UTC, absent when no fetch ran or
+// the fetch failed.
 type BaseJSON struct {
 	Default   string `json:"default"`
 	Ref       string `json:"ref"`
@@ -112,10 +113,12 @@ func Encode(r Report) ([]byte, error) {
 	}
 	// base is absent when no default branch was found; fetch is absent when
 	// no fetch ran ("not attempted"), a zero At being the sign of that.
+	// fetched_at is written only after a fetch that worked: after a failed
+	// one (or none) the base is not known to be current as of any time.
 	if r.Base.Default != "" {
-		e.Base = &BaseJSON{
-			Default: r.Base.Default, Ref: r.Base.Ref, Fallback: r.Base.Fallback,
-			FetchedAt: timeJSON(r.Base.FetchedAt),
+		e.Base = &BaseJSON{Default: r.Base.Default, Ref: r.Base.Ref, Fallback: r.Base.Fallback}
+		if r.Fetch.OK {
+			e.Base.FetchedAt = timeJSON(r.Base.FetchedAt)
 		}
 	}
 	if !r.Fetch.At.IsZero() {

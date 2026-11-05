@@ -20,8 +20,10 @@ import (
 
 const (
 	cleanupFixture = "../../../docs/contracts/cleanup-list.sample.json"
-	cleanupSchema  = "../../../docs/contracts/cleanup-list.schema.json"
-	cleanupPkgDir  = "../../internal/cleanup"
+	// cleanupFetchFailedFixture is a run whose fetch failed: no fetched_at.
+	cleanupFetchFailedFixture = "../../../docs/contracts/cleanup-list.fetch-failed.sample.json"
+	cleanupSchema             = "../../../docs/contracts/cleanup-list.schema.json"
+	cleanupPkgDir             = "../../internal/cleanup"
 )
 
 func readJSONFile(t *testing.T, path string) any {
@@ -195,8 +197,10 @@ func jsonType(v any) string {
 // validates the fixture and live Encode/EncodeError output against the
 // published schema (enums included), and requires the fixture to show one row
 // of each status and kind, an unknown row, a blocker row and an evidence-less
-// row. Why: a script in another language reads this document; a renamed Go
-// json tag must fail here until the schema and fixture move with it.
+// row. The fetch-failed sample is held the same way, and the two pin that
+// base.fetched_at appears only beside fetch.ok true. Why: a script in another
+// language reads this document; a renamed Go json tag must fail here until
+// the schema and fixture move with it.
 func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	raw, err := os.ReadFile(cleanupFixture)
 	if err != nil {
@@ -235,6 +239,29 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	if errs := checkAgainst(schema, fixtureDoc, "fixture"); len(errs) > 0 {
 		t.Errorf("fixture violates the schema:\n%s", strings.Join(errs, "\n"))
 	}
+	fetchFailedRaw, err := os.ReadFile(cleanupFetchFailedFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkJSONShape(t, "fetch-failed document", fetchFailedRaw, reflect.TypeFor[cleanup.Envelope]())
+	fetchFailedDoc := readJSONFile(t, cleanupFetchFailedFixture)
+	if errs := checkAgainst(schema, fetchFailedDoc, "fetch-failed fixture"); len(errs) > 0 {
+		t.Errorf("fetch-failed fixture violates the schema:\n%s", strings.Join(errs, "\n"))
+	}
+	// base.fetched_at only after a fetch that worked: the main sample shows
+	// it with fetch.ok true, the fetch-failed sample shows fetch.ok false
+	// without it.
+	for name, d := range map[string]any{"fixture": fixtureDoc, "fetch-failed fixture": fetchFailedDoc} {
+		m := d.(map[string]any)
+		base, _ := m["base"].(map[string]any)
+		fetch, _ := m["fetch"].(map[string]any)
+		_, hasAt := base["fetched_at"]
+		ok, _ := fetch["ok"].(bool)
+		want := name == "fixture"
+		if hasAt != ok || ok != want {
+			t.Errorf("%s: fetch.ok %v, base.fetched_at present %v; want both %v", name, ok, hasAt, want)
+		}
+	}
 	// What wt prints must pass too, success, failed fetch and failure.
 	okDoc, err := cleanup.Encode(cleanup.Report{Repo: "/r", GH: cleanup.GHOK,
 		Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "x", Status: cleanup.StatusLessSure, Unknown: true}}})
@@ -266,13 +293,13 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	}
 
 	// Every key of every struct reachable from Envelope (not just rows) must
-	// appear in the fixture or in the live error document, so an omitempty
+	// appear in a fixture or in the live error document, so an omitempty
 	// key nobody shows cannot be renamed unnoticed.
 	seenKeys := map[reflect.Type]map[string]bool{}
 	reachable := map[reflect.Type]bool{}
 	walkTyped(t, schema, schema, reflect.TypeFor[cleanup.Envelope](), nil, "envelope",
 		func(_ string, typ reflect.Type, _ map[string]any, _ map[string]any) { reachable[typ] = true })
-	for _, d := range []any{fixtureDoc, errV} {
+	for _, d := range []any{fixtureDoc, fetchFailedDoc, errV} {
 		walkTyped(t, schema, schema, reflect.TypeFor[cleanup.Envelope](), d, "envelope",
 			func(_ string, typ reflect.Type, _ map[string]any, obj map[string]any) {
 				if seenKeys[typ] == nil {

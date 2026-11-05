@@ -136,7 +136,10 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	case baseErr != nil:
 		return Snapshot{}, baseErr
 	}
-	s.Base.FetchedAt = s.Fetch.At
+	if s.Fetch.OK {
+		// Only a fetch that worked says how current the base is.
+		s.Base.FetchedAt = s.Fetch.At
+	}
 	if !s.NoDefault {
 		var ok bool
 		if s.BaseTip, ok = commitOf(g, qualifiedBase(s.Base)); !ok {

@@ -2,7 +2,7 @@
   "version": 1,
   "repo": "/home/owner/src/project",
   "base": {"default": "main", "ref": "origin/main", "fallback": false, "fetched_at": "2026-11-04T12:00:00Z"},
-  "fetch": {"ok": false, "error": "fatal: unable to access 'https://example.invalid/project.git/': Could not resolve host", "at": "2026-11-04T12:00:00Z"},
+  "fetch": {"ok": true, "at": "2026-11-04T12:00:00Z"},
   "gh": "ok",
   "rows": [
     {"kind": "worktree", "name": "merged-topic", "path": "/home/owner/src/project/.worktrees/merged-topic", "branch": "merged-topic", "remote": "origin", "status": "proven", "evidence": "pr-tip", "unknown": false, "age_days": 6, "reasons": [], "blockers": [], "pr": {"number": 42, "state": "MERGED"}},

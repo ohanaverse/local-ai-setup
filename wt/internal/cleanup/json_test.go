@@ -209,6 +209,58 @@ func TestEncodeFetchAbsentUnlessAttempted(t *testing.T) {
 	}
 }
 
+// TestEncodeFetchedAtOnlyAfterAGoodFetch gathers with a fetch that works,
+// one that fails and none at all, and encodes each. Why: `base.fetched_at`
+// tells a consumer "the base is current as of then"; after a failed fetch,
+// or with none, that is false, so the key must be absent (the failure is in
+// `fetch`), and present only when the fetch succeeded.
+func TestEncodeFetchedAtOnlyAfterAGoodFetch(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(f *fixture)
+		fetch bool
+		want  bool // fetched_at present
+	}{
+		{"fetch ok", func(*fixture) {}, true, true},
+		{"fetch failed", func(f *fixture) {
+			f.git("remote", "set-url", "origin", f.Origin+"-missing")
+		}, true, false},
+		{"no fetch attempted", func(*fixture) {}, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			c.setup(f)
+			noGh(t)
+			s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: c.fetch})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := Encode(Classify(s, Options{Now: later()}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc struct {
+				Base map[string]json.RawMessage `json:"base"`
+			}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				t.Fatal(err)
+			}
+			if _, has := doc.Base["fetched_at"]; has != c.want {
+				t.Fatalf("fetched_at present = %v, want %v (fetch %+v):\n%s", has, c.want, s.Fetch, raw)
+			}
+		})
+	}
+	// A report that says the fetch failed never carries fetched_at, even if
+	// a caller filled Base.FetchedAt.
+	at := time.Date(2026, 11, 4, 1, 2, 3, 0, time.UTC)
+	raw, _ := Encode(Report{Repo: "/r", Base: Base{Default: "main", Ref: "origin/main", FetchedAt: at},
+		Fetch: FetchResult{Err: "no network", At: at}})
+	if strings.Contains(string(raw), "fetched_at") {
+		t.Fatalf("failed fetch carries fetched_at:\n%s", raw)
+	}
+}
+
 // TestEncodeAgeAbsentWhenUnknown pins that age_days is left out when the
 // age could not be determined and written (as 0) for a known age under a
 // day. Why: 0 for both would let a consumer read "unknown" as "brand new".
