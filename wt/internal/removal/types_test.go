@@ -1,6 +1,9 @@
 package removal
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,4 +115,48 @@ func TestFixtureBuildsItems(t *testing.T) {
 	if row := f.row(r, cleanup.KindWorktree, "other"); row.Status != cleanup.StatusInUse {
 		t.Errorf("locked worktree status %s, want in_use", row.Status)
 	}
+}
+
+// TestFixtureIgnoresHostileGlobalConfig points every global git config git
+// could read (GIT_CONFIG_GLOBAL, ~/.gitconfig, $XDG_CONFIG_HOME/git/config) at
+// a core.hooksPath whose pre-commit hook always fails, checks that this config
+// does fail a plain commit, then applies TestMain's isolateGitConfig and
+// builds a fixture, which commits. A developer's global config must not reach
+// the fixture: a hook, template or merge driver there would make removal
+// tests fail, or pass, for reasons of their machine.
+func TestFixtureIgnoresHostileGlobalConfig(t *testing.T) {
+	hooks := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostile := "[core]\n\thooksPath = " + hooks + "\n"
+	home := t.TempDir()
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	for _, p := range []string{global, filepath.Join(home, ".gitconfig"), filepath.Join(home, "git", "config")} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(hostile), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+
+	// Control: the hostile config is in force, or this test proves nothing.
+	dir := t.TempDir()
+	if b, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, b)
+	}
+	if b, err := exec.Command("git", "-C", dir, "-c", "user.name=T", "-c", "user.email=t@example.com",
+		"commit", "-q", "--allow-empty", "-m", "x").CombinedOutput(); err == nil {
+		t.Fatalf("commit under the hostile hooksPath succeeded; the control is broken\n%s", b)
+	}
+
+	if err := isolateGitConfig(home); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t)
+	f.Commit(f.Dir, "after.txt", "x", "commit after isolation")
 }
