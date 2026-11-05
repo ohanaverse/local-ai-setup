@@ -67,13 +67,53 @@ func (e Engine) safeItem(it Item, dry bool) (o Outcome) {
 }
 
 func (e Engine) item(it Item, dry bool) Outcome {
+	g := e.gate(it)
+	if g.stop != nil {
+		return *g.stop
+	}
+	return e.act(it, g, dry)
+}
+
+// gated is the engine's decision about one item before anything is touched:
+// either stop (refused or skipped, final) or the fresh row and what acting
+// on it needs. Run, Plan and Preview all decide through gate, so a preview
+// can never disagree with a run about a refusal.
+type gated struct {
+	stop  *Outcome    // non-nil: the item's final outcome (refused or skipped)
+	fresh cleanup.Row // the re-classification (zero when none was read)
+	// hasFresh: fresh was read (the rescan ran and found the target).
+	hasFresh bool
+	// procs and procErr are the live-process check's answer (worktree items).
+	procs   []Proc
+	procErr error
+	// needForce: a loss only Force approves (uncommitted changes, a detached
+	// HEAD's unique commits). gitForce: git must be passed --force (dirty).
+	needForce, gitForce bool
+}
+
+func stopWith(o Outcome, fresh cleanup.Row, has bool) gated {
+	return gated{stop: &o, fresh: fresh, hasFresh: has}
+}
+
+// gate runs every check for it in its fixed order (worktreeGate,
+// branchGate); an item of any other kind is refused.
+func (e Engine) gate(it Item) gated {
 	switch it.Kind {
 	case cleanup.KindWorktree:
-		return e.worktreeItem(it, dry)
+		return e.worktreeGate(it)
 	case cleanup.KindBranch:
-		return e.branchItem(it, dry)
+		return e.branchGate(it)
 	}
-	return NewOutcome(it, WtRefused, BrNotAttempted, fmt.Sprintf("invalid target: kind %q is not removable", it.Kind))
+	return stopWith(NewOutcome(it, WtRefused, BrNotAttempted, fmt.Sprintf("invalid target: kind %q is not removable", it.Kind)), cleanup.Row{}, false)
+}
+
+// act carries out an item gate let through (dry: decide the branch stage
+// only, change nothing).
+func (e Engine) act(it Item, g gated, dry bool) Outcome {
+	if it.Kind == cleanup.KindWorktree {
+		return e.worktreeAct(it, g, dry)
+	}
+	return e.branchAct(it, g, dry)
 }
 
 // refuse is a refusal of it's worktree: nothing was touched.
@@ -86,8 +126,9 @@ func skipped(it Item, reason string) Outcome {
 	return NewOutcome(it, WtSkippedChanged, BrNotAttempted, reason)
 }
 
-// worktreeItem runs the gates for one worktree item in their fixed order,
-// then (unless dry) removes it and hands over to the branch stage.
+// worktreeGate runs the gates for one worktree item in their fixed order;
+// worktreeAct then (unless dry) removes it and hands over to the branch
+// stage.
 //
 // What the re-check cannot close. The last fresh read is the rescan; between
 // it and `git worktree remove` (the compare window: Rescan to git) the tree
@@ -99,89 +140,104 @@ func skipped(it Item, reason string) Outcome {
 // (orphaned), or, on the dirty+Force path, any new file at all. The slow
 // live-process check therefore runs before the rescan, to keep the window
 // as short as the rescan's own gates allow.
-func (e Engine) worktreeItem(it Item, dry bool) Outcome {
+func (e Engine) worktreeGate(it Item) gated {
 	// 1. A target no row could have produced, or a "saw" nothing could be
 	// compared with.
 	if why := e.invalidItem(it); why != "" {
-		return refuse(it, "invalid target: "+why)
+		return stopWith(refuse(it, "invalid target: "+why), cleanup.Row{}, false)
 	}
 
 	// 2. Live processes: a warning, never a refusal. Before the rescan, so
 	// it stays out of the compare window.
-	warnings := e.procWarnings(it.Path)
+	procs, procErr := e.findProcs(it.Path)
 
 	// 3. Re-classify it now.
 	fresh, err := rescan(e.G, e.Prior, e.In, e.classifyOpts(), cleanup.Target{Kind: cleanup.KindWorktree, Path: it.Path, Ref: it.Ref})
+	stop := func(o Outcome) gated {
+		g := stopWith(o, fresh, err == nil)
+		g.procs, g.procErr = procs, procErr
+		return g
+	}
 	if errors.Is(err, cleanup.ErrTargetGone) {
-		return skipped(it, "no longer exists")
+		return stop(skipped(it, "no longer exists"))
 	}
 	if err != nil {
-		return refuse(it, "could not re-check: "+err.Error())
+		return stop(refuse(it, "could not re-check: "+err.Error()))
 	}
 
 	// 4. Exact identity: Rescan folds case, but refs/heads/Topic and
 	// refs/heads/topic can be two branches.
 	if it.Ref != "" && fresh.Ref != it.Ref {
-		return refuse(it, fmt.Sprintf("branch spelling changed: %s is now %s", it.Ref, fresh.Ref))
+		return stop(refuse(it, fmt.Sprintf("branch spelling changed: %s is now %s", it.Ref, fresh.Ref)))
 	}
 	if it.Ref == "" && fresh.Ref != "" {
-		return refuse(it, "worktree is now on "+fresh.Ref+" (was detached)")
+		return stop(refuse(it, "worktree is now on "+fresh.Ref+" (was detached)"))
 	}
 
 	// 5. Hard blockers: no option overrides them.
 	if len(fresh.Blockers) > 0 {
-		return refuse(it, blockerReason(fresh.Blockers))
+		return stop(refuse(it, blockerReason(fresh.Blockers)))
 	}
 	if fresh.Status == cleanup.StatusInUse {
-		return refuse(it, "in use")
+		return stop(refuse(it, "in use"))
 	}
 
 	// 6. An unknown is never approved, Force or not.
 	if fresh.Losses.GatesUnknown {
-		return refuse(it, "could not read the worktree's state")
+		return stop(refuse(it, "could not read the worktree's state"))
 	}
 
 	// 7. Changed since the user saw it: status, commit, what would be lost.
 	if fresh.Status.WorseThan(it.Saw) {
-		return skipped(it, fmt.Sprintf("status changed since it was listed (%s, was %s)", fresh.Status, it.Saw))
+		return stop(skipped(it, fmt.Sprintf("status changed since it was listed (%s, was %s)", fresh.Status, it.Saw)))
 	}
 	tip := fresh.Tip
 	if fresh.Ref == "" {
 		tip = fresh.Head
 	}
 	if tip == "" {
-		return refuse(it, "could not read the worktree's commit")
+		return stop(refuse(it, "could not read the worktree's commit"))
 	}
 	if tip != it.SawTip {
-		return skipped(it, "branch moved since it was listed")
+		return stop(skipped(it, "branch moved since it was listed"))
 	}
 	if lossesWorse(fresh.Losses, it.SawLosses) {
-		return skipped(it, "what would be lost changed since it was listed")
+		return stop(skipped(it, "what would be lost changed since it was listed"))
 	}
 
 	// 8. Losses only a flag approves.
-	force := false
+	g := gated{fresh: fresh, hasFresh: true, procs: procs, procErr: procErr}
 	if fresh.Losses.Dirty {
+		g.needForce = true
+		g.gitForce = true // git refuses a dirty worktree without it
 		if !e.Opts.Force {
-			return refuse(it, "uncommitted changes; --force required")
+			return stop(refuse(it, "uncommitted changes; --force required"))
 		}
-		force = true // git refuses a dirty worktree without it
 	}
-	if fresh.Losses.DetachedUnique && fresh.Ref == "" && !e.Opts.Force {
-		return refuse(it, "commits that exist only in this worktree; --force required")
+	if fresh.Losses.DetachedUnique && fresh.Ref == "" {
+		g.needForce = true
+		if !e.Opts.Force {
+			return stop(refuse(it, "commits that exist only in this worktree; --force required"))
+		}
 	}
 
 	// 9. Defence in depth at the deletion site: git is handed only a valid
 	// path that is the one the user ticked.
 	if why := e.invalidPath(fresh.Path); why != "" {
-		return refuse(it, "invalid target: "+why)
+		return stop(refuse(it, "invalid target: "+why))
 	}
 	if cleanup.ResolvePath(fresh.Path) != cleanup.ResolvePath(it.Path) {
-		return refuse(it, "path changed: the re-check found "+fresh.Path)
+		return stop(refuse(it, "path changed: the re-check found "+fresh.Path))
 	}
+	return g
+}
 
+// worktreeAct removes a worktree item worktreeGate let through, then runs
+// the branch stage; dry decides the branch stage and removes nothing.
+func (e Engine) worktreeAct(it Item, g gated, dry bool) Outcome {
+	fresh := g.fresh
 	o := NewOutcome(it, WtRemoved, BrNotAttempted, "")
-	for _, w := range warnings {
+	for _, w := range procWarnings(g.procs, g.procErr) {
 		o.AddWarning(w)
 	}
 
@@ -197,7 +253,7 @@ func (e Engine) worktreeItem(it Item, dry bool) Outcome {
 	}
 
 	// 11. Remove and verify.
-	if wt, reason := e.removeWorktree(fresh.Path, force); wt != WtRemoved {
+	if wt, reason := e.removeWorktree(fresh.Path, g.gitForce); wt != WtRemoved {
 		o.Worktree = wt
 		o.SetReason(reason)
 		return o
@@ -218,21 +274,20 @@ func (o *Outcome) applyBranch(r branchResult) {
 	}
 }
 
-// branchItem runs the gates for one branch-only item (a local branch with
-// no worktree) in the worktree item's order, then hands it to the branch
-// stage. A refused or skipped item's branch is not_attempted.
-func (e Engine) branchItem(it Item, dry bool) Outcome {
-	refuseB := func(reason string) Outcome { return NewOutcome(it, WtRefused, BrNotAttempted, reason) }
-	skipB := func(reason string) Outcome { return NewOutcome(it, WtSkippedChanged, BrNotAttempted, reason) }
-
+// branchGate runs the gates for one branch-only item (a local branch with
+// no worktree) in the worktree item's order; branchAct then hands it to the
+// branch stage. A refused or skipped item's branch is not_attempted.
+func (e Engine) branchGate(it Item) gated {
 	// 1. A target no row could have produced.
 	if why := invalidBranchItem(it); why != "" {
-		return refuseB("invalid target: " + why)
+		return stopWith(refuse(it, "invalid target: "+why), cleanup.Row{}, false)
 	}
 
 	// 2. Re-classify it now. A branch a worktree now holds is an error here
 	// (Rescan gives no branch row for it): refused.
 	fresh, err := rescan(e.G, e.Prior, e.In, e.classifyOpts(), cleanup.Target{Kind: cleanup.KindBranch, Ref: it.Ref})
+	refuseB := func(reason string) gated { return stopWith(refuse(it, reason), fresh, err == nil) }
+	skipB := func(reason string) gated { return stopWith(skipped(it, reason), fresh, err == nil) }
 	if errors.Is(err, cleanup.ErrTargetGone) {
 		return skipB("no longer exists")
 	}
@@ -264,11 +319,15 @@ func (e Engine) branchItem(it Item, dry bool) Outcome {
 	if lossesWorse(fresh.Losses, it.SawLosses) {
 		return skipB("what would be lost changed since it was listed")
 	}
-
 	// 6. (No live-process check: a branch has no directory.)
-	// 7, 8. The branch stage; a dry run decides without writing.
+	return gated{fresh: fresh, hasFresh: true}
+}
+
+// branchAct is the branch stage (7, 8) for a branch item branchGate let
+// through; a dry run decides without writing.
+func (e Engine) branchAct(it Item, g gated, dry bool) Outcome {
 	o := NewOutcome(it, WtNotRequested, BrNotAttempted, "")
-	o.applyBranch(e.deleteBranch(itemCtx{item: it, fresh: fresh, considerBranch: true, dry: dry}, fresh))
+	o.applyBranch(e.deleteBranch(itemCtx{item: it, fresh: g.fresh, considerBranch: true, dry: dry}, g.fresh))
 	return o
 }
 
@@ -404,13 +463,18 @@ func blockerReason(bs []cleanup.Reason) string {
 // maxProcNames is how many command names a live-process warning names.
 const maxProcNames = 3
 
-// procWarnings are the warnings for live processes running in dir, or for a
-// check that could not run (none without Opts.Procs). It never refuses.
-func (e Engine) procWarnings(dir string) []string {
+// findProcs asks Opts.Procs for the live processes running in dir (none,
+// and no error, without one).
+func (e Engine) findProcs(dir string) ([]Proc, error) {
 	if e.Opts.Procs == nil {
-		return nil
+		return nil, nil
 	}
-	ps, err := e.Opts.Procs.InDir(dir)
+	return e.Opts.Procs.InDir(dir)
+}
+
+// procWarnings are the warnings for live processes ps running in a worktree,
+// or for a check that could not run (err). They never refuse.
+func procWarnings(ps []Proc, err error) []string {
 	if err != nil {
 		return []string{"could not check for running processes: " + err.Error()}
 	}
