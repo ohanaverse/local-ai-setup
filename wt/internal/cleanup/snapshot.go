@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // GatherInputs are what Gather cannot learn from git.
@@ -261,10 +260,16 @@ func (s *Snapshot) readRefs(g Git) error {
 	return nil
 }
 
-// isDefault reports whether name is the default branch in any form. With no
-// default branch nothing is excluded: every row is Unknown anyway.
+// isDefault reports whether name is the default branch's own name. Only the
+// exact name counts: for-each-ref hands this the bare branch name, so this
+// caller can tell a branch from a remote-tracking ref and need not fall back
+// to the picker's suffix form (worktree.IsDefaultBranchForm), which would
+// also match a branch called feature/<default> — a normal branch the list
+// must show, with its worktree in use for its own verdict, not as "the
+// default branch" (enumerate.go spells that caller duty out). With no default
+// branch nothing is excluded: every row is Unknown anyway.
 func (s *Snapshot) isDefault(name string) bool {
-	return !s.NoDefault && worktree.IsDefaultBranchForm(name, s.Base.Default)
+	return !s.NoDefault && name == s.Base.Default
 }
 
 // prove runs the ladder once per distinct tip (heads, remotes, detached

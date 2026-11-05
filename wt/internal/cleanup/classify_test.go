@@ -131,6 +131,22 @@ func TestClassify(t *testing.T) {
 			f.Merge("topic")
 			f.Push("main")
 		}, want: want{kind: KindBranch, name: "topic", status: StatusProven, ev: EvAncestor}},
+		// A branch whose name ends in /<default> is a normal branch, not the
+		// default's remote-tracking form: it is judged like any other instead
+		// of being dropped from the list (and its worktree's verdict must be
+		// its own, not "the default branch").
+		{name: "branch named x/<default> is judged, not excluded", setup: func(t *testing.T, f *fixture) {
+			f.Branch("feature/main")
+			f.Checkout("feature/main")
+			f.Commit("a", "a", "a")
+			f.Checkout("main")
+			f.Commit("m", "m", "m")
+			f.Merge("feature/main")
+			f.Push("main")
+		}, want: want{kind: KindBranch, name: "feature/main", status: StatusProven, ev: EvAncestor}},
+		{name: "worktree on a branch named x/<default> keeps its own verdict", setup: func(t *testing.T, f *fixture) {
+			f.Worktree("feature/main")
+		}, want: want{kind: KindWorktree, name: "feature/main", status: StatusProven, ev: EvSameCommit}},
 		{name: "fast-forward", setup: func(t *testing.T, f *fixture) {
 			f.Branch("topic")
 			f.Checkout("topic")
