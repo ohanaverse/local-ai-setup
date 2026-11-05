@@ -364,7 +364,7 @@ func (c *classifier) local(j *judge, h RefFact) {
 		}
 		if ok && p.Verdict == NotMerged {
 			if res.Lookup == LookupUnknown {
-				j.unsure(ReasonPRUnknown, cmp.Or(res.Err, "no PR lookup for this branch"))
+				j.unsure(ReasonPRUnknown, cmp.Or(res.Err, noPRLookupDetail))
 			}
 			if len(p.Weak) > 0 {
 				j.weak(ReasonWeakSignal, weakDetail(p.Weak))
@@ -413,7 +413,7 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	res := c.s.PRs[rf.Name] // a miss is LookupUnknown
 	switch {
 	case res.Lookup == LookupUnknown:
-		j.unsure(ReasonCannotVerify, cmp.Or(res.Err, "no PR lookup for this branch"))
+		j.unsure(ReasonCannotVerify, cmp.Or(res.Err, noPRLookupDetail))
 	case c.gh != GHOK:
 		j.unsure(ReasonCannotVerify, c.ghNote)
 	}

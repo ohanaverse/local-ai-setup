@@ -29,14 +29,15 @@ func ghLine(t *testing.T, r Report) string {
 }
 
 // TestHeaderGHUnavailableNamesTheCause pins that the gh line says why gh
-// answered nothing, for the three realistic causes (not logged in, not
-// installed, timed out). Why: rows read only "PR lookup failed", so without
+// answered nothing, for the four realistic causes (not logged in, not
+// installed, timed out, own repository unknown). Why: rows read only "PR lookup failed", so without
 // this the plain list and the TUI never told the user what to fix.
 func TestHeaderGHUnavailableNamesTheCause(t *testing.T) {
 	for _, cause := range []string{
 		"gh pr list: exit status 4: To get started with GitHub CLI, please run: gh auth login",
 		`exec: "gh": executable file not found in $PATH`,
 		"gh pr list timed out after 15s",
+		"own repository unknown; cannot filter fork PRs",
 	} {
 		want := "gh:    unavailable (" + cause + "); PR evidence is missing and rows that need it say so"
 		if got := ghLine(t, ghDownReport(cause)); got != want {
@@ -47,16 +48,16 @@ func TestHeaderGHUnavailableNamesTheCause(t *testing.T) {
 
 // TestHeaderGHCausesAreDistinctFirstSeenAndCapped pins that the same cause on
 // many rows is shown once, two distinct causes both show in first-seen
-// order, a third becomes "(+1 more)", and one cause is cut at 100 runes.
+// order joined by " | ", a third becomes "(+1 more)", and one cause is cut at 100 runes.
 // Why: the line must stay short however many rows fail differently.
 func TestHeaderGHCausesAreDistinctFirstSeenAndCapped(t *testing.T) {
 	if got := ghLine(t, ghDownReport("a", "a", "a")); !strings.Contains(got, "unavailable (a);") {
 		t.Errorf("repeated cause: %q", got)
 	}
-	if got := ghLine(t, ghDownReport("b", "a")); !strings.Contains(got, "unavailable (b; a);") {
+	if got := ghLine(t, ghDownReport("b", "a")); !strings.Contains(got, "unavailable (b | a);") {
 		t.Errorf("two causes: %q", got)
 	}
-	if got := ghLine(t, ghDownReport("b", "a", "c")); !strings.Contains(got, "unavailable (b; a (+1 more));") {
+	if got := ghLine(t, ghDownReport("b", "a", "c")); !strings.Contains(got, "unavailable (b | a (+1 more));") {
 		t.Errorf("three causes: %q", got)
 	}
 	got := ghLine(t, ghDownReport(strings.Repeat("x", 300)))
@@ -102,5 +103,26 @@ func TestEncodeKeepsGHCauseOnRowsOnly(t *testing.T) {
 	}
 	if strings.Contains(s, "PR evidence is missing") || strings.Contains(s, "unavailable (") {
 		t.Errorf("header text leaked into JSON:\n%s", s)
+	}
+}
+
+// TestHeaderGHCausesSeparatorAndFallback pins that causes are joined with
+// " | " (one real cause, "own repository unknown; cannot filter fork PRs",
+// holds "; " itself) and that the synthetic "no PR lookup for this branch"
+// is left out when a real cause is present, yet shown when it is the only
+// one. Why: with "; " the line read as more causes than it had.
+func TestHeaderGHCausesSeparatorAndFallback(t *testing.T) {
+	own := "own repository unknown; cannot filter fork PRs"
+	got := ghLine(t, ghDownReport(own, "gh pr list timed out after 15s"))
+	if want := "unavailable (" + own + " | gh pr list timed out after 15s);"; !strings.Contains(got, want) {
+		t.Errorf("gh line = %q, want it to contain %q", got, want)
+	}
+	got = ghLine(t, ghDownReport(noPRLookupDetail, own))
+	if strings.Contains(got, noPRLookupDetail) || !strings.Contains(got, "unavailable ("+own+");") {
+		t.Errorf("fallback beside a real cause: %q", got)
+	}
+	got = ghLine(t, ghDownReport(noPRLookupDetail))
+	if !strings.Contains(got, "unavailable ("+noPRLookupDetail+");") {
+		t.Errorf("fallback alone: %q", got)
 	}
 }

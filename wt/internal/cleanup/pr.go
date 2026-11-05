@@ -96,27 +96,22 @@ const ghErrMax = 120
 // gh's multi-line text (an unauthenticated gh prints a login speech) must not
 // be pasted whole.
 func ghFailure(err error, stderr []byte) error {
-	return errors.New(oneLine(fmt.Sprintf("gh pr list: %v: %s", err, firstLine(string(stderr)))))
+	return errors.New(oneLine(fmt.Sprintf("gh pr list: %v: %s", err, oneLine(string(stderr)))))
 }
 
-// firstLine is s's first line that is not blank.
-func firstLine(s string) string {
+// oneLine is the first line of s that is not blank once sanitised: made
+// printable (tab and CR become spaces; control runes such as ESC and BEL,
+// and bidi controls, are dropped), its whitespace runs collapsed to single
+// spaces, cut to ghErrMax runes (ending in "…"). Every gh error text goes
+// through it, so a row's detail, the JSON and the header's gh line never
+// carry terminal control sequences from gh's stderr.
+func oneLine(s string) string {
 	for _, l := range strings.Split(s, "\n") {
-		if strings.TrimSpace(l) != "" {
-			return l
+		if l = flat(l); l != "" {
+			return capRunes(l, ghErrMax)
 		}
 	}
 	return ""
-}
-
-// oneLine is the first non-blank line of s with its whitespace runs
-// collapsed to single spaces, cut to ghErrMax runes (ending in "…").
-func oneLine(s string) string {
-	s = strings.Join(strings.Fields(firstLine(s)), " ")
-	if r := []rune(s); len(r) > ghErrMax {
-		s = string(r[:ghErrMax-1]) + "…"
-	}
-	return s
 }
 
 type ghPRRow struct {
@@ -153,11 +148,21 @@ func (r ghPRRow) headRepo() string {
 	return ""
 }
 
+// lookupOne is lookupBranch with its error text made one sanitised line
+// (oneLine): it is a row's detail, goes into the JSON and reaches the
+// terminal through the header's gh line.
 func lookupOne(dir, branch, ownRepo string) PRResult {
+	r := lookupBranch(dir, branch, ownRepo)
+	if r.Err != "" {
+		r.Err = cmp.Or(oneLine(r.Err), "gh pr list failed")
+	}
+	return r
+}
+
+func lookupBranch(dir, branch, ownRepo string) PRResult {
 	out, err := ghPRList(dir, branch)
 	if err != nil {
-		// One line whatever the error held: it is a row's detail.
-		return PRResult{Lookup: LookupUnknown, Err: cmp.Or(oneLine(err.Error()), "gh pr list failed")}
+		return PRResult{Lookup: LookupUnknown, Err: cmp.Or(err.Error(), "gh pr list failed")}
 	}
 	var rows []ghPRRow
 	if err := json.Unmarshal(out, &rows); err != nil {

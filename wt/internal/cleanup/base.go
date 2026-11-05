@@ -119,10 +119,10 @@ const fetchTimeout = 120 * time.Second
 func Fetch(g Git) FetchResult {
 	o, err := g.Run("remote")
 	if err != nil {
-		return FetchResult{Err: err.Error(), At: time.Now()}
+		return FetchResult{Err: fetchErrText(err.Error()), At: time.Now()}
 	}
 	if o.Code != 0 {
-		return FetchResult{Err: gitFailure(o, "remote").Error(), At: time.Now()}
+		return FetchResult{Err: fetchErrText(gitFailure(o, "remote").Error()), At: time.Now()}
 	}
 	if !slices.Contains(strings.Fields(o.Stdout), "origin") {
 		return FetchResult{Skipped: "no origin remote"}
@@ -136,10 +136,12 @@ func Fetch(g Git) FetchResult {
 		return FetchResult{Err: fmt.Sprintf("git fetch --prune origin timed out after %s", g.Timeout), At: at}
 	}
 	if err != nil {
-		return FetchResult{Err: err.Error(), At: at}
+		return FetchResult{Err: fetchErrText(err.Error()), At: at}
 	}
 	if o.Code != 0 {
-		msg := strings.TrimSpace(o.Stderr)
+		// git's stderr is several lines and may hold anything: the header
+		// and JSON fetch.error show it as one sanitised line.
+		msg := fetchErrText(o.Stderr)
 		if msg == "" {
 			msg = "git fetch exited non-zero"
 		}

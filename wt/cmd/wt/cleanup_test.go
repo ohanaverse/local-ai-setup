@@ -242,6 +242,47 @@ func TestCleanupCmdFetchFailureExits0(t *testing.T) {
 	}
 }
 
+// TestCleanupCmdFetchFailureIsOneLine fetches from an origin that does not
+// exist, so git prints "fatal: ... does not appear to be a git repository",
+// "fatal: Could not read from remote repository.", a blank line and "Please
+// make sure ...". Why: that text went raw into the --plain header, splitting
+// the fetch line over several lines (some at column 0), and into a
+// multi-line JSON fetch.error; both must be one line.
+func TestCleanupCmdFetchFailureIsOneLine(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	cgit(t, dir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "nowhere.git"))
+
+	stdout, _, err := runCleanup(t, a, dir, "--json")
+	if err != nil {
+		t.Fatalf("err = %v, want exit 0", err)
+	}
+	var env cleanup.Envelope
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Fetch == nil || env.Fetch.Error == "" || strings.ContainsAny(env.Fetch.Error, "\n\r\t") {
+		t.Errorf("fetch.error is not one line: %+v", env.Fetch)
+	}
+	plain, _, err := runCleanup(t, a, dir, "--plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fetchLine string
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.HasPrefix(line, "fetch:") {
+			fetchLine = line
+		}
+		if strings.HasPrefix(line, "Please make sure") || strings.HasPrefix(line, "fatal:") {
+			t.Errorf("git's text broke onto its own line %q:\n%s", line, plain)
+		}
+	}
+	if !strings.Contains(fetchLine, "FAILED (fatal:") || !strings.HasSuffix(fetchLine, "merges since the last fetch may be missed") {
+		t.Errorf("fetch line is not whole on one line: %q", fetchLine)
+	}
+}
+
 // TestCleanupCmdGhFailureKeepsRowsOneLine makes every gh call fail with an
 // unauthenticated gh's multi-line message, in a repository whose origin
 // names a GitHub repo (so gh is asked), and prints --plain and --json. Why:

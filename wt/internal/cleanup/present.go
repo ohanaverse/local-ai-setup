@@ -2,6 +2,7 @@ package cleanup
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -287,10 +288,12 @@ const (
 	ghCauseMax    = 100 // runes of one cause on the gh line
 )
 
-// ghCauseText is why gh answered nothing: the distinct one-line details of
-// the rows' PR-lookup reasons, first-seen order, at most ghCausesShown of
-// them joined with "; " and the rest counted as "(+N more)". "" when no row
-// carries one.
+// ghCauseText is why gh answered nothing: the distinct details of the rows'
+// PR-lookup reasons, each sanitised again to one printable line (the line
+// reaches the terminal), first-seen order, at most ghCausesShown of them
+// joined with " | " (a cause may hold "; " itself) and the rest counted as
+// "(+N more)". The synthetic noPRLookupDetail is left out beside a real
+// cause. "" when no row carries one.
 func ghCauseText(r Report) string {
 	var causes []string
 	seen := map[string]bool{}
@@ -299,22 +302,22 @@ func ghCauseText(r Report) string {
 			if re.Code != ReasonPRUnknown && re.Code != ReasonCannotVerify {
 				continue
 			}
-			c := strings.TrimSpace(re.Detail)
+			c := capRunes(flat(re.Detail), ghCauseMax)
 			if c == "" || seen[c] {
 				continue
 			}
 			seen[c] = true
-			if rs := []rune(c); len(rs) > ghCauseMax {
-				c = string(rs[:ghCauseMax-1]) + "…"
-			}
 			causes = append(causes, c)
 		}
 	}
+	if len(causes) > 1 {
+		causes = slices.DeleteFunc(causes, func(c string) bool { return c == noPRLookupDetail })
+	}
 	if len(causes) > ghCausesShown {
 		more := fmt.Sprintf("(+%d more)", len(causes)-ghCausesShown)
-		return strings.Join(causes[:ghCausesShown], "; ") + " " + more
+		return strings.Join(causes[:ghCausesShown], " | ") + " " + more
 	}
-	return strings.Join(causes, "; ")
+	return strings.Join(causes, " | ")
 }
 
 // HeaderLines are the lines above the groups: the repository, the base (and
@@ -340,7 +343,7 @@ func HeaderLines(r Report, now time.Time) []string {
 	case r.Fetch.OK:
 		lines = append(lines, "fetch: ok, "+agoText(r.Fetch.At, now))
 	default:
-		lines = append(lines, "fetch: FAILED ("+r.Fetch.Err+"); the base may be stale, merges since the last fetch may be missed")
+		lines = append(lines, "fetch: FAILED ("+fetchErrText(r.Fetch.Err)+"); the base may be stale, merges since the last fetch may be missed")
 	}
 
 	switch r.GH {
