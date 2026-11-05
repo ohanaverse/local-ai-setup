@@ -635,7 +635,7 @@ wt cleanup --min-age 30m       # how old a branch at or behind main must be to c
 Every row lands in one of four groups, each row saying why:
 
 - **PROVEN MERGED**: its content is in `origin/<default>` (same commit, ancestor, matching trees, a merge that adds nothing, or a merged PR at that tip) and nothing else holds it. Only these start ticked.
-- **LOOKS MERGED, LESS SURE**: a hint without a proof (patch-equivalent commits only, a PR state `gh` could not answer), or a proof plus a soft issue such as ignored files that would be lost (`.env`, `.venv`) or a branch younger than `--min-age`.
+- **LOOKS MERGED, LESS SURE**: a hint without a proof (patch-equivalent commits only, a PR state `gh` could not answer), or a proof plus a soft issue such as ignored files that would be lost (`.env`, `.venv`), a branch younger than `--min-age`, or a never-pushed branch whose commits undo each other (it matches the base only because it changes nothing overall, and its commits exist nowhere else).
 - **HAS WORK THAT EXISTS NOWHERE ELSE**: unpushed commits, uncommitted or untracked files, detached commits, or an open PR.
 - **IN USE / LOCKED**: cannot be removed: the primary checkout, the directory you are in, a locked worktree, one that contains another worktree, a rebase or merge in progress, or a registered model artifact under it.
 
