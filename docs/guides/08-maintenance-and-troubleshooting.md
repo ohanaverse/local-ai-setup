@@ -46,6 +46,7 @@ Reading it fast:
 - Any line that differs → §1 for restart mechanics, §3 for logs.
 - Looking for a `modelman` command? §6 has the `wt` or `llmbench` command for each.
 - Cleaning up after modelman? §7 lists the files it left and what to check first.
+- Merged branches and worktrees piling up? §9 (`wt cleanup`) shows which can go and why.
 
 ## Steps
 
@@ -619,6 +620,28 @@ wt smoke                                     # prove a changed profile's models 
 ```
 
 Each write keeps a `slot-profiles.toml.bak-<stamp>` backup next to the file and is validated before it replaces it; `wt profile list` shows the result. Candidate scores are only as current as `tiers.toml`: refresh with `uv run --directory modeltiers modeltiers run` ([12-model-tiers](12-model-tiers.md)). Full reference: [wt/docs/wt-agents/slot-profiles.md](../../wt/docs/wt-agents/slot-profiles.md#managing-the-file).
+
+### 9. Cleaning up worktrees and branches
+
+After a few PRs merge, run `wt cleanup` from anywhere inside the repository to see which worktrees, local branches and `origin` branches can go, and why:
+
+```bash
+wt cleanup                     # tick list on a terminal; text through a pipe or with --plain
+wt cleanup --no-fetch          # skip the `git fetch --prune` it runs first
+wt cleanup --json              # one JSON document (docs/contracts/cleanup-list.schema.json)
+wt cleanup --min-age 30m       # how old a branch at or behind main must be to count as merged (default 10m)
+```
+
+Every row lands in one of four groups, each row saying why:
+
+- **PROVEN MERGED**: its content is in `origin/<default>` (same commit, ancestor, matching trees, a merge that adds nothing, or a merged PR at that tip) and nothing else holds it. Only these start ticked.
+- **LOOKS MERGED, LESS SURE**: a hint without a proof (patch-equivalent commits only, a PR state `gh` could not answer), or a proof plus a soft issue such as ignored files that would be lost (`.env`, `.venv`) or a branch younger than `--min-age`.
+- **HAS WORK THAT EXISTS NOWHERE ELSE**: unpushed commits, uncommitted or untracked files, detached commits, or an open PR.
+- **IN USE / LOCKED**: cannot be removed: the primary checkout, the directory you are in, a locked worktree, one that contains another worktree, a rebase or merge in progress, or a registered model artifact under it.
+
+A row wt could not judge (a git error, no `gh` where a proof needs it) shows the cause and is never proven. An old branch whose reflog expired reads as new for 10 minutes after anything rewrites `packed-refs` (a clone, `git gc`, a fetch that prunes a packed ref); re-run later or with `--no-fetch`.
+
+This release only lists: nothing is removed, and enter in the list prints what would go. Until a later release adds removal, delete with the `repo-cleanup` skill, using `wt cleanup` to check its answers.
 
 ## Verification
 

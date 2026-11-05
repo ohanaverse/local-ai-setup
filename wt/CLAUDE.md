@@ -272,6 +272,28 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it when typed as the bare name or a remote-tracking form like `origin/<default>` or `<remote>/HEAD` (one `refuseDefaultBranch` guard; matched only while that ref lives under `refs/remotes/` and no local branch has the same name), and `-W origin/feature` resolves like the picker (a local `feature` tracking it). The picker skips bare default-branch rows.
 
+## Cleanup classifier (`wt cleanup`)
+
+`internal/cleanup` classifies every worktree, local branch and `origin` branch into proven / less_sure / unique_work / in_use from one read-only snapshot; `cmd/wt/cleanup.go` prints it (`--json`, `--plain`) or shows the tick list (`internal/tui/cleanup_list.go`). Design: [../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md](../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md); operator pointer: guide 08 §9.
+
+- **Fail closed.** A git error, an unresolved default branch, an unknown PR state or an unavailable gate is Unknown, never proven. `LookupUnknown` is the zero value of `Lookup`, so a missing map entry reads Unknown.
+- **No deletion code in `internal/cleanup` or `cmd/wt/cleanup*.go`**: `TestCleanupCmdContainsNoDeletion` scans both for a banlist.
+- **The base is `origin/<default>`**; the local default is only a fallback, and then every verdict is capped below proven (`capFallback`).
+- **Weak signals are not proofs**: `git cherry` and patch-id equivalence (`WeakSignals`) show as less_sure, never proven (they pass a squash that was later reverted).
+- **Refs passed to `Prove`/`WeakSignals` are fully qualified** (`refs/heads/<b>`, `refs/remotes/<r>/<b>`) or a 40-hex id, so a tag never shadows a branch.
+- **Min-age (`DefaultMinAge`, 10m) gates `same-commit` and `ancestor` evidence**: wt creates branches from a local main behind `origin/main`, so a new branch reads as ancestor-merged. An old branch whose reflog expired takes its age from `packed-refs`' mtime, so it reads fresh for 10 minutes after any packed-refs rewrite (clone, gc, a fetch that prunes a packed ref); accepted, it heals.
+- **Evidence strings, reason and blocker codes are the JSON contract**: [../docs/contracts/cleanup-list.sample.json](../docs/contracts/cleanup-list.sample.json) + `cleanup-list.schema.json`, held by `cmd/wt/cleanup_contract_test.go`; change them only with the fixture.
+
+**Before `wt cleanup` deletes anything** (PR B carries, settle first):
+
+- a floor for `--min-age` (today any positive value, 1ns, turns the fresh-branch rule off), or a header line when it is lowered;
+- a header note when the registry failed to load (protected `local_path` artifacts are then not protected);
+- `config.ExpandHome` for protected paths (today only `~/` is expanded);
+- extend the banlist test (refspec push `:topic`, `gh api -X DELETE`) as removal code arrives;
+- a ticked less_sure or unique_work row goes through a confirmation that states what would be lost, with `-D` behind its own confirmation;
+- a `remote` row is tickable only when proven;
+- the stacked-PR `base_of_open_pr` check is blind under a failed or skipped fetch.
+
 ## Verification commands
 
 Run the Go test block above before any commit, then exercise the installed binary:
