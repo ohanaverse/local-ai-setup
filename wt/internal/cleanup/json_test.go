@@ -349,3 +349,51 @@ func TestEncodeKeepsEveryNestedPath(t *testing.T) {
 		t.Errorf("JSON has %d nested blockers, want 30", n)
 	}
 }
+
+// TestCleanupJSONUnchangedByNewRowFields encodes rows with Ref, Tip, Head,
+// Losses and BranchProven set and compares the document with the same rows
+// without them, then checks every row key is one of PR A's. Why: those fields
+// serve removal only; the cleanup JSON is a pinned contract
+// (docs/contracts/cleanup-list.sample.json), and a new or changed key would
+// break every consumer reading it.
+func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
+	tip := strings.Repeat("c", 40)
+	bare := []Row{
+		{Kind: KindWorktree, Name: "topic", Path: "/w/topic", Branch: "topic", Status: StatusUniqueWork,
+			Evidence: EvMergeAddsNothing, Reasons: []Reason{{ReasonDirty, "uncommitted or untracked files"}}},
+		{Kind: KindBranch, Name: "solo", Branch: "solo", Status: StatusUniqueWork, Reasons: []Reason{{ReasonUnpushed, "3 commits on no remote-tracking ref"}}},
+	}
+	full := slices.Clone(bare)
+	full[0].Ref, full[0].Tip, full[0].Head, full[0].BranchProven = "refs/heads/topic", tip, tip, true
+	full[0].Losses = Losses{Dirty: true, IgnoredEntries: 2, IgnoredBytes: 10, DetachedUnique: true}
+	full[1].Ref, full[1].Tip = "refs/heads/solo", tip
+	full[1].Losses = Losses{Unpushed: 3}
+	rep := func(rows []Row) Report {
+		return Report{Repo: "/r", GH: GHOK, Base: Base{Default: "main", Ref: "origin/main"}, Rows: rows}
+	}
+	want, err := Encode(rep(bare))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Encode(rep(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("new row fields changed the JSON:\n got %s\nwant %s", got, want)
+	}
+	var doc struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	prA := []string{"kind", "name", "path", "branch", "remote", "status", "evidence", "unknown", "age_days", "reasons", "blockers", "pr"}
+	for _, row := range doc.Rows {
+		for k := range row {
+			if !slices.Contains(prA, k) {
+				t.Errorf("row carries key %q, not in PR A's row shape", k)
+			}
+		}
+	}
+}

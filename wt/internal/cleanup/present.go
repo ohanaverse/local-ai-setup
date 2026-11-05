@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // This file is the words of `wt cleanup`: the group order and headings, the
@@ -257,6 +259,53 @@ func NestedPaths(row Row) []string {
 		}
 	}
 	return out
+}
+
+// LossLines is what removing r would lose, one plain sentence each, in a
+// fixed order: uncommitted changes, ignored files, commits only here, a
+// detached HEAD's commits. Unreadable gates or an uncounted number of commits
+// are said as possible losses, never left out. A row that loses nothing has
+// no lines. Every word is this package's own (numbers and sizes only), so no
+// tool text reaches the confirmation through it.
+func LossLines(r Row) []string {
+	var out []string
+	l := r.Losses
+	if l.Dirty {
+		out = append(out, "uncommitted changes will be lost")
+	}
+	for _, re := range r.Reasons {
+		if re.Code == ReasonGatesUnavailable {
+			out = append(out, "could not read the worktree's state; uncommitted or ignored files may be lost")
+			break
+		}
+	}
+	if n := l.IgnoredEntries; n > 0 {
+		s := fmt.Sprintf("%d ignored %s", n, plural(n, "entry", "entries"))
+		if l.IgnoredBytes > 0 {
+			s += ", " + localmodels.FormatSize(l.IgnoredBytes)
+		}
+		out = append(out, s+" will be deleted")
+	}
+	switch n := l.Unpushed; {
+	case n == 1:
+		out = append(out, "1 commit exists only on this machine")
+	case n > 1:
+		out = append(out, fmt.Sprintf("%d commits exist only on this machine", n))
+	case n < 0:
+		out = append(out, "could not count the commits that exist only on this machine; some may be lost")
+	}
+	if l.DetachedUnique {
+		out = append(out, "the detached HEAD's commits are on no branch and will be lost")
+	}
+	return out
+}
+
+// plural is one when n is 1, else many.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // AgeText is a row's age as "today" or "3d ago"; "" when it is not known.
