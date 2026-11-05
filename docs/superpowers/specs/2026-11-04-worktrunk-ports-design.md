@@ -49,6 +49,16 @@ PATH**).
   reuse loop matches by branch name, so old basename-layout worktrees
   (`.worktrees/x` holding `feature/x`) resolve with no migration
   (`TestEnsureForNameReusesSlashedBranchWorktree` pins this).
+- **PRs 2–3 are SUPERSEDED (2026-11-04)** by
+  `2026-11-04-wt-cleanup-design.md` (`wt cleanup`: view-only list → local
+  removal → `origin` removal → move-to-worktree). Do not build them from this
+  file. Their decided values (dirty gate, force scopes, `-D` matrix,
+  trash-rename drain, lock immunity, registered-artifact refusal, CAS delete,
+  `branch_outcome`, min-age) carry into that design, and the sections below
+  stay as the source for those details. The "six checks, all passing" wording
+  is wrong: worktrunk returns on the *first* rung that holds
+  (`src/git/mod.rs:275`), and the new design does not count patch-id as proof.
+  PRs 4–6 are unchanged.
 - **PRs 2–5: not started.** Everything below about worktrunk's behavior comes
   from docs and source reading — neither tool has been executed (the research's
   Gaps section says so explicitly). Kernel edge behavior (error paths, exact
