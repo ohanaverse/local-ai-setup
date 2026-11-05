@@ -20,6 +20,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/spend"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
@@ -45,6 +46,9 @@ func TestMain(m *testing.M) {
 	// test names a file of its own (tiers.IsolateForTest).
 	tiers.IsolateForTest()
 	probeInventory = localmodels.OnDiskSnapshotForTest
+	// wt remove's live-process finder runs lsof over the whole machine: no
+	// test scans it. Tests that need processes stub a finder of their own.
+	removeProcs = func() removal.ProcFinder { return nil }
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests
 	// that need to exercise the not-installed path stub this explicitly.

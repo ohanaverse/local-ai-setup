@@ -61,11 +61,8 @@ func cleanupCmd(a *app) *cobra.Command {
 		// main prints the error line; cobra's copy would repeat it.
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("min-age") && minAge <= 0 {
-				return fmt.Errorf("--min-age must be a positive duration such as 10m, got %s (a zero threshold would let a brand-new branch look merged)", minAge)
-			}
-			if cmd.Flags().Changed("min-age") && minAge < cleanup.MinAgeFloor {
-				return fmt.Errorf("--min-age must be at least 1m, got %s (a shorter threshold lets a brand-new branch look merged)", minAge)
+			if err := checkMinAge(cmd, minAge); err != nil {
+				return err
 			}
 			return executeCleanup(cmd, a, cleanupFlags{json: asJSON, noFetch: noFetch, plain: plain, minAge: minAge})
 		},
@@ -75,6 +72,35 @@ func cleanupCmd(a *app) *cobra.Command {
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
+}
+
+// checkMinAge is the --min-age usage check `wt cleanup` and `wt remove`
+// share: a value given must be at least cleanup.MinAgeFloor.
+func checkMinAge(cmd *cobra.Command, minAge time.Duration) error {
+	if !cmd.Flags().Changed("min-age") {
+		return nil
+	}
+	if minAge <= 0 {
+		return fmt.Errorf("--min-age must be a positive duration such as 10m, got %s (a zero threshold would let a brand-new branch look merged)", minAge)
+	}
+	if minAge < cleanup.MinAgeFloor {
+		return fmt.Errorf("--min-age must be at least 1m, got %s (a shorter threshold lets a brand-new branch look merged)", minAge)
+	}
+	return nil
+}
+
+// cleanupInputs are the GatherInputs `wt cleanup` and `wt remove` gather
+// with from cwd: this process's session claim (so its own root launch does
+// not look like another's), the registered artifacts and four gh calls at a
+// time.
+func cleanupInputs(cwd string, fetch bool, protected []string) cleanup.GatherInputs {
+	claim, err := sessionclaim.Self(cwd, "", "wt-cleanup")
+	if err != nil {
+		// Never joined, only used to tell this process from the others: a
+		// claim that could not be timed at worst makes the root look held.
+		claim = sessionclaim.Claim{PID: os.Getpid()}
+	}
+	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4}
 }
 
 type cleanupFlags struct {
@@ -88,22 +114,10 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	if err != nil {
 		return cleanupFail(out, f.json, "", err)
 	}
-	claim, err := sessionclaim.Self(cwd, "", "wt-cleanup")
-	if err != nil {
-		// Never joined, only used to tell this process from the others: a
-		// claim that could not be timed at worst makes the root look held.
-		claim = sessionclaim.Claim{PID: os.Getpid()}
-	}
 	// Listing only reads, so a registry that cannot be read does not stop
 	// it: the header says protection is off (and a removal refuses).
 	protected, protErr := protectedPaths(a)
-	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanup.GatherInputs{
-		CWD:            cwd,
-		Fetch:          !f.noFetch,
-		ProtectedPaths: protected,
-		Claim:          claim,
-		Parallel:       4,
-	})
+	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupInputs(cwd, !f.noFetch, protected))
 	if err != nil {
 		repo := snap.Repo
 		if repo == "" {
