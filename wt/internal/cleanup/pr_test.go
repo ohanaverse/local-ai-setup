@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -19,8 +20,9 @@ func stubGh(t *testing.T, fn func(dir, branch string) ([]byte, error)) {
 func prJSON(number int, state, repo string) map[string]any {
 	return map[string]any{
 		"number": number, "state": state, "headRefOid": "abc", "baseRefName": "main",
-		"mergeCommit":    map[string]any{"oid": "def"},
-		"headRepository": map[string]any{"name": "r", "nameWithOwner": repo},
+		"mergeCommit":       map[string]any{"oid": "def"},
+		"isCrossRepository": strings.ToLower(repo) != "o/r",
+		"headRepository":    map[string]any{"name": "r", "nameWithOwner": repo},
 	}
 }
 
@@ -148,6 +150,96 @@ func TestPRLookupManyBranchesBounded(t *testing.T) {
 // TestRealGhPRListRefusesInTestBinary checks the real call never reaches
 // GitHub from a test binary.
 func TestRealGhPRListRefusesInTestBinary(t *testing.T) {
+	realGhPRListRefuses(t)
+}
+
+// TestPRResultZeroIsUnknown checks a zero PRResult (a map miss) is UNKNOWN,
+// not Known or None, so it can never lift an open-PR veto.
+func TestPRResultZeroIsUnknown(t *testing.T) {
+	if (PRResult{}).Lookup != LookupUnknown {
+		t.Fatalf("zero Lookup = %v", PRResult{}.Lookup)
+	}
+}
+
+// TestPRLookupRenamedRepoSameRepoPRIsKnown checks a same-repository PR
+// (isCrossRepository false) whose nameWithOwner differs from ownRepo, as after
+// a rename or transfer, is kept: dropping it would lose an open-PR veto.
+func TestPRLookupRenamedRepoSameRepoPRIsKnown(t *testing.T) {
+	stubGh(t, func(string, string) ([]byte, error) {
+		row := prJSON(5, "OPEN", "new/name")
+		row["isCrossRepository"] = false
+		return mustJSON(t, []any{row}), nil
+	})
+	r := LookupPRs("", []string{"topic"}, "old/name", 1)["topic"]
+	if r.Lookup != LookupKnown || len(r.PRs) != 1 {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+// TestPRLookupCrossRepoOtherRepoDropped checks a genuinely cross-repository
+// PR from another repo is still dropped.
+func TestPRLookupCrossRepoOtherRepoDropped(t *testing.T) {
+	stubGh(t, func(string, string) ([]byte, error) {
+		row := prJSON(5, "OPEN", "someone/r")
+		row["isCrossRepository"] = true
+		return mustJSON(t, []any{row}), nil
+	})
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupNone {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+// TestPRLookupNullHeadRepository checks a null headRepository keeps a
+// same-repository PR and drops a cross-repository (deleted fork) one.
+func TestPRLookupNullHeadRepository(t *testing.T) {
+	stubGh(t, func(string, string) ([]byte, error) {
+		return []byte(`[{"number":1,"state":"OPEN","headRepository":null,"isCrossRepository":false}]`), nil
+	})
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupKnown {
+		t.Fatalf("same-repo got %+v", r)
+	}
+	stubGh(t, func(string, string) ([]byte, error) {
+		return []byte(`[{"number":1,"state":"OPEN","headRepository":null,"isCrossRepository":true}]`), nil
+	})
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupNone {
+		t.Fatalf("deleted fork got %+v", r)
+	}
+}
+
+// TestPRLookupEmptyOwnRepoIsUnknown checks an empty ownRepo makes every
+// branch UNKNOWN with a message and never calls gh.
+func TestPRLookupEmptyOwnRepoIsUnknown(t *testing.T) {
+	var calls atomic.Int32
+	stubGh(t, func(string, string) ([]byte, error) { calls.Add(1); return []byte("[]"), nil })
+	got := LookupPRs("", []string{"a", "b"}, "  ", 2)
+	if calls.Load() != 0 || len(got) != 2 {
+		t.Fatalf("calls=%d got=%v", calls.Load(), got)
+	}
+	for b, r := range got {
+		if r.Lookup != LookupUnknown || r.Err == "" {
+			t.Fatalf("%s: %+v", b, r)
+		}
+	}
+}
+
+// TestPRLookupSchemaDriftIsUnknown checks an unrecognised state, a missing
+// number, or output of `null` is UNKNOWN, so a gh schema change cannot
+// quietly drop the veto.
+func TestPRLookupSchemaDriftIsUnknown(t *testing.T) {
+	for name, body := range map[string]string{
+		"state":  `[{"number":1,"state":"WEIRD","isCrossRepository":false}]`,
+		"number": `[{"number":0,"state":"OPEN","isCrossRepository":false}]`,
+		"null":   `null`,
+	} {
+		stubGh(t, func(string, string) ([]byte, error) { return []byte(body), nil })
+		r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+		if r.Lookup != LookupUnknown || r.Err == "" {
+			t.Fatalf("%s: %+v", name, r)
+		}
+	}
+}
+
+func realGhPRListRefuses(t *testing.T) {
 	if _, err := realGhPRList("", "topic"); !errors.Is(err, errGhUnderTest) {
 		t.Fatalf("err = %v", err)
 	}

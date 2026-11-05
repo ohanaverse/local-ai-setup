@@ -35,13 +35,14 @@ type PRInfo struct {
 type Lookup int
 
 const (
+	// LookupUnknown means the answer is unusable: failure, timeout, bad
+	// output or a possibly truncated page. Never treat it as none. It is the
+	// zero value, so a zero PRResult (a map miss) is never read as an answer.
+	LookupUnknown Lookup = iota
 	// LookupKnown means at least one own-repo PR exists.
-	LookupKnown Lookup = iota
+	LookupKnown
 	// LookupNone means gh answered completely and there is no own-repo PR.
 	LookupNone
-	// LookupUnknown means the answer is unusable: failure, timeout, bad
-	// output or a possibly truncated page. Never treat it as none.
-	LookupUnknown
 )
 
 // PRResult is the PR facts for one branch.
@@ -129,19 +130,26 @@ func lookupOne(dir, branch, ownRepo string) PRResult {
 	if err := json.Unmarshal(out, &rows); err != nil {
 		return PRResult{Lookup: LookupUnknown, Err: "gh pr list: unexpected output: " + err.Error()}
 	}
+	if rows == nil {
+		return PRResult{Lookup: LookupUnknown, Err: "gh pr list: output was null, not a list"}
+	}
 	if len(rows) >= prLimit {
 		return PRResult{Lookup: LookupUnknown, Err: fmt.Sprintf("gh pr list returned %d PRs, the page limit; may be truncated", len(rows))}
 	}
 	own := strings.ToLower(ownRepo)
 	var prs []PRInfo
 	for _, r := range rows {
-		repo := r.headRepo()
-		// A same-repository PR gh gave no head repository for is ours; a
-		// cross-repository one with none is a deleted fork's, not ours.
-		if repo != own && !(repo == "" && !r.IsCrossRepository) {
+		state := strings.ToUpper(r.State)
+		if r.Number <= 0 || (state != "OPEN" && state != "MERGED" && state != "CLOSED") {
+			return PRResult{Lookup: LookupUnknown, Err: fmt.Sprintf("gh pr list: unrecognised PR (number %d, state %q)", r.Number, r.State)}
+		}
+		// isCrossRepository false means the head is the repository gh
+		// queried, whatever name it now has (rename, transfer): ours. A
+		// cross-repository PR is ours only if its head repo is ownRepo.
+		if r.IsCrossRepository && r.headRepo() != own {
 			continue
 		}
-		p := PRInfo{Number: r.Number, State: strings.ToUpper(r.State), HeadRefOid: r.HeadRefOid, BaseRef: r.BaseRefName}
+		p := PRInfo{Number: r.Number, State: state, HeadRefOid: r.HeadRefOid, BaseRef: r.BaseRefName}
 		if r.MergeCommit != nil {
 			p.MergeCommit = r.MergeCommit.Oid
 		}
@@ -162,6 +170,12 @@ func LookupPRs(dir string, branches []string, ownRepo string, parallel int) map[
 		parallel = 1
 	}
 	res := make(map[string]PRResult, len(branches))
+	if strings.TrimSpace(ownRepo) == "" {
+		for _, b := range branches {
+			res[b] = PRResult{Lookup: LookupUnknown, Err: "own repository unknown; cannot filter fork PRs"}
+		}
+		return res
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallel)
