@@ -94,18 +94,10 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		// claim that could not be timed at worst makes the root look held.
 		claim = sessionclaim.Claim{PID: os.Getpid()}
 	}
-	repo := cleanup.Git{Dir: cwd}
-	// The primary worktree, which a relative local_path is resolved against.
-	// A listing that fails leaves it unknown (a relative path then fails
-	// protectedPaths); Gather lists again and reports that failure.
-	var repoRoot string
-	if facts, err := cleanup.ListWorktrees(repo, cwd); err == nil && len(facts) > 0 {
-		repoRoot = facts[0].Path
-	}
 	// Listing only reads, so a registry that cannot be read does not stop
 	// it: the header says protection is off (and a removal refuses).
-	protected, protErr := protectedPaths(a, repoRoot)
-	snap, err := cleanup.Gather(repo, cleanup.GatherInputs{
+	protected, protErr := protectedPaths(a)
+	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanup.GatherInputs{
 		CWD:            cwd,
 		Fetch:          !f.noFetch,
 		ProtectedPaths: protected,
@@ -120,8 +112,11 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		return cleanupFail(out, f.json, repo, err)
 	}
 	report := cleanupClassify(snap, cleanup.Options{Now: time.Now(), MinAge: f.minAge})
-	if protErr != nil {
+	switch {
+	case protErr != nil:
 		report.Notes = append(report.Notes, cleanupRegistryNote(protErr))
+	case noRegistry(a):
+		report.Notes = append(report.Notes, "registry: none at "+cleanup.OneLine(config.RegistryPath())+"; no model artifacts are registered")
 	}
 
 	switch {
@@ -160,28 +155,47 @@ var errRegistryUnavailable = errors.New("the registry failed to load")
 
 // cleanupRegistryNote is the header line `wt cleanup` adds when protectedPaths
 // failed: the list still shows, but nothing is marked protected_artifact and
-// a removal must refuse.
+// a removal must refuse. The cause is the load error itself, without
+// errRegistryUnavailable's own words in front of it.
 func cleanupRegistryNote(err error) string {
-	return "registry: could not be read (" + cleanup.OneLine(err.Error()) + "); artifact protection is OFF and removal is refused"
+	cause := strings.TrimPrefix(err.Error(), errRegistryUnavailable.Error()+": ")
+	return "registry: could not be read: " + cleanup.OneLine(cause) + "; artifact protection is OFF and removal is refused"
+}
+
+// noRegistry reports whether the registry did not load only because there is
+// no file at the default path: nothing is registered, so nothing needs
+// protecting. A redirected path (WT_REGISTRY, MODELMAN_REGISTRY,
+// XDG_CONFIG_HOME) that is missing is not this case: it may be a typo or an
+// unmounted volume hiding a real registry.
+func noRegistry(a *app) bool {
+	return a != nil && errors.Is(a.loadErr, config.ErrRegistryMissing) && !config.RegistryRedirected()
 }
 
 // protectedPaths are the registry's local_path artifacts (fetch and draft of
 // every model) as absolute, cleaned paths, sorted and each once: wt never
-// deletes them, so a worktree holding one is in use. "~" and "~/..." are
-// expanded (config.ExpandHome); a relative path is resolved against repoRoot,
-// the primary worktree, never the working directory, which differs between
-// a linked worktree and a subdirectory. It fails closed: a registry that did
-// not load is errRegistryUnavailable, and a local_path the loader read as
-// absent because it was malformed (config.ArtifactFaults: not a string, or
-// its fetch/draft not a table), or one that cannot be resolved (no home
-// directory, a relative path with no repoRoot), is an error naming the
-// model. A path wt cannot enumerate is a path it cannot protect.
-func protectedPaths(a *app, repoRoot string) ([]string, error) {
-	if a == nil || a.cfg == nil {
+// deletes them, so a worktree holding one, or inside one, is in use. "~" and
+// "~/..." are expanded (config.ExpandHome). No file at the default registry
+// path is nothing to protect (nil, nil). Everything else fails closed: a
+// registry that did not load is errRegistryUnavailable, and a local_path the
+// loader read as absent because it was malformed (config.ArtifactFaults: not
+// a string, or its fetch/draft not a table), a "~" path that cannot be
+// expanded, or a relative path is an error naming the model. A relative
+// local_path has no agreed base (wt model add writes absolute paths, llmbench
+// resolves from its own working directory, modeladmin from wt's), so wt
+// cannot know what it names: a path wt cannot enumerate is a path it cannot
+// protect.
+func protectedPaths(a *app) ([]string, error) {
+	if a == nil {
 		return nil, errRegistryUnavailable
 	}
+	if noRegistry(a) {
+		return nil, nil
+	}
 	if a.loadErr != nil {
-		return nil, fmt.Errorf("%w: %v", errRegistryUnavailable, a.loadErr)
+		return nil, fmt.Errorf("%w: %w", errRegistryUnavailable, a.loadErr)
+	}
+	if a.cfg == nil {
+		return nil, errRegistryUnavailable
 	}
 	var out []string
 	for _, m := range a.cfg.Models {
@@ -197,9 +211,9 @@ func protectedPaths(a *app, repoRoot string) ([]string, error) {
 			case side.art.LocalPath == "":
 				continue
 			}
-			p, err := resolveLocalPath(side.art.LocalPath, repoRoot)
+			p, err := resolveLocalPath(side.art.LocalPath)
 			if err != nil {
-				return nil, fmt.Errorf("model %s: %s.local_path %q: %w", m.ID, side.key, side.art.LocalPath, err)
+				return nil, fmt.Errorf("model %s: %s.local_path %q %w", m.ID, side.key, side.art.LocalPath, err)
 			}
 			out = append(out, p)
 		}
@@ -208,23 +222,21 @@ func protectedPaths(a *app, repoRoot string) ([]string, error) {
 	return slices.Compact(out), nil
 }
 
-// resolveLocalPath is one local_path as an absolute, cleaned path: home
-// expanded, a relative path joined to repoRoot.
-func resolveLocalPath(lp, repoRoot string) (string, error) {
+// resolveLocalPath is one local_path as an absolute, cleaned path, home
+// expanded. Its error completes "fetch.local_path "<value>" ...".
+func resolveLocalPath(lp string) (string, error) {
 	p, err := config.ExpandHome(lp)
 	if err != nil {
-		return "", fmt.Errorf("cannot find the home directory: %w", err)
+		return "", fmt.Errorf("cannot be expanded: no home directory: %w", err)
 	}
 	if strings.HasPrefix(p, "~") {
 		// ExpandHome left it: an empty $HOME, or a "~user" form wt does not
-		// expand. Joined to repoRoot it would name the wrong directory.
-		return "", errors.New("cannot expand ~ (no home directory, or a ~user form)")
+		// expand. This also refuses a literal relative directory named
+		// "~foo": it is relative either way, and refusing fails closed.
+		return "", errors.New("cannot be expanded (no home directory, or a ~user form); write it as an absolute path")
 	}
 	if !filepath.IsAbs(p) {
-		if repoRoot == "" || !filepath.IsAbs(repoRoot) {
-			return "", errors.New("relative, and the repository root is unknown")
-		}
-		p = filepath.Join(repoRoot, p)
+		return "", errors.New("is relative; write it as an absolute path")
 	}
 	return filepath.Clean(p), nil
 }

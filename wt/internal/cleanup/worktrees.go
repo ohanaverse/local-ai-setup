@@ -194,9 +194,13 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	self := resolve(w.Path)
 	// Every check that needs no git runs before the first git call, so its
 	// blocker is in the partial Gates whatever fails later.
+	// Both directions: an artifact inside the worktree, or the worktree
+	// inside (or equal to) an artifact directory; removing it would delete
+	// part of the artifact either way. within is separator-safe (/a/b is not
+	// under /a/bc) and both sides are resolved through symlinks.
 	for _, p := range in.ProtectedPaths {
-		if within(resolve(p), self) {
-			block(BlockProtectedArtifact, p)
+		if rp := resolve(p); within(rp, self) || within(self, rp) {
+			block(BlockProtectedArtifact, flat(p))
 		}
 	}
 	all, err := listWorktrees(g)

@@ -283,10 +283,11 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 - **Refs passed to `Prove`/`WeakSignals` are fully qualified** (`refs/heads/<b>`, `refs/remotes/<r>/<b>`) or a 40-hex id, so a tag never shadows a branch.
 - **Min-age (`DefaultMinAge`, 10m) gates `same-commit` and `ancestor` evidence**: wt creates branches from a local main behind `origin/main`, so a new branch reads as ancestor-merged. An old branch whose reflog expired takes its age from `packed-refs`' mtime, so it reads fresh for 10 minutes after any packed-refs rewrite (clone, gc, a fetch that prunes a packed ref); accepted, it heals.
 - **Evidence strings, reason and blocker codes are the JSON contract**: [../docs/contracts/cleanup-list.sample.json](../docs/contracts/cleanup-list.sample.json) + `cleanup-list.schema.json`, held by `cmd/wt/cleanup_contract_test.go`; change them only with the fixture.
+- **`--min-age` has a floor** (`cleanup.MinAgeFloor`, 1m; less is a usage error); a value below 10m is named in the header.
+- **Protected artifacts fail closed** (`protectedPaths`, `cmd/wt/cleanup.go`): a registry that did not load is `errRegistryUnavailable`; a malformed, unexpandable `~` or **relative** `local_path` is refused with an error naming the model (no tool agrees on a relative path's base). The listing still shows, with "artifact protection is OFF and removal is refused" in the header. Only a missing registry at the default (not redirected) path is "nothing to protect". The `protected_artifact` gate blocks both directions: an artifact in the worktree, or the worktree in (or equal to) an artifact.
 
 **Before `wt cleanup` deletes anything** (PR B carries, settle first):
 
-- settled: `--min-age` floor `cleanup.MinAgeFloor` (1m) with a header note below 10m; `protectedPaths` fails closed (`errRegistryUnavailable`, a malformed or unresolvable `local_path` names the model; `~` expanded, relative against the primary worktree) and the listing then says "artifact protection is OFF and removal is refused" in the header;
 - extend the banlist test (refspec push `:topic`, `gh api -X DELETE`) as removal code arrives;
 - a ticked less_sure or unique_work row goes through a confirmation that states what would be lost, with `-D` behind its own confirmation;
 - a `remote` row is tickable only when proven;

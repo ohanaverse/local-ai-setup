@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -61,7 +62,7 @@ func TestMinAgeFloorRejected(t *testing.T) {
 func TestProtectedPathsExpandsBareHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	got, err := protectedPaths(protectApp(localModel("a", "~"), localModel("b", "~/x")), t.TempDir())
+	got, err := protectedPaths(protectApp(localModel("a", "~"), localModel("b", "~/x")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,24 +71,25 @@ func TestProtectedPathsExpandsBareHome(t *testing.T) {
 	}
 }
 
-// TestProtectedPathsRelativeIsAgainstRepoRoot verifies a relative local_path
-// is resolved against the repository root passed in, not the working
-// directory (the test runs from an unrelated directory to prove it). Why:
-// `wt cleanup` run from a linked worktree or a subdirectory resolved the same
-// registry entry to a different directory, so the artifact it named could go
-// unprotected.
-func TestProtectedPathsRelativeIsAgainstRepoRoot(t *testing.T) {
-	root, elsewhere := t.TempDir(), t.TempDir()
-	t.Chdir(elsewhere)
-	got, err := protectedPaths(protectApp(localModel("a", "models/q4"), localModel("b", "./out/../draft")), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{filepath.Join(root, "draft"), filepath.Join(root, "models", "q4")}; !slices.Equal(got, want) {
-		t.Errorf("paths = %q, want %q", got, want)
-	}
-	if _, err := protectedPaths(protectApp(localModel("a", "models/q4")), ""); err == nil {
-		t.Error("relative local_path with no repository root: err = nil, want an error (cannot be protected)")
+// TestProtectedPathsRelativeFailsClosed verifies a relative local_path
+// (fetch or draft) is an error naming the model, the value and the fix
+// ("write it as an absolute path"), from any working directory. Why: no tool
+// agrees on what a relative local_path is relative to (wt model add makes it
+// absolute, llmbench resolves it from its own cwd, modeladmin from wt's), so
+// cleanup cannot know which directory to protect: it fails closed.
+func TestProtectedPathsRelativeFailsClosed(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, c := range []struct {
+		m    config.Model
+		want string
+	}{
+		{localModel("omlx/rel", "models/q4"), `model omlx/rel: fetch.local_path "models/q4" is relative; write it as an absolute path`},
+		{config.Model{ID: "mlx/d", Draft: config.ModelArtifact{LocalPath: "./draft"}}, `model mlx/d: draft.local_path "./draft" is relative; write it as an absolute path`},
+	} {
+		got, err := protectedPaths(protectApp(localModel("ok", "/x"), c.m))
+		if err == nil || err.Error() != c.want {
+			t.Errorf("err = %v (paths %q), want %q", err, got, c.want)
+		}
 	}
 }
 
@@ -106,13 +108,13 @@ func TestProtectedPathsMalformedFailsClosed(t *testing.T) {
 		{"draft.local_path not a string", config.Model{ID: "omlx/bad", Draft: config.ModelArtifact{Malformed: config.ArtifactFaults{LocalPath: true}}}},
 		{"fetch not a table", config.Model{ID: "omlx/bad", Fetch: config.ModelArtifact{Malformed: config.ArtifactFaults{NotTable: true}}}},
 	} {
-		_, err := protectedPaths(protectApp(localModel("ok", "/x"), c.m), t.TempDir())
+		_, err := protectedPaths(protectApp(localModel("ok", "/x"), c.m))
 		if err == nil || !strings.Contains(err.Error(), "omlx/bad") {
 			t.Errorf("%s: err = %v, want an error naming omlx/bad", c.name, err)
 		}
 	}
 	t.Setenv("HOME", "")
-	if _, err := protectedPaths(protectApp(localModel("omlx/home", "~/m")), t.TempDir()); err == nil || !strings.Contains(err.Error(), "omlx/home") {
+	if _, err := protectedPaths(protectApp(localModel("omlx/home", "~/m"))); err == nil || !strings.Contains(err.Error(), "omlx/home") {
 		t.Errorf("~ path with HOME unset: err = %v, want an error naming omlx/home", err)
 	}
 }
@@ -124,10 +126,10 @@ func TestProtectedPathsMalformedFailsClosed(t *testing.T) {
 func TestProtectedPathsRegistryFailedIsError(t *testing.T) {
 	a := protectApp()
 	a.loadErr = errors.New("registry.toml: parse error")
-	if _, err := protectedPaths(a, t.TempDir()); !errors.Is(err, errRegistryUnavailable) {
+	if _, err := protectedPaths(a); !errors.Is(err, errRegistryUnavailable) {
 		t.Errorf("loadErr set: err = %v, want errRegistryUnavailable", err)
 	}
-	if _, err := protectedPaths(&app{}, t.TempDir()); !errors.Is(err, errRegistryUnavailable) {
+	if _, err := protectedPaths(&app{}); !errors.Is(err, errRegistryUnavailable) {
 		t.Errorf("nil cfg: err = %v, want errRegistryUnavailable", err)
 	}
 }
@@ -142,9 +144,9 @@ func TestProtectedPathsSortedDeduped(t *testing.T) {
 	got, err := protectedPaths(protectApp(
 		localModel("a", "/z/m"),
 		localModel("b", "/a/m/"),
-		config.Model{ID: "c", Fetch: config.ModelArtifact{LocalPath: "/z/./m"}, Draft: config.ModelArtifact{LocalPath: "rel"}},
+		config.Model{ID: "c", Fetch: config.ModelArtifact{LocalPath: "/z/./m"}, Draft: config.ModelArtifact{LocalPath: filepath.Join(root, "rel") + "/"}},
 		localModel("d", filepath.Join(root, "rel")),
-	), root)
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +158,8 @@ func TestProtectedPathsSortedDeduped(t *testing.T) {
 // TestCleanupListHeaderWarnsWhenRegistryFailed verifies that with a registry
 // that failed to load `wt cleanup` still lists (exit 0) and the plain header
 // carries one line saying artifact protection is OFF and removal is refused,
-// with the load error on that same line; and that the --json document is
+// with the load error on that same line after "could not be read: " and no
+// repeated wrapper text ("failed to load"); and that the --json document is
 // byte-identical to the one a loaded registry produces. Why: listing is
 // read-only and still useful, but the user must know a protected artifact is
 // not marked; the JSON contract must not change.
@@ -189,7 +192,8 @@ func TestCleanupListHeaderWarnsWhenRegistryFailed(t *testing.T) {
 			t.Errorf("the load error broke onto its own line:\n%s", plain)
 		}
 	}
-	if !strings.HasPrefix(line, "registry: could not be read") ||
+	if !strings.HasPrefix(line, "registry: could not be read: registry.toml: line 3") ||
+		strings.Contains(line, "failed to load") ||
 		!strings.HasSuffix(line, "artifact protection is OFF and removal is refused") ||
 		!strings.Contains(line, "line 3 expected '='") {
 		t.Errorf("registry line = %q\n%s", line, plain)
@@ -200,5 +204,95 @@ func TestCleanupListHeaderWarnsWhenRegistryFailed(t *testing.T) {
 	}
 	if after != before {
 		t.Errorf("JSON changed when the registry failed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// registryApp is newApp under a scratch HOME whose default config home is
+// spelled out (XDG_CONFIG_HOME = $HOME/.config, which is not a redirect),
+// with WT_LITELLM_CONFIG named as every scratch registry needs. setup may
+// write a registry or redirect it; it gets the default registry path.
+func registryApp(t *testing.T, setup func(home, defaultReg string)) *app {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(home, "config.yaml"))
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	setup(home, filepath.Join(home, ".config", "local-ai", "registry.toml"))
+	a, err := newApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// TestProtectedPathsMissingRegistryIsNothingToProtect verifies that with no
+// registry file at the default path (not redirected) protectedPaths returns
+// an empty list and no error, and `wt cleanup` says so neutrally in its
+// header ("registry: none at <path>; ...") with no protection-OFF line.
+// Why: no registry means nothing is registered, so there is nothing to
+// protect; refusing removal there would make cleanup useless on a machine
+// that never set up models.
+func TestProtectedPathsMissingRegistryIsNothingToProtect(t *testing.T) {
+	var reg string
+	a := registryApp(t, func(_, def string) { reg = def })
+	if !errors.Is(a.loadErr, config.ErrRegistryMissing) {
+		t.Fatalf("loadErr = %v, want ErrRegistryMissing", a.loadErr)
+	}
+	got, err := protectedPaths(a)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("protectedPaths = %q, %v; want none and no error", got, err)
+	}
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	plain, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plain, "\nregistry: none at "+reg+"; no model artifacts are registered\n") {
+		t.Errorf("no neutral registry line for %s:\n%s", reg, plain)
+	}
+	if strings.Contains(plain, "protection is OFF") {
+		t.Errorf("missing registry reads as a failure:\n%s", plain)
+	}
+}
+
+// TestProtectedPathsRegistryLoadFailuresFailClosed verifies the registry
+// failures other than "no file at the default path" are errRegistryUnavailable:
+// a missing registry the environment redirected (WT_REGISTRY), invalid
+// TOML, and a symlink to nothing. Why: each may hide registered artifacts
+// (a typo in WT_REGISTRY, a dotfiles link on an unmounted volume, a hand
+// edit gone wrong), so removal must refuse rather than protect nothing.
+func TestProtectedPathsRegistryLoadFailuresFailClosed(t *testing.T) {
+	for name, setup := range map[string]func(home, def string){
+		"missing redirected": func(home, _ string) {
+			t.Setenv("WT_REGISTRY", filepath.Join(home, "elsewhere", "registry.toml"))
+		},
+		"invalid toml": func(home, _ string) {
+			p := filepath.Join(home, "bad.toml")
+			if err := os.WriteFile(p, []byte("models = [\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("WT_REGISTRY", p)
+		},
+		"dangling symlink": func(_, def string) {
+			if err := os.MkdirAll(filepath.Dir(def), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(filepath.Dir(def), "gone.toml"), def); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := registryApp(t, setup)
+			if a.loadErr == nil {
+				t.Fatal("registry loaded, want a load error")
+			}
+			if _, err := protectedPaths(a); !errors.Is(err, errRegistryUnavailable) {
+				t.Errorf("err = %v, want errRegistryUnavailable", err)
+			}
+		})
 	}
 }

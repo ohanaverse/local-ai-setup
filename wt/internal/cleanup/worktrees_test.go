@@ -412,3 +412,50 @@ func TestGatesListFailureKeepsProtectedArtifact(t *testing.T) {
 		t.Fatalf("blockers %v with error %v, want %q", codes(g), err, BlockProtectedArtifact)
 	}
 }
+
+// TestGatesProtectedArtifactBothDirections verifies the protected_artifact
+// blocker fires when a worktree sits inside a registered artifact directory
+// (or is that directory, also when named through a symlink), not only when
+// the artifact sits inside the worktree, and that a sibling sharing a name
+// prefix (wt-top, wt-topicx beside wt-topic) is no blocker. The detail names
+// the protected path on one sanitised line. Why: removing a worktree inside
+// an artifact deletes part of that artifact; a bare string-prefix test
+// would also block (or miss) siblings.
+func TestGatesProtectedArtifactBothDirections(t *testing.T) {
+	f := newFixture(t)
+	wt := f.Worktree("topic")
+	w := factFor(t, f, t.TempDir(), wt)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(filepath.Dir(wt), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, path string
+		want       bool
+	}{
+		{"worktree under the artifact", filepath.Dir(wt), true},
+		{"worktree is the artifact", wt, true},
+		{"artifact through a symlink", filepath.Join(link, "wt-topic"), true},
+		{"artifact under the worktree", filepath.Join(wt, "a\nb"), true},
+		{"sibling, shorter name", filepath.Join(filepath.Dir(wt), "wt-top"), false},
+		{"sibling, longer name", wt + "x", false},
+	} {
+		g, err := CheckGates(Git{Dir: f.Dir}, w, GateInputs{Base: baseRef, ProtectedPaths: []string{c.path}})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var got *Reason
+		for i := range g.Blockers {
+			if g.Blockers[i].Code == BlockProtectedArtifact {
+				got = &g.Blockers[i]
+			}
+		}
+		if (got != nil) != c.want {
+			t.Errorf("%s: blockers %v, want protected_artifact=%v", c.name, codes(g), c.want)
+			continue
+		}
+		if got != nil && got.Detail != flat(c.path) {
+			t.Errorf("%s: detail = %q, want %q", c.name, got.Detail, flat(c.path))
+		}
+	}
+}
