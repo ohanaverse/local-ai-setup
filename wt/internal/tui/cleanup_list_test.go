@@ -142,6 +142,32 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 	if !strings.Contains(m.View(), "[-] worktree  deep") {
 		t.Errorf("in-use row not drawn [-]:\n%s", m.View())
 	}
+
+	// Each clause of the lock on its own: an in_use row with no blockers,
+	// and a blocker on a row that is not in_use. Both are [-] and stay
+	// unticked through space and `a`.
+	r := cleanupFixture()
+	r.Rows = append(r.Rows,
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "inuse-noblock", Path: "/repo/.worktrees/inuse-noblock", Status: cleanup.StatusInUse},
+		cleanup.Row{Kind: cleanup.KindBranch, Name: "blocked-lesssure", Branch: "blocked-lesssure", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockHeld}}},
+		cleanup.Row{Kind: cleanup.KindBranch, Name: "blocked-proven", Branch: "blocked-proven", Status: cleanup.StatusProven,
+			Evidence: cleanup.EvAncestor, Blockers: []cleanup.Reason{{Code: cleanup.BlockBaseOfOpenPR}}},
+	)
+	for _, name := range []string{"inuse-noblock", "blocked-lesssure", "blocked-proven"} {
+		m = newSizedCleanupList(t, r, 120, 50)
+		m = moveTo(t, m, name)
+		m = cleanupSend(t, m, spaceKey)
+		m = cleanupSend(t, m, keyRunes("a"))
+		for _, n := range m.tickedNames() {
+			if n == name {
+				t.Errorf("%s was ticked", name)
+			}
+		}
+		if block := rowBlock(t, m.View(), name); !strings.HasPrefix(strings.TrimLeft(block, "> "), "[-]") {
+			t.Errorf("%s not drawn [-]: %q", name, block)
+		}
+	}
 }
 
 // TestCleanupListRemoteNotProvenIsLocked pins that a remote row that is not
@@ -236,41 +262,168 @@ func TestCleanupListEnterIsViewOnly(t *testing.T) {
 	}
 }
 
-// TestCleanupListNarrowWidthKeepsEvidence pins the width rule at 80
-// columns with long branch names: no line is wider than the terminal, the
-// name column is what gets cut, every row's evidence stays whole, and the
-// detail line under the list carries the highlighted row's full sentence.
-func TestCleanupListNarrowWidthKeepsEvidence(t *testing.T) {
+// longRowsFixture is cleanupFixture plus the rows whose sentences are too
+// long for one line at 80 columns: a long branch name, the primary
+// checkout with its path (the only Current worktree, so "you are here"),
+// and an Unknown branch with several long reasons.
+func longRowsFixture() cleanup.Report {
 	r := cleanupFixture()
 	long := "feature/an-extremely-long-branch-name-that-goes-on-and-on-forever"
 	r.Rows = append(r.Rows, cleanup.Row{Kind: cleanup.KindBranch, Name: long, Branch: long,
 		Status: cleanup.StatusProven, Evidence: cleanup.EvMergeAddsNothing})
 	r.Rows[2].Name = "worktree-" + long
-	m := newSizedCleanupList(t, r, 80, 24)
+	// Only the primary checkout is Current now: drop "deep"'s marker.
+	r.Rows[8].Blockers = []cleanup.Reason{{Code: cleanup.BlockLocked}}
+	r.Rows[0].Path = "/private/tmp/claude-501/a-rather-deep/scratch/cleanup-fixture/repo"
+	r.Rows[0].Blockers = []cleanup.Reason{{Code: cleanup.BlockPrimary, Detail: r.Rows[0].Path}, {Code: cleanup.BlockCurrent}}
+	r.Rows = append(r.Rows, cleanup.Row{Kind: cleanup.KindBranch, Name: "many-reasons", Branch: "many-reasons",
+		Status: cleanup.StatusLessSure, Unknown: true, Evidence: cleanup.EvSameCommit, Reasons: []cleanup.Reason{
+			{Code: cleanup.ReasonPRUnknown, Detail: "gh exited 1: could not resolve to a Repository with the name o/r"},
+			{Code: cleanup.ReasonUnpushedUnknown, Detail: "rev-list failed: fatal: bad revision"},
+			{Code: cleanup.ReasonIgnoredFiles, Detail: ".env, .venv, node_modules"},
+		}})
+	return r
+}
+
+// squash is s with every whitespace character removed, so a sentence can be
+// compared with its wrapped rendering whatever the line breaks.
+func squash(s string) string { return strings.Join(strings.Fields(s), "") }
+
+// rowBlock is the rendered text of the row whose name column starts with
+// namePrefix: its first line and the continuation lines under it, joined.
+func rowBlock(t *testing.T, view, namePrefix string) string {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		trim := strings.TrimLeft(line, "> ")
+		if !(strings.HasPrefix(trim, "[x]") || strings.HasPrefix(trim, "[ ]") || strings.HasPrefix(trim, "[-]")) {
+			continue
+		}
+		// After the 3-column box ("[ ]" holds a space): kind, then name.
+		if fields := strings.Fields(trim[3:]); len(fields) < 2 || !strings.HasPrefix(fields[1], namePrefix) {
+			continue
+		}
+		block := []string{line}
+		for _, next := range lines[i+1:] {
+			if !strings.HasPrefix(next, "    ") || strings.HasPrefix(strings.TrimSpace(next), "[") {
+				break
+			}
+			block = append(block, next)
+		}
+		return strings.Join(block, "\n")
+	}
+	t.Fatalf("no row named %q in view:\n%s", namePrefix, view)
+	return ""
+}
+
+// TestCleanupListNarrowWidthKeepsEvidence pins the width rule at 80
+// columns with long names and long sentences: no line is wider than the
+// terminal, the name column is what gets cut, and EVERY row's whole
+// sentence (cleanup.RowText, the age after it) is in that row's own lines —
+// wrapped onto continuation lines, never cut with an ellipsis.
+func TestCleanupListNarrowWidthKeepsEvidence(t *testing.T) {
+	r := longRowsFixture()
+	m := newSizedCleanupList(t, r, 80, 60)
 	view := m.View()
 	for i, line := range strings.Split(view, "\n") {
 		if w := lipgloss.Width(line); w > 80 {
 			t.Errorf("line %d is %d columns wide: %q", i, w, line)
 		}
 	}
+	long := r.Rows[len(r.Rows)-2].Name
 	for _, line := range strings.Split(view, "\n") {
 		if strings.Contains(line, "[x]") && strings.Contains(line, long) {
 			t.Errorf("long name was not truncated in its row at 80 columns: %q", line)
 		}
 	}
-	for _, ev := range []string{"squash merged, content is in origin/main", "squash merged, PR #517", "ancestor of origin/main"} {
-		if !strings.Contains(view, ev) {
-			t.Errorf("evidence %q cut at 80 columns:\n%s", ev, view)
+	wrapped := 0
+	for _, row := range r.Rows {
+		name := cleanup.DisplayName(row)
+		block := rowBlock(t, view, name[:min(len(name), 12)])
+		if strings.Count(block, "\n") > 0 {
+			wrapped++
 		}
+		if !strings.Contains(squash(block), squash(cleanup.RowText(r, row))) {
+			t.Errorf("row %q does not carry its whole sentence %q:\n%s", name, cleanup.RowText(r, row), block)
+		}
+		// A sentence cut with an ellipsis cannot contain its own end, so the
+		// check above is also the no-"…" check for the evidence.
 	}
-	// The Unknown row's detail says why, whole, in the detail line.
-	m = moveTo(t, m, "who-knows")
+	if wrapped < 2 {
+		t.Errorf("only %d rows wrapped at 80 columns; the fixture's long sentences should wrap:\n%s", wrapped, view)
+	}
+}
+
+// TestCleanupListSaysWhenRowsAreOffScreen pins the scroll hints: a list
+// taller than its room says there is more below (the real 80x24 screen
+// ended on a group heading with its rows out of sight and no sign of them),
+// and once scrolled, that there is more above. The view stays within 24.
+func TestCleanupListSaysWhenRowsAreOffScreen(t *testing.T) {
+	m := newSizedCleanupList(t, longRowsFixture(), 80, 24)
+	view := m.View()
+	if !strings.Contains(view, "↓ more below") || strings.Contains(view, "↑ more above") {
+		t.Errorf("top of a long list: want only the below hint:\n%s", view)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnd})
 	view = m.View()
-	if !strings.Contains(strings.Join(strings.Fields(view), " "), "PR lookup failed (gh exited 1)") {
-		t.Errorf("unknown row's reason missing from the view:\n%s", view)
+	if !strings.Contains(view, "↑ more above") || strings.Contains(view, "↓ more below") {
+		t.Errorf("end of a long list: want only the above hint:\n%s", view)
 	}
 	if h := lipgloss.Height(view); h > 24 {
-		t.Errorf("view is %d lines tall at 24", h)
+		t.Errorf("view is %d lines at 24", h)
+	}
+	if strings.Contains(newSizedCleanupList(t, cleanupFixture(), 120, 60).View(), "more below") {
+		t.Error("a list that fits shows a scroll hint")
+	}
+}
+
+// TestCleanupListPrimaryCheckoutSaysYouAreHere pins that at 80 columns the
+// primary checkout's row, with its long path, still shows "you are here":
+// the marker was the part an ellipsis cut off first.
+func TestCleanupListPrimaryCheckoutSaysYouAreHere(t *testing.T) {
+	m := newSizedCleanupList(t, longRowsFixture(), 80, 60)
+	block := rowBlock(t, m.View(), "main")
+	if !strings.Contains(squash(block), squash("you are here")) {
+		t.Errorf("primary checkout row lacks the marker:\n%s", block)
+	}
+}
+
+// TestCleanupListWrappedRowStaysOnScreen pins the 80x24 layout with the
+// cursor on a row whose sentence wraps to three or more lines: the header,
+// the whole highlighted row and the detail line are all on screen, and the
+// view is no taller than the terminal.
+func TestCleanupListWrappedRowStaysOnScreen(t *testing.T) {
+	r := longRowsFixture()
+	m := newSizedCleanupList(t, r, 80, 24)
+	m = moveTo(t, m, "many-reasons")
+	view := m.View()
+	if h := lipgloss.Height(view); h > 24 {
+		t.Errorf("view is %d lines at 24:\n%s", h, view)
+	}
+	block := rowBlock(t, view, "many-reasons")
+	if strings.Count(block, "\n") < 2 {
+		t.Fatalf("highlighted row is not 3+ lines at 80 columns:\n%s", block)
+	}
+	if !strings.HasPrefix(block, "> ") {
+		t.Errorf("highlighted row has no cursor:\n%s", block)
+	}
+	row := r.Rows[len(r.Rows)-1]
+	if !strings.Contains(squash(block), squash(cleanup.RowText(r, row))) {
+		t.Errorf("highlighted row cut:\n%s", block)
+	}
+	if !strings.Contains(view, "base:  origin/main") {
+		t.Errorf("header missing:\n%s", view)
+	}
+	if !strings.Contains(view, "── many-reasons ─") {
+		t.Errorf("detail line missing:\n%s", view)
+	}
+	// Moving back up to the top brings the first row (and its heading) back.
+	for i := 0; i < 20; i++ {
+		m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	}
+	view = m.View()
+	if !strings.Contains(view, cleanup.Heading(cleanup.StatusProven)) || !strings.Contains(view, "> [x] worktree") {
+		t.Errorf("top of the list not back on screen:\n%s", view)
 	}
 }
 

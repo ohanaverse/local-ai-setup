@@ -837,3 +837,33 @@ func TestClassifyGHState(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyUnpushedCountWording pins the unpushed detail's grammar: one
+// commit is "1 commit", more are "N commits". The sentence is shown as it is
+// in the list, the plain output and the JSON detail.
+func TestClassifyUnpushedCountWording(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("one")
+	f.Checkout("one")
+	f.Commit("a", "a", "a")
+	f.Checkout("main")
+	f.Branch("two")
+	f.Checkout("two")
+	f.Commit("b", "b", "b")
+	f.Commit("c", "c", "c")
+	f.Checkout("main")
+	noGh(t)
+	r := Classify(gather(t, f), Options{Now: later()})
+	for name, want := range map[string]string{"one": "1 commit on no remote-tracking ref", "two": "2 commits on no remote-tracking ref"} {
+		row := findRow(t, r, KindBranch, name)
+		got := ""
+		for _, re := range row.Reasons {
+			if re.Code == ReasonUnpushed {
+				got = re.Detail
+			}
+		}
+		if got != want {
+			t.Errorf("%s: unpushed detail = %q, want %q%s", name, got, want, dumpRows(r.Rows))
+		}
+	}
+}

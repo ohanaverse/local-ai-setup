@@ -337,7 +337,11 @@ func (c *classifier) local(j *judge, h RefFact) {
 	if j.ev == "" {
 		switch {
 		case ok && p.Unpushed > 0:
-			j.uniq(ReasonUnpushed, fmt.Sprintf("%d commits on no remote-tracking ref", p.Unpushed))
+			noun := "commits"
+			if p.Unpushed == 1 {
+				noun = "commit"
+			}
+			j.uniq(ReasonUnpushed, fmt.Sprintf("%d %s on no remote-tracking ref", p.Unpushed, noun))
 		case ok && p.Unpushed < 0:
 			j.unsure(ReasonUnpushedUnknown, p.UnpushedErr)
 		}

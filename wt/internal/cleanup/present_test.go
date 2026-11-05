@@ -151,3 +151,52 @@ func TestHeaderLinesTellFetchAndFallback(t *testing.T) {
 		t.Errorf("skipped header:\n%s", sk)
 	}
 }
+
+// TestRowTextWeakSignalSaidOnce pins that a row whose only signal is cherry
+// or patch-id equivalence says "not proven" once: the evidence wording and
+// the weak-signal reason say the same thing, and the list showed both.
+func TestRowTextWeakSignalSaidOnce(t *testing.T) {
+	rep := Report{Base: Base{Ref: "origin/main"}}
+	for _, ev := range []Evidence{EvPatchID, EvCherryEquivalent} {
+		row := Row{Status: StatusLessSure, Evidence: ev, Reasons: []Reason{{Code: ReasonWeakSignal}}}
+		if got, want := RowText(rep, row), "patches appear in origin/main, not proven"; got != want {
+			t.Errorf("%s: RowText = %q, want %q", ev, got, want)
+		}
+	}
+	// With no weak evidence the reason still speaks for itself.
+	row := Row{Status: StatusLessSure, Reasons: []Reason{{Code: ReasonWeakSignal}}}
+	if got := RowText(rep, row); got != "patches appear in the base, not proven" {
+		t.Errorf("reason alone: RowText = %q", got)
+	}
+}
+
+// TestRowTextPutsWhatLowersItFirst pins the order blockers, then reasons,
+// then the proof: the first words are the ones read on a narrow screen, and
+// a dirty worktree must say it has uncommitted files before it says "same
+// commit as origin/main".
+func TestRowTextPutsWhatLowersItFirst(t *testing.T) {
+	rep := Report{Base: Base{Ref: "origin/main"}}
+	row := Row{Kind: KindWorktree, Path: "/r/x", Status: StatusUniqueWork, Evidence: EvSameCommit,
+		Reasons: []Reason{{Code: ReasonDirty, Detail: "1 untracked"}}}
+	if got, want := RowText(rep, row), "uncommitted or untracked files (1 untracked); same commit as origin/main"; got != want {
+		t.Errorf("RowText = %q, want %q", got, want)
+	}
+	locked := Row{Kind: KindWorktree, Path: "/r/y", Status: StatusInUse, Evidence: EvSameCommit,
+		Blockers: []Reason{{Code: BlockLocked}}, Reasons: []Reason{{Code: ReasonIgnoredFiles, Detail: ".env"}}}
+	if got, want := RowText(rep, locked), "locked; ignored files (.env); same commit as origin/main"; got != want {
+		t.Errorf("RowText = %q, want %q", got, want)
+	}
+}
+
+// TestReasonTextDetailSameAsWording pins that a detail repeating its code's
+// wording is said once: the classifier's dirty detail is the dirty wording,
+// and the real 80x24 screen read "uncommitted or untracked files
+// (uncommitted or untracked files)".
+func TestReasonTextDetailSameAsWording(t *testing.T) {
+	if got := ReasonText(ReasonDirty, "uncommitted or untracked files"); got != "uncommitted or untracked files" {
+		t.Errorf("ReasonText = %q", got)
+	}
+	if got := ReasonText(ReasonDirty, "2 modified"); got != "uncommitted or untracked files (2 modified)" {
+		t.Errorf("ReasonText with a real detail = %q", got)
+	}
+}

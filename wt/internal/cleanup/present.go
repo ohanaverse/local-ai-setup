@@ -113,14 +113,15 @@ var detailIsSentence = map[string]bool{
 }
 
 // ReasonText is one reason or blocker as a phrase. A code with no wording
-// reads as the bare code, so an unforeseen reason is still shown.
+// reads as the bare code, so an unforeseen reason is still shown. A detail
+// that only repeats the wording is said once.
 func ReasonText(code, detail string) string {
 	w, ok := reasonWording[code]
 	if !ok {
 		w = code
 	}
 	switch {
-	case detail == "":
+	case detail == "" || detail == w:
 		return w
 	case detailIsSentence[code]:
 		return detail
@@ -175,14 +176,14 @@ func deepestCurrent(r Report) string {
 	return best
 }
 
-// RowText is the one-line evidence for a row: the proof, then what blocks
-// it, then what lowers it, joined by "; ". An Unknown row says why through
-// its reasons.
+// RowText is the one-line evidence for a row: what blocks it, then what
+// lowers it, then the proof, joined by "; ". What keeps a row from being
+// removed comes first, so a narrow screen or a skimming reader meets it
+// before a long proof sentence. An Unknown row says why through its reasons.
+// A weak-signal reason is left out when the evidence already says "not
+// proven" in the same words.
 func RowText(rep Report, row Row) string {
 	var parts []string
-	if ev := evidenceText(row, rep.Base.Ref); ev != "" {
-		parts = append(parts, ev)
-	}
 	here := deepestCurrent(rep)
 	for _, b := range row.Blockers {
 		if b.Code == BlockCurrent {
@@ -195,8 +196,15 @@ func RowText(rep Report, row Row) string {
 		}
 		parts = append(parts, ReasonText(b.Code, b.Detail))
 	}
+	weakEvidence := row.Evidence == EvCherryEquivalent || row.Evidence == EvPatchID
 	for _, r := range row.Reasons {
+		if r.Code == ReasonWeakSignal && r.Detail == "" && weakEvidence {
+			continue
+		}
 		parts = append(parts, ReasonText(r.Code, r.Detail))
+	}
+	if ev := evidenceText(row, rep.Base.Ref); ev != "" {
+		parts = append(parts, ev)
 	}
 	if len(parts) == 0 {
 		return "no evidence"
