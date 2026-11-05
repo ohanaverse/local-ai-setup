@@ -293,6 +293,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 - a ticked less_sure or unique_work row goes through a confirmation that states what would be lost, with `-D` behind its own confirmation;
 - a `remote` row is tickable only when proven;
 - the stacked-PR `base_of_open_pr` check is blind under a failed or skipped fetch.
+- fetch every remote: `Fetch` in `internal/cleanup/base.go` runs `git fetch --prune origin`, but the spec and PR A plan say `fetch --all --prune` and the "pushed" test reads every `refs/remotes/*`, so another remote's refs can be stale (change it with a test, and say in the header which remotes were fetched).
 
 ## Verification commands
 
