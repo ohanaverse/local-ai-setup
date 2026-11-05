@@ -42,7 +42,11 @@ registry wt could not read, or a `local_path` in it that is malformed or
 relative (write every `local_path` as an absolute path; `~/` is fine): the
 list still shows, the header says artifact protection is OFF, and registered
 model artifacts are not marked in use. No registry at the default path means
-nothing is registered: the header says `registry: none at <path>`.
+nothing is registered: the header says `registry: none at <path>`; a missing
+registry anywhere else (`WT_REGISTRY`, a relocated `XDG_CONFIG_HOME`, no home
+directory) counts as could not be read. A `local_path` that is an ancestor of
+the repository (`~`, or `/`) blocks every worktree under it as
+`protected_artifact`, and the row's detail names that path.
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md).

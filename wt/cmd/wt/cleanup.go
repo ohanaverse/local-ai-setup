@@ -164,11 +164,24 @@ func cleanupRegistryNote(err error) string {
 
 // noRegistry reports whether the registry did not load only because there is
 // no file at the default path: nothing is registered, so nothing needs
-// protecting. A redirected path (WT_REGISTRY, MODELMAN_REGISTRY,
-// XDG_CONFIG_HOME) that is missing is not this case: it may be a typo or an
-// unmounted volume hiding a real registry.
+// protecting. It is a positive match: the home directory is known and
+// absolute, and the registry path is exactly $HOME/.config/local-ai/
+// registry.toml (XDG_CONFIG_HOME spelling out $HOME/.config is that same
+// place). Any other location was chosen by a person or script (WT_REGISTRY,
+// MODELMAN_REGISTRY, an XDG_CONFIG_HOME elsewhere) and may be a typo or an
+// unmounted volume hiding a real registry, so its absence fails closed. With
+// no home directory (launchd, cron) there is no default to match, so that
+// fails closed too; config.RegistryRedirected answers false there and must
+// not decide this.
 func noRegistry(a *app) bool {
-	return a != nil && errors.Is(a.loadErr, config.ErrRegistryMissing) && !config.RegistryRedirected()
+	if a == nil || !errors.Is(a.loadErr, config.ErrRegistryMissing) {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !filepath.IsAbs(home) {
+		return false
+	}
+	return filepath.Clean(config.RegistryPath()) == filepath.Join(home, ".config", "local-ai", "registry.toml")
 }
 
 // protectedPaths are the registry's local_path artifacts (fetch and draft of

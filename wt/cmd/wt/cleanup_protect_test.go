@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -207,15 +208,15 @@ func TestCleanupListHeaderWarnsWhenRegistryFailed(t *testing.T) {
 	}
 }
 
-// registryApp is newApp under a scratch HOME whose default config home is
-// spelled out (XDG_CONFIG_HOME = $HOME/.config, which is not a redirect),
-// with WT_LITELLM_CONFIG named as every scratch registry needs. setup may
+// registryApp is newApp under a scratch HOME with no registry or config-home
+// override (XDG_CONFIG_HOME, WT_REGISTRY and MODELMAN_REGISTRY empty), and
+// WT_LITELLM_CONFIG named as every scratch registry needs. setup may
 // write a registry or redirect it; it gets the default registry path.
 func registryApp(t *testing.T, setup func(home, defaultReg string)) *app {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("WT_LITELLM_CONFIG", filepath.Join(home, "config.yaml"))
 	t.Setenv("WT_REGISTRY", "")
 	t.Setenv("MODELMAN_REGISTRY", "")
@@ -292,6 +293,60 @@ func TestProtectedPathsRegistryLoadFailuresFailClosed(t *testing.T) {
 			}
 			if _, err := protectedPaths(a); !errors.Is(err, errRegistryUnavailable) {
 				t.Errorf("err = %v, want errRegistryUnavailable", err)
+			}
+		})
+	}
+}
+
+// TestNoRegistryOnlyAtTheDefaultPath verifies that a missing registry counts
+// as "nothing to protect" only when it is missing at the default path,
+// $HOME/.config/local-ai/registry.toml, under an absolute home directory;
+// every other missing registry is errRegistryUnavailable. The cases: no
+// HOME with a WT_REGISTRY that is missing, no HOME and nothing set (the path
+// is then cwd-relative), a relative HOME, an XDG_CONFIG_HOME relocated
+// elsewhere, against a temp HOME with no overrides and one with
+// XDG_CONFIG_HOME spelling out $HOME/.config (the default location). The app
+// carries the ErrRegistryMissing config.Load returns, built directly so no
+// load runs without a home directory. Why: launchd and cron run wt with no
+// HOME, where "is the registry redirected" has no answer; reading those as
+// "nothing registered" would let a removal delete a registered artifact.
+func TestNoRegistryOnlyAtTheDefaultPath(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		env       func(home string) map[string]string
+		wantEmpty bool
+	}{
+		{"no HOME, missing WT_REGISTRY", func(string) map[string]string {
+			return map[string]string{"HOME": "", "WT_REGISTRY": "/Volumes/gone/registry.toml"}
+		}, false},
+		{"no HOME, nothing set", func(string) map[string]string { return map[string]string{"HOME": ""} }, false},
+		{"relative HOME", func(string) map[string]string { return map[string]string{"HOME": "home"} }, false},
+		{"XDG_CONFIG_HOME relocated", func(home string) map[string]string {
+			return map[string]string{"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, "elsewhere")}
+		}, false},
+		{"default path, no overrides", func(home string) map[string]string { return map[string]string{"HOME": home} }, true},
+		{"default path spelled out in XDG_CONFIG_HOME", func(home string) map[string]string {
+			return map[string]string{"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config")}
+		}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			for _, k := range []string{"XDG_CONFIG_HOME", "WT_REGISTRY", "MODELMAN_REGISTRY"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range c.env(t.TempDir()) {
+				t.Setenv(k, v)
+			}
+			a := &app{cfg: &config.Config{}, loadErr: fmt.Errorf("%w at %s", config.ErrRegistryMissing, config.RegistryPath())}
+			got, err := protectedPaths(a)
+			if c.wantEmpty {
+				if err != nil || len(got) != 0 {
+					t.Errorf("protectedPaths = %q, %v; want none and no error", got, err)
+				}
+				return
+			}
+			if !errors.Is(err, errRegistryUnavailable) {
+				t.Errorf("protectedPaths = %q, %v; want errRegistryUnavailable", got, err)
 			}
 		})
 	}
