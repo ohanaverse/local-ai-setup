@@ -116,3 +116,34 @@ func (f *fixture) Ignored(path string) {
 	}
 	f.Dirty(path)
 }
+
+// Merge merges branch into the current branch with a merge commit (--no-ff).
+func (f *fixture) Merge(branch string) { f.t.Helper(); f.git("merge", "--no-ff", "--no-edit", branch) }
+
+// FastForward fast-forwards the current branch to branch.
+func (f *fixture) FastForward(branch string) { f.t.Helper(); f.git("merge", "--ff-only", branch) }
+
+// CherryPick re-applies each sha, in order, on the current branch: a 1:1
+// rebase-merge as a forge does it.
+func (f *fixture) CherryPick(shas ...string) {
+	f.t.Helper()
+	for _, s := range shas {
+		f.git("cherry-pick", s)
+	}
+}
+
+// MergeResolving merges branch into the current branch, expecting a conflict
+// on file, and resolves it with content that neither side has.
+func (f *fixture) MergeResolving(branch, file, content string) string {
+	f.t.Helper()
+	cmd := exec.Command("git", "-C", f.Dir, "merge", "--no-ff", "--no-edit", branch)
+	if b, err := cmd.CombinedOutput(); err == nil {
+		f.t.Fatalf("merge %s: expected a conflict, got none\n%s", branch, b)
+	}
+	if err := os.WriteFile(filepath.Join(f.Dir, file), []byte(content), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	f.git("add", file)
+	f.git("commit", "--no-edit")
+	return f.git("rev-parse", "HEAD")
+}

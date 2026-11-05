@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -29,7 +30,10 @@ type Out struct {
 // Run runs `git -C g.Dir args...`. A non-zero exit is an answer, not an
 // error: Out.Code carries it. The error is only for a failure to spawn git or
 // for the timeout.
-func (g Git) Run(args ...string) (Out, error) {
+func (g Git) Run(args ...string) (Out, error) { return g.RunInput("", args...) }
+
+// RunInput is Run with stdin fed from input (for `git patch-id`).
+func (g Git) RunInput(input string, args ...string) (Out, error) {
 	timeout := g.Timeout
 	if timeout == 0 {
 		timeout = defaultTimeout
@@ -38,6 +42,9 @@ func (g Git) Run(args ...string) (Out, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.Dir}, args...)...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
