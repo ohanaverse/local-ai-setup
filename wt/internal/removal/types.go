@@ -135,13 +135,18 @@ type Outcome struct {
 	// before a fresh row existed.
 	LossLines []string
 	// DeletedTip is the full commit id of the branch when this run deleted
-	// it, or may have (Ruling J): set whenever the branch stage's
-	// update-ref -d was issued and the ref was gone afterwards, whatever
-	// came next (deleted; restored after a worktree took it; restore
-	// failed; re-created by someone else), and when a failed update-ref -d
-	// left the ref gone. Never capped, unlike Reason: it is the one
-	// reliable record of the commit. Empty for dry runs and for every
-	// branch this run did not touch.
+	// it, or may have (Ruling J): on every path where the branch stage
+	// issued update-ref -d and cannot prove the ref still exists. That is:
+	// deleted; deleted, then restored (a worktree took it, or the worktrees
+	// could not be re-checked); deleted and not restored, or re-created by
+	// someone else; git reported the delete but the ref could not be
+	// re-read; git's update-ref failed and the ref was gone afterwards
+	// (retained_moved) or could not be re-read (retained_unknown); and a
+	// panic after the update-ref was issued (safeItem: failed /
+	// retained_unknown). Never capped, unlike Reason: it is the one
+	// reliable record of the commit. Empty for dry runs, for a delete git
+	// refused with the ref still there, and for every branch this run did
+	// not touch.
 	DeletedTip string
 }
 

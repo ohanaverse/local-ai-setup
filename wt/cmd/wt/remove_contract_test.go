@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -16,15 +17,59 @@ import (
 )
 
 const (
-	removeFixture       = "../../../docs/contracts/remove-result.sample.json"
-	removeDryRunFixture = "../../../docs/contracts/remove-result.dry-run.sample.json"
-	removeErrorFixture  = "../../../docs/contracts/remove-result.error.sample.json"
-	removeSchema        = "../../../docs/contracts/remove-result.schema.json"
-	removalPkgDir       = "../../internal/removal"
+	removeFixture            = "../../../docs/contracts/remove-result.sample.json"
+	removeDryRunFixture      = "../../../docs/contracts/remove-result.dry-run.sample.json"
+	removeErrorFixture       = "../../../docs/contracts/remove-result.error.sample.json"
+	removeDryRunErrorFixture = "../../../docs/contracts/remove-result.dry-run.error.sample.json"
+	removePartialFixture     = "../../../docs/contracts/remove-result.partial.sample.json"
+	removeSchema             = "../../../docs/contracts/remove-result.schema.json"
+	removalPkgDir            = "../../internal/removal"
 )
 
-// removeFixtures are the three samples by name.
-var removeFixtures = map[string]string{"sample": removeFixture, "dry-run sample": removeDryRunFixture, "error sample": removeErrorFixture}
+// removeFixtures are the samples by name.
+var removeFixtures = map[string]string{"sample": removeFixture, "dry-run sample": removeDryRunFixture,
+	"error sample": removeErrorFixture, "dry-run error sample": removeDryRunErrorFixture, "partial sample": removePartialFixture}
+
+// removeFixtureFacts are what each sample must say: dry_run, whether error
+// is present, and whether items is empty.
+var removeFixtureFacts = map[string]struct{ dryRun, hasError, noItems bool }{
+	removeFixture:            {false, false, false},
+	removeDryRunFixture:      {true, false, false},
+	removeErrorFixture:       {false, true, true},
+	removeDryRunErrorFixture: {true, true, true},
+	removePartialFixture:     {false, true, false},
+}
+
+// tipBranches are the branch outcomes a branch_tip may accompany (the ref
+// may be gone): deleted, put back, or unknown after the delete was issued,
+// or gone after git's error.
+var tipBranches = []string{"deleted", "retained_checked_out", "retained_unknown", "retained_moved"}
+
+// checkBranchTips fails for any item whose branch_tip is not a full 40-hex
+// commit id, or that carries one beside a branch outcome no deletion can
+// produce, or (dry) that carries one at all.
+func checkBranchTips(t *testing.T, name string, items []map[string]any, dry bool) {
+	t.Helper()
+	for i, it := range items {
+		tip, has := it["branch_tip"]
+		if !has {
+			continue
+		}
+		s, _ := tip.(string)
+		if !fullSHA.MatchString(s) {
+			t.Errorf("%s: items[%d].branch_tip %v is not a 40-hex commit id", name, i, tip)
+		}
+		if b, _ := it["branch"].(string); !slices.Contains(tipBranches, b) {
+			t.Errorf("%s: items[%d] carries branch_tip beside branch %q", name, i, b)
+		}
+		if dry {
+			t.Errorf("%s: items[%d] carries branch_tip in a dry run, which deletes nothing", name, i)
+		}
+	}
+}
+
+// fullSHA is a full commit id as git prints it.
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // removeItems are a sample's items, decoded generically.
 func removeItems(t *testing.T, path string) []map[string]any {
@@ -62,15 +107,16 @@ func removeEnums(t *testing.T) map[string][]string {
 	return got
 }
 
-// TestRemoveFixturesMatchEnvelopeShape pins the three removal samples
+// TestRemoveFixturesMatchEnvelopeShape pins the removal samples
 // (docs/contracts/remove-result*.json) to removal.Envelope in both directions
 // (every key a sample carries is one wt writes, with that JSON type, and
 // every always-written key is present) and validates each against the
-// published schema with the purpose-built validator; the dry-run sample says
-// dry_run true and carries no branch_tip, the others dry_run false, and the
-// error sample has items [] and error.message. Why: a script in another
-// language reads this document; a renamed Go json tag must fail here until
-// the schema and samples move with it.
+// published schema with the purpose-built validator. Each sample says what it
+// is (removeFixtureFacts: dry_run, error present, items empty); every
+// branch_tip is a full 40-hex id beside a branch outcome a deletion can
+// produce, and none appears in a dry run. Why: a script in another language
+// reads this document; a renamed Go json tag must fail here until the schema
+// and samples move with it.
 func TestRemoveFixturesMatchEnvelopeShape(t *testing.T) {
 	schema := readJSONFile(t, removeSchema).(map[string]any)
 	for name, path := range removeFixtures {
@@ -83,38 +129,61 @@ func TestRemoveFixturesMatchEnvelopeShape(t *testing.T) {
 		if errs := checkAgainst(schema, doc, name); len(errs) > 0 {
 			t.Errorf("%s violates the schema:\n%s", name, strings.Join(errs, "\n"))
 		}
-		if dry := doc["dry_run"] == true; dry != (path == removeDryRunFixture) {
-			t.Errorf("%s: dry_run %v", name, doc["dry_run"])
+		facts := removeFixtureFacts[path]
+		if dry := doc["dry_run"] == true; dry != facts.dryRun {
+			t.Errorf("%s: dry_run %v, want %v", name, doc["dry_run"], facts.dryRun)
 		}
-		_, hasErr := doc["error"]
-		if hasErr != (path == removeErrorFixture) {
-			t.Errorf("%s: error present %v", name, hasErr)
+		if _, hasErr := doc["error"]; hasErr != facts.hasError {
+			t.Errorf("%s: error present %v, want %v", name, hasErr, facts.hasError)
 		}
-	}
-	if items := removeItems(t, removeErrorFixture); len(items) != 0 {
-		t.Errorf("error sample has %d items, want []", len(items))
-	}
-	for _, it := range removeItems(t, removeDryRunFixture) {
-		if _, has := it["branch_tip"]; has {
-			t.Errorf("dry-run sample item %v carries branch_tip; a dry run deletes nothing", it["name"])
+		items := removeItems(t, path)
+		if (len(items) == 0) != facts.noItems {
+			t.Errorf("%s: %d items", name, len(items))
 		}
+		checkBranchTips(t, name, items, facts.dryRun)
 	}
 }
 
 // TestRemoveSchemaEnumsCoverEveryOutcome pins the schema's kind, saw,
-// worktree and branch enums to the Go constants (read from source), and
-// encodes one outcome per constant value through removal.Encode, which must
-// accept it and produce a document the schema accepts. Why: a new outcome
-// constant must fail here until the schema, the encoder's own enum list and
-// the samples carry it.
+// worktree and branch enums to the Go constants (read from source) plus the
+// reserved sentinel removal.InvalidValue, which is not an outcome constant
+// and is added here explicitly. It encodes one outcome per constant value
+// through removal.Encode, which must write it unchanged with no error, and
+// one outcome off the contract in every field, which must come out as the
+// sentinel with a partial-report error; both documents must pass the schema.
+// Why: a new outcome constant must fail here until the schema, the encoder's
+// own enum list and the samples carry it.
 func TestRemoveSchemaEnumsCoverEveryOutcome(t *testing.T) {
 	schema := readJSONFile(t, removeSchema).(map[string]any)
 	got := removeEnums(t)
 	want := map[string][]string{}
+	withSentinel := map[string][]string{}
 	for _, k := range []string{"kind", "saw", "worktree", "branch"} {
 		want[k] = schemaDefEnum(t, schema, "item", "properties", k)
+		withSentinel[k] = append(slices.Clone(got[k]), removal.InvalidValue)
 	}
-	checkEnumsEqual(t, got, want)
+	checkEnumsEqual(t, withSentinel, want)
+
+	bad, err := removal.Encode([]removal.Outcome{{}}, removal.Meta{Repo: "/r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var badDoc map[string]any
+	if err := json.Unmarshal(bad, &badDoc); err != nil {
+		t.Fatal(err)
+	}
+	if errs := checkAgainst(schema, badDoc, "off-contract"); len(errs) > 0 {
+		t.Errorf("off-contract document violates the schema:\n%s", strings.Join(errs, "\n"))
+	}
+	badItem := badDoc["items"].([]any)[0].(map[string]any)
+	for _, k := range []string{"kind", "saw", "worktree", "branch"} {
+		if badItem[k] != removal.InvalidValue {
+			t.Errorf("off-contract %s written as %v, want %q", k, badItem[k], removal.InvalidValue)
+		}
+	}
+	if badDoc["error"] == nil {
+		t.Error("off-contract document carries no error")
+	}
 
 	base := removal.Outcome{Item: removal.Item{Kind: cleanup.KindWorktree, Name: "x", Path: "/x", Saw: cleanup.StatusProven},
 		Worktree: removal.WtRemoved, Branch: removal.BrNotAttempted}
@@ -137,11 +206,14 @@ func TestRemoveSchemaEnumsCoverEveryOutcome(t *testing.T) {
 	}
 	b, err := removal.Encode(outs, removal.Meta{Repo: "/r"})
 	if err != nil {
-		t.Fatalf("Encode refuses a declared constant: %v", err)
+		t.Fatal(err)
 	}
-	var v any
+	var v map[string]any
 	if err := json.Unmarshal(b, &v); err != nil {
 		t.Fatal(err)
+	}
+	if v["error"] != nil {
+		t.Errorf("Encode does not know a declared constant: %v", v["error"])
 	}
 	if errs := checkAgainst(schema, v, "every constant"); len(errs) > 0 {
 		t.Errorf("every-constant document violates the schema:\n%s", strings.Join(errs, "\n"))
@@ -214,6 +286,21 @@ func TestRemoveFixtureCoversEveryOutcome(t *testing.T) {
 	has("detached worktree item without ref", func(it map[string]any) bool { return it["kind"] == "worktree" && absent(it, "ref") })
 	has("item with warnings", func(it map[string]any) bool { return nonEmpty(it, "warnings") })
 	has("item with losses", func(it map[string]any) bool { return nonEmpty(it, "losses") })
+	for _, b := range []string{"retained_moved", "retained_unknown"} {
+		has(b+" item with branch_tip (the ref may be gone)", func(it map[string]any) bool { return it["branch"] == b && !absent(it, "branch_tip") })
+	}
+	// remote and in_use belong to previews and plans only.
+	if seen(main, "kind", string(cleanup.KindRemote)) || seen(main, "saw", string(cleanup.StatusInUse)) {
+		t.Error("the run sample shows a remote kind or an in_use status, which only previews and plans carry")
+	}
+	// The sentinel is not an outcome constant: the partial sample shows it in
+	// each enum field.
+	partial := removeItems(t, removePartialFixture)
+	for _, key := range []string{"kind", "saw", "worktree", "branch"} {
+		if !seen(partial, key, removal.InvalidValue) {
+			t.Errorf("the partial sample has no item with %s %q", key, removal.InvalidValue)
+		}
+	}
 }
 
 // TestRemoveLiveEncodeValidatesAgainstSchema drives the REAL engine in a
@@ -296,12 +383,12 @@ func TestRemoveLiveEncodeValidatesAgainstSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	errDoc, err := removal.EncodeError(dir, errors.New("boom"))
+	errDoc, err := removal.EncodeError(removal.Meta{Repo: dir, DryRun: true}, errors.New("boom"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, b := range map[string][]byte{"run": runDoc, "plan": planDoc, "error": errDoc} {
-		var v any
+		var v map[string]any
 		if err := json.Unmarshal(b, &v); err != nil {
 			t.Fatal(err)
 		}
@@ -309,6 +396,14 @@ func TestRemoveLiveEncodeValidatesAgainstSchema(t *testing.T) {
 			t.Errorf("%s document violates the schema:\n%s\n%s", name, strings.Join(errs, "\n"), b)
 		}
 		checkJSONShape(t, name, b, reflect.TypeFor[removal.Envelope]())
+		var items []map[string]any
+		for _, it := range v["items"].([]any) {
+			items = append(items, it.(map[string]any))
+		}
+		checkBranchTips(t, name, items, v["dry_run"] == true)
+		if name != "error" && v["error"] != nil {
+			t.Errorf("%s document is a partial report: %v", name, v["error"])
+		}
 	}
 	var run removal.Envelope
 	if err := json.Unmarshal(runDoc, &run); err != nil {

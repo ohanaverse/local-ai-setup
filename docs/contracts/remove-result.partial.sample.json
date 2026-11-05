@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "repo": "/Users/me/src/app",
+  "dry_run": false,
+  "items": [
+    {
+      "kind": "worktree",
+      "name": "topic",
+      "path": "/Users/me/src/app/.worktrees/topic",
+      "ref": "refs/heads/topic",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "deleted",
+      "reason": "deleted refs/heads/topic (was 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345; restore: git branch topic 3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345)",
+      "warnings": ["the commit survives only until git gc prunes it, possibly the next gc"],
+      "losses": [],
+      "branch_tip": "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+    },
+    {
+      "kind": "invalid",
+      "name": "",
+      "saw": "invalid",
+      "worktree": "invalid",
+      "branch": "invalid",
+      "reason": "",
+      "warnings": [],
+      "losses": []
+    }
+  ],
+  "error": {
+    "message": "partial report: item 1: kind \"\" is not in the result contract; item 1: status seen \"\" is not in the result contract; item 1: worktree outcome \"\" is not in the result contract; item 1: branch outcome \"\" i…"
+  }
+}

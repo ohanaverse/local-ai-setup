@@ -1,8 +1,10 @@
 package removal
 
 import (
+	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -79,6 +81,20 @@ func TestDeletedTipThroughTheEngine(t *testing.T) {
 				// The re-read after git's reported delete now fails.
 				f.write(filepath.Dir(packed), filepath.Base(packed), "not a packed-refs line\n")
 				return out, err
+			})
+			return one(t, e, it), tip
+		}, BrRetainedUnknown, true},
+		"git errors after deleting, then unreadable": {func(t *testing.T) (Outcome, string) {
+			// A timeout after the write: git returns an error although the
+			// ref is gone, and the re-read cannot tell.
+			f, e, it, tip := branchItem(t)
+			packed := f.git("rev-parse", "--path-format=absolute", "--git-path", "packed-refs")
+			stubRefGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+				if _, err := g.Run(args...); err != nil {
+					return cleanup.Out{}, err
+				}
+				f.write(filepath.Dir(packed), filepath.Base(packed), "not a packed-refs line\n")
+				return cleanup.Out{}, errors.New("git update-ref: timed out")
 			})
 			return one(t, e, it), tip
 		}, BrRetainedUnknown, true},
@@ -233,6 +249,91 @@ func TestOutcomeLossLines(t *testing.T) {
 		o := one(t, f.engine(s, f.inputs(), Options{}), it)
 		if o.Worktree != WtRefused || len(o.LossLines) != 0 {
 			t.Fatalf("outcome %+v, want refused with no loss lines", o)
+		}
+	})
+}
+
+// TestPanicAfterBranchDeletionKeepsTheTip: a panic in the branch stage once
+// update-ref -d has been issued (a worktree item and a branch item) still
+// yields an outcome carrying the deleted commit as DeletedTip, failed, with
+// a reason that says a branch was deleted; a panic before the update-ref
+// carries no tip. Why: safeItem replaces a panicking item's outcome
+// wholesale, and the restore id must not be lost with it (Ruling J).
+func TestPanicAfterBranchDeletionKeepsTheTip(t *testing.T) {
+	boom := func() { panic("boom") }
+	t.Run("worktree item, after the update-ref", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		f.mergedWorktree("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindWorktree, "topic")
+		hookAfterUpdateRef(t, boom)
+		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
+		if o.Worktree != WtFailed || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip ||
+			!strings.Contains(o.Reason, "internal error after a branch deletion") {
+			t.Fatalf("outcome %+v, want failed / retained_unknown with DeletedTip %s", o, row.Tip)
+		}
+		if _, ok := f.refTip("refs/heads/topic"); ok {
+			t.Fatal("precondition: the branch was not deleted")
+		}
+	})
+	t.Run("branch item, after the update-ref", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		f.Branch("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindBranch, "topic")
+		hookAfterUpdateRef(t, boom)
+		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
+		if o.Worktree != WtFailed || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip {
+			t.Fatalf("outcome %+v, want failed / retained_unknown with DeletedTip %s", o, row.Tip)
+		}
+	})
+	t.Run("before the update-ref", func(t *testing.T) {
+		noGh(t)
+		f := newFixture(t)
+		f.Branch("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindBranch, "topic")
+		hookBeforeUpdateRef(t, boom)
+		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
+		if o.Worktree != WtFailed || o.Branch != BrNotAttempted || o.DeletedTip != "" {
+			t.Fatalf("outcome %+v, want failed / not_attempted with no tip", o)
+		}
+		if _, ok := f.refTip("refs/heads/topic"); !ok {
+			t.Fatal("topic deleted")
+		}
+	})
+}
+
+// TestPendingTipFollowsTheResult pins safeItem's record (itemCtx.pending)
+// through the branch stage: after a compare-and-swap that provably did not
+// delete (the ref moved first) it is empty again; after a delete it is the
+// tip. Why: a panic later in the item must report a tip only when the branch
+// may really be gone.
+func TestPendingTipFollowsTheResult(t *testing.T) {
+	t.Run("CAS lost", func(t *testing.T) {
+		f, e, good := branchCase(t)
+		newTip := f.git("commit-tree", "-p", good.Tip, "-m", "raced", good.Tip+"^{tree}")
+		hookBeforeUpdateRef(t, func() { f.git("update-ref", "refs/heads/topic", newTip) })
+		pending := "stale"
+		ic := itemCtx{item: withD, considerBranch: true, pending: &pending}
+		if r := e.deleteBranch(ic, good); r.Out != BrRetainedMoved {
+			t.Fatalf("got %s %q, want retained_moved", r.Out, r.Reason)
+		}
+		if pending != "" {
+			t.Errorf("pending %q after a CAS that did not delete, want empty", pending)
+		}
+	})
+	t.Run("deleted", func(t *testing.T) {
+		_, e, good := branchCase(t)
+		var pending string
+		ic := itemCtx{item: withD, considerBranch: true, pending: &pending}
+		if r := e.deleteBranch(ic, good); r.Out != BrDeleted {
+			t.Fatalf("got %s %q, want deleted", r.Out, r.Reason)
+		}
+		if pending != good.Tip {
+			t.Errorf("pending %q after a delete, want %s", pending, good.Tip)
 		}
 	})
 }

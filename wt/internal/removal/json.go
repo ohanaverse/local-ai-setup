@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
@@ -25,7 +26,9 @@ type Meta struct {
 // Envelope is the one JSON document a removal prints, on success and on
 // failure. Items is always present (`[]`, never null) and in the order the
 // items were acted on; DryRun is always written. On failure Error is set and
-// Items is empty.
+// Items is empty. Error beside a non-empty Items is a partial report (Encode
+// met values outside the contract): every listed item is still a change the
+// run made or decided.
 type Envelope struct {
 	Version int        `json:"version"`
 	Repo    string     `json:"repo"`
@@ -58,8 +61,14 @@ type ErrorJSON struct {
 	Message string `json:"message"`
 }
 
-// The contract's enums, by Go type: an outcome holding any other value is not
-// encoded (Encode fails) rather than printed off-contract.
+// InvalidValue is the reserved sentinel the document writes in place of a
+// kind, saw, worktree or branch value that is not in the contract (no engine
+// outcome holds one). It is not an outcome: an item carrying it comes with
+// the envelope's error naming the item and the value (a partial report).
+const InvalidValue = "invalid"
+
+// The contract's enums, by Go type. A value outside them is written as
+// InvalidValue and reported in the envelope's error, never dropped.
 var (
 	jsonKinds     = []cleanup.Kind{cleanup.KindWorktree, cleanup.KindBranch, cleanup.KindRemote}
 	jsonStatuses  = []cleanup.Status{cleanup.StatusProven, cleanup.StatusLessSure, cleanup.StatusUniqueWork, cleanup.StatusInUse}
@@ -78,34 +87,43 @@ func sanitised(ss []string) []string {
 	return out
 }
 
-// itemJSON is o as the contract writes it, or an error when one of its enum
-// values is not in the contract.
-func itemJSON(i int, o Outcome) (ItemJSON, error) {
-	it := o.Item
-	switch {
-	case !slices.Contains(jsonKinds, it.Kind):
-		return ItemJSON{}, fmt.Errorf("removal: item %d: kind %q is not in the result contract", i, it.Kind)
-	case !slices.Contains(jsonStatuses, it.Saw):
-		return ItemJSON{}, fmt.Errorf("removal: item %d: status seen %q is not in the result contract", i, it.Saw)
-	case !slices.Contains(jsonWorktrees, o.Worktree):
-		return ItemJSON{}, fmt.Errorf("removal: item %d: worktree outcome %q is not in the result contract", i, o.Worktree)
-	case !slices.Contains(jsonBranches, o.Branch):
-		return ItemJSON{}, fmt.Errorf("removal: item %d: branch outcome %q is not in the result contract", i, o.Branch)
+// enumValue is v when it is one of allowed, else InvalidValue and a problem
+// line naming item i, what (the field) and v.
+func enumValue[T ~string](i int, what string, v T, allowed []T, problems *[]string) string {
+	if slices.Contains(allowed, v) {
+		return string(v)
 	}
+	*problems = append(*problems, fmt.Sprintf("item %d: %s %q is not in the result contract", i, what, string(v)))
+	return InvalidValue
+}
+
+// itemJSON is o as the contract writes it. A value outside the contract is
+// written as InvalidValue (a malformed DeletedTip is left out) and described
+// in problems; the item itself is never dropped.
+func itemJSON(i int, o Outcome, problems *[]string) ItemJSON {
+	it := o.Item
 	j := ItemJSON{
-		Kind: string(it.Kind), Name: it.Name, Ref: it.Ref, Saw: string(it.Saw),
-		Worktree: string(o.Worktree), Branch: string(o.Branch),
+		Kind: enumValue(i, "kind", it.Kind, jsonKinds, problems), Name: it.Name, Ref: it.Ref,
+		Saw:      enumValue(i, "status seen", it.Saw, jsonStatuses, problems),
+		Worktree: enumValue(i, "worktree outcome", o.Worktree, jsonWorktrees, problems),
+		Branch:   enumValue(i, "branch outcome", o.Branch, jsonBranches, problems),
 		// Reason and Warnings are set through SetReason/AddWarning, but an
 		// Outcome is a plain struct: sanitise again, never trust the input.
-		Reason:    cleanup.OneLine(o.Reason),
-		Warnings:  sanitised(o.Warnings),
-		Losses:    sanitised(o.LossLines),
-		BranchTip: o.DeletedTip,
+		Reason:   cleanup.OneLine(o.Reason),
+		Warnings: sanitised(o.Warnings),
+		Losses:   sanitised(o.LossLines),
+	}
+	switch {
+	case o.DeletedTip == "":
+	case commitID.MatchString(o.DeletedTip):
+		j.BranchTip = o.DeletedTip
+	default:
+		*problems = append(*problems, fmt.Sprintf("item %d: branch_tip %q is not a full commit id", i, o.DeletedTip))
 	}
 	if it.Kind != cleanup.KindBranch {
 		j.Path = it.Path
 	}
-	return j, nil
+	return j
 }
 
 func marshal(e Envelope) ([]byte, error) {
@@ -119,28 +137,31 @@ func marshal(e Envelope) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Encode renders outcomes as the envelope, in the order given. It fails,
-// printing nothing, if an outcome holds a value outside the contract's enums
-// (no engine outcome does); the caller then prints EncodeError's document.
+// Encode renders outcomes as the envelope, every one of them, in the order
+// given. It runs after the removals happened, so it never drops an item: a
+// value outside the contract is written as InvalidValue (a malformed
+// DeletedTip left out) and the envelope's error names each such item and
+// value, a partial report the caller treats as having made the listed
+// changes. It returns an error only when marshalling fails.
 func Encode(outcomes []Outcome, meta Meta) ([]byte, error) {
 	e := Envelope{Version: EnvelopeVersion, Repo: meta.Repo, DryRun: meta.DryRun, Items: make([]ItemJSON, 0, len(outcomes))}
+	var problems []string
 	for i, o := range outcomes {
-		j, err := itemJSON(i, o)
-		if err != nil {
-			return nil, err
-		}
-		e.Items = append(e.Items, j)
+		e.Items = append(e.Items, itemJSON(i, o, &problems))
+	}
+	if len(problems) > 0 {
+		e.Error = &ErrorJSON{Message: cleanup.OneLine("partial report: " + strings.Join(problems, "; "))}
 	}
 	return marshal(e)
 }
 
-// EncodeError renders the failure envelope: no items, dry_run false (the
-// document claims nothing was decided), and err as one sanitised line; a nil
-// err is reported as "unknown error".
-func EncodeError(repo string, err error) ([]byte, error) {
+// EncodeError renders the failure envelope: no items, dry_run from meta (a
+// failed dry run says so), and err as one sanitised line; a nil err is
+// reported as "unknown error".
+func EncodeError(meta Meta, err error) ([]byte, error) {
 	msg := "unknown error" // a nil err still yields one document
 	if err != nil {
 		msg = cleanup.OneLine(err.Error())
 	}
-	return marshal(Envelope{Version: EnvelopeVersion, Repo: repo, Items: []ItemJSON{}, Error: &ErrorJSON{Message: msg}})
+	return marshal(Envelope{Version: EnvelopeVersion, Repo: meta.Repo, DryRun: meta.DryRun, Items: []ItemJSON{}, Error: &ErrorJSON{Message: msg}})
 }

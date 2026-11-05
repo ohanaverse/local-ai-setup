@@ -171,7 +171,13 @@ func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) branchResult {
 	if ic.dry {
 		return result(BrDeleted, "dry run: would delete "+ref)
 	}
-	return e.casDelete(ref, fresh.Tip)
+	r := e.casDelete(ref, fresh.Tip, ic.pending)
+	if ic.pending != nil {
+		// What the result says, now that it is known: cleared when the
+		// compare-and-swap provably did not delete.
+		*ic.pending = r.DeletedTip
+	}
+	return r
 }
 
 // onlyVerdictUnknown reports whether r's Unknown is only about the merge
@@ -260,10 +266,16 @@ func refHeld(held []string, ref string) bool {
 // result by re-reading the ref: git's exit status alone is never taken for
 // it. After a confirmed delete it re-checks the worktrees and puts the
 // branch back if one now holds it (or that cannot be read).
-func (e Engine) casDelete(ref, tip string) branchResult {
+//
+// pending (nil-safe) is set to tip immediately before the update-ref is
+// issued: if anything after it panics, safeItem still reports the tip.
+func (e Engine) casDelete(ref, tip string, pending *string) branchResult {
 	was := fmt.Sprintf("%s (was %s)", ref, tip)
 
 	beforeUpdateRef()
+	if pending != nil {
+		*pending = tip
+	}
 	out, err := runRefGit(e.G, "update-ref", "--no-deref", "-d", ref, tip)
 	if err != nil || out.Code != 0 {
 		return e.deleteFailed(ref, tip, gitErrText(err, out))
@@ -322,13 +334,16 @@ func gitErrText(err error, out cleanup.Out) string {
 }
 
 // deleteFailed judges a delete git did not confirm by re-reading the ref.
+// Every result that cannot prove the ref still exists records the tip
+// (Ruling J): git may have deleted it before failing (a timeout after the
+// write).
 func (e Engine) deleteFailed(ref, tip, gitErr string) branchResult {
 	was := fmt.Sprintf("%s (was %s)", ref, tip)
 	now, exists, rerr := e.readRef(ref)
 	switch {
 	case rerr != nil:
 		return result(BrRetainedUnknown, "branch "+was+": git update-ref failed and it could not be re-read",
-			"git update-ref: "+gitErr, "re-read: "+rerr.Error())
+			"git update-ref: "+gitErr, "re-read: "+rerr.Error()).deletedTip(tip)
 	case !exists:
 		// Someone else deleted it, or git did before it failed (a timeout
 		// after the write): fail closed, but say so and give the tip.

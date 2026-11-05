@@ -28,6 +28,10 @@ type itemCtx struct {
 	// dry: decide only (Plan / DryRun); the worktree at removedPath is
 	// still there.
 	dry bool
+	// pending (nil for previews) is safeItem's record of a commit whose
+	// branch may be deleted: set just before update-ref -d is issued, then
+	// to the result's DeletedTip. A panic after it keeps the restore id.
+	pending *string
 }
 
 // Run acts on items one at a time, in the order given, re-classifying each
@@ -57,20 +61,29 @@ func (e Engine) each(items []Item, progress func(Outcome), dry bool) []Outcome {
 
 // safeItem is item with a panic turned into a failed outcome: one item's
 // bug must not lose the outcomes of the others or leave the run unreported.
+// A panic once the branch stage issued update-ref -d keeps the commit as
+// DeletedTip (Ruling J): the branch may be gone.
 func (e Engine) safeItem(it Item, dry bool) (o Outcome) {
+	var pending string
 	defer func() {
 		if r := recover(); r != nil {
-			o = NewOutcome(it, WtFailed, BrNotAttempted, fmt.Sprintf("internal error: %v", r))
+			if pending == "" {
+				o = NewOutcome(it, WtFailed, BrNotAttempted, fmt.Sprintf("internal error: %v", r))
+				return
+			}
+			o = NewOutcome(it, WtFailed, BrRetainedUnknown,
+				fmt.Sprintf("internal error after a branch deletion; restore with the tip %s: %v", pending, r))
+			o.DeletedTip = pending
 		}
 	}()
-	return e.item(it, dry)
+	return e.item(it, dry, &pending)
 }
 
 // item is Run's and Plan's path for one item. The first check: it must have
 // come unmodified from ItemPreview.Confirmed or ConfirmedDeletingBranch
 // (Ruling L). Preview, which takes ItemFromRow items as input, does not
-// come through here.
-func (e Engine) item(it Item, dry bool) Outcome {
+// come through here. pending is safeItem's (itemCtx.pending).
+func (e Engine) item(it Item, dry bool, pending *string) Outcome {
 	if !it.confirmed() {
 		return refuse(it, "invalid target: not confirmed")
 	}
@@ -78,6 +91,7 @@ func (e Engine) item(it Item, dry bool) Outcome {
 	if g.stop != nil {
 		return *g.stop
 	}
+	g.pending = pending
 	o, _ := e.act(it, g, dry)
 	return o
 }
@@ -98,6 +112,9 @@ type gated struct {
 	// must be passed --force (dirty, and the item has Approved.Force).
 	need     Needs
 	gitForce bool
+	// pending is handed to the branch stage (itemCtx.pending); nil in a
+	// preview.
+	pending *string
 }
 
 // needsOf is what removing an item of kind k whose fresh row is fresh needs
@@ -285,7 +302,7 @@ func (e Engine) worktreeAct(it Item, g gated, dry bool) (Outcome, []string) {
 		o.AddWarning(w)
 	}
 
-	ic := itemCtx{item: it, fresh: fresh, removedPath: fresh.Path, considerBranch: true, dry: dry}
+	ic := itemCtx{item: it, fresh: fresh, removedPath: fresh.Path, considerBranch: true, dry: dry, pending: g.pending}
 
 	// 10. A dry run removes nothing; it still decides the branch stage, as
 	// the run would after a removal.
@@ -386,7 +403,7 @@ func (e Engine) branchGate(it Item) gated {
 // branchAct is the branch stage (8, 9) for a branch item branchGate let
 // through; a dry run decides without writing.
 func (e Engine) branchAct(it Item, g gated, dry bool) (Outcome, []string) {
-	r := e.deleteBranch(itemCtx{item: it, fresh: g.fresh, considerBranch: true, dry: dry}, g.fresh)
+	r := e.deleteBranch(itemCtx{item: it, fresh: g.fresh, considerBranch: true, dry: dry, pending: g.pending}, g.fresh)
 	o := NewOutcome(it, WtNotRequested, BrNotAttempted, "")
 	o.LossLines = lossLines(g.fresh)
 	return o.applyBranch(r), oneLines(r.Warnings)

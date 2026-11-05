@@ -49,22 +49,29 @@ func encodeDoc(t *testing.T, outcomes []Outcome, meta Meta) (map[string]any, []b
 
 // TestRemoveEnvelopeVersioned pins that every removal document, success and
 // failure, carries `version` equal to EnvelopeVersion and an always-present
-// boolean `dry_run`. Why: a consumer checks the version before reading
+// boolean `dry_run` taken from Meta, the failure document too (a failed dry
+// run says dry_run true). Why: a consumer checks the version before reading
 // anything else, and must never have to guess whether a run changed things.
 func TestRemoveEnvelopeVersioned(t *testing.T) {
 	if EnvelopeVersion != 1 {
 		t.Fatalf("EnvelopeVersion = %d; bump only with the schema and fixtures", EnvelopeVersion)
 	}
 	okDoc, _ := encodeDoc(t, sampleOutcomes(), Meta{Repo: "/r", DryRun: true})
-	errB, err := EncodeError("/r", errors.New("boom"))
-	if err != nil {
-		t.Fatal(err)
+	errDoc := map[string]any{}
+	dryErrDoc := map[string]any{}
+	for d, meta := range map[*map[string]any]Meta{&errDoc: {Repo: "/r"}, &dryErrDoc: {Repo: "/r", DryRun: true}} {
+		b, err := EncodeError(meta, errors.New("boom"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, d); err != nil {
+			t.Fatal(err)
+		}
 	}
-	var errDoc map[string]any
-	if err := json.Unmarshal(errB, &errDoc); err != nil {
-		t.Fatal(err)
+	if dryErrDoc["dry_run"] != true {
+		t.Errorf("a failed dry run's document says dry_run %v", dryErrDoc["dry_run"])
 	}
-	for name, d := range map[string]map[string]any{"Encode": okDoc, "EncodeError": errDoc} {
+	for name, d := range map[string]map[string]any{"Encode": okDoc, "EncodeError": errDoc, "EncodeError dry run": dryErrDoc} {
 		if d["version"] != float64(EnvelopeVersion) {
 			t.Errorf("%s: version %v, want %d", name, d["version"], EnvelopeVersion)
 		}
@@ -94,7 +101,7 @@ func TestRemoveEnvelopeItemsNeverNull(t *testing.T) {
 		docs["Encode "+name] = b
 	}
 	for name, e := range map[string]error{"error": errors.New("x"), "nil error": nil} {
-		b, err := EncodeError("/r", e)
+		b, err := EncodeError(Meta{Repo: "/r"}, e)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +191,7 @@ func TestRemoveErrorIsOneDocument(t *testing.T) {
 		"nil error":  {nil, "unknown error"},
 		"long error": {errors.New(strings.Repeat("x", 500)), strings.Repeat("x", 199) + "…"},
 	} {
-		b, err := EncodeError("/r", c.err)
+		b, err := EncodeError(Meta{Repo: "/r"}, c.err)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -287,25 +294,79 @@ func TestRemoveAbsentVersusEmpty(t *testing.T) {
 	if l := byName["wip"]["losses"].([]any); len(l) != 1 || l[0] != "uncommitted changes will be lost" {
 		t.Errorf("losses %v", l)
 	}
+	// Every enum key carries the outcome's own value, item by item.
+	for _, o := range sampleOutcomes() {
+		m := byName[o.Item.Name]
+		for k, want := range map[string]string{"kind": string(o.Item.Kind), "saw": string(o.Item.Saw),
+			"worktree": string(o.Worktree), "branch": string(o.Branch), "reason": o.Reason} {
+			if m[k] != want {
+				t.Errorf("%s: %s %v, want %q", o.Item.Name, k, m[k], want)
+			}
+		}
+	}
 }
 
-// TestRemoveEncodeRefusesOffContractValues: an outcome whose kind, saw,
-// worktree or branch value is not one of the contract's enums is an error,
-// never a document that breaks the schema. Why: a consumer validating against
-// the schema must be able to trust every document wt prints.
-func TestRemoveEncodeRefusesOffContractValues(t *testing.T) {
-	good := sampleOutcomes()[0]
-	for name, edit := range map[string]func(o *Outcome){
-		"kind":     func(o *Outcome) { o.Item.Kind = "" },
-		"saw":      func(o *Outcome) { o.Item.Saw = "" },
-		"worktree": func(o *Outcome) { o.Worktree = "gone" },
-		"branch":   func(o *Outcome) { o.Branch = "" },
-	} {
-		o := good
-		edit(&o)
-		if b, err := Encode([]Outcome{o}, Meta{Repo: "/r"}); err == nil {
-			t.Errorf("%s: off-contract value encoded:\n%s", name, b)
+// TestRemoveEncodeNeverDropsItems: an outcome holding a value outside the
+// contract (kind, saw, worktree or branch not a declared constant; a
+// DeletedTip that is not a full 40-hex commit id) never makes Encode fail
+// or drop an item. Every item is written in order, the bad field as the
+// reserved sentinel "invalid" (a bad tip omitted), the good items whole
+// (their branch_tip kept), and the envelope's error names each bad item's
+// index and value: a partial report. Why: Encode runs after the removals
+// happened; failing the batch would discard every real deletion's restore id.
+func TestRemoveEncodeNeverDropsItems(t *testing.T) {
+	good := sampleOutcomes()[0] // carries a branch_tip
+	cases := map[string]struct {
+		edit  func(o *Outcome)
+		key   string // the field that becomes "invalid"; "" for branch_tip
+		value string // what the error must name
+	}{
+		"kind":       {func(o *Outcome) { o.Item.Kind = "" }, "kind", `kind ""`},
+		"saw":        {func(o *Outcome) { o.Item.Saw = "seen" }, "saw", `status seen "seen"`},
+		"worktree":   {func(o *Outcome) { o.Worktree = "gone" }, "worktree", `worktree outcome "gone"`},
+		"branch":     {func(o *Outcome) { o.Branch = "" }, "branch", `branch outcome ""`},
+		"short tip":  {func(o *Outcome) { o.DeletedTip = "abc1234" }, "", `branch_tip "abc1234"`},
+		"upper tip":  {func(o *Outcome) { o.DeletedTip = strings.ToUpper(sha40) }, "", `branch_tip`},
+		"sha256 tip": {func(o *Outcome) { o.DeletedTip = strings.Repeat("a", 64) }, "", `branch_tip`},
+	}
+	for name, c := range cases {
+		bad := good
+		bad.Item.Name = "bad"
+		c.edit(&bad)
+		outs := []Outcome{good, bad, sampleOutcomes()[2]}
+		b, err := Encode(outs, Meta{Repo: "/r"})
+		if err != nil {
+			t.Errorf("%s: Encode failed for outcome content: %v", name, err)
+			continue
 		}
+		var d map[string]any
+		if err := json.Unmarshal(b, &d); err != nil {
+			t.Fatal(err)
+		}
+		items := d["items"].([]any)
+		if len(items) != 3 {
+			t.Errorf("%s: %d items, want all 3", name, len(items))
+			continue
+		}
+		first, second := items[0].(map[string]any), items[1].(map[string]any)
+		if first["branch_tip"] != sha40 || first["saw"] != "proven" {
+			t.Errorf("%s: the good item changed: %v", name, first)
+		}
+		if c.key != "" && second[c.key] != InvalidValue {
+			t.Errorf("%s: %s is %v, want %q", name, c.key, second[c.key], InvalidValue)
+		}
+		if _, has := second["branch_tip"]; c.key == "" && has {
+			t.Errorf("%s: malformed branch_tip written: %v", name, second["branch_tip"])
+		}
+		errObj, _ := d["error"].(map[string]any)
+		msg, _ := errObj["message"].(string)
+		if !strings.Contains(msg, "item 1: ") || !strings.Contains(msg, c.value) {
+			t.Errorf("%s: error %q does not name item 1 and %s", name, msg, c.value)
+		}
+	}
+	// A clean batch has no error.
+	if d, _ := encodeDoc(t, sampleOutcomes(), Meta{Repo: "/r"}); d["error"] != nil {
+		t.Errorf("clean batch carries error %v", d["error"])
 	}
 }
 

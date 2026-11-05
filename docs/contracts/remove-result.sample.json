@@ -55,7 +55,20 @@
     },
     {
       "kind": "worktree",
-      "name": "fix-main",
+      "name": "perf",
+      "path": "/Users/me/src/app/.worktrees/perf",
+      "ref": "refs/heads/perf",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "retained_moved",
+      "reason": "branch refs/heads/perf (was 2468ace02468ace02468ace02468ace02468ace0) gone after git error; it may have been deleted by this run",
+      "warnings": ["git update-ref: exit 1: fatal: update_ref failed for ref 'refs/heads/perf': cannot lock ref"],
+      "losses": [],
+      "branch_tip": "2468ace02468ace02468ace02468ace02468ace0"
+    },
+    {
+      "kind": "worktree",
+      "name": "fix/main",
       "path": "/Users/me/src/app/.worktrees/fix-main",
       "ref": "refs/heads/fix/main",
       "saw": "proven",
