@@ -28,6 +28,6 @@
     }
   ],
   "error": {
-    "message": "partial report: item 1: kind \"\" is not in the result contract; item 1: status seen \"\" is not in the result contract; item 1: worktree outcome \"\" is not in the result contract; item 1: branch outcome \"\" i…"
+    "message": "partial report: item 1: kind \"\" is not in the result contract; item 1: status seen \"\" is not in the result contract; and 2 more off-contract values"
   }
 }

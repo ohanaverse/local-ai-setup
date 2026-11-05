@@ -131,9 +131,34 @@ func TestDeletedTipThroughTheEngine(t *testing.T) {
 			f.forcedWorktreeOn("other", "topic")
 			return one(t, f.engine(s, f.inputs(), Options{}), itemOf(row)), row.Tip
 		}, BrRetainedCheckedOut, false},
-		"git reports a delete that did not happen": {func(t *testing.T) (Outcome, string) {
+		"git reports a delete, the ref is at the same tip": {func(t *testing.T) (Outcome, string) {
+			// Anomalous: a CAS delete that exited 0 is this run's delete, so
+			// the tip is recorded although the ref reads back unchanged.
 			_, e, it, tip := branchItem(t)
 			stubRefGit(t, func(cleanup.Git, ...string) (cleanup.Out, error) { return cleanup.Out{}, nil })
+			return one(t, e, it), tip
+		}, BrRetainedUnknown, true},
+		"deleted, then re-created at another commit": {func(t *testing.T) (Outcome, string) {
+			f, e, it, tip := branchItem(t)
+			other := f.git("commit-tree", "-p", tip, "-m", "other", tip+"^{tree}")
+			stubRefGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+				out, err := g.Run(args...)
+				if err == nil && out.Code == 0 {
+					f.git("update-ref", "refs/heads/topic", other)
+				}
+				return out, err
+			})
+			o := one(t, e, it)
+			if !strings.Contains(o.Reason, "git deleted refs/heads/topic (was "+tip+") but it exists again at "+other[:7]) {
+				t.Errorf("reason %q does not say the deleted ref exists again", o.Reason)
+			}
+			return o, tip
+		}, BrRetainedUnknown, true},
+		"git refuses, the ref intact": {func(t *testing.T) (Outcome, string) {
+			_, e, it, tip := branchItem(t)
+			stubRefGit(t, func(cleanup.Git, ...string) (cleanup.Out, error) {
+				return cleanup.Out{Code: 1, Stderr: "fatal: cannot lock ref"}, nil
+			})
 			return one(t, e, it), tip
 		}, BrRetainedUnknown, false},
 		"refused": {func(t *testing.T) (Outcome, string) {
@@ -284,6 +309,26 @@ func TestPanicAfterBranchDeletionKeepsTheTip(t *testing.T) {
 		s, r := f.report()
 		row := f.row(r, cleanup.KindBranch, "topic")
 		hookAfterUpdateRef(t, boom)
+		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
+		if o.Worktree != WtFailed || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip {
+			t.Fatalf("outcome %+v, want failed / retained_unknown with DeletedTip %s", o, row.Tip)
+		}
+	})
+	t.Run("inside the update-ref, after git wrote", func(t *testing.T) {
+		// The tip must be recorded BEFORE the update-ref is issued: a panic
+		// while the call is still in flight (after git deleted the ref) must
+		// not lose it.
+		noGh(t)
+		f := newFixture(t)
+		f.Branch("topic")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindBranch, "topic")
+		stubRefGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+			if _, err := g.Run(args...); err != nil {
+				t.Fatal(err)
+			}
+			panic("boom inside the update-ref")
+		})
 		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
 		if o.Worktree != WtFailed || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip {
 			t.Fatalf("outcome %+v, want failed / retained_unknown with DeletedTip %s", o, row.Tip)

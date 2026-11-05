@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -367,6 +368,42 @@ func TestRemoveEncodeNeverDropsItems(t *testing.T) {
 	// A clean batch has no error.
 	if d, _ := encodeDoc(t, sampleOutcomes(), Meta{Repo: "/r"}); d["error"] != nil {
 		t.Errorf("clean batch carries error %v", d["error"])
+	}
+}
+
+// TestRemovePartialReportCountsWhatItCannotName: the partial report's
+// error.message fits the 200-rune line cap without being cut: it names the
+// first off-contract values and states how many more there are ("and N more
+// off-contract values"), the named and the counted adding up to all of them;
+// a single value too long to name still yields the total count first. Why: a
+// cut message would silently hide how many items carry the sentinel.
+func TestRemovePartialReportCountsWhatItCannotName(t *testing.T) {
+	msgOf := func(outs []Outcome) string {
+		t.Helper()
+		d, _ := encodeDoc(t, outs, Meta{Repo: "/r"})
+		e, _ := d["error"].(map[string]any)
+		m, _ := e["message"].(string)
+		return m
+	}
+	bad := Outcome{} // four off-contract values
+	msg := msgOf([]Outcome{bad, bad, bad})
+	if n := len([]rune(msg)); n > 200 || strings.HasSuffix(msg, "…") {
+		t.Fatalf("message %q (%d runes) is cut", msg, n)
+	}
+	named := strings.Count(msg, " is not in the result contract")
+	more := 0
+	if i := strings.Index(msg, "; and "); i >= 0 {
+		if _, err := fmt.Sscanf(msg[i:], "; and %d more off-contract values", &more); err != nil {
+			t.Fatalf("message %q: %v", msg, err)
+		}
+	}
+	if named == 0 || named+more != 12 {
+		t.Errorf("message %q names %d and counts %d more, want 12 in all", msg, named, more)
+	}
+	long := Outcome{Item: Item{Kind: cleanup.KindBranch, Saw: cleanup.Status(strings.Repeat("x", 500))},
+		Worktree: WtNotRequested, Branch: BrNotAttempted}
+	if msg := msgOf([]Outcome{long, long}); !strings.HasPrefix(msg, "partial report: 2 off-contract values;") {
+		t.Errorf("message %q does not lead with the count", msg)
 	}
 }
 

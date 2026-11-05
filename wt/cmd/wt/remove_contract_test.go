@@ -303,6 +303,46 @@ func TestRemoveFixtureCoversEveryOutcome(t *testing.T) {
 	}
 }
 
+// partialSampleInput are the outcomes remove-result.partial.sample.json is
+// the encoding of: a worktree removed with its branch deleted, and a zero
+// Outcome (every enum field off the contract).
+func partialSampleInput() []removal.Outcome {
+	const tip = "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+	good := removal.NewOutcome(removal.Item{Kind: cleanup.KindWorktree, Name: "topic", Path: "/Users/me/src/app/.worktrees/topic",
+		Ref: "refs/heads/topic", Saw: cleanup.StatusProven}, removal.WtRemoved, removal.BrDeleted,
+		"deleted refs/heads/topic (was "+tip+"; restore: git branch topic "+tip+")")
+	good.AddWarning("the commit survives only until git gc prunes it, possibly the next gc")
+	good.DeletedTip = tip
+	return []removal.Outcome{good, {}}
+}
+
+// TestRemovePartialSampleIsEncodeOutput encodes partialSampleInput and
+// requires the partial sample to be that document: error.message byte for
+// byte, and the whole document equal once decoded. Why: the sample shows the
+// partial-report message wt prints; hand-written, it would drift from the
+// encoder's wording and its cap.
+func TestRemovePartialSampleIsEncodeOutput(t *testing.T) {
+	b, err := removal.Encode(partialSampleInput(), removal.Meta{Repo: "/Users/me/src/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	want = readJSONFile(t, removePartialFixture).(map[string]any)
+	ge, _ := got["error"].(map[string]any)
+	we, _ := want["error"].(map[string]any)
+	gm, _ := ge["message"].(string)
+	wm, _ := we["message"].(string)
+	if gm != wm {
+		t.Errorf("partial sample error.message\n%q\nEncode writes\n%q", wm, gm)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("partial sample is not Encode's output; Encode writes:\n%s", b)
+	}
+}
+
 // TestRemoveLiveEncodeValidatesAgainstSchema drives the REAL engine in a
 // scratch repository (a proven worktree, a dirty one, a locked one, a
 // detached one and a branch-only item) through Preview, Confirmed and Run,

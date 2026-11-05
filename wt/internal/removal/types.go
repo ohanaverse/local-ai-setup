@@ -139,8 +139,10 @@ type Outcome struct {
 	// issued update-ref -d and cannot prove the ref still exists. That is:
 	// deleted; deleted, then restored (a worktree took it, or the worktrees
 	// could not be re-checked); deleted and not restored, or re-created by
-	// someone else; git reported the delete but the ref could not be
-	// re-read; git's update-ref failed and the ref was gone afterwards
+	// someone else; git reported the delete (a compare-and-swap that exits
+	// 0 is this run's delete) and the ref could not be re-read or reads
+	// back again, at another commit or anomalously at the same one; git's
+	// update-ref failed and the ref was gone afterwards
 	// (retained_moved) or could not be re-read (retained_unknown); and a
 	// panic after the update-ref was issued (safeItem: failed /
 	// retained_unknown). Never capped, unlike Reason: it is the one

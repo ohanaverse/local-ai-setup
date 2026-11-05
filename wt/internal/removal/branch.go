@@ -285,8 +285,14 @@ func (e Engine) casDelete(ref, tip string, pending *string) branchResult {
 	case rerr != nil:
 		// git reported the delete: it may have happened, so keep the tip.
 		return result(BrRetainedUnknown, "branch "+was+": git reported it deleted but it could not be re-read", rerr.Error()).deletedTip(tip)
+	case exists && now != tip:
+		// The compare-and-swap exited 0: this run deleted tip, and someone
+		// re-created the ref at another commit before the re-read.
+		return result(BrRetainedUnknown, fmt.Sprintf("git deleted %s (was %s) but it exists again at %s", ref, tip, abbrev(now))).deletedTip(tip)
 	case exists:
-		return result(BrRetainedUnknown, fmt.Sprintf("branch %s still exists (at %s) although git reported it deleted", was, abbrev(now)))
+		// Anomalous: git reported the delete and the ref reads back at the
+		// same tip. The run issued a successful delete, so keep the tip.
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s still exists (at %s) although git reported it deleted", was, abbrev(now))).deletedTip(tip)
 	}
 
 	// A worktree that checked the branch out (or started a rebase or bisect

@@ -142,7 +142,9 @@ func marshal(e Envelope) ([]byte, error) {
 // value outside the contract is written as InvalidValue (a malformed
 // DeletedTip left out) and the envelope's error names each such item and
 // value, a partial report the caller treats as having made the listed
-// changes. It returns an error only when marshalling fails.
+// changes. The message is one line under the 200-rune cap: it names the first
+// off-contract values that fit and states the count of the rest ("and N more
+// off-contract values"). It returns an error only when marshalling fails.
 func Encode(outcomes []Outcome, meta Meta) ([]byte, error) {
 	e := Envelope{Version: EnvelopeVersion, Repo: meta.Repo, DryRun: meta.DryRun, Items: make([]ItemJSON, 0, len(outcomes))}
 	var problems []string
@@ -150,9 +152,26 @@ func Encode(outcomes []Outcome, meta Meta) ([]byte, error) {
 		e.Items = append(e.Items, itemJSON(i, o, &problems))
 	}
 	if len(problems) > 0 {
-		e.Error = &ErrorJSON{Message: cleanup.OneLine("partial report: " + strings.Join(problems, "; "))}
+		e.Error = &ErrorJSON{Message: partialMessage(problems)}
 	}
 	return marshal(e)
+}
+
+// partialMessage is the partial report's error message: the first problems
+// that fit on one uncut line (cleanup.OneLine's cap), then the count of the
+// rest. When not even one fits, the total count leads and the first problem
+// follows, cut.
+func partialMessage(problems []string) string {
+	for n := len(problems); n >= 1; n-- {
+		msg := "partial report: " + strings.Join(problems[:n], "; ")
+		if rest := len(problems) - n; rest > 0 {
+			msg += fmt.Sprintf("; and %d more off-contract values", rest)
+		}
+		if line := cleanup.OneLine(msg); !strings.HasSuffix(line, "…") {
+			return line
+		}
+	}
+	return cleanup.OneLine(fmt.Sprintf("partial report: %d off-contract values; the first: %s", len(problems), problems[0]))
 }
 
 // EncodeError renders the failure envelope: no items, dry_run from meta (a
