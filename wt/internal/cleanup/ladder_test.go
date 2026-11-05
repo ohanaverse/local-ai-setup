@@ -59,6 +59,25 @@ func TestProveLadder(t *testing.T) {
 			f.Commit("m", "m", "m")
 			f.Push("main")
 		}, EvMergeAddsNothing, Merged},
+		{"multi-commit squash, main not advanced", func(f *fixture) {
+			// main is exactly the squash: the tip's tree is the base's tree.
+			f.Branch("topic")
+			f.Checkout("topic")
+			f.Commit("a", "a", "a")
+			f.Commit("b", "b", "b")
+			f.Squash("topic")
+		}, EvTreesMatch, Merged},
+		{"commit then revert on the branch, main advanced", func(f *fixture) {
+			// The tip's tree is the merge-base's tree: the branch adds nothing.
+			// main moves on so the trees-match rung cannot answer first.
+			f.Branch("topic")
+			f.Checkout("topic")
+			f.Commit("secret.txt", "s", "add secret")
+			f.Revert("HEAD")
+			f.Checkout("main")
+			f.Commit("m", "m", "m")
+			f.Push("main")
+		}, EvNoAddedChanges, Merged},
 		{"commit main lacks", func(f *fixture) {
 			f.Branch("topic")
 			f.Checkout("topic")

@@ -158,6 +158,23 @@ func TestClassify(t *testing.T) {
 			f.Commit("m", "m", "m")
 			f.Push("main")
 		}, want: want{kind: KindBranch, name: "topic", status: StatusProven, ev: EvMergeAddsNothing}},
+		{name: "multi-commit squash, main not advanced, never pushed", setup: func(t *testing.T, f *fixture) {
+			f.Branch("topic")
+			f.Checkout("topic")
+			f.Commit("a", "a", "a")
+			f.Commit("b", "b", "b")
+			f.Squash("topic")
+		}, want: want{kind: KindBranch, name: "topic", status: StatusProven, ev: EvTreesMatch}},
+		{name: "commit then revert on the branch, pushed", setup: func(t *testing.T, f *fixture) {
+			f.Branch("topic")
+			f.Checkout("topic")
+			f.Commit("secret.txt", "s", "add secret")
+			f.Revert("HEAD")
+			f.Push("topic")
+			f.Checkout("main")
+			f.Commit("m", "m", "m")
+			f.Push("main")
+		}, want: want{kind: KindBranch, name: "topic", status: StatusProven, ev: EvNoAddedChanges}},
 		{name: "squash then revert", setup: func(t *testing.T, f *fixture) {
 			f.Branch("topic")
 			f.Checkout("topic")
