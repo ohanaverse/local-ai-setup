@@ -1219,3 +1219,25 @@ func TestBranchReasonKeepsFullTipUnderTheCap(t *testing.T) {
 		})
 	}
 }
+
+// TestBranchDeleteDropsUpstreamConfig deletes a branch that has an upstream
+// configured and requires its [branch "<name>"] section to go with it, as
+// `git branch -D` does. Why: update-ref -d leaves remote/merge behind, and the
+// printed restore command (`git branch <name> <sha>`) would then make a
+// branch that silently inherits a stale upstream.
+func TestBranchDeleteDropsUpstreamConfig(t *testing.T) {
+	noGh(t)
+	f := newFixture(t)
+	f.mergedWorktree("topic")
+	f.git("config", "branch.topic.remote", "origin")
+	f.git("config", "branch.topic.merge", "refs/heads/topic")
+	s, r := f.report()
+	row := f.row(r, cleanup.KindWorktree, "topic")
+	o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
+	if o.Branch != BrDeleted {
+		t.Fatalf("outcome %+v, want deleted", o)
+	}
+	if got := f.git("config", "--list"); strings.Contains(got, "branch.topic.") {
+		t.Errorf("branch.topic.* config left behind:\n%s", got)
+	}
+}

@@ -346,7 +346,15 @@ func (e Engine) afterDelete(ref, tip string) branchResult {
 	restoreCmd := "restore: " + restoreCommand(ref, tip)
 	h := e.checkHolders(ref, "")
 	if h.Out == "" {
-		return result(BrDeleted, fmt.Sprintf("deleted %s (was %s; %s)", ref, tip, restoreCmd), gcCaveat)
+		// `git branch -D` drops the branch's [branch "<name>"] section
+		// (remote, merge); update-ref does not, and a later branch of the
+		// same name (the restore command makes one) would inherit that
+		// upstream. A missing section is exit 128 and nothing to do.
+		warnings := []string{gcCaveat}
+		if out, err := e.G.Run("config", "--remove-section", "branch."+name); err != nil || (out.Code != 0 && out.Code != 128) {
+			warnings = append(warnings, "the branch's upstream config (branch."+name+".*) could not be removed: "+gitErrText(err, out))
+		}
+		return result(BrDeleted, fmt.Sprintf("deleted %s (was %s; %s)", ref, tip, restoreCmd), warnings...)
 	}
 	restored, recreated, why := e.restoreRef(ref, tip)
 	switch {

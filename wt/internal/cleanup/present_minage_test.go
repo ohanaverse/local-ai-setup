@@ -1,7 +1,8 @@
 package cleanup
 
 import (
-	"bytes"
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,18 +54,26 @@ func TestHeaderNotesLoweredMinAge(t *testing.T) {
 		t.Errorf("Classify default MinAge = %s, want %s", got, DefaultMinAge)
 	}
 
-	want, err := Encode(base)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The rows are the same; only the `notes` array differs, and it carries
+	// exactly the header's caveats.
 	withAll := lowered
 	withAll.Notes = []string{"registry: could not be read; artifact protection is OFF and removal is refused"}
-	got, err := Encode(withAll)
-	if err != nil {
-		t.Fatal(err)
+	if got, want := NoteLines(withAll), []string{minAgeLine(withAll), withAll.Notes[0]}; !slices.Equal(got, want) {
+		t.Errorf("NoteLines = %q, want %q", got, want)
 	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("JSON changed with MinAge/Notes set:\n got %s\nwant %s", got, want)
+	rowsOf := func(r Report) string {
+		raw, err := Encode(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct{ Rows json.RawMessage }
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return string(doc.Rows)
+	}
+	if rowsOf(withAll) != rowsOf(base) {
+		t.Error("rows changed with MinAge/Notes set")
 	}
 }
 

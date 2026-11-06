@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -203,8 +204,23 @@ func TestCleanupListHeaderWarnsWhenRegistryFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after != before {
-		t.Errorf("JSON changed when the registry failed:\nbefore %s\nafter  %s", before, after)
+	// Only `notes` may differ: it carries the protection-OFF caveat that a
+	// script reading rows needs, and the rows are unchanged.
+	var bd, ad struct {
+		Notes []string
+		Rows  json.RawMessage
+	}
+	if err := json.Unmarshal([]byte(before), &bd); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(after), &ad); err != nil {
+		t.Fatal(err)
+	}
+	if string(ad.Rows) != string(bd.Rows) {
+		t.Errorf("rows changed when the registry failed:\nbefore %s\nafter  %s", bd.Rows, ad.Rows)
+	}
+	if len(ad.Notes) != 1 || !strings.Contains(ad.Notes[0], "artifact protection is OFF") {
+		t.Errorf("JSON notes = %q, want the protection-OFF caveat", ad.Notes)
 	}
 }
 

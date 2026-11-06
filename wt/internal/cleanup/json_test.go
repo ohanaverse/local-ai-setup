@@ -397,3 +397,26 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 		}
 	}
 }
+
+// TestEnvelopeCarriesNotes pins that the caveats the text header prints (a
+// lowered min-age and the caller's Notes) are in the JSON `notes` array, and
+// that the key is absent when there are none. Why: a script reading rows
+// cannot otherwise learn that artifact protection is off.
+func TestEnvelopeCarriesNotes(t *testing.T) {
+	raw, err := Encode(Report{Repo: "/r", GH: GHOK, MinAge: time.Minute,
+		Notes: []string{"registry: failed to load; artifact protection is OFF"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct{ Notes []string }
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Notes) != 2 || !strings.HasPrefix(doc.Notes[0], "min-age: lowered to 1m") || !strings.Contains(doc.Notes[1], "protection is OFF") {
+		t.Errorf("notes = %q", doc.Notes)
+	}
+	plain, _ := Encode(Report{Repo: "/r", GH: GHOK})
+	if _, has := decodeDoc(t, plain)["notes"]; has {
+		t.Error("notes present for a report with none")
+	}
+}
