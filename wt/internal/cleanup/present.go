@@ -63,12 +63,14 @@ func Groups(r Report) []Group {
 func (r Row) Tickable() bool { return r.Status == StatusProven && len(r.Blockers) == 0 }
 
 // DisplayName is the name a row is listed under: a remote row names its
-// remote, so it is not mistaken for the local branch of the same name.
+// remote, so it is not mistaken for the local branch of the same name. It
+// is one printable line (a detached worktree's directory name can hold any
+// byte); Row.Name stays raw for matching.
 func DisplayName(r Row) string {
 	if r.Kind == KindRemote && r.Remote != "" {
-		return r.Remote + "/" + r.Name
+		return flat(r.Remote + "/" + r.Name)
 	}
-	return r.Name
+	return flat(r.Name)
 }
 
 // reasonWording is one phrase per reason or blocker code. A code the
@@ -250,12 +252,13 @@ func nestedText(n int) string {
 }
 
 // NestedPaths are the paths of the worktrees inside row's (its nested
-// blockers' details), in blocker order. RowText only counts them.
+// blockers' details), in blocker order, each one printable line. RowText
+// only counts them.
 func NestedPaths(row Row) []string {
 	var out []string
 	for _, b := range row.Blockers {
 		if b.Code == BlockNested {
-			out = append(out, b.Detail)
+			out = append(out, flat(b.Detail))
 		}
 	}
 	return out

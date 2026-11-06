@@ -136,16 +136,26 @@ func commonDir(g Git) (string, error) {
 // adminDir finds the administrative directory (<common>/worktrees/<id>) of
 // the linked worktree registered at path: the one whose gitdir file names
 // <path>/.git (absolute, or relative to the administrative directory). None,
-// or more than one, is an error.
+// or more than one, is an error. The worktrees directory is listed, never
+// globbed: the repository's path may hold glob metacharacters (`x[1]`).
+// An entry with no gitdir file registers nothing and is skipped.
 func adminDir(common, path string) (string, error) {
-	matches, err := filepath.Glob(filepath.Join(common, "worktrees", "*", "gitdir"))
-	if err != nil {
-		return "", err
+	root := filepath.Join(common, "worktrees")
+	entries, err := os.ReadDir(root)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("cleanup: %s: %w", flat(root), err)
 	}
 	want, wantClean := resolve(path), filepath.Clean(path)
 	var found []string
-	for _, m := range matches {
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		m := filepath.Join(root, e.Name(), "gitdir")
 		b, err := os.ReadFile(m)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return "", fmt.Errorf("cleanup: %s: %w", flat(m), err)
 		}
