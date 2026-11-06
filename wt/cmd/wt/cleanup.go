@@ -92,13 +92,13 @@ func checkMinAge(cmd *cobra.Command, minAge time.Duration) error {
 // cleanupInputs are the GatherInputs `wt cleanup` and `wt remove` gather
 // with from cwd: this process's session claim (so its own root launch does
 // not look like another's), the registered artifacts and four gh calls at a
-// time.
-func cleanupInputs(cwd string, fetch bool, protected []string) cleanup.GatherInputs {
-	claim, err := sessionclaim.Self(cwd, "", "wt-cleanup")
+// time. label names the command in the claim ("wt-cleanup", "wt-remove").
+func cleanupInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+	claim, err := sessionclaim.Self(cwd, "", label)
 	if err != nil {
 		// Never joined, only used to tell this process from the others: a
 		// claim that could not be timed at worst makes the root look held.
-		claim = sessionclaim.Claim{PID: os.Getpid()}
+		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: label}
 	}
 	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4}
 }
@@ -117,7 +117,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	// Listing only reads, so a registry that cannot be read does not stop
 	// it: the header says protection is off (and a removal refuses).
 	protected, protErr := protectedPaths(a)
-	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupInputs(cwd, !f.noFetch, protected))
+	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupInputs(cwd, !f.noFetch, protected, "wt-cleanup"))
 	if err != nil {
 		repo := snap.Repo
 		if repo == "" {

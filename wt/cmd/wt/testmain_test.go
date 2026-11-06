@@ -48,6 +48,8 @@ func TestMain(m *testing.M) {
 	probeInventory = localmodels.OnDiskSnapshotForTest
 	// wt remove's live-process finder runs lsof over the whole machine: no
 	// test scans it. Tests that need processes stub a finder of their own.
+	// The real default is kept for TestRemoveDefaultProcFinderIsLsof.
+	defaultRemoveProcs = removeProcs
 	removeProcs = func() removal.ProcFinder { return nil }
 	// A pinned agent's binary-presence check (issue #147) defaults to
 	// "installed" so existing tests that pin an agent are unaffected; tests

@@ -131,7 +131,7 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 	if err != nil {
 		return removeFail(out, f, "", 1, err)
 	}
-	in := cleanupInputs(cwd, !f.noFetch, protected)
+	in := cleanupInputs(cwd, !f.noFetch, protected, "wt-remove")
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {
 		repo := snap.Repo
@@ -178,8 +178,14 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 	outcomes := make([]removal.Outcome, 0, len(items))
 	for _, p := range items {
 		if p.run != nil {
-			outcomes = append(outcomes, results[0])
+			o := results[0]
 			results = results[1:]
+			if f.deleteBranch && o.Item.Kind == cleanup.KindWorktree && o.Item.Ref != "" &&
+				o.Worktree == removal.WtRemoved && o.Branch != removal.BrDeleted {
+				o.AddWarning(fmt.Sprintf("-D had no effect on branch %s: %s",
+					strings.TrimPrefix(o.Item.Ref, "refs/heads/"), o.Branch))
+			}
+			outcomes = append(outcomes, o)
 			continue
 		}
 		outcomes = append(outcomes, p.outcome)
@@ -197,6 +203,10 @@ func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.R
 	var rows []cleanup.Row
 	seen := map[int]bool{}
 	for _, arg := range args {
+		if strings.TrimSpace(arg) == "" {
+			// Joined to cwd it would name the current checkout.
+			return nil, fmt.Errorf("%q names no worktree path or local branch (an empty argument)", arg)
+		}
 		p := arg
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(cwd, p)
@@ -336,9 +346,14 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 		for _, w := range pv.Warnings {
 			b.WriteString("      warning: " + cleanup.OneLine(w) + "\n")
 		}
-		if p.deleting != "" {
+		switch {
+		case p.deleting != "":
+			// The worktree's kept-branch note no longer holds: -D deletes it.
 			b.WriteString("      -D: will also delete unmerged branch " + cleanup.OneLine(p.deleting) + "\n")
-		} else {
+		default:
+			if pv.Item.Kind == cleanup.KindBranch && pv.Needs.Delete {
+				b.WriteString("      -D: deletes unmerged branch " + cleanup.OneLine(pv.Item.Name) + "\n")
+			}
 			for _, n := range pv.Notes {
 				b.WriteString("      note: " + cleanup.OneLine(n) + "\n")
 			}

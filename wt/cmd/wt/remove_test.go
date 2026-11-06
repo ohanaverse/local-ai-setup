@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,10 @@ func removeApp(t *testing.T) (*app, string) {
 	t.Cleanup(func() { removeNow, removeTTY, removeProcs = oldNow, oldTTY, oldProcs })
 	return a, tmp
 }
+
+// defaultRemoveProcs is removeProcs as the package initialised it, saved by
+// TestMain before it stubs the seam.
+var defaultRemoveProcs func() removal.ProcFinder
 
 // onTTY makes the command see a terminal for the rest of the test.
 func onTTY(t *testing.T) {
@@ -260,9 +265,267 @@ func TestRemoveCmdUnknownArgIsUsageError(t *testing.T) {
 	if exitOf(err) != 1 || env.Error == nil || !strings.Contains(env.Error.Message, "nope") {
 		t.Errorf("json: exit %d env %+v", exitOf(err), env)
 	}
-	// A remote row is never a target: origin/main names no local target.
-	if _, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "origin/main"); exitOf(err) != 1 {
-		t.Errorf("origin/main: exit %d, want 1", exitOf(err))
+	// The empty argument names nothing (joined to the current directory it
+	// would be the primary checkout).
+	if _, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", ""); exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), `""`) {
+		t.Errorf(`"": exit %d err %v, want 1 naming ""`, exitOf(err), err)
+	}
+}
+
+// TestRemoveCmdRemoteRowIsNeverATarget verifies an origin branch with no
+// local branch (a real, non-default remote row) is not a target by its
+// remote-tracking name nor by its branch name: exit 1, and the remote ref
+// stays. Remote rows belong to PR C; wt remove must never reach origin.
+func TestRemoveCmdRemoteRowIsNeverATarget(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	cgit(t, dir, "checkout", "-b", "topic")
+	cleanupCommit(t, dir, "t.txt", "topic work")
+	cgit(t, dir, "push", "-u", "origin", "topic")
+	cgit(t, dir, "checkout", "main")
+	cgit(t, dir, "branch", "-D", "topic")
+	if got := cgit(t, dir, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/topic"); got != "refs/remotes/origin/topic" {
+		t.Fatalf("fixture: origin/topic missing (%q)", got)
+	}
+	for _, arg := range []string{"origin/topic", "topic", "refs/remotes/origin/topic"} {
+		_, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--force", "--accept-loss", "-D", arg)
+		if exitOf(err) != 1 {
+			t.Errorf("%s: exit %d (%v), want 1", arg, exitOf(err), err)
+		}
+	}
+	if got := cgit(t, dir, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/topic"); got != "refs/remotes/origin/topic" {
+		t.Errorf("origin/topic gone")
+	}
+}
+
+// TestRemoveCmdDuplicateArgsAreOneItem verifies that naming the same
+// worktree twice (its path, and its branch name, and the path again) acts on
+// it once: one item, exit 0. A second item for the same target would read
+// "no longer exists" and turn a clean run into exit 2.
+func TestRemoveCmdDuplicateArgsAreOneItem(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	stdout, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--json", p, "topic", p)
+	if exitOf(err) != 0 {
+		t.Fatalf("exit %d (%v)\n%s", exitOf(err), err, stdout)
+	}
+	if env := decodeOne(t, stdout); len(env.Items) != 1 || env.Items[0].Worktree != "removed" {
+		t.Errorf("items = %+v, want one removed", env.Items)
+	}
+}
+
+// TestRemoveCmdRegistryCheckedBeforeAnythingIsRead verifies the registry
+// refusal comes before the working directory is read as a repository and
+// before any fetch: outside a repository the error still names the registry,
+// and inside one (without --no-fetch) origin's new commit is not fetched.
+// Removal must not even start reading with artifact protection off.
+func TestRemoveCmdRegistryCheckedBeforeAnythingIsRead(t *testing.T) {
+	_, tmp := removeApp(t)
+	if err := os.WriteFile(filepath.Join(tmp, "local-ai", "registry.toml"), []byte("models = [ broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := newApp()
+	if err != nil || a.loadErr == nil {
+		t.Fatalf("newApp: %v, loadErr %v; want a load error", err, a.loadErr)
+	}
+	if _, _, err := runRemove(t, a, t.TempDir(), "", "--yes", "topic"); exitOf(err) != 1 || !strings.Contains(fmtErr(err), "registry") {
+		t.Errorf("outside a repository: exit %d err %v, want 1 naming the registry", exitOf(err), err)
+	}
+
+	dir := cleanupRepo(t)
+	other := filepath.Join(filepath.Dir(dir), "other")
+	origin := cgit(t, dir, "remote", "get-url", "origin")
+	cgit(t, filepath.Dir(dir), "clone", "-q", origin, other)
+	cgit(t, other, "config", "user.email", "t@example.com")
+	cgit(t, other, "config", "user.name", "T")
+	cgit(t, other, "config", "commit.gpgsign", "false")
+	cleanupCommit(t, other, "new.txt", "new upstream work")
+	cgit(t, other, "push", "origin", "main")
+	before := cgit(t, dir, "rev-parse", "refs/remotes/origin/main")
+	if _, _, err := runRemove(t, a, dir, "", "--yes", "main"); exitOf(err) != 1 {
+		t.Errorf("in a repository: exit %d (%v), want 1", exitOf(err), err)
+	}
+	if after := cgit(t, dir, "rev-parse", "refs/remotes/origin/main"); after != before {
+		t.Errorf("origin/main moved %s -> %s: a fetch ran before the registry refusal", before, after)
+	}
+}
+
+// fmtErr is err's text, "" for nil.
+func fmtErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// TestRemoveDefaultProcFinderIsLsof verifies the command's default
+// live-process finder is removal.LsofFinder (by type; it is not run, no test
+// scans the machine). A nil default would silently drop the "processes
+// running in the worktree" warning.
+func TestRemoveDefaultProcFinderIsLsof(t *testing.T) {
+	got, want := reflect.TypeOf(defaultRemoveProcs()), reflect.TypeOf(removal.LsofFinder())
+	if got == nil || got != want {
+		t.Errorf("default finder type = %v, want %v", got, want)
+	}
+}
+
+// TestCleanupInputsLabelsTheCommand verifies the session claim names the
+// command that gathered (wt-remove for remove, wt-cleanup for cleanup), so a
+// claim seen by another process says who holds the root.
+func TestCleanupInputsLabelsTheCommand(t *testing.T) {
+	dir := t.TempDir()
+	for _, label := range []string{"wt-remove", "wt-cleanup"} {
+		if got := cleanupInputs(dir, false, nil, label).Claim.Agent; got != label {
+			t.Errorf("label %s: claim agent %q", label, got)
+		}
+	}
+}
+
+// TestRemoveCmdPromptShowsEveryItemFirst verifies that with two items on a
+// terminal the prompt prints BOTH items' loss lines and processes, and the
+// -D line naming the offered branch, all before the [y/N] question. Seeing
+// only the first item's losses would approve the second blind.
+func TestRemoveCmdPromptShowsEveryItemFirst(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	first := mergedWorktree(t, dir, "topic")
+	second := unmergedWorktree(t, dir, "kept")
+	githubOrigin(t, dir)
+	excl := filepath.Join(filepath.Dir(dir), "excl")
+	if err := os.WriteFile(excl, []byte("cache/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cgit(t, dir, "config", "core.excludesFile", excl)
+	// Different losses per item (1 and 2 ignored entries), so one item's
+	// lines cannot stand in for the other's.
+	for n, p := range []string{first, second} {
+		if err := os.MkdirAll(filepath.Join(p, "cache"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for k := 0; k <= n; k++ {
+			if err := os.WriteFile(filepath.Join(p, "cache", "blob"+string(rune('a'+k))), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	removeProcs = func() removal.ProcFinder {
+		return dirProcs{first: {PID: 111, Command: "vim"}, second: {PID: 222, Command: "make"}}
+	}
+	stdout, _, err := runRemove(t, a, dir, "", "--no-fetch", "--dry-run", "--accept-loss", "-D", "--json", first, second)
+	env := decodeOne(t, stdout)
+	if err != nil || len(env.Items) != 2 || len(env.Items[0].Losses) == 0 || len(env.Items[1].Losses) == 0 {
+		t.Fatalf("dry run: err %v items %+v, want two items with losses", err, env.Items)
+	}
+
+	onTTY(t)
+	_, stderr, err := runRemove(t, a, dir, "n\n", "--no-fetch", "--accept-loss", "-D", first, second)
+	if exitOf(err) != 3 {
+		t.Fatalf("exit %d (%v), want 3", exitOf(err), err)
+	}
+	q := strings.Index(stderr, "[y/N]")
+	want := append(append([]string{}, env.Items[0].Losses...), env.Items[1].Losses...)
+	want = append(want, "pid 111 vim", "pid 222 make", "-D: will also delete unmerged branch kept")
+	for _, w := range want {
+		if i := strings.Index(stderr, w); i < 0 || i > q {
+			t.Errorf("%q missing or after the question (at %d, question at %d):\n%s", w, i, q, stderr)
+		}
+	}
+	// Each item's losses and process under its own heading.
+	i, j := strings.Index(stderr, "worktree topic"), strings.Index(stderr, "worktree kept")
+	if i < 0 || j < i || q < j {
+		t.Fatalf("headings out of order:\n%s", stderr)
+	}
+	for k, sec := range []string{stderr[i:j], stderr[j:q]} {
+		proc := []string{"pid 111 vim", "pid 222 make"}[k]
+		for _, l := range append(append([]string{}, env.Items[k].Losses...), proc) {
+			if !strings.Contains(sec, l) {
+				t.Errorf("item %d: %q not under its heading:\n%s", k, l, sec)
+			}
+		}
+	}
+	if env.Items[0].Losses[0] == env.Items[1].Losses[0] {
+		t.Fatalf("fixture: the two items' losses are the same (%q)", env.Items[0].Losses)
+	}
+}
+
+// dirProcs is a ProcFinder that finds one process per worktree directory.
+type dirProcs map[string]removal.Proc
+
+func (d dirProcs) InDir(dir string) ([]removal.Proc, error) {
+	for k, p := range d {
+		if cleanup.ResolvePath(k) == cleanup.ResolvePath(dir) {
+			return []removal.Proc{p}, nil
+		}
+	}
+	return nil, nil
+}
+
+// TestRemoveCmdClosedStdinIsNo verifies a terminal whose input ends without
+// an answer (EOF) counts as No: exit 3, nothing removed. A closed stdin must
+// never read as consent.
+func TestRemoveCmdClosedStdinIsNo(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	onTTY(t)
+	for _, in := range []string{"", "y"} { // "y" with no newline is still read
+		_, _, err := runRemove(t, a, dir, in, "--no-fetch", p)
+		if in == "" && (exitOf(err) != 3 || !exists(p)) {
+			t.Errorf("EOF: exit %d (%v), there=%v, want 3 and kept", exitOf(err), err, exists(p))
+		}
+		if in == "y" && (exitOf(err) != 0 || exists(p)) {
+			t.Errorf("y then EOF: exit %d (%v), there=%v, want 0 and gone", exitOf(err), err, exists(p))
+		}
+	}
+}
+
+// TestRemoveCmdBranchItemDeleteLine verifies that for a branch-only item -D
+// is described as deleting that branch itself ("-D: deletes unmerged branch
+// rescue"), never as "will also delete" something besides it, and that the
+// item's notes are not hidden. The prompt must say plainly what -D does to
+// the item named.
+func TestRemoveCmdBranchItemDeleteLine(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	uniqueBranch(t, dir, "rescue")
+	githubOrigin(t, dir)
+	onTTY(t)
+	_, stderr, err := runRemove(t, a, dir, "n\n", "--no-fetch", "--accept-loss", "-D", "rescue")
+	if exitOf(err) != 3 {
+		t.Fatalf("exit %d (%v), want 3", exitOf(err), err)
+	}
+	if !strings.Contains(stderr, "-D: deletes unmerged branch rescue") || strings.Contains(stderr, "will also delete") {
+		t.Errorf("prompt:\n%s", stderr)
+	}
+}
+
+// TestRemoveCmdDeleteFlagWithoutEffectIsSaid verifies that when -D is given
+// for a worktree whose branch is kept by rule (another worktree has it
+// checked out), the result says -D had no effect on that branch. A user who
+// asked for the branch to go must not assume it did.
+func TestRemoveCmdDeleteFlagWithoutEffectIsSaid(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := unmergedWorktree(t, dir, "kept")
+	twin := filepath.Join(filepath.Dir(dir), "wt-twin")
+	cgit(t, dir, "worktree", "add", "-f", twin, "kept")
+	githubOrigin(t, dir)
+	stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--accept-loss", "-D", "--json", p)
+	env := decodeOne(t, stdout)
+	if len(env.Items) != 1 {
+		t.Fatalf("items = %+v (exit %d, %s)", env.Items, exitOf(err), stderr)
+	}
+	it := env.Items[0]
+	if it.Worktree != "removed" || it.Branch == "deleted" || !hasBranch(t, dir, "kept") {
+		t.Fatalf("item = %+v, want the worktree removed and the branch kept", it)
+	}
+	said := false
+	for _, w := range it.Warnings {
+		said = said || strings.Contains(w, "-D had no effect") && strings.Contains(w, "kept")
+	}
+	if !said {
+		t.Errorf("warnings %q do not say -D had no effect on kept", it.Warnings)
 	}
 }
 
@@ -540,6 +803,10 @@ func TestRemoveExitCode(t *testing.T) {
 		{"detached", []removal.Outcome{wt(removal.WtRemoved, removal.BrNotAttempted)}, 0},
 		{"kept unmerged", []removal.Outcome{wt(removal.WtRemoved, removal.BrRetainedUnmerged)}, 0},
 		{"branch deleted", []removal.Outcome{br(removal.BrDeleted)}, 0},
+		{"kept: checked out elsewhere", []removal.Outcome{wt(removal.WtRemoved, removal.BrRetainedCheckedOut)}, 0},
+		{"kept: default", []removal.Outcome{wt(removal.WtRemoved, removal.BrRetainedDefault)}, 0},
+		{"branch item checked out", []removal.Outcome{br(removal.BrRetainedCheckedOut)}, 2},
+		{"branch item default", []removal.Outcome{br(removal.BrRetainedDefault)}, 2},
 		{"refused", []removal.Outcome{wt(removal.WtRemoved, removal.BrDeleted), wt(removal.WtRefused, removal.BrNotAttempted)}, 2},
 		{"skipped", []removal.Outcome{wt(removal.WtSkippedChanged, removal.BrNotAttempted)}, 2},
 		{"failed", []removal.Outcome{wt(removal.WtFailed, removal.BrNotAttempted)}, 2},
