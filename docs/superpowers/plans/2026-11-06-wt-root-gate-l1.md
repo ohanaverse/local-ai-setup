@@ -169,7 +169,7 @@
 - Modify: `wt/CLAUDE.md` (key-flags table; the "Guard, init seeding, sessions" bullet; the Worktree "Default branch is never a linked worktree" note), `wt/docs/internals/launch-flow.md` (entry table, "Shared-root check" skips paragraph), `wt/README.md` (flag table), `--allow-shared-root` help text in `main.go`, and the design doc.
 
 - [ ] **Step 1: Update the docs** to say: `--root` exists and is exclusive with `--cwd`/`-W`; `--cwd` at the root asks (no terminal: refuses, names `--root`); `-W <root's branch>` is refused; the picker has no root row; the gate runs in `RunE` before `runLaunchPath`; a nested launch under a held root is not gated.
-- [ ] **Step 2: Correct the design.** `EnsureForName` returns an already-checked-out branch's path *before* its default-branch refusal, so `-W main` with the root on `main` resolves to the root today; only the not-checked-out forms (`origin/main`, `<remote>/HEAD`, bare `main` when checked out nowhere) are refused by #516. In the design's `-W <name>` bullet, replace "`-W main` and `-W origin/main` are already refused (#516)" with that accurate statement.
+- [ ] **Step 2: Make `wt/CLAUDE.md`'s "Default branch is never a linked worktree" note accurate.** `EnsureForName` returns an already-checked-out branch's path *before* its default-branch refusal, so `-W main` with the root on `main` resolves to the root today (and, after this plan, is refused by `refuseRootBranch`); #516's refusal covers only the not-checked-out forms (`origin/main`, `<remote>/HEAD`). The design doc already says this.
 - [ ] **Step 3: Run `bin/check-links` from the repo root; expect no broken links.**
 - [ ] **Step 4: Commit** — `docs: root gate (L1) behaviour and design correction`.
 
@@ -187,6 +187,6 @@
 ## Self-review
 
 - **Spec coverage:** `--root` (T4–5), exclusivity (T5), root gate with default-no and no-terminal refusal (T3–5), subdirectory/linked-worktree not gated (T4–5), one question when another session holds the root (T4), `-W` root refusal (T4–5), picker row dropped (T1, T6), docs (T7). The "`--root` does not waive the shared-root menu" rule needs no code: the shared check stays downstream and is covered by the existing tests.
-- **Found while planning:** the design's claim that `-W main` is refused today is wrong when the root is on `main` (T7 step 2 corrects it). A nested `wt` launched by an agent at the root would have been newly refused; T2 and T4 exist to prevent that.
+- **Found while planning:** the design's claim that `-W main` is refused today was wrong when the root is on `main`; the design is corrected in the same commit as this plan. A nested `wt` launched by an agent at the root would have been newly refused; T2 and T4 exist to prevent that.
 - **Behavior change to call out in the PR:** scripts that run `wt --cwd` in a repository root with no terminal now refuse and must pass `--root`; `-W` together with `--cwd` is now an error.
 - **Proportion:** eight tasks for roughly 250 lines of production code plus tests.
