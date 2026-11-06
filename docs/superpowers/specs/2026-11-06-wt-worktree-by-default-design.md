@@ -76,8 +76,10 @@ demoted, not dropped.
   as today (documented limit).
 - `-W <name>` naming a branch the **root has checked out** is refused with a
   message pointing at `--root`. This holds for any root branch, default or not.
-  Today it silently resolves to the root; `-W main` and `-W origin/main` are
-  already refused (#516).
+  Today it silently resolves to the root, including `-W main` while the root
+  is on `main`: `EnsureForName` returns an already-checked-out branch's path
+  before its default-branch refusal (#516), which therefore only covers the
+  not-checked-out forms (`origin/main`, `<remote>/HEAD`).
 
 - **No terminal.** A bare `wt` (and the `<agent>-wt` shims, which are
   `wt --agent <agent>`) already needs a terminal for its pickers
