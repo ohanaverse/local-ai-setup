@@ -118,15 +118,18 @@ type (
 	cleanupSignalMsg struct{ sig os.Signal }
 )
 
-// forwardSignals turns every SIGINT and SIGTERM to the process into a
-// cleanupSignalMsg until stop is called (Ruling T). RunCleanupList runs the
+// forwardedSignals are the signals forwardSignals turns into messages.
+var forwardedSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP}
+
+// forwardSignals turns every SIGINT, SIGTERM and SIGHUP (a closed terminal)
+// to the process into a cleanupSignalMsg until stop is called (Ruling T). RunCleanupList runs the
 // program without Bubble Tea's own handler, which quits on the first signal
 // in any phase and then lets a second one end the process: a removal in
 // flight would be abandoned and its outcome lost. The model decides what a
 // signal does (signalled).
 func forwardSignals(send func(tea.Msg)) (stop func()) {
 	sig := make(chan os.Signal, 4)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sig, forwardedSignals...)
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -355,16 +358,19 @@ func (m cleanupListModel) confirmKey(msg tea.KeyMsg) (cleanupListModel, tea.Cmd)
 		c.offset, c.follow = c.offset+max(1, m.height/2), false
 		return m, nil
 	case "tab":
-		// Ruling U: a toggle applies only to an entry whose decision lines
-		// are on screen. After pgup/pgdown the highlighted entry may be
-		// out of sight: this tab brings it back into view and toggles
-		// nothing; the next one toggles it, in view.
+		// Ruling U: turning a toggle ON applies only to an entry whose
+		// decision lines are on screen. After pgup/pgdown the highlighted
+		// entry may be out of sight: this tab brings it back into view and
+		// toggles nothing; the next one toggles it, in view. Turning one
+		// OFF never adds an approval, so it applies even to an entry too
+		// tall for the screen (which could otherwise never be untoggled).
 		visible := m.frame().visible(c.cursor)
 		c.follow = true
-		if !visible {
+		e := &c.entries[c.cursor]
+		if !visible && !e.delBranch {
 			return m, nil
 		}
-		if e := &c.entries[c.cursor]; e.runnable() && e.pv.CanDeleteBranch {
+		if e.runnable() && e.pv.CanDeleteBranch {
 			e.delBranch = !e.delBranch
 		}
 		return m, nil
@@ -373,7 +379,7 @@ func (m cleanupListModel) confirmKey(msg tea.KeyMsg) (cleanupListModel, tea.Cmd)
 		return m.cancelConfirm("nothing could be removed")
 	}
 	if !c.needsTyped() {
-		if k == "y" {
+		if k == "y" || k == "Y" {
 			return m.confirmed()
 		}
 		return m.cancelConfirm("not confirmed")
