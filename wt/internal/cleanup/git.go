@@ -1,5 +1,7 @@
 // Package cleanup judges which worktrees and branches are safe to remove. It
 // is read-only by design: nothing here deletes a worktree, branch or ref.
+// internal/removal acts on its rows (re-checking each with Rescan first) and
+// is the only package in wt allowed to delete.
 package cleanup
 
 import (

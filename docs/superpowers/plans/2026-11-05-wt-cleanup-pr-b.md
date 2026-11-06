@@ -18,9 +18,15 @@
 4. **Non-interactive approval:** `--yes` approves proven rows only. Removing a less-sure or unique-work row needs the matching explicit flag (`--force` for dirty, `-D` for unmerged) **and** `--yes`; without `--yes` and without a terminal the command exits 3 and removes nothing.
 5. **Exit codes for `wt remove`:** 0 everything requested was removed (a retained branch under the `-d` rule is not a failure); 1 could not start (usage, no default branch, registry failed to load); 2 some items were skipped, refused or failed; 3 approval missing. The JSON result is printed first, always.
 6. **Remote rows are never removable in PR B** (PR C owns `origin`). They stay `[-]` in the list.
-7. **Registry load failure refuses removal** (artifact protection cannot be trusted), and `local_path` protection is fixed per the carry list (home expansion with `config.ExpandHome`, relative paths resolved against the repo root, a malformed `local_path` fails closed).
+7. **Registry load failure refuses removal** (artifact protection cannot be trusted), and `local_path` protection is fixed per the carry list (home expansion with `config.ExpandHome`, relative paths resolved against the repo root, a malformed `local_path` fails closed). *Superseded (Ruling D): a relative `local_path` is refused, not resolved; see the note below.*
 8. **`--min-age` gets a floor of 1 minute**; a value below the 10-minute default shows a header note.
 9. **Tests duplicate a slim git fixture** inside `internal/removal` rather than extracting a shared package from PR A's tests (extraction is a later refactor).
+
+> **Superseded while building (rulings A-U, recorded in the PR B task ledger and summarised in `wt/CLAUDE.md`, "Removal invariants").** Where this plan and the code differ, the code and these notes win:
+> - **Approvals are per item, not run-wide (Rulings K-N).** `Options` has no `Force` or `DeleteUnmerged`: each `Item` carries `Approved Needs{Confirm, Force, Delete}`. An item reaches `Engine.Run` only unmodified from `ItemPreview.Confirmed(exactly its Needs)` or, for a worktree whose unmerged branch the user opted in to delete, `ItemPreview.ConfirmedDeletingBranch`; items and previews are sealed, and `Run`/`Plan` refuse anything else. Every `Options{Force, DeleteUnmerged}` / `Opts.Force` below is to be read as the item's `Approved.Force` / `Approved.Delete`.
+> - **Call 4 is stricter (Rulings B, P).** A fifth approval kind, `ApprovalNeedsConfirm`, and the flag `--accept-loss`: any non-proven item or loss needs it on every path (a terminal `y` replaces only `--yes`). Dirty needs `--force --accept-loss`, unmerged `-D --accept-loss`; the TUI's typed `delete` grants each item exactly its own Needs.
+> - **Call 7 changed (Rulings D, E).** A relative `local_path` is refused with an error naming the model (no tool agrees on its base), not resolved against the repo root; `protectedPaths(a)` takes no repo root. A missing registry is "nothing to protect" only at the default path with a resolvable home.
+> - **Other rulings:** `Row.BranchProven` decides `retained_unmerged` (A); `Rescan` enforces target identity (C); `Item.SawLosses` makes worse losses a skip (G); `-D` ignores verdict-only unknowns (H); restore ids are `Outcome.DeletedTip` / `branch_tip`, recorded before `update-ref` (I, J); the result never drops an item (O); `wt remove` argument matching and exit codes (Q); the list exits 0 after a run (R); the `-D` toggle and signal handling in the TUI (S, T, U).
 
 ## Global Constraints
 
@@ -132,7 +138,7 @@
   - `type WorktreeOutcome string` consts `WtRemoved`, `WtSkippedChanged`, `WtRefused`, `WtFailed`, `WtNotRequested` = `removed`, `skipped_changed`, `refused`, `failed`, `not_requested`.
   - `type BranchOutcome string` consts `BrDeleted`, `BrNotAttempted`, `BrRetainedUnmerged`, `BrRetainedMoved`, `BrRetainedCheckedOut`, `BrRetainedDefault`, `BrRetainedUnknown` = the wire strings in the calls list.
   - `type Outcome struct { Item Item; Worktree WorktreeOutcome; Branch BranchOutcome; Reason string; Warnings []string }` — `Reason` is one sanitised line (use the cleanup text sanitiser via an exported `cleanup.OneLine` if needed; export it, do not copy it).
-  - `type Options struct { Force bool; DeleteUnmerged bool; DryRun bool; Now func() time.Time; Procs ProcFinder; RemoveTimeout time.Duration }` (zero `RemoveTimeout` means 10 minutes).
+  - `type Options struct { Force bool; DeleteUnmerged bool; DryRun bool; Now func() time.Time; Procs ProcFinder; RemoveTimeout time.Duration }` (zero `RemoveTimeout` means 10 minutes). *Superseded (Ruling K): `Force`/`DeleteUnmerged` became per-item `Item.Approved`; see the note under the Calls.*
   - `type Engine struct { G cleanup.Git; Prior cleanup.Snapshot; In cleanup.GatherInputs; Classify cleanup.Options; Opts Options }`.
   - Test fixture: a slim real-git builder (`newFixture(t)`: bare origin + clone, `Commit`, `Branch`, `Worktree(branch) string` placing worktrees under `<repo>/.worktrees/`, `Dirty(dir,file)`, `Ignored(dir,file)`, `Lock(path)`, `SquashMerge(branch)`); `TestMain` with `gitenv.IsolateForTest()` and `ghPRList` stubbed via `cleanup.StubPRListForTest`.
 

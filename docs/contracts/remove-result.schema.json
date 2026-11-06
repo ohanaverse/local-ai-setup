@@ -28,7 +28,7 @@
         "name": {"type": "string", "description": "A raw identifier (a worktree's branch short name, or its directory's base name when detached; a branch's short name). Carried verbatim: JSON escapes only C0 controls, so C1 and bidi characters pass through; a consumer MUST escape it before printing to a terminal."},
         "path": {"type": "string", "description": "A raw identifier, carried verbatim; escape before printing to a terminal."},
         "ref": {"type": "string", "description": "A full refname (refs/heads/<name>), carried verbatim; escape before printing to a terminal."},
-        "saw": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use", "invalid"], "description": "`in_use` appears only in preview or dry-run (plan) documents, never in a run document; `invalid` only in a partial report."},
+        "saw": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use", "invalid"], "description": "`in_use` appears in preview or dry-run (plan) documents, and in a run document only for an item refused before anything was attempted (an in-use target named to `wt remove`: `worktree` is then `refused`, `branch` `not_attempted`); `invalid` only in a partial report."},
         "worktree": {"type": "string", "enum": ["removed", "skipped_changed", "refused", "failed", "not_requested", "invalid"]},
         "branch": {"type": "string", "enum": ["deleted", "not_attempted", "retained_unmerged", "retained_moved", "retained_checked_out", "retained_default", "retained_unknown", "invalid"]},
         "reason": {"type": "string"},
