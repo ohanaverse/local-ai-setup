@@ -280,8 +280,9 @@ func TestOutcomeLossLines(t *testing.T) {
 
 // TestPanicAfterBranchDeletionKeepsTheTip: a panic in the branch stage once
 // update-ref -d has been issued (a worktree item and a branch item) still
-// yields an outcome carrying the deleted commit as DeletedTip, failed, with
-// a reason that says a branch was deleted; a panic before the update-ref
+// yields an outcome carrying the deleted commit as DeletedTip, its worktree
+// failed (not_requested for a branch item, which has none), with a reason
+// that says a branch was deleted; a panic before the update-ref
 // carries no tip. Why: safeItem replaces a panicking item's outcome
 // wholesale, and the restore id must not be lost with it (Ruling J).
 func TestPanicAfterBranchDeletionKeepsTheTip(t *testing.T) {
@@ -310,8 +311,8 @@ func TestPanicAfterBranchDeletionKeepsTheTip(t *testing.T) {
 		row := f.row(r, cleanup.KindBranch, "topic")
 		hookAfterUpdateRef(t, boom)
 		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
-		if o.Worktree != WtFailed || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip {
-			t.Fatalf("outcome %+v, want failed / retained_unknown with DeletedTip %s", o, row.Tip)
+		if o.Worktree != WtNotRequested || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip {
+			t.Fatalf("outcome %+v, want not_requested / retained_unknown with DeletedTip %s", o, row.Tip)
 		}
 	})
 	t.Run("inside the update-ref, after git wrote", func(t *testing.T) {
@@ -330,8 +331,8 @@ func TestPanicAfterBranchDeletionKeepsTheTip(t *testing.T) {
 			panic("boom inside the update-ref")
 		})
 		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
-		if o.Worktree != WtFailed || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip {
-			t.Fatalf("outcome %+v, want failed / retained_unknown with DeletedTip %s", o, row.Tip)
+		if o.Worktree != WtNotRequested || o.Branch != BrRetainedUnknown || o.DeletedTip != row.Tip {
+			t.Fatalf("outcome %+v, want not_requested / retained_unknown with DeletedTip %s", o, row.Tip)
 		}
 	})
 	t.Run("before the update-ref", func(t *testing.T) {

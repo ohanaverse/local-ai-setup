@@ -3,6 +3,8 @@ package removal
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -37,7 +39,8 @@ type itemCtx struct {
 // Run acts on items one at a time, in the order given, re-classifying each
 // immediately before it is touched (spec "Re-check in PR B"). Every item
 // yields exactly one Outcome, in the same order; progress (nil-safe) is
-// called after each. With Opts.DryRun it is Plan.
+// called after each; a panic in it becomes a warning on that item's Outcome
+// and the run goes on. With Opts.DryRun it is Plan.
 func (e Engine) Run(items []Item, progress func(Outcome)) []Outcome {
 	return e.each(items, progress, e.Opts.DryRun)
 }
@@ -51,12 +54,27 @@ func (e Engine) each(items []Item, progress func(Outcome), dry bool) []Outcome {
 	out := make([]Outcome, 0, len(items))
 	for _, it := range items {
 		o := e.safeItem(it, dry)
-		out = append(out, o)
 		if progress != nil {
-			progress(o)
+			if w := safeProgress(progress, o); w != "" {
+				o.AddWarning(w)
+			}
 		}
+		out = append(out, o)
 	}
 	return out
+}
+
+// safeProgress calls progress with o and returns a warning when it panics,
+// "" otherwise: a caller's display bug must not lose the outcomes (and the
+// restore ids) of a run that already changed the repository.
+func safeProgress(progress func(Outcome), o Outcome) (warning string) {
+	defer func() {
+		if r := recover(); r != nil {
+			warning = fmt.Sprintf("progress callback panicked: %v", r)
+		}
+	}()
+	progress(o)
+	return ""
 }
 
 // safeItem is item with a panic turned into a failed outcome: one item's
@@ -71,7 +89,12 @@ func (e Engine) safeItem(it Item, dry bool) (o Outcome) {
 				o = NewOutcome(it, WtFailed, BrNotAttempted, fmt.Sprintf("internal error: %v", r))
 				return
 			}
-			o = NewOutcome(it, WtFailed, BrRetainedUnknown,
+			wt := WtFailed
+			if it.Kind == cleanup.KindBranch {
+				// A branch-only item has no worktree that could have failed.
+				wt = WtNotRequested
+			}
+			o = NewOutcome(it, wt, BrRetainedUnknown,
 				fmt.Sprintf("internal error after a branch deletion; restore with the tip %s: %v", pending, r))
 			o.DeletedTip = pending
 		}
@@ -263,6 +286,15 @@ func (e Engine) worktreeGate(it Item) gated {
 	}
 	g.gitForce = fresh.Losses.Dirty // git refuses a dirty worktree without it
 
+	// 8b. git skips its "contains submodules" check under --force and deletes
+	// an initialised submodule's repository with the tree (Ruling X): the
+	// force path is refused for such a worktree, never taken.
+	if g.gitForce {
+		if why := submodulesIn(fresh.Path); why != "" {
+			return stop(refuse(it, why))
+		}
+	}
+
 	// 9. Defence in depth at the deletion site: git is handed only a valid
 	// path that is the one the user ticked.
 	if why := e.invalidPath(fresh.Path); why != "" {
@@ -272,6 +304,35 @@ func (e Engine) worktreeGate(it Item) gated {
 		return stop(refuse(it, "path changed: the re-check found "+fresh.Path))
 	}
 	return g
+}
+
+// submodulesIn says why the worktree at path may not be removed with
+// --force because of submodules, or "": its admin dir holds a modules/
+// directory (a submodule repository git would delete), or `git submodule
+// status` lists an initialised module (a line not starting with '-'). Either
+// read failing refuses too (fail closed).
+func submodulesIn(path string) string {
+	const refused = "contains submodules; remove by hand"
+	g := cleanup.Git{Dir: path}
+	out, err := g.Run("rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil || out.Code != 0 || strings.TrimSpace(out.Stdout) == "" {
+		return "could not check for submodules (the worktree's git dir); remove by hand"
+	}
+	if _, err := os.Stat(filepath.Join(strings.TrimSpace(out.Stdout), "modules")); err == nil {
+		return refused
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "could not check for submodules: " + err.Error() + "; remove by hand"
+	}
+	out, err = g.Run("submodule", "status")
+	if err != nil || out.Code != 0 {
+		return "could not check for submodules (git submodule status); remove by hand"
+	}
+	for _, line := range strings.Split(out.Stdout, "\n") {
+		if line != "" && !strings.HasPrefix(line, "-") {
+			return refused
+		}
+	}
+	return ""
 }
 
 // unapproved says why it's own approvals do not cover need, or "": Force

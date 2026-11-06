@@ -111,6 +111,8 @@ func result(out BranchOutcome, reason string, warnings ...string) branchResult {
 //     holding the branch (cleanup.HeldRefs: checked out, or held by a
 //     rebase or bisect; refnames compared case-folded): retained_checked_out;
 //     a list or a holder that cannot be read: retained_unknown;
+//     5b. another local branch whose refname differs only in case (checkCaseSibling,
+//     Ruling X), or branches that cannot be listed: retained_unknown;
 //  6. `git update-ref --no-deref -d <ref> <tip>`, a compare-and-swap on the
 //     tip the re-check read: deleted (verified gone, and no worktree holds
 //     it afterwards), retained_moved when the ref moved or vanished first,
@@ -166,6 +168,10 @@ func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) branchResult {
 	}
 	if h := e.checkHolders(ref, removed); h.Out != "" {
 		return h
+	}
+	// 5b.
+	if r := e.checkCaseSibling(ref); r.Out != "" {
+		return r
 	}
 	// 6.
 	if ic.dry {
@@ -249,6 +255,30 @@ func holderOf(g cleanup.Git, facts []cleanup.WorktreeFact, ref, removed string) 
 	return "", nil
 }
 
+// checkCaseSibling returns retained_unknown when another local branch's
+// refname differs from ref only in case (or the branches cannot be listed),
+// else a zero result. On a case-insensitive volume one loose ref file
+// answers to both spellings, so `update-ref -d` on one (with the other
+// packed) deletes both and the re-read sees only the one it was asked
+// about. It is refused on every filesystem (Ruling X): over-retaining on a
+// case-sensitive one is the fail-closed direction.
+func (e Engine) checkCaseSibling(ref string) branchResult {
+	out, err := e.G.Run("for-each-ref", "--format=%(refname)", "refs/heads/")
+	if err == nil && out.Code != 0 {
+		err = fmt.Errorf("git for-each-ref: exit %d: %s", out.Code, cleanup.OneLine(out.Stderr))
+	}
+	if err != nil {
+		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: could not list branches", ref), "could not list branches: "+err.Error())
+	}
+	for _, name := range strings.Split(out.Stdout, "\n") {
+		name = strings.TrimSpace(name)
+		if name != "" && name != ref && strings.EqualFold(name, ref) {
+			return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: a branch differing only in case exists (%s); git cannot delete one without the other on this volume; delete by hand", ref, name))
+		}
+	}
+	return branchResult{}
+}
+
 // refHeld reports whether ref is among held, full refnames compared
 // case-folded: on a case-insensitive volume Feature/x and feature/x are one
 // ref file; on a case-sensitive one the fold over-matches, which only keeps
@@ -309,7 +339,7 @@ func (e Engine) casDelete(ref, tip string, pending *string) branchResult {
 func (e Engine) afterDelete(ref, tip string) branchResult {
 	was := fmt.Sprintf("%s (was %s)", ref, tip)
 	name := strings.TrimPrefix(ref, "refs/heads/")
-	restoreCmd := fmt.Sprintf("restore: git branch %s %s", name, tip)
+	restoreCmd := "restore: " + restoreCommand(ref, tip)
 	h := e.checkHolders(ref, "")
 	if h.Out == "" {
 		return result(BrDeleted, fmt.Sprintf("deleted %s (was %s; %s)", ref, tip, restoreCmd), gcCaveat)
@@ -329,6 +359,18 @@ func (e Engine) afterDelete(ref, tip string) branchResult {
 	}
 	return result(BrRetainedUnknown, fmt.Sprintf("branch %s deleted and not restored; %s", was, restoreCmd),
 		append(h.Warnings, "restoring it failed: "+why, gcCaveat)...)
+}
+
+// restoreCommand is the command that puts ref back at tip: `git branch
+// <name> <tip>`, or, for a name that starts with '-' (git branch refuses
+// it, and `git branch -D <tip>` reads as a delete), `git update-ref <ref>
+// <tip>`.
+func restoreCommand(ref, tip string) string {
+	name := strings.TrimPrefix(ref, "refs/heads/")
+	if strings.HasPrefix(name, "-") {
+		return fmt.Sprintf("git update-ref %s %s", ref, tip)
+	}
+	return fmt.Sprintf("git branch %s %s", name, tip)
 }
 
 // gitErrText is a failed git call's error as one line.
