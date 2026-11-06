@@ -540,3 +540,75 @@ func TestRemoteTagsHidden(t *testing.T) {
 		}
 	}
 }
+
+// rootAndLinkedGroups is a primary checkout on main (Root: true) plus one
+// linked worktree, the shape every root-row test below starts from. The
+// directories are real so buildList's symlink resolution matches paths.
+func rootAndLinkedGroups(t *testing.T, rootIsCurrent bool) (groups []worktree.EntryGroup, root, linked string) {
+	t.Helper()
+	root = t.TempDir()
+	linked = t.TempDir()
+	rootType := worktree.TypeWorktree
+	if rootIsCurrent {
+		rootType = worktree.TypeCurrent
+	}
+	groups = []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
+		{Type: rootType, Branch: "main", Path: root, Root: true},
+		{Type: worktree.TypeWorktree, Branch: "feat", Path: linked},
+	}}}
+	return groups, root, linked
+}
+
+// TestBuildListOmitsThePrimaryCheckout asserts the picker never offers the
+// repository root: the root-gate design makes the root a deliberate act
+// (--root), so a row for it would be a silent way in. The linked worktree
+// must still be listed.
+func TestBuildListOmitsThePrimaryCheckout(t *testing.T) {
+	groups, root, linked := rootAndLinkedGroups(t, false)
+	l := buildList(groups, "main", linked, themes.Default, 80, 24)
+	var sawLinked bool
+	for _, it := range l.Items() {
+		ei, ok := it.(entryItem)
+		if !ok || ei.kind != kindEntry {
+			continue
+		}
+		if ei.entry.Path == root {
+			t.Errorf("picker lists the root checkout: %+v", ei)
+		}
+		if ei.entry.Path == linked {
+			sawLinked = true
+		}
+	}
+	if !sawLinked {
+		t.Error("linked worktree missing from the picker")
+	}
+}
+
+// TestPickerStartsOnNewWorktreeWhenStandingInTheRoot asserts that with the
+// root row gone, a picker opened from the root has nothing to mark
+// (current) and so opens on "+ New worktree…", the only sensible default.
+func TestPickerStartsOnNewWorktreeWhenStandingInTheRoot(t *testing.T) {
+	groups, root, _ := rootAndLinkedGroups(t, true)
+	m := model{width: 80, height: 24}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: root})
+	m = got.(model)
+	sel, ok := m.list.SelectedItem().(entryItem)
+	if !ok || sel.kind != kindNewWorktree {
+		t.Fatalf("selected = %+v, want the new-worktree sentinel", m.list.SelectedItem())
+	}
+}
+
+// TestPickerStartsOnTheCurrentLinkedWorktree asserts the dropped root row
+// did not disturb the other starting position: launched from a linked
+// worktree, the picker still opens on that worktree's (current) row.
+func TestPickerStartsOnTheCurrentLinkedWorktree(t *testing.T) {
+	groups, _, linked := rootAndLinkedGroups(t, false)
+	groups[0].Entries[1].Type = worktree.TypeCurrent
+	m := model{width: 80, height: 24}
+	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: linked})
+	m = got.(model)
+	sel, ok := m.list.SelectedItem().(entryItem)
+	if !ok || sel.kind != kindEntry || sel.label != "(current)" || sel.entry.Path != linked {
+		t.Fatalf("selected = %+v, want the linked worktree's (current) row", m.list.SelectedItem())
+	}
+}

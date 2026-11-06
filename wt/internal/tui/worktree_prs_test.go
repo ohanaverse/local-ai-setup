@@ -1248,7 +1248,7 @@ func TestStaleFilterRunKeepsAForkTagOnALocalRow(t *testing.T) {
 // end to end, from git's remotes through the entry load, the parsed gh
 // listing and the picker: origin is your fork (Me/Fork), so your local
 // feat-x shows the PR you opened from it (#7), while a stranger's PRs from
-// their fork's main and patch-1 tag neither the (current) main row nor your
+// their fork's main and patch-1 tag neither a main row nor your
 // patch-1. A regression either drops your fork's tag from your branch (the
 // remotes never reach the lookup) or shows strangers' PRs on your branches.
 func TestForkWorkflowTagsYourLocalBranchFromYourFork(t *testing.T) {
@@ -1282,7 +1282,9 @@ func TestForkWorkflowTagsYourLocalBranchFromYourFork(t *testing.T) {
 	m = got.(model)
 	got, _ = m.Update(loadPRsCmd(repo, worktree.PRListAll)())
 	m = got.(model)
-	for branch, want := range map[string]string{"main": "", "feat-x": "#7 open", "patch-1": ""} {
+	// The root row (main) is no longer listed, so the stranger's main PR has
+	// no row to tag; feat-x and patch-1 still pin the fork rule.
+	for branch, want := range map[string]string{"feat-x": "#7 open", "patch-1": ""} {
 		if got := rowByBranch(t, m.list.Items(), branch).prTag(); got != want {
 			t.Errorf("%s tag = %q, want %q", branch, got, want)
 		}

@@ -434,6 +434,11 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 			}
 		}
 		for _, e := range g.Entries {
+			// The repository root is reached only deliberately (--root, or
+			// --cwd standing in it), never from the picker.
+			if e.Root {
+				continue
+			}
 			// The default branch must never be a linked worktree, so skip
 			// bare default-branch rows — the picker must not offer them as
 			// create-targets. The primary checkout on the default branch
