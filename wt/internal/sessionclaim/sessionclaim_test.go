@@ -395,8 +395,12 @@ func TestNonPositivePidIsMalformed(t *testing.T) {
 // session that holds the root must be recognised as running under it.
 func TestAncestorHoldsSeesAParentsClaim(t *testing.T) {
 	ppid := os.Getppid()
+	started, err := startTime(ppid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	claimFile(t, dir, ppid, body(ppid, 1000, root))
+	claimFile(t, dir, ppid, body(ppid, started, root))
 	got, err := AncestorHolds(dir, Claim{Path: root})
 	if err != nil || !got {
 		t.Fatalf("AncestorHolds = %v, %v; want true, nil", got, err)
@@ -438,10 +442,30 @@ func TestAncestorHoldsNoClaimsDir(t *testing.T) {
 // does not exempt a launch at this one.
 func TestAncestorHoldsOtherPath(t *testing.T) {
 	ppid := os.Getppid()
+	started, err := startTime(ppid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	claimFile(t, dir, ppid, body(ppid, 1000, "/elsewhere"))
+	claimFile(t, dir, ppid, body(ppid, started, "/elsewhere"))
 	got, err := AncestorHolds(dir, Claim{Path: root})
 	if err != nil || got {
 		t.Fatalf("AncestorHolds = %v, %v; want false, nil", got, err)
+	}
+}
+
+// TestAncestorHoldsIgnoresAStaleAncestorsClaim checks the contract's liveness
+// rule reaches this reader too (session-claims.md: a claim is live when the
+// pid runs AND the process started when the claim says): a SIGKILLed wt
+// leaves its claim behind, and once that pid is recycled into an ancestor of
+// a new launch, pid-in-ancestors alone would let the stale file silently
+// waive the root gate.
+func TestAncestorHoldsIgnoresAStaleAncestorsClaim(t *testing.T) {
+	ppid := os.Getppid()
+	dir := t.TempDir()
+	claimFile(t, dir, ppid, body(ppid, 1000, root))
+	got, err := AncestorHolds(dir, Claim{Path: root})
+	if err != nil || got {
+		t.Fatalf("AncestorHolds = %v, %v; want false, nil (a stale claim must not hold)", got, err)
 	}
 }

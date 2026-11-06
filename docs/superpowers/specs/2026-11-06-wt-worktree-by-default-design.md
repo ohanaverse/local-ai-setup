@@ -95,7 +95,10 @@ demoted, not dropped.
   (its `c` choice is the consent, and it also offers a new worktree), so the
   user is never asked twice. A launch under a `wt` session that already holds the root (a
   parent process's claim, as `shell-wt --cwd -- npm test` run by an agent at the
-  root) is not gated. `wt smoke --cwd` passes through the same gate before its
+  root) is not gated — and only while that claim is live: its recorded start
+  time must still match the pid, so a stale claim left by a killed wt, its pid
+  since recycled, exempts nothing (`session-claims.md`'s liveness rule).
+  `wt smoke --cwd` passes through the same gate before its
   model is resolved; its refusal names smoke's own remedies, since `--root` is
   not smoke's flag.
 

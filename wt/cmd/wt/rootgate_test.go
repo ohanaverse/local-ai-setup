@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // gateWorktree adds a linked worktree named name to the repository at root and
@@ -91,7 +90,7 @@ func TestGateAllowsANestedLaunchUnderAHeldRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ppid := os.Getppid()
-	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", ppid, time.Now().Unix(), root)
+	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", ppid, processStartedAt(t, ppid), root)
 	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(ppid)), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

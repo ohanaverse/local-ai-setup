@@ -250,11 +250,15 @@ func Others(commonDir string, c Claim) ([]Claim, error) {
 	return others, err
 }
 
-// AncestorHolds reports whether commonDir/wt-sessions holds a parseable claim
-// on c.Path whose pid is this process or one of its parents: the launch runs
-// under a wt session that already holds the checkout (an agent at the root
-// running a nested wt). It takes no lock and changes nothing; no wt-sessions
-// directory means false.
+// AncestorHolds reports whether commonDir/wt-sessions holds a claim that
+// holds c.Path: one parseable, live — the contract's liveness rule
+// (docs/contracts/session-claims.md: pid running and started as recorded, so
+// a stale claim whose pid was recycled does not count) — and whose pid is
+// this process or one of its parents: the launch runs under a wt session
+// that already holds the checkout (an agent at the root running a nested
+// wt). A start time that cannot be read counts as not held, so the caller
+// asks. It takes no lock and changes nothing; no wt-sessions directory means
+// false.
 func AncestorHolds(commonDir string, c Claim) (bool, error) {
 	dir := filepath.Join(commonDir, "wt-sessions")
 	files, err := readClaims(dir)
@@ -272,9 +276,17 @@ func AncestorHolds(commonDir string, c Claim) (bool, error) {
 		if mine == nil {
 			mine = ancestors()
 		}
-		if mine[f.c.PID] {
-			return true, nil
+		if !mine[f.c.PID] {
+			continue
 		}
+		// An ancestor's claim is honored only while live: pid alone would
+		// trust a SIGKILLed wt's leftover file once the system recycles
+		// that pid into an ancestor of a new launch — the stale file would
+		// silently waive the root gate.
+		if alive, _ := live(f.c); !alive {
+			continue
+		}
+		return true, nil
 	}
 	return false, nil
 }

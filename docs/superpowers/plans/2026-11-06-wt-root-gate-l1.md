@@ -71,7 +71,7 @@
 - Test: `wt/internal/sessionclaim/sessionclaim_test.go`
 
 **Interfaces:**
-- Produces: `func AncestorHolds(commonDir string, c Claim) (bool, error)` — true when `commonDir/wt-sessions` holds a parseable claim on `c.Path` whose pid is this process or one of its parents (`ancestors()`); no `wt-sessions` directory means false. Takes no lock and changes nothing.
+- Produces: `func AncestorHolds(commonDir string, c Claim) (bool, error)` — true when `commonDir/wt-sessions` holds a parseable claim on `c.Path` whose pid is this process or one of its parents (`ancestors()`); no `wt-sessions` directory means false. Takes no lock and changes nothing. **Corrected after review (2026-11-06):** the claim must also be *live* — the contract's liveness rule (`docs/contracts/session-claims.md`: pid running and started as recorded; an unreadable start time counts as not held) — so a stale claim whose pid was recycled never waives the gate; pinned by `TestAncestorHoldsIgnoresAStaleAncestorsClaim`.
 
 - [ ] **Step 1: Write failing tests** with the package's claim-writing helper:
   - `TestAncestorHoldsSeesAParentsClaim`: a claim file named `os.Getppid()` on path P → `AncestorHolds` true for a `Claim{Path: P}`.

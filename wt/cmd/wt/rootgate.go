@@ -23,8 +23,9 @@ const (
 // (--cwd): working in a repository's root needs the person's say-so. It does
 // nothing when launchPath is not a root, when another live session holds the
 // root (the shared-root menu that follows is the one question) and when a
-// parent wt session already holds it (a nested launch under an agent at the
-// root). Otherwise, with no terminal it refuses with remedy — what this
+// parent wt session live-holds it (a nested launch under an agent at the
+// root; a stale claim whose pid was recycled does not count —
+// docs/contracts/session-claims.md). Otherwise, with no terminal it refuses with remedy — what this
 // command can name as the way in — marked as a rootGateError so the caller
 // can silence cobra's usage block after it; on a terminal it asks, and a no
 // is errCancelled. A claims directory that cannot be read counts as no other

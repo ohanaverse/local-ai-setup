@@ -65,6 +65,23 @@ func ownClaim(root string) string {
 	return filepath.Join(root, ".git", "wt-sessions", strconv.Itoa(os.Getpid()))
 }
 
+// processStartedAt returns pid's real start time in epoch seconds, read via
+// `ps -o lstart=`: a fixture claim for a live process must carry a start
+// time sessionclaim.live accepts, and the contract's 5-second tolerance
+// covers this method's second granularity beside wt's now-minus-etime read.
+func processStartedAt(t *testing.T, pid int) int64 {
+	t.Helper()
+	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return started.Unix()
+}
+
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // failReader fails the test if the menu is read when it must not be shown.
@@ -307,20 +324,13 @@ func TestCwdLaunchAllowSharedRootReleasesClaim(t *testing.T) {
 func TestConfirmParentClaimIsNotAnotherSession(t *testing.T) {
 	root := sharedRootRepo(t)
 	ppid := os.Getppid()
-	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(ppid)).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	started, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
-	if err != nil {
-		t.Fatal(err)
-	}
+	started := processStartedAt(t, ppid)
 	sessions := filepath.Join(root, ".git", "wt-sessions")
 	if err := os.MkdirAll(sessions, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	parent := filepath.Join(sessions, strconv.Itoa(ppid))
-	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", ppid, started.Unix(), root)
+	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", ppid, started, root)
 	if err := os.WriteFile(parent, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
