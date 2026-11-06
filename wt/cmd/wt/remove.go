@@ -70,9 +70,18 @@ func removeCmd(a *app) *cobra.Command {
 			"than one, no default branch, a registry that did not load). 2: some item was\n" +
 			"refused, skipped or failed. 3: approval missing (no --yes and no terminal, or\n" +
 			"the prompt was declined). With --json the one result document\n" +
-			"(docs/contracts/remove-result.schema.json) is printed first, on failure too.",
+			"(docs/contracts/remove-result.schema.json) is printed first, on failure too\n" +
+			"(a usage error as well, when --json comes before the bad flag).",
 		Example:       "  wt remove ../repo-wt/topic\n  wt remove topic --dry-run\n  wt remove topic old-spike --yes --accept-loss -D",
-		Args:          cobra.MinimumNArgs(1),
+		// Both usage failures below go through removeFail, so --json gets its
+		// error document (exit 1) as the help promises.
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				return removeFail(cmd.OutOrStdout(), f, "", 1,
+					errors.New("name at least one worktree path or branch to remove"))
+			}
+			return nil
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -82,6 +91,11 @@ func removeCmd(a *app) *cobra.Command {
 			return executeRemove(cmd, a, f, args)
 		},
 	}
+	// A bad flag: --json is honoured when it came before the bad one (the
+	// parser stops at the first error, so a later --json is unseen).
+	c.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return removeFail(cmd.OutOrStdout(), f, "", 1, err)
+	})
 	c.Flags().BoolVar(&f.yes, "yes", false, "remove without asking (only what the other flags approve)")
 	c.Flags().BoolVar(&f.acceptLoss, "accept-loss", false, "approve the losses --dry-run lists for items that are not proven or lose something")
 	c.Flags().BoolVar(&f.force, "force", false, "also lose uncommitted changes or a detached HEAD's commits")

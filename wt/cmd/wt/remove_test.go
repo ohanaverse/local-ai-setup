@@ -847,3 +847,36 @@ func TestRemoveCmdRegisteredOnRoot(t *testing.T) {
 		t.Errorf("Find(remove) = %v, %v", c, err)
 	}
 }
+
+// TestRemoveJSONUsageErrorsPrintTheEnvelope verifies that `wt remove --json`
+// with no target, or with an unknown flag after --json, prints the one error
+// document on stdout, nothing on stderr, and exits 1; without --json the
+// error is the plain exit-1 error. Why: the help promises the document "on
+// failure too", and a script must not have to parse cobra's usage text.
+func TestRemoveJSONUsageErrorsPrintTheEnvelope(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	for name, args := range map[string][]string{
+		"no target": {"--json"},
+		"bad flag":  {"--json", "--bogus", "x"},
+	} {
+		stdout, stderr, err := runRemove(t, a, dir, "", args...)
+		if exitOf(err) != 1 {
+			t.Errorf("%s: exit %d, want 1 (%v)", name, exitOf(err), err)
+		}
+		var doc struct {
+			Error *struct{ Message string }
+			Items []any
+		}
+		if jerr := json.Unmarshal([]byte(stdout), &doc); jerr != nil || doc.Error == nil || doc.Error.Message == "" {
+			t.Errorf("%s: stdout is not the error envelope: %q (%v)", name, stdout, jerr)
+		}
+		if stderr != "" {
+			t.Errorf("%s: stderr = %q, want none", name, stderr)
+		}
+	}
+	stdout, _, err := runRemove(t, a, dir, "")
+	if exitOf(err) != 1 || stdout != "" {
+		t.Errorf("no --json, no target: exit %d, stdout %q; want 1 and none", exitOf(err), stdout)
+	}
+}
