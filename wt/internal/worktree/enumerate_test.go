@@ -850,3 +850,93 @@ func TestRootOfSymlinkedRootYes(t *testing.T) {
 		t.Fatalf("RootOf(%s) = %q, %v; want %q, true", link, root, ok, want)
 	}
 }
+
+// TestPrimaryOfFromRootLinkedAndSubdir checks PrimaryOf finds the primary
+// checkout from the root, a linked worktree and a subdirectory, because
+// `wt --root` must launch in the root from wherever it is run.
+func TestPrimaryOfFromRootLinkedAndSubdir(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	want, _ := filepath.EvalSymlinks(dir)
+	linked := filepath.Join(dir, ".worktrees", "feat")
+	if out, err := runGitCmd(dir, "worktree", "add", "-b", "feat", linked); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, from := range map[string]string{"root": dir, "linked": linked, "subdir": sub} {
+		got, err := PrimaryOf(from)
+		if err != nil || got != want {
+			t.Errorf("PrimaryOf(%s) = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
+// TestPrimaryOfBareAndOutside checks PrimaryOf errors for a bare repository
+// and a directory outside any repository, because neither has a checkout a
+// launch could land in.
+func TestPrimaryOfBareAndOutside(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "r.git")
+	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	if got, err := PrimaryOf(bare); err == nil {
+		t.Errorf("PrimaryOf(bare) = %q, nil; want error", got)
+	}
+	if got, err := PrimaryOf(t.TempDir()); err == nil {
+		t.Errorf("PrimaryOf(non-repo) = %q, nil; want error", got)
+	}
+}
+
+// TestListWorktreesMarksOnlyThePrimary checks exactly the primary checkout's
+// entry carries Root, and none does in a bare repository, because the picker
+// drops the Root row and must not drop a linked worktree.
+func TestListWorktreesMarksOnlyThePrimary(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	linked := filepath.Join(dir, ".worktrees", "feat")
+	if out, err := runGitCmd(dir, "worktree", "add", "-b", "feat", linked); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(dir)
+	roots := 0
+	for _, e := range entries {
+		if !e.Root {
+			continue
+		}
+		roots++
+		if got, _ := filepath.EvalSymlinks(e.Path); got != want {
+			t.Errorf("Root entry path = %q; want %q", e.Path, want)
+		}
+	}
+	if len(entries) != 2 || roots != 1 {
+		t.Fatalf("entries = %+v; want 2 entries with exactly 1 Root", entries)
+	}
+
+	bare := filepath.Join(t.TempDir(), "r.git")
+	if out, err := exec.Command("git", "clone", "--bare", dir, bare).CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare: %v\n%s", err, out)
+	}
+	bl := filepath.Join(t.TempDir(), "bl")
+	if out, err := runGitCmd(bare, "worktree", "add", bl, "main"); err != nil {
+		t.Fatalf("bare worktree add: %v\n%s", err, out)
+	}
+	entries, err = listWorktrees(bare, bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("bare entries = %+v; want 1", entries)
+	}
+	for _, e := range entries {
+		if e.Root {
+			t.Errorf("bare repo entry %+v marked Root", e)
+		}
+	}
+}

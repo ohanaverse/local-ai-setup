@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"fmt"
 	"maps"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,10 @@ type Entry struct {
 	// push and upstream remote names). Empty for a remote-branch row, for a
 	// branch with neither, and when that remote names no repository.
 	TrackRepo string
+
+	// Root is true only for the repository's primary checkout (the first
+	// entry of `git worktree list`); never set in a bare repository.
+	Root bool
 }
 
 // GroupKind identifies a logical group of picker rows.
@@ -104,8 +109,13 @@ func listWorktrees(dir, cwdRoot string) ([]Entry, error) {
 	var entries []Entry
 	var path, branch string
 	isBare := false
+	seen := false // the first block (the primary checkout) has been flushed
 
 	flush := func() {
+		first := !seen && path != ""
+		if path != "" {
+			seen = true
+		}
 		if path != "" && !isBare {
 			t := TypeWorktree
 			resolvedPath, _ := filepath.EvalSymlinks(path)
@@ -116,7 +126,7 @@ func listWorktrees(dir, cwdRoot string) ([]Entry, error) {
 			if b == "" {
 				b = "(detached)"
 			}
-			entries = append(entries, Entry{Type: t, Branch: b, Path: path})
+			entries = append(entries, Entry{Type: t, Branch: b, Path: path, Root: first})
 		}
 		path, branch = "", ""
 		isBare = false
@@ -215,25 +225,36 @@ func RootOf(dir string) (root string, ok bool) {
 	if err != nil {
 		return "", false
 	}
-	out, err := runGit(resolved, "worktree", "list", "--porcelain")
-	if err != nil {
+	primary, err := PrimaryOf(resolved)
+	if err != nil || primary != resolved {
 		return "", false
+	}
+	return primary, true
+}
+
+// PrimaryOf returns the primary checkout (the first entry of `git worktree
+// list`) of the repository that owns dir, with symlinks resolved. It works
+// from the root, a linked worktree or a subdirectory, and errors for a bare
+// repository, a path outside any repository, or a git failure.
+func PrimaryOf(dir string) (string, error) {
+	out, err := runGit(dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
 	}
 	first, _, _ := strings.Cut(string(out), "\n\n")
 	var path string
 	for _, line := range strings.Split(first, "\n") {
 		if line == "bare" {
-			return "", false
+			return "", fmt.Errorf("%s is in a bare repository: no primary checkout", dir)
 		}
 		if p, found := strings.CutPrefix(line, "worktree "); found {
 			path = p
 		}
 	}
-	primary, err := filepath.EvalSymlinks(path)
-	if path == "" || err != nil || primary != resolved {
-		return "", false
+	if path == "" {
+		return "", fmt.Errorf("no primary checkout found for %s", dir)
 	}
-	return primary, true
+	return filepath.EvalSymlinks(path)
 }
 
 // CommonDirAt returns the absolute path of dir's repository's common git
