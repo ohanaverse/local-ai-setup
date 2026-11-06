@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/x/term"
@@ -120,6 +122,10 @@ type plannedItem struct {
 }
 
 func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) error {
+	// A reader that goes away (`wt remove ... | head`) must not kill wt with
+	// SIGPIPE after a removal: the write fails instead and the result goes
+	// to stderr (writeRemoveResult), restore ids included.
+	signal.Ignore(syscall.SIGPIPE)
 	out := cmd.OutOrStdout()
 	// The registry first: without it no artifact can be protected, so
 	// nothing is read or touched (plan call 7).
@@ -416,6 +422,16 @@ func removeOK(o removal.Outcome) bool {
 // items is a partial report (Ruling O): printed whole, exit 2.
 func writeRemoveResult(out, errOut io.Writer, asJSON bool, meta removal.Meta, outcomes []removal.Outcome) error {
 	code := removeExitCode(outcomes)
+	notRemoved := errors.New("some items were not removed")
+	if meta.DryRun {
+		notRemoved = errors.New("some items would not be removed")
+	}
+	// lost is a result stdout did not take (a closed pipe): the removals
+	// happened, so the text, restore ids included, goes to stderr instead.
+	lost := func(err error) error {
+		printRemoveText(errOut, meta, outcomes)
+		return &exitCodeError{code: 2, err: fmt.Errorf("could not write the result to stdout (it is on stderr): %w", err)}
+	}
 	if asJSON {
 		b, err := removal.Encode(outcomes, meta)
 		if err != nil {
@@ -424,7 +440,7 @@ func writeRemoveResult(out, errOut io.Writer, asJSON bool, meta removal.Meta, ou
 			return &exitCodeError{code: 2, err: fmt.Errorf("could not write the JSON result: %w", err)}
 		}
 		if _, err := out.Write(b); err != nil {
-			return &exitCodeError{code: 2, err: err}
+			return lost(err)
 		}
 		var env struct {
 			Error *removal.ErrorJSON `json:"error"`
@@ -433,20 +449,23 @@ func writeRemoveResult(out, errOut io.Writer, asJSON bool, meta removal.Meta, ou
 			code = 2
 		}
 		if code != 0 {
-			return &exitCodeError{code: code, err: errors.New("some items were not removed"), quiet: true}
+			return &exitCodeError{code: code, err: notRemoved, quiet: true}
 		}
 		return nil
 	}
-	printRemoveText(out, meta, outcomes)
+	if err := printRemoveText(out, meta, outcomes); err != nil {
+		return lost(err)
+	}
 	if code != 0 {
-		return &exitCodeError{code: code, err: errors.New("some items were not removed")}
+		return &exitCodeError{code: code, err: notRemoved}
 	}
 	return nil
 }
 
 // printRemoveText is the human result: one line per item, then its losses,
-// warnings and, for a deleted branch, the commit it pointed at.
-func printRemoveText(w io.Writer, meta removal.Meta, outcomes []removal.Outcome) {
+// warnings and, for a deleted branch, the commit it pointed at. It returns
+// the write's error.
+func printRemoveText(w io.Writer, meta removal.Meta, outcomes []removal.Outcome) error {
 	var b strings.Builder
 	if meta.DryRun {
 		b.WriteString("dry run: nothing was changed\n")
@@ -467,5 +486,6 @@ func printRemoveText(w io.Writer, meta removal.Meta, outcomes []removal.Outcome)
 			b.WriteString("    branch tip was " + o.DeletedTip + "\n")
 		}
 	}
-	_, _ = io.WriteString(w, b.String())
+	_, err := io.WriteString(w, b.String())
+	return err
 }
