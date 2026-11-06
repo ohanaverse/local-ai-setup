@@ -46,7 +46,9 @@ func cleanupCmd(a *app) *cobra.Command {
 		Long: "List the repository's worktrees, local branches and origin branches in four\n" +
 			"groups, by how sure wt is that each can go: PROVEN MERGED, LOOKS MERGED (LESS\n" +
 			"SURE), HAS WORK THAT EXISTS NOWHERE ELSE, and IN USE / LOCKED. Each row says\n" +
-			"why. --plain and --json only read. On a terminal, enter removes the ticked\n" +
+			"why. --plain and --json write no ref, index or working file (the merge\n" +
+			"proof may leave unreachable tree objects that git gc collects). On a\n" +
+			"terminal, enter removes the ticked\n" +
 			"rows after a confirmation that lists what each would lose: y when every\n" +
 			"row is proven, the typed word delete when any is not proven or loses\n" +
 			"something. origin branches are never removed.\n\n" +

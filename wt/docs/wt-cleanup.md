@@ -9,8 +9,8 @@ branches are never removed (a later release).
 
 ```bash
 wt cleanup                  # interactive tick list on a terminal; enter removes the ticked rows
-wt cleanup --plain          # text list, also used when output is a pipe (only reads)
-wt cleanup --json           # one JSON document (printed on failure too; only reads)
+wt cleanup --plain          # text list, also used when output is a pipe (removes nothing)
+wt cleanup --json           # one JSON document (printed on failure too; removes nothing)
 wt cleanup --no-fetch       # skip `git fetch --prune origin`
 wt cleanup --min-age 30m    # raise the fresh-branch threshold (default 10m)
 
@@ -26,10 +26,14 @@ wt remove topic old-spike --yes --accept-loss -D   # non-interactive, with expli
 | Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing. |
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read. |
 | Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref. |
-| In use / locked | A primary, current, locked, nested or mid-operation worktree, or a held session claim. |
+| In use / locked | A primary, current, locked, nested or mid-operation worktree, a held session claim, a registered model artifact (`protected_artifact`), or the default branch (`default_branch`). |
 
 Weak signals are never proofs. Any fact wt cannot establish makes the row
 less sure, never proven.
+
+Listing writes no ref, index or working file. The merge-adds-nothing proof
+(`git merge-tree --write-tree`) may leave unreachable tree objects in the
+object store, which `git gc` collects.
 
 ## `wt cleanup` flags
 
@@ -43,7 +47,8 @@ less sure, never proven.
 ## `wt cleanup` exit codes
 
 0: a list was produced. 1: the repository could not be classified (not a
-repository, no default branch). A failed fetch, a missing `gh` and a row wt
+repository, no default branch), or a usage error (an unknown flag, an
+argument), which prints no JSON document even under `--json`. A failed fetch, a missing `gh` and a row wt
 could not judge are shown in the output, never an exit status. So is a
 registry wt could not read, or a `local_path` in it that is malformed or
 relative (write every `local_path` as an absolute path; `~/` is fine): the
@@ -68,10 +73,22 @@ and only when no other worktree holds it. A worktree's branch is deleted with
 it only when the branch is proven merged; otherwise it is kept
 (`retained_unmerged`) unless you also approved deleting it.
 
+Some targets are always refused, whatever you approve: a worktree whose
+directory is gone ("could not read the worktree's state"; `git worktree
+prune` clears its registration), a dirty worktree that holds initialised
+submodules ("contains submodules; remove by hand": `git worktree remove
+--force` would delete the submodules' repositories), and a branch beside one
+whose name differs only in case (`Topic` and `topic`: on a case-insensitive
+volume git deletes both, so it is kept as `retained_unknown`; delete it by
+hand). A repository whose object format is not sha1 is not supported: both
+commands stop before reading anything else (exit 1).
+
 Every deleted branch's full commit id is reported (the `branch_tip` key in
 JSON, "branch tip was ..." in text and on the results screen, kept after the
 list closes). Restore one with `git branch <name> <sha>` while git still has
-the commit (until a `git gc` prunes it).
+the commit (until a `git gc` prunes it); for a branch whose name starts with
+`-`, which `git branch` refuses, the restore line is `git update-ref
+refs/heads/<name> <sha>`.
 
 ### Approvals
 
@@ -105,7 +122,7 @@ entry is proven `y` confirms; otherwise only the typed word `delete` then
 enter does, and any other key cancels. The prompt always states how many
 items will be removed and how many need force or `-D`, and how many are not
 on screen. `origin` rows cannot be ticked. While removal runs, keys,
-ctrl+c and termination signals wait until it ends; the results screen shows
+ctrl+c and termination and hangup signals wait until it ends; the results screen shows
 every outcome and the same outcomes print again when wt exits.
 
 ### `wt remove` arguments, output and exit codes
@@ -117,8 +134,11 @@ two different targets, stops the run before anything is touched.
 
 `--json` prints one document,
 [remove-result.schema.json](../../docs/contracts/remove-result.schema.json)
-(samples beside it), on failure too. `--no-fetch` and `--min-age` behave as
-for `wt cleanup`.
+(samples beside it), on failure too, except for a usage error the argument
+parser reports itself (an unknown flag, no arguments): that prints no
+document and exits 1. If stdout cannot be written (a closed pipe) the result
+goes to stderr as text, restore ids included, and the exit is 2. `--no-fetch`
+and `--min-age` behave as for `wt cleanup`.
 
 | Exit | Meaning |
 |---|---|
@@ -128,7 +148,8 @@ for `wt cleanup`.
 | 3 | approval missing: no `--yes` and no terminal, or the prompt was declined; nothing was removed |
 
 The tick list exits 0 after a removal run, whatever the outcomes: they were
-on screen and are printed at exit.
+on screen and are printed at exit, unless the repository could not be
+re-read afterwards (exit 1; the outcomes still print).
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md).
