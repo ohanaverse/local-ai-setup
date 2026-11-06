@@ -84,8 +84,11 @@ type cleanupListModel struct {
 	conf    *cleanupConfirm // the confirm screen; nil outside it
 	run     *cleanupRun     // the last run; set from the progress screen on
 	log     []removal.Outcome
-	exitErr error            // returned by RunCleanupList (the re-read failed)
-	clock   func() time.Time // the list's clock on a rebuild
+	exitErr error // returned by RunCleanupList (the re-read failed)
+	// quitAfterRun: a signal came during a run; the program quits when the
+	// run ends (Ruling T).
+	quitAfterRun bool
+	clock        func() time.Time // the list's clock on a rebuild
 }
 
 // newCleanupList builds the list for r: every group's heading and rows in
@@ -118,7 +121,13 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	m := newCleanupList(r, th, time.Now())
 	m.rm = rm
-	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	// Bubble Tea's own signal handler quits on SIGINT/SIGTERM in any phase,
+	// mid-removal too; the model handles them instead (Ruling T). The
+	// forwarding stops only after the exit message is printed.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithoutSignalHandler())
+	stop := forwardSignals(p.Send)
+	defer stop()
+	final, err := p.Run()
 	fm, ok := final.(cleanupListModel)
 	if ok && fm.exitMessage() != "" {
 		if _, werr := fmt.Fprintln(os.Stdout, fm.exitMessage()); werr != nil && err == nil {
@@ -145,6 +154,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.gotRunDone(msg)
 	case cleanupRefreshMsg:
 		return m.gotRefresh(msg)
+	case cleanupSignalMsg:
+		return m.signalled()
 	case tea.KeyMsg:
 		if m.done {
 			return m, nil
@@ -527,4 +538,15 @@ func (m cleanupListModel) tickedNames() []string {
 
 // exitMessage is what RunCleanupList prints after the program ends: every
 // outcome of the session ("" when nothing ran).
-func (m cleanupListModel) exitMessage() string { return logText(m.log) }
+func (m cleanupListModel) exitMessage() string {
+	text := logText(m.log)
+	if m.phase != cleanupPhaseRunning || m.run == nil {
+		return text
+	}
+	// Ended mid-run anyway: say what has no outcome (Ruling T).
+	if text == "" {
+		text = "wt cleanup: removed 0 items"
+	}
+	lines := append([]string{text, "the run did not finish:"}, m.run.unfinishedLines()...)
+	return strings.Join(lines, "\n")
+}

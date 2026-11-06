@@ -692,10 +692,12 @@ func TestDeleteBranchToggleIsPerItem(t *testing.T) {
 	}
 }
 
-// TestDeleteBranchToggleTurnsYIntoTypedWord pins that toggling a branch
-// deletion on makes the selection need the typed word, and toggling it off
-// again restores the prompt it had.
-func TestDeleteBranchToggleTurnsYIntoTypedWord(t *testing.T) {
+// TestDeleteBranchToggleAddsTheDeleteApproval pins that toggling an
+// entry's offered branch deletion adds -D to the approvals that entry shows
+// (and gets), and toggling it off again restores the screen exactly. (An
+// entry that offers a branch is never proven, so its prompt is already the
+// typed word; the toggle never turns a y prompt into a typed one.)
+func TestDeleteBranchToggleAddsTheDeleteApproval(t *testing.T) {
 	r := newRmRepo(t)
 	r.unpushed("kept")
 	h := r.harness()

@@ -2,8 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -72,7 +76,10 @@ type cleanupConfirm struct {
 	entries []confirmEntry // grouped by approval kind (confirmGroups' order)
 	cursor  int            // the highlighted entry
 	offset  int            // the first body line on screen
-	typed   string         // what has been typed toward `delete`
+	// follow: the view keeps the highlighted entry in sight (arrows);
+	// false after pgup/pgdown, so they scroll within a tall entry.
+	follow bool
+	typed  string // what has been typed toward `delete`
 }
 
 // cleanupRun is a run's state, kept for the results screen.
@@ -80,6 +87,7 @@ type cleanupRun struct {
 	entries []confirmEntry
 	results []removal.Outcome // per entry
 	have    []bool            // results[i] is set
+	logged  []bool            // results[i] is in the session's exit log
 	runAt   []int             // the entry index of each item handed to Run
 	items   []removal.Item
 	got     int // outcomes received so far
@@ -106,7 +114,50 @@ type (
 		report cleanup.Report
 		err    error
 	}
+	// cleanupSignalMsg is a SIGINT or SIGTERM to the process (forwardSignals).
+	cleanupSignalMsg struct{ sig os.Signal }
 )
+
+// forwardSignals turns every SIGINT and SIGTERM to the process into a
+// cleanupSignalMsg until stop is called (Ruling T). RunCleanupList runs the
+// program without Bubble Tea's own handler, which quits on the first signal
+// in any phase and then lets a second one end the process: a removal in
+// flight would be abandoned and its outcome lost. The model decides what a
+// signal does (signalled).
+func forwardSignals(send func(tea.Msg)) (stop func()) {
+	sig := make(chan os.Signal, 4)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case s := <-sig:
+				send(cleanupSignalMsg{sig: s})
+			case <-done:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			signal.Stop(sig)
+			close(done)
+		})
+	}
+}
+
+// signalled is a signal's effect: during a run it is remembered and the
+// program quits once the run ends (Ruling T: a run in flight is never
+// abandoned); otherwise it quits now.
+func (m cleanupListModel) signalled() (cleanupListModel, tea.Cmd) {
+	if m.phase == cleanupPhaseRunning {
+		m.quitAfterRun = true
+		return m, nil
+	}
+	m.done = true
+	return m, tea.Quit
+}
 
 // confirmWord is what must be typed to confirm a selection that is not all
 // proven.
@@ -215,6 +266,7 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 			c.entries = append(c.entries, confirmEntry{pv: p})
 		}
 	}
+	c.follow = true
 	m.phase, m.conf = cleanupPhaseConfirm, c
 	return m, nil
 }
@@ -290,16 +342,17 @@ func (m cleanupListModel) confirmKey(msg tea.KeyMsg) (cleanupListModel, tea.Cmd)
 	case "esc", "ctrl+c":
 		return m.cancelConfirm("cancelled")
 	case "up":
-		c.cursor = max(0, c.cursor-1)
+		c.cursor, c.follow = max(0, c.cursor-1), true
 		return m, nil
 	case "down":
-		c.cursor = min(len(c.entries)-1, c.cursor+1)
+		c.cursor, c.follow = min(len(c.entries)-1, c.cursor+1), true
 		return m, nil
 	case "pgup":
-		c.offset = max(0, c.offset-max(1, m.height/2))
+		// Scroll the lines, the cursor stays: within a tall entry too.
+		c.offset, c.follow = max(0, c.offset-max(1, m.height/2)), false
 		return m, nil
 	case "pgdown":
-		c.offset += max(1, m.height/2)
+		c.offset, c.follow = c.offset+max(1, m.height/2), false
 		return m, nil
 	case "tab":
 		if e := &c.entries[c.cursor]; e.runnable() && e.pv.CanDeleteBranch {
@@ -317,7 +370,9 @@ func (m cleanupListModel) confirmKey(msg tea.KeyMsg) (cleanupListModel, tea.Cmd)
 		return m.cancelConfirm("not confirmed")
 	}
 	switch {
-	case k == "n":
+	case k == "n", msg.Alt, k == " ", msg.Type == tea.KeyRunes && strings.ContainsRune(string(msg.Runes), ' '):
+		// None of these can be part of the word: an alt-modified letter
+		// (alt+d) or a space typed toward it is not "delete".
 		return m.cancelConfirm("cancelled")
 	case k == "backspace":
 		if r := []rune(c.typed); len(r) > 0 {
@@ -342,7 +397,8 @@ func (m cleanupListModel) confirmKey(msg tea.KeyMsg) (cleanupListModel, tea.Cmd)
 // results; a refused preview's outcome is its plan.
 func (m cleanupListModel) confirmed() (cleanupListModel, tea.Cmd) {
 	c := m.conf
-	r := &cleanupRun{entries: c.entries, results: make([]removal.Outcome, len(c.entries)), have: make([]bool, len(c.entries))}
+	r := &cleanupRun{entries: c.entries, results: make([]removal.Outcome, len(c.entries)),
+		have: make([]bool, len(c.entries)), logged: make([]bool, len(c.entries))}
 	for i, e := range c.entries {
 		if !e.runnable() {
 			o := e.pv.Plan
@@ -430,17 +486,54 @@ func (m cleanupListModel) gotProgress(msg cleanupProgressMsg) (cleanupListModel,
 	if r.got < len(r.runAt) {
 		i := r.runAt[r.got]
 		r.results[i], r.have[i] = msg.o, true
+		// Into the exit log now, not when the run ends: a program that
+		// ends before then still prints it (Ruling T).
+		m.log = append(m.log, msg.o)
+		r.logged[i] = true
 		r.got++
 	}
 	return m, waitRun(msg.ch)
 }
 
-// gotRunDone shows the results.
+// gotRunDone shows the results, or quits when a signal asked for it
+// during the run.
 func (m cleanupListModel) gotRunDone(msg cleanupRunDoneMsg) (cleanupListModel, tea.Cmd) {
 	if m.phase != cleanupPhaseRunning || m.run == nil {
 		return m, nil
 	}
-	return m.finishRun(&msg), nil
+	m = m.finishRun(&msg)
+	if m.quitAfterRun {
+		m.done = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// unfinishedLines are what a program ended mid-run says about the items it
+// has no outcome for (Ruling T): the one in flight is in an unknown state,
+// the ones after it were not attempted, the refused ones were not removed.
+func (r *cleanupRun) unfinishedLines() []string {
+	at := map[int]int{}
+	for k, i := range r.runAt {
+		at[i] = k
+	}
+	var out []string
+	for i, e := range r.entries {
+		if r.logged[i] {
+			continue
+		}
+		name := string(e.pv.Item.Kind) + " " + cleanup.OneLine(e.pv.Item.Name)
+		k, ran := at[i]
+		switch {
+		case ran && k == r.got:
+			out = append(out, name+": state unknown: wt ended while it was being removed; check the repository")
+		case ran:
+			out = append(out, name+": not attempted")
+		case r.have[i]:
+			out = append(out, outcomeLines(r.results[i])...)
+		}
+	}
+	return out
 }
 
 // finishRun settles every entry's outcome and opens the results screen.
@@ -474,7 +567,14 @@ func (m cleanupListModel) finishRun(msg *cleanupRunDoneMsg) cleanupListModel {
 			why+"; check the repository: this item may or may not have been removed")
 		r.results[i], r.have[i] = o, true
 	}
-	m.log = append(m.log, r.results...)
+	// Outcomes progress already logged stay as they were logged; the rest
+	// (refusals, items nothing was reported for) join the log now.
+	for i, o := range r.results {
+		if !r.logged[i] {
+			m.log = append(m.log, o)
+			r.logged[i] = true
+		}
+	}
 	m.phase = cleanupPhaseResults
 	return m
 }
@@ -601,14 +701,23 @@ func wrapIndented(text, indent string, width int) []string {
 	return out
 }
 
-// wrapOutcome is outcomeLines wrapped, continuation lines indented.
+// wrapOutcome is outcomeLines wrapped, continuation lines indented. The
+// deleted branch's commit id is never cut: when "branch tip was <id>" does
+// not fit, the id gets a line of its own, indented only as far as the width
+// leaves room for all of it.
 func wrapOutcome(o removal.Outcome, width int) []string {
 	var out []string
+	const tipLead = "branch tip was "
 	for k, l := range outcomeLines(o) {
 		indent := "  "
 		if k > 0 {
 			indent = "      "
 			l = strings.TrimLeft(l, " ")
+		}
+		if tip, ok := strings.CutPrefix(l, tipLead); ok && k > 0 && width > 0 && len(indent)+len(l) > width {
+			out = append(out, indent+strings.TrimSpace(tipLead))
+			out = append(out, strings.Repeat(" ", max(0, min(len(indent), width-len(tip))))+tip)
+			continue
 		}
 		out = append(out, wrapIndented(l, indent, width)...)
 	}
@@ -650,10 +759,13 @@ func (m *cleanupListModel) shortPath(p string) string {
 // branchOf is a full refname's short name.
 func branchOf(ref string) string { return strings.TrimPrefix(ref, "refs/heads/") }
 
-// entryLines are one confirm entry: its name line, then what it loses, the
-// processes running in it, warnings, notes, the branch toggle and the
-// approvals it gets, or why it will not be removed.
-func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) []string {
+// entryLines are one confirm entry: its name line, then, first, what the
+// user decides about it — the branch toggle (or the branch it deletes) and
+// the approvals it gets, or why it will not be removed — and only then what
+// it loses, the processes running in it, warnings and notes. keyN is how
+// many lines the decision part takes from the top: an entry taller than
+// the screen (dozens of processes) never hides it.
+func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []string, keyN int) {
 	pv := e.pv
 	cursor := "  "
 	if selected {
@@ -663,7 +775,7 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) []string {
 	if pv.Item.Kind == cleanup.KindWorktree && pv.Item.Path != "" {
 		head += "  " + cleanup.OneLine(m.shortPath(pv.Item.Path))
 	}
-	out := wrapIndented(head, "", m.width)
+	out = wrapIndented(head, "", m.width)
 	add := func(s string) { out = append(out, wrapIndented(s, "      ", m.width)...) }
 	if !e.runnable() {
 		why := pv.Reason
@@ -671,7 +783,18 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) []string {
 			why = pv.Plan.Reason
 		}
 		add("not removed: " + cleanup.OneLine(why))
+	} else {
+		switch {
+		case pv.CanDeleteBranch && e.delBranch:
+			add("[x] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
+		case pv.CanDeleteBranch:
+			add("[ ] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
+		case pv.Item.Kind == cleanup.KindBranch && pv.Needs.Delete:
+			add("deletes unmerged branch " + cleanup.OneLine(pv.Item.Name))
+		}
+		add(approvalText(e.approved()))
 	}
+	keyN = len(out)
 	for _, l := range pv.LossLines {
 		add("will lose: " + cleanup.OneLine(l))
 	}
@@ -681,36 +804,24 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) []string {
 	for _, w := range pv.Warnings {
 		add("warning: " + cleanup.OneLine(w))
 	}
-	if !e.runnable() {
-		return out
-	}
-	switch {
-	case pv.CanDeleteBranch && e.delBranch:
-		add("[x] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
-	case pv.CanDeleteBranch:
-		for _, n := range pv.Notes {
-			add("note: " + cleanup.OneLine(n))
-		}
-		add("[ ] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
-	default:
-		if pv.Item.Kind == cleanup.KindBranch && pv.Needs.Delete {
-			add("deletes unmerged branch " + cleanup.OneLine(pv.Item.Name))
-		}
+	// A toggled-on branch deletion replaces the kept-branch note, which
+	// would then be false.
+	if e.runnable() && !(pv.CanDeleteBranch && e.delBranch) {
 		for _, n := range pv.Notes {
 			add("note: " + cleanup.OneLine(n))
 		}
 	}
-	add(approvalText(e.approved()))
-	return out
+	return out, keyN
 }
 
 // confirmBody is the confirm screen's scrolling part: each group's heading
-// and entries. starts[i] is entry i's first line.
-func (m *cleanupListModel) confirmBody() (lines []string, starts []int) {
+// and entries. starts[i] is entry i's first line, keyEnds[i] the line after
+// its decision part (entryLines' keyN).
+func (m *cleanupListModel) confirmBody() (lines []string, starts, keyEnds []int) {
 	c := m.conf
 	head := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader)).Bold(true)
 	sel := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
-	starts = make([]int, len(c.entries))
+	starts, keyEnds = make([]int, len(c.entries)), make([]int, len(c.entries))
 	last := removal.Approval("-")
 	for i, e := range c.entries {
 		if e.pv.Approval != last {
@@ -722,7 +833,9 @@ func (m *cleanupListModel) confirmBody() (lines []string, starts []int) {
 			}
 		}
 		starts[i] = len(lines)
-		for _, l := range m.entryLines(e, i == c.cursor) {
+		el, keyN := m.entryLines(e, i == c.cursor)
+		keyEnds[i] = starts[i] + keyN
+		for _, l := range el {
 			l = clip(l, m.width)
 			if i == c.cursor {
 				l = sel.Render(l)
@@ -730,11 +843,11 @@ func (m *cleanupListModel) confirmBody() (lines []string, starts []int) {
 			lines = append(lines, l)
 		}
 	}
-	return lines, starts
+	return lines, starts, keyEnds
 }
 
-// confirmTop is the confirm screen's title and summary.
-func (m *cleanupListModel) confirmTop() []string {
+// confirmTop is the confirm screen's title and its summary lines.
+func (m *cleanupListModel) confirmTop() (title, summary []string) {
 	c := m.conf
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	n, all := c.runnableCount(), len(c.entries)
@@ -753,45 +866,71 @@ func (m *cleanupListModel) confirmTop() []string {
 		}
 	}
 	sum := fmt.Sprintf("remove %d of %d ticked (%s); nothing has been removed yet", n, all, strings.Join(parts, ", "))
-	out := []string{accent.Render(clip("wt cleanup · confirm", m.width))}
-	return append(out, wrapIndented(sum, "", m.width)...)
+	return []string{accent.Render(clip("wt cleanup · confirm", m.width))}, wrapIndented(sum, "", m.width)
 }
 
-// confirmFoot is the confirm screen's prompt.
-func (m *cleanupListModel) confirmFoot() []string {
+// confirmFoot is the confirm screen's key hints and its prompt (the prompt
+// is never given up).
+func (m *cleanupListModel) confirmFoot() (hints, prompt []string) {
 	c := m.conf
 	n := c.runnableCount()
 	noun := "items"
 	if n == 1 {
 		noun = "item"
 	}
-	var out []string
 	if c.offersToggle() {
-		out = append(out, wrapIndented("↑↓ move · tab: also delete the highlighted item's unmerged branch", "", m.width)...)
+		hints = wrapIndented("↑↓ move · pgup/pgdown scroll · tab: also delete the highlighted item's unmerged branch", "", m.width)
 	}
 	switch {
 	case n == 0:
-		out = append(out, wrapIndented("nothing here can be removed · any key goes back", "", m.width)...)
+		prompt = wrapIndented("nothing here can be removed · any key goes back", "", m.width)
 	case !c.needsTyped():
-		out = append(out, wrapIndented(fmt.Sprintf("y removes %d %s · any other key cancels", n, noun), "", m.width)...)
+		prompt = wrapIndented(fmt.Sprintf("y removes %d %s · any other key cancels", n, noun), "", m.width)
 	default:
-		out = append(out, wrapIndented(fmt.Sprintf("type %s and press enter to remove %d %s with the approvals listed · esc cancels", confirmWord, n, noun), "", m.width)...)
-		out = append(out, clip("> "+cleanup.OneLine(c.typed)+"_", m.width))
+		ask := fmt.Sprintf("type %s and press enter to remove %d %s with the approvals listed · esc cancels", confirmWord, n, noun)
+		if m.width > 0 && m.width < 60 {
+			ask = "type " + confirmWord + ", then enter · esc cancels"
+		}
+		prompt = append(wrapIndented(ask, "", m.width), clip("> "+cleanup.OneLine(c.typed)+"_", m.width))
 	}
-	return out
+	return hints, prompt
 }
 
-// confirmView draws the confirm screen: title and summary, the entries
-// (scrolled to keep the highlighted one in view), the prompt.
+// confirmView draws the confirm screen: title and summary, the entries, the
+// key hints and the prompt. On a short terminal the hints, then the summary,
+// then the title give way so that the highlighted entry's decision part
+// (its toggle and approvals) shows beside the prompt. The arrows keep the
+// highlighted entry in view; pgup/pgdown scroll freely, within a tall
+// entry too.
 func (m *cleanupListModel) confirmView() string {
 	c := m.conf
-	top, foot := m.confirmTop(), m.confirmFoot()
-	body, starts := m.confirmBody()
-	end := len(body)
-	if c.cursor+1 < len(starts) {
-		end = starts[c.cursor+1]
+	title, summary := m.confirmTop()
+	hints, prompt := m.confirmFoot()
+	body, starts, keyEnds := m.confirmBody()
+	need := keyEnds[c.cursor] - starts[c.cursor]
+	if m.height > 0 {
+		fits := func() bool { return len(title)+len(summary)+len(hints)+len(prompt)+need+1 <= m.height }
+		if !fits() {
+			hints = nil
+		}
+		if !fits() {
+			summary = nil
+		}
+		if !fits() {
+			title = nil
+		}
 	}
-	c.offset = keepInView(c.offset, starts[c.cursor], end, len(body), m.bodyRoom(len(top)+len(foot), len(body)))
+	top := append(title, summary...)
+	foot := append(hints, prompt...)
+	room := m.bodyRoom(len(top)+len(foot), len(body))
+	if c.follow {
+		end := len(body)
+		if c.cursor+1 < len(starts) {
+			end = starts[c.cursor+1]
+		}
+		c.offset = keepInView(c.offset, starts[c.cursor], end, len(body), room)
+	}
+	c.offset = max(0, min(c.offset, max(0, len(body)-room)))
 	return m.framed(top, body, c.offset, foot)
 }
 
@@ -868,7 +1007,11 @@ func (m *cleanupListModel) runningView() string {
 	if w := len(r.items) - r.got - 1; w > 0 {
 		body = append(body, fmt.Sprintf("%d waiting", w))
 	}
-	foot := wrapIndented("keys wait until the run ends", "", m.width)
+	// Ruling T: nothing interrupts a run, and the screen says so.
+	foot := wrapIndented("removing, please wait: keys, ctrl+c and signals wait until the run ends", "", m.width)
+	if m.quitAfterRun {
+		foot = append(foot, wrapIndented("a quit was asked: wt quits when this run ends", "", m.width)...)
+	}
 	room := m.bodyRoom(len(top)+len(foot), len(body))
 	offset := max(0, len(body)-room) // the newest lines
 	return m.framed(top, body, offset, foot)
