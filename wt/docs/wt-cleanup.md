@@ -95,6 +95,11 @@ the commit (until a `git gc` prunes it); for a branch whose name starts with
 refs/heads/<name> <sha> ""` (the empty old value makes it create-only, like
 `git branch`: it fails rather than move a branch re-created since).
 
+A deleted branch's upstream settings (`branch.<name>.remote` and `.merge`) go
+with it, as with `git branch -D`, so a branch restored under the same name does
+not inherit a stale upstream; a restore does not bring them back. If they
+cannot be removed the outcome carries a warning.
+
 ### Approvals
 
 Approvals are per item. Each one means exactly one thing:
