@@ -584,7 +584,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; asks nothing (default for a bare wt is a worktree)")
-	cmd.Flags().Bool("allow-shared-root", false, "Launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse)")
+	cmd.Flags().Bool("allow-shared-root", false, "Answer the shared-root menu with continue: launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse). Does not replace --root or the --cwd root prompt")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
 	// Register it as a hidden string flag so pflag parses the old arity

@@ -66,8 +66,9 @@ demoted, not dropped.
 
 - `--root`, `--cwd` and `-W` are **mutually exclusive**. Combining any two is a
   usage error.
-- `--root` finds the root by the checkout (`worktree.RootOf`), never by branch
-  name. It refuses outside a repository and in a bare repository (no root).
+- `--root` finds the root by the checkout (`worktree.PrimaryOf`, the primary entry
+  of `git worktree list`, from the root, a linked worktree or a subdirectory;
+  `RootOf` is the yes/no form for a given directory), never by branch name. It refuses outside a repository and in a bare repository (no root).
 - `--root` waives the *root* prompt only. If another live `wt` session holds
   the root, the continue / new worktree / quit menu still appears;
   `--allow-shared-root` still pre-answers it. Consent to work in the root is not
@@ -92,7 +93,9 @@ demoted, not dropped.
   worktree or a subdirectory is unaffected. The prompt defaults to no. If
   another live session also holds the root, only the shared-root menu is shown
   (its `c` choice is the consent, and it also offers a new worktree), so the
-  user is never asked twice.
+  user is never asked twice. A launch under a `wt` session that already holds the root (a
+  parent process's claim, as `shell-wt --cwd -- npm test` run by an agent at the
+  root) is not gated.
 
 ### Creating a worktree by typing a name
 
