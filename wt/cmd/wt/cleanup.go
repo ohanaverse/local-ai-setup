@@ -1,5 +1,7 @@
 // wt cleanup — which worktrees and branches are safe to remove, and why.
-// Read-only: this command and internal/cleanup never delete anything.
+// This file and internal/cleanup hold no deletion code: the tick list
+// removes what the user confirms through internal/removal's engine (wired
+// in cleanupRemoveFuncs), the one package allowed to delete.
 package main
 
 import (
@@ -15,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
@@ -29,8 +32,8 @@ var (
 		f, ok := w.(*os.File)
 		return ok && term.IsTerminal(f.Fd())
 	}
-	// runCleanupList shows the report as the tick list (view only: enter
-	// prints what would be removed and removes nothing).
+	// runCleanupList shows the report as the tick list; enter removes the
+	// ticked rows through the RemoveFuncs after a confirmation.
 	runCleanupList = tui.RunCleanupList
 )
 
@@ -43,7 +46,10 @@ func cleanupCmd(a *app) *cobra.Command {
 		Long: "List the repository's worktrees, local branches and origin branches in four\n" +
 			"groups, by how sure wt is that each can go: PROVEN MERGED, LOOKS MERGED (LESS\n" +
 			"SURE), HAS WORK THAT EXISTS NOWHERE ELSE, and IN USE / LOCKED. Each row says\n" +
-			"why. This command only reads: it removes nothing.\n\n" +
+			"why. --plain and --json only read. On a terminal, enter removes the ticked\n" +
+			"rows after a confirmation that lists what each would lose: y when every\n" +
+			"row is proven, the typed word delete when any is not proven or loses\n" +
+			"something. origin branches are never removed.\n\n" +
 			"It runs `git fetch --prune origin` first (--no-fetch skips it) and says in the\n" +
 			"header how that went (a repository with no origin remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
@@ -125,13 +131,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		}
 		return cleanupFail(out, f.json, repo, err)
 	}
-	report := cleanupClassify(snap, cleanup.Options{Now: time.Now(), MinAge: f.minAge})
-	switch {
-	case protErr != nil:
-		report.Notes = append(report.Notes, cleanupRegistryNote(protErr))
-	case noRegistry(a):
-		report.Notes = append(report.Notes, "registry: none at "+cleanup.OneLine(config.RegistryPath())+"; no model artifacts are registered")
-	}
+	report := cleanupReport(a, snap, f.minAge, protErr)
 
 	switch {
 	case f.json:
@@ -142,9 +142,58 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		_, err = out.Write(b)
 		return err
 	case !f.plain && isTerminalWriter(out):
-		return runCleanupList(report, a.theme)
+		in := cleanupInputs(cwd, false, protected, "wt-cleanup")
+		return runCleanupList(report, a.theme, cleanupRemoveFuncs(a, snap, in, f.minAge, protErr))
 	}
 	return printCleanupPlain(out, report, time.Now())
+}
+
+// cleanupReport classifies snap now, with the registry's header note.
+func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr error) cleanup.Report {
+	report := cleanupClassify(snap, cleanup.Options{Now: time.Now(), MinAge: minAge})
+	switch {
+	case protErr != nil:
+		report.Notes = append(report.Notes, cleanupRegistryNote(protErr))
+	case noRegistry(a):
+		report.Notes = append(report.Notes, "registry: none at "+cleanup.OneLine(config.RegistryPath())+"; no model artifacts are registered")
+	}
+	return report
+}
+
+// cleanupRemoveFuncs connects the tick list to the removal engine, with the
+// settings `wt remove` uses (its clock and process finder): Preview turns
+// the ticked rows into preview inputs (ItemFromRow) and previews them; Run
+// removes the items the list confirmed; Refresh re-reads the repository (no
+// fetch) for the rebuilt list and points the engine at the new snapshot. A
+// registry that did not load turns removal off (plan call 7): enter then
+// says so and previews nothing.
+func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
+	if protErr != nil {
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed"}
+	}
+	in.Fetch = false // a re-check never fetches
+	eng := &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
+		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
+	return tui.RemoveFuncs{
+		Preview: func(rows []cleanup.Row) []removal.ItemPreview {
+			items := make([]removal.Item, len(rows))
+			for i, r := range rows {
+				items[i] = removal.ItemFromRow(r)
+			}
+			return eng.Preview(items)
+		},
+		Run: func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
+			return eng.Run(items, progress)
+		},
+		Refresh: func() (cleanup.Report, error) {
+			fresh, err := cleanup.Gather(eng.G, in)
+			if err != nil {
+				return cleanup.Report{}, err
+			}
+			eng.Prior = fresh
+			return cleanupReport(a, fresh, minAge, nil), nil
+		},
+	}
 }
 
 // cleanupFail ends the run with exit 1. Under --json it first prints the one

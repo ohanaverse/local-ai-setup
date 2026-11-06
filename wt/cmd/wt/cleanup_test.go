@@ -15,7 +15,9 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
 func cgit(t *testing.T, dir string, args ...string) string {
@@ -478,7 +480,7 @@ func TestCleanupCmdTTYHandsOffToList(t *testing.T) {
 	oldTTY, oldList := isTerminalWriter, runCleanupList
 	isTerminalWriter = func(io.Writer) bool { return true }
 	calls := 0
-	runCleanupList = func(r cleanup.Report, _ themes.Theme) error { calls++; return nil }
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { calls++; return nil }
 	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
 
 	if out, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil || calls != 1 || out != "" {
@@ -488,6 +490,68 @@ func TestCleanupCmdTTYHandsOffToList(t *testing.T) {
 		if _, _, err := runCleanup(t, a, dir, "--no-fetch", flag); err != nil || calls != 1 {
 			t.Errorf("%s: err=%v calls=%d, want the list not called", flag, err, calls)
 		}
+	}
+}
+
+// TestCleanupListGetsTheRemovalEngine verifies the tick list is handed
+// RemoveFuncs over the real engine for this repository: Preview previews the
+// rows it is given, an Item confirmed from that preview is removed by Run,
+// and Refresh re-reads the repository without the removed worktree. A wiring
+// mistake (no engine, the wrong directory, a stale snapshot) would make the
+// list's enter do nothing or act on the wrong repository.
+func TestCleanupListGetsTheRemovalEngine(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	var got cleanup.Report
+	var rm tui.RemoveFuncs
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, f tui.RemoveFuncs) error { got, rm = r, f; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+	if _, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if rm.Off != "" || rm.Preview == nil || rm.Run == nil || rm.Refresh == nil {
+		t.Fatalf("RemoveFuncs not wired: %+v", rm)
+	}
+	var row cleanup.Row
+	for _, r := range got.Rows {
+		if r.Kind == cleanup.KindWorktree && r.Name == "topic" {
+			row = r
+		}
+	}
+	ps := rm.Preview([]cleanup.Row{row})
+	if len(ps) != 1 || ps[0].Approval == removal.ApprovalRefused {
+		t.Fatalf("preview: %+v", ps)
+	}
+	it, err := ps[0].Confirmed(ps[0].Needs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	outs := rm.Run([]removal.Item{it}, func(removal.Outcome) { calls++ })
+	if len(outs) != 1 || outs[0].Worktree != removal.WtRemoved || calls != 1 || exists(p) {
+		t.Fatalf("run: %+v progress calls %d, worktree there %v", outs, calls, exists(p))
+	}
+	fresh, err := rm.Refresh()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range fresh.Rows {
+		if r.Kind == cleanup.KindWorktree && r.Name == "topic" {
+			t.Errorf("refreshed report still lists the removed worktree")
+		}
+	}
+}
+
+// TestCleanupListRemovalOffWithoutRegistry verifies that a registry that did
+// not load turns the list's removal off (plan call 7): the RemoveFuncs say
+// why and hold no engine, so enter can preview or remove nothing.
+func TestCleanupListRemovalOffWithoutRegistry(t *testing.T) {
+	rm := cleanupRemoveFuncs(nil, cleanup.Snapshot{}, cleanup.GatherInputs{}, 0, errRegistryUnavailable)
+	if !strings.Contains(rm.Off, "the registry failed to load") || rm.Preview != nil || rm.Run != nil || rm.Refresh != nil {
+		t.Errorf("RemoveFuncs = %+v, want removal off naming the registry", rm)
 	}
 }
 
