@@ -250,6 +250,43 @@ func Others(commonDir string, c Claim) ([]Claim, error) {
 	return others, err
 }
 
+// AncestorHolds reports whether commonDir/wt-sessions holds a parseable claim
+// on c.Path whose pid is this process or one of its parents: the launch runs
+// under a wt session that already holds the checkout (an agent at the root
+// running a nested wt). It takes no lock and changes nothing; no wt-sessions
+// directory means false.
+func AncestorHolds(commonDir string, c Claim) (bool, error) {
+	dir := filepath.Join(commonDir, "wt-sessions")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var mine map[int]bool
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		other, ok := parse(data)
+		if !ok || other.Path != c.Path {
+			continue
+		}
+		if mine == nil {
+			mine = ancestors()
+		}
+		if mine[other.PID] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // hasClaims reports whether dir holds a claim file (a file named by a pid).
 func hasClaims(dir string) bool {
 	entries, err := os.ReadDir(dir)
