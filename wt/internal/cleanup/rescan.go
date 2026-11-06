@@ -64,6 +64,11 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 	if err != nil {
 		return Row{}, err
 	}
+	if len(facts) == 0 {
+		// git always lists the primary checkout; an empty list is not a
+		// repository we can judge (fail closed rather than index it).
+		return Row{}, errors.New("cleanup: git worktree list named no worktree")
+	}
 	s := Snapshot{
 		Repo:      facts[0].Path,
 		CommonDir: prior.CommonDir,
