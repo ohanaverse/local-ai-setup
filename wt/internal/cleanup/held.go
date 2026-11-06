@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // HeldRefs is every full refname worktree w holds the way git's own branch
@@ -116,8 +117,26 @@ func heldStatePaths(g Git, w WorktreeFact) ([]string, error) {
 	return out, nil
 }
 
+// commonDirs remembers commonDir's answer per directory git runs in. Every
+// caller loops HeldRefs over all worktrees (a preview of M ticked items over
+// N worktrees), and each call would otherwise spawn its own rev-parse for a
+// value that does not change while the process lives. Only a good answer is
+// kept; a failure is asked again.
+var commonDirs sync.Map // Git.Dir -> string
+
 // commonDir is the repository's absolute git common dir, read where g runs.
 func commonDir(g Git) (string, error) {
+	if v, ok := commonDirs.Load(g.Dir); ok {
+		return v.(string), nil
+	}
+	common, err := readCommonDir(g)
+	if err == nil {
+		commonDirs.Store(g.Dir, common)
+	}
+	return common, err
+}
+
+func readCommonDir(g Git) (string, error) {
 	args := []string{"rev-parse", "--path-format=absolute", "--git-common-dir"}
 	o, err := g.Run(args...)
 	if err != nil {

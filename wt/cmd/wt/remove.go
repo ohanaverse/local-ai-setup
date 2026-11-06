@@ -72,7 +72,7 @@ func removeCmd(a *app) *cobra.Command {
 			"the prompt was declined). With --json the one result document\n" +
 			"(docs/contracts/remove-result.schema.json) is printed first, on failure too\n" +
 			"(a usage error as well, when --json comes before the bad flag).",
-		Example:       "  wt remove ../repo-wt/topic\n  wt remove topic --dry-run\n  wt remove topic old-spike --yes --accept-loss -D",
+		Example: "  wt remove ../repo-wt/topic\n  wt remove topic --dry-run\n  wt remove topic old-spike --yes --accept-loss -D",
 		// Both usage failures below go through removeFail, so --json gets its
 		// error document (exit 1) as the help promises.
 		Args: func(cmd *cobra.Command, args []string) error {

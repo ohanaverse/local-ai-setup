@@ -207,3 +207,24 @@ func TestRescanBranchHeldByRebase(t *testing.T) {
 		}
 	}
 }
+
+// TestCommonDirIsAskedOnce reads the common dir of a repository, destroys
+// the repository, and reads it again: the second answer is the first one
+// without a git run. Why: HeldRefs is looped over every worktree by Rescan,
+// the branch stage and the preview, and each call used to spawn a rev-parse
+// for a value that cannot change under a running wt.
+func TestCommonDirIsAskedOnce(t *testing.T) {
+	f := newFixture(t)
+	g := Git{Dir: f.Dir}
+	first, err := commonDir(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(f.Dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	second, err := commonDir(g)
+	if err != nil || second != first {
+		t.Errorf("second commonDir = %q, %v; want the remembered %q", second, err, first)
+	}
+}
