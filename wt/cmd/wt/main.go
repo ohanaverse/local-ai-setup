@@ -544,13 +544,11 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := gateRoot(wd, agent, os.Stdin, osStderr, stdinTTY()); err != nil {
+				if err := gateRoot(wd, agent, os.Stdin, osStderr, stdinTTY(), launchRootRemedy); err != nil {
 					if errors.Is(err, errCancelled) {
 						return nil
 					}
-					cmd.SilenceErrors = true
-					cmd.SilenceUsage = true
-					return err
+					return refuse(err)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, wd, root)
 			}
@@ -591,7 +589,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; asks nothing (default for a bare wt is a worktree)")
-	cmd.Flags().Bool("allow-shared-root", false, "Answer the shared-root menu with continue: launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse). Does not replace --root or the --cwd root prompt")
+	cmd.Flags().Bool("allow-shared-root", false, "Answer the shared-root menu with continue: launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse). Answers that menu only: a --cwd launch at a root no other session holds is still asked, and --root is the no-prompt way in")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
 	// Register it as a hidden string flag so pflag parses the old arity

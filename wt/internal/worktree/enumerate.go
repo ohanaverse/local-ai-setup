@@ -256,14 +256,16 @@ func PrimaryOf(dir string) (string, error) {
 	var path string
 	for _, line := range strings.Split(first, "\n") {
 		if line == "bare" {
-			return "", fmt.Errorf("%s is in a bare repository: no primary checkout", dir)
+			// Worded so a caller that wraps this ("no primary checkout: …",
+			// cmd/wt's --root) does not repeat itself.
+			return "", fmt.Errorf("%s is a bare repository; it has no checkout", dir)
 		}
 		if p, found := strings.CutPrefix(line, "worktree "); found {
 			path = p
 		}
 	}
 	if path == "" {
-		return "", fmt.Errorf("no primary checkout found for %s", dir)
+		return "", fmt.Errorf("git's worktree list named no worktree entry for %s", dir)
 	}
 	return filepath.EvalSymlinks(path)
 }

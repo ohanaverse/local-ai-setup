@@ -95,7 +95,9 @@ demoted, not dropped.
   (its `c` choice is the consent, and it also offers a new worktree), so the
   user is never asked twice. A launch under a `wt` session that already holds the root (a
   parent process's claim, as `shell-wt --cwd -- npm test` run by an agent at the
-  root) is not gated.
+  root) is not gated. `wt smoke --cwd` passes through the same gate before its
+  model is resolved; its refusal names smoke's own remedies, since `--root` is
+  not smoke's flag.
 
 ### Creating a worktree by typing a name
 

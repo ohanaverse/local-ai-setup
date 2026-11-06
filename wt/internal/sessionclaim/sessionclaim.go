@@ -257,7 +257,7 @@ func Others(commonDir string, c Claim) ([]Claim, error) {
 // directory means false.
 func AncestorHolds(commonDir string, c Claim) (bool, error) {
 	dir := filepath.Join(commonDir, "wt-sessions")
-	entries, err := os.ReadDir(dir)
+	files, err := readClaims(dir)
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -265,26 +265,50 @@ func AncestorHolds(commonDir string, c Claim) (bool, error) {
 		return false, err
 	}
 	var mine map[int]bool
-	for _, e := range entries {
-		if _, err := strconv.Atoi(e.Name()); err != nil {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		other, ok := parse(data)
-		if !ok || other.Path != c.Path {
+	for _, f := range files {
+		if !f.ok || f.c.Path != c.Path {
 			continue
 		}
 		if mine == nil {
 			mine = ancestors()
 		}
-		if mine[other.PID] {
+		if mine[f.c.PID] {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// claimEntry is one claim file in the directory: the path to act on (scan
+// prunes) and the parsed contents (ok is false for a malformed file).
+type claimEntry struct {
+	path string
+	c    Claim
+	ok   bool
+}
+
+// readClaims reads every claim file in dir (files named by a pid; .lock and
+// rename temp files are skipped). It is the one directory walk the readers
+// share — scan, Others and AncestorHolds must agree on what a claim file is.
+func readClaims(dir string) ([]claimEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]claimEntry, 0, len(entries))
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		c, ok := parse(data)
+		files = append(files, claimEntry{path: p, c: c, ok: ok})
+	}
+	return files, nil
 }
 
 // hasClaims reports whether dir holds a claim file (a file named by a pid).
@@ -307,21 +331,12 @@ func hasClaims(dir string) bool {
 // neither returned nor deleted. mine is this process and its parents
 // (ancestors); nil means scan walks the chain itself, when it first needs it.
 func scan(dir string, c Claim, mine map[int]bool, prune bool) (others []Claim, err error) {
-	entries, err := os.ReadDir(dir)
+	files, err := readClaims(dir)
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range entries {
-		// Claim files are named by pid; skip .lock and rename temp files.
-		if _, err := strconv.Atoi(e.Name()); err != nil {
-			continue
-		}
-		p := filepath.Join(dir, e.Name())
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		other, ok := parse(data)
+	for _, f := range files {
+		other, ok := f.c, f.ok
 		if ok {
 			if mine == nil {
 				mine = ancestors()
@@ -338,7 +353,7 @@ func scan(dir string, c Claim, mine map[int]bool, prune bool) (others []Claim, e
 		}
 		if !alive {
 			if prune {
-				_ = os.Remove(p)
+				_ = os.Remove(f.path)
 			}
 			continue
 		}

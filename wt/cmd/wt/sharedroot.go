@@ -36,7 +36,9 @@ func releaseRootClaim() {
 // holdSharedRoot runs confirmSharedRoot for a launch wt makes in launchPath
 // without the picker, keeps the claim's release for releaseRootClaim, and
 // returns the directory to launch in. It decides on launchPath, not the flag
-// that named it: a -W that resolves to the root is checked like --cwd.
+// that named it: -W cannot resolve to the root anymore (refuseRootBranch
+// refuses it upstream), so only --root and an already-confirmed --cwd arrive
+// here standing in the root.
 func holdSharedRoot(cmd *cobra.Command, agent, launchPath string) (string, error) {
 	allow, _ := cmd.Flags().GetBool("allow-shared-root")
 	dir, release, err := confirmSharedRoot(launchPath, agent, allow, os.Stdin, osStderr, stdinTTY())

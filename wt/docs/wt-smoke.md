@@ -50,7 +50,9 @@ wt smoke <model-id> --cwd        # run the agents in the current directory
   last. The agent needs N tool calls in a row, each fed by the previous result,
   which exercises the multi-turn tool-result path a single read does not.
   `--hops` on its own is an error: it changes nothing without `--tools`.
-- `--cwd` — run each agent in the current directory. Without it every row
+- `--cwd` — run each agent in the current directory. Standing in a repository
+  root this asks first, and refuses with no terminal (the root gate; pass it
+  from below the root, or answer on a terminal). Without it every row
   runs in its own fresh temporary git repository, removed when the row ends
   (see "Tool-use permission").
 - `--timeout` — per-agent timeout. Default: `180s` for cloud models, `900s` for local models (cold prefill of large agent prompts can take minutes). An explicit value applies to both.

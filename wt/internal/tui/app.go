@@ -357,12 +357,13 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			})
 			m.pendingHighlight = ""
 		} else {
-			// Default the cursor to the repo root so Enter relaunches
-			// where the user already is without an extra keystroke.
-			// buildList always pins the (current) entry at index 1
-			// (right after the sentinel) when one exists, so this is
-			// the starting selection regardless of which branch the
-			// repo root is on.
+			// Default the cursor to the entry for the directory the
+			// user already is in, so Enter relaunches there without an
+			// extra keystroke. buildList pins the (current) entry at
+			// index 1 (right after the sentinel) when one exists — a
+			// linked worktree's row. The repository root's row is never
+			// listed, so standing in the root leaves the cursor on the
+			// "+ New worktree…" sentinel.
 			selectFirstEntry(&m.list, func(ei entryItem) bool {
 				return ei.label == "(current)"
 			})

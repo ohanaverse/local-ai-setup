@@ -39,7 +39,7 @@ func TestGateIgnoresNonRoots(t *testing.T) {
 		"outside": t.TempDir(),
 	} {
 		var out bytes.Buffer
-		if err := gateRoot(dir, "claude", failReader{t}, &out, false); err != nil {
+		if err := gateRoot(dir, "claude", failReader{t}, &out, false, launchRootRemedy); err != nil {
 			t.Errorf("%s: gateRoot = %v, want nil", name, err)
 		}
 		if out.Len() != 0 {
@@ -52,7 +52,7 @@ func TestGateIgnoresNonRoots(t *testing.T) {
 // refusal that names --root, the way to say yes without a prompt.
 func TestGateNoTerminalRefusesNamingRoot(t *testing.T) {
 	root := sharedRootRepo(t)
-	err := gateRoot(root, "claude", failReader{t}, &bytes.Buffer{}, false)
+	err := gateRoot(root, "claude", failReader{t}, &bytes.Buffer{}, false, launchRootRemedy)
 	if err == nil || !strings.Contains(err.Error(), "--root") {
 		t.Fatalf("err = %v, want a refusal naming --root", err)
 	}
@@ -62,10 +62,10 @@ func TestGateNoTerminalRefusesNamingRoot(t *testing.T) {
 // quietly (errCancelled), so a "no" is a choice and not a failure.
 func TestGateTerminalAnswers(t *testing.T) {
 	root := sharedRootRepo(t)
-	if err := gateRoot(root, "claude", strings.NewReader("y"), &bytes.Buffer{}, true); err != nil {
+	if err := gateRoot(root, "claude", strings.NewReader("y"), &bytes.Buffer{}, true, launchRootRemedy); err != nil {
 		t.Errorf("y: err = %v, want nil", err)
 	}
-	if err := gateRoot(root, "claude", strings.NewReader("n"), &bytes.Buffer{}, true); !errors.Is(err, errCancelled) {
+	if err := gateRoot(root, "claude", strings.NewReader("n"), &bytes.Buffer{}, true, launchRootRemedy); !errors.Is(err, errCancelled) {
 		t.Errorf("n: err = %v, want errCancelled", err)
 	}
 }
@@ -76,7 +76,7 @@ func TestGateTerminalAnswers(t *testing.T) {
 func TestGateLeavesTheQuestionToTheSharedMenu(t *testing.T) {
 	root := sharedRootRepo(t)
 	liveOtherClaim(t, root, "codex")
-	if err := gateRoot(root, "claude", failReader{t}, &bytes.Buffer{}, true); err != nil {
+	if err := gateRoot(root, "claude", failReader{t}, &bytes.Buffer{}, true, launchRootRemedy); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
 }
@@ -95,7 +95,7 @@ func TestGateAllowsANestedLaunchUnderAHeldRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(ppid)), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := gateRoot(root, "claude", failReader{t}, &bytes.Buffer{}, false); err != nil {
+	if err := gateRoot(root, "claude", failReader{t}, &bytes.Buffer{}, false, launchRootRemedy); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestGateSeesTheRootThroughASymlink(t *testing.T) {
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatal(err)
 	}
-	err := gateRoot(link, "claude", failReader{t}, &bytes.Buffer{}, false)
+	err := gateRoot(link, "claude", failReader{t}, &bytes.Buffer{}, false, launchRootRemedy)
 	if err == nil || !strings.Contains(err.Error(), "--root") {
 		t.Fatalf("err = %v, want a refusal naming --root", err)
 	}

@@ -72,10 +72,11 @@ func smokeCmd(a *app) *cobra.Command {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
 				// An interrupt is not a usage mistake: no flag summary after it.
-				// Neither is a start that failed or was refused, and with
-				// cobra's "Error:" line gone the summary would stand alone
-				// above main's one line.
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err)
+				// Neither is a start that failed or was refused, nor the root
+				// gate's refusal — final, and its message names the remedy —
+				// and with cobra's "Error:" line gone the summary would stand
+				// alone above main's one line.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || isRootGateError(err)
 				return err
 			}
 			if anyFail {
@@ -163,6 +164,31 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 	toolCheck, hops, promptOverride := toolFlags.toolCheck, toolFlags.hops, toolFlags.prompt
 
+	// The root gate runs here, for the flag-validation reason above: with
+	// --cwd the root command's persistent flag, every row runs in the
+	// caller's directory, so standing in the repository root needs the
+	// person's say-so exactly as a --cwd launch gives it — a silent root
+	// launch is the failure the gate exists to prevent — and a refusal must
+	// cost neither an interactive model pick nor a model start. smoke claims
+	// the root for no session of its own (self only excludes this pid) and
+	// rows may run several agents, so the self claim names none. Without
+	// --cwd every row runs in a fresh temporary git repository (#193):
+	// permission checks are off, and a model's stray tool call must not land
+	// in a real repo.
+	inPlace, _ := cmd.Flags().GetBool("cwd")
+	cwd := ""
+	if inPlace {
+		if cwd, err = os.Getwd(); err != nil {
+			return false, err
+		}
+		if gerr := gateRoot(cwd, "", cmd.InOrStdin(), osStderr, stdinTTY(), smokeRootRemedy); gerr != nil {
+			if errors.Is(gerr, errCancelled) {
+				return false, nil
+			}
+			return false, gerr
+		}
+	}
+
 	var modelID string
 	if len(args) > 0 {
 		modelID = args[0]
@@ -191,17 +217,6 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 	timeout = smokeTimeout(a.cfg, m, timeout)
 	jsonOut, _ := cmd.Flags().GetBool("json")
-	// --cwd is the root command's persistent flag; here it opts a run back
-	// into the caller's directory. The default is a fresh temporary git
-	// repository per row (#193): every row runs its agent with permission
-	// checks off, and a model's stray tool call must not land in a real repo.
-	inPlace, _ := cmd.Flags().GetBool("cwd")
-	cwd := ""
-	if inPlace {
-		if cwd, err = os.Getwd(); err != nil {
-			return false, err
-		}
-	}
 
 	if t.Start() {
 		replace, _ := cmd.Flags().GetBool("replace")
