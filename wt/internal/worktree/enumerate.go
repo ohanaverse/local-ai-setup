@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -226,8 +227,18 @@ func RootOf(dir string) (root string, ok bool) {
 		return "", false
 	}
 	primary, err := PrimaryOf(resolved)
-	if err != nil || primary != resolved {
+	if err != nil {
 		return "", false
+	}
+	if primary != resolved {
+		// EvalSymlinks does not fold letter case, so on a case-insensitive
+		// filesystem the same directory can spell differently; ask the
+		// filesystem whether they are one.
+		a, aerr := os.Stat(resolved)
+		b, berr := os.Stat(primary)
+		if aerr != nil || berr != nil || !os.SameFile(a, b) {
+			return "", false
+		}
 	}
 	return primary, true
 }

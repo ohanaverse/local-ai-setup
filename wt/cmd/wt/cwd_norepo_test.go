@@ -20,6 +20,7 @@ import (
 // where the agent ran, whether the guard was asked for, and the bookkeeping.
 type cwdLaunch struct {
 	err        error
+	output     string   // what cobra printed to stdout and stderr
 	agentDir   string   // the agent's own working directory, links resolved
 	claimSeen  bool     // the agent found this wt's root session claim while it ran
 	guarded    bool     // maybeInstallGuard was called
@@ -101,7 +102,7 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 		t.Fatal(err)
 	}
 	args := append(append(append([]string{}, where...), "-A", "claude", "-M", "claude/opus"), extra...)
-	captureFile(t, &os.Stdout, func() { _, res.err = runWT(t, args...) })
+	captureFile(t, &os.Stdout, func() { res.output, res.err = runWT(t, args...) })
 
 	if b, rerr := os.ReadFile(pwdFile); rerr == nil {
 		res.agentDir = strings.TrimSpace(string(b))

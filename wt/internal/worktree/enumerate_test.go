@@ -851,6 +851,24 @@ func TestRootOfSymlinkedRootYes(t *testing.T) {
 	}
 }
 
+// TestRootOfMiscasedPathYes checks a root reached by a path that differs only
+// in letter case (the same directory on a case-insensitive filesystem) is
+// still the root, because the root gate must not be skipped by typing the
+// path in another case. It skips where the filesystem is case-sensitive.
+func TestRootOfMiscasedPathYes(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	resolved, _ := filepath.EvalSymlinks(dir)
+	miscased := filepath.Join(filepath.Dir(resolved), strings.ToUpper(filepath.Base(resolved)))
+	if _, err := os.Stat(miscased); err != nil {
+		t.Skip("case-sensitive filesystem")
+	}
+	root, ok := RootOf(miscased)
+	if !ok || root != resolved {
+		t.Fatalf("RootOf(%s) = %q, %v; want %q, true", miscased, root, ok, resolved)
+	}
+}
+
 // TestPrimaryOfFromRootLinkedAndSubdir checks PrimaryOf finds the primary
 // checkout from the root, a linked worktree and a subdirectory, because
 // `wt --root` must launch in the root from wherever it is run.

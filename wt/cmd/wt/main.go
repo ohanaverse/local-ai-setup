@@ -362,8 +362,15 @@ func rootCmd() *cobra.Command {
 					places++
 				}
 			}
+			// Each refusal below is final, not a usage mistake: silence
+			// cobra's usage block so main's one "wt:" line is the message.
+			refuse := func(err error) error {
+				cmd.SilenceErrors = true
+				cmd.SilenceUsage = true
+				return err
+			}
 			if places > 1 {
-				return fmt.Errorf("--root, --cwd and -W are mutually exclusive: each says where to launch")
+				return refuse(fmt.Errorf("--root, --cwd and -W are mutually exclusive: each says where to launch"))
 			}
 
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
@@ -484,11 +491,11 @@ func rootCmd() *cobra.Command {
 			// downstream (runLaunchPath).
 			if rootFlag {
 				if _, err := worktree.RepoRoot(); err != nil {
-					return fmt.Errorf("not in a git repo: %w", err)
+					return refuse(fmt.Errorf("not in a git repo: %w", err))
 				}
 				root, err := worktree.PrimaryOf(".")
 				if err != nil {
-					return fmt.Errorf("no primary checkout: %w", err)
+					return refuse(fmt.Errorf("no primary checkout: %w", err))
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
 			}
@@ -504,7 +511,7 @@ func rootCmd() *cobra.Command {
 					return err
 				}
 				if err := refuseRootBranch(name, path); err != nil {
-					return err
+					return refuse(err)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}

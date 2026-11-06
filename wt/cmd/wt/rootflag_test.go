@@ -153,3 +153,31 @@ func TestQuitAtTheRootPromptEndsTheLaunchQuietly(t *testing.T) {
 		t.Errorf("launched or claimed: agentDir=%q claimSeen=%v", res.agentDir, res.claimSeen)
 	}
 }
+
+// TestRootLaunchUsageErrorsPrintNoUsageBlock checks the refusals of --root and
+// -W (two places at once, --root outside a repository, -W naming the root's
+// branch) are not usage mistakes cobra should answer with its command list:
+// the block would bury the one "wt:" line main prints for the error.
+func TestRootLaunchUsageErrorsPrintNoUsageBlock(t *testing.T) {
+	cases := map[string]struct {
+		dir   func(t *testing.T) string
+		where []string
+	}{
+		"root with cwd":     {sharedRootRepo, []string{"--root", "--cwd"}},
+		"root with -W":      {sharedRootRepo, []string{"--root", "-W", "x"}},
+		"root outside repo": {func(t *testing.T) string { return t.TempDir() }, []string{"--root"}},
+		"-W root branch":    {sharedRootRepo, []string{"-W", "main"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stubStdinTTY(t, false)
+			res := runPinnedLaunch(t, tc.dir(t), tc.where)
+			if res.err == nil {
+				t.Fatal("the launch succeeded; want a refusal")
+			}
+			if strings.Contains(res.output, "Usage:") || strings.Contains(res.output, "Available Commands") {
+				t.Errorf("output carries cobra's usage block:\n%s", res.output)
+			}
+		})
+	}
+}
