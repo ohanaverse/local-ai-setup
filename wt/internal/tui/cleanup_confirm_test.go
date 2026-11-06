@@ -346,8 +346,9 @@ func TestConfirmListsLossesForEveryTickedItem(t *testing.T) {
 }
 
 // TestConfirmProvenOnlyAcceptsY pins the light path: a selection of proven
-// items only is confirmed by y and by nothing else; another key cancels and
-// Run is never called; y removes the worktree and its branch.
+// items only is confirmed by y (or Y, TestAllProvenConfirmAcceptsUppercaseY)
+// and by nothing else; another key cancels and Run is never called; y
+// removes the worktree and its branch.
 func TestConfirmProvenOnlyAcceptsY(t *testing.T) {
 	r := newRmRepo(t)
 	p := r.merged("done")
@@ -357,7 +358,7 @@ func TestConfirmProvenOnlyAcceptsY(t *testing.T) {
 	if v := m.View(); !strings.Contains(v, "y removes 1 item (0 force, 0 -D) · any other key cancels") || strings.Contains(v, "type delete") {
 		t.Fatalf("proven-only prompt:\n%s", v)
 	}
-	for _, k := range []tea.KeyMsg{keyRunes("x"), keyRunes("Y"), enterKey, keyRunes("d")} {
+	for _, k := range []tea.KeyMsg{keyRunes("x"), keyRunes("n"), enterKey, keyRunes("d")} {
 		m2 := press(t, m, k)
 		if m2.phase != cleanupPhaseList || h.runCalls != 0 || !strings.Contains(m2.status, "nothing was removed") {
 			t.Fatalf("key %q: phase %v, runs %d, status %q; want cancelled", k.String(), m2.phase, h.runCalls, m2.status)
