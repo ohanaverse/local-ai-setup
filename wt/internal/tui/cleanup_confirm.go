@@ -355,6 +355,15 @@ func (m cleanupListModel) confirmKey(msg tea.KeyMsg) (cleanupListModel, tea.Cmd)
 		c.offset, c.follow = c.offset+max(1, m.height/2), false
 		return m, nil
 	case "tab":
+		// Ruling U: a toggle applies only to an entry whose decision lines
+		// are on screen. After pgup/pgdown the highlighted entry may be
+		// out of sight: this tab brings it back into view and toggles
+		// nothing; the next one toggles it, in view.
+		visible := m.frame().visible(c.cursor)
+		c.follow = true
+		if !visible {
+			return m, nil
+		}
 		if e := &c.entries[c.cursor]; e.runnable() && e.pv.CanDeleteBranch {
 			e.delBranch = !e.delBranch
 		}
@@ -716,7 +725,16 @@ func wrapOutcome(o removal.Outcome, width int) []string {
 		}
 		if tip, ok := strings.CutPrefix(l, tipLead); ok && k > 0 && width > 0 && len(indent)+len(l) > width {
 			out = append(out, indent+strings.TrimSpace(tipLead))
-			out = append(out, strings.Repeat(" ", max(0, min(len(indent), width-len(tip))))+tip)
+			if width >= len(tip) {
+				out = append(out, strings.Repeat(" ", max(0, min(len(indent), width-len(tip))))+tip)
+				continue
+			}
+			// Narrower than the id: split it over lines, never cut it.
+			for len(tip) > 0 {
+				n := min(width, len(tip))
+				out = append(out, tip[:n])
+				tip = tip[n:]
+			}
 			continue
 		}
 		out = append(out, wrapIndented(l, indent, width)...)
@@ -869,47 +887,96 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 	return []string{accent.Render(clip("wt cleanup · confirm", m.width))}, wrapIndented(sum, "", m.width)
 }
 
-// confirmFoot is the confirm screen's key hints and its prompt (the prompt
-// is never given up).
-func (m *cleanupListModel) confirmFoot() (hints, prompt []string) {
+// confirmHints are the confirm screen's key hints.
+func (m *cleanupListModel) confirmHints() []string {
+	if !m.conf.offersToggle() {
+		return nil
+	}
+	return wrapIndented("↑↓ move · pgup/pgdown scroll · tab: also delete the highlighted item's unmerged branch", "", m.width)
+}
+
+// confirmPrompt is the confirm screen's prompt (never given up). It always
+// says what the answer approves (Ruling U): how many items, how many of
+// them with the --force and -D equivalents, and how many are not on screen
+// (hidden), so nothing `delete` is typed for is out of sight in count and
+// kind. Below 60 columns it is the short form, which fits in 40.
+func (m *cleanupListModel) confirmPrompt(hidden int) []string {
 	c := m.conf
-	n := c.runnableCount()
+	n, force, del := 0, 0, 0
+	for _, e := range c.entries {
+		if !e.runnable() {
+			continue
+		}
+		n++
+		a := e.approved()
+		if a.Force {
+			force++
+		}
+		if a.Delete {
+			del++
+		}
+	}
 	noun := "items"
 	if n == 1 {
 		noun = "item"
 	}
-	if c.offersToggle() {
-		hints = wrapIndented("↑↓ move · pgup/pgdown scroll · tab: also delete the highlighted item's unmerged branch", "", m.width)
+	kinds := fmt.Sprintf("(%d force, %d -D)", force, del)
+	more := ""
+	if hidden > 0 {
+		more = fmt.Sprintf(" · %d not shown", hidden)
 	}
+	narrow := m.width > 0 && m.width < 60
+	var ask string
 	switch {
 	case n == 0:
-		prompt = wrapIndented("nothing here can be removed · any key goes back", "", m.width)
+		return wrapIndented("nothing here can be removed · any key goes back", "", m.width)
+	case !c.needsTyped() && narrow:
+		ask = fmt.Sprintf("y: removes %d %s%s · other keys cancel", n, kinds, more)
 	case !c.needsTyped():
-		prompt = wrapIndented(fmt.Sprintf("y removes %d %s · any other key cancels", n, noun), "", m.width)
+		ask = fmt.Sprintf("y removes %d %s %s%s · any other key cancels", n, noun, kinds, more)
+	case narrow:
+		ask = fmt.Sprintf("%s+enter: removes %d %s%s · esc", confirmWord, n, kinds, more)
 	default:
-		ask := fmt.Sprintf("type %s and press enter to remove %d %s with the approvals listed · esc cancels", confirmWord, n, noun)
-		if m.width > 0 && m.width < 60 {
-			ask = "type " + confirmWord + ", then enter · esc cancels"
-		}
-		prompt = append(wrapIndented(ask, "", m.width), clip("> "+cleanup.OneLine(c.typed)+"_", m.width))
+		ask = fmt.Sprintf("type %s and press enter to remove %d %s %s with the approvals listed%s · esc cancels", confirmWord, n, noun, kinds, more)
 	}
-	return hints, prompt
+	out := wrapIndented(ask, "", m.width)
+	if c.needsTyped() {
+		out = append(out, clip("> "+cleanup.OneLine(c.typed)+"_", m.width))
+	}
+	return out
 }
 
-// confirmView draws the confirm screen: title and summary, the entries, the
-// key hints and the prompt. On a short terminal the hints, then the summary,
-// then the title give way so that the highlighted entry's decision part
-// (its toggle and approvals) shows beside the prompt. The arrows keep the
-// highlighted entry in view; pgup/pgdown scroll freely, within a tall
-// entry too.
-func (m *cleanupListModel) confirmView() string {
+// confirmFrame is one frame of the confirm screen: what is above and below
+// the entries, the entries' lines, where each entry and its decision part
+// start and end, and the window on them.
+type confirmFrame struct {
+	top, foot      []string
+	body           []string
+	starts, keyEnd []int
+	offset, room   int
+}
+
+// visible says whether entry i's decision part (name, toggle, approvals)
+// is wholly on screen in f.
+func (f confirmFrame) visible(i int) bool {
+	return f.starts[i] >= f.offset && f.keyEnd[i] <= f.offset+f.room
+}
+
+// frame lays the confirm screen out. On a short terminal the hints, then
+// the summary, then the title give way so that the highlighted entry's
+// decision part shows beside the prompt. The arrows (and tab) keep the
+// highlighted entry in view; pgup/pgdown scroll freely, within a tall entry
+// too. The prompt is laid out for the largest "not shown" count first, so
+// counting what the window hides cannot change the window.
+func (m *cleanupListModel) frame() confirmFrame {
 	c := m.conf
 	title, summary := m.confirmTop()
-	hints, prompt := m.confirmFoot()
+	hints := m.confirmHints()
 	body, starts, keyEnds := m.confirmBody()
+	reserve := m.confirmPrompt(len(c.entries))
 	need := keyEnds[c.cursor] - starts[c.cursor]
 	if m.height > 0 {
-		fits := func() bool { return len(title)+len(summary)+len(hints)+len(prompt)+need+1 <= m.height }
+		fits := func() bool { return len(title)+len(summary)+len(hints)+len(reserve)+need+1 <= m.height }
 		if !fits() {
 			hints = nil
 		}
@@ -921,8 +988,7 @@ func (m *cleanupListModel) confirmView() string {
 		}
 	}
 	top := append(title, summary...)
-	foot := append(hints, prompt...)
-	room := m.bodyRoom(len(top)+len(foot), len(body))
+	room := m.bodyRoom(len(top)+len(hints)+len(reserve), len(body))
 	if c.follow {
 		end := len(body)
 		if c.cursor+1 < len(starts) {
@@ -931,7 +997,21 @@ func (m *cleanupListModel) confirmView() string {
 		c.offset = keepInView(c.offset, starts[c.cursor], end, len(body), room)
 	}
 	c.offset = max(0, min(c.offset, max(0, len(body)-room)))
-	return m.framed(top, body, c.offset, foot)
+	f := confirmFrame{top: top, body: body, starts: starts, keyEnd: keyEnds, offset: c.offset, room: room}
+	hidden := 0
+	for i := range c.entries {
+		if !f.visible(i) {
+			hidden++
+		}
+	}
+	f.foot = append(hints, m.confirmPrompt(hidden)...)
+	return f
+}
+
+// confirmView draws the confirm screen.
+func (m *cleanupListModel) confirmView() string {
+	f := m.frame()
+	return m.framedRoom(f.top, f.body, f.offset, f.room, f.foot)
 }
 
 // bodyRoom is how many body lines fit beside fixed lines, one going to the
@@ -962,7 +1042,11 @@ func keepInView(offset, start, end, total, room int) int {
 // framed is top, the body from offset (with a scroll hint when it does not
 // fit), and foot, no taller than the terminal.
 func (m *cleanupListModel) framed(top, body []string, offset int, foot []string) string {
-	room := m.bodyRoom(len(top)+len(foot), len(body))
+	return m.framedRoom(top, body, offset, m.bodyRoom(len(top)+len(foot), len(body)), foot)
+}
+
+// framedRoom is framed with the body's room given.
+func (m *cleanupListModel) framedRoom(top, body []string, offset, room int, foot []string) string {
 	end := min(len(body), offset+room)
 	lines := append([]string{}, top...)
 	lines = append(lines, body[offset:end]...)

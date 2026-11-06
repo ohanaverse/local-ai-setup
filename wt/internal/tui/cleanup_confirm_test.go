@@ -354,7 +354,7 @@ func TestConfirmProvenOnlyAcceptsY(t *testing.T) {
 	h := r.harness()
 	m := setTicks(t, h.list(120, 40), "done")
 	m = press(t, m, enterKey)
-	if v := m.View(); !strings.Contains(v, "y removes 1 item · any other key cancels") || strings.Contains(v, "type delete") {
+	if v := m.View(); !strings.Contains(v, "y removes 1 item (0 force, 0 -D) · any other key cancels") || strings.Contains(v, "type delete") {
 		t.Fatalf("proven-only prompt:\n%s", v)
 	}
 	for _, k := range []tea.KeyMsg{keyRunes("x"), keyRunes("Y"), enterKey, keyRunes("d")} {
@@ -816,7 +816,7 @@ func confirmScreens(t *testing.T) map[string]cleanupListModel {
 // stays.
 func TestConfirmFitsTheTerminal80x24(t *testing.T) {
 	screens := confirmScreens(t)
-	for _, size := range [][2]int{{80, 24}, {40, 12}, {40, 8}} {
+	for _, size := range [][2]int{{80, 24}, {40, 12}, {40, 8}, {30, 12}} {
 		for name, m := range screens {
 			name = fmt.Sprintf("%s %dx%d", name, size[0], size[1])
 			m = cleanupSend(t, m, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
@@ -844,7 +844,7 @@ func checkRemovalScreen(t *testing.T, name, v string, width, height int) {
 		last := ansi.Strip(lines[len(lines)-1])
 		switch {
 		case strings.HasPrefix(name, "confirm, proven"):
-			if !strings.Contains(last, "cancels") {
+			if !strings.Contains(last, "cancel") {
 				t.Errorf("%s: prompt not last: %q", name, last)
 			}
 		case strings.HasPrefix(name, "confirm, typed"):
@@ -852,6 +852,18 @@ func checkRemovalScreen(t *testing.T, name, v string, width, height int) {
 				t.Errorf("%s: typed line not last: %q", name, last)
 			}
 		}
+		if strings.HasPrefix(name, "confirm") {
+			checkPromptCounts(t, name, v)
+		}
+	}
+}
+
+// checkPromptCounts asserts Ruling U on a confirm screen: the prompt states
+// the --force and -D counts at every size.
+func checkPromptCounts(t *testing.T, name, v string) {
+	t.Helper()
+	if s := squash(ansi.Strip(v)); !strings.Contains(s, "force,") || !strings.Contains(s, "-D)") {
+		t.Errorf("%s: the prompt does not count the force and -D approvals:\n%s", name, v)
 	}
 }
 
@@ -874,6 +886,10 @@ func removalScreen(name string) func(t *testing.T, width, height int) string {
 		if !ok {
 			t.Fatalf("no removal screen %q", name)
 		}
-		return cleanupSend(t, m, tea.WindowSizeMsg{Width: width, Height: height}).View()
+		v := cleanupSend(t, m, tea.WindowSizeMsg{Width: width, Height: height}).View()
+		if strings.HasPrefix(name, "confirm") {
+			checkPromptCounts(t, name+fmt.Sprintf(" %dx%d", width, height), v)
+		}
+		return v
 	}
 }
