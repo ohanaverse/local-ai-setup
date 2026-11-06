@@ -55,6 +55,27 @@ func TestAllProvenConfirmAcceptsUppercaseY(t *testing.T) {
 	}
 }
 
+// TestUppercaseYDoesNotConfirmTypedDelete: Y confirms only the all-proven
+// screen; on the typed-word screen (anything not proven) it is just a
+// letter, so Y then enter cancels and nothing runs.
+func TestUppercaseYDoesNotConfirmTypedDelete(t *testing.T) {
+	r := newRmRepo(t)
+	r.unpushed("kept")
+	h := r.harness()
+	m := press(t, setTicks(t, h.list(80, 24), "kept"), enterKey)
+	if !m.conf.needsTyped() {
+		t.Fatal("fixture: the confirmation does not need the typed word")
+	}
+	m = press(t, m, keyRunes("Y"))
+	if m.phase != cleanupPhaseConfirm {
+		t.Fatalf("Y on the typed screen left phase %v", m.phase)
+	}
+	m = press(t, m, enterKey)
+	if h.runCalls != 0 || m.phase != cleanupPhaseList {
+		t.Errorf("Y, enter: runs %d phase %v; want cancelled", h.runCalls, m.phase)
+	}
+}
+
 // TestForwardSignalsIncludesSIGHUP: a terminal closed mid-run sends SIGHUP,
 // whose default action killed wt and lost the run's outcomes; it is
 // forwarded like SIGINT and SIGTERM, so the run finishes (Ruling T).

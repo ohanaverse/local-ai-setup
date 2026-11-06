@@ -11,6 +11,10 @@ import (
 // restore). It is a seam: tests record the argument vector or make it fail.
 var runRefGit = func(g cleanup.Git, args ...string) (cleanup.Out, error) { return g.Run(args...) }
 
+// probeGit runs the read-only probes the case-sibling and submodule checks
+// make. It is a seam: tests make one fail to pin that it fails closed.
+var probeGit = func(g cleanup.Git, args ...string) (cleanup.Out, error) { return g.Run(args...) }
+
 // beforeUpdateRef runs between the branch stage's last check and its
 // update-ref; afterUpdateRef between a delete git confirmed and the re-check
 // of the worktrees. They are test seams (a test moves the ref, or checks it
@@ -263,7 +267,7 @@ func holderOf(g cleanup.Git, facts []cleanup.WorktreeFact, ref, removed string) 
 // about. It is refused on every filesystem (Ruling X): over-retaining on a
 // case-sensitive one is the fail-closed direction.
 func (e Engine) checkCaseSibling(ref string) branchResult {
-	out, err := e.G.Run("for-each-ref", "--format=%(refname)", "refs/heads/")
+	out, err := probeGit(e.G, "for-each-ref", "--format=%(refname)", "refs/heads/")
 	if err == nil && out.Code != 0 {
 		err = fmt.Errorf("git for-each-ref: exit %d: %s", out.Code, cleanup.OneLine(out.Stderr))
 	}
@@ -364,11 +368,12 @@ func (e Engine) afterDelete(ref, tip string) branchResult {
 // restoreCommand is the command that puts ref back at tip: `git branch
 // <name> <tip>`, or, for a name that starts with '-' (git branch refuses
 // it, and `git branch -D <tip>` reads as a delete), `git update-ref <ref>
-// <tip>`.
+// <tip> ""`: the empty old value makes it create-only, like `git branch`
+// (it fails if the ref was re-created meanwhile, instead of moving it).
 func restoreCommand(ref, tip string) string {
 	name := strings.TrimPrefix(ref, "refs/heads/")
 	if strings.HasPrefix(name, "-") {
-		return fmt.Sprintf("git update-ref %s %s", ref, tip)
+		return fmt.Sprintf(`git update-ref %s %s ""`, ref, tip)
 	}
 	return fmt.Sprintf("git branch %s %s", name, tip)
 }

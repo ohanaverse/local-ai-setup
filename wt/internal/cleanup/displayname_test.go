@@ -37,6 +37,15 @@ func TestDisplayNameSanitisesDetachedWorktreeName(t *testing.T) {
 	}
 }
 
+// TestDisplayNameSanitisesRemoteRow: a remote row's name (remote/branch)
+// goes through the same flattening as a local one.
+func TestDisplayNameSanitisesRemoteRow(t *testing.T) {
+	row := Row{Kind: KindRemote, Remote: "origin", Name: "a\x1b]0;pwned\x07"}
+	if got := DisplayName(row); hasControl(got) || !strings.HasPrefix(got, "origin/a") {
+		t.Errorf("DisplayName = %q, want origin/a... with no control bytes", got)
+	}
+}
+
 // TestNestedPathsSanitised: the nested worktrees' paths the tick list names
 // come from the filesystem and are printed as is; they are one printable
 // line each.

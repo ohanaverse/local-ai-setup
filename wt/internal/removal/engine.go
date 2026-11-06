@@ -314,7 +314,7 @@ func (e Engine) worktreeGate(it Item) gated {
 func submodulesIn(path string) string {
 	const refused = "contains submodules; remove by hand"
 	g := cleanup.Git{Dir: path}
-	out, err := g.Run("rev-parse", "--path-format=absolute", "--git-dir")
+	out, err := probeGit(g, "rev-parse", "--path-format=absolute", "--git-dir")
 	if err != nil || out.Code != 0 || strings.TrimSpace(out.Stdout) == "" {
 		return "could not check for submodules (the worktree's git dir); remove by hand"
 	}
@@ -323,7 +323,7 @@ func submodulesIn(path string) string {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "could not check for submodules: " + err.Error() + "; remove by hand"
 	}
-	out, err = g.Run("submodule", "status")
+	out, err = probeGit(g, "submodule", "status")
 	if err != nil || out.Code != 0 {
 		return "could not check for submodules (git submodule status); remove by hand"
 	}

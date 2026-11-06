@@ -31,7 +31,9 @@ wt remove topic old-spike --yes --accept-loss -D   # non-interactive, with expli
 Weak signals are never proofs. Any fact wt cannot establish makes the row
 less sure, never proven.
 
-Listing writes no ref, index or working file. The merge-adds-nothing proof
+Apart from the fetch, which updates and prunes `origin`'s remote-tracking
+refs (`--no-fetch` skips it), listing writes no ref, index or working file.
+The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
 object store, which `git gc` collects.
 
@@ -75,9 +77,11 @@ it only when the branch is proven merged; otherwise it is kept
 
 Some targets are always refused, whatever you approve: a worktree whose
 directory is gone ("could not read the worktree's state"; `git worktree
-prune` clears its registration), a dirty worktree that holds initialised
-submodules ("contains submodules; remove by hand": `git worktree remove
---force` would delete the submodules' repositories), and a branch beside one
+prune` clears its registration), a dirty worktree that holds submodules
+("contains submodules; remove by hand": `git worktree remove --force` would
+delete the submodules' repositories; this covers an initialised module, an
+embedded repository added as one, and a leftover `modules/` directory in the
+worktree's git dir, and a check that cannot be read refuses too), and a branch beside one
 whose name differs only in case (`Topic` and `topic`: on a case-insensitive
 volume git deletes both, so it is kept as `retained_unknown`; delete it by
 hand). A repository whose object format is not sha1 is not supported: both
@@ -88,7 +92,8 @@ JSON, "branch tip was ..." in text and on the results screen, kept after the
 list closes). Restore one with `git branch <name> <sha>` while git still has
 the commit (until a `git gc` prunes it); for a branch whose name starts with
 `-`, which `git branch` refuses, the restore line is `git update-ref
-refs/heads/<name> <sha>`.
+refs/heads/<name> <sha> ""` (the empty old value makes it create-only, like
+`git branch`: it fails rather than move a branch re-created since).
 
 ### Approvals
 
