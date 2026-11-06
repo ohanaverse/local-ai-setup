@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/spf13/cobra"
@@ -30,9 +28,7 @@ var (
 	// removeTTY says whether the y/N prompt can be asked: both its input and
 	// the stream it is written to are terminals.
 	removeTTY = func(in io.Reader, out io.Writer) bool {
-		fi, ok := in.(*os.File)
-		fo, ok2 := out.(*os.File)
-		return ok && ok2 && term.IsTerminal(fi.Fd()) && term.IsTerminal(fo.Fd())
+		return isTerminalStream(in) && isTerminalStream(out)
 	}
 	// removeProcs is the live-process finder (a warning, never a refusal).
 	removeProcs = func() removal.ProcFinder { return removal.LsofFinder() }
@@ -111,17 +107,9 @@ func removeCmd(a *app) *cobra.Command {
 // --json it first prints the one error envelope and stays quiet on stderr;
 // otherwise main prints the error.
 func removeFail(out io.Writer, f removeFlags, repo string, code int, err error) error {
-	if !f.json {
-		return &exitCodeError{code: code, err: err}
-	}
-	b, encErr := removal.EncodeError(removal.Meta{Repo: repo, DryRun: f.dryRun}, err)
-	if encErr != nil {
-		return &exitCodeError{code: code, err: errors.Join(err, encErr)}
-	}
-	if _, werr := out.Write(b); werr != nil {
-		return &exitCodeError{code: code, err: errors.Join(err, werr)}
-	}
-	return &exitCodeError{code: code, err: err, quiet: true}
+	return failWithEnvelope(out, f.json, code, err, func() ([]byte, error) {
+		return removal.EncodeError(removal.Meta{Repo: repo, DryRun: f.dryRun}, err)
+	})
 }
 
 // plannedItem is one named target on its way through the command: its row,
@@ -447,7 +435,7 @@ func writeRemoveResult(out, errOut io.Writer, asJSON bool, meta removal.Meta, ou
 		return &exitCodeError{code: 2, err: fmt.Errorf("could not write the result to stdout (it is on stderr): %w", err)}
 	}
 	if asJSON {
-		b, err := removal.Encode(outcomes, meta)
+		b, partial, err := removal.EncodeReport(outcomes, meta)
 		if err != nil {
 			// The removals happened; say so in text rather than lose them.
 			printRemoveText(errOut, meta, outcomes)
@@ -456,10 +444,7 @@ func writeRemoveResult(out, errOut io.Writer, asJSON bool, meta removal.Meta, ou
 		if _, err := out.Write(b); err != nil {
 			return lost(err)
 		}
-		var env struct {
-			Error *removal.ErrorJSON `json:"error"`
-		}
-		if jsonErr := json.Unmarshal(b, &env); jsonErr != nil || env.Error != nil {
+		if partial {
 			code = 2
 		}
 		if code != 0 {
@@ -485,19 +470,13 @@ func printRemoveText(w io.Writer, meta removal.Meta, outcomes []removal.Outcome)
 		b.WriteString("dry run: nothing was changed\n")
 	}
 	for _, o := range outcomes {
-		fmt.Fprintf(&b, "%s %s: worktree %s, branch %s", o.Item.Kind, cleanup.OneLine(o.Item.Name), o.Worktree, o.Branch)
+		b.WriteString(removal.Headline(o))
 		if o.Reason != "" {
 			b.WriteString(": " + cleanup.OneLine(o.Reason))
 		}
 		b.WriteString("\n")
-		for _, l := range o.LossLines {
-			b.WriteString("    loss: " + cleanup.OneLine(l) + "\n")
-		}
-		for _, x := range o.Warnings {
-			b.WriteString("    warning: " + cleanup.OneLine(x) + "\n")
-		}
-		if o.DeletedTip != "" {
-			b.WriteString("    branch tip was " + o.DeletedTip + "\n")
+		for _, l := range removal.DetailLines(o) {
+			b.WriteString("    " + l + "\n")
 		}
 	}
 	_, err := io.WriteString(w, b.String())

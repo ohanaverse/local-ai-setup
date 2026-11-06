@@ -674,18 +674,12 @@ func removedSummary(outs []removal.Outcome) string {
 // and, for a branch this run deleted (or may have), the commit it pointed
 // at (Ruling J). Every piece of engine text is one sanitised line.
 func outcomeLines(o removal.Outcome) []string {
-	out := []string{fmt.Sprintf("%s %s: worktree %s, branch %s", o.Item.Kind, cleanup.OneLine(o.Item.Name), o.Worktree, o.Branch)}
+	out := []string{removal.Headline(o)}
 	if o.Reason != "" {
 		out = append(out, "    "+cleanup.OneLine(o.Reason))
 	}
-	for _, l := range o.LossLines {
-		out = append(out, "    loss: "+cleanup.OneLine(l))
-	}
-	for _, w := range o.Warnings {
-		out = append(out, "    warning: "+cleanup.OneLine(w))
-	}
-	if o.DeletedTip != "" {
-		out = append(out, "    branch tip was "+cleanup.OneLine(o.DeletedTip))
+	for _, l := range removal.DetailLines(o) {
+		out = append(out, "    "+l)
 	}
 	return out
 }

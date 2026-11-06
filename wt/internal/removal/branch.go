@@ -151,7 +151,7 @@ func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) branchResult {
 	if !strings.HasPrefix(ref, "refs/heads/") {
 		return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: not a local branch ref", ref))
 	}
-	if !commitID.MatchString(fresh.Tip) {
+	if !cleanup.IsFullCommitID(fresh.Tip) {
 		if sha256ID(fresh.Tip) {
 			return result(BrRetainedUnknown, fmt.Sprintf("branch %s kept: object format not supported (sha256 repositories are not supported for branch deletion in this release)", ref))
 		}

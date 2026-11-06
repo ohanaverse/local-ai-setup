@@ -184,7 +184,7 @@ func TestDeletedTipThroughTheEngine(t *testing.T) {
 			if o.DeletedTip != want {
 				t.Errorf("DeletedTip %q, want %q (reason %q)", o.DeletedTip, want, o.Reason)
 			}
-			if c.wantsTip && !commitID.MatchString(o.DeletedTip) {
+			if c.wantsTip && !cleanup.IsFullCommitID(o.DeletedTip) {
 				t.Errorf("DeletedTip %q is not a full commit id", o.DeletedTip)
 			}
 		})

@@ -115,7 +115,7 @@ func itemJSON(i int, o Outcome, problems *[]string) ItemJSON {
 	}
 	switch {
 	case o.DeletedTip == "":
-	case commitID.MatchString(o.DeletedTip):
+	case cleanup.IsFullCommitID(o.DeletedTip):
 		j.BranchTip = o.DeletedTip
 	default:
 		*problems = append(*problems, fmt.Sprintf("item %d: branch_tip %q is not a full commit id", i, o.DeletedTip))
@@ -146,6 +146,14 @@ func marshal(e Envelope) ([]byte, error) {
 // off-contract values that fit and states the count of the rest ("and N more
 // off-contract values"). It returns an error only when marshalling fails.
 func Encode(outcomes []Outcome, meta Meta) ([]byte, error) {
+	b, _, err := EncodeReport(outcomes, meta)
+	return b, err
+}
+
+// EncodeReport is Encode that also says whether the document is a partial
+// report (it carries an error beside its items), so a caller needs no second
+// decode to choose its exit status.
+func EncodeReport(outcomes []Outcome, meta Meta) (doc []byte, partial bool, err error) {
 	e := Envelope{Version: EnvelopeVersion, Repo: meta.Repo, DryRun: meta.DryRun, Items: make([]ItemJSON, 0, len(outcomes))}
 	var problems []string
 	for i, o := range outcomes {
@@ -154,7 +162,8 @@ func Encode(outcomes []Outcome, meta Meta) ([]byte, error) {
 	if len(problems) > 0 {
 		e.Error = &ErrorJSON{Message: partialMessage(problems)}
 	}
-	return marshal(e)
+	doc, err = marshal(e)
+	return doc, e.Error != nil, err
 }
 
 // partialMessage is the partial report's error message: the first problems

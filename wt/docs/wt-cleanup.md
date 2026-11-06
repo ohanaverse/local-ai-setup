@@ -41,7 +41,7 @@ object store, which `git gc` collects.
 
 | Flag | Effect |
 |---|---|
-| `--json` | Machine-readable report: [cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json), sample [cleanup-list.sample.json](../../docs/contracts/cleanup-list.sample.json). |
+| `--json` | Machine-readable report: [cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json), sample [cleanup-list.sample.json](../../docs/contracts/cleanup-list.sample.json). Its `notes` array holds the caveats the text header prints (a lowered `--min-age`, artifact protection off, no registry); read it before acting on `rows`. |
 | `--no-fetch` | Skip the fetch. A repository with no `origin` remote skips it anyway; the header says how it went. |
 | `--min-age <duration>` | A branch younger than this that sits at or behind the base is never proven merged (a brand-new branch looks merged). At least `1m` (less is a usage error, exit 1); a value below the default `10m` is named in the header. |
 | `--plain` | Text output on a terminal. |
@@ -139,9 +139,9 @@ two different targets, stops the run before anything is touched.
 
 `--json` prints one document,
 [remove-result.schema.json](../../docs/contracts/remove-result.schema.json)
-(samples beside it), on failure too, except for a usage error the argument
-parser reports itself (an unknown flag, no arguments): that prints no
-document and exits 1. If stdout cannot be written (a closed pipe) the result
+(samples beside it), on failure too, a usage error (no arguments, an unknown
+flag) included: it prints the error document and exits 1. A bad flag is seen
+as a `--json` request only when `--json` comes before it. If stdout cannot be written (a closed pipe) the result
 goes to stderr as text, restore ids included, and the exit is 2. `--no-fetch`
 and `--min-age` behave as for `wt cleanup`.
 

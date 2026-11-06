@@ -28,14 +28,17 @@ var (
 	// cleanupClassify is cleanup.Classify, so a test can see the Options.
 	cleanupClassify = cleanup.Classify
 	// isTerminalWriter says whether w is a terminal.
-	isTerminalWriter = func(w io.Writer) bool {
-		f, ok := w.(*os.File)
-		return ok && term.IsTerminal(f.Fd())
-	}
+	isTerminalWriter = func(w io.Writer) bool { return isTerminalStream(w) }
 	// runCleanupList shows the report as the tick list; enter removes the
 	// ticked rows through the RemoveFuncs after a confirmation.
 	runCleanupList = tui.RunCleanupList
 )
+
+// isTerminalStream says whether s (a reader or writer) is a terminal file.
+func isTerminalStream(s any) bool {
+	f, ok := s.(*os.File)
+	return ok && term.IsTerminal(f.Fd())
+}
 
 func cleanupCmd(a *app) *cobra.Command {
 	var asJSON, noFetch, plain bool
@@ -202,17 +205,25 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 // cleanupFail ends the run with exit 1. Under --json it first prints the one
 // error envelope and stays quiet on stderr; otherwise main prints the error.
 func cleanupFail(out io.Writer, asJSON bool, repo string, err error) error {
+	return failWithEnvelope(out, asJSON, 1, err, func() ([]byte, error) { return cleanup.EncodeError(repo, err) })
+}
+
+// failWithEnvelope ends a run with code and err. Under asJSON it first
+// prints the document encode builds and stays quiet on stderr (the document
+// carries the error); if that cannot be written, main prints the error
+// beside the write problem. Without asJSON main prints the error.
+func failWithEnvelope(out io.Writer, asJSON bool, code int, err error, encode func() ([]byte, error)) error {
 	if !asJSON {
-		return &exitCodeError{code: 1, err: err}
+		return &exitCodeError{code: code, err: err}
 	}
-	b, encErr := cleanup.EncodeError(repo, err)
+	b, encErr := encode()
 	if encErr != nil {
-		return &exitCodeError{code: 1, err: errors.Join(err, encErr)}
+		return &exitCodeError{code: code, err: errors.Join(err, encErr)}
 	}
 	if _, werr := out.Write(b); werr != nil {
-		return &exitCodeError{code: 1, err: errors.Join(err, werr)}
+		return &exitCodeError{code: code, err: errors.Join(err, werr)}
 	}
-	return &exitCodeError{code: 1, err: err, quiet: true}
+	return &exitCodeError{code: code, err: err, quiet: true}
 }
 
 // errRegistryUnavailable is protectedPaths' error when the registry did not

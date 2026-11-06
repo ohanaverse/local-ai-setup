@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -481,7 +480,7 @@ func invalidBranchItem(it Item) string {
 		return "a branch item has no path"
 	case !slices.Contains(tickable, it.Saw):
 		return fmt.Sprintf("unknown status seen %q", it.Saw)
-	case !commitID.MatchString(it.SawTip):
+	case !cleanup.IsFullCommitID(it.SawTip):
 		return fmt.Sprintf("commit seen %q is not a full commit id", it.SawTip)
 	}
 	return ""
@@ -491,9 +490,6 @@ func invalidBranchItem(it Item) string {
 // "worse than what the user saw" cannot be judged (an unknown status ranks
 // worst, so nothing would ever be worse than it).
 var tickable = []cleanup.Status{cleanup.StatusProven, cleanup.StatusLessSure, cleanup.StatusUniqueWork}
-
-// commitID is a full commit id as git prints it (cleanup's fullCommitID).
-var commitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // invalidItem says why a worktree item cannot be acted on before anything
 // is read, or "": its path (invalidPath), its Saw (a tickable status,
@@ -509,7 +505,7 @@ func (e Engine) invalidItem(it Item) string {
 	switch {
 	case it.SawTip == "" && it.Ref != "":
 		return "no commit seen for " + it.Ref
-	case it.SawTip != "" && !commitID.MatchString(it.SawTip):
+	case it.SawTip != "" && !cleanup.IsFullCommitID(it.SawTip):
 		return fmt.Sprintf("commit seen %q is not a full commit id", it.SawTip)
 	}
 	return ""

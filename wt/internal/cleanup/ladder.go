@@ -51,6 +51,10 @@ const patchIDWalkCap = 500
 
 var fullCommitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// IsFullCommitID reports whether s is a full 40-hex commit id as git prints
+// it: the one definition wt's cleanup and removal share.
+func IsFullCommitID(s string) bool { return fullCommitID.MatchString(s) }
+
 // qualified reports whether ref is a full 40-hex commit id or a plain
 // refs/heads/<b> or refs/remotes/<r>/<b> name (no revision syntax). A short
 // name is refused: git resolves `t2` to a tag t2 before the branch t2, so a
