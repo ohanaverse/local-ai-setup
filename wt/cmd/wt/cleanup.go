@@ -1,5 +1,7 @@
 // wt cleanup — which worktrees and branches are safe to remove, and why.
-// Read-only: this command and internal/cleanup never delete anything.
+// This file and internal/cleanup hold no deletion code: the tick list
+// removes what the user confirms through internal/removal's engine (wired
+// in cleanupRemoveFuncs), the one package allowed to delete.
 package main
 
 import (
@@ -8,11 +10,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
@@ -23,14 +28,17 @@ var (
 	// cleanupClassify is cleanup.Classify, so a test can see the Options.
 	cleanupClassify = cleanup.Classify
 	// isTerminalWriter says whether w is a terminal.
-	isTerminalWriter = func(w io.Writer) bool {
-		f, ok := w.(*os.File)
-		return ok && term.IsTerminal(f.Fd())
-	}
-	// runCleanupList shows the report as the tick list (view only: enter
-	// prints what would be removed and removes nothing).
+	isTerminalWriter = func(w io.Writer) bool { return isTerminalStream(w) }
+	// runCleanupList shows the report as the tick list; enter removes the
+	// ticked rows through the RemoveFuncs after a confirmation.
 	runCleanupList = tui.RunCleanupList
 )
+
+// isTerminalStream says whether s (a reader or writer) is a terminal file.
+func isTerminalStream(s any) bool {
+	f, ok := s.(*os.File)
+	return ok && term.IsTerminal(f.Fd())
+}
 
 func cleanupCmd(a *app) *cobra.Command {
 	var asJSON, noFetch, plain bool
@@ -41,7 +49,13 @@ func cleanupCmd(a *app) *cobra.Command {
 		Long: "List the repository's worktrees, local branches and origin branches in four\n" +
 			"groups, by how sure wt is that each can go: PROVEN MERGED, LOOKS MERGED (LESS\n" +
 			"SURE), HAS WORK THAT EXISTS NOWHERE ELSE, and IN USE / LOCKED. Each row says\n" +
-			"why. This command only reads: it removes nothing.\n\n" +
+			"why. Apart from the fetch's remote-tracking refs (--no-fetch skips it),\n" +
+			"--plain and --json write no ref, index or working file (the merge proof\n" +
+			"may leave unreachable tree objects that git gc collects). On a\n" +
+			"terminal, enter removes the ticked\n" +
+			"rows after a confirmation that lists what each would lose: y when every\n" +
+			"row is proven, the typed word delete when any is not proven or loses\n" +
+			"something. origin branches are never removed.\n\n" +
 			"It runs `git fetch --prune origin` first (--no-fetch skips it) and says in the\n" +
 			"header how that went (a repository with no origin remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
@@ -49,16 +63,18 @@ func cleanupCmd(a *app) *cobra.Command {
 			"not be classified at all (not a repository, no default branch). With --json\n" +
 			"the one JSON document is printed on failure too.\n\n" +
 			"On a terminal the list is interactive; --plain, --json and a pipe print text.\n" +
-			"A branch younger than --min-age (default 10m) that sits at or behind the base\n" +
-			"is never proven merged: a brand-new branch looks merged.",
+			"A branch younger than --min-age (default 10m, at least 1m) that sits at or\n" +
+			"behind the base is never proven merged: a brand-new branch looks merged. A\n" +
+			"value below 10m is named in the header, as is a registry wt could not read\n" +
+			"(registered local_path artifacts are then not marked).",
 		Example:      "  wt cleanup\n  wt cleanup --plain --no-fetch\n  wt cleanup --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		// main prints the error line; cobra's copy would repeat it.
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("min-age") && minAge <= 0 {
-				return fmt.Errorf("--min-age must be a positive duration such as 10m, got %s (a zero threshold would let a brand-new branch look merged)", minAge)
+			if err := checkMinAge(cmd, minAge); err != nil {
+				return err
 			}
 			return executeCleanup(cmd, a, cleanupFlags{json: asJSON, noFetch: noFetch, plain: plain, minAge: minAge})
 		},
@@ -66,8 +82,37 @@ func cleanupCmd(a *app) *cobra.Command {
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
 	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune origin first")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
-	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; must be positive)")
+	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
+}
+
+// checkMinAge is the --min-age usage check `wt cleanup` and `wt remove`
+// share: a value given must be at least cleanup.MinAgeFloor.
+func checkMinAge(cmd *cobra.Command, minAge time.Duration) error {
+	if !cmd.Flags().Changed("min-age") {
+		return nil
+	}
+	if minAge <= 0 {
+		return fmt.Errorf("--min-age must be a positive duration such as 10m, got %s (a zero threshold would let a brand-new branch look merged)", minAge)
+	}
+	if minAge < cleanup.MinAgeFloor {
+		return fmt.Errorf("--min-age must be at least 1m, got %s (a shorter threshold lets a brand-new branch look merged)", minAge)
+	}
+	return nil
+}
+
+// cleanupInputs are the GatherInputs `wt cleanup` and `wt remove` gather
+// with from cwd: this process's session claim (so its own root launch does
+// not look like another's), the registered artifacts and four gh calls at a
+// time. label names the command in the claim ("wt-cleanup", "wt-remove").
+func cleanupInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+	claim, err := sessionclaim.Self(cwd, "", label)
+	if err != nil {
+		// Never joined, only used to tell this process from the others: a
+		// claim that could not be timed at worst makes the root look held.
+		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: label}
+	}
+	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4}
 }
 
 type cleanupFlags struct {
@@ -81,19 +126,10 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	if err != nil {
 		return cleanupFail(out, f.json, "", err)
 	}
-	claim, err := sessionclaim.Self(cwd, "", "wt-cleanup")
-	if err != nil {
-		// Never joined, only used to tell this process from the others: a
-		// claim that could not be timed at worst makes the root look held.
-		claim = sessionclaim.Claim{PID: os.Getpid()}
-	}
-	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanup.GatherInputs{
-		CWD:            cwd,
-		Fetch:          !f.noFetch,
-		ProtectedPaths: protectedPaths(a),
-		Claim:          claim,
-		Parallel:       4,
-	})
+	// Listing only reads, so a registry that cannot be read does not stop
+	// it: the header says protection is off (and a removal refuses).
+	protected, protErr := protectedPaths(a)
+	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupInputs(cwd, !f.noFetch, protected, "wt-cleanup"))
 	if err != nil {
 		repo := snap.Repo
 		if repo == "" {
@@ -101,7 +137,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		}
 		return cleanupFail(out, f.json, repo, err)
 	}
-	report := cleanupClassify(snap, cleanup.Options{Now: time.Now(), MinAge: f.minAge})
+	report := cleanupReport(a, snap, f.minAge, protErr)
 
 	switch {
 	case f.json:
@@ -112,52 +148,187 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		_, err = out.Write(b)
 		return err
 	case !f.plain && isTerminalWriter(out):
-		return runCleanupList(report, a.theme)
+		in := cleanupInputs(cwd, false, protected, "wt-cleanup")
+		return runCleanupList(report, a.theme, cleanupRemoveFuncs(a, snap, in, f.minAge, protErr))
 	}
 	return printCleanupPlain(out, report, time.Now())
+}
+
+// cleanupReport classifies snap now, with the registry's header note.
+func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr error) cleanup.Report {
+	report := cleanupClassify(snap, cleanup.Options{Now: time.Now(), MinAge: minAge})
+	switch {
+	case protErr != nil:
+		report.Notes = append(report.Notes, cleanupRegistryNote(protErr))
+	case noRegistry(a):
+		report.Notes = append(report.Notes, "registry: none at "+cleanup.OneLine(config.RegistryPath())+"; no model artifacts are registered")
+	}
+	return report
+}
+
+// cleanupRemoveFuncs connects the tick list to the removal engine, with the
+// settings `wt remove` uses (its clock and process finder): Preview turns
+// the ticked rows into preview inputs (ItemFromRow) and previews them; Run
+// removes the items the list confirmed; Refresh re-reads the repository (no
+// fetch) for the rebuilt list and points the engine at the new snapshot. A
+// registry that did not load turns removal off (plan call 7): enter then
+// says so and previews nothing.
+func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
+	if protErr != nil {
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed"}
+	}
+	in.Fetch = false // a re-check never fetches
+	eng := &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
+		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
+	return tui.RemoveFuncs{
+		Preview: func(rows []cleanup.Row) []removal.ItemPreview {
+			items := make([]removal.Item, len(rows))
+			for i, r := range rows {
+				items[i] = removal.ItemFromRow(r)
+			}
+			return eng.Preview(items)
+		},
+		Run: func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
+			return eng.Run(items, progress)
+		},
+		Refresh: func() (cleanup.Report, error) {
+			fresh, err := cleanup.Gather(eng.G, in)
+			if err != nil {
+				return cleanup.Report{}, err
+			}
+			eng.Prior = fresh
+			return cleanupReport(a, fresh, minAge, nil), nil
+		},
+	}
 }
 
 // cleanupFail ends the run with exit 1. Under --json it first prints the one
 // error envelope and stays quiet on stderr; otherwise main prints the error.
 func cleanupFail(out io.Writer, asJSON bool, repo string, err error) error {
-	if !asJSON {
-		return &exitCodeError{code: 1, err: err}
-	}
-	b, encErr := cleanup.EncodeError(repo, err)
-	if encErr != nil {
-		return &exitCodeError{code: 1, err: errors.Join(err, encErr)}
-	}
-	if _, werr := out.Write(b); werr != nil {
-		return &exitCodeError{code: 1, err: errors.Join(err, werr)}
-	}
-	return &exitCodeError{code: 1, err: err, quiet: true}
+	return failWithEnvelope(out, asJSON, 1, err, func() ([]byte, error) { return cleanup.EncodeError(repo, err) })
 }
 
-// protectedPaths are the registry's local_path artifacts as absolute paths:
-// wt never deletes them, so a worktree holding one is in use. A registry that
-// did not load simply names none.
-func protectedPaths(a *app) []string {
-	if a == nil || a.cfg == nil {
-		return nil
+// failWithEnvelope ends a run with code and err. Under asJSON it first
+// prints the document encode builds and stays quiet on stderr (the document
+// carries the error); if that cannot be written, main prints the error
+// beside the write problem. Without asJSON main prints the error.
+func failWithEnvelope(out io.Writer, asJSON bool, code int, err error, encode func() ([]byte, error)) error {
+	if !asJSON {
+		return &exitCodeError{code: code, err: err}
+	}
+	b, encErr := encode()
+	if encErr != nil {
+		return &exitCodeError{code: code, err: errors.Join(err, encErr)}
+	}
+	if _, werr := out.Write(b); werr != nil {
+		return &exitCodeError{code: code, err: errors.Join(err, werr)}
+	}
+	return &exitCodeError{code: code, err: err, quiet: true}
+}
+
+// errRegistryUnavailable is protectedPaths' error when the registry did not
+// load: the artifacts it names are unknown, so none can be protected.
+var errRegistryUnavailable = errors.New("the registry failed to load")
+
+// cleanupRegistryNote is the header line `wt cleanup` adds when protectedPaths
+// failed: the list still shows, but nothing is marked protected_artifact and
+// a removal must refuse. The cause is the load error itself, without
+// errRegistryUnavailable's own words in front of it.
+func cleanupRegistryNote(err error) string {
+	cause := strings.TrimPrefix(err.Error(), errRegistryUnavailable.Error()+": ")
+	return "registry: could not be read: " + cleanup.OneLine(cause) + "; artifact protection is OFF and removal is refused"
+}
+
+// noRegistry reports whether the registry did not load only because there is
+// no file at the default path: nothing is registered, so nothing needs
+// protecting. It is a positive match: the home directory is known and
+// absolute, and the registry path is exactly $HOME/.config/local-ai/
+// registry.toml (XDG_CONFIG_HOME spelling out $HOME/.config is that same
+// place). Any other location was chosen by a person or script (WT_REGISTRY,
+// MODELMAN_REGISTRY, an XDG_CONFIG_HOME elsewhere) and may be a typo or an
+// unmounted volume hiding a real registry, so its absence fails closed. With
+// no home directory (launchd, cron) there is no default to match, so that
+// fails closed too; config.RegistryRedirected answers false there and must
+// not decide this.
+func noRegistry(a *app) bool {
+	if a == nil || !errors.Is(a.loadErr, config.ErrRegistryMissing) {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !filepath.IsAbs(home) {
+		return false
+	}
+	return filepath.Clean(config.RegistryPath()) == filepath.Join(home, ".config", "local-ai", "registry.toml")
+}
+
+// protectedPaths are the registry's local_path artifacts (fetch and draft of
+// every model) as absolute, cleaned paths, sorted and each once: wt never
+// deletes them, so a worktree holding one, or inside one, is in use. "~" and
+// "~/..." are expanded (config.ExpandHome). No file at the default registry
+// path is nothing to protect (nil, nil). Everything else fails closed: a
+// registry that did not load is errRegistryUnavailable, and a local_path the
+// loader read as absent because it was malformed (config.ArtifactFaults: not
+// a string, or its fetch/draft not a table), a "~" path that cannot be
+// expanded, or a relative path is an error naming the model. A relative
+// local_path has no agreed base (wt model add writes absolute paths, llmbench
+// resolves from its own working directory, modeladmin from wt's), so wt
+// cannot know what it names: a path wt cannot enumerate is a path it cannot
+// protect.
+func protectedPaths(a *app) ([]string, error) {
+	if a == nil {
+		return nil, errRegistryUnavailable
+	}
+	if noRegistry(a) {
+		return nil, nil
+	}
+	if a.loadErr != nil {
+		return nil, fmt.Errorf("%w: %w", errRegistryUnavailable, a.loadErr)
+	}
+	if a.cfg == nil {
+		return nil, errRegistryUnavailable
 	}
 	var out []string
 	for _, m := range a.cfg.Models {
-		for _, p := range []string{m.Fetch.LocalPath, m.Draft.LocalPath} {
-			if p == "" {
+		for _, side := range []struct {
+			key string
+			art config.ModelArtifact
+		}{{"fetch", m.Fetch}, {"draft", m.Draft}} {
+			switch {
+			case side.art.Malformed.NotTable:
+				return nil, fmt.Errorf("model %s: %s is not a table, so its local_path cannot be protected", m.ID, side.key)
+			case side.art.Malformed.LocalPath:
+				return nil, fmt.Errorf("model %s: %s.local_path is not a string, so it cannot be protected", m.ID, side.key)
+			case side.art.LocalPath == "":
 				continue
 			}
-			if rest, ok := strings.CutPrefix(p, "~/"); ok {
-				if home, err := os.UserHomeDir(); err == nil {
-					p = filepath.Join(home, rest)
-				}
-			}
-			if abs, err := filepath.Abs(p); err == nil {
-				p = abs
+			p, err := resolveLocalPath(side.art.LocalPath)
+			if err != nil {
+				return nil, fmt.Errorf("model %s: %s.local_path %q %w", m.ID, side.key, side.art.LocalPath, err)
 			}
 			out = append(out, p)
 		}
 	}
-	return out
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
+// resolveLocalPath is one local_path as an absolute, cleaned path, home
+// expanded. Its error completes "fetch.local_path "<value>" ...".
+func resolveLocalPath(lp string) (string, error) {
+	p, err := config.ExpandHome(lp)
+	if err != nil {
+		return "", fmt.Errorf("cannot be expanded: no home directory: %w", err)
+	}
+	if strings.HasPrefix(p, "~") {
+		// ExpandHome left it: an empty $HOME, or a "~user" form wt does not
+		// expand. This also refuses a literal relative directory named
+		// "~foo": it is relative either way, and refusing fails closed.
+		return "", errors.New("cannot be expanded (no home directory, or a ~user form); write it as an absolute path")
+	}
+	if !filepath.IsAbs(p) {
+		return "", errors.New("is relative; write it as an absolute path")
+	}
+	return filepath.Clean(p), nil
 }
 
 // printCleanupPlain writes the header and the groups as text. Same groups,

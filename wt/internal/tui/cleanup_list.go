@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
@@ -26,8 +27,8 @@ import (
 // of its own rather than a bubbles list, whose delegate gives every item the
 // same height. The name column is what gives way to the width.
 //
-// It is VIEW ONLY: enter prints what would be removed, after the alt screen
-// is gone, and exits. Nothing here runs git or removes anything.
+// enter removes the ticked rows, through a confirm screen and the removal
+// engine (cleanup_confirm.go); this file runs no git and removes nothing.
 
 // cleanupItem is one entry of the list: a group heading or a row.
 type cleanupItem struct {
@@ -38,19 +39,13 @@ type cleanupItem struct {
 }
 
 // cleanupLocked reports whether a row can never be ticked: an in-use row, a
-// row with any hard blocker, and a remote row that is not proven (only a
-// merged PR puts an origin branch up for removal). Every other row may be
-// ticked by the user; only Tickable rows are ticked for them (by default and
-// by `a`).
-//
-// Binding for PR B (Ruling 14), which makes enter remove: a ticked row that
-// is less sure or has unique work must go through a confirmation that states
-// what would be lost — and a branch deleted with -D through a confirmation of
-// its own — before anything is removed. If PR B instead locks unique-work
-// rows, this function is the one place to change.
+// row with any hard blocker, and every remote row (wt does not delete origin
+// branches yet, plan call 9). Every other row may be ticked by the user;
+// only Tickable rows are ticked for them (by default and by `a`). A ticked
+// row that is not proven, or loses anything, goes through the typed
+// confirmation (cleanup_confirm.go) before anything is removed.
 func cleanupLocked(r cleanup.Row) bool {
-	return r.Status == cleanup.StatusInUse || len(r.Blockers) > 0 ||
-		(r.Kind == cleanup.KindRemote && r.Status != cleanup.StatusProven)
+	return r.Status == cleanup.StatusInUse || len(r.Blockers) > 0 || r.Kind == cleanup.KindRemote
 }
 
 // Row geometry: "> " cursor, "[x] " box, the kind padded to 8, then the name
@@ -80,13 +75,26 @@ type cleanupListModel struct {
 	maxText       int          // the longest sentence (with its age)
 	width, height int
 	done          bool
-	message       string // printed after the program ends; "" for a plain quit
+
+	// The removal flow (cleanup_confirm.go).
+	rm      RemoveFuncs
+	phase   cleanupPhase
+	status  string          // one line under the list ("nothing ticked", "cancelled...")
+	pending int             // rows being previewed
+	conf    *cleanupConfirm // the confirm screen; nil outside it
+	run     *cleanupRun     // the last run; set from the progress screen on
+	log     []removal.Outcome
+	exitErr error // returned by RunCleanupList (the re-read failed)
+	// quitAfterRun: a signal came during a run; the program quits when the
+	// run ends (Ruling T).
+	quitAfterRun bool
+	clock        func() time.Time // the list's clock on a rebuild
 }
 
 // newCleanupList builds the list for r: every group's heading and rows in
 // cleanup.Groups' order, Tickable rows ticked, the cursor on the first row.
 func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupListModel {
-	m := cleanupListModel{report: r, theme: th, now: now, ticked: map[int]bool{}, cursor: -1}
+	m := cleanupListModel{report: r, theme: th, now: now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
 	for _, g := range cleanup.Groups(r) {
 		m.items = append(m.items, cleanupItem{heading: g.Heading})
 		for _, row := range g.Rows {
@@ -106,16 +114,28 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 	return m
 }
 
-// RunCleanupList shows r as the tick list on the alt screen. enter is view
-// only: once the screen is gone it prints what would have been removed.
-// Nothing is removed and no git command is run.
-func RunCleanupList(r cleanup.Report, th themes.Theme) error {
-	final, err := tea.NewProgram(newCleanupList(r, th, time.Now()), tea.WithAltScreen()).Run()
-	if err != nil {
-		return err
+// RunCleanupList shows r as the tick list on the alt screen. enter removes
+// the ticked rows through rm after a confirmation; once the screen is gone,
+// every outcome of the session is printed (what was removed and each
+// deleted branch's commit outlive the alt screen).
+func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
+	m := newCleanupList(r, th, time.Now())
+	m.rm = rm
+	// Bubble Tea's own signal handler quits on SIGINT/SIGTERM in any phase,
+	// mid-removal too; the model handles them instead (Ruling T). The
+	// forwarding stops only after the exit message is printed.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithoutSignalHandler())
+	stop := forwardSignals(p.Send)
+	defer stop()
+	final, err := p.Run()
+	fm, ok := final.(cleanupListModel)
+	if ok && fm.exitMessage() != "" {
+		if _, werr := fmt.Fprintln(os.Stdout, fm.exitMessage()); werr != nil && err == nil {
+			err = werr
+		}
 	}
-	if fm, ok := final.(cleanupListModel); ok && fm.message != "" {
-		_, err = fmt.Fprintln(os.Stdout, fm.message)
+	if err == nil && ok {
+		err = fm.exitErr
 	}
 	return err
 }
@@ -126,10 +146,37 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case cleanupPreviewMsg:
+		return m.gotPreviews(msg)
+	case cleanupProgressMsg:
+		return m.gotProgress(msg)
+	case cleanupRunDoneMsg:
+		return m.gotRunDone(msg)
+	case cleanupRefreshMsg:
+		return m.gotRefresh(msg)
+	case cleanupSignalMsg:
+		return m.signalled()
 	case tea.KeyMsg:
 		if m.done {
 			return m, nil
 		}
+		switch m.phase {
+		case cleanupPhaseConfirm:
+			return m.confirmKey(msg)
+		case cleanupPhaseResults:
+			return m.resultsKey(msg)
+		case cleanupPhaseRunning:
+			// A removal in flight is never abandoned: keys wait.
+			return m, nil
+		case cleanupPhasePreviewing, cleanupPhaseRefreshing:
+			// Nothing is being removed: ctrl+c may leave.
+			if msg.String() == "ctrl+c" {
+				m.done = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		m.status = ""
 		if m.rows == 0 {
 			// "nothing to clean up": any key leaves.
 			m.done = true
@@ -140,9 +187,7 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.done = true
 			return m, tea.Quit
 		case "enter":
-			m.done = true
-			m.message = m.viewOnlyMessage()
-			return m, tea.Quit
+			return m.startRemoval()
 		case " ":
 			if it := m.items[m.cursor]; !it.locked {
 				m.ticked[m.cursor] = !m.ticked[m.cursor]
@@ -309,7 +354,7 @@ func (m *cleanupListModel) layout() cleanupLayout {
 
 	title := clip(m.titleLine(), m.width) + "\n"
 	header := m.headerBlock() + "\n\n"
-	detail := "\n" + m.detail()
+	detail := "\n" + m.statusBlock() + m.detail()
 	frames := [][2]string{{title + header, detail}, {title, detail}, {"", detail}, {"", ""}}
 	l := cleanupLayout{lines: lines}
 	for k, f := range frames {
@@ -359,7 +404,16 @@ func (m *cleanupListModel) layout() cleanupLayout {
 func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter show ticked (view only) · q quit")
+	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter remove ticked · q quit")
+}
+
+// statusBlock is the status, wrapped, with its line break; "" without one.
+func (m *cleanupListModel) statusBlock() string {
+	if m.status == "" {
+		return ""
+	}
+	st := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent))
+	return st.Render(clip(tuilayout.WrapText(m.status, m.width), m.width)) + "\n"
 }
 
 // headerBlock is cleanup.HeaderLines, wrapped: the fetch failure ends in
@@ -384,7 +438,10 @@ func (m *cleanupListModel) detail() string {
 	if age := cleanup.AgeText(it.row); age != "" {
 		text += " [" + age + "]"
 	}
-	if it.locked {
+	switch {
+	case it.locked && it.row.Kind == cleanup.KindRemote:
+		text = "cannot be ticked (wt does not delete origin branches): " + text
+	case it.locked:
 		text = "cannot be ticked: " + text
 	}
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
@@ -403,8 +460,20 @@ func (m cleanupListModel) View() string {
 	if m.done {
 		return ""
 	}
+	switch m.phase {
+	case cleanupPhasePreviewing:
+		return m.waitView(fmt.Sprintf("wt cleanup · re-checking %d ticked items; nothing is removed yet (ctrl+c leaves)", m.pending))
+	case cleanupPhaseConfirm:
+		return m.confirmView()
+	case cleanupPhaseRunning:
+		return m.runningView()
+	case cleanupPhaseResults:
+		return m.resultsView()
+	case cleanupPhaseRefreshing:
+		return m.waitView("wt cleanup · re-reading the repository")
+	}
 	if m.rows == 0 {
-		body := m.headerBlock() + "\n\nnothing to clean up: no other worktree or branch\n\npress any key to quit"
+		body := m.headerBlock() + "\n\n" + m.statusBlock() + "nothing to clean up: no other worktree or branch\n\npress any key to quit"
 		return capLines(clip(body, m.width), m.height)
 	}
 	l := m.layout()
@@ -467,22 +536,17 @@ func (m cleanupListModel) tickedNames() []string {
 	return out
 }
 
-// viewOnlyMessage is enter's sentence in PR A: what would be removed.
-func (m cleanupListModel) viewOnlyMessage() string {
-	items := m.tickedItems()
-	if len(items) == 0 {
-		return "view only — nothing is removed; nothing ticked"
+// exitMessage is what RunCleanupList prints after the program ends: every
+// outcome of the session ("" when nothing ran).
+func (m cleanupListModel) exitMessage() string {
+	text := logText(m.log)
+	if m.phase != cleanupPhaseRunning || m.run == nil {
+		return text
 	}
-	names := make([]string, len(items))
-	for i, it := range items {
-		names[i] = string(it.row.Kind) + " " + cleanup.DisplayName(it.row)
+	// Ended mid-run anyway: say what has no outcome (Ruling T).
+	if text == "" {
+		text = "wt cleanup: removed 0 items"
 	}
-	noun := "items"
-	if len(items) == 1 {
-		noun = "item"
-	}
-	return fmt.Sprintf("view only — nothing is removed; would remove %d %s: %s", len(items), noun, strings.Join(names, ", "))
+	lines := append([]string{text, "the run did not finish:"}, m.run.unfinishedLines()...)
+	return strings.Join(lines, "\n")
 }
-
-// exitMessage is what RunCleanupList prints after the program ends.
-func (m cleanupListModel) exitMessage() string { return m.message }

@@ -4,6 +4,7 @@
   "base": {"default": "main", "ref": "origin/main", "fallback": false, "fetched_at": "2026-11-04T12:00:00Z"},
   "fetch": {"ok": true, "at": "2026-11-04T12:00:00Z"},
   "gh": "ok",
+  "notes": ["min-age: lowered to 1m (default 10m): fresh branches may read as merged"],
   "rows": [
     {"kind": "worktree", "name": "merged-topic", "path": "/home/owner/src/project/.worktrees/merged-topic", "branch": "merged-topic", "status": "proven", "evidence": "pr-tip", "unknown": false, "age_days": 6, "reasons": [], "blockers": [], "pr": {"number": 42, "state": "MERGED"}},
     {"kind": "branch", "name": "old-idea", "branch": "old-idea", "status": "proven", "evidence": "ancestor", "unknown": false, "age_days": 30, "reasons": [], "blockers": []},

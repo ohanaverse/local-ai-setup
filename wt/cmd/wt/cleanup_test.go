@@ -15,7 +15,9 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
 
 func cgit(t *testing.T, dir string, args ...string) string {
@@ -136,7 +138,15 @@ func TestCleanupCmdPlainGroupsInOrder(t *testing.T) {
 	cleanupCommit(t, dir, "r", "rescue work")
 	cgit(t, dir, "checkout", "main")
 
-	stdout, stderr, err := runCleanup(t, a, dir, "--plain", "--min-age", "1ns")
+	// The branches are seconds old and --min-age has a 1m floor: classify
+	// an hour from now so "merged" is old enough to be proven.
+	old := cleanupClassify
+	cleanupClassify = func(s cleanup.Snapshot, o cleanup.Options) cleanup.Report {
+		o.Now = o.Now.Add(time.Hour)
+		return old(s, o)
+	}
+	t.Cleanup(func() { cleanupClassify = old })
+	stdout, stderr, err := runCleanup(t, a, dir, "--plain")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +480,7 @@ func TestCleanupCmdTTYHandsOffToList(t *testing.T) {
 	oldTTY, oldList := isTerminalWriter, runCleanupList
 	isTerminalWriter = func(io.Writer) bool { return true }
 	calls := 0
-	runCleanupList = func(r cleanup.Report, _ themes.Theme) error { calls++; return nil }
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { calls++; return nil }
 	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
 
 	if out, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil || calls != 1 || out != "" {
@@ -480,6 +490,68 @@ func TestCleanupCmdTTYHandsOffToList(t *testing.T) {
 		if _, _, err := runCleanup(t, a, dir, "--no-fetch", flag); err != nil || calls != 1 {
 			t.Errorf("%s: err=%v calls=%d, want the list not called", flag, err, calls)
 		}
+	}
+}
+
+// TestCleanupListGetsTheRemovalEngine verifies the tick list is handed
+// RemoveFuncs over the real engine for this repository: Preview previews the
+// rows it is given, an Item confirmed from that preview is removed by Run,
+// and Refresh re-reads the repository without the removed worktree. A wiring
+// mistake (no engine, the wrong directory, a stale snapshot) would make the
+// list's enter do nothing or act on the wrong repository.
+func TestCleanupListGetsTheRemovalEngine(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	var got cleanup.Report
+	var rm tui.RemoveFuncs
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, f tui.RemoveFuncs) error { got, rm = r, f; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+	if _, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if rm.Off != "" || rm.Preview == nil || rm.Run == nil || rm.Refresh == nil {
+		t.Fatalf("RemoveFuncs not wired: %+v", rm)
+	}
+	var row cleanup.Row
+	for _, r := range got.Rows {
+		if r.Kind == cleanup.KindWorktree && r.Name == "topic" {
+			row = r
+		}
+	}
+	ps := rm.Preview([]cleanup.Row{row})
+	if len(ps) != 1 || ps[0].Approval == removal.ApprovalRefused {
+		t.Fatalf("preview: %+v", ps)
+	}
+	it, err := ps[0].Confirmed(ps[0].Needs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	outs := rm.Run([]removal.Item{it}, func(removal.Outcome) { calls++ })
+	if len(outs) != 1 || outs[0].Worktree != removal.WtRemoved || calls != 1 || exists(p) {
+		t.Fatalf("run: %+v progress calls %d, worktree there %v", outs, calls, exists(p))
+	}
+	fresh, err := rm.Refresh()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range fresh.Rows {
+		if r.Kind == cleanup.KindWorktree && r.Name == "topic" {
+			t.Errorf("refreshed report still lists the removed worktree")
+		}
+	}
+}
+
+// TestCleanupListRemovalOffWithoutRegistry verifies that a registry that did
+// not load turns the list's removal off (plan call 7): the RemoveFuncs say
+// why and hold no engine, so enter can preview or remove nothing.
+func TestCleanupListRemovalOffWithoutRegistry(t *testing.T) {
+	rm := cleanupRemoveFuncs(nil, cleanup.Snapshot{}, cleanup.GatherInputs{}, 0, errRegistryUnavailable)
+	if !strings.Contains(rm.Off, "the registry failed to load") || rm.Preview != nil || rm.Run != nil || rm.Refresh != nil {
+		t.Errorf("RemoveFuncs = %+v, want removal off naming the registry", rm)
 	}
 }
 
@@ -493,13 +565,17 @@ func TestCleanupCmdRegisteredOnRoot(t *testing.T) {
 }
 
 // TestCleanupCmdContainsNoDeletion scans the non-test sources of the cleanup
-// package and of this command for any deletion call. PR A is read-only by
-// design: a removal belongs to a later PR and must not slip in unreviewed.
+// package and of this command for any deletion call. The classifier is
+// read-only by design: removal lives in internal/removal alone (held module-
+// wide by TestDeletionStringsOnlyInRemovalPackage), and must not slip in here
+// unreviewed. Besides worktree and branch deletion it bans the two ways to
+// delete a remote branch: a push (refspec ":<branch>") and `gh api -X DELETE`.
 func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 	files, _ := filepath.Glob("../../internal/cleanup/*.go")
 	more, _ := filepath.Glob("cleanup*.go")
 	files = append(files, more...)
-	banned := []string{"worktree remove", `"worktree", "remove"`, `"worktree", "prune"`, "update-ref", `branch", "-d`, `branch", "-D`, "--delete", "os.RemoveAll", "os.Remove("}
+	banned := []string{"worktree remove", `"worktree", "remove"`, `"worktree", "prune"`, "update-ref", `branch", "-d`, `branch", "-D`, "--delete", "os.RemoveAll", "os.Remove(",
+		`":"+`, `":" +`, `"push"`, "-X DELETE", `"-X", "DELETE"`, `"--method", "DELETE"`, "-XDELETE"}
 	scanned := 0
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
@@ -510,8 +586,19 @@ func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The one exemption: in held.go only, the sequencer state file
+		// HeldRefs reads (a read-only path whose name contains "update-ref"),
+		// exact spelling. Every "update-ref" there must be that spelling.
+		src := string(b)
+		if filepath.Base(f) == "held.go" && strings.Contains(filepath.ToSlash(f), "internal/cleanup/") {
+			const stateFile = "rebase-merge/update-refs"
+			if n, m := strings.Count(src, "update-ref"), strings.Count(src, stateFile); n != m {
+				t.Errorf("%s: %d \"update-ref\" but only %d %q", f, n, m, stateFile)
+			}
+			src = strings.ReplaceAll(src, stateFile, "")
+		}
 		for _, s := range banned {
-			if strings.Contains(string(b), s) {
+			if strings.Contains(src, s) {
 				t.Errorf("%s contains %q", f, s)
 			}
 		}

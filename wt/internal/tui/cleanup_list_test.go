@@ -102,14 +102,15 @@ func TestCleanupListGroupOrder(t *testing.T) {
 }
 
 // TestCleanupListDefaultTicksOnlyProven pins the default ticks: exactly the
-// Tickable (proven, unblocked) rows start ticked, local and remote alike, and
-// nothing else. A less-sure or unique-work row ticked by default is a
-// one-keystroke loss of work once enter removes things.
+// Tickable (proven, unblocked) local rows start ticked, and nothing else — no
+// remote row, proven or not (wt does not delete origin branches). A
+// less-sure or unique-work row ticked by default is a one-keystroke loss of
+// work now that enter removes things.
 func TestCleanupListDefaultTicksOnlyProven(t *testing.T) {
 	r := cleanupFixture()
 	m := newSizedCleanupList(t, r, 120, 40)
 	got := strings.Join(m.tickedNames(), ",")
-	want := "full-branch-name-paths,fix-default-guard,origin/merged-remote"
+	want := "full-branch-name-paths,fix-default-guard"
 	if got != want {
 		t.Errorf("default ticks = %q, want %q", got, want)
 	}
@@ -118,7 +119,7 @@ func TestCleanupListDefaultTicksOnlyProven(t *testing.T) {
 		for _, n := range m.tickedNames() {
 			ticked = ticked || n == cleanup.DisplayName(row)
 		}
-		if ticked != row.Tickable() {
+		if ticked != (row.Tickable() && row.Kind != cleanup.KindRemote) {
 			t.Errorf("%s: ticked=%v, Tickable=%v", cleanup.DisplayName(row), ticked, row.Tickable())
 		}
 	}
@@ -171,20 +172,26 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 	}
 }
 
-// TestCleanupListRemoteNotProvenIsLocked pins that a remote row that is not
-// proven is [-] and cannot be ticked: deleting an origin branch is shared
-// state, and only a merged PR backing it may put it up for removal.
-func TestCleanupListRemoteNotProvenIsLocked(t *testing.T) {
-	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
-	m = moveTo(t, m, "origin/old-remote")
-	m = cleanupSend(t, m, spaceKey)
-	for _, n := range m.tickedNames() {
-		if n == "origin/old-remote" {
-			t.Errorf("remote row that is not proven was ticked")
+// TestCleanupListRemoteRowsAreLocked pins that every remote row, proven or
+// not, is [-] and cannot be ticked by space or `a`: enter now removes what is
+// ticked, and wt does not delete origin branches (shared state; plan call 9).
+func TestCleanupListRemoteRowsAreLocked(t *testing.T) {
+	for _, name := range []string{"origin/old-remote", "origin/merged-remote"} {
+		m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+		m = moveTo(t, m, name)
+		m = cleanupSend(t, m, spaceKey)
+		m = cleanupSend(t, m, keyRunes("a"))
+		for _, n := range m.tickedNames() {
+			if n == name {
+				t.Errorf("remote row %s was ticked", name)
+			}
 		}
-	}
-	if !strings.Contains(m.View(), "[-] remote    origin/old-remote") {
-		t.Errorf("remote not-proven row not drawn [-]:\n%s", m.View())
+		if !strings.Contains(m.View(), "[-] remote    "+name) {
+			t.Errorf("remote row %s not drawn [-]:\n%s", name, m.View())
+		}
+		if !strings.Contains(m.View(), "wt does not delete origin branches") {
+			t.Errorf("the detail line does not say why %s cannot be ticked:\n%s", name, m.View())
+		}
 	}
 }
 
@@ -219,45 +226,20 @@ func TestCleanupListAllTicksOnlyProven(t *testing.T) {
 	m = moveTo(t, m, "spike-picker")
 	m = cleanupSend(t, m, keyRunes("a"))
 	got := strings.Join(m.tickedNames(), ",")
-	if want := "full-branch-name-paths,fix-default-guard,origin/merged-remote"; got != want {
+	if want := "full-branch-name-paths,fix-default-guard"; got != want {
 		t.Errorf("after a: ticked = %q, want %q", got, want)
 	}
 }
 
-// TestCleanupListEnterIsViewOnly pins that enter in PR A removes nothing: it
-// quits with tea.Quit (no other command, so nothing that could run git) and
-// leaves the "view only" sentence naming what would be removed.
-func TestCleanupListEnterIsViewOnly(t *testing.T) {
+// TestCleanupListTitleNamesRemoval pins the list's key line: enter removes
+// the ticked rows now, and the PR A "view only" wording is gone from it.
+func TestCleanupListTitleNamesRemoval(t *testing.T) {
 	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	fm := next.(cleanupListModel)
-	if cmd == nil {
-		t.Fatal("enter returned no command; want tea.Quit")
+	if v := m.View(); !strings.Contains(v, "enter remove ticked") || strings.Contains(v, "view only") {
+		t.Errorf("title line:\n%s", v)
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatalf("enter's command produced %T, want tea.QuitMsg only", cmd())
-	}
-	want := "view only — nothing is removed; would remove 3 items: worktree full-branch-name-paths, branch fix-default-guard, remote origin/merged-remote"
-	if fm.exitMessage() != want {
-		t.Errorf("exit message = %q\nwant          %q", fm.exitMessage(), want)
-	}
-	if fm.View() != "" {
-		t.Errorf("view after enter should be empty (the message prints after the alt screen), got %q", fm.View())
-	}
-
-	// Nothing ticked says so.
-	m = newSizedCleanupList(t, cleanupFixture(), 120, 40)
-	for _, n := range []string{"full-branch-name-paths", "fix-default-guard", "origin/merged-remote"} {
-		m = moveTo(t, m, n)
-		m = cleanupSend(t, m, spaceKey)
-	}
-	fm = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if fm.exitMessage() != "view only — nothing is removed; nothing ticked" {
-		t.Errorf("exit message with nothing ticked = %q", fm.exitMessage())
-	}
-
-	// q quits with no message.
-	next, cmd = newSizedCleanupList(t, cleanupFixture(), 120, 40).Update(keyRunes("q"))
+	// q quits with nothing to print.
+	next, cmd := m.Update(keyRunes("q"))
 	if cmd == nil || next.(cleanupListModel).exitMessage() != "" {
 		t.Errorf("q: cmd=%v message=%q; want tea.Quit and no message", cmd, next.(cleanupListModel).exitMessage())
 	}

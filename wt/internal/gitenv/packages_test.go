@@ -245,7 +245,7 @@ func TestEveryPackageThatRunsGitIsolatesIt(t *testing.T) {
 
 	// The packages known to run git must be among those found, or the reading
 	// above has stopped seeing anything and the loop proves nothing.
-	for _, dir := range []string{"cmd/wt", "internal/guard", "internal/worktree", "internal/smoke", "internal/tui", "internal/gitenv"} {
+	for _, dir := range []string{"cmd/wt", "internal/guard", "internal/worktree", "internal/smoke", "internal/tui", "internal/gitenv", "internal/removal"} {
 		if !slices.Contains(need, dir) {
 			t.Errorf("%s was not found to run git; this test no longer reads the module's source correctly", dir)
 		}

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 )
 
 // This file is the words of `wt cleanup`: the group order and headings, the
@@ -61,12 +63,14 @@ func Groups(r Report) []Group {
 func (r Row) Tickable() bool { return r.Status == StatusProven && len(r.Blockers) == 0 }
 
 // DisplayName is the name a row is listed under: a remote row names its
-// remote, so it is not mistaken for the local branch of the same name.
+// remote, so it is not mistaken for the local branch of the same name. It
+// is one printable line (a detached worktree's directory name can hold any
+// byte); Row.Name stays raw for matching.
 func DisplayName(r Row) string {
 	if r.Kind == KindRemote && r.Remote != "" {
-		return r.Remote + "/" + r.Name
+		return flat(r.Remote + "/" + r.Name)
 	}
-	return r.Name
+	return flat(r.Name)
 }
 
 // reasonWording is one phrase per reason or blocker code. A code the
@@ -248,15 +252,60 @@ func nestedText(n int) string {
 }
 
 // NestedPaths are the paths of the worktrees inside row's (its nested
-// blockers' details), in blocker order. RowText only counts them.
+// blockers' details), in blocker order, each one printable line. RowText
+// only counts them.
 func NestedPaths(row Row) []string {
 	var out []string
 	for _, b := range row.Blockers {
 		if b.Code == BlockNested {
-			out = append(out, b.Detail)
+			out = append(out, flat(b.Detail))
 		}
 	}
 	return out
+}
+
+// LossLines is what removing r would lose, one plain sentence each, in a
+// fixed order: uncommitted changes, ignored files, commits only here, a
+// detached HEAD's commits. Unreadable gates or an uncounted number of commits
+// are said as possible losses, never left out. A row that loses nothing has
+// no lines. Every word is this package's own (numbers and sizes only), so no
+// tool text reaches the confirmation through it.
+func LossLines(r Row) []string {
+	var out []string
+	l := r.Losses
+	if l.Dirty {
+		out = append(out, "uncommitted changes will be lost")
+	}
+	if l.GatesUnknown {
+		out = append(out, "could not read the worktree's state; uncommitted or ignored files may be lost")
+	}
+	if n := l.IgnoredEntries; n > 0 {
+		s := fmt.Sprintf("%d ignored %s", n, plural(n, "entry", "entries"))
+		if l.IgnoredBytes > 0 {
+			s += ", " + localmodels.FormatSize(l.IgnoredBytes)
+		}
+		out = append(out, s+" will be deleted")
+	}
+	switch n := l.Unpushed; {
+	case n == 1:
+		out = append(out, "1 commit exists only on this machine")
+	case n > 1:
+		out = append(out, fmt.Sprintf("%d commits exist only on this machine", n))
+	case n < 0:
+		out = append(out, "could not count the commits that exist only on this machine; some may be lost")
+	}
+	if l.DetachedUnique {
+		out = append(out, "the detached HEAD's commits are on no branch and will be lost")
+	}
+	return out
+}
+
+// plural is one when n is 1, else many.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // AgeText is a row's age as "today" or "3d ago"; "" when it is not known.
@@ -325,7 +374,8 @@ func ghCauseText(r Report) string {
 
 // HeaderLines are the lines above the groups: the repository, the base (and
 // whether it is a local fallback), the fetch result and how fresh the base
-// is, and what gh could answer.
+// is, and what gh could answer; then a note when MinAge was lowered below
+// DefaultMinAge, and the caller's Notes, one sanitised line each.
 func HeaderLines(r Report, now time.Time) []string {
 	lines := []string{"repo:  " + r.Repo}
 
@@ -363,5 +413,33 @@ func HeaderLines(r Report, now time.Time) []string {
 	default:
 		lines = append(lines, "gh:    "+string(r.GH))
 	}
+
+	return append(lines, NoteLines(r)...)
+}
+
+// NoteLines are the caveats a reader must see beside the rows: the lowered
+// min-age, then the caller's Notes, one sanitised line each. The text header
+// and the --json `notes` array both carry exactly these.
+func NoteLines(r Report) []string {
+	var lines []string
+	// A zero MinAge is a Report not built by Classify: nothing was lowered.
+	if r.MinAge > 0 && r.MinAge < DefaultMinAge {
+		lines = append(lines, "min-age: lowered to "+shortDuration(r.MinAge)+" (default "+shortDuration(DefaultMinAge)+"): fresh branches may read as merged")
+	}
+	for _, n := range r.Notes {
+		lines = append(lines, flat(n))
+	}
 	return lines
+}
+
+// shortDuration is d as the user would type it: "2m", not "2m0s".
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }

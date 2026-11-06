@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "repo": "/Users/me/src/app",
+  "dry_run": false,
+  "items": [],
+  "error": {
+    "message": "registry: could not be read (parse error at line 12); artifact protection is OFF and removal is refused"
+  }
+}

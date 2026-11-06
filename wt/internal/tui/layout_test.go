@@ -688,6 +688,15 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		{"cleanup list, gh down, wrapped row highlighted", func(t *testing.T, width, height int) string {
 			return moveTo(t, newSizedCleanupList(t, ghDownFixture(), width, height), "many-reasons").View()
 		}},
+		{"cleanup confirm, proven", removalScreen("confirm, proven")},
+		{"cleanup confirm, typed", removalScreen("confirm, typed")},
+		{"cleanup progress", removalScreen("progress")},
+		{"cleanup results", removalScreen("results")},
+		{"cleanup list, status", func(t *testing.T, width, height int) string {
+			m := newSizedCleanupList(t, longRowsFixture(), width, height)
+			m.status = "cancelled: nothing was removed; " + strings.Repeat("a long status ", 6)
+			return cleanupSend(t, m, tea.WindowSizeMsg{Width: width, Height: height}).View()
+		}},
 		{"cleanup list, empty report", func(t *testing.T, width, height int) string {
 			r := cleanupFixture()
 			r.Rows = nil

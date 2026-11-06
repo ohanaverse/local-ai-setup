@@ -46,7 +46,7 @@ Reading it fast:
 - Any line that differs → §1 for restart mechanics, §3 for logs.
 - Looking for a `modelman` command? §6 has the `wt` or `llmbench` command for each.
 - Cleaning up after modelman? §7 lists the files it left and what to check first.
-- Merged branches and worktrees piling up? §9 (`wt cleanup`) shows which can go and why.
+- Merged branches and worktrees piling up? §9 (`wt cleanup`, `wt remove`) shows which can go and why, and removes the ones you confirm.
 
 ## Steps
 
@@ -628,7 +628,7 @@ After a few PRs merge, run `wt cleanup` from anywhere inside the repository to s
 ```bash
 wt cleanup                     # tick list on a terminal; text through a pipe or with --plain
 wt cleanup --no-fetch          # skip the `git fetch --prune origin` it runs first
-wt cleanup --json              # one JSON document (docs/contracts/cleanup-list.schema.json)
+wt cleanup --json              # one JSON document (docs/contracts/cleanup-list.schema.json; read its `notes` too)
 wt cleanup --min-age 30m       # how old a branch at or behind main must be to count as merged (default 10m)
 ```
 
@@ -637,11 +637,26 @@ Every row lands in one of four groups, each row saying why:
 - **PROVEN MERGED**: its content is in `origin/<default>` (same commit, ancestor, matching trees, a merge that adds nothing, or a merged PR at that tip) and nothing else holds it. Only these start ticked.
 - **LOOKS MERGED, LESS SURE**: a hint without a proof (patch-equivalent commits only, a PR state `gh` could not answer), or a proof plus a soft issue such as ignored files that would be lost (`.env`, `.venv`), a branch younger than `--min-age`, or a never-pushed branch whose commits undo each other (it matches the base only because it changes nothing overall, and its commits exist nowhere else).
 - **HAS WORK THAT EXISTS NOWHERE ELSE**: unpushed commits, uncommitted or untracked files, detached commits, or an open PR.
-- **IN USE / LOCKED**: cannot be removed: the primary checkout, the directory you are in, a locked worktree, one that contains another worktree, a rebase or merge in progress, or a registered model artifact under it.
+- **IN USE / LOCKED**: cannot be removed: the primary checkout, the directory you are in, a locked worktree, one that contains another worktree, a rebase or merge in progress, a registered model artifact under it, a held session (another wt launch in that checkout), or the default branch.
+
+Listing removes nothing: apart from the fetch, which updates and prunes `origin`'s remote-tracking refs (`--no-fetch` skips it), it writes no ref, index or working file (the merge-adds-nothing proof may leave unreachable tree objects that `git gc` collects).
 
 A row wt could not judge (a git error, no `gh` where a proof needs it) shows the cause and is never proven. An old branch whose reflog expired reads as new for 10 minutes after anything rewrites `packed-refs` (a clone, `git gc`, a fetch that prunes a packed ref); re-run later or with `--no-fetch`.
 
-This release only lists: nothing is removed, and enter in the list prints what would go. Until a later release adds removal, delete with the `repo-cleanup` skill, using `wt cleanup` to check its answers.
+**Removing.** In the list, tick rows with space (`a` ticks every proven row; only proven rows start ticked) and press enter. A confirmation lists every ticked entry with what it would lose (uncommitted changes, ignored files such as `.venv`, commits that exist only on this machine) and any process running in it. When every entry is proven, `y` removes them; otherwise type `delete` and press enter, and any other key cancels. An entry whose worktree branch is unmerged offers `[ ] also delete unmerged branch <name>`: `tab` toggles it for that entry only, and it is off by default, so the branch is kept. `origin` rows cannot be ticked; `origin` branches are not removed in this release.
+
+From a script or another terminal, `wt remove` takes the same targets by name and uses the same engine:
+
+```bash
+wt remove ../repo-wt/topic --dry-run       # what would happen, with each loss; changes nothing
+wt remove topic                            # a worktree path or a local branch name; asks y/N on a terminal
+wt remove topic --yes                      # no prompt: removes it only if it is proven
+wt remove topic --yes --accept-loss        # also an item that is not proven or loses ignored files or local commits
+wt remove topic --yes --accept-loss --force   # also lose uncommitted changes (or a detached HEAD's commits)
+wt remove old-spike --yes --accept-loss -D    # also delete a branch that is not proven merged
+```
+
+What each approval means, and nothing more: `--yes` (or `y`) only skips the question, and alone covers proven items; `--accept-loss` (the list's typed `delete`) says you read the losses `--dry-run` printed; `--force` covers uncommitted changes; `-D` (the list's per-entry toggle) covers deleting an unmerged branch. A missing approval refuses that item and the rest go on. Nothing overrides a hard blocker: the primary checkout, the directory you are in, a locked worktree, a rebase in progress, a registered model artifact, the default branch. Each item is re-checked right before it is touched and skipped if it changed since you saw it. A deleted branch's upstream settings are removed with it (as `git branch -D` does) and a restore does not bring them back. Every deleted branch's commit id is printed with a restore command (`git branch <name> <sha>`, or the create-only `git update-ref refs/heads/<name> <sha> ""` for a name starting with `-`), good until `git gc` prunes the commit. Always refused: a dirty worktree holding submodules, including an embedded repository or a leftover `modules/` directory in its git dir (`--force` would delete their repositories), a branch beside one whose name differs only in case (kept; delete it by hand), and a worktree whose directory is gone (`git worktree prune` clears it). Exit codes and the JSON result: [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md#wt-remove-arguments-output-and-exit-codes).
 
 ## Verification
 

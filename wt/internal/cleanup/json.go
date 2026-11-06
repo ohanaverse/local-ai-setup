@@ -20,8 +20,11 @@ type Envelope struct {
 	Base    *BaseJSON  `json:"base,omitempty"`
 	Fetch   *FetchJSON `json:"fetch,omitempty"`
 	GH      string     `json:"gh,omitempty"`
-	Rows    []RowJSON  `json:"rows"`
-	Error   *ErrorJSON `json:"error,omitempty"`
+	// Notes are the caveats the text view prints under its header (a lowered
+	// min-age, artifact protection off, no registry); absent when there are none.
+	Notes []string   `json:"notes,omitempty"`
+	Rows  []RowJSON  `json:"rows"`
+	Error *ErrorJSON `json:"error,omitempty"`
 }
 
 // BaseJSON is Base. FetchedAt is RFC 3339 UTC, absent when no fetch ran or
@@ -109,6 +112,7 @@ func Encode(r Report) ([]byte, error) {
 		Version: EnvelopeVersion,
 		Repo:    r.Repo,
 		GH:      string(r.GH),
+		Notes:   NoteLines(r),
 		Rows:    make([]RowJSON, 0, len(r.Rows)),
 	}
 	// base is absent when no default branch was found; fetch is absent when

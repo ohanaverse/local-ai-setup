@@ -293,6 +293,15 @@ PR.** Without `gh` it still works; PR rungs report "needs gh".
 Enter removes ticked worktrees and local branches. Also `wt remove
 <worktree>` as the single-item form over the **same engine**.
 
+> **As built** (see the PR B plan,
+> `docs/superpowers/plans/2026-11-05-wt-cleanup-pr-b.md`, its "Calls" and
+> the note on rulings A-U after them): no trash-rename or drain (plain,
+> synchronous `git worktree remove`; `--force` only for an approved dirty
+> worktree); approvals are per item and sealed (`--accept-loss` / typed
+> `delete` for anything not proven, `--force` for dirt, `-D` per item);
+> `branch_outcome` drops `retained_capped`; `wt remove` takes several
+> targets.
+
 - Re-classify each item immediately before acting; skip and report any that
   changed since the list was drawn.
 - Worktrees: plain `git worktree remove`, never `--force`; trash-rename and a

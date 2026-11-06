@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "repo": "/Users/me/src/app",
+  "dry_run": true,
+  "items": [
+    {
+      "kind": "worktree",
+      "name": "topic",
+      "path": "/Users/me/src/app/.worktrees/topic",
+      "ref": "refs/heads/topic",
+      "saw": "proven",
+      "worktree": "removed",
+      "branch": "deleted",
+      "reason": "dry run: would remove; would delete refs/heads/topic",
+      "warnings": [],
+      "losses": []
+    },
+    {
+      "kind": "worktree",
+      "name": "spike",
+      "path": "/Users/me/src/app/.worktrees/spike",
+      "ref": "refs/heads/spike",
+      "saw": "less_sure",
+      "worktree": "removed",
+      "branch": "retained_unmerged",
+      "reason": "dry run: would remove; branch refs/heads/spike kept: not proven merged; -D deletes it",
+      "warnings": [],
+      "losses": ["2 ignored entries, 14.2 MB will be deleted"]
+    },
+    {
+      "kind": "worktree",
+      "name": "agent-run",
+      "path": "/Users/me/src/app/.worktrees/agent-run",
+      "ref": "refs/heads/agent-run",
+      "saw": "in_use",
+      "worktree": "refused",
+      "branch": "not_attempted",
+      "reason": "hard blocker: locked (locked: agent running)",
+      "warnings": [],
+      "losses": []
+    },
+    {
+      "kind": "remote",
+      "name": "origin/old",
+      "ref": "refs/remotes/origin/old",
+      "saw": "proven",
+      "worktree": "refused",
+      "branch": "not_attempted",
+      "reason": "invalid target: kind \"remote\" is not removable",
+      "warnings": [],
+      "losses": []
+    },
+    {
+      "kind": "branch",
+      "name": "old-release",
+      "ref": "refs/heads/old-release",
+      "saw": "proven",
+      "worktree": "not_requested",
+      "branch": "deleted",
+      "reason": "dry run: would delete refs/heads/old-release",
+      "warnings": [],
+      "losses": []
+    }
+  ]
+}

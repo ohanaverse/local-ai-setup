@@ -349,3 +349,74 @@ func TestEncodeKeepsEveryNestedPath(t *testing.T) {
 		t.Errorf("JSON has %d nested blockers, want 30", n)
 	}
 }
+
+// TestCleanupJSONUnchangedByNewRowFields encodes rows with Ref, Tip, Head,
+// Losses and BranchProven set and compares the document with the same rows
+// without them, then checks every row key is one of PR A's. Why: those fields
+// serve removal only; the cleanup JSON is a pinned contract
+// (docs/contracts/cleanup-list.sample.json), and a new or changed key would
+// break every consumer reading it.
+func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
+	tip := strings.Repeat("c", 40)
+	bare := []Row{
+		{Kind: KindWorktree, Name: "topic", Path: "/w/topic", Branch: "topic", Status: StatusUniqueWork,
+			Evidence: EvMergeAddsNothing, Reasons: []Reason{{ReasonDirty, "uncommitted or untracked files"}}},
+		{Kind: KindBranch, Name: "solo", Branch: "solo", Status: StatusUniqueWork, Reasons: []Reason{{ReasonUnpushed, "3 commits on no remote-tracking ref"}}},
+	}
+	full := slices.Clone(bare)
+	full[0].Ref, full[0].Tip, full[0].Head, full[0].BranchProven = "refs/heads/topic", tip, tip, true
+	full[0].Losses = Losses{Dirty: true, IgnoredEntries: 2, IgnoredBytes: 10, DetachedUnique: true, GatesUnknown: true}
+	full[1].Ref, full[1].Tip = "refs/heads/solo", tip
+	full[1].Losses = Losses{Unpushed: 3}
+	rep := func(rows []Row) Report {
+		return Report{Repo: "/r", GH: GHOK, Base: Base{Default: "main", Ref: "origin/main"}, Rows: rows}
+	}
+	want, err := Encode(rep(bare))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Encode(rep(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("new row fields changed the JSON:\n got %s\nwant %s", got, want)
+	}
+	var doc struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	prA := []string{"kind", "name", "path", "branch", "remote", "status", "evidence", "unknown", "age_days", "reasons", "blockers", "pr"}
+	for _, row := range doc.Rows {
+		for k := range row {
+			if !slices.Contains(prA, k) {
+				t.Errorf("row carries key %q, not in PR A's row shape", k)
+			}
+		}
+	}
+}
+
+// TestEnvelopeCarriesNotes pins that the caveats the text header prints (a
+// lowered min-age and the caller's Notes) are in the JSON `notes` array, and
+// that the key is absent when there are none. Why: a script reading rows
+// cannot otherwise learn that artifact protection is off.
+func TestEnvelopeCarriesNotes(t *testing.T) {
+	raw, err := Encode(Report{Repo: "/r", GH: GHOK, MinAge: time.Minute,
+		Notes: []string{"registry: failed to load; artifact protection is OFF"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct{ Notes []string }
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Notes) != 2 || !strings.HasPrefix(doc.Notes[0], "min-age: lowered to 1m") || !strings.Contains(doc.Notes[1], "protection is OFF") {
+		t.Errorf("notes = %q", doc.Notes)
+	}
+	plain, _ := Encode(Report{Repo: "/r", GH: GHOK})
+	if _, has := decodeDoc(t, plain)["notes"]; has {
+		t.Error("notes present for a report with none")
+	}
+}

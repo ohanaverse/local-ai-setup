@@ -74,6 +74,12 @@ const (
 // minute ago looks merged.
 const DefaultMinAge = 10 * time.Minute
 
+// MinAgeFloor is the smallest MinAge `wt cleanup --min-age` accepts. Any
+// positive value used to be taken, and 1ns turns the fresh-branch rule off:
+// a branch made a second ago reads as proven merged. Classify itself does not
+// enforce it (a test may pass any Options); the command refuses a lower value.
+const MinAgeFloor = time.Minute
+
 // Options are Classify's only inputs besides the Snapshot.
 type Options struct {
 	Now    time.Time     // zero: every same-commit branch counts as fresh
@@ -95,6 +101,46 @@ type Row struct {
 	PR       *PRInfo // the PR the verdict rests on, if any
 	AgeDays  int
 	AgeKnown bool // AgeDays is a real age (0 then means under a day), not "could not tell"
+
+	// The facts below serve removal only and are never serialised (RowJSON
+	// is built field by field; TestCleanupJSONUnchangedByNewRowFields).
+
+	// Ref is the full refname the row names: refs/heads/<b> for a branch row
+	// and a worktree on a branch (the spelling for-each-ref gave, when the
+	// branch is among the heads), refs/remotes/<r>/<b> for a remote row, ""
+	// for a detached worktree.
+	Ref string
+	// Tip is Ref's full commit id as gathered ("" when Ref is "" or its head
+	// was not found).
+	Tip string
+	// Head is a worktree row's HEAD commit id; "" for branch and remote rows.
+	Head string
+	// Losses is what removing the row would lose.
+	Losses Losses
+	// BranchProven is Ruling A: the branch alone, ignoring the worktree's
+	// gates (dirty or ignored files, blockers), would classify proven. For a
+	// branch row it is Status == proven; for a remote row or a detached
+	// worktree it is false.
+	BranchProven bool
+}
+
+// Losses is what removing a row would lose. A zero Losses loses nothing that
+// exists only here; any other value names a loss, and GatesUnknown or a
+// negative Unpushed say a loss could not be ruled out.
+type Losses struct {
+	Dirty          bool  // tracked changes or non-ignored untracked files
+	IgnoredEntries int   // ignored entries deleted with the directory
+	IgnoredBytes   int64 // their size on disk
+	// Unpushed: 0 = the content is in the base; >0 counts commits reachable
+	// from no remote-tracking ref (only counted for trees-match /
+	// no-added-changes proofs and unproven branches); -1 when the count
+	// failed or the branch's tip has no proof at all.
+	Unpushed       int
+	DetachedUnique bool // a detached HEAD the base does not reach
+	// GatesUnknown: the worktree's gates could not be read (GatesErr), so
+	// Dirty, IgnoredEntries, IgnoredBytes and DetachedUnique are zero only
+	// because nothing was read, not because nothing would be lost.
+	GatesUnknown bool
 }
 
 // Report is a classified snapshot.
@@ -104,6 +150,12 @@ type Report struct {
 	Fetch FetchResult
 	GH    GHState
 	Rows  []Row
+	// MinAge is the Options.MinAge Classify used (DefaultMinAge when none
+	// was given). Not part of the JSON contract.
+	MinAge time.Duration
+	// Notes are extra header lines the caller adds (HeaderLines appends
+	// them, one sanitised line each). Not part of the JSON contract.
+	Notes []string
 }
 
 // judge collects one row's findings; status applies the precedence.
@@ -164,7 +216,7 @@ func Classify(s Snapshot, o Options) Report {
 	if c.gh == GHUnavailable {
 		c.ghNote = "gh answered for no branch"
 	}
-	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh}
+	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, MinAge: o.MinAge}
 	held := map[string]bool{}
 	for _, ws := range s.Worktrees {
 		r.Rows = append(r.Rows, c.worktree(ws))
@@ -186,7 +238,7 @@ func Classify(s Snapshot, o Options) Report {
 	}
 	slices.SortStableFunc(r.Rows, func(a, b Row) int {
 		return cmp.Or(
-			cmp.Compare(statusOrder(a.Status), statusOrder(b.Status)),
+			cmp.Compare(a.Status.Rank(), b.Status.Rank()),
 			cmp.Compare(kindOrder(a.Kind), kindOrder(b.Kind)),
 			cmp.Compare(a.Name, b.Name),
 			cmp.Compare(a.Remote, b.Remote),
@@ -194,11 +246,6 @@ func Classify(s Snapshot, o Options) Report {
 		)
 	})
 	return r
-}
-
-// statusOrder is the display order of the groups.
-func statusOrder(s Status) int {
-	return slices.Index([]Status{StatusProven, StatusLessSure, StatusUniqueWork, StatusInUse}, s)
 }
 
 func kindOrder(k Kind) int { return slices.Index([]Kind{KindWorktree, KindBranch, KindRemote}, k) }
@@ -228,9 +275,12 @@ func (c *classifier) isDefault(name string) bool {
 func (c *classifier) worktree(ws WorktreeState) Row {
 	w := ws.Fact
 	branch := strings.TrimPrefix(w.Branch, "refs/heads/")
-	row := Row{Kind: KindWorktree, Path: w.Path, Branch: branch, Name: branch}
+	row := Row{Kind: KindWorktree, Path: w.Path, Branch: branch, Name: branch, Ref: w.Branch, Head: w.Head}
 	if branch == "" {
 		row.Name = filepath.Base(w.Path)
+	} else {
+		// Unknown until the branch's head is found and its proof read.
+		row.Losses.Unpushed = -1
 	}
 	var j judge
 	g := ws.Gates
@@ -238,7 +288,14 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 	j.blockers = append(j.blockers, g.Blockers...)
 	if ws.GatesErr != "" {
 		j.unsure(ReasonGatesUnavailable, ws.GatesErr)
+		row.Losses.GatesUnknown = true
 	} else {
+		// Only gates that read cleanly say what is lost; a gates error
+		// leaves them zero and sets GatesUnknown instead.
+		row.Losses.Dirty = g.Dirty
+		row.Losses.IgnoredEntries = g.IgnoredCount
+		row.Losses.IgnoredBytes = g.IgnoredBytes
+		row.Losses.DetachedUnique = g.DetachedUnique
 		if g.Dirty {
 			j.uniq(ReasonDirty, "uncommitted or untracked files")
 		}
@@ -271,8 +328,13 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 			j.unsure(ReasonBranchUnknown, w.Branch+" is not among the branch refs")
 			break
 		}
+		// The exact spelling for-each-ref gave: on a case-insensitive
+		// volume the worktree's HEAD may spell the branch differently.
+		row.Ref, row.Tip = h.Ref, h.Tip
+		row.Losses.Unpushed = c.unpushedOf(h)
 		c.local(&j, h)
 		c.setAge(&row, h)
+		row.BranchProven = c.branchProven(h)
 	case w.Detached:
 		p, ok := c.s.Proofs[w.Head]
 		switch {
@@ -307,17 +369,45 @@ func (c *classifier) head(ref string) (RefFact, bool) {
 }
 
 func (c *classifier) branchRow(h RefFact) Row {
-	row := Row{Kind: KindBranch, Name: h.Name, Branch: h.Name, Remote: h.Remote}
+	row := Row{Kind: KindBranch, Name: h.Name, Branch: h.Name, Remote: h.Remote, Ref: h.Ref, Tip: h.Tip}
+	row.Losses.Unpushed = -1
 	var j judge
 	if c.s.NoDefault {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
 	} else {
+		row.Losses.Unpushed = c.unpushedOf(h)
 		c.local(&j, h)
 		c.setAge(&row, h)
 	}
 	c.capFallback(&j)
 	j.fill(&row)
+	row.BranchProven = row.Status == StatusProven
 	return row
+}
+
+// branchProven is Ruling A: h's own judgement, the one a worktree row on it
+// is built from but without the worktree's gates, is proven.
+func (c *classifier) branchProven(h RefFact) bool {
+	var j judge
+	c.local(&j, h)
+	c.capFallback(&j)
+	return j.status() == StatusProven
+}
+
+// unpushedOf is Losses.Unpushed for local head h: 0 when a proof other than
+// trees-match / no-added-changes puts the content in the base (the count is
+// not taken then); otherwise the counted commits reachable from no
+// remote-tracking ref (trees-match / no-added-changes proofs and unproven
+// branches); -1 when the count failed or the tip has no proof.
+func (c *classifier) unpushedOf(h RefFact) int {
+	p, ok := c.s.Proofs[h.Tip]
+	switch {
+	case !ok || p.Unpushed < 0:
+		return -1
+	case p.Verdict == Merged && !treeProof(p.Evidence):
+		return 0
+	}
+	return p.Unpushed
 }
 
 const mergeProofDetail = "the merge checks could not finish (a git error, no common history, or a configured merge driver)"
@@ -403,7 +493,7 @@ func (c *classifier) netZeroUnpushed(j *judge, p Proof) {
 // answer, a merged PR for the head, no open PR on it or based on it, and
 // content in the base.
 func (c *classifier) remoteRow(rf RefFact) Row {
-	row := Row{Kind: KindRemote, Name: rf.Name, Branch: rf.Name, Remote: rf.Remote}
+	row := Row{Kind: KindRemote, Name: rf.Name, Branch: rf.Name, Remote: rf.Remote, Ref: rf.Ref, Tip: rf.Tip}
 	var j judge
 	if c.s.NoDefault {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
