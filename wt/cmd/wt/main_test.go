@@ -438,7 +438,7 @@ func TestWorktreeWithAgentWithoutModelShowsModelPicker(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	if _, err := runWT(t, "-W", "my-feature", "-A", "pi"); err != nil {
+	if _, err := runWT(t, "-W", "my-feature", "--new", "-A", "pi"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotAgent != "pi" {
@@ -460,8 +460,8 @@ func TestReplaceFlagReachesTUIRun(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{"with --replace", []string{"-W", "my-feature", "-A", "pi", "--replace"}, true},
-		{"without --replace", []string{"-W", "my-feature", "-A", "pi"}, false},
+		{"with --replace", []string{"-W", "my-feature", "--new", "-A", "pi", "--replace"}, true},
+		{"without --replace", []string{"-W", "my-feature", "--new", "-A", "pi"}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := initTestRepo(t)
@@ -512,9 +512,9 @@ func TestOthersFlagReachesTUIRun(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"--others=stop", []string{"-W", "my-feature", "-A", "pi", "--others=stop"}, "stop"},
-		{"--others=keep", []string{"-W", "my-feature", "-A", "pi", "--others=keep"}, "keep"},
-		{"without --others", []string{"-W", "my-feature", "-A", "pi"}, ""},
+		{"--others=stop", []string{"-W", "my-feature", "--new", "-A", "pi", "--others=stop"}, "stop"},
+		{"--others=keep", []string{"-W", "my-feature", "--new", "-A", "pi", "--others=keep"}, "keep"},
+		{"without --others", []string{"-W", "my-feature", "--new", "-A", "pi"}, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := initTestRepo(t)
@@ -559,7 +559,7 @@ func TestWorktreeWithAgentAndModelLaunches(t *testing.T) {
 	home := t.TempDir()
 	withCleanConfigEnv(t, home)
 
-	_, err := runWT(t, "-W", "my-feature", "-A", "pi", "-M", "claude/opus")
+	_, err := runWT(t, "-W", "my-feature", "--new", "-A", "pi", "-M", "claude/opus")
 	if err == nil {
 		t.Fatal("expected a launch error (empty config has no models), got nil")
 	}
@@ -592,7 +592,7 @@ func TestWorktreeWithModelWithoutAgentPassesPinnedToTUI(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	if _, err := runWT(t, "-W", "my-feature", "-M", "claude/opus"); err != nil {
+	if _, err := runWT(t, "-W", "my-feature", "--new", "-M", "claude/opus"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotAgent != "" {
@@ -799,7 +799,7 @@ func TestMalformedRegistryStillFailsClosed(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"model-driven agent", []string{"-A", "claude", "-W", "my-feature"}},
+		{"model-driven agent", []string{"-A", "claude", "-W", "my-feature", "--new"}},
 		{"command agent", []string{"--agent", "shell"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -841,7 +841,7 @@ func TestPinnedAgentNotInstalledErrorsBeforeWorktreeWork(t *testing.T) {
 	installed = func(name string) bool { return false }
 	defer func() { installed = oldInstalled }()
 
-	_, err := runWT(t, "-A", "claude", "-W", "my-feature")
+	_, err := runWT(t, "-A", "claude", "-W", "my-feature", "--new")
 	if err == nil {
 		t.Fatal("expected a not-installed error")
 	}
@@ -1116,7 +1116,7 @@ func TestModelDrivenAgentPassesThroughWithoutRegistry(t *testing.T) {
 	}
 	defer func() { launchPassthrough = oldLaunchPassthrough }()
 
-	if _, err := runWT(t, "-A", "claude", "-W", "my-feature"); err != nil {
+	if _, err := runWT(t, "-A", "claude", "-W", "my-feature", "--new"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -1174,7 +1174,7 @@ func TestConfiguredAgentSurvivesMissingRegistry(t *testing.T) {
 	stdinTTY = func() bool { return true }
 	defer func() { stdinTTY = oldStdinTTY }()
 
-	if _, err := runWT(t, "-W", "my-feature", "-A", "pi"); err != nil {
+	if _, err := runWT(t, "-W", "my-feature", "--new", "-A", "pi"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if passthroughCalled {
@@ -1193,7 +1193,7 @@ func TestPinnedModelWithUnconfiguredAgentErrors(t *testing.T) {
 	home := t.TempDir()
 	writeEmptyRegistry(t, home) // registry exists but claude has no config.toml entry
 
-	_, err := runWT(t, "-A", "claude", "-W", "my-feature", "-M", "ollama/foo")
+	_, err := runWT(t, "-A", "claude", "-W", "my-feature", "--new", "-M", "ollama/foo")
 	if err == nil {
 		t.Fatal("expected an error for -M against an unconfigured agent")
 	}
@@ -1232,7 +1232,7 @@ func TestUnpinnedWorktreeSkipsPassthroughGuard(t *testing.T) {
 	}
 	defer func() { launchPassthrough = oldLaunchPassthrough }()
 
-	if _, err := runWT(t, "-W", "my-feature"); err != nil {
+	if _, err := runWT(t, "-W", "my-feature", "--new"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !tuiCalled {
@@ -1365,7 +1365,7 @@ func TestBrokenRegistryLinkIsNotAPassthrough(t *testing.T) {
 	}
 	defer func() { launchPassthrough = oldLaunchPassthrough }()
 
-	_, err := runWT(t, "-A", "claude", "-W", "my-feature")
+	_, err := runWT(t, "-A", "claude", "-W", "my-feature", "--new")
 	if !errors.Is(err, config.ErrRegistryLink) {
 		t.Fatalf("err = %v, want config.ErrRegistryLink", err)
 	}

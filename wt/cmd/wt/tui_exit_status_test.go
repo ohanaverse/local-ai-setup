@@ -34,7 +34,7 @@ func runPickerLaunch(t *testing.T, tuiErr error) (string, error) {
 	oldTTY := stdinTTY
 	stdinTTY = func() bool { return true }
 	t.Cleanup(func() { stdinTTY = oldTTY })
-	return runWT(t, "-W", "my-feature", "-A", "pi")
+	return runWT(t, "-W", "my-feature", "--new", "-A", "pi")
 }
 
 // TestPickerLaunchExitsWithTheAgentsStatus pins #412 at the process exit: a

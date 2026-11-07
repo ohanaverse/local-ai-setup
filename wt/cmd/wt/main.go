@@ -372,6 +372,10 @@ func rootCmd() *cobra.Command {
 			if places > 1 {
 				return refuse(fmt.Errorf("--root, --cwd and -W are mutually exclusive: each says where to launch"))
 			}
+			newFlag, _ := cmd.Flags().GetBool("new")
+			if newFlag && mustGetString(cmd, "worktree") == "" {
+				return refuse(fmt.Errorf("--new is only valid with -W <name>"))
+			}
 
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
 				status, err := checkGuardStatus()
@@ -506,6 +510,18 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
+				creates, base, err := worktree.WouldCreate(root, name)
+				if err != nil {
+					return err
+				}
+				if creates {
+					if err := confirmCreate(name, base, newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
+						if errors.Is(err, errCancelled) {
+							return nil
+						}
+						return refuse(err)
+					}
+				}
 				path, err := worktree.EnsureForName(root, name)
 				if err != nil {
 					return err
@@ -589,6 +605,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; asks nothing (default for a bare wt is a worktree)")
+	cmd.Flags().Bool("new", false, "With -W, create the branch and worktree when the name does not exist yet (default: ask; with no terminal, refuse)")
 	cmd.Flags().Bool("allow-shared-root", false, "Answer the shared-root menu with continue: launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse). Answers that menu only: a --cwd launch at a root no other session holds is still asked, and --root is the no-prompt way in")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.

@@ -436,7 +436,7 @@ func TestPickerLaunchHandsTheTUIItsRootCheck(t *testing.T) {
 	}{
 		{"root", []string{"--root", "-A", "pi"}, tui.RootCheck{}},
 		{"root allow", []string{"--root", "-A", "pi", "--allow-shared-root"}, tui.RootCheck{Allow: true}},
-		{"named worktree", []string{"-W", "my-feature", "-A", "pi"}, tui.RootCheck{}},
+		{"named worktree", []string{"-W", "my-feature", "--new", "-A", "pi"}, tui.RootCheck{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := pickerRootCheck(t, tc.args...); got != tc.want {
