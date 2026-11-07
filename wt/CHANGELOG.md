@@ -4,6 +4,19 @@
 
 ### Added
 
+- `-W <name>` now asks `create it from <base>? [y/N]` before it creates a
+  branch and worktree for a name that does not exist (Enter or `n` declines,
+  exit 0, nothing created). New `--new` answers yes in advance. **Breaking for
+  scripts:** with no terminal, `claude-wt -W newname` now refuses naming
+  `--new`; add `--new` to keep creating. Existing branches and worktrees are
+  reused without a question. In a repository with no commits the question says
+  `create it as an empty orphan branch with no shared history …` — git creates
+  an orphan there, never a branch off the unborn HEAD. An invalid branch name
+  (`a..b`, `foo.lock`) is refused before the question with git's reason, a
+  name another branch blocks (`feature` vs `feature/x`, or `Feature/x` on a
+  case-insensitive volume) names that branch and is refused too, and a
+  case-only variant of an existing branch or remote-tracking ref is an error,
+  not a second checkout of that branch.
 - Sushi is a local provider: `wt start|stop|list` manage it, and `wt -A
   claude|pi -M sushi/...` launches on it. `wt model add sushi ...` adds
   `sushi` to the `supported_providers` of claude and pi in config.toml when

@@ -64,7 +64,14 @@ func Choose(r Root, others []sessionclaim.Claim, in io.Reader, out io.Writer) by
 // the end of input are no (the default). On a terminal it reads one key
 // without waiting for Enter.
 func ConfirmRoot(r Root, in io.Reader, out io.Writer) bool {
-	fmt.Fprintf(out, "wt: %s is the repository root (branch %s). Work here instead of in a worktree? [y/N]: ", r.Path, r.Branch)
+	return AskYesNo(fmt.Sprintf("%s is the repository root (branch %s). Work here instead of in a worktree?", r.Path, r.Branch), in, out)
+}
+
+// AskYesNo prints "wt: " + prompt + " [y/N]: " on out and reads one key from
+// in: y or Y is yes; every other key, Esc, Ctrl-C and the end of input are no
+// (the default). On a terminal it reads one key without waiting for Enter.
+func AskYesNo(prompt string, in io.Reader, out io.Writer) bool {
+	fmt.Fprintf(out, "wt: %s [y/N]: ", prompt)
 	yes := readKey(in, func(b byte) (byte, bool) { return b | 0x20, true }) == 'y' // any one key answers; 'Y' folds to 'y'
 	fmt.Fprintln(out)
 	return yes

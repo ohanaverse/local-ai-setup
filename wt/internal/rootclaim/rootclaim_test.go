@@ -107,3 +107,20 @@ func TestConfirmRootDefaultsToNo(t *testing.T) {
 		}
 	}
 }
+
+// TestAskYesNoDefaultsToNo checks only y or Y answers yes; Enter, n, q, Esc,
+// Ctrl-C and end of input all answer no, and the prompt text and the [y/N]
+// default are printed, so a stray key never confirms an action that creates
+// something.
+func TestAskYesNoDefaultsToNo(t *testing.T) {
+	cases := map[string]bool{"y": true, "Y": true, "n": false, "\n": false, "q": false, "\x1b": false, "\x03": false, "": false}
+	for in, want := range cases {
+		var out bytes.Buffer
+		if got := AskYesNo("create it?", strings.NewReader(in), &out); got != want {
+			t.Errorf("AskYesNo(%q) = %v; want %v", in, got, want)
+		}
+		if want := "wt: create it? [y/N]: "; !strings.Contains(out.String(), want) {
+			t.Errorf("AskYesNo(%q) printed %q; want it to contain %q", in, out.String(), want)
+		}
+	}
+}

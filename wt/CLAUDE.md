@@ -6,7 +6,7 @@ Rules and gotchas live here; mechanisms, function lists and step-by-step detail 
 
 The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. Three launch inputs:
 
-1. **Where** — `--root` (the primary checkout, from anywhere), `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree), or the worktree picker (which has no root row). Outside a repository `-W` refuses (`not in a git repo`).
+1. **Where** — `--root` (the primary checkout, from anywhere), `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree; a new name asks before it creates, `--new` answers), or the worktree picker (which has no root row). Outside a repository `-W` refuses (`not in a git repo`).
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
 3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (eligible models rotate on successive launches).
 
@@ -24,7 +24,8 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 
 | Flag | Effect |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use/create the worktree for `<name>`; skip the worktree picker |
+| `-W <name>`, `--worktree <name>` | Use the worktree for `<name>`; skip the worktree picker. An existing worktree or branch is reused silently; a name that matches none of them (and no remote-tracking ref) creates a branch and worktree only after you say yes (`create it from <base>? [y/N]`, default no; with no commits yet the question names an empty orphan branch, which is what git creates) |
+| `--new` | With `-W`, answer that question yes. With no terminal a new name is refused unless `--new` is passed. A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root`. The picker's "+ New worktree…" prompt and the shared-root `w` choice never ask |
 | `-A <name>`, `--agent <name>` | Pin the agent or `shell`; never defaulted |
 | `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`: cloud or running → launch; a non-running local starts; a blocked model errors with that row's reason. Without `-A`, the agent is prompted first. `-M profile/<name>` pins a slot profile |
 | `--replace` | With `-M`, start the model even if it means stopping a running one (same provider only) |
@@ -251,7 +252,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - **TIER's score orders the picker's model rows** (descending, within the running-local and other bands) but is never routed on; a missing or unparseable `tiers.toml` is `-` and unscored, never an error.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
-> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY when `-A` or `-M` is omitted, and `--cwd` standing in the repository root needs one for the root prompt even when both are pinned (with no TTY it refuses, naming `--root`).
+> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY when `-A` or `-M` is omitted, and `--cwd` standing in the repository root needs one for the root prompt even when both are pinned (with no TTY it refuses, naming `--root`); `-W <name that does not exist>` also needs a TTY for the create question even with both pinned (with no TTY it refuses, naming `--new`).
 
 Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, start-on-select, the launch-time route check, or the model table.
 
@@ -313,7 +314,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 Run the Go test block above before any commit, then exercise the installed binary:
 
 ```bash
-wt -W my-feature -A claude           # named worktree + launch
+wt -W my-feature -A claude           # named worktree + launch (asks first if my-feature is new; --new answers)
 wt model list [--json]               # every registry model and local model found, with live status
 wt cloud-sync --dry-run              # plan a price and ollama-catalog refresh; changes nothing
 wt smoke <model-id> [--only claude,codex] [--prompt P] [--timeout 5m] [--json]

@@ -302,7 +302,7 @@ some columns omitted.
 the same row the picker shows.
 
 ```bash
-claude-wt -W feat -M profile/mixed
+claude-wt -W feat --new -M profile/mixed
 ```
 
 - A pinned profile whose local model is idle starts it first, as a pinned

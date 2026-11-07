@@ -86,3 +86,24 @@ func refuseRootBranch(name, path string) error {
 	}
 	return nil
 }
+
+// confirmCreate is the question before -W <name> creates a branch and a
+// worktree for a name that exists nowhere: start is how the new branch would
+// start, phrased for the question ("from <branch>", "from detached HEAD
+// <sha>", "as an empty orphan branch …" — worktree.WouldCreate returns it
+// with its preposition, so the question never claims a base git would not
+// use). --new (isNew) is the answer already given. On a terminal it asks
+// (default no; a no is errCancelled); with no terminal and no --new it
+// refuses, naming --new.
+func confirmCreate(name, start string, isNew bool, in io.Reader, out io.Writer, isTTY bool) error {
+	if isNew {
+		return nil
+	}
+	if !isTTY {
+		return fmt.Errorf("no branch or worktree named %q; pass --new to create it", name)
+	}
+	if !rootclaim.AskYesNo(fmt.Sprintf("no branch or worktree named %q; create it %s?", name, start), in, out) {
+		return errCancelled
+	}
+	return nil
+}

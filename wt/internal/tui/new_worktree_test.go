@@ -113,6 +113,33 @@ func TestEnsureNewWorktreeCmdSuccess(t *testing.T) {
 	}
 }
 
+// TestEnsureNewWorktreeCmdNeverAsksTheWFlagQuestion pins the L2 promise that
+// the picker's "+ New worktree…" prompt creates a new name without the
+// create-it? question `wt -W <new name>` asks: the person already typed the
+// name on purpose. Stdin is at end-of-file, where any y/N question would
+// answer no, so a worktree that still gets created proves none was asked.
+func TestEnsureNewWorktreeCmdNeverAsksTheWFlagQuestion(t *testing.T) {
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	saved := os.Stdin
+	os.Stdin = devnull
+	t.Cleanup(func() { os.Stdin = saved })
+
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	got, ok := ensureNewWorktreeCmd(dir, "typed-on-purpose")().(newWorktreeCreatedMsg)
+	if !ok || got.err != nil {
+		t.Fatalf("ensureNewWorktreeCmd = %+v, ok=%v; want a created worktree with no error", got, ok)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".worktrees", "typed-on-purpose")); err != nil {
+		t.Errorf("worktree not created: %v", err)
+	}
+}
+
 // TestEnsureNewWorktreeCmdGitError asserts that git errors are
 // surfaced to the caller rather than swallowed. The traversal
 // name flattens to a harmless directory name and git rejects the

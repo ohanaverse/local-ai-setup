@@ -287,7 +287,7 @@ func rootCmd() *cobra.Command {
 		Use:   "wt",
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 		Example: "  wt                          # interactive TUI\n" +
-			"  wt -W my-feature -A claude   # create worktree and launch\n" +
+			"  wt -W my-feature -A claude   # use the worktree; a new name asks first (--new answers)\n" +
 			"  wt --cwd --agent codex       # launch in the current directory\n" +
 			"  wt -A claude -- --verbose    # pass arguments to the agent (a relative path is\n" +
 			"                               # resolved from the directory the agent starts in)\n" +
@@ -371,6 +371,10 @@ func rootCmd() *cobra.Command {
 			}
 			if places > 1 {
 				return refuse(fmt.Errorf("--root, --cwd and -W are mutually exclusive: each says where to launch"))
+			}
+			newFlag, _ := cmd.Flags().GetBool("new")
+			if newFlag && mustGetString(cmd, "worktree") == "" {
+				return refuse(fmt.Errorf("--new is only valid with -W <name>"))
 			}
 
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
@@ -500,15 +504,27 @@ func rootCmd() *cobra.Command {
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
 			}
 
-			// -W <name>: use/create a worktree, then launch (no picker).
+			// -W <name>: use a worktree (asking before creating one), then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
+				creates, start, err := worktree.WouldCreate(root, name)
+				if err != nil {
+					return refuse(err)
+				}
+				if creates {
+					if err := confirmCreate(name, start, newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
+						if errors.Is(err, errCancelled) {
+							return nil
+						}
+						return refuse(err)
+					}
+				}
 				path, err := worktree.EnsureForName(root, name)
 				if err != nil {
-					return err
+					return refuse(err)
 				}
 				if err := refuseRootBranch(name, path); err != nil {
 					return refuse(err)
@@ -572,7 +588,7 @@ func rootCmd() *cobra.Command {
 
 	// Flags shared by wt and its subcommands.
 	cmd.PersistentFlags().Bool("yolo", false, "Skip permission prompts")
-	cmd.PersistentFlags().StringP("worktree", "W", "", "Use/create worktree for branch")
+	cmd.PersistentFlags().StringP("worktree", "W", "", "Use the worktree for a branch; a name that does not exist yet asks before creating it (see --new)")
 	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
@@ -589,6 +605,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
 	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; asks nothing (default for a bare wt is a worktree)")
+	cmd.Flags().Bool("new", false, "With -W, create the branch and worktree when the name does not exist yet (default: ask; with no terminal, refuse)")
 	cmd.Flags().Bool("allow-shared-root", false, "Answer the shared-root menu with continue: launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse). Answers that menu only: a --cwd launch at a root no other session holds is still asked, and --root is the no-prompt way in")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.

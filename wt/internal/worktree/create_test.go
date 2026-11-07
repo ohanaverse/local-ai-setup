@@ -904,3 +904,324 @@ func TestEnsureForBranchRefusesDefaultBranchAnyRemote(t *testing.T) {
 		t.Errorf("EnsureForBranch(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
 	}
 }
+
+// A brand-new -W name must start its branch at dir's HEAD, not at the default
+// branch. L2's prompt names that base to the user, so the refactor onto
+// classifyName must keep creation branching from where the prompt says.
+func TestEnsureForNameNewBranchStartsAtHead(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	if out, err := runGitCmd(dir, "checkout", "-b", "topic"); err != nil {
+		t.Fatalf("checkout: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "commit", "--allow-empty", "-m", "topic work"); err != nil {
+		t.Fatalf("commit: %v\n%s", err, out)
+	}
+	head, _ := runGitCmd(dir, "rev-parse", "HEAD")
+	if _, err := EnsureForName(dir, "fresh"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := runGitCmd(dir, "rev-parse", "fresh")
+	if string(got) != string(head) {
+		t.Fatalf("fresh = %s, want dir's HEAD %s", got, head)
+	}
+}
+
+// WouldCreate must say true only for the case where EnsureForName would run
+// `git worktree add -b` for a branch that does not exist, name how that case
+// would start (the phrase the question joins after "create it": "from
+// <branch>" or "from detached HEAD <sha>"), and return the very error
+// EnsureForName returns for invalid names, so the question is never asked
+// about a name that would be rejected after "y". Every case builds a fresh
+// repo because a wrong creation would leave a branch that masks the next
+// case.
+func TestWouldCreate(t *testing.T) {
+	type tc struct {
+		name     string
+		prepare  func(t *testing.T, dir string)
+		arg      string
+		creates  bool
+		base     string // exact base, or prefix when basePrefix
+		basePref bool
+		wantErr  bool
+	}
+	git := func(t *testing.T, dir string, args ...string) {
+		t.Helper()
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	cases := []tc{
+		{name: "unknown name on a branch", arg: "brand-new", creates: true, base: "from main"},
+		{name: "unknown name on a non-default branch", arg: "brand-new", creates: true, base: "from topic",
+			prepare: func(t *testing.T, dir string) { git(t, dir, "checkout", "-b", "topic") }},
+		{name: "unknown name on a detached HEAD", arg: "brand-new", creates: true, base: "from detached HEAD ", basePref: true,
+			prepare: func(t *testing.T, dir string) { git(t, dir, "checkout", "--detach") }},
+		{name: "existing worktree", arg: "wt-branch",
+			prepare: func(t *testing.T, dir string) {
+				git(t, dir, "worktree", "add", "-b", "wt-branch", filepath.Join(dir, ".worktrees", "wt-branch"))
+			}},
+		{name: "existing local branch without a worktree", arg: "lonely",
+			prepare: func(t *testing.T, dir string) { git(t, dir, "branch", "lonely") }},
+		{name: "remote-tracking name", arg: "origin/feat",
+			prepare: func(t *testing.T, dir string) {
+				setupRemote(t, dir, "feat", "feat")
+			}},
+		{name: "default branch checked out in the root", arg: "main"},
+		{name: "empty name", arg: "", wantErr: true},
+		{name: "default branch remote form", arg: "origin/main", wantErr: true,
+			prepare: func(t *testing.T, dir string) {
+				setupDefaultRemote(t, dir)
+				git(t, dir, "checkout", "-b", "topic")
+			}},
+		{name: "path collision", arg: "feature/x", wantErr: true,
+			prepare: func(t *testing.T, dir string) {
+				git(t, dir, "worktree", "add", "-b", "feature-x", filepath.Join(dir, ".worktrees", "feature-x"))
+			}},
+		{name: "overlong name", arg: strings.Repeat("ab/", 100) + "x", wantErr: true},
+		{name: "double dot is not a ref name", arg: "a..b", wantErr: true},
+		{name: ".lock suffix is not a ref name", arg: "foo.lock", wantErr: true},
+		{name: "tilde is not a ref name", arg: "x~1", wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			gitInit(t, dir)
+			if c.prepare != nil {
+				c.prepare(t, dir)
+			}
+			creates, base, err := WouldCreate(dir, c.arg)
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("WouldCreate error = nil, want one")
+				}
+				if creates {
+					t.Error("creates = true alongside an error")
+				}
+				// Same input, same error text from EnsureForName.
+				_, ensureErr := EnsureForName(dir, c.arg)
+				if ensureErr == nil || ensureErr.Error() != err.Error() {
+					t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if creates != c.creates {
+				t.Fatalf("creates = %v, want %v", creates, c.creates)
+			}
+			if !c.creates {
+				return
+			}
+			if c.basePref && !strings.HasPrefix(base, c.base) || !c.basePref && base != c.base {
+				t.Errorf("base = %q, want %q", base, c.base)
+			}
+			if c.basePref {
+				sha, err := runGitCmd(dir, "rev-parse", "--short", "HEAD")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := c.base + strings.TrimSpace(string(sha)); base != want {
+					t.Errorf("base = %q, want %q", base, want)
+				}
+			}
+			out, err := runGitCmd(dir, "for-each-ref", "--format=%(refname)", "refs/heads/"+c.arg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range strings.Split(string(out), "\n") {
+				if strings.TrimSpace(l) == "refs/heads/"+c.arg {
+					t.Error("WouldCreate created the branch")
+				}
+			}
+		})
+	}
+}
+
+// A name git cannot use as a branch must be refused by WouldCreate, with git's
+// own reason in the error, so the caller never asks "create it?" about a name
+// that is bound to fail.
+func TestWouldCreateInvalidRefNameQuotesGit(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	_, _, err := WouldCreate(dir, "a..b")
+	if err == nil || !strings.Contains(err.Error(), "a..b") || !strings.Contains(err.Error(), "not a valid branch name") {
+		t.Fatalf("error = %v, want git's 'not a valid branch name' naming a..b", err)
+	}
+}
+
+// On a case-insensitive volume refs/heads/Main resolves to main's ref file. A
+// case-only variant of an existing branch must be an error, not a silent
+// second checkout of that branch and not a create question.
+func TestClassifyNameCaseVariantOfBranch(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	// The prescribed case-sensitivity probe: the filesystem, not show-ref's
+	// case-folded ref-file resolution, decides whether this test runs.
+	if err := os.WriteFile(filepath.Join(dir, "CaseProbe"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "caseprobe")); err != nil {
+		t.Skip("case-sensitive volume: Main and main are different branches")
+	}
+	_, _, err := WouldCreate(dir, "Main")
+	if err == nil || !strings.Contains(err.Error(), "differs only in case") {
+		t.Fatalf("WouldCreate(Main) error = %v, want a 'differs only in case' error", err)
+	}
+	if _, err := EnsureForName(dir, "Main"); err == nil {
+		t.Fatal("EnsureForName(Main) succeeded, want the same refusal")
+	}
+	if _, serr := os.Stat(filepath.Join(dir, ".worktrees", "Main")); serr == nil {
+		t.Error("a worktree was created for the case variant")
+	}
+}
+
+// On a case-insensitive volume show-ref resolves refs/remotes/origin/Feat
+// through origin/feat's ref file. A case-only variant of a remote-tracking
+// name must be refused exactly like a local one, never tracked: `worktree add
+// -b Feat … origin/Feat` would check out origin/feat under the wrong name, and
+// origin/Main (the default branch form) would put the default branch in a
+// linked worktree — the invariant refuseDefaultBranch exists for. The
+// filesystem probe decides whether this test runs; assertions read
+// for-each-ref, never refExists.
+func TestClassifyNameCaseVariantOfRemoteRef(t *testing.T) {
+	cases := []struct {
+		name  string
+		arg   string
+		setup func(t *testing.T, dir string)
+	}{
+		{name: "any remote branch", arg: "origin/Feat", setup: func(t *testing.T, dir string) {
+			setupRemote(t, dir, "feat", "feat")
+		}},
+		{name: "the default branch form", arg: "origin/Main", setup: func(t *testing.T, dir string) {
+			setupDefaultRemote(t, dir)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			gitInit(t, dir)
+			// The prescribed case-sensitivity probe: the filesystem, not
+			// show-ref's case-folded ref-file resolution, decides whether
+			// this case can happen at all.
+			if err := os.WriteFile(filepath.Join(dir, "CaseProbe"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "caseprobe")); err != nil {
+				t.Skip("case-sensitive volume: the typed case names a different ref")
+			}
+			c.setup(t, dir)
+			if _, _, err := WouldCreate(dir, c.arg); err == nil || !strings.Contains(err.Error(), "differs only in case") {
+				t.Fatalf("WouldCreate(%s) error = %v; want a 'differs only in case' error", c.arg, err)
+			}
+			if _, err := EnsureForName(dir, c.arg); err == nil || !strings.Contains(err.Error(), "differs only in case") {
+				t.Fatalf("EnsureForName(%s) error = %v; want the same refusal", c.arg, err)
+			}
+			short := c.arg[strings.IndexByte(c.arg, '/')+1:]
+			out, err := runGitCmd(dir, "for-each-ref", "--format=%(refname)", "refs/heads")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range strings.Split(string(out), "\n") {
+				if l == "refs/heads/"+short {
+					t.Errorf("local branch %s was created under the wrong case: %s", short, out)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(dir, ".worktrees", short)); err == nil {
+				t.Errorf(".worktrees/%s was created", short)
+			}
+		})
+	}
+}
+
+// A name git cannot create because a local branch sits on its ref path — a
+// leaf branch above it (feature blocks feature/x) or a branch nested under it
+// (feature/x blocks feature) — must be refused before the create question,
+// naming the branch in the way. Git nests refs as directories and would fail
+// at the ref lock after "y"; the question and git's own failure must agree.
+func TestWouldCreateRefNamespaceConflictNamesTheBlocker(t *testing.T) {
+	for _, c := range []struct {
+		name, arg, blocker string
+		prep               []string
+	}{
+		{name: "leaf blocks its slashed name", arg: "feature/x", blocker: "feature", prep: []string{"branch", "feature"}},
+		{name: "nested branch blocks the leaf name", arg: "feature", blocker: "feature/x", prep: []string{"branch", "feature/x"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			gitInit(t, dir)
+			if out, err := runGitCmd(dir, c.prep...); err != nil {
+				t.Fatalf("git %v: %v\n%s", c.prep, err, out)
+			}
+			_, _, err := WouldCreate(dir, c.arg)
+			if err == nil || !strings.Contains(err.Error(), c.arg) || !strings.Contains(err.Error(), c.blocker) {
+				t.Fatalf("WouldCreate(%s) error = %v; want it to name %q and %q", c.arg, err, c.arg, c.blocker)
+			}
+			_, ensureErr := EnsureForName(dir, c.arg)
+			if ensureErr == nil || ensureErr.Error() != err.Error() {
+				t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
+			}
+		})
+	}
+}
+
+// On an unborn HEAD (a fresh `git init`, no commits) `git worktree add -b`
+// prints "No possible source branch, inferring --orphan" and creates a branch
+// sharing no history — not one off the unborn current branch. The start
+// phrase the create question shows must say that, never "from <branch>", or
+// the question promises a base git would not use.
+func TestWouldCreateUnbornHeadDescribesAnOrphan(t *testing.T) {
+	dir := t.TempDir()
+	// gitInit's commit is deliberately absent: HEAD must be unborn.
+	if out, err := runGitCmd(dir, "init", "-b", "main"); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	creates, start, err := WouldCreate(dir, "topic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creates {
+		t.Fatal("creates = false; want true")
+	}
+	const want = "as an empty orphan branch with no shared history (this repository has no commits yet)"
+	if start != want {
+		t.Errorf("start = %q; want %q", start, want)
+	}
+	out, err := runGitCmd(dir, "for-each-ref", "--format=%(refname)", "refs/heads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("branches exist after the question: %s", out)
+	}
+}
+
+// On a case-insensitive volume a case-folded ref-namespace conflict must be
+// refused before the create question exactly like the exact-case one: with
+// `feature` existing, `git branch Feature/x` fails at the ref lock
+// ("'refs/heads/Feature' exists") because git nests refs as directories, so
+// the question would be asked about a creation that can never happen. The
+// filesystem probe decides whether this case can happen at all; assertions
+// read for-each-ref, never refExists.
+func TestWouldCreateCaseFoldedRefNamespaceConflict(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "CaseProbe"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "caseprobe")); err != nil {
+		t.Skip("case-sensitive volume: Feature/x and feature coexist")
+	}
+	if out, err := runGitCmd(dir, "branch", "feature"); err != nil {
+		t.Fatalf("git branch feature: %v\n%s", err, out)
+	}
+	_, _, err := WouldCreate(dir, "Feature/x")
+	if err == nil || !strings.Contains(err.Error(), `"Feature/x"`) || !strings.Contains(err.Error(), `"feature"`) {
+		t.Fatalf("WouldCreate(Feature/x) error = %v; want it to name %q and %q", err, "Feature/x", "feature")
+	}
+	_, ensureErr := EnsureForName(dir, "Feature/x")
+	if ensureErr == nil || ensureErr.Error() != err.Error() {
+		t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
+	}
+}
