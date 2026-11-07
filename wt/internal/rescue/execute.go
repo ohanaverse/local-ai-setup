@@ -124,10 +124,15 @@ func (e Engine) Execute(p *Plan) Outcome {
 		madeDirs = append(madeDirs, made...)
 		if err != nil {
 			// The worktree is kept (no rollback), so give the directories made
-			// so far their source modes too: they are 0700 while copying. This
-			// is best effort and its own error is not the failure reported.
-			_ = setDirModes(p.Source.Path, dest, madeDirs)
-			return keep(CodeCarryFailed, "copying %s: %v", cleanup.OneLine(rel), err)
+			// so far their source modes too: they are 0700 while copying. The
+			// copy error is the failure; a mode that could not be set is
+			// appended to it, since the kept worktree is documented to carry
+			// the original's directory modes.
+			msg := fmt.Sprintf("copying %s: %v", cleanup.OneLine(rel), err)
+			if merr := setDirModes(p.Source.Path, dest, madeDirs); merr != nil {
+				msg += fmt.Sprintf("; directory modes could not be restored: %v", merr)
+			}
+			return keep(CodeCarryFailed, "%s", msg)
 		}
 	}
 	// Directory modes go on last: a read-only source directory must not block

@@ -41,6 +41,7 @@ var verdictOnlyUnknown = map[string]bool{
 	cleanup.ReasonPRUnknown:             true,
 	cleanup.ReasonPRMergeUnknown:        true,
 	cleanup.ReasonCannotVerify:          true,
+	cleanup.ReasonNotChecked:            true,
 }
 
 // knownNotUnknown are the reason codes that never make a row Unknown (unique

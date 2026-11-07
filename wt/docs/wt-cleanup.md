@@ -236,7 +236,9 @@ reproduce byte for byte (`content_filter`); more than 20000
 untracked files, or more than 512 MiB of untracked files and changed tracked
 files together (`too_large`; a changed tracked file counts as the larger of its
 working file and its index or HEAD blob, so a staged deletion of a big file
-counts too); a source that changed while it was being checked
+counts too, whatever its name holds; a staged rename is one file, counted once
+at the larger of the old path's HEAD blob and the new path's blob, while a
+deletion plus a different big addition counts both); a source that changed while it was being checked
 (`source_changed`); a commit count that cannot be read, or reads 0 while the classifier counted unpushed
 commits (exit 1, never a plan claiming 0 commits; a detached HEAD that a remote-tracking ref
 already holds legitimately counts 0); an unreadable worktree
@@ -258,7 +260,9 @@ branch, `branch_kept` is true and the message names the branch, which a rerun
 would otherwise report as `name_unavailable`): nothing is rolled back, because undoing it would mean a
 forced removal of a directory that now holds your work. Look at it, then
 `wt remove` it if you do not want it. When copying the untracked files is what
-failed, the directories made so far already carry the original's modes.
+failed, the directories made so far already carry the original's modes; if one
+of them could not be set (its source is gone), the message ends with
+"directory modes could not be restored".
 
 One narrow window is not closed: a branch that someone else creates under the
 new name in the instant between wt's last look at the name and `git worktree
@@ -327,4 +331,6 @@ the rules are narrower than for a local branch:
   none of them: a PR found for `origin/foo` never blocks, adds a reason to or
   names a dependant of `upstream/foo`. Nothing asks `gh` about another remote,
   so that row's pull-request state is unknown and it is at most less sure
-  (`cannot_verify`), never proven by git's proofs alone.
+  (reason `not_checked`, "the pull-request state of another remote's branch
+  is not checked"; it is not a gh failure, so the header's gh line never names
+  it), never proven by git's proofs alone.

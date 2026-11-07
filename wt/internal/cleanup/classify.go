@@ -47,6 +47,7 @@ const (
 	ReasonPRMergeUnknown        = "pr_merge_unknown"        // Unknown: a merged PR's merge commit could not be checked against the base
 	ReasonUnpushedUnknown       = "unpushed_unknown"        // Unknown: counting unpushed commits failed
 	ReasonCannotVerify          = "cannot_verify"           // gh did not answer for every branch, and this row needs it
+	ReasonNotChecked            = "not_checked"             // Unknown: the pull-request state of another remote's branch is never asked of gh
 	ReasonUnpushed              = "unpushed"                // unique: commits no remote-tracking ref reaches
 	ReasonNetZeroUnpushed       = "net_zero_unpushed"       // soft: proven only by equal trees, the branch nets to nothing, and its commits are on no remote-tracking ref
 	ReasonPRHeadMoved           = "pr_head_moved"           // unique: a merged PR's head is not the tip
@@ -505,7 +506,7 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	// nor has a lookup of its own (nothing asks gh about upstream/foo), so
 	// it is judged on git's proofs, and its PR state is unknown (below).
 	origin := rf.Remote == "origin"
-	var res PRResult // zero value is LookupUnknown: another remote's row has no lookup, and no check below reads it for that row
+	var res PRResult // zero value (LookupUnknown) for another remote's row, which has no lookup
 	if origin {
 		res = c.s.PRs[rf.Name] // a miss is LookupUnknown
 		switch {
@@ -517,8 +518,10 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	} else {
 		// Fail closed: nothing asks gh about another remote's branch, so its
 		// pull-request state is unknown, never "no PR". The row can read at
-		// most less_sure; git's proofs below still give its evidence.
-		j.unsure(ReasonCannotVerify, noPRLookupDetail)
+		// most less_sure; git's proofs below still give its evidence. This
+		// is not a gh failure (not_checked, not cannot_verify), so the gh
+		// wording and the header's gh line never claim it is.
+		j.unsure(ReasonNotChecked, notCheckedDetail)
 	}
 	p, ok := c.s.Proofs[rf.Tip]
 	switch {
@@ -558,18 +561,8 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 		// re-verifies exactly that before it pushes); an unknown lookup is
 		// already unsure above, so the soft reasons are only for an answered
 		// lookup.
-		if res.Lookup != LookupUnknown && origin {
+		if origin && res.Lookup != LookupUnknown {
 			c.remotePRRung(&j, rf, res)
-		} else if res.Lookup != LookupUnknown {
-			// Another remote's row keeps the plain rule: any merged PR for
-			// the branch name.
-			merged := findPR(res, func(pr PRInfo) bool { return pr.State == "MERGED" })
-			switch {
-			case merged == nil:
-				j.weak(ReasonNoMergedPR, "content is in the base, but no PR for this branch merged")
-			case j.pr == nil:
-				j.pr = merged
-			}
 		}
 	} else if ok && p.Verdict == NotMerged {
 		if len(p.Weak) > 0 {

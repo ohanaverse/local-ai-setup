@@ -619,4 +619,9 @@ func TestExecuteGivesCreatedDirectoriesTheirModesWhenTheCopyFailsMidway(t *testi
 	if got := dirMode(t, filepath.Join(out.Plan.DestPath, "shared")); got != 0o750 {
 		t.Errorf("shared has mode %o in the kept worktree, want 750", got)
 	}
+	// ghost/ was made in the copy but its source is gone, so its mode could not
+	// be set: the keep reason says so rather than promising the modes.
+	if !strings.Contains(out.Reason, "directory modes could not be restored") {
+		t.Errorf("reason %q does not report the directory modes that could not be restored", out.Reason)
+	}
 }

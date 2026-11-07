@@ -704,3 +704,35 @@ func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
 		}
 	}
 }
+
+// TestGuardedRunReleasesSignalForwardingWhenTheProgramPanics: the program run
+// panics. What: the signal forwarding is released before the panic leaves
+// guardedRun (once), while a run that returns normally keeps it until the
+// caller calls the returned stop. Why: the release used to be deferred only
+// after runCleanupProgram returned, so a panic in the program left the
+// process's SIGINT/SIGTERM forwarded to a dead program.
+func TestGuardedRunReleasesSignalForwardingWhenTheProgramPanics(t *testing.T) {
+	stops := 0
+	stop := func() { stops++ }
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic was swallowed")
+			}
+		}()
+		guardedRun(stop, func() (tea.Model, error) { panic("boom") })
+	}()
+	if stops != 1 {
+		t.Errorf("stop called %d times after a panic, want 1", stops)
+	}
+
+	stops = 0
+	_, got, err := guardedRun(stop, func() (tea.Model, error) { return nil, nil })
+	if err != nil || stops != 0 {
+		t.Fatalf("normal run: err %v, stops %d, want the forwarding kept", err, stops)
+	}
+	got()
+	if stops != 1 {
+		t.Errorf("returned stop did not release (stops %d)", stops)
+	}
+}

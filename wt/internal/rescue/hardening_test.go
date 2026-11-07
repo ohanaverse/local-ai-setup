@@ -423,3 +423,68 @@ func TestPreflightCountsAStagedDeletionAgainstTheSizeLimit(t *testing.T) {
 		t.Error("something was created")
 	}
 }
+
+// TestBlobSizesCoverAPathWithANewline: a big committed file whose name holds
+// a newline has its deletion staged. What: blobSizes reports the big size and
+// Preflight refuses with too_large. Why: cat-file's line-based stdin cannot
+// name such a path, so it used to count 0.
+func TestBlobSizesCoverAPathWithANewline(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	name := "gone\nname.bin"
+	f.Commit(p, name, strings.Repeat("g", 300), "big committed")
+	gitIn(t, p, "rm", "-q", name)
+
+	got, err := blobSizes(sgit{dir: p}, []string{name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[name] != 300 {
+		t.Errorf("blobSizes = %v, want %q: 300", got, name)
+	}
+	old := limitBytes
+	limitBytes = 100
+	t.Cleanup(func() { limitBytes = old })
+	eng, find := f.engine(f.Dir)
+	_, err = eng.Preflight(find(p), "")
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != CodeTooLarge {
+		t.Fatalf("Preflight = %v, want too_large", err)
+	}
+}
+
+// TestPreflightCountsAStagedRenameOnce: a staged rename of a file just under
+// the limit passes (old and new path are one file), while deleting one big
+// file and adding a different big one counts both and is refused. Why: the
+// rename's old path (HEAD blob) and new path (index blob) were both counted,
+// so a file under the limit was refused as twice its size.
+func TestPreflightCountsAStagedRenameOnce(t *testing.T) {
+	old := limitBytes
+	limitBytes = 100
+	t.Cleanup(func() { limitBytes = old })
+
+	t.Run("rename passes", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		f.Commit(p, "a.bin", strings.Repeat("a", 80), "big committed")
+		gitIn(t, p, "mv", "a.bin", "b.bin")
+		eng, find := f.engine(f.Dir)
+		if _, err := eng.Preflight(find(p), ""); err != nil {
+			t.Fatalf("Preflight = %v, want the rename to pass", err)
+		}
+	})
+	t.Run("delete plus different add counts both", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		f.Commit(p, "a.bin", strings.Repeat("aaaaaaa\n", 10), "big committed")
+		gitIn(t, p, "rm", "-q", "a.bin")
+		f.write(p, "c.bin", strings.Repeat("zzzzzzz\n", 10)) // too different for rename detection
+		gitIn(t, p, "add", "c.bin")
+		eng, find := f.engine(f.Dir)
+		_, err := eng.Preflight(find(p), "")
+		var r *Refusal
+		if !errors.As(err, &r) || r.Code != CodeTooLarge {
+			t.Fatalf("Preflight = %v, want too_large", err)
+		}
+	})
+}

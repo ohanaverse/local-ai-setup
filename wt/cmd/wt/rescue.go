@@ -177,14 +177,15 @@ func rescueRow(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap clea
 		// comparison after the copy still runs. A prompt keeps the re-read.
 		plan.SkipStartRecheck()
 	}
-	return writeRescueResult(out, errOut, f.json, meta, executeRescuePlan(eng, plan))
+	afterRescueConfirm()
+	return writeRescueResult(out, errOut, f.json, meta, eng.Execute(plan))
 }
 
-// executeRescuePlan is the test seam over the executor: a test swaps it to see
-// the plan as the command hands it over (which path ran: --yes or a prompt).
-var executeRescuePlan = func(eng rescue.Engine, plan *rescue.Plan) rescue.Outcome {
-	return eng.Execute(plan)
-}
+// afterRescueConfirm is a test seam, called after the confirmation (or --yes)
+// and just before the copy: the one point where the source can change between
+// Preflight and Execute with no hook inside the rescue package, so a command
+// test can show which path re-reads the source at the start of Execute.
+var afterRescueConfirm = func() {}
 
 // promptRescue prints what the rescue will do and asks y/N (default No).
 func promptRescue(ask io.Writer, answer io.Reader, p *rescue.Plan) bool {

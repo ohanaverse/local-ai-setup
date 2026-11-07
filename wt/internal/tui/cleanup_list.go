@@ -162,8 +162,21 @@ func realCleanupProgram(m cleanupListModel) (tea.Model, func(), error) {
 	// mid-removal too; the model handles them instead (Ruling T). The
 	// forwarding stops only after the exit message is printed.
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithoutSignalHandler())
-	stop := forwardSignals(p.Send)
-	final, err := p.Run()
+	return guardedRun(forwardSignals(p.Send), p.Run)
+}
+
+// guardedRun runs the program and returns its result with stop, which the
+// caller calls once it is done with the forwarding. A panic in run releases
+// the forwarding itself before it propagates: the caller never got stop.
+func guardedRun(stop func(), run func() (tea.Model, error)) (tea.Model, func(), error) {
+	returned := false
+	defer func() {
+		if !returned {
+			stop()
+		}
+	}()
+	final, err := run()
+	returned = true
 	return final, stop, err
 }
 

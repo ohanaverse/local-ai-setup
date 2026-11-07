@@ -157,7 +157,7 @@ func rowByRef(t *testing.T, r Report, ref string) Row {
 // sits beside origin/topic while origin's checks all fail (open PR targeting
 // topic, origin not fetched). What: origin's row is in use / unsure, the
 // upstream row carries none of origin's blockers and is less sure only
-// because nothing asks gh about another remote (cannot_verify). Why: the base
+// because nothing asks gh about another remote (not_checked). Why: the base
 // query and the origin fetch are origin facts only; a bare-name map must not
 // carry origin's answer onto another remote's row, and a --no-fetch run must
 // not turn an upstream row into origin's verdict. Its own PR state is unknown,
@@ -171,8 +171,8 @@ func TestNonOriginRemoteRowKeepsItsVerdict(t *testing.T) {
 	})
 	rep := Classify(s, Options{Now: later()})
 	up := rowByRef(t, rep, "refs/remotes/upstream/topic")
-	if up.Status != StatusLessSure || !slices.Contains(reasonCodes(up.Reasons), ReasonCannotVerify) || len(up.Blockers) != 0 {
-		t.Fatalf("upstream row %s unknown=%v reasons %v blockers %v, want less_sure by cannot_verify alone", up.Status, up.Unknown, reasonCodes(up.Reasons), reasonCodes(up.Blockers))
+	if up.Status != StatusLessSure || !slices.Contains(reasonCodes(up.Reasons), ReasonNotChecked) || len(up.Blockers) != 0 {
+		t.Fatalf("upstream row %s unknown=%v reasons %v blockers %v, want less_sure by not_checked alone", up.Status, up.Unknown, reasonCodes(up.Reasons), reasonCodes(up.Blockers))
 	}
 	if og := rowByRef(t, rep, "refs/remotes/origin/topic"); og.Status == StatusProven {
 		t.Fatalf("origin row stayed proven: %v", reasonCodes(og.Reasons))
@@ -181,7 +181,7 @@ func TestNonOriginRemoteRowKeepsItsVerdict(t *testing.T) {
 
 // TestNonOriginRowWithoutBaseAnswerIsNotUnknown: a lone upstream row has no
 // BasePRs entry (only origin gets the query); it must not fail on that missing
-// answer. What: it is less sure only for cannot_verify (no gh lookup exists for
+// answer. What: it is less sure only for not_checked (no gh lookup exists for
 // another remote) and has no blocker. Why: it must never read proven, because
 // its pull-request state is unknown, and must never inherit origin's answer.
 func TestNonOriginRowWithoutBaseAnswerIsNotUnknown(t *testing.T) {
@@ -190,8 +190,8 @@ func TestNonOriginRowWithoutBaseAnswerIsNotUnknown(t *testing.T) {
 		s.BasePRs = nil
 	})
 	row := rowByRef(t, Classify(s, Options{Now: later()}), "refs/remotes/upstream/topic")
-	if row.Status != StatusLessSure || len(row.Blockers) != 0 || !slices.Contains(reasonCodes(row.Reasons), ReasonCannotVerify) {
-		t.Fatalf("got %s unknown=%v reasons %v blockers %v, want less_sure by cannot_verify alone", row.Status, row.Unknown, reasonCodes(row.Reasons), reasonCodes(row.Blockers))
+	if row.Status != StatusLessSure || len(row.Blockers) != 0 || !slices.Contains(reasonCodes(row.Reasons), ReasonNotChecked) {
+		t.Fatalf("got %s unknown=%v reasons %v blockers %v, want less_sure by not_checked alone", row.Status, row.Unknown, reasonCodes(row.Reasons), reasonCodes(row.Blockers))
 	}
 }
 

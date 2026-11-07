@@ -142,7 +142,3 @@ type Engine struct {
 // hashes every changed file a second time, is skipped. The comparison after
 // the copy still runs. Call it only on that path; the default re-checks.
 func (p *Plan) SkipStartRecheck() { p.skipStartRecheck = true }
-
-// StartRecheckSkipped reports whether SkipStartRecheck was called: the
-// command layer's tests read it to show which path (--yes or a prompt) ran.
-func (p *Plan) StartRecheckSkipped() bool { return p.skipStartRecheck }
