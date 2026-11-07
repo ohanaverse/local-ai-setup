@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -274,7 +275,8 @@ func readBackupOwner(target string) (pid int, ok bool) {
 // other value in the current content untouched — so content the launched
 // agent itself wrote during the session (e.g. a permission grant beside a
 // pinned permissions.defaultMode) survives cleanup, and so does a leaf the
-// session changed or deleted after the merge. ok is false (caller falls
+// session changed or deleted after the merge. When nothing differs from the
+// snapshot afterwards, the snapshot's own bytes come back. ok is false (caller falls
 // back to the whole-file restore) when either originalSnapshot or target's
 // current content isn't a JSON object, since a safe per-leaf merge isn't
 // possible in that case.
@@ -291,6 +293,12 @@ func surgicalRestoreJSON(originalSnapshot []byte, target string, recs []leafRec)
 		return nil, false
 	}
 	revertLeaves(curDoc, origDoc, recs)
+	// Nothing else differs from the snapshot: the session changed no leaf,
+	// so hand back the stored bytes untouched. Re-marshalling would reformat
+	// a tracked file and show it modified in git (#530).
+	if reflect.DeepEqual(curDoc, origDoc) {
+		return originalSnapshot, true
+	}
 	data, err := json.MarshalIndent(curDoc, "", "  ")
 	if err != nil {
 		return nil, false

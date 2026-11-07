@@ -123,7 +123,16 @@ func (e Engine) Execute(p *Plan) Outcome {
 		made, err := copyUntracked(p.Source.Path, dest, rel)
 		madeDirs = append(madeDirs, made...)
 		if err != nil {
-			return keep(CodeCarryFailed, "copying %s: %v", cleanup.OneLine(rel), err)
+			// The worktree is kept (no rollback), so give the directories made
+			// so far their source modes too: they are 0700 while copying. The
+			// copy error is the failure; a mode that could not be set is
+			// appended to it, since the kept worktree is documented to carry
+			// the original's directory modes.
+			msg := fmt.Sprintf("copying %s: %v", cleanup.OneLine(rel), err)
+			if merr := setDirModes(p.Source.Path, dest, madeDirs); merr != nil {
+				msg += fmt.Sprintf("; directory modes could not be restored: %v", merr)
+			}
+			return keep(CodeCarryFailed, "%s", msg)
 		}
 	}
 	// Directory modes go on last: a read-only source directory must not block
@@ -212,22 +221,24 @@ func setFileModes(src, dst string, rels []string) error {
 
 // setDirModes gives each directory the copy created the mode of its source
 // counterpart, deepest first so a parent made read-only does not block its
-// child.
+// child. A directory it cannot set (its source is gone) does not stop the
+// others; the first error is returned.
 func setDirModes(src, dst string, dirs []string) error {
 	sorted := slices.Clone(dirs)
 	slices.SortFunc(sorted, func(a, b string) int {
 		return strings.Count(b, "/") - strings.Count(a, "/")
 	})
+	var first error
 	for _, rel := range sorted {
 		fi, err := os.Lstat(filepath.Join(src, rel))
-		if err != nil {
-			return err
+		if err == nil {
+			err = os.Chmod(filepath.Join(dst, rel), fi.Mode().Perm())
 		}
-		if err := os.Chmod(filepath.Join(dst, rel), fi.Mode().Perm()); err != nil {
-			return err
+		if err != nil && first == nil {
+			first = err
 		}
 	}
-	return nil
+	return first
 }
 
 func printable(s string) string { return strings.ReplaceAll(s, "\x00", "\n") }

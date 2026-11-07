@@ -156,10 +156,12 @@ func rowByRef(t *testing.T, r Report, ref string) Row {
 // TestNonOriginRemoteRowKeepsItsVerdict classifies an upstream/topic row that
 // sits beside origin/topic while origin's checks all fail (open PR targeting
 // topic, origin not fetched). What: origin's row is in use / unsure, the
-// upstream row is proven as before the origin stage existed. Why: the base
+// upstream row carries none of origin's blockers and is less sure only
+// because nothing asks gh about another remote (not_checked). Why: the base
 // query and the origin fetch are origin facts only; a bare-name map must not
 // carry origin's answer onto another remote's row, and a --no-fetch run must
-// not turn every upstream row Unknown.
+// not turn an upstream row into origin's verdict. Its own PR state is unknown,
+// never "no PR", so it never reads proven.
 func TestNonOriginRemoteRowKeepsItsVerdict(t *testing.T) {
 	open := PRInfo{Number: 12, State: "OPEN", HeadRefOid: strings.Repeat("e", 40), BaseRef: "topic"}
 	s := remoteSnap(func(s *Snapshot, tip string) {
@@ -169,8 +171,8 @@ func TestNonOriginRemoteRowKeepsItsVerdict(t *testing.T) {
 	})
 	rep := Classify(s, Options{Now: later()})
 	up := rowByRef(t, rep, "refs/remotes/upstream/topic")
-	if up.Status != StatusProven || up.Unknown {
-		t.Fatalf("upstream row %s unknown=%v %v %v", up.Status, up.Unknown, reasonCodes(up.Reasons), reasonCodes(up.Blockers))
+	if up.Status != StatusLessSure || !slices.Contains(reasonCodes(up.Reasons), ReasonNotChecked) || len(up.Blockers) != 0 {
+		t.Fatalf("upstream row %s unknown=%v reasons %v blockers %v, want less_sure by not_checked alone", up.Status, up.Unknown, reasonCodes(up.Reasons), reasonCodes(up.Blockers))
 	}
 	if og := rowByRef(t, rep, "refs/remotes/origin/topic"); og.Status == StatusProven {
 		t.Fatalf("origin row stayed proven: %v", reasonCodes(og.Reasons))
@@ -178,14 +180,44 @@ func TestNonOriginRemoteRowKeepsItsVerdict(t *testing.T) {
 }
 
 // TestNonOriginRowWithoutBaseAnswerIsNotUnknown: a lone upstream row has no
-// BasePRs entry (only origin gets the query); it must not turn cannot_verify.
+// BasePRs entry (only origin gets the query); it must not fail on that missing
+// answer. What: it is less sure only for not_checked (no gh lookup exists for
+// another remote) and has no blocker. Why: it must never read proven, because
+// its pull-request state is unknown, and must never inherit origin's answer.
 func TestNonOriginRowWithoutBaseAnswerIsNotUnknown(t *testing.T) {
 	s := remoteSnap(func(s *Snapshot, tip string) {
 		s.Remotes[0] = RefFact{Ref: "refs/remotes/upstream/topic", Name: "topic", Remote: "upstream", Tip: tip, Created: old}
 		s.BasePRs = nil
 	})
 	row := rowByRef(t, Classify(s, Options{Now: later()}), "refs/remotes/upstream/topic")
-	if row.Status != StatusProven || row.Unknown {
-		t.Fatalf("got %s unknown=%v %v", row.Status, row.Unknown, reasonCodes(row.Reasons))
+	if row.Status != StatusLessSure || len(row.Blockers) != 0 || !slices.Contains(reasonCodes(row.Reasons), ReasonNotChecked) {
+		t.Fatalf("got %s unknown=%v reasons %v blockers %v, want less_sure by not_checked alone", row.Status, row.Unknown, reasonCodes(row.Reasons), reasonCodes(row.Blockers))
+	}
+}
+
+// TestNonOriginRowReadsNoBareNamePRs classifies an upstream/topic row beside a
+// bare-name PR lookup that describes origin/topic: an open PR whose head is
+// "topic", a merged one, and an open PR from "feat" whose base is "topic".
+// What: the upstream row gets no open_pr or base_of_open_pr blocker and
+// carries none of those PRs; the origin row still sees all of them. Why: gh is
+// asked about the own repository, which origin is, so a PR found for
+// origin/topic must not inform upstream/topic's weak reason or dependants.
+func TestNonOriginRowReadsNoBareNamePRs(t *testing.T) {
+	s := remoteSnap(func(s *Snapshot, tip string) {
+		s.Remotes = append(s.Remotes, RefFact{Ref: "refs/remotes/upstream/topic", Name: "topic", Remote: "upstream", Tip: tip, Created: old})
+		s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{
+			{Number: 9, State: "MERGED", HeadRefOid: tip, BaseRef: "main", MergeCommit: strings.Repeat("d", 40)},
+			{Number: 11, State: "OPEN", HeadRefOid: tip, BaseRef: "main"},
+		}}
+		s.PRs["feat"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{{Number: 12, State: "OPEN", HeadRefOid: strings.Repeat("e", 40), BaseRef: "topic"}}}
+	})
+	rep := Classify(s, Options{Now: later()})
+	up := rowByRef(t, rep, "refs/remotes/upstream/topic")
+	if len(up.Blockers) != 0 || up.PR != nil {
+		t.Fatalf("upstream row read origin's PRs: blockers %v pr %+v", reasonCodes(up.Blockers), up.PR)
+	}
+	og := rowByRef(t, rep, "refs/remotes/origin/topic")
+	if !slices.Contains(reasonCodes(og.Blockers), BlockOpenPR) || !slices.Contains(reasonCodes(og.Blockers), BlockBaseOfOpenPR) {
+		t.Fatalf("origin row lost its blockers: %v", reasonCodes(og.Blockers))
 	}
 }

@@ -126,3 +126,27 @@ func TestHeaderGHCausesSeparatorAndFallback(t *testing.T) {
 		t.Errorf("fallback alone: %q", got)
 	}
 }
+
+// TestNotCheckedRowIsNotAGHProblem: another remote's row carries not_checked
+// while gh is down. What: its row text keeps the not-checked wording (not
+// "PR lookup failed" or the gh outage text), and the header's gh line names
+// only the causes of rows that did ask gh. Why: nothing asked gh about that
+// row, so a gh outage explanation under it would be false, and its synthetic
+// detail must not read as a gh cause.
+func TestNotCheckedRowIsNotAGHProblem(t *testing.T) {
+	r := Report{Base: Base{Ref: "origin/main"}, GH: GHUnavailable}
+	r.Rows = append(r.Rows, Row{Kind: KindRemote, Name: "topic", Remote: "upstream", Status: StatusLessSure, Unknown: true,
+		Reasons: []Reason{{Code: ReasonNotChecked, Detail: notCheckedDetail}}})
+	row := r.Rows[0]
+	got := RowText(r, row)
+	if !strings.Contains(got, notCheckedDetail) || strings.Contains(got, "PR lookup failed") || strings.Contains(got, ghUnavailableDetail) {
+		t.Errorf("row text %q", got)
+	}
+	if line := ghLine(t, r); strings.Contains(line, notCheckedDetail) || strings.Contains(line, "(") {
+		t.Errorf("gh line names the not-checked row as a cause: %q", line)
+	}
+	r.Rows = append(r.Rows, ghDownReport("gh pr list timed out after 15s").Rows...)
+	if line := ghLine(t, r); !strings.Contains(line, "(gh pr list timed out after 15s)") {
+		t.Errorf("gh line %q", line)
+	}
+}
