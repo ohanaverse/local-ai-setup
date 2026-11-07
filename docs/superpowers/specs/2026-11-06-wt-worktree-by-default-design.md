@@ -231,6 +231,12 @@ in my suggested order (my call; any order works, PR C is independent):
 - Wording of the prompts and error messages.
 - Whether a claude launch (which writes and restores
   `<worktree>/.claude/settings.local.json`) leaves a worktree that the engine
-  still calls clean. Unverified; the L3 acceptance run must check it on a real
-  claude launch, and the predicate must not be loosened to hide a failure.
+  still calls clean. **Checked 2026-11-07 on the built binary with a real
+  claude (no model call):** yes, once wt has restored the file at a normal
+  exit, which happens before the prompt; only an automatic profile on a
+  non-native model writes the file (`claude/native` and slot profiles never
+  do), it leaves an empty `.claude/` directory git does not see, and a
+  killed wt leaves the file behind so the engine correctly refuses the
+  worktree. A repository that *tracks* the file gets it reformatted by the
+  restore and so is not offered (#530); the predicate was not loosened.
 - Test strategy; the pty driver for the TUI screens (`memory/tui-screens-via-pty`).
