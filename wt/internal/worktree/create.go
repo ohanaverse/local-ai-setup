@@ -197,71 +197,124 @@ func checkBranchName(dir, name string) error {
 	return nil
 }
 
-// EnsureForName returns the worktree path for branch name, creating it if needed.
-// dir is the repo root. If the branch is already checked out somewhere, that
-// path is returned (idempotent).
-func EnsureForName(dir, name string) (string, error) {
+// Plan is one classification of a typed -W name, resolved once: the create
+// question reads it (Creates, Start) and the creation consumes the same
+// object (Ensure), so the phrase a user answered and the branch that is made
+// come from one set of git probes instead of two.
+type Plan struct {
+	dir, name string
+	cls       nameClass
+	start     string // the phrase Start returns; empty unless cls creates
+}
+
+// Resolve classifies name against the repo at dir once and returns the plan.
+// It creates nothing. A name Ensure would reject comes back as that same
+// error, so callers can refuse before asking anything.
+func Resolve(dir, name string) (*Plan, error) {
 	if name == "" {
-		return "", fmt.Errorf("worktree name cannot be empty")
+		return nil, fmt.Errorf("worktree name cannot be empty")
 	}
 	entries, err := listWorktrees(dir, dir)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	cls, err := classifyName(dir, name, entries)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	switch cls.kind {
+	p := &Plan{dir: dir, name: name, cls: cls}
+	if cls.kind == nameCreate {
+		if p.start, err = startPhrase(dir); err != nil {
+			return nil, err
+		}
+	}
+	return p, nil
+}
+
+// Creates reports whether Ensure will create a new branch (git worktree add
+// -b for a branch that does not exist), as opposed to reusing a worktree or
+// checking out an existing or remote-tracking branch.
+func (p *Plan) Creates() bool { return p.cls.kind == nameCreate }
+
+// Start is how the branch Ensure would create starts — the phrase the create
+// question joins after "create it": "from <current branch>", "from detached
+// HEAD <short sha>", or "as an empty orphan branch with no shared history
+// (this repository has no commits yet)" on an unborn HEAD, where git infers
+// --orphan rather than a base. Empty when the plan does not create.
+func (p *Plan) Start() string { return p.start }
+
+// Ensure returns the worktree path for the planned name, creating it if
+// needed. A reused worktree is returned as is (idempotent).
+//
+// The classification is not repeated, but a creation re-checks the two things
+// that could have moved while the user was being asked: the base (a changed
+// Start is an error naming both phrases, never a branch made from a base the
+// user was not shown) and the name itself (git refuses `worktree add -b` for
+// a branch another wt made meanwhile, so an approved creation is never
+// silently turned into a reuse of someone else's branch).
+func (p *Plan) Ensure() (string, error) {
+	switch p.cls.kind {
 	case nameTrackRemote:
-		return addTrackingWorktree(dir, name, cls.short)
+		return addTrackingWorktree(p.dir, p.name, p.cls.short)
 	case nameExistingBranch:
-		if _, err := runGit(dir, "worktree", "add", cls.path, name); err != nil {
+		if _, err := runGit(p.dir, "worktree", "add", p.cls.path, p.name); err != nil {
 			return "", fmt.Errorf("git worktree add: %w", err)
 		}
 	case nameCreate:
-		if _, err := runGit(dir, "worktree", "add", "-b", name, cls.path); err != nil {
+		now, err := startPhrase(p.dir)
+		if err != nil {
+			return "", err
+		}
+		if now != p.start {
+			return "", fmt.Errorf("the repository changed while asking: %q was to be created %s, it would now start %s; run the command again", p.name, p.start, now)
+		}
+		if _, err := runGit(p.dir, "worktree", "add", "-b", p.name, p.cls.path); err != nil {
 			return "", fmt.Errorf("git worktree add -b: %w", err)
 		}
 	}
-	return cls.path, nil
+	return p.cls.path, nil
 }
 
-// WouldCreate reports whether EnsureForName(dir, name) would create a new
-// branch (git worktree add -b for a branch that does not exist), and how that
-// branch would start — the phrase the create question joins after "create
-// it": "from <current branch>", "from detached HEAD <short sha>", or "as an
-// empty orphan branch with no shared history (this repository has no commits
-// yet)" on an unborn HEAD, where git infers --orphan rather than a base. It
-// creates nothing. A name EnsureForName would reject comes back as that same
-// error, so callers can refuse before asking anything.
-func WouldCreate(dir, name string) (creates bool, start string, err error) {
-	if name == "" {
-		return false, "", fmt.Errorf("worktree name cannot be empty")
-	}
-	entries, err := listWorktrees(dir, dir)
-	if err != nil {
-		return false, "", err
-	}
-	cls, err := classifyName(dir, name, entries)
-	if err != nil || cls.kind != nameCreate {
-		return false, "", err
-	}
+// startPhrase says how a branch created now would start (see Plan.Start).
+func startPhrase(dir string) (string, error) {
 	// An unborn HEAD (a fresh `git init`) is not a base: git prints "No
 	// possible source branch, inferring --orphan" and the branch shares no
 	// history, so say that rather than name the unborn branch it would not
 	// use.
 	if _, err := runGit(dir, "rev-parse", "--verify", "--quiet", "HEAD"); err != nil {
-		return true, "as an empty orphan branch with no shared history (this repository has no commits yet)", nil
+		return "as an empty orphan branch with no shared history (this repository has no commits yet)", nil
 	}
 	if b := CurrentBranchAt(dir); b != "" {
-		return true, "from " + b, nil
+		return "from " + b, nil
 	}
 	out, err := runGit(dir, "rev-parse", "--short", "HEAD")
 	if err != nil {
-		return false, "", fmt.Errorf("git rev-parse HEAD: %w", err)
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
 	}
-	return true, "from detached HEAD " + strings.TrimSpace(string(out)), nil
+	return "from detached HEAD " + strings.TrimSpace(string(out)), nil
+}
+
+// EnsureForName returns the worktree path for branch name, creating it if needed.
+// dir is the repo root. If the branch is already checked out somewhere, that
+// path is returned (idempotent). Callers that ask before creating use Resolve
+// and Plan.Ensure so the question and the creation share one classification.
+func EnsureForName(dir, name string) (string, error) {
+	p, err := Resolve(dir, name)
+	if err != nil {
+		return "", err
+	}
+	return p.Ensure()
+}
+
+// WouldCreate reports whether EnsureForName(dir, name) would create a new
+// branch, and how it would start (see Plan.Start). It creates nothing.
+// Resolve is the form that also carries the classification into the creation.
+func WouldCreate(dir, name string) (creates bool, start string, err error) {
+	p, err := Resolve(dir, name)
+	if err != nil {
+		return false, "", err
+	}
+	return p.Creates(), p.Start(), nil
 }
 
 // maxDirNameBytes is the filesystem's per-entry name limit (NAME_MAX on macOS
