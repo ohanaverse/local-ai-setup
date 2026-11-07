@@ -132,13 +132,8 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	m := newCleanupList(r, th, time.Now())
 	m.rm = rm
-	// Bubble Tea's own signal handler quits on SIGINT/SIGTERM in any phase,
-	// mid-removal too; the model handles them instead (Ruling T). The
-	// forwarding stops only after the exit message is printed.
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithoutSignalHandler())
-	stop := forwardSignals(p.Send)
+	final, stop, err := runCleanupProgram(m)
 	defer stop()
-	final, err := p.Run()
 	fm, ok := final.(cleanupListModel)
 	if ok && fm.exitMessage() != "" {
 		if _, werr := fmt.Fprintln(os.Stdout, fm.exitMessage()); werr != nil && err == nil {
@@ -154,6 +149,35 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 		err = runRescue(fm, rm, stop)
 	}
 	return err
+}
+
+// runCleanupProgram is the test seam over the Bubble Tea program: it runs the
+// list on the alt screen and returns the final model and the function that
+// stops the signal forwarding (idempotent). A test swaps it to drive
+// RunCleanupList's after-the-screen steps without a terminal.
+var runCleanupProgram = realCleanupProgram
+
+func realCleanupProgram(m cleanupListModel) (tea.Model, func(), error) {
+	// Bubble Tea's own signal handler quits on SIGINT/SIGTERM in any phase,
+	// mid-removal too; the model handles them instead (Ruling T). The
+	// forwarding stops only after the exit message is printed.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithoutSignalHandler())
+	return guardedRun(forwardSignals(p.Send), p.Run)
+}
+
+// guardedRun runs the program and returns its result with stop, which the
+// caller calls once it is done with the forwarding. A panic in run releases
+// the forwarding itself before it propagates: the caller never got stop.
+func guardedRun(stop func(), run func() (tea.Model, error)) (tea.Model, func(), error) {
+	returned := false
+	defer func() {
+		if !returned {
+			stop()
+		}
+	}()
+	final, err := run()
+	returned = true
+	return final, stop, err
 }
 
 // runRescue hands the `r` key's row to rm.Rescue, if there is one. It stops

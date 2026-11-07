@@ -260,6 +260,21 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	if errs := checkAgainst(schema, noOriginDoc, "no-origin fixture"); len(errs) > 0 {
 		t.Errorf("no-origin fixture violates the schema:\n%s", strings.Join(errs, "\n"))
 	}
+	// The no-origin sample shows another remote's row: less sure by
+	// not_checked alone (nothing asks gh about it; not a gh failure).
+	foundNotChecked := false
+	for _, r := range noOriginDoc.(map[string]any)["rows"].([]any) {
+		row := r.(map[string]any)
+		if row["kind"] != "remote" || row["remote"] == "origin" {
+			continue
+		}
+		for _, re := range row["reasons"].([]any) {
+			foundNotChecked = foundNotChecked || re.(map[string]any)["code"] == cleanup.ReasonNotChecked
+		}
+	}
+	if !foundNotChecked {
+		t.Errorf("the no-origin fixture has no non-origin remote row with a %s reason", cleanup.ReasonNotChecked)
+	}
 	// base.fetched_at only after a fetch that worked: the main sample shows
 	// it with fetch.ok true, the fetch-failed sample shows fetch.ok false
 	// without it.

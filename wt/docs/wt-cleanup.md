@@ -108,7 +108,14 @@ list closes). Restore one with `git branch <name> <sha>` while git still has
 the commit (until a `git gc` prunes it); for a branch whose name starts with
 `-`, which `git branch` refuses, the restore line is `git update-ref
 refs/heads/<name> <sha> ""` (the empty old value makes it create-only, like
-`git branch`: it fails rather than move a branch re-created since).
+`git branch`: it fails rather than move a branch re-created since). The
+"survives only until git gc prunes it" warning appears (on every path: deleted,
+re-created, not restored) only when no other local branch or remote-tracking
+branch (`main`, `origin/<other>`, another branch) reaches the deleted tip;
+otherwise a gc loses nothing and the warning is left out. Tags and stash
+entries do not count, and neither does `origin/<the deleted branch's own
+name>`, which goes in the same cleanup or is what you are removing. If git
+cannot answer, the warning stays.
 
 A deleted branch's upstream settings (`branch.<name>.remote` and `.merge`) go
 with it, as with `git branch -D`, so a branch restored under the same name does
@@ -240,7 +247,11 @@ affected paths); a changed file a `filter`, `ident` or `working-tree-encoding`
 attribute handles, git-lfs or any clean/smudge filter, which a copy could not
 reproduce byte for byte (`content_filter`); more than 20000
 untracked files, or more than 512 MiB of untracked files and changed tracked
-files together (`too_large`); a source that changed while it was being checked
+files together (`too_large`; a changed tracked file counts as the larger of its
+working file and its index or HEAD blob, so a staged deletion of a big file
+counts too, whatever its name holds; a staged rename is one file, counted once
+at the larger of the old path's HEAD blob and the new path's blob, while a
+deletion plus a different big addition counts both); a source that changed while it was being checked
 (`source_changed`); a commit count that cannot be read, or reads 0 while the classifier counted unpushed
 commits (exit 1, never a plan claiming 0 commits; a detached HEAD that a remote-tracking ref
 already holds legitimately counts 0); an unreadable worktree
@@ -261,7 +272,16 @@ path in the message; when creating the worktree failed after git made the
 branch, `branch_kept` is true and the message names the branch, which a rerun
 would otherwise report as `name_unavailable`): nothing is rolled back, because undoing it would mean a
 forced removal of a directory that now holds your work. Look at it, then
-`wt remove` it if you do not want it.
+`wt remove` it if you do not want it. When copying the untracked files is what
+failed, the directories made so far already carry the original's modes; if one
+of them could not be set (its source is gone), the message ends with
+"directory modes could not be restored".
+
+One narrow window is not closed: a branch that someone else creates under the
+new name in the instant between wt's last look at the name and `git worktree
+add` is indistinguishable from a leftover of the failed add, so a failure of
+that add may then report it as kept. It is untestable without a race and not
+guarded against.
 
 The JSON `code` says which step failed: `create_failed` (git could not create
 the worktree; `created` says whether anything was left), `carry_failed` (the
@@ -325,4 +345,11 @@ the rules are narrower than for a local branch:
   last `gh` read and the push is closed by GitHub. Restore the branch and
   reopen the PR.
 - Only `origin` rows are removable; rows of other remotes stay listed and
-  locked.
+  locked. The PR lookups (by head branch, and the open PRs found by base)
+  describe the repository `origin` points at, so a row of another remote reads
+  none of them: a PR found for `origin/foo` never blocks, adds a reason to or
+  names a dependant of `upstream/foo`. Nothing asks `gh` about another remote,
+  so that row's pull-request state is unknown and it is at most less sure
+  (reason `not_checked`, "the pull-request state of another remote's branch
+  is not checked"; it is not a gh failure, so the header's gh line never names
+  it), never proven by git's proofs alone.

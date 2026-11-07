@@ -1493,3 +1493,24 @@ func TestCleanupRestoresALeafPastFloat64sExactRange(t *testing.T) {
 	got := leafSession(t, []byte(`{"reserved":1}`), content, nil)
 	assertSameJSON(t, "restored content", "the original reserved of 1 back", got, []byte(`{"reserved":1}`))
 }
+
+// TestCleanupRestoresOriginalBytesWhenSessionChangedNothing verifies the
+// surgical restore hands back the stored snapshot byte for byte when the
+// session left the file as the merge wrote it (#530): a tracked
+// .claude/settings.local.json must not come back reformatted, or git sees a
+// modification and the exit prompt is withheld. A session that did change
+// something still gets the per-leaf merge (the neighbouring tests).
+func TestCleanupRestoresOriginalBytesWhenSessionChangedNothing(t *testing.T) {
+	for name, original := range map[string]string{
+		"compact":              `{"a":1}`,
+		"tabs and newline":     "{\n\t\"a\": 1,\n\t\"permissions\": {\"defaultMode\": \"plan\"}\n}\n",
+		"unsorted odd spacing": `{ "z" : 1 ,"a":[1,2] }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := leafSession(t, []byte(original), pinDefaultMode("default"), nil)
+			if string(got) != original {
+				t.Errorf("restored %q, want the original bytes %q", got, original)
+			}
+		})
+	}
+}
