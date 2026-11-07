@@ -952,6 +952,8 @@ func TestWouldCreate(t *testing.T) {
 	}
 	cases := []tc{
 		{name: "unknown name on a branch", arg: "brand-new", creates: true, base: "main"},
+		{name: "unknown name on a non-default branch", arg: "brand-new", creates: true, base: "topic",
+			prepare: func(t *testing.T, dir string) { git(t, dir, "checkout", "-b", "topic") }},
 		{name: "unknown name on a detached HEAD", arg: "brand-new", creates: true, base: "detached HEAD ", basePref: true,
 			prepare: func(t *testing.T, dir string) { git(t, dir, "checkout", "--detach") }},
 		{name: "existing worktree", arg: "wt-branch",
@@ -1011,8 +1013,14 @@ func TestWouldCreate(t *testing.T) {
 			if c.basePref && !strings.HasPrefix(base, c.base) || !c.basePref && base != c.base {
 				t.Errorf("base = %q, want %q", base, c.base)
 			}
-			if c.basePref && len(base) == len(c.base) {
-				t.Errorf("base = %q has no sha", base)
+			if c.basePref {
+				sha, err := runGitCmd(dir, "rev-parse", "--short", "HEAD")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := c.base + strings.TrimSpace(string(sha)); base != want {
+					t.Errorf("base = %q, want %q", base, want)
+				}
 			}
 			if refExists(dir, "refs/heads/"+c.arg) {
 				t.Error("WouldCreate created the branch")
