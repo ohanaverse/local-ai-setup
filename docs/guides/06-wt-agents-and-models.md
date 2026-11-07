@@ -38,6 +38,8 @@ claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything 
 
 `-W <name>` reuses an existing worktree or branch silently. A name that matches neither asks `create it from <base>? [y/N]` (default no) before it creates anything — with no commits in the repository the question names an empty orphan branch instead of a base, which is what git creates; `--new` answers yes, and a launch with no terminal (a script) is refused without it. The picker's "+ New worktree…" prompt and the shared-root `w` choice do not ask.
 
+**When the agent exits**, wt offers to remove a worktree and branch that this launch created if nothing changed in them: `<path> was created for this session and nothing changed in it. Remove it and its branch <name>?` Enter keeps it; `y` removes both through the same engine as `wt remove`. A reused worktree, a new worktree on an existing branch, `--cwd`, `--root`, a worktree where anything changed (an uncommitted or ignored file, a commit, a process still running) and any launch with no terminal are kept silently. The prompt comes after the stop picker and before the summary line, and the agent's exit status is unchanged. To turn it off, set `exit_prompt = "keep"` under `[launch]` in `~/.config/agent-wt/config.toml` (the default is `"ask"`; no value removes without a keypress).
+
 ## Steps
 
 ### 1. Shims and agent support matrix

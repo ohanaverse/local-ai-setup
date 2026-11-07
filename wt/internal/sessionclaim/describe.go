@@ -2,6 +2,7 @@ package sessionclaim
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -38,3 +39,10 @@ func CheckFailed(root string, err error) string {
 func NewWorktreeName(pid int, now time.Time) string {
 	return fmt.Sprintf("session-%d-%s", pid, now.Format("150405"))
 }
+
+// WorktreeName is the branch the shared-root "new worktree" choice creates
+// now, for this process. It is a var so tests can aim a creation route at a
+// prepared name: the real name can collide with an old session worktree of a
+// recycled pid at the same time of day, which is a reuse, never this launch's
+// creation.
+var WorktreeName = func() string { return NewWorktreeName(os.Getpid(), time.Now()) }

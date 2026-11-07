@@ -9,6 +9,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -103,6 +104,11 @@ func runLaunchPath(
 	// must run even for shell-wt (which never builds a model picker) to
 	// keep other concurrent sessions' counts accurate. Best-effort.
 	sweepRefcounts()
+
+	// The post-exit worktree prompt reads this run's registry through the
+	// app; the TUI is handed the same Env.
+	exitPromptEnv = newExitPromptEnv(a)
+	tui.ExitPrompt = exitPromptEnv
 
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
@@ -528,6 +534,9 @@ func rootCmd() *cobra.Command {
 				}
 				if err := refuseRootBranch(name, path); err != nil {
 					return refuse(err)
+				}
+				if creates {
+					exitprompt.RecordNote(osStderr, path, name)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}

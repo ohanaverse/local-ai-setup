@@ -4,6 +4,19 @@
 
 ### Added
 
+- When the agent exits, `wt` offers to remove the worktree and branch this
+  launch created if nothing changed in them: `<path> was created for this
+  session and nothing changed in it. Remove it and its branch <name>?` Enter
+  keeps (default no); `y` removes both through the `wt remove` engine, which
+  still refuses anything that moved. Only a branch and worktree created by
+  this launch qualify (not a reused worktree, a new worktree on an existing
+  branch, `--cwd` or `--root`); a changed, committed-in (even if the commit
+  was later undone by `reset --hard`), ignored-file or still-running worktree
+  is kept silently, and so is any launch with no
+  terminal. The prompt runs after the stop picker and before the summary
+  line, and the agent's exit status is unchanged. New setting `[launch]
+  exit_prompt = "ask" | "keep"` in `config.toml`; no value removes without a
+  keypress.
 - `-W <name>` now asks `create it from <base>? [y/N]` before it creates a
   branch and worktree for a name that does not exist (Enter or `n` declines,
   exit 0, nothing created). New `--new` answers yes in advance. **Breaking for

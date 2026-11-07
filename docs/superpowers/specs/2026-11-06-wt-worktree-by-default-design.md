@@ -129,14 +129,45 @@ or remove it.
 
 **Eligible** means all of:
 
-1. This launch **created** the worktree (not one the user made earlier and came
-   back to; not `--cwd`, not `--root`).
-2. The removal engine classifies it as removable without any approval: no
-   uncommitted changes, no commits beyond the base, nothing unpushed, not in
-   use, no hard blocker.
-3. A terminal is attached and `--json` is not in effect.
+1. This launch **created the branch and its worktree** (not one the user made
+   earlier and came back to; not `--cwd`, not `--root`; not a new worktree on
+   a branch that already existed, whose history this launch did not make).
+2. Nothing happened in it: the branch tip still equals the tip recorded when
+   the launch created it, the removal engine's preview shows no losses and no
+   running processes, no hard blocker, and the row's only soft reasons are
+   `fresh_branch` (and `base_is_local` when the repository has no remote).
+   The branch's reflog must also still have the entries it had at creation, so
+   a commit made and then undone by `git reset --hard` counts as touched (the
+   tree is clean and the tip is the creation tip, but the reflog is all that
+   still reaches that commit and deleting the branch deletes it); an unreadable
+   or disabled reflog fails closed. Any other reason, a moved tip, dirt or an
+   ignored file makes it ineligible.
+3. A terminal is attached.
 
 If it is not eligible, the worktree is kept silently.
+
+**Ruling: how this fits the engine's min-age rule** (decided 2026-11-06 after
+running the engine on a just-created worktree). The classifier files a
+worktree whose branch is at the base commit but under 10 minutes old as "looks
+merged, less sure" with the single reason `fresh_branch`; `wt remove` then
+needs `--yes --accept-loss`, and `-D` to delete the branch (otherwise it is
+kept as `retained_unmerged`). The min-age floor cannot be lowered, and this
+design does not change the classifier or add stored state. Instead the exit
+prompt's *eligibility* is the narrow predicate above over the engine's own
+output, with the creation tip held **in memory** by the launch that made the
+branch (no stored record). On "y" it removes the worktree **and its branch**
+through the engine with the `Confirm` and branch-delete approvals (the same
+sealed approvals `wt remove --accept-loss -D` uses), so the engine's rescan,
+compare-and-swap and hard blockers still apply: anything that moved since the
+prompt was built is skipped, never forced.
+
+A session longer than the 10-minute floor is different: an untouched branch at
+or behind the base then classifies **proven** with no reasons, and the engine
+deletes its branch under a plain confirmation (the preview's `CanDeleteBranch`
+is false because there is nothing unproven to opt in to). The prompt offers
+these too, removing through `Confirmed(p.Needs)` and requiring the plan to
+delete the branch; every other condition above is unchanged. Without this the
+prompt would only appear for sessions under ten minutes.
 
 **Behaviour**
 
@@ -198,8 +229,8 @@ in my suggested order (my call; any order works, PR C is independent):
   only Agents, DefaultTag and `[litellm]`; this may need a documented
   exception, or a different file).
 - Wording of the prompts and error messages.
-- How to treat a freshly created branch at the base commit under the removal
-  engine's "same commit as base is excluded when the branch is new" and
-  min-age floor: the exit prompt must work for a worktree created minutes ago
-  and left untouched. This needs a ruling in the engine, not a bypass of it.
+- Whether a claude launch (which writes and restores
+  `<worktree>/.claude/settings.local.json`) leaves a worktree that the engine
+  still calls clean. Unverified; the L3 acceptance run must check it on a real
+  claude launch, and the predicate must not be loosened to hide a failure.
 - Test strategy; the pty driver for the TUI screens (`memory/tui-screens-via-pty`).

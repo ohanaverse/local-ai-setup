@@ -53,7 +53,9 @@ After the launched subprocess exits, the TUI and non-TUI paths run the same fixe
 - `survey.ReleaseSession()` runs before the stop picker; the summary line (`agents.Summary`) never affects the exit code.
 - **wt exits with the agent's status on both paths, after the whole tail** (#412): non-TUI `os.Exit(ee.ExitCode())`; TUI `tui.Run` returns the error and `runTUI` makes an `exitCodeError`. **Never `os.Exit` inside `internal/tui`.**
 - A batch of stops costs one LiteLLM restart and one ollama wait (#379, #142); a stop ollama accepted and still lists at the bound is `*lifecycle.StillFinishingError`, not a failure.
-- A slot-profile session's tail is release → stop picker → summary (no survey, no price notice).
+- A slot-profile session's tail is release → stop picker → worktree prompt → summary (no survey, no price notice).
+- **Worktree prompt** (`internal/exitprompt`, `Offer`): after the stop picker and before the summary, on all four tails (`runAgentCmd`, `runSlotAgentCmd`, both branches of `printPendingSummaryAndSurvey`). Only a branch *and* worktree this launch created qualify (the creation routes call `exitprompt.Record`; the tip is held in memory, nothing is stored). Eligibility is a narrow predicate over `Engine.Preview` (no losses, no processes, no hard blocker, only `fresh_branch`/`base_is_local`, evidence `same-commit`/`ancestor`, tip unmoved, and the branch reflog still the creation count so a commit undone by `reset --hard` counts as touched; a session past the 10-minute floor reads proven and is offered too); anything else is kept silently. Enter keeps; "y" removes worktree and branch through the engine (`ConfirmedDeletingBranch` on a less-sure row or `Confirmed(p.Needs)` on a proven one, then `Engine.Run`). It never changes the exit status. `[launch] exit_prompt = "keep"` turns it off.
+- Known gap in `Offer`'s gather: it runs `cleanup.LookupPRs` over every local and remote branch (gh fan-out, 15s timeout each) before the prompt appears, though only the recorded branch's open-PR check is load-bearing; fixing it needs a gather knob in `internal/cleanup`.
 
 Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before changing the summary line, the stop picker, the stale-pricing notice, the survey, session handling, or profiles.
 
@@ -96,7 +98,7 @@ Every file and package in full: [docs/internals/packages.md](docs/internals/pack
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` is wt-owned and holds **only Agents, DefaultTag, and the `[litellm]` table**; Providers/Models live in the registry and this file's write path never touches them.
+`~/.config/agent-wt/config.toml` is wt-owned and holds **only Agents, DefaultTag, the `[litellm]` table and the `[launch]` table** (`exit_prompt = "ask"|"keep"`, `config.LaunchState`); Providers/Models live in the registry and this file's write path never touches them.
 
 - **Writers go through `(*Config).PatchSave` or `lockedApply`** (flock, re-read fresh, mutate only their own fields); `Save(cfg)` only for a known-fresh `Config`. **Any read-modify-write of a wt-owned file flocks via `config.WithFileLock`** — the one helper (`WithLock` for config.toml, `UpdateRegistry` for registry.toml, `slotedit.Apply` for slot-profiles.toml); a new write path without it can silently lose a concurrent edit.
 - `wt config` launches even when `config.toml` fails validation, so the editor can repair it.
@@ -269,6 +271,8 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 > **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and `EnsureForName` never fetches (it reads only the remote-tracking refs already present).
 
 > **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup, and forks no git: staleness is answered off the update goroutine, #451). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
+
+> **Creation routes record what they made** for the exit prompt: `-W` (`EnsureForName`), the picker's new-worktree row and the shared-root `w` choice call `exitprompt.RecordNote(path, branch)` only when `worktree.WouldCreate` (read before `EnsureForName`) says they create the *branch* as well as the worktree. A reused worktree, a new worktree on an existing branch (the picker's bare-branch row), `--cwd` and `--root` record nothing, so they never prompt. A new creation route must record too, or the prompt will never see it.
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 

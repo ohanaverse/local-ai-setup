@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -253,6 +254,7 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 		}
 		// The commit point: the agent runs next.
 		status := record()
+		exitprompt.Launched(cmd.Dir)
 		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
 		release()
 		// Capture (do not print) the summary line. Printing here would
