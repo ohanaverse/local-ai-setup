@@ -1,8 +1,10 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -72,9 +74,49 @@ func classifyName(dir, name string, entries []Entry) (nameKind, string, error) {
 	}
 
 	if refExists(dir, "refs/heads/"+name) {
+		// refExists resolves the ref file, which a case-insensitive volume
+		// matches in any case. Only an exact branch is reused; a case-only
+		// variant would check out the other branch under the wrong name.
+		if !branchExactly(dir, name) {
+			return 0, "", fmt.Errorf("branch %q differs only in case from an existing branch; use that branch's exact name", name)
+		}
 		return nameExistingBranch, path, nil
 	}
+	// Last, so a name git would refuse is an error before anyone is asked to
+	// create it (the question and git's own failure must agree).
+	if err := checkBranchName(dir, name); err != nil {
+		return 0, "", err
+	}
 	return nameCreate, path, nil
+}
+
+// branchExactly reports whether a local branch named exactly name exists,
+// comparing the names git lists rather than resolving a ref file.
+func branchExactly(dir, name string) bool {
+	out, err := runGit(dir, "for-each-ref", "--format=%(refname)", "refs/heads/"+name)
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if l == "refs/heads/"+name {
+			return true
+		}
+	}
+	return false
+}
+
+// checkBranchName asks git whether name is a usable branch name, returning
+// git's own message when it is not.
+func checkBranchName(dir, name string) error {
+	if _, err := runGit(dir, "check-ref-format", "--branch", name); err != nil {
+		msg := err.Error()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && strings.TrimSpace(string(ee.Stderr)) != "" {
+			msg = strings.TrimSpace(string(ee.Stderr))
+		}
+		return fmt.Errorf("invalid branch name %q: %s", name, msg)
+	}
+	return nil
 }
 
 // EnsureForName returns the worktree path for branch name, creating it if needed.

@@ -978,6 +978,9 @@ func TestWouldCreate(t *testing.T) {
 				git(t, dir, "worktree", "add", "-b", "feature-x", filepath.Join(dir, ".worktrees", "feature-x"))
 			}},
 		{name: "overlong name", arg: strings.Repeat("ab/", 100) + "x", wantErr: true},
+		{name: "double dot is not a ref name", arg: "a..b", wantErr: true},
+		{name: ".lock suffix is not a ref name", arg: "foo.lock", wantErr: true},
+		{name: "tilde is not a ref name", arg: "x~1", wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1026,5 +1029,38 @@ func TestWouldCreate(t *testing.T) {
 				t.Error("WouldCreate created the branch")
 			}
 		})
+	}
+}
+
+// A name git cannot use as a branch must be refused by WouldCreate, with git's
+// own reason in the error, so the caller never asks "create it?" about a name
+// that is bound to fail.
+func TestWouldCreateInvalidRefNameQuotesGit(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	_, _, err := WouldCreate(dir, "a..b")
+	if err == nil || !strings.Contains(err.Error(), "a..b") || !strings.Contains(err.Error(), "not a valid branch name") {
+		t.Fatalf("error = %v, want git's 'not a valid branch name' naming a..b", err)
+	}
+}
+
+// On a case-insensitive volume refs/heads/Main resolves to main's ref file. A
+// case-only variant of an existing branch must be an error, not a silent
+// second checkout of that branch and not a create question.
+func TestClassifyNameCaseVariantOfBranch(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	if !refExists(dir, "refs/heads/Main") {
+		t.Skip("case-sensitive refs: Main and main are different branches")
+	}
+	_, _, err := WouldCreate(dir, "Main")
+	if err == nil || !strings.Contains(err.Error(), "differs only in case") {
+		t.Fatalf("WouldCreate(Main) error = %v, want a 'differs only in case' error", err)
+	}
+	if _, err := EnsureForName(dir, "Main"); err == nil {
+		t.Fatal("EnsureForName(Main) succeeded, want the same refusal")
+	}
+	if _, serr := os.Stat(filepath.Join(dir, ".worktrees", "Main")); serr == nil {
+		t.Error("a worktree was created for the case variant")
 	}
 }

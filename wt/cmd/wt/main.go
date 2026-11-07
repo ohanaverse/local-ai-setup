@@ -512,7 +512,7 @@ func rootCmd() *cobra.Command {
 				}
 				creates, base, err := worktree.WouldCreate(root, name)
 				if err != nil {
-					return err
+					return refuse(err)
 				}
 				if creates {
 					if err := confirmCreate(name, base, newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
@@ -524,7 +524,7 @@ func rootCmd() *cobra.Command {
 				}
 				path, err := worktree.EnsureForName(root, name)
 				if err != nil {
-					return err
+					return refuse(err)
 				}
 				if err := refuseRootBranch(name, path); err != nil {
 					return refuse(err)

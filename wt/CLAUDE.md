@@ -252,7 +252,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - **TIER's score orders the picker's model rows** (descending, within the running-local and other bands) but is never routed on; a missing or unparseable `tiers.toml` is `-` and unscored, never an error.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
-> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY when `-A` or `-M` is omitted, and `--cwd` standing in the repository root needs one for the root prompt even when both are pinned (with no TTY it refuses, naming `--root`).
+> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY when `-A` or `-M` is omitted, and `--cwd` standing in the repository root needs one for the root prompt even when both are pinned (with no TTY it refuses, naming `--root`); `-W <name that does not exist>` also needs a TTY for the create question even with both pinned (with no TTY it refuses, naming `--new`).
 
 Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, start-on-select, the launch-time route check, or the model table.
 
