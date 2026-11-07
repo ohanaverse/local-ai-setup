@@ -13,7 +13,7 @@
   cd /Users/keith/github/ohanaverse/local-ai-setup/wt && go build -o /Users/keith/.local/bin/wt ./cmd/wt
   ```
 
-  **Caveat (2026-08-29):** the installed binary is STALE — built 2026-08-27 12:15, one commit before the registry-consumer merge (`79d620f`, 2026-08-28, "wt: consume modelman's registry.toml (Phase 4)"). The rebuild command above is the fix — it builds over the PATH copy at `~/.local/bin/wt`; a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4). Differences are cataloged in Steps §3 and Gotchas.
+  **Check the binary:** if `wt --help` lacks a flag or command this guide names (`--root`, `--new`, `wt cleanup`, `wt rescue`), the `wt` on PATH is older than the guide. The rebuild command above is the fix: it builds over the PATH copy at `~/.local/bin/wt`; a GOPATH build would be shadowed (see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4).
 - **Shims on PATH** (`claude-wt` … `shell-wt` in `/Users/keith/.local/bin/`). Missing? `make install` from `/Users/keith/github/ohanaverse/local-ai-setup/wt` — verified real (copies `bin/*-wt` to `/Users/keith/.local/bin/` and re-signs on macOS to dodge AMFI `SIGKILL`/exit 137). All 7 shims present here:
 
   ```
@@ -100,7 +100,7 @@ Precedence when `-M` is combined with `-T`/`-F`: the tags/family filters define 
 
 **Where the models come from:** `~/.config/local-ai/registry.toml` (`wt model init` creates it and adds provider rows; `wt model add|edit|rm` and the Models tab of `wt config` manage its models) and `~/.config/agent-wt/config.toml` (wt-owned) are joined in memory by `internal/config/config.go` `Load()`. Registry providers/models are loaded **last and overwrite anything pre-existing in config.toml — registry.toml is the source of truth**, and wt never writes them back into `config.toml` (see §6). Local rows are then built from the live inventory: a registry local model appears only when it is on disk or running, and an on-disk model with no entry appears under its discovered id `<family>/<artifact>`. To see what wt will load: `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` prints the model count, and `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` how many of those are untagged.
 
-**Stale-binary delta:** the installed 2026-08-27 build predates the merge and still serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`. Its picker therefore misses registry-only entries (any model added to `registry.toml` but absent from those old `config.toml` blocks). Same flags, different catalog — rebuild (Prerequisites) before trusting the picker.
+**Old-binary delta:** a `wt` built before the registry-consumer merge (2026-08-28) serves its catalog from `~/.config/agent-wt/config.toml` `[[models]]` blocks (which still sit on disk as one-time migration output), not from `registry.toml`, and its picker misses registry-only entries. Same flags, different catalog; rebuild (Prerequisites) before trusting the picker.
 
 ### 4. LiteLLM routing mode
 
@@ -334,10 +334,10 @@ Full reference — every field, every blocked reason, what Claude Code is given:
 Live-ran (2026-08-29, all read-only):
 
 - `wt --version` → `wt 0.1.0`
-- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide; `--root` postdates this capture — added with the 2026-11-06 root gate)
+- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide). A dated capture: later builds add `--new`, `--root`, `--allow-shared-root`, `--others` and `--replace`, so read the current list from `wt --help`
 - `wt --check-guard` → `wt: main guard is installed in this repo.`
 - `wt rotate code` → one model id (example: `ollama/kimi-k2.7-code:cloud`), exit 0, no files touched
-- `wt -w foo` → `wt: -w is removed; use -W or --worktree`, exit 1, and `git worktree list` confirmed nothing was created
+- `wt -w foo` → `Error: -w is removed; use -W or --worktree` (followed by the usage text), exit 1, and `git worktree list` confirmed nothing was created
 - `wt config --help` / `wt config theme --help` → subcommands as listed in §6
 - Registry models present: `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` → a non-zero count
 
@@ -351,7 +351,7 @@ Model pin dry explanation (no agent launch required): suppose `ollama/qwen3.8:27
 - **`agy-wt` and `shell-wt` have no rotation** (no model layer at all); `--yolo` is a no-op for pi.
 - **wt never resumes a session, for any agent** — there is no resume/fresh prompt. Continue a conversation with the agent's own flags after `--` (§2, "Sessions are the agent's own"); whether a resumed session's stored model overrides the model you picked is the agent's behaviour, and wt does not guard against it.
 - **Tag rotation is latent while models are untagged:** a model with `tags = []` is not narrowed by tag, and `-T`-less rotation walks the whole list — the header's tag slot shows `code` without meaning a filter is active. Check `grep -c '^tags = \[\]' ~/.config/local-ai/registry.toml` (untagged models) vs `grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml` (all models); set tags with `wt model edit <id> --tags code` or in the Tags field of the Models tab's form ([03-model-families](03-model-families.md) Step 3).
-- **Stale PATH binary:** `/Users/keith/.local/bin/wt` (2026-08-27) reads its model catalog from `config.toml`, missing registry-only models; rebuild with the Prerequisites command. After a rebuild, expect `wt rotate code`'s pair-check behavior to change until tags exist in the registry (also flagged in [03-model-families](03-model-families.md)).
+- **Stale PATH binary:** a `wt` on PATH that predates the registry-consumer merge (2026-08-28) reads its model catalog from `config.toml` and misses registry-only models; `wt --help` lacking a flag this guide names is the quick tell. Rebuild with the Prerequisites command.
 - **Three hand-installed `dsh-*` shims sit alongside the wt ones:** `/Users/keith/.local/bin/` also has `dsh-headless-wt`, `dsh-tui-wt`, and `dsh-webui-wt` — unknown to wt 0.1.0, so launching one errors with `unknown agent "dsh-…"`. Present on disk but not wt-documented.
 - **`-W` is the real flag.** The `-w` short form was removed and now errors with `-w is removed; use -W or --worktree`.
 - **`rotation.state` is written by single-model launches only** (`RecordFor()`); the `wt rotate <tag>` probe, `esc`/canceled prompts and slot-profile launches never touch it. One global slot — per-tag/agent state files are legacy migration inputs. The picker's `> ` marker is a second file, `last-picked.state`, which every recorded launch writes.

@@ -4,6 +4,29 @@
 
 ### Added
 
+- `wt cleanup` lists the repository's worktrees, local branches and origin
+  branches in four groups by how sure wt is each can go (proven merged, looks merged and less sure, has work that exists nowhere
+  else, in use or locked), with the evidence per row. It fetches first
+  (`--no-fetch` skips it), prints text with `--plain` or a pipe and one JSON
+  document with `--json` (`docs/contracts/cleanup-list.*`), and a branch
+  at or behind the base and younger than `--min-age` (default 10m) is never proven merged. On a
+  terminal, enter removes the ticked worktrees and local branches after a
+  confirmation (`y` when all are proven, the typed word `delete` otherwise).
+  `wt remove <worktree-path-or-branch>...` removes named targets through the
+  same engine, re-checking each first, with one flag per approval (`--yes`
+  for a proven item, `--accept-loss`, `--force`, `-D`), plus `--dry-run`,
+  `--json`, `--no-fetch` and `--min-age`. Exit 0 removed, 1 could not start,
+  2 some item refused, skipped or failed, 3 approval missing (no `--yes` and
+  no terminal, or declined); `docs/contracts/remove-result.*`. See
+  `docs/wt-cleanup.md` (#520).
+- `--root` launches in the repository's primary checkout from anywhere and
+  asks no consent question (the shared-root menu still runs when another
+  session holds the root; `--allow-shared-root` answers it). A `--cwd` launch
+  standing in a repository root now asks first (default no), and **breaking
+  for scripts:** with no terminal it refuses and names `--root`, so
+  `claude-wt --cwd` at a root needs `--root` instead. `-W <the root's branch>`
+  is refused and points at `--root`, `wt smoke --cwd` asks at a root, and the
+  worktree picker no longer lists the root as a row (#523).
 - `wt remove origin/<name> --remote` (and, in the `wt cleanup` list, a proven
   `origin` row ticked by hand and confirmed by typing `delete origin`) deletes
   a merged branch on origin. Nothing else grants it (`--yes`, `y`,
@@ -343,6 +366,14 @@
 
 ### Changed
 
+- A worktree directory now derives from the whole branch name, not its last
+  component: `feature/x` creates `.worktrees/feature-x` (was `.worktrees/x`),
+  so `feature/x` and `bug/x` can both have worktrees. Path-hostile characters
+  (slash, backslash, colon, control characters) become `-`; two names that
+  flatten to the same directory (`feature/x` and `feature-x`) error with
+  `already in use by branch …`, and a derived name over 255 bytes is
+  refused. Worktrees made earlier (`.worktrees/x` holding `feature/x`) keep
+  resolving by branch, with no migration (#517).
 - The model picker is ordered by tier score, and its SURVEY column is gone.
   Rows now fall in four bands: native models, slot-profile rows (now
   alphabetical by `profile/<name>` rather than in `slot-profiles.toml`
@@ -500,6 +531,10 @@
 
 ### Fixed
 
+- `wt -W origin/<default>` (and `upstream/<default>`, `<remote>/HEAD`) is
+  refused like the bare default branch, instead of creating a linked
+  worktree on a local branch literally named `origin/main`. A local
+  `feature/<default>` branch is still allowed (#516).
 - `wt` now writes `general_settings.cancel_on_disconnect: true` into LiteLLM's
   `config.yaml` when the key is absent, so the proxy cancels the upstream call
   when a client abandons a non-streamed request. Before, LiteLLM never noticed

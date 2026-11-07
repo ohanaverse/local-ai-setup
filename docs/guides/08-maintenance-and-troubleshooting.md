@@ -632,12 +632,14 @@ wt cleanup --json              # one JSON document (docs/contracts/cleanup-list.
 wt cleanup --min-age 30m       # how old a branch at or behind main must be to count as merged (default 10m)
 ```
 
-Every row lands in one of four groups, each row saying why:
+wt puts a worktree at `<repo>/.worktrees/<branch name with / and other path characters flattened to ->` (`feature/x` gets `.worktrees/feature-x`), so that is the path `wt remove` and `wt rescue` take; the branch name works as a target too. Every row lands in one of four groups, each row saying why:
 
 - **PROVEN MERGED**: its content is in `origin/<default>` (same commit, ancestor, matching trees, a merge that adds nothing, or a merged PR at that tip) and nothing else holds it. Only these start ticked.
 - **LOOKS MERGED, LESS SURE**: a hint without a proof (patch-equivalent commits only, a PR state `gh` could not answer), or a proof plus a soft issue such as ignored files that would be lost (`.env`, `.venv`), a branch younger than `--min-age`, or a never-pushed branch whose commits undo each other (it matches the base only because it changes nothing overall, and its commits exist nowhere else).
 - **HAS WORK THAT EXISTS NOWHERE ELSE**: unpushed commits, uncommitted or untracked files, detached commits, or an open PR.
 - **IN USE / LOCKED**: cannot be removed: the primary checkout, the directory you are in, a locked worktree, one that contains another worktree, a rebase or merge in progress, a registered model artifact under it, a held session (another wt launch in that checkout), or the default branch.
+
+The fetch runs `git fetch --prune` for every remote (`origin` first, the others at the same time) and never prompts: git's prompts are off and ssh runs in `BatchMode` (unless you set `GIT_SSH_COMMAND` or `core.sshCommand`, which wt leaves alone). A remote that would ask for a passphrase or a password therefore fails at once instead of waiting; the header names the failed fetch, the list is still produced and the rows are judged as of the last fetch (load the key into `ssh-agent`, or fetch by hand, and run it again). Details: [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md).
 
 Listing removes nothing: apart from the fetch, which updates and prunes the remotes' remote-tracking refs (`--no-fetch` skips it; the header says which remotes were fetched), it writes no ref, index or working file (the merge-adds-nothing proof may leave unreachable tree objects that `git gc` collects).
 
@@ -648,7 +650,7 @@ A row wt could not judge (a git error, no `gh` where a proof needs it) shows the
 From a script or another terminal, `wt remove` takes the same targets by name and uses the same engine:
 
 ```bash
-wt remove ../repo-wt/topic --dry-run       # what would happen, with each loss; changes nothing
+wt remove .worktrees/topic --dry-run       # what would happen, with each loss; changes nothing
 wt remove topic                            # a worktree path or a local branch name; asks y/N on a terminal
 wt remove topic --yes                      # no prompt: removes it only if it is proven
 wt remove topic --yes --accept-loss        # also an item that is not proven or loses ignored files or local commits
@@ -662,7 +664,7 @@ What each approval means, and nothing more: `--yes` (or `y`) only skips the ques
 **Keeping work before you remove it.** A row under HAS WORK THAT EXISTS NOWHERE ELSE is the one `wt remove` makes you approve. To keep that work first, copy it into a new branch and worktree (the original is only read):
 
 ```bash
-wt rescue ../repo-wt/spike --dry-run   # what would be copied, and what is left behind (ignored files); changes nothing
+wt rescue .worktrees/spike --dry-run   # what would be copied, and what is left behind (ignored files); changes nothing
 wt rescue spike                        # asks y/N; the new branch is rescued/spike under .worktrees/
 ```
 
@@ -696,7 +698,7 @@ Expect `model_list entries: <N>`, with `<N>` equal to the number of ids the auth
 - **A model still loaded after wt stopped it means two Ollama servers.** `wt stop` (or the stop prompt on exit) prints `done`, yet `ollama ps` still lists the model and the memory is not freed: run `pgrep -fl "ollama serve"`. Two lines means LiteLLM started a second server beside the app's, which it does at proxy startup for any ollama row in `config.yaml` with no `api_base` ([04-litellm-config](04-litellm-config.md) Gotchas). wt fills that field in on its next write; to clear it at once, kill the extra `ollama serve` (the one that is not under `Ollama.app`) and restart the proxy (§2 Step 8). Left alone, the stray copy unloads after Ollama's keep-alive, five minutes by default, which makes this look intermittent.
 - **An omlx model is running only when omlx has it loaded.** The omlx service lists every model in its directory on `/v1/models` whether or not it is loaded, so that list is not "what is running"; wt asks omlx what is loaded instead (`curl -s http://localhost:8000/health` shows the pool's `model_count` and `loaded_count`). When some omlx models are loaded and others are not, only omlx's key-protected status endpoint says which: if the server has an API key, set `auth.secret_ref` on the registry's omlx provider, or `wt litellm sync` warns that the omlx probe did not succeed and leaves its routes unchanged, and a start asks before replacing.
 - **There is no Ollama LaunchAgent.** `launchctl list | grep ollama` shows `-	0	com.ollama.ollama` because the row comes from the app's login item — you cannot `kickstart` Ollama back; relaunch Ollama.app. (The `application.com.electron.ollama.*` row appears only while the app window lives — don't grep for it in scripts.)
-- **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt` (asdf: `/Users/keith/.asdf/installs/golang/1.26.7/packages/bin/wt`), but PATH resolves `wt` to `/Users/keith/.local/bin/wt` first — checked live: `which -a wt` lists only the `~/.local/bin` path, and the asdf GOPATH bin currently holds no `wt`. Rebuilding into GOPATH therefore leaves the stale 2026-08-27 binary in charge. Build over `~/.local/bin/wt` (or evict it) and re-verify `which wt` before trusting a post-build `wt` (guide 06's stale-binary gotcha is the same story from the model-catalog side).
+- **`wt`'s GOPATH build vs PATH binary.** A GOPATH build writes `$(go env GOPATH)/bin/wt`, but PATH may resolve `wt` to `~/.local/bin/wt` first (`which -a wt` shows the order), so rebuilding into GOPATH leaves the older binary in charge. Build over `~/.local/bin/wt` (`make install`, or evict it) and re-verify `which wt` before trusting a post-build `wt`. If `wt --help` lacks a flag or command a guide names, the binary on PATH is older than the guide: rebuild (guide 06's stale-binary gotcha is the same story from the model-catalog side).
 - **A LiteLLM upgrade or reinstall leaves Prisma to redo** — `uv tool upgrade litellm` keeps the env with the receipt's extras and Python; a `--force` reinstall re-creates it, so always give it the full form, `uv tool install --force --python 3.11 'litellm[proxy,extra-proxy]'`. After either, re-run `prisma generate` (guide 01 §1/§6; §4 above), or the Postgres-backed UI/auth features die on the next kickstart with one of: `ModuleNotFoundError: No module named 'prisma'` (Prisma ships in the `extra-proxy` extra on LiteLLM ≥1.98, not `[proxy]`) or `Unable to find Prisma binaries. Please run 'prisma generate' first.` (unpinned Python — uv picked 3.14 on the 2026-09-30 rebuild, where the engines are missing; 3.11 is known-good). Both symptoms verified 2026-09-30.
 - **Redis crash-loops on `redisearch.so` on this machine (2026-09-30).** The module file is unreadable system-wide (`dlopen ... errno=1` in `/opt/homebrew/var/log/redis.log`), even source-built; the bottle pour itself can also `EPERM` on it during `brew install`/`upgrade`, so use `--build-from-source`. Fix applied in `/opt/homebrew/etc/redis.conf`: only the `redisearch.so` `loadmodule` line is commented out (RedisBloom/ReJSON/Timeseries load fine; original at `redis.conf.bak-original`). LiteLLM needs plain Redis only.
 - **`Registry file not found` from llmbench with `XDG_CONFIG_HOME` set.** With that variable set, llmbench used to fall back to a registry at `~/.config/local-ai/registry.toml`. It now looks only at `$XDG_CONFIG_HOME/local-ai/registry.toml`, the file wt names in that case, and says `Registry file not found: <that path>` when it is missing. Move the file there, or name it with `WT_REGISTRY`.

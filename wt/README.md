@@ -75,10 +75,15 @@ All launchers support:
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing branch or worktree is reused silently; a new name asks `create it from <base>? [y/N]` (default no; with no commits in the repository the question names an empty orphan branch instead of a base) before creating anything, and with no terminal is refused unless `--new` is passed |
 | `--new` | With `-W`, create the branch and worktree for a name that does not exist yet without asking. A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root` |
-| `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and asks nothing. Exclusive with `--cwd` and `-W`. |
+| `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and asks no consent question (the shared-root menu still runs when another live wt session holds the root; `--allow-shared-root` answers it). Exclusive with `--cwd` and `-W`. |
 | `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. Standing in the repository root it asks first (default no); with no terminal it refuses and names `--root`. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--allow-shared-root` | Launch in the repository root without asking even when another wt session is running there (with no terminal the launch otherwise refuses) |
+| `-M <provider>/<name>`, `--model <provider>/<name>` | Pin the model (or `profile/<name>` for a slot profile); skips the model picker |
+| `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within the flag) |
+| `-F <families>`, `--family <families>` | Filter the model list by family (comma-delimited, OR within the flag) |
+| `--replace` | With `-M`, start the model even if it means stopping a running one |
+| `--others keep\|stop` | When a local start loads a model beside other providers' models: keep them or stop the ones wt can stop (default: ask; with no terminal keep and warn) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` | Seed agent instruction files (AGENTS.md + agent-specific pointer) and exit |
 | `--version` | Print version and exit |
@@ -87,9 +92,24 @@ All launchers support:
 
 Model rotation happens inside the TUI — there are no `--code`/`--design`/`--native` flags. Use `-T <tag>` to filter to a tag group, then `up`/`down` to pick a model — launching it advances the rotation automatically for the next entry.
 
+## Commands
+
+Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a reference page:
+
+| Command | What it does | Reference |
+|---|---|---|
+| `wt cleanup` | Lists worktrees, local branches and `origin` branches that can go, in four groups with the proof for each; on a terminal removes the ones you tick | [docs/wt-cleanup.md](docs/wt-cleanup.md), [guide 08 §9](../docs/guides/08-maintenance-and-troubleshooting.md) |
+| `wt remove <worktree-path-or-branch>...` | Removes named worktrees and branches through the same engine, re-checking each; `--dry-run` first | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-remove-arguments-output-and-exit-codes) |
+| `wt rescue <worktree-path-or-branch>` | Copies a worktree's local-only work into a new branch and worktree before you remove it | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-rescue-keep-work-before-it-is-lost) |
+| `wt start`, `wt stop`, `wt served`, `wt warm` | Start and stop local models | [docs/wt-start-stop.md](docs/wt-start-stop.md) |
+| `wt smoke` | One-shot prompt through every agent eligible for a model | [docs/wt-smoke.md](docs/wt-smoke.md) |
+| `wt model`, `wt config` | Registry and preferences | [docs/wt-model.md](docs/wt-model.md), [docs/wt-config.md](docs/wt-config.md) |
+| `wt stats` | Launches and LiteLLM spend per model | [docs/wt-stats.md](docs/wt-stats.md) |
+| `wt cloud-sync` | Refresh cloud prices and the ollama catalog | [docs/wt-cloud-sync.md](docs/wt-cloud-sync.md) |
+
 ## Configuration
 
-The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag.
+The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag, plus the hand-edited `[launch] exit_prompt` setting (see [Exit prompt](#exit-prompt-for-an-untouched-worktree)).
 
 Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`. `wt model init` creates that file and adds the default provider rows; models are listed, added, edited and removed with `wt model list|add|edit|rm`, or on the Models tab of `wt config` (`wt model`) — see `docs/wt-model.md`. `wt` joins the registry in memory with `config.toml`; nothing writes providers or models into `config.toml`.
 

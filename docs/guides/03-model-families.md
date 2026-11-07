@@ -15,7 +15,7 @@ grep -c '^\[\[models\]\]' ~/.config/local-ai/registry.toml
 
 It prints the number of `[[models]]` entries in your registry; anything ≥2 is enough to follow along.
 
-- A `wt` on PATH built before the 2026-08-28 registry-consumer merge serves a stale catalog — see Gotchas (stale-binary item); rebuild with `make install` if in doubt.
+- A `wt` on PATH built before the 2026-08-28 registry-consumer merge serves a stale catalog — see Gotchas (stale-binary item); rebuild with `make install` if `wt --help` lacks a flag this guide names.
 
 ## TL;DR
 
@@ -187,7 +187,7 @@ ollama/glm-5.3-flash:cloud
 - **Family/tag structure is canonical in `registry.toml`.** Change a model's family and tags with `wt model edit` or the Models tab ([02-providers-and-models](02-providers-and-models.md) Step 1); a `[[families]]` display name is a hand edit, and nothing reads it today.
 - **`~/.config/local-ai/families/` is LEGACY** (per-family YAML manifests such as `ornith-1.5.yaml` — migration inputs only; legacy manifests did carry `display_name`, e.g. `Qwen 3.8`). Per [00-config-map](00-config-map.md): don't resurrect it.
 - **TUI behavior:** there is no `d` tag-toggle key, `rotation.state` is a single global slot, and per-tag `rotation-<tag>.state` files are legacy migration inputs that are deleted after migration. The `> ` marker in the picker is read from `last-picked.state`, a second single-slot file beside it.
-- **A `wt` binary built before the registry-consumer merge (2026-08-28) serves a stale catalog.** Symptom: `wt rotate code`/`design` return models although `registry.toml` has no tags — the old build still serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks, so its catalog can be missing models the registry has (and list ones it doesn't). A rebuild from `~/github/ohanaverse/local-ai-setup/wt` (`go build -o /Users/keith/.local/bin/wt ./cmd/wt` — build over the PATH copy, not GOPATH, which `~/.local/bin` shadows; see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4) makes `registry.toml` authoritative — expected to fail the `wt rotate code/design` pair-check above until tags exist.
+- **A `wt` binary built before the registry-consumer merge (2026-08-28) serves a stale catalog.** Symptom: `wt rotate code`/`design` return models although `registry.toml` has no tags: the old build serves tagged models from `~/.config/agent-wt/config.toml` `[[models]]` blocks, so its catalog can be missing models the registry has (and list ones it doesn't). Rebuild with `make install` from `wt/` (it builds over the PATH copy at `~/.local/bin/wt`, not GOPATH, which `~/.local/bin` shadows; see [08-maintenance-and-troubleshooting](08-maintenance-and-troubleshooting.md) §4); a current build makes `registry.toml` authoritative.
 
 ## Going deeper
 
