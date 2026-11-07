@@ -1,6 +1,6 @@
 # `wt` opens in a worktree by default — Design
 
-**Status:** draft for approval (2026-11-06). Revises the scope of #521 and #522
+**Status:** approved and built (status note 2026-11-07): L1 #523, L2 #524, L3 #526; cleanup PR C #528 and PR D #529 also merged; #522 open. Originally a draft for approval (2026-11-06). Revises the scope of #521 and #522
 and adds two launch changes. Reads with `2026-11-04-wt-cleanup-design.md`
 (PR C and PR D there are unchanged).
 
@@ -77,7 +77,7 @@ demoted, not dropped.
   as today (documented limit).
 - `-W <name>` naming a branch the **root has checked out** is refused with a
   message pointing at `--root`. This holds for any root branch, default or not.
-  Today it silently resolves to the root, including `-W main` while the root
+  Before L1 it silently resolved to the root, including `-W main` while the root
   is on `main`: `EnsureForName` returns an already-checked-out branch's path
   before its default-branch refusal (#516), which therefore only covers the
   not-checked-out forms (`origin/main`, `<remote>/HEAD`).
@@ -225,9 +225,7 @@ in my suggested order (my call; any order works, PR C is independent):
 
 ## Left to the builder
 
-- Where the exit-prompt setting lives (`config.toml` is documented as holding
-  only Agents, DefaultTag and `[litellm]`; this may need a documented
-  exception, or a different file).
+- Where the exit-prompt setting lives. Settled as built: `[launch] exit_prompt = "ask"|"keep"` in `config.toml` (`wt/internal/config/launch.go`, `wt/docs/configuration.md` "Exit prompt setting").
 - Wording of the prompts and error messages.
 - Whether a claude launch (which writes and restores
   `<worktree>/.claude/settings.local.json`) leaves a worktree that the engine

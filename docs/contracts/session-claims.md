@@ -1,6 +1,6 @@
 # Session claims
 
-A claim records that a `wt` session runs in a repository's root checkout. `wt` (Go, `wt/internal/sessionclaim`) writes and removes claims; `repo-cleanup` (bash 3.2, in the repo-cleanup-skill repository) only reads them. Neither side may depend on the other being installed, so this file format is the whole contract.
+A claim records that a `wt` session runs in a repository's root checkout. `wt` (Go, `wt/internal/sessionclaim`) writes and removes claims; `repo-cleanup` (bash 3.2, in the repo-cleanup-skill repository) and `wt cleanup` (which marks a root worktree held, and reports `claims_unavailable` when the claims cannot be read) only read them. Neither side may depend on the other being installed, so this file format is the whole contract.
 
 A claim is one file per live `wt` process, in the repository's common git directory:
 
@@ -27,6 +27,7 @@ Rules:
 - `path` is the physical path of the root: symlinks resolved (so `/var` and `/private/var` agree on macOS), no trailing slash. Both sides derive it from the primary worktree's top level, not from the current directory. `wt` uses `filepath.EvalSymlinks`; `repo-cleanup` uses `pwd -P`.
 - `pid` is the `wt` process. `wt` runs the agent as a child and stays alive until it exits, so the claim lasts as long as `wt` does. That is the session's lifetime unless `wt` itself is killed (SIGTERM, SIGKILL) while the agent still runs: then the claim's pid is gone and the root looks free.
 - `started` is epoch seconds. A reader treats it as equal to the process's actual start time within 5 seconds, because `wt` and `repo-cleanup` read it by different methods. Both compute it as now minus `ps -o etime= -p <pid>` (format `[[dd-]hh:]mm:ss`); each side subtracts a whole-second reading, so the two reads can differ by up to 2 seconds from rounding alone and a 2-second window had no margin. Liveness therefore compares wall-clock elapsed time: a wall-clock step of more than 5 seconds after launch (an NTP step) makes a live claim read as stale on both sides.
+- A reader ignores a live claim whose `pid` is its own process or one of its ancestors: that is a nested launch (an agent running `wt` at the root), not another session. `wt` walks the parent chain for this, as `repo-cleanup` does. An ancestor's claim exempts the launch only while it is live.
 - Readers must be plain POSIX tools. `repo-cleanup` must not call `wt`, so the format stays line-oriented `key=value`.
 - Unknown keys are ignored. A file missing `pid`, `started` or `path` is treated as stale.
 - Under `wt-sessions/`, `.lock` is the flock `wt` takes around reading and writing claims; readers ignore it.

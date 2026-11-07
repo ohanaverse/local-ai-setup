@@ -1,6 +1,6 @@
 # `wt cleanup` — Design
 
-**Status:** draft for approval (2026-11-04). Supersedes PRs 2–3 of
+**Status:** built (status note 2026-11-07): PR A (#518 and follow-ups), B #520, C #528, D #529. Originally a draft for approval (2026-11-04). Supersedes PRs 2–3 of
 `2026-11-04-worktrunk-ports-design.md`; PRs 4–6 of that series are unchanged.
 
 ## Intent
@@ -250,7 +250,7 @@ checks them while reading.
 - **Live processes by cwd.** macOS only; tool (`lsof`/`ps`) is the builder's.
   Warning only, as carried from PR 2.
 - **Remote (my call).** Rows use the remote the branch's upstream names, else
-  `origin`; fork workflows are out of scope (single-user setup).
+  `origin` (PR C narrowed this: origin only, other remotes stay listed and locked; see its plan, R1); fork workflows are out of scope (single-user setup).
 - **Carried details.** Trash-rename, drain, lock immunity, the `-D`
   git-parity matrix, `branch_outcome`, and registered-artifact refusal keep
   the wording of PR 2/PR 3 in `2026-11-04-worktrunk-ports-design.md`, which

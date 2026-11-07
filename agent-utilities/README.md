@@ -4,7 +4,7 @@ Small standalone utilities for working with specific coding agents, one director
 
 | Directory | Agent | Utilities |
 |-----------|-------|-----------|
-| [`claude-utilities/`](claude-utilities/README.md) | Claude Code | `transcript_speed.py` — estimate output tokens/second from local session transcripts |
+| [`claude-utilities/`](claude-utilities/README.md) | Claude Code | `transcript_speed.py` (output tokens/second from local session transcripts), `otel_receiver.py` + `otel_speed.py` (TTFT and decode rate from OTLP traces), `probe_runner.py` (controlled probes via real `claude -p` calls) |
 
 ## Conventions
 

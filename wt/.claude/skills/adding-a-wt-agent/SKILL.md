@@ -25,7 +25,7 @@ agent needs a `[[agents]]` entry.
 2. Implement other optional capabilities as needed: `Seeder`, `Syncer`, `ArgSetter`, `StateDirer` (if the agent keeps per-working-directory state, so `wt smoke` can remove it for its temporary directories)
 3. Register from the driver file's own `init()` with `register("<name>", func() Driver { return <name>Driver{} })` (`register` is defined in `internal/agents/agents.go`)
 4. Add a model-id regression test (`Test<Name>OllamaPrefix`) using a model with distinct `ID`/`ModelName` to catch wrong id passthrough
-5. Add the agent to the protocol table and the capability table in `wt/docs/internals/agents.md`, and to the Protocols bullet under "Agents (Go)" in `wt/CLAUDE.md`
+5. Add the agent to the protocol table and the capability table in `wt/docs/internals/agents.md`
 
 **Key gotchas:**
 - The model ref comes from `Route.ModelRef` — `ResolveRoute` already picked `m.ID` (litellm/forced) or `m.ModelName` (direct); don't re-derive it

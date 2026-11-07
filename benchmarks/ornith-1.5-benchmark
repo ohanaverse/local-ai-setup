@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ornith-1.5-benchmark — Compare the four Ornith-1.5-35B variants (ISOLATED runs)
+# ornith-1.5-benchmark — Compare the three Ornith-1.5-35B variants (ISOLATED runs)
 #
 # Strategy: local MLX/GGUF models share Apple Silicon GPU/RAM and would
 # distort each other's benchmarks. So:
