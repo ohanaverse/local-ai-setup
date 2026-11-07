@@ -21,6 +21,10 @@ const defaultTimeout = 30 * time.Second
 type Git struct {
 	Dir     string
 	Timeout time.Duration // zero means 30s
+	// Config are `key=value` settings passed as `-c` options before the
+	// subcommand (core.fsmonitor=false for a caller that must not start the
+	// fsmonitor daemon).
+	Config []string
 	// Env is appended to the process environment (last entry wins). Use
 	// NonInteractive(dir) for any call that may reach a remote.
 	Env []string
@@ -66,12 +70,16 @@ func (g Git) RunInput(input string, args ...string) (Out, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.Dir}, args...)...)
+	full := []string{"-C", g.Dir}
+	for _, c := range g.Config {
+		full = append(full, "-c", c)
+	}
+	cmd := exec.CommandContext(ctx, "git", append(full, args...)...)
+	// This package is read-only: GIT_OPTIONAL_LOCKS=0 stops `git status` and
+	// `git diff` from rewriting the index's stat cache as a side effect.
+	cmd.Env = append(append(os.Environ(), "GIT_OPTIONAL_LOCKS=0"), g.Env...)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
-	}
-	if len(g.Env) > 0 {
-		cmd.Env = append(os.Environ(), g.Env...)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

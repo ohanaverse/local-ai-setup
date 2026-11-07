@@ -333,11 +333,22 @@ lease, `origin` only, its own `Remote` approval, a per-remote fetch).
 
 ### PR D — move local-only work to a new worktree
 
-From UNIQUE WORK rows, "move" creates a new branch (default `rescued/<name>`)
-checked out in a new worktree; unpushed commits go there, uncommitted files
-come along still uncommitted; the original becomes removable. Refuse (leave
-the original untouched) if a file is both staged and modified, or a nested
-repository is present. Never deletes the original in the same step.
+From UNIQUE WORK rows, `wt rescue` (and `r` in the list) creates a new branch
+(default `rescued/<name>`) at the original's exact HEAD, in a new worktree;
+the unpushed commits are on it, and the uncommitted files come along still
+uncommitted (staged stays staged). Refuse (leave the original untouched) if a
+file is both staged and modified, or a nested repository is present. Never
+deletes the original.
+
+*Amended when PR D was built (2026-11-07).* The first draft said "the
+original becomes removable". It does not: `unpushed` is counted against
+remote-tracking refs only, so a local `rescued/*` branch does not clear it,
+and the uncommitted files are **copied**, not moved, so the original stays
+dirty. It therefore still reads unique work and removing it still takes
+`--accept-loss --force -D`. Making it provably removable is a separate
+classifier change ("preserved by branch X": a local ref at the tip plus a
+verified snapshot of the dirt) with its own fail-closed proof. Details and
+rulings: [the PR D plan](../plans/2026-11-07-wt-cleanup-pr-d.md).
 
 ## Effect on the worktrunk-ports series
 
