@@ -7,22 +7,32 @@ import (
 	"strings"
 )
 
-// EnsureForName returns the worktree path for branch name, creating it if needed.
-// dir is the repo root. If the branch is already checked out somewhere, that
-// path is returned (idempotent).
-func EnsureForName(dir, name string) (string, error) {
+// nameKind is what a typed -W name means.
+type nameKind int
+
+const (
+	nameReuseWorktree  nameKind = iota // a worktree already holds the branch (or the path)
+	nameExistingBranch                 // a local branch with no worktree
+	nameTrackRemote                    // a remote-tracking ref to track
+	nameCreate                         // nothing matches: a new branch
+)
+
+// classifyName decides what name means in dir, given the registered worktree
+// entries. It is the one decision order behind EnsureForName and WouldCreate,
+// so a question about creating is asked about exactly the case that creates.
+// path is the worktree to reuse (nameReuseWorktree) or to add (the others,
+// except nameTrackRemote, whose path addTrackingWorktree derives). A name
+// that cannot be used (empty, default-branch form, path collision, too long)
+// is an error.
+func classifyName(dir, name string, entries []Entry) (nameKind, string, error) {
 	if name == "" {
-		return "", fmt.Errorf("worktree name cannot be empty")
+		return 0, "", fmt.Errorf("worktree name cannot be empty")
 	}
 
 	// Already checked out in a worktree? Use it.
-	entries, err := listWorktrees(dir, dir)
-	if err != nil {
-		return "", err
-	}
 	for _, e := range entries {
 		if e.Branch == name && e.Path != "" {
-			return e.Path, nil
+			return nameReuseWorktree, e.Path, nil
 		}
 	}
 
@@ -30,7 +40,7 @@ func EnsureForName(dir, name string) (string, error) {
 	// the bare name or as a remote-tracking form (origin/<default>,
 	// <remote>/HEAD, ...).
 	if err := refuseDefaultBranch(dir, name); err != nil {
-		return "", err
+		return 0, "", err
 	}
 
 	// A remote-tracking name (origin/feature) resolves like the picker does:
@@ -39,15 +49,15 @@ func EnsureForName(dir, name string) (string, error) {
 	if _, short, ok := remoteRefParts(dir, name); ok {
 		for _, e := range entries {
 			if e.Branch == short && e.Path != "" {
-				return e.Path, nil
+				return nameReuseWorktree, e.Path, nil
 			}
 		}
-		return addTrackingWorktree(dir, name, short)
+		return nameTrackRemote, "", nil
 	}
 
 	path, err := worktreePath(dir, name)
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	// Idempotent: if the path is already a registered worktree for the same
 	// branch, reuse it. If it's registered for a DIFFERENT branch — a name
@@ -56,21 +66,73 @@ func EnsureForName(dir, name string) (string, error) {
 	// wt — error rather than silently returning the wrong worktree.
 	if branch, ok := branchAtPath(entries, path); ok {
 		if branch != "" && branch != name {
-			return "", fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
+			return 0, "", fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
 		}
-		return path, nil
+		return nameReuseWorktree, path, nil
 	}
 
 	if refExists(dir, "refs/heads/"+name) {
+		return nameExistingBranch, path, nil
+	}
+	return nameCreate, path, nil
+}
+
+// EnsureForName returns the worktree path for branch name, creating it if needed.
+// dir is the repo root. If the branch is already checked out somewhere, that
+// path is returned (idempotent).
+func EnsureForName(dir, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("worktree name cannot be empty")
+	}
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		return "", err
+	}
+	kind, path, err := classifyName(dir, name, entries)
+	if err != nil {
+		return "", err
+	}
+	switch kind {
+	case nameTrackRemote:
+		_, short, _ := remoteRefParts(dir, name)
+		return addTrackingWorktree(dir, name, short)
+	case nameExistingBranch:
 		if _, err := runGit(dir, "worktree", "add", path, name); err != nil {
 			return "", fmt.Errorf("git worktree add: %w", err)
 		}
-	} else {
+	case nameCreate:
 		if _, err := runGit(dir, "worktree", "add", "-b", name, path); err != nil {
 			return "", fmt.Errorf("git worktree add -b: %w", err)
 		}
 	}
 	return path, nil
+}
+
+// WouldCreate reports whether EnsureForName(dir, name) would create a new
+// branch (git worktree add -b for a branch that does not exist), and the base
+// that branch would start from: dir's current branch, else "detached HEAD
+// <short sha>". It creates nothing. A name EnsureForName would reject comes
+// back as that same error, so callers can refuse before asking anything.
+func WouldCreate(dir, name string) (creates bool, base string, err error) {
+	if name == "" {
+		return false, "", fmt.Errorf("worktree name cannot be empty")
+	}
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		return false, "", err
+	}
+	kind, _, err := classifyName(dir, name, entries)
+	if err != nil || kind != nameCreate {
+		return false, "", err
+	}
+	if b := CurrentBranchAt(dir); b != "" {
+		return true, b, nil
+	}
+	out, err := runGit(dir, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return false, "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return true, "detached HEAD " + strings.TrimSpace(string(out)), nil
 }
 
 // maxDirNameBytes is the filesystem's per-entry name limit (NAME_MAX on macOS

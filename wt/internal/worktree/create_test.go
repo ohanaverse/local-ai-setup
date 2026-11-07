@@ -904,3 +904,119 @@ func TestEnsureForBranchRefusesDefaultBranchAnyRemote(t *testing.T) {
 		t.Errorf("EnsureForBranch(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
 	}
 }
+
+// A brand-new -W name must start its branch at dir's HEAD, not at the default
+// branch. L2's prompt names that base to the user, so the refactor onto
+// classifyName must keep creation branching from where the prompt says.
+func TestEnsureForNameNewBranchStartsAtHead(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	if out, err := runGitCmd(dir, "checkout", "-b", "topic"); err != nil {
+		t.Fatalf("checkout: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "commit", "--allow-empty", "-m", "topic work"); err != nil {
+		t.Fatalf("commit: %v\n%s", err, out)
+	}
+	head, _ := runGitCmd(dir, "rev-parse", "HEAD")
+	if _, err := EnsureForName(dir, "fresh"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := runGitCmd(dir, "rev-parse", "fresh")
+	if string(got) != string(head) {
+		t.Fatalf("fresh = %s, want dir's HEAD %s", got, head)
+	}
+}
+
+// WouldCreate must say true only for the case where EnsureForName would run
+// `git worktree add -b` for a branch that does not exist, name that case's
+// base (the current branch, or "detached HEAD <sha>"), and return the very
+// error EnsureForName returns for invalid names, so the question is never
+// asked about a name that would be rejected after "y". Every case builds a
+// fresh repo because a wrong creation would leave a branch that masks the
+// next case.
+func TestWouldCreate(t *testing.T) {
+	type tc struct {
+		name     string
+		prepare  func(t *testing.T, dir string)
+		arg      string
+		creates  bool
+		base     string // exact base, or prefix when basePrefix
+		basePref bool
+		wantErr  bool
+	}
+	git := func(t *testing.T, dir string, args ...string) {
+		t.Helper()
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	cases := []tc{
+		{name: "unknown name on a branch", arg: "brand-new", creates: true, base: "main"},
+		{name: "unknown name on a detached HEAD", arg: "brand-new", creates: true, base: "detached HEAD ", basePref: true,
+			prepare: func(t *testing.T, dir string) { git(t, dir, "checkout", "--detach") }},
+		{name: "existing worktree", arg: "wt-branch",
+			prepare: func(t *testing.T, dir string) {
+				git(t, dir, "worktree", "add", "-b", "wt-branch", filepath.Join(dir, ".worktrees", "wt-branch"))
+			}},
+		{name: "existing local branch without a worktree", arg: "lonely",
+			prepare: func(t *testing.T, dir string) { git(t, dir, "branch", "lonely") }},
+		{name: "remote-tracking name", arg: "origin/feat",
+			prepare: func(t *testing.T, dir string) {
+				setupRemote(t, dir, "feat", "feat")
+			}},
+		{name: "default branch checked out in the root", arg: "main"},
+		{name: "empty name", arg: "", wantErr: true},
+		{name: "default branch remote form", arg: "origin/main", wantErr: true,
+			prepare: func(t *testing.T, dir string) {
+				setupDefaultRemote(t, dir)
+				git(t, dir, "checkout", "-b", "topic")
+			}},
+		{name: "path collision", arg: "feature/x", wantErr: true,
+			prepare: func(t *testing.T, dir string) {
+				git(t, dir, "worktree", "add", "-b", "feature-x", filepath.Join(dir, ".worktrees", "feature-x"))
+			}},
+		{name: "overlong name", arg: strings.Repeat("ab/", 100) + "x", wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			gitInit(t, dir)
+			if c.prepare != nil {
+				c.prepare(t, dir)
+			}
+			creates, base, err := WouldCreate(dir, c.arg)
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("WouldCreate error = nil, want one")
+				}
+				if creates {
+					t.Error("creates = true alongside an error")
+				}
+				// Same input, same error text from EnsureForName.
+				_, ensureErr := EnsureForName(dir, c.arg)
+				if ensureErr == nil || ensureErr.Error() != err.Error() {
+					t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if creates != c.creates {
+				t.Fatalf("creates = %v, want %v", creates, c.creates)
+			}
+			if !c.creates {
+				return
+			}
+			if c.basePref && !strings.HasPrefix(base, c.base) || !c.basePref && base != c.base {
+				t.Errorf("base = %q, want %q", base, c.base)
+			}
+			if c.basePref && len(base) == len(c.base) {
+				t.Errorf("base = %q has no sha", base)
+			}
+			if refExists(dir, "refs/heads/"+c.arg) {
+				t.Error("WouldCreate created the branch")
+			}
+		})
+	}
+}
