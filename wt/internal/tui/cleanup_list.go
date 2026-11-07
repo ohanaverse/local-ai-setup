@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
@@ -88,7 +89,10 @@ type cleanupListModel struct {
 	// quitAfterRun: a signal came during a run; the program quits when the
 	// run ends (Ruling T).
 	quitAfterRun bool
-	clock        func() time.Time // the list's clock on a rebuild
+	// rescueRow is the row `r` chose: the list quits and RunCleanupList
+	// hands it to RemoveFuncs.Rescue once the alt screen is gone.
+	rescueRow *cleanup.Row
+	clock     func() time.Time // the list's clock on a rebuild
 }
 
 // newCleanupList builds the list for r: every group's heading and rows in
@@ -137,7 +141,32 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	if err == nil && ok {
 		err = fm.exitErr
 	}
+	// The rescue asks and prints on the real terminal, so it runs here, after
+	// the alt screen has closed (and after the session's removal log).
+	if err == nil && ok && fm.rescueRow != nil && rm.Rescue != nil {
+		err = rm.Rescue(*fm.rescueRow)
+	}
 	return err
+}
+
+// startRescue handles `r`: on a row a rescue is offered for, quit and
+// remember the row; otherwise stay and say why on the status line.
+func (m cleanupListModel) startRescue() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok {
+		return m, nil
+	}
+	if offered, why := rescue.Offered(row); !offered {
+		m.status = "rescue: " + why
+		return m, nil
+	}
+	if m.rm.Rescue == nil {
+		m.status = "rescue is not available here"
+		return m, nil
+	}
+	m.rescueRow = &row
+	m.done = true
+	return m, tea.Quit
 }
 
 func (m cleanupListModel) Init() tea.Cmd { return nil }
@@ -188,6 +217,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			return m.startRemoval()
+		case "r":
+			return m.startRescue()
 		case " ":
 			if it := m.items[m.cursor]; !it.locked {
 				m.ticked[m.cursor] = !m.ticked[m.cursor]
@@ -404,7 +435,7 @@ func (m *cleanupListModel) layout() cleanupLayout {
 func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter remove ticked · q quit")
+	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter remove ticked · r rescue · q quit")
 }
 
 // statusBlock is the status, wrapped, with its line break; "" without one.

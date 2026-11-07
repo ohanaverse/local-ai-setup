@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -44,6 +45,9 @@ func (g Git) RunInput(input string, args ...string) (Out, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.Dir}, args...)...)
+	// This package is read-only: GIT_OPTIONAL_LOCKS=0 stops `git status` and
+	// `git diff` from rewriting the index's stat cache as a side effect.
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}

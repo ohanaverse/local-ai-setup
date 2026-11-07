@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "outcome": "moved",
+  "created": true,
+  "source": {
+    "path": "/Users/me/repo/.worktrees/spike",
+    "ref": "refs/heads/spike",
+    "head": "f92581ff5ac55df734270fc13d5b48260567e8a9"
+  },
+  "destination": {
+    "path": "/Users/me/repo/.worktrees/rescued-spike",
+    "branch": "rescued/spike",
+    "start": "f92581ff5ac55df734270fc13d5b48260567e8a9"
+  },
+  "carried": {
+    "commits": 2,
+    "staged": 1,
+    "unstaged": 3,
+    "untracked": 4,
+    "untracked_bytes": 1234
+  },
+  "left_behind": {
+    "ignored_entries": 2
+  },
+  "completed": [
+    "created branch rescued/spike and its worktree at f92581ff5ac55df734270fc13d5b48260567e8a9",
+    "carried staged changes",
+    "carried unstaged changes",
+    "copied 4 untracked files",
+    "verified status and file contents against the source"
+  ],
+  "warnings": []
+}

@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,5 +39,21 @@ func TestRunTimeoutIsAnError(t *testing.T) {
 	g := Git{Dir: f.Dir, Timeout: 50 * time.Millisecond}
 	if _, err := g.Run("-c", "alias.nap=!sleep 5", "nap"); err == nil {
 		t.Fatal("want an error from a timed-out git, got nil")
+	}
+}
+
+// TestGitRunTurnsOptionalLocksOff checks every git call the classifier makes
+// carries GIT_OPTIONAL_LOCKS=0 (observed through a shell alias, which sees git's
+// environment). Why: the package promises to write no index; without this
+// `git status` may refresh the index's stat cache in the worktree it inspects,
+// which `wt rescue` found by comparing a source's index bytes before and after.
+func TestGitRunTurnsOptionalLocksOff(t *testing.T) {
+	f := newFixture(t)
+	o, err := Git{Dir: f.Dir}.Run("-c", "alias.optlocks=!echo $GIT_OPTIONAL_LOCKS", "optlocks")
+	if err != nil || o.Code != 0 {
+		t.Fatalf("run: %v %+v", err, o)
+	}
+	if got := strings.TrimSpace(o.Stdout); got != "0" {
+		t.Errorf("GIT_OPTIONAL_LOCKS = %q, want 0", got)
 	}
 }

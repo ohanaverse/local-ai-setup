@@ -50,6 +50,10 @@ type RemoveFuncs struct {
 	// Off, when not "", is why removal is unavailable (the registry did not
 	// load): enter says it and nothing is previewed.
 	Off string
+	// Rescue copies one row's local-only work into a new branch and worktree
+	// (`wt rescue`). It runs after the list has quit and the alt screen is
+	// gone, so it may ask on the terminal. nil: `r` says it is unavailable.
+	Rescue func(row cleanup.Row) error
 }
 
 // cleanupPhase is which screen the list program shows.

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "outcome": "refused",
+  "code": "staged_and_modified",
+  "reason": "a file is both staged and modified: src/main.go (stage it or restore it first); nothing was created",
+  "created": false,
+  "source": {
+    "path": "/Users/me/repo/.worktrees/spike",
+    "ref": "refs/heads/spike",
+    "head": "f92581ff5ac55df734270fc13d5b48260567e8a9"
+  },
+  "completed": [],
+  "warnings": []
+}
