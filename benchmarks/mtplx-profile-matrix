@@ -13,7 +13,7 @@
 # a time: it refuses to start while another is loaded, as the other benchmarks require.
 #
 # Usage:
-#   mtplx-profile-matrix --model <mtplx/org/name> --profile <slot profile/name> [options]
+#   mtplx-profile-matrix --model <mtplx/org/name> --profile profile/<name> [options]
 #     --runs N              rounds (default 2)
 #     --conditions "a b c"  mtplx profiles to compare (default "sustained turbo stable")
 #     --task light|heavy    heavy first makes Claude read ~118 KB of notes, so prompts reach
@@ -24,7 +24,7 @@
 # The slot profile must put the model on the slots Claude Code sends its full prompt to
 # (sonnet and haiku, for instance); see wt/docs/wt-agents/slot-profiles.md.
 # Results: <out>/results.tsv, turns.tsv, outcomes.tsv, logs/. Archive a run into
-# benchmarks/results/ (benchmarks/mtplx-profile-matrix.md says what to record).
+# benchmarks/results/ (see benchmarks/mtplx-profile-matrix.md).
 
 set -u
 

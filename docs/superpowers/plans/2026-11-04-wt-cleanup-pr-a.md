@@ -1,5 +1,7 @@
 # `wt cleanup` PR A — read-only classifier, list and `--json` Implementation Plan
 
+> **Status: done.** Built and merged as #518 and its follow-ups. The "no code that deletes anything" constraint applies to this PR only; deletion landed in PR B (#520), C (#528) and D (#529).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship `wt cleanup`, which classifies every worktree, local branch and `origin` branch with its proof and shows it as a grouped list and as `--json` — and contains no code that deletes anything.

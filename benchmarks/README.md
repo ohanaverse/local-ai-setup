@@ -8,8 +8,8 @@ Performance and accuracy benchmarks for the local AI setup.
 across a model/thinking/route matrix and grades the result on deterministic
 gates plus a blind LLM rubric — see [docs/guides/09-agent-benchmarks.md](../docs/guides/09-agent-benchmarks.md).
 
-- **`tasks/`** — task bundles (`day31-drift` ships first)
-- **`suites/`** — suite TOML files (`smoke.toml`, `q4-agent-sweep.toml`)
+- **`tasks/`** — task bundles (`day31-drift`, `eval/`)
+- **`suites/`** — suite TOML files (e.g. `smoke.toml`, `q4-agent-sweep.toml`, `eval-sweep.toml`; `ls benchmarks/suites` or `llmbench agent list-suites` for the rest)
 
 ## Capability eval benchmark
 

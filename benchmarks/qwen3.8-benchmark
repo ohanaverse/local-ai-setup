@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# qwen3.8-benchmark — Compare the four qwen3.8 backends (ISOLATED runs)
+# qwen3.8-benchmark — Compare the qwen3.8 backends (ollama, omlx, mtplx, OpenRouter) (ISOLATED runs)
 #
 # Strategy: local MLX/GGUF models share Apple Silicon GPU/RAM and would
 # distort each other's benchmarks. So:
 #   - Ollama: `ollama stop <model>` unloads the model from RAM
 #             (daemon keeps running on :11434; model reloads on demand)
 #   - oMLX:   `omlx stop` halts the service entirely
+#   - MTPLX:  `mtplx stop --port 8003 --grace-seconds 10` (via `llmbench provider isolate`)
 #   - OpenRouter: cloud, always live
 #
 # Measures:
@@ -75,7 +76,7 @@ OUTFILE="/tmp/qwen3.8-benchmark-$(date +%Y%m%d-%H%M%S).md"
     echo
     echo "**Date**: $(date)"
     echo "**max_tokens**: $MAX_TOKENS"
-    echo "**Mode**: Local backends run in isolation — before each test, all local models are unloaded (Ollama) or fully stopped (oMLX). Only the one being tested has its model loaded. OpenRouter is cloud and unaffected."
+    echo "**Mode**: Local backends run in isolation — before each test, all local models are unloaded (Ollama) or fully stopped (oMLX, MTPLX). Only the one being tested has its model loaded. OpenRouter is cloud and unaffected."
     echo
     echo "## Prompt"
     echo

@@ -159,7 +159,7 @@ Compare results across files for stability. The script does not auto-aggregate; 
 ```bash
 for f in $(ls -t /tmp/qwen3.8-benchmark-*.md | head -3); do
     echo "=== $f ==="
-    grep -E "^\| (ollama|omlx|llama\.cpp|openrouter)" "$f"
+    grep -E "^\| (ollama|omlx|mtplx|openrouter)" "$f"
     echo
 done
 ```

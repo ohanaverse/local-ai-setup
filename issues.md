@@ -111,14 +111,14 @@ From `/code-review` on branch `pi-nyt-litellm-compat-store` (PR #150, commit
 today wt only ever writes `{supportsStore:false}` and nothing richer — but a
 maintenance trap if `piCompat` ever grows more fields.
 
-- `pi_models.go:559` — resync does `p.Compat = supportsStoreFalse` (full
+- `pi_models.go`, `syncDirectProviders` (the resync, about `:556`) — resync does `p.Compat = supportsStoreFalse` (full
   pointer replacement) instead of merging just `SupportsStore`. If a `compat`
   block on a provider ever picks up other sub-fields (e.g. a hand-added
   `supportsDeveloperRole`), the next wt-triggered rewrite silently drops them.
   Confirmed via an ad-hoc test: a foreign block with
   `compat:{supportsDeveloperRole:true,supportsReasoningEffort:false}`
   round-trips as `compat:{}` once any other provider mutation forces a file
-  rewrite. The create path (`:432`/`:445`, `!existed`) has the same full-replacement
+  rewrite. The create path (same function, about `:448`, `!existed`) has the same full-replacement
   shape.
 - `pi_models.go:107` — `supportsStoreFalse` is a single shared `*piCompat`
   pointer assigned by reference into every nyt-litellm provider-block write.
@@ -142,4 +142,8 @@ maintenance trap if `piCompat` ever grows more fields.
   endpoint. [x] Fixed 2026-08-29.
 - Guide 05:96 wording: "they currently mirror per-model tags" was changed to
   "per-model ids" — the examples (`qwen3.8:27b-mlx`, `ornith-1.5:35b`) are model
-  ids, not the separate `tags` registry field. [x] Fixed 2026-08-29.Skipped Task 7: agent-worktree README PR not yet merged into main.
+  ids, not the separate `tags` registry field. [x] Fixed 2026-08-29.
+
+Note from the 2026-08-29 review run: its Task 7 (the agent-worktree README PR of item 2)
+was skipped at the time because that PR was not yet merged into main; item 2 above
+records the README fix as done.

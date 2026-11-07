@@ -1,5 +1,7 @@
 # `wt -W` Creation Confirmation (L2) Implementation Plan
 
+> **Status: done.** Built and merged as #524.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `-W <name>` that would create a new branch and worktree asks first on a terminal and refuses without one unless `--new` is passed, so a typo can no longer silently create a branch.

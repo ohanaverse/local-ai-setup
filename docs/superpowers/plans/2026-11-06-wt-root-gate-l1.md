@@ -1,5 +1,7 @@
 # `wt` Root Gate (L1) Implementation Plan
 
+> **Status: done.** Built and merged as #523. L2 shipped as #524 and L3 as #526.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A launch reaches the repository root only by a deliberate act: `--root`, or a confirmed `--cwd` standing in it. The picker no longer offers the root, and `-W <the root's branch>` is refused.

@@ -1,7 +1,7 @@
 #!/bin/bash
 # update-common.sh — the shared contract behind bin/update/* and bin/update-tools.
 #
-# Why this file exists: eight per-tool scripts would otherwise each invent their
+# Why this file exists: the per-tool scripts would otherwise each invent their
 # own banner, flag parsing, dry-run handling and exit codes, and the umbrella
 # would have nothing stable to summarise them with. What the umbrella reads is
 # the one-line trailer every script prints when it finishes (see below) —

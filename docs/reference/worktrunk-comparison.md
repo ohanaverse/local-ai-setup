@@ -1,5 +1,7 @@
 # worktrunk vs wt — worktree & branch feature comparison
 
+> **Status note (2026-11-07).** This is a research snapshot of 2026-11-04. wt has since gained `wt cleanup`, `wt remove` (including `--remote` for origin branches) and `wt rescue`, with JSON contracts and a removal engine that checks dirty state, merge proof and age (see [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md)). Where the text below says wt has no removal or cleanup, that gap is closed; the comparison of what each tool does is otherwise as of 2026-11-04.
+
 **Research date:** 2026-11-04
 **Scope:** worktree/branch management. wt's model/provider stack (registry, LiteLLM, slot profiles, smoke) appears only as *switch cost* — what replacing wt's worktree layer would put at risk.
 **Method:** read-only docs + source audit of both tools (worktrunk at `main` `3bf9166`, release v0.81.0-era; wt at `9b702c0f`), each report adversarially cross-checked against primary sources by a second reader prompted to refute. Neither tool was executed — see [Gaps](#gaps-not-verified). Evidence tiers: **verified** (adversarially confirmed), **reported** (grounded, single-source), **unverified** (static reading only).
@@ -8,7 +10,7 @@
 
 ## TL;DR
 
-- The two tools overlap only at the **worktree-mechanics layer**. [worktrunk](https://github.com/max-sixty/worktrunk) is a general git-worktree lifecycle manager (create → list → merge → remove) built for parallel AI-agent workflows. Local `wt` ([wt/](../../wt/CLAUDE.md)) is an **agent launcher** whose unit of work happens to be a worktree (create-or-reuse → pick agent → pick model → launch), with no removal, merge, or cleanup at all.
+- The two tools overlap only at the **worktree-mechanics layer**. [worktrunk](https://github.com/max-sixty/worktrunk) is a general git-worktree lifecycle manager (create → list → merge → remove) built for parallel AI-agent workflows. Local `wt` ([wt/](../../wt/CLAUDE.md)) is an **agent launcher** whose unit of work happens to be a worktree (create-or-reuse → pick agent → pick model → launch), with no removal, merge, or cleanup at all at the snapshot (removal and cleanup have since shipped, see the status note).
 - **They collide on the binary name `wt`** (worktrunk's default command name is `wt`; on Windows it also ships `git-wt`). Installing worktrunk on this machine shadows or is shadowed by local wt, and worktrunk's Claude Code plugin hooks literally invoke `wt switch --create` — PATH order would silently route those to the wrong tool. Any coexistence requires renaming one of them (worktrunk supports `--cmd <name>`).
 - **Recommendation: don't replace wt; port selected lifecycle ideas** (see [Recommendation](#recommendation)). Replacing wt means rebuilding its entire model/agent stack on top of worktrunk (worktrunk launches arbitrary programs via `-x` but knows nothing about models), and adopting a solo-maintainer 0.x dependency that ships breaking changes frequently.
 - The highest-value ideas to bring into wt, ranked: **full-branch-name worktree paths** (fixes a real collision block), **a removal/prune lifecycle with worktrunk's safety kernel**, **copy-ignored (reflink) seeding of build caches**, **JSON output discipline** (versioned schemas, stable outcome vocabularies).
@@ -20,7 +22,7 @@
 
 **worktrunk** (Rust, MIT OR Apache-2.0, https://worktrunk.dev) — "a CLI for Git worktree management, designed for parallel AI agent workflows." Philosophy: *"worktrees as easy as branches"* — worktrees are addressed by branch name and their paths are **computed** from a configurable minijinja template (default `{{ repo_path }}/../{{ repo }}.{{ branch | sanitize }}`, i.e. a sibling dir like `~/code/myproject.feature-auth`), never stored. Four core commands (`switch`, `list`, `merge`, `remove`) plus building blocks (`wt step …`), a ten-type hook system, aliases, and `wt-<name>` custom subcommands. Repo created 2025-10-17; 140 releases as of the research date.
 
-**wt** ([wt/](../../wt/CLAUDE.md), Go) — a worktree **agent launcher**: choose *where* (`-W <name>`, `--cwd`, or the worktree picker), *what* (an agent CLI — claude, codex, copilot, pi, agy, opencode — or `shell`), and *which model* (the rotating picker over the local model stack), then launch. Its worktree surface is **create, reuse, and enumerate** only. There is deliberately no removal, no prune, no merge/rebase/push, no stacking, no dirty detection (see [Deliberately absent](#deliberately-absent-in-wt)). Cleanup lives outside wt (plain git and the `repo-cleanup` skill). Its reason to exist — the model registry, LiteLLM routing, slot profiles, smoke testing, shared-root session claims — has no worktrunk equivalent.
+**wt** ([wt/](../../wt/CLAUDE.md), Go) — a worktree **agent launcher**: choose *where* (`-W <name>`, `--cwd`, or the worktree picker), *what* (an agent CLI — claude, codex, copilot, pi, agy, opencode — or `shell`), and *which model* (the rotating picker over the local model stack), then launch. Its worktree surface is **create, reuse, and enumerate** only. There is deliberately no removal, no prune, no merge/rebase/push, no stacking, no dirty detection (see [Deliberately absent](#deliberately-absent-in-wt)). At the snapshot, cleanup lived outside wt (plain git and the `repo-cleanup` skill); `wt cleanup`/`wt remove` now cover it. Its reason to exist — the model registry, LiteLLM routing, slot profiles, smoke testing, shared-root session claims — has no worktrunk equivalent.
 
 ---
 
@@ -65,9 +67,9 @@
 
 | Concern | worktrunk | wt |
 |---|---|---|
-| Remove | `wt remove`: dirty gate (`git status --porcelain` incl. untracked; **gitignored files exempt**), `git worktree lock` immune even with `--force`, two force scopes (`--force` = dirty worktree, `-D` = unmerged branch), background by default | **none** — `repo-cleanup` skill + plain git |
+| Remove | `wt remove`: dirty gate (`git status --porcelain` incl. untracked; **gitignored files exempt**), `git worktree lock` immune even with `--force`, two force scopes (`--force` = dirty worktree, `-D` = unmerged branch), background by default | **none** at the snapshot (now `wt remove`, see the status note) |
 | Branch deletion safety | only when integrated, via 6 checks (same commit, ancestor, empty 3-dot diff, trees match, simulated merge adds nothing, **patch-id match** — squash-aware; walk capped at 500 commits) | `repo-cleanup` classification (STALE / OK TO DELETE / MERGED / DIRTY / ACTIVE), `git branch -d` discipline |
-| Bulk cleanup | `wt step prune`: integrated worktrees+branches + stale registrations; `--min-age` 1d guard; skips locked/dirty/main; concurrent | none |
+| Bulk cleanup | `wt step prune`: integrated worktrees+branches + stale registrations; `--min-age` 1d guard; skips locked/dirty/main; concurrent | `wt cleanup` + `wt remove` (shipped after this snapshot, see the status note) |
 | Merge | `wt merge`: commit → squash (swept changes backed up to `refs/wt-backup/<branch>` with a printed recovery command) → rebase → pre-merge hooks → fast-forward → pre-remove → cleanup | none (agents own their git workflow) |
 | Local integrate/push | `wt step push` (fast-forward the target ref **locally only** — "no commits leave the repository"), `step rebase`, `step squash`, `step diff` (net diff since merge-base) | none |
 | Undo/recovery | `refs/wt-backup/<branch>` survives even a remove | none |
@@ -178,7 +180,7 @@ not-ported list live in the series design,
 | PR | Port | Status at this decision |
 |---|---|---|
 | 1 | full-branch-name worktree paths | [PR #517](https://github.com/ohanaverse/local-ai-setup/pull/517), in review |
-| 2 | `wt remove` + JSON contract | spec'd, not built |
+| 2 | `wt remove` + JSON contract | built (`wt remove`, `wt cleanup`, `wt rescue`; see status note) |
 | 3 | integrated-only branch deletion + `wt prune` | spec'd, not built |
 | 4 | copy-ignored (reflink) seeding | spec'd, not built |
 | 5 | tether / process teardown (standalone PR) | spec'd, not built |
