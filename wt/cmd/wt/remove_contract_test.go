@@ -289,10 +289,14 @@ func TestRemoveFixtureCoversEveryOutcome(t *testing.T) {
 	for _, b := range []string{"retained_moved", "retained_unknown"} {
 		has(b+" item with branch_tip (the ref may be gone)", func(it map[string]any) bool { return it["branch"] == b && !absent(it, "branch_tip") })
 	}
-	// remote and in_use belong to previews and plans only.
-	if seen(main, "kind", string(cleanup.KindRemote)) || seen(main, "saw", string(cleanup.StatusInUse)) {
-		t.Error("the run sample shows a remote kind or an in_use status, which only previews and plans carry")
+	// in_use belongs to previews and plans only; a remote item is a run
+	// result since origin removal, and shows the restore tip.
+	if seen(main, "saw", string(cleanup.StatusInUse)) {
+		t.Error("the run sample shows an in_use status, which only previews and plans carry")
 	}
+	has("deleted remote item with branch_tip, no path", func(it map[string]any) bool {
+		return it["kind"] == "remote" && it["branch"] == "deleted" && it["worktree"] == "not_requested" && !absent(it, "branch_tip") && absent(it, "path")
+	})
 	// The sentinel is not an outcome constant: the partial sample shows it in
 	// each enum field.
 	partial := removeItems(t, removePartialFixture)

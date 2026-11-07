@@ -87,11 +87,17 @@ type Needs struct {
 	Confirm bool
 	Force   bool
 	Delete  bool
+	// Remote is the approval to delete a branch on origin (CLI --remote, the
+	// TUI's typed "delete origin"). It is required even for a proven item,
+	// covers nothing else, and nothing else covers it: a deletion visible to
+	// everyone with access to the repository is never granted by --yes, y,
+	// --accept-loss, -D, --force or the plain typed "delete".
+	Remote bool
 }
 
 // covers reports whether every approval need asks for is in n.
 func (n Needs) covers(need Needs) bool {
-	return (n.Confirm || !need.Confirm) && (n.Force || !need.Force) && (n.Delete || !need.Delete)
+	return (n.Confirm || !need.Confirm) && (n.Force || !need.Force) && (n.Delete || !need.Delete) && (n.Remote || !need.Remote)
 }
 
 // WorktreeOutcome is what happened to an item's worktree. The values are wire

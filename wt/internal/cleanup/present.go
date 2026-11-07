@@ -390,13 +390,13 @@ func HeaderLines(r Report, now time.Time) []string {
 
 	switch {
 	case r.Fetch.Skipped != "":
-		lines = append(lines, "fetch: skipped ("+r.Fetch.Skipped+")")
+		lines = append(lines, "fetch: skipped ("+r.Fetch.Skipped+")"+otherRemotesText(r.Fetch))
 	case r.Fetch.At.IsZero():
 		lines = append(lines, "fetch: skipped; the base is as old as the last fetch, merges since may be missed")
 	case r.Fetch.OK:
-		lines = append(lines, "fetch: ok, "+agoText(r.Fetch.At, now))
+		lines = append(lines, "fetch: ok, "+agoText(r.Fetch.At, now)+otherRemotesText(r.Fetch))
 	default:
-		lines = append(lines, "fetch: FAILED ("+fetchErrText(r.Fetch.Err)+"); the base may be stale, merges since the last fetch may be missed")
+		lines = append(lines, "fetch: FAILED ("+fetchErrText(r.Fetch.Err)+"); the base may be stale, merges since the last fetch may be missed"+otherRemotesText(r.Fetch))
 	}
 
 	switch r.GH {
@@ -442,4 +442,36 @@ func shortDuration(d time.Duration) string {
 		s = strings.TrimSuffix(s, "0m")
 	}
 	return s
+}
+
+// otherRemotesText says how the remotes besides origin fared, as a header
+// suffix ("; also fetched upstream; not fetched: fork (reason)"), or "" when
+// origin is the only remote. Origin's own result is the header line itself.
+func otherRemotesText(f FetchResult) string {
+	var ok, bad, skipped []string
+	for _, r := range f.Remotes {
+		switch {
+		case r.Name == "origin":
+		case r.Skipped:
+			skipped = append(skipped, flat(r.Name))
+		case r.OK:
+			ok = append(ok, flat(r.Name))
+		default:
+			bad = append(bad, flat(r.Name)+" FAILED ("+fetchErrText(r.Err)+")")
+		}
+	}
+	var parts []string
+	if len(ok) > 0 {
+		parts = append(parts, "also fetched "+strings.Join(ok, ", "))
+	}
+	if len(bad) > 0 {
+		parts = append(parts, strings.Join(bad, "; "))
+	}
+	if len(skipped) > 0 {
+		parts = append(parts, "skipped (skipFetchAll) "+strings.Join(skipped, ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, "; ")
 }

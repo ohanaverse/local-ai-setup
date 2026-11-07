@@ -200,7 +200,7 @@ func TestFetchNamesOrigin(t *testing.T) {
 	}
 }
 
-// TestFetchWithoutOriginIsSkipped removes the origin remote and fetches. Why:
+// TestFetchWithoutOriginIsSkipped removes the only (origin) remote and fetches. Why:
 // the base is origin's; with no origin there is nothing to fetch, and
 // "FAILED (fatal: no remote ...)" on every run would read as a broken fetch.
 // It is a skip with its cause, never ok and never a failure.
@@ -208,8 +208,8 @@ func TestFetchWithoutOriginIsSkipped(t *testing.T) {
 	f := newFixture(t)
 	f.git("remote", "remove", "origin")
 	r := Fetch(Git{Dir: f.Dir})
-	if r.OK || r.Err != "" || r.Skipped != "no origin remote" || !r.At.IsZero() {
-		t.Fatalf("got %+v, want skipped (no origin remote), not ok, no error, no time", r)
+	if r.OK || r.Err != "" || r.Skipped != "no remotes" || !r.At.IsZero() {
+		t.Fatalf("got %+v, want skipped (no remotes), not ok, no error, no time", r)
 	}
 }
 
@@ -223,5 +223,175 @@ func TestFetchTimeoutIsNamed(t *testing.T) {
 	r := Fetch(Git{Dir: f.Dir, Timeout: 200 * time.Millisecond})
 	if r.OK || !strings.Contains(r.Err, "timed out after 200ms") {
 		t.Fatalf("got %+v, want a failure naming the timeout", r)
+	}
+}
+
+// addBareRemote adds a bare repository as remote name of f and returns its
+// path (a branch "topic" pushed to it when push is set).
+func addBareRemote(t *testing.T, f *fixture, name string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name+".git")
+	gitIn(t, filepath.Dir(p), "init", "--bare", "-b", "main", p)
+	f.git("remote", "add", name, p)
+	f.git("push", name, "main")
+	return p
+}
+
+// TestFetchEveryRemote fetches a repo with origin and a second remote that
+// both moved. What: both tracking refs advance and the result lists both.
+// Why: the spec says "fetch --all"; the "pushed" test reads every
+// refs/remotes/*, so a stale second remote made unpushed counts wrong, and
+// the header must say which remotes were fetched.
+func TestFetchEveryRemote(t *testing.T) {
+	f := newFixture(t)
+	other := addBareRemote(t, f, "upstream")
+	c := filepath.Join(t.TempDir(), "c")
+	gitIn(t, filepath.Dir(c), "clone", other, c)
+	gitIn(t, c, "config", "user.email", "t@example.com")
+	gitIn(t, c, "config", "user.name", "T")
+	gitIn(t, c, "commit", "--allow-empty", "-m", "x")
+	gitIn(t, c, "push", "origin", "main")
+	moved := gitIn(t, c, "rev-parse", "HEAD")
+	advanceOrigin(t, f)
+
+	r := Fetch(Git{Dir: f.Dir})
+	if !r.OK || len(r.Remotes) != 2 || !r.Remotes[0].OK || !r.Remotes[1].OK {
+		t.Fatalf("got %+v, want both remotes ok", r)
+	}
+	if got := f.git("rev-parse", "refs/remotes/upstream/main"); got != moved {
+		t.Fatalf("upstream/main = %s, want %s (second remote not fetched)", got, moved)
+	}
+}
+
+// TestFetchOneRemoteFailing breaks the second remote. What: origin is still
+// fetched and Fetch.OK stays true, while Remotes names the failure. Why: a
+// partial failure must be reported truthfully, and must not hide the remote
+// the base and the origin rows depend on.
+func TestFetchOneRemoteFailing(t *testing.T) {
+	f := newFixture(t)
+	addBareRemote(t, f, "upstream")
+	f.git("remote", "set-url", "upstream", filepath.Join(t.TempDir(), "missing.git"))
+	r := Fetch(Git{Dir: f.Dir})
+	if !r.OK {
+		t.Fatalf("origin fetched fine, OK should hold: %+v", r)
+	}
+	var bad *RemoteFetch
+	for i := range r.Remotes {
+		if r.Remotes[i].Name == "upstream" {
+			bad = &r.Remotes[i]
+		}
+	}
+	if bad == nil || bad.OK || bad.Err == "" {
+		t.Fatalf("upstream should be a named failure: %+v", r.Remotes)
+	}
+}
+
+// TestFetchOriginFailingOtherOK breaks origin only. What: OK is false though
+// the other remote fetched. Why: Fetch.OK is origin's freshness; the base and
+// the origin rows depend on it.
+func TestFetchOriginFailingOtherOK(t *testing.T) {
+	f := newFixture(t)
+	addBareRemote(t, f, "upstream")
+	f.git("remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
+	r := Fetch(Git{Dir: f.Dir})
+	if r.OK || r.Err == "" {
+		t.Fatalf("got %+v, want origin failure", r)
+	}
+	for _, rm := range r.Remotes {
+		if rm.Name == "upstream" && !rm.OK {
+			t.Fatalf("upstream should still be fetched: %+v", rm)
+		}
+	}
+}
+
+// TestFetchSkipFetchAllRemote marks a remote skipFetchAll. What: it is listed
+// as skipped and not fetched. Why: the user opted that remote out of `fetch
+// --all`; honouring it keeps "every remote" the same set git means.
+func TestFetchSkipFetchAllRemote(t *testing.T) {
+	f := newFixture(t)
+	addBareRemote(t, f, "upstream")
+	f.git("config", "remote.upstream.skipFetchAll", "true")
+	r := Fetch(Git{Dir: f.Dir})
+	for _, rm := range r.Remotes {
+		if rm.Name == "upstream" && !rm.Skipped {
+			t.Fatalf("upstream should be skipped: %+v", rm)
+		}
+	}
+	if !r.OK {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// TestFetchOriginIgnoresSkipFetchAll marks origin skipFetchAll and moves
+// origin. What: Fetch still fetches origin (OK, no Skipped) and the tracking
+// ref follows. Why: a plain `git fetch origin` ignores skipFetchAll, and the
+// base and every origin row are origin's; skipping it would make all of them
+// unverifiable for a setting that only means "leave me out of --all".
+func TestFetchOriginIgnoresSkipFetchAll(t *testing.T) {
+	f := newFixture(t)
+	f.git("config", "remote.origin.skipFetchAll", "true")
+	moved := advanceOrigin(t, f)
+	r := Fetch(Git{Dir: f.Dir})
+	if !r.OK || r.Skipped != "" {
+		t.Fatalf("origin should be fetched: %+v", r)
+	}
+	if got := f.git("rev-parse", "refs/remotes/origin/main"); got != moved {
+		t.Fatalf("origin/main = %s, want %s", got, moved)
+	}
+}
+
+// TestFetchWithoutAnyRemote has no remote at all. What: Skipped says so.
+// Why: nothing to fetch is not a failure.
+func TestFetchWithoutAnyRemote(t *testing.T) {
+	f := newFixture(t)
+	f.git("remote", "remove", "origin")
+	if r := Fetch(Git{Dir: f.Dir}); r.Skipped != "no remotes" || r.OK {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+// TestFetchNoOriginStillFetchesOthers has a remote but no origin. What: the
+// other is fetched and Skipped names the missing origin. Why: the header must
+// still say which remotes were fetched.
+func TestFetchNoOriginStillFetchesOthers(t *testing.T) {
+	f := newFixture(t)
+	addBareRemote(t, f, "upstream")
+	f.git("remote", "remove", "origin")
+	r := Fetch(Git{Dir: f.Dir})
+	if r.Skipped != "no origin remote" || r.OK || len(r.Remotes) != 1 || !r.Remotes[0].OK {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+// TestFetchOtherRemotesRunConcurrentlyWithAShorterTimeout adds two remotes
+// whose upload-pack sleeps. What: with the non-origin timeout at 300ms both
+// are reported as timed out after 300ms, origin is fetched OK, the run takes
+// well under the sum of two sleeps, and Remotes keeps `git remote` order.
+// Why: origin alone drives classification; a slow fork or upstream must not
+// hold the command for origin's full window, nor serially.
+func TestFetchOtherRemotesRunConcurrentlyWithAShorterTimeout(t *testing.T) {
+	old := otherFetchTimeout
+	otherFetchTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { otherFetchTimeout = old })
+	f := newFixture(t)
+	for _, n := range []string{"slow1", "slow2"} {
+		addBareRemote(t, f, n)
+		f.git("config", "remote."+n+".uploadpack", "sleep 5; git-upload-pack")
+	}
+	start := time.Now()
+	r := Fetch(Git{Dir: f.Dir})
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("took %s: other remotes did not time out early", d)
+	}
+	if !r.OK || len(r.Remotes) != 3 || r.Remotes[0].Name != "origin" || !r.Remotes[0].OK {
+		t.Fatalf("got %+v, want origin ok first", r)
+	}
+	for _, rm := range r.Remotes[1:] {
+		if rm.OK || !strings.Contains(rm.Err, "timed out after 300ms") {
+			t.Fatalf("%s: %+v, want a 300ms timeout", rm.Name, rm)
+		}
+	}
+	if r.Remotes[1].Name != "slow1" || r.Remotes[2].Name != "slow2" {
+		t.Fatalf("order %+v", r.Remotes)
 	}
 }

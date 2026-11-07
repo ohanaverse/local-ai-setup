@@ -522,18 +522,42 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 			j.pr = pr
 		}
 	}
-	for _, n := range c.openPRsBasedOn(rf.Name) {
+	// The origin checks (this run's origin fetch, the live "who targets this
+	// branch" query, the PR rung the removal engine re-verifies) apply to an
+	// origin row only: they are origin facts, keyed by a bare name, and
+	// nothing deletes any other remote's branch.
+	origin := rf.Remote == "origin"
+	if origin {
+		if why := c.originFetchProblem(); why != "" {
+			j.unsure(ReasonCannotVerify, why)
+		}
+	}
+	candidate := j.ev != ""
+	deps, baseErr := c.dependants(rf.Name, candidate, origin)
+	if baseErr != "" {
+		j.unsure(ReasonCannotVerify, baseErr)
+	}
+	for _, n := range deps {
 		j.block(BlockBaseOfOpenPR, fmt.Sprintf("open PR #%d targets this branch", n))
 	}
 	if j.ev != "" {
-		// Proven needs a MERGED PR for the head; an unknown lookup is already
-		// unsure above, so the soft reason is only for an answered "none".
-		merged := findPR(res, func(pr PRInfo) bool { return pr.State == "MERGED" })
-		switch {
-		case merged == nil && res.Lookup != LookupUnknown:
-			j.weak(ReasonNoMergedPR, "content is in the base, but no PR for this branch merged")
-		case merged != nil && j.pr == nil:
-			j.pr = merged
+		// Proven needs a MERGED PR into the default branch whose head is this
+		// tip and whose merge commit is in the base (the removal engine
+		// re-verifies exactly that before it pushes); an unknown lookup is
+		// already unsure above, so the soft reasons are only for an answered
+		// lookup.
+		if res.Lookup != LookupUnknown && origin {
+			c.remotePRRung(&j, rf, res)
+		} else if res.Lookup != LookupUnknown {
+			// Another remote's row keeps the plain rule: any merged PR for
+			// the branch name.
+			merged := findPR(res, func(pr PRInfo) bool { return pr.State == "MERGED" })
+			switch {
+			case merged == nil:
+				j.weak(ReasonNoMergedPR, "content is in the base, but no PR for this branch merged")
+			case j.pr == nil:
+				j.pr = merged
+			}
 		}
 	} else if ok && p.Verdict == NotMerged {
 		if len(p.Weak) > 0 {
@@ -546,6 +570,77 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	c.capFallback(&j)
 	j.fill(&row)
 	return row
+}
+
+// originFetchProblem says why this run's fetch does not support deleting an
+// origin branch, or "": origin must have been fetched cleanly now, or a PR
+// opened against the branch since the last fetch is invisible.
+func (c *classifier) originFetchProblem() string {
+	f := c.s.Fetch
+	switch {
+	case f.OK:
+		return ""
+	case f.Skipped != "":
+		return "origin was not fetched (" + f.Skipped + "); open pull requests that target this branch may be missed"
+	case f.At.IsZero():
+		return "origin was not fetched this run (--no-fetch); open pull requests that target this branch may be missed"
+	}
+	return "origin was not fetched cleanly this run (" + fetchErrText(f.Err) + "); open pull requests that target this branch may be missed"
+}
+
+// dependants are the open PRs, from any head repository, that target name:
+// those found through head lookups of other branches plus the live per-branch
+// base query. When the row is a deletion candidate (needAnswer) a missing,
+// failed or truncated base query is an error text. The base query is origin's
+// (BasePRs is keyed by bare name): a row of another remote neither reads it
+// nor needs it.
+func (c *classifier) dependants(name string, needAnswer, origin bool) ([]int, string) {
+	out := c.openPRsBasedOn(name)
+	if !origin {
+		slices.Sort(out)
+		return out, ""
+	}
+	b, ok := c.s.BasePRs[name]
+	var why string
+	switch {
+	case !ok || b.Lookup == LookupUnknown:
+		if needAnswer {
+			why = cmp.Or(b.Err, "the open pull requests that target this branch could not be listed")
+		}
+	default:
+		for _, pr := range b.PRs {
+			if pr.State == "OPEN" && !slices.Contains(out, pr.Number) {
+				out = append(out, pr.Number)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out, why
+}
+
+// remotePRRung is the origin row's PR proof for a row whose content is in the
+// base: see remoteRow.
+func (c *classifier) remotePRRung(j *judge, rf RefFact, res PRResult) {
+	exact := findPR(res, func(pr PRInfo) bool {
+		return pr.State == "MERGED" && pr.BaseRef == c.s.Base.Default && pr.HeadRefOid == rf.Tip && c.s.Merges[pr.MergeCommit] == TriYes
+	})
+	if exact != nil {
+		if j.pr == nil {
+			j.pr = exact
+		}
+		return
+	}
+	if moved := c.movedPR(res, rf.Tip); moved != nil {
+		j.weak(ReasonPRHeadMoved, fmt.Sprintf("content is in the base, but PR #%d merged a different head; the branch moved after the merge", moved.Number))
+		return
+	}
+	if unk := findPR(res, func(pr PRInfo) bool {
+		return pr.State == "MERGED" && pr.BaseRef == c.s.Base.Default && pr.HeadRefOid == rf.Tip && c.s.Merges[pr.MergeCommit] == TriUnknown
+	}); unk != nil {
+		j.unsure(ReasonPRMergeUnknown, fmt.Sprintf("PR #%d's merge commit could not be checked against the base", unk.Number))
+		return
+	}
+	j.weak(ReasonNoMergedPR, "content is in the base, but no PR for this branch merged into "+c.s.Base.Default+" with a merge commit in the base")
 }
 
 // prTip is the PR rung: a MERGED PR into the default branch whose head is the

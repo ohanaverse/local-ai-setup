@@ -18,5 +18,8 @@ func TestMain(m *testing.M) {
 	ghPRList = func(dir, branch string) ([]byte, error) {
 		return nil, errors.New("test forgot to stub ghPRList")
 	}
+	ghPRBaseList = func(dir, base string) ([]byte, error) {
+		return nil, errors.New("test forgot to stub ghPRBaseList")
+	}
 	os.Exit(m.Run())
 }

@@ -158,16 +158,16 @@ func TestGatherWithoutOriginSkipsFetch(t *testing.T) {
 	f := newFixture(t)
 	f.git("remote", "remove", "origin")
 	noGh(t)
-	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true, OriginRows: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !s.Base.Fallback || s.Fetch.Skipped == "" || !s.Base.FetchedAt.IsZero() {
+	if !s.Base.Fallback || s.Fetch.Skipped != "no remotes" || !s.Base.FetchedAt.IsZero() {
 		t.Fatalf("base %+v fetch %+v, want fallback base, skipped fetch, no fetched_at", s.Base, s.Fetch)
 	}
 	r := Classify(s, Options{Now: later()})
 	header := strings.Join(HeaderLines(r, time.Now()), "\n")
-	if !strings.Contains(header, "fetch: skipped (no origin remote)") || strings.Contains(header, "FAILED") {
+	if !strings.Contains(header, "fetch: skipped (no remotes)") || strings.Contains(header, "FAILED") {
 		t.Fatalf("header:\n%s", header)
 	}
 	raw, err := Encode(r)
@@ -195,6 +195,59 @@ func TestOwnRepoFromURL(t *testing.T) {
 	} {
 		if got := ownRepoFromURL(url); got != want {
 			t.Errorf("ownRepoFromURL(%q) = %q, want %q", url, got, want)
+		}
+	}
+}
+
+// TestGatherReportsAnEarlierFetchWhenNotFetching gathers with Fetch false but
+// the first run's result in Fetched. What: the snapshot carries it, so an
+// origin row stays proven. Why: the tick list re-reads the repository after a
+// removal without fetching; without the carried result every origin row would
+// turn "not fetched" and lock after the first run.
+func TestGatherReportsAnEarlierFetchWhenNotFetching(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	tip := f.git("rev-parse", "main")
+	mergedPRStub(t, "topic", 8, tip, tip)
+	stubGhBase(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	first, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true, OriginRows: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetched: first.Fetch, OriginRows: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Fetch.OK || !again.Fetch.At.Equal(first.Fetch.At) {
+		t.Fatalf("fetch %+v, want the first run's %+v", again.Fetch, first.Fetch)
+	}
+	if row := findRow(t, Classify(again, Options{Now: later()}), KindRemote, "topic"); row.Status != StatusProven {
+		t.Fatalf("origin row is %s after a fetch-less re-read, want proven", row.Status)
+	}
+}
+
+// TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted gathers a repo with
+// one merged origin branch, with and without GatherInputs.OriginRows. What:
+// without it no `gh pr list --base` call is made and BasePRs is empty; with it
+// the branch is asked about once. Why: the query is one gh call per origin
+// candidate; `wt remove <local branch>` and the exit prompt never show or act
+// on an origin row, so they must not pay for it (Rescan re-asks before any
+// delete either way).
+func TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	stubGh(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	for _, want := range []bool{false, true} {
+		var calls []string
+		stubGhBase(t, func(_, b string) ([]byte, error) { calls = append(calls, b); return []byte("[]"), nil })
+		s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", OriginRows: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(calls) > 0; got != want || (len(s.BasePRs) > 0) != want {
+			t.Fatalf("OriginRows=%v: base calls %v, BasePRs %v", want, calls, s.BasePRs)
 		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -35,19 +36,19 @@ var (
 )
 
 type removeFlags struct {
-	yes, force, deleteBranch, acceptLoss, dryRun, json, noFetch bool
-	minAge                                                      time.Duration
+	yes, force, deleteBranch, acceptLoss, dryRun, json, noFetch, remote bool
+	minAge                                                              time.Duration
 }
 
 func removeCmd(a *app) *cobra.Command {
 	var f removeFlags
 	c := &cobra.Command{
 		Use:   "remove <worktree-path-or-branch>...",
-		Short: "Remove the named worktrees and local branches, re-checking each first",
-		Long: "Remove each named worktree (by its path) or local branch (by its exact name),\n" +
-			"and a removed worktree's branch when it is proven merged. Each target is\n" +
-			"classified as `wt cleanup` lists it, then re-checked immediately before it is\n" +
-			"touched; one that changed since is skipped. origin branches are never removed.\n\n" +
+		Short: "Remove the named worktrees, local branches and origin branches, re-checking each first",
+		Long: "Remove each named worktree (by its path), local branch (by its exact name) or\n" +
+			"origin branch (origin/<name>), and a removed worktree's branch when it is\n" +
+			"proven merged. Each target is classified as `wt cleanup` lists it, then\n" +
+			"re-checked immediately before it is touched; one that changed since is skipped.\n\n" +
 			"Approvals are per item and each flag means one thing:\n" +
 			"  --yes          go ahead without the y/N prompt (a proven item needs nothing else)\n" +
 			"  --accept-loss  approve the losses --dry-run lists (not proven, ignored files,\n" +
@@ -56,6 +57,14 @@ func removeCmd(a *app) *cobra.Command {
 			"                 HEAD's commits\n" +
 			"  -D             delete a branch not proven merged: a named branch, or the\n" +
 			"                 branch of a named worktree (the prompt names each one)\n" +
+			"  --remote       delete a branch ON ORIGIN (origin/<name>): visible to everyone\n" +
+			"                 with access to the repository, and closing any PR that targets\n" +
+			"                 it. Only a proven row qualifies (merged PR with this exact\n" +
+			"                 head, no open PR on it or targeting it, origin fetched this run,\n" +
+			"                 so --no-fetch refuses it); none of the other flags, --yes\n" +
+			"                 included, grants it. The delete is a lease push on the sha\n" +
+			"                 listed, so a branch someone pushed to since is left alone, and\n" +
+			"                 the result prints the sha and the command that restores it.\n" +
 			"An item whose flag is missing is refused and the others go on. No flag\n" +
 			"overrides a hard blocker (primary or current checkout, locked, in use,\n" +
 			"a registered model artifact, the default branch...).\n\n" +
@@ -68,7 +77,7 @@ func removeCmd(a *app) *cobra.Command {
 			"the prompt was declined). With --json the one result document\n" +
 			"(docs/contracts/remove-result.schema.json) is printed first, on failure too\n" +
 			"(a usage error as well, when --json comes before the bad flag).",
-		Example: "  wt remove ../repo-wt/topic\n  wt remove topic --dry-run\n  wt remove topic old-spike --yes --accept-loss -D",
+		Example: "  wt remove ../repo-wt/topic\n  wt remove topic --dry-run\n  wt remove topic old-spike --yes --accept-loss -D\n  wt remove origin/merged-topic --remote --yes",
 		// Both usage failures below go through removeFail, so --json gets its
 		// error document (exit 1) as the help promises.
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -98,7 +107,8 @@ func removeCmd(a *app) *cobra.Command {
 	c.Flags().BoolVarP(&f.deleteBranch, "delete-unmerged", "D", false, "delete branches not proven merged (named ones, and named worktrees' branches)")
 	c.Flags().BoolVar(&f.dryRun, "dry-run", false, "say what would happen and change nothing (needs no --yes)")
 	c.Flags().BoolVar(&f.json, "json", false, "print the result as one JSON document (docs/contracts/remove-result.schema.json)")
-	c.Flags().BoolVar(&f.noFetch, "no-fetch", false, "do not run git fetch --prune origin first")
+	c.Flags().BoolVar(&f.remote, "remote", false, "also approve deleting the origin branches named (origin/<name>); no other flag does")
+	c.Flags().BoolVar(&f.noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first (origin branches are then not removable)")
 	c.Flags().DurationVar(&f.minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
 }
@@ -140,6 +150,9 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 		return removeFail(out, f, "", 1, err)
 	}
 	in := cleanupInputs(cwd, !f.noFetch, protected, "wt-remove")
+	// Only a named origin/<branch> needs the per-branch gh --base query; a
+	// local branch or worktree never reads an origin row.
+	in.OriginRows = slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "origin/") })
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {
 		repo := snap.Repo
@@ -156,6 +169,7 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 	}
 
 	in.Fetch = false // a re-check never fetches
+	in.Fetched = snap.Fetch
 	eng := removal.Engine{G: cleanup.Git{Dir: cwd}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: f.minAge},
 		Opts: removal.Options{DryRun: f.dryRun, Now: removeNow, Procs: removeProcs()}}
 	items := planRemove(eng, rows, f)
@@ -203,8 +217,10 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 
 // resolveRemoveArgs maps each argument to its one row: a worktree row whose
 // path is the argument (relative to cwd; both compared after resolving
-// symlinks), or a worktree or branch row whose full refname is
-// refs/heads/<argument> exactly. Remote rows are never targets. No match, or
+// symlinks), a worktree or branch row whose full refname is
+// refs/heads/<argument> exactly, or an origin row when the argument is
+// exactly origin/<name> (refs/remotes/origin/<name>; a local branch literally
+// named origin/<name> makes it ambiguous, as for any two matches). No match, or
 // more than one, is a usage error naming the argument. An argument naming a
 // row an earlier one already named adds nothing.
 func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.Row, error) {
@@ -224,15 +240,16 @@ func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.R
 		for i, row := range r.Rows {
 			byPath := row.Kind == cleanup.KindWorktree && row.Path != "" && cleanup.ResolvePath(row.Path) == p
 			byRef := (row.Kind == cleanup.KindWorktree || row.Kind == cleanup.KindBranch) && row.Ref != "" && row.Ref == "refs/heads/"+arg
-			if byPath || byRef {
+			byOrigin := row.Kind == cleanup.KindRemote && row.Remote == "origin" && row.Ref != "" && row.Ref == "refs/remotes/"+arg
+			if byPath || byRef || byOrigin {
 				hits = append(hits, i)
 			}
 		}
 		switch {
 		case len(hits) == 0:
-			return nil, fmt.Errorf("%q names no worktree path or local branch of this repository", cleanup.OneLine(arg))
+			return nil, fmt.Errorf("%q names no worktree path, local branch or origin/<branch> of this repository", cleanup.OneLine(arg))
 		case len(hits) > 1:
-			return nil, fmt.Errorf("%q matches more than one target (a worktree path and a branch); name it unambiguously", cleanup.OneLine(arg))
+			return nil, fmt.Errorf("%q matches more than one target (for example a worktree path and a branch); name it unambiguously", cleanup.OneLine(arg))
 		}
 		if !seen[hits[0]] {
 			seen[hits[0]] = true
@@ -249,7 +266,7 @@ func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.R
 // otherwise it is refused naming the missing flags. A row listed in use is
 // refused without a preview.
 func planRemove(eng removal.Engine, rows []cleanup.Row, f removeFlags) []plannedItem {
-	granted := removal.Needs{Confirm: f.acceptLoss, Force: f.force, Delete: f.deleteBranch}
+	granted := removal.Needs{Confirm: f.acceptLoss, Force: f.force, Delete: f.deleteBranch, Remote: f.remote}
 	out := make([]plannedItem, len(rows))
 	var inputs []removal.Item
 	var at []int
@@ -313,6 +330,9 @@ func missingFlags(need, granted removal.Needs) string {
 	if need.Confirm && !granted.Confirm {
 		m = append(m, "--accept-loss")
 	}
+	if need.Remote && !granted.Remote {
+		m = append(m, "--remote (deleting an origin branch is visible to everyone with access to the repository)")
+	}
 	return strings.Join(m, ", ")
 }
 
@@ -340,6 +360,14 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 			continue
 		}
 		pv := p.preview
+		if pv.Item.Kind == cleanup.KindRemote {
+			fmt.Fprintf(&b, "  DELETE origin/%s on origin [%s]", cleanup.OneLine(pv.Item.Name), pv.Fresh.Status)
+			if pv.Fresh.PR != nil {
+				fmt.Fprintf(&b, " (merged PR #%d)", pv.Fresh.PR.Number)
+			}
+			b.WriteString("\n      visible to everyone with access to the repository; restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name) + "\n")
+			continue
+		}
 		fmt.Fprintf(&b, "  remove %s %s", pv.Item.Kind, cleanup.OneLine(pv.Item.Name))
 		if pv.Item.Kind == cleanup.KindWorktree {
 			fmt.Fprintf(&b, " (%s)", cleanup.OneLine(pv.Item.Path))
@@ -377,6 +405,13 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 	if runnable == 1 {
 		word = "item"
 	}
+	if n := originCount(items); n > 0 {
+		bw := "branches"
+		if n == 1 {
+			bw = "branch"
+		}
+		fmt.Fprintf(&b, "%d %s on origin (visible to everyone with access to the repository).\n", n, bw)
+	}
 	fmt.Fprintf(&b, "Remove %d %s? [y/N] ", runnable, word)
 	if _, err := io.WriteString(ask, b.String()); err != nil {
 		return false
@@ -387,6 +422,17 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 		return true
 	}
 	return false
+}
+
+// originCount is how many of the items that will run delete an origin branch.
+func originCount(items []plannedItem) int {
+	n := 0
+	for _, p := range items {
+		if p.run != nil && p.run.Kind == cleanup.KindRemote {
+			n++
+		}
+	}
+	return n
 }
 
 // removeExitCode is the status for a finished run's outcomes: 0 when every
@@ -404,6 +450,8 @@ func removeExitCode(outcomes []removal.Outcome) int {
 func removeOK(o removal.Outcome) bool {
 	switch o.Item.Kind {
 	case cleanup.KindBranch:
+		return o.Worktree == removal.WtNotRequested && o.Branch == removal.BrDeleted
+	case cleanup.KindRemote:
 		return o.Worktree == removal.WtNotRequested && o.Branch == removal.BrDeleted
 	case cleanup.KindWorktree:
 		if o.Worktree != removal.WtRemoved {
