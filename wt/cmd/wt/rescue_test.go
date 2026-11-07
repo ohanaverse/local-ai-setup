@@ -503,3 +503,42 @@ func TestPrintRescueTextNamesAKeptBranch(t *testing.T) {
 		t.Errorf("nothing was created, yet:\n%s", got)
 	}
 }
+
+// TestRescueSkipsTheStartRecheckOnlyWithYes runs the command once with --yes
+// and once through the y/N prompt, reading the plan the executor receives.
+// What: --yes hands over a plan marked SkipStartRecheck, a prompted run one
+// that is not. Why: the skip is safe only when nothing was shown or asked
+// between Preflight and Execute; a prompt gives the source time to change, so
+// it must keep the start-of-Execute re-read. Without this, either path could
+// regress with every other rescue test still green.
+func TestRescueSkipsTheStartRecheckOnlyWithYes(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		yes   bool
+		skips bool
+	}{{"yes", true, true}, {"prompted", false, false}} {
+		t.Run(c.name, func(t *testing.T) {
+			a := rescueApp(t)
+			dir := cleanupRepo(t)
+			workWorktree(t, dir)
+			rescueTTY = func(io.Reader, io.Writer) bool { return true }
+			var seen []bool
+			old := executeRescuePlan
+			executeRescuePlan = func(eng rescue.Engine, plan *rescue.Plan) rescue.Outcome {
+				seen = append(seen, plan.StartRecheckSkipped())
+				return eng.Execute(plan)
+			}
+			t.Cleanup(func() { executeRescuePlan = old })
+			args := []string{"spike", "--no-fetch"}
+			if c.yes {
+				args = append(args, "--yes")
+			}
+			if _, _, err := runRescue(t, a, dir, "y\n", args...); err != nil {
+				t.Fatal(err)
+			}
+			if len(seen) != 1 || seen[0] != c.skips {
+				t.Fatalf("StartRecheckSkipped at Execute = %v, want [%v]", seen, c.skips)
+			}
+		})
+	}
+}

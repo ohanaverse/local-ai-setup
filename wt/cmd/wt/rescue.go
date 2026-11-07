@@ -177,7 +177,13 @@ func rescueRow(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap clea
 		// comparison after the copy still runs. A prompt keeps the re-read.
 		plan.SkipStartRecheck()
 	}
-	return writeRescueResult(out, errOut, f.json, meta, eng.Execute(plan))
+	return writeRescueResult(out, errOut, f.json, meta, executeRescuePlan(eng, plan))
+}
+
+// executeRescuePlan is the test seam over the executor: a test swaps it to see
+// the plan as the command hands it over (which path ran: --yes or a prompt).
+var executeRescuePlan = func(eng rescue.Engine, plan *rescue.Plan) rescue.Outcome {
+	return eng.Execute(plan)
 }
 
 // promptRescue prints what the rescue will do and asks y/N (default No).

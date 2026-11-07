@@ -663,3 +663,44 @@ func TestRunRescueStopsSignalForwardingFirst(t *testing.T) {
 		t.Errorf("no row chosen: err=%v calls=%v, want nothing", err, calls)
 	}
 }
+
+// TestRunCleanupListStopsForwardingThenRescues drives RunCleanupList through
+// the program seam with a final model that holds a rescue row. What: the
+// signal forwarding is stopped and then rm.Rescue runs with that row, in that
+// order, and a final model without a row rescues nothing. Why:
+// TestRunRescueStopsSignalForwardingFirst covers runRescue alone; this fails
+// if RunCleanupList stops calling runRescue (the r key would do nothing) or
+// calls the rescue before the stop (Ctrl-C at its prompt would be dropped).
+func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	var calls []string
+	row := cleanup.Row{Name: "spike"}
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		m.rescueRow = &row
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
+	rm := RemoveFuncs{Rescue: func(r cleanup.Row) error {
+		calls = append(calls, "rescue:"+r.Name)
+		return nil
+	}}
+	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) < 2 || calls[0] != "stop" || calls[1] != "rescue:spike" {
+		t.Errorf("calls = %v, want stop then rescue:spike", calls)
+	}
+
+	calls = nil
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
+	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range calls {
+		if strings.HasPrefix(c, "rescue:") {
+			t.Errorf("no row chosen but rescue ran: %v", calls)
+		}
+	}
+}

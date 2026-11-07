@@ -191,6 +191,7 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 		return err
 	}
 	var tracked []string
+	worktree := map[string]int64{} // changed tracked path -> working file size
 	for _, en := range es {
 		if en.kind == '1' || en.kind == '2' {
 			tracked = append(tracked, en.path)
@@ -200,7 +201,7 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 			// A changed tracked file is carried as a diff held in memory and
 			// written whole: it counts against the same byte limit.
 			if fi, err := os.Lstat(filepath.Join(sg.dir, en.path)); err == nil && fi.Mode().IsRegular() {
-				p.trackedBytes += fi.Size()
+				worktree[en.path] = fi.Size()
 			}
 		}
 		if en.kind == 'u' {
@@ -229,6 +230,15 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 			p.Counts.Unstaged++
 		}
 	}
+	// Each changed tracked file counts as the larger of its working file and
+	// its index or HEAD blob (see blobSizes).
+	blobs, err := blobSizes(sg, tracked)
+	if err != nil {
+		return err
+	}
+	for _, path := range tracked {
+		p.trackedBytes += max(worktree[path], blobs[path])
+	}
 	if p.trackedBytes+p.Counts.UntrackedBytes > limitBytes {
 		return refuse(CodeTooLarge, tooLargeMessage())
 	}
@@ -248,7 +258,9 @@ func checkContentFilters(sg sgit, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	out, err := sg.out(nil, append([]string{"check-attr", "-z", "filter", "ident", "working-tree-encoding", "--"}, paths...)...)
+	// The paths go on stdin (NUL-separated), never the argv: a big change set
+	// would exceed ARG_MAX.
+	out, err := sg.out([]byte(strings.Join(paths, "\x00")+"\x00"), "check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding")
 	if err != nil {
 		return err
 	}
@@ -284,12 +296,17 @@ func checkLineEndings(sg sgit, paths []string) error {
 	}
 	autocrlf, coreEOL := cfg("core.autocrlf"), cfg("core.eol")
 	convert := autocrlf == "true" || autocrlf == "input"
-	args := append([]string{"--literal-pathspecs", "ls-files", "--eol", "-z", "--"}, paths...)
-	out, err := sg.out(nil, args...)
-	if err != nil {
-		return err
+	// `ls-files` reads no paths from stdin, so they go in argv chunks below
+	// ARG_MAX.
+	var recs []string
+	for _, chunk := range argChunks(paths, argBudget) {
+		out, err := sg.out(nil, append([]string{"--literal-pathspecs", "ls-files", "--eol", "-z", "--"}, chunk...)...)
+		if err != nil {
+			return err
+		}
+		recs = append(recs, strings.Split(string(out), "\x00")...)
 	}
-	for _, rec := range strings.Split(string(out), "\x00") {
+	for _, rec := range recs {
 		info, path, ok := strings.Cut(rec, "\t")
 		f := strings.Fields(info)
 		if !ok || len(f) < 3 {
@@ -307,6 +324,28 @@ func checkLineEndings(sg sgit, paths []string) error {
 		}
 	}
 	return nil
+}
+
+// argBudget is the most path bytes one git argv carries here: well under the
+// smallest ARG_MAX in use (macOS 1 MiB, which the environment also uses).
+const argBudget = 64 << 10
+
+// argChunks splits paths into runs whose total length (plus a separator each)
+// stays within budget; one longer path gets a run of its own.
+func argChunks(paths []string, budget int) [][]string {
+	var out [][]string
+	start, size := 0, 0
+	for i, p := range paths {
+		if size > 0 && size+len(p)+1 > budget {
+			out = append(out, paths[start:i])
+			start, size = i, 0
+		}
+		size += len(p) + 1
+	}
+	if start < len(paths) {
+		out = append(out, paths[start:])
+	}
+	return out
 }
 
 // writesCRLF says whether git would write this file with CRLF line endings
@@ -398,4 +437,47 @@ func safeRel(rel string) bool {
 	return !slices.ContainsFunc(strings.Split(rel, "/"), func(c string) bool {
 		return c == "" || c == ".." || c == "." || strings.EqualFold(c, ".git")
 	})
+}
+
+// blobSizes is, per path, the larger of its index blob and its HEAD blob
+// (0 for a path with neither). The diff a rescue carries holds those blobs in
+// memory whatever the working file now is: a file staged big and then
+// truncated, or a big committed file whose deletion is staged, has a small or
+// missing working file. A path with a newline cannot be named on
+// `cat-file --batch-check`'s line-based stdin and is left out (the working
+// file's size alone counts for it).
+func blobSizes(sg sgit, paths []string) (map[string]int64, error) {
+	var in strings.Builder
+	var named []string
+	for _, p := range paths {
+		if strings.ContainsRune(p, '\n') {
+			continue
+		}
+		named = append(named, p)
+		in.WriteString(":0:" + p + "\nHEAD:" + p + "\n")
+	}
+	sizes := make(map[string]int64, len(named))
+	if len(named) == 0 {
+		return sizes, nil
+	}
+	out, err := sg.out([]byte(in.String()), "cat-file", "--batch-check")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != 2*len(named) {
+		return nil, fmt.Errorf("git cat-file --batch-check: %d answers for %d requests", len(lines), 2*len(named))
+	}
+	for i, p := range named {
+		for _, l := range lines[2*i : 2*i+2] {
+			// "<sha> <type> <size>", or "<name> missing" / "<name> ambiguous".
+			f := strings.Fields(l)
+			if len(f) == 3 && f[1] == "blob" {
+				if n, err := strconv.ParseInt(f[2], 10, 64); err == nil {
+					sizes[p] = max(sizes[p], n)
+				}
+			}
+		}
+	}
+	return sizes, nil
 }

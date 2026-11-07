@@ -500,12 +500,25 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 		j.fill(&row)
 		return row
 	}
-	res := c.s.PRs[rf.Name] // a miss is LookupUnknown
-	switch {
-	case res.Lookup == LookupUnknown:
-		j.unsure(ReasonCannotVerify, cmp.Or(res.Err, noPRLookupDetail))
-	case c.gh != GHOK:
-		j.unsure(ReasonCannotVerify, c.ghNote)
+	// PRs and BasePRs are keyed by a bare branch name and describe the own
+	// repository, which is origin: another remote's row neither reads them
+	// nor has a lookup of its own (nothing asks gh about upstream/foo), so
+	// it is judged on git's proofs, and its PR state is unknown (below).
+	origin := rf.Remote == "origin"
+	var res PRResult // zero value is LookupUnknown: another remote's row has no lookup, and no check below reads it for that row
+	if origin {
+		res = c.s.PRs[rf.Name] // a miss is LookupUnknown
+		switch {
+		case res.Lookup == LookupUnknown:
+			j.unsure(ReasonCannotVerify, cmp.Or(res.Err, noPRLookupDetail))
+		case c.gh != GHOK:
+			j.unsure(ReasonCannotVerify, c.ghNote)
+		}
+	} else {
+		// Fail closed: nothing asks gh about another remote's branch, so its
+		// pull-request state is unknown, never "no PR". The row can read at
+		// most less_sure; git's proofs below still give its evidence.
+		j.unsure(ReasonCannotVerify, noPRLookupDetail)
 	}
 	p, ok := c.s.Proofs[rf.Tip]
 	switch {
@@ -526,7 +539,6 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	// branch" query, the PR rung the removal engine re-verifies) apply to an
 	// origin row only: they are origin facts, keyed by a bare name, and
 	// nothing deletes any other remote's branch.
-	origin := rf.Remote == "origin"
 	if origin {
 		if why := c.originFetchProblem(); why != "" {
 			j.unsure(ReasonCannotVerify, why)
@@ -591,15 +603,16 @@ func (c *classifier) originFetchProblem() string {
 // dependants are the open PRs, from any head repository, that target name:
 // those found through head lookups of other branches plus the live per-branch
 // base query. When the row is a deletion candidate (needAnswer) a missing,
-// failed or truncated base query is an error text. The base query is origin's
-// (BasePRs is keyed by bare name): a row of another remote neither reads it
-// nor needs it.
+// failed or truncated base query is an error text. The base query and the
+// open PRs found by head lookups are origin's (both are keyed by a bare name in
+// the own repository): a row of another remote reads neither and needs neither.
 func (c *classifier) dependants(name string, needAnswer, origin bool) ([]int, string) {
-	out := c.openPRsBasedOn(name)
 	if !origin {
-		slices.Sort(out)
-		return out, ""
+		// openPRsBasedOn matches a bare base name in the own repository
+		// (origin): its answer says nothing about another remote's branch.
+		return nil, ""
 	}
+	out := c.openPRsBasedOn(name)
 	b, ok := c.s.BasePRs[name]
 	var why string
 	switch {
