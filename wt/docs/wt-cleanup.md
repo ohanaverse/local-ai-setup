@@ -184,10 +184,15 @@ staged changes (still staged), unstaged changes and untracked files that are
 not ignored. Not carried: ignored files (`.env`, `.venv`; the count is
 reported) and empty directories. Before it reports `moved`, wt checks that the
 new worktree's `git status` equals the original's and that every changed file
-has the same content, mode and link target.
+has the same content, mode and link target. A directory the copy creates for
+untracked files gets the original directory's mode (a `0700` one stays
+`0700`), and the check compares those modes too.
 
 **The original stays as it was, and is not made removable.** It is read with
-optional locks off (no index refresh) and compared before and after. Its commits
+optional locks off (no index refresh) and compared before and after: its HEAD,
+its own branch ref, its staged content (not the index file's bytes, which a
+`git status` elsewhere may refresh) and the files the status names. Other
+refs, other worktrees' commits and a background fetch do not fail the run. Its commits
 are counted against remote-tracking refs only and its files were copied, not
 moved, so `wt cleanup` still lists it as having work that exists nowhere else
 and `wt remove` still needs `--accept-loss`, `--force` and `-D`. Remove it
@@ -202,7 +207,9 @@ staged and modified (`staged_and_modified`); an intent-to-add file
 (`intent_to_add`); a nested git repository (`nested_repo`); an untracked path that is a fifo, socket or other
 non-file, or whose path is unsafe to copy (`special_file`); a changed file whose
 line endings git converts (a `text`/`eol` attribute or `core.autocrlf`) and that
-holds CRLF or asks for it (`line_endings`); more than 20000
+holds CRLF or asks for it (`line_endings`); a changed file a `filter`
+attribute handles, git-lfs or any clean/smudge filter, which a copy could not
+reproduce byte for byte (`content_filter`); more than 20000
 untracked files or 512 MiB (`too_large`); an unreadable worktree
 (`gates_unknown`, `unreadable`); a name already taken (`name_unavailable`,
 naming `--to`; there is no automatic suffix); a branch with no worktree
@@ -212,7 +219,9 @@ during the copy the run fails with `source_changed_while_copying` rather than
 report a stale copy).
 
 **A failure after the new worktree exists keeps it** (`created: true`, its
-path in the message): nothing is rolled back, because undoing it would mean a
+path in the message; when creating the worktree failed after git made the
+branch, `branch_kept` is true and the message names the branch, which a rerun
+would otherwise report as `name_unavailable`): nothing is rolled back, because undoing it would mean a
 forced removal of a directory that now holds your work. Look at it, then
 `wt remove` it if you do not want it.
 
@@ -227,7 +236,9 @@ forced removal of a directory that now holds your work. Look at it, then
 [rescue-result.schema.json](../../docs/contracts/rescue-result.schema.json)
 (samples beside it), on failure too. `--no-fetch` and `--min-age` behave as
 for `wt cleanup`. `--dry-run` writes no ref, index or working file (like
-listing, the merge proof may leave unreachable tree objects).
+listing, the merge proof may leave unreachable tree objects): it does not
+fetch, so what counts as unpushed or merged is as of the last fetch, and the
+report says so in `warnings`.
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md).

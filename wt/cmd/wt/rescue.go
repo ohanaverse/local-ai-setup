@@ -30,6 +30,9 @@ var rescueTTY = func(in io.Reader, out io.Writer) bool {
 // the rescue once the alt screen is gone. Tests swap them.
 var rescueStreams = func() (io.Reader, io.Writer, io.Writer) { return os.Stdin, os.Stdout, os.Stderr }
 
+// dryRunFetchNote is the warning a dry run carries: it ran no fetch.
+const dryRunFetchNote = "dry run: nothing was fetched, so remote-tracking refs (and what counts as unpushed or merged) are as of the last fetch"
+
 type rescueFlags struct {
 	to                         string
 	yes, dryRun, json, noFetch bool
@@ -55,12 +58,14 @@ func rescueCmd(a *app) *cobra.Command {
 			"checkout, one with a merge, rebase or similar in progress or unmerged\n" +
 			"paths, a file marked skip-worktree or assume-unchanged, a changed\n" +
 			"submodule, a file both staged and modified, an intent-to-add file, a nested\n" +
-			"git repository, more than 20000 untracked files or 512 MiB, and a name that\n" +
+			"git repository, a changed file under a content filter (git-lfs or any\n" +
+			"clean/smudge filter), more than 20000 untracked files or 512 MiB, and a name that\n" +
 			"is taken (pass --to NAME, the full branch name). A failure after the new\n" +
 			"worktree exists keeps it and says where; nothing is rolled back.\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing what\n" +
 			"it will carry; with no terminal it creates nothing. --dry-run says what\n" +
-			"would happen and changes nothing (no ref, index or working file).\n\n" +
+			"would happen and changes nothing (no ref, index or working file); it\n" +
+			"skips the fetch and classifies against the last one.\n\n" +
 			"Exit 0: the work was copied and verified (or, with --dry-run, would be).\n" +
 			"1: could not start (no match or an ambiguous argument, --min-age below 1m).\n" +
 			"2: refused or failed. 3: approval missing (no --yes and no terminal, or the\n" +
@@ -81,9 +86,9 @@ func rescueCmd(a *app) *cobra.Command {
 	})
 	c.Flags().StringVar(&f.to, "to", "", "the new branch's full name (default rescued/<branch or directory name>)")
 	c.Flags().BoolVar(&f.yes, "yes", false, "copy without asking")
-	c.Flags().BoolVar(&f.dryRun, "dry-run", false, "say what would happen and change nothing (needs no --yes)")
+	c.Flags().BoolVar(&f.dryRun, "dry-run", false, "say what would happen and change nothing, fetch included (needs no --yes)")
 	c.Flags().BoolVar(&f.json, "json", false, "print the result as one JSON document (docs/contracts/rescue-result.schema.json)")
-	c.Flags().BoolVar(&f.noFetch, "no-fetch", false, "do not run git fetch --prune origin first")
+	c.Flags().BoolVar(&f.noFetch, "no-fetch", false, "do not run git fetch --prune origin first (a dry run never does)")
 	c.Flags().DurationVar(&f.minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
 }
@@ -110,7 +115,9 @@ func executeRescue(cmd *cobra.Command, a *app, f rescueFlags, target string) err
 	if err != nil {
 		return rescueFail(out, f, "", 1, err)
 	}
-	in := cleanupInputs(cwd, !f.noFetch, nil, "wt-rescue")
+	// A dry run promises to write no ref: `git fetch` rewrites remote-tracking
+	// refs, so it classifies against the last fetch instead.
+	in := cleanupInputs(cwd, !f.noFetch && !f.dryRun, nil, "wt-rescue")
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {
 		repo := snap.Repo
@@ -136,16 +143,21 @@ func rescueRow(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap clea
 	meta := rescue.Meta{Repo: snap.Repo, DryRun: f.dryRun}
 	eng := rescue.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{Now: removeNow(), MinAge: f.minAge}}
 
+	var notes []string
+	if f.dryRun {
+		notes = []string{dryRunFetchNote}
+	}
 	plan, err := eng.Preflight(row, f.to)
 	var refusal *rescue.Refusal
 	switch {
 	case errors.As(err, &refusal):
 		return writeRescueResult(out, errOut, f.json, meta, rescue.Outcome{Status: rescue.StatusRefused, Code: refusal.Code,
-			Reason: refusal.Message + "; nothing was created", Plan: rescue.Plan{Source: rescue.Source{Path: row.Path, Ref: row.Ref, Head: row.Head}}})
+			Reason: refusal.Message + "; nothing was created", Plan: rescue.Plan{Source: rescue.Source{Path: row.Path, Ref: row.Ref, Head: row.Head}, Warnings: notes}})
 	case err != nil:
 		return rescueFail(out, f, snap.Repo, 1, err)
 	}
 	if f.dryRun {
+		plan.Warnings = append(plan.Warnings, notes...)
 		return writeRescueResult(out, errOut, f.json, meta, rescue.Outcome{Status: rescue.StatusWouldMove, Plan: *plan})
 	}
 	if !f.yes {
@@ -275,6 +287,9 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 	}
 	if o.Status == rescue.StatusMoved {
 		fmt.Fprintf(&b, "    the original is untouched and still holds work only it has; removing it takes `wt remove %s` with the approvals it names\n", cleanup.OneLine(p.Source.Path))
+	}
+	if o.Status == rescue.StatusFailed && o.BranchKept && !o.Created {
+		fmt.Fprintf(&b, "    the new branch %s was kept (creating its worktree failed after git made it); a rerun needs --to NAME or `wt remove %s`\n", cleanup.OneLine(p.Branch), cleanup.OneLine(p.Branch))
 	}
 	if o.Status == rescue.StatusFailed && o.Created {
 		fmt.Fprintf(&b, "    the new branch %s and worktree %s were kept; `wt remove` can clear them\n", cleanup.OneLine(p.Branch), cleanup.OneLine(o.Plan.DestPath))

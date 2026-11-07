@@ -112,48 +112,38 @@ func hashPath(root, rel string) string {
 }
 
 // fingerprint is everything about a source a rescue promises not to change:
-// HEAD, every ref except the new branch, the index file's bytes, the status
-// listing and the content of every path the status names.
+// its HEAD, the branch ref HEAD names, the index's content (the staged
+// entries, not the file's bytes, which a stat-cache refresh rewrites), the
+// status listing and the content of every path the status names. Other refs,
+// other worktrees and remote-tracking refs are not the source's: a parallel
+// session or a background fetch changes them without touching it.
 type fingerprint struct {
 	head   string
-	refs   string
+	branch string // the ref HEAD names, with its commit; "" when detached
 	index  string
 	status string
 	files  map[string]string
 }
 
-// takeFingerprint reads sg's source. exclude is the full refname of the new
-// branch, which the rescue itself adds to the shared refs.
-func takeFingerprint(sg sgit, exclude string) (fingerprint, error) {
+// takeFingerprint reads sg's source.
+func takeFingerprint(sg sgit) (fingerprint, error) {
 	var fp fingerprint
 	var err error
 	if fp.head, err = sg.text("rev-parse", "HEAD"); err != nil {
 		return fp, err
 	}
-	refs, err := sg.out(nil, "for-each-ref", "--format=%(objectname) %(refname)")
-	if err != nil {
-		return fp, err
-	}
-	var kept []string
-	for _, l := range strings.Split(string(refs), "\n") {
-		if l != "" && !strings.HasSuffix(l, " "+exclude) {
-			kept = append(kept, l)
+	if ref, err := sg.text("symbolic-ref", "-q", "HEAD"); err == nil && ref != "" {
+		tip, err := sg.text("rev-parse", "--verify", "-q", ref)
+		if err != nil {
+			tip = "unborn"
 		}
+		fp.branch = ref + " " + tip
 	}
-	fp.refs = strings.Join(kept, "\n")
-	idx, err := sg.text("rev-parse", "--path-format=absolute", "--git-path", "index")
+	idx, err := sg.out(nil, "ls-files", "--stage", "-z")
 	if err != nil {
 		return fp, err
 	}
-	b, err := os.ReadFile(idx)
-	switch {
-	case os.IsNotExist(err):
-		fp.index = "absent"
-	case err != nil:
-		return fp, err
-	default:
-		fp.index = fmt.Sprintf("%x", sha256.Sum256(b))
-	}
+	fp.index = fmt.Sprintf("%x", sha256.Sum256(idx))
 	st, err := sg.out(nil, statusArgs...)
 	if err != nil {
 		return fp, err
@@ -175,8 +165,8 @@ func (a fingerprint) diff(b fingerprint) string {
 	switch {
 	case a.head != b.head:
 		return "HEAD"
-	case a.refs != b.refs:
-		return "a ref"
+	case a.branch != b.branch:
+		return "the branch"
 	case a.index != b.index:
 		return "the index"
 	case a.status != b.status:

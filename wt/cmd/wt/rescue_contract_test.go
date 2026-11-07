@@ -20,11 +20,12 @@ var rescueFixtures = map[string]struct {
 	path, outcome string
 	dryRun        bool
 }{
-	"moved sample":   {"../../../docs/contracts/rescue-result.sample.json", "moved", false},
-	"dry-run sample": {"../../../docs/contracts/rescue-result.dry-run.sample.json", "would_move", true},
-	"refused sample": {"../../../docs/contracts/rescue-result.refused.sample.json", "refused", false},
-	"failed sample":  {"../../../docs/contracts/rescue-result.failed.sample.json", "failed", false},
-	"error sample":   {"../../../docs/contracts/rescue-result.error.sample.json", "", false},
+	"moved sample":       {"../../../docs/contracts/rescue-result.sample.json", "moved", false},
+	"dry-run sample":     {"../../../docs/contracts/rescue-result.dry-run.sample.json", "would_move", true},
+	"refused sample":     {"../../../docs/contracts/rescue-result.refused.sample.json", "refused", false},
+	"failed sample":      {"../../../docs/contracts/rescue-result.failed.sample.json", "failed", false},
+	"branch-kept sample": {"../../../docs/contracts/rescue-result.branch-kept.sample.json", "failed", false},
+	"error sample":       {"../../../docs/contracts/rescue-result.error.sample.json", "", false},
 }
 
 // TestRescueFixturesMatchEnvelopeShape pins the samples

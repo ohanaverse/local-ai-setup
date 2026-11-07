@@ -93,6 +93,22 @@ func TestPreflightRefusals(t *testing.T) {
 			f.write(p, "work.txt", "work\nmore\n")
 			return p
 		}, CodeLineEndings},
+		{"clean/smudge filter on a changed file", func(f *fixture) string {
+			p := workTree(f)
+			f.git("config", "filter.shout.clean", "cat")
+			f.git("config", "filter.shout.smudge", "cat")
+			f.Commit(p, ".gitattributes", "*.dat filter=shout\n", "attrs")
+			f.Commit(p, "a.dat", "one", "data")
+			f.write(p, "a.dat", "two")
+			return p
+		}, CodeContentFilter},
+		{"filter=lfs on a staged file", func(f *fixture) string {
+			p := workTree(f)
+			f.Commit(p, ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n", "attrs")
+			f.write(p, "big.bin", "payload")
+			gitIn(f.t, p, "add", "-f", "big.bin")
+			return p
+		}, CodeContentFilter},
 		{"branch name taken", func(f *fixture) string {
 			p := workTree(f)
 			f.git("branch", "rescued/topic")

@@ -635,3 +635,29 @@ func TestCleanupListRKeyExplainsWhenNotOffered(t *testing.T) {
 		t.Errorf("no Rescue wired: rescueRow=%v status=%q", fm.rescueRow, fm.status)
 	}
 }
+
+// TestRunRescueStopsSignalForwardingFirst checks the r key's hand-off stops
+// the signal forwarding before rm.Rescue runs, and does nothing when no row
+// was chosen. Why: the Bubble Tea program has finished by then, so forwarded
+// signals would go to a dead p.Send and be dropped, and Ctrl-C at the
+// rescue's y/N prompt (or SIGHUP during the copy) would do nothing.
+func TestRunRescueStopsSignalForwardingFirst(t *testing.T) {
+	var calls []string
+	row := cleanup.Row{Name: "spike"}
+	fm := cleanupListModel{rescueRow: &row}
+	rm := RemoveFuncs{Rescue: func(r cleanup.Row) error {
+		calls = append(calls, "rescue:"+r.Name)
+		return nil
+	}}
+	if err := runRescue(fm, rm, func() { calls = append(calls, "stop") }); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "stop,rescue:spike" {
+		t.Errorf("calls = %s, want stop before rescue", got)
+	}
+
+	calls = nil
+	if err := runRescue(cleanupListModel{}, rm, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
+		t.Errorf("no row chosen: err=%v calls=%v, want nothing", err, calls)
+	}
+}

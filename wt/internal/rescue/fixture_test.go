@@ -153,18 +153,40 @@ func (f *fixture) world() string {
 	return f.git("for-each-ref") + "\n" + f.git("worktree", "list", "--porcelain") + "\n" + strings.Join(names, ",")
 }
 
-// snapshot is the source's fingerprint, taken the way the engine takes it.
-func snapshot(t *testing.T, src string, excludeRef ...string) fingerprint {
+// snap is a fingerprint plus the index file's raw bytes, which the engine's
+// own fingerprint ignores (a stat-cache refresh rewrites them) but the engine
+// itself must never cause to change.
+type snap struct {
+	fingerprint
+	raw string
+}
+
+// snapshot is the source's fingerprint, taken the way the engine takes it,
+// with the raw index bytes beside it.
+func snapshot(t *testing.T, src string) snap {
 	t.Helper()
-	ex := ""
-	if len(excludeRef) > 0 {
-		ex = excludeRef[0]
-	}
-	fp, err := takeFingerprint(sgit{dir: src}, ex)
+	fp, err := takeFingerprint(sgit{dir: src})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fp
+	raw := "absent"
+	if idx := gitIn(t, src, "rev-parse", "--path-format=absolute", "--git-path", "index"); idx != "" {
+		if b, err := os.ReadFile(idx); err == nil {
+			raw = string(b)
+		}
+	}
+	return snap{fp, raw}
+}
+
+// diff names what differs ("" none), including the raw index bytes.
+func (a snap) diff(b snap) string {
+	if d := a.fingerprint.diff(b.fingerprint); d != "" {
+		return d
+	}
+	if a.raw != b.raw {
+		return "the raw index file"
+	}
+	return ""
 }
 
 // execGit is a git command in dir, for tests that feed stdin or expect failure.

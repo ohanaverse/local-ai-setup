@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rescueOnce runs Preflight and Execute for the worktree at src and returns
@@ -85,7 +86,7 @@ func TestExecuteCarriesEachKindOfWork(t *testing.T) {
 			f.Commit(p, "work.txt", "work", "work")
 			c.setup(f, p)
 			head := gitIn(t, p, "rev-parse", "HEAD")
-			before := snapshot(t, p, "refs/heads/rescued/topic")
+			before := snapshot(t, p)
 
 			plan, out := rescueOnce(t, f, p)
 
@@ -105,7 +106,7 @@ func TestExecuteCarriesEachKindOfWork(t *testing.T) {
 			if err != nil || string(got) != before.status {
 				t.Errorf("status differs (err %v):\n%q\n%q", err, got, before.status)
 			}
-			if d := before.diff(snapshot(t, p, "refs/heads/rescued/topic")); d != "" {
+			if d := before.diff(snapshot(t, p)); d != "" {
 				t.Errorf("the source changed (%s)", d)
 			}
 			if plan.Counts.Commits != 1 {
@@ -264,7 +265,7 @@ func TestExecuteFailsWhenTheCopyDiffers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := snapshot(t, p, "refs/heads/rescued/topic")
+	before := snapshot(t, p)
 	t.Cleanup(func() { afterCarry = func(*Plan) {} })
 	afterCarry = func(pl *Plan) { f.write(pl.DestPath, "u.txt", "drift") }
 
@@ -273,7 +274,7 @@ func TestExecuteFailsWhenTheCopyDiffers(t *testing.T) {
 	if out.Status != StatusFailed || out.Code != CodeVerifyFailed || !out.Created {
 		t.Fatalf("outcome = %+v", out)
 	}
-	if d := before.diff(snapshot(t, p, "refs/heads/rescued/topic")); d != "" {
+	if d := before.diff(snapshot(t, p)); d != "" {
 		t.Errorf("the source changed (%s)", d)
 	}
 }
@@ -294,7 +295,7 @@ func TestExecuteKeepsTheDestinationOnAFailureAndARerunNamesTheTaken(t *testing.T
 		t.Fatal(err)
 	}
 	plan.untracked = append(plan.untracked, "ghost.txt") // vanished after the check
-	before := snapshot(t, p, "refs/heads/rescued/topic")
+	before := snapshot(t, p)
 
 	out := eng.Execute(plan)
 
@@ -307,7 +308,7 @@ func TestExecuteKeepsTheDestinationOnAFailureAndARerunNamesTheTaken(t *testing.T
 	if gitIn(t, f.Dir, "rev-parse", "--verify", "refs/heads/rescued/topic") == "" {
 		t.Error("the branch is gone")
 	}
-	if d := before.diff(snapshot(t, p, "refs/heads/rescued/topic")); d != "" {
+	if d := before.diff(snapshot(t, p)); d != "" {
 		t.Errorf("the source changed (%s)", d)
 	}
 	eng2, find2 := f.engine(f.Dir)
@@ -330,7 +331,7 @@ func TestCopyUntrackedNeverOverwritesOrFollowsLinks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "a.txt"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyUntracked(src, dst, "a.txt"); err == nil {
+	if _, err := copyUntracked(src, dst, "a.txt"); err == nil {
 		t.Error("an existing file was overwritten")
 	}
 	if b, _ := os.ReadFile(filepath.Join(dst, "a.txt")); string(b) != "old" {
@@ -346,7 +347,7 @@ func TestCopyUntrackedNeverOverwritesOrFollowsLinks(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dst, "d")); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyUntracked(src, dst, "d/f"); err == nil {
+	if _, err := copyUntracked(src, dst, "d/f"); err == nil {
 		t.Error("a symlinked parent was followed")
 	}
 	if ents, _ := os.ReadDir(outside); len(ents) != 0 {
@@ -395,5 +396,194 @@ func TestExecuteIgnoresTheUsersDiffPrefixSettings(t *testing.T) {
 				t.Fatalf("status %s (%s): %s", out.Status, out.Code, out.Reason)
 			}
 		})
+	}
+}
+
+// churn does what parallel sessions and background tools do around a source
+// without touching what the rescue promises to keep: a new branch, a moved
+// remote-tracking ref, a commit in another worktree, and a `git status` in
+// the source that refreshes its index's stat cache (raw index bytes change,
+// content does not).
+func churn(t *testing.T, f *fixture, source string) {
+	t.Helper()
+	other := f.Worktree("bystander")
+	f.Commit(other, "other.txt", "other", "other work")
+	f.git("branch", "unrelated")
+	f.git("update-ref", "refs/remotes/origin/elsewhere", gitIn(t, other, "rev-parse", "HEAD"))
+	future := time.Now().Add(time.Minute)
+	if err := os.Chtimes(filepath.Join(source, "work.txt"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, source, "status", "--porcelain")
+}
+
+// TestExecuteIgnoresChangesOutsideTheSource checks that refs, other
+// worktrees' commits and an index stat-cache refresh between the check and
+// the run, or while the copy runs, neither refuse the rescue nor fail it
+// half built. Why: the fingerprint guards only what the rescue promises not
+// to change (the source's HEAD, its branch, its index content, its files);
+// hashing every ref and the raw index bytes made any parallel session or
+// background fetch abort the rescue.
+func TestExecuteIgnoresChangesOutsideTheSource(t *testing.T) {
+	for _, when := range []string{"between check and run", "while copying"} {
+		t.Run(when, func(t *testing.T) {
+			f := newFixture(t)
+			p := f.Worktree("topic")
+			f.Commit(p, "work.txt", "work", "work")
+			f.write(p, "work.txt", "edit")
+			eng, find := f.engine(f.Dir)
+			plan, err := eng.Preflight(find(p), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if when == "between check and run" {
+				churn(t, f, p)
+			} else {
+				t.Cleanup(func() { afterCarry = func(*Plan) {} })
+				afterCarry = func(*Plan) { churn(t, f, p) }
+			}
+
+			out := eng.Execute(plan)
+
+			if out.Status != StatusMoved {
+				t.Fatalf("status %s (%s): %s", out.Status, out.Code, out.Reason)
+			}
+		})
+	}
+}
+
+// TestExecuteReportsABranchLeftByAFailedCreate checks that when
+// worktree.CreateAt fails after git made the branch (here a failing
+// post-checkout hook), the outcome says the branch was kept and names it,
+// instead of "nothing was created", and that a rerun's name_unavailable is
+// therefore explained. Why: the old report claimed nothing existed while
+// refs/heads/rescued/topic did, so the user's next run failed with no
+// account of why.
+func TestExecuteReportsABranchLeftByAFailedCreate(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "work.txt", "edit")
+	eng, find := f.engine(f.Dir)
+	plan, err := eng.Preflight(find(p), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir"), "hooks", "post-checkout")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out := eng.Execute(plan)
+
+	if out.Status != StatusFailed || out.Code != CodeCreateFailed {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if !out.BranchKept {
+		t.Errorf("BranchKept is false although refs/heads/rescued/topic exists: %+v", out)
+	}
+	if strings.Contains(out.Reason, "nothing was created") || !strings.Contains(out.Reason, "rescued/topic") {
+		t.Errorf("reason %q must name the kept branch and not say nothing was created", out.Reason)
+	}
+	gitIn(t, f.Dir, "rev-parse", "--verify", "refs/heads/rescued/topic")
+}
+
+// TestExecuteSaysNothingWasCreatedWhenCreateLeavesNothing checks a create that
+// fails before git touches anything (the start commit is unknown) still says
+// nothing was created and sets neither Created nor BranchKept. Why: the new
+// leftover-branch report must not turn every create failure into a "kept".
+func TestExecuteSaysNothingWasCreatedWhenCreateLeavesNothing(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "work.txt", "edit")
+	eng, find := f.engine(f.Dir)
+	plan, err := eng.Preflight(find(p), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Start = strings.Repeat("0", 40)
+
+	out := eng.Execute(plan)
+
+	if out.Code != CodeCreateFailed || out.Created || out.BranchKept || !strings.Contains(out.Reason, "nothing was created") {
+		t.Fatalf("outcome = %+v", out)
+	}
+}
+
+// dirMode is the permission bits of dir.
+func dirMode(t *testing.T, dir string) os.FileMode {
+	t.Helper()
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Mode().Perm()
+}
+
+// TestExecuteCarriesDirectoryModes checks the directories created for
+// untracked files get the source directory's mode, a 0700 one included and a
+// read-only one (so the copy had to write into it first), and that a
+// directory git already made in the destination keeps its own. Why: a 0700
+// directory used to become 0755, silently widening who can read the files
+// the user kept private.
+func TestExecuteCarriesDirectoryModes(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "private/deep/note.txt", "secret")
+	f.write(p, "ro/file.txt", "read only dir")
+	f.write(p, "tracked/new.txt", "new in a tracked dir")
+	if err := os.Chmod(filepath.Join(p, "private"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(p, "private/deep"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(p, "ro"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(p, "ro"), 0o700) })
+
+	_, out := rescueOnce(t, f, p)
+	dest := out.Plan.DestPath
+	t.Cleanup(func() { os.Chmod(filepath.Join(dest, "ro"), 0o700) })
+
+	if out.Status != StatusMoved {
+		t.Fatalf("status %s (%s): %s", out.Status, out.Code, out.Reason)
+	}
+	for dir, want := range map[string]os.FileMode{"private": 0o700, "private/deep": 0o750, "ro": 0o500} {
+		if got := dirMode(t, filepath.Join(dest, dir)); got != want {
+			t.Errorf("%s has mode %o, want %o", dir, got, want)
+		}
+	}
+}
+
+// TestVerifyComparesDirectoryModes checks a destination directory whose mode
+// drifted from the source's after the copy is a verify failure. Why: verify
+// compared per-file modes only, so a widened directory passed as moved.
+func TestVerifyComparesDirectoryModes(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "private/note.txt", "secret")
+	if err := os.Chmod(filepath.Join(p, "private"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	eng, find := f.engine(f.Dir)
+	plan, err := eng.Preflight(find(p), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { afterCarry = func(*Plan) {} })
+	afterCarry = func(pl *Plan) { os.Chmod(filepath.Join(pl.DestPath, "private"), 0o755) }
+
+	out := eng.Execute(plan)
+
+	if out.Status != StatusFailed || out.Code != CodeVerifyFailed || !strings.Contains(out.Reason, "private") {
+		t.Fatalf("outcome = %+v", out)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -41,7 +42,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	exclude := "refs/heads/" + p.Branch
 
 	// The state the plan was checked against must still be the source's.
-	now, err := takeFingerprint(sg, exclude)
+	now, err := takeFingerprint(sg)
 	if err != nil {
 		return fail(CodeUnreadable, "could not read the source: %v", err)
 	}
@@ -53,6 +54,19 @@ func (e Engine) Execute(p *Plan) Outcome {
 
 	dest, err := worktree.CreateAt(p.Repo, p.Branch, p.Start)
 	if err != nil {
+		// git makes the branch before it checks the worktree out, so a failure
+		// can leave the branch (and a directory) behind. Say so, with the name:
+		// a rerun is refused for that very name.
+		if _, rerr := (sgit{dir: p.Repo}).text("rev-parse", "--verify", "-q", exclude); rerr == nil {
+			o.BranchKept = true
+			_, derr := os.Lstat(p.DestPath)
+			o.Created = derr == nil
+			kept := "the branch " + p.Branch + " was kept"
+			if o.Created {
+				kept += " and so was the directory " + p.DestPath
+			}
+			return fail(CodeCreateFailed, "could not create the new worktree: %v (%s; nothing was rolled back, `wt remove` can clear it)", err, kept)
+		}
 		return fail(CodeCreateFailed, "could not create the new worktree: %v; nothing was created", err)
 	}
 	o.Created, p.DestPath, o.Plan.DestPath = true, dest, dest
@@ -85,10 +99,18 @@ func (e Engine) Execute(p *Plan) Outcome {
 		}
 		done("carried unstaged changes")
 	}
+	var madeDirs []string
 	for _, rel := range p.untracked {
-		if err := copyUntracked(p.Source.Path, dest, rel); err != nil {
+		made, err := copyUntracked(p.Source.Path, dest, rel)
+		madeDirs = append(madeDirs, made...)
+		if err != nil {
 			return keep(CodeCarryFailed, "copying %s: %v", cleanup.OneLine(rel), err)
 		}
+	}
+	// Directory modes go on last: a read-only source directory must not block
+	// writing its files into the copy.
+	if err := setDirModes(p.Source.Path, dest, madeDirs); err != nil {
+		return keep(CodeCarryFailed, "setting directory modes: %v", err)
 	}
 	if len(p.untracked) > 0 {
 		done(fmt.Sprintf("copied %d untracked files", len(p.untracked)))
@@ -96,7 +118,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	afterCarry(p)
 
 	// A held session may have edited the source while it was being read.
-	after, err := takeFingerprint(sg, exclude)
+	after, err := takeFingerprint(sg)
 	if err != nil {
 		return keep(CodeUnreadable, "could not re-read the source: %v", err)
 	}
@@ -104,7 +126,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 		return keep(CodeSourceChangedMid, "the source changed while copying (%s), so the copy may be stale", d)
 	}
 
-	if err := verify(sg, dg, p, after); err != nil {
+	if err := verify(sg, dg, p, after, madeDirs); err != nil {
 		return keep(CodeVerifyFailed, "the copy does not match the source: %v", err)
 	}
 	done("verified status and file contents against the source")
@@ -113,9 +135,10 @@ func (e Engine) Execute(p *Plan) Outcome {
 }
 
 // verify checks the destination reproduces the source: the same HEAD, the
-// same `status --porcelain=v2` listing byte for byte, and the same content,
-// mode and link target at every path that listing names.
-func verify(sg, dg sgit, p *Plan, src fingerprint) error {
+// same `status --porcelain=v2` listing byte for byte, the same content, mode
+// and link target at every path that listing names, and the same mode on
+// every directory the copy created.
+func verify(sg, dg sgit, p *Plan, src fingerprint, madeDirs []string) error {
 	head, err := dg.text("rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -135,6 +158,36 @@ func verify(sg, dg sgit, p *Plan, src fingerprint) error {
 			return fmt.Errorf("%s differs (source %s, destination %s)", cleanup.OneLine(rel), shortHash(want), shortHash(got))
 		}
 	}
+	for _, rel := range madeDirs {
+		sm, serr := os.Lstat(filepath.Join(sg.dir, rel))
+		dm, derr := os.Lstat(filepath.Join(dg.dir, rel))
+		if serr != nil || derr != nil {
+			return fmt.Errorf("directory %s could not be compared (source %v, destination %v)", cleanup.OneLine(rel), serr, derr)
+		}
+		if sm.Mode().Perm() != dm.Mode().Perm() {
+			return fmt.Errorf("directory %s has mode %o, the source's is %o", cleanup.OneLine(rel), dm.Mode().Perm(), sm.Mode().Perm())
+		}
+	}
+	return nil
+}
+
+// setDirModes gives each directory the copy created the mode of its source
+// counterpart, deepest first so a parent made read-only does not block its
+// child.
+func setDirModes(src, dst string, dirs []string) error {
+	sorted := slices.Clone(dirs)
+	slices.SortFunc(sorted, func(a, b string) int {
+		return strings.Count(b, "/") - strings.Count(a, "/")
+	})
+	for _, rel := range sorted {
+		fi, err := os.Lstat(filepath.Join(src, rel))
+		if err != nil {
+			return err
+		}
+		if err := os.Chmod(filepath.Join(dst, rel), fi.Mode().Perm()); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -152,57 +205,61 @@ func shortHash(s string) string {
 // one, refusing a parent that is a symlink or not a directory (so a link
 // cannot send the copy out of dst); it opens the file exclusively (never
 // overwriting) and keeps its permission bits; a symlink is recreated, not
-// followed.
-func copyUntracked(src, dst, rel string) error {
+// followed. It returns the directories it created (relative, slash
+// separated) so the caller can give them the source's modes once every file
+// is in: they are made 0700 here so a read-only source directory does not
+// stop its own files being written.
+func copyUntracked(src, dst, rel string) (made []string, err error) {
 	if !safeRel(rel) {
-		return fmt.Errorf("unsafe path")
+		return nil, fmt.Errorf("unsafe path")
 	}
 	parts := strings.Split(rel, "/")
 	dir := dst
-	for _, c := range parts[:len(parts)-1] {
+	for i, c := range parts[:len(parts)-1] {
 		dir = filepath.Join(dir, c)
 		fi, err := os.Lstat(dir)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			if err := os.Mkdir(dir, 0o755); err != nil {
-				return err
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				return made, err
 			}
+			made = append(made, strings.Join(parts[:i+1], "/"))
 		case err != nil:
-			return err
+			return made, err
 		case !fi.IsDir():
-			return fmt.Errorf("%s is not a directory in the new worktree", c)
+			return made, fmt.Errorf("%s is not a directory in the new worktree", c)
 		}
 	}
 	from, to := filepath.Join(src, rel), filepath.Join(dst, rel)
 	fi, err := os.Lstat(from)
 	if err != nil {
-		return err
+		return made, err
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
 		t, err := os.Readlink(from)
 		if err != nil {
-			return err
+			return made, err
 		}
-		return os.Symlink(t, to)
+		return made, os.Symlink(t, to)
 	}
 	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("not a regular file")
+		return made, fmt.Errorf("not a regular file")
 	}
 	in, err := os.OpenFile(from, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return err
+		return made, err
 	}
 	defer in.Close()
 	out, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fi.Mode().Perm())
 	if err != nil {
-		return err
+		return made, err
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
-		return err
+		return made, err
 	}
 	if err := out.Close(); err != nil {
-		return err
+		return made, err
 	}
-	return os.Chmod(to, fi.Mode().Perm())
+	return made, os.Chmod(to, fi.Mode().Perm())
 }

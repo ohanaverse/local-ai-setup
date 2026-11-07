@@ -98,7 +98,7 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 	}
 	p.Branch, p.DestPath = branch, dest
 
-	if p.fp, err = takeFingerprint(sg, "refs/heads/"+branch); err != nil {
+	if p.fp, err = takeFingerprint(sg); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -166,7 +166,35 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 			p.Counts.Unstaged++
 		}
 	}
-	return checkLineEndings(sg, tracked)
+	if err := checkLineEndings(sg, tracked); err != nil {
+		return err
+	}
+	return checkContentFilters(sg, tracked)
+}
+
+// checkContentFilters refuses a changed tracked file that a content filter
+// handles (a `filter` attribute: git-lfs or any clean/smudge pair). The diff
+// the copy applies holds the cleaned blob but the new worktree's files would
+// be smudged (or the filter missing or failing there), so verify would find a
+// difference only after the branch and worktree existed.
+func checkContentFilters(sg sgit, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	out, err := sg.out(nil, append([]string{"check-attr", "-z", "filter", "--"}, paths...)...)
+	if err != nil {
+		return err
+	}
+	// -z output is NUL-terminated triples: path, attribute, value.
+	f := strings.Split(string(out), "\x00")
+	for i := 0; i+2 < len(f); i += 3 {
+		switch v := f[i+2]; v {
+		case "unspecified", "unset":
+		default:
+			return refuse(CodeContentFilter, "a content filter ("+cleanup.OneLine(v)+", for example git-lfs) applies to "+cleanup.OneLine(f[i])+", so a copy would not match it byte for byte")
+		}
+	}
+	return nil
 }
 
 // checkLineEndings refuses a changed tracked file whose line endings git

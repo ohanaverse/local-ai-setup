@@ -1,50 +1,38 @@
 package rescue
 
 import (
-	"bytes"
-	"context"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
 
 // gitTimeout bounds one git call.
 const gitTimeout = 2 * time.Minute
 
-// sgit runs git in one directory. Every call turns optional locks off and
-// the fsmonitor daemon off: `git status` or `git diff` would otherwise be
-// free to rewrite the index's stat cache, which is a change to a source
-// that must stay as found.
+// sgit runs git in one directory through cleanup.Git, which turns optional
+// locks off (so `git status` or `git diff` cannot rewrite the index's stat
+// cache, a change to a source that must stay as found); the fsmonitor daemon
+// is switched off here too. It differs from cleanup.Git only in treating a
+// non-zero exit as an error carrying stderr.
 type sgit struct{ dir string }
 
-// out runs `git -C dir -c core.fsmonitor=false args...` with stdin, returning
-// stdout. A non-zero exit is an error carrying stderr.
+func (g sgit) runner() cleanup.Git {
+	return cleanup.Git{Dir: g.dir, Timeout: gitTimeout, Config: []string{"core.fsmonitor=false"}}
+}
+
+// out runs git with stdin, returning stdout. A non-zero exit is an error
+// carrying stderr.
 func (g sgit) out(stdin []byte, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
-	defer cancel()
-	full := append([]string{"-C", g.dir, "-c", "core.fsmonitor=false"}, args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
+	o, err := g.runner().RunInput(string(stdin), args...)
+	if err != nil {
+		return nil, fmt.Errorf("git %s: %w", args[0], err)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("git %s: %w", args[0], ctx.Err())
-		}
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr.String()))
-		}
-		return nil, err
+	if o.Code != 0 {
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(o.Stderr))
 	}
-	return stdout.Bytes(), nil
+	return []byte(o.Stdout), nil
 }
 
 func (g sgit) text(args ...string) (string, error) {

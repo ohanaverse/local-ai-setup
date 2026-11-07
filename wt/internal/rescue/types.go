@@ -42,6 +42,7 @@ const (
 	CodeSpecialFile      = "special_file"
 	CodeTooLarge         = "too_large"
 	CodeLineEndings      = "line_endings"
+	CodeContentFilter    = "content_filter"
 	CodeNameUnavailable  = "name_unavailable"
 	CodeSourceChanged    = "source_changed"
 	CodeUnreadable       = "unreadable"
@@ -108,12 +109,16 @@ const (
 // (so a failed outcome with Created set names a half-built destination to
 // keep). Completed lists the steps that finished.
 type Outcome struct {
-	Status    Status
-	Plan      Plan
-	Code      string // the Refusal or failure code; "" for moved and would_move
-	Reason    string
-	Created   bool
-	Completed []string
+	Status  Status
+	Plan    Plan
+	Code    string // the Refusal or failure code; "" for moved and would_move
+	Reason  string
+	Created bool
+	// BranchKept says the new branch exists although the worktree creation
+	// failed: git made the branch first and the failure came after. Created
+	// says whether the worktree directory is there too.
+	BranchKept bool
+	Completed  []string
 }
 
 // Engine runs a rescue in one repository. G runs git in the repository (any

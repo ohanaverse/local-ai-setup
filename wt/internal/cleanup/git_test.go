@@ -57,3 +57,27 @@ func TestGitRunTurnsOptionalLocksOff(t *testing.T) {
 		t.Errorf("GIT_OPTIONAL_LOCKS = %q, want 0", got)
 	}
 }
+
+// TestGitConfigAndEnvApplyToEveryCall checks Git.Config becomes `-c k=v`
+// options before the subcommand and Git.Env is added to the child's
+// environment (observed through git config and a shell alias). Why: the
+// rescue engine reads a source it must not change and needs
+// core.fsmonitor=false and its own environment on every call, through this
+// one runner instead of a second copy of it.
+func TestGitConfigAndEnvApplyToEveryCall(t *testing.T) {
+	f := newFixture(t)
+	f.Commit("a.txt", "a", "base")
+	g := Git{Dir: f.Dir, Config: []string{"core.fsmonitor=false", "rescue.probe=yes"}, Env: []string{"RESCUE_PROBE=seen"}}
+
+	out, err := g.Run("config", "--get", "rescue.probe")
+	if err != nil || out.Code != 0 || strings.TrimSpace(out.Stdout) != "yes" {
+		t.Fatalf("config probe: %+v err=%v, want yes", out, err)
+	}
+	out, err = g.Run("-c", "alias.env=!echo $RESCUE_PROBE", "env")
+	if err != nil || strings.TrimSpace(out.Stdout) != "seen" {
+		t.Fatalf("env probe: %+v err=%v, want seen", out, err)
+	}
+	if _, err := (Git{Dir: f.Dir}).Run("config", "--get", "rescue.probe"); err != nil {
+		t.Fatal(err)
+	}
+}

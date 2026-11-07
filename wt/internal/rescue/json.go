@@ -30,6 +30,7 @@ type Envelope struct {
 	Code        string           `json:"code,omitempty"`
 	Reason      string           `json:"reason,omitempty"`
 	Created     bool             `json:"created"`
+	BranchKept  bool             `json:"branch_kept,omitempty"`
 	Source      *SourceJSON      `json:"source,omitempty"`
 	Destination *DestinationJSON `json:"destination,omitempty"`
 	Carried     *CarriedJSON     `json:"carried,omitempty"`
@@ -79,13 +80,13 @@ var Outcomes = []Status{StatusMoved, StatusWouldMove, StatusRefused, StatusFaile
 // Codes is every code an Outcome or Refusal can carry.
 var Codes = []string{CodeNotWorktree, CodePrimary, CodeNothingToKeep, CodeGatesUnknown, CodeOperation,
 	CodeUnmerged, CodeHiddenIndex, CodeSubmodule, CodeStagedAndEdited, CodeIntentToAdd, CodeNestedRepo,
-	CodeSpecialFile, CodeTooLarge, CodeLineEndings, CodeNameUnavailable, CodeSourceChanged, CodeUnreadable, CodeVerifyFailed,
+	CodeSpecialFile, CodeTooLarge, CodeLineEndings, CodeContentFilter, CodeNameUnavailable, CodeSourceChanged, CodeUnreadable, CodeVerifyFailed,
 	CodeCarryFailed, CodeCreateFailed, CodeSourceChangedMid}
 
 // EncodeResult is the document for one outcome.
 func EncodeResult(o Outcome, m Meta) ([]byte, error) {
 	e := Envelope{Version: EnvelopeVersion, Repo: m.Repo, DryRun: m.DryRun,
-		Outcome: string(o.Status), Code: o.Code, Reason: cleanup.OneLine(o.Reason), Created: o.Created,
+		Outcome: string(o.Status), Code: o.Code, Reason: cleanup.OneLine(o.Reason), Created: o.Created, BranchKept: o.BranchKept,
 		Completed: sanitised(o.Completed), Warnings: sanitised(o.Plan.Warnings)}
 	p := o.Plan
 	if p.Source.Path != "" {

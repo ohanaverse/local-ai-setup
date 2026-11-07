@@ -143,10 +143,23 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	}
 	// The rescue asks and prints on the real terminal, so it runs here, after
 	// the alt screen has closed (and after the session's removal log).
-	if err == nil && ok && fm.rescueRow != nil && rm.Rescue != nil {
-		err = rm.Rescue(*fm.rescueRow)
+	if err == nil && ok {
+		err = runRescue(fm, rm, stop)
 	}
 	return err
+}
+
+// runRescue hands the `r` key's row to rm.Rescue, if there is one. It stops
+// the signal forwarding first: the program has finished, so a forwarded
+// signal would go to a dead p.Send and be dropped, leaving Ctrl-C at the
+// rescue's y/N prompt (or during a long copy) with no effect. With the
+// forwarding stopped Go's default handling ends the process again.
+func runRescue(fm cleanupListModel, rm RemoveFuncs, stop func()) error {
+	if fm.rescueRow == nil || rm.Rescue == nil {
+		return nil
+	}
+	stop()
+	return rm.Rescue(*fm.rescueRow)
 }
 
 // startRescue handles `r`: on a row a rescue is offered for, quit and

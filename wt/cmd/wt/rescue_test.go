@@ -444,3 +444,62 @@ func TestCleanupListGetsTheRescue(t *testing.T) {
 		t.Errorf("out %q err %q", out.String(), errOut.String())
 	}
 }
+
+// TestRescueCmdDryRunDoesNotFetch checks --dry-run without --no-fetch leaves
+// every ref alone even when origin has moved on (the fetch is skipped), and
+// the report says the classification used the last fetch. Why: the help
+// promises a dry run changes no ref, index or working file, and `git fetch`
+// rewrites remote-tracking refs.
+func TestRescueCmdDryRunDoesNotFetch(t *testing.T) {
+	a := rescueApp(t)
+	dir := cleanupRepo(t)
+	src := workWorktree(t, dir)
+	other := filepath.Join(filepath.Dir(dir), "second")
+	cgit(t, filepath.Dir(dir), "clone", filepath.Join(filepath.Dir(dir), "origin.git"), other)
+	cgit(t, other, "config", "user.email", "t@example.com")
+	cgit(t, other, "config", "user.name", "T")
+	cgit(t, other, "config", "commit.gpgsign", "false")
+	cleanupCommit(t, other, "remote-only.txt", "moved on")
+	cgit(t, other, "push", "origin", "main")
+	worldBefore, stateBefore := repoWorld(t, dir), sourceState(t, src)
+
+	stdout, _, err := runRescue(t, a, dir, "", "spike", "--dry-run", "--json")
+
+	if exitOf(err) != 0 {
+		t.Fatalf("exit %d\n%s", exitOf(err), stdout)
+	}
+	if got := repoWorld(t, dir); got != worldBefore {
+		t.Errorf("a dry run changed refs:\n%s\n--- was ---\n%s", got, worldBefore)
+	}
+	if got := sourceState(t, src); got != stateBefore {
+		t.Error("a dry run changed the source")
+	}
+	env := decodeRescue(t, stdout)
+	if !strings.Contains(strings.Join(env.Warnings, "\n"), "last fetch") {
+		t.Errorf("warnings %q do not say the last fetch was used", env.Warnings)
+	}
+}
+
+// TestPrintRescueTextNamesAKeptBranch checks the human result of a create that
+// failed after git made the branch names the branch as kept, with or without
+// its directory, and that a failure which created nothing says neither. Why:
+// the text used to claim only "failed", leaving a rerun's name_unavailable
+// unexplained.
+func TestPrintRescueTextNamesAKeptBranch(t *testing.T) {
+	plan := rescue.Plan{Branch: "rescued/x", DestPath: "/d/rescued-x", Source: rescue.Source{Path: "/s"}}
+	render := func(o rescue.Outcome) string {
+		var b bytes.Buffer
+		if err := printRescueText(&b, rescue.Meta{}, o); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	got := render(rescue.Outcome{Status: rescue.StatusFailed, Code: rescue.CodeCreateFailed, Reason: "r", Plan: plan, BranchKept: true})
+	if !strings.Contains(got, "branch rescued/x was kept") {
+		t.Errorf("a kept branch is not named:\n%s", got)
+	}
+	got = render(rescue.Outcome{Status: rescue.StatusFailed, Code: rescue.CodeCreateFailed, Reason: "r", Plan: plan})
+	if strings.Contains(got, "was kept") || strings.Contains(got, "were kept") {
+		t.Errorf("nothing was created, yet:\n%s", got)
+	}
+}
