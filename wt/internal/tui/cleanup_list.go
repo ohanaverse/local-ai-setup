@@ -40,13 +40,20 @@ type cleanupItem struct {
 }
 
 // cleanupLocked reports whether a row can never be ticked: an in-use row, a
-// row with any hard blocker, and every remote row (wt does not delete origin
-// branches yet, plan call 9). Every other row may be ticked by the user;
-// only Tickable rows are ticked for them (by default and by `a`). A ticked
-// row that is not proven, or loses anything, goes through the typed
-// confirmation (cleanup_confirm.go) before anything is removed.
+// row with any hard blocker, and a remote row unless it is a proven origin
+// branch (the engine removes nothing else on a remote: only origin, only
+// proven). Every other row may be ticked by the user; only Tickable local
+// rows are ticked for them (by default and by `a`): an origin row is never
+// ticked for the user, who must space each one, because deleting it is
+// visible to everyone with access to the repository. A ticked row that is not
+// proven, or loses anything, goes through the typed confirmation
+// (cleanup_confirm.go) before anything is removed; an origin row through its
+// own phrase.
 func cleanupLocked(r cleanup.Row) bool {
-	return r.Status == cleanup.StatusInUse || len(r.Blockers) > 0 || r.Kind == cleanup.KindRemote
+	if r.Kind == cleanup.KindRemote && (!r.Tickable() || r.Remote != "origin") {
+		return true
+	}
+	return r.Status == cleanup.StatusInUse || len(r.Blockers) > 0
 }
 
 // Row geometry: "> " cursor, "[x] " box, the kind padded to 8, then the name
@@ -103,7 +110,7 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 		m.items = append(m.items, cleanupItem{heading: g.Heading})
 		for _, row := range g.Rows {
 			it := cleanupItem{row: row, text: cleanup.RowText(r, row), locked: cleanupLocked(row)}
-			if row.Tickable() && !it.locked {
+			if row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
 				m.ticked[len(m.items)] = true
 			}
 			if m.cursor < 0 {
@@ -238,7 +245,7 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "a":
 			for i, it := range m.items {
-				if it.heading == "" && !it.locked && it.row.Tickable() {
+				if it.heading == "" && !it.locked && it.row.Tickable() && it.row.Kind != cleanup.KindRemote {
 					m.ticked[i] = true
 				}
 			}
@@ -483,8 +490,12 @@ func (m *cleanupListModel) detail() string {
 		text += " [" + age + "]"
 	}
 	switch {
+	case it.locked && it.row.Kind == cleanup.KindRemote && it.row.Remote != "origin":
+		text = "cannot be ticked (wt removes only origin branches): " + text
 	case it.locked && it.row.Kind == cleanup.KindRemote:
-		text = "cannot be ticked (wt does not delete origin branches): " + text
+		text = "cannot be ticked (only a proven origin branch can be removed): " + text
+	case it.row.Kind == cleanup.KindRemote:
+		text = "origin branch: deleting it is visible to everyone with access to the repository and needs the phrase delete origin; space ticks it: " + text
 	case it.locked:
 		text = "cannot be ticked: " + text
 	}

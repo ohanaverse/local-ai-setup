@@ -18,9 +18,9 @@ import (
 // hand Run the Item ItemPreview.Confirmed (or ConfirmedDeletingBranch)
 // builds from what the user confirmed (Ruling K; Tasks 9 and 10 depend on this).
 //
-// Every kind converts, a remote row included: the engine refuses a remote
-// item ("not removable"), so a caller that lets one through gets a refusal,
-// never a silently re-kinded item.
+// Every kind converts, a remote row included. An origin row that is proven
+// is removable through the Remote approval; any other remote item is refused
+// by the engine, never silently re-kinded.
 func ItemFromRow(r cleanup.Row) Item {
 	tip := r.Tip
 	if r.Kind == cleanup.KindWorktree && r.Ref == "" {
@@ -55,6 +55,10 @@ const (
 	// ApprovalNeedsDelete: a branch item whose branch is not proven merged;
 	// -D plus the typed confirmation.
 	ApprovalNeedsDelete Approval = "needs_delete"
+	// ApprovalNeedsRemote: a proven origin branch; deleting it is public, so
+	// it needs the Remote approval (--remote, the typed "delete origin") and
+	// no other approval stands in for it.
+	ApprovalNeedsRemote Approval = "needs_remote"
 	// ApprovalRefused: Run would refuse it, skip it, or do nothing to it;
 	// ItemPreview.Reason is the engine's reason. No approval removes it.
 	ApprovalRefused Approval = "refused"
@@ -237,7 +241,7 @@ func (e Engine) safePreview(it Item) (p ItemPreview) {
 
 func (e Engine) previewItem(it Item) ItemPreview {
 	full := it
-	full.Approved = Needs{Confirm: true, Force: true, Delete: it.Kind == cleanup.KindBranch}
+	full.Approved = Needs{Confirm: true, Force: true, Delete: it.Kind == cleanup.KindBranch, Remote: it.Kind == cleanup.KindRemote}
 	g := e.gate(full)
 	p := ItemPreview{Item: it, Procs: g.procs, Fresh: g.fresh}
 	p.Warnings = oneLines(procWarnings(nil, g.procErr))
@@ -254,7 +258,7 @@ func (e Engine) previewItem(it Item) ItemPreview {
 	plan.Item = it
 	p.Plan = plan
 	p.Warnings = append(p.Warnings, branchWarnings...)
-	if it.Kind == cleanup.KindBranch && plan.Branch != BrDeleted {
+	if (it.Kind == cleanup.KindBranch || it.Kind == cleanup.KindRemote) && plan.Branch != BrDeleted {
 		// A branch item whose branch would stay does nothing at all.
 		p.Approval, p.Reason = ApprovalRefused, plan.Reason
 		return p
@@ -262,6 +266,8 @@ func (e Engine) previewItem(it Item) ItemPreview {
 
 	p.Needs = g.need
 	switch {
+	case p.Needs.Remote:
+		p.Approval = ApprovalNeedsRemote
 	case p.Needs.Force:
 		p.Approval = ApprovalNeedsForce
 	case p.Needs.Delete:

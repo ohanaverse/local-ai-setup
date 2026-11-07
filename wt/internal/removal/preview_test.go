@@ -100,7 +100,7 @@ func TestItemFromRowDetachedSawTipIsHead(t *testing.T) {
 
 // TestItemFromRowRemoteIsConvertedAndRefused converts a remote row: the
 // conversion keeps its kind (callers never get a silently re-kinded item),
-// and the engine refuses it (remote rows are not removable in PR B), in
+// and the engine refuses it (an unproven origin row is not removable), in
 // Preview and in Run alike.
 func TestItemFromRowRemoteIsConvertedAndRefused(t *testing.T) {
 	noGh(t)
@@ -114,8 +114,8 @@ func TestItemFromRowRemoteIsConvertedAndRefused(t *testing.T) {
 	e := f.engine(s, f.inputs(), Options{})
 	p := previewOne(t, e, it)
 	o := one(t, e, granted(it, allNeeds))
-	if p.Approval != ApprovalRefused || o.Worktree != WtRefused || p.Reason != o.Reason || !strings.Contains(o.Reason, "not removable") {
-		t.Fatalf("preview %s %q, run %s %q; want both refused: not removable", p.Approval, p.Reason, o.Worktree, o.Reason)
+	if p.Approval != ApprovalRefused || o.Worktree != WtRefused || p.Reason != o.Reason || !strings.Contains(o.Reason, "only a proven origin branch") {
+		t.Fatalf("preview %s %q, run %s %q; want both refused: only a proven origin branch", p.Approval, p.Reason, o.Worktree, o.Reason)
 	}
 }
 

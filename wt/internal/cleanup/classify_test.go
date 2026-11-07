@@ -63,6 +63,15 @@ func reasonCodes(rs []Reason) []string {
 // noGh stubs gh with an answered, empty listing for every branch.
 func noGh(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	stubGhBase(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+}
+
+// stubGhBase replaces the `gh pr list --base` seam for one test.
+func stubGhBase(t *testing.T, fn func(dir, base string) ([]byte, error)) {
+	t.Helper()
+	old := ghPRBaseList
+	ghPRBaseList = fn
+	t.Cleanup(func() { ghPRBaseList = old })
 }
 
 // mergedPRStub stubs gh so branch has one own-repo MERGED PR #n into main
@@ -822,6 +831,8 @@ func handSnapshot() Snapshot {
 		Proofs:  map[string]Proof{},
 		PRs:     map[string]PRResult{},
 		Merges:  map[string]Tri{},
+		// A hand snapshot stands for a normal run: origin fetched cleanly now.
+		Fetch: FetchResult{OK: true, At: time.Now()},
 	}
 }
 
@@ -877,6 +888,8 @@ func TestClassifyRemoteRowRules(t *testing.T) {
 		s.Remotes = []RefFact{{Ref: "refs/remotes/origin/topic", Name: "topic", Remote: "origin", Tip: tip, Created: old}}
 		s.Proofs[tip] = Proof{Evidence: EvAncestor, Verdict: Merged}
 		s.PRs["topic"] = topic
+		s.Merges[merged.MergeCommit] = TriYes
+		s.BasePRs = map[string]PRResult{"topic": {Lookup: LookupNone}}
 		for k, v := range others {
 			s.PRs[k] = v
 		}

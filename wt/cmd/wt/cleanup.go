@@ -55,10 +55,15 @@ func cleanupCmd(a *app) *cobra.Command {
 			"terminal, enter removes the ticked\n" +
 			"rows after a confirmation that lists what each would lose: y when every\n" +
 			"row is proven, the typed word delete when any is not proven or loses\n" +
-			"something. origin branches are never removed. r copies the work of the row\n" +
-			"under the cursor into a new branch and worktree first (`wt rescue`).\n\n" +
-			"It runs `git fetch --prune origin` first (--no-fetch skips it) and says in the\n" +
-			"header how that went (a repository with no origin remote skips it). A failed\n" +
+			"something. A proven origin branch is tickable too (never ticked for you), and\n" +
+			"deleting it needs its own typed phrase, delete origin. r copies the work of\n" +
+			"the row under the cursor into a new branch and worktree first (`wt rescue`).\n\n" +
+			"It runs `git fetch --prune <remote>` for every remote first (origin first, the\n" +
+			"others at the same time), never prompting (git's prompts are off and ssh uses\n" +
+			"BatchMode unless you set GIT_SSH_COMMAND or core.sshCommand, which is then\n" +
+			"left alone)\n" +
+			"(--no-fetch skips it; an origin branch is then not removable) and says in the\n" +
+			"header how that went (a repository with no remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
 			"status. Exit 0 means a list was produced; exit 1 means the repository could\n" +
 			"not be classified at all (not a repository, no default branch). With --json\n" +
@@ -81,7 +86,7 @@ func cleanupCmd(a *app) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
-	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune origin first")
+	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
@@ -116,6 +121,15 @@ func cleanupInputs(cwd string, fetch bool, protected []string, label string) cle
 	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4}
 }
 
+// cleanupListInputs is cleanupInputs for a caller that shows or acts on origin
+// rows (the list, `wt remove origin/...`): it also makes the per-branch
+// `gh pr list --base` query.
+func cleanupListInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+	in := cleanupInputs(cwd, fetch, protected, label)
+	in.OriginRows = true
+	return in
+}
+
 type cleanupFlags struct {
 	json, noFetch, plain bool
 	minAge               time.Duration
@@ -130,7 +144,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	// Listing only reads, so a registry that cannot be read does not stop
 	// it: the header says protection is off (and a removal refuses).
 	protected, protErr := protectedPaths(a)
-	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupInputs(cwd, !f.noFetch, protected, "wt-cleanup"))
+	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupListInputs(cwd, !f.noFetch, protected, "wt-cleanup"))
 	if err != nil {
 		repo := snap.Repo
 		if repo == "" {
@@ -149,7 +163,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		_, err = out.Write(b)
 		return err
 	case !f.plain && isTerminalWriter(out):
-		in := cleanupInputs(cwd, false, protected, "wt-cleanup")
+		in := cleanupListInputs(cwd, false, protected, "wt-cleanup")
 		return runCleanupList(report, a.theme, cleanupRemoveFuncs(a, snap, in, f.minAge, protErr))
 	}
 	return printCleanupPlain(out, report, time.Now())
@@ -178,6 +192,7 @@ func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr 
 // removes anything, so the registry does not matter to it.
 func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
 	in.Fetch = false // a re-check never fetches
+	in.Fetched = snap.Fetch
 	// cur is the snapshot the list currently stands on: Refresh replaces it,
 	// and `r` rescues against it.
 	cur := &snap

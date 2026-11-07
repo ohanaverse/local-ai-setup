@@ -15,7 +15,7 @@ import (
 // rescanInputs are the GatherInputs gather(t, f) uses, so a rescan sees the
 // same caller directory and own repo as the full run it is compared with.
 func rescanInputs(f *fixture) GatherInputs {
-	return GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+	return GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2, OriginRows: true}
 }
 
 // targetOf is the Target that names row.
@@ -465,12 +465,110 @@ func TestRescanRejectsMalformedTarget(t *testing.T) {
 		{Kind: KindBranch, Ref: "--all"},
 		{Kind: KindBranch, Ref: "refs/tags/v1"},
 		{Kind: KindBranch, Ref: "refs/remotes/origin/topic"},
-		{Kind: KindRemote, Ref: "refs/remotes/origin/topic"},
+		{Kind: KindRemote, Ref: "origin/topic"},
+		{Kind: KindRemote, Ref: "refs/heads/topic"},
 		{Kind: KindBranch, Ref: "refs/heads/alias"},
 	} {
 		_, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, tg)
 		if err == nil || errors.Is(err, ErrTargetGone) {
 			t.Errorf("Rescan(%+v): error %v, want a plain error", tg, err)
 		}
+	}
+}
+
+// remoteFixture is a repo whose origin branch "topic" is merged (a merged PR
+// at its tip), listed with a clean fetch.
+func remoteFixture(t *testing.T) (*fixture, Snapshot, Options, Target) {
+	t.Helper()
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	tip := f.git("rev-parse", "main")
+	mergedPRStub(t, "topic", 8, tip, tip)
+	stubGhBase(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	in := rescanInputs(f)
+	in.Fetch = true
+	s, err := Gather(Git{Dir: f.Dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := Options{Now: later()}
+	row := findRow(t, Classify(s, o), KindRemote, "topic")
+	if row.Status != StatusProven {
+		t.Fatalf("fixture row is %s, want proven%s", row.Status, dumpRows(Classify(s, o).Rows))
+	}
+	return f, s, o, Target{Kind: KindRemote, Ref: row.Ref}
+}
+
+// TestRescanRemoteRunsGhLiveForThatBranchOnly rescans an origin row and counts
+// the gh calls. What: exactly one head lookup and one base lookup, both for
+// the target, and the result equals the full run's row. Why: the PR facts of
+// the first gather are exactly what made the stacked-PR check blind; the
+// delete is public, so its re-check asks gh again (one pair per item), while a
+// worktree or branch rescan still runs none.
+func TestRescanRemoteRunsGhLiveForThatBranchOnly(t *testing.T) {
+	f, s, o, tg := remoteFixture(t)
+	var heads, bases []string
+	stubGh(t, func(_, b string) ([]byte, error) {
+		heads = append(heads, b)
+		tip := f.git("rev-parse", "main")
+		return mustJSON(t, []any{map[string]any{"number": 8, "state": "MERGED", "headRefOid": tip, "baseRefName": "main",
+			"mergeCommit": map[string]any{"oid": tip}, "isCrossRepository": false, "headRepository": map[string]any{"name": "r", "nameWithOwner": "o/r"}}}), nil
+	})
+	stubGhBase(t, func(_, b string) ([]byte, error) { bases = append(bases, b); return []byte("[]"), nil })
+	row := mustRescan(t, f, s, o, tg)
+	if row.Status != StatusProven || !slices.Equal(heads, []string{"topic"}) || !slices.Equal(bases, []string{"topic"}) {
+		t.Fatalf("row %s, head calls %v, base calls %v", row.Status, heads, bases)
+	}
+	heads, bases = nil, nil
+	mustRescan(t, f, s, o, Target{Kind: KindBranch, Ref: "refs/heads/topic"})
+	f.Branch("loc")
+	mustRescan(t, f, s, o, Target{Kind: KindBranch, Ref: "refs/heads/loc"})
+	if len(heads)+len(bases) != 0 {
+		t.Fatalf("a branch rescan ran gh: heads %v bases %v", heads, bases)
+	}
+}
+
+// TestRescanRemoteSeesAPROpenedAfterTheList opens a dependent PR (base query)
+// after the list was built. What: the fresh row is in_use/base_of_open_pr.
+// Why: a PR opened in the window between the list and the delete would be
+// closed by the delete; the rescan must see everything gh can tell.
+func TestRescanRemoteSeesAPROpenedAfterTheList(t *testing.T) {
+	f, s, o, tg := remoteFixture(t)
+	stubGhBase(t, func(string, string) ([]byte, error) {
+		return []byte(`[{"number":40,"headRefName":"c","isCrossRepository":false}]`), nil
+	})
+	row := mustRescan(t, f, s, o, tg)
+	if row.Status != StatusInUse || !slices.Contains(reasonCodes(row.Blockers), BlockBaseOfOpenPR) {
+		t.Fatalf("row %s %v", row.Status, reasonCodes(row.Blockers))
+	}
+}
+
+// TestRescanRemoteHeadMoved answers the head lookup with a merged PR for a
+// different head. What: the row is less_sure/pr_head_moved. Why: only the PR's
+// exact head proves that the merge covers what the delete throws away.
+func TestRescanRemoteHeadMoved(t *testing.T) {
+	f, s, o, tg := remoteFixture(t)
+	tip := f.git("rev-parse", "main")
+	mergedPRStub(t, "topic", 8, strings.Repeat("9", 40), tip)
+	row := mustRescan(t, f, s, o, tg)
+	if row.Status != StatusLessSure || !slices.Contains(reasonCodes(row.Reasons), ReasonPRHeadMoved) {
+		t.Fatalf("row %s %v", row.Status, reasonCodes(row.Reasons))
+	}
+}
+
+// TestRescanRemoteGoneAndDefault rescans a vanished tracking ref and the
+// default branch's. What: gone is ErrTargetGone; the default branch is a plain
+// error that says so. Why: a vanished ref must read "skipped: no longer
+// exists", never "is the default branch" (the old wording for any empty set).
+func TestRescanRemoteGoneAndDefault(t *testing.T) {
+	f, s, o, tg := remoteFixture(t)
+	if _, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, Target{Kind: KindRemote, Ref: "refs/remotes/origin/main"}); err == nil ||
+		errors.Is(err, ErrTargetGone) || !strings.Contains(err.Error(), "default branch") {
+		t.Fatalf("default branch: %v", err)
+	}
+	f.git("update-ref", "-d", "refs/remotes/origin/topic")
+	if _, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, tg); !errors.Is(err, ErrTargetGone) {
+		t.Fatalf("vanished ref: %v, want ErrTargetGone", err)
 	}
 }

@@ -327,6 +327,10 @@ Rows of kind `remote`, rules above, leased delete, confirmation that names the
 audience ("visible to everyone with access to the repository") and the count.
 Requires `gh`; absence leaves local rows fully working.
 
+**As built:** [../plans/2026-11-07-wt-cleanup-pr-c.md](../plans/2026-11-07-wt-cleanup-pr-c.md)
+(rulings and where reality differed from this section: an explicit-sha
+lease, `origin` only, its own `Remote` approval, a per-remote fetch).
+
 ### PR D — move local-only work to a new worktree
 
 From UNIQUE WORK rows, `wt rescue` (and `r` in the list) creates a new branch

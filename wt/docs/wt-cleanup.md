@@ -4,14 +4,16 @@
 branches in four groups, by how sure wt is that each can go, with the
 evidence for every row. On a terminal the list removes the worktrees and
 local branches you tick, after a confirmation. `wt remove` does the same for
-targets named on the command line. Both use one removal engine; `origin`
-branches are never removed (a later release).
+targets named on the command line. Both use one removal engine, which also
+deletes a **proven `origin` branch** when you give it the approval no other
+flag implies (`--remote`, or the typed phrase `delete origin`): see
+[Deleting an origin branch](#deleting-an-origin-branch).
 
 ```bash
 wt cleanup                  # interactive tick list on a terminal; enter removes the ticked rows
 wt cleanup --plain          # text list, also used when output is a pipe (removes nothing)
 wt cleanup --json           # one JSON document (printed on failure too; removes nothing)
-wt cleanup --no-fetch       # skip `git fetch --prune origin`
+wt cleanup --no-fetch       # skip `git fetch --prune <remote>` for every remote
 wt cleanup --min-age 30m    # raise the fresh-branch threshold (default 10m)
 
 wt remove <worktree-path-or-branch>... --dry-run   # what would happen; changes nothing
@@ -31,8 +33,16 @@ wt remove topic old-spike --yes --accept-loss -D   # non-interactive, with expli
 Weak signals are never proofs. Any fact wt cannot establish makes the row
 less sure, never proven.
 
-Apart from the fetch, which updates and prunes `origin`'s remote-tracking
+Apart from the fetch, which updates and prunes every remote's remote-tracking
 refs (`--no-fetch` skips it), listing writes no ref, index or working file.
+The fetch takes `origin` first and on its own (it alone drives classification,
+120s), then every other remote concurrently with a shorter limit (30s); the
+header and `fetch.remotes` in the JSON report each remote's result, also when
+the repository has no `origin` (`fetch.skipped`). It never prompts: git's
+terminal and credential-manager prompts are off, and ssh runs with
+`-o BatchMode=yes` unless you set `GIT_SSH_COMMAND` or `core.sshCommand`
+yourself, in which case your ssh command is used as it is and any question it
+asks is yours.
 The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
 object store, which `git gc` collects.
@@ -42,7 +52,7 @@ object store, which `git gc` collects.
 | Flag | Effect |
 |---|---|
 | `--json` | Machine-readable report: [cleanup-list.schema.json](../../docs/contracts/cleanup-list.schema.json), sample [cleanup-list.sample.json](../../docs/contracts/cleanup-list.sample.json). Its `notes` array holds the caveats the text header prints (a lowered `--min-age`, artifact protection off, no registry); read it before acting on `rows`. |
-| `--no-fetch` | Skip the fetch. A repository with no `origin` remote skips it anyway; the header says how it went. |
+| `--no-fetch` | Skip the fetch (every remote, never prompting). A repository with no remote skips it anyway; the header says how it went, remote by remote. With the fetch skipped or failed no `origin` row can be proven. |
 | `--min-age <duration>` | A branch younger than this that sits at or behind the base is never proven merged (a brand-new branch looks merged). At least `1m` (less is a usage error, exit 1); a value below the default `10m` is named in the header. |
 | `--plain` | Text output on a terminal. |
 
@@ -131,7 +141,12 @@ what it would lose, running processes, and the approvals it needs. When every
 entry is proven `y` confirms; otherwise only the typed word `delete` then
 enter does, and any other key cancels. The prompt always states how many
 items will be removed and how many need force or `-D`, and how many are not
-on screen. `origin` rows cannot be ticked. While removal runs, keys,
+on screen. A proven `origin` row can be ticked, but is never ticked for you
+(`a` skips it too); any other remote row cannot. A confirmation that includes
+an `origin` branch has its own group (`ORIGIN BRANCHES`), says how many
+branches are on `origin` and that they are visible to everyone with access to
+the repository, refuses `y` and the plain `delete`, and needs `delete origin`
+typed. While removal runs, keys,
 ctrl+c and termination and hangup signals wait until it ends; the results screen shows
 every outcome and the same outcomes print again when wt exits.
 
@@ -139,7 +154,8 @@ every outcome and the same outcomes print again when wt exits.
 
 An argument is a worktree path (relative to the current directory) or a local
 branch's exact name; a branch name also selects the worktree that has it
-checked out. `origin/<branch>` never matches. An argument matching nothing, or
+checked out; `origin/<branch>` names that branch on origin (a local branch
+literally called `origin/<branch>` makes it ambiguous). An argument matching nothing, or
 two different targets, stops the run before anything is touched.
 
 `--json` prints one document,
@@ -242,3 +258,43 @@ report says so in `warnings`.
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md).
+
+## Deleting an origin branch
+
+`wt remove origin/<name> --remote` (or an origin row ticked in the list and
+confirmed with `delete origin`) deletes the branch on `origin`. It is visible
+to everyone with access to the repository and this tool cannot undo it, so
+the rules are narrower than for a local branch:
+
+- Only a **proven** row on **`origin`**: a MERGED pull request into the default
+  branch whose head is exactly the branch's tip, whose merge commit is in the
+  base; no open PR with the branch as head; no open PR (from this repository or
+  a fork) with it as base; content in the base; and `origin` fetched cleanly
+  **this run**. `--no-fetch`, a failed fetch, a missing `gh` or a failed
+  query each make the row unproven. There is no `--accept-loss` or `-D` path.
+- The approval is its own: `--remote` on the CLI, `delete origin` in the list.
+  `--yes`, `y`, `--accept-loss`, `-D`, `--force` and the plain `delete` never
+  grant it, and `--remote` grants nothing else.
+- Right before the push the engine re-asks `gh` about this one branch (so a PR
+  opened since the list is seen), re-reads origin with `git ls-remote`, and
+  compares four things that must be the same commit: the listed tip, the
+  tracking ref, origin's live ref and the merged PR's head. Then it runs
+  `git push --porcelain --no-verify --force-with-lease=refs/heads/<n>:<sha> origin :refs/heads/<n>`;
+  the server compares `<sha>`, so a branch pushed to since is left alone
+  (`retained_moved`). Git runs with prompts disabled (see the fetch note above for ssh) and a 120s limit. Just before pushing, the gate also asks git itself that the merged PR's merge commit is an ancestor of the base; it does not rely on the list's answer.
+- Success is judged by reading origin again, never by the push's exit status:
+  `deleted` means a fresh read found the ref gone; `retained_unknown` means
+  origin refused it (branch protection, a server hook, `receive.denyDeletes`)
+  or could not be read; `retained_moved` also covers a branch that was already
+  gone because someone else deleted it while wt's own push failed (nothing is
+  recorded as deleted by wt and no restore line is printed). The JSON `branch_tip` and the printed restore line
+  (`git push origin <sha>:refs/heads/<n>`) are present whenever the ref may be
+  gone; GitHub's "Restore branch" button on the merged PR also works. Your
+  clone keeps the commit only until `git gc`.
+- A same-named local branch and its worktree are not touched; a warning names
+  a local branch that tracked it.
+- One race stays open: a PR opened against the branch between the engine's
+  last `gh` read and the push is closed by GitHub. Restore the branch and
+  reopen the PR.
+- Only `origin` rows are removable; rows of other remotes stay listed and
+  locked.

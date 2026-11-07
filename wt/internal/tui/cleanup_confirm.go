@@ -167,8 +167,12 @@ func (m cleanupListModel) signalled() (cleanupListModel, tea.Cmd) {
 }
 
 // confirmWord is what must be typed to confirm a selection that is not all
-// proven.
-const confirmWord = "delete"
+// proven; confirmOriginWord when it deletes any origin branch. The plain word
+// never grants an origin deletion.
+const (
+	confirmWord       = "delete"
+	confirmOriginWord = "delete origin"
+)
 
 // confirmGroups is the confirm screen's group order and headings.
 var confirmGroups = []struct {
@@ -179,6 +183,7 @@ var confirmGroups = []struct {
 	{removal.ApprovalNeedsConfirm, "NOT PROVEN, OR LOSES WHAT IS LISTED"},
 	{removal.ApprovalNeedsForce, "UNCOMMITTED CHANGES OR DETACHED COMMITS"},
 	{removal.ApprovalNeedsDelete, "UNMERGED BRANCHES"},
+	{removal.ApprovalNeedsRemote, "ORIGIN BRANCHES · visible to everyone with access to the repository"},
 	{removal.ApprovalRefused, "WILL NOT BE REMOVED"},
 }
 
@@ -188,15 +193,17 @@ var confirmCountWords = map[removal.Approval]string{
 	removal.ApprovalNeedsConfirm: "not proven or losing something",
 	removal.ApprovalNeedsForce:   "with uncommitted changes or detached commits",
 	removal.ApprovalNeedsDelete:  "unmerged branch",
+	removal.ApprovalNeedsRemote:  "on origin",
 	removal.ApprovalRefused:      "will not be removed",
 }
 
-// tickedRows are the rows enter hands the engine: ticked, never locked and
-// never a remote row (a remote row is locked; this is the second guard).
+// tickedRows are the rows enter hands the engine: ticked and never locked.
+// The engine is the guard for an origin row (only proven, only origin, and
+// only with the Remote approval, which only the typed phrase gives).
 func (m cleanupListModel) tickedRows() []cleanup.Row {
 	var out []cleanup.Row
 	for _, it := range m.tickedItems() {
-		if it.locked || it.row.Kind == cleanup.KindRemote {
+		if it.locked {
 			continue
 		}
 		out = append(out, it.row)
@@ -313,6 +320,26 @@ func (c *cleanupConfirm) runnableCount() int {
 	return n
 }
 
+// originCount is how many runnable entries delete a branch on origin.
+func (c *cleanupConfirm) originCount() int {
+	n := 0
+	for _, e := range c.entries {
+		if e.runnable() && e.approved().Remote {
+			n++
+		}
+	}
+	return n
+}
+
+// word is what must be typed: the origin phrase when any runnable entry
+// deletes an origin branch, else the plain word.
+func (c *cleanupConfirm) word() string {
+	if c.originCount() > 0 {
+		return confirmOriginWord
+	}
+	return confirmWord
+}
+
 // needsTyped says whether the selection needs the typed word: some runnable
 // item needs an approval (or has its branch toggled).
 func (c *cleanupConfirm) needsTyped() bool {
@@ -388,22 +415,30 @@ func (m cleanupListModel) confirmKey(msg tea.KeyMsg) (cleanupListModel, tea.Cmd)
 		}
 		return m.cancelConfirm("not confirmed")
 	}
+	word := c.word()
+	spaceOK := strings.Contains(word, " ") && c.typed != "" && !strings.HasSuffix(c.typed, " ") && len([]rune(c.typed)) < len([]rune(word))
+	isSpace := k == " " || msg.Type == tea.KeySpace || msg.Type == tea.KeyRunes && strings.ContainsRune(string(msg.Runes), ' ')
 	switch {
-	case k == "n", msg.Alt, k == " ", msg.Type == tea.KeyRunes && strings.ContainsRune(string(msg.Runes), ' '):
+	case isSpace && spaceOK && (msg.Type == tea.KeySpace || string(msg.Runes) == " " || k == " "):
+		// "delete origin" holds one space; it is part of the word only
+		// after the first word, once.
+		c.typed += " "
+	case k == "n" && !strings.HasPrefix(word, c.typed+"n"), msg.Alt, isSpace:
 		// None of these can be part of the word: an alt-modified letter
-		// (alt+d) or a space typed toward it is not "delete".
+		// (alt+d), a space typed toward it, or an n that is not the next letter
+		// of the word ("origin" has an n of its own).
 		return m.cancelConfirm("cancelled")
 	case k == "backspace":
 		if r := []rune(c.typed); len(r) > 0 {
 			c.typed = string(r[:len(r)-1])
 		}
 	case k == "enter":
-		if c.typed == confirmWord {
+		if c.typed == word {
 			return m.confirmed()
 		}
-		return m.cancelConfirm(fmt.Sprintf("typed %q, not %q", cleanup.OneLine(c.typed), confirmWord))
+		return m.cancelConfirm(fmt.Sprintf("typed %q, not %q", cleanup.OneLine(c.typed), word))
 	case msg.Type == tea.KeyRunes:
-		if len([]rune(c.typed)) < 2*len(confirmWord) {
+		if len([]rune(c.typed)) < 2*len(word) {
 			c.typed += string(msg.Runes)
 		}
 	}
@@ -759,6 +794,9 @@ func approvalText(n removal.Needs) string {
 	if n.Delete {
 		f = append(f, "-D")
 	}
+	if n.Remote {
+		f = append(f, "--remote (delete origin)")
+	}
 	if len(f) == 0 {
 		return "approvals: none needed (proven)"
 	}
@@ -794,6 +832,9 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 		cursor = "> "
 	}
 	head := cursor + string(pv.Item.Kind) + " " + cleanup.OneLine(pv.Item.Name)
+	if pv.Item.Kind == cleanup.KindRemote {
+		head = cursor + "remote origin/" + cleanup.OneLine(pv.Item.Name)
+	}
 	if pv.Item.Kind == cleanup.KindWorktree && pv.Item.Path != "" {
 		head += "  " + cleanup.OneLine(m.shortPath(pv.Item.Path))
 	}
@@ -815,6 +856,12 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 			add("deletes unmerged branch " + cleanup.OneLine(pv.Item.Name))
 		}
 		add(approvalText(e.approved()))
+		if pv.Item.Kind == cleanup.KindRemote && pv.Fresh.Tip != "" {
+			if pv.Fresh.PR != nil {
+				add(fmt.Sprintf("merged PR #%d; no open PR uses this branch as of the re-check", pv.Fresh.PR.Number))
+			}
+			add("restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name))
+		}
 	}
 	keyN = len(out)
 	for _, l := range pv.LossLines {
@@ -888,6 +935,13 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 		}
 	}
 	sum := fmt.Sprintf("remove %d of %d ticked (%s); nothing has been removed yet", n, all, strings.Join(parts, ", "))
+	if k := c.originCount(); k > 0 {
+		noun := "branches"
+		if k == 1 {
+			noun = "branch"
+		}
+		sum += fmt.Sprintf(" · %d %s on origin, visible to everyone with access to the repository; no open PR uses them as of the re-check, and GitHub can restore a deleted branch from its merged PR", k, noun)
+	}
 	return []string{accent.Render(clip("wt cleanup · confirm", m.width))}, wrapIndented(sum, "", m.width)
 }
 
@@ -907,6 +961,7 @@ func (m *cleanupListModel) confirmHints() []string {
 func (m *cleanupListModel) confirmPrompt(hidden int) []string {
 	c := m.conf
 	n, force, del := 0, 0, 0
+	word := c.word()
 	for _, e := range c.entries {
 		if !e.runnable() {
 			continue
@@ -925,6 +980,9 @@ func (m *cleanupListModel) confirmPrompt(hidden int) []string {
 		noun = "item"
 	}
 	kinds := fmt.Sprintf("(%d force, %d -D)", force, del)
+	if o := c.originCount(); o > 0 {
+		kinds = fmt.Sprintf("(%d force, %d -D, %d on origin)", force, del, o)
+	}
 	more := ""
 	if hidden > 0 {
 		more = fmt.Sprintf(" · %d not shown", hidden)
@@ -939,9 +997,9 @@ func (m *cleanupListModel) confirmPrompt(hidden int) []string {
 	case !c.needsTyped():
 		ask = fmt.Sprintf("y removes %d %s %s%s · any other key cancels", n, noun, kinds, more)
 	case narrow:
-		ask = fmt.Sprintf("%s+enter: removes %d %s%s · esc", confirmWord, n, kinds, more)
+		ask = fmt.Sprintf("%s+enter: removes %d %s%s · esc", word, n, kinds, more)
 	default:
-		ask = fmt.Sprintf("type %s and press enter to remove %d %s %s with the approvals listed%s · esc cancels", confirmWord, n, noun, kinds, more)
+		ask = fmt.Sprintf("type %s and press enter to remove %d %s %s with the approvals listed%s · esc cancels", word, n, noun, kinds, more)
 	}
 	out := wrapIndented(ask, "", m.width)
 	if c.needsTyped() {

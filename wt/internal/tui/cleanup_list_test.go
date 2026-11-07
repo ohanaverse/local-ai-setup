@@ -172,11 +172,13 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 	}
 }
 
-// TestCleanupListRemoteRowsAreLocked pins that every remote row, proven or
-// not, is [-] and cannot be ticked by space or `a`: enter now removes what is
-// ticked, and wt does not delete origin branches (shared state; plan call 9).
-func TestCleanupListRemoteRowsAreLocked(t *testing.T) {
-	for _, name := range []string{"origin/old-remote", "origin/merged-remote"} {
+// TestCleanupListUnprovenRemoteRowsAreLocked pins that a remote row which is
+// not a proven origin branch is [-] and cannot be ticked by space or `a`:
+// enter removes what is ticked, and the engine deletes on origin only a
+// proven origin row (the proven one is tickable, see
+// TestOriginRowsAreTickableButNeverTickedForYou).
+func TestCleanupListUnprovenRemoteRowsAreLocked(t *testing.T) {
+	for _, name := range []string{"origin/old-remote"} {
 		m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
 		m = moveTo(t, m, name)
 		m = cleanupSend(t, m, spaceKey)
@@ -189,7 +191,7 @@ func TestCleanupListRemoteRowsAreLocked(t *testing.T) {
 		if !strings.Contains(m.View(), "[-] remote    "+name) {
 			t.Errorf("remote row %s not drawn [-]:\n%s", name, m.View())
 		}
-		if !strings.Contains(m.View(), "wt does not delete origin branches") {
+		if !strings.Contains(m.View(), "only a proven origin branch can be removed") {
 			t.Errorf("the detail line does not say why %s cannot be ticked:\n%s", name, m.View())
 		}
 	}
