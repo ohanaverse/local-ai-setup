@@ -2,6 +2,7 @@ package rescue
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -324,4 +325,166 @@ func TestPreflightRefusesAZeroCountWhenTheGateSaysCommitsExist(t *testing.T) {
 	if plan, err := eng.Preflight(row, ""); err == nil {
 		t.Fatalf("Preflight accepted a 0 count against unpushed commits; plan says %d", plan.Counts.Commits)
 	}
+}
+
+// bigPathList is enough long, mostly nonexistent paths that passing them on
+// the git command line would exceed ARG_MAX on macOS (1 MiB) and Linux, with
+// the one real path last.
+func bigPathList(real string) []string {
+	long := strings.Repeat("d", 120) + "/" + strings.Repeat("f", 120)
+	paths := make([]string, 0, 13000)
+	for i := 0; i < 12000; i++ {
+		paths = append(paths, fmt.Sprintf("%s%05d", long, i))
+	}
+	return append(paths, real)
+}
+
+// TestAttributeChecksSurviveAVeryLargeChangeSet runs checkContentFilters and
+// checkLineEndings over about 3 MB of paths with one filtered and one
+// eol=crlf file at the end. What: both still refuse that file, with no
+// "argument list too long" error. Why: the paths used to ride the git argv, so
+// a big change set (a generated tree) failed the rescue with an exec error, or
+// worse a refusal that named nothing, instead of the right verdict.
+func TestAttributeChecksSurviveAVeryLargeChangeSet(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.Dir, ".gitattributes", "*.lfs filter=lfs\n*.crlf eol=crlf\n")
+	f.git("add", ".gitattributes")
+	f.git("commit", "-m", "attrs")
+	f.Commit(f.Dir, "big.lfs", "x", "lfs")
+	f.Commit(f.Dir, "big.crlf", "x\n", "crlf")
+	sg := sgit{dir: f.Dir}
+
+	err := checkContentFilters(sg, bigPathList("big.lfs"))
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != CodeContentFilter || !strings.Contains(r.Message, "big.lfs") {
+		t.Errorf("checkContentFilters = %v, want a content_filter refusal naming big.lfs", err)
+	}
+	err = checkLineEndings(sg, bigPathList("big.crlf"))
+	if !errors.As(err, &r) || r.Code != CodeLineEndings || !strings.Contains(r.Message, "big.crlf") {
+		t.Errorf("checkLineEndings = %v, want a line_endings refusal naming big.crlf", err)
+	}
+	if err := checkContentFilters(sg, bigPathList("README")); err != nil {
+		t.Errorf("unfiltered large set: %v", err)
+	}
+	if err := checkLineEndings(sg, bigPathList("README")); err != nil {
+		t.Errorf("unconverted large set: %v", err)
+	}
+}
+
+// TestBlobSizesCountTheStagedAndCommittedBlob checks blobSizes reports the
+// larger of a path's index blob and its HEAD blob, whatever the working file
+// holds. What: a file staged big and then truncated in the working tree, and a
+// big committed file whose deletion is staged, both report the big size; a
+// path git has no blob for reports 0. Why: the tracked-size bound used the
+// working file's size, so these counted about 0 although the diff held the
+// whole blob in memory.
+func TestBlobSizesCountTheStagedAndCommittedBlob(t *testing.T) {
+	f := newFixture(t)
+	f.Commit(f.Dir, "gone.bin", strings.Repeat("g", 300), "big committed")
+	f.git("rm", "-q", "gone.bin")
+	f.write(f.Dir, "staged.bin", strings.Repeat("s", 200))
+	f.git("add", "staged.bin")
+	f.write(f.Dir, "staged.bin", "") // truncated after staging
+	sg := sgit{dir: f.Dir}
+
+	got, err := blobSizes(sg, []string{"gone.bin", "staged.bin", "nothing.bin", "with\nnewline"})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["gone.bin"] != 300 || got["staged.bin"] != 200 || got["nothing.bin"] != 0 {
+		t.Errorf("blobSizes = %v, want gone 300, staged 200, nothing 0", got)
+	}
+}
+
+// TestPreflightCountsAStagedDeletionAgainstTheSizeLimit stages the deletion of
+// a big committed file (the working file is gone, so it measures 0) with the
+// limit below its size. What: Preflight refuses with too_large and creates
+// nothing. Why: `diff --cached --binary` of a deletion carries the whole old
+// blob, held in memory by Execute, while the working-file size said 0.
+func TestPreflightCountsAStagedDeletionAgainstTheSizeLimit(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "gone.bin", strings.Repeat("g", 300), "big committed")
+	gitIn(t, p, "rm", "-q", "gone.bin")
+	old := limitBytes
+	limitBytes = 100
+	t.Cleanup(func() { limitBytes = old })
+	eng, find := f.engine(f.Dir)
+	world := f.world()
+
+	_, err := eng.Preflight(find(p), "")
+
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != CodeTooLarge {
+		t.Fatalf("Preflight = %v, want too_large", err)
+	}
+	if f.world() != world {
+		t.Error("something was created")
+	}
+}
+
+// TestBlobSizesCoverAPathWithANewline: a big committed file whose name holds
+// a newline has its deletion staged. What: blobSizes reports the big size and
+// Preflight refuses with too_large. Why: cat-file's line-based stdin cannot
+// name such a path, so it used to count 0.
+func TestBlobSizesCoverAPathWithANewline(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	name := "gone\nname.bin"
+	f.Commit(p, name, strings.Repeat("g", 300), "big committed")
+	gitIn(t, p, "rm", "-q", name)
+
+	got, err := blobSizes(sgit{dir: p}, []string{name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[name] != 300 {
+		t.Errorf("blobSizes = %v, want %q: 300", got, name)
+	}
+	old := limitBytes
+	limitBytes = 100
+	t.Cleanup(func() { limitBytes = old })
+	eng, find := f.engine(f.Dir)
+	_, err = eng.Preflight(find(p), "")
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != CodeTooLarge {
+		t.Fatalf("Preflight = %v, want too_large", err)
+	}
+}
+
+// TestPreflightCountsAStagedRenameOnce: a staged rename of a file just under
+// the limit passes (old and new path are one file), while deleting one big
+// file and adding a different big one counts both and is refused. Why: the
+// rename's old path (HEAD blob) and new path (index blob) were both counted,
+// so a file under the limit was refused as twice its size.
+func TestPreflightCountsAStagedRenameOnce(t *testing.T) {
+	old := limitBytes
+	limitBytes = 100
+	t.Cleanup(func() { limitBytes = old })
+
+	t.Run("rename passes", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		f.Commit(p, "a.bin", strings.Repeat("a", 80), "big committed")
+		gitIn(t, p, "mv", "a.bin", "b.bin")
+		eng, find := f.engine(f.Dir)
+		if _, err := eng.Preflight(find(p), ""); err != nil {
+			t.Fatalf("Preflight = %v, want the rename to pass", err)
+		}
+	})
+	t.Run("delete plus different add counts both", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		f.Commit(p, "a.bin", strings.Repeat("aaaaaaa\n", 10), "big committed")
+		gitIn(t, p, "rm", "-q", "a.bin")
+		f.write(p, "c.bin", strings.Repeat("zzzzzzz\n", 10)) // too different for rename detection
+		gitIn(t, p, "add", "c.bin")
+		eng, find := f.engine(f.Dir)
+		_, err := eng.Preflight(find(p), "")
+		var r *Refusal
+		if !errors.As(err, &r) || r.Code != CodeTooLarge {
+			t.Fatalf("Preflight = %v, want too_large", err)
+		}
+	})
 }

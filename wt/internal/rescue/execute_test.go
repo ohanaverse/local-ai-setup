@@ -588,3 +588,40 @@ func TestVerifyComparesDirectoryModes(t *testing.T) {
 		t.Fatalf("outcome = %+v", out)
 	}
 }
+
+// TestExecuteGivesCreatedDirectoriesTheirModesWhenTheCopyFailsMidway makes the
+// copy of a second untracked file fail after the first one's directory (mode
+// 0750) was created. What: the failure keeps the destination as before and
+// the directory the copy made already has the source's mode, not the 0700 the
+// copy writes with; a directory whose source vanished does not stop the
+// others. Why: the modes used to be applied only after every file was in, so
+// the kept half-built worktree widened or narrowed directories the user set.
+func TestExecuteGivesCreatedDirectoriesTheirModesWhenTheCopyFailsMidway(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "shared/one.txt", "one")
+	if err := os.Chmod(filepath.Join(p, "shared"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	eng, find := f.engine(f.Dir)
+	plan, err := eng.Preflight(find(p), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.untracked = append(plan.untracked, "ghost/two.txt") // vanished after the check
+
+	out := eng.Execute(plan)
+
+	if out.Status != StatusFailed || out.Code != CodeCarryFailed || !out.Created {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if got := dirMode(t, filepath.Join(out.Plan.DestPath, "shared")); got != 0o750 {
+		t.Errorf("shared has mode %o in the kept worktree, want 750", got)
+	}
+	// ghost/ was made in the copy but its source is gone, so its mode could not
+	// be set: the keep reason says so rather than promising the modes.
+	if !strings.Contains(out.Reason, "directory modes could not be restored") {
+		t.Errorf("reason %q does not report the directory modes that could not be restored", out.Reason)
+	}
+}

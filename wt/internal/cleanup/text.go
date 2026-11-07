@@ -10,6 +10,11 @@ import (
 // no error text. The header's gh line leaves it out beside a real cause.
 const noPRLookupDetail = "no PR lookup for this branch"
 
+// notCheckedDetail is the detail of a not_checked reason: nothing asks gh
+// about another remote's branch, so this is not a gh failure and the header's
+// gh line never names it.
+const notCheckedDetail = "the pull-request state of another remote's branch is not checked"
+
 // fetchErrMax caps a fetch error's length in runes.
 const fetchErrMax = 200
 

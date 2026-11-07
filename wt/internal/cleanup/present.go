@@ -85,6 +85,7 @@ var reasonWording = map[string]string{
 	ReasonPRMergeUnknown:        "could not check the merged PR against the base",
 	ReasonUnpushedUnknown:       "could not count unpushed commits",
 	ReasonCannotVerify:          "needs gh",
+	ReasonNotChecked:            notCheckedDetail,
 	ReasonUnpushed:              "unpushed commits",
 	ReasonNetZeroUnpushed:       "commits that undo each other exist only on this machine",
 	ReasonPRHeadMoved:           "branch moved on after its PR merged",

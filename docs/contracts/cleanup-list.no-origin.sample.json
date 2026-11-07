@@ -5,6 +5,7 @@
   "fetch": {"ok": false, "skipped": "no origin remote", "remotes": [{"name": "upstream", "ok": true}, {"name": "fork", "ok": false, "error": "fatal: unable to access the remote"}]},
   "gh": "ok",
   "rows": [
-    {"kind": "worktree", "name": "main", "path": "/home/owner/src/project", "branch": "main", "status": "in_use", "unknown": false, "reasons": [], "blockers": [{"code": "primary", "detail": "/home/owner/src/project"}, {"code": "default_branch", "detail": "main"}]}
+    {"kind": "worktree", "name": "main", "path": "/home/owner/src/project", "branch": "main", "status": "in_use", "unknown": false, "reasons": [], "blockers": [{"code": "primary", "detail": "/home/owner/src/project"}, {"code": "default_branch", "detail": "main"}]},
+    {"kind": "remote", "name": "feature", "branch": "feature", "remote": "upstream", "status": "less_sure", "evidence": "ancestor", "unknown": true, "age_days": 20, "reasons": [{"code": "not_checked", "detail": "the pull-request state of another remote's branch is not checked"}], "blockers": []}
   ]
 }
