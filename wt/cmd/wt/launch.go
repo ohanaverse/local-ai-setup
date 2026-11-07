@@ -12,6 +12,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -511,6 +512,7 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 		return perr
 	}
 
+	exitprompt.Launched(cmd.Dir)
 	duration, err := agents.RunAndCleanup(cmd, profileCleanup)
 	// Explicit, not deferred, for the same reason as profileCleanup: the
 	// os.Exit below would skip a deferred release.

@@ -53,6 +53,29 @@ func Recorded() (Created, bool) {
 	return recorded, have
 }
 
+// Launched tells the prompt the agent ran in dir (empty means the current
+// directory). A record whose worktree is neither dir nor an ancestor of it is
+// dropped: the launch did not create and use that worktree, so it is never
+// offered. Call it where the agent is started.
+func Launched(dir string) {
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			Reset()
+			return
+		}
+		dir = wd
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !have {
+		return
+	}
+	if !cleanup.Within(cleanup.ResolvePath(dir), cleanup.ResolvePath(recorded.Path)) {
+		recorded, have = Created{}, false
+	}
+}
+
 // Reset forgets the record (tests).
 func Reset() {
 	mu.Lock()
@@ -63,12 +86,14 @@ func Reset() {
 // Env is what Offer needs from the caller, which owns the registry and the
 // session claim: Inputs builds the gather inputs for cwd (fetch off, the
 // protected artifacts set), Procs finds live processes in a worktree, Now is
-// the clock (nil means time.Now), and Keep is the [launch] exit_prompt =
+// the clock (nil means time.Now), Flush (may be nil) discards typeahead from
+// the terminal just before the question, and Keep is the [launch] exit_prompt =
 // "keep" setting.
 type Env struct {
 	Inputs func(cwd string) (cleanup.GatherInputs, error)
 	Procs  removal.ProcFinder
 	Now    func() time.Time
+	Flush  func()
 	Keep   bool
 }
 
@@ -98,6 +123,8 @@ func Eligible(p removal.ItemPreview, c Created) (ok bool, why string) {
 		return false, "removing it would lose something"
 	case len(p.Procs) > 0:
 		return false, "a process is running in it"
+	case procCheckFailed(p):
+		return false, "running processes could not be checked"
 	case len(f.Blockers) > 0 || f.Status == cleanup.StatusInUse:
 		return false, "it is in use"
 	case f.Unknown:
@@ -126,6 +153,17 @@ func Eligible(p removal.ItemPreview, c Created) (ok bool, why string) {
 		return false, "its branch cannot be deleted"
 	}
 	return true, ""
+}
+
+// procCheckFailed reports whether the preview carries the engine's note that
+// the process lookup could not run, which leaves "no process" unverified.
+func procCheckFailed(p removal.ItemPreview) bool {
+	for _, w := range p.Warnings {
+		if strings.HasPrefix(w, "could not check for running processes") {
+			return true
+		}
+	}
+	return false
 }
 
 // Offer asks whether to remove the worktree and branch this launch created.
@@ -191,6 +229,9 @@ func Offer(env Env, in io.Reader, out io.Writer, isTTY bool) {
 	p := previews[0]
 	if ok, _ := Eligible(p, c); !ok {
 		return
+	}
+	if env.Flush != nil {
+		env.Flush()
 	}
 	if !rootclaim.AskYesNo(fmt.Sprintf("%s was created for this session and nothing changed in it. Remove it and its branch %s?", c.Path, c.Branch), in, out) {
 		return

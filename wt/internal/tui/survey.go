@@ -57,6 +57,7 @@ var offerExitPrompt = realOfferExitPrompt
 
 func realOfferExitPrompt(cfg *config.Config) {
 	env := ExitPrompt
+	env.Flush = survey.FlushInput
 	env.Keep = cfg.ExitPromptKeep()
 	exitprompt.Offer(env, os.Stdin, os.Stdout, term.IsTerminal(os.Stdin.Fd()))
 }

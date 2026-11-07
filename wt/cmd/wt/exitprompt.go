@@ -7,6 +7,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
 // exitPromptEnv is what the post-exit worktree prompt needs from this run:
@@ -37,6 +38,7 @@ var offerExitPrompt = realOfferExitPrompt
 
 func realOfferExitPrompt(cfg *config.Config) {
 	env := exitPromptEnv
+	env.Flush = survey.FlushInput
 	env.Keep = cfg.ExitPromptKeep()
 	exitprompt.Offer(env, os.Stdin, os.Stdout, stdinTTY())
 }

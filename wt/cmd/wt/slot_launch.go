@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
@@ -298,6 +299,7 @@ func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.C
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	exitprompt.Launched(cmd.Dir)
 	duration, err := agents.RunAndCleanup(cmd, cleanup)
 	// Explicit, not deferred: the os.Exit below would skip a deferred release.
 	releaseRootClaim()

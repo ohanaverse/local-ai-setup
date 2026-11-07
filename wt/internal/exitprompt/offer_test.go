@@ -362,3 +362,82 @@ func TestEligibleNamesTheFailingCondition(t *testing.T) {
 		seen[why] = name
 	}
 }
+
+// errProcs is a ProcFinder whose lookup fails, like lsof missing or timing out.
+type errProcs struct{}
+
+func (errProcs) InDir(string) ([]removal.Proc, error) { return nil, errors.New("lsof timed out") }
+
+// TestOfferIsSilentWhenTheProcessCheckFails checks that a worktree whose
+// running-process lookup failed is not offered: "nothing changed in it" is
+// unverified, so the offer fails closed rather than deleting under a possible
+// live process.
+func TestOfferIsSilentWhenTheProcessCheckFails(t *testing.T) {
+	c := newOfferCase(t, false)
+	c.create()
+	c.env.Procs = errProcs{}
+	if out := c.offer(failReader{t}, true); out != "" {
+		t.Errorf("expected no output, got:\n%s", out)
+	}
+	if !c.intact() {
+		t.Error("something was removed")
+	}
+}
+
+// TestOfferFlushesTypeaheadJustBeforeTheQuestion checks the input flush runs
+// after eligibility is known and before the question is read, so keys typed
+// while the agent ran cannot answer it, and that it does not run when the
+// offer stays silent.
+func TestOfferFlushesTypeaheadJustBeforeTheQuestion(t *testing.T) {
+	c := newOfferCase(t, false)
+	c.create()
+	flushed := 0
+	c.env.Flush = func() { flushed++ }
+	in := &hookReader{ans: "n", fn: func() {
+		if flushed != 1 {
+			t.Errorf("flush ran %d times before the answer was read, want 1", flushed)
+		}
+	}}
+	c.offer(in, true)
+	if flushed != 1 {
+		t.Errorf("flush ran %d times, want 1", flushed)
+	}
+	git(t, c.path, "commit", "--allow-empty", "-q", "-m", "work")
+	flushed = 0
+	c.offer(failReader{t}, true)
+	if flushed != 0 {
+		t.Errorf("flush ran for a silent offer")
+	}
+}
+
+// TestLaunchedDropsTheRecordForAnotherDirectory checks that a creation record
+// survives only a launch in (or under) the created worktree: a launch in the
+// root or another worktree, as after the picker's new-worktree row, means the
+// agent never ran there, so nothing is offered. An empty dir means the cwd.
+func TestLaunchedDropsTheRecordForAnotherDirectory(t *testing.T) {
+	c := newOfferCase(t, false)
+	c.create()
+	Launched(filepath.Join(c.path, "sub"))
+	if _, ok := Recorded(); !ok {
+		t.Fatal("a launch under the worktree dropped the record")
+	}
+	Launched(c.path)
+	if _, ok := Recorded(); !ok {
+		t.Fatal("a launch in the worktree dropped the record")
+	}
+	Launched(c.root)
+	if _, ok := Recorded(); ok {
+		t.Error("a launch in the root kept the record")
+	}
+	c.create()
+	Launched("")
+	if _, ok := Recorded(); ok {
+		t.Error("a launch in the cwd (the root) kept the record")
+	}
+	c.create()
+	t.Chdir(c.path)
+	Launched("")
+	if _, ok := Recorded(); !ok {
+		t.Error("a launch in the cwd (the worktree) dropped the record")
+	}
+}
