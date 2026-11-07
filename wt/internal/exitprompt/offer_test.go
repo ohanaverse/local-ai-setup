@@ -216,17 +216,57 @@ func TestOfferIsSilentWhenTouched(t *testing.T) {
 	}
 }
 
-// TestOfferStillEligibleAfterAResetToTheCreationTip checks that a commit
-// undone by a hard reset leaves a worktree the engine calls untouched, so the
-// tip comparison, not history, is what decides.
-func TestOfferStillEligibleAfterAResetToTheCreationTip(t *testing.T) {
+// TestOfferIsSilentAfterACommitUndoneByAReset checks that a commit undone by a
+// hard reset back to the creation tip still counts as touched. The tree is
+// clean and the tip equals the creation tip, but deleting the branch deletes
+// its reflog, which is the only thing that still reaches the discarded commit;
+// a session that made and discarded work must not be offered a removal that
+// orphans it.
+func TestOfferIsSilentAfterACommitUndoneByAReset(t *testing.T) {
 	c := newOfferCase(t, false)
 	c.create()
 	tip := git(t, c.path, "rev-parse", "HEAD")
 	git(t, c.path, "commit", "--allow-empty", "-q", "-m", "oops")
 	git(t, c.path, "reset", "-q", "--hard", tip)
-	if out := c.offer("n", true); !strings.Contains(out, "Remove it and its branch") {
-		t.Errorf("not offered after a reset to the creation tip:\n%s", out)
+	if out := c.offer(failReader{t}, true); out != "" {
+		t.Errorf("offered after a reset to the creation tip:\n%s", out)
+	}
+	if !c.intact() {
+		t.Error("worktree or branch was removed")
+	}
+}
+
+// TestOfferIsSilentWhenTheReflogCannotBeRead checks the fail-closed side of
+// the reflog rule: with reflogs off the branch has no history to compare, so
+// "nothing happened" cannot be shown and the worktree is kept silently.
+func TestOfferIsSilentWhenTheReflogCannotBeRead(t *testing.T) {
+	c := newOfferCase(t, false)
+	git(t, c.root, "config", "core.logAllRefUpdates", "false")
+	c.create()
+	if out := c.offer(failReader{t}, true); out != "" {
+		t.Errorf("offered with no reflog to compare:\n%s", out)
+	}
+	if !c.intact() {
+		t.Error("worktree or branch was removed")
+	}
+}
+
+// TestReflogUntouched checks the rule itself: the count recorded at creation
+// must still be the count, and a missing baseline never passes.
+func TestReflogUntouched(t *testing.T) {
+	c := newOfferCase(t, false)
+	c.create()
+	rec, _ := Recorded()
+	if ok, why := ReflogUntouched(rec); !ok {
+		t.Fatalf("a fresh worktree is touched: %s", why)
+	}
+	git(t, c.path, "commit", "--allow-empty", "-q", "-m", "x")
+	if ok, _ := ReflogUntouched(rec); ok {
+		t.Error("a new commit leaves the reflog untouched")
+	}
+	rec.Reflog = 0
+	if ok, _ := ReflogUntouched(rec); ok {
+		t.Error("a record with no reflog baseline passes")
 	}
 }
 

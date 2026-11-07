@@ -136,7 +136,12 @@ or remove it.
    the launch created it, the removal engine's preview shows no losses and no
    running processes, no hard blocker, and the row's only soft reasons are
    `fresh_branch` (and `base_is_local` when the repository has no remote).
-   Any other reason, a moved tip, dirt or an ignored file makes it ineligible.
+   The branch's reflog must also still have the entries it had at creation, so
+   a commit made and then undone by `git reset --hard` counts as touched (the
+   tree is clean and the tip is the creation tip, but the reflog is all that
+   still reaches that commit and deleting the branch deletes it); an unreadable
+   or disabled reflog fails closed. Any other reason, a moved tip, dirt or an
+   ignored file makes it ineligible.
 3. A terminal is attached.
 
 If it is not eligible, the worktree is kept silently.
@@ -155,6 +160,14 @@ through the engine with the `Confirm` and branch-delete approvals (the same
 sealed approvals `wt remove --accept-loss -D` uses), so the engine's rescan,
 compare-and-swap and hard blockers still apply: anything that moved since the
 prompt was built is skipped, never forced.
+
+A session longer than the 10-minute floor is different: an untouched branch at
+or behind the base then classifies **proven** with no reasons, and the engine
+deletes its branch under a plain confirmation (the preview's `CanDeleteBranch`
+is false because there is nothing unproven to opt in to). The prompt offers
+these too, removing through `Confirmed(p.Needs)` and requiring the plan to
+delete the branch; every other condition above is unchanged. Without this the
+prompt would only appear for sessions under ten minutes.
 
 **Behaviour**
 

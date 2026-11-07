@@ -10,8 +10,9 @@
   keeps (default no); `y` removes both through the `wt remove` engine, which
   still refuses anything that moved. Only a branch and worktree created by
   this launch qualify (not a reused worktree, a new worktree on an existing
-  branch, `--cwd` or `--root`); a changed, committed-in, ignored-file or
-  still-running worktree is kept silently, and so is any launch with no
+  branch, `--cwd` or `--root`); a changed, committed-in (even if the commit
+  was later undone by `reset --hard`), ignored-file or still-running worktree
+  is kept silently, and so is any launch with no
   terminal. The prompt runs after the stop picker and before the summary
   line, and the agent's exit status is unchanged. New setting `[launch]
   exit_prompt = "ask" | "keep"` in `config.toml`; no value removes without a

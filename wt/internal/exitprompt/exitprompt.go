@@ -20,9 +20,13 @@ import (
 )
 
 // Created is a worktree and branch this launch created. Branch is the short
-// name; Tip is the full sha the branch pointed at when it was created.
+// name; Tip is the full sha the branch pointed at when it was created. Reflog
+// is how many entries the branch's reflog had then (normally one, "Created
+// from"); 0 means it could not be read or reflogs are off, which never counts
+// as "nothing happened".
 type Created struct {
 	Path, Branch, Tip string
+	Reflog            int
 }
 
 var (
@@ -39,11 +43,41 @@ func Record(path, branch string) error {
 	if err != nil {
 		return fmt.Errorf("read the tip of %s: %w", path, err)
 	}
+	n, _ := reflogCount(path, branch) // an unreadable reflog records 0
 	mu.Lock()
 	defer mu.Unlock()
-	recorded = Created{Path: path, Branch: branch, Tip: strings.TrimSpace(string(out))}
+	recorded = Created{Path: path, Branch: branch, Tip: strings.TrimSpace(string(out)), Reflog: n}
 	have = true
 	return nil
+}
+
+// reflogCount is how many entries branch's reflog has, read in dir.
+func reflogCount(dir, branch string) (int, error) {
+	out, err := exec.Command("git", "-C", dir, "reflog", "show", "--format=%H", "refs/heads/"+branch).Output()
+	if err != nil {
+		return 0, err
+	}
+	return len(strings.Fields(string(out))), nil
+}
+
+// ReflogUntouched reports whether the branch's reflog is still what it was at
+// creation. The tip comparison alone misses a commit made and then undone by
+// a hard reset: the tree is clean and the tip is the creation tip, but the
+// reflog is the only thing still reaching that commit, and deleting the branch
+// deletes it. A creation record with no reflog baseline (reflogs off, or
+// unreadable) fails closed. why names the reason ("" when untouched).
+func ReflogUntouched(c Created) (ok bool, why string) {
+	if c.Reflog < 1 {
+		return false, "the branch's reflog could not be read when it was created"
+	}
+	n, err := reflogCount(c.Path, c.Branch)
+	if err != nil {
+		return false, "the branch's reflog could not be read: " + cleanup.OneLine(err.Error())
+	}
+	if n != c.Reflog {
+		return false, "the branch's history changed since it was created"
+	}
+	return true, ""
 }
 
 // Recorded returns what Record stored, and false when nothing was.
@@ -228,6 +262,9 @@ func Offer(env Env, in io.Reader, out io.Writer, isTTY bool) {
 	}
 	p := previews[0]
 	if ok, _ := Eligible(p, c); !ok {
+		return
+	}
+	if ok, _ := ReflogUntouched(c); !ok {
 		return
 	}
 	if env.Flush != nil {
