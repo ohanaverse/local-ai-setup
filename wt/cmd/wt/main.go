@@ -104,6 +104,11 @@ func runLaunchPath(
 	// keep other concurrent sessions' counts accurate. Best-effort.
 	sweepRefcounts()
 
+	// The post-exit worktree prompt reads this run's registry through the
+	// app; the TUI is handed the same Env.
+	exitPromptEnv = newExitPromptEnv(a)
+	tui.ExitPrompt = exitPromptEnv
+
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
 	// applies local-model launch profiles exactly like the non-TUI path

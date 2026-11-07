@@ -526,6 +526,9 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	if m.ID != "" && !m.Native {
 		runStopPicker(cfg)
 	}
+	// A worktree this launch created and nothing touched is offered for
+	// removal; command agents get it too (their launch may have made it).
+	offerExitPrompt(cfg)
 
 	// Leading "\n" guards against the agent's last byte being non-newline
 	// (e.g. a bare prompt or a SIGINT-truncated line) — without it the

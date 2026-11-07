@@ -304,6 +304,7 @@ func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.C
 
 	releaseSession()
 	runStopPicker(cfg)
+	offerExitPrompt(cfg)
 	// Leading "\n" for the same reason as runAgentCmd's: the agent's last
 	// byte may not be a newline.
 	fmt.Println("\n" + agents.Summary(agent, config.Model{ID: row.Model.ID}, duration))
