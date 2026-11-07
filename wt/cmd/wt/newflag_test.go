@@ -102,11 +102,15 @@ func TestWorktreeFlagUnknownNameAskedOnATerminal(t *testing.T) {
 	})
 }
 
-// TestWorktreeFlagNewCreatesWithoutAsking checks --new is the answer: with an
-// unknown name it creates and launches with no terminal and reads nothing.
+// TestWorktreeFlagNewCreatesWithoutAsking checks --new is the answer already
+// given: with an unknown name and a terminal available it creates and
+// launches printing no question. Stdin is at end of input, so a question asked
+// anyway would answer no and fail the launch check below, instead of reading
+// the terminal this test runs from.
 func TestWorktreeFlagNewCreatesWithoutAsking(t *testing.T) {
 	root := sharedRootRepo(t)
 	stubStdinTTY(t, true)
+	answerOnStdin(t, "")
 	notes := captureNotes(t)
 	res := runPinnedLaunch(t, root, []string{"-W", "fresh", "--new"})
 	want := physical(t, filepath.Join(root, ".worktrees", "fresh"))
@@ -158,14 +162,19 @@ func TestWorktreeFlagExistingNamesNeverAsk(t *testing.T) {
 // EnsureForName rejects fails with that error on a terminal without being
 // asked first, so "y" is never the way to learn the name was bad.
 func TestWorktreeFlagInvalidNameErrorsBeforeTheQuestion(t *testing.T) {
-	for _, name := range []string{"origin/main", strings.Repeat("a", 300)} {
-		t.Run(name[:min(len(name), 12)], func(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{name: "origin/main", want: "default branch"},
+		{name: strings.Repeat("a", 300), want: "too long"},
+	} {
+		t.Run(tc.name[:min(len(tc.name), 12)], func(t *testing.T) {
 			root := sharedRootRepo(t)
-			// origin/main only counts as a default-branch form when origin
-			// exists and has a remote-tracking main.
+			// origin/main is a default-branch form only when origin exists,
+			// has a remote-tracking main, and origin/HEAD names it: the
+			// refusal is gated on DefaultBranch, which reads origin/HEAD.
 			for _, args := range [][]string{
 				{"remote", "add", "origin", root},
 				{"update-ref", "refs/remotes/origin/main", "HEAD"},
+				{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
 			} {
 				if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
 					t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -173,9 +182,12 @@ func TestWorktreeFlagInvalidNameErrorsBeforeTheQuestion(t *testing.T) {
 			}
 			stubStdinTTY(t, true)
 			notes := captureNotes(t)
-			res := runPinnedLaunch(t, root, []string{"-W", name})
+			res := runPinnedLaunch(t, root, []string{"-W", tc.name})
 			if res.err == nil {
 				t.Fatal("the launch succeeded; want the name rejected")
+			}
+			if !strings.Contains(res.err.Error(), tc.want) {
+				t.Errorf("err = %v; want it to say %q", res.err, tc.want)
 			}
 			if strings.Contains(res.err.Error(), "--new") || strings.Contains(notes.String(), "[y/N]") {
 				t.Errorf("asked before rejecting: err=%v notes=%q", res.err, notes.String())

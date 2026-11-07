@@ -1025,8 +1025,14 @@ func TestWouldCreate(t *testing.T) {
 					t.Errorf("base = %q, want %q", base, want)
 				}
 			}
-			if refExists(dir, "refs/heads/"+c.arg) {
-				t.Error("WouldCreate created the branch")
+			out, err := runGitCmd(dir, "for-each-ref", "--format=%(refname)", "refs/heads/"+c.arg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range strings.Split(string(out), "\n") {
+				if strings.TrimSpace(l) == "refs/heads/"+c.arg {
+					t.Error("WouldCreate created the branch")
+				}
 			}
 		})
 	}
@@ -1050,8 +1056,13 @@ func TestWouldCreateInvalidRefNameQuotesGit(t *testing.T) {
 func TestClassifyNameCaseVariantOfBranch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
-	if !refExists(dir, "refs/heads/Main") {
-		t.Skip("case-sensitive refs: Main and main are different branches")
+	// The prescribed case-sensitivity probe: the filesystem, not show-ref's
+	// case-folded ref-file resolution, decides whether this test runs.
+	if err := os.WriteFile(filepath.Join(dir, "CaseProbe"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "caseprobe")); err != nil {
+		t.Skip("case-sensitive volume: Main and main are different branches")
 	}
 	_, _, err := WouldCreate(dir, "Main")
 	if err == nil || !strings.Contains(err.Error(), "differs only in case") {

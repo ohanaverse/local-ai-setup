@@ -19,22 +19,29 @@ const (
 	nameCreate                         // nothing matches: a new branch
 )
 
+// nameClass is what classifyName decided about a typed name.
+type nameClass struct {
+	kind  nameKind
+	path  string // the worktree to reuse or to add (not for nameTrackRemote)
+	short string // nameTrackRemote: the local branch to create and track
+}
+
 // classifyName decides what name means in dir, given the registered worktree
 // entries. It is the one decision order behind EnsureForName and WouldCreate,
 // so a question about creating is asked about exactly the case that creates.
 // path is the worktree to reuse (nameReuseWorktree) or to add (the others,
-// except nameTrackRemote, whose path addTrackingWorktree derives). A name
-// that cannot be used (empty, default-branch form, path collision, too long)
-// is an error.
-func classifyName(dir, name string, entries []Entry) (nameKind, string, error) {
+// except nameTrackRemote, whose path addTrackingWorktree derives from short).
+// A name that cannot be used (empty, default-branch form, path collision, too
+// long) is an error.
+func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	if name == "" {
-		return 0, "", fmt.Errorf("worktree name cannot be empty")
+		return nameClass{}, fmt.Errorf("worktree name cannot be empty")
 	}
 
 	// Already checked out in a worktree? Use it.
 	for _, e := range entries {
 		if e.Branch == name && e.Path != "" {
-			return nameReuseWorktree, e.Path, nil
+			return nameClass{kind: nameReuseWorktree, path: e.Path}, nil
 		}
 	}
 
@@ -42,7 +49,7 @@ func classifyName(dir, name string, entries []Entry) (nameKind, string, error) {
 	// the bare name or as a remote-tracking form (origin/<default>,
 	// <remote>/HEAD, ...).
 	if err := refuseDefaultBranch(dir, name); err != nil {
-		return 0, "", err
+		return nameClass{}, err
 	}
 
 	// A remote-tracking name (origin/feature) resolves like the picker does:
@@ -51,15 +58,15 @@ func classifyName(dir, name string, entries []Entry) (nameKind, string, error) {
 	if _, short, ok := remoteRefParts(dir, name); ok {
 		for _, e := range entries {
 			if e.Branch == short && e.Path != "" {
-				return nameReuseWorktree, e.Path, nil
+				return nameClass{kind: nameReuseWorktree, path: e.Path}, nil
 			}
 		}
-		return nameTrackRemote, "", nil
+		return nameClass{kind: nameTrackRemote, short: short}, nil
 	}
 
 	path, err := worktreePath(dir, name)
 	if err != nil {
-		return 0, "", err
+		return nameClass{}, err
 	}
 	// Idempotent: if the path is already a registered worktree for the same
 	// branch, reuse it. If it's registered for a DIFFERENT branch — a name
@@ -68,9 +75,9 @@ func classifyName(dir, name string, entries []Entry) (nameKind, string, error) {
 	// wt — error rather than silently returning the wrong worktree.
 	if branch, ok := branchAtPath(entries, path); ok {
 		if branch != "" && branch != name {
-			return 0, "", fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
+			return nameClass{}, fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
 		}
-		return nameReuseWorktree, path, nil
+		return nameClass{kind: nameReuseWorktree, path: path}, nil
 	}
 
 	if refExists(dir, "refs/heads/"+name) {
@@ -78,16 +85,16 @@ func classifyName(dir, name string, entries []Entry) (nameKind, string, error) {
 		// matches in any case. Only an exact branch is reused; a case-only
 		// variant would check out the other branch under the wrong name.
 		if !branchExactly(dir, name) {
-			return 0, "", fmt.Errorf("branch %q differs only in case from an existing branch; use that branch's exact name", name)
+			return nameClass{}, fmt.Errorf("branch %q differs only in case from an existing branch; use that branch's exact name", name)
 		}
-		return nameExistingBranch, path, nil
+		return nameClass{kind: nameExistingBranch, path: path}, nil
 	}
 	// Last, so a name git would refuse is an error before anyone is asked to
 	// create it (the question and git's own failure must agree).
 	if err := checkBranchName(dir, name); err != nil {
-		return 0, "", err
+		return nameClass{}, err
 	}
-	return nameCreate, path, nil
+	return nameClass{kind: nameCreate, path: path}, nil
 }
 
 // branchExactly reports whether a local branch named exactly name exists,
@@ -130,24 +137,23 @@ func EnsureForName(dir, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	kind, path, err := classifyName(dir, name, entries)
+	cls, err := classifyName(dir, name, entries)
 	if err != nil {
 		return "", err
 	}
-	switch kind {
+	switch cls.kind {
 	case nameTrackRemote:
-		_, short, _ := remoteRefParts(dir, name)
-		return addTrackingWorktree(dir, name, short)
+		return addTrackingWorktree(dir, name, cls.short)
 	case nameExistingBranch:
-		if _, err := runGit(dir, "worktree", "add", path, name); err != nil {
+		if _, err := runGit(dir, "worktree", "add", cls.path, name); err != nil {
 			return "", fmt.Errorf("git worktree add: %w", err)
 		}
 	case nameCreate:
-		if _, err := runGit(dir, "worktree", "add", "-b", name, path); err != nil {
+		if _, err := runGit(dir, "worktree", "add", "-b", name, cls.path); err != nil {
 			return "", fmt.Errorf("git worktree add -b: %w", err)
 		}
 	}
-	return path, nil
+	return cls.path, nil
 }
 
 // WouldCreate reports whether EnsureForName(dir, name) would create a new
@@ -163,8 +169,8 @@ func WouldCreate(dir, name string) (creates bool, base string, err error) {
 	if err != nil {
 		return false, "", err
 	}
-	kind, _, err := classifyName(dir, name, entries)
-	if err != nil || kind != nameCreate {
+	cls, err := classifyName(dir, name, entries)
+	if err != nil || cls.kind != nameCreate {
 		return false, "", err
 	}
 	if b := CurrentBranchAt(dir); b != "" {
