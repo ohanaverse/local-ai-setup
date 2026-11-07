@@ -503,3 +503,44 @@ func TestPrintRescueTextNamesAKeptBranch(t *testing.T) {
 		t.Errorf("nothing was created, yet:\n%s", got)
 	}
 }
+
+// TestRescueStartRecheckDependsOnWhetherAPromptWasShown drives the real command
+// and edits a tracked file of the source between the confirmation and the copy.
+// What: through the y/N prompt Execute re-reads the source first and refuses
+// with source_changed, creating nothing; with --yes (no prompt, so Preflight's
+// reading stands) the edit is caught only by the comparison after the copy
+// (source_changed_while_copying, the new worktree kept). Why: skipping the
+// start re-read is safe only when nothing gave the source time to change; a
+// prompted run that skipped it, or a --yes run that did not, would regress with
+// every other rescue test still green.
+func TestRescueStartRecheckDependsOnWhetherAPromptWasShown(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		yes  bool
+		code string
+	}{{"yes", true, rescue.CodeSourceChangedMid}, {"prompted", false, rescue.CodeSourceChanged}} {
+		t.Run(c.name, func(t *testing.T) {
+			a := rescueApp(t)
+			dir := cleanupRepo(t)
+			p := workWorktree(t, dir)
+			rescueTTY = func(io.Reader, io.Writer) bool { return true }
+			afterRescueConfirm = func() {
+				if err := os.WriteFile(filepath.Join(p, "spike.txt"), []byte("edited while asking"), 0o644); err != nil {
+					t.Error(err)
+				}
+			}
+			t.Cleanup(func() { afterRescueConfirm = func() {} })
+			args := []string{"spike", "--no-fetch", "--json"}
+			if c.yes {
+				args = append(args, "--yes")
+			}
+			stdout, _, err := runRescue(t, a, dir, "y\n", args...)
+			if err == nil {
+				t.Fatalf("a rescue of a source edited after the check succeeded:\n%s", stdout)
+			}
+			if !strings.Contains(stdout, `"`+c.code+`"`) {
+				t.Fatalf("want code %s, got:\n%s", c.code, stdout)
+			}
+		})
+	}
+}

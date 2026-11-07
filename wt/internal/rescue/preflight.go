@@ -191,16 +191,19 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 		return err
 	}
 	var tracked []string
+	var renamed []string           // en.path -> en.orig pairs flattened: [new, old, new, old...]
+	worktree := map[string]int64{} // changed tracked path -> working file size
 	for _, en := range es {
 		if en.kind == '1' || en.kind == '2' {
 			tracked = append(tracked, en.path)
 			if en.orig != "" {
 				tracked = append(tracked, en.orig)
+				renamed = append(renamed, en.path, en.orig)
 			}
 			// A changed tracked file is carried as a diff held in memory and
 			// written whole: it counts against the same byte limit.
 			if fi, err := os.Lstat(filepath.Join(sg.dir, en.path)); err == nil && fi.Mode().IsRegular() {
-				p.trackedBytes += fi.Size()
+				worktree[en.path] = fi.Size()
 			}
 		}
 		if en.kind == 'u' {
@@ -229,6 +232,25 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 			p.Counts.Unstaged++
 		}
 	}
+	// Each changed tracked file counts as the larger of its working file and
+	// its index or HEAD blob (see blobSizes). A staged rename is one file: the
+	// old path's HEAD blob and the new path's blob and working file count once,
+	// as the larger of them, and the old path adds nothing of its own.
+	blobs, err := blobSizes(sg, tracked)
+	if err != nil {
+		return err
+	}
+	origOf := map[string]bool{}
+	for i := 0; i < len(renamed); i += 2 {
+		origOf[renamed[i+1]] = true
+		blobs[renamed[i]] = max(blobs[renamed[i]], blobs[renamed[i+1]])
+	}
+	for _, path := range tracked {
+		if origOf[path] {
+			continue
+		}
+		p.trackedBytes += max(worktree[path], blobs[path])
+	}
 	if p.trackedBytes+p.Counts.UntrackedBytes > limitBytes {
 		return refuse(CodeTooLarge, tooLargeMessage())
 	}
@@ -248,7 +270,9 @@ func checkContentFilters(sg sgit, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	out, err := sg.out(nil, append([]string{"check-attr", "-z", "filter", "ident", "working-tree-encoding", "--"}, paths...)...)
+	// The paths go on stdin (NUL-separated), never the argv: a big change set
+	// would exceed ARG_MAX.
+	out, err := sg.out([]byte(strings.Join(paths, "\x00")+"\x00"), "check-attr", "-z", "--stdin", "filter", "ident", "working-tree-encoding")
 	if err != nil {
 		return err
 	}
@@ -272,8 +296,8 @@ func checkContentFilters(sg sgit, paths []string) error {
 // CRLF: a text or eol attribute, core.autocrlf or core.eol. git apply and a
 // fresh checkout then write different bytes than the source holds (an LF file
 // becomes CRLF under core.eol=crlf with `text`), which verify would only find
-// after the new worktree existed. Only the changed paths are looked at, and
-// only the ones affected are named.
+// after the new worktree existed. Only the changed paths are judged, and only
+// the ones affected are named.
 func checkLineEndings(sg sgit, paths []string) error {
 	if len(paths) == 0 {
 		return nil
@@ -284,15 +308,21 @@ func checkLineEndings(sg sgit, paths []string) error {
 	}
 	autocrlf, coreEOL := cfg("core.autocrlf"), cfg("core.eol")
 	convert := autocrlf == "true" || autocrlf == "input"
-	args := append([]string{"--literal-pathspecs", "ls-files", "--eol", "-z", "--"}, paths...)
-	out, err := sg.out(nil, args...)
+	// One pass over the whole index (no path arguments, so no ARG_MAX limit),
+	// filtered below to the changed paths.
+	want := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		want[p] = true
+	}
+	out, err := sg.out(nil, "ls-files", "--eol", "-z")
 	if err != nil {
 		return err
 	}
-	for _, rec := range strings.Split(string(out), "\x00") {
+	recs := strings.Split(string(out), "\x00")
+	for _, rec := range recs {
 		info, path, ok := strings.Cut(rec, "\t")
 		f := strings.Fields(info)
-		if !ok || len(f) < 3 {
+		if !ok || len(f) < 3 || !want[path] {
 			continue
 		}
 		attr := strings.TrimPrefix(strings.Join(f[2:], " "), "attr/")
@@ -398,4 +428,73 @@ func safeRel(rel string) bool {
 	return !slices.ContainsFunc(strings.Split(rel, "/"), func(c string) bool {
 		return c == "" || c == ".." || c == "." || strings.EqualFold(c, ".git")
 	})
+}
+
+// blobSizes is, per path, the larger of its index blob and its HEAD blob
+// (0 for a path with neither). The diff a rescue carries holds those blobs in
+// memory whatever the working file now is: a file staged big and then
+// truncated, or a big committed file whose deletion is staged, has a small or
+// missing working file. The paths are read from NUL-delimited listings of the
+// index (`ls-files -s -z`, sizes by `cat-file --batch-check` over the blob ids)
+// and of HEAD (`ls-tree -r -l -z`), then filtered in Go, so a path with a
+// newline or any other byte is covered and no path rides an argv.
+func blobSizes(sg sgit, paths []string) (map[string]int64, error) {
+	want := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		want[p] = true
+	}
+	sizes := make(map[string]int64, len(paths))
+	if len(want) == 0 {
+		return sizes, nil
+	}
+	// HEAD: "<mode> <type> <sha> <size>\t<path>" (size "-" for a non-blob).
+	head, err := sg.out(nil, "ls-tree", "-r", "-l", "-z", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range strings.Split(string(head), "\x00") {
+		info, path, ok := strings.Cut(rec, "\t")
+		f := strings.Fields(info)
+		if !ok || len(f) != 4 || f[1] != "blob" || !want[path] {
+			continue
+		}
+		if n, err := strconv.ParseInt(f[3], 10, 64); err == nil {
+			sizes[path] = max(sizes[path], n)
+		}
+	}
+	// Index, stage 0: "<mode> <sha> <stage>\t<path>".
+	idx, err := sg.out(nil, "ls-files", "-s", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var shas, owners []string
+	for _, rec := range strings.Split(string(idx), "\x00") {
+		info, path, ok := strings.Cut(rec, "\t")
+		f := strings.Fields(info)
+		if !ok || len(f) != 3 || f[2] != "0" || f[0] == "160000" || !want[path] {
+			continue
+		}
+		shas, owners = append(shas, f[1]), append(owners, path)
+	}
+	if len(shas) == 0 {
+		return sizes, nil
+	}
+	out, err := sg.out([]byte(strings.Join(shas, "\n")+"\n"), "cat-file", "--batch-check")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != len(shas) {
+		return nil, fmt.Errorf("git cat-file --batch-check: %d answers for %d requests", len(lines), len(shas))
+	}
+	for i, l := range lines {
+		// "<sha> <type> <size>", or "<sha> missing".
+		f := strings.Fields(l)
+		if len(f) == 3 && f[1] == "blob" {
+			if n, err := strconv.ParseInt(f[2], 10, 64); err == nil {
+				sizes[owners[i]] = max(sizes[owners[i]], n)
+			}
+		}
+	}
+	return sizes, nil
 }

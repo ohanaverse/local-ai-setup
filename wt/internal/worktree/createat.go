@@ -110,6 +110,10 @@ func CreateAt(dir, name, start string) (string, error) {
 	// Anything that appears after this look is not this call's: git refuses to
 	// reuse a name, so a ref or directory found afterwards was either made by
 	// the add or by someone racing it; only the first kind is claimed.
+	// Known limit: a branch or directory created by someone else in the few
+	// microseconds between CheckNew above and these two looks is
+	// indistinguishable from the add's own leftover and would be claimed. It
+	// cannot be tested without a race and is deliberately left as it is.
 	_, e := runGit(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+name)
 	branchBefore := e == nil
 	_, e = os.Lstat(path)
