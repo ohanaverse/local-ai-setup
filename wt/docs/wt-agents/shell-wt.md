@@ -23,11 +23,14 @@ shell-wt ls
 shell-wt -- ls -la
 shell-wt -- rm --init
 
-# No command: open an interactive bash in the chosen worktree
+# No command: open an interactive bash in the existing worktree or branch
+# (a name matching neither asks before creating; with no terminal that is
+# refused unless --new is passed)
 shell-wt -W my-feature
 
-# Skip picker, use/create a named worktree
-shell-wt -W my-feature -- make test
+# Skip picker, use a named worktree; --new answers the create question
+# for a branch that may not exist yet
+shell-wt -W my-feature --new -- make test
 
 # Run in the current directory (skip picker)
 shell-wt --cwd -- npm test
@@ -66,7 +69,8 @@ still refused): put it before the command.
 
 | Flag | Description |
 |------|-------------|
-| `-W <name>`, `--worktree <name>` | Use/create worktree for branch, skip worktree picker |
+| `-W <name>`, `--worktree <name>` | Use the worktree for a branch, skip worktree picker; a name matching no worktree or branch asks before creating it (refused with no terminal unless `--new`) |
+| `--new` | Answer yes to the create-this-branch question; valid only with `-W` |
 | `--cwd` | Run in the current directory (inside a git repository or not), skip worktree picker |
 | `--init` | Seed agent instruction files (AGENTS.md) and exit |
 | `--no-guard` | Remove main-branch commit guard |

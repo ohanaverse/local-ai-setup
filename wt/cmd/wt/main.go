@@ -504,7 +504,7 @@ func rootCmd() *cobra.Command {
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
 			}
 
-			// -W <name>: use/create a worktree, then launch (no picker).
+			// -W <name>: use a worktree (asking before creating one), then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
 				if err != nil {
