@@ -389,3 +389,83 @@ func TestNonPositivePidIsMalformed(t *testing.T) {
 		}
 	}
 }
+
+// TestAncestorHoldsSeesAParentsClaim checks a claim file written by this
+// process's parent on the asked path is reported: a launch inside an agent
+// session that holds the root must be recognised as running under it.
+func TestAncestorHoldsSeesAParentsClaim(t *testing.T) {
+	ppid := os.Getppid()
+	started, err := startTime(ppid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	claimFile(t, dir, ppid, body(ppid, started, root))
+	got, err := AncestorHolds(dir, Claim{Path: root})
+	if err != nil || !got {
+		t.Fatalf("AncestorHolds = %v, %v; want true, nil", got, err)
+	}
+}
+
+// TestAncestorHoldsIgnoresOtherSessions checks a live claim by a process that
+// is not an ancestor does not count: another session on the root is the
+// shared-root menu's business, not a reason to skip the root gate.
+func TestAncestorHoldsIgnoresOtherSessions(t *testing.T) {
+	child := exec.Command("sleep", "60")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	pid := child.Process.Pid
+	cs, err := startTime(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	claimFile(t, dir, pid, body(pid, cs, root))
+	got, err := AncestorHolds(dir, Claim{Path: root})
+	if err != nil || got {
+		t.Fatalf("AncestorHolds = %v, %v; want false, nil", got, err)
+	}
+}
+
+// TestAncestorHoldsNoClaimsDir checks a repository that never had a session
+// (no wt-sessions directory) is "no", not an error.
+func TestAncestorHoldsNoClaimsDir(t *testing.T) {
+	got, err := AncestorHolds(t.TempDir(), Claim{Path: root})
+	if err != nil || got {
+		t.Fatalf("AncestorHolds = %v, %v; want false, nil", got, err)
+	}
+}
+
+// TestAncestorHoldsOtherPath checks a parent's claim on a different checkout
+// does not exempt a launch at this one.
+func TestAncestorHoldsOtherPath(t *testing.T) {
+	ppid := os.Getppid()
+	started, err := startTime(ppid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	claimFile(t, dir, ppid, body(ppid, started, "/elsewhere"))
+	got, err := AncestorHolds(dir, Claim{Path: root})
+	if err != nil || got {
+		t.Fatalf("AncestorHolds = %v, %v; want false, nil", got, err)
+	}
+}
+
+// TestAncestorHoldsIgnoresAStaleAncestorsClaim checks the contract's liveness
+// rule reaches this reader too (session-claims.md: a claim is live when the
+// pid runs AND the process started when the claim says): a SIGKILLed wt
+// leaves its claim behind, and once that pid is recycled into an ancestor of
+// a new launch, pid-in-ancestors alone would let the stale file silently
+// waive the root gate.
+func TestAncestorHoldsIgnoresAStaleAncestorsClaim(t *testing.T) {
+	ppid := os.Getppid()
+	dir := t.TempDir()
+	claimFile(t, dir, ppid, body(ppid, 1000, root))
+	got, err := AncestorHolds(dir, Claim{Path: root})
+	if err != nil || got {
+		t.Fatalf("AncestorHolds = %v, %v; want false, nil (a stale claim must not hold)", got, err)
+	}
+}

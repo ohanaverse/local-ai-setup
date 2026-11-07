@@ -88,3 +88,22 @@ func TestChooseKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestConfirmRootDefaultsToNo checks only y or Y confirms working in the root;
+// Enter, n, q, Esc, Ctrl-C and end of input all decline, and the prompt names
+// the root, its branch and the [y/N] default, so a stray key never lands a
+// session in the root.
+func TestConfirmRootDefaultsToNo(t *testing.T) {
+	cases := map[string]bool{"y": true, "Y": true, "n": false, "\n": false, "q": false, "\x1b": false, "\x03": false, "": false}
+	for in, want := range cases {
+		var out bytes.Buffer
+		if got := ConfirmRoot(Root{Path: "/r", Branch: "feat"}, strings.NewReader(in), &out); got != want {
+			t.Errorf("ConfirmRoot(%q) = %v; want %v", in, got, want)
+		}
+		for _, s := range []string{"/r", "feat", "[y/N]"} {
+			if !strings.Contains(out.String(), s) {
+				t.Errorf("ConfirmRoot(%q) printed %q; want it to contain %q", in, out.String(), s)
+			}
+		}
+	}
+}

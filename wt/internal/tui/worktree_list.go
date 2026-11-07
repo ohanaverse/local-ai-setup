@@ -389,17 +389,21 @@ func prsCurrent(items []list.Item, prs worktree.PRSet, own worktree.RepoSet, sta
 type selectedEntryMsg struct{ entry worktree.Entry }
 
 // buildList constructs a list.Model from worktree groups in the order
-// the picker should render them: sentinel, then the repo-root ((current))
-// entry pinned second, then the rest of the worktrees group, then the
+// the picker should render them: sentinel, then the ((current)) entry —
+// the entry matching the launch directory, when one survives the listing
+// rules below — pinned second, then the rest of the worktrees group, then the
 // local-branches group, then — only when the remote-branches group is
 // non-empty — a separator row, then the remote-branches group. Entries
 // matching the repo default branch are rendered with "(default)"; the
 // entry matching the launch directory (after resolving symlinks) is
 // rendered with "(current)", which wins over "(default)" so the current
 // worktree stays distinguishable from a separate worktree on the default
-// branch. The markers are tracked on entryItem.label so the underlying
-// worktree.Entry is never mutated and remains safe to forward into
-// selectedEntryMsg.
+// branch. The repository root's entry (Entry.Root) is never listed: the
+// root is reached only deliberately (--root, or a confirmed --cwd), so
+// standing in the root leaves no (current) row and the list opens on the
+// "+ New worktree…" sentinel. The markers are tracked on entryItem.label
+// so the underlying worktree.Entry is never mutated and remains safe to
+// forward into selectedEntryMsg.
 //
 // repoRoot is resolved with filepath.EvalSymlinks so symlinked paths
 // (e.g. ~/.worktrees/foo -> .worktrees/foo) compare correctly against
@@ -434,10 +438,17 @@ func buildList(groups []worktree.EntryGroup, defaultBranch, repoRoot string, the
 			}
 		}
 		for _, e := range g.Entries {
+			// The repository root is reached only deliberately (--root, or
+			// --cwd standing in it), never from the picker.
+			if e.Root {
+				continue
+			}
 			// The default branch must never be a linked worktree, so skip
 			// bare default-branch rows — the picker must not offer them as
-			// create-targets. The primary checkout on the default branch
-			// still appears as (current). The helper applies the same rule
+			// create-targets. A linked worktree on the default branch (made
+			// outside wt) still appears, as (default); the primary checkout
+			// never appears at all — its Root row is dropped above. The
+			// helper applies the same rule
 			// to local default branches and remote-tracking refs under any
 			// remote (origin/main, upstream/main, ...), while keeping a local
 			// branch whose name happens to end in "/main" (e.g. feature/main)

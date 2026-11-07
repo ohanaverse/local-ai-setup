@@ -71,7 +71,8 @@ All launchers support:
 | Flag | Description |
 |---|---|
 | `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip the worktree picker |
-| `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
+| `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and asks nothing. Exclusive with `--cwd` and `-W`. |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. Standing in the repository root it asks first (default no); with no terminal it refuses and names `--root`. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
 | `--allow-shared-root` | Launch in the repository root without asking even when another wt session is running there (with no terminal the launch otherwise refuses) |
 | `--yolo` | Prepend the agent's skip-permissions flag |
@@ -144,7 +145,7 @@ The base URL is the resolved route's origin plus `/v1`. On a direct route that o
 
 ## Two sessions in one checkout
 
-wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, wt names it (agent, pid, how long, branch) and asks: `c` continue here, `w` start in a new worktree (a fresh `session-<pid>-<time>` branch under `.worktrees/`), or `q` / Esc to quit without launching. Launching in a linked worktree (`-W <name>` or a worktree row) never asks; `-W` naming the root's branch lands in the root and is checked like any root launch. A launch in a subdirectory of the root is not checked. `--allow-shared-root` continues without asking; with no terminal and no flag, wt refuses and says which session holds the root. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
+wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, wt names it (agent, pid, how long, branch) and asks: `c` continue here, `w` start in a new worktree (a fresh `session-<pid>-<time>` branch under `.worktrees/`), or `q` / Esc to quit without launching. Launching in a linked worktree (`-W <name>` or a worktree row) never asks; `-W` naming the root's branch is refused (use `--root`). The worktree picker has no root row; `--root` and `--cwd` (after a yes) are the ways in. A launch in a subdirectory of the root is not checked. `--allow-shared-root` continues without asking; with no terminal and no flag, wt refuses and says which session holds the root. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
 
 ## Main guard
 

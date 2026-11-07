@@ -20,6 +20,7 @@ import (
 // where the agent ran, whether the guard was asked for, and the bookkeeping.
 type cwdLaunch struct {
 	err        error
+	output     string   // what cobra printed to stdout and stderr
 	agentDir   string   // the agent's own working directory, links resolved
 	claimSeen  bool     // the agent found this wt's root session claim while it ran
 	guarded    bool     // maybeInstallGuard was called
@@ -101,7 +102,7 @@ func runPinnedLaunch(t *testing.T, dir string, where []string, extra ...string) 
 		t.Fatal(err)
 	}
 	args := append(append(append([]string{}, where...), "-A", "claude", "-M", "claude/opus"), extra...)
-	captureFile(t, &os.Stdout, func() { _, res.err = runWT(t, args...) })
+	captureFile(t, &os.Stdout, func() { res.output, res.err = runWT(t, args...) })
 
 	if b, rerr := os.ReadFile(pwdFile); rerr == nil {
 		res.agentDir = strings.TrimSpace(string(b))
@@ -293,13 +294,12 @@ func TestCwdOutsideARepoReachesThePickers(t *testing.T) {
 
 // TestWorktreeFlagOutsideARepoStillRefuses pins the launches that do need a
 // repository: -W creates or opens a worktree, so outside one it must refuse
-// with a message that says why, launch nothing and open no picker — with or
-// without --cwd beside it. --cwd learning to run without a repository must
-// not turn `-W name` into a silent launch in the wrong place.
+// with a message that says why, launch nothing and open no picker. (-W with
+// --cwd beside it is now a usage error: TestRootFlagIsMutuallyExclusive.)
+// --cwd learning to run without a repository must not turn `-W name` into a silent launch in the wrong place.
 func TestWorktreeFlagOutsideARepoStillRefuses(t *testing.T) {
 	for _, args := range [][]string{
 		{"-W", "my-branch", "-A", "shell"},
-		{"-W", "my-branch", "--cwd", "-A", "shell"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			expectDirectLaunch(t)

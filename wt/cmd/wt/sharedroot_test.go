@@ -65,6 +65,23 @@ func ownClaim(root string) string {
 	return filepath.Join(root, ".git", "wt-sessions", strconv.Itoa(os.Getpid()))
 }
 
+// processStartedAt returns pid's real start time in epoch seconds, read via
+// `ps -o lstart=`: a fixture claim for a live process must carry a start
+// time sessionclaim.live accepts, and the contract's 5-second tolerance
+// covers this method's second granularity beside wt's now-minus-etime read.
+func processStartedAt(t *testing.T, pid int) int64 {
+	t.Helper()
+	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return started.Unix()
+}
+
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // failReader fails the test if the menu is read when it must not be shown.
@@ -307,20 +324,13 @@ func TestCwdLaunchAllowSharedRootReleasesClaim(t *testing.T) {
 func TestConfirmParentClaimIsNotAnotherSession(t *testing.T) {
 	root := sharedRootRepo(t)
 	ppid := os.Getppid()
-	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(ppid)).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	started, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
-	if err != nil {
-		t.Fatal(err)
-	}
+	started := processStartedAt(t, ppid)
 	sessions := filepath.Join(root, ".git", "wt-sessions")
 	if err := os.MkdirAll(sessions, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	parent := filepath.Join(sessions, strconv.Itoa(ppid))
-	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", ppid, started.Unix(), root)
+	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", ppid, started, root)
 	if err := os.WriteFile(parent, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -340,9 +350,9 @@ func TestConfirmParentClaimIsNotAnotherSession(t *testing.T) {
 
 // TestNamedWorktreeLaunchDecidesOnTheResolvedDir checks -W is judged by the
 // directory it resolves to, not the flag: -W naming a linked worktree is
-// never checked or claimed; -W naming the root's branch lands in the root and
-// is refused without a terminal while another session holds it, and is
-// claimed for the agent's run when nobody does.
+// never checked or claimed; --root (-W naming the root's branch is refused
+// now) lands in the root and is refused without a terminal while another
+// session holds it, and is claimed for the agent's run when nobody does.
 func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
 	t.Run("linked worktree", func(t *testing.T) {
 		root := sharedRootRepo(t)
@@ -360,11 +370,11 @@ func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
 			t.Error("a linked-worktree launch claimed the root")
 		}
 	})
-	t.Run("root branch, held", func(t *testing.T) {
+	t.Run("root, held", func(t *testing.T) {
 		root := sharedRootRepo(t)
 		pid := liveOtherClaim(t, root, "codex")
 		stubStdinTTY(t, false)
-		res := runPinnedLaunch(t, root, []string{"-W", "main"})
+		res := runPinnedLaunch(t, root, []string{"--root"})
 		if res.err == nil || !strings.Contains(res.err.Error(), "--allow-shared-root") || !strings.Contains(res.err.Error(), "pid "+strconv.Itoa(pid)) {
 			t.Fatalf("err = %v; want the shared-root refusal", res.err)
 		}
@@ -372,10 +382,10 @@ func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
 			t.Errorf("the agent ran in %q despite the refusal", res.agentDir)
 		}
 	})
-	t.Run("root branch, free", func(t *testing.T) {
+	t.Run("root, free", func(t *testing.T) {
 		root := sharedRootRepo(t)
 		stubStdinTTY(t, false)
-		res := runPinnedLaunch(t, root, []string{"-W", "main"})
+		res := runPinnedLaunch(t, root, []string{"--root"})
 		if res.err != nil || res.agentDir != root {
 			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, root)
 		}
@@ -424,8 +434,8 @@ func TestPickerLaunchHandsTheTUIItsRootCheck(t *testing.T) {
 		args []string
 		want tui.RootCheck
 	}{
-		{"cwd", []string{"--cwd", "-A", "pi"}, tui.RootCheck{}},
-		{"cwd allow", []string{"--cwd", "-A", "pi", "--allow-shared-root"}, tui.RootCheck{Allow: true}},
+		{"root", []string{"--root", "-A", "pi"}, tui.RootCheck{}},
+		{"root allow", []string{"--root", "-A", "pi", "--allow-shared-root"}, tui.RootCheck{Allow: true}},
 		{"named worktree", []string{"-W", "my-feature", "-A", "pi"}, tui.RootCheck{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

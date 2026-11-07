@@ -719,7 +719,7 @@ func TestAgentWithOneEligibleModelAutoLaunches(t *testing.T) {
 	}
 	defer func() { launchFiltered = oldLaunchFiltered }()
 
-	if _, err := runWT(t, "--cwd", "-A", "claude"); err != nil {
+	if _, err := runWT(t, "--root", "-A", "claude"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -906,7 +906,7 @@ func TestCommandAgentDirectLaunchSkipsMissingRegistry(t *testing.T) {
 	maybeInstallGuard = func() {}
 	defer func() { maybeInstallGuard = oldMaybeInstallGuard }()
 
-	if _, err := runWT(t, "--cwd", "--agent", "shell"); err != nil {
+	if _, err := runWT(t, "--root", "--agent", "shell"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {

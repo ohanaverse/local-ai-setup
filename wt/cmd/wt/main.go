@@ -353,6 +353,26 @@ func rootCmd() *cobra.Command {
 				}
 			}
 
+			// --root, --cwd and -W each say where to launch: two of them
+			// contradict each other.
+			rootFlag, _ := cmd.Flags().GetBool("root")
+			places := 0
+			for _, set := range []bool{rootFlag, cwd, mustGetString(cmd, "worktree") != ""} {
+				if set {
+					places++
+				}
+			}
+			// Each refusal below is final, not a usage mistake: silence
+			// cobra's usage block so main's one "wt:" line is the message.
+			refuse := func(err error) error {
+				cmd.SilenceErrors = true
+				cmd.SilenceUsage = true
+				return err
+			}
+			if places > 1 {
+				return refuse(fmt.Errorf("--root, --cwd and -W are mutually exclusive: each says where to launch"))
+			}
+
 			if check, _ := cmd.Flags().GetBool("check-guard"); check {
 				status, err := checkGuardStatus()
 				if err != nil {
@@ -466,6 +486,20 @@ func rootCmd() *cobra.Command {
 				return fmt.Errorf("agent %q is not installed — install the %s binary", agent, agent)
 			}
 
+			// --root: the primary checkout, found from anywhere. The flag is
+			// the consent, so no root prompt; the shared-root menu still runs
+			// downstream (runLaunchPath).
+			if rootFlag {
+				if _, err := worktree.RepoRoot(); err != nil {
+					return refuse(fmt.Errorf("not in a git repo: %w", err))
+				}
+				root, err := worktree.PrimaryOf(".")
+				if err != nil {
+					return refuse(fmt.Errorf("no primary checkout: %w", err))
+				}
+				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
+			}
+
 			// -W <name>: use/create a worktree, then launch (no picker).
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
@@ -475,6 +509,9 @@ func rootCmd() *cobra.Command {
 				path, err := worktree.EnsureForName(root, name)
 				if err != nil {
 					return err
+				}
+				if err := refuseRootBranch(name, path); err != nil {
+					return refuse(err)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
@@ -506,6 +543,12 @@ func rootCmd() *cobra.Command {
 				wd, err := os.Getwd()
 				if err != nil {
 					return err
+				}
+				if err := gateRoot(wd, agent, os.Stdin, osStderr, stdinTTY(), launchRootRemedy); err != nil {
+					if errors.Is(err, errCancelled) {
+						return nil
+					}
+					return refuse(err)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, wd, root)
 			}
@@ -545,7 +588,8 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
-	cmd.Flags().Bool("allow-shared-root", false, "Launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse)")
+	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; asks nothing (default for a bare wt is a worktree)")
+	cmd.Flags().Bool("allow-shared-root", false, "Answer the shared-root menu with continue: launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse). Answers that menu only: a --cwd launch at a root no other session holds is still asked, and --root is the no-prompt way in")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
 	// Register it as a hidden string flag so pflag parses the old arity

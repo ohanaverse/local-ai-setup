@@ -6,7 +6,7 @@ Rules and gotchas live here; mechanisms, function lists and step-by-step detail 
 
 The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. Three launch inputs:
 
-1. **Where** — `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree), or the worktree picker. Outside a repository `-W` refuses (`not in a git repo`).
+1. **Where** — `--root` (the primary checkout, from anywhere), `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree), or the worktree picker (which has no root row). Outside a repository `-W` refuses (`not in a git repo`).
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
 3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (eligible models rotate on successive launches).
 
@@ -31,7 +31,8 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 | `--others=keep\|stop` | Answer without asking when a start loads a model beside other providers' models (picker: `-M` row only). Unset: ask; with no TTY keep them and warn once (#412) |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
-| `--cwd` | Launch in the current directory, repository or not. Takes no value: a first argument before `--` naming an existing directory is refused (#392) unless `shell`'s first word is a bare name on `$PATH` |
+| `--root` | Launch in the repository's primary checkout, found from anywhere (a linked worktree or subdirectory too); the flag is the consent, so no prompt. Exclusive with `--cwd` and `-W`; refuses outside a repository and in a bare one. The shared-root menu still runs (`--allow-shared-root` answers it) |
+| `--cwd` | Launch in the current directory, repository or not. Standing in the repository root it asks (default no); with no terminal it refuses and names `--root`. Takes no value: a first argument before `--` naming an existing directory is refused (#392) unless `shell`'s first word is a bare name on `$PATH` |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` / `--check-guard` / `--no-guard` | Seed AGENTS.md + pointer files then exit / check / remove the `block-main-commit` guard |
 
@@ -200,7 +201,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md#profiles-inte
 
 ## Smoke test (`wt smoke`)
 
-`wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model, built like a real launch (`agents.BuildLaunchCmdInfo`), and reports PASS/FAIL/SKIP ([docs/wt-smoke.md](docs/wt-smoke.md)). Each row runs in its own temporary git repo unless `--cwd`; permission checks are off (yolo forced on except codex) and the directory is not a sandbox (#193). A model fallback is FAIL; the default prompt never contains its sentinel verbatim. `--tools` is the tool-call check (a nonce planted in the row's directory, read with a tool) and `--hops N` chains N dependent reads; both are exclusive with `--prompt` and `--cwd`, and their combination is validated before the model is resolved.
+`wt smoke [model-id]` runs a one-shot prompt through every agent eligible for one model, built like a real launch (`agents.BuildLaunchCmdInfo`), and reports PASS/FAIL/SKIP ([docs/wt-smoke.md](docs/wt-smoke.md)). Each row runs in its own temporary git repo unless `--cwd` (standing in a repository root, that ask is gated: a terminal is asked, no terminal refuses); permission checks are off (yolo forced on except codex) and the directory is not a sandbox (#193). A model fallback is FAIL; the default prompt never contains its sentinel verbatim. `--tools` is the tool-call check (a nonce planted in the row's directory, read with a tool) and `--hops N` chains N dependent reads; both are exclusive with `--prompt` and `--cwd`, and their combination is validated before the model is resolved.
 
 Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row directories, yolo, process-group cleanup, env stripping, Ctrl+C, or timeouts (180s cloud, 900s local).
 
@@ -236,7 +237,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - `internal/guard` manages the `block-main-commit` hook (`Install` is idempotent and appends; `git rev-parse --git-common-dir` covers all worktrees).
 - `wt --init` seeds `AGENTS.md` and a pointer file (`cmd/wt/main.go`, before any agent-binary requirement); existing files are never overwritten.
 - wt launches a fresh agent every time and leaves session handling to the agent (#198, #204): continue with the agent's own flags after `--` (`claude-wt -- --continue`). Why the session lookup stays removed: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#sessions-go).
-- A launch in the repository root writes a claim under `<git-common-dir>/wt-sessions/<pid>` (`internal/sessionclaim`); a second live root launch gets the continue / new worktree / quit menu (`c`/`w`/`q`, Esc quits). A linked worktree (by `-W` or a row) skips the check — the check judges the resolved directory, so `-W <root's branch>` is checked — `--allow-shared-root` continues without asking, and with no terminal the launch refuses. A claims failure only prints a note. Where the check runs and when the claim is released: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#shared-root-check-internalsessionclaim); the file format `repo-cleanup` also reads: [docs/contracts/session-claims.md](../docs/contracts/session-claims.md).
+- A launch in the repository root writes a claim under `<git-common-dir>/wt-sessions/<pid>` (`internal/sessionclaim`); a second live root launch gets the continue / new worktree / quit menu (`c`/`w`/`q`, Esc quits). A linked worktree (by `-W` or a row) skips the check — the check judges the resolved directory, so `-W <root's branch>` is refused, pointing at `--root` — `--allow-shared-root` continues without asking, and with no terminal the launch refuses. A claims failure only prints a note. The root gate (`cmd/wt/rootgate.go`: `--cwd` standing in the root asks, or refuses with no terminal; `-W` resolving to the root is refused) runs in `RunE` on the resolved directory before `runLaunchPath` (and `wt smoke --cwd` runs it in `runSmoke` before the model is resolved, its refusal naming smoke's remedies since `--root` is not its flag); it is skipped when another live session holds the root (the shared-root menu is then the one question) and when a parent wt session already holds it *live* (a nested `shell-wt --cwd` under an agent at the root; a stale claim whose pid was recycled does not count — `docs/contracts/session-claims.md`). Where the check runs and when the claim is released: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#shared-root-check-internalsessionclaim); the file format `repo-cleanup` also reads: [docs/contracts/session-claims.md](../docs/contracts/session-claims.md).
 
 ## TUI (Go)
 
@@ -250,7 +251,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - **TIER's score orders the picker's model rows** (descending, within the running-local and other bands) but is never routed on; a missing or unparseable `tiers.toml` is `-` and unscored, never an error.
 - A test that sets state by hand goes through `Update` before reading `View()`.
 
-> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY only when `-A` or `-M` is omitted.
+> **TTY required.** `WithAltScreen` opens `/dev/tty`; from a pipe/CI it fails with `could not open a new TTY`. Flag paths (`--version`) skip the TUI; `-W`/`--cwd` need a TTY when `-A` or `-M` is omitted, and `--cwd` standing in the repository root needs one for the root prompt even when both are pinned (with no TTY it refuses, naming `--root`).
 
 Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, start-on-select, the launch-time route check, or the model table.
 
@@ -270,7 +271,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 
-> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it when typed as the bare name or a remote-tracking form like `origin/<default>` or `<remote>/HEAD` (one `refuseDefaultBranch` guard; matched only while that ref lives under `refs/remotes/` and no local branch has the same name), and `-W origin/feature` resolves like the picker (a local `feature` tracking it). The picker skips bare default-branch rows.
+> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it when typed as a remote-tracking form like `origin/<default>` or `<remote>/HEAD`, the forms where it is not already checked out (`EnsureForName` returns an already-checked-out branch's path *before* that refusal, so `-W main` with the root on `main` resolves to the root; `cmd/wt`'s `refuseRootBranch` then refuses it and points at `--root`) (one `refuseDefaultBranch` guard; matched only while that ref lives under `refs/remotes/` and no local branch has the same name), and `-W origin/feature` resolves like the picker (a local `feature` tracking it). The picker skips bare default-branch rows.
 
 ## Cleanup classifier and removal (`wt cleanup`, `wt remove`)
 

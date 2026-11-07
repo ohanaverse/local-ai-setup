@@ -59,8 +59,36 @@ func Choose(r Root, others []sessionclaim.Claim, in io.Reader, out io.Writer) by
 	return choice
 }
 
+// ConfirmRoot asks on out whether to work in the root r instead of a worktree
+// and reads one key from in: y or Y is yes; every other key, Esc, Ctrl-C and
+// the end of input are no (the default). On a terminal it reads one key
+// without waiting for Enter.
+func ConfirmRoot(r Root, in io.Reader, out io.Writer) bool {
+	fmt.Fprintf(out, "wt: %s is the repository root (branch %s). Work here instead of in a worktree? [y/N]: ", r.Path, r.Branch)
+	yes := readKey(in, func(b byte) (byte, bool) { return b | 0x20, true }) == 'y' // any one key answers; 'Y' folds to 'y'
+	fmt.Fprintln(out)
+	return yes
+}
+
 // readChoice reads keys from in until one is c, w or q.
 func readChoice(in io.Reader) byte {
+	return readKey(in, func(b byte) (byte, bool) {
+		switch b {
+		case 'c', 'C':
+			return 'c', true
+		case 'w', 'W':
+			return 'w', true
+		case 'q', 'Q', 0x1b, 0x03:
+			return 'q', true
+		}
+		return 0, false
+	})
+}
+
+// readKey reads single bytes from in (raw, one key at a time, when in is a
+// terminal) until pick accepts one, and returns what pick returned for it.
+// The end of input returns 'q', which both callers read as quit / no.
+func readKey(in io.Reader, pick func(byte) (byte, bool)) byte {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(f.Fd()) {
 		if state, err := term.MakeRaw(f.Fd()); err == nil {
 			defer term.Restore(f.Fd(), state)
@@ -73,13 +101,8 @@ func readChoice(in io.Reader) byte {
 		} else if n == 0 {
 			continue
 		}
-		switch b := buf[0]; b {
-		case 'c', 'C':
-			return 'c'
-		case 'w', 'W':
-			return 'w'
-		case 'q', 'Q', 0x1b, 0x03:
-			return 'q'
+		if r, ok := pick(buf[0]); ok {
+			return r
 		}
 	}
 }

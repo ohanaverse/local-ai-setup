@@ -216,7 +216,8 @@ Start the model first (`wt start sushi/…`) or let the smoke run do it; either 
 
   Observed: `wt: main guard is installed in this repo.`
 - `--yolo` — exists in 0.1.0, verified in `wt --help` and `cmd/wt/main.go`; prepends the agent's skip-permissions flag (claude: `--dangerously-skip-permissions`). Source-verified caveat: pi has no such flag, so `--yolo` is a no-op there (`internal/agents/agents_test.go`: "Pi has no yolo flag").
-- `--cwd` — launch in the current directory, inside a git repository or not, with no pickers (the one launch that stays where you typed it; `-W` and the picker start at a worktree's root). The agent starts in that directory, so its own continue flag after `--` (`claude-wt --cwd -- --continue`) finds the sessions of that directory; wt itself never resumes one.
+- `--cwd` — launch in the current directory, inside a git repository or not, with no pickers (the one launch that stays where you typed it; `-W` and the picker start at a worktree's root). The agent starts in that directory, so its own continue flag after `--` (`claude-wt --cwd -- --continue`) finds the sessions of that directory; wt itself never resumes one. Run from a repository's root, `--cwd` needs your say-so: on a terminal it asks, with no terminal it refuses and names `--root` (a nested launch under an agent that already holds the root, and a root another wt session holds, which gets the shared-root menu instead, are not asked). The worktree picker no longer offers the root, and `-W <name>` refuses a name that is the root's checked-out branch.
+- `--root` — launch in the repository's primary checkout from anywhere; the flag is the consent, so nothing is asked (the shared-root menu still runs). Exclusive with `--cwd` and `-W`; an error outside a repository.
 - `--debug-worktrees` — test helper printing worktrees/branches; not for daily use, one line, moving on.
 - Removed subcommands now fail loudly instead of passing the word to the agent as its first argument: `wt models` → error "wt models is removed; use wt config to view models", same shape for `wt agents` (source-verified guard in `cmd/wt/main.go`). A word after `--` is a passthrough command and is not refused: `wt -A shell -- models` runs a command named `models`.
 
@@ -328,7 +329,7 @@ Full reference — every field, every blocked reason, what Claude Code is given:
 Live-ran (2026-08-29, all read-only):
 
 - `wt --version` → `wt 0.1.0`
-- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide)
+- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide; `--root` postdates this capture — added with the 2026-11-06 root gate)
 - `wt --check-guard` → `wt: main guard is installed in this repo.`
 - `wt rotate code` → one model id (example: `ollama/kimi-k2.7-code:cloud`), exit 0, no files touched
 - `wt -w foo` → `wt: -w is removed; use -W or --worktree`, exit 1, and `git worktree list` confirmed nothing was created
