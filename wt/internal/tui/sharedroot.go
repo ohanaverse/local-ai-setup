@@ -121,9 +121,12 @@ func sharedRootWorktreeCmd(root string) tea.Cmd {
 		// existing branch or worktree (a recycled pid at the same time of day
 		// can meet an old session worktree) is not this launch's creation and
 		// must never be offered for removal.
-		creates, _, _ := worktree.WouldCreate(root, name)
-		path, err := worktree.EnsureForName(root, name)
-		if err == nil && creates {
+		plan, err := worktree.Resolve(root, name)
+		if err != nil {
+			return sharedRootWorktreeMsg{err: err}
+		}
+		path, err := plan.Ensure()
+		if err == nil && plan.Creates() {
 			exitprompt.RecordNote(os.Stderr, path, name)
 		}
 		return sharedRootWorktreeMsg{path: path, err: err}

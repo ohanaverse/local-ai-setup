@@ -516,19 +516,20 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				creates, start, err := worktree.WouldCreate(root, name)
+				plan, err := worktree.Resolve(root, name)
 				if err != nil {
 					return refuse(err)
 				}
+				creates := plan.Creates()
 				if creates {
-					if err := confirmCreate(name, start, newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
+					if err := confirmCreate(name, plan.Start(), newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
 						if errors.Is(err, errCancelled) {
 							return nil
 						}
 						return refuse(err)
 					}
 				}
-				path, err := worktree.EnsureForName(root, name)
+				path, err := plan.Ensure()
 				if err != nil {
 					return refuse(err)
 				}

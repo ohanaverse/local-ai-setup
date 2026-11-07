@@ -110,12 +110,15 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 		// existing branch or worktree (a recycled pid at the same time of day
 		// can meet an old session worktree) is not this launch's creation and
 		// must never be offered for removal.
-		creates, _, _ := worktree.WouldCreate(root.Path, name)
-		path, err := worktree.EnsureForName(root.Path, name)
+		plan, err := worktree.Resolve(root.Path, name)
 		if err != nil {
 			return "", noop, fmt.Errorf("new worktree: %w", err)
 		}
-		if creates {
+		path, err := plan.Ensure()
+		if err != nil {
+			return "", noop, fmt.Errorf("new worktree: %w", err)
+		}
+		if plan.Creates() {
 			exitprompt.RecordNote(osStderr, path, name)
 		}
 		fmt.Fprintf(out, "wt: launching in the new worktree %s\n", path)
