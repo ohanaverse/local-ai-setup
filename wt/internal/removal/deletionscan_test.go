@@ -47,10 +47,12 @@ var fileOpAllowed = map[string]allowedFileOps{
 }
 
 // fileOpNever are files no allow-list entry may cover: the read-only cleanup
-// classifier and its command (TestCleanupCmdContainsNoDeletion holds the same
+// classifier and its command, and the copy-only rescue engine and its command (TestCleanupCmdContainsNoDeletion holds the same
 // line with a substring scan).
 func fileOpNever(rel string) bool {
 	return strings.HasPrefix(rel, "internal/cleanup/") ||
+		strings.HasPrefix(rel, "internal/rescue/") ||
+		(strings.HasPrefix(rel, "cmd/wt/rescue") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/")) ||
 		(strings.HasPrefix(rel, "cmd/wt/cleanup") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/"))
 }
 
@@ -536,5 +538,42 @@ func TestDeletionScanRefusesDotImports(t *testing.T) {
 		if g, _ := scanFile(fset, "x.go", file); len(g) == 0 {
 			t.Errorf("dot-import of %s not reported", pkg)
 		}
+	}
+}
+
+// TestRescueIsInsideTheDeletionScanAndNeverAllowed checks the copy-only rescue
+// engine (internal/rescue) and its command (cmd/wt/rescue*.go) are files the
+// module scan reads, that no allow-list entry can cover them, and that the scan
+// does flag a deletion written in them. Why: the rescue promises it only
+// creates; a rollback "for tidiness" (os.RemoveAll of a half-built worktree,
+// `git worktree remove`) is exactly the call it must not make, so the scan
+// must not be able to skip the package.
+func TestRescueIsInsideTheDeletionScanAndNeverAllowed(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := filepath.Glob(filepath.Join(root, "internal", "rescue", "*.go"))
+	if err != nil || len(pkg) == 0 {
+		t.Fatalf("no files under internal/rescue (%v): the pin has nothing to pin", err)
+	}
+	for _, rel := range []string{"internal/rescue/execute.go", "cmd/wt/rescue.go", "cmd/wt/rescue_json.go"} {
+		if !fileOpNever(rel) {
+			t.Errorf("fileOpNever(%q) is false: an allow-list entry could cover it", rel)
+		}
+	}
+	for rel := range fileOpAllowed {
+		if strings.Contains(rel, "rescue") {
+			t.Errorf("fileOpAllowed names %s", rel)
+		}
+	}
+	src := "package rescue\nimport (\"os\"; \"os/exec\")\nfunc f(d string) {\n os.RemoveAll(d)\n exec.Command(\"git\", \"worktree\", \"remove\", d)\n}\n"
+	file, err := parser.ParseFile(token.NewFileSet(), "execute.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git, fileOps := scanFile(token.NewFileSet(), "internal/rescue/execute.go", file)
+	if len(git) == 0 || len(fileOps) == 0 {
+		t.Errorf("the scan missed a deletion in the rescue package: git %v, files %v", git, fileOps)
 	}
 }

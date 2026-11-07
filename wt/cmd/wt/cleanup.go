@@ -55,7 +55,8 @@ func cleanupCmd(a *app) *cobra.Command {
 			"terminal, enter removes the ticked\n" +
 			"rows after a confirmation that lists what each would lose: y when every\n" +
 			"row is proven, the typed word delete when any is not proven or loses\n" +
-			"something. origin branches are never removed.\n\n" +
+			"something. origin branches are never removed. r copies the work of the row\n" +
+			"under the cursor into a new branch and worktree first (`wt rescue`).\n\n" +
 			"It runs `git fetch --prune origin` first (--no-fetch skips it) and says in the\n" +
 			"header how that went (a repository with no origin remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
@@ -172,15 +173,25 @@ func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr 
 // removes the items the list confirmed; Refresh re-reads the repository (no
 // fetch) for the rebuilt list and points the engine at the new snapshot. A
 // registry that did not load turns removal off (plan call 7): enter then
-// says so and previews nothing.
+// says so and previews nothing. Rescue (the `r` key) runs `wt rescue`'s
+// executor on the list's current snapshot and is wired either way: it never
+// removes anything, so the registry does not matter to it.
 func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
-	if protErr != nil {
-		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed"}
-	}
 	in.Fetch = false // a re-check never fetches
+	// cur is the snapshot the list currently stands on: Refresh replaces it,
+	// and `r` rescues against it.
+	cur := &snap
+	rescueRowFn := func(row cleanup.Row) error {
+		answer, out, errOut := rescueStreams()
+		return rescueRow(answer, out, errOut, rescueFlags{minAge: minAge}, *cur, in, row)
+	}
+	if protErr != nil {
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Rescue: rescueRowFn}
+	}
 	eng := &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
 	return tui.RemoveFuncs{
+		Rescue: rescueRowFn,
 		Preview: func(rows []cleanup.Row) []removal.ItemPreview {
 			items := make([]removal.Item, len(rows))
 			for i, r := range rows {
@@ -197,6 +208,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 				return cleanup.Report{}, err
 			}
 			eng.Prior = fresh
+			*cur = fresh
 			return cleanupReport(a, fresh, minAge, nil), nil
 		},
 	}

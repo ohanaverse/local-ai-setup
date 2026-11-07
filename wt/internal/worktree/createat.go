@@ -1,0 +1,96 @@
+package worktree
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+)
+
+// fullCommitID is a full object id as git prints it (sha-1 or sha-256).
+var fullCommitID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// CheckNew reports where CreateAt would put a new branch called name, or why
+// it cannot. It writes nothing. It is classifyName's answer for a name that
+// must be new: a branch of that name, a worktree that holds it, a path
+// another branch's name flattens onto, a directory already there, an
+// invalid branch name and a remote-tracking form are all errors. There is no
+// reuse and no automatic suffix: a rerun must be told a name is taken.
+func CheckNew(dir, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("worktree name cannot be empty")
+	}
+	if err := checkNewBranchName(dir, name); err != nil {
+		return "", err
+	}
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		return "", err
+	}
+	cls, err := classifyName(dir, name, entries)
+	if err != nil {
+		return "", err
+	}
+	switch cls.kind {
+	case nameCreate:
+	case nameReuseWorktree:
+		return "", fmt.Errorf("branch %q already exists: worktree %s holds it", name, cls.path)
+	case nameExistingBranch:
+		return "", fmt.Errorf("branch %q already exists", name)
+	default:
+		return "", fmt.Errorf("%q names a remote-tracking branch, not a new branch", name)
+	}
+	if _, err := os.Lstat(cls.path); err == nil {
+		return "", fmt.Errorf("%s already exists", cls.path)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return cls.path, nil
+}
+
+// checkNewBranchName is checkBranchName plus a refusal of "@" and a refs/
+// prefix, which git accepts as a ref name but which would make a branch git
+// cannot address by that name (or one under refs/heads/refs/).
+func checkNewBranchName(dir, name string) error {
+	if name == "@" || strings.HasPrefix(name, "refs/") {
+		return fmt.Errorf("invalid branch name %q: not usable as a new branch name", name)
+	}
+	return checkBranchName(dir, name)
+}
+
+// CreateAt creates branch name and its linked worktree under dir's
+// .worktrees at the commit start (a full object id of a commit, never a
+// name that could move), without upstream tracking, and returns the
+// worktree's path. dir is the repository root. Every check CheckNew makes
+// runs first, so a refusal leaves no branch behind. It never reuses an
+// existing branch or worktree.
+func CreateAt(dir, name, start string) (string, error) {
+	if !fullCommitID.MatchString(start) {
+		return "", fmt.Errorf("start %q is not a full commit id", start)
+	}
+	out, err := runGit(dir, "cat-file", "-t", start)
+	if err != nil || strings.TrimSpace(string(out)) != "commit" {
+		return "", fmt.Errorf("start %s is not a commit of this repository", start)
+	}
+	path, err := CheckNew(dir, name)
+	if err != nil {
+		return "", err
+	}
+	if out, err := runGitCombined(dir, "worktree", "add", "--no-track", "-b", name, path, start); err != nil {
+		msg := fmt.Sprintf("git worktree add -b: %v: %s", err, strings.TrimSpace(string(out)))
+		if _, e := runGit(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+name); e == nil {
+			msg += fmt.Sprintf(" (branch %s was created and left behind)", name)
+		}
+		return "", fmt.Errorf("%s", msg)
+	}
+	return path, nil
+}
+
+// runGitCombined is runGit with stderr folded into the output, for an error
+// message that says why git failed.
+func runGitCombined(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}

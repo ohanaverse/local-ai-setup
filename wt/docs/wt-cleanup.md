@@ -1,4 +1,4 @@
-# `wt cleanup` and `wt remove`
+# `wt cleanup`, `wt remove` and `wt rescue`
 
 `wt cleanup` lists the repository's worktrees, local branches and `origin`
 branches in four groups, by how sure wt is that each can go, with the
@@ -160,6 +160,85 @@ and `--min-age` behave as for `wt cleanup`.
 The tick list exits 0 after a removal run, whatever the outcomes: they were
 on screen and are printed at exit, unless the repository could not be
 re-read afterwards (exit 1; the outcomes still print).
+
+## `wt rescue`: keep work before it is lost
+
+A worktree in the "has work that exists nowhere else" group holds commits and
+files that exist only there. `wt rescue` copies them into a new branch and
+worktree so they survive; it only creates, and never changes or removes the
+original.
+
+```bash
+wt rescue ../repo-wt/spike --dry-run   # what would be copied; changes nothing
+wt rescue spike                        # asks y/N on a terminal
+wt rescue spike --yes --to keep/spike  # no prompt; choose the branch name
+```
+
+In `wt cleanup`'s list, `r` on a worktree row with work to keep does the same
+after the list closes.
+
+The new branch (default `rescued/<branch>`, or `rescued/<directory>` for a
+detached worktree) starts at the original's exact HEAD, so every commit
+comes with it, and its worktree goes under `.worktrees/`. Carried on top:
+staged changes (still staged), unstaged changes and untracked files that are
+not ignored. Not carried: ignored files (`.env`, `.venv`; the count is
+reported) and empty directories. Before it reports `moved`, wt checks that the
+new worktree's `git status` equals the original's and that every changed file
+has the same content, mode and link target. A directory the copy creates for
+untracked files gets the original directory's mode (a `0700` one stays
+`0700`), and the check compares those modes too.
+
+**The original stays as it was, and is not made removable.** It is read with
+optional locks off (no index refresh) and compared before and after: its HEAD,
+its own branch ref, its staged content (not the index file's bytes, which a
+`git status` elsewhere may refresh) and the files the status names. Other
+refs, other worktrees' commits and a background fetch do not fail the run. Its commits
+are counted against remote-tracking refs only and its files were copied, not
+moved, so `wt cleanup` still lists it as having work that exists nowhere else
+and `wt remove` still needs `--accept-loss`, `--force` and `-D`. Remove it
+after you have checked the copy.
+
+Refused, with nothing created (JSON `code` in brackets): nothing to keep
+(`nothing_to_keep`); the primary checkout (`primary`; #522); a rebase, merge
+or similar in progress (`operation_in_progress`) or unmerged paths
+(`unmerged_paths`); a skip-worktree or assume-unchanged file
+(`hidden_index_flags`); a changed submodule (`submodule_change`); a file both
+staged and modified (`staged_and_modified`); an intent-to-add file
+(`intent_to_add`); a nested git repository (`nested_repo`); an untracked path that is a fifo, socket or other
+non-file, or whose path is unsafe to copy (`special_file`); a changed file whose
+line endings git converts (a `text`/`eol` attribute or `core.autocrlf`) and that
+holds CRLF or asks for it (`line_endings`); a changed file a `filter`
+attribute handles, git-lfs or any clean/smudge filter, which a copy could not
+reproduce byte for byte (`content_filter`); more than 20000
+untracked files or 512 MiB (`too_large`); an unreadable worktree
+(`gates_unknown`, `unreadable`); a name already taken (`name_unavailable`,
+naming `--to`; there is no automatic suffix); a branch with no worktree
+(`not_worktree`; `wt -W <branch>` gives it one). Current, locked and held
+worktrees are allowed (a held one is warned about: if its session edits files
+during the copy the run fails with `source_changed_while_copying` rather than
+report a stale copy).
+
+**A failure after the new worktree exists keeps it** (`created: true`, its
+path in the message; when creating the worktree failed after git made the
+branch, `branch_kept` is true and the message names the branch, which a rerun
+would otherwise report as `name_unavailable`): nothing is rolled back, because undoing it would mean a
+forced removal of a directory that now holds your work. Look at it, then
+`wt remove` it if you do not want it.
+
+| Exit | Meaning |
+|---|---|
+| 0 | the work was copied and verified (with `--dry-run`: it would be) |
+| 1 | could not start: no or ambiguous target, `--min-age` below `1m`, the repository could not be classified |
+| 2 | refused or failed |
+| 3 | approval missing: no `--yes` and no terminal, or the prompt was declined; nothing was created |
+
+`--json` prints one document,
+[rescue-result.schema.json](../../docs/contracts/rescue-result.schema.json)
+(samples beside it), on failure too. `--no-fetch` and `--min-age` behave as
+for `wt cleanup`. `--dry-run` writes no ref, index or working file (like
+listing, the merge proof may leave unreachable tree objects): it does not
+fetch, so what counts as unpushed or merged is as of the last fetch, and the
+report says so in `warnings`.
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md).
