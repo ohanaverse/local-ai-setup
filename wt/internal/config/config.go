@@ -828,6 +828,9 @@ type Config struct {
 	// LitellmTable is the wt-owned persisted [litellm] routing state.
 	LitellmTable *LitellmState `toml:"litellm,omitempty"`
 	litellm      LitellmState  `toml:"-"` // runtime copy of LitellmTable
+	// LaunchTable is the hand-edited [launch] table (exit_prompt); wt
+	// round-trips it through every save but never sets it.
+	LaunchTable *LaunchState `toml:"launch,omitempty"`
 	// wt decides which local models are running from the live inventory
 	// (internal/localmodels), never from a stored flag. See
 	// docs/superpowers/specs/2026-09-20-wt-live-resolution-design.md.
@@ -883,6 +886,9 @@ func Load() (*Config, error) {
 
 	cfg, exists, err := readConfigFile()
 	if err != nil {
+		return nil, err
+	}
+	if err := cfg.validateLaunch(); err != nil {
 		return nil, err
 	}
 
