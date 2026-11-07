@@ -9,7 +9,7 @@ The root command's `RunE` (`cmd/wt/main.go`) picks one of five entries into `run
 | Entry | `launchPath` | `root` | Outside a git repository |
 |---|---|---|---|
 | `--root` | `worktree.PrimaryOf(".")`, the primary checkout from anywhere | the same path | refused (also in a bare repository); exclusive with `--cwd` and `-W` |
-| `-W <name>` | the worktree `EnsureForName` returned; refused (`refuseRootBranch`) when that is the root | the checkout root | refused: `not in a git repo: <git's error>` |
+| `-W <name>` | the worktree `EnsureForName` returned, after `confirmCreate` asked (or `--new` answered) when `worktree.WouldCreate` says the name would create a branch (no terminal and no `--new`: refused, naming `--new`; an invalid name errors first, with `EnsureForName`'s own error); refused (`refuseRootBranch`) when that is the root | the checkout root | refused: `not in a git repo: <git's error>` |
 | `--cwd` | `os.Getwd()`, absolute; `gateRoot` first asks when it is the root (no terminal: refuses, naming `--root`) | the checkout root, or `""` when `worktree.RepoRoot` finds none | launches |
 | no flag, outside a repository (`!worktree.IsRepo(".")`) | `"."` | `""` | this is that case |
 | no flag, inside one | `""` (the worktree picker resolves it) | `""` (the caller installs the guard itself) | never reached |

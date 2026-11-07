@@ -29,11 +29,14 @@
 ```bash
 # from: any git repo, e.g. ~/github/ohanaverse/local-ai-setup
 claude-wt                    # TUI: pick worktree/branch + model (advances rotation)
-claude-wt -W my-feature      # skip worktree picker
+claude-wt -W my-feature      # skip worktree picker; a new name asks "create it?" (default no)
+claude-wt -W my-feature --new  # create it without asking (required with no terminal)
 claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything (example id — use one of yours)
 ```
 
 `-W` (uppercase) is the real worktree flag — confirmed by `wt --help` (both the installed binary and repo source, which agree).
+
+`-W <name>` reuses an existing worktree or branch silently. A name that matches neither asks `create it from <base>? [y/N]` (default no) before it creates anything; `--new` answers yes, and a launch with no terminal (a script) is refused without it. The picker's "+ New worktree…" prompt and the shared-root `w` choice do not ask.
 
 ## Steps
 

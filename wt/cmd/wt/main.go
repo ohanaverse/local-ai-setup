@@ -287,7 +287,7 @@ func rootCmd() *cobra.Command {
 		Use:   "wt",
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 		Example: "  wt                          # interactive TUI\n" +
-			"  wt -W my-feature -A claude   # create worktree and launch\n" +
+			"  wt -W my-feature -A claude   # use the worktree; a new name asks first (--new answers)\n" +
 			"  wt --cwd --agent codex       # launch in the current directory\n" +
 			"  wt -A claude -- --verbose    # pass arguments to the agent (a relative path is\n" +
 			"                               # resolved from the directory the agent starts in)\n" +
@@ -588,7 +588,7 @@ func rootCmd() *cobra.Command {
 
 	// Flags shared by wt and its subcommands.
 	cmd.PersistentFlags().Bool("yolo", false, "Skip permission prompts")
-	cmd.PersistentFlags().StringP("worktree", "W", "", "Use/create worktree for branch")
+	cmd.PersistentFlags().StringP("worktree", "W", "", "Use the worktree for a branch; a name that does not exist yet asks before creating it (see --new)")
 	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")

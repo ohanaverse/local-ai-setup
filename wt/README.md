@@ -40,8 +40,11 @@ The `*-wt` shims just `exec wt --agent <name>`, so the installed `wt` must be on
 # Launch in any git repo — TUI picker for worktrees and branches
 claude-wt
 
-# Work on a specific branch directly (skip TUI)
+# Work on a specific branch directly (skip TUI); a new name asks before creating it
 claude-wt -W my-feature
+
+# Create it without the question (needed when there is no terminal)
+claude-wt -W my-feature --new
 
 # Run in the current directory (no worktree picker; works outside a git repo too)
 claude-wt --cwd
@@ -70,7 +73,8 @@ All launchers support:
 
 | Flag | Description |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use or create a worktree for the given branch; skip the worktree picker |
+| `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing branch or worktree is reused silently; a new name asks `create it from <base>? [y/N]` (default no) before creating anything, and with no terminal is refused unless `--new` is passed |
+| `--new` | With `-W`, create the branch and worktree for a name that does not exist yet without asking. A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root` |
 | `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and asks nothing. Exclusive with `--cwd` and `-W`. |
 | `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. Standing in the repository root it asks first (default no); with no terminal it refuses and names `--root`. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |

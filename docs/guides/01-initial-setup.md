@@ -524,7 +524,7 @@ Final check — a `wt` agent launch actually streaming through this proxy:
 
 ```bash
 # from: anywhere — -M takes any id from the /v1/models listing (example shown)
-claude-wt -W smoke-test -M ollama/qwen3.8:27b-mlx
+claude-wt -W smoke-test --new -M ollama/qwen3.8:27b-mlx   # --new: create the worktree without being asked
 ```
 
 ## Gotchas
