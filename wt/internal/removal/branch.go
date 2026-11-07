@@ -2,6 +2,7 @@ package removal
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -63,8 +64,10 @@ var knownNotUnknown = map[string]bool{
 	cleanup.ReasonClaimsUnavailable: true,
 }
 
-// gcCaveat is the warning on every deletion: the restore command works only
-// while git keeps the unreachable commit.
+// gcCaveat is the warning on a deletion whose tip no other branch reaches:
+// the restore command works only while git keeps the unreachable commit.
+// Every site that appends it asks tipHeldElsewhere first (deleted, re-created
+// and not-restored alike).
 const gcCaveat = "the commit survives only until git gc prunes it, possibly the next gc"
 
 // branchResult is the branch stage's answer: the outcome, one reason line,
@@ -350,7 +353,8 @@ func (e Engine) afterDelete(ref, tip string) branchResult {
 		// (remote, merge); update-ref does not, and a later branch of the
 		// same name (the restore command makes one) would inherit that
 		// upstream. A missing section is exit 128 and nothing to do.
-		warnings := []string{gcCaveat}
+		var warnings []string
+		warnings = e.withGcCaveat(warnings, name, tip)
 		if out, err := e.G.Run("config", "--remove-section", "branch."+name); err != nil || (out.Code != 0 && out.Code != 128) {
 			warnings = append(warnings, "the branch's upstream config (branch."+name+".*) could not be removed: "+gitErrText(err, out))
 		}
@@ -367,10 +371,41 @@ func (e Engine) afterDelete(ref, tip string) branchResult {
 		// there now and which commit was deleted.
 		return result(BrRetainedUnknown,
 			fmt.Sprintf("branch %s deleted; %s was re-created at %s; the deleted commit was %s", was, name, abbrev(recreated), tip),
-			append(h.Warnings, gcCaveat)...)
+			e.withGcCaveat(slices.Clone(h.Warnings), name, tip)...)
 	}
 	return result(BrRetainedUnknown, fmt.Sprintf("branch %s deleted and not restored; %s", was, restoreCmd),
-		append(h.Warnings, "restoring it failed: "+why, gcCaveat)...)
+		e.withGcCaveat(append(slices.Clone(h.Warnings), "restoring it failed: "+why), name, tip)...)
+}
+
+// withGcCaveat appends gcCaveat to warnings unless another branch holds tip.
+func (e Engine) withGcCaveat(warnings []string, name, tip string) []string {
+	if e.tipHeldElsewhere(name, tip) {
+		return warnings
+	}
+	return append(warnings, gcCaveat)
+}
+
+// tipHeldElsewhere reports whether a local branch or remote-tracking ref
+// still reaches tip (the deleted branch is already gone): then a gc prunes
+// nothing and the gc caveat would mislead (#531). Only refs/heads and
+// refs/remotes count: a tag or refs/stash entry can be dropped on its own,
+// and the namespace limit bounds the walk. refs/remotes/origin/<name> (the
+// deleted branch's own name) does not count: it goes in the same cleanup, or
+// is what the user is removing. Two results are asked for so that one excluded
+// ref cannot hide another holder. Any failure to ask answers false, so the
+// caveat stays.
+func (e Engine) tipHeldElsewhere(name, tip string) bool {
+	out, err := probeGit(e.G, "for-each-ref", "--count=2", "--contains", tip, "--format=%(refname)", "refs/heads/", "refs/remotes/")
+	if err != nil || out.Code != 0 {
+		return false
+	}
+	own := "refs/remotes/origin/" + name
+	for _, ref := range strings.Fields(out.Stdout) {
+		if ref != own {
+			return true
+		}
+	}
+	return false
 }
 
 // restoreCommand is the command that puts ref back at tip: `git branch

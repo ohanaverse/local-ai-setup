@@ -152,6 +152,13 @@ it or writing on top of it — that launch degrades to unprofiled, same as
 any other config_content failure. A process is always free to restore its
 own backup at its own normal exit.
 
+**A JSON file the session left as wt wrote it comes back byte for byte.**
+When the surgical restore finds nothing differing from the stored snapshot,
+it writes the snapshot's own bytes, not a re-formatted copy, so a tracked
+`.claude/settings.local.json` is not shown modified and the exit-prompt
+worktree offer is not withheld (#530). If the session changed something,
+the per-leaf merge runs and the file is re-formatted as before.
+
 ## Working example: local models, all four agents
 
 A verified starting point for a machine serving local models through
