@@ -317,11 +317,12 @@ The post-run steps run in a fixed order — identical in the TUI and non-TUI
 paths, with the user's interactive steps first and the informational output
 last so the prompts cannot scroll it away:
 
-> release this session's refcount entry → survey → stop picker → summary
-> line → after-survey stats → pricing notice
+> release this session's refcount entry → survey → stop picker → worktree
+> prompt → summary line → after-survey stats → pricing notice
 
-Both the survey and the stop picker therefore run **before** the summary
-line.
+The survey, the stop picker and the worktree prompt therefore run **before**
+the summary line. A slot-profile session runs the same order without the
+survey, the after-survey stats and the pricing notice.
 
 **Exit status.** Once these steps have run, wt exits with the agent's own
 exit status — 3 when the agent exited 3, 255 when a signal killed it — on
@@ -345,6 +346,21 @@ user does next (0 on quitting), since no agent status exists to report.
   when stdin is not a TTY, when the launch had no model (command agents
   like `shell`), or when the model is **native** — a native launch has no
   priced model to survey (issue #116).
+- **Worktree prompt** (`exitprompt.Offer`, #521). When the agent exits in a
+  worktree and branch that **this launch created** and nobody touched, wt asks
+  on one line, after the stop picker: `<path> was created for this session
+  and nothing changed in it. Remove it and its branch <name>?` Enter keeps
+  (the default is no); `y` removes the worktree **and** its branch through the
+  same engine as `wt remove`, so its rescan and hard blockers still apply, and
+  anything that moved since is refused and kept (the engine's reason is
+  printed). A worktree qualifies only when the launch created the branch and
+  the worktree (a reused worktree, a new worktree on an existing branch,
+  `--cwd` and `--root` never do), the branch still sits at the commit it
+  started on, and the engine finds no uncommitted or ignored file, no
+  commit of its own and no running process in it. Anything else is kept silently,
+  and so is every launch with no terminal. It never changes the exit status.
+  Turn it off with `[launch] exit_prompt = "keep"` in
+  `~/.config/agent-wt/config.toml`; no value removes without a keypress.
 - **Stop picker** (`survey.Picker`, issue #115). Offers to stop running
   local models that no live wt session is using (refcount zero, probe
   trusted, stop backend exists). One line, applied on Enter: space-separated

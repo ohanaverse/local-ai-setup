@@ -172,6 +172,10 @@ claude's `--continue` means the most recent conversation in the current director
 
 `wt` used to resume the newest session by itself. That appended a one-shot run (`-- -p "..."`) to whichever conversation was newest, including one another process was using (#204), and made an opencode launch fail when the resumed session had stored a different model (#198). Whether a resumed session's stored model overrides the chosen one is the agent's behaviour; `wt` does not guard against it, and native models are not special-cased.
 
+## Exit prompt for an untouched worktree
+
+When the agent exits, `wt` offers to remove a worktree (and its branch) that this launch created and nothing touched: `<path> was created for this session and nothing changed in it. Remove it and its branch <name>?` Enter keeps it; `y` removes both through the same engine as `wt remove`. Only a branch `wt` created in that launch qualifies (not an existing worktree or branch, `--cwd` or `--root`), and anything changed, committed, ignored-but-present or still running is kept silently, as is any launch with no terminal. The prompt comes after the stop picker and before the summary line, and never changes the exit status. `[launch] exit_prompt = "keep"` in `~/.config/agent-wt/config.toml` turns it off. See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-exit-order).
+
 ## Post-run summary line
 
 After every agent or command subprocess exits, `wt` prints a single line to stdout summarizing the run:
