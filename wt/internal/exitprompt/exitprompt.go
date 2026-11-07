@@ -80,6 +80,15 @@ func ReflogUntouched(c Created) (ok bool, why string) {
 	return true, ""
 }
 
+// RecordNote records that this launch created branch in the worktree at
+// path, printing one line on w when it could not: a failure is never a failed
+// launch, the worktree is then simply never offered for removal.
+func RecordNote(w io.Writer, path, branch string) {
+	if err := Record(path, branch); err != nil {
+		fmt.Fprintf(w, "wt: note: could not record %s for the exit prompt (%v); it will be kept\n", path, err)
+	}
+}
+
 // Recorded returns what Record stored, and false when nothing was.
 func Recorded() (Created, bool) {
 	mu.Lock()
@@ -285,7 +294,11 @@ func Offer(env Env, in io.Reader, out io.Writer, isTTY bool) {
 	}
 	for _, o := range eng.Run([]removal.Item{item}, nil) {
 		fmt.Fprintln(out, removal.Headline(o))
-		if o.Reason != "" && o.Worktree != removal.WtRemoved {
+		// The reason is printed whenever the outcome is short of removing
+		// the worktree AND its branch: it is the engine's only account of
+		// what was kept and why (a branch held by another worktree, a
+		// case-only sibling, a tip that moved mid-run).
+		if o.Reason != "" && (o.Worktree != removal.WtRemoved || o.Branch != removal.BrDeleted) {
 			fmt.Fprintln(out, "reason: "+o.Reason)
 		}
 		for _, l := range removal.DetailLines(o) {

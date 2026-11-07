@@ -9,6 +9,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -535,7 +536,7 @@ func rootCmd() *cobra.Command {
 					return refuse(err)
 				}
 				if creates {
-					recordCreation(path, name)
+					exitprompt.RecordNote(osStderr, path, name)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
