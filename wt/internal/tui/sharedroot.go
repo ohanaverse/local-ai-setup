@@ -115,7 +115,11 @@ func (m model) handleSharedRootKey(msg tea.KeyMsg) (model, tea.Cmd) {
 // picker names it, so it is never the default branch.
 func sharedRootWorktreeCmd(root string) tea.Cmd {
 	return func() tea.Msg {
-		path, err := worktree.EnsureForName(root, sessionclaim.NewWorktreeName(os.Getpid(), time.Now()))
+		name := sessionclaim.NewWorktreeName(os.Getpid(), time.Now())
+		path, err := worktree.EnsureForName(root, name)
+		if err == nil {
+			recordCreation(path, name)
+		}
 		return sharedRootWorktreeMsg{path: path, err: err}
 	}
 }

@@ -38,7 +38,11 @@ type newWorktreeCreatedMsg struct {
 // command from Update.
 func ensureNewWorktreeCmd(root, name string) tea.Cmd {
 	return func() tea.Msg {
+		creates, _, _ := worktree.WouldCreate(root, name)
 		path, err := worktree.EnsureForName(root, name)
+		if err == nil && creates {
+			recordCreation(path, name)
+		}
 		return newWorktreeCreatedMsg{path: path, name: name, err: err}
 	}
 }

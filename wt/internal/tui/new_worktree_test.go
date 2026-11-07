@@ -5,6 +5,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // TestValidateNewWorktreeNameRejectsEmpty asserts the validator
@@ -229,4 +232,70 @@ func gitInit(t *testing.T, dir string) {
 		// the test setup is broken, not the code under test.
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
+}
+
+// TestPickerCreationRoutesRecordOnlyACreatedBranch checks the exit prompt's
+// source of truth on the picker: a typed new name records the branch it made,
+// while a typed existing name, an existing worktree and a bare-branch row
+// (EnsureForBranch, history this launch did not make) record nothing.
+func TestPickerCreationRoutesRecordOnlyACreatedBranch(t *testing.T) {
+	t.Run("typed new name", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		dir := t.TempDir()
+		gitInit(t, dir)
+		got, ok := ensureNewWorktreeCmd(dir, "fresh")().(newWorktreeCreatedMsg)
+		if !ok || got.err != nil {
+			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		}
+		rec, ok := exitprompt.Recorded()
+		if !ok || rec.Path != got.path || rec.Branch != "fresh" || rec.Tip == "" {
+			t.Errorf("Recorded() = %+v, %v; want fresh at %s", rec, ok, got.path)
+		}
+	})
+	t.Run("typed existing branch", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		dir := t.TempDir()
+		gitInit(t, dir)
+		if out, err := exec.Command("git", "-C", dir, "branch", "topic").CombinedOutput(); err != nil {
+			t.Fatalf("git branch: %v\n%s", err, out)
+		}
+		if got, ok := ensureNewWorktreeCmd(dir, "topic")().(newWorktreeCreatedMsg); !ok || got.err != nil {
+			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		}
+		if rec, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing for an existing branch", rec)
+		}
+	})
+	t.Run("typed existing worktree", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		dir := t.TempDir()
+		gitInit(t, dir)
+		if _, err := worktree.EnsureForName(dir, "again"); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := ensureNewWorktreeCmd(dir, "again")().(newWorktreeCreatedMsg); !ok || got.err != nil {
+			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		}
+		if rec, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing for a reused worktree", rec)
+		}
+	})
+	t.Run("bare branch row", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		dir := t.TempDir()
+		gitInit(t, dir)
+		if out, err := exec.Command("git", "-C", dir, "branch", "feature").CombinedOutput(); err != nil {
+			t.Fatalf("git branch: %v\n%s", err, out)
+		}
+		if got, ok := ensureBranchWorktreeCmd(dir, "feature")().(branchWorktreeCreatedMsg); !ok || got.err != nil {
+			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		}
+		if rec, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing for a bare-branch row", rec)
+		}
+	})
 }

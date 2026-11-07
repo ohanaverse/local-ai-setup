@@ -109,6 +109,7 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 		if err != nil {
 			return "", noop, fmt.Errorf("new worktree: %w", err)
 		}
+		recordCreation(path, name)
 		fmt.Fprintf(out, "wt: launching in the new worktree %s\n", path)
 		return path, noop, nil
 	default:

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 )
 
 // answerOnStdin makes os.Stdin a pipe that holds answer and ends, until the
@@ -282,4 +284,101 @@ func TestConfirmCreateRendersTheStartPhrase(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWorktreeFlagRecordsOnlyACreatedBranch checks the exit prompt's source of
+// truth: -W records the branch and worktree only when this launch created the
+// branch (a "y" or --new on an unknown name), and records nothing for an
+// existing worktree, an existing branch with no worktree, --root or --cwd,
+// because the prompt may only ever offer to remove what this launch made.
+func TestWorktreeFlagRecordsOnlyACreatedBranch(t *testing.T) {
+	t.Run("asked and yes", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		root := sharedRootRepo(t)
+		stubStdinTTY(t, true)
+		answerOnStdin(t, "y")
+		captureNotes(t)
+		res := runPinnedLaunch(t, root, []string{"-W", "typo"})
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		got, ok := exitprompt.Recorded()
+		if !ok || got.Branch != "typo" || physical(t, got.Path) != res.agentDir || got.Tip == "" {
+			t.Errorf("Recorded() = %+v, %v; want branch typo at %s", got, ok, res.agentDir)
+		}
+	})
+	t.Run("new flag", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		root := sharedRootRepo(t)
+		stubStdinTTY(t, false)
+		res := runPinnedLaunch(t, root, []string{"-W", "fresh", "--new"})
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		if got, ok := exitprompt.Recorded(); !ok || got.Branch != "fresh" {
+			t.Errorf("Recorded() = %+v, %v; want branch fresh", got, ok)
+		}
+	})
+	t.Run("answered no", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		root := sharedRootRepo(t)
+		stubStdinTTY(t, true)
+		answerOnStdin(t, "n")
+		captureNotes(t)
+		runPinnedLaunch(t, root, []string{"-W", "typo"})
+		if got, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing after a no", got)
+		}
+	})
+	t.Run("existing worktree", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		root := sharedRootRepo(t)
+		addLinkedWorktree(t, root, "feat")
+		stubStdinTTY(t, false)
+		runPinnedLaunch(t, root, []string{"-W", "feat"})
+		if got, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing for a reused worktree", got)
+		}
+	})
+	t.Run("existing branch without a worktree", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		root := sharedRootRepo(t)
+		if out, err := exec.Command("git", "-C", root, "branch", "topic").CombinedOutput(); err != nil {
+			t.Fatalf("branch: %v\n%s", err, out)
+		}
+		stubStdinTTY(t, false)
+		res := runPinnedLaunch(t, root, []string{"-W", "topic"})
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		if got, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing: the branch's history was not made by this launch", got)
+		}
+	})
+	t.Run("root", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		root := sharedRootRepo(t)
+		stubStdinTTY(t, false)
+		runPinnedLaunch(t, root, []string{"--root"})
+		if got, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing for --root", got)
+		}
+	})
+	t.Run("cwd", func(t *testing.T) {
+		exitprompt.Reset()
+		t.Cleanup(exitprompt.Reset)
+		root := sharedRootRepo(t)
+		linked := addLinkedWorktree(t, root, "feat")
+		stubStdinTTY(t, false)
+		runPinnedLaunch(t, linked, []string{"--cwd"})
+		if got, ok := exitprompt.Recorded(); ok {
+			t.Errorf("Recorded() = %+v; want nothing for --cwd", got)
+		}
+	})
 }

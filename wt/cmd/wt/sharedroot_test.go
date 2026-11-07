@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
@@ -490,5 +491,33 @@ func TestQuitAtTheRootMenuEndsTheLaunchWithoutAnError(t *testing.T) {
 	}
 	if fileExists(ownClaim(root)) {
 		t.Error("quit claimed the root")
+	}
+}
+
+// TestConfirmNewWorktreeRecordsTheCreation checks the shared-root menu's "w"
+// records the session branch it created, so the exit prompt can offer to
+// remove it; the other answers create nothing and record nothing.
+func TestConfirmNewWorktreeRecordsTheCreation(t *testing.T) {
+	exitprompt.Reset()
+	t.Cleanup(exitprompt.Reset)
+	root := sharedRootRepo(t)
+	liveOtherClaim(t, root, "codex")
+	var out bytes.Buffer
+	dir, release, err := confirmSharedRoot(root, "claude", false, strings.NewReader("c"), &out, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if got, ok := exitprompt.Recorded(); ok {
+		t.Fatalf("Recorded() = %+v after continue; want nothing", got)
+	}
+	dir, release, err = confirmSharedRoot(root, "claude", false, strings.NewReader("w"), &out, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	got, ok := exitprompt.Recorded()
+	if !ok || got.Path != dir || !strings.HasPrefix(got.Branch, "session-") || got.Tip == "" {
+		t.Errorf("Recorded() = %+v, %v; want the session branch at %s", got, ok, dir)
 	}
 }

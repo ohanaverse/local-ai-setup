@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -669,5 +670,28 @@ func TestLatePromptQuitLeavesNoTraceOfTheLaunch(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSharedRootWorktreeChoiceRecordsTheCreation checks the screen's "w"
+// records the session branch it created, so the exit prompt can offer to
+// remove it, and that "c" (continue in the root) records nothing.
+func TestSharedRootWorktreeChoiceRecordsTheCreation(t *testing.T) {
+	exitprompt.Reset()
+	t.Cleanup(exitprompt.Reset)
+	root := rootRepo(t)
+	liveOther(t, root, "codex")
+	m, _, launched := pickRow(t, root)
+	m, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	if _, ok := exitprompt.Recorded(); ok {
+		t.Fatal("recorded before the worktree exists")
+	}
+	updateMsg(m, cmd())
+	if len(*launched) != 1 {
+		t.Fatalf("launched %v; want one launch", *launched)
+	}
+	got, ok := exitprompt.Recorded()
+	if !ok || got.Path != (*launched)[0] || !strings.HasPrefix(got.Branch, "session-") || got.Tip == "" {
+		t.Errorf("Recorded() = %+v, %v; want the session branch at %s", got, ok, (*launched)[0])
 	}
 }

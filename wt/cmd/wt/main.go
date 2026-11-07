@@ -529,6 +529,9 @@ func rootCmd() *cobra.Command {
 				if err := refuseRootBranch(name, path); err != nil {
 					return refuse(err)
 				}
+				if creates {
+					recordCreation(path, name)
+				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
 
