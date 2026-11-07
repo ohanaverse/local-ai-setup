@@ -69,6 +69,19 @@ wt stop --all                    # stop every running local model, then the omlx
   unload a model in the middle of a load.
   wt sees a load only through omlx's status endpoint: on a server with an
   API key the registry does not name, a loading model reads as not running.
+- sushi: before the server is spawned, wt checks that the pack fits
+  `iogpu.wired_limit_mb` (about 1.1 times the pack's `*.safetensors`; a
+  setting of 0 counts as 75% of the machine's memory). A pack that does not
+  fit fails the start with `sudo sysctl iogpu.wired_limit_mb=59000` (resets on
+  reboot; wt never sets it). When wt cannot measure, it prints
+  `wt: skipping the memory check (<why>)` and goes on. A start that finds the
+  port busy with a sushi wt itself started (up, no pack loaded yet) reuses it
+  and loads the pack there instead of failing with `port in use`.
+- rec: one instance serves the whole machine, on any port. A rec already
+  serving the model at the registry's address is adopted (nothing is spawned);
+  one serving another model or address is asked about before it is replaced
+  (`--replace` answers yes). `wt stop rec` runs `rec stop`, which reaches it
+  wherever it listens.
 - Not on disk (a registry entry whose artifact is missing): not listed;
   `wt start <id>` exits 1 with `<id> is not on disk — pull or download it
   first`.

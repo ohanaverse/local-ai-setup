@@ -8,8 +8,9 @@ components — fresh install starts at
 |---|---|
 | Root (`bin/`, `benchmarks/`, `docs/`, `litellm-session-logs/`) | backends (LiteLLM proxy, Ollama, oMLX) + LaunchAgents + benchmarks + user guides + session-log extraction |
 | `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
+| `agent-utilities/` | read-only stdlib-Python helpers for specific coding agents (`claude-utilities/`: transcript and OTel speed estimates); run manually |
 | `modeltiers/` | advisory capability tiers for the models wt lists, from public benchmark sources (`modeltiers` CLI) |
-| `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims) |
+| `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims); `wt cleanup`, `wt remove` and `wt rescue` retire worktrees and branches ([reference](wt/docs/wt-cleanup.md), [guide 08 §9](docs/guides/08-maintenance-and-troubleshooting.md)) |
 
 ## User guides (docs/guides/)
 
@@ -26,7 +27,7 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated llmbench runs |
 | [`06-wt-agents-and-models.md`](docs/guides/06-wt-agents-and-models.md) | pick worktree/agent/model, then launch |
 | [`07-usage-and-spend.md`](docs/guides/07-usage-and-spend.md) | reconcile wt launches vs LiteLLM spend |
-| [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades |
+| [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades, cleaning up worktrees and branches (`wt cleanup`, `wt remove`, `wt rescue`, §9) |
 | [`09-agent-benchmarks.md`](docs/guides/09-agent-benchmarks.md) | agentic coding benchmark (`llmbench agent`) |
 | [`10-mlx-lm-quantization.md`](docs/guides/10-mlx-lm-quantization.md) | local mlx-lm quantization + `mlx_lm_server` speculative decoding |
 | [`11-capability-eval-benchmark.md`](docs/guides/11-capability-eval-benchmark.md) | cross-category capability benchmark (`llmbench eval`) |
@@ -60,7 +61,12 @@ Any line that differs → [08-maintenance-and-troubleshooting.md](docs/guides/08
 - [Adding MLX (Apple Silicon) as a Fourth Backend to Your LiteLLM macOS Proxy](docs/reference/Adding%20MLX%20%28Apple%20Silicon%29%20as%20a%20Fourth%20Backend%20to%20Your%20LiteLLM%20macOS%20Proxy.md)
 - [oMLX Download and Run](docs/reference/oMLX%20Download%20and%20Run.md)
 - [Downloading and Managing Hugging Face Models on macOS for Local LLM Inference (2026)](docs/reference/Downloading%20and%20Managing%20Hugging%20Face%20Models%20on%20macOS%20for%20Local%20LLM%20Inference%20%282026%29.md)
-- [provider-artifacts.md](docs/reference/provider-artifacts.md) — captured provider artifacts + llama.cpp re-enable procedure
+- [provider-artifacts.md](docs/reference/provider-artifacts.md) — captured provider artifacts (LiteLLM, oMLX, mlx_lm_server, rec, Sushi) + llama.cpp (retired) re-enable procedure
+- [worktrunk-comparison.md](docs/reference/worktrunk-comparison.md) — wt compared with worktrunk
+- [glm-5.3-flash-openrouter.md](docs/reference/glm-5.3-flash-openrouter.md) — GLM-5.3-Flash via OpenRouter and ollama cloud
+- `docs/reference/artifacts/` — captured provider config files (litellm, llamacpp, omlx, registry)
+
+Research notes: [`docs/minimal-agent-harnesses/`](docs/minimal-agent-harnesses/) (local-model engines and coding agents) and [`docs/benchmarking-tools-for-apple-silicon/`](docs/benchmarking-tools-for-apple-silicon/).
 
 ## Legacy
 
@@ -72,13 +78,15 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 
 ```
 .
-├── bin/                # check-links, mlx-quantize (monorepo-wide utilities; provider isolation moved to llmbench's `provider` CLI)
+├── bin/                # check-links, mlx-quantize, update-tools + update/<tool> (+ lib/), check-config-dirs-untouched (monorepo-wide utilities; provider isolation moved to llmbench's `provider` CLI)
+├── agent-utilities/    # read-only helper scripts for specific coding agents (claude-utilities/) — has its own CLAUDE.md
 ├── benchmarks/         # legacy benchmark scripts + write-ups
 │   └── results/        # benchmark output artifacts
 ├── litellm-session-logs/ # pull one LiteLLM session's request/response logs from Postgres, rebuild transcripts — has its own CLAUDE.md
 ├── docs/
 │   ├── guides/         # user playbooks — index above
 │   ├── reference/      # backend-specific guides
+│   ├── minimal-agent-harnesses/, benchmarking-tools-for-apple-silicon/  # research notes
 │   ├── contracts/      # cross-language config-format fixtures (read by wt Go and llmbench Python tests) + modeltiers' output sample
 │   ├── archive/        # superseded docs
 │   └── superpowers/    # plans + specs
@@ -87,7 +95,7 @@ One-off benchmark write-ups (legacy ad hoc scripts): [ornith-1.5](benchmarks/orn
 ├── wt/                 # worktree agent launcher (Go) — has its own CLAUDE.md
 ├── .github/workflows/ # CI: shell-ci, wt-ci, llmbench-ci, modeltiers-ci
 ├── CLAUDE.md           # agent entry point
-├── Makefile            # make lint (shellcheck), make check-links, make test-all
+├── Makefile            # make lint (shellcheck), make check-links, make test-all, make install, make update-tools
 └── README.md           # this file — index only
 ```
 

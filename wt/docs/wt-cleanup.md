@@ -2,8 +2,9 @@
 
 `wt cleanup` lists the repository's worktrees, local branches and `origin`
 branches in four groups, by how sure wt is that each can go, with the
-evidence for every row. On a terminal the list removes the worktrees and
-local branches you tick, after a confirmation. `wt remove` does the same for
+evidence for every row. On a terminal the list removes the worktrees, local
+branches and (with a typed phrase) proven `origin` branches you tick, after a
+confirmation. `wt remove` does the same for
 targets named on the command line. Both use one removal engine, which also
 deletes a **proven `origin` branch** when you give it the approval no other
 flag implies (`--remote`, or the typed phrase `delete origin`): see
@@ -19,6 +20,7 @@ wt cleanup --min-age 30m    # raise the fresh-branch threshold (default 10m)
 wt remove <worktree-path-or-branch>... --dry-run   # what would happen; changes nothing
 wt remove ../repo-wt/topic                         # asks y/N on a terminal
 wt remove topic old-spike --yes --accept-loss -D   # non-interactive, with explicit approvals
+wt remove origin/merged-topic --remote --yes       # delete a proven branch on origin
 ```
 
 ## Groups
@@ -29,6 +31,9 @@ wt remove topic old-spike --yes --accept-loss -D   # non-interactive, with expli
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read. |
 | Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref. |
 | In use / locked | A primary, current, locked, nested or mid-operation worktree, a held session claim, a registered model artifact (`protected_artifact`), or the default branch (`default_branch`). |
+
+`origin` branches are rows in these same groups, judged the same way (a proven
+one is the only kind that can be removed).
 
 Weak signals are never proofs. Any fact wt cannot establish makes the row
 less sure, never proven.
@@ -112,7 +117,7 @@ cannot be removed the outcome carries a warning.
 
 ### Approvals
 
-Approvals are per item. Each one means exactly one thing:
+Approvals are per item. Each one means exactly one thing (`--dry-run` lists the losses and changes nothing, and needs none):
 
 | Approval | `wt remove` flag | In the list | Covers |
 |---|---|---|---|
@@ -120,6 +125,7 @@ Approvals are per item. Each one means exactly one thing:
 | accept the loss | `--accept-loss` | the typed word `delete` | any item that is not proven or loses something (ignored files such as `.venv`, commits only on this machine, a fresh branch, a PR state wt could not read) |
 | force | `--force` | the typed word `delete` | also lose a worktree's uncommitted changes, or a detached HEAD's commits |
 | delete unmerged branch | `-D` | `tab` on that entry, then `delete` | delete a branch not proven merged: a named branch, or (per entry) a removed worktree's branch |
+| delete on origin | `--remote` | the typed phrase `delete origin` | a proven `origin/<name>` row; no other approval grants it |
 
 `--force` never implies `-D`, and neither implies `--accept-loss`: a dirty
 worktree needs `--force --accept-loss`, an unmerged branch `-D
@@ -256,6 +262,12 @@ branch, `branch_kept` is true and the message names the branch, which a rerun
 would otherwise report as `name_unavailable`): nothing is rolled back, because undoing it would mean a
 forced removal of a directory that now holds your work. Look at it, then
 `wt remove` it if you do not want it.
+
+The JSON `code` says which step failed: `create_failed` (git could not create
+the worktree; `created` says whether anything was left), `carry_failed` (the
+worktree exists but staged changes, unstaged changes, file modes or an
+untracked file could not be copied into it) and `verify_failed` (the copy was
+made but the comparison with the source found a difference).
 
 | Exit | Meaning |
 |---|---|
