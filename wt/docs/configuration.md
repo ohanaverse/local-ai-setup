@@ -115,6 +115,17 @@ agent-toolkit deploy home --dry-run    # Preview changes
 
 `wt` (the worktree/agent launcher, `wt/cmd/wt`) is a separate tool from the Claude Code/Codex configuration this doc otherwise covers, but it reads its own model registry at `~/.config/local-ai/registry.toml`. A missing registry does not block launching an agent: a model-driven agent with no `config.toml` entry (including the case where the registry is entirely absent) launches its installed binary directly, with no model routing. `wt model init` creates the registry and its provider rows; models are added, edited and removed with `wt model add|edit|rm`, or on the Models tab of `wt config` (`wt model`); each syncs the LiteLLM routes itself. A registry with models in it is what unlocks model routing/rotation. See the "Missing registry → unconfigured-agent passthrough" note in `wt/docs/internals/config-and-registry.md` and `wt/docs/superpowers/specs/2026-09-22-wt-unconfigured-agent-passthrough-design.md` for the full behavior.
 
+### Exit prompt setting
+
+When an agent exits in a worktree and branch that `wt` created for that launch and nothing changed in, `wt` asks whether to remove both (Enter keeps). `~/.config/agent-wt/config.toml` controls it:
+
+```toml
+[launch]
+exit_prompt = "ask"   # default when absent; "keep" never asks
+```
+
+Any other value is rejected, naming the key. There is no value that removes a worktree without a keypress. See `wt/docs/wt-agents/README.md#post-exit-order`.
+
 ## References
 
 - [Claude Code Hooks](https://code.claude.com/docs/en/hooks)

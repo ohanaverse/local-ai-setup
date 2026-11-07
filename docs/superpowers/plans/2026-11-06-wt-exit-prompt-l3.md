@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: done.** Built and merged as #526 (Refs #521, which stays open for the follow-ups #530 and #531). Task 6's acceptance ran on 2026-11-07 against the installed binary with a real claude and is recorded in the spec's "Left to the builder". The checkboxes below are left as written (the plan was executed by sub-agents, not ticked off here).
+
 **Goal:** When the agent exits, a worktree (and branch) this launch created and nobody touched is offered for removal with one keypress, through the same removal engine as `wt remove`.
 
 **Architecture:** A new package `internal/exitprompt` holds the launch-side record ("this launch created branch B at tip T in path P", in memory only), the eligibility predicate over the engine's own preview, and the prompt. The three creation routes record; the four post-exit tails (non-TUI single model, non-TUI slot profile, TUI single model, TUI slot profile) call `Offer` after the stop picker and before the summary line. Removal is `Engine.Preview` → `ConfirmedDeletingBranch` → `Engine.Run`, so rescan, compare-and-swap and hard blockers still apply.

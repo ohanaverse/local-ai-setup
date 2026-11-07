@@ -1225,3 +1225,64 @@ func TestWouldCreateCaseFoldedRefNamespaceConflict(t *testing.T) {
 		t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
 	}
 }
+
+// TestResolveEnsureCreatesWhatWasAsked pins that a Plan carries one
+// classification from the question to the creation: Creates and Start match
+// WouldCreate, and Ensure makes the worktree and branch the question described.
+// It matters because -W and both picker routes now ask and create through the
+// same object (#525).
+func TestResolveEnsureCreatesWhatWasAsked(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	p, err := Resolve(dir, "brand-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	creates, start, _ := WouldCreate(dir, "brand-new")
+	if !p.Creates() || p.Start() != start || creates != p.Creates() || p.Start() != "from main" {
+		t.Fatalf("plan = creates %v start %q, WouldCreate = %v %q", p.Creates(), p.Start(), creates, start)
+	}
+	path, err := p.Ensure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(gitRun(t, path, "rev-parse", "--abbrev-ref", "HEAD")); got != "brand-new" {
+		t.Fatalf("worktree HEAD = %q, want brand-new", got)
+	}
+}
+
+// TestPlanEnsureRefusesAChangedBase pins that a creation whose base moved
+// after the question was built is refused rather than made from a base the
+// user was not shown. The stale-prompt race is #525's whole point.
+func TestPlanEnsureRefusesAChangedBase(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	p, err := Resolve(dir, "brand-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "checkout", "-b", "elsewhere")
+	_, err = p.Ensure()
+	if err == nil || !strings.Contains(err.Error(), "from main") || !strings.Contains(err.Error(), "from elsewhere") {
+		t.Fatalf("error = %v, want one naming both bases", err)
+	}
+	if out := gitRun(t, dir, "for-each-ref", "refs/heads/brand-new"); strings.TrimSpace(out) != "" {
+		t.Fatalf("branch was created anyway: %q", out)
+	}
+}
+
+// TestPlanEnsureDoesNotReuseABranchMadeMeanwhile pins that a name approved for
+// creation which another session made first fails instead of silently
+// becoming a reuse of that branch (git's own refusal at `worktree add -b`).
+func TestPlanEnsureDoesNotReuseABranchMadeMeanwhile(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	p, err := Resolve(dir, "brand-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "branch", "brand-new")
+	if _, err := p.Ensure(); err == nil {
+		t.Fatal("Ensure succeeded over a branch created after the plan")
+	}
+}

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": true,
+  "outcome": "would_move",
+  "created": false,
+  "source": {
+    "path": "/Users/me/repo/.worktrees/scratch",
+    "head": "f92581ff5ac55df734270fc13d5b48260567e8a9"
+  },
+  "destination": {
+    "path": "/Users/me/repo/.worktrees/rescued-scratch",
+    "branch": "rescued/scratch",
+    "start": "f92581ff5ac55df734270fc13d5b48260567e8a9"
+  },
+  "carried": {
+    "commits": 2,
+    "staged": 1,
+    "unstaged": 3,
+    "untracked": 4,
+    "untracked_bytes": 1234
+  },
+  "left_behind": {
+    "ignored_entries": 0
+  },
+  "completed": [],
+  "warnings": [
+    "another wt session holds this worktree; if it edits files during the copy the rescue fails rather than copy a stale state"
+  ]
+}

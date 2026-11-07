@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
@@ -115,7 +116,19 @@ func (m model) handleSharedRootKey(msg tea.KeyMsg) (model, tea.Cmd) {
 // picker names it, so it is never the default branch.
 func sharedRootWorktreeCmd(root string) tea.Cmd {
 	return func() tea.Msg {
-		path, err := worktree.EnsureForName(root, sessionclaim.NewWorktreeName(os.Getpid(), time.Now()))
+		name := sessionclaim.WorktreeName()
+		// Record only a branch this call creates: a name that resolves to an
+		// existing branch or worktree (a recycled pid at the same time of day
+		// can meet an old session worktree) is not this launch's creation and
+		// must never be offered for removal.
+		plan, err := worktree.Resolve(root, name)
+		if err != nil {
+			return sharedRootWorktreeMsg{err: err}
+		}
+		path, err := plan.Ensure()
+		if err == nil && plan.Creates() {
+			exitprompt.RecordNote(os.Stderr, path, name)
+		}
 		return sharedRootWorktreeMsg{path: path, err: err}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -20,6 +21,32 @@ const defaultTimeout = 30 * time.Second
 type Git struct {
 	Dir     string
 	Timeout time.Duration // zero means 30s
+	// Config are `key=value` settings passed as `-c` options before the
+	// subcommand (core.fsmonitor=false for a caller that must not start the
+	// fsmonitor daemon).
+	Config []string
+	// Env is appended to the process environment (last entry wins). Use
+	// NonInteractive(dir) for any call that may reach a remote.
+	Env []string
+}
+
+// NonInteractive is the environment of a git call in dir that must never
+// prompt: no terminal credential prompt, no credential-manager dialog, and ssh
+// in BatchMode (no passphrase or host-key question). The ssh part is added only
+// when the user has set neither GIT_SSH_COMMAND nor core.sshCommand (read in
+// dir, so repository config counts): their own ssh command is left alone, and
+// a prompt it raises is theirs.
+func NonInteractive(dir string) []string {
+	env := []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"}
+	if os.Getenv("GIT_SSH_COMMAND") != "" {
+		return env
+	}
+	// Exit 1 is "unset"; any other failure is read as "set" (fail toward
+	// leaving the user's ssh alone).
+	if o, err := (Git{Dir: dir, Timeout: 5 * time.Second}).Run("config", "--get", "core.sshCommand"); err != nil || o.Code != 1 {
+		return env
+	}
+	return append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 }
 
 // Out is a finished git process: its output and exit code.
@@ -43,7 +70,14 @@ func (g Git) RunInput(input string, args ...string) (Out, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.Dir}, args...)...)
+	full := []string{"-C", g.Dir}
+	for _, c := range g.Config {
+		full = append(full, "-c", c)
+	}
+	cmd := exec.CommandContext(ctx, "git", append(full, args...)...)
+	// This package is read-only: GIT_OPTIONAL_LOCKS=0 stops `git status` and
+	// `git diff` from rewriting the index's stat cache as a side effect.
+	cmd.Env = append(append(os.Environ(), "GIT_OPTIONAL_LOCKS=0"), g.Env...)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
 	}

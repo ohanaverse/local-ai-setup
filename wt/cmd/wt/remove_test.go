@@ -272,10 +272,12 @@ func TestRemoveCmdUnknownArgIsUsageError(t *testing.T) {
 	}
 }
 
-// TestRemoveCmdRemoteRowIsNeverATarget verifies an origin branch with no
-// local branch (a real, non-default remote row) is not a target by its
-// remote-tracking name nor by its branch name: exit 1, and the remote ref
-// stays. Remote rows belong to PR C; wt remove must never reach origin.
+// TestRemoveCmdRemoteRowIsNeverATarget verifies an unmerged origin branch
+// with no local branch (a real, non-default remote row) is never deleted: a
+// bare branch name or a refs/remotes/ spelling is no target (exit 1), and
+// origin/topic, though a target, is refused (exit 2) however many approvals
+// are given, --remote included, because only a proven row is removable. The
+// remote ref stays.
 func TestRemoveCmdRemoteRowIsNeverATarget(t *testing.T) {
 	a, _ := removeApp(t)
 	dir := cleanupRepo(t)
@@ -287,10 +289,10 @@ func TestRemoveCmdRemoteRowIsNeverATarget(t *testing.T) {
 	if got := cgit(t, dir, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/topic"); got != "refs/remotes/origin/topic" {
 		t.Fatalf("fixture: origin/topic missing (%q)", got)
 	}
-	for _, arg := range []string{"origin/topic", "topic", "refs/remotes/origin/topic"} {
-		_, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--force", "--accept-loss", "-D", arg)
-		if exitOf(err) != 1 {
-			t.Errorf("%s: exit %d (%v), want 1", arg, exitOf(err), err)
+	for arg, want := range map[string]int{"origin/topic": 2, "topic": 1, "refs/remotes/origin/topic": 1} {
+		_, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--force", "--accept-loss", "-D", "--remote", arg)
+		if exitOf(err) != want {
+			t.Errorf("%s: exit %d (%v), want %d", arg, exitOf(err), err, want)
 		}
 	}
 	if got := cgit(t, dir, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/topic"); got != "refs/remotes/origin/topic" {

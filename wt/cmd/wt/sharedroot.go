@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -104,10 +105,21 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 		}
 		return "", noop, fmt.Errorf("the repository root %s is in use by %s; pass --allow-shared-root to launch there anyway, or -W <name> to use a linked worktree", root.Path, strings.Join(names, ", "))
 	case choice == 'w':
-		name := sessionclaim.NewWorktreeName(os.Getpid(), time.Now())
-		path, err := worktree.EnsureForName(root.Path, name)
+		name := sessionclaim.WorktreeName()
+		// Record only a branch this call creates: a name that resolves to an
+		// existing branch or worktree (a recycled pid at the same time of day
+		// can meet an old session worktree) is not this launch's creation and
+		// must never be offered for removal.
+		plan, err := worktree.Resolve(root.Path, name)
 		if err != nil {
 			return "", noop, fmt.Errorf("new worktree: %w", err)
+		}
+		path, err := plan.Ensure()
+		if err != nil {
+			return "", noop, fmt.Errorf("new worktree: %w", err)
+		}
+		if plan.Creates() {
+			exitprompt.RecordNote(osStderr, path, name)
 		}
 		fmt.Fprintf(out, "wt: launching in the new worktree %s\n", path)
 		return path, noop, nil

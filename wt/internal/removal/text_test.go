@@ -31,3 +31,20 @@ func TestDetailLinesKeepsRestoreIDAndOneLine(t *testing.T) {
 		t.Errorf("Headline = %q", h)
 	}
 }
+
+// TestHeadlineOfAnOriginItem prints the headline and details of a deleted
+// origin branch. What: it names origin/<name> and the branch outcome, with no
+// worktree wording, and the restore tip line follows. Why: the command and
+// the tick list print these same lines; "worktree not_requested" for a branch
+// on a server would read as nonsense, and the tip is the one undo.
+func TestHeadlineOfAnOriginItem(t *testing.T) {
+	tip := strings.Repeat("a", 40)
+	o := NewOutcome(Item{Kind: cleanup.KindRemote, Name: "topic"}, WtNotRequested, BrDeleted, "x")
+	o.DeletedTip = tip
+	if got := Headline(o); got != "remote origin/topic: branch deleted" {
+		t.Errorf("headline %q", got)
+	}
+	if d := DetailLines(o); len(d) != 1 || !strings.Contains(d[0], tip) {
+		t.Errorf("details %v", d)
+	}
+}

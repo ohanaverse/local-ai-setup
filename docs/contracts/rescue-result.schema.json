@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rescue-result.schema.json",
+  "title": "wt rescue result",
+  "description": "The one document `wt rescue --json` prints, on success, refusal and failure (nothing else goes to stdout). `outcome` is one of `moved` (the work was copied and verified), `would_move` (a dry run: it would be), `refused` (a check failed before anything was created; `created` is false) or `failed` (something went wrong; `created` says whether the new branch and worktree exist: when true they are KEPT, never rolled back, at `destination.path`; a `create_failed` outcome may instead carry `branch_kept`: git made the branch and then failed to make the worktree). `code` is the stable refusal or failure code; `reason` one sanitised line (at most 200 characters, so it may be cut). `source` is the worktree the work came from (`ref` is absent for a detached worktree); the source is only read and never changed. `destination` is present once a name was chosen: the new branch, its worktree path and the full commit id it starts at (the source's exact HEAD, so every commit comes with it). `carried` and `left_behind` count what is (or would be) copied and what is not (ignored entries stay behind). `completed` lists the steps that finished; `warnings` holds sanitised lines (always arrays). `moved` does NOT make the source removable: it still reads as having work only it holds. A run that failed before any outcome (no match, ambiguous argument, usage error, a registry or repository that could not be read) has `error` and none of `outcome`, `source`, `destination`, `carried`, `left_behind`. `name`s, paths and refs are raw identifiers carried verbatim: JSON escapes only C0 controls, so a consumer MUST escape them before printing to a terminal. Pinned to wt/internal/rescue/json.go by wt/cmd/wt/rescue_contract_test.go; a key or code added there must be added here and in the samples in the same change.",
+  "type": "object",
+  "required": [
+    "version",
+    "repo",
+    "dry_run",
+    "created",
+    "completed",
+    "warnings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "moved",
+        "would_move",
+        "refused",
+        "failed"
+      ]
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "not_worktree",
+        "primary",
+        "nothing_to_keep",
+        "gates_unknown",
+        "operation_in_progress",
+        "unmerged_paths",
+        "hidden_index_flags",
+        "submodule_change",
+        "staged_and_modified",
+        "intent_to_add",
+        "nested_repo",
+        "special_file",
+        "line_endings",
+        "content_filter",
+        "too_large",
+        "name_unavailable",
+        "source_changed",
+        "unreadable",
+        "verify_failed",
+        "carry_failed",
+        "create_failed",
+        "source_changed_while_copying"
+      ],
+      "description": "Present for a refused or failed outcome."
+    },
+    "reason": {
+      "type": "string"
+    },
+    "created": {
+      "type": "boolean",
+      "description": "Whether the new worktree directory exists now."
+    },
+    "branch_kept": {
+      "type": "boolean",
+      "description": "Present (true) only when creating the worktree failed after git made the branch, so the branch `destination.branch` exists although the creation failed. It is kept, never rolled back; `created` says whether the directory at `destination.path` is there too. A rerun with the same name is refused as `name_unavailable` until it is removed."
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "destination": {
+      "$ref": "#/$defs/destination"
+    },
+    "carried": {
+      "$ref": "#/$defs/carried"
+    },
+    "left_behind": {
+      "$ref": "#/$defs/left_behind"
+    },
+    "completed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": [
+        "path",
+        "head"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string",
+          "description": "A full refname; absent for a detached worktree."
+        },
+        "head": {
+          "type": "string",
+          "description": "Full commit id of the source's HEAD."
+        }
+      }
+    },
+    "destination": {
+      "type": "object",
+      "required": [
+        "path",
+        "branch",
+        "start"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string",
+          "description": "The new branch's short name."
+        },
+        "start": {
+          "type": "string",
+          "description": "Full commit id the new branch starts at."
+        }
+      }
+    },
+    "carried": {
+      "type": "object",
+      "required": [
+        "commits",
+        "staged",
+        "unstaged",
+        "untracked",
+        "untracked_bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "commits": {
+          "type": "integer",
+          "description": "Commits reachable from no remote-tracking ref (0 only when there are none; an unreadable count stops the run)."
+        },
+        "staged": {
+          "type": "integer"
+        },
+        "unstaged": {
+          "type": "integer"
+        },
+        "untracked": {
+          "type": "integer"
+        },
+        "untracked_bytes": {
+          "type": "integer"
+        }
+      }
+    },
+    "left_behind": {
+      "type": "object",
+      "required": [
+        "ignored_entries"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ignored_entries": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -38,7 +40,14 @@ type newWorktreeCreatedMsg struct {
 // command from Update.
 func ensureNewWorktreeCmd(root, name string) tea.Cmd {
 	return func() tea.Msg {
-		path, err := worktree.EnsureForName(root, name)
+		plan, err := worktree.Resolve(root, name)
+		if err != nil {
+			return newWorktreeCreatedMsg{name: name, err: err}
+		}
+		path, err := plan.Ensure()
+		if err == nil && plan.Creates() {
+			exitprompt.RecordNote(os.Stderr, path, name)
+		}
 		return newWorktreeCreatedMsg{path: path, name: name, err: err}
 	}
 }

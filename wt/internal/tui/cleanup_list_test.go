@@ -172,11 +172,13 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 	}
 }
 
-// TestCleanupListRemoteRowsAreLocked pins that every remote row, proven or
-// not, is [-] and cannot be ticked by space or `a`: enter now removes what is
-// ticked, and wt does not delete origin branches (shared state; plan call 9).
-func TestCleanupListRemoteRowsAreLocked(t *testing.T) {
-	for _, name := range []string{"origin/old-remote", "origin/merged-remote"} {
+// TestCleanupListUnprovenRemoteRowsAreLocked pins that a remote row which is
+// not a proven origin branch is [-] and cannot be ticked by space or `a`:
+// enter removes what is ticked, and the engine deletes on origin only a
+// proven origin row (the proven one is tickable, see
+// TestOriginRowsAreTickableButNeverTickedForYou).
+func TestCleanupListUnprovenRemoteRowsAreLocked(t *testing.T) {
+	for _, name := range []string{"origin/old-remote"} {
 		m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
 		m = moveTo(t, m, name)
 		m = cleanupSend(t, m, spaceKey)
@@ -189,7 +191,7 @@ func TestCleanupListRemoteRowsAreLocked(t *testing.T) {
 		if !strings.Contains(m.View(), "[-] remote    "+name) {
 			t.Errorf("remote row %s not drawn [-]:\n%s", name, m.View())
 		}
-		if !strings.Contains(m.View(), "wt does not delete origin branches") {
+		if !strings.Contains(m.View(), "only a proven origin branch can be removed") {
 			t.Errorf("the detail line does not say why %s cannot be ticked:\n%s", name, m.View())
 		}
 	}
@@ -575,5 +577,89 @@ func TestCleanupListFortyRowsAllReachable(t *testing.T) {
 			t.Fatalf("%s not whole and highlighted on screen:\n%s", name, view)
 		}
 		m = cleanupSend(t, m, keyRunes("j"))
+	}
+}
+
+// rescueListFixture is a report with one worktree row that has local work
+// (unpushed commits and dirt), one clean worktree and one branch row.
+func rescueListFixture() cleanup.Report {
+	return cleanup.Report{
+		Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Fetch: cleanup.FetchResult{OK: true, At: time.Now()}, GH: cleanup.GHOK,
+		Rows: []cleanup.Row{
+			{Kind: cleanup.KindWorktree, Name: "spike", Path: "/repo/.worktrees/spike", Branch: "spike", Ref: "refs/heads/spike",
+				Status: cleanup.StatusUniqueWork, Losses: cleanup.Losses{Dirty: true, Unpushed: 2}},
+			{Kind: cleanup.KindWorktree, Name: "tidy", Path: "/repo/.worktrees/tidy", Branch: "tidy", Ref: "refs/heads/tidy", Status: cleanup.StatusProven},
+			{Kind: cleanup.KindBranch, Name: "lone", Branch: "lone", Status: cleanup.StatusLessSure},
+		},
+	}
+}
+
+// TestCleanupListRKeyHandsTheRowToRescue checks `r` on a worktree row with
+// local work quits the list and records that row for the rescue hand-off, and
+// that the title line names the key. Why: the rescue prompts on the real
+// terminal, so the list must leave the alt screen first.
+func TestCleanupListRKeyHandsTheRowToRescue(t *testing.T) {
+	m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
+	m.rm.Rescue = func(cleanup.Row) error { return nil }
+	m = moveTo(t, m, "spike")
+	if v := m.View(); !strings.Contains(v, "r rescue") {
+		t.Errorf("title line does not offer r rescue:\n%s", v)
+	}
+
+	next, cmd := m.Update(keyRunes("r"))
+
+	fm := next.(cleanupListModel)
+	if cmd == nil || fm.rescueRow == nil || fm.rescueRow.Name != "spike" || !fm.done {
+		t.Fatalf("cmd=%v rescueRow=%+v done=%v; want quit with the spike row", cmd, fm.rescueRow, fm.done)
+	}
+}
+
+// TestCleanupListRKeyExplainsWhenNotOffered checks `r` on a clean worktree, on
+// a branch row, and with no rescue wired in stays in the list and says why on
+// the status line. Why: a key that does nothing, silently, reads as broken.
+func TestCleanupListRKeyExplainsWhenNotOffered(t *testing.T) {
+	for _, c := range []struct{ row, want string }{
+		{"tidy", "nothing to keep"},
+		{"lone", "wt -W lone"},
+	} {
+		m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
+		m.rm.Rescue = func(cleanup.Row) error { return nil }
+		m = moveTo(t, m, c.row)
+		next, cmd := m.Update(keyRunes("r"))
+		fm := next.(cleanupListModel)
+		if fm.rescueRow != nil || fm.done || (cmd != nil && cmd() != nil) || !strings.Contains(fm.status, c.want) {
+			t.Errorf("%s: rescueRow=%v done=%v status=%q; want to stay with %q", c.row, fm.rescueRow, fm.done, fm.status, c.want)
+		}
+	}
+	m := moveTo(t, newSizedCleanupList(t, rescueListFixture(), 100, 30), "spike")
+	next, _ := m.Update(keyRunes("r"))
+	if fm := next.(cleanupListModel); fm.rescueRow != nil || !strings.Contains(fm.status, "not available") {
+		t.Errorf("no Rescue wired: rescueRow=%v status=%q", fm.rescueRow, fm.status)
+	}
+}
+
+// TestRunRescueStopsSignalForwardingFirst checks the r key's hand-off stops
+// the signal forwarding before rm.Rescue runs, and does nothing when no row
+// was chosen. Why: the Bubble Tea program has finished by then, so forwarded
+// signals would go to a dead p.Send and be dropped, and Ctrl-C at the
+// rescue's y/N prompt (or SIGHUP during the copy) would do nothing.
+func TestRunRescueStopsSignalForwardingFirst(t *testing.T) {
+	var calls []string
+	row := cleanup.Row{Name: "spike"}
+	fm := cleanupListModel{rescueRow: &row}
+	rm := RemoveFuncs{Rescue: func(r cleanup.Row) error {
+		calls = append(calls, "rescue:"+r.Name)
+		return nil
+	}}
+	if err := runRescue(fm, rm, func() { calls = append(calls, "stop") }); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "stop,rescue:spike" {
+		t.Errorf("calls = %s, want stop before rescue", got)
+	}
+
+	calls = nil
+	if err := runRescue(cleanupListModel{}, rm, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
+		t.Errorf("no row chosen: err=%v calls=%v, want nothing", err, calls)
 	}
 }

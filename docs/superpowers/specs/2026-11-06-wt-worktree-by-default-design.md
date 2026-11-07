@@ -136,7 +136,12 @@ or remove it.
    the launch created it, the removal engine's preview shows no losses and no
    running processes, no hard blocker, and the row's only soft reasons are
    `fresh_branch` (and `base_is_local` when the repository has no remote).
-   Any other reason, a moved tip, dirt or an ignored file makes it ineligible.
+   The branch's reflog must also still have the entries it had at creation, so
+   a commit made and then undone by `git reset --hard` counts as touched (the
+   tree is clean and the tip is the creation tip, but the reflog is all that
+   still reaches that commit and deleting the branch deletes it); an unreadable
+   or disabled reflog fails closed. Any other reason, a moved tip, dirt or an
+   ignored file makes it ineligible.
 3. A terminal is attached.
 
 If it is not eligible, the worktree is kept silently.
@@ -155,6 +160,14 @@ through the engine with the `Confirm` and branch-delete approvals (the same
 sealed approvals `wt remove --accept-loss -D` uses), so the engine's rescan,
 compare-and-swap and hard blockers still apply: anything that moved since the
 prompt was built is skipped, never forced.
+
+A session longer than the 10-minute floor is different: an untouched branch at
+or behind the base then classifies **proven** with no reasons, and the engine
+deletes its branch under a plain confirmation (the preview's `CanDeleteBranch`
+is false because there is nothing unproven to opt in to). The prompt offers
+these too, removing through `Confirmed(p.Needs)` and requiring the plan to
+delete the branch; every other condition above is unchanged. Without this the
+prompt would only appear for sessions under ten minutes.
 
 **Behaviour**
 
@@ -218,6 +231,12 @@ in my suggested order (my call; any order works, PR C is independent):
 - Wording of the prompts and error messages.
 - Whether a claude launch (which writes and restores
   `<worktree>/.claude/settings.local.json`) leaves a worktree that the engine
-  still calls clean. Unverified; the L3 acceptance run must check it on a real
-  claude launch, and the predicate must not be loosened to hide a failure.
+  still calls clean. **Checked 2026-11-07 on the built binary with a real
+  claude (no model call):** yes, once wt has restored the file at a normal
+  exit, which happens before the prompt; only an automatic profile on a
+  non-native model writes the file (`claude/native` and slot profiles never
+  do), it leaves an empty `.claude/` directory git does not see, and a
+  killed wt leaves the file behind so the engine correctly refuses the
+  worktree. A repository that *tracks* the file gets it reformatted by the
+  restore and so is not offered (#530); the predicate was not loosened.
 - Test strategy; the pty driver for the TUI screens (`memory/tui-screens-via-pty`).

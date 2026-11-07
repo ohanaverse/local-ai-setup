@@ -9,6 +9,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -103,6 +104,11 @@ func runLaunchPath(
 	// must run even for shell-wt (which never builds a model picker) to
 	// keep other concurrent sessions' counts accurate. Best-effort.
 	sweepRefcounts()
+
+	// The post-exit worktree prompt reads this run's registry through the
+	// app; the TUI is handed the same Env.
+	exitPromptEnv = newExitPromptEnv(a)
+	tui.ExitPrompt = exitPromptEnv
 
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
@@ -510,24 +516,28 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				creates, start, err := worktree.WouldCreate(root, name)
+				plan, err := worktree.Resolve(root, name)
 				if err != nil {
 					return refuse(err)
 				}
+				creates := plan.Creates()
 				if creates {
-					if err := confirmCreate(name, start, newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
+					if err := confirmCreate(name, plan.Start(), newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
 						if errors.Is(err, errCancelled) {
 							return nil
 						}
 						return refuse(err)
 					}
 				}
-				path, err := worktree.EnsureForName(root, name)
+				path, err := plan.Ensure()
 				if err != nil {
 					return refuse(err)
 				}
 				if err := refuseRootBranch(name, path); err != nil {
 					return refuse(err)
+				}
+				if creates {
+					exitprompt.RecordNote(osStderr, path, name)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}
@@ -625,6 +635,6 @@ func rootCmd() *cobra.Command {
 	cmd.Flags().Bool("check-guard", false, "Check if the main guard is installed and exit")
 	cmd.Flags().Bool("no-guard", false, "Uninstall the main guard and exit")
 
-	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), servedCmd(a), warmCmd(a), litellmCmd(a), profileCmd(a), modelCmd(a), cloudSyncCmd(a), cleanupCmd(a), removeCmd(a))
+	cmd.AddCommand(rotateCmd(a), configCmd(a), statsCmd(a), smokeCmd(a), stopCmd(a), startCmd(a), servedCmd(a), warmCmd(a), litellmCmd(a), profileCmd(a), modelCmd(a), cloudSyncCmd(a), cleanupCmd(a), removeCmd(a), rescueCmd(a))
 	return cmd
 }

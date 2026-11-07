@@ -31,6 +31,9 @@ func TestMain(m *testing.M) {
 	cleanup.StubPRListForTest(func(dir, branch string) ([]byte, error) {
 		return nil, errors.New("test forgot to stub the gh pr list seam")
 	})
+	cleanup.StubPRBaseListForTest(func(dir, base string) ([]byte, error) {
+		return nil, errors.New("test forgot to stub the gh pr list --base seam")
+	})
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -105,23 +106,48 @@ func ResolveBase(g Git) (Base, error) {
 // FetchResult is the outcome of Fetch. A failure is a value: the base may be
 // stale and the caller must say so.
 type FetchResult struct {
+	// OK means origin was fetched cleanly this run (the base and the origin
+	// rows are origin's). Other remotes' results are in Remotes.
 	OK  bool
 	Err string
 	At  time.Time // zero when no fetch ran (not asked for, or Skipped)
-	// Skipped is why no fetch was attempted although one was asked for
-	// ("no origin remote"); "" otherwise. A skip is neither ok nor a failure.
+	// Skipped is why origin was not fetched although a fetch was asked for
+	// ("no origin remote", "no remotes"); "" otherwise. A skip is neither ok
+	// nor a failure.
 	Skipped string
+	// Remotes is every remote considered, in `git remote` order.
+	Remotes []RemoteFetch
 }
 
-// fetchTimeout bounds the fetch when g.Timeout is zero: a fetch over the
-// network takes longer than the 30s every other git call gets.
+// RemoteFetch is one remote's fetch.
+type RemoteFetch struct {
+	Name    string
+	OK      bool
+	Err     string
+	Skipped bool // remote.<name>.skipFetchAll is true: not fetched
+}
+
+// fetchTimeout bounds each remote's fetch when g.Timeout is zero: a fetch
+// over the network takes longer than the 30s every other git call gets.
 const fetchTimeout = 120 * time.Second
 
-// Fetch runs `git fetch --prune origin`. It only updates remote-tracking refs.
-// It names origin because the base is origin's: a bare `git fetch` fetches
-// the current branch's upstream remote, which may not be origin. With no
-// origin remote nothing is fetched and the result says why (Skipped).
+// otherFetchTimeout bounds each non-origin remote's fetch (they run
+// concurrently, after origin): the classification does not depend on them, so
+// a slow one must not hold the command for origin's full window. A seam for
+// tests.
+var otherFetchTimeout = 30 * time.Second
+
+// Fetch runs `git fetch --prune <remote>` once per remote (never prompting;
+// origin first and alone, then the others concurrently under the shorter
+// otherFetchTimeout),
+// skipping a non-origin remote whose skipFetchAll is true (origin is always
+// fetched). It only updates
+// remote-tracking refs. A loop rather than `fetch --all` so each remote's
+// result is known: the header and JSON say which were fetched. The top-level
+// OK/Err/At are origin's, because the base is origin's; with no origin the
+// other remotes are still fetched and Skipped says so.
 func Fetch(g Git) FetchResult {
+	g.Env = append(slices.Clone(g.Env), NonInteractive(g.Dir)...)
 	o, err := g.Run("remote")
 	if err != nil {
 		return FetchResult{Err: fetchErrText(err.Error()), At: time.Now()}
@@ -129,19 +155,61 @@ func Fetch(g Git) FetchResult {
 	if o.Code != 0 {
 		return FetchResult{Err: fetchErrText(gitFailure(o, "remote").Error()), At: time.Now()}
 	}
-	if !slices.Contains(strings.Fields(o.Stdout), "origin") {
-		return FetchResult{Skipped: "no origin remote"}
+	names := strings.Fields(o.Stdout)
+	if len(names) == 0 {
+		return FetchResult{Skipped: "no remotes"}
 	}
 	if g.Timeout == 0 {
 		g.Timeout = fetchTimeout
 	}
-	at := time.Now()
-	o, err = g.Run("fetch", "--prune", "origin")
+	res := FetchResult{Remotes: make([]RemoteFetch, len(names))}
+	// Origin first and on its own: it alone drives classification. The other
+	// remotes then fetch concurrently under a shorter timeout.
+	var others sync.WaitGroup
+	og := g
+	other := g
+	other.Timeout = min(g.Timeout, otherFetchTimeout)
+	for i, n := range names {
+		res.Remotes[i].Name = n
+		if n != "origin" {
+			continue
+		}
+		at := time.Now()
+		res.Remotes[i].OK, res.Remotes[i].Err = fetchOne(og, n)
+		res.OK, res.Err, res.At = res.Remotes[i].OK, res.Remotes[i].Err, at
+	}
+	for i, n := range names {
+		if n == "origin" {
+			continue
+		}
+		// skipFetchAll only leaves a remote out of `fetch --all`; a plain
+		// `git fetch origin` fetches it, and the base is origin's, so origin
+		// is always fetched (above).
+		if c, err := g.Run("config", "--type=bool", "--get", "remote."+n+".skipFetchAll"); err == nil && c.Code == 0 && strings.TrimSpace(c.Stdout) == "true" {
+			res.Remotes[i].Skipped = true
+			continue
+		}
+		others.Add(1)
+		go func() {
+			defer others.Done()
+			res.Remotes[i].OK, res.Remotes[i].Err = fetchOne(other, n)
+		}()
+	}
+	others.Wait()
+	if !slices.Contains(names, "origin") {
+		res.Skipped = "no origin remote"
+	}
+	return res
+}
+
+// fetchOne runs `git fetch --prune name`; ok, or the one-line failure.
+func fetchOne(g Git, name string) (bool, string) {
+	o, err := g.Run("fetch", "--prune", name)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return FetchResult{Err: fmt.Sprintf("git fetch --prune origin timed out after %s", g.Timeout), At: at}
+		return false, fmt.Sprintf("git fetch --prune %s timed out after %s", name, g.Timeout)
 	}
 	if err != nil {
-		return FetchResult{Err: fetchErrText(err.Error()), At: at}
+		return false, fetchErrText(err.Error())
 	}
 	if o.Code != 0 {
 		// git's stderr is several lines and may hold anything: the header
@@ -150,7 +218,7 @@ func Fetch(g Git) FetchResult {
 		if msg == "" {
 			msg = "git fetch exited non-zero"
 		}
-		return FetchResult{Err: msg, At: at}
+		return false, msg
 	}
-	return FetchResult{OK: true, At: at}
+	return true, ""
 }
