@@ -103,7 +103,10 @@ list closes). Restore one with `git branch <name> <sha>` while git still has
 the commit (until a `git gc` prunes it); for a branch whose name starts with
 `-`, which `git branch` refuses, the restore line is `git update-ref
 refs/heads/<name> <sha> ""` (the empty old value makes it create-only, like
-`git branch`: it fails rather than move a branch re-created since).
+`git branch`: it fails rather than move a branch re-created since). The
+"survives only until git gc prunes it" warning appears only when no other ref
+(`main`, a remote-tracking branch, another branch) reaches the deleted tip;
+otherwise a gc loses nothing and the warning is left out.
 
 A deleted branch's upstream settings (`branch.<name>.remote` and `.merge`) go
 with it, as with `git branch -D`, so a branch restored under the same name does

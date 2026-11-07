@@ -158,7 +158,8 @@ func TestBranchRetainedUnmergedWithoutD(t *testing.T) {
 func TestBranchDeletedWithDOnUnmerged(t *testing.T) {
 	noGh(t)
 	f := newFixture(t)
-	f.unmergedPushed("topic")
+	// Unpushed: no other ref holds the commit, so the gc caveat applies (#531).
+	f.Commit(f.Worktree("topic"), "topic.txt", "work", "topic work")
 	s, r := f.report()
 	row := f.row(r, cleanup.KindWorktree, "topic")
 	o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, true))
@@ -1180,8 +1181,9 @@ func TestBranchReasonKeepsFullTipUnderTheCap(t *testing.T) {
 		if o.Branch != BrDeleted || !strings.Contains(o.Reason, ref+" (was "+row.Tip) {
 			t.Fatalf("outcome %+v, want deleted with the full tip after the ref", o)
 		}
-		if !slices.Contains(o.Warnings, gcCaveat) {
-			t.Errorf("warnings %q lack the gc caveat", o.Warnings)
+		// The branch was pushed, so origin/<branch> holds the tip: no caveat (#531).
+		if slices.Contains(o.Warnings, gcCaveat) {
+			t.Errorf("warnings %q carry the gc caveat for a pushed tip", o.Warnings)
 		}
 	})
 	for _, failRestore := range []bool{false, true} {
@@ -1240,4 +1242,51 @@ func TestBranchDeleteDropsUpstreamConfig(t *testing.T) {
 	if got := f.git("config", "--list"); strings.Contains(got, "branch.topic.") {
 		t.Errorf("branch.topic.* config left behind:\n%s", got)
 	}
+}
+
+// TestBranchGcCaveatOnlyForUnreachableTip checks the gc warning follows the
+// truth (#531): a deleted branch whose tip another ref still holds (the
+// creation commit on main, a remote-tracking ref, a sibling branch) loses
+// nothing to a gc, so no caveat; a tip only the deleted branch held keeps
+// it. Why it matters: the exit prompt printed the warning for a fresh
+// branch sitting on main, which alarmed for nothing.
+func TestBranchGcCaveatOnlyForUnreachableTip(t *testing.T) {
+	run := func(t *testing.T, setup func(f *fixture) string, del bool) Outcome {
+		t.Helper()
+		noGh(t)
+		f := newFixture(t)
+		setup(f)
+		s, r := f.report()
+		row := f.row(r, cleanup.KindWorktree, "topic")
+		o := one(t, f.engine(s, f.inputs(), Options{}), approve(itemOf(row), false, del))
+		if o.Branch != BrDeleted {
+			t.Fatalf("outcome %+v, want branch deleted", o)
+		}
+		return o
+	}
+	t.Run("tip on main", func(t *testing.T) {
+		o := run(t, func(f *fixture) string { return f.Worktree("topic") }, false)
+		if slices.Contains(o.Warnings, gcCaveat) {
+			t.Errorf("warnings %q carry the gc caveat for a tip on main", o.Warnings)
+		}
+		if !strings.Contains(o.Reason, "restore: git branch topic ") {
+			t.Errorf("reason %q lost the restore command", o.Reason)
+		}
+	})
+	t.Run("tip on a remote-tracking ref", func(t *testing.T) {
+		o := run(t, func(f *fixture) string { return f.unmergedPushed("topic") }, true)
+		if slices.Contains(o.Warnings, gcCaveat) {
+			t.Errorf("warnings %q carry the gc caveat for a pushed tip", o.Warnings)
+		}
+	})
+	t.Run("tip held by no other ref", func(t *testing.T) {
+		o := run(t, func(f *fixture) string {
+			p := f.Worktree("topic")
+			f.Commit(p, "topic.txt", "work", "topic work")
+			return p
+		}, true)
+		if !slices.Contains(o.Warnings, gcCaveat) {
+			t.Errorf("warnings %q lack the gc caveat for an unreachable tip", o.Warnings)
+		}
+	})
 }

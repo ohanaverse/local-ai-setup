@@ -63,8 +63,8 @@ var knownNotUnknown = map[string]bool{
 	cleanup.ReasonClaimsUnavailable: true,
 }
 
-// gcCaveat is the warning on every deletion: the restore command works only
-// while git keeps the unreachable commit.
+// gcCaveat is the warning on a deletion whose tip no other ref reaches: the
+// restore command works only while git keeps the unreachable commit.
 const gcCaveat = "the commit survives only until git gc prunes it, possibly the next gc"
 
 // branchResult is the branch stage's answer: the outcome, one reason line,
@@ -350,7 +350,10 @@ func (e Engine) afterDelete(ref, tip string) branchResult {
 		// (remote, merge); update-ref does not, and a later branch of the
 		// same name (the restore command makes one) would inherit that
 		// upstream. A missing section is exit 128 and nothing to do.
-		warnings := []string{gcCaveat}
+		var warnings []string
+		if !e.tipHeldElsewhere(tip) {
+			warnings = append(warnings, gcCaveat)
+		}
 		if out, err := e.G.Run("config", "--remove-section", "branch."+name); err != nil || (out.Code != 0 && out.Code != 128) {
 			warnings = append(warnings, "the branch's upstream config (branch."+name+".*) could not be removed: "+gitErrText(err, out))
 		}
@@ -371,6 +374,14 @@ func (e Engine) afterDelete(ref, tip string) branchResult {
 	}
 	return result(BrRetainedUnknown, fmt.Sprintf("branch %s deleted and not restored; %s", was, restoreCmd),
 		append(h.Warnings, "restoring it failed: "+why, gcCaveat)...)
+}
+
+// tipHeldElsewhere reports whether some ref still reaches tip (the deleted
+// branch is already gone): then a gc prunes nothing and the gc caveat would
+// mislead (#531). Any failure to ask answers false, so the caveat stays.
+func (e Engine) tipHeldElsewhere(tip string) bool {
+	out, err := e.G.Run("for-each-ref", "--count=1", "--contains", tip, "--format=%(refname)")
+	return err == nil && out.Code == 0 && strings.TrimSpace(out.Stdout) != ""
 }
 
 // restoreCommand is the command that puts ref back at tip: `git branch
