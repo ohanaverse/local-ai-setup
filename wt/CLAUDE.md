@@ -85,12 +85,12 @@ go test ./...
 go test ./internal/agents -run TestOpenCodeOllamaPrefix   # one test
 go vet ./...
 make check   # shellcheck, shfmt, gofmt -l (wt-ci's gate); `make format` writes both
-make -C .. test-all   # CI-equivalent: root lint + llmbench + wt
+make -C .. test-all   # CI-equivalent: root lint + llmbench + modeltiers + wt
 ```
 
 ## Go module
 
-Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,removal,rescue}`.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,removal,rescue,exitprompt}`.
 
 **Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
 
@@ -131,7 +131,7 @@ Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-re
 
 ## Local-model resolution
 
-Every model row wt shows or resolves is built by `internal/catalog` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag). A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec, not running or still loading) or **block**.
+Every model row wt shows or resolves is built by `internal/catalog` from the agent's eligible list plus one live `localmodels.Inventory` snapshot (no stored flag). A row's action is **launch** (cloud, or local and running), **start** (local ollama/omlx/omlx-6bit/mtplx/rec/sushi, not running or still loading) or **block**.
 
 - **`config.Provider.Origin` is the one reading of a provider's address** (#348): probes, routes, direct routes and pi's `models.json` all use it, and so must any new reader. A test never binds or dials the mtplx default port 8003.
 - **`localmodels.ServedIDs` is the one answer to "what is this server serving"** (#201).
@@ -240,7 +240,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 - `internal/guard` manages the `block-main-commit` hook (`Install` is idempotent and appends; `git rev-parse --git-common-dir` covers all worktrees).
 - `wt --init` seeds `AGENTS.md` and a pointer file (`cmd/wt/main.go`, before any agent-binary requirement); existing files are never overwritten.
 - wt launches a fresh agent every time and leaves session handling to the agent (#198, #204): continue with the agent's own flags after `--` (`claude-wt -- --continue`). Why the session lookup stays removed: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#sessions-go).
-- A launch in the repository root writes a claim under `<git-common-dir>/wt-sessions/<pid>` (`internal/sessionclaim`); a second live root launch gets the continue / new worktree / quit menu (`c`/`w`/`q`, Esc quits). A linked worktree (by `-W` or a row) skips the check — the check judges the resolved directory, so `-W <root's branch>` is refused, pointing at `--root` — `--allow-shared-root` continues without asking, and with no terminal the launch refuses. A claims failure only prints a note. The root gate (`cmd/wt/rootgate.go`: `--cwd` standing in the root asks, or refuses with no terminal; `-W` resolving to the root is refused) runs in `RunE` on the resolved directory before `runLaunchPath` (and `wt smoke --cwd` runs it in `runSmoke` before the model is resolved, its refusal naming smoke's remedies since `--root` is not its flag); it is skipped when another live session holds the root (the shared-root menu is then the one question) and when a parent wt session already holds it *live* (a nested `shell-wt --cwd` under an agent at the root; a stale claim whose pid was recycled does not count — `docs/contracts/session-claims.md`). Where the check runs and when the claim is released: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#shared-root-check-internalsessionclaim); the file format `repo-cleanup` also reads: [docs/contracts/session-claims.md](../docs/contracts/session-claims.md).
+- A launch in the repository root writes a claim under `<git-common-dir>/wt-sessions/<pid>` (`internal/sessionclaim`); a second live root launch gets the continue / new worktree / quit menu (`c`/`w`/`q`, Esc quits). A linked worktree (by `-W` or a row) skips the check — the check judges the resolved directory, so `-W <root's branch>` is refused, pointing at `--root` — `--allow-shared-root` continues without asking, and with no terminal the launch refuses. A claims failure only prints a note. The root gate (`cmd/wt/rootgate.go`: `--cwd` standing in the root asks, or refuses with no terminal; `-W` resolving to the root is refused) runs in `RunE` on the resolved directory before `runLaunchPath` (and `wt smoke --cwd` runs it in `runSmoke` before the model is resolved, its refusal naming smoke's remedies since `--root` is not its flag); it is skipped when another live session holds the root (the shared-root menu is then the one question) and when a parent wt session already holds it *live* (a nested `shell-wt --cwd` under an agent at the root; a stale claim whose pid was recycled does not count — `docs/contracts/session-claims.md`). Where the check runs and when the claim is released: [docs/internals/launch-flow.md](docs/internals/launch-flow.md#shared-root-check-internalsessionclaim-internalrootclaim); the file format `repo-cleanup` also reads: [docs/contracts/session-claims.md](../docs/contracts/session-claims.md).
 
 ## TUI (Go)
 
@@ -260,7 +260,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 ## Worktree (Go)
 
-`internal/worktree` handles enumeration (`Enumerate`) and creation (`EnsureForName` for `-W`, `EnsureForBranch` for the picker). Every function takes `dir` (repo root) first for testability.
+`internal/worktree` handles enumeration (`Enumerate`) and creation (`Resolve` then `Plan.Ensure` for `-W`, the picker's new-worktree row and the shared-root `w` choice; `EnsureForBranch` for the picker's bare-branch row). Every function takes `dir` (repo root) first for testability.
 
 > **Worktree paths derive from the full branch name** (`worktreeDirName`): path separators on any platform, colon, and ASCII control characters flatten to `-`, so `feature/x` → `.worktrees/feature-x` and `feature/x` + `bug/x` get distinct directories (once they raced for `.worktrees/x`). A name that flattens onto another's directory (`feature/x` vs `feature-x`) errors "already in use by branch …" on every creation path, `-W` and the picker alike (one `pathCollision` check); the check asks the filesystem (`os.SameFile`) so `Feature/x` vs `feature/x` collide on a case-insensitive volume (macOS default) and stay distinct on a case-sensitive one; a flattened name over 255 bytes is refused with a "shorten the branch name" error (git stores a long ref as nested directories, but the flattened name is one entry); a worktree from the old last-component layout (`.worktrees/x` holding `feature/x`) keeps resolving by branch name (the reuse loop matches branches, never paths). Derived `.`/`..` are rejected — `filepath.Join` would clean `..` to the repo root and `.` to the container.
 
@@ -268,11 +268,11 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **A launch that has a directory needs no repository**: the repo root handed to `runLaunchPath` gates the guard install and nothing else (state is keyed by model, agent and pid). Only `-W` and the worktree picker refuse outside one; don't key new launch state on the repository. [Details](docs/internals/launch-flow.md#launch-directory-and-the-repository).
 
-> **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and `EnsureForName` never fetches (it reads only the remote-tracking refs already present).
+> **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and creation never fetches (`Resolve`, `Plan.Ensure` and `EnsureForName` read only the remote-tracking refs already present).
 
 > **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup, and forks no git: staleness is answered off the update goroutine, #451). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
 
-> **Creation routes record what they made** for the exit prompt: `-W` (`EnsureForName`), the picker's new-worktree row and the shared-root `w` choice call `exitprompt.RecordNote(path, branch)` only when their `worktree.Resolve` plan says (`Plan.Creates`) they create the *branch* as well as the worktree. The plan is one classification: the create question reads `Start`, `Plan.Ensure` creates from the same object (a moved base is refused, never created from a base the user was not shown; #525); `EnsureForName`/`WouldCreate` remain as one-shot wrappers. A reused worktree, a new worktree on an existing branch (the picker's bare-branch row), `--cwd` and `--root` record nothing, so they never prompt. A new creation route must record too, or the prompt will never see it.
+> **Creation routes record what they made** for the exit prompt: `-W` (`worktree.Resolve`, then `Plan.Ensure`), the picker's new-worktree row and the shared-root `w` choice call `exitprompt.RecordNote(w, path, branch)` only when their `worktree.Resolve` plan says (`Plan.Creates`) they create the *branch* as well as the worktree. The plan is one classification: the create question reads `Start`, `Plan.Ensure` creates from the same object (a moved base is refused, never created from a base the user was not shown; #525); `EnsureForName`/`WouldCreate` remain as one-shot wrappers. A reused worktree, a new worktree on an existing branch (the picker's bare-branch row), `--cwd` and `--root` record nothing, so they never prompt. A new creation route must record too, or the prompt will never see it.
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 

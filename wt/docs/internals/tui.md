@@ -39,6 +39,14 @@ Slot-profile launch (`slot_flow.go`): Enter on a profile row that is not blocked
 - **A model table is priced once, when it is built** (`modelrows.go`): `buildRows` reads one clock (`pickerNow`, or `tableInput.now`) and `tableRow.pricedAt` resolves each row's price in force (`config.ModelCost.PriceAt` over its `cost.time_prices` rows). The COST cell, the `~` mark and the mode line's price read `tableRow.price()` / `timePriced()`, never `Model.Cost`'s flat fields and never a clock, so an open picker's prices do not change at a window boundary. The rows are the ollama flow's `off-peak` one, the openrouter flow's `openrouter` ones (one per level of a schedule other than the dearest, which is the flat price) and any written by hand. The mark and the heading `COST (~ varies by time)` cost width (one usage column at one list width each; the COST column at three), and the mode line's price is whole or absent (`modeLine`): read the two notes on them in this file before changing either. LiteLLM's route carries the flat price at every hour.
 
 
+## Other screens: shared root, new worktree, `wt cleanup`
+
+Three screens sit beside the launcher phases above (`internal/tui`).
+
+- **Shared-root check** (`sharedroot.go`, `phaseSharedRoot`): another live wt session holds the repository root the launch resolved to, so the screen offers `c` continue / `w` new worktree / `q` quit (the text is `sessionclaim.Menu`; the plain-terminal twin is `cmd/wt/sharedroot.go`). `RootCheck.Allow` is `--allow-shared-root`. Where the check runs and when the claim is released: [launch-flow.md](launch-flow.md#shared-root-check-internalsessionclaim-internalrootclaim).
+- **New-worktree prompt** (`new_worktree.go`, `phaseNewWorktree`): the picker's "+ New worktree..." row. It never asks whether to create; it resolves the typed name through `worktree.Resolve` and creates with `Plan.Ensure`, then records the branch and worktree for the exit prompt (`exitprompt.RecordNote`) when the plan created the branch too.
+- **`wt cleanup` tick list and removal** (`cleanup_list.go`, `cleanup_confirm.go`; run by `RunCleanupList`): the report's four groups with a checkbox column and a detail line for the highlighted row; space ticks, `a` ticks every proven local row, enter opens the confirm screen, then a progress screen and the results, and `r` hands a row to `wt rescue`. The words come from `internal/cleanup/present.go`; the screens never build a `removal.Item` themselves (the engine previews the rows and the confirm screen turns each preview into an item through `Confirmed` or `ConfirmedDeletingBranch`). Behavior and rules: [../../CLAUDE.md](../../CLAUDE.md#cleanup-classifier-and-removal-wt-cleanup-wt-remove) and [../wt-cleanup.md](../wt-cleanup.md).
+
 ## Detail moved from wt/CLAUDE.md
 
 The full text of rules that [CLAUDE.md](../../CLAUDE.md) now keeps as one-line summaries.
