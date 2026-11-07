@@ -154,6 +154,7 @@ func later() time.Time { return time.Now().Add(time.Hour) }
 func noGh(t *testing.T) {
 	t.Helper()
 	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
+	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
 }
 
 // inputs are the GatherInputs a test's Engine and report use: the primary

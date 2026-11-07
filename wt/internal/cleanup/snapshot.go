@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +17,12 @@ import (
 
 // GatherInputs are what Gather cannot learn from git.
 type GatherInputs struct {
-	CWD            string             // the caller's directory (Current worktrees)
-	Fetch          bool               // run `git fetch --prune origin` first
+	CWD   string // the caller's directory (Current worktrees)
+	Fetch bool   // run `git fetch --prune <remote>` for every remote first
+	// Fetched is the result of an earlier fetch of this run, reported as the
+	// snapshot's when Fetch is false: a re-read after a removal (the tick
+	// list's refresh) must not suddenly find every origin row "not fetched".
+	Fetched        FetchResult
 	OwnRepo        string             // owner/repo for PR filtering; "" parses origin's URL
 	ProtectedPaths []string           // registered local_path model artifacts
 	Claim          sessionclaim.Claim // this process's claim (its PID); Path is set to the root
@@ -99,7 +104,11 @@ type Snapshot struct {
 	Remotes   []RefFact           // refs/remotes/<r>/* for origin and every upstream's remote, default forms excluded
 	Proofs    map[string]Proof    // by tip commit id
 	PRs       map[string]PRResult // by branch name; a miss is LookupUnknown
-	Merges    map[string]Tri      // merged PR merge commit -> is it an ancestor of the base
+	// BasePRs is, for an origin branch that could be a deletion candidate, the
+	// live answer to "which open PRs (any head repository) target this
+	// branch?", by branch name. A miss is LookupUnknown.
+	BasePRs   map[string]PRResult
+	Merges    map[string]Tri // merged PR merge commit -> is it an ancestor of the base
 	Claims    []sessionclaim.Claim
 	ClaimsErr string
 }
@@ -141,6 +150,8 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 
 	if in.Fetch {
 		s.Fetch = Fetch(g)
+	} else {
+		s.Fetch = in.Fetched
 	}
 	var baseErr error
 	s.Base, baseErr = ResolveBase(g)
@@ -185,7 +196,32 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	}
 	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel)
 	s.checkMerges(g)
+	s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel)
 	return s, nil
+}
+
+// baseCandidates are the names of the origin branches that could be offered
+// for deletion: content already in the base, or a merged PR into the default
+// branch whose head is the tip. Only these need the live "who targets this
+// branch" query (one gh call each).
+func (s *Snapshot) baseCandidates() []string {
+	var out []string
+	for _, r := range s.Remotes {
+		if r.Remote != "origin" || slices.Contains(out, r.Name) {
+			continue
+		}
+		if p, ok := s.Proofs[r.Tip]; ok && p.Verdict == Merged {
+			out = append(out, r.Name)
+			continue
+		}
+		for _, pr := range s.PRs[r.Name].PRs {
+			if pr.State == "MERGED" && pr.BaseRef == s.Base.Default && pr.HeadRefOid == r.Tip {
+				out = append(out, r.Name)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // readClaims fills Claims and ClaimsErr (read-only, on the root's physical

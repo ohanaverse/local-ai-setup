@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -274,5 +275,96 @@ func TestPRLookupErrorIsOneLine(t *testing.T) {
 func realGhPRListRefuses(t *testing.T) {
 	if _, err := realGhPRList("", "topic"); !errors.Is(err, errGhUnderTest) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestLookupBaseOfIsTriState drives the open-PRs-by-base query through its
+// answers. What: a list is known, an empty list is none, and an error, null,
+// bad JSON or a full page (possible truncation) is unknown. Why: the delete of
+// an origin branch closes every PR that targets it, so only a complete answer
+// may say "none" (fail closed, like the head lookup).
+func TestLookupBaseOfIsTriState(t *testing.T) {
+	full := make([]map[string]any, prLimit)
+	for i := range full {
+		full[i] = map[string]any{"number": i + 1}
+	}
+	cases := []struct {
+		name string
+		body []byte
+		err  error
+		want Lookup
+	}{
+		{"one", []byte(`[{"number":4,"headRefName":"x","isCrossRepository":true}]`), nil, LookupKnown},
+		{"none", []byte(`[]`), nil, LookupNone},
+		{"error", nil, errors.New("boom"), LookupUnknown},
+		{"null", []byte(`null`), nil, LookupUnknown},
+		{"bad json", []byte(`{`), nil, LookupUnknown},
+		{"full page", mustJSON(t, full), nil, LookupUnknown},
+		{"bad number", []byte(`[{"number":0}]`), nil, LookupUnknown},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stubGhBase(t, func(string, string) ([]byte, error) { return c.body, c.err })
+			got := LookupBaseOf("", []string{"topic"}, 1)["topic"]
+			if got.Lookup != c.want || (c.want == LookupUnknown && got.Err == "") {
+				t.Fatalf("got %+v, want lookup %v (with an error text when unknown)", got, c.want)
+			}
+			if c.want == LookupKnown && (got.PRs[0].Number != 4 || got.PRs[0].State != "OPEN" || got.PRs[0].BaseRef != "topic") {
+				t.Fatalf("PR fact: %+v", got.PRs)
+			}
+		})
+	}
+}
+
+// TestGatherAsksWhoTargetsEachMergeCandidate gathers a repo whose origin
+// branch "topic" is merged and has a dependent PR that gh reports on the base
+// query only (its head branch exists nowhere locally). What: the row is
+// in_use with base_of_open_pr, and the head-lookup alone would have missed it.
+// Why: this is the real blind spot of the stacked-PR check; deleting topic
+// would close that PR.
+func TestGatherAsksWhoTargetsEachMergeCandidate(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	tip := f.git("rev-parse", "main")
+	mergedPRStub(t, "topic", 8, tip, tip)
+	var asked atomic.Int32
+	stubGhBase(t, func(_, base string) ([]byte, error) {
+		asked.Add(1)
+		if base == "topic" {
+			return []byte(`[{"number":31,"headRefName":"child","isCrossRepository":true}]`), nil
+		}
+		return []byte(`[]`), nil
+	})
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := findRow(t, Classify(s, Options{Now: later()}), KindRemote, "topic")
+	if row.Status != StatusInUse || !slices.Contains(reasonCodes(row.Blockers), BlockBaseOfOpenPR) {
+		t.Fatalf("row %s blockers %v, want in_use with %s", row.Status, reasonCodes(row.Blockers), BlockBaseOfOpenPR)
+	}
+	if asked.Load() == 0 {
+		t.Fatal("the base query was never run")
+	}
+}
+
+// TestGatherBaseQueryFailureMakesTheRowUnsure fails the base query while the
+// fetch is fine. What: a merged origin row becomes unknown/cannot_verify.
+// Why: an answered "fetch ok" does not prove that no PR targets the branch.
+func TestGatherBaseQueryFailureMakesTheRowUnsure(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	tip := f.git("rev-parse", "main")
+	mergedPRStub(t, "topic", 8, tip, tip)
+	stubGhBase(t, func(string, string) ([]byte, error) { return nil, errors.New("gh down") })
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := findRow(t, Classify(s, Options{Now: later()}), KindRemote, "topic")
+	if row.Status == StatusProven || !row.Unknown || !slices.Contains(reasonCodes(row.Reasons), ReasonCannotVerify) {
+		t.Fatalf("row %s unknown=%v %v", row.Status, row.Unknown, reasonCodes(row.Reasons))
 	}
 }

@@ -7,8 +7,12 @@ import (
 )
 
 // Headline is the first line of an outcome's text: what became of the item's
-// worktree and branch.
+// worktree and branch (for an origin branch, of the branch on origin).
 func Headline(o Outcome) string {
+	if o.Item.Kind == cleanup.KindRemote {
+		// A remote item has no worktree stage: the branch outcome is the story.
+		return fmt.Sprintf("remote origin/%s: branch %s", cleanup.OneLine(o.Item.Name), o.Branch)
+	}
 	return fmt.Sprintf("%s %s: worktree %s, branch %s", o.Item.Kind, cleanup.OneLine(o.Item.Name), o.Worktree, o.Branch)
 }
 

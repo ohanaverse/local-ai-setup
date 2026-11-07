@@ -3,6 +3,7 @@ package cleanup
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -12,9 +13,10 @@ import (
 var ErrTargetGone = errors.New("cleanup: the target no longer exists")
 
 // Target names one row to rescan: a worktree by Path, a local branch by its
-// full refname Ref (refs/heads/<b>). For a worktree, Ref is the identity the
+// full refname Ref (refs/heads/<b>), an origin or other remote-tracking branch
+// by its refs/remotes/<r>/<b> name. For a worktree, Ref is the identity the
 // caller saw and is enforced: its branch's full refname, or "" for a
-// detached worktree. Remote rows are not rescannable in PR B.
+// detached worktree.
 type Target struct {
 	Kind Kind
 	Path string
@@ -34,10 +36,11 @@ const notReadByRescan = "not read by a rescan"
 // re-resolves the base ref's tip locally, so a fetch another process made
 // since the list is honoured; it never fetches and never runs gh. From prior
 // it reuses Base, CommonDir, OwnRepo, Fetch, NoDefault and PRs, and the
-// non-target Heads and Remotes entries (whose rows are discarded). The PR
-// facts are therefore as of the first Gather: a PR opened after the list is
-// not seen (the spec accepts this); a merged PR still proves only the head it
-// merged, so a tip that moved past it stops counting.
+// non-target Heads and Remotes entries (whose rows are discarded). For a
+// worktree or branch the PR facts are as of the first Gather: a PR opened
+// after the list is not seen (the spec accepts this); a merged PR still proves
+// only the head it merged, so a tip that moved past it stops counting. For a
+// remote target they are live.
 //
 // The snapshot handed to the pure Classify is prior's with the target's
 // entries replaced: the other heads and remotes stay as listed, and the other
@@ -144,7 +147,10 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		}
 		refs = []string{t.Ref}
 	case KindRemote:
-		return Row{}, fmt.Errorf("cleanup: rescan: unsupported target kind %q", flat(string(t.Kind)))
+		if !strings.HasPrefix(t.Ref, "refs/remotes/") || !qualified(t.Ref) {
+			return Row{}, fmt.Errorf("cleanup: rescan: remote target %q is not a refs/remotes/ name", flat(t.Ref))
+		}
+		refs = []string{t.Ref}
 	default:
 		return Row{}, fmt.Errorf("cleanup: rescan: unknown target kind %q", flat(string(t.Kind)))
 	}
@@ -163,12 +169,32 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 				mini.Remotes = append(mini.Remotes, r)
 			}
 		}
-		if t.Kind == KindBranch && len(heads) == 0 {
+		if (t.Kind == KindBranch && len(heads) == 0) || (t.Kind == KindRemote && len(remotes) == 0) {
 			return Row{}, ErrTargetGone
 		}
 		if t.Kind != KindWorktree && len(mini.Heads)+len(mini.Remotes) == 0 {
 			return Row{}, fmt.Errorf("cleanup: %s is the default branch", flat(t.Ref))
 		}
+	}
+
+	if t.Kind == KindRemote && len(mini.Remotes) == 1 {
+		// The delete of an origin branch is public: ask gh again, for this
+		// branch only, both who has it as a head and who targets it. The
+		// maps are copied; the prior snapshot is never written.
+		name := mini.Remotes[0].Name
+		s.PRs = maps.Clone(prior.PRs)
+		if s.PRs == nil {
+			s.PRs = map[string]PRResult{}
+		}
+		s.PRs[name] = LookupPRs(g.Dir, []string{name}, s.OwnRepo, 1)[name]
+		s.BasePRs = maps.Clone(prior.BasePRs)
+		if s.BasePRs == nil {
+			s.BasePRs = map[string]PRResult{}
+		}
+		s.BasePRs[name] = LookupBaseOf(g.Dir, []string{name}, 1)[name]
+		mini.PRs = s.PRs
+	} else {
+		s.BasePRs = prior.BasePRs
 	}
 
 	mini.Proofs = map[string]Proof{}

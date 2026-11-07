@@ -199,7 +199,10 @@ var refLike = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._/-]*$`)
 func deleteRefspec(s string) bool {
 	s = strings.TrimPrefix(s, "+")
 	rest, ok := strings.CutPrefix(s, ":")
-	return ok && (strings.HasPrefix(rest, dyn) || refLike.MatchString(rest))
+	// A runtime part anywhere after the constant start (":refs/heads/"+b, the
+	// fully qualified form internal/removal's own origin delete uses) reads as
+	// a ref character.
+	return ok && (strings.HasPrefix(rest, dyn) || refLike.MatchString(strings.ReplaceAll(rest, dyn, "x")))
 }
 
 // gitDeletion names the banned git/gh argument shape in one argument list, or
@@ -481,6 +484,10 @@ func TestDeletionScanSeesEachShape(t *testing.T) {
 		{`g.Run("push", "origin", "+:"+b)`, true, false},
 		{`g.Run("push", "origin", "+:topic")`, true, false},
 		{`g.Run("push", "origin", ":"+b)`, true, false},
+		// The exact shape internal/removal/remote.go uses: a lease push whose
+		// refspec is ":refs/heads/" + a variable. Outside internal/removal the
+		// scan must flag it (TestDeletionStringsOnlyInRemovalPackage).
+		{`runRemoteGit(g, "push", "--porcelain", "--no-verify", "--force-with-lease=refs/heads/"+name+":"+sha, "origin", ":refs/heads/"+name)`, true, false},
 		{`g.Run("branch", "-Df", b)`, true, false},
 		{`g.Run("branch", "-dr", b)`, true, false},
 		{`g.Run("branch", "-fD", b)`, true, false},

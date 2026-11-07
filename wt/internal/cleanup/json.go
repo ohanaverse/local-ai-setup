@@ -36,12 +36,24 @@ type BaseJSON struct {
 	FetchedAt string `json:"fetched_at,omitempty"`
 }
 
-// FetchJSON is FetchResult: whether `git fetch --prune origin` worked. Error is the
+// FetchJSON is FetchResult: whether `git fetch --prune origin` worked (the base is origin's; Remotes lists every remote). Error is the
 // failure text and is absent on success; At is RFC 3339 UTC.
 type FetchJSON struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
 	At    string `json:"at,omitempty"`
+	// Remotes is every remote considered, origin included; absent when
+	// origin is the only one (additive, optional).
+	Remotes []FetchRemoteJSON `json:"remotes,omitempty"`
+}
+
+// FetchRemoteJSON is one remote's fetch. Skipped is a remote excluded by
+// remote.<name>.skipFetchAll.
+type FetchRemoteJSON struct {
+	Name    string `json:"name"`
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+	Skipped bool   `json:"skipped,omitempty"`
 }
 
 // ErrorJSON is the failure that ended the run.
@@ -127,6 +139,11 @@ func Encode(r Report) ([]byte, error) {
 	}
 	if !r.Fetch.At.IsZero() {
 		e.Fetch = &FetchJSON{OK: r.Fetch.OK, Error: r.Fetch.Err, At: timeJSON(r.Fetch.At)}
+		if len(r.Fetch.Remotes) > 1 {
+			for _, rm := range r.Fetch.Remotes {
+				e.Fetch.Remotes = append(e.Fetch.Remotes, FetchRemoteJSON{Name: flat(rm.Name), OK: rm.OK, Error: fetchErrText(rm.Err), Skipped: rm.Skipped})
+			}
+		}
 	}
 	for _, row := range r.Rows {
 		rj := RowJSON{

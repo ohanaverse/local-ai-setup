@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -20,6 +21,15 @@ const defaultTimeout = 30 * time.Second
 type Git struct {
 	Dir     string
 	Timeout time.Duration // zero means 30s
+	// Env is appended to the process environment (last entry wins). Use
+	// NonInteractive() for any call that may reach a remote.
+	Env []string
+}
+
+// NonInteractive is the environment of a git call that must never prompt:
+// no terminal credential prompt and no credential-manager dialog.
+func NonInteractive() []string {
+	return []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"}
 }
 
 // Out is a finished git process: its output and exit code.
@@ -46,6 +56,9 @@ func (g Git) RunInput(input string, args ...string) (Out, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.Dir}, args...)...)
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
+	}
+	if len(g.Env) > 0 {
+		cmd.Env = append(os.Environ(), g.Env...)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

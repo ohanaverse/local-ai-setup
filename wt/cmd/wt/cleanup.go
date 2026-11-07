@@ -55,9 +55,11 @@ func cleanupCmd(a *app) *cobra.Command {
 			"terminal, enter removes the ticked\n" +
 			"rows after a confirmation that lists what each would lose: y when every\n" +
 			"row is proven, the typed word delete when any is not proven or loses\n" +
-			"something. origin branches are never removed.\n\n" +
-			"It runs `git fetch --prune origin` first (--no-fetch skips it) and says in the\n" +
-			"header how that went (a repository with no origin remote skips it). A failed\n" +
+			"something. A proven origin branch is tickable too (never ticked for you), and\n" +
+			"deleting it needs its own typed phrase, delete origin.\n\n" +
+			"It runs `git fetch --prune <remote>` for every remote first, never prompting\n" +
+			"(--no-fetch skips it; an origin branch is then not removable) and says in the\n" +
+			"header how that went (a repository with no remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
 			"status. Exit 0 means a list was produced; exit 1 means the repository could\n" +
 			"not be classified at all (not a repository, no default branch). With --json\n" +
@@ -80,7 +82,7 @@ func cleanupCmd(a *app) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
-	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune origin first")
+	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
@@ -178,6 +180,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed"}
 	}
 	in.Fetch = false // a re-check never fetches
+	in.Fetched = snap.Fetch
 	eng := &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
 	return tui.RemoveFuncs{

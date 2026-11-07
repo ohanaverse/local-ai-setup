@@ -147,6 +147,11 @@ type gated struct {
 // A worktree item's unproven branch is not a need: without Approved.Delete
 // it is kept.
 func needsOf(k cleanup.Kind, fresh cleanup.Row) Needs {
+	if k == cleanup.KindRemote {
+		// Only a proven, unblocked, loss-free origin branch gets this far
+		// (remoteGate); what it needs is the Remote approval and nothing else.
+		return Needs{Remote: true}
+	}
 	return Needs{
 		Confirm: fresh.Status != cleanup.StatusProven || len(cleanup.LossLines(fresh)) > 0,
 		Force:   fresh.Losses.Dirty || fresh.Losses.DetachedUnique,
@@ -168,13 +173,15 @@ func stopWith(o Outcome, fresh cleanup.Row, has bool) gated {
 func lossLines(fresh cleanup.Row) []string { return oneLines(cleanup.LossLines(fresh)) }
 
 // gate runs every check for it in its fixed order (worktreeGate,
-// branchGate); an item of any other kind is refused.
+// branchGate, remoteGate); an item of any other kind is refused.
 func (e Engine) gate(it Item) gated {
 	switch it.Kind {
 	case cleanup.KindWorktree:
 		return e.worktreeGate(it)
 	case cleanup.KindBranch:
 		return e.branchGate(it)
+	case cleanup.KindRemote:
+		return e.remoteGate(it)
 	}
 	return stopWith(NewOutcome(it, WtRefused, BrNotAttempted, fmt.Sprintf("invalid target: kind %q is not removable", it.Kind)), cleanup.Row{}, false)
 }
@@ -183,8 +190,11 @@ func (e Engine) gate(it Item) gated {
 // only, change nothing). It also returns the branch stage's warnings, which
 // the Outcome holds after any process warnings.
 func (e Engine) act(it Item, g gated, dry bool) (Outcome, []string) {
-	if it.Kind == cleanup.KindWorktree {
+	switch it.Kind {
+	case cleanup.KindWorktree:
 		return e.worktreeAct(it, g, dry)
+	case cleanup.KindRemote:
+		return e.remoteAct(it, g, dry)
 	}
 	return e.branchAct(it, g, dry)
 }

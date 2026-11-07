@@ -229,7 +229,9 @@ func TestClassifyBranchProven(t *testing.T) {
 			s.Worktrees = []WorktreeState{primary}
 			s.Remotes = []RefFact{{Ref: "refs/remotes/origin/topic", Name: "topic", Remote: "origin", Tip: tip, Created: old}}
 			s.Proofs[tip] = squashed
-			s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{{Number: 9, State: "MERGED", HeadRefOid: tip, BaseRef: "main"}}}
+			s.PRs["topic"] = PRResult{Lookup: LookupKnown, PRs: []PRInfo{{Number: 9, State: "MERGED", HeadRefOid: tip, BaseRef: "main", MergeCommit: strings.Repeat("d", 40)}}}
+			s.Merges[strings.Repeat("d", 40)] = TriYes
+			s.BasePRs = map[string]PRResult{"topic": {Lookup: LookupNone}}
 			return s
 		}(), later(), KindRemote, "topic", StatusProven, false},
 		{"detached worktree with a proven HEAD", func() Snapshot {

@@ -64,6 +64,7 @@ func cleanupRepo(t *testing.T) string {
 func stubCleanupGH(t *testing.T) {
 	t.Helper()
 	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
+	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
 }
 
 // runCleanup runs `wt cleanup args...` from dir and returns both streams and

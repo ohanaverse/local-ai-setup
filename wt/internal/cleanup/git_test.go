@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,5 +39,21 @@ func TestRunTimeoutIsAnError(t *testing.T) {
 	g := Git{Dir: f.Dir, Timeout: 50 * time.Millisecond}
 	if _, err := g.Run("-c", "alias.nap=!sleep 5", "nap"); err == nil {
 		t.Fatal("want an error from a timed-out git, got nil")
+	}
+}
+
+// TestNonInteractiveEnvReachesGit runs a git alias that prints the prompt
+// variable through Git{Env: NonInteractive()}. What: the env reaches the
+// child git. Why: the spec and `wt cleanup --help` promise a fetch that never
+// prompts (GIT_TERMINAL_PROMPT=0), but Git.Run set nothing, so a credential
+// prompt could reach /dev/tty; the push added in PR C must not prompt either.
+func TestNonInteractiveEnvReachesGit(t *testing.T) {
+	f := newFixture(t)
+	o, err := Git{Dir: f.Dir, Env: NonInteractive()}.Run("-c", `alias.e=!echo "$GIT_TERMINAL_PROMPT $GCM_INTERACTIVE"`, "e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(o.Stdout); len(got) != 2 || got[0] != "0" || got[1] != "never" {
+		t.Fatalf("got %q, want 0 and never", o.Stdout)
 	}
 }

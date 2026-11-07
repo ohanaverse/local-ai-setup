@@ -420,3 +420,40 @@ func TestEnvelopeCarriesNotes(t *testing.T) {
 		t.Error("notes present for a report with none")
 	}
 }
+
+// TestEncodeFetchRemotes encodes a report fetched from two remotes, one of
+// which failed. What: fetch.remotes lists both with their own result, while
+// fetch.ok stays origin's; a single-remote repository omits the key. Why: the
+// header and JSON must say exactly which remotes were fetched, and the key is
+// additive so older consumers are unaffected.
+func TestEncodeFetchRemotes(t *testing.T) {
+	two := FetchResult{OK: true, At: time.Now(), Remotes: []RemoteFetch{{Name: "origin", OK: true}, {Name: "up", Err: "boom"}}}
+	raw, err := Encode(Report{Repo: "/r", Base: Base{Default: "main", Ref: "origin/main"}, Fetch: two})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	want := []FetchRemoteJSON{{Name: "origin", OK: true}, {Name: "up", Error: "boom"}}
+	if env.Fetch == nil || !env.Fetch.OK || !slices.Equal(env.Fetch.Remotes, want) {
+		t.Fatalf("remotes missing or wrong:\n%s", raw)
+	}
+	one := FetchResult{OK: true, At: time.Now(), Remotes: []RemoteFetch{{Name: "origin", OK: true}}}
+	raw, _ = Encode(Report{Repo: "/r", Fetch: one})
+	if strings.Contains(string(raw), `"remotes"`) {
+		t.Fatalf("single remote should omit remotes:\n%s", raw)
+	}
+}
+
+// TestHeaderNamesOtherRemotes renders the header for a fetch that covered a
+// second remote that failed. What: the header names it with its error. Why:
+// "fetch: ok" alone would hide that a remote's tracking refs are stale.
+func TestHeaderNamesOtherRemotes(t *testing.T) {
+	r := Report{Repo: "/r", Fetch: FetchResult{OK: true, At: time.Now(), Remotes: []RemoteFetch{{Name: "origin", OK: true}, {Name: "up", Err: "boom"}, {Name: "fk", Skipped: true}}}}
+	h := strings.Join(HeaderLines(r, time.Now()), "\n")
+	if !strings.Contains(h, "up FAILED (boom)") || !strings.Contains(h, "skipFetchAll) fk") {
+		t.Fatalf("header:\n%s", h)
+	}
+}
