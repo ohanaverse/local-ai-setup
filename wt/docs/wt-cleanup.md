@@ -104,9 +104,13 @@ the commit (until a `git gc` prunes it); for a branch whose name starts with
 `-`, which `git branch` refuses, the restore line is `git update-ref
 refs/heads/<name> <sha> ""` (the empty old value makes it create-only, like
 `git branch`: it fails rather than move a branch re-created since). The
-"survives only until git gc prunes it" warning appears only when no other ref
-(`main`, a remote-tracking branch, another branch) reaches the deleted tip;
-otherwise a gc loses nothing and the warning is left out.
+"survives only until git gc prunes it" warning appears (on every path: deleted,
+re-created, not restored) only when no other local branch or remote-tracking
+branch (`main`, `origin/<other>`, another branch) reaches the deleted tip;
+otherwise a gc loses nothing and the warning is left out. Tags and stash
+entries do not count, and neither does `origin/<the deleted branch's own
+name>`, which goes in the same cleanup or is what you are removing. If git
+cannot answer, the warning stays.
 
 A deleted branch's upstream settings (`branch.<name>.remote` and `.merge`) go
 with it, as with `git branch -D`, so a branch restored under the same name does

@@ -1148,6 +1148,33 @@ func TestBranchRestoredWhenCheckedOutDuringDelete(t *testing.T) {
 			t.Errorf("topic at %s, want the re-created %s", tip, other)
 		}
 	})
+	t.Run("gc caveat follows the same rule when not restored", func(t *testing.T) {
+		// branchCase's tip is on main: nothing to lose to a gc, whatever
+		// became of the restore.
+		for _, name := range []string{"re-created", "restore fails"} {
+			f, e, good := branchCase(t)
+			other := f.git("commit-tree", "-p", good.Tip, "-m", "new", good.Tip+"^{tree}")
+			hookAfterUpdateRef(t, func() {
+				checkout(f)()
+				if name == "re-created" {
+					f.git("update-ref", "refs/heads/topic", other)
+				}
+			})
+			if name == "restore fails" {
+				n := 0
+				stubRefGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+					if n++; n == 1 {
+						return g.Run(args...)
+					}
+					return cleanup.Out{Code: 1, Stderr: "fatal: cannot lock"}, nil
+				})
+			}
+			res := e.deleteBranch(itemCtx{item: withD, considerBranch: true}, good)
+			if slices.Contains(res.Warnings, gcCaveat) {
+				t.Errorf("%s: warnings %q carry the gc caveat for a tip held by main", name, res.Warnings)
+			}
+		}
+	})
 }
 
 // longName is a 45-character branch name.
@@ -1180,10 +1207,6 @@ func TestBranchReasonKeepsFullTipUnderTheCap(t *testing.T) {
 		o := one(t, f.engine(s, f.inputs(), Options{}), itemOf(row))
 		if o.Branch != BrDeleted || !strings.Contains(o.Reason, ref+" (was "+row.Tip) {
 			t.Fatalf("outcome %+v, want deleted with the full tip after the ref", o)
-		}
-		// The branch was pushed, so origin/<branch> holds the tip: no caveat (#531).
-		if slices.Contains(o.Warnings, gcCaveat) {
-			t.Errorf("warnings %q carry the gc caveat for a pushed tip", o.Warnings)
 		}
 	})
 	for _, failRestore := range []bool{false, true} {
@@ -1273,10 +1296,57 @@ func TestBranchGcCaveatOnlyForUnreachableTip(t *testing.T) {
 			t.Errorf("reason %q lost the restore command", o.Reason)
 		}
 	})
-	t.Run("tip on a remote-tracking ref", func(t *testing.T) {
-		o := run(t, func(f *fixture) string { return f.unmergedPushed("topic") }, true)
+	t.Run("tip on another remote-tracking ref", func(t *testing.T) {
+		o := run(t, func(f *fixture) string {
+			p := f.unmergedPushed("topic")
+			f.git("push", "origin", "topic:refs/heads/other")
+			f.git("fetch", "origin")
+			return p
+		}, true)
 		if slices.Contains(o.Warnings, gcCaveat) {
-			t.Errorf("warnings %q carry the gc caveat for a pushed tip", o.Warnings)
+			t.Errorf("warnings %q carry the gc caveat for a tip on origin/other", o.Warnings)
+		}
+	})
+	// D2: origin/<the deleted branch's own name> goes in the same cleanup (or
+	// is what the user removes), so it does not hold the tip.
+	t.Run("tip only on origin of its own name", func(t *testing.T) {
+		o := run(t, func(f *fixture) string { return f.unmergedPushed("topic") }, true)
+		if !slices.Contains(o.Warnings, gcCaveat) {
+			t.Errorf("warnings %q lack the gc caveat: only origin/topic holds the tip", o.Warnings)
+		}
+	})
+	// D1: only refs/heads and refs/remotes hold a tip.
+	t.Run("tip held only by a tag", func(t *testing.T) {
+		o := run(t, func(f *fixture) string {
+			p := f.Worktree("topic")
+			f.Commit(p, "topic.txt", "work", "topic work")
+			f.git("tag", "keep", "topic")
+			return p
+		}, true)
+		if !slices.Contains(o.Warnings, gcCaveat) {
+			t.Errorf("warnings %q lack the gc caveat: a tag does not count", o.Warnings)
+		}
+	})
+	t.Run("tip held only by a stash entry", func(t *testing.T) {
+		o := run(t, func(f *fixture) string {
+			p := f.Worktree("topic")
+			sha := f.Commit(p, "topic.txt", "work", "topic work")
+			f.git("update-ref", "refs/stash", sha)
+			return p
+		}, true)
+		if !slices.Contains(o.Warnings, gcCaveat) {
+			t.Errorf("warnings %q lack the gc caveat: refs/stash does not count", o.Warnings)
+		}
+	})
+	// A git failure while asking keeps the caveat (fail closed), through the
+	// probeGit seam.
+	t.Run("holder probe fails", func(t *testing.T) {
+		for _, asErr := range []bool{true, false} {
+			failProbe(t, "for-each-ref", "--count=2", asErr)
+			o := run(t, func(f *fixture) string { return f.Worktree("topic") }, false)
+			if !slices.Contains(o.Warnings, gcCaveat) {
+				t.Errorf("asErr=%v: warnings %q lack the gc caveat after a failed probe", asErr, o.Warnings)
+			}
 		}
 	})
 	t.Run("tip held by no other ref", func(t *testing.T) {
