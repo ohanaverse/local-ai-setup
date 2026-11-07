@@ -13,10 +13,10 @@
 ## Global Constraints
 
 - A `-W` name is a **creation** only when it matches no existing worktree, no existing local branch, and no remote-tracking ref (the `git worktree add -b` case in `EnsureForName`). Everything else is reused or tracked with no question, exactly as today.
-- On a terminal the question is `no branch or worktree named "<name>"; create it from <base>? [y/N]`, default **no**. Quitting or answering no ends the launch with status 0, no message beyond the question, nothing created, nothing recorded (`errCancelled`).
+- On a terminal the question is `no branch or worktree named "<name>"; create it <start>? [y/N]`, default **no**, where `<start>` is `from <base>` or — in a repository with no commits — `as an empty orphan branch with no shared history (this repository has no commits yet)`, which is what git creates there. Quitting or answering no ends the launch with status 0, no message beyond the question, nothing created, nothing recorded (`errCancelled`).
 - With no terminal, a creation is refused unless `--new` is passed; the error names `--new`.
 - `--new` is valid only with `-W`. With an existing name it is a no-op. With `--cwd`, `--root`, or no `-W` it is a usage error.
-- The base is whatever creation uses today (`git worktree add -b` from the directory handed to `EnsureForName`); this plan does not change it. The prompt names it: the current branch, else `detached HEAD <short sha>`.
+- The base is whatever creation uses today (`git worktree add -b` from the directory handed to `EnsureForName`); this plan does not change it. The prompt names how the branch starts: `from <current branch>`, `from detached HEAD <short sha>`, or the empty-orphan phrase above on an unborn HEAD (git infers `--orphan`, never the unborn branch; amended 2026-11-06 after review).
 - A name that `EnsureForName` would reject (default branch forms, path collision, too long, empty) is rejected with that same error **before** any question is asked.
 - The picker's "+ New worktree…" prompt and the shared-root `w` choice are unchanged and never ask this question.
 - Every `Test*` has a top-level `//` comment saying what it tests and why. Commits end with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
@@ -48,7 +48,7 @@
 - Test: `wt/internal/worktree/create_test.go` (the package's existing test file for `EnsureForName`)
 
 **Interfaces:**
-- Produces: `func WouldCreate(dir, name string) (creates bool, base string, err error)` — `creates` is true only when `EnsureForName(dir, name)` would run `git worktree add -b` for a branch that does not exist; `base` is the current branch of `dir`, else `detached HEAD <short sha>`; `err` is the error `EnsureForName` would return for the same input (empty name, default-branch form, path collision, too-long name, git failure), with `creates` false.
+- Produces: `func WouldCreate(dir, name string) (creates bool, start string, err error)` — `creates` is true only when `EnsureForName(dir, name)` would run `git worktree add -b` for a branch that does not exist; `start` is the phrase the question joins after `create it` — `from <current branch>`, `from detached HEAD <short sha>`, or the empty-orphan phrase on an unborn HEAD; `err` is the error `EnsureForName` would return for the same input (empty name, default-branch form, path collision, too-long name, git failure), with `creates` false.
 - `EnsureForName`'s behavior and error messages must not change.
 
 - [ ] **Step 1: Characterize `EnsureForName` first.** Run `go test ./internal/worktree` and confirm existing coverage passes. Add any missing characterization tests (each in a fresh repo) pinning today's behavior: name checked out in a worktree → that path; existing local branch with no worktree → new worktree on it, branch unchanged; `origin/feature` with a remote-tracking ref → worktree tracking it; unknown name → new branch from `dir`'s HEAD; default-branch forms refused; path collision refused; too-long refused. They must pass before the refactor.
@@ -82,7 +82,7 @@
 
 **Interfaces:**
 - Consumes: `worktree.WouldCreate`, `rootclaim.AskYesNo`, `errCancelled`, `stdinTTY()`, `osStderr`.
-- Produces: `--new` (bool, root command only; help: "With -W, create the branch and worktree when the name does not exist yet (default: ask; with no terminal, refuse)"); `func confirmCreate(name, base string, isNew bool, in io.Reader, out io.Writer, isTTY bool) error` — nil when `isNew` or the answer is yes; `errCancelled` on no; with no terminal and not `isNew`, an error containing `--new` (`no branch or worktree named "<name>"; pass --new to create it`).
+- Produces: `--new` (bool, root command only; help: "With -W, create the branch and worktree when the name does not exist yet (default: ask; with no terminal, refuse)"); `func confirmCreate(name, start string, isNew bool, in io.Reader, out io.Writer, isTTY bool) error` — nil when `isNew` or the answer is yes; `errCancelled` on no; with no terminal and not `isNew`, an error containing `--new` (`no branch or worktree named "<name>"; pass --new to create it`).
 
 - [ ] **Step 1: Write failing tests** (launch-capture pattern of `rootflag_test.go`):
   - `TestWorktreeFlagUnknownNameWithoutTerminalRefusesNamingNew`: error contains `--new`; afterwards `git branch --list <name>` is empty and `.worktrees/<name>` does not exist.
@@ -124,3 +124,23 @@
 - **Spec coverage:** ask on a terminal, default no (T2–3); refuse without a terminal unless `--new` (T3); existing names reused silently (T1, T3); `--new` validity rules (T3); base named, unchanged (T1); picker row and shared-root `w` unchanged (T3 test); error-before-question (T1, T3).
 - **Behavior change to call out in the PR:** scripts or docs that create a worktree with `claude-wt -W newname` and no terminal now need `--new`.
 - **Proportion:** five tasks; the only structural change is the classifier extraction in T1, which the spec's "one rule" requires.
+
+---
+
+## Review rulings (2026-11-06)
+
+After `/code-review --fix` on the built branch (PR #524):
+
+- **The question never names a base git would not use.** On an unborn HEAD the
+  old wording said "create it from <current branch>" while git infers
+  `--orphan`; `WouldCreate` now returns the start phrase with its preposition
+  and the unborn case says `as an empty orphan branch with no shared history
+  (this repository has no commits yet)` (constraints 2 and 5 amended above).
+- **A case-folded ref-namespace conflict is refused too** (`feature` blocks
+  `Feature/x` on a case-insensitive volume, gated on `core.ignorecase`): the
+  question must never be asked about a creation git would refuse at the ref
+  lock. Exact-case and case-sensitive-volume behavior is unchanged.
+- **Double classification stays** (`WouldCreate` then `EnsureForName` each run
+  the classifier): replacing the interface with a resolve-then-ensure handle is
+  deferred to #525, since re-classifying right before the create is this
+  plan's deliberate state re-check.

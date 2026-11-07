@@ -510,12 +510,12 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("not in a git repo: %w", err)
 				}
-				creates, base, err := worktree.WouldCreate(root, name)
+				creates, start, err := worktree.WouldCreate(root, name)
 				if err != nil {
 					return refuse(err)
 				}
 				if creates {
-					if err := confirmCreate(name, base, newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
+					if err := confirmCreate(name, start, newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
 						if errors.Is(err, errCancelled) {
 							return nil
 						}

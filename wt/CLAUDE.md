@@ -24,7 +24,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 
 | Flag | Effect |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use the worktree for `<name>`; skip the worktree picker. An existing worktree or branch is reused silently; a name that matches none of them (and no remote-tracking ref) creates a branch and worktree only after you say yes (`create it from <base>? [y/N]`, default no) |
+| `-W <name>`, `--worktree <name>` | Use the worktree for `<name>`; skip the worktree picker. An existing worktree or branch is reused silently; a name that matches none of them (and no remote-tracking ref) creates a branch and worktree only after you say yes (`create it from <base>? [y/N]`, default no; with no commits yet the question names an empty orphan branch, which is what git creates) |
 | `--new` | With `-W`, answer that question yes. With no terminal a new name is refused unless `--new` is passed. A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root`. The picker's "+ New worktree…" prompt and the shared-root `w` choice never ask |
 | `-A <name>`, `--agent <name>` | Pin the agent or `shell`; never defaulted |
 | `-M <id>`, `--model <id>` | Pin model as `<provider>/<name>`: cloud or running → launch; a non-running local starts; a blocked model errors with that row's reason. Without `-A`, the agent is prompted first. `-M profile/<name>` pins a slot profile |

@@ -36,7 +36,7 @@ claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything 
 
 `-W` (uppercase) is the real worktree flag — confirmed by `wt --help` (both the installed binary and repo source, which agree).
 
-`-W <name>` reuses an existing worktree or branch silently. A name that matches neither asks `create it from <base>? [y/N]` (default no) before it creates anything; `--new` answers yes, and a launch with no terminal (a script) is refused without it. The picker's "+ New worktree…" prompt and the shared-root `w` choice do not ask.
+`-W <name>` reuses an existing worktree or branch silently. A name that matches neither asks `create it from <base>? [y/N]` (default no) before it creates anything — with no commits in the repository the question names an empty orphan branch instead of a base, which is what git creates; `--new` answers yes, and a launch with no terminal (a script) is refused without it. The picker's "+ New worktree…" prompt and the shared-root `w` choice do not ask.
 
 ## Steps
 

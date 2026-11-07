@@ -73,7 +73,7 @@ All launchers support:
 
 | Flag | Description |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing branch or worktree is reused silently; a new name asks `create it from <base>? [y/N]` (default no) before creating anything, and with no terminal is refused unless `--new` is passed |
+| `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing branch or worktree is reused silently; a new name asks `create it from <base>? [y/N]` (default no; with no commits in the repository the question names an empty orphan branch instead of a base) before creating anything, and with no terminal is refused unless `--new` is passed |
 | `--new` | With `-W`, create the branch and worktree for a name that does not exist yet without asking. A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root` |
 | `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and asks nothing. Exclusive with `--cwd` and `-W`. |
 | `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. Standing in the repository root it asks first (default no); with no terminal it refuses and names `--root`. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |

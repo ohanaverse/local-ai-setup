@@ -54,8 +54,20 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 
 	// A remote-tracking name (origin/feature) resolves like the picker does:
 	// reuse a worktree already on the local branch, else create one tracking
-	// the remote.
+	// the remote. remoteRefParts resolves the ref file, which a
+	// case-insensitive volume matches in any case; only an exact ref is
+	// tracked, by the same rule as the local branch below — tracking a
+	// case-only variant would check out the other branch under the wrong
+	// name (and for a default-branch form like origin/Main put the default
+	// branch in a linked worktree).
 	if _, short, ok := remoteRefParts(dir, name); ok {
+		exact, err := refExactly(dir, "refs/remotes/"+name)
+		if err != nil {
+			return nameClass{}, err
+		}
+		if !exact {
+			return nameClass{}, caseVariantError(name)
+		}
 		for _, e := range entries {
 			if e.Branch == short && e.Path != "" {
 				return nameClass{kind: nameReuseWorktree, path: e.Path}, nil
@@ -72,11 +84,13 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	// branch, reuse it. If it's registered for a DIFFERENT branch — a name
 	// that flattens to another's (feature/x and feature-x share
 	// .worktrees/feature-x), or a last-component worktree left by an older
-	// wt — error rather than silently returning the wrong worktree.
-	if branch, ok := branchAtPath(entries, path); ok {
-		if branch != "" && branch != name {
-			return nameClass{}, fmt.Errorf("worktree path %s is already in use by branch %q", path, branch)
-		}
+	// wt — error rather than silently returning the wrong worktree. The
+	// collision error is pathCollision's, the one "already in use" message
+	// for -W and the picker.
+	if err := pathCollision(entries, path, name); err != nil {
+		return nameClass{}, err
+	}
+	if _, registered := branchAtPath(entries, path); registered {
 		return nameClass{kind: nameReuseWorktree, path: path}, nil
 	}
 
@@ -84,8 +98,12 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 		// refExists resolves the ref file, which a case-insensitive volume
 		// matches in any case. Only an exact branch is reused; a case-only
 		// variant would check out the other branch under the wrong name.
-		if !branchExactly(dir, name) {
-			return nameClass{}, fmt.Errorf("branch %q differs only in case from an existing branch; use that branch's exact name", name)
+		exact, err := refExactly(dir, "refs/heads/"+name)
+		if err != nil {
+			return nameClass{}, err
+		}
+		if !exact {
+			return nameClass{}, caseVariantError(name)
 		}
 		return nameClass{kind: nameExistingBranch, path: path}, nil
 	}
@@ -94,22 +112,75 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	if err := checkBranchName(dir, name); err != nil {
 		return nameClass{}, err
 	}
+	if err := refNamespaceFree(dir, name); err != nil {
+		return nameClass{}, err
+	}
 	return nameClass{kind: nameCreate, path: path}, nil
 }
 
-// branchExactly reports whether a local branch named exactly name exists,
-// comparing the names git lists rather than resolving a ref file.
-func branchExactly(dir, name string) bool {
-	out, err := runGit(dir, "for-each-ref", "--format=%(refname)", "refs/heads/"+name)
+// caseVariantError is the one refusal for a name that resolves an existing ref
+// only through the case-insensitive ref-file lookup: using it would check out
+// the other branch under the wrong name.
+func caseVariantError(name string) error {
+	return fmt.Errorf("branch %q differs only in case from an existing branch; use that branch's exact name", name)
+}
+
+// refExactly reports whether the fully-qualified ref exists with exactly that
+// spelling, comparing the names git lists rather than resolving a ref file (a
+// case-insensitive volume matches the file in any case).
+func refExactly(dir, ref string) (bool, error) {
+	out, err := runGit(dir, "for-each-ref", "--format=%(refname)", ref)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("git for-each-ref: %w", err)
 	}
 	for _, l := range strings.Split(string(out), "\n") {
-		if l == "refs/heads/"+name {
-			return true
+		if l == ref {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
+}
+
+// refNamespaceFree errors when git could not create refs/heads/<name> because
+// a local branch already sits on its path: a leaf branch above it (feature
+// blocks feature/x) or a branch nested under it (feature/x blocks feature).
+// Git nests refs as directories and refuses both at the ref lock — after the
+// create question has already been asked — so it is refused here instead.
+// With core.ignorecase (git init writes it true on a case-insensitive
+// volume) the comparison folds case, so feature blocks Feature/x exactly as
+// it blocks feature/x (git's mkdir of refs/heads/Feature collides with the
+// refs/heads/feature file); unset or false — a case-sensitive volume —
+// compares exactly, and Feature/x is its own name there.
+func refNamespaceFree(dir, name string) error {
+	out, err := runGit(dir, "for-each-ref", "--format=%(refname)", "refs/heads")
+	if err != nil {
+		return fmt.Errorf("git for-each-ref: %w", err)
+	}
+	prefix := "refs/heads/" + name
+	fold := gitIgnoreCase(dir)
+	for _, l := range strings.Split(string(out), "\n") {
+		ref := strings.TrimSpace(l)
+		if ref == "" {
+			continue
+		}
+		r, p := ref, prefix
+		if fold {
+			r, p = strings.ToLower(r), strings.ToLower(p)
+		}
+		if strings.HasPrefix(r, p+"/") || strings.HasPrefix(p, r+"/") {
+			return fmt.Errorf("cannot create branch %q: %q is in the way (git nests branches as directories, so one name cannot sit under the other)",
+				name, strings.TrimPrefix(ref, "refs/heads/"))
+		}
+	}
+	return nil
+}
+
+// gitIgnoreCase reports whether git compares ref names case-insensitively in
+// dir (core.ignorecase, normalized by --bool; git init writes it true when
+// the filesystem is case-insensitive).
+func gitIgnoreCase(dir string) bool {
+	out, err := runGit(dir, "config", "--bool", "--get", "core.ignorecase")
+	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 // checkBranchName asks git whether name is a usable branch name, returning
@@ -157,11 +228,14 @@ func EnsureForName(dir, name string) (string, error) {
 }
 
 // WouldCreate reports whether EnsureForName(dir, name) would create a new
-// branch (git worktree add -b for a branch that does not exist), and the base
-// that branch would start from: dir's current branch, else "detached HEAD
-// <short sha>". It creates nothing. A name EnsureForName would reject comes
-// back as that same error, so callers can refuse before asking anything.
-func WouldCreate(dir, name string) (creates bool, base string, err error) {
+// branch (git worktree add -b for a branch that does not exist), and how that
+// branch would start — the phrase the create question joins after "create
+// it": "from <current branch>", "from detached HEAD <short sha>", or "as an
+// empty orphan branch with no shared history (this repository has no commits
+// yet)" on an unborn HEAD, where git infers --orphan rather than a base. It
+// creates nothing. A name EnsureForName would reject comes back as that same
+// error, so callers can refuse before asking anything.
+func WouldCreate(dir, name string) (creates bool, start string, err error) {
 	if name == "" {
 		return false, "", fmt.Errorf("worktree name cannot be empty")
 	}
@@ -173,14 +247,21 @@ func WouldCreate(dir, name string) (creates bool, base string, err error) {
 	if err != nil || cls.kind != nameCreate {
 		return false, "", err
 	}
+	// An unborn HEAD (a fresh `git init`) is not a base: git prints "No
+	// possible source branch, inferring --orphan" and the branch shares no
+	// history, so say that rather than name the unborn branch it would not
+	// use.
+	if _, err := runGit(dir, "rev-parse", "--verify", "--quiet", "HEAD"); err != nil {
+		return true, "as an empty orphan branch with no shared history (this repository has no commits yet)", nil
+	}
 	if b := CurrentBranchAt(dir); b != "" {
-		return true, b, nil
+		return true, "from " + b, nil
 	}
 	out, err := runGit(dir, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return false, "", fmt.Errorf("git rev-parse HEAD: %w", err)
 	}
-	return true, "detached HEAD " + strings.TrimSpace(string(out)), nil
+	return true, "from detached HEAD " + strings.TrimSpace(string(out)), nil
 }
 
 // maxDirNameBytes is the filesystem's per-entry name limit (NAME_MAX on macOS

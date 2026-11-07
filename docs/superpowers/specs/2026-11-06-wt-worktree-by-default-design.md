@@ -106,14 +106,19 @@ demoted, not dropped.
 
 `-W <name>` that matches no existing branch or worktree is a *creation*.
 
-- On a terminal, ask: `no branch or worktree named "<name>"; create it from
-  <base>? [y/N]`. Default no.
+- On a terminal, ask: `no branch or worktree named "<name>"; create it
+  <start>? [y/N]`. Default no. `<start>` is `from <base>`, or `as an empty
+  orphan branch with no shared history (this repository has no commits yet)`
+  in a repository with no commits — what git actually creates there (amended
+  2026-11-06 after review).
 - With no terminal, refuse unless `--new` is passed.
 - A name that already exists is reused with no question, as today. `--new` is
   valid only with `-W`; with an existing name it is a no-op, and with `--cwd`,
   `--root` or no `-W` it is a usage error.
 - The base is whatever creation uses today (`EnsureForName`); this design does
-  not change it, and the prompt names it.
+  not change it, and the prompt names how the branch starts: `from <current
+  branch>`, `from detached HEAD <short sha>`, or the empty-orphan phrase above
+  on an unborn HEAD (git infers `--orphan`, never the unborn branch).
 - The picker's explicit "new worktree" row already asks for a name on purpose;
   it is unchanged.
 

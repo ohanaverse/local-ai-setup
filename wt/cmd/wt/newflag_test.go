@@ -229,16 +229,16 @@ func TestNewFlagUsage(t *testing.T) {
 // without reading input.
 func TestConfirmCreate(t *testing.T) {
 	var out bytes.Buffer
-	if err := confirmCreate("x", "main", true, failReader{t}, &out, false); err != nil || out.Len() != 0 {
+	if err := confirmCreate("x", "from main", true, failReader{t}, &out, false); err != nil || out.Len() != 0 {
 		t.Errorf("--new: err=%v out=%q", err, out.String())
 	}
-	if err := confirmCreate("x", "main", false, strings.NewReader("y"), &out, true); err != nil {
+	if err := confirmCreate("x", "from main", false, strings.NewReader("y"), &out, true); err != nil {
 		t.Errorf("y: err=%v", err)
 	}
-	if err := confirmCreate("x", "main", false, strings.NewReader("n"), &out, true); err != errCancelled {
+	if err := confirmCreate("x", "from main", false, strings.NewReader("n"), &out, true); err != errCancelled {
 		t.Errorf("n: err=%v; want errCancelled", err)
 	}
-	err := confirmCreate("x", "main", false, failReader{t}, &out, false)
+	err := confirmCreate("x", "from main", false, failReader{t}, &out, false)
 	if err == nil || !strings.Contains(err.Error(), `no branch or worktree named "x"; pass --new to create it`) {
 		t.Errorf("no terminal: err=%v", err)
 	}
@@ -259,5 +259,27 @@ func TestOtherCreationPathsDoNotAsk(t *testing.T) {
 	release()
 	if !fileExists(dir) || strings.Contains(out.String(), "no branch or worktree named") {
 		t.Errorf("dir=%q out=%q; want a created worktree and no creation question", dir, out.String())
+	}
+}
+
+// TestConfirmCreateRendersTheStartPhrase checks the question joins "create
+// it" with worktree.WouldCreate's start phrase verbatim, so an unborn
+// repository is asked about "an empty orphan branch with no shared history" —
+// never "from <branch>", which git would not use there (it infers --orphan).
+func TestConfirmCreateRendersTheStartPhrase(t *testing.T) {
+	for _, c := range []struct{ start, want string }{
+		{start: "from main", want: `no branch or worktree named "x"; create it from main?`},
+		{start: "as an empty orphan branch with no shared history (this repository has no commits yet)",
+			want: `no branch or worktree named "x"; create it as an empty orphan branch with no shared history (this repository has no commits yet)?`},
+	} {
+		t.Run(c.start, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := confirmCreate("x", c.start, false, strings.NewReader("n"), &out, true); err != errCancelled {
+				t.Fatalf("err = %v; want errCancelled", err)
+			}
+			if !strings.Contains(out.String(), c.want) {
+				t.Errorf("question = %q; want it to contain %q", out.String(), c.want)
+			}
+		})
 	}
 }
