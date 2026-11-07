@@ -10,3 +10,12 @@ func StubPRListForTest(fn func(dir, branch string) ([]byte, error)) (restore fun
 	ghPRList = fn
 	return func() { ghPRList = old }
 }
+
+// StubPRBaseListForTest replaces the `gh pr list --base <branch>` call with fn
+// and returns the function that puts the previous one back. Production code
+// never calls it.
+func StubPRBaseListForTest(fn func(dir, base string) ([]byte, error)) (restore func()) {
+	old := ghPRBaseList
+	ghPRBaseList = fn
+	return func() { ghPRBaseList = old }
+}

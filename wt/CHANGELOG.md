@@ -4,6 +4,17 @@
 
 ### Added
 
+- `wt remove origin/<name> --remote` (and, in the `wt cleanup` list, a proven
+  `origin` row ticked by hand and confirmed by typing `delete origin`) deletes
+  a merged branch on origin. Nothing else grants it (`--yes`, `y`,
+  `--accept-loss`, `-D`, `--force` and the plain `delete` do not), only a
+  proven row qualifies (a merged PR with exactly that head, nothing open on or
+  targeting it, origin fetched this run, so `--no-fetch` refuses it), and the
+  push is a lease on the listed commit, so a branch pushed to since is left
+  alone. The result prints the commit and `git push origin <sha>:refs/heads/<n>`
+  to restore it. `wt cleanup` now fetches every remote (never prompting) and
+  its header and JSON (`fetch.remotes`) say which; origin rows whose tip moved
+  after their PR merged are now less sure.
 - When the agent exits, `wt` offers to remove the worktree and branch this
   launch created if nothing changed in them: `<path> was created for this
   session and nothing changed in it. Remove it and its branch <name>?` Enter

@@ -41,12 +41,12 @@
     },
     {
       "kind": "remote",
-      "name": "origin/old",
+      "name": "old",
       "ref": "refs/remotes/origin/old",
       "saw": "proven",
       "worktree": "refused",
       "branch": "not_attempted",
-      "reason": "invalid target: kind \"remote\" is not removable",
+      "reason": "needs --remote: deleting an origin branch is visible to everyone with access to the repository",
       "warnings": [],
       "losses": []
     },

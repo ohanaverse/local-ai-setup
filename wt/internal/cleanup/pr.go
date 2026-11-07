@@ -232,3 +232,98 @@ func LookupPRs(dir string, branches []string, ownRepo string, parallel int) map[
 	wg.Wait()
 	return res
 }
+
+// ghPRBaseList is the test seam for the live "open PRs targeting this
+// branch" query: it returns `gh pr list --base <branch> --state open` JSON.
+var ghPRBaseList = realGhPRBaseList
+
+func realGhPRBaseList(dir, base string) ([]byte, error) {
+	if testing.Testing() {
+		return nil, errGhUnderTest
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), prTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+		"--base", base, "--state", "open", "--limit", strconv.Itoa(prLimit),
+		"--json", "number,headRefName,isCrossRepository")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(),
+		"GH_PROMPT_DISABLED=1", "GH_PAGER=cat", "PAGER=cat",
+		"GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1", "NO_COLOR=1")
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("gh pr list --base timed out after %s", prTimeout)
+		}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return nil, ghFailure(err, ee.Stderr)
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// lookupBaseOne is the open PRs whose base is name, from any head repository:
+// a PR from a fork targeting the branch is closed by deleting it just as an
+// own-repo one is, so unlike lookupBranch there is no head-repo filter. A
+// failure, null, bad output or a possibly truncated page is LookupUnknown.
+func lookupBaseOne(dir, name string) PRResult {
+	out, err := ghPRBaseList(dir, name)
+	if err != nil {
+		return PRResult{Lookup: LookupUnknown, Err: cmp.Or(oneLine(err.Error()), "gh pr list --base failed")}
+	}
+	var rows []struct {
+		Number int `json:"number"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return PRResult{Lookup: LookupUnknown, Err: "gh pr list --base: unexpected output: " + oneLine(err.Error())}
+	}
+	if rows == nil {
+		return PRResult{Lookup: LookupUnknown, Err: "gh pr list --base: output was null, not a list"}
+	}
+	if len(rows) >= prLimit {
+		return PRResult{Lookup: LookupUnknown, Err: fmt.Sprintf("gh pr list --base returned %d PRs, the page limit; may be truncated", len(rows))}
+	}
+	var prs []PRInfo
+	for _, r := range rows {
+		if r.Number <= 0 {
+			return PRResult{Lookup: LookupUnknown, Err: fmt.Sprintf("gh pr list --base: unrecognised PR (number %d)", r.Number)}
+		}
+		prs = append(prs, PRInfo{Number: r.Number, State: "OPEN", BaseRef: name})
+	}
+	if len(prs) == 0 {
+		return PRResult{Lookup: LookupNone}
+	}
+	return PRResult{Lookup: LookupKnown, PRs: prs}
+}
+
+// LookupBaseOf asks gh, for each branch name, which open PRs target it (any
+// head repository), at most parallel calls at once. Every name gets an
+// entry; any failure is LookupUnknown, never LookupNone.
+func LookupBaseOf(dir string, names []string, parallel int) map[string]PRResult {
+	if parallel < 1 {
+		parallel = 1
+	}
+	res := make(map[string]PRResult, len(names))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, parallel)
+	for _, n := range names {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(n string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			r := lookupBaseOne(dir, n)
+			mu.Lock()
+			res[n] = r
+			mu.Unlock()
+		}(n)
+	}
+	wg.Wait()
+	return res
+}

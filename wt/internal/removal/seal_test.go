@@ -116,7 +116,7 @@ func TestConfirmedRefusesApprovalsNotNeededOrOffered(t *testing.T) {
 		if p.CanDeleteBranch {
 			t.Fatalf("precondition: %s offers -D", p.Item.Name)
 		}
-		union = Needs{union.Confirm || p.Needs.Confirm, union.Force || p.Needs.Force, union.Delete || p.Needs.Delete}
+		union = Needs{Confirm: union.Confirm || p.Needs.Confirm, Force: union.Force || p.Needs.Force, Delete: union.Delete || p.Needs.Delete, Remote: union.Remote || p.Needs.Remote}
 	}
 	if union != allNeeds {
 		t.Fatalf("precondition: union %+v", union)

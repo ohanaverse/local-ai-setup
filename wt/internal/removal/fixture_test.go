@@ -154,12 +154,13 @@ func later() time.Time { return time.Now().Add(time.Hour) }
 func noGh(t *testing.T) {
 	t.Helper()
 	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
+	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
 }
 
 // inputs are the GatherInputs a test's Engine and report use: the primary
 // checkout as the caller's directory, own repo o/r, no fetch.
 func (f *fixture) inputs() cleanup.GatherInputs {
-	return cleanup.GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+	return cleanup.GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2, OriginRows: true}
 }
 
 // report gathers and classifies the repository the way `wt cleanup` does
