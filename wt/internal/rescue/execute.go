@@ -39,33 +39,47 @@ func (e Engine) Execute(p *Plan) Outcome {
 		return o
 	}
 	sg := sgit{dir: p.Source.Path}
-	exclude := "refs/heads/" + p.Branch
 
-	// The state the plan was checked against must still be the source's.
-	now, err := takeFingerprint(sg)
-	if err != nil {
-		return fail(CodeUnreadable, "could not read the source: %v", err)
-	}
-	if d := p.fp.diff(now); d != "" {
-		o.Status, o.Code = StatusRefused, CodeSourceChanged
-		o.Reason = "the source changed since it was checked (" + d + "); nothing was created"
-		return o
+	// The state the plan was checked against must still be the source's. When
+	// nothing gave anyone time to edit it since Preflight (no prompt), the
+	// fingerprint Preflight took stands and this second read is skipped: the
+	// comparison after the copy still catches a change.
+	if !p.skipStartRecheck {
+		now, err := takeFingerprint(sg)
+		if err != nil {
+			return fail(CodeUnreadable, "could not read the source: %v", err)
+		}
+		if d := p.fp.diff(now); d != "" {
+			o.Status, o.Code = StatusRefused, CodeSourceChanged
+			o.Reason = "the source changed since it was checked (" + d + "); nothing was created"
+			return o
+		}
 	}
 
 	dest, err := worktree.CreateAt(p.Repo, p.Branch, p.Start)
 	if err != nil {
-		// git makes the branch before it checks the worktree out, so a failure
-		// can leave the branch (and a directory) behind. Say so, with the name:
-		// a rerun is refused for that very name.
-		if _, rerr := (sgit{dir: p.Repo}).text("rev-parse", "--verify", "-q", exclude); rerr == nil {
-			o.BranchKept = true
-			_, derr := os.Lstat(p.DestPath)
-			o.Created = derr == nil
-			kept := "the branch " + p.Branch + " was kept"
-			if o.Created {
-				kept += " and so was the directory " + p.DestPath
+		var notMade *worktree.NotCreatedError
+		var addFailed *worktree.AddFailedError
+		switch {
+		case errors.As(err, &notMade) && notMade.NameUnavailable:
+			// The name was free at Preflight and is not now (the prompt waited):
+			// whatever holds it is someone else's, not ours to point `wt remove` at.
+			o.Status, o.Code = StatusRefused, CodeNameUnavailable
+			o.Reason = fmt.Sprintf("the new branch name or directory was taken since the check (%v); pass --to NAME to choose another; nothing was created", err)
+			return o
+		case errors.As(err, &addFailed) && (addFailed.BranchLeft || addFailed.DirLeft):
+			// git made the branch before it checked the worktree out, so a failure
+			// can leave the branch (and a directory) behind. Say so, with the name:
+			// a rerun is refused for that very name.
+			o.BranchKept, o.Created = addFailed.BranchLeft, addFailed.DirLeft
+			var kept []string
+			if o.BranchKept {
+				kept = append(kept, "the branch "+p.Branch)
 			}
-			return fail(CodeCreateFailed, "could not create the new worktree: %v (%s; nothing was rolled back, `wt remove` can clear it)", err, kept)
+			if o.Created {
+				kept = append(kept, "the directory "+p.DestPath)
+			}
+			return fail(CodeCreateFailed, "could not create the new worktree: %v (%s was kept; nothing was rolled back, `wt remove` can clear it)", err, strings.Join(kept, " and "))
 		}
 		return fail(CodeCreateFailed, "could not create the new worktree: %v; nothing was created", err)
 	}
@@ -98,6 +112,11 @@ func (e Engine) Execute(p *Plan) Outcome {
 			return keep(CodeCarryFailed, "applying the unstaged changes: %v", err)
 		}
 		done("carried unstaged changes")
+	}
+	// git apply writes a file with 0666 minus the umask, whatever mode the
+	// source's copy has; give each changed tracked file the source's exact one.
+	if err := setFileModes(p.Source.Path, dest, p.tracked); err != nil {
+		return keep(CodeCarryFailed, "setting file modes: %v", err)
 	}
 	var madeDirs []string
 	for _, rel := range p.untracked {
@@ -166,6 +185,26 @@ func verify(sg, dg sgit, p *Plan, src fingerprint, madeDirs []string) error {
 		}
 		if sm.Mode().Perm() != dm.Mode().Perm() {
 			return fmt.Errorf("directory %s has mode %o, the source's is %o", cleanup.OneLine(rel), dm.Mode().Perm(), sm.Mode().Perm())
+		}
+	}
+	return nil
+}
+
+// setFileModes gives each regular file in rels that exists in both trees the
+// source's permission bits. A path the source no longer has (a deletion), a
+// link or a directory is left as git made it; verify compares what remains.
+func setFileModes(src, dst string, rels []string) error {
+	for _, rel := range rels {
+		fi, err := os.Lstat(filepath.Join(src, rel))
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		to := filepath.Join(dst, rel)
+		if ti, err := os.Lstat(to); err != nil || !ti.Mode().IsRegular() {
+			continue
+		}
+		if err := os.Chmod(to, fi.Mode().Perm()); err != nil {
+			return err
 		}
 	}
 	return nil

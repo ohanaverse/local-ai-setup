@@ -200,7 +200,12 @@ staged changes (still staged), unstaged changes and untracked files that are
 not ignored. Not carried: ignored files (`.env`, `.venv`; the count is
 reported) and empty directories. Before it reports `moved`, wt checks that the
 new worktree's `git status` equals the original's and that every changed file
-has the same content, mode and link target. A directory the copy creates for
+has the same content, mode and link target (a changed tracked file gets the
+original's exact permission bits, since `git apply` would write `0666` minus
+the umask). The new worktree is added with git hooks disabled
+(`core.hooksPath=/dev/null`): when the repository has a `post-checkout` hook, the
+plan carries a warning that it did not run there, so run whatever it sets up
+yourself. A directory the copy creates for
 untracked files gets the original directory's mode (a `0700` one stays
 `0700`), and the check compares those modes too.
 
@@ -222,17 +227,28 @@ or similar in progress (`operation_in_progress`) or unmerged paths
 staged and modified (`staged_and_modified`); an intent-to-add file
 (`intent_to_add`); a nested git repository (`nested_repo`); an untracked path that is a fifo, socket or other
 non-file, or whose path is unsafe to copy (`special_file`); a changed file whose
-line endings git converts (a `text`/`eol` attribute or `core.autocrlf`) and that
-holds CRLF or asks for it (`line_endings`); a changed file a `filter`
+line endings git converts (a `text`/`eol` attribute, `core.autocrlf` or `core.eol`)
+and that holds CRLF or would be written with CRLF there, such as an LF file
+under `core.eol=crlf` with a `text` attribute (`line_endings`, naming only the
+affected paths); a changed file a `filter`, `ident` or `working-tree-encoding`
 attribute handles, git-lfs or any clean/smudge filter, which a copy could not
 reproduce byte for byte (`content_filter`); more than 20000
-untracked files or 512 MiB (`too_large`); an unreadable worktree
+untracked files, or more than 512 MiB of untracked files and changed tracked
+files together (`too_large`); a source that changed while it was being checked
+(`source_changed`); a commit count that cannot be read, or reads 0 while the classifier counted unpushed
+commits (exit 1, never a plan claiming 0 commits; a detached HEAD that a remote-tracking ref
+already holds legitimately counts 0); an unreadable worktree
 (`gates_unknown`, `unreadable`); a name already taken (`name_unavailable`,
-naming `--to`; there is no automatic suffix); a branch with no worktree
+naming `--to`; there is no automatic suffix; it can also be answered while the
+y/N prompt waited, when someone took the branch or directory in the meantime:
+then it is a `refused` outcome, nothing was created and nothing is kept); a branch with no worktree
 (`not_worktree`; `wt -W <branch>` gives it one). Current, locked and held
 worktrees are allowed (a held one is warned about: if its session edits files
 during the copy the run fails with `source_changed_while_copying` rather than
-report a stale copy).
+report a stale copy). With `--yes` the source is not re-read between the check
+and the copy (nothing was shown in between); a change in that instant is
+caught by the comparison after the copy and fails the run, keeping the new
+worktree. After a prompt the source is re-read before anything is created.
 
 **A failure after the new worktree exists keeps it** (`created: true`, its
 path in the message; when creating the worktree failed after git made the

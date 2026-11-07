@@ -166,7 +166,7 @@
       "properties": {
         "commits": {
           "type": "integer",
-          "description": "Commits reachable from no remote-tracking ref (0 when not counted)."
+          "description": "Commits reachable from no remote-tracking ref (0 only when there are none; an unreadable count stops the run)."
         },
         "staged": {
           "type": "integer"

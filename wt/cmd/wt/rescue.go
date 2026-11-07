@@ -59,9 +59,12 @@ func rescueCmd(a *app) *cobra.Command {
 			"paths, a file marked skip-worktree or assume-unchanged, a changed\n" +
 			"submodule, a file both staged and modified, an intent-to-add file, a nested\n" +
 			"git repository, a changed file under a content filter (git-lfs or any\n" +
-			"clean/smudge filter), more than 20000 untracked files or 512 MiB, and a name that\n" +
+			"clean/smudge filter), a changed file git would write with different line\n" +
+			"endings, more than 20000 untracked files or 512 MiB of untracked and changed\n" +
+			"tracked files together, and a name that\n" +
 			"is taken (pass --to NAME, the full branch name). A failure after the new\n" +
-			"worktree exists keeps it and says where; nothing is rolled back.\n\n" +
+			"worktree exists keeps it and says where; nothing is rolled back. Git hooks\n" +
+			"(post-checkout) do not run in the new worktree; the plan warns when one exists.\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing what\n" +
 			"it will carry; with no terminal it creates nothing. --dry-run says what\n" +
 			"would happen and changes nothing (no ref, index or working file); it\n" +
@@ -167,6 +170,12 @@ func rescueRow(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap clea
 		if !promptRescue(errOut, answer, plan) {
 			return rescueFail(out, f, snap.Repo, 3, errors.New("not confirmed; nothing was created"))
 		}
+	}
+	if f.yes {
+		// Nothing was shown or asked since Preflight read the source, so its
+		// fingerprint stands and Execute skips its own start-of-run re-read; the
+		// comparison after the copy still runs. A prompt keeps the re-read.
+		plan.SkipStartRecheck()
 	}
 	return writeRescueResult(out, errOut, f.json, meta, eng.Execute(plan))
 }

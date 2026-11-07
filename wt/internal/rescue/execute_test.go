@@ -453,12 +453,12 @@ func TestExecuteIgnoresChangesOutsideTheSource(t *testing.T) {
 }
 
 // TestExecuteReportsABranchLeftByAFailedCreate checks that when
-// worktree.CreateAt fails after git made the branch (here a failing
-// post-checkout hook), the outcome says the branch was kept and names it,
-// instead of "nothing was created", and that a rerun's name_unavailable is
-// therefore explained. Why: the old report claimed nothing existed while
-// refs/heads/rescued/topic did, so the user's next run failed with no
-// account of why.
+// worktree.CreateAt fails after git made the branch (here .worktrees became
+// read-only after the check, so the directory could not be made), the outcome
+// says the branch was kept and names it, instead of "nothing was created",
+// and that a rerun's name_unavailable is therefore explained. Why: the old
+// report claimed nothing existed while refs/heads/rescued/topic did, so the
+// user's next run failed with no account of why.
 func TestExecuteReportsABranchLeftByAFailedCreate(t *testing.T) {
 	f := newFixture(t)
 	p := f.Worktree("topic")
@@ -469,12 +469,13 @@ func TestExecuteReportsABranchLeftByAFailedCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hook := filepath.Join(gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir"), "hooks", "post-checkout")
-	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+	wtDir := filepath.Join(f.Dir, ".worktrees")
+	if err := os.Chmod(wtDir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { os.Chmod(wtDir, 0o755) })
+	if err := os.WriteFile(filepath.Join(wtDir, "probe"), nil, 0o644); err == nil {
+		t.Skip("the directory is writable despite chmod (running as root?)")
 	}
 
 	out := eng.Execute(plan)

@@ -59,30 +59,73 @@ func checkNewBranchName(dir, name string) error {
 	return checkBranchName(dir, name)
 }
 
+// NotCreatedError says CreateAt refused before it ran `git worktree add`: the
+// start was unusable or CheckNew refused the name (taken, invalid, a path
+// already there). Nothing was made by this call, so whatever the name now
+// points at is not CreateAt's. NameUnavailable is true for CheckNew's
+// refusals.
+type NotCreatedError struct {
+	NameUnavailable bool
+	Err             error
+}
+
+func (e *NotCreatedError) Error() string { return e.Err.Error() }
+func (e *NotCreatedError) Unwrap() error { return e.Err }
+
+// AddFailedError says `git worktree add` ran and failed. BranchLeft and
+// DirLeft report what that run left behind: a branch (or directory) that was
+// absent just before the run and is there now, so it is this call's own
+// leftover and not someone else's.
+type AddFailedError struct {
+	BranchLeft bool
+	DirLeft    bool
+	Err        error
+}
+
+func (e *AddFailedError) Error() string { return e.Err.Error() }
+func (e *AddFailedError) Unwrap() error { return e.Err }
+
 // CreateAt creates branch name and its linked worktree under dir's
 // .worktrees at the commit start (a full object id of a commit, never a
 // name that could move), without upstream tracking, and returns the
 // worktree's path. dir is the repository root. Every check CheckNew makes
 // runs first, so a refusal leaves no branch behind. It never reuses an
-// existing branch or worktree.
+// existing branch or worktree. Hooks are disabled for the add
+// (core.hooksPath=/dev/null): a post-checkout hook could rewrite or fail the
+// new checkout, and a caller that needs a faithful copy must not run user
+// code in it. The errors are *NotCreatedError (nothing was made) or
+// *AddFailedError (git ran).
 func CreateAt(dir, name, start string) (string, error) {
 	if !fullCommitID.MatchString(start) {
-		return "", fmt.Errorf("start %q is not a full commit id", start)
+		return "", &NotCreatedError{Err: fmt.Errorf("start %q is not a full commit id", start)}
 	}
 	out, err := runGit(dir, "cat-file", "-t", start)
 	if err != nil || strings.TrimSpace(string(out)) != "commit" {
-		return "", fmt.Errorf("start %s is not a commit of this repository", start)
+		return "", &NotCreatedError{Err: fmt.Errorf("start %s is not a commit of this repository", start)}
 	}
 	path, err := CheckNew(dir, name)
 	if err != nil {
-		return "", err
+		return "", &NotCreatedError{NameUnavailable: true, Err: err}
 	}
-	if out, err := runGitCombined(dir, "worktree", "add", "--no-track", "-b", name, path, start); err != nil {
+	// Anything that appears after this look is not this call's: git refuses to
+	// reuse a name, so a ref or directory found afterwards was either made by
+	// the add or by someone racing it; only the first kind is claimed.
+	_, e := runGit(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+name)
+	branchBefore := e == nil
+	_, e = os.Lstat(path)
+	dirBefore := e == nil
+	if out, err := runGitCombined(dir, "-c", "core.hooksPath="+os.DevNull, "worktree", "add", "--no-track", "-b", name, path, start); err != nil {
+		fail := &AddFailedError{}
 		msg := fmt.Sprintf("git worktree add -b: %v: %s", err, strings.TrimSpace(string(out)))
-		if _, e := runGit(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+name); e == nil {
+		if _, e := runGit(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+name); e == nil && !branchBefore {
+			fail.BranchLeft = true
 			msg += fmt.Sprintf(" (branch %s was created and left behind)", name)
 		}
-		return "", fmt.Errorf("%s", msg)
+		if _, e := os.Lstat(path); e == nil && !dirBefore {
+			fail.DirLeft = true
+		}
+		fail.Err = fmt.Errorf("%s", msg)
+		return "", fail
 	}
 	return path, nil
 }

@@ -16,7 +16,9 @@ import (
 )
 
 // Limits on what Preflight accepts to copy: an untracked build directory
-// that was not ignored would otherwise be copied silently. Fixed, no flag.
+// that was not ignored would otherwise be copied silently. The byte limit
+// covers the untracked files plus the changed tracked files together (the
+// names say "Untracked" for history). Fixed, no flag.
 const (
 	MaxUntrackedBytes = 512 << 20
 	MaxUntrackedFiles = 20000
@@ -72,7 +74,7 @@ type Source struct {
 
 // Counts is what a rescue carries and what it leaves behind.
 type Counts struct {
-	Commits        int   // commits reachable from no remote-tracking ref (0 when unknown)
+	Commits        int   // commits reachable from no remote-tracking ref (Preflight fails rather than leave it unknown)
 	Staged         int   // paths with a staged change
 	Unstaged       int   // paths with an unstaged change
 	Untracked      int   // untracked, non-ignored paths copied
@@ -91,8 +93,11 @@ type Plan struct {
 	Counts   Counts
 	Warnings []string
 
-	untracked []string    // paths to copy, relative to the source
-	fp        fingerprint // the source as Preflight found it
+	untracked        []string    // paths to copy, relative to the source
+	tracked          []string    // changed tracked paths (a rename names its new path and its old)
+	trackedBytes     int64       // size of the changed tracked files (counts against the byte limit)
+	skipStartRecheck bool        // see SkipStartRecheck
+	fp               fingerprint // the source as Preflight found it
 }
 
 // Status is the frozen outcome string.
@@ -130,3 +135,10 @@ type Engine struct {
 	In       cleanup.GatherInputs
 	Classify cleanup.Options
 }
+
+// SkipStartRecheck tells Execute that nothing happened between Preflight and
+// it that gave the source time to change (no prompt was shown), so the
+// fingerprint Preflight took is reused and the start-of-Execute re-read, which
+// hashes every changed file a second time, is skipped. The comparison after
+// the copy still runs. Call it only on that path; the default re-checks.
+func (p *Plan) SkipStartRecheck() { p.skipStartRecheck = true }

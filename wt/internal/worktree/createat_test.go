@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,5 +167,43 @@ func TestCheckNewRefusesNamesGitCannotUseAsABranch(t *testing.T) {
 	}
 	if after := gitOut(t, dir, "for-each-ref"); after != before {
 		t.Errorf("refs changed:\n%s\n--\n%s", before, after)
+	}
+}
+
+// TestCreateAtTypesItsFailures checks a refused name is a *NotCreatedError
+// with NameUnavailable (and no branch of ours), an unusable start a
+// *NotCreatedError without it, and a `git worktree add` that fails after
+// making the branch an *AddFailedError whose BranchLeft says so. Why: the
+// rescue must tell "someone else holds the name" from "we left a branch
+// behind" by type, not by looking for the ref afterwards.
+func TestCreateAtTypesItsFailures(t *testing.T) {
+	dir, first, _ := repoWithTwoCommits(t)
+	gitOut(t, dir, "branch", "taken", first)
+
+	var nc *NotCreatedError
+	_, err := CreateAt(dir, "taken", first)
+	if !errors.As(err, &nc) || !nc.NameUnavailable {
+		t.Fatalf("taken name: %v, want NotCreatedError{NameUnavailable}", err)
+	}
+	_, err = CreateAt(dir, "fresh", "abc")
+	if !errors.As(err, &nc) || nc.NameUnavailable {
+		t.Fatalf("bad start: %v, want NotCreatedError without NameUnavailable", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(dir, ".worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(dir, ".worktrees")
+	if err := os.Chmod(wt, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(wt, 0o755) })
+	if os.WriteFile(filepath.Join(wt, "probe"), nil, 0o644) == nil {
+		t.Skip("directory writable despite chmod (root?)")
+	}
+	var af *AddFailedError
+	_, err = CreateAt(dir, "rescued/left", first)
+	if !errors.As(err, &af) || !af.BranchLeft {
+		t.Fatalf("failed add: %v, want AddFailedError{BranchLeft}", err)
 	}
 }

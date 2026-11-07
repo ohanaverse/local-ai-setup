@@ -1,10 +1,12 @@
 package rescue
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -16,6 +18,9 @@ var (
 	limitFiles int   = MaxUntrackedFiles
 	limitBytes int64 = MaxUntrackedBytes
 )
+
+// afterReadWork is a test seam, called once the source's state has been read.
+var afterReadWork = func() {}
 
 // DefaultBranch is the name Preflight gives the new branch when none is
 // asked for: rescued/<the source's branch>, or rescued/<directory name> for
@@ -82,11 +87,38 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		if err != nil {
 			return nil, err
 		}
-		fmt.Sscan(n, &p.Counts.Commits)
+		c, err := parseCommitCount(n)
+		if err != nil {
+			return nil, fmt.Errorf("could not count the commits that exist only here: %w", err)
+		}
+		if c == 0 && fresh.Losses.Unpushed > 0 {
+			// The classifier counted unpushed commits by the same definition and
+			// the count says none: a fetch landed between the two reads, or one
+			// of them is wrong. A prompt claiming 0 commits would mislead. A
+			// detached HEAD that is only "not in the base" (DetachedUnique) can
+			// legitimately count 0 here, because a remote-tracking ref already
+			// holds it.
+			return nil, errors.New("could not count the commits that exist only here: the classifier found some and the count found none (run it again)")
+		}
+		p.Counts.Commits = c
+	}
+	// The fingerprint is taken before the reads below, so a change made while
+	// they run is never baked in as "the state that was checked"; it is taken
+	// again afterwards and the two must agree.
+	fp, err := takeFingerprint(sg)
+	if err != nil {
+		return nil, err
 	}
 	if err := e.readWork(sg, p); err != nil {
 		return nil, err
 	}
+	afterReadWork()
+	if again, err := takeFingerprint(sg); err != nil {
+		return nil, err
+	} else if d := fp.diff(again); d != "" {
+		return nil, refuse(CodeSourceChanged, "the worktree changed while it was being checked ("+d+"); run it again")
+	}
+	p.fp = fp
 
 	branch := name
 	if branch == "" {
@@ -97,11 +129,37 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		return nil, refuse(CodeNameUnavailable, fmt.Sprintf("pass --to NAME to choose another branch name (%v)", err))
 	}
 	p.Branch, p.DestPath = branch, dest
-
-	if p.fp, err = takeFingerprint(sg); err != nil {
-		return nil, err
+	if w := postCheckoutHookWarning(p.Repo); w != "" {
+		p.Warnings = append(p.Warnings, w)
 	}
 	return p, nil
+}
+
+// parseCommitCount reads `rev-list --count` output; anything but a
+// non-negative integer is an error, never a silent 0.
+func parseCommitCount(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("git printed %q, not a number", cleanup.OneLine(s))
+	}
+	return n, nil
+}
+
+// postCheckoutHookWarning says so when the repository has a post-checkout
+// hook, which the new worktree's checkout does not run (hooks are disabled
+// for it); "" when there is none or it cannot be looked up cheaply.
+func postCheckoutHookWarning(repo string) string {
+	path, err := (sgit{dir: repo}).text("rev-parse", "--git-path", "hooks/post-checkout")
+	if err != nil || path == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(repo, path)
+	}
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+		return ""
+	}
+	return "a post-checkout hook exists (" + cleanup.OneLine(path) + ") and did not run in the new worktree: hooks are disabled while it is created, so run whatever it sets up (dependencies, generated files) there yourself"
 }
 
 // readWork reads the source's uncommitted state into p and refuses what has
@@ -139,6 +197,11 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 			if en.orig != "" {
 				tracked = append(tracked, en.orig)
 			}
+			// A changed tracked file is carried as a diff held in memory and
+			// written whole: it counts against the same byte limit.
+			if fi, err := os.Lstat(filepath.Join(sg.dir, en.path)); err == nil && fi.Mode().IsRegular() {
+				p.trackedBytes += fi.Size()
+			}
 		}
 		if en.kind == 'u' {
 			return refuse(CodeUnmerged, "the index has unmerged paths; resolve them first")
@@ -166,6 +229,10 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 			p.Counts.Unstaged++
 		}
 	}
+	if p.trackedBytes+p.Counts.UntrackedBytes > limitBytes {
+		return refuse(CodeTooLarge, tooLargeMessage())
+	}
+	p.tracked = tracked
 	if err := checkLineEndings(sg, tracked); err != nil {
 		return err
 	}
@@ -181,7 +248,7 @@ func checkContentFilters(sg sgit, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	out, err := sg.out(nil, append([]string{"check-attr", "-z", "filter", "--"}, paths...)...)
+	out, err := sg.out(nil, append([]string{"check-attr", "-z", "filter", "ident", "working-tree-encoding", "--"}, paths...)...)
 	if err != nil {
 		return err
 	}
@@ -191,6 +258,9 @@ func checkContentFilters(sg sgit, paths []string) error {
 		switch v := f[i+2]; v {
 		case "unspecified", "unset":
 		default:
+			if f[i+1] != "filter" {
+				return refuse(CodeContentFilter, "the "+cleanup.OneLine(f[i+1])+" attribute rewrites "+cleanup.OneLine(f[i])+" when it is written, so a copy would not match it byte for byte")
+			}
 			return refuse(CodeContentFilter, "a content filter ("+cleanup.OneLine(v)+", for example git-lfs) applies to "+cleanup.OneLine(f[i])+", so a copy would not match it byte for byte")
 		}
 	}
@@ -198,16 +268,21 @@ func checkContentFilters(sg sgit, paths []string) error {
 }
 
 // checkLineEndings refuses a changed tracked file whose line endings git
-// converts (a text or eol attribute, or core.autocrlf) when the file has CRLF
-// or the attribute asks for it. git apply and a fresh checkout then write
-// different bytes than the source holds, which verify would only find after
-// the new worktree existed.
+// converts when the destination file is written or the source's file has
+// CRLF: a text or eol attribute, core.autocrlf or core.eol. git apply and a
+// fresh checkout then write different bytes than the source holds (an LF file
+// becomes CRLF under core.eol=crlf with `text`), which verify would only find
+// after the new worktree existed. Only the changed paths are looked at, and
+// only the ones affected are named.
 func checkLineEndings(sg sgit, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	autocrlf, _ := sg.text("config", "--get", "core.autocrlf")
-	autocrlf = strings.ToLower(autocrlf)
+	cfg := func(key string) string {
+		v, _ := sg.text("config", "--get", key)
+		return strings.ToLower(v)
+	}
+	autocrlf, coreEOL := cfg("core.autocrlf"), cfg("core.eol")
 	convert := autocrlf == "true" || autocrlf == "input"
 	args := append([]string{"--literal-pathspecs", "ls-files", "--eol", "-z", "--"}, paths...)
 	out, err := sg.out(nil, args...)
@@ -227,11 +302,58 @@ func checkLineEndings(sg sgit, paths []string) error {
 				crlf = true
 			}
 		}
-		if strings.Contains(attr, "eol=crlf") || (crlf && (convert || attr != "")) {
-			return refuse(CodeLineEndings, "git converts the line endings of "+cleanup.OneLine(path)+" (a text or eol attribute, or core.autocrlf), so a copy would not match it byte for byte")
+		if strings.Contains(attr, "eol=crlf") || (crlf && (convert || attr != "")) || writesCRLF(attr, f[0], f[1], autocrlf, coreEOL) {
+			return refuse(CodeLineEndings, "git converts the line endings of "+cleanup.OneLine(path)+" (a text or eol attribute, or core.autocrlf or core.eol), so a copy would not match it byte for byte")
 		}
 	}
 	return nil
+}
+
+// writesCRLF says whether git would write this file with CRLF line endings
+// into a fresh worktree: it is converted on checkout (a `text` attribute, an
+// `eol` attribute, `text=auto` on content git reads as text, or core.autocrlf
+// with no attribute) and the effective eol is CRLF (the eol attribute, else
+// core.autocrlf=true, else core.eol=crlf; core.autocrlf overrides core.eol).
+// idx and wt are the index and working-tree columns of `ls-files --eol`.
+func writesCRLF(attr, idx, wt, autocrlf, coreEOL string) bool {
+	var text, auto, noText bool
+	eol := ""
+	for _, t := range strings.Fields(attr) {
+		switch {
+		case t == "text":
+			text = true
+		case t == "-text":
+			noText = true
+		case t == "text=auto":
+			auto = true
+		case strings.HasPrefix(t, "eol="):
+			eol = strings.TrimPrefix(t, "eol=")
+			text = true
+		}
+	}
+	if noText {
+		return false
+	}
+	if !text && !auto {
+		if autocrlf != "true" && autocrlf != "input" {
+			return false
+		}
+		auto = true // core.autocrlf behaves as text=auto for a file without attributes
+	}
+	if !text && (idx == "i/-text" || wt == "w/-text") {
+		return false // text=auto on content git reads as binary: no conversion
+	}
+	switch {
+	case eol == "crlf":
+		return true
+	case eol != "":
+		return false
+	case autocrlf == "true":
+		return true
+	case autocrlf == "input":
+		return false
+	}
+	return coreEOL == "crlf"
 }
 
 // checkUntracked refuses an untracked path that cannot be copied faithfully
@@ -257,10 +379,14 @@ func (e Engine) checkUntracked(root, rel string, p *Plan) error {
 	p.untracked = append(p.untracked, rel)
 	p.Counts.Untracked++
 	if p.Counts.Untracked > limitFiles || p.Counts.UntrackedBytes > limitBytes {
-		return refuse(CodeTooLarge, fmt.Sprintf("more than %d untracked files or %d MiB would be copied; commit or move the large files first",
-			limitFiles, limitBytes>>20))
+		return refuse(CodeTooLarge, tooLargeMessage())
 	}
 	return nil
+}
+
+func tooLargeMessage() string {
+	return fmt.Sprintf("more than %d untracked files, or more than %d MiB of untracked files and changed tracked files together, would be copied; commit or move the large files first",
+		limitFiles, limitBytes>>20)
 }
 
 // safeRel reports whether rel is a relative path with no "..", empty or .git
