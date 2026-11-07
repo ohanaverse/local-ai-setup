@@ -481,3 +481,66 @@ func TestLaunchedDropsTheRecordForAnotherDirectory(t *testing.T) {
 		t.Error("a launch in the cwd (the worktree) dropped the record")
 	}
 }
+
+// TestOfferExplainsABranchKeptAfterTheWorktreeWasRemoved checks the engine's
+// reason reaches the user in the one outcome where it matters most: "y"
+// removed the worktree but the branch stage kept the branch (a case-only
+// sibling appeared, or another worktree took the branch after eligibility saw
+// a deletable one). Without the reason line the user watches work survive a
+// yes to "remove it and its branch" with nothing saying why; cmd/wt/remove.go
+// and the cleanup tick list print this outcome's reason unconditionally. The
+// break this catches: gating the reason on the worktree outcome alone.
+func TestOfferExplainsABranchKeptAfterTheWorktreeWasRemoved(t *testing.T) {
+	cases := map[string]struct {
+		touch   func(t *testing.T, c *offerCase)
+		outcome string
+		phrase  string
+	}{
+		"case-only sibling": {
+			touch: func(t *testing.T, c *offerCase) {
+				// Topic packed and topic loose at one commit (the
+				// caseSiblings recipe in internal/removal): the branch stage
+				// keeps the branch on every filesystem, and says delete by
+				// hand (Ruling X).
+				tip := git(t, c.root, "rev-parse", "refs/heads/topic")
+				git(t, c.root, "pack-refs", "--all")
+				git(t, c.root, "update-ref", "refs/heads/Topic", tip)
+			},
+			outcome: "retained_unknown",
+			phrase:  "differing only in case",
+		},
+		"branch taken by the root": {
+			touch: func(t *testing.T, c *offerCase) {
+				// The root checks the branch out after the question, so the
+				// branch stage finds it held and keeps it.
+				git(t, c.root, "checkout", "-q", "--ignore-other-worktrees", "topic")
+			},
+			outcome: "retained_checked_out",
+			phrase:  "held by another worktree",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := newOfferCase(t, false)
+			c.create()
+			in := &hookReader{ans: "y", fn: func() { tc.touch(t, c) }}
+			out := c.offer(in, true)
+			if _, err := os.Stat(c.path); !os.IsNotExist(err) {
+				t.Fatalf("worktree still there (stat err %v)\n%s", err, out)
+			}
+			if !strings.Contains(out, "worktree removed") || !strings.Contains(out, tc.outcome) {
+				t.Errorf("output does not report a removed worktree and %s:\n%s", tc.outcome, out)
+			}
+			if !strings.Contains(out, "reason: ") || !strings.Contains(out, tc.phrase) {
+				t.Errorf("output does not say why the branch survived (%q):\n%s", tc.phrase, out)
+			}
+			// Asserted on for-each-ref, never `branch --list`: on a
+			// case-insensitive volume the sibling's ref file answers to both
+			// spellings.
+			refs := git(t, c.root, "for-each-ref", "--format=%(refname)", "refs/heads/")
+			if !strings.Contains(refs, "refs/heads/topic") {
+				t.Errorf("branch topic was deleted although the outcome kept it; refs:\n%s", refs)
+			}
+		})
+	}
+}

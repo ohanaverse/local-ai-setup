@@ -116,7 +116,7 @@ func (m model) handleSharedRootKey(msg tea.KeyMsg) (model, tea.Cmd) {
 // picker names it, so it is never the default branch.
 func sharedRootWorktreeCmd(root string) tea.Cmd {
 	return func() tea.Msg {
-		name := sessionclaim.NewWorktreeName(os.Getpid(), time.Now())
+		name := sessionclaim.WorktreeName()
 		// Record only a branch this call creates: a name that resolves to an
 		// existing branch or worktree (a recycled pid at the same time of day
 		// can meet an old session worktree) is not this launch's creation and

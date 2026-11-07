@@ -105,7 +105,7 @@ func confirmSharedRoot(dir, agent string, allow bool, in io.Reader, out io.Write
 		}
 		return "", noop, fmt.Errorf("the repository root %s is in use by %s; pass --allow-shared-root to launch there anyway, or -W <name> to use a linked worktree", root.Path, strings.Join(names, ", "))
 	case choice == 'w':
-		name := sessionclaim.NewWorktreeName(os.Getpid(), time.Now())
+		name := sessionclaim.WorktreeName()
 		// Record only a branch this call creates: a name that resolves to an
 		// existing branch or worktree (a recycled pid at the same time of day
 		// can meet an old session worktree) is not this launch's creation and

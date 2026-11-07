@@ -695,3 +695,35 @@ func TestSharedRootWorktreeChoiceRecordsTheCreation(t *testing.T) {
 		t.Errorf("Recorded() = %+v, %v; want the session branch at %s", got, ok, (*launched)[0])
 	}
 }
+
+// TestSharedRootWorktreeChoiceDoesNotRecordAReusedWorktree checks the screen's
+// "w" records only a branch it creates: a generated session name that already
+// has a branch and worktree (a recycled pid at the same time of day can meet
+// an old session worktree) is reused for the launch but never recorded — one
+// keypress at the exit prompt would otherwise delete another session's
+// worktree and branch.
+func TestSharedRootWorktreeChoiceDoesNotRecordAReusedWorktree(t *testing.T) {
+	exitprompt.Reset()
+	t.Cleanup(exitprompt.Reset)
+	root := rootRepo(t)
+	const name = "session-12345-010203"
+	leftover := filepath.Join(root, ".worktrees", name)
+	if out, err := exec.Command("git", "-C", root, "worktree", "add", "-q", "-b", name, leftover).CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	old := sessionclaim.WorktreeName
+	sessionclaim.WorktreeName = func() string { return name }
+	t.Cleanup(func() { sessionclaim.WorktreeName = old })
+
+	msg := sharedRootWorktreeCmd(root)()
+	got, ok := msg.(sharedRootWorktreeMsg)
+	if !ok || got.err != nil {
+		t.Fatalf("msg = %+v, ok=%v; want the reused worktree without error", msg, ok)
+	}
+	if got.path != leftover {
+		t.Errorf("path = %q; want the reused worktree %q", got.path, leftover)
+	}
+	if rec, ok := exitprompt.Recorded(); ok {
+		t.Errorf("Recorded() = %+v; a reused worktree is not this launch's creation", rec)
+	}
+}

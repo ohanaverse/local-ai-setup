@@ -14,6 +14,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 )
@@ -519,5 +520,39 @@ func TestConfirmNewWorktreeRecordsTheCreation(t *testing.T) {
 	got, ok := exitprompt.Recorded()
 	if !ok || got.Path != dir || !strings.HasPrefix(got.Branch, "session-") || got.Tip == "" {
 		t.Errorf("Recorded() = %+v, %v; want the session branch at %s", got, ok, dir)
+	}
+}
+
+// TestConfirmNewWorktreeDoesNotRecordAReusedWorktree checks the "w" choice
+// records only a branch it creates: a generated session name that already has
+// a branch and worktree (a recycled pid at the same time of day can meet an
+// old session worktree) is reused for the launch but never recorded — one
+// keypress at the exit prompt would otherwise delete another session's
+// worktree and branch.
+func TestConfirmNewWorktreeDoesNotRecordAReusedWorktree(t *testing.T) {
+	exitprompt.Reset()
+	t.Cleanup(exitprompt.Reset)
+	root := sharedRootRepo(t)
+	liveOtherClaim(t, root, "codex")
+	const name = "session-12345-010203"
+	leftover := filepath.Join(root, ".worktrees", name)
+	if out, err := exec.Command("git", "-C", root, "worktree", "add", "-q", "-b", name, leftover).CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	old := sessionclaim.WorktreeName
+	sessionclaim.WorktreeName = func() string { return name }
+	t.Cleanup(func() { sessionclaim.WorktreeName = old })
+
+	var out bytes.Buffer
+	dir, release, err := confirmSharedRoot(root, "claude", false, strings.NewReader("w"), &out, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if dir != leftover {
+		t.Errorf("dir = %q; want the reused worktree %q", dir, leftover)
+	}
+	if rec, ok := exitprompt.Recorded(); ok {
+		t.Errorf("Recorded() = %+v; a reused worktree is not this launch's creation", rec)
 	}
 }
