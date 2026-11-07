@@ -362,3 +362,36 @@ func TestFetchNoOriginStillFetchesOthers(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 }
+
+// TestFetchOtherRemotesRunConcurrentlyWithAShorterTimeout adds two remotes
+// whose upload-pack sleeps. What: with the non-origin timeout at 300ms both
+// are reported as timed out after 300ms, origin is fetched OK, the run takes
+// well under the sum of two sleeps, and Remotes keeps `git remote` order.
+// Why: origin alone drives classification; a slow fork or upstream must not
+// hold the command for origin's full window, nor serially.
+func TestFetchOtherRemotesRunConcurrentlyWithAShorterTimeout(t *testing.T) {
+	old := otherFetchTimeout
+	otherFetchTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { otherFetchTimeout = old })
+	f := newFixture(t)
+	for _, n := range []string{"slow1", "slow2"} {
+		addBareRemote(t, f, n)
+		f.git("config", "remote."+n+".uploadpack", "sleep 5; git-upload-pack")
+	}
+	start := time.Now()
+	r := Fetch(Git{Dir: f.Dir})
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("took %s: other remotes did not time out early", d)
+	}
+	if !r.OK || len(r.Remotes) != 3 || r.Remotes[0].Name != "origin" || !r.Remotes[0].OK {
+		t.Fatalf("got %+v, want origin ok first", r)
+	}
+	for _, rm := range r.Remotes[1:] {
+		if rm.OK || !strings.Contains(rm.Err, "timed out after 300ms") {
+			t.Fatalf("%s: %+v, want a 300ms timeout", rm.Name, rm)
+		}
+	}
+	if r.Remotes[1].Name != "slow1" || r.Remotes[2].Name != "slow2" {
+		t.Fatalf("order %+v", r.Remotes)
+	}
+}

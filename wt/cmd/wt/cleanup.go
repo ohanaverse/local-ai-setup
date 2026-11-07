@@ -57,7 +57,10 @@ func cleanupCmd(a *app) *cobra.Command {
 			"row is proven, the typed word delete when any is not proven or loses\n" +
 			"something. A proven origin branch is tickable too (never ticked for you), and\n" +
 			"deleting it needs its own typed phrase, delete origin.\n\n" +
-			"It runs `git fetch --prune <remote>` for every remote first, never prompting\n" +
+			"It runs `git fetch --prune <remote>` for every remote first (origin first, the\n" +
+			"others at the same time), never prompting (git's prompts are off and ssh uses\n" +
+			"BatchMode unless you set GIT_SSH_COMMAND or core.sshCommand, which is then\n" +
+			"left alone)\n" +
 			"(--no-fetch skips it; an origin branch is then not removable) and says in the\n" +
 			"header how that went (a repository with no remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
@@ -117,6 +120,15 @@ func cleanupInputs(cwd string, fetch bool, protected []string, label string) cle
 	return cleanup.GatherInputs{CWD: cwd, Fetch: fetch, ProtectedPaths: protected, Claim: claim, Parallel: 4}
 }
 
+// cleanupListInputs is cleanupInputs for a caller that shows or acts on origin
+// rows (the list, `wt remove origin/...`): it also makes the per-branch
+// `gh pr list --base` query.
+func cleanupListInputs(cwd string, fetch bool, protected []string, label string) cleanup.GatherInputs {
+	in := cleanupInputs(cwd, fetch, protected, label)
+	in.OriginRows = true
+	return in
+}
+
 type cleanupFlags struct {
 	json, noFetch, plain bool
 	minAge               time.Duration
@@ -131,7 +143,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	// Listing only reads, so a registry that cannot be read does not stop
 	// it: the header says protection is off (and a removal refuses).
 	protected, protErr := protectedPaths(a)
-	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupInputs(cwd, !f.noFetch, protected, "wt-cleanup"))
+	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupListInputs(cwd, !f.noFetch, protected, "wt-cleanup"))
 	if err != nil {
 		repo := snap.Repo
 		if repo == "" {
@@ -150,7 +162,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		_, err = out.Write(b)
 		return err
 	case !f.plain && isTerminalWriter(out):
-		in := cleanupInputs(cwd, false, protected, "wt-cleanup")
+		in := cleanupListInputs(cwd, false, protected, "wt-cleanup")
 		return runCleanupList(report, a.theme, cleanupRemoveFuncs(a, snap, in, f.minAge, protErr))
 	}
 	return printCleanupPlain(out, report, time.Now())

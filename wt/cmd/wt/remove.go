@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -149,6 +150,9 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 		return removeFail(out, f, "", 1, err)
 	}
 	in := cleanupInputs(cwd, !f.noFetch, protected, "wt-remove")
+	// Only a named origin/<branch> needs the per-branch gh --base query; a
+	// local branch or worktree never reads an origin row.
+	in.OriginRows = slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "origin/") })
 	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {
 		repo := snap.Repo

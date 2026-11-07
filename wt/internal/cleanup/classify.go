@@ -522,11 +522,18 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 			j.pr = pr
 		}
 	}
-	if why := c.originFetchProblem(); why != "" {
-		j.unsure(ReasonCannotVerify, why)
+	// The origin checks (this run's origin fetch, the live "who targets this
+	// branch" query, the PR rung the removal engine re-verifies) apply to an
+	// origin row only: they are origin facts, keyed by a bare name, and
+	// nothing deletes any other remote's branch.
+	origin := rf.Remote == "origin"
+	if origin {
+		if why := c.originFetchProblem(); why != "" {
+			j.unsure(ReasonCannotVerify, why)
+		}
 	}
 	candidate := j.ev != ""
-	deps, baseErr := c.dependants(rf.Name, candidate)
+	deps, baseErr := c.dependants(rf.Name, candidate, origin)
 	if baseErr != "" {
 		j.unsure(ReasonCannotVerify, baseErr)
 	}
@@ -539,8 +546,18 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 		// re-verifies exactly that before it pushes); an unknown lookup is
 		// already unsure above, so the soft reasons are only for an answered
 		// lookup.
-		if res.Lookup != LookupUnknown {
+		if res.Lookup != LookupUnknown && origin {
 			c.remotePRRung(&j, rf, res)
+		} else if res.Lookup != LookupUnknown {
+			// Another remote's row keeps the plain rule: any merged PR for
+			// the branch name.
+			merged := findPR(res, func(pr PRInfo) bool { return pr.State == "MERGED" })
+			switch {
+			case merged == nil:
+				j.weak(ReasonNoMergedPR, "content is in the base, but no PR for this branch merged")
+			case j.pr == nil:
+				j.pr = merged
+			}
 		}
 	} else if ok && p.Verdict == NotMerged {
 		if len(p.Weak) > 0 {
@@ -574,9 +591,15 @@ func (c *classifier) originFetchProblem() string {
 // dependants are the open PRs, from any head repository, that target name:
 // those found through head lookups of other branches plus the live per-branch
 // base query. When the row is a deletion candidate (needAnswer) a missing,
-// failed or truncated base query is an error text.
-func (c *classifier) dependants(name string, needAnswer bool) ([]int, string) {
+// failed or truncated base query is an error text. The base query is origin's
+// (BasePRs is keyed by bare name): a row of another remote neither reads it
+// nor needs it.
+func (c *classifier) dependants(name string, needAnswer, origin bool) ([]int, string) {
 	out := c.openPRsBasedOn(name)
+	if !origin {
+		slices.Sort(out)
+		return out, ""
+	}
 	b, ok := c.s.BasePRs[name]
 	var why string
 	switch {

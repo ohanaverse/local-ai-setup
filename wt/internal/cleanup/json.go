@@ -45,6 +45,9 @@ type FetchJSON struct {
 	// Remotes is every remote considered, origin included; absent when
 	// origin is the only one (additive, optional).
 	Remotes []FetchRemoteJSON `json:"remotes,omitempty"`
+	// Skipped is why origin was not fetched ("no origin remote") while other
+	// remotes were; absent otherwise (additive, optional).
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // FetchRemoteJSON is one remote's fetch. Skipped is a remote excluded by
@@ -137,9 +140,14 @@ func Encode(r Report) ([]byte, error) {
 			e.Base.FetchedAt = timeJSON(r.Base.FetchedAt)
 		}
 	}
-	if !r.Fetch.At.IsZero() {
-		e.Fetch = &FetchJSON{OK: r.Fetch.OK, Error: r.Fetch.Err, At: timeJSON(r.Fetch.At)}
-		if len(r.Fetch.Remotes) > 1 {
+	if !r.Fetch.At.IsZero() || len(r.Fetch.Remotes) > 0 {
+		// A repository with no origin has no At, but its other remotes were
+		// fetched: the block carries ok false, skipped and their results.
+		e.Fetch = &FetchJSON{OK: r.Fetch.OK, Error: r.Fetch.Err, Skipped: flat(r.Fetch.Skipped)}
+		if !r.Fetch.At.IsZero() {
+			e.Fetch.At = timeJSON(r.Fetch.At)
+		}
+		if len(r.Fetch.Remotes) > 1 || (len(r.Fetch.Remotes) == 1 && r.Fetch.Remotes[0].Name != "origin") {
 			for _, rm := range r.Fetch.Remotes {
 				e.Fetch.Remotes = append(e.Fetch.Remotes, FetchRemoteJSON{Name: flat(rm.Name), OK: rm.OK, Error: fetchErrText(rm.Err), Skipped: rm.Skipped})
 			}

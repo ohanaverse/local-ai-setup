@@ -89,12 +89,17 @@ func (e Engine) safeItem(it Item, dry bool) (o Outcome) {
 				return
 			}
 			wt := WtFailed
-			if it.Kind == cleanup.KindBranch {
-				// A branch-only item has no worktree that could have failed.
+			if it.Kind != cleanup.KindWorktree {
+				// A branch-only or remote item has no worktree that could
+				// have failed.
 				wt = WtNotRequested
 			}
+			restore := fmt.Sprintf("restore with the tip %s", pending)
+			if it.Kind == cleanup.KindRemote {
+				restore = fmt.Sprintf("restore with: git push origin %s:refs/heads/%s", pending, remoteName(it.Ref))
+			}
 			o = NewOutcome(it, wt, BrRetainedUnknown,
-				fmt.Sprintf("internal error after a branch deletion; restore with the tip %s: %v", pending, r))
+				fmt.Sprintf("internal error after a branch deletion; %s: %v", restore, r))
 			o.DeletedTip = pending
 		}
 	}()

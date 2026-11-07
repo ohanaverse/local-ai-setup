@@ -599,3 +599,70 @@ func TestRemoteDryRunReadsButNeverPushes(t *testing.T) {
 		t.Fatalf("dry run after a move: %+v", o)
 	}
 }
+
+// TestRemotePanicReportsNoWorktreeAndTheRightRestore panics in the push of a
+// remote item. What: worktree is not_requested (a remote item has no worktree
+// stage) and the restore text is the push that recreates the origin branch,
+// not `git branch`. Why: a script reading worktree "failed" would believe a
+// worktree removal failed, and `git branch` would restore a local branch
+// while origin stays without it.
+func TestRemotePanicReportsNoWorktreeAndTheRightRestore(t *testing.T) {
+	w := newRemoteWorld(t)
+	e := w.engine(Options{})
+	it := w.confirmed(t, e)
+	old := runRemoteGit
+	runRemoteGit = func(cleanup.Git, ...string) (cleanup.Out, error) { panic("boom") }
+	t.Cleanup(func() { runRemoteGit = old })
+	o := one(t, e, it)
+	if o.Worktree != WtNotRequested {
+		t.Errorf("worktree %s, want not_requested", o.Worktree)
+	}
+	want := "git push origin " + w.tip + ":refs/heads/topic"
+	if !strings.Contains(o.Reason, want) || strings.Contains(o.Reason, "git branch") {
+		t.Errorf("reason %q lacks %q", o.Reason, want)
+	}
+}
+
+// TestRemotePushFailedAndRefGoneIsNotOurDeletion fails the push for a
+// non-timeout reason while someone else deletes the branch. What: the outcome
+// is retained_moved ("already gone"), no DeletedTip and no restore command.
+// Why: reporting deleted with restore advice claims a delete wt did not make.
+func TestRemotePushFailedAndRefGoneIsNotOurDeletion(t *testing.T) {
+	w := newRemoteWorld(t)
+	e := w.engine(Options{})
+	it := w.confirmed(t, e)
+	old := runRemoteGit
+	runRemoteGit = func(cleanup.Git, ...string) (cleanup.Out, error) {
+		gitIn(t, w.f.Origin, "update-ref", "-d", "refs/heads/topic")
+		return cleanup.Out{Code: 1, Stderr: "remote rejected"}, nil
+	}
+	t.Cleanup(func() { runRemoteGit = old })
+	o := one(t, e, it)
+	if o.Branch != BrRetainedMoved || o.DeletedTip != "" || strings.Contains(o.Reason, "restore") || !strings.Contains(o.Reason, "already gone") {
+		t.Fatalf("outcome %+v", o)
+	}
+}
+
+// TestRemoteGateRechecksTheMergeCommitInTheBase hands the gate a fresh row
+// whose merged PR has a merge commit outside the base. What: refused, nothing
+// pushed. Why: the gate's PR proof must stand without the classifier.
+func TestRemoteGateRechecksTheMergeCommitInTheBase(t *testing.T) {
+	w := newRemoteWorld(t)
+	e := w.engine(Options{})
+	it := w.confirmed(t, e)
+	stray := gitIn(t, w.f.Dir, "commit-tree", "-m", "stray", "main^{tree}")
+	old := rescan
+	rescan = func(g cleanup.Git, p cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error) {
+		r, err := old(g, p, in, o, tg)
+		pr := *r.PR
+		pr.MergeCommit = stray
+		r.PR = &pr
+		return r, err
+	}
+	t.Cleanup(func() { rescan = old })
+	calls := recordPush(t)
+	o := one(t, e, it)
+	if o.Branch == BrDeleted || len(*calls) != 0 || o.Worktree != WtRefused {
+		t.Fatalf("outcome %+v pushes %v", o, *calls)
+	}
+}

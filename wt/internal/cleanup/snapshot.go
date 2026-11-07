@@ -27,6 +27,12 @@ type GatherInputs struct {
 	ProtectedPaths []string           // registered local_path model artifacts
 	Claim          sessionclaim.Claim // this process's claim (its PID); Path is set to the root
 	Parallel       int                // concurrent gh calls (<1 means 1)
+	// OriginRows says the caller will show or act on origin rows (the cleanup
+	// list, `wt remove origin/...`): only then is the live `gh pr list --base`
+	// query made, one gh call per origin candidate. Without it an origin row
+	// that could be deleted stays unverifiable (cannot_verify), which is fine
+	// for a caller that never offers it. Rescan asks regardless.
+	OriginRows bool
 }
 
 // RefFact is one branch ref from for-each-ref.
@@ -196,7 +202,9 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	}
 	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel)
 	s.checkMerges(g)
-	s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel)
+	if in.OriginRows {
+		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel)
+	}
 	return s, nil
 }
 

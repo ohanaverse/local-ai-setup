@@ -390,7 +390,7 @@ func HeaderLines(r Report, now time.Time) []string {
 
 	switch {
 	case r.Fetch.Skipped != "":
-		lines = append(lines, "fetch: skipped ("+r.Fetch.Skipped+")")
+		lines = append(lines, "fetch: skipped ("+r.Fetch.Skipped+")"+otherRemotesText(r.Fetch))
 	case r.Fetch.At.IsZero():
 		lines = append(lines, "fetch: skipped; the base is as old as the last fetch, merges since may be missed")
 	case r.Fetch.OK:

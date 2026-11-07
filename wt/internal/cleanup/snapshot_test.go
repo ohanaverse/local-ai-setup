@@ -158,7 +158,7 @@ func TestGatherWithoutOriginSkipsFetch(t *testing.T) {
 	f := newFixture(t)
 	f.git("remote", "remove", "origin")
 	noGh(t)
-	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true, OriginRows: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +211,11 @@ func TestGatherReportsAnEarlierFetchWhenNotFetching(t *testing.T) {
 	tip := f.git("rev-parse", "main")
 	mergedPRStub(t, "topic", 8, tip, tip)
 	stubGhBase(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
-	first, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	first, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true, OriginRows: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetched: first.Fetch})
+	again, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetched: first.Fetch, OriginRows: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,5 +224,30 @@ func TestGatherReportsAnEarlierFetchWhenNotFetching(t *testing.T) {
 	}
 	if row := findRow(t, Classify(again, Options{Now: later()}), KindRemote, "topic"); row.Status != StatusProven {
 		t.Fatalf("origin row is %s after a fetch-less re-read, want proven", row.Status)
+	}
+}
+
+// TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted gathers a repo with
+// one merged origin branch, with and without GatherInputs.OriginRows. What:
+// without it no `gh pr list --base` call is made and BasePRs is empty; with it
+// the branch is asked about once. Why: the query is one gh call per origin
+// candidate; `wt remove <local branch>` and the exit prompt never show or act
+// on an origin row, so they must not pay for it (Rescan re-asks before any
+// delete either way).
+func TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic")
+	stubGh(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	for _, want := range []bool{false, true} {
+		var calls []string
+		stubGhBase(t, func(_, b string) ([]byte, error) { calls = append(calls, b); return []byte("[]"), nil })
+		s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", OriginRows: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(calls) > 0; got != want || (len(s.BasePRs) > 0) != want {
+			t.Fatalf("OriginRows=%v: base calls %v, BasePRs %v", want, calls, s.BasePRs)
+		}
 	}
 }

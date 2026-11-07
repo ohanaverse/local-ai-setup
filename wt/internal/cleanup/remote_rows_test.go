@@ -140,3 +140,52 @@ func TestRemoteRowPRRungMatchesTheEngine(t *testing.T) {
 		})
 	}
 }
+
+// rowByRef is the row with the given full refname.
+func rowByRef(t *testing.T, r Report, ref string) Row {
+	t.Helper()
+	for _, row := range r.Rows {
+		if row.Ref == ref {
+			return row
+		}
+	}
+	t.Fatalf("no row %s", ref)
+	return Row{}
+}
+
+// TestNonOriginRemoteRowKeepsItsVerdict classifies an upstream/topic row that
+// sits beside origin/topic while origin's checks all fail (open PR targeting
+// topic, origin not fetched). What: origin's row is in use / unsure, the
+// upstream row is proven as before the origin stage existed. Why: the base
+// query and the origin fetch are origin facts only; a bare-name map must not
+// carry origin's answer onto another remote's row, and a --no-fetch run must
+// not turn every upstream row Unknown.
+func TestNonOriginRemoteRowKeepsItsVerdict(t *testing.T) {
+	open := PRInfo{Number: 12, State: "OPEN", HeadRefOid: strings.Repeat("e", 40), BaseRef: "topic"}
+	s := remoteSnap(func(s *Snapshot, tip string) {
+		s.Remotes = append(s.Remotes, RefFact{Ref: "refs/remotes/upstream/topic", Name: "topic", Remote: "upstream", Tip: tip, Created: old})
+		s.BasePRs = map[string]PRResult{"topic": {Lookup: LookupKnown, PRs: []PRInfo{open}}}
+		s.Fetch = FetchResult{} // --no-fetch
+	})
+	rep := Classify(s, Options{Now: later()})
+	up := rowByRef(t, rep, "refs/remotes/upstream/topic")
+	if up.Status != StatusProven || up.Unknown {
+		t.Fatalf("upstream row %s unknown=%v %v %v", up.Status, up.Unknown, reasonCodes(up.Reasons), reasonCodes(up.Blockers))
+	}
+	if og := rowByRef(t, rep, "refs/remotes/origin/topic"); og.Status == StatusProven {
+		t.Fatalf("origin row stayed proven: %v", reasonCodes(og.Reasons))
+	}
+}
+
+// TestNonOriginRowWithoutBaseAnswerIsNotUnknown: a lone upstream row has no
+// BasePRs entry (only origin gets the query); it must not turn cannot_verify.
+func TestNonOriginRowWithoutBaseAnswerIsNotUnknown(t *testing.T) {
+	s := remoteSnap(func(s *Snapshot, tip string) {
+		s.Remotes[0] = RefFact{Ref: "refs/remotes/upstream/topic", Name: "topic", Remote: "upstream", Tip: tip, Created: old}
+		s.BasePRs = nil
+	})
+	row := rowByRef(t, Classify(s, Options{Now: later()}), "refs/remotes/upstream/topic")
+	if row.Status != StatusProven || row.Unknown {
+		t.Fatalf("got %s unknown=%v %v", row.Status, row.Unknown, reasonCodes(row.Reasons))
+	}
+}

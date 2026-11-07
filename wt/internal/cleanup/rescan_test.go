@@ -15,7 +15,7 @@ import (
 // rescanInputs are the GatherInputs gather(t, f) uses, so a rescan sees the
 // same caller directory and own repo as the full run it is compared with.
 func rescanInputs(f *fixture) GatherInputs {
-	return GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+	return GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2, OriginRows: true}
 }
 
 // targetOf is the Target that names row.

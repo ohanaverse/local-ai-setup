@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -130,7 +131,15 @@ type RemoteFetch struct {
 // over the network takes longer than the 30s every other git call gets.
 const fetchTimeout = 120 * time.Second
 
-// Fetch runs `git fetch --prune <remote>` once per remote (never prompting),
+// otherFetchTimeout bounds each non-origin remote's fetch (they run
+// concurrently, after origin): the classification does not depend on them, so
+// a slow one must not hold the command for origin's full window. A seam for
+// tests.
+var otherFetchTimeout = 30 * time.Second
+
+// Fetch runs `git fetch --prune <remote>` once per remote (never prompting;
+// origin first and alone, then the others concurrently under the shorter
+// otherFetchTimeout),
 // skipping a non-origin remote whose skipFetchAll is true (origin is always
 // fetched). It only updates
 // remote-tracking refs. A loop rather than `fetch --all` so each remote's
@@ -138,7 +147,7 @@ const fetchTimeout = 120 * time.Second
 // OK/Err/At are origin's, because the base is origin's; with no origin the
 // other remotes are still fetched and Skipped says so.
 func Fetch(g Git) FetchResult {
-	g.Env = append(slices.Clone(g.Env), NonInteractive()...)
+	g.Env = append(slices.Clone(g.Env), NonInteractive(g.Dir)...)
 	o, err := g.Run("remote")
 	if err != nil {
 		return FetchResult{Err: fetchErrText(err.Error()), At: time.Now()}
@@ -153,24 +162,40 @@ func Fetch(g Git) FetchResult {
 	if g.Timeout == 0 {
 		g.Timeout = fetchTimeout
 	}
-	var res FetchResult
-	for _, n := range names {
-		rf := RemoteFetch{Name: n}
-		// skipFetchAll only leaves a remote out of `fetch --all`; a plain
-		// `git fetch origin` fetches it, and the base is origin's, so origin
-		// is always fetched.
-		if c, err := g.Run("config", "--type=bool", "--get", "remote."+n+".skipFetchAll"); n != "origin" && err == nil && c.Code == 0 && strings.TrimSpace(c.Stdout) == "true" {
-			rf.Skipped = true
-			res.Remotes = append(res.Remotes, rf)
+	res := FetchResult{Remotes: make([]RemoteFetch, len(names))}
+	// Origin first and on its own: it alone drives classification. The other
+	// remotes then fetch concurrently under a shorter timeout.
+	var others sync.WaitGroup
+	og := g
+	other := g
+	other.Timeout = min(g.Timeout, otherFetchTimeout)
+	for i, n := range names {
+		res.Remotes[i].Name = n
+		if n != "origin" {
 			continue
 		}
 		at := time.Now()
-		rf.OK, rf.Err = fetchOne(g, n)
-		res.Remotes = append(res.Remotes, rf)
-		if n == "origin" {
-			res.OK, res.Err, res.At = rf.OK, rf.Err, at
-		}
+		res.Remotes[i].OK, res.Remotes[i].Err = fetchOne(og, n)
+		res.OK, res.Err, res.At = res.Remotes[i].OK, res.Remotes[i].Err, at
 	}
+	for i, n := range names {
+		if n == "origin" {
+			continue
+		}
+		// skipFetchAll only leaves a remote out of `fetch --all`; a plain
+		// `git fetch origin` fetches it, and the base is origin's, so origin
+		// is always fetched (above).
+		if c, err := g.Run("config", "--type=bool", "--get", "remote."+n+".skipFetchAll"); err == nil && c.Code == 0 && strings.TrimSpace(c.Stdout) == "true" {
+			res.Remotes[i].Skipped = true
+			continue
+		}
+		others.Add(1)
+		go func() {
+			defer others.Done()
+			res.Remotes[i].OK, res.Remotes[i].Err = fetchOne(other, n)
+		}()
+	}
+	others.Wait()
 	if !slices.Contains(names, "origin") {
 		res.Skipped = "no origin remote"
 	}

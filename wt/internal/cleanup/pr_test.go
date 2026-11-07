@@ -336,7 +336,7 @@ func TestGatherAsksWhoTargetsEachMergeCandidate(t *testing.T) {
 		}
 		return []byte(`[]`), nil
 	})
-	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true, OriginRows: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestGatherBaseQueryFailureMakesTheRowUnsure(t *testing.T) {
 	tip := f.git("rev-parse", "main")
 	mergedPRStub(t, "topic", 8, tip, tip)
 	stubGhBase(t, func(string, string) ([]byte, error) { return nil, errors.New("gh down") })
-	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true})
+	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Fetch: true, OriginRows: true})
 	if err != nil {
 		t.Fatal(err)
 	}

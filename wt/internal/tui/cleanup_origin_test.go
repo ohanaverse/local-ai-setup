@@ -32,7 +32,7 @@ func (r *rmRepo) originBranch(branch string) string {
 // run's fetch to be proven).
 func (r *rmRepo) originHarness() *rmHarness {
 	r.t.Helper()
-	h := &rmHarness{repo: r, gatherOpts: cleanup.GatherInputs{CWD: r.dir, OwnRepo: "o/r", Parallel: 2, Fetch: true}}
+	h := &rmHarness{repo: r, gatherOpts: cleanup.GatherInputs{CWD: r.dir, OwnRepo: "o/r", Parallel: 2, Fetch: true, OriginRows: true}}
 	h.regather()
 	return h
 }

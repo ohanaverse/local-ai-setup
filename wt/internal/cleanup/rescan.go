@@ -177,7 +177,7 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		}
 	}
 
-	if t.Kind == KindRemote && len(mini.Remotes) == 1 {
+	if t.Kind == KindRemote && len(mini.Remotes) == 1 && mini.Remotes[0].Remote == "origin" {
 		// The delete of an origin branch is public: ask gh again, for this
 		// branch only, both who has it as a head and who targets it. The
 		// maps are copied; the prior snapshot is never written.

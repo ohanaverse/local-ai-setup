@@ -22,8 +22,11 @@ const (
 	cleanupFixture = "../../../docs/contracts/cleanup-list.sample.json"
 	// cleanupFetchFailedFixture is a run whose fetch failed: no fetched_at.
 	cleanupFetchFailedFixture = "../../../docs/contracts/cleanup-list.fetch-failed.sample.json"
-	cleanupSchema             = "../../../docs/contracts/cleanup-list.schema.json"
-	cleanupPkgDir             = "../../internal/cleanup"
+	// cleanupNoOriginFixture is a repository with remotes but no origin:
+	// fetch.skipped and the other remotes' results, no fetch.at.
+	cleanupNoOriginFixture = "../../../docs/contracts/cleanup-list.no-origin.sample.json"
+	cleanupSchema          = "../../../docs/contracts/cleanup-list.schema.json"
+	cleanupPkgDir          = "../../internal/cleanup"
 )
 
 func readJSONFile(t *testing.T, path string) any {
@@ -248,6 +251,15 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	if errs := checkAgainst(schema, fetchFailedDoc, "fetch-failed fixture"); len(errs) > 0 {
 		t.Errorf("fetch-failed fixture violates the schema:\n%s", strings.Join(errs, "\n"))
 	}
+	noOriginRaw, err := os.ReadFile(cleanupNoOriginFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkJSONShape(t, "no-origin document", noOriginRaw, reflect.TypeFor[cleanup.Envelope]())
+	noOriginDoc := readJSONFile(t, cleanupNoOriginFixture)
+	if errs := checkAgainst(schema, noOriginDoc, "no-origin fixture"); len(errs) > 0 {
+		t.Errorf("no-origin fixture violates the schema:\n%s", strings.Join(errs, "\n"))
+	}
 	// base.fetched_at only after a fetch that worked: the main sample shows
 	// it with fetch.ok true, the fetch-failed sample shows fetch.ok false
 	// without it.
@@ -295,7 +307,7 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 	// Every key of every struct reachable from Envelope (not just rows) must
 	// appear in a fixture or in the live error document, so an omitempty
 	// key nobody shows cannot be renamed unnoticed.
-	checkEveryKeyAppears(t, schema, reflect.TypeFor[cleanup.Envelope](), fixtureDoc, fetchFailedDoc, errV)
+	checkEveryKeyAppears(t, schema, reflect.TypeFor[cleanup.Envelope](), fixtureDoc, fetchFailedDoc, noOriginDoc, errV)
 }
 
 // checkEveryKeyAppears fails for every json key of every struct reachable

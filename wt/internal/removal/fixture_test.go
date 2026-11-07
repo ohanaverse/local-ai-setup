@@ -160,7 +160,7 @@ func noGh(t *testing.T) {
 // inputs are the GatherInputs a test's Engine and report use: the primary
 // checkout as the caller's directory, own repo o/r, no fetch.
 func (f *fixture) inputs() cleanup.GatherInputs {
-	return cleanup.GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+	return cleanup.GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2, OriginRows: true}
 }
 
 // report gathers and classifies the repository the way `wt cleanup` does

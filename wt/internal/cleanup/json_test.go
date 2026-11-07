@@ -457,3 +457,34 @@ func TestHeaderNamesOtherRemotes(t *testing.T) {
 		t.Fatalf("header:\n%s", h)
 	}
 }
+
+// TestNoOriginRepoReportsItsOtherRemotesFetch encodes and prints a report
+// whose only remote is "up" (no origin). What: the header still says up was
+// fetched (or failed) beside "skipped (no origin remote)", and the JSON has a
+// fetch block with ok false, skipped "no origin remote" and remotes. Why: a
+// repository with only other remotes was fetched, and neither output said
+// how it went.
+func TestNoOriginRepoReportsItsOtherRemotesFetch(t *testing.T) {
+	r := Report{Repo: "/r", Fetch: FetchResult{Skipped: "no origin remote", Remotes: []RemoteFetch{{Name: "up", OK: true}, {Name: "fork", Err: "boom"}}}}
+	h := strings.Join(HeaderLines(r, time.Now()), "\n")
+	if !strings.Contains(h, "skipped (no origin remote)") || !strings.Contains(h, "also fetched up") || !strings.Contains(h, "fork FAILED (boom)") {
+		t.Errorf("header lacks the other remotes' results:\n%s", h)
+	}
+	raw, err := Encode(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	want := []FetchRemoteJSON{{Name: "up", OK: true}, {Name: "fork", Error: "boom"}}
+	if env.Fetch == nil || env.Fetch.OK || env.Fetch.Skipped != "no origin remote" || !slices.Equal(env.Fetch.Remotes, want) {
+		t.Fatalf("fetch = %+v\n%s", env.Fetch, raw)
+	}
+	// No remotes at all stays "no fetch block".
+	raw, _ = Encode(Report{Repo: "/r", Fetch: FetchResult{Skipped: "no remotes"}})
+	if strings.Contains(string(raw), `"fetch"`) {
+		t.Errorf("no remotes at all gave a fetch block:\n%s", raw)
+	}
+}

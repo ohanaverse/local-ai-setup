@@ -35,6 +35,14 @@ less sure, never proven.
 
 Apart from the fetch, which updates and prunes every remote's remote-tracking
 refs (`--no-fetch` skips it), listing writes no ref, index or working file.
+The fetch takes `origin` first and on its own (it alone drives classification,
+120s), then every other remote concurrently with a shorter limit (30s); the
+header and `fetch.remotes` in the JSON report each remote's result, also when
+the repository has no `origin` (`fetch.skipped`). It never prompts: git's
+terminal and credential-manager prompts are off, and ssh runs with
+`-o BatchMode=yes` unless you set `GIT_SSH_COMMAND` or `core.sshCommand`
+yourself, in which case your ssh command is used as it is and any question it
+asks is yours.
 The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
 object store, which `git gc` collects.
@@ -194,11 +202,13 @@ the rules are narrower than for a local branch:
   tracking ref, origin's live ref and the merged PR's head. Then it runs
   `git push --porcelain --no-verify --force-with-lease=refs/heads/<n>:<sha> origin :refs/heads/<n>`;
   the server compares `<sha>`, so a branch pushed to since is left alone
-  (`retained_moved`). Git runs with prompts disabled and a 120s limit.
+  (`retained_moved`). Git runs with prompts disabled (see the fetch note above for ssh) and a 120s limit. Just before pushing, the gate also asks git itself that the merged PR's merge commit is an ancestor of the base; it does not rely on the list's answer.
 - Success is judged by reading origin again, never by the push's exit status:
   `deleted` means a fresh read found the ref gone; `retained_unknown` means
   origin refused it (branch protection, a server hook, `receive.denyDeletes`)
-  or could not be read. The JSON `branch_tip` and the printed restore line
+  or could not be read; `retained_moved` also covers a branch that was already
+  gone because someone else deleted it while wt's own push failed (nothing is
+  recorded as deleted by wt and no restore line is printed). The JSON `branch_tip` and the printed restore line
   (`git push origin <sha>:refs/heads/<n>`) are present whenever the ref may be
   gone; GitHub's "Restore branch" button on the merged PR also works. Your
   clone keeps the commit only until `git gc`.

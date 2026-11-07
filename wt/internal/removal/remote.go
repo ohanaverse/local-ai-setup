@@ -1,6 +1,7 @@
 package removal
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -33,7 +34,7 @@ var beforePush = func() {}
 // repository, never prompting, with a bounded time.
 func (e Engine) remoteGit() cleanup.Git {
 	g := e.G
-	g.Env = append(append([]string(nil), g.Env...), cleanup.NonInteractive()...)
+	g.Env = append(append([]string(nil), g.Env...), cleanup.NonInteractive(g.Dir)...)
 	g.Timeout = remoteTimeout
 	return g
 }
@@ -85,8 +86,9 @@ func invalidRemoteItem(it Item) string {
 //  5. hard blockers (an open PR on it, a PR targeting it...);
 //  6. an unverifiable row (gh, the fetch, the merge check) is refused;
 //  7. a worse status or a moved tip is skipped_changed;
-//  8. the PR proof, independently of the classifier: a MERGED PR into the
-//     default branch whose head is exactly this tip;
+//  8. the PR proof, re-checked here rather than trusted from the classifier:
+//     a MERGED PR into the default branch whose head is exactly this tip and
+//     whose merge commit git says is an ancestor of the base right now;
 //  9. the Remote approval.
 func (e Engine) remoteGate(it Item) gated {
 	if why := invalidRemoteItem(it); why != "" {
@@ -135,11 +137,39 @@ func (e Engine) remoteGate(it Item) gated {
 	if pr := fresh.PR; pr == nil || pr.State != "MERGED" || pr.BaseRef != e.Prior.Base.Default || pr.HeadRefOid != fresh.Tip {
 		return refuseR("no merged PR into " + e.Prior.Base.Default + " with this exact head")
 	}
+	switch e.mergeInBase(fresh.PR.MergeCommit) {
+	case cleanup.TriNo:
+		return refuseR("the merged PR's merge commit is not in " + e.Prior.Base.Ref)
+	case cleanup.TriUnknown:
+		return refuseR("could not check that the merged PR's merge commit is in " + e.Prior.Base.Ref)
+	}
 	g := gated{fresh: fresh, hasFresh: true, need: needsOf(it.Kind, fresh)}
 	if !it.Approved.Remote {
 		return refuseR("needs --remote: deleting an origin branch is visible to everyone with access to the repository")
 	}
 	return g
+}
+
+// mergeInBase asks git whether the merge commit is an ancestor of the base
+// ref as it is now (never the listing's answer).
+func (e Engine) mergeInBase(merge string) cleanup.Tri {
+	if !cleanup.IsFullCommitID(merge) {
+		return cleanup.TriUnknown
+	}
+	base := "refs/remotes/" + e.Prior.Base.Ref
+	if e.Prior.Base.Fallback {
+		base = "refs/heads/" + e.Prior.Base.Ref
+	}
+	out, err := probeGit(e.G, "merge-base", "--is-ancestor", merge, base)
+	switch {
+	case err != nil:
+		return cleanup.TriUnknown
+	case out.Code == 0:
+		return cleanup.TriYes
+	case out.Code == 1:
+		return cleanup.TriNo
+	}
+	return cleanup.TriUnknown
 }
 
 // lsRemote reads origin's ref for name, at origin's push URL, with `git ls-remote --exit-code`: the
@@ -220,6 +250,7 @@ func (e Engine) remoteAct(it Item, g gated, dry bool) (Outcome, []string) {
 	out, perr := runRemoteGit(e.remoteGit(), "push", "--porcelain", "--no-verify",
 		"--force-with-lease=refs/heads/"+name+":"+sha, "origin", ":refs/heads/"+name)
 	o.DeletedTip = sha // the ref may be gone until a read proves it is not
+	pushFailed := perr != nil && !errors.Is(perr, context.DeadlineExceeded) || perr == nil && out.Code != 0
 	pushText := cleanup.OneLine(strings.TrimSpace(out.Stdout + " " + out.Stderr))
 	timedOut := errors.Is(perr, context.DeadlineExceeded)
 
@@ -229,6 +260,12 @@ func (e Engine) remoteAct(it Item, g gated, dry bool) (Outcome, []string) {
 		reason := fmt.Sprintf("origin/%s (was %s): could not read origin after the push; it may be deleted; restore if needed: %s", name, sha, restore)
 		o.AddWarning("read after the push failed: " + rerr.Error())
 		return set(BrRetainedUnknown, reason)
+	case !still && pushFailed:
+		// Our push failed, yet the ref is gone: someone else deleted it. Not
+		// our deletion, so no DeletedTip and no restore command.
+		o.DeletedTip = ""
+		o.AddWarning("push failed: " + cmp.Or(pushText, fmt.Sprint(perr)))
+		return set(BrRetainedMoved, fmt.Sprintf("origin/%s is already gone from origin (deleted by someone else; wt's push failed, so wt deleted nothing)", name))
 	case !still:
 		o.Branch = BrDeleted
 		o.SetReason(fmt.Sprintf("origin/%s (was %s) deleted; restore: %s", name, sha, restore))

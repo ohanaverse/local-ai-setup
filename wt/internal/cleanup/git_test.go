@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -43,17 +44,62 @@ func TestRunTimeoutIsAnError(t *testing.T) {
 }
 
 // TestNonInteractiveEnvReachesGit runs a git alias that prints the prompt
-// variable through Git{Env: NonInteractive()}. What: the env reaches the
+// variable through Git{Env: NonInteractive(f.Dir)}. What: the env reaches the
 // child git. Why: the spec and `wt cleanup --help` promise a fetch that never
 // prompts (GIT_TERMINAL_PROMPT=0), but Git.Run set nothing, so a credential
 // prompt could reach /dev/tty; the push added in PR C must not prompt either.
 func TestNonInteractiveEnvReachesGit(t *testing.T) {
 	f := newFixture(t)
-	o, err := Git{Dir: f.Dir, Env: NonInteractive()}.Run("-c", `alias.e=!echo "$GIT_TERMINAL_PROMPT $GCM_INTERACTIVE"`, "e")
+	o, err := Git{Dir: f.Dir, Env: NonInteractive(f.Dir)}.Run("-c", `alias.e=!echo "$GIT_TERMINAL_PROMPT $GCM_INTERACTIVE"`, "e")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Fields(o.Stdout); len(got) != 2 || got[0] != "0" || got[1] != "never" {
 		t.Fatalf("got %q, want 0 and never", o.Stdout)
 	}
+}
+
+// TestNonInteractiveSSHBatchMode checks the ssh half of the no-prompt env.
+// What: with neither GIT_SSH_COMMAND nor core.sshCommand set, git's ssh runs
+// with BatchMode=yes (no passphrase or host-key prompt); a user's own
+// GIT_SSH_COMMAND or core.sshCommand (repository config) is left alone.
+// Why: GIT_TERMINAL_PROMPT=0 does not stop ssh asking on /dev/tty, and
+// overriding a user's ssh command would break their setup.
+func TestNonInteractiveSSHBatchMode(t *testing.T) {
+	has := func(env []string) bool {
+		for _, e := range env {
+			if strings.HasPrefix(e, "GIT_SSH_COMMAND=") && strings.Contains(e, "BatchMode=yes") {
+				return true
+			}
+		}
+		return false
+	}
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv("GIT_SSH_COMMAND", "")
+		os.Unsetenv("GIT_SSH_COMMAND")
+		f := newFixture(t)
+		if !has(NonInteractive(f.Dir)) {
+			t.Fatalf("no BatchMode in %v", NonInteractive(f.Dir))
+		}
+	})
+	t.Run("env set", func(t *testing.T) {
+		t.Setenv("GIT_SSH_COMMAND", "ssh -i mykey")
+		f := newFixture(t)
+		for _, e := range NonInteractive(f.Dir) {
+			if strings.HasPrefix(e, "GIT_SSH_COMMAND=") {
+				t.Fatalf("overrides the user's GIT_SSH_COMMAND: %s", e)
+			}
+		}
+	})
+	t.Run("core.sshCommand set", func(t *testing.T) {
+		t.Setenv("GIT_SSH_COMMAND", "")
+		os.Unsetenv("GIT_SSH_COMMAND")
+		f := newFixture(t)
+		f.git("config", "core.sshCommand", "ssh -i mykey")
+		for _, e := range NonInteractive(f.Dir) {
+			if strings.HasPrefix(e, "GIT_SSH_COMMAND=") {
+				t.Fatalf("overrides core.sshCommand: %s", e)
+			}
+		}
+	})
 }
