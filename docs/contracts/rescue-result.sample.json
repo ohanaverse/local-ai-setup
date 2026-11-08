@@ -24,12 +24,17 @@
   "left_behind": {
     "ignored_entries": 2
   },
+  "record": {
+    "ref": "refs/wt/rescued/0123456789abcdef",
+    "commit": "3b1c9e7a5d2f48608c1e9a7b4d5f60213a8e7c9d"
+  },
   "completed": [
     "created branch rescued/spike and its worktree at f92581ff5ac55df734270fc13d5b48260567e8a9",
     "carried staged changes",
     "carried unstaged changes",
     "copied 4 untracked files",
-    "verified status and file contents against the source"
+    "verified status and file contents against the source",
+    "recorded the source at refs/wt/rescued/0123456789abcdef"
   ],
   "warnings": []
 }

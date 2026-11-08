@@ -35,6 +35,7 @@ type Envelope struct {
 	Destination *DestinationJSON `json:"destination,omitempty"`
 	Carried     *CarriedJSON     `json:"carried,omitempty"`
 	LeftBehind  *LeftBehindJSON  `json:"left_behind,omitempty"`
+	Record      *RecordJSON      `json:"record,omitempty"`
 	Completed   []string         `json:"completed"`
 	Warnings    []string         `json:"warnings"`
 	Error       *ErrorJSON       `json:"error,omitempty"`
@@ -69,6 +70,13 @@ type LeftBehindJSON struct {
 	IgnoredEntries int `json:"ignored_entries"`
 }
 
+// RecordJSON is the record a moved rescue left: the ref under
+// RecordRefPrefix and the commit it names. Absent when no record was written.
+type RecordJSON struct {
+	Ref    string `json:"ref"`
+	Commit string `json:"commit"`
+}
+
 // ErrorJSON is the failure that ended the run before any outcome.
 type ErrorJSON struct {
 	Message string `json:"message"`
@@ -97,6 +105,9 @@ func EncodeResult(o Outcome, m Meta) ([]byte, error) {
 		c := p.Counts
 		e.Carried = &CarriedJSON{Commits: c.Commits, Staged: c.Staged, Unstaged: c.Unstaged, Untracked: c.Untracked, UntrackedBytes: c.UntrackedBytes}
 		e.LeftBehind = &LeftBehindJSON{IgnoredEntries: c.IgnoredLeft}
+	}
+	if o.Record != nil {
+		e.Record = &RecordJSON{Ref: o.Record.Ref, Commit: o.Record.Commit}
 	}
 	return encode(e)
 }
