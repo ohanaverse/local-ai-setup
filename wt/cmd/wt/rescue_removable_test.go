@@ -79,7 +79,7 @@ func hasRef(t *testing.T, dir, ref string) bool {
 	return cgit(t, dir, "for-each-ref", "--format=%(refname)", ref) == ref
 }
 
-// expectUniqueWork asserts the source row is unique_work, not preserved.
+// expectNotPreserved asserts the source row is unique_work, not preserved.
 func expectNotPreserved(t *testing.T, a *app, dir, want string) {
 	t.Helper()
 	r := rowFor(t, listRows(t, a, dir), "spike")
@@ -177,7 +177,7 @@ func TestCleanupReadsWhatRescueWrites(t *testing.T) {
 	}
 }
 
-// TestRescuedOriginalStopsReadingRemovableWhenItChanges covers the cases
+// TestRescuedOriginalStopsReadingRemovableAndRefuses covers the cases
 // that must leave the original as it reads today: a commit made after the
 // rescue, the record deleted, an edit after a clean rescue, an ignored file
 // (less_sure, and remove --yes refuses), and gh unavailable (less_sure).
@@ -248,7 +248,10 @@ func TestRescuedOriginalStopsReadingRemovableAndRefuses(t *testing.T) {
 		if r.Status != "less_sure" || !slices.Contains(reasonCodes(r), "pr_unknown") {
 			t.Fatalf("status = %q evidence %q reasons %v, want less_sure with pr_unknown", r.Status, r.Evidence, reasonCodes(r))
 		}
-		runRemove(t, a, dir, "", "--no-fetch", "--yes", "--json", src)
+		stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--json", src)
+		if exitOf(err) == 0 {
+			t.Errorf("remove --yes exit 0 with the PR state unknown; stderr %q\n%s", stderr, stdout)
+		}
 		if !exists(src) || !hasBranch(t, dir, "spike") {
 			t.Error("original or branch removed with the PR state unknown")
 		}

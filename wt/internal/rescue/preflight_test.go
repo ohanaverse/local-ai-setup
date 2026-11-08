@@ -304,7 +304,7 @@ func TestPreflightStillAcceptsASecondRescueOfAPreservedOriginal(t *testing.T) {
 	if _, out := rescueOnce(t, f, p); out.Status != StatusMoved {
 		t.Fatalf("first rescue: %+v", out)
 	}
-	if n := len(strings.Split(strings.TrimSpace(rescuedRefs(t, f)), "\n")); n != 1 {
+	if n := len(strings.Fields(f.git("for-each-ref", "--format=%(refname)", "refs/wt/rescued"))); n != 1 {
 		t.Fatalf("after the first rescue %d record refs, want 1", n)
 	}
 
@@ -323,7 +323,7 @@ func TestPreflightStillAcceptsASecondRescueOfAPreservedOriginal(t *testing.T) {
 	if out := eng.Execute(plan); out.Status != StatusMoved {
 		t.Fatalf("second rescue: %+v", out)
 	}
-	if n := len(strings.Split(strings.TrimSpace(rescuedRefs(t, f)), "\n")); n != 2 {
+	if n := len(strings.Fields(f.git("for-each-ref", "--format=%(refname)", "refs/wt/rescued"))); n != 2 {
 		t.Errorf("after the second rescue %d record refs, want 2:\n%s", n, rescuedRefs(t, f))
 	}
 }

@@ -282,7 +282,10 @@ Then the row's evidence is `rescued` and it carries the informational reason
 status). Everything else keeps its usual effect: an open or unknown PR, a
 branch judged against a local default, and ignored files (the row stays less
 sure and needs `--accept-loss`). `rescued` rows are not age-gated. The
-worktree-exit prompt does not offer a rescued original. Only the source of a
+worktree-exit prompt does not offer a rescued original. The source ref must
+match the record exactly: on a case-insensitive volume, a worktree whose HEAD
+spells the branch in a different case from the ref's spelling does not read
+removable (it fails closed; `--accept-loss` still works). Only the source of a
 rescue is ever preserved, never the copy. A record pins its objects until you
 remove it, and wt does not prune records yet (#543). To drop one after you have
 checked the copy:

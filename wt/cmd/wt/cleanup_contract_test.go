@@ -233,11 +233,14 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 		if r["evidence"] == string(cleanup.EvRescued) {
 			seen["rescued"] = true
 		}
-		if rs, _ := r["reasons"].([]any); len(rs) > 0 {
-			for _, re := range rs {
-				if re.(map[string]any)["code"] == cleanup.ReasonPreserved {
-					seen["preserved"] = true
-				}
+		rs, _ := r["reasons"].([]any)
+		for _, reason := range rs {
+			m, ok := reason.(map[string]any)
+			if !ok {
+				t.Fatalf("a reason of row %v is %T, want an object", r["name"], reason)
+			}
+			if m["code"] == cleanup.ReasonPreserved {
+				seen["preserved"] = true
 			}
 		}
 	}

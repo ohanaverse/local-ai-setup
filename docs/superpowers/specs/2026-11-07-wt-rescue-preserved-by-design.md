@@ -277,8 +277,9 @@ Settled while building PR B1:
 
 - Commit I's tree is built by `dirtsnap.IndexTree` from `ls-files --stage -z`, not by `git write-tree` (which rewrites the source's raw index file). The B2 note about `write-tree` leaving unreachable objects is therefore moot.
 - `Preserved` is applied only when the row's own commits are the uncovered part: no ladder evidence, raw `Unpushed > 0` for a branch or `DetachedUnique` for a detached HEAD, the fresh tip equals `Wt-Source-Head`, no dirt and no gates error.
-- PR safety checks (`open_pr`, `pr_unknown`, `pr_head_moved`) still apply to a preserved row.
-- A `Rescan` error is `refused`, not `skipped_changed`, so a record-listing failure degrades to "no records" instead of returning an error; the lapse tests expect `skipped_changed` via a dropped status.
+- PR safety checks (`open_pr`, `pr_unknown`, `pr_head_moved`) and `weak_signal` still apply to a preserved row.
+- In the removal engine a `Rescan` error is `refused`, not `skipped_changed`.
+- Therefore a record-listing failure inside `Rescan` is treated as "no records" instead of an error, and the lapse tests expect `skipped_changed` via a dropped status.
 - The informational reason (`preserved`) needs a fifth judge slot (`info`): it is in neither the unique, unknown nor soft lists.
 - `EffectiveLosses` clears only `Unpushed > 0` (and `DetachedUnique`).
 - `Preserved` carries `SourceHead`.
