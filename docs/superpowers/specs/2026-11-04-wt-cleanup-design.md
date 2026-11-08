@@ -350,6 +350,14 @@ classifier change ("preserved by branch X": a local ref at the tip plus a
 verified snapshot of the dirt) with its own fail-closed proof. Details and
 rulings: [the PR D plan](../plans/2026-11-07-wt-cleanup-pr-d.md).
 
+*Amended again when the rescue record's reading side was built (2026-11-08).*
+A *clean* original (commits only, no staged, unstaged or untracked changes)
+now does read removable once a `wt rescue` record keeps its commits: it is
+`proven` with evidence `rescued` and `wt remove --yes` takes it. A dirty
+original is unchanged and still takes `--accept-loss --force -D` (covering
+dirt is a later PR). Design:
+[the preserved-by-design spec](2026-11-07-wt-rescue-preserved-by-design.md).
+
 ## Effect on the worktrunk-ports series
 
 - PR 2 (`wt remove` + JSON) and PR 3 (integrated-only deletion + `wt prune`)

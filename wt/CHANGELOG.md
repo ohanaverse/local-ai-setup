@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Changed
+
+- A clean original that `wt rescue` has copied now reads removable. `wt cleanup`
+  reads the `refs/wt/rescued/*` records; when one matches a branch or
+  detached worktree with no staged, unstaged or untracked changes, whose own
+  commits are the only thing missing from the remote-tracking refs, the row
+  is `proven` with evidence `rescued` and the informational reason
+  `preserved`, and `wt remove <path> --yes` removes it and its own branch
+  with no other approval. A row with uncommitted changes is unchanged (still
+  unique work, still `--accept-loss --force -D`). Ignored files, an open or
+  unknown PR and a local base keep their usual effect, and the worktree-exit
+  prompt does not offer a rescued original. `cleanup-list` gains the evidence
+  value `rescued` and the reason code `preserved` (additive, version 1
+  unchanged); `remove-result` is unchanged. See `docs/wt-cleanup.md`.
+
 ### Added
 
 - `wt rescue` leaves a record after a verified copy: the ref
@@ -10,8 +25,9 @@
   files) as two commits. The text output gains a `record:` line and
   `--json` an additive `record {ref, commit}`. If the record cannot be
   written the rescue stays `moved` with a `record_not_written:` warning.
-  Nothing reads the record yet: `wt cleanup` and `wt remove` are unchanged
-  and the original is still not made removable. See `docs/wt-cleanup.md`.
+  When this entry was written nothing read the record; `wt cleanup` and
+  `wt remove` now do (see the entry above for what changed). See
+  `docs/wt-cleanup.md`.
 - `wt cleanup` lists the repository's worktrees, local branches and origin
   branches in four groups by how sure wt is each can go (proven merged, looks merged and less sure, has work that exists nowhere
   else, in use or locked), with the evidence per row. It fetches first
@@ -46,7 +62,7 @@
   to restore it. `wt cleanup` now fetches every remote (never prompting) and
   its header and JSON (`fetch.remotes`) say which; origin rows whose tip moved
   after their PR merged are now less sure.
-- `wt rescue <worktree-path-or-branch>` copies a worktree's local-only work into a new branch (`rescued/<name>`, or `--to NAME`) and worktree under `.worktrees/`: the branch starts at the original's exact HEAD (so its commits come along) and carries staged, unstaged and untracked files, then checks the copy against the original before it reports `moved`. The original is only read and is not made removable. Refuses, creating nothing, a rebase or merge in progress, unmerged paths, skip-worktree files, a changed submodule, a file both staged and modified, a nested repository and similar; a failure after the new worktree exists keeps it. `--dry-run`, `--yes`, `--json` ([contract](../docs/contracts/rescue-result.schema.json)); exit 0 done, 1 could not start, 2 refused or failed, 3 approval missing. In `wt cleanup`'s list, `r` rescues the row under the cursor. Every git call `wt cleanup` and `wt remove` make now runs with `GIT_OPTIONAL_LOCKS=0`, so listing no longer refreshes a worktree's index.
+- `wt rescue <worktree-path-or-branch>` copies a worktree's local-only work into a new branch (`rescued/<name>`, or `--to NAME`) and worktree under `.worktrees/`: the branch starts at the original's exact HEAD (so its commits come along) and carries staged, unstaged and untracked files, then checks the copy against the original before it reports `moved`. The original is only read (a later change lets a clean one read removable once its record exists; see the Unreleased entry). Refuses, creating nothing, a rebase or merge in progress, unmerged paths, skip-worktree files, a changed submodule, a file both staged and modified, a nested repository and similar; a failure after the new worktree exists keeps it. `--dry-run`, `--yes`, `--json` ([contract](../docs/contracts/rescue-result.schema.json)); exit 0 done, 1 could not start, 2 refused or failed, 3 approval missing. In `wt cleanup`'s list, `r` rescues the row under the cursor. Every git call `wt cleanup` and `wt remove` make now runs with `GIT_OPTIONAL_LOCKS=0`, so listing no longer refreshes a worktree's index.
 - When the agent exits, `wt` offers to remove the worktree and branch this
   launch created if nothing changed in them: `<path> was created for this
   session and nothing changed in it. Remove it and its branch <name>?` Enter
