@@ -355,3 +355,149 @@ func TestNoRecordsMeansNoExtraGitWork(t *testing.T) {
 		t.Fatalf("%d calls name %s, %d coverage calls; log: %q", n, RecordRefPrefix, coverageCalls(lines), lines)
 	}
 }
+
+// TestPreservedOfDirtyRow checks a dirty worktree is preserved, with
+// CoversDirt, only when the record holds exactly its uncommitted state. Why:
+// the record is the only copy of that work; an edit after the rescue, a
+// record taken without a snapshot (HEAD trees) and a clean record for a dirty
+// source must all read as not preserved.
+func TestPreservedOfDirtyRow(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(t *testing.T, d dirtFixture)
+		want  bool
+	}{
+		{"matching dirt", func(t *testing.T, d dirtFixture) {
+			d.f.addRecord(t, d.dir, recordOpts{Snapshot: true})
+		}, true},
+		{"file edited after the record", func(t *testing.T, d dirtFixture) {
+			d.f.addRecord(t, d.dir, recordOpts{Snapshot: true})
+			d.write(t, "a.txt", "edited later")
+		}, false},
+		{"record without a snapshot", func(t *testing.T, d dirtFixture) {
+			d.f.addRecord(t, d.dir, recordOpts{})
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := newDirtFixture(t)
+			c.build(t, d)
+			ws, recs := stateOf(t, d.f, d.dir)
+			if !ws.Gates.Dirty {
+				t.Fatal("control: the worktree should be dirty")
+			}
+			got := preservedOf(Git{Dir: d.f.Dir}, ws, recs)
+			if !c.want {
+				if got != nil || ws.Preserved != nil {
+					t.Fatalf("preservedOf = %+v, Gather left %+v, want nil", got, ws.Preserved)
+				}
+				return
+			}
+			if got == nil || !got.CoversDirt || ws.Preserved == nil || *ws.Preserved != *got {
+				t.Fatalf("preservedOf = %+v, Gather left %+v, want CoversDirt", got, ws.Preserved)
+			}
+		})
+	}
+}
+
+// TestPreservedOfCleanRowDoesNotCoverDirt checks a clean worktree with a
+// record gets CoversDirt false and no git call of the dirt check (index flags,
+// diff-index, hashing). Why: a clean row must stay as cheap as B1 made it.
+func TestPreservedOfCleanRowDoesNotCoverDirt(t *testing.T) {
+	f, wt := preservedWT(t)
+	f.addRecord(t, wt, recordOpts{})
+	ws, recs := stateOf(t, f, wt)
+	calls := gitLog(t)
+	got := preservedOf(Git{Dir: f.Dir}, ws, recs)
+	if got == nil || got.CoversDirt {
+		t.Fatalf("preservedOf = %+v, want a match without CoversDirt", got)
+	}
+	for _, l := range calls() {
+		for _, banned := range []string{"ls-files", "diff-index", "diff-files", "write-tree", "add -A", "status"} {
+			if strings.Contains(l, banned) {
+				t.Errorf("clean row ran the dirt check: git %s", l)
+			}
+		}
+	}
+}
+
+// TestPreservedOfPicksTheCoveringRecord keeps an older record that does not
+// cover the dirt beside one that does. Why: a mismatching record must not end
+// the search; any one covering record preserves the row.
+func TestPreservedOfPicksTheCoveringRecord(t *testing.T) {
+	d := newDirtFixture(t)
+	d.f.addRecord(t, d.dir, recordOpts{Snapshot: true, DestPath: "/tmp/old"})
+	d.write(t, "a.txt", "a-second")
+	good := d.f.addRecord(t, d.dir, recordOpts{Snapshot: true, DestPath: "/tmp/new"})
+	ws, recs := stateOf(t, d.f, d.dir)
+	if len(recs) != 2 {
+		t.Fatalf("records = %+v, want 2", recs)
+	}
+	got := preservedOf(Git{Dir: d.f.Dir}, ws, recs)
+	if got == nil || got.Ref != good || !got.CoversDirt {
+		t.Fatalf("preservedOf = %+v, want the covering record %s", got, good)
+	}
+}
+
+// TestGatherAndRescanAgreeOnDirt checks Gather and Rescan give the same row
+// for a dirty worktree whose dirt is covered, edited after the record, and
+// hidden by assume-unchanged. Why: the removal re-check must judge the dirt
+// exactly as the list did.
+func TestGatherAndRescanAgreeOnDirt(t *testing.T) {
+	cases := map[string]func(t *testing.T, d dirtFixture){
+		"covered":      func(*testing.T, dirtFixture) {},
+		"edited after": func(t *testing.T, d dirtFixture) { d.write(t, "a.txt", "later") },
+		"flagged hidden": func(t *testing.T, d dirtFixture) {
+			gitIn(t, d.dir, "update-index", "--assume-unchanged", "b.txt")
+			d.write(t, "b.txt", "hidden edit")
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := newDirtFixture(t)
+			d.f.addRecord(t, d.dir, recordOpts{Snapshot: true})
+			mutate(t, d)
+			noGh(t)
+			o := Options{Now: later()}
+			s := gather(t, d.f)
+			row := findRow(t, Classify(s, o), KindWorktree, "dirty")
+			sameRow(t, mustRescan(t, d.f, s, o, targetOf(row)), row)
+			var ws WorktreeState
+			for _, w := range s.Worktrees {
+				if resolve(w.Fact.Path) == resolve(d.dir) {
+					ws = w
+				}
+			}
+			if covered := name == "covered"; (ws.Preserved != nil && ws.Preserved.CoversDirt) != covered {
+				t.Fatalf("Preserved = %+v, want covered=%v", ws.Preserved, covered)
+			}
+		})
+	}
+}
+
+// TestPreservedOfHardBlockerStaysNil locks a dirty worktree that has a
+// matching snapshot record. Why: a hard blocker means in_use whatever the
+// record holds. (A stopped rebase cannot be the blocker here: git cannot
+// write the tree a snapshot record needs from an unmerged index, and the
+// rebase moves HEAD off the record's source head.)
+func TestPreservedOfHardBlockerStaysNil(t *testing.T) {
+	f, wt := preservedWT(t)
+	f.DirtyIn(wt, "scratch.txt")
+	f.addRecord(t, wt, recordOpts{Snapshot: true})
+	f.git("worktree", "lock", wt)
+	ws, recs := stateOf(t, f, wt)
+	if len(recs) == 0 {
+		t.Fatal("no record listed")
+	}
+	if len(ws.Gates.Blockers) == 0 {
+		t.Fatal("control: no blocker")
+	}
+	if got := preservedOf(Git{Dir: f.Dir}, ws, recs); got != nil || ws.Preserved != nil {
+		t.Fatalf("preservedOf = %+v, Gather left %+v, want nil", got, ws.Preserved)
+	}
+	noGh(t)
+	row := findRow(t, Classify(gather(t, f), Options{Now: later()}), KindWorktree, "topic")
+	if row.Status != StatusInUse {
+		t.Fatalf("status = %s, want in_use", row.Status)
+	}
+}
