@@ -159,7 +159,7 @@ func needsOf(k cleanup.Kind, fresh cleanup.Row) Needs {
 	}
 	return Needs{
 		Confirm: fresh.Status != cleanup.StatusProven || len(cleanup.LossLines(fresh)) > 0,
-		Force:   fresh.Losses.Dirty || fresh.Losses.DetachedUnique,
+		Force:   fresh.EffectiveLosses().Dirty || fresh.EffectiveLosses().DetachedUnique,
 		Delete:  k == cleanup.KindBranch && !fresh.BranchProven,
 	}
 }
@@ -271,6 +271,7 @@ func (e Engine) worktreeGate(it Item) gated {
 	}
 
 	// 6. An unknown is never approved, Force or not.
+	// losses: raw, the view never clears GatesUnknown (same value either way)
 	if fresh.Losses.GatesUnknown {
 		return stop(refuse(it, "could not read the worktree's state"))
 	}
@@ -289,7 +290,7 @@ func (e Engine) worktreeGate(it Item) gated {
 	if tip != it.SawTip {
 		return stop(skipped(it, "branch moved since it was listed"))
 	}
-	if lossesWorse(fresh.Losses, it.SawLosses) {
+	if lossesWorse(fresh.EffectiveLosses(), it.SawLosses) {
 		return stop(skipped(it, "what would be lost changed since it was listed"))
 	}
 
@@ -298,7 +299,8 @@ func (e Engine) worktreeGate(it Item) gated {
 	if why := unapproved(it, fresh, g.need); why != "" {
 		return stop(refuse(it, why))
 	}
-	g.gitForce = fresh.Losses.Dirty // git refuses a dirty worktree without it
+	// losses: raw, git refuses a dirty worktree without --force, covered or not
+	g.gitForce = fresh.Losses.Dirty
 
 	// 8b. git skips its "contains submodules" check under --force and deletes
 	// an initialised submodule's repository with the tree (Ruling X): the
@@ -355,7 +357,7 @@ func submodulesIn(path string) string {
 // is kept, never refused here).
 func unapproved(it Item, fresh cleanup.Row, need Needs) string {
 	switch {
-	case need.Force && !it.Approved.Force && fresh.Losses.Dirty:
+	case need.Force && !it.Approved.Force && fresh.EffectiveLosses().Dirty:
 		return "uncommitted changes; --force required"
 	case need.Force && !it.Approved.Force:
 		return "commits that exist only in this worktree; --force required"
@@ -462,7 +464,7 @@ func (e Engine) branchGate(it Item) gated {
 	if fresh.Tip != it.SawTip {
 		return skipB("branch moved since it was listed")
 	}
-	if lossesWorse(fresh.Losses, it.SawLosses) {
+	if lossesWorse(fresh.EffectiveLosses(), it.SawLosses) {
 		return skipB("what would be lost changed since it was listed")
 	}
 	// 6. (No live-process check: a branch has no directory.)

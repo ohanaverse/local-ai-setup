@@ -63,6 +63,7 @@ var knownNotUnknown = map[string]bool{
 	cleanup.ReasonBaseIsLocal:       true,
 	cleanup.ReasonNoMergedPR:        true,
 	cleanup.ReasonClaimsUnavailable: true,
+	cleanup.ReasonPreserved:         true,
 }
 
 // gcCaveat is the warning on a deletion whose tip no other branch reaches:
@@ -386,17 +387,18 @@ func (e Engine) withGcCaveat(warnings []string, name, tip string) []string {
 	return append(warnings, gcCaveat)
 }
 
-// tipHeldElsewhere reports whether a local branch or remote-tracking ref
-// still reaches tip (the deleted branch is already gone): then a gc prunes
-// nothing and the gc caveat would mislead (#531). Only refs/heads and
-// refs/remotes count: a tag or refs/stash entry can be dropped on its own,
-// and the namespace limit bounds the walk. refs/remotes/origin/<name> (the
+// tipHeldElsewhere reports whether a local branch, remote-tracking ref or
+// wt rescue record still reaches tip (the deleted branch is already gone):
+// then a gc prunes nothing and the gc caveat would mislead (#531). Only
+// refs/heads, refs/remotes and refs/wt/rescued count: a tag or refs/stash
+// entry can be dropped on its own, a record is never deleted by wt, and the
+// namespace limit bounds the walk. refs/remotes/origin/<name> (the
 // deleted branch's own name) does not count: it goes in the same cleanup, or
 // is what the user is removing. Two results are asked for so that one excluded
 // ref cannot hide another holder. Any failure to ask answers false, so the
 // caveat stays.
 func (e Engine) tipHeldElsewhere(name, tip string) bool {
-	out, err := probeGit(e.G, "for-each-ref", "--count=2", "--contains", tip, "--format=%(refname)", "refs/heads/", "refs/remotes/")
+	out, err := probeGit(e.G, "for-each-ref", "--count=2", "--contains", tip, "--format=%(refname)", "refs/heads/", "refs/remotes/", cleanup.RecordRefPrefix)
 	if err != nil || out.Code != 0 {
 		return false
 	}

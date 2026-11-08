@@ -22,9 +22,11 @@ func Offered(row cleanup.Row) (bool, string) {
 			return false, "an operation is in progress there"
 		}
 	}
+	// losses: raw, rescue is offered for what the worktree holds, record or not
 	if row.Losses.GatesUnknown {
 		return false, "its state could not be read"
 	}
+	// losses: raw, rescue is offered for what the worktree holds, record or not
 	if !row.Losses.Dirty && row.Losses.Unpushed == 0 && !row.Losses.DetachedUnique {
 		return false, "nothing to keep"
 	}

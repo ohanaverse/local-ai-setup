@@ -155,7 +155,7 @@ type Losses struct {
 // files and GatesUnknown are untouched, since a record keeps commits only.
 // Without Preserved it is Losses unchanged. Losses itself stays raw.
 func (r Row) EffectiveLosses() Losses {
-	l := r.Losses
+	l := r.Losses // losses: raw, the view is built from the raw value
 	if r.Preserved == nil {
 		return l
 	}
