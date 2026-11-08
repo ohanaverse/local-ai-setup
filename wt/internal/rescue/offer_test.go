@@ -46,3 +46,17 @@ func TestOfferedScreensRowsWithoutGit(t *testing.T) {
 		}
 	}
 }
+
+// TestOfferedStillOffersAPreservedRow checks that a worktree row with a
+// rescue record applied (Preserved set) and raw Unpushed commits is still
+// offered a rescue. Why: Offered reads the raw losses, so a second rescue of
+// an already-preserved original stays possible; the effective view would
+// report "nothing to keep".
+func TestOfferedStillOffersAPreservedRow(t *testing.T) {
+	row := cleanup.Row{Kind: cleanup.KindWorktree, Name: "x",
+		Losses:    cleanup.Losses{Unpushed: 3},
+		Preserved: &cleanup.Preserved{Ref: "refs/wt/rescued/0123456789abcdef", DestBranch: "rescued/x", DestPath: "/copy"}}
+	if ok, why := Offered(row); !ok || why != "" {
+		t.Errorf("Offered = %v, %q; want true, empty", ok, why)
+	}
+}

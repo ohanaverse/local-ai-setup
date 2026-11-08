@@ -230,8 +230,21 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 		if _, has := r["evidence"]; !has {
 			seen["no-evidence"] = true
 		}
+		if r["evidence"] == string(cleanup.EvRescued) {
+			seen["rescued"] = true
+		}
+		rs, _ := r["reasons"].([]any)
+		for _, reason := range rs {
+			m, ok := reason.(map[string]any)
+			if !ok {
+				t.Fatalf("a reason of row %v is %T, want an object", r["name"], reason)
+			}
+			if m["code"] == cleanup.ReasonPreserved {
+				seen["preserved"] = true
+			}
+		}
 	}
-	for _, want := range []string{"status:proven", "status:less_sure", "status:unique_work", "status:in_use",
+	for _, want := range []string{"rescued", "preserved", "status:proven", "status:less_sure", "status:unique_work", "status:in_use",
 		"kind:worktree", "kind:branch", "kind:remote", "unknown", "blockers", "no-evidence"} {
 		if !seen[want] {
 			t.Errorf("the fixture has no row for %q", want)

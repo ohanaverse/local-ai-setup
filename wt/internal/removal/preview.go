@@ -9,8 +9,9 @@ import (
 
 // ItemFromRow builds the PREVIEW INPUT for a listed row: what the user
 // ticked (kind, path, ref, name) and what the list showed (status, commit,
-// and the row's whole Losses, an unknown unpushed count and unreadable gates
-// included; never a zero or recomputed value, Ruling G). The commit is the
+// and the row's whole effective losses, Row.EffectiveLosses: commits a
+// rescue record keeps are not counted, while an unknown unpushed count and
+// unreadable gates are included; never a zero or recomputed value, Ruling G). The commit is the
 // branch tip, or for a detached worktree its HEAD (the commit the engine
 // compares for it). It carries no approvals.
 //
@@ -33,7 +34,7 @@ func ItemFromRow(r cleanup.Row) Item {
 		Name:      r.Name,
 		Saw:       r.Status,
 		SawTip:    tip,
-		SawLosses: r.Losses,
+		SawLosses: r.EffectiveLosses(),
 	}
 }
 

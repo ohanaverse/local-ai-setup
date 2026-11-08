@@ -270,3 +270,18 @@ The marked calls above, gathered. All are implementation-level; the user's fidel
 13. The follow-up issue is filed before B1 (read as "the second PR"); the #522 requirement is recorded in the issue only.
 14. The PR split A, B1, B2 (the comparison's recommendation, adopted).
 15. Settled during the builder check, all minor: the B2 pre-remove re-check runs only for rows with `Preserved` and `CoversDirt`; dirtsnap's size cap counts only the paths it would hash (changed and untracked); branch refs are stored as full refnames so `detached` cannot collide with a branch; a record on a primary or locked worktree still yields the hard blocker (`in_use`) with one test; one text line names the ref in `wt rescue` and the reason text shows in the TUI confirmation; the implementer drafts the pruning issue in the B1 PR checklist and the owner (or the assistant on request) files it.
+
+## Amendments (2026-11-08)
+
+Settled while building PR B1:
+
+- Commit I's tree is built by `dirtsnap.IndexTree` from `ls-files --stage -z`, not by `git write-tree` (which rewrites the source's raw index file). The B2 note about `write-tree` leaving unreachable objects is therefore moot.
+- `Preserved` is applied only when the row's own commits are the uncovered part: no ladder evidence, raw `Unpushed > 0` for a branch or `DetachedUnique` for a detached HEAD, the fresh tip equals `Wt-Source-Head`, no dirt and no gates error.
+- PR safety checks (`open_pr`, `pr_unknown`, `pr_head_moved`) and `weak_signal` still apply to a preserved row.
+- In the removal engine a `Rescan` error is `refused`, not `skipped_changed`.
+- Therefore a record-listing failure inside `Rescan` is treated as "no records" instead of an error, and the lapse tests expect `skipped_changed` via a dropped status.
+- The informational reason (`preserved`) needs a fifth judge slot (`info`): it is in neither the unique, unknown nor soft lists.
+- `EffectiveLosses` clears only `Unpushed > 0` (and `DetachedUnique`).
+- `Preserved` carries `SourceHead`.
+- A record whose ref is not `refs/wt/rescued/<first 16 hex of its commit>` is ignored.
+- The Losses read-site guard is a name-keyed `go/ast` scan in `internal/cleanup` (no `go/types`).

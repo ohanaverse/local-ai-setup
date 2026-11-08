@@ -7,6 +7,7 @@
   "notes": ["min-age: lowered to 1m (default 10m): fresh branches may read as merged"],
   "rows": [
     {"kind": "worktree", "name": "merged-topic", "path": "/home/owner/src/project/.worktrees/merged-topic", "branch": "merged-topic", "status": "proven", "evidence": "pr-tip", "unknown": false, "age_days": 6, "reasons": [], "blockers": [], "pr": {"number": 42, "state": "MERGED"}},
+    {"kind": "worktree", "name": "rescued-spike", "path": "/home/owner/src/project/.worktrees/rescued-spike", "branch": "rescued-spike", "status": "proven", "evidence": "rescued", "unknown": false, "age_days": 3, "reasons": [{"code": "preserved", "detail": "preserved by refs/wt/rescued/0123456789abcdef (copy: /Users/me/repo/.worktrees/rescued-spike)"}], "blockers": []},
     {"kind": "branch", "name": "old-idea", "branch": "old-idea", "status": "proven", "evidence": "ancestor", "unknown": false, "age_days": 30, "reasons": [], "blockers": []},
     {"kind": "branch", "name": "cherry-only", "branch": "cherry-only", "remote": "origin", "status": "less_sure", "unknown": false, "age_days": 0, "reasons": [{"code": "weak_signal", "detail": "cherry-equivalent only; not a proof"}], "blockers": []},
     {"kind": "branch", "name": "undone-locally", "branch": "undone-locally", "status": "less_sure", "evidence": "no-added-changes", "unknown": false, "age_days": 2, "reasons": [{"code": "net_zero_unpushed", "detail": "2 commits on no remote-tracking ref; together they change nothing"}], "blockers": []},

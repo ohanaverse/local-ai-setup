@@ -93,6 +93,9 @@ type WorktreeState struct {
 	// HeadSince is when a detached HEAD last moved (the newest entry of the
 	// worktree's HEAD reflog); zero when unknown or not read. Min-age needs it.
 	HeadSince time.Time
+	// Preserved is set when a rescue record covers this worktree (see
+	// preservedOf); nil otherwise. Classify decides what it changes.
+	Preserved *Preserved
 }
 
 // Snapshot is every fact Classify reads. Gather fills it with git, gh and
@@ -117,6 +120,8 @@ type Snapshot struct {
 	Merges    map[string]Tri // merged PR merge commit -> is it an ancestor of the base
 	Claims    []sessionclaim.Claim
 	ClaimsErr string
+	// Records are the well-formed rescue records; a failed listing leaves none.
+	Records []RescueRecord
 }
 
 // refFormat is one for-each-ref record: fields split by NUL.
@@ -182,9 +187,10 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 
+	s.Records, _ = ListRecords(g) // an error reads as no records
 	gin := s.readClaims(in)
 	for _, w := range facts {
-		s.Worktrees = append(s.Worktrees, gateState(g, w, gin))
+		s.Worktrees = append(s.Worktrees, worktreeState(g, w, gin, s.Records))
 	}
 
 	s.Proofs = map[string]Proof{}

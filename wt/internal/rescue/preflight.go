@@ -52,6 +52,7 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		return nil, fmt.Errorf("could not re-check %s: %w", cleanup.OneLine(row.Path), err)
 	}
 	p := &Plan{Repo: e.Prior.Repo, Source: Source{Path: fresh.Path, Ref: fresh.Ref, Head: fresh.Head}, Start: fresh.Head}
+	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
 	p.Counts.IgnoredLeft = fresh.Losses.IgnoredEntries
 
 	for _, b := range fresh.Blockers {
@@ -64,9 +65,11 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 			p.Warnings = append(p.Warnings, "another wt session holds this worktree; if it edits files during the copy the rescue fails rather than copy a stale state")
 		}
 	}
+	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
 	if fresh.Losses.GatesUnknown {
 		return nil, refuse(CodeGatesUnknown, "the worktree's state could not be read, so nothing can be copied faithfully")
 	}
+	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
 	if !fresh.Losses.Dirty && fresh.Losses.Unpushed == 0 && !fresh.Losses.DetachedUnique {
 		return nil, refuse(CodeNothingToKeep, "nothing to keep: no uncommitted changes and no commits that exist only here")
 	}
@@ -82,6 +85,7 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 	}
 	// Commits that exist on no remote-tracking ref: the classifier's own
 	// "unpushed" definition, counted for a detached HEAD too.
+	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
 	if fresh.Losses.Unpushed > 0 || fresh.Losses.DetachedUnique {
 		n, err := sg.text("rev-list", "--count", "HEAD", "--not", "--remotes")
 		if err != nil {
@@ -91,6 +95,7 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("could not count the commits that exist only here: %w", err)
 		}
+		// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
 		if c == 0 && fresh.Losses.Unpushed > 0 {
 			// The classifier counted unpushed commits by the same definition and
 			// the count says none: a fetch landed between the two reads, or one

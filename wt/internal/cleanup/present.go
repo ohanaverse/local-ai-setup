@@ -99,6 +99,7 @@ var reasonWording = map[string]string{
 	ReasonBaseIsLocal:           "compared with the local default branch only",
 	ReasonNoMergedPR:            "no merged PR",
 	ReasonClaimsUnavailable:     "could not check other wt sessions",
+	ReasonPreserved:             "preserved by a wt rescue record",
 	// Blocker codes (BlockOpenPR shares ReasonOpenPR's code, so its wording).
 	BlockDefaultBranch:     "the default branch",
 	BlockBaseOfOpenPR:      "an open PR targets it",
@@ -116,7 +117,7 @@ var reasonWording = map[string]string{
 var detailIsSentence = map[string]bool{
 	ReasonUnpushed: true, ReasonPRHeadMoved: true, ReasonOpenPR: true,
 	ReasonDetachedUnique: true, ReasonFreshBranch: true, ReasonBaseIsLocal: true,
-	ReasonNoMergedPR: true, BlockBaseOfOpenPR: true,
+	ReasonNoMergedPR: true, BlockBaseOfOpenPR: true, ReasonPreserved: true,
 }
 
 // ReasonText is one reason or blocker as a phrase. A code with no wording
@@ -160,6 +161,8 @@ func evidenceText(row Row, base string) string {
 			return fmt.Sprintf("squash merged, PR #%d", row.PR.Number)
 		}
 		return "its PR merged"
+	case EvRescued:
+		return "not merged, a wt rescue record holds its commits"
 	case EvCherryEquivalent, EvPatchID:
 		return "patches appear in " + base + ", not proven"
 	case "":
@@ -273,7 +276,7 @@ func NestedPaths(row Row) []string {
 // tool text reaches the confirmation through it.
 func LossLines(r Row) []string {
 	var out []string
-	l := r.Losses
+	l := r.EffectiveLosses()
 	if l.Dirty {
 		out = append(out, "uncommitted changes will be lost")
 	}

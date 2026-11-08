@@ -27,9 +27,9 @@ wt remove origin/merged-topic --remote --yes       # delete a proven branch on o
 
 | Group | Meaning |
 |---|---|
-| Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing. |
+| Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing; or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read. |
-| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref. |
+| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes, or an open PR. |
 | In use / locked | A primary, current, locked, nested or mid-operation worktree, a held session claim, a registered model artifact (`protected_artifact`), or the default branch (`default_branch`). |
 
 `origin` branches are rows in these same groups, judged the same way (a proven
@@ -40,6 +40,7 @@ less sure, never proven.
 
 Apart from the fetch, which updates and prunes every remote's remote-tracking
 refs (`--no-fetch` skips it), listing writes no ref, index or working file.
+It reads the `wt rescue` records under `refs/wt/rescued/` (one `for-each-ref`).
 The fetch takes `origin` first and on its own (it alone drives classification,
 120s), then every other remote concurrently with a shorter limit (30s); the
 header and `fetch.remotes` in the JSON report each remote's result, also when
@@ -149,6 +150,12 @@ each item's losses, the processes running in it, and every unmerged branch
 `--dry-run` needs neither and applies the same approval checks, so
 `--dry-run` with your flags shows exactly what the real run would do.
 
+A clean original that `wt rescue` has copied (its commits are the only thing
+it holds that exists nowhere else, and a record keeps them; see
+[the record](#wt-rescue-keep-work-before-it-is-lost)) reads proven, so `--yes`
+alone removes it and its own branch. One with uncommitted changes still needs
+`--accept-loss`, `--force` and `-D`.
+
 In the list, enter shows a confirmation with every ticked entry: its group,
 what it would lose, running processes, and the approvals it needs. When every
 entry is proven `y` confirms; otherwise only the typed word `delete` then
@@ -222,15 +229,20 @@ yourself. A directory the copy creates for
 untracked files gets the original directory's mode (a `0700` one stays
 `0700`), and the check compares those modes too.
 
-**The original stays as it was, and is not made removable.** It is read with
+**The original stays as it was.** It is never changed or removed by the rescue. It is read with
 optional locks off (no index refresh) and compared before and after: its HEAD,
 its own branch ref, its staged content (not the index file's bytes, which a
 `git status` elsewhere may refresh) and the files the status names. Other
 refs, other worktrees' commits and a background fetch do not fail the run. Its commits
 are counted against remote-tracking refs only and its files were copied, not
-moved, so `wt cleanup` still lists it as having work that exists nowhere else
-and `wt remove` still needs `--accept-loss`, `--force` and `-D`. Remove it
-after you have checked the copy.
+moved. What happens to it afterwards depends on the record (next paragraph):
+while it is clean (no staged, unstaged or untracked changes) and the record
+keeps its commits, `wt cleanup` lists it as proven and `wt remove <path> --yes`
+removes it and its own branch. An original with uncommitted changes is
+unchanged: `wt cleanup` still lists it as having work that exists nowhere
+else and `wt remove` still needs `--accept-loss`, `--force` and `-D` (the
+record does not count for those changes). Remove it after you have checked
+the copy.
 
 **The record.** After the copy is verified, and only then, wt re-reads the
 source and, if it did not change, leaves a record in the source's repository:
@@ -249,11 +261,34 @@ git log --stat <ref>
 
 If the record cannot be written (the source changed after the verification,
 a SHA-256 repository, or a git step failed), the rescue stays `moved` and the
-report carries a warning starting `record_not_written:`; the copy is unaffected. The record
-is extra proof only: `wt cleanup` and `wt remove` do not read it yet, so
-their output is unchanged. A record pins its objects until you remove it,
-and wt does not prune records yet. To drop one after you have checked the
-copy:
+report carries a warning starting `record_not_written:`; the copy is unaffected. `wt cleanup` and
+`wt remove` read the records (`for-each-ref refs/wt/rescued/`, afresh on every
+classification, including the re-check before a removal). A record counts for a
+branch or detached worktree only when everything below holds; otherwise it is
+ignored and the row reads as it would without it:
+
+- the ref is `refs/wt/rescued/` plus the first 16 hex digits of its commit, and
+  its trailers are well formed (`Wt-Version` 1);
+- its source path, ref (`detached` for a detached HEAD) and head equal the
+  worktree's, and for a branch the branch tip is still that head;
+- its commit and the commit's parent exist, and the worktree's HEAD reaches
+  nothing that neither the record nor a remote-tracking ref reaches;
+- the worktree has no uncommitted, staged or untracked change, nothing wt
+  could not read, and no hard blocker;
+- the row has no merge proof and its own commits are what exists nowhere else.
+
+Then the row's evidence is `rescued` and it carries the informational reason
+`preserved` (`preserved by <record ref> (copy: <path>)`; it never lowers the
+status). Everything else keeps its usual effect: an open or unknown PR, a
+branch judged against a local default, and ignored files (the row stays less
+sure and needs `--accept-loss`). `rescued` rows are not age-gated. The
+worktree-exit prompt does not offer a rescued original. The source ref must
+match the record exactly: on a case-insensitive volume, a worktree whose HEAD
+spells the branch in a different case from the ref's spelling does not read
+removable (it fails closed; `--accept-loss` still works). Only the source of a
+rescue is ever preserved, never the copy. A record pins its objects until you
+remove it, and wt does not prune records yet (#543). To drop one after you have
+checked the copy:
 
 ```bash
 git update-ref -d refs/wt/rescued/<id>

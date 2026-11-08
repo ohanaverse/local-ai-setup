@@ -19,6 +19,11 @@ const (
 	EvMergeAddsNothing Evidence = "merge-adds-nothing" // merging tip into base changes nothing
 	EvPRTip            Evidence = "pr-tip"             // a merged PR's head is the tip (set by the classifier)
 
+	// EvRescued is not a merge proof: a wt rescue record covers the
+	// worktree's unpushed commits (or detached HEAD), so removing it loses
+	// none of them (set by the classifier for a preserved worktree row only).
+	EvRescued Evidence = "rescued"
+
 	// Weak signals: never proofs. Both show patch equivalence, not that the
 	// content is still in the base (a later revert on main defeats them).
 	EvCherryEquivalent Evidence = "cherry-equivalent"

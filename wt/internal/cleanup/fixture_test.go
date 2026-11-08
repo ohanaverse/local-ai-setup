@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -272,4 +273,77 @@ func (f *fixture) MergeResolving(branch, file, content string) string {
 	f.git("add", file)
 	f.git("commit", "--no-edit")
 	return f.git("rev-parse", "HEAD")
+}
+
+// recordOpts overrides what addRecord writes; an empty field takes the value a
+// real rescue of the source would write, so a test sets only the field it
+// wants to make wrong.
+type recordOpts struct {
+	Version, SourcePath, SourceRef, SourceHead, DestBranch, DestPath string
+	Omit                                                             []string // trailer keys left out
+	Extra                                                            []string // trailer lines appended as given
+	Message                                                          *string  // replaces the whole message
+	Object                                                           string   // when set, the ref points at this object instead
+}
+
+// addRecord builds by hand the chain a rescue writes (I: a tree with parent
+// the source HEAD, W: a tree with parent I, six trailers on both) and points
+// refs/wt/rescued/<16 hex of W> at W. It returns the ref name.
+func (f *fixture) addRecord(t *testing.T, srcPath string, o recordOpts) string {
+	t.Helper()
+	head := gitIn(t, srcPath, "rev-parse", "HEAD")
+	def := func(v, d string) string {
+		if v == "" {
+			return d
+		}
+		return v
+	}
+	ref := "detached"
+	if b := gitIn(t, srcPath, "branch", "--show-current"); b != "" {
+		ref = "refs/heads/" + b
+	}
+	vals := [][2]string{
+		{"Wt-Version", def(o.Version, "1")},
+		{"Wt-Source-Path", def(o.SourcePath, ResolvePath(srcPath))},
+		{"Wt-Source-Ref", def(o.SourceRef, ref)},
+		{"Wt-Source-Head", def(o.SourceHead, head)},
+		{"Wt-Dest-Branch", def(o.DestBranch, "rescue/x")},
+		{"Wt-Dest-Path", def(o.DestPath, "/tmp/dest")},
+	}
+	msg := "wt rescue record\n\n"
+	for _, kv := range vals {
+		skip := false
+		for _, k := range o.Omit {
+			skip = skip || k == kv[0]
+		}
+		if !skip {
+			msg += kv[0] + ": " + kv[1] + "\n"
+		}
+	}
+	for _, e := range o.Extra {
+		msg += e + "\n"
+	}
+	if o.Message != nil {
+		msg = *o.Message
+	}
+	tree := gitIn(t, srcPath, "rev-parse", "HEAD^{tree}")
+	commit := func(parent string) string {
+		cmd := exec.Command("git", "-C", srcPath, "commit-tree", tree, "-p", parent, "-F", "-")
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@invalid",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@invalid")
+		cmd.Stdin = strings.NewReader(msg)
+		b, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("commit-tree: %v", err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	w := commit(commit(head))
+	target := w
+	if o.Object != "" {
+		target = o.Object
+	}
+	name := fmt.Sprintf("refs/wt/rescued/%s", w[:16])
+	gitIn(t, srcPath, "update-ref", name, target)
+	return name
 }

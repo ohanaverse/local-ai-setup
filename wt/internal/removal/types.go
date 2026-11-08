@@ -35,8 +35,8 @@ type Item struct {
 	// worktree's HEAD. The item is skipped if it moved.
 	SawTip string
 	// SawLosses is what the user saw would be lost when they approved the
-	// item (the row's Losses). The item is skipped if the fresh losses are
-	// worse; the zero value means they saw nothing to lose, so any loss is
+	// item (the row's EffectiveLosses). The item is skipped if the fresh
+	// effective losses are worse; the zero value means they saw nothing to lose, so any loss is
 	// then a skip.
 	SawLosses cleanup.Losses
 	// Approved are the approvals the user gave THIS item (never a run-wide

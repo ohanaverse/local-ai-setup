@@ -162,6 +162,7 @@ func Eligible(p removal.ItemPreview, c Created) (ok bool, why string) {
 		return false, "the worktree is no longer on branch " + c.Branch
 	case f.Tip == "" || f.Tip != c.Tip:
 		return false, "the branch tip moved since the worktree was created"
+	// losses: raw, the exit prompt offers only a worktree that holds nothing at all, record or not
 	case len(p.LossLines) > 0 || f.Losses != (cleanup.Losses{}):
 		return false, "removing it would lose something"
 	case len(p.Procs) > 0:

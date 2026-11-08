@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -289,5 +290,70 @@ func TestLossLinesWording(t *testing.T) {
 				t.Fatalf("LossLines = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// TestEffectiveLossesOfAPreservedRow checks what a rescue record changes in
+// the loss view: a counted unpushed number and a detached HEAD's commits read
+// as covered, while an uncounted number (-1), dirty files, ignored files and
+// unreadable gates stay as they are; a row with no record is unchanged and
+// the raw Losses is never written. Why: a record covers only commits, so any
+// other loss shown as covered would let the removal hide data it cannot save.
+func TestEffectiveLossesOfAPreservedRow(t *testing.T) {
+	p := &Preserved{Ref: "refs/wt/rescue/x"}
+	raw := Losses{Dirty: true, IgnoredEntries: 2, IgnoredBytes: 99, Unpushed: 3, DetachedUnique: true, GatesUnknown: true}
+	want := raw
+	want.Unpushed, want.DetachedUnique = 0, false
+
+	r := Row{Losses: raw, Preserved: p}
+	if got := r.EffectiveLosses(); got != want {
+		t.Errorf("preserved: EffectiveLosses = %+v, want %+v", got, want)
+	}
+	if r.Losses != raw {
+		t.Errorf("preserved: raw Losses changed to %+v", r.Losses)
+	}
+	uncounted := Row{Losses: Losses{Unpushed: -1}, Preserved: p}
+	if got := uncounted.EffectiveLosses().Unpushed; got != -1 {
+		t.Errorf("uncounted Unpushed = %d, want -1 kept", got)
+	}
+	plain := Row{Losses: raw}
+	if got := plain.EffectiveLosses(); got != raw {
+		t.Errorf("no record: EffectiveLosses = %+v, want %+v", got, raw)
+	}
+}
+
+// TestLossLinesFollowsTheEffectiveView checks the confirmation sentences of a
+// preserved row: the unpushed-commits line is gone, an ignored-files line
+// stays. Why: the confirmation must not warn about commits a record keeps,
+// and must still warn about files no record keeps.
+func TestLossLinesFollowsTheEffectiveView(t *testing.T) {
+	p := &Preserved{}
+	got := LossLines(Row{Losses: Losses{Unpushed: 3}, Preserved: p})
+	if len(got) != 0 {
+		t.Errorf("preserved with 3 unpushed: LossLines = %q, want none", got)
+	}
+	got = LossLines(Row{Losses: Losses{Unpushed: 3, IgnoredEntries: 1, IgnoredBytes: 1}, Preserved: p})
+	if len(got) != 1 || got[0] != "1 ignored entry, 1 B will be deleted" {
+		t.Errorf("preserved with an ignored file: LossLines = %q, want only the ignored-entries line", got)
+	}
+}
+
+// TestLossesStaysComparable pins Losses as a comparable value of plain
+// fields. Why: callers compare whole Losses values with == (the removal gates
+// do), and a slice, map or pointer field would break that or compare by
+// address.
+func TestLossesStaysComparable(t *testing.T) {
+	if (Losses{}) != (Losses{}) {
+		t.Fatal("zero Losses values differ")
+	}
+	typ := reflect.TypeOf(Losses{})
+	if !typ.Comparable() {
+		t.Fatal("Losses is not comparable")
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		switch k := typ.Field(i).Type.Kind(); k {
+		case reflect.Slice, reflect.Map, reflect.Pointer, reflect.Interface, reflect.Func, reflect.Chan:
+			t.Errorf("Losses.%s has kind %s; only plain value fields are allowed", typ.Field(i).Name, k)
+		}
 	}
 }
