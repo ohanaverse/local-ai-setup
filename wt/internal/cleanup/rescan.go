@@ -115,7 +115,10 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 			}
 			return Row{}, fmt.Errorf("cleanup: worktree %s is now %s (was %s)", flat(w.Path), flat(now), flat(t.Ref))
 		}
-		mini.Worktrees = []WorktreeState{gateState(g, w, gin)}
+		// Records are listed afresh, never taken from prior; a failed
+		// listing is no records, not an error.
+		recs, _ := ListRecords(g)
+		mini.Worktrees = []WorktreeState{worktreeState(g, w, gin, recs)}
 		if w.Branch != "" {
 			// The worktree's spelling and, on a case-insensitive volume, the
 			// spelling for-each-ref gave in the list; a branch not found is
