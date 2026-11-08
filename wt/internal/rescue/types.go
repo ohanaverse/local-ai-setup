@@ -24,6 +24,18 @@ const (
 	MaxUntrackedFiles = 20000
 )
 
+// RecordRefPrefix starts the name of the ref a rescue record is kept under;
+// RecordWarningPrefix starts the one warning line saying no record was
+// written (the rescue itself still succeeded).
+const (
+	RecordRefPrefix     = "refs/wt/rescued/"
+	RecordWarningPrefix = "record_not_written: "
+)
+
+// Record is what a rescue left behind to prove the copy: the ref and the
+// commit (W) it points at.
+type Record struct{ Ref, Commit string }
+
 // BranchPrefix starts the default name of the new branch.
 const BranchPrefix = "rescued/"
 
