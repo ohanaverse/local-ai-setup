@@ -391,3 +391,31 @@ func TestPreReCheckMismatches(t *testing.T) {
 		})
 	}
 }
+
+// TestPreReCheckRefusesSubmoduleInitialisedAfterGate initialises a submodule
+// repository in a dirty rescued original's admin dir (modules/) after the
+// gate's submodule check, before the re-check right before git (stubbed: the
+// second rescan creates it, then reads for real). The record still covers the
+// tree, so coverLapsed passes; the item must still be refused with the
+// gate's submodule wording and no git worktree remove. Why: the re-check can
+// take minutes while it hashes, and git skips its own submodule check under
+// the --force it is handed here with no Force approval behind it (Ruling X).
+func TestPreReCheckRefusesSubmoduleInitialisedAfterGate(t *testing.T) {
+	f := newFixture(t)
+	rs, eng, it := confirmedDirtyPreserved(t, f)
+	admin := gitIn(t, rs.Src, "rev-parse", "--path-format=absolute", "--git-dir")
+	n := secondRescan(t, func(g cleanup.Git, prior cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error) {
+		if err := os.MkdirAll(filepath.Join(admin, "modules", "x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return cleanup.Rescan(g, prior, in, o, tg)
+	})
+	calls := recordRemoves(t)
+	o := one(t, eng, it)
+	if o.Worktree != WtRefused || o.Reason != "contains submodules; remove by hand" || o.Branch != BrNotAttempted {
+		t.Fatalf("outcome %s/%s %q, want refused: contains submodules; remove by hand", o.Worktree, o.Branch, o.Reason)
+	}
+	if *n != 2 || len(worktreeRemoves(*calls)) != 0 || !exists(t, rs.Src) || !exists(t, filepath.Join(admin, "modules", "x")) {
+		t.Errorf("%d rescans, git calls %q; want 2, no worktree remove, and the worktree and modules kept", *n, *calls)
+	}
+}

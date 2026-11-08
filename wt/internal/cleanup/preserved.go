@@ -23,10 +23,11 @@ const recordIDLen = 16
 // a worktree that has unreadable gates or any hard blocker, or is the primary
 // or bare one. For a dirty worktree a record must also hold the uncommitted
 // state (dirtCovered), else the next record is tried; the result then has
-// CoversDirt. A clean worktree runs no dirt check. A record matches only when its ref is the prefix
-// plus the commit's first 16 digits, its source path, ref and head equal the
-// worktree's, its commit and parent exist, and the worktree's HEAD adds
-// nothing the record ref and remote-tracking refs do not reach.
+// CoversDirt. A clean worktree runs no dirt check. A record matches only
+// when its ref is the prefix plus the commit's first 16 digits, its source
+// path, ref and head equal the worktree's, its commit and parent exist, and
+// the worktree's HEAD adds nothing the record ref and remote-tracking refs
+// do not reach.
 func preservedOf(g Git, ws WorktreeState, recs []RescueRecord) *Preserved {
 	w := ws.Fact
 	if len(recs) == 0 || ws.GatesErr != "" || len(ws.Gates.Blockers) > 0 ||

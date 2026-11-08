@@ -362,6 +362,7 @@ func TestDirtCoveredRacyCleanEntry(t *testing.T) {
 	set(p, "s2")
 	// The index now has the entry's mtime: racily clean, as git leaves it when
 	// the edit lands in the second the index was written.
+	// An empty content argument means only set the mtime (the index is not rewritten).
 	set(gitIn(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "index"), "")
 	_, wtree := snapshotTrees(t, dir)
 	want := gitIn(t, dir, "hash-object", "s.txt")

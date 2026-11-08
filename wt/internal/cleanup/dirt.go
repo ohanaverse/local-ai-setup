@@ -55,10 +55,11 @@ func dirtRunner(wg Git) dirtsnap.Runner {
 //     an edit to one, so the comparison below would miss it);
 //  3. no intent-to-add entry (`diff-files --diff-filter=A`);
 //  4. `diff-index --cached --quiet I` exits 0: the index tree is I, and an
-//     unmerged or intent-to-add entry makes it differ;
+//     unmerged or intent-to-add entry makes it differ (this step is the
+//     unmerged guard: Build below has no unmerged check of its own);
 //  5. dirtsnap.Build of the working tree equals W's tree (a nested
-//     repository, submodule, special file or unmerged path is unsupported,
-//     over the caps is too large; both are errors).
+//     repository, submodule or special file is unsupported, over the caps
+//     is too large; both are errors).
 //
 // Declared losses, because git does not record them and the copy a rescue
 // makes cannot carry them: file mode bits other than the executable bit, and

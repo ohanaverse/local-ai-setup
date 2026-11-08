@@ -555,10 +555,11 @@ func TestPreservedDetailMentionsDirtOnlyWhenCovered(t *testing.T) {
 	}
 }
 
-// TestRowTickableWhenDirtCovered checks a covered dirty row lands in the
-// less-sure group with no blocker, so the list lets the user tick it, while
-// Tickable (status-based, the default tick) stays false. Why: covered dirt is
-// a loss the user must accept, never one ticked for them.
+// TestRowTickableWhenDirtCovered checks a covered dirty row reads less_sure
+// with no blocker and sits in the less_sure group, and that Tickable stays
+// false for it (Tickable is proven-only), so it is never ticked by default or
+// by select-all. Why: covered dirt is a loss the user must accept, never one
+// ticked for them.
 func TestRowTickableWhenDirtCovered(t *testing.T) {
 	f, _, _ := dirtyPreservedWT(t, recordOpts{})
 	noGh(t)
@@ -576,5 +577,67 @@ func TestRowTickableWhenDirtCovered(t *testing.T) {
 				t.Fatalf("row in group %s", g.Status)
 			}
 		}
+	}
+}
+
+// TestClassifyDirtyCoveredDetachedWithoutAProof pins a detached oddity: a
+// dirty detached worktree on a commit only it has (DetachedUnique), its dirt
+// covered by a record, whose merge proof is Undetermined rather than
+// NotMerged. detachedPreserved needs NotMerged, so the HEAD is not read
+// rescued: detached_unique and the unavailable proof stay and the row stays
+// unique_work. The attach step still gives it Preserved (the dirt is
+// covered), and the effective view then clears DetachedUnique as well as
+// Dirty. Why that is truthful: preservedOf only matched the record after
+// recordCovers proved the HEAD reachable from the record ref, so the record
+// does hold the commit; and it is conservative, because the status and its
+// reasons still come from the ladder, so nothing reads proven or less_sure
+// on the record's say-so, and the user still has to accept the item.
+func TestClassifyDirtyCoveredDetachedWithoutAProof(t *testing.T) {
+	f := newFixture(t)
+	wt := f.Worktree("loose")
+	f.DetachOrphan(wt)
+	f.DirtyIn(wt, "scratch.txt")
+	f.addRecord(t, wt, recordOpts{Snapshot: true})
+	noGh(t)
+	s := gather(t, f)
+	head := gitIn(t, wt, "rev-parse", "HEAD")
+	p, ok := s.Proofs[head]
+	if !ok || p.Verdict != NotMerged {
+		t.Fatalf("control: proof %+v (found %v), want NotMerged", p, ok)
+	}
+	p.Verdict = Undetermined
+	s.Proofs[head] = p
+	r := rowOf(t, s, KindWorktree, filepath.Base(wt))
+	wantRow(t, r, StatusUniqueWork, "", []string{ReasonDetachedUnique, ReasonMergeProofUnavailable, ReasonPreserved}, false, true)
+	wantDirtCovered(t, r)
+	if !r.Losses.DetachedUnique || r.EffectiveLosses().DetachedUnique {
+		t.Fatal("DetachedUnique: want raw true, effective false")
+	}
+}
+
+// TestClassifyDirtyCoveredOpenPRClearsUnpushed rescues a dirty worktree with
+// an unpushed commit whose branch has an open PR: the PR keeps the row
+// unique_work, while Preserved is attached, the dirt reads covered and the
+// effective Unpushed is 0 (raw 1). Why: the record holds both the commit and
+// the dirt, so neither is a loss, but an open PR is a reason of its own that
+// the record must not override (Review Focus 4).
+func TestClassifyDirtyCoveredOpenPRClearsUnpushed(t *testing.T) {
+	f, _, _ := dirtyPreservedWT(t, recordOpts{})
+	stubGhBase(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	body := mustJSON(t, []any{prJSON(7, "OPEN", "o/r")})
+	stubGh(t, func(_, b string) ([]byte, error) {
+		if b == "topic" {
+			return body, nil
+		}
+		return []byte("[]"), nil
+	})
+	r := rowOf(t, gather(t, f), KindWorktree, "topic")
+	if r.Status != StatusUniqueWork || !slices.Equal(reasonCodes(r.Reasons), []string{ReasonOpenPR, ReasonPreserved}) || r.Preserved == nil {
+		t.Fatalf("row = %s reasons %v preserved %+v, want unique_work [open_pr preserved] with Preserved",
+			r.Status, reasonCodes(r.Reasons), r.Preserved)
+	}
+	wantDirtCovered(t, r)
+	if r.Losses.Unpushed != 1 || r.EffectiveLosses().Unpushed != 0 {
+		t.Fatalf("unpushed raw %d effective %d, want 1 and 0", r.Losses.Unpushed, r.EffectiveLosses().Unpushed)
 	}
 }

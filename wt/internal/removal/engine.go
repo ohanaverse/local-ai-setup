@@ -418,6 +418,14 @@ func (e Engine) worktreeAct(it Item, g gated, dry bool) (Outcome, []string) {
 		}
 		// losses: raw, git refuses a dirty worktree without --force, covered or not
 		gitForce = now.Losses.Dirty
+		// The gate's submodule check (8b) ran before this rescan, which can
+		// take minutes while it hashes; git skips its own check under
+		// --force, so ask again, last, with nothing slow after it.
+		if gitForce {
+			if why := submodulesIn(fresh.Path); why != "" {
+				return stop(WtRefused, why)
+			}
+		}
 	}
 
 	// 12. Remove and verify.
