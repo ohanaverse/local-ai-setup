@@ -16,8 +16,10 @@ import (
 
 // lossCounts is what one function does with a row's losses, by kind:
 //
-//   - raw: a `.Losses` read carrying the inline marker `// losses: raw, <why>`
-//     on its line or the line before (a deliberate read of the raw value);
+//   - raw: a `.Losses` read carrying the marker `// losses: raw, <why>`, as a
+//     trailing comment on its own line or alone on the line just before it
+//     (a deliberate read of the raw value); a trailing marker never covers
+//     the next line, a standalone one never its own or a later line;
 //   - effective: a call of `EffectiveLosses` (the view a removal reads);
 //   - seal: a read of an Item's `SawLosses` (or the seal's `sawLosses`): the
 //     value ItemFromRow sealed, which is the effective view;
@@ -42,7 +44,7 @@ var lossSites = map[string]lossCounts{
 	// The removal engine: approvals, the lapse check and the seal read the
 	// effective view; two gates read raw values the view never changes or
 	// git needs as they are.
-	"internal/removal/engine.go#needsOf":              {effective: 2},
+	"internal/removal/engine.go#needsOf":              {effective: 1},
 	"internal/removal/engine.go#unapproved":           {effective: 1},
 	"internal/removal/engine.go#Engine.worktreeGate":  {raw: 2, effective: 1, seal: 1},
 	"internal/removal/engine.go#Engine.branchGate":    {effective: 1, seal: 1},
@@ -100,12 +102,41 @@ func scanLosses(fset *token.FileSet, file *ast.File, rel string) map[string]loss
 		}
 		pkgs[name] = true
 	}
-	marked := map[int]bool{} // lines a raw marker covers: its own and the next
+	// A line holding code before a comment makes that comment trailing.
+	codeBefore := map[int]token.Pos{} // line -> the earliest code position on it
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			return true
+		}
+		if _, ok := n.(*ast.CommentGroup); ok {
+			return false
+		}
+		if _, ok := n.(*ast.Comment); ok {
+			return false
+		}
+		for _, p := range []token.Pos{n.Pos(), n.End() - 1} {
+			if !p.IsValid() {
+				continue
+			}
+			l := fset.Position(p).Line
+			if q, ok := codeBefore[l]; !ok || p < q {
+				codeBefore[l] = p
+			}
+		}
+		return true
+	})
+	// The lines a raw marker covers: a trailing marker its own line only, a
+	// marker alone on its line the next line only.
+	marked := map[int]bool{}
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
 			if strings.HasPrefix(c.Text, rawMarker) && strings.TrimSpace(strings.TrimPrefix(c.Text, rawMarker)) != "" {
 				l := fset.Position(c.Slash).Line
-				marked[l], marked[l+1] = true, true
+				if q, ok := codeBefore[l]; ok && q < c.Slash {
+					marked[l] = true
+				} else {
+					marked[l+1] = true
+				}
 			}
 		}
 	}
@@ -176,7 +207,7 @@ func compareLossSites(got, want map[string]lossCounts) []string {
 	var bad []string
 	for k, g := range got {
 		if g.unlabelled > 0 {
-			bad = append(bad, fmt.Sprintf("%s: %d unlabelled .Losses read(s): call EffectiveLosses, or mark a deliberate raw read with %q on its line or the line before", k, g.unlabelled, rawMarker+"<why>"))
+			bad = append(bad, fmt.Sprintf("%s: %d unlabelled .Losses read(s): call EffectiveLosses, or mark a deliberate raw read with %q trailing on its line or alone on the line before", k, g.unlabelled, rawMarker+"<why>"))
 		}
 		w, ok := want[k]
 		switch {
@@ -250,8 +281,10 @@ func TestEveryLossesReadSiteIsLabelled(t *testing.T) {
 
 // TestLossesGuardBites feeds the scanner small sources and checks each kind
 // of mistake is found: an unmarked read, a marker with no reason, a new
-// function, a changed count, a stale entry; and that the legitimate shapes
-// (marker on the line before, a write, the view, the seal, a package-qualified
+// function, a changed count, a stale entry, a standalone marker two lines
+// above the read, a trailing marker on the line before it; and that the
+// legitimate shapes (a standalone marker on the line before, a trailing one
+// on the read's own line, a write, the view, the seal, a package-qualified
 // type) count as such. Why: a guard that silently matches nothing would pass
 // on any change.
 func TestLossesGuardBites(t *testing.T) {
@@ -280,6 +313,17 @@ func view(r cleanup.Row, it Item) bool {
 }
 
 func build(r *cleanup.Row) { r.Losses.Dirty = true; r.Losses.Unpushed++ }
+
+func standaloneTooFar(r cleanup.Row) bool {
+	// losses: raw, a standalone marker covers only the next line
+	x := 1
+	return r.Losses.Dirty && x > 0
+}
+
+func trailingNextLine(r cleanup.Row) bool {
+	x := 1 // losses: raw, a trailing marker covers only its own line
+	return r.Losses.Dirty && x > 0
+}
 `
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments|parser.SkipObjectResolution)
@@ -294,6 +338,10 @@ func build(r *cleanup.Row) { r.Losses.Dirty = true; r.Losses.Unpushed++ }
 		"p.go#sameLine": {raw: 1},
 		"p.go#view":     {raw: 1, effective: 1, seal: 1},
 		"p.go#build":    {write: 2},
+		// Neither marker reaches the read: a standalone one two lines above,
+		// a trailing one on the line before.
+		"p.go#standaloneTooFar": {unlabelled: 1},
+		"p.go#trailingNextLine": {unlabelled: 1},
 	}
 	if len(got) != len(want) {
 		t.Errorf("scan = %+v, want %+v", got, want)
@@ -318,15 +366,17 @@ func build(r *cleanup.Row) { r.Losses.Dirty = true; r.Losses.Unpushed++ }
 		"p.go#noWhy: 1 unlabelled",
 		"p.go#sameLine: found",
 		"p.go#gone: listed in lossSites but no longer",
+		"p.go#standaloneTooFar: 1 unlabelled",
+		"p.go#trailingNextLine: 1 unlabelled",
 	} {
 		if !slices.ContainsFunc(bad, func(b string) bool { return strings.HasPrefix(b, frag) }) {
 			t.Errorf("no finding %q in %q", frag, bad)
 		}
 	}
-	if len(bad) != 6 { // the five above plus noWhy unlisted
-		t.Errorf("%d findings, want 6: %q", len(bad), bad)
+	if len(bad) != 10 { // the seven above plus noWhy, standaloneTooFar and trailingNextLine unlisted
+		t.Errorf("%d findings, want 10: %q", len(bad), bad)
 	}
-	if b := compareLossSites(got, want); len(b) != 2 { // only the two unlabelled reads
-		t.Errorf("findings against an exact table = %q, want the two unlabelled reads", b)
+	if b := compareLossSites(got, want); len(b) != 4 { // only the four unlabelled reads
+		t.Errorf("findings against an exact table = %q, want the four unlabelled reads", b)
 	}
 }

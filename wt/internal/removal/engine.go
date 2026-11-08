@@ -157,9 +157,10 @@ func needsOf(k cleanup.Kind, fresh cleanup.Row) Needs {
 		// (remoteGate); what it needs is the Remote approval and nothing else.
 		return Needs{Remote: true}
 	}
+	eff := fresh.EffectiveLosses()
 	return Needs{
 		Confirm: fresh.Status != cleanup.StatusProven || len(cleanup.LossLines(fresh)) > 0,
-		Force:   fresh.EffectiveLosses().Dirty || fresh.EffectiveLosses().DetachedUnique,
+		Force:   eff.Dirty || eff.DetachedUnique,
 		Delete:  k == cleanup.KindBranch && !fresh.BranchProven,
 	}
 }

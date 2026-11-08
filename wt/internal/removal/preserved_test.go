@@ -289,6 +289,104 @@ func TestPreservedItemLapses(t *testing.T) {
 	}
 }
 
+// TestPreservedItemLapsesUnderAPRReason seals a preview of a rescued original
+// whose status a PR reason already holds below proven (an open PR on its
+// branch: unique_work; a PR lookup that failed: less_sure), deletes the
+// record before Run and expects skipped_changed with nothing removed.
+//
+// Open PR: the status stays unique_work and the tip does not move, so the
+// only comparison that sees the record go is the effective lossesWorse (the
+// sealed effective Unpushed 0 against the fresh raw 1); this is the lapse no
+// TestPreservedItemLapses case reaches. A raw seal (ItemFromRow sealing
+// Losses) would let it through: raw 1 against fresh 1 is not worse.
+//
+// PR lookup failed: the record carried the row from unique_work to
+// less_sure, so losing it drops the status back to unique_work and the
+// status comparison fires first (before the tip and losses checks).
+//
+// Each case also runs once with the record left in place: the same sealed
+// item is removed (worktree removed, its unproven branch kept). That control
+// is what makes a raw read at the gate visible: compared raw, the fresh
+// Unpushed 1 is "worse" than the sealed 0 even with the record intact, so
+// the preview itself (and the control's Run) would read skipped_changed.
+//
+// Why: a preserved original that also has a PR reason still needs only the
+// record to cover its commits; when the record goes, Run must not delete them.
+func TestPreservedItemLapsesUnderAPRReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		gh     func(t *testing.T)
+		status cleanup.Status
+		code   string
+		reason string
+	}{
+		{"open PR", func(t *testing.T) {
+			t.Cleanup(cleanup.StubPRListForTest(func(_, b string) ([]byte, error) {
+				if b == "topic" {
+					return []byte(`[{"number":9,"state":"OPEN","headRefOid":"0000000000000000000000000000000000000000","baseRefName":"main","isCrossRepository":false,"headRepository":{"name":"r","nameWithOwner":"o/r"}}]`), nil
+				}
+				return []byte("[]"), nil
+			}))
+		}, cleanup.StatusUniqueWork, cleanup.ReasonOpenPR, "what would be lost changed since it was listed"},
+		{"PR lookup failed", func(t *testing.T) {
+			t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") }))
+		}, cleanup.StatusLessSure, cleanup.ReasonPRUnknown, "status changed since it was listed (unique_work, was less_sure)"},
+	}
+	for _, c := range cases {
+		for _, lapse := range []bool{false, true} {
+			name := c.name + "/record kept"
+			if lapse {
+				name = c.name + "/record deleted"
+			}
+			t.Run(name, func(t *testing.T) { preservedPRCase(t, c.gh, c.status, c.code, c.reason, lapse) })
+		}
+	}
+}
+
+// preservedPRCase is one TestPreservedItemLapsesUnderAPRReason run: with
+// lapse the record is deleted between Confirmed and Run and the item must be
+// skipped as reason with nothing removed; without it the item is removed.
+func preservedPRCase(t *testing.T, gh func(*testing.T), status cleanup.Status, code, reason string, lapse bool) {
+	f := newFixture(t)
+	rs := rescuedTopic(t, f)
+	gh(t)
+	s, r := f.report()
+	row := preservedRow(t, f, r)
+	if row.Status != status || !hasReason(row, code) || row.EffectiveLosses().Unpushed != 0 {
+		t.Fatalf("precondition: status %s reasons %+v effective unpushed %d; want %s with %s and 0",
+			row.Status, row.Reasons, row.EffectiveLosses().Unpushed, status, code)
+	}
+	eng := f.engine(s, f.inputs(), Options{})
+	p := previewOne(t, eng, ItemFromRow(row))
+	if p.Plan.Worktree != WtRemoved {
+		t.Fatalf("preview plans %s (%s), want removed", p.Plan.Worktree, p.Plan.Reason)
+	}
+	if !p.Needs.Confirm {
+		t.Fatalf("Needs = %+v, want Confirm", p.Needs)
+	}
+	it, err := p.Confirmed(p.Needs)
+	if err != nil {
+		t.Fatalf("Confirmed(%+v): %v", p.Needs, err)
+	}
+	if !lapse {
+		if o := one(t, eng, it); o.Worktree != WtRemoved {
+			t.Fatalf("outcome %s/%s %q, want removed with the record kept", o.Worktree, o.Branch, o.Reason)
+		}
+		if exists(t, rs.Src) || !f.refExists("refs/heads/topic") {
+			t.Error("the original worktree is still there, or its unproven branch is gone")
+		}
+		return
+	}
+	f.git("update-ref", "-d", rs.Ref)
+	o := one(t, eng, it)
+	if o.Worktree != WtSkippedChanged || o.Reason != reason || o.Branch != BrNotAttempted {
+		t.Fatalf("outcome %s/%s %q, want skipped_changed/not_attempted %q", o.Worktree, o.Branch, o.Reason, reason)
+	}
+	if !exists(t, rs.Src) || !f.registered(rs.Src) || !f.refExists("refs/heads/topic") {
+		t.Error("something was removed")
+	}
+}
+
 // TestTipHeldByTheRecordAlone deletes the copy's worktree and branch first,
 // so only the record still reaches the original's tip, then removes the
 // original: its branch is deleted with no gc caveat. Why: the record holds
