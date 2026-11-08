@@ -33,7 +33,8 @@ type lossCounts struct{ raw, effective, seal, write, unlabelled int }
 // touches a row's losses, keyed "<file relative to the module root>#<func>"
 // with the receiver type for a method. The counts are exact, so a second
 // read added to a listed function fails too. A preserved row's raw losses
-// still count its covered commits; only the sites labelled raw may see them.
+// still count its covered commits, and its covered dirt (CoversDirt); only the
+// sites labelled raw may see them.
 var lossSites = map[string]lossCounts{
 	// The classifier builds the raw value; the view is made from it.
 	"internal/cleanup/classify.go#classifier.worktree":  {write: 7},
