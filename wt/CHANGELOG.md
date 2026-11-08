@@ -4,6 +4,14 @@
 
 ### Added
 
+- `wt rescue` leaves a record after a verified copy: the ref
+  `refs/wt/rescued/<id>` in the source's repository, holding the source's
+  commits and its working state (staged, unstaged and untracked non-ignored
+  files) as two commits. The text output gains a `record:` line and
+  `--json` an additive `record {ref, commit}`. If the record cannot be
+  written the rescue stays `moved` with a `record_not_written:` warning.
+  Nothing reads the record yet: `wt cleanup` and `wt remove` are unchanged
+  and the original is still not made removable. See `docs/wt-cleanup.md`.
 - `wt cleanup` lists the repository's worktrees, local branches and origin
   branches in four groups by how sure wt is each can go (proven merged, looks merged and less sure, has work that exists nowhere
   else, in use or locked), with the evidence per row. It fetches first

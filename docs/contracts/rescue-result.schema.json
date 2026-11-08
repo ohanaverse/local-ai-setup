@@ -84,6 +84,9 @@
     "left_behind": {
       "$ref": "#/$defs/left_behind"
     },
+    "record": {
+      "$ref": "#/$defs/record"
+    },
     "completed": {
       "type": "array",
       "items": {
@@ -92,6 +95,7 @@
     },
     "warnings": {
       "type": "array",
+      "description": "A line starting \"record_not_written: \" means the rescue was verified but left no record.",
       "items": {
         "type": "string"
       }
@@ -191,6 +195,24 @@
       "properties": {
         "ignored_entries": {
           "type": "integer"
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "ref",
+        "commit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "The record ref, under refs/wt/rescued/."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Full commit id the record ref names."
         }
       }
     }

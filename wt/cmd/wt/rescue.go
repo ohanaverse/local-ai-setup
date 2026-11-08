@@ -298,6 +298,9 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 	for _, s := range o.Completed {
 		b.WriteString("    done: " + cleanup.OneLine(s) + "\n")
 	}
+	if o.Record != nil {
+		b.WriteString("    record: " + cleanup.OneLine(o.Record.Ref) + " (holds the commits and the working state)\n")
+	}
 	for _, s := range p.Warnings {
 		b.WriteString("    warning: " + cleanup.OneLine(s) + "\n")
 	}

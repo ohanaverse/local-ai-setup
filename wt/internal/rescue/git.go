@@ -16,10 +16,14 @@ const gitTimeout = 2 * time.Minute
 // cache, a change to a source that must stay as found); the fsmonitor daemon
 // is switched off here too. It differs from cleanup.Git only in treating a
 // non-zero exit as an error carrying stderr.
-type sgit struct{ dir string }
+type sgit struct {
+	dir    string
+	env    []string // appended to the process environment (the record's identity)
+	config []string // extra `-c key=value` settings (the record's hooks off)
+}
 
 func (g sgit) runner() cleanup.Git {
-	return cleanup.Git{Dir: g.dir, Timeout: gitTimeout, Config: []string{"core.fsmonitor=false"}}
+	return cleanup.Git{Dir: g.dir, Timeout: gitTimeout, Config: append([]string{"core.fsmonitor=false"}, g.config...), Env: g.env}
 }
 
 // out runs git with stdin, returning stdout. A non-zero exit is an error
@@ -37,5 +41,11 @@ func (g sgit) out(stdin []byte, args ...string) ([]byte, error) {
 
 func (g sgit) text(args ...string) (string, error) {
 	b, err := g.out(nil, args...)
+	return strings.TrimSpace(string(b)), err
+}
+
+// text2 is text with stdin.
+func (g sgit) text2(stdin string, args ...string) (string, error) {
+	b, err := g.out([]byte(stdin), args...)
 	return strings.TrimSpace(string(b)), err
 }

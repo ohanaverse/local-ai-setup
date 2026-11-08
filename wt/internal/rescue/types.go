@@ -24,6 +24,18 @@ const (
 	MaxUntrackedFiles = 20000
 )
 
+// RecordRefPrefix starts the name of the ref a rescue record is kept under;
+// RecordWarningPrefix starts the one warning line saying no record was
+// written (the rescue itself still succeeded).
+const (
+	RecordRefPrefix     = "refs/wt/rescued/"
+	RecordWarningPrefix = "record_not_written: "
+)
+
+// Record is what a rescue left behind to prove the copy: the ref and the
+// commit (W) it points at.
+type Record struct{ Ref, Commit string }
+
 // BranchPrefix starts the default name of the new branch.
 const BranchPrefix = "rescued/"
 
@@ -124,6 +136,9 @@ type Outcome struct {
 	// says whether the worktree directory is there too.
 	BranchKept bool
 	Completed  []string
+	// Record is the proof left in the source's repository; nil unless the
+	// rescue moved and the record was written.
+	Record *Record
 }
 
 // Engine runs a rescue in one repository. G runs git in the repository (any

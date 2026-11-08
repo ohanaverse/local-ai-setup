@@ -232,6 +232,33 @@ moved, so `wt cleanup` still lists it as having work that exists nowhere else
 and `wt remove` still needs `--accept-loss`, `--force` and `-D`. Remove it
 after you have checked the copy.
 
+**The record.** After the copy is verified, and only then, wt re-reads the
+source and, if it did not change, leaves a record in the source's repository:
+the ref `refs/wt/rescued/<id>`, printed as a `record:` line (JSON
+`record {ref, commit}`). It points at two commits: the source's index state
+(parent: the source's HEAD) and its working state on top of that. So it holds
+the commits and the working state: staged, unstaged and untracked files that
+are not ignored. It does not hold ignored files, file modes beyond the
+executable bit, or empty directories. The commits carry the source path,
+branch and HEAD in `Wt-*` trailers. Inspect it:
+
+```bash
+git for-each-ref refs/wt/rescued
+git log --stat <ref>
+```
+
+If the record cannot be written (the source changed after the verification,
+a SHA-256 repository, or a git step failed), the rescue stays `moved` and the
+report carries a warning starting `record_not_written:`; the copy is unaffected. The record
+is extra proof only: `wt cleanup` and `wt remove` do not read it yet, so
+their output is unchanged. A record pins its objects until you remove it,
+and wt does not prune records yet. To drop one after you have checked the
+copy:
+
+```bash
+git update-ref -d refs/wt/rescued/<id>
+```
+
 Refused, with nothing created (JSON `code` in brackets): nothing to keep
 (`nothing_to_keep`); the primary checkout (`primary`; #522); a rebase, merge
 or similar in progress (`operation_in_progress`) or unmerged paths
