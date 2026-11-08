@@ -248,8 +248,8 @@ git log --stat <ref>
 ```
 
 If the record cannot be written (the source changed after the verification,
-or a git step failed), the rescue stays `moved` and the report carries a
-warning starting `record_not_written:`; the copy is unaffected. The record
+a SHA-256 repository, or a git step failed), the rescue stays `moved` and the
+report carries a warning starting `record_not_written:`; the copy is unaffected. The record
 is extra proof only: `wt cleanup` and `wt remove` do not read it yet, so
 their output is unchanged. A record pins its objects until you remove it,
 and wt does not prune records yet. To drop one after you have checked the

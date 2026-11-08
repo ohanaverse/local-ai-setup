@@ -72,6 +72,24 @@ func TestIndexTreeMatchesWriteTree(t *testing.T) {
 	}
 }
 
+// TestIndexTreeDiffersFromWriteTreeOnIntentToAdd pins the documented gap: an
+// intent-to-add entry (`git add -N`) is listed by `ls-files --stage` as a
+// stage-0 empty blob, so IndexTree records it while write-tree leaves it out.
+// Why: the doc tells callers to refuse i-t-a first (rescue's Preflight does);
+// if git or IndexTree ever changes here, this test says the doc is stale.
+func TestIndexTreeDiffersFromWriteTreeOnIntentToAdd(t *testing.T) {
+	d := newRepo(t)
+	writeFile(t, filepath.Join(d, "ita.txt"), "later\n", 0o644)
+	gitT(t, d, nil, "add", "-N", "ita.txt")
+	got, err := IndexTree(d, runIn(d), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := indexOracle(t, d); got == want {
+		t.Fatalf("IndexTree = write-tree = %s for an intent-to-add entry; update IndexTree's doc", got)
+	}
+}
+
 // TestIndexTreeRefusesAnUnmergedIndex pins ErrUnsupported for a conflict: a
 // tree cannot describe stages 1 to 3.
 func TestIndexTreeRefusesAnUnmergedIndex(t *testing.T) {

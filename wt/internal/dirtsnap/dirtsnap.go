@@ -16,7 +16,10 @@ import (
 )
 
 // Runner runs git in the repository with stdin (nil for none); a non-zero
-// exit is an error.
+// exit is an error. It must set GIT_OPTIONAL_LOCKS=0: without it the
+// `git status` inside Build may rewrite the repository's index (its stat and
+// untracked caches), a change to a source that must only be read. rescue's
+// sgit runs through cleanup.Git, which sets it.
 type Runner func(stdin []byte, args ...string) ([]byte, error)
 
 // Limits bounds a build. Zero means unlimited.
@@ -84,6 +87,14 @@ type builder struct {
 // own add -A there. Callers must refuse those states first (the rescue and
 // the classifier do). A nested repository, submodule or special file gives
 // ErrUnsupported; changed files or bytes over lim give ErrTooLarge.
+//
+// A changed file's executable bit is read from disk (core.fileMode=false is
+// not honoured) and a regular file is hashed as a file even where
+// core.symlinks=false would keep a 120000 entry, so in those configurations
+// Build can differ from add -A. Trees are encoded with 20-byte ids, so a
+// SHA-256 repository fails with an error (rescue then reports
+// record_not_written). A path below a symlink, a file or a missing directory
+// is absent, as git's has_symlink_leading_path says.
 func Build(dir string, run Runner, write bool, lim Limits) (string, error) {
 	b := &builder{run: run, store: write}
 	out, err := run(nil, "rev-parse", "--verify", "HEAD^{tree}")

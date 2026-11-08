@@ -6,12 +6,18 @@ import (
 	"strings"
 )
 
-// IndexTree returns the 40-hex id of the tree the index of dir records, the
-// answer `git write-tree` gives, built in memory from `ls-files --stage` so
-// the index file is never rewritten (write-tree stores a cache-tree
-// extension in it). write adds -w to every hash-object; false stores
-// nothing. An unmerged entry gives ErrUnsupported. Gitlink entries are kept
-// as entries. No temp file is created and nothing is deleted.
+// IndexTree returns the 40-hex id of the tree the index of dir records,
+// built in memory from `ls-files --stage` so the index file is never
+// rewritten (write-tree stores a cache-tree extension in it). write adds -w
+// to every hash-object; false stores nothing. An unmerged entry gives
+// ErrUnsupported. Gitlink entries are kept as entries. No temp file is
+// created and nothing is deleted.
+//
+// It gives the answer `git write-tree` gives except for an intent-to-add
+// entry (`git add -N`): ls-files prints it as a stage-0 empty blob, which
+// IndexTree records and write-tree leaves out. Refusing an index holding one
+// is the caller's job, as for Build's skip-worktree and assume-unchanged
+// files (rescue's Preflight refuses all three).
 func IndexTree(dir string, run Runner, write bool) (string, error) {
 	out, err := run(nil, "ls-files", "--stage", "-z")
 	if err != nil {
