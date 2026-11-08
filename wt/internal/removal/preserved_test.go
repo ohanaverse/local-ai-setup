@@ -455,3 +455,342 @@ func TestBranchStageKnowsThePreservedCode(t *testing.T) {
 		t.Error("knownNotUnknown lacks preserved")
 	}
 }
+
+// dirtyRescuedTopic is rescuedTopic with uncommitted work in the source when
+// it is rescued: a tracked edit, a staged new file and an untracked file. The
+// real rescue engine's record holds that state, so the row reads CoversDirt.
+func dirtyRescuedTopic(t *testing.T, f *fixture) rescued {
+	t.Helper()
+	src := f.Worktree("topic")
+	f.Commit(src, "topic.txt", "work", "topic work")
+	f.write(src, "topic.txt", "edited")
+	f.write(src, "staged.txt", "staged")
+	gitIn(t, src, "add", "staged.txt")
+	f.write(src, "scratch.txt", "untracked")
+	return rescueWorktree(t, f, src)
+}
+
+// dirtyPreservedRow is the report's row of the dirty rescued original
+// "topic", failing unless its record covers the dirt: less_sure, raw Dirty
+// kept, effective Dirty cleared.
+func dirtyPreservedRow(t *testing.T, f *fixture, r cleanup.Report) cleanup.Row {
+	t.Helper()
+	row := f.row(r, cleanup.KindWorktree, "topic")
+	if row.Preserved == nil || !row.Preserved.CoversDirt || row.Status != cleanup.StatusLessSure ||
+		!row.Losses.Dirty || row.EffectiveLosses().Dirty {
+		t.Fatalf("precondition: row %s preserved=%+v raw dirty %v effective dirty %v; want a less_sure row whose record covers its dirt",
+			row.Status, row.Preserved, row.Losses.Dirty, row.EffectiveLosses().Dirty)
+	}
+	return row
+}
+
+// worktreeRemoves are the `git worktree remove` calls among calls.
+func worktreeRemoves(calls [][]string) [][]string {
+	var out [][]string
+	for _, c := range calls {
+		if len(c) >= 2 && c[0] == "worktree" && c[1] == "remove" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// TestDirtyPreservedItemRemovesWithAcceptLoss removes a rescued original
+// whose record also holds its uncommitted work, through the real Preview ->
+// Confirmed -> Run path: it needs exactly Confirm (--accept-loss, never
+// --force), git is handed --force once (git refuses a dirty tree without
+// it), the original's branch is deleted unasked, and the record and the copy
+// survive. The run rescans twice (the gate, then the re-check right before
+// git) and git runs straight after the second. Why: this is PR B2's case; the
+// record makes the dirt recoverable, so it is not a loss to force, but git
+// still needs --force and the last read must be right before it.
+func TestDirtyPreservedItemRemovesWithAcceptLoss(t *testing.T) {
+	f := newFixture(t)
+	rs := dirtyRescuedTopic(t, f)
+	s, r := f.report()
+	row := dirtyPreservedRow(t, f, r)
+	eng := f.engine(s, f.inputs(), Options{})
+	p := previewOne(t, eng, ItemFromRow(row))
+	wantApproval(t, p, ApprovalNeedsConfirm, Needs{Confirm: true})
+	it, err := p.Confirmed(Needs{Confirm: true})
+	if err != nil {
+		t.Fatalf("Confirmed(Confirm): %v", err)
+	}
+	var order []string
+	stubRescan(t, func(g cleanup.Git, prior cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error) {
+		order = append(order, "rescan")
+		return cleanup.Rescan(g, prior, in, o, tg)
+	})
+	var calls [][]string
+	stubRunGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+		calls = append(calls, append([]string(nil), args...))
+		order = append(order, strings.Join(args[:min(2, len(args))], " "))
+		return g.Run(args...)
+	})
+	o := one(t, eng, it)
+	if o.Worktree != WtRemoved || o.Branch != BrDeleted {
+		t.Fatalf("outcome %s/%s (%s), want removed/deleted", o.Worktree, o.Branch, o.Reason)
+	}
+	rm := worktreeRemoves(calls)
+	if len(rm) != 1 || strings.Join(rm[0], " ") != "worktree remove --force -- "+row.Path {
+		t.Errorf("worktree removes %q, want one `worktree remove --force -- %s`", rm, row.Path)
+	}
+	if len(order) < 3 || strings.Join(order[:3], ",") != "rescan,rescan,worktree remove" {
+		t.Errorf("order %q, want rescan, rescan, then git worktree remove", order)
+	}
+	if exists(t, rs.Src) || f.registered(rs.Src) || f.refExists("refs/heads/topic") {
+		t.Error("the original worktree or its branch is still there")
+	}
+	if !f.refExists(rs.Ref) || f.git("rev-parse", rs.Ref) != rs.RecordTip {
+		t.Errorf("record %s gone or moved", rs.Ref)
+	}
+	if got := f.git("rev-parse", "refs/heads/"+rs.DestBr); got != rs.DestTip || !strings.HasPrefix(rs.DestBr, "rescued/") {
+		t.Errorf("copy branch %s at %s, want rescued/... at %s", rs.DestBr, got, rs.DestTip)
+	}
+	if !exists(t, filepath.Join(rs.DestPath, "scratch.txt")) {
+		t.Error("the copy lost the untracked file")
+	}
+}
+
+// TestCleanPreservedItemRunsNoReCheck removes a clean rescued original and
+// counts one rescan. Why: the re-check right before git is only for covered
+// dirt (git's --force path); a clean original is protected by git itself, and
+// B1's cost promise is that it hashes nothing more.
+func TestCleanPreservedItemRunsNoReCheck(t *testing.T) {
+	f := newFixture(t)
+	rescuedTopic(t, f)
+	s, r := f.report()
+	eng := f.engine(s, f.inputs(), Options{})
+	it, err := previewOne(t, eng, ItemFromRow(preservedRow(t, f, r))).Confirmed(Needs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := countRescans(t)
+	if o := one(t, eng, it); o.Worktree != WtRemoved {
+		t.Fatalf("outcome %s (%s), want removed", o.Worktree, o.Reason)
+	}
+	if *n != 1 {
+		t.Errorf("%d rescans, want 1", *n)
+	}
+}
+
+// TestDirtyPreservedItemLapses confirms a preview of a dirty rescued
+// original, then changes the source between the preview and Run in each way
+// the record can stop covering it (a tracked edit, an untracked edit, an
+// exec-bit flip, a restage, a new untracked file, the record deleted): each
+// is skipped_changed with the exact reason, its loss lines, and no git
+// worktree remove. Why: --force would delete whatever changed; the record
+// must still hold exactly what is in the tree when git runs.
+func TestDirtyPreservedItemLapses(t *testing.T) {
+	const reason = "status changed since it was listed (unique_work, was less_sure)"
+	cases := []struct {
+		name  string
+		lapse func(t *testing.T, f *fixture, rs rescued)
+	}{
+		{"edit tracked", func(t *testing.T, f *fixture, rs rescued) { f.write(rs.Src, "topic.txt", "edited again") }},
+		{"edit untracked", func(t *testing.T, f *fixture, rs rescued) { f.write(rs.Src, "scratch.txt", "untracked, edited") }},
+		{"exec-bit flip", func(t *testing.T, f *fixture, rs rescued) {
+			if err := os.Chmod(filepath.Join(rs.Src, "topic.txt"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"restage", func(t *testing.T, f *fixture, rs rescued) { gitIn(t, rs.Src, "add", "topic.txt") }},
+		{"new untracked file", func(t *testing.T, f *fixture, rs rescued) { f.write(rs.Src, "new.txt", "new") }},
+		{"record deleted", func(t *testing.T, f *fixture, rs rescued) { f.git("update-ref", "-d", rs.Ref) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			rs := dirtyRescuedTopic(t, f)
+			s, r := f.report()
+			eng := f.engine(s, f.inputs(), Options{})
+			p := previewOne(t, eng, ItemFromRow(dirtyPreservedRow(t, f, r)))
+			it, err := p.Confirmed(p.Needs)
+			if err != nil {
+				t.Fatalf("Confirmed(%+v): %v", p.Needs, err)
+			}
+			c.lapse(t, f, rs)
+			calls := recordRemoves(t)
+			o := one(t, eng, it)
+			if o.Worktree != WtSkippedChanged || o.Reason != reason || o.Branch != BrNotAttempted {
+				t.Fatalf("outcome %s/%s %q, want skipped_changed/not_attempted %q", o.Worktree, o.Branch, o.Reason, reason)
+			}
+			if !slices.ContainsFunc(o.LossLines, func(l string) bool { return strings.Contains(l, "uncommitted") }) {
+				t.Errorf("loss lines %q, want the uncommitted-changes line", o.LossLines)
+			}
+			if rm := worktreeRemoves(*calls); len(rm) != 0 || !exists(t, rs.Src) || !f.registered(rs.Src) || !f.refExists("refs/heads/topic") {
+				t.Errorf("worktree removes %q; want none and the original kept", rm)
+			}
+		})
+	}
+}
+
+// TestEditThenRevertStillRemoves edits a covered file and writes its bytes
+// back between the preview and Run: the tree is again what the record holds,
+// so the item is removed. Why: coverage is by content, not by timestamps; a
+// touch that changes nothing must not make the item unremovable.
+func TestEditThenRevertStillRemoves(t *testing.T) {
+	f := newFixture(t)
+	rs := dirtyRescuedTopic(t, f)
+	s, r := f.report()
+	eng := f.engine(s, f.inputs(), Options{})
+	it, err := previewOne(t, eng, ItemFromRow(dirtyPreservedRow(t, f, r))).Confirmed(Needs{Confirm: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(rs.Src, "topic.txt", "something else entirely")
+	f.write(rs.Src, "topic.txt", "edited")
+	f.write(rs.Src, "scratch.txt", "x")
+	f.write(rs.Src, "scratch.txt", "untracked")
+	if o := one(t, eng, it); o.Worktree != WtRemoved || o.Branch != BrDeleted {
+		t.Fatalf("outcome %s/%s (%s), want removed/deleted", o.Worktree, o.Branch, o.Reason)
+	}
+	if exists(t, rs.Src) {
+		t.Error("the original is still there")
+	}
+}
+
+// TestPreviewDoesNotRunTheReCheck counts the rescans of a preview and of a
+// dry run (Plan) of a dirty rescued original: one each. Why: the re-check
+// belongs right before git, which neither runs; a preview reading twice
+// would only cost time and could disagree with itself.
+func TestPreviewDoesNotRunTheReCheck(t *testing.T) {
+	f := newFixture(t)
+	dirtyRescuedTopic(t, f)
+	s, r := f.report()
+	eng := f.engine(s, f.inputs(), Options{})
+	row := dirtyPreservedRow(t, f, r)
+	n := countRescans(t)
+	p := previewOne(t, eng, ItemFromRow(row))
+	if *n != 1 {
+		t.Errorf("preview: %d rescans, want 1", *n)
+	}
+	it, err := p.Confirmed(p.Needs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*n = 0
+	out := eng.Plan([]Item{it})
+	if len(out) != 1 || out[0].Worktree != WtRemoved || !strings.HasPrefix(out[0].Reason, "dry run: would remove") {
+		t.Fatalf("plan %+v, want a dry-run removal", out)
+	}
+	if *n != 1 {
+		t.Errorf("dry run: %d rescans, want 1", *n)
+	}
+}
+
+// TestPreviewNoteForCoveredDirt checks the preview of a dirty rescued
+// original carries the one display note naming the record and the copy, that
+// a clean rescued original's preview has none, and that the note is not part
+// of what Confirmed trusts (editing it still confirms). Why: the user is
+// asked to accept a dirty tree's removal and must see where the changes are
+// kept; the note is display only, so it must not change the seal or the
+// remove-result contract.
+func TestPreviewNoteForCoveredDirt(t *testing.T) {
+	f := newFixture(t)
+	dirtyRescuedTopic(t, f)
+	s, r := f.report()
+	row := dirtyPreservedRow(t, f, r)
+	p := previewOne(t, f.engine(s, f.inputs(), Options{}), ItemFromRow(row))
+	// One sanitised line, capped like every display line (a long temp path
+	// may be cut).
+	want := cleanup.OneLine("uncommitted changes are kept in " + row.Preserved.Ref + " (copy: " + row.Preserved.DestPath + ")")
+	if !slices.Equal(p.Notes, []string{want}) {
+		t.Errorf("notes %q, want [%q]", p.Notes, want)
+	}
+	edited := p
+	edited.Notes = []string{"something else"}
+	if _, err := edited.Confirmed(Needs{Confirm: true}); err != nil {
+		t.Errorf("a preview with edited notes is refused: %v", err)
+	}
+
+	g := newFixture(t)
+	rescuedTopic(t, g)
+	s, r = g.report()
+	if p := previewOne(t, g.engine(s, g.inputs(), Options{}), ItemFromRow(preservedRow(t, g, r))); len(p.Notes) != 0 {
+		t.Errorf("clean preserved notes %q, want none", p.Notes)
+	}
+}
+
+// TestSubmoduleStillRefusedUnderForce checks the --force path's submodule
+// refusal still holds around covered dirt: (1) a rescued original whose dirt
+// the record covers gets a submodule repository forged into its admin dir:
+// it needs only Confirm, yet git would be handed --force, so submodulesIn
+// refuses it; (2) a submodule added and initialised after the rescue: the
+// record no longer covers the tree (dirtsnap does not hash submodules), the
+// row needs Force, and with Force it is still refused. Nothing is removed.
+// Why: git skips its own submodule check under --force; covered dirt must not
+// open a path around Ruling X.
+func TestSubmoduleStillRefusedUnderForce(t *testing.T) {
+	t.Run("forged modules dir, dirt covered", func(t *testing.T) {
+		f := newFixture(t)
+		rs := dirtyRescuedTopic(t, f)
+		admin := gitIn(t, rs.Src, "rev-parse", "--path-format=absolute", "--git-dir")
+		if err := os.MkdirAll(filepath.Join(admin, "modules", "x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s, r := f.report()
+		row := dirtyPreservedRow(t, f, r)
+		if nd := needsOf(cleanup.KindWorktree, row); nd != (Needs{Confirm: true}) {
+			t.Fatalf("needs %+v, want Confirm only", nd)
+		}
+		eng := f.engine(s, f.inputs(), Options{})
+		if p := previewOne(t, eng, ItemFromRow(row)); p.Approval != ApprovalRefused || !strings.Contains(p.Reason, "contains submodules") {
+			t.Errorf("preview %s %q, want refused: contains submodules", p.Approval, p.Reason)
+		}
+		if o := one(t, eng, itemOf(row)); o.Worktree != WtRefused || !strings.Contains(o.Reason, "contains submodules; remove by hand") {
+			t.Errorf("outcome %s %q, want refused: contains submodules", o.Worktree, o.Reason)
+		}
+		if !exists(t, rs.Src) {
+			t.Error("the original was removed")
+		}
+	})
+	t.Run("submodule initialised after the rescue", func(t *testing.T) {
+		f := newFixture(t)
+		rs := dirtyRescuedTopic(t, f)
+		sub := filepath.Join(t.TempDir(), "sub")
+		gitIn(t, filepath.Dir(sub), "init", "-q", "-b", "main", sub)
+		gitIn(t, sub, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
+		gitIn(t, rs.Src, "-c", "protocol.file.allow=always", "submodule", "add", sub, "sub")
+		s, r := f.report()
+		row := f.row(r, cleanup.KindWorktree, "topic")
+		if row.Preserved != nil && row.Preserved.CoversDirt {
+			t.Fatalf("precondition: Preserved %+v covers a tree with a submodule", row.Preserved)
+		}
+		if nd := needsOf(cleanup.KindWorktree, row); !nd.Force {
+			t.Fatalf("needs %+v, want Force", nd)
+		}
+		eng := f.engine(s, f.inputs(), Options{})
+		if o := one(t, eng, approve(itemOf(row), true, false)); o.Worktree != WtRefused || !strings.Contains(o.Reason, "contains submodules") {
+			t.Errorf("outcome %s %q, want refused: contains submodules", o.Worktree, o.Reason)
+		}
+		if !exists(t, rs.Src) {
+			t.Error("the original was removed")
+		}
+	})
+}
+
+// TestMissingAcceptLossRefuses runs a dirty rescued original's item with no
+// approval at all: it is refused for want of confirmation (the CLI's
+// --accept-loss), and the reason never asks for --force. Confirmed(Needs{})
+// refuses to build it too. Why: covered dirt is recoverable, so it must not
+// demand --force, but removing an unproven, dirty tree still needs the typed
+// confirmation.
+func TestMissingAcceptLossRefuses(t *testing.T) {
+	f := newFixture(t)
+	rs := dirtyRescuedTopic(t, f)
+	s, r := f.report()
+	row := dirtyPreservedRow(t, f, r)
+	eng := f.engine(s, f.inputs(), Options{})
+	p := previewOne(t, eng, ItemFromRow(row))
+	if _, err := p.Confirmed(Needs{}); err == nil {
+		t.Error("Confirmed(Needs{}) built an item that needs Confirm")
+	}
+	o := one(t, eng, granted(ItemFromRow(row), Needs{}))
+	if o.Worktree != WtRefused || !strings.HasPrefix(o.Reason, "needs confirmation: less_sure") || strings.Contains(o.Reason, "force") {
+		t.Errorf("outcome %s %q, want refused: needs confirmation, no force", o.Worktree, o.Reason)
+	}
+	if !exists(t, rs.Src) {
+		t.Error("the original was removed")
+	}
+}

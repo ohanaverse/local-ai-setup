@@ -280,6 +280,10 @@ func (e Engine) previewItem(it Item) ItemPreview {
 	}
 
 	fresh := g.fresh
+	if it.Kind == cleanup.KindWorktree && fresh.Preserved != nil && fresh.Preserved.CoversDirt {
+		// Display only: not in previewBasis (the seal) or any JSON.
+		p.Notes = append(p.Notes, cleanup.OneLine("uncommitted changes are kept in "+fresh.Preserved.Ref+" (copy: "+fresh.Preserved.DestPath+")"))
+	}
 	if it.Kind == cleanup.KindWorktree && fresh.Ref != "" && plan.Branch != BrDeleted {
 		if !fresh.BranchProven {
 			withDelete := full
