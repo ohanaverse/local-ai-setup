@@ -284,6 +284,40 @@ type recordOpts struct {
 	Extra                                                            []string // trailer lines appended as given
 	Message                                                          *string  // replaces the whole message
 	Object                                                           string   // when set, the ref points at this object instead
+	// Snapshot makes I the source's index tree and W its working-tree tree
+	// (index plus `add -A`), as a real rescue of a dirty source writes them,
+	// computed here with git alone (a temporary index copy, add -A, write-tree)
+	// so the oracle shares no code with the code under test. False keeps the
+	// HEAD tree in both commits.
+	Snapshot bool
+}
+
+// snapshotTrees returns the source's index tree and the tree add -A would
+// make of its working tree, both through a throwaway copy of the index so the
+// source's own index is untouched.
+func snapshotTrees(t *testing.T, srcPath string) (itree, wtree string) {
+	t.Helper()
+	idx := gitIn(t, srcPath, "rev-parse", "--path-format=absolute", "--git-path", "index")
+	b, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(t.TempDir(), "index")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", srcPath}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmp)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	itree = run("write-tree")
+	run("add", "-A")
+	return itree, run("write-tree")
 }
 
 // addRecord builds by hand the chain a rescue writes (I: a tree with parent
@@ -326,8 +360,12 @@ func (f *fixture) addRecord(t *testing.T, srcPath string, o recordOpts) string {
 	if o.Message != nil {
 		msg = *o.Message
 	}
-	tree := gitIn(t, srcPath, "rev-parse", "HEAD^{tree}")
-	commit := func(parent string) string {
+	itree := gitIn(t, srcPath, "rev-parse", "HEAD^{tree}")
+	wtree := itree
+	if o.Snapshot {
+		itree, wtree = snapshotTrees(t, srcPath)
+	}
+	commit := func(tree, parent string) string {
 		cmd := exec.Command("git", "-C", srcPath, "commit-tree", tree, "-p", parent, "-F", "-")
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@invalid",
 			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@invalid")
@@ -338,7 +376,7 @@ func (f *fixture) addRecord(t *testing.T, srcPath string, o recordOpts) string {
 		}
 		return strings.TrimSpace(string(b))
 	}
-	w := commit(commit(head))
+	w := commit(wtree, commit(itree, head))
 	target := w
 	if o.Object != "" {
 		target = o.Object
