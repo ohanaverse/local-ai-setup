@@ -292,3 +292,38 @@ func TestCheckUntrackedRefusesWhatIsNotAFileOrLink(t *testing.T) {
 		}
 	}
 }
+
+// TestPreflightStillAcceptsASecondRescueOfAPreservedOriginal checks that after
+// one real rescue the original reads preserved, yet Preflight with a distinct
+// --to name still returns a plan (no nothing_to_keep) and executing it writes
+// a second, distinct record ref. Why: Preflight reads the raw losses, so
+// the user can still keep a second copy of work a record already covers.
+func TestPreflightStillAcceptsASecondRescueOfAPreservedOriginal(t *testing.T) {
+	f := newFixture(t)
+	p := workTree(f)
+	if _, out := rescueOnce(t, f, p); out.Status != StatusMoved {
+		t.Fatalf("first rescue: %+v", out)
+	}
+	if n := len(strings.Split(strings.TrimSpace(rescuedRefs(t, f)), "\n")); n != 1 {
+		t.Fatalf("after the first rescue %d record refs, want 1", n)
+	}
+
+	eng, find := f.engine(f.Dir)
+	row := find(p)
+	if row.Preserved == nil {
+		t.Fatalf("original is not preserved after a rescue: %+v", row)
+	}
+	plan, err := eng.Preflight(row, "keep/again")
+	if err != nil {
+		t.Fatalf("second Preflight: %v", err)
+	}
+	if plan.Branch != "keep/again" {
+		t.Errorf("plan branch = %q, want keep/again", plan.Branch)
+	}
+	if out := eng.Execute(plan); out.Status != StatusMoved {
+		t.Fatalf("second rescue: %+v", out)
+	}
+	if n := len(strings.Split(strings.TrimSpace(rescuedRefs(t, f)), "\n")); n != 2 {
+		t.Errorf("after the second rescue %d record refs, want 2:\n%s", n, rescuedRefs(t, f))
+	}
+}

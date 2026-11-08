@@ -403,6 +403,31 @@ func TestEligibleNamesTheFailingCondition(t *testing.T) {
 	}
 }
 
+// TestEligibleRejectsAPreservedRow checks that a worktree a rescue record
+// covers (Preserved set) is still refused by the exit prompt when its raw
+// Losses.Unpushed is 2 and no loss line was printed, with the "lose
+// something" reason, while every other condition passes. Why: the prompt
+// offers only a worktree that holds nothing at all, record or not; reading
+// the effective losses here would delete a worktree whose commits only the
+// record keeps.
+func TestEligibleRejectsAPreservedRow(t *testing.T) {
+	cr := Created{Path: "/w", Branch: "topic", Tip: "abc"}
+	p := removal.ItemPreview{
+		Approval:        removal.ApprovalNeedsConfirm,
+		CanDeleteBranch: true,
+		LossLines:       nil,
+		Fresh: cleanup.Row{Kind: cleanup.KindWorktree, Status: cleanup.StatusLessSure, Evidence: cleanup.EvSameCommit,
+			Ref: "refs/heads/topic", Branch: "topic", Tip: "abc",
+			Reasons:   []cleanup.Reason{{Code: cleanup.ReasonFreshBranch}, {Code: cleanup.ReasonBaseIsLocal}},
+			Losses:    cleanup.Losses{Unpushed: 2},
+			Preserved: &cleanup.Preserved{Ref: "refs/wt/rescued/0123456789abcdef", DestBranch: "rescued/topic", DestPath: "/copy"}},
+	}
+	ok, why := Eligible(p, cr)
+	if ok || why != "removing it would lose something" {
+		t.Errorf("Eligible = %v, %q; want false, %q", ok, why, "removing it would lose something")
+	}
+}
+
 // errProcs is a ProcFinder whose lookup fails, like lsof missing or timing out.
 type errProcs struct{}
 
