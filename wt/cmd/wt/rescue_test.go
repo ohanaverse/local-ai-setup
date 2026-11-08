@@ -559,6 +559,34 @@ func TestPrintRescueTextNamesAKeptBranch(t *testing.T) {
 	}
 }
 
+// TestPrintRescueTextNamesTheRecord checks a moved outcome with a Record prints
+// one `    record: <ref> (holds the commits and the working state)` line after the
+// done: lines and before the warnings, and one without a Record prints no
+// record: line. Why: the user must be able to find what a rescue left, and the
+// line must not appear when nothing was written.
+func TestPrintRescueTextNamesTheRecord(t *testing.T) {
+	plan := rescue.Plan{Branch: "rescued/x", DestPath: "/d/rescued-x", Source: rescue.Source{Path: "/s"}, Warnings: []string{"w1"}}
+	render := func(o rescue.Outcome) string {
+		var b bytes.Buffer
+		if err := printRescueText(&b, rescue.Meta{}, o); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	got := render(rescue.Outcome{Status: rescue.StatusMoved, Plan: plan, Completed: []string{"step"}, Record: &rescue.Record{Ref: "refs/wt/rescued/abc", Commit: "deadbeef"}})
+	line := "    record: refs/wt/rescued/abc (holds the commits and the working state)\n"
+	if strings.Count(got, line) != 1 {
+		t.Fatalf("want the record line once:\n%s", got)
+	}
+	if d, r, w := strings.Index(got, "done: step"), strings.Index(got, line), strings.Index(got, "warning: w1"); !(d < r && r < w) {
+		t.Errorf("record line is not between done and warning:\n%s", got)
+	}
+	got = render(rescue.Outcome{Status: rescue.StatusMoved, Plan: plan})
+	if strings.Contains(got, "record:") {
+		t.Errorf("no record was written, yet:\n%s", got)
+	}
+}
+
 // TestRescueStartRecheckDependsOnWhetherAPromptWasShown drives the real command
 // and edits a tracked file of the source between the confirmation and the copy.
 // What: through the y/N prompt Execute re-reads the source first and refuses
