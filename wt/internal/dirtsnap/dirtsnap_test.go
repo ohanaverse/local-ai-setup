@@ -143,6 +143,35 @@ func TestBuildMatchesTheOracleOnTrickyShapes(t *testing.T) {
 		{"tracked file emptied", func(t *testing.T, d string) {
 			writeFile(t, filepath.Join(d, "a.txt"), "", 0o644)
 		}},
+		// A tracked directory replaced by a symlink: the old children must
+		// read as removed (git never looks through a link), not be hashed
+		// from wherever the link points.
+		{"tracked directory replaced by a symlink to an outside directory", func(t *testing.T, d string) {
+			out := t.TempDir()
+			writeFile(t, filepath.Join(out, "y.txt"), "outside content\n", 0o644)
+			rm(t, filepath.Join(d, "x"))
+			if err := os.Symlink(out, filepath.Join(d, "x")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"tracked directory replaced by a symlink to a directory inside the repo", func(t *testing.T, d string) {
+			writeFile(t, filepath.Join(d, "other", "y.txt"), "inside content\n", 0o644)
+			rm(t, filepath.Join(d, "x"))
+			if err := os.Symlink("other", filepath.Join(d, "x")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"tracked directory replaced by a symlink, new files nested elsewhere", func(t *testing.T, d string) {
+			out := t.TempDir()
+			writeFile(t, filepath.Join(out, "y.txt"), "outside content\n", 0o644)
+			writeFile(t, filepath.Join(out, "z.txt"), "more outside\n", 0o644)
+			rm(t, filepath.Join(d, "x"))
+			if err := os.Symlink(out, filepath.Join(d, "x")); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(d, "n", "m", "new.txt"), "new\n", 0o644)
+			writeFile(t, filepath.Join(d, "x.d", "f"), "f\n", 0o644)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

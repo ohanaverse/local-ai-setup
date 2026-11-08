@@ -856,3 +856,39 @@ func TestTwoRescuesOfOneSourceLeaveTwoValidRecords(t *testing.T) {
 		t.Errorf("Wt-Dest-Branch trailers are equal: %q", a)
 	}
 }
+
+// TestExecuteRecordOfADirectoryReplacedByASymlinkMatchesGit checks a source
+// whose tracked directory was replaced by a symlink to a directory outside
+// the repository (holding a file of the same name) is carried and recorded
+// with git's own working-tree tree: the link kept as a link, the tracked
+// children removed. Why: a record built by reading through the link would
+// hold outside content under the old path and lose the symlink, a false
+// proof of what the source held.
+func TestExecuteRecordOfADirectoryReplacedByASymlinkMatchesGit(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.write(p, "x/y.txt", "tracked")
+	gitIn(t, p, "add", "x/y.txt")
+	gitIn(t, p, "commit", "-q", "-m", "x")
+	out := t.TempDir()
+	f.write(out, "y.txt", "outside content")
+	if err := os.RemoveAll(filepath.Join(p, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(out, filepath.Join(p, "x")); err != nil {
+		t.Fatal(err)
+	}
+	want := recOracle(t, p)
+
+	_, o := rescueOnce(t, f, p)
+
+	if o.Status != StatusMoved {
+		t.Fatalf("status %s (%s): %s", o.Status, o.Code, o.Reason)
+	}
+	if o.Record == nil {
+		t.Fatalf("no record; warnings %q", o.Plan.Warnings)
+	}
+	if got := gitIn(t, p, "rev-parse", o.Record.Commit+"^{tree}"); got != want {
+		t.Errorf("W tree = %s, want git's %s\n%s", got, want, gitIn(t, p, "ls-tree", "-r", o.Record.Commit))
+	}
+}

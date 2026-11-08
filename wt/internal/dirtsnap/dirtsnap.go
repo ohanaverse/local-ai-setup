@@ -32,6 +32,41 @@ var (
 	ErrTooLarge = errors.New("dirtsnap: working tree over the limits")
 )
 
+// prefixCheck remembers, per proper prefix of a status path, whether it
+// blocks the path: the answer git's has_symlink_leading_path gives. os.Lstat
+// declines to follow only the last component, so without this a tracked
+// directory replaced by a symlink would be read through the link.
+type prefixCheck map[string]bool
+
+// blocked reports whether a proper prefix of path (slash-separated, relative
+// to dir) is a symlink, not a directory, or missing; the path is then absent
+// from the working tree as git sees it.
+func (c prefixCheck) blocked(dir, path string) (bool, error) {
+	for i := 0; i < len(path); i++ {
+		if path[i] != '/' {
+			continue
+		}
+		prefix := path[:i]
+		b, seen := c[prefix]
+		if !seen {
+			fi, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(prefix)))
+			switch {
+			case errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR):
+				b = true
+			case err != nil:
+				return false, fmt.Errorf("dirtsnap: %s: %w", prefix, err)
+			default:
+				b = !fi.IsDir()
+			}
+			c[prefix] = b
+		}
+		if b {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // lsChunkBytes bounds the path bytes on one ls-tree command line.
 const lsChunkBytes = 64 * 1024
 
@@ -69,6 +104,7 @@ func Build(dir string, run Runner, write bool, lim Limits) (string, error) {
 	var removals []string
 	var changes []change
 	var paths []string
+	leading := prefixCheck{}
 	for _, rec := range bytes.Split(out, []byte{0}) {
 		if len(rec) == 0 {
 			continue
@@ -82,9 +118,18 @@ func Build(dir string, run Runner, write bool, lim Limits) (string, error) {
 			return "", fmt.Errorf("%w: %s is a nested repository", ErrUnsupported, path)
 		}
 		paths = append(paths, path)
+		lead, err := leading.blocked(dir, path)
+		if err != nil {
+			return "", err
+		}
+		if lead {
+			removals = append(removals, path)
+			continue
+		}
 		fi, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(path)))
 		// ENOTDIR: a parent that was a directory is now a file, so the
-		// tracked child below it is gone.
+		// tracked child below it is gone (leading.blocked has already said
+		// so; this stays for a parent replaced between the two looks).
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			removals = append(removals, path)
 			continue
