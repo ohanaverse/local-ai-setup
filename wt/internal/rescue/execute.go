@@ -18,6 +18,10 @@ import (
 // source is compared and the destination verified.
 var afterCarry = func(*Plan) {}
 
+// afterVerify is a test seam, called once the copy is verified and before the
+// source is compared a last time and the record written.
+var afterVerify = func(*Plan) {}
+
 // patchArgs make a diff reproduce content exactly: binary-safe, full ids, no
 // rename guessing, none of the user's diff or textconv programs.
 // The a/ b/ prefixes are set explicitly: git apply strips one leading path
@@ -158,6 +162,23 @@ func (e Engine) Execute(p *Plan) Outcome {
 		return keep(CodeVerifyFailed, "the copy does not match the source: %v", err)
 	}
 	done("verified status and file contents against the source")
+
+	// The copy is verified; the record is extra proof. Whatever stops it
+	// leaves the rescue moved and says so in a warning.
+	afterVerify(p)
+	warn := func(why string) {
+		o.Plan.Warnings = append(o.Plan.Warnings, RecordWarningPrefix+cleanup.OneLine(why))
+	}
+	if again, err := takeFingerprint(sg); err != nil {
+		warn("could not re-read the source: " + err.Error())
+	} else if d := p.fp.diff(again); d != "" {
+		warn("the source changed after the copy was verified (" + d + ")")
+	} else if rec, err := writeRecord(sg, p); err != nil {
+		warn(err.Error())
+	} else {
+		o.Record = &rec
+		done("recorded the source at " + rec.Ref)
+	}
 	o.Status = StatusMoved
 	return o
 }

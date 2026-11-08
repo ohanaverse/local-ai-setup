@@ -136,6 +136,9 @@ type Outcome struct {
 	// says whether the worktree directory is there too.
 	BranchKept bool
 	Completed  []string
+	// Record is the proof left in the source's repository; nil unless the
+	// rescue moved and the record was written.
+	Record *Record
 }
 
 // Engine runs a rescue in one repository. G runs git in the repository (any

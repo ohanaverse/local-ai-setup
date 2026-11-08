@@ -625,3 +625,234 @@ func TestExecuteGivesCreatedDirectoriesTheirModesWhenTheCopyFailsMidway(t *testi
 		t.Errorf("reason %q does not report the directory modes that could not be restored", out.Reason)
 	}
 }
+
+// rescuedRefs lists the refs under the record prefix in the repository.
+func rescuedRefs(t *testing.T, f *fixture) string {
+	t.Helper()
+	return f.git("for-each-ref", "refs/wt/rescued")
+}
+
+// TestExecuteWritesARecordAfterVerify checks, for commits-only, staged,
+// unstaged, nested-untracked and detached sources, that a moved outcome
+// carries a Record whose ref resolves to its commit, whose W tree is git's
+// working-tree tree and whose I tree is the index tree, and that the source
+// (raw index bytes included) is untouched. Why: the record is the proof the
+// copy kept everything; a wrong tree or a touched source breaks that claim.
+func TestExecuteWritesARecordAfterVerify(t *testing.T) {
+	cases := []struct {
+		name     string
+		detached bool
+		setup    func(f *fixture, p string)
+	}{
+		{"commits only", false, func(f *fixture, p string) {}},
+		{"staged", false, func(f *fixture, p string) {
+			f.write(p, "work.txt", "staged")
+			gitIn(f.t, p, "add", "work.txt")
+		}},
+		{"unstaged", false, func(f *fixture, p string) { f.write(p, "work.txt", "unstaged") }},
+		{"nested untracked", false, func(f *fixture, p string) { f.write(p, "a/b/c.txt", "deep") }},
+		{"detached", true, func(f *fixture, p string) {
+			f.write(p, "work.txt", "staged")
+			gitIn(f.t, p, "add", "work.txt")
+			f.write(p, "u.txt", "untracked")
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			var p string
+			if c.detached {
+				p = f.Detached("d")
+			} else {
+				p = f.Worktree("topic")
+			}
+			f.Commit(p, "work.txt", "work", "work")
+			c.setup(f, p)
+			wantW, wantI := recOracle(t, p), copyIndexTree(t, p)
+			before := snapshot(t, p)
+
+			_, o := rescueOnce(t, f, p)
+
+			if o.Status != StatusMoved {
+				t.Fatalf("status %s (%s): %s", o.Status, o.Code, o.Reason)
+			}
+			if o.Record == nil {
+				t.Fatalf("no record; warnings %q", o.Plan.Warnings)
+			}
+			if got := gitIn(t, p, "rev-parse", o.Record.Ref); got != o.Record.Commit {
+				t.Errorf("ref points at %s, want %s", got, o.Record.Commit)
+			}
+			if got := gitIn(t, p, "rev-parse", o.Record.Commit+"^{tree}"); got != wantW {
+				t.Errorf("W tree = %s, want %s", got, wantW)
+			}
+			if got := gitIn(t, p, "rev-parse", o.Record.Commit+"^^{tree}"); got != wantI {
+				t.Errorf("I tree = %s, want %s", got, wantI)
+			}
+			if d := before.diff(snapshot(t, p)); d != "" {
+				t.Errorf("the source changed (%s)", d)
+			}
+		})
+	}
+}
+
+// TestExecuteWritesNoRecordWhenNothingMoved checks a refusal (nothing to
+// keep), a taken name and a failed verify each leave no ref under
+// refs/wt/rescued and no Record. Why: a record is a claim that the copy is
+// verified; none may exist for a rescue that did not finish.
+func TestExecuteWritesNoRecordWhenNothingMoved(t *testing.T) {
+	t.Run("nothing to keep", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		eng, find := f.engine(f.Dir)
+		_, err := eng.Preflight(find(p), "")
+		var r *Refusal
+		if !errors.As(err, &r) || r.Code != CodeNothingToKeep {
+			t.Fatalf("Preflight = %v, want nothing_to_keep", err)
+		}
+		if got := rescuedRefs(t, f); got != "" {
+			t.Errorf("refs: %s", got)
+		}
+	})
+	t.Run("name unavailable", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		f.Commit(p, "work.txt", "work", "work")
+		eng, find := f.engine(f.Dir)
+		plan, err := eng.Preflight(find(p), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.git("branch", plan.Branch) // taken while the prompt waited
+		o := eng.Execute(plan)
+		if o.Code != CodeNameUnavailable || o.Record != nil {
+			t.Fatalf("outcome = %+v", o)
+		}
+		if got := rescuedRefs(t, f); got != "" {
+			t.Errorf("refs: %s", got)
+		}
+	})
+	t.Run("verify failed", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.Worktree("topic")
+		f.Commit(p, "work.txt", "work", "work")
+		f.write(p, "u.txt", "untracked")
+		eng, find := f.engine(f.Dir)
+		plan, err := eng.Preflight(find(p), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { afterCarry = func(*Plan) {} })
+		afterCarry = func(pl *Plan) { f.write(pl.DestPath, "u.txt", "drift") }
+		o := eng.Execute(plan)
+		if o.Code != CodeVerifyFailed || o.Record != nil {
+			t.Fatalf("outcome = %+v", o)
+		}
+		if got := rescuedRefs(t, f); got != "" {
+			t.Errorf("refs: %s", got)
+		}
+	})
+}
+
+// TestExecuteKeepsMovedWhenTheRecordCannotBeWritten checks a failing ref
+// update leaves the outcome moved, with no Record, no ref and exactly one
+// record_not_written warning. Why: the copy is verified and kept; only the
+// extra proof is lost, and the user must be told.
+func TestExecuteKeepsMovedWhenTheRecordCannotBeWritten(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "u.txt", "untracked")
+	old := updateRecordRef
+	t.Cleanup(func() { updateRecordRef = old })
+	updateRecordRef = func(sgit, string, string) error { return errors.New("disk full") }
+
+	_, o := rescueOnce(t, f, p)
+
+	if o.Status != StatusMoved || o.Record != nil {
+		t.Fatalf("outcome = %+v", o)
+	}
+	var n int
+	for _, w := range o.Plan.Warnings {
+		if strings.HasPrefix(w, RecordWarningPrefix) {
+			n++
+			if !strings.Contains(w, "disk full") {
+				t.Errorf("warning does not say why: %q", w)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d record warnings in %q, want 1", n, o.Plan.Warnings)
+	}
+	if got := rescuedRefs(t, f); got != "" {
+		t.Errorf("refs: %s", got)
+	}
+}
+
+// TestExecuteWritesNoRecordWhenTheSourceChangedAfterVerify checks an edit to
+// the source between verify and the record write gives a moved outcome, no
+// record and a warning. Why: a record of a state the copy never held would
+// be a false proof.
+func TestExecuteWritesNoRecordWhenTheSourceChangedAfterVerify(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "work.txt", "edit")
+	eng, find := f.engine(f.Dir)
+	plan, err := eng.Preflight(find(p), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { afterVerify = func(*Plan) {} })
+	afterVerify = func(*Plan) { f.write(p, "work.txt", "edited after verify") }
+
+	o := eng.Execute(plan)
+
+	if o.Status != StatusMoved || o.Record != nil {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if len(o.Plan.Warnings) == 0 || !strings.HasPrefix(o.Plan.Warnings[len(o.Plan.Warnings)-1], RecordWarningPrefix) ||
+		!strings.Contains(strings.Join(o.Plan.Warnings, "\n"), "changed") {
+		t.Errorf("warnings = %q", o.Plan.Warnings)
+	}
+	if got := rescuedRefs(t, f); got != "" {
+		t.Errorf("refs: %s", got)
+	}
+}
+
+// TestTwoRescuesOfOneSourceLeaveTwoValidRecords checks a second rescue of the
+// unchanged source (to another branch) adds a second record beside the first,
+// and their Wt-Dest-Branch trailers differ. Why: each rescue made its own
+// destination; one record must not shadow or overwrite the other.
+func TestTwoRescuesOfOneSourceLeaveTwoValidRecords(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "u.txt", "untracked")
+	_, first := rescueOnce(t, f, p)
+	eng, find := f.engine(f.Dir)
+	plan, err := eng.Preflight(find(p), "rescued/second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := eng.Execute(plan)
+
+	if first.Record == nil || second.Record == nil {
+		t.Fatalf("records: %v %v; outcomes %+v / %+v", first.Record, second.Record, first, second)
+	}
+	if first.Record.Ref == second.Record.Ref {
+		t.Fatalf("both records are %s", first.Record.Ref)
+	}
+	if n := len(strings.Split(rescuedRefs(t, f), "\n")); n != 2 {
+		t.Errorf("%d refs, want 2", n)
+	}
+	for _, r := range []*Record{first.Record, second.Record} {
+		if got := gitIn(t, p, "rev-parse", r.Ref); got != r.Commit {
+			t.Errorf("%s points at %s, want %s", r.Ref, got, r.Commit)
+		}
+	}
+	a := trailer(t, p, first.Record.Commit, "Wt-Dest-Branch")
+	b := trailer(t, p, second.Record.Commit, "Wt-Dest-Branch")
+	if a == b {
+		t.Errorf("Wt-Dest-Branch trailers are equal: %q", a)
+	}
+}
