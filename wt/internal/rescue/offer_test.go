@@ -60,3 +60,17 @@ func TestOfferedStillOffersAPreservedRow(t *testing.T) {
 		t.Errorf("Offered = %v, %q; want true, empty", ok, why)
 	}
 }
+
+// TestRescueStillOffersDirtyPreserved checks that a worktree row whose record
+// covers its uncommitted work (CoversDirt, raw Dirty still set) is still
+// offered a rescue. Why: Offered reads raw losses so a second rescue of a
+// dirty, already-preserved original stays possible; the effective view
+// clears Dirty and would say "nothing to keep".
+func TestRescueStillOffersDirtyPreserved(t *testing.T) {
+	row := cleanup.Row{Kind: cleanup.KindWorktree, Name: "x",
+		Losses:    cleanup.Losses{Dirty: true},
+		Preserved: &cleanup.Preserved{Ref: "refs/wt/rescued/0123456789abcdef", DestBranch: "rescued/x", DestPath: "/copy", CoversDirt: true}}
+	if ok, why := Offered(row); !ok || why != "" {
+		t.Errorf("Offered = %v, %q; want true, empty", ok, why)
+	}
+}
