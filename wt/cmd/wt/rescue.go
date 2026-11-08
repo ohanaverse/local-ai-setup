@@ -52,9 +52,10 @@ func rescueCmd(a *app) *cobra.Command {
 			"The original is only read and is never changed, switched or removed. It is\n" +
 			"not removed either, but once its record exists a clean original (no staged,\n" +
 			"unstaged or untracked changes) reads removable in `wt cleanup`: the record\n" +
-			"holds its commits. One with uncommitted changes still takes the approvals\n" +
-			"`wt remove` names. Before it says the work moved, wt checks that the new\n" +
-			"worktree's `git status` and file contents match the original's.\n\n" +
+			"holds its commits. Ignored files, an open or unknown PR and a local base\n" +
+			"keep their usual effect, and one with uncommitted changes still takes the\n" +
+			"approvals `wt remove` names. Before it says the work moved, wt checks that\n" +
+			"the new worktree's `git status` and file contents match the original's.\n\n" +
 			"It refuses, creating nothing, a worktree with nothing to keep, the primary\n" +
 			"checkout, one with a merge, rebase or similar in progress or unmerged\n" +
 			"paths, a file marked skip-worktree or assume-unchanged, a changed\n" +
@@ -307,9 +308,9 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 	}
 	if o.Status == rescue.StatusMoved {
 		if o.Record != nil {
-			fmt.Fprintf(&b, "    the original is untouched; with the record above, a clean one reads removable (`wt remove %s`), one with uncommitted changes still needs the approvals it names\n", cleanup.OneLine(p.Source.Path))
+			fmt.Fprintf(&b, "    the original is untouched; with the record above, a clean one reads removable (`wt remove %s`), but ignored files, an open or unknown PR or a local base keep it below proven; anything not proven still needs the approvals it names\n", cleanup.OneLine(p.Source.Path))
 		} else {
-			fmt.Fprintf(&b, "    the original is untouched, but no record was written (see the warning above), so it still holds work only it has; removing it takes `wt remove %s` with the approvals it names\n", cleanup.OneLine(p.Source.Path))
+			fmt.Fprintf(&b, "    the original is untouched, but no record was written (see the warning above), so `wt cleanup` reads it as holding work only it has; removing it takes `wt remove %s` with the approvals it names\n", cleanup.OneLine(p.Source.Path))
 		}
 	}
 	if o.Status == rescue.StatusFailed && o.BranchKept && !o.Created {
