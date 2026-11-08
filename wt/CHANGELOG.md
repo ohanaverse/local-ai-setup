@@ -4,14 +4,23 @@
 
 ### Changed
 
+- A dirty original that `wt rescue` has copied now reads removable with
+  `--accept-loss` when its index and working tree are exactly what the record
+  captured: the row is `less_sure` (reason `preserved`, never default-ticked),
+  needs no `--force`, and `wt remove` re-checks the record right before
+  `git worktree remove` (a change then is `skipped_changed`). The preview adds
+  `uncommitted changes are kept in <ref> (copy: <path>)`. Not kept: ignored
+  files, file modes beyond the executable bit, empty directories. Cost: a
+  covered row hashes its changed files on every list and re-check, and once
+  more before removal. `cleanup-list` and `remove-result` are unchanged.
 - A clean original that `wt rescue` has copied now reads removable. `wt cleanup`
   reads the `refs/wt/rescued/*` records; when one matches a branch or
   detached worktree with no staged, unstaged or untracked changes, whose own
   commits are the only thing missing from the remote-tracking refs, the row
   is `proven` with evidence `rescued` and the informational reason
   `preserved`, and `wt remove <path> --yes` removes it and its own branch
-  with no other approval. A row with uncommitted changes is unchanged (still
-  unique work, still `--accept-loss --force -D`). Ignored files, an open or
+  with no other approval. A row with uncommitted changes stays unique work
+  (`--accept-loss --force -D`) unless B2 below covers it. Ignored files, an open or
   unknown PR and a local base keep their usual effect, and the worktree-exit
   prompt does not offer a rescued original. `cleanup-list` gains the evidence
   value `rescued` and the reason code `preserved` (additive, version 1
