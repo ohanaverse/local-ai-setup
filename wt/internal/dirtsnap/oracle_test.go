@@ -2,6 +2,7 @@ package dirtsnap
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +17,12 @@ func runIn(dir string) Runner {
 		if stdin != nil {
 			cmd.Stdin = bytes.NewReader(stdin)
 		}
-		return cmd.Output()
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("git %v: %w: %s", args, err, bytes.TrimSpace(stderr.Bytes()))
+		}
+		return stdout.Bytes(), nil
 	}
 }
 

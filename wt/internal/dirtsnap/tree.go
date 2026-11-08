@@ -74,7 +74,7 @@ func encodeTree(entries map[string]*entry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// mergeTree applies removals, then additions, to the tree rooted at n.
+// mergeTree applies removals, then additions, to the tree held by root.
 // A path is slash-separated; an addition is a blob with a mode and id.
 func (b *builder) mergeTree(root *node, removals []string, adds map[string]*entry) error {
 	for _, p := range removals {
