@@ -65,29 +65,69 @@ func dirtRunner(wg Git) dirtsnap.Runner {
 // makes cannot carry them: file mode bits other than the executable bit, and
 // empty directories. A change of only those still reads as covered.
 func dirtCovered(wg Git, w WorktreeFact, r RescueRecord) bool {
-	if w.Head == "" || w.Head != r.SourceHead || len(r.Commit) < recordIDLen {
-		return false
+	return len(dirtCoveredRecords(wg, w, []RescueRecord{r})) > 0
+}
+
+// dirtCoveredRecords keeps, in order, the records of rs dirtCovered accepts.
+// The checks that look only at the worktree (2, 3 and 5) run once for the
+// whole slice: a source rescued more than once at one head leaves a candidate
+// per rescue, and step 5 hashes every changed file. Step 1 still runs first
+// per record, so a worktree whose head is not a record's forks no process at
+// all (TestDirtCoveredCheapChecksFirst).
+func dirtCoveredRecords(wg Git, w WorktreeFact, rs []RescueRecord) []RescueRecord {
+	if w.Head == "" {
+		return nil
 	}
-	o, err := wg.Run("rev-parse", "--verify", "--end-of-options", r.Commit+"^{tree}")
-	if err != nil || o.Code != 0 {
-		return false
+	type candidate struct {
+		r     RescueRecord
+		wtree string
 	}
-	wtree := strings.TrimSpace(o.Stdout)
-	o, err = wg.Run("rev-parse", "--verify", "--end-of-options", r.Commit+"~2")
-	if err != nil || o.Code != 0 || strings.TrimSpace(o.Stdout) != r.SourceHead {
-		return false
+	var cands []candidate
+	for _, r := range rs {
+		if w.Head != r.SourceHead || len(r.Commit) < recordIDLen {
+			continue
+		}
+		o, err := wg.Run("rev-parse", "--verify", "--end-of-options", r.Commit+"^{tree}")
+		if err != nil || o.Code != 0 {
+			continue
+		}
+		wtree := strings.TrimSpace(o.Stdout)
+		o, err = wg.Run("rev-parse", "--verify", "--end-of-options", r.Commit+"~2")
+		if err != nil || o.Code != 0 || strings.TrimSpace(o.Stdout) != r.SourceHead {
+			continue
+		}
+		cands = append(cands, candidate{r, wtree})
+	}
+	if len(cands) == 0 {
+		return nil
 	}
 	if hidden, err := hiddenIndexFlags(wg); err != nil || hidden {
-		return false
+		return nil
 	}
-	o, err = wg.Run("diff-files", "--diff-filter=A", "--name-only", "-z")
+	o, err := wg.Run("diff-files", "--diff-filter=A", "--name-only", "-z")
 	if err != nil || o.Code != 0 || o.Stdout != "" {
-		return false
+		return nil
 	}
-	o, err = wg.Run("diff-index", "--cached", "--quiet", r.Commit+"^", "--")
-	if err != nil || o.Code != 0 {
-		return false
+	var indexed []candidate
+	for _, c := range cands {
+		o, err := wg.Run("diff-index", "--cached", "--quiet", c.r.Commit+"^", "--")
+		if err != nil || o.Code != 0 {
+			continue
+		}
+		indexed = append(indexed, c)
+	}
+	if len(indexed) == 0 {
+		return nil
 	}
 	got, err := dirtsnap.Build(wg.Dir, dirtRunner(wg), false, dirtLimits)
-	return err == nil && got == wtree
+	if err != nil {
+		return nil
+	}
+	var out []RescueRecord
+	for _, c := range indexed {
+		if c.wtree == got {
+			out = append(out, c.r)
+		}
+	}
+	return out
 }

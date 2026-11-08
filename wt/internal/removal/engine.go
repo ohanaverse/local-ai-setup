@@ -284,10 +284,7 @@ func (e Engine) worktreeGate(it Item) gated {
 	if fresh.Status.WorseThan(it.Saw) {
 		return stop(skipped(it, fmt.Sprintf("status changed since it was listed (%s, was %s)", fresh.Status, it.Saw)))
 	}
-	tip := fresh.Tip
-	if fresh.Ref == "" {
-		tip = fresh.Head
-	}
+	tip := rowTip(fresh)
 	if tip == "" {
 		return stop(refuse(it, "could not read the worktree's commit"))
 	}
@@ -414,7 +411,7 @@ func (e Engine) worktreeAct(it Item, g gated, dry bool) (Outcome, []string) {
 		case err != nil:
 			return stop(WtRefused, "could not re-check: "+err.Error())
 		case coverLapsed(it, fresh, now):
-			return stop(WtSkippedChanged, "changed while being checked: the rescue record no longer covers the uncommitted changes")
+			return stop(WtSkippedChanged, "changed while being checked: it no longer matches what was confirmed")
 		}
 		// losses: raw, git refuses a dirty worktree without --force, covered or not
 		gitForce = now.Losses.Dirty
@@ -449,16 +446,10 @@ func (e Engine) worktreeAct(it Item, g gated, dry bool) (Outcome, []string) {
 // sharing them: the gate distinguishes refused from skipped and names each
 // cause, while any mismatch here is one skipped_changed.
 func coverLapsed(it Item, gate, now cleanup.Row) bool {
-	tipOf := func(r cleanup.Row) string {
-		if r.Ref == "" {
-			return r.Head
-		}
-		return r.Tip
-	}
 	p, q := gate.Preserved, now.Preserved
 	switch {
 	case q == nil || !q.CoversDirt || p == nil || q.Ref != p.Ref || q.Commit != p.Commit,
-		now.Ref != gate.Ref || tipOf(now) == "" || tipOf(now) != tipOf(gate) || tipOf(now) != it.SawTip,
+		now.Ref != gate.Ref || rowTip(now) == "" || rowTip(now) != rowTip(gate) || rowTip(now) != it.SawTip,
 		len(now.Blockers) > 0 || now.Status == cleanup.StatusInUse,
 		now.Losses.GatesUnknown, // losses: raw, the view never clears GatesUnknown (same value either way)
 		now.Status.WorseThan(it.Saw),

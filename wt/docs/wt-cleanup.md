@@ -246,8 +246,9 @@ working tree (staged, unstaged and untracked files that are not ignored) must
 equal the record's, and its HEAD and branch tip must still be the commit the
 record names. Then `wt cleanup` lists it as less sure (reason `preserved`,
 evidence unchanged) and `wt remove <path> --accept-loss` removes it; it never
-needs `--force`, and it is not ticked by default in the list. Any other edit
-(a change of file modes other than the executable bit is not seen, see below),
+needs `--force`, and it is not ticked by default in the list. Any change that
+leaves it different (a change of file modes other than the executable bit is
+not seen, see below),
 a file marked skip-worktree or assume-unchanged, or a record that no longer
 matches returns it to having work
 that exists nowhere else, needing `--accept-loss`, `--force` and `-D`.

@@ -294,7 +294,7 @@ func TestPreReCheckCatchesEditAfterGate(t *testing.T) {
 	})
 	calls := recordRemoves(t)
 	o := one(t, eng, it)
-	const reason = "changed while being checked: the rescue record no longer covers the uncommitted changes"
+	const reason = "changed while being checked: it no longer matches what was confirmed"
 	if o.Worktree != WtSkippedChanged || o.Reason != reason || o.Branch != BrNotAttempted {
 		t.Fatalf("outcome %s/%s %q, want skipped_changed/not_attempted %q", o.Worktree, o.Branch, o.Reason, reason)
 	}
@@ -382,7 +382,7 @@ func TestPreReCheckMismatches(t *testing.T) {
 			})
 			calls := recordRemoves(t)
 			o := one(t, eng, it)
-			if o.Worktree != WtSkippedChanged || o.Reason != "changed while being checked: the rescue record no longer covers the uncommitted changes" {
+			if o.Worktree != WtSkippedChanged || o.Reason != "changed while being checked: it no longer matches what was confirmed" {
 				t.Fatalf("outcome %s %q, want skipped_changed by the re-check", o.Worktree, o.Reason)
 			}
 			if len(*calls) != 0 || !exists(t, rs.Src) {

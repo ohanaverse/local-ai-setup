@@ -42,21 +42,32 @@ func preservedOf(g Git, ws WorktreeState, recs []RescueRecord) *Preserved {
 	}
 	path := resolve(w.Path)
 	wg := Git{Dir: w.Path, Timeout: g.Timeout}
+	var matching []RescueRecord
 	for _, r := range recs {
 		if len(r.Commit) < recordIDLen || r.Ref != RecordRefPrefix+r.Commit[:recordIDLen] ||
 			r.SourcePath != path || r.SourceRef != ref || r.SourceHead != w.Head ||
 			!recordCovers(g, r, w.Head) {
 			continue
 		}
-		if ws.Gates.Dirty && !dirtCovered(wg, w, r) {
-			continue
+		if !ws.Gates.Dirty {
+			return &Preserved{
+				Ref: r.Ref, Commit: r.Commit, SourceHead: r.SourceHead,
+				DestBranch: r.DestBranch, DestPath: r.DestPath,
+			}
 		}
-		return &Preserved{
-			Ref: r.Ref, Commit: r.Commit, SourceHead: r.SourceHead,
-			DestBranch: r.DestBranch, DestPath: r.DestPath, CoversDirt: ws.Gates.Dirty,
-		}
+		matching = append(matching, r)
 	}
-	return nil
+	// Every match is tried against the one dirt check (it snapshots the
+	// working tree once); the first record it accepts wins.
+	covering := dirtCoveredRecords(wg, w, matching)
+	if len(covering) == 0 {
+		return nil
+	}
+	r := covering[0]
+	return &Preserved{
+		Ref: r.Ref, Commit: r.Commit, SourceHead: r.SourceHead,
+		DestBranch: r.DestBranch, DestPath: r.DestPath, CoversDirt: true,
+	}
 }
 
 // recordCovers is whether the record's commit and its parent exist and head

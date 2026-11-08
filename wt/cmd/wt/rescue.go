@@ -54,12 +54,12 @@ func rescueCmd(a *app) *cobra.Command {
 			"unstaged or untracked changes) reads removable in `wt cleanup`: the record\n" +
 			"holds its commits. An original with uncommitted changes reads removable\n" +
 			"too, with --accept-loss (not --force), while its index and working tree are\n" +
-			"exactly what the record captured; any edit after the rescue takes it back to\n" +
-			"holding work only it has. The record does not hold ignored files, file modes\n" +
-			"beyond the executable bit or empty directories. Ignored files, an open or\n" +
-			"unknown PR and a local base keep their usual effect. Before it says the work\n" +
-			"moved, wt checks that the new worktree's `git status` and file contents\n" +
-			"match the original's.\n\n" +
+			"exactly what the record captured; any change that leaves either different\n" +
+			"takes it back to holding work only it has. The record does not hold ignored\n" +
+			"files, file modes beyond the executable bit or empty directories. Ignored\n" +
+			"files, an open or unknown PR and a local base keep their usual effect.\n" +
+			"Before it says the work moved, wt checks that the new worktree's `git status`\n" +
+			"and file contents match the original's.\n\n" +
 			"It refuses, creating nothing, a worktree with nothing to keep, the primary\n" +
 			"checkout, one with a merge, rebase or similar in progress or unmerged\n" +
 			"paths, a file marked skip-worktree or assume-unchanged, a changed\n" +
