@@ -2,9 +2,11 @@ package dirtsnap
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -280,5 +282,96 @@ func TestBuildStopsAtTheLimits(t *testing.T) {
 	}
 	if _, err := Build(dir, runIn(dir), false, Limits{MaxBytes: 10}); err != nil {
 		t.Fatalf("MaxBytes at the size: %v", err)
+	}
+}
+
+// recordingRunner wraps runIn and records the git subcommand of every call.
+func recordingRunner(dir string, calls *[]string) Runner {
+	inner := runIn(dir)
+	return func(stdin []byte, args ...string) ([]byte, error) {
+		for _, a := range args {
+			if a == "ls-tree" || a == "hash-object" {
+				*calls = append(*calls, a)
+				break
+			}
+		}
+		return inner(stdin, args...)
+	}
+}
+
+// TestBuildRefusesOverMaxFilesBeforeAnyGitWork pins that the file limit is
+// applied before ls-tree or hash-object run, so a huge dirty tree costs a
+// status and nothing else (and cannot overflow a command line first).
+func TestBuildRefusesOverMaxFilesBeforeAnyGitWork(t *testing.T) {
+	dir := newRepo(t)
+	for _, n := range []string{"one", "two", "three"} {
+		writeFile(t, filepath.Join(dir, n), "x\n", 0o644)
+	}
+	var calls []string
+	_, err := Build(dir, recordingRunner(dir, &calls), true, Limits{MaxFiles: 2})
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("git calls before the limit check: %v", calls)
+	}
+}
+
+// TestBuildOfAVeryLargeTreeMatchesTheOracle pins that a thousand changed
+// paths with long names build and equal git's answer, which only holds when
+// no command line grows with the number of paths (1000 x ~110 bytes spans
+// two ls-tree chunks).
+func TestBuildOfAVeryLargeTreeMatchesTheOracle(t *testing.T) {
+	dir := newRepo(t)
+	long := strings.Repeat("n", 100)
+	for i := 0; i < 1000; i++ {
+		writeFile(t, filepath.Join(dir, "bulk", fmt.Sprintf("%s-%05d", long, i)), "b\n", 0o644)
+	}
+	got, err := Build(dir, runIn(dir), true, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := oracleTree(t, dir); got != want {
+		t.Fatalf("Build = %s, oracle = %s", got, want)
+	}
+}
+
+// TestBuildLeavesNoObjectsAfterARefusal pins that a refused build with
+// write=true has stored none of the would-be blobs, because every refusal
+// comes before the first hash-object -w.
+func TestBuildLeavesNoObjectsAfterARefusal(t *testing.T) {
+	cases := map[string]struct {
+		extra func(t *testing.T, d string)
+		lim   Limits
+	}{
+		"too large by files": {lim: Limits{MaxFiles: 1}},
+		"too large by bytes": {lim: Limits{MaxBytes: 3}},
+		"unsupported nested repo": {extra: func(t *testing.T, d string) {
+			n := filepath.Join(d, "zz-nested")
+			if err := os.MkdirAll(n, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			gitT(t, n, nil, "init", "-q")
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := newRepo(t)
+			writeFile(t, filepath.Join(dir, "p1"), "payload one\n", 0o644)
+			writeFile(t, filepath.Join(dir, "p2"), "payload two\n", 0o644)
+			if tc.extra != nil {
+				tc.extra(t, dir)
+			}
+			b1 := gitT(t, dir, nil, "hash-object", "p1")
+			b2 := gitT(t, dir, nil, "hash-object", "p2")
+			if _, err := Build(dir, runIn(dir), true, tc.lim); err == nil {
+				t.Fatal("expected a refusal")
+			}
+			for _, id := range []string{b1, b2} {
+				if exec.Command("git", "-C", dir, "cat-file", "-e", id).Run() == nil {
+					t.Fatalf("blob %s was stored by a refused build", id)
+				}
+			}
+		})
 	}
 }

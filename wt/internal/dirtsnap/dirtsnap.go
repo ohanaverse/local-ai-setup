@@ -32,6 +32,9 @@ var (
 	ErrTooLarge = errors.New("dirtsnap: working tree over the limits")
 )
 
+// lsChunkBytes bounds the path bytes on one ls-tree command line.
+const lsChunkBytes = 64 * 1024
+
 type builder struct {
 	run   Runner
 	store bool
@@ -100,10 +103,31 @@ func Build(dir string, run Runner, write bool, lim Limits) (string, error) {
 		}
 		changes = append(changes, change{path, fi})
 	}
-	if len(paths) > 0 {
-		// A gitlink in HEAD at a changed path (even a deleted one) cannot be
-		// rebuilt from the files on disk.
-		lsArgs := append([]string{"--literal-pathspecs", "ls-tree", "-z", "HEAD", "--"}, paths...)
+	// The file-count limit comes before any further git call, so a huge
+	// dirty tree is refused cheaply.
+	if lim.MaxFiles > 0 && len(changes) > lim.MaxFiles {
+		return "", fmt.Errorf("%w: %d changed files over %d", ErrTooLarge, len(changes), lim.MaxFiles)
+	}
+	// The byte total uses the Lstat size; it is not recounted if a file grows
+	// before it is read.
+	var total int64
+	for _, c := range changes {
+		total += c.fi.Size()
+	}
+	if lim.MaxBytes > 0 && total > lim.MaxBytes {
+		return "", fmt.Errorf("%w: %d bytes over %d", ErrTooLarge, total, lim.MaxBytes)
+	}
+	// A gitlink in HEAD at a changed path (even a deleted one) cannot be
+	// rebuilt from the files on disk. Paths go in bounded chunks so the
+	// command line never grows with the number of changed paths.
+	for len(paths) > 0 {
+		n, size := 0, 0
+		for n < len(paths) && (n == 0 || size+len(paths[n])+1 <= lsChunkBytes) {
+			size += len(paths[n]) + 1
+			n++
+		}
+		lsArgs := append([]string{"--literal-pathspecs", "ls-tree", "-z", "HEAD", "--"}, paths[:n]...)
+		paths = paths[n:]
 		lt, err := run(nil, lsArgs...)
 		if err != nil {
 			return "", fmt.Errorf("dirtsnap: ls-tree HEAD: %w", err)
@@ -115,17 +139,10 @@ func Build(dir string, run Runner, write bool, lim Limits) (string, error) {
 			}
 		}
 	}
-	var total int64
-	for _, c := range changes {
-		total += c.fi.Size()
-	}
-	if (lim.MaxFiles > 0 && len(changes) > lim.MaxFiles) || (lim.MaxBytes > 0 && total > lim.MaxBytes) {
-		return "", fmt.Errorf("%w: %d changed files, %d bytes", ErrTooLarge, len(changes), total)
-	}
 	adds := map[string]*entry{}
 	for _, c := range changes {
 		full := filepath.Join(dir, filepath.FromSlash(c.path))
-		var body []byte
+		body := []byte{}
 		mode := "100644"
 		if c.fi.Mode()&os.ModeSymlink != 0 {
 			target, err := os.Readlink(full)
@@ -146,8 +163,9 @@ func Build(dir string, run Runner, write bool, lim Limits) (string, error) {
 		if write {
 			args = append(args, "-w")
 		}
-		// An empty body reaches the runner as empty stdin, which git reads
-		// as the empty blob either way.
+		// An empty body is passed as empty (non-nil) stdin. A Runner that
+		// treats empty input as no stdin (cleanup.Git.RunInput does, at
+		// git.go:81) makes git read /dev/null: still the empty blob.
 		id, err := run(body, append(args, "--stdin")...)
 		if err != nil {
 			return "", fmt.Errorf("dirtsnap: hash-object %s: %w", c.path, err)
