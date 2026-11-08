@@ -306,7 +306,11 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 		b.WriteString("    warning: " + cleanup.OneLine(s) + "\n")
 	}
 	if o.Status == rescue.StatusMoved {
-		fmt.Fprintf(&b, "    the original is untouched; with the record above, a clean one reads removable (`wt remove %s`), one with uncommitted changes still needs the approvals it names\n", cleanup.OneLine(p.Source.Path))
+		if o.Record != nil {
+			fmt.Fprintf(&b, "    the original is untouched; with the record above, a clean one reads removable (`wt remove %s`), one with uncommitted changes still needs the approvals it names\n", cleanup.OneLine(p.Source.Path))
+		} else {
+			fmt.Fprintf(&b, "    the original is untouched, but no record was written (see the warning above), so it still holds work only it has; removing it takes `wt remove %s` with the approvals it names\n", cleanup.OneLine(p.Source.Path))
+		}
 	}
 	if o.Status == rescue.StatusFailed && o.BranchKept && !o.Created {
 		fmt.Fprintf(&b, "    the new branch %s was kept (creating its worktree failed after git made it); a rerun needs --to NAME or `wt remove %s`\n", cleanup.OneLine(p.Branch), cleanup.OneLine(p.Branch))
