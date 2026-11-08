@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/dirtsnap"
 )
@@ -328,4 +329,57 @@ func TestDirtCoveredCheapChecksFirst(t *testing.T) {
 	if b, _ := os.ReadFile(log); len(b) == 0 {
 		t.Fatal("control: wrapper saw no call")
 	}
+}
+
+// TestDirtCoveredRacyCleanEntry pins a staged file edited again within the
+// same timestamp as its index entry, with the same size: only the index's own
+// mtime (racy-git) tells git to read the content. Why: a snapshot record's
+// oracle once copied the index into a fresh file, whose newer mtime hid that
+// edit, so W held the staged content and the check flaked about 1 run in 8.
+// The oracle must see the edit, and the record must read as covered.
+func TestDirtCoveredRacyCleanEntry(t *testing.T) {
+	f := newFixture(t)
+	f.Commit("s.txt", "s0", "s")
+	dir := f.Worktree("racy")
+	// ctime cannot be set; without this the edit's new ctime would give the
+	// stat away and the race would not be forced.
+	gitIn(t, dir, "config", "core.trustctime", "false")
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
+	p := filepath.Join(dir, "s.txt")
+	set := func(path, content string) {
+		t.Helper()
+		if content != "" {
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set(p, "s1")
+	gitIn(t, dir, "add", "s.txt")
+	set(p, "s2")
+	// The index now has the entry's mtime: racily clean, as git leaves it when
+	// the edit lands in the second the index was written.
+	set(gitIn(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "index"), "")
+	_, wtree := snapshotTrees(t, dir)
+	want := gitIn(t, dir, "hash-object", "s.txt")
+	if got := gitIn(t, dir, "rev-parse", wtree+":s.txt"); got != want {
+		t.Fatalf("oracle W has s.txt %s, want the working copy %s", got, want)
+	}
+	ref := f.addRecord(t, dir, recordOpts{Snapshot: true})
+	recs, err := ListRecords(Git{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if r.Ref == ref {
+			if !dirtCovered(Git{Dir: dir}, WorktreeFact{Path: dir, Head: gitIn(t, dir, "rev-parse", "HEAD")}, r) {
+				t.Fatal("racily clean edit: record not covered")
+			}
+			return
+		}
+	}
+	t.Fatalf("record %s not listed", ref)
 }

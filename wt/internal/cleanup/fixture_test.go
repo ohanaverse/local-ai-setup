@@ -293,8 +293,13 @@ type recordOpts struct {
 }
 
 // snapshotTrees returns the source's index tree and the tree add -A would
-// make of its working tree, both through a throwaway copy of the index so the
-// source's own index is untouched.
+// make of its working tree, the source's own index untouched. The index tree
+// is write-tree over a throwaway copy of the index (it reads only the entries'
+// object ids). The working tree goes through a second, new index read from
+// that tree: its entries carry no stat data, so add -A hashes every file. The
+// copy must not be used for it: its newer mtime makes a racily clean entry (a
+// file rewritten, same size, in the second its entry was staged) look clean,
+// and add -A would keep the staged content.
 func snapshotTrees(t *testing.T, srcPath string) (itree, wtree string) {
 	t.Helper()
 	idx := gitIn(t, srcPath, "rev-parse", "--path-format=absolute", "--git-path", "index")
@@ -302,22 +307,24 @@ func snapshotTrees(t *testing.T, srcPath string) (itree, wtree string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmp := filepath.Join(t.TempDir(), "index")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	tmp := t.TempDir()
+	cp, fresh := filepath.Join(tmp, "index-copy"), filepath.Join(tmp, "index-fresh")
+	if err := os.WriteFile(cp, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run := func(args ...string) string {
+	run := func(index string, args ...string) string {
 		cmd := exec.Command("git", append([]string{"-C", srcPath}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmp)
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+index)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
 		return strings.TrimSpace(string(out))
 	}
-	itree = run("write-tree")
-	run("add", "-A")
-	return itree, run("write-tree")
+	itree = run(cp, "write-tree")
+	run(fresh, "read-tree", itree)
+	run(fresh, "add", "-A")
+	return itree, run(fresh, "write-tree")
 }
 
 // addRecord builds by hand the chain a rescue writes (I: a tree with parent
