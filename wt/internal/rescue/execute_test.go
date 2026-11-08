@@ -892,3 +892,67 @@ func TestExecuteRecordOfADirectoryReplacedByASymlinkMatchesGit(t *testing.T) {
 		t.Errorf("W tree = %s, want git's %s\n%s", got, want, gitIn(t, p, "ls-tree", "-r", o.Record.Commit))
 	}
 }
+
+// TestExecuteWritesNoRecordWhenTheSourceChangesWhileTheRecordIsBuilt edits
+// the source after the record's objects are built and before its ref is
+// created (the beforeRecordRef seam): the outcome is moved, no ref exists and
+// one record_not_written warning names the change. Why: the record is read
+// after the copy was verified, so only a fingerprint taken after those reads
+// proves the copy and the record describe the same state.
+func TestExecuteWritesNoRecordWhenTheSourceChangesWhileTheRecordIsBuilt(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "work.txt", "edit")
+	t.Cleanup(func() { beforeRecordRef = func(*Plan) {} })
+	beforeRecordRef = func(*Plan) { f.write(p, "work.txt", "edited while the record was built") }
+
+	_, o := rescueOnce(t, f, p)
+
+	if o.Status != StatusMoved || o.Record != nil {
+		t.Fatalf("outcome = %+v", o)
+	}
+	var got []string
+	for _, w := range o.Plan.Warnings {
+		if strings.HasPrefix(w, RecordWarningPrefix) {
+			got = append(got, w)
+		}
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "changed") {
+		t.Errorf("record warnings = %q (all: %q)", got, o.Plan.Warnings)
+	}
+	if refs := rescuedRefs(t, f); refs != "" {
+		t.Errorf("refs: %s", refs)
+	}
+}
+
+// TestExecuteRecordIgnoresAFailingReferenceTransactionHook installs a
+// reference-transaction hook that exits 1 and rescues a dirty source: the
+// outcome is moved with a record whose ref resolves. Why: the record's
+// update-ref would otherwise run the repository's hook, which could refuse
+// (or rewrite) the record; rescue runs no repository hook anywhere else.
+func TestExecuteRecordIgnoresAFailingReferenceTransactionHook(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "u.txt", "untracked")
+	hooks := f.git("rev-parse", "--path-format=absolute", "--git-path", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, o := rescueOnce(t, f, p)
+
+	if o.Status != StatusMoved {
+		t.Fatalf("status %s (%s): %s", o.Status, o.Code, o.Reason)
+	}
+	if o.Record == nil {
+		t.Fatalf("no record; warnings %q", o.Plan.Warnings)
+	}
+	if got := gitIn(t, p, "rev-parse", o.Record.Ref); got != o.Record.Commit {
+		t.Errorf("ref points at %s, want %s", got, o.Record.Commit)
+	}
+}

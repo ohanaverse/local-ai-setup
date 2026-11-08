@@ -25,11 +25,27 @@ func hasControl(s string) bool {
 	return false
 }
 
-// writeRecord writes the two commits that prove a rescue and the ref that
-// keeps them: I (the source's index tree, parent the source's HEAD) and W
-// (the source's working-tree tree, parent I). It only adds objects and one
-// create-only ref; the source is read.
+// hooksOff is the config every record git call runs with: update-ref runs the
+// repository's reference-transaction hook, which must not refuse or rewrite
+// the record (the destination's worktree add turns hooks off the same way).
+var hooksOff = []string{"core.hooksPath=/dev/null"}
+
+// writeRecord builds the record (buildRecord) and creates its ref
+// (createRecordRef) in one step, with no check between them.
 func writeRecord(src sgit, p *Plan) (Record, error) {
+	rec, err := buildRecord(src, p)
+	if err != nil {
+		return Record{}, err
+	}
+	return rec, createRecordRef(src, rec)
+}
+
+// buildRecord writes the two commits that prove a rescue and names the ref
+// that will keep them: I (the source's index tree, parent the source's HEAD)
+// and W (the source's working-tree tree, parent I). It only adds objects,
+// which nothing references until createRecordRef runs (gc collects them if it
+// never does); the source is read.
+func buildRecord(src sgit, p *Plan) (Record, error) {
 	srcPath := cleanup.ResolvePath(p.Source.Path)
 	refName := p.Source.Ref
 	if refName == "" {
@@ -57,7 +73,7 @@ func writeRecord(src sgit, p *Plan) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
-	ci := sgit{dir: src.dir, env: recordEnv}
+	ci := sgit{dir: src.dir, env: recordEnv, config: hooksOff}
 	commit := func(tree, parent string) (string, error) {
 		return ci.text2(msg, "commit-tree", tree, "-p", parent, "-F", "-")
 	}
@@ -72,22 +88,24 @@ func writeRecord(src sgit, p *Plan) (Record, error) {
 	if len(w) < 16 {
 		return Record{}, fmt.Errorf("unexpected commit id %q", w)
 	}
-	ref := RecordRefPrefix + w[:16]
-	if err := updateRecordRef(src, ref, w); err != nil {
-		return Record{}, err
-	}
-	return Record{Ref: ref, Commit: w}, nil
+	return Record{Ref: RecordRefPrefix + w[:16], Commit: w}, nil
+}
+
+// createRecordRef creates the record's ref, the one ref write of a rescue.
+func createRecordRef(src sgit, rec Record) error {
+	return updateRecordRef(src, rec.Ref, rec.Commit)
 }
 
 // updateRecordRef creates ref at commit and nothing else: an existing ref at
 // the same commit counts as written, at another commit it is an error. It is
 // a variable so a test can fail the one step.
 var updateRecordRef = func(src sgit, ref, commit string) error {
-	_, err := src.out(nil, "update-ref", ref, commit, "")
+	g := sgit{dir: src.dir, config: hooksOff}
+	_, err := g.out(nil, "update-ref", ref, commit, "")
 	if err == nil {
 		return nil
 	}
-	if cur, e := src.text("rev-parse", "--verify", "-q", ref); e == nil && cur == commit {
+	if cur, e := g.text("rev-parse", "--verify", "-q", ref); e == nil && cur == commit {
 		return nil
 	}
 	return err

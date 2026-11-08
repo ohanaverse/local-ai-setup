@@ -22,6 +22,10 @@ var afterCarry = func(*Plan) {}
 // source is compared a last time and the record written.
 var afterVerify = func(*Plan) {}
 
+// beforeRecordRef is a test seam, called once the record's objects are built
+// and before the source is compared a last time and the ref created.
+var beforeRecordRef = func(*Plan) {}
+
 // patchArgs make a diff reproduce content exactly: binary-safe, full ids, no
 // rename guessing, none of the user's diff or textconv programs.
 // The a/ b/ prefixes are set explicitly: git apply strips one leading path
@@ -163,17 +167,27 @@ func (e Engine) Execute(p *Plan) Outcome {
 	}
 	done("verified status and file contents against the source")
 
-	// The copy is verified; the record is extra proof. Whatever stops it
-	// leaves the rescue moved and says so in a warning.
+	// The copy is verified; the record is extra proof. Its objects are built
+	// first, then the source is compared with the fingerprint the copy was
+	// verified against, and only then is the ref created: a change while the
+	// record was read leaves no ref (the unreferenced objects are gc's).
+	// Whatever stops it leaves the rescue moved and says so in a warning.
 	afterVerify(p)
 	warn := func(why string) {
 		o.Plan.Warnings = append(o.Plan.Warnings, RecordWarningPrefix+cleanup.OneLine(why))
 	}
+	rec, err := buildRecord(sg, p)
+	if err != nil {
+		warn(err.Error())
+		o.Status = StatusMoved
+		return o
+	}
+	beforeRecordRef(p)
 	if again, err := takeFingerprint(sg); err != nil {
 		warn("could not re-read the source: " + err.Error())
 	} else if d := p.fp.diff(again); d != "" {
 		warn("the source changed after the copy was verified (" + d + ")")
-	} else if rec, err := writeRecord(sg, p); err != nil {
+	} else if err := createRecordRef(sg, rec); err != nil {
 		warn(err.Error())
 	} else {
 		o.Record = &rec
