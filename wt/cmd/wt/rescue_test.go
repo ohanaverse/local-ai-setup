@@ -371,17 +371,46 @@ func TestRescueCmdRegisteredOnRoot(t *testing.T) {
 	}
 }
 
+// rescueBanned are the deletion shapes no rescue source may hold. A ref
+// write is not among them: the rescue creates one ref (the record), checked
+// separately by riskyRescueSource.
+var rescueBanned = []string{"worktree remove", `"worktree", "remove"`, `"worktree", "prune"`,
+	"update-ref -d", "update-ref --delete", `"update-ref", "-d"`, `"update-ref", "--delete"`,
+	`branch", "-d`, `branch", "-D`, "--delete", "os.RemoveAll", "os.Remove(", "os.Rename(",
+	`":"+`, `":" +`, `"push"`, "-X DELETE"}
+
+// createOnlyRefWrite is the one ref write the rescue may make, in record.go.
+const createOnlyRefWrite = `"update-ref", ref, commit, ""`
+
+// riskyRescueSource lists what is wrong with one non-test rescue source: each
+// banned deletion shape it holds, and any `"update-ref"` that is not the
+// create-only record write in record.go.
+func riskyRescueSource(name, src string) []string {
+	var bad []string
+	for _, s := range rescueBanned {
+		if strings.Contains(src, s) {
+			bad = append(bad, fmt.Sprintf("%s contains %q", name, s))
+		}
+	}
+	if n := strings.Count(src, `"update-ref"`); n > 0 {
+		if filepath.Base(name) != "record.go" || n != 1 || !strings.Contains(src, createOnlyRefWrite) {
+			bad = append(bad, name+": a ref write in rescue must be create-only ("+createOnlyRefWrite+") and live in record.go")
+		}
+	}
+	return bad
+}
+
 // TestRescueContainsNoDeletion checks neither the rescue engine nor its
-// command holds a deletion shape (the same banned substrings as the cleanup
-// check). Why: the rescue only creates; internal/removal is the only deleter
-// and TestDeletionStringsOnlyInRemovalPackage also reads these files.
+// command holds a deletion shape, and that the only ref write is the one
+// create-only `update-ref` of the record in internal/rescue/record.go. Why:
+// the rescue may create exactly one ref (the record), never delete one;
+// deleting is internal/removal's alone, and TestDeletionStringsOnlyInRemovalPackage
+// (AST, shape-based) is the authoritative guard and needs no allow-list entry.
 func TestRescueContainsNoDeletion(t *testing.T) {
 	files, _ := filepath.Glob("../../internal/rescue/*.go")
 	more, _ := filepath.Glob("rescue*.go")
 	files = append(files, more...)
-	banned := []string{"worktree remove", `"worktree", "remove"`, `"worktree", "prune"`, "update-ref", `branch", "-d`, `branch", "-D`, "--delete", "os.RemoveAll", "os.Remove(", "os.Rename(",
-		`":"+`, `":" +`, `"push"`, "-X DELETE"}
-	scanned := 0
+	scanned, refWrites := 0, 0
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
@@ -391,14 +420,40 @@ func TestRescueContainsNoDeletion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, s := range banned {
-			if strings.Contains(string(b), s) {
-				t.Errorf("%s contains %q", f, s)
-			}
+		for _, m := range riskyRescueSource(f, string(b)) {
+			t.Error(m)
 		}
+		refWrites += strings.Count(string(b), `"update-ref"`)
 	}
 	if scanned < 6 {
 		t.Errorf("scanned only %d sources", scanned)
+	}
+	if refWrites != 1 {
+		t.Errorf(`"update-ref" appears %d times in the rescue sources, want exactly 1 (in record.go)`, refWrites)
+	}
+}
+
+// TestRiskyRescueSourceBites checks the narrowed guard still reports a
+// delete-flag ref update, a second ref write, a ref write outside record.go
+// and a non-create-only form, and accepts the record's own write. Why: the
+// guard was loosened from a bare "update-ref" ban; this proves it still bites.
+func TestRiskyRescueSourceBites(t *testing.T) {
+	cases := []struct {
+		name, file, src string
+		bad             bool
+	}{
+		{"create-only in record.go", "record.go", `run("update-ref", ref, commit, "")`, false},
+		{"delete flag, args", "record.go", `run("update-ref", "-d", ref)`, true},
+		{"delete long flag, args", "record.go", `run("update-ref", "--delete", ref)`, true},
+		{"delete flag, shell", "record.go", "git update-ref -d refs/x", true},
+		{"second bare update-ref", "record.go", `run("update-ref", ref, commit, ""); run("update-ref", other, c, "")`, true},
+		{"update-ref elsewhere", "execute.go", `run("update-ref", ref, commit, "")`, true},
+		{"not create-only", "record.go", `run("update-ref", ref, commit)`, true},
+	}
+	for _, c := range cases {
+		if got := riskyRescueSource(c.file, c.src); (len(got) > 0) != c.bad {
+			t.Errorf("%s: reported %q, want bad=%v", c.name, got, c.bad)
+		}
 	}
 }
 
