@@ -273,8 +273,8 @@ func coverageCalls(lines []string) int {
 
 // TestGatherAndRescanAgreeOnPreserved checks Gather marks the rescued
 // worktree and not an unrescued one, that Rescan runs the same record check
-// (seen as the coverage git call, since the row carries no field for it yet)
-// and its row equals the full run's. Why: both paths must go through
+// (seen as the coverage git call) and its row, Preserved included, equals the
+// full run's. Why: both paths must go through
 // worktreeState, or the removal re-check would judge a different state than
 // the list showed.
 func TestGatherAndRescanAgreeOnPreserved(t *testing.T) {

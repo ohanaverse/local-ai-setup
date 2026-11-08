@@ -351,8 +351,8 @@ func TestEncodeKeepsEveryNestedPath(t *testing.T) {
 }
 
 // TestCleanupJSONUnchangedByNewRowFields encodes rows with Ref, Tip, Head,
-// Losses and BranchProven set and compares the document with the same rows
-// without them, then checks every row key is one of PR A's. Why: those fields
+// Losses, BranchProven and Preserved set and compares the document with the
+// same rows without them, then checks every row key is one of PR A's. Why: those fields
 // serve removal only; the cleanup JSON is a pinned contract
 // (docs/contracts/cleanup-list.sample.json), and a new or changed key would
 // break every consumer reading it.
@@ -366,6 +366,7 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 	full := slices.Clone(bare)
 	full[0].Ref, full[0].Tip, full[0].Head, full[0].BranchProven = "refs/heads/topic", tip, tip, true
 	full[0].Losses = Losses{Dirty: true, IgnoredEntries: 2, IgnoredBytes: 10, DetachedUnique: true, GatesUnknown: true}
+	full[0].Preserved = &Preserved{Ref: RecordRefPrefix + tip[:16], Commit: tip, SourceHead: tip, DestBranch: "rescued/topic", DestPath: "/w/rescued"}
 	full[1].Ref, full[1].Tip = "refs/heads/solo", tip
 	full[1].Losses = Losses{Unpushed: 3}
 	rep := func(rows []Row) Report {

@@ -61,6 +61,7 @@ const (
 	ReasonBaseIsLocal           = "base_is_local"           // soft: no remote default; the base is the local one
 	ReasonNoMergedPR            = "no_merged_pr"            // soft (remote rows): merged content but no merged PR
 	ReasonClaimsUnavailable     = "claims_unavailable"      // the session claims could not be read
+	ReasonPreserved             = "preserved"               // informational: a rescue record covers the worktree's commits; never lowers the status
 )
 
 // Blocker codes beyond CheckGates' own.
@@ -123,6 +124,10 @@ type Row struct {
 	// branch row it is Status == proven; for a remote row or a detached
 	// worktree it is false.
 	BranchProven bool
+	// Preserved is the rescue record the classifier applied to a worktree
+	// row (its commits read as covered, evidence rescued); nil when no record
+	// applies, and always nil for branch and remote rows.
+	Preserved *Preserved
 }
 
 // Losses is what removing a row would lose. A zero Losses loses nothing that
@@ -159,9 +164,12 @@ type Report struct {
 	Notes []string
 }
 
-// judge collects one row's findings; status applies the precedence.
+// judge collects one row's findings; status applies the precedence. info
+// holds informational reasons: shown after the others, never counted by
+// status or by fill's "nothing found" test.
 type judge struct {
 	blockers, unique, unknown, soft []Reason
+	info                            []Reason
 	ev                              Evidence
 	pr                              *PRInfo
 }
@@ -192,7 +200,7 @@ func (j *judge) fill(r *Row) {
 	r.Evidence = j.ev
 	r.Unknown = len(j.unknown) > 0
 	r.Blockers = j.blockers
-	r.Reasons = slices.Concat(j.unique, j.unknown, j.soft)
+	r.Reasons = slices.Concat(j.unique, j.unknown, j.soft, j.info)
 	if j.pr != nil {
 		pr := *j.pr
 		r.PR = &pr
@@ -300,7 +308,7 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		if g.Dirty {
 			j.uniq(ReasonDirty, "uncommitted or untracked files")
 		}
-		if g.DetachedUnique {
+		if g.DetachedUnique && !c.detachedPreserved(ws) {
 			j.uniq(ReasonDetachedUnique, "detached HEAD "+short(w.Head)+" is not in the base")
 		}
 		if g.IgnoredCount > 0 {
@@ -333,9 +341,13 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		// volume the worktree's HEAD may spell the branch differently.
 		row.Ref, row.Tip = h.Ref, h.Tip
 		row.Losses.Unpushed = c.unpushedOf(h)
-		c.local(&j, h)
+		covered := c.branchPreserved(ws, h)
+		c.local(&j, h, covered)
 		c.setAge(&row, h)
-		row.BranchProven = c.branchProven(h)
+		row.BranchProven = c.branchProven(h, covered)
+		if j.ev == EvRescued {
+			row.Preserved = c.preserve(&j, ws.Preserved)
+		}
 	case w.Detached:
 		p, ok := c.s.Proofs[w.Head]
 		switch {
@@ -343,6 +355,10 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 			j.unsure(ReasonMergeProofUnavailable, mergeProofDetail)
 		case p.Verdict == Merged:
 			j.ev = p.Evidence
+		case c.detachedPreserved(ws):
+			// Set before minAge: rescued is not age-gated.
+			j.ev = EvRescued
+			row.Preserved = c.preserve(&j, ws.Preserved)
 		}
 		// A detached HEAD's age is when it last moved there.
 		c.minAge(&j, RefFact{Created: ws.HeadSince})
@@ -377,7 +393,7 @@ func (c *classifier) branchRow(h RefFact) Row {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
 	} else {
 		row.Losses.Unpushed = c.unpushedOf(h)
-		c.local(&j, h)
+		c.local(&j, h, false)
 		c.setAge(&row, h)
 	}
 	c.capFallback(&j)
@@ -387,12 +403,52 @@ func (c *classifier) branchRow(h RefFact) Row {
 }
 
 // branchProven is Ruling A: h's own judgement, the one a worktree row on it
-// is built from but without the worktree's gates, is proven.
-func (c *classifier) branchProven(h RefFact) bool {
+// is built from but without the worktree's gates, is proven. covered is the
+// same flag the worktree row passed to local.
+func (c *classifier) branchProven(h RefFact, covered bool) bool {
 	var j judge
-	c.local(&j, h)
+	c.local(&j, h, covered)
 	c.capFallback(&j)
 	return j.status() == StatusProven
+}
+
+// preservable is whether ws's record may be applied at all: one was matched,
+// the gates read cleanly and found no dirt.
+func preservable(ws WorktreeState) bool {
+	return ws.Preserved != nil && ws.GatesErr == "" && !ws.Gates.Dirty
+}
+
+// branchPreserved is whether a rescue record covers the unpushed commits of
+// the worktree's branch h: the record applies, the tip has no merge proof
+// (NotMerged), its counted unpushed commits exist (> 0, never unknown), and
+// the fresh tip is the head the record was written from.
+func (c *classifier) branchPreserved(ws WorktreeState, h RefFact) bool {
+	if !preservable(ws) || !IsFullCommitID(h.Tip) || h.Tip != ws.Preserved.SourceHead {
+		return false
+	}
+	p, ok := c.s.Proofs[h.Tip]
+	return ok && p.Verdict == NotMerged && p.Unpushed > 0
+}
+
+// detachedPreserved is whether a rescue record covers a detached worktree's
+// HEAD: the record applies, the HEAD is unique (DetachedUnique), has no merge
+// proof (NotMerged) and is the head the record was written from.
+func (c *classifier) detachedPreserved(ws WorktreeState) bool {
+	w := ws.Fact
+	if !w.Detached || !preservable(ws) || !ws.Gates.DetachedUnique ||
+		!IsFullCommitID(w.Head) || w.Head != ws.Preserved.SourceHead {
+		return false
+	}
+	p, ok := c.s.Proofs[w.Head]
+	return ok && p.Verdict == NotMerged
+}
+
+// preserve adds the informational preserved reason and returns the row's
+// copy of p. The trailer values are untrusted text, so they go through flat.
+func (c *classifier) preserve(j *judge, p *Preserved) *Preserved {
+	j.info = append(j.info, Reason{ReasonPreserved, "preserved by " + flat(p.Ref) + " (copy: " + flat(p.DestPath) + ")"})
+	cp := *p
+	return &cp
 }
 
 // unpushedOf is Losses.Unpushed for local head h: 0 when a proof other than
@@ -415,8 +471,11 @@ const mergeProofDetail = "the merge checks could not finish (a git error, no com
 
 // local judges a local branch's content: the ladder, the PR rung, the
 // open-PR veto, and (only when nothing proves a merge) unpushed commits and a
-// merged PR whose head moved on.
-func (c *classifier) local(j *judge, h RefFact) {
+// merged PR whose head moved on. covered says a rescue record covers the
+// unpushed commits (branchPreserved): unpushed is not raised, every other
+// check runs as without it, and the evidence becomes rescued afterwards
+// (before minAge, which does not gate it).
+func (c *classifier) local(j *judge, h RefFact, covered bool) {
 	p, ok := c.s.Proofs[h.Tip]
 	res := c.s.PRs[h.Name] // a miss is LookupUnknown
 	switch {
@@ -436,7 +495,7 @@ func (c *classifier) local(j *judge, h RefFact) {
 	}
 	if j.ev == "" {
 		switch {
-		case ok && p.Unpushed > 0:
+		case ok && p.Unpushed > 0 && !covered:
 			noun := "commits"
 			if p.Unpushed == 1 {
 				noun = "commit"
@@ -459,6 +518,9 @@ func (c *classifier) local(j *judge, h RefFact) {
 			}
 			if len(p.Weak) > 0 {
 				j.weak(ReasonWeakSignal, weakDetail(p.Weak))
+			}
+			if covered {
+				j.ev = EvRescued
 			}
 		}
 	}
