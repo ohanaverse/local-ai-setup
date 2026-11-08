@@ -276,7 +276,7 @@ func NestedPaths(row Row) []string {
 // tool text reaches the confirmation through it.
 func LossLines(r Row) []string {
 	var out []string
-	l := r.Losses
+	l := r.EffectiveLosses()
 	if l.Dirty {
 		out = append(out, "uncommitted changes will be lost")
 	}

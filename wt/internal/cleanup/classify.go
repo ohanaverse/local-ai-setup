@@ -149,6 +149,23 @@ type Losses struct {
 	GatesUnknown bool
 }
 
+// EffectiveLosses is what removing r would lose once a rescue record is
+// counted: for a row with Preserved, a counted Unpushed (> 0) and a detached
+// HEAD's commits read as covered; an uncounted Unpushed (-1), Dirty, ignored
+// files and GatesUnknown are untouched, since a record keeps commits only.
+// Without Preserved it is Losses unchanged. Losses itself stays raw.
+func (r Row) EffectiveLosses() Losses {
+	l := r.Losses
+	if r.Preserved == nil {
+		return l
+	}
+	if l.Unpushed > 0 {
+		l.Unpushed = 0
+	}
+	l.DetachedUnique = false
+	return l
+}
+
 // Report is a classified snapshot.
 type Report struct {
 	Repo  string
