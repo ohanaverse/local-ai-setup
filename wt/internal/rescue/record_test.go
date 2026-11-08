@@ -229,3 +229,47 @@ func TestWriteRecordReadsButNeverChangesTheSource(t *testing.T) {
 		t.Errorf("source changed: %s", d)
 	}
 }
+
+// TestTheRecordOutlivesTheBranchTheReflogAndGC rescues a source holding an
+// unpushed commit, a staged change, an unstaged change and an untracked file
+// in a nested directory, then removes the destination worktree and its branch
+// with plain git, expires every reflog and runs `gc --prune=now`. The record
+// ref must still resolve, I and W must still exist, and W must still hold the
+// untracked file's exact content; the source is unchanged by all of it. Why:
+// "preserved" must not depend on the destination, and a bare hash with no ref
+// would be pruned.
+func TestTheRecordOutlivesTheBranchTheReflogAndGC(t *testing.T) {
+	f := newFixture(t)
+	src := f.Worktree("topic")
+	f.Commit(src, "committed.txt", "unpushed", "unpushed work")
+	f.write(src, "README", "staged edit")
+	gitIn(t, src, "add", "README")
+	f.write(src, "committed.txt", "unstaged edit")
+	const untracked = "deep/er/only-here.txt"
+	const content = "this exists nowhere else\n"
+	f.write(src, untracked, content)
+
+	plan, out := rescueOnce(t, f, src)
+	if out.Status != StatusMoved || out.Record == nil {
+		t.Fatalf("status %v record %v, want moved with a record", out.Status, out.Record)
+	}
+	rec := *out.Record
+	before := snapshot(t, src)
+
+	gitIn(t, f.Dir, "worktree", "remove", "--force", plan.DestPath)
+	gitIn(t, f.Dir, "branch", "-D", plan.Branch)
+	gitIn(t, f.Dir, "reflog", "expire", "--expire=now", "--all")
+	gitIn(t, f.Dir, "gc", "--prune=now")
+
+	if got := gitIn(t, f.Dir, "rev-parse", rec.Ref); got != rec.Commit {
+		t.Errorf("%s = %s, want %s", rec.Ref, got, rec.Commit)
+	}
+	gitIn(t, f.Dir, "cat-file", "-e", rec.Commit)
+	gitIn(t, f.Dir, "cat-file", "-e", rec.Commit+"^")
+	if got := gitIn(t, f.Dir, "show", rec.Commit+":"+untracked); got != strings.TrimSpace(content) {
+		t.Errorf("untracked file in W = %q, want %q", got, strings.TrimSpace(content))
+	}
+	if d := before.diff(snapshot(t, src)); d != "" {
+		t.Errorf("source changed: %s", d)
+	}
+}
