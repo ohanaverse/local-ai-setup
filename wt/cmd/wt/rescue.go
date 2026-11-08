@@ -52,10 +52,14 @@ func rescueCmd(a *app) *cobra.Command {
 			"The original is only read and is never changed, switched or removed. It is\n" +
 			"not removed either, but once its record exists a clean original (no staged,\n" +
 			"unstaged or untracked changes) reads removable in `wt cleanup`: the record\n" +
-			"holds its commits. Ignored files, an open or unknown PR and a local base\n" +
-			"keep their usual effect, and one with uncommitted changes still takes the\n" +
-			"approvals `wt remove` names. Before it says the work moved, wt checks that\n" +
-			"the new worktree's `git status` and file contents match the original's.\n\n" +
+			"holds its commits. An original with uncommitted changes reads removable\n" +
+			"too, with --accept-loss (not --force), while its index and working tree are\n" +
+			"exactly what the record captured; any edit after the rescue takes it back to\n" +
+			"holding work only it has. The record does not hold ignored files, file modes\n" +
+			"beyond the executable bit or empty directories. Ignored files, an open or\n" +
+			"unknown PR and a local base keep their usual effect. Before it says the work\n" +
+			"moved, wt checks that the new worktree's `git status` and file contents\n" +
+			"match the original's.\n\n" +
 			"It refuses, creating nothing, a worktree with nothing to keep, the primary\n" +
 			"checkout, one with a merge, rebase or similar in progress or unmerged\n" +
 			"paths, a file marked skip-worktree or assume-unchanged, a changed\n" +
@@ -308,7 +312,7 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 	}
 	if o.Status == rescue.StatusMoved {
 		if o.Record != nil {
-			fmt.Fprintf(&b, "    the original is untouched; with the record above, a clean one reads removable (`wt remove %s`), but ignored files, an open or unknown PR or a local base keep it below proven; anything not proven still needs the approvals it names\n", cleanup.OneLine(p.Source.Path))
+			fmt.Fprintf(&b, "    the original is untouched; with the record above, a clean one reads removable (`wt remove %s`), and one with uncommitted changes reads removable with --accept-loss while it still matches the record; ignored files, an open or unknown PR or a local base keep it below proven; anything not proven still needs the approvals it names\n", cleanup.OneLine(p.Source.Path))
 		} else {
 			fmt.Fprintf(&b, "    the original is untouched, but no record was written (see the warning above), so `wt cleanup` reads it as holding work only it has; removing it takes `wt remove %s` with the approvals it names\n", cleanup.OneLine(p.Source.Path))
 		}
