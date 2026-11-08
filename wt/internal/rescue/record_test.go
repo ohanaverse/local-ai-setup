@@ -28,6 +28,28 @@ func recOracle(t *testing.T, dir string) string {
 	return run("write-tree")
 }
 
+// copyIndexTree is git's write-tree run on a copy of the index, so the real
+// index is not touched.
+func copyIndexTree(t *testing.T, dir string) string {
+	t.Helper()
+	idx := gitIn(t, dir, "rev-parse", "--path-format=absolute", "--git-path", "index")
+	raw, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := filepath.Join(t.TempDir(), "idx")
+	if err := os.WriteFile(cp, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := execGit(dir, "write-tree")
+	cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+cp)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("write-tree: %v\n%s", err, b)
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // recPlan builds the Plan a real Preflight would for the worktree at p.
 func recPlan(t *testing.T, f *fixture, p string) *Plan {
 	t.Helper()
@@ -78,7 +100,7 @@ func TestWriteRecordBuildsTheChain(t *testing.T) {
 		if got := gitIn(t, p, "rev-parse", i+"^"); got != head {
 			t.Errorf("I's parent = %s, want HEAD %s", got, head)
 		}
-		if got, want := gitIn(t, p, "rev-parse", i+"^{tree}"), gitIn(t, p, "write-tree"); got != want {
+		if got, want := gitIn(t, p, "rev-parse", i+"^{tree}"), copyIndexTree(t, p); got != want {
 			t.Errorf("I tree = %s, want index tree %s", got, want)
 		}
 		if got, want := gitIn(t, p, "rev-parse", rec.Commit+"^{tree}"), recOracle(t, p); got != want {
@@ -189,10 +211,8 @@ func TestUpdateRecordRefIsCreateOnly(t *testing.T) {
 }
 
 // TestWriteRecordReadsButNeverChangesTheSource proves the writer leaves the
-// source as found: the engine's fingerprint and every index entry. The index
-// file's raw bytes are deliberately not compared: the brief-mandated
-// `git write-tree` stores git's cache-tree extension in the index when it was
-// stale, which changes the bytes but no entry, stat or content.
+// source exactly as found, the raw index bytes included: I's tree is derived
+// in memory, so no cache-tree extension is stored in the source's index.
 func TestWriteRecordReadsButNeverChangesTheSource(t *testing.T) {
 	f := newFixture(t)
 	p := f.Worktree("topic")
@@ -201,15 +221,11 @@ func TestWriteRecordReadsButNeverChangesTheSource(t *testing.T) {
 	f.write(p, "u.txt", "u")
 	plan := recPlan(t, f, p)
 	before := snapshot(t, p)
-	entries := gitIn(t, p, "ls-files", "-s", "-t")
 
 	if _, err := writeRecord(sgit{dir: p}, plan); err != nil {
 		t.Fatal(err)
 	}
-	if d := before.fingerprint.diff(snapshot(t, p).fingerprint); d != "" {
+	if d := before.diff(snapshot(t, p)); d != "" {
 		t.Errorf("source changed: %s", d)
-	}
-	if got := gitIn(t, p, "ls-files", "-s", "-t"); got != entries {
-		t.Errorf("index entries changed:\n%s\nwas\n%s", got, entries)
 	}
 }

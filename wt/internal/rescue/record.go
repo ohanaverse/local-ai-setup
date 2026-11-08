@@ -49,7 +49,7 @@ func writeRecord(src sgit, p *Plan) (Record, error) {
 		"Wt-Dest-Path: " + p.DestPath,
 	}, "\n") + "\n"
 
-	itree, err := src.text("write-tree")
+	itree, err := dirtsnap.IndexTree(src.dir, src.out, true)
 	if err != nil {
 		return Record{}, err
 	}
