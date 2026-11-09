@@ -454,6 +454,25 @@ func TestRecordCoversDirtUnknownRecord(t *testing.T) {
 	}
 }
 
+// TestRecordCoversDirtReadFailureIsAnError pins that a git call that fails
+// inside the check (here an unreadable index, which the cheap record checks do
+// not touch) comes back as false with an error, while a state the record
+// simply does not cover stays false with a nil error. Why: ReleaseRoot tells
+// "could not check the record" (retry) from "the record does not hold the
+// root" (re-run rescue); swallowing the read error sent a retryable failure
+// down the wrong branch.
+func TestRecordCoversDirtReadFailureIsAnError(t *testing.T) {
+	d, head, ref := rootDirt(t)
+	idx := filepath.Join(d.dir, ".git", "index")
+	if err := os.WriteFile(idx, []byte("not an index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := RecordCoversDirt(Git{Dir: d.dir}, d.dir, head, ref)
+	if got || err == nil {
+		t.Fatalf("RecordCoversDirt = %v, %v; want false with a read error", got, err)
+	}
+}
+
 // TestRecordCoversDirtWrongHead pins that a head other than the record's
 // source head is not covered. Why: a record vouches only for the commit it
 // was taken at.

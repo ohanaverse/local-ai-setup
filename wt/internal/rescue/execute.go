@@ -217,15 +217,10 @@ func (e Engine) executeInto(r *runState) Outcome {
 		return keep(CodeSourceChangedMid, "the source changed while copying (%s), so the copy may be stale", d)
 	}
 
-	if err := verify(sg, dg, p, after, madeDirs); err != nil {
+	// The source was just proven equal to p.fp (the diff above), so comparing
+	// the destination with p.fp is comparing it with the source.
+	if err := verify(sg, dg, p, madeDirs); err != nil {
 		return keep(CodeVerifyFailed, "the copy does not match the source: %v", err)
-	}
-	// The same comparison a caller re-asks later (DestinationMatches): after
-	// verify it can only differ if the destination changed in between.
-	if d, err := p.DestinationMatches(dest); err != nil {
-		return keep(CodeVerifyFailed, "the copy could not be re-read: %v", err)
-	} else if d != "" {
-		return keep(CodeVerifyFailed, "the copy does not match the source: %s", d)
 	}
 	done("verified status and file contents against the source")
 
@@ -261,10 +256,11 @@ func (e Engine) executeInto(r *runState) Outcome {
 }
 
 // verify checks the destination reproduces the source: the same HEAD, the
-// same `status --porcelain=v2` listing byte for byte, the same content, mode
-// and link target at every path that listing names, and the same mode on
-// every directory the copy created.
-func verify(sg, dg sgit, p *Plan, src fingerprint, madeDirs []string) error {
+// same `status --porcelain=v2` listing and content, mode and link target at
+// every path that listing names (DestinationMatches, against the fingerprint
+// the caller proved equal to the source), and the same mode on every
+// directory the copy created.
+func verify(sg, dg sgit, p *Plan, madeDirs []string) error {
 	head, err := dg.text("rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -272,17 +268,10 @@ func verify(sg, dg sgit, p *Plan, src fingerprint, madeDirs []string) error {
 	if head != p.Start {
 		return fmt.Errorf("HEAD is %s, want %s", head, p.Start)
 	}
-	st, err := dg.out(nil, statusArgs...)
-	if err != nil {
+	if d, err := p.DestinationMatches(dg.dir); err != nil {
 		return err
-	}
-	if string(st) != src.status {
-		return fmt.Errorf("git status differs:\nsource:\n%s\ndestination:\n%s", printable(src.status), printable(string(st)))
-	}
-	for rel, want := range src.files {
-		if got := hashPath(dg.dir, rel); got != want {
-			return fmt.Errorf("%s differs (source %s, destination %s)", cleanup.OneLine(rel), shortHash(want), shortHash(got))
-		}
+	} else if d != "" {
+		return errors.New(d)
 	}
 	for _, rel := range madeDirs {
 		sm, serr := os.Lstat(filepath.Join(sg.dir, rel))
