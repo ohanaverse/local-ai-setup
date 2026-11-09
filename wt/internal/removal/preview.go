@@ -23,10 +23,7 @@ import (
 // is removable through the Remote approval; any other remote item is refused
 // by the engine, never silently re-kinded.
 func ItemFromRow(r cleanup.Row) Item {
-	tip := r.Tip
-	if r.Kind == cleanup.KindWorktree && r.Ref == "" {
-		tip = r.Head
-	}
+	tip := rowTip(r)
 	return Item{
 		Kind:      r.Kind,
 		Path:      r.Path,
@@ -36,6 +33,17 @@ func ItemFromRow(r cleanup.Row) Item {
 		SawTip:    tip,
 		SawLosses: r.EffectiveLosses(),
 	}
+}
+
+// rowTip is the commit a row and its item are compared on: the branch tip, or
+// a detached worktree's HEAD (Row.Head; Row.Tip is then ""). ItemFromRow
+// seals it as SawTip, and the gate and the re-check before git compare
+// against it.
+func rowTip(r cleanup.Row) string {
+	if r.Ref == "" {
+		return r.Head
+	}
+	return r.Tip
 }
 
 // Approval is the summary of what a caller must obtain from the user before
@@ -280,6 +288,10 @@ func (e Engine) previewItem(it Item) ItemPreview {
 	}
 
 	fresh := g.fresh
+	if it.Kind == cleanup.KindWorktree && fresh.Preserved != nil && fresh.Preserved.CoversDirt {
+		// Display only: not in previewBasis (the seal) or any JSON.
+		p.Notes = append(p.Notes, cleanup.OneLine("uncommitted changes are kept in "+fresh.Preserved.Ref+" (copy: "+fresh.Preserved.DestPath+")"))
+	}
 	if it.Kind == cleanup.KindWorktree && fresh.Ref != "" && plan.Branch != BrDeleted {
 		if !fresh.BranchProven {
 			withDelete := full

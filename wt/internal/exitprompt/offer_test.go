@@ -569,3 +569,26 @@ func TestOfferExplainsABranchKeptAfterTheWorktreeWasRemoved(t *testing.T) {
 		})
 	}
 }
+
+// TestExitPromptNeverOffersDirtyPreserved checks that a worktree whose
+// rescue record covers its uncommitted work (Preserved.CoversDirt, raw
+// Losses.Dirty still true, so the effective view shows no loss) is refused by
+// the exit prompt. Why: the prompt offers only a worktree holding nothing at
+// all; reading effective losses would delete uncommitted work that only the
+// record keeps, without the --accept-loss a user must give.
+func TestExitPromptNeverOffersDirtyPreserved(t *testing.T) {
+	cr := Created{Path: "/w", Branch: "topic", Tip: "abc"}
+	p := removal.ItemPreview{
+		Approval:        removal.ApprovalNeedsConfirm,
+		CanDeleteBranch: true,
+		Fresh: cleanup.Row{Kind: cleanup.KindWorktree, Status: cleanup.StatusLessSure, Evidence: cleanup.EvSameCommit,
+			Ref: "refs/heads/topic", Branch: "topic", Tip: "abc",
+			Reasons:   []cleanup.Reason{{Code: cleanup.ReasonFreshBranch}},
+			Losses:    cleanup.Losses{Dirty: true},
+			Preserved: &cleanup.Preserved{Ref: "refs/wt/rescued/0123456789abcdef", DestBranch: "rescued/topic", DestPath: "/copy", CoversDirt: true}},
+	}
+	ok, why := Eligible(p, cr)
+	if ok || why != "removing it would lose something" {
+		t.Errorf("Eligible = %v, %q; want false, %q", ok, why, "removing it would lose something")
+	}
+}

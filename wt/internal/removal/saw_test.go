@@ -1,8 +1,10 @@
 package removal
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -242,4 +244,178 @@ type orderProcs struct{ order *[]string }
 func (p orderProcs) InDir(string) ([]Proc, error) {
 	*p.order = append(*p.order, "procs")
 	return []Proc{{7, "vim"}}, nil
+}
+
+// confirmedDirtyPreserved is a dirty rescued original confirmed through the
+// real Preview -> Confirmed path, with its engine.
+func confirmedDirtyPreserved(t *testing.T, f *fixture) (rescued, Engine, Item) {
+	t.Helper()
+	rs := dirtyRescuedTopic(t, f)
+	s, r := f.report()
+	eng := f.engine(s, f.inputs(), Options{})
+	it, err := previewOne(t, eng, ItemFromRow(dirtyPreservedRow(t, f, r))).Confirmed(Needs{Confirm: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rs, eng, it
+}
+
+// secondRescan stubs rescan: call 1 (the gate) is real, call 2 (the re-check
+// right before git) returns second(); it fails the test on a third call.
+func secondRescan(t *testing.T, second func(g cleanup.Git, prior cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error)) *int {
+	t.Helper()
+	n := 0
+	stubRescan(t, func(g cleanup.Git, prior cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error) {
+		n++
+		switch n {
+		case 1:
+			return cleanup.Rescan(g, prior, in, o, tg)
+		case 2:
+			return second(g, prior, in, o, tg)
+		}
+		t.Errorf("rescan call %d, want 2", n)
+		return cleanup.Rescan(g, prior, in, o, tg)
+	})
+	return &n
+}
+
+// TestPreReCheckCatchesEditAfterGate edits a covered file after the gate's
+// rescan but before the re-check right before git (stubbed: call 1 real,
+// call 2 preceded by the edit): the item is skipped_changed with the re-check
+// reason and the fresh loss lines, and git never runs. Why: git is handed
+// --force for a dirty original, and would delete an edit made in the gate's
+// compare window; the last read before git must be the one that decides.
+func TestPreReCheckCatchesEditAfterGate(t *testing.T) {
+	f := newFixture(t)
+	rs, eng, it := confirmedDirtyPreserved(t, f)
+	n := secondRescan(t, func(g cleanup.Git, prior cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error) {
+		f.write(rs.Src, "topic.txt", "edited after the gate")
+		return cleanup.Rescan(g, prior, in, o, tg)
+	})
+	calls := recordRemoves(t)
+	o := one(t, eng, it)
+	const reason = "changed while being checked: it no longer matches what was confirmed"
+	if o.Worktree != WtSkippedChanged || o.Reason != reason || o.Branch != BrNotAttempted {
+		t.Fatalf("outcome %s/%s %q, want skipped_changed/not_attempted %q", o.Worktree, o.Branch, o.Reason, reason)
+	}
+	if !slices.ContainsFunc(o.LossLines, func(l string) bool { return strings.Contains(l, "uncommitted") }) {
+		t.Errorf("loss lines %q, want the fresh uncommitted-changes line", o.LossLines)
+	}
+	if *n != 2 || len(*calls) != 0 {
+		t.Errorf("%d rescans, git calls %q; want 2 and none", *n, *calls)
+	}
+	if b, err := os.ReadFile(filepath.Join(rs.Src, "topic.txt")); err != nil || string(b) != "edited after the gate" {
+		t.Errorf("the edit is gone: %q %v", b, err)
+	}
+}
+
+// TestPreReCheckErrorIsRefused has the re-check right before git fail: the
+// item is refused ("could not re-check: ...") and git never runs. Why: a
+// re-check that cannot be made is not a pass (fail closed), and the gate
+// treats a rescan error the same way.
+func TestPreReCheckErrorIsRefused(t *testing.T) {
+	f := newFixture(t)
+	rs, eng, it := confirmedDirtyPreserved(t, f)
+	secondRescan(t, func(cleanup.Git, cleanup.Snapshot, cleanup.GatherInputs, cleanup.Options, cleanup.Target) (cleanup.Row, error) {
+		return cleanup.Row{}, errors.New("listing broke")
+	})
+	calls := recordRemoves(t)
+	o := one(t, eng, it)
+	if o.Worktree != WtRefused || o.Reason != "could not re-check: listing broke" || o.Branch != BrNotAttempted {
+		t.Fatalf("outcome %s/%s %q, want refused: could not re-check: listing broke", o.Worktree, o.Branch, o.Reason)
+	}
+	if len(*calls) != 0 || !exists(t, rs.Src) {
+		t.Errorf("git calls %q; want none and the original kept", *calls)
+	}
+}
+
+// TestPreReCheckTargetGoneIsSkipped has the re-check right before git find
+// the target gone (ErrTargetGone): skipped_changed "no longer exists", as at
+// the gate, and git never runs. Why: a worktree that vanished in the window
+// changed since the user confirmed it; there is nothing to approve.
+func TestPreReCheckTargetGoneIsSkipped(t *testing.T) {
+	f := newFixture(t)
+	_, eng, it := confirmedDirtyPreserved(t, f)
+	secondRescan(t, func(cleanup.Git, cleanup.Snapshot, cleanup.GatherInputs, cleanup.Options, cleanup.Target) (cleanup.Row, error) {
+		return cleanup.Row{}, cleanup.ErrTargetGone
+	})
+	calls := recordRemoves(t)
+	o := one(t, eng, it)
+	if o.Worktree != WtSkippedChanged || o.Reason != "no longer exists" || o.Branch != BrNotAttempted {
+		t.Fatalf("outcome %s/%s %q, want skipped_changed: no longer exists", o.Worktree, o.Branch, o.Reason)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("git calls %q, want none", *calls)
+	}
+}
+
+// TestPreReCheckMismatches feeds the re-check right before git a row that
+// differs from the gate's in one way each (the record dropped, its dirt no
+// longer covered, another record ref or commit, the tip moved, a blocker,
+// in use, unreadable gates, a worse status, a worse loss): each is
+// skipped_changed with the re-check reason and git never runs. Why: each is
+// a way the tree or the record changed in the window, and --force would
+// remove what changed.
+func TestPreReCheckMismatches(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		edit func(r *cleanup.Row)
+	}{
+		{"record dropped", func(r *cleanup.Row) { r.Preserved = nil }},
+		{"dirt no longer covered", func(r *cleanup.Row) { p := *r.Preserved; p.CoversDirt = false; r.Preserved = &p }},
+		{"another record ref", func(r *cleanup.Row) { p := *r.Preserved; p.Ref += "0"; r.Preserved = &p }},
+		{"another record commit", func(r *cleanup.Row) { p := *r.Preserved; p.Commit = strings.Repeat("e", 40); r.Preserved = &p }},
+		{"tip moved", func(r *cleanup.Row) { r.Tip = strings.Repeat("e", 40) }},
+		{"blocker", func(r *cleanup.Row) { r.Blockers = []cleanup.Reason{{Code: cleanup.BlockLocked}} }},
+		{"in use", func(r *cleanup.Row) { r.Status = cleanup.StatusInUse }},
+		{"gates unknown", func(r *cleanup.Row) { r.Losses.GatesUnknown = true }},
+		{"worse status", func(r *cleanup.Row) { r.Status = cleanup.StatusUniqueWork }},
+		{"worse loss", func(r *cleanup.Row) { r.Losses.IgnoredEntries++ }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			rs, eng, it := confirmedDirtyPreserved(t, f)
+			secondRescan(t, func(g cleanup.Git, prior cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error) {
+				r, err := cleanup.Rescan(g, prior, in, o, tg)
+				c.edit(&r)
+				return r, err
+			})
+			calls := recordRemoves(t)
+			o := one(t, eng, it)
+			if o.Worktree != WtSkippedChanged || o.Reason != "changed while being checked: it no longer matches what was confirmed" {
+				t.Fatalf("outcome %s %q, want skipped_changed by the re-check", o.Worktree, o.Reason)
+			}
+			if len(*calls) != 0 || !exists(t, rs.Src) {
+				t.Errorf("git calls %q; want none and the original kept", *calls)
+			}
+		})
+	}
+}
+
+// TestPreReCheckRefusesSubmoduleInitialisedAfterGate initialises a submodule
+// repository in a dirty rescued original's admin dir (modules/) after the
+// gate's submodule check, before the re-check right before git (stubbed: the
+// second rescan creates it, then reads for real). The record still covers the
+// tree, so coverLapsed passes; the item must still be refused with the
+// gate's submodule wording and no git worktree remove. Why: the re-check can
+// take minutes while it hashes, and git skips its own submodule check under
+// the --force it is handed here with no Force approval behind it (Ruling X).
+func TestPreReCheckRefusesSubmoduleInitialisedAfterGate(t *testing.T) {
+	f := newFixture(t)
+	rs, eng, it := confirmedDirtyPreserved(t, f)
+	admin := gitIn(t, rs.Src, "rev-parse", "--path-format=absolute", "--git-dir")
+	n := secondRescan(t, func(g cleanup.Git, prior cleanup.Snapshot, in cleanup.GatherInputs, o cleanup.Options, tg cleanup.Target) (cleanup.Row, error) {
+		if err := os.MkdirAll(filepath.Join(admin, "modules", "x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return cleanup.Rescan(g, prior, in, o, tg)
+	})
+	calls := recordRemoves(t)
+	o := one(t, eng, it)
+	if o.Worktree != WtRefused || o.Reason != "contains submodules; remove by hand" || o.Branch != BrNotAttempted {
+		t.Fatalf("outcome %s/%s %q, want refused: contains submodules; remove by hand", o.Worktree, o.Branch, o.Reason)
+	}
+	if *n != 2 || len(worktreeRemoves(*calls)) != 0 || !exists(t, rs.Src) || !exists(t, filepath.Join(admin, "modules", "x")) {
+		t.Errorf("%d rescans, git calls %q; want 2, no worktree remove, and the worktree and modules kept", *n, *calls)
+	}
 }

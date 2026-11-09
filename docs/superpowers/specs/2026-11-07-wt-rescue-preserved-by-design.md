@@ -285,3 +285,15 @@ Settled while building PR B1:
 - `Preserved` carries `SourceHead`.
 - A record whose ref is not `refs/wt/rescued/<first 16 hex of its commit>` is ignored.
 - The Losses read-site guard is a name-keyed `go/ast` scan in `internal/cleanup` (no `go/types`).
+
+## Amendments (2026-11-08)
+
+PR B2 lets a record cover a dirty original (plan `docs/superpowers/plans/2026-11-08-wt-rescue-preserved-pr-b2.md`). What the build settled:
+
+- **`Preserved` attaches independently of evidence.** A dirt-covered row gets `Row.Preserved` even when the ladder already gave it evidence (merged, pushed); the reason `preserved` is weak, so the row reads `less_sure`. An open PR still makes it `unique_work`; `pr_unknown`, ignored files and a local base keep their effect. `Row.Tickable` stays proven-only, so a `less_sure` row is not default-ticked.
+- **The index comparison uses `git diff-index --cached --quiet` against the record's first commit (I)**, not `dirtsnap.IndexTree`: the former reads the index without rebuilding it and fails on an unmerged or intent-to-add entry.
+- **Limits are duplicated, not imported.** `internal/cleanup` repeats rescue's 20000 files / 512 MiB (cleanup may not import rescue); `TestDirtLimitsMatchRescue` pins them equal. A state over them reads not covered.
+- **The record chain is source head <- I <- W**, so `Wt-Source-Head` is `W^^` (`W~2`), not `W^^^`.
+- **The re-check sits in `Engine.worktreeAct`, not the gate**, because the preview runs the gate and would pay a second `Rescan` per row. It runs right before `git worktree remove`; a change is `skipped_changed`, and a re-check `Rescan` error is `refused`.
+- **Clean initialised submodules** are not detected by the classifier's dirt check; `submodulesIn` refuses them at removal.
+- **Declared losses:** ignored files, file modes beyond the executable bit, empty directories, and a write to the original between the re-check and `git worktree remove`. **Cost:** a covered-dirt row hashes its changed files on every `Gather` and `Rescan`, and once more before removal.

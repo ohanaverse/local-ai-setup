@@ -228,7 +228,10 @@ func skipped(it Item, reason string) Outcome {
 // directory), a merge or rebase started, a commit made on a detached HEAD
 // (orphaned), or, on the dirty+Force path, any new file at all. The slow
 // live-process check therefore runs before the rescan, to keep the window
-// as short as the rescan's own gates allow.
+// as short as the rescan's own gates allow. For a dirty original whose
+// rescue record covers its dirt (the one --force path no Force approval
+// stands behind), worktreeAct re-reads it once more right before git
+// (coverLapsed), leaving only that second read's own window.
 func (e Engine) worktreeGate(it Item) gated {
 	// 1. A target no row could have produced, or a "saw" nothing could be
 	// compared with.
@@ -281,10 +284,7 @@ func (e Engine) worktreeGate(it Item) gated {
 	if fresh.Status.WorseThan(it.Saw) {
 		return stop(skipped(it, fmt.Sprintf("status changed since it was listed (%s, was %s)", fresh.Status, it.Saw)))
 	}
-	tip := fresh.Tip
-	if fresh.Ref == "" {
-		tip = fresh.Head
-	}
+	tip := rowTip(fresh)
 	if tip == "" {
 		return stop(refuse(it, "could not read the worktree's commit"))
 	}
@@ -390,16 +390,73 @@ func (e Engine) worktreeAct(it Item, g gated, dry bool) (Outcome, []string) {
 		return o.applyBranch(r), oneLines(r.Warnings)
 	}
 
-	// 11. Remove and verify.
-	if wt, reason := e.removeWorktree(fresh.Path, g.gitForce); wt != WtRemoved {
+	// 11. A dirty original whose uncommitted work a rescue record holds goes
+	// to git with --force, which would delete anything that changed since the
+	// gate's rescan. Re-read it right before git (nothing slow in between):
+	// it must still be what the gate let through and what the user saw.
+	gitForce := g.gitForce
+	if fresh.Preserved != nil && fresh.Preserved.CoversDirt {
+		now, err := rescan(e.G, e.Prior, e.In, e.classifyOpts(), cleanup.Target{Kind: cleanup.KindWorktree, Path: it.Path, Ref: it.Ref})
+		stop := func(wt WorktreeOutcome, reason string) (Outcome, []string) {
+			o.Worktree, o.Branch = wt, BrNotAttempted
+			o.SetReason(reason)
+			if err == nil {
+				o.LossLines = lossLines(now)
+			}
+			return o, nil
+		}
+		switch {
+		case errors.Is(err, cleanup.ErrTargetGone):
+			return stop(WtSkippedChanged, "no longer exists")
+		case err != nil:
+			return stop(WtRefused, "could not re-check: "+err.Error())
+		case coverLapsed(it, fresh, now):
+			return stop(WtSkippedChanged, "changed while being checked: it no longer matches what was confirmed")
+		}
+		// losses: raw, git refuses a dirty worktree without --force, covered or not
+		gitForce = now.Losses.Dirty
+		// The gate's submodule check (8b) ran before this rescan, which can
+		// take minutes while it hashes; git skips its own check under
+		// --force, so ask again, last, with nothing slow after it.
+		if gitForce {
+			if why := submodulesIn(fresh.Path); why != "" {
+				return stop(WtRefused, why)
+			}
+		}
+	}
+
+	// 12. Remove and verify.
+	if wt, reason := e.removeWorktree(fresh.Path, gitForce); wt != WtRemoved {
 		o.Worktree = wt
 		o.SetReason(reason)
 		return o, nil
 	}
 
-	// 12. The branch stage.
+	// 13. The branch stage.
 	r := e.deleteBranch(ic, fresh)
 	return o.applyBranch(r), oneLines(r.Warnings)
+}
+
+// coverLapsed reports whether now, the re-check right before git of a dirty
+// original whose record covered its dirt at the gate (gate), no longer
+// matches: the same record (Ref and Commit) must still cover the dirt, the
+// commit must be the gate's and the one the user saw, and the gate's steps
+// 5-7 must still pass (no blocker, not in use, readable gates, a status and
+// effective losses no worse than seen). It repeats those steps rather than
+// sharing them: the gate distinguishes refused from skipped and names each
+// cause, while any mismatch here is one skipped_changed.
+func coverLapsed(it Item, gate, now cleanup.Row) bool {
+	p, q := gate.Preserved, now.Preserved
+	switch {
+	case q == nil || !q.CoversDirt || p == nil || q.Ref != p.Ref || q.Commit != p.Commit,
+		now.Ref != gate.Ref || rowTip(now) == "" || rowTip(now) != rowTip(gate) || rowTip(now) != it.SawTip,
+		len(now.Blockers) > 0 || now.Status == cleanup.StatusInUse,
+		now.Losses.GatesUnknown, // losses: raw, the view never clears GatesUnknown (same value either way)
+		now.Status.WorseThan(it.Saw),
+		lossesWorse(now.EffectiveLosses(), it.SawLosses):
+		return true
+	}
+	return false
 }
 
 // oneLines is ws, each as one sanitised line.

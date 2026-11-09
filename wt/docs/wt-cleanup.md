@@ -28,8 +28,8 @@ wt remove origin/merged-topic --remote --yes       # delete a proven branch on o
 | Group | Meaning |
 |---|---|
 | Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing; or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
-| Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read. |
-| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes, or an open PR. |
+| Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read; also a rescued original whose uncommitted changes still equal its record. |
+| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR. |
 | In use / locked | A primary, current, locked, nested or mid-operation worktree, a held session claim, a registered model artifact (`protected_artifact`), or the default branch (`default_branch`). |
 
 `origin` branches are rows in these same groups, judged the same way (a proven
@@ -153,8 +153,10 @@ each item's losses, the processes running in it, and every unmerged branch
 A clean original that `wt rescue` has copied (its commits are the only thing
 it holds that exists nowhere else, and a record keeps them; see
 [the record](#wt-rescue-keep-work-before-it-is-lost)) reads proven, so `--yes`
-alone removes it and its own branch. One with uncommitted changes still needs
-`--accept-loss`, `--force` and `-D`.
+alone removes it and its own branch. One with uncommitted changes needs
+`--accept-loss` alone while its index and working tree still equal the record
+(it reads less sure); once they differ it needs `--accept-loss`, `--force`
+and `-D` again.
 
 In the list, enter shows a confirmation with every ticked entry: its group,
 what it would lose, running processes, and the approvals it needs. When every
@@ -239,10 +241,27 @@ moved. What happens to it afterwards depends on the record (next paragraph):
 while it is clean (no staged, unstaged or untracked changes) and the record
 keeps its commits, `wt cleanup` lists it as proven and `wt remove <path> --yes`
 removes it and its own branch. An original with uncommitted changes is
-unchanged: `wt cleanup` still lists it as having work that exists nowhere
-else and `wt remove` still needs `--accept-loss`, `--force` and `-D` (the
-record does not count for those changes). Remove it after you have checked
-the copy.
+covered only while it is exactly what the record captured: its index and
+working tree (staged, unstaged and untracked files that are not ignored) must
+equal the record's, and its HEAD and branch tip must still be the commit the
+record names. Then `wt cleanup` lists it as less sure (reason `preserved`,
+evidence unchanged) and `wt remove <path> --accept-loss` removes it; it never
+needs `--force`, and it is not ticked by default in the list. Any change that
+leaves it different (a change of file modes other than the executable bit is
+not seen, see below),
+a file marked skip-worktree or assume-unchanged, or a record that no longer
+matches returns it to having work
+that exists nowhere else, needing `--accept-loss`, `--force` and `-D`.
+`wt remove` re-reads the record immediately before `git worktree remove` and
+skips the item (`skipped_changed`) if the original changed since the
+preview; an error in that re-read refuses it. The preview notes where the
+changes are kept: `uncommitted changes are kept in <ref> (copy: <path>)`.
+What the removal loses even then: ignored files, file modes beyond the
+executable bit, empty directories, and anything written to the original in the
+short window between the re-check and `git worktree remove`. Cost: a covered
+row hashes its changed files on every list and re-check, and once more right
+before removal (a worktree with over 20000 changed files (tracked changes and untracked)
+or 512 MiB in them is not covered). Remove it after you have checked the copy.
 
 **The record.** After the copy is verified, and only then, wt re-reads the
 source and, if it did not change, leaves a record in the source's repository:

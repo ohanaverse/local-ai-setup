@@ -290,3 +290,133 @@ func TestRescueTwiceThenRemove(t *testing.T) {
 		}
 	}
 }
+
+// dirtyWorktree is cleanWorktree plus all three kinds of uncommitted work: a
+// staged edit, an unstaged edit and an untracked file.
+func dirtyWorktree(t *testing.T, dir string) string {
+	t.Helper()
+	p := cleanWorktree(t, dir)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(os.WriteFile(filepath.Join(p, "staged.txt"), []byte("staged"), 0o644))
+	cgit(t, p, "add", "staged.txt")
+	must(os.WriteFile(filepath.Join(p, "spike.txt"), []byte("edited"), 0o644))
+	must(os.WriteFile(filepath.Join(p, "new.txt"), []byte("untracked"), 0o644))
+	return p
+}
+
+// TestRescueDirtyOriginalIsRemovableWithAcceptLoss drives the real commands
+// on a worktree with commits plus staged, unstaged and untracked work:
+// after `rescue --yes` the original lists less_sure with reason preserved,
+// its loss lines no longer mention uncommitted changes, plain `remove --yes`
+// exits 2 (refused) with "needs --accept-loss" and removes nothing, and
+// `--accept-loss` removes the worktree and branch while the copy and the
+// record stay. Why: the feature's promise for dirty work, and only the real
+// commands together prove the classifier, the engine's re-check and the
+// approval ladder agree (dirt never reads proven and never needs --force).
+func TestRescueDirtyOriginalIsRemovableWithAcceptLoss(t *testing.T) {
+	a := rescueApp(t)
+	dir := cleanupRepo(t)
+	src := dirtyWorktree(t, dir)
+	githubOrigin(t, dir)
+	env := rescueClean(t, a, dir)
+
+	r := rowFor(t, listRows(t, a, dir), "spike")
+	if r.Status != "less_sure" || !slices.Contains(reasonCodes(r), "preserved") || slices.Contains(reasonCodes(r), "dirty") {
+		t.Fatalf("source row = status %q evidence %q reasons %v, want less_sure with preserved and no dirty", r.Status, r.Evidence, reasonCodes(r))
+	}
+
+	// The dry run without --accept-loss exits 2 (refused), but still reports
+	// the effective loss lines.
+	stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--dry-run", "--json", src)
+	if items := decodeOne(t, stdout).Items; len(items) != 1 {
+		t.Fatalf("dry-run exit %d, stderr %q\n%s", exitOf(err), stderr, stdout)
+	}
+	for _, l := range decodeOne(t, stdout).Items[0].Losses {
+		if strings.Contains(l, "uncommitted changes") {
+			t.Errorf("effective loss lines still say %q", l)
+		}
+	}
+
+	stdout, stderr, err = runRemove(t, a, dir, "", "--no-fetch", "--yes", "--json", src)
+	out := decodeOne(t, stdout)
+	if exitOf(err) != 2 || len(out.Items) != 1 || !strings.Contains(out.Items[0].Reason, "needs --accept-loss") {
+		t.Fatalf("remove --yes exit %d, items %+v, stderr %q, want 2 (refused) and \"needs --accept-loss\"", exitOf(err), out.Items, stderr)
+	}
+	if !exists(src) || !hasBranch(t, dir, "spike") {
+		t.Fatal("the original or its branch was removed without --accept-loss")
+	}
+
+	stdout, stderr, err = runRemove(t, a, dir, "", "--no-fetch", "--yes", "--accept-loss", "--json", src)
+	if exitOf(err) != 0 {
+		t.Fatalf("remove --accept-loss exit %d, stderr %q\n%s", exitOf(err), stderr, stdout)
+	}
+	if exists(src) || hasBranch(t, dir, "spike") {
+		t.Error("original or its branch survives --accept-loss")
+	}
+	if !hasBranch(t, dir, "rescued/spike") || !exists(env.Destination.Path) || !hasRef(t, dir, env.Record.Ref) {
+		t.Error("the copy, its worktree or the record is gone")
+	}
+}
+
+// TestRescueDirtyOriginalNegatives checks the cases where a dirty original
+// must not read covered: an edit after the rescue, an assume-unchanged flag
+// hiding an edit, and an operation in progress. Each keeps the row off the
+// preserved/less_sure path, and `remove --yes --accept-loss` still needs
+// --force (exit non-zero, nothing removed). Why: the record covers exactly
+// the state rescued; anything the record cannot prove must read as today.
+func TestRescueDirtyOriginalNegatives(t *testing.T) {
+	check := func(t *testing.T, a *app, dir, src string) {
+		t.Helper()
+		r := rowFor(t, listRows(t, a, dir), "spike")
+		if r.Status == "less_sure" && slices.Contains(reasonCodes(r), "preserved") && !slices.Contains(reasonCodes(r), "dirty") {
+			t.Fatalf("row still reads covered: status %q reasons %v", r.Status, reasonCodes(r))
+		}
+		if r.Status != "unique_work" && r.Status != "in_use" {
+			t.Fatalf("status = %q reasons %v, want unique_work or in_use", r.Status, reasonCodes(r))
+		}
+		_, _, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--accept-loss", "--json", src)
+		if exitOf(err) == 0 || !exists(src) || !hasBranch(t, dir, "spike") {
+			t.Errorf("remove --accept-loss exit %d, removed=%v; want a refusal that keeps everything", exitOf(err), !exists(src))
+		}
+	}
+	t.Run("edit after the rescue", func(t *testing.T) {
+		a := rescueApp(t)
+		dir := cleanupRepo(t)
+		src := dirtyWorktree(t, dir)
+		githubOrigin(t, dir)
+		rescueClean(t, a, dir)
+		if err := os.WriteFile(filepath.Join(src, "new.txt"), []byte("changed after"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		check(t, a, dir, src)
+	})
+	t.Run("hidden by assume-unchanged", func(t *testing.T) {
+		a := rescueApp(t)
+		dir := cleanupRepo(t)
+		src := dirtyWorktree(t, dir)
+		githubOrigin(t, dir)
+		rescueClean(t, a, dir)
+		cgit(t, src, "update-index", "--assume-unchanged", "spike.txt")
+		if err := os.WriteFile(filepath.Join(src, "spike.txt"), []byte("hidden edit"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		check(t, a, dir, src)
+	})
+	t.Run("operation in progress", func(t *testing.T) {
+		a := rescueApp(t)
+		dir := cleanupRepo(t)
+		src := dirtyWorktree(t, dir)
+		githubOrigin(t, dir)
+		rescueClean(t, a, dir)
+		gd := cgit(t, src, "rev-parse", "--absolute-git-dir")
+		if err := os.WriteFile(filepath.Join(gd, "MERGE_HEAD"), []byte(cgit(t, src, "rev-parse", "HEAD")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		check(t, a, dir, src)
+	})
+}

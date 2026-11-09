@@ -33,7 +33,8 @@ type lossCounts struct{ raw, effective, seal, write, unlabelled int }
 // touches a row's losses, keyed "<file relative to the module root>#<func>"
 // with the receiver type for a method. The counts are exact, so a second
 // read added to a listed function fails too. A preserved row's raw losses
-// still count its covered commits; only the sites labelled raw may see them.
+// still count its covered commits, and its covered dirt (CoversDirt); only the
+// sites labelled raw may see them.
 var lossSites = map[string]lossCounts{
 	// The classifier builds the raw value; the view is made from it.
 	"internal/cleanup/classify.go#classifier.worktree":  {write: 7},
@@ -44,10 +45,14 @@ var lossSites = map[string]lossCounts{
 	// The removal engine: approvals, the lapse check and the seal read the
 	// effective view; two gates read raw values the view never changes or
 	// git needs as they are.
-	"internal/removal/engine.go#needsOf":              {effective: 1},
-	"internal/removal/engine.go#unapproved":           {effective: 1},
-	"internal/removal/engine.go#Engine.worktreeGate":  {raw: 2, effective: 1, seal: 1},
-	"internal/removal/engine.go#Engine.branchGate":    {effective: 1, seal: 1},
+	"internal/removal/engine.go#needsOf":             {effective: 1},
+	"internal/removal/engine.go#unapproved":          {effective: 1},
+	"internal/removal/engine.go#Engine.worktreeGate": {raw: 2, effective: 1, seal: 1},
+	"internal/removal/engine.go#Engine.branchGate":   {effective: 1, seal: 1},
+	// The re-check right before git for covered dirt: the gate's lapse
+	// comparison again, and --force from the raw Dirty.
+	"internal/removal/engine.go#coverLapsed":          {raw: 1, effective: 1, seal: 1},
+	"internal/removal/engine.go#Engine.worktreeAct":   {raw: 1},
 	"internal/removal/preview.go#ItemFromRow":         {effective: 1},
 	"internal/removal/preview.go#ItemPreview.confirm": {seal: 1},
 	"internal/removal/types.go#sealOf":                {seal: 1},

@@ -61,7 +61,7 @@ const (
 	ReasonBaseIsLocal           = "base_is_local"           // soft: no remote default; the base is the local one
 	ReasonNoMergedPR            = "no_merged_pr"            // soft (remote rows): merged content but no merged PR
 	ReasonClaimsUnavailable     = "claims_unavailable"      // the session claims could not be read
-	ReasonPreserved             = "preserved"               // informational: a rescue record covers the worktree's commits; never lowers the status
+	ReasonPreserved             = "preserved"               // a rescue record covers the worktree's commits (informational, never lowers the status) or also its uncommitted work (soft: less sure)
 )
 
 // Blocker codes beyond CheckGates' own.
@@ -125,8 +125,10 @@ type Row struct {
 	// worktree it is false.
 	BranchProven bool
 	// Preserved is the rescue record the classifier applied to a worktree
-	// row (its commits read as covered, evidence rescued); nil when no record
-	// applies, and always nil for branch and remote rows.
+	// row: its unpushed or detached commits read as covered (evidence
+	// rescued), and with CoversDirt its uncommitted work too (whatever the
+	// evidence, which a merged branch keeps). nil when no record applies, and
+	// always nil for branch and remote rows.
 	Preserved *Preserved
 }
 
@@ -151,8 +153,9 @@ type Losses struct {
 
 // EffectiveLosses is what removing r would lose once a rescue record is
 // counted: for a row with Preserved, a counted Unpushed (> 0) and a detached
-// HEAD's commits read as covered; an uncounted Unpushed (-1), Dirty, ignored
-// files and GatesUnknown are untouched, since a record keeps commits only.
+// HEAD's commits read as covered, and Dirty too when the record also holds
+// the uncommitted work (CoversDirt); an uncounted Unpushed (-1), ignored
+// files and GatesUnknown are untouched, since a record keeps none of them.
 // Without Preserved it is Losses unchanged. Losses itself stays raw.
 func (r Row) EffectiveLosses() Losses {
 	l := r.Losses // losses: raw, the view is built from the raw value
@@ -163,6 +166,9 @@ func (r Row) EffectiveLosses() Losses {
 		l.Unpushed = 0
 	}
 	l.DetachedUnique = false
+	if r.Preserved.CoversDirt {
+		l.Dirty = false
+	}
 	return l
 }
 
@@ -322,7 +328,9 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		row.Losses.IgnoredEntries = g.IgnoredCount
 		row.Losses.IgnoredBytes = g.IgnoredBytes
 		row.Losses.DetachedUnique = g.DetachedUnique
-		if g.Dirty {
+		// Covered dirt is not raised; the preserved reason (soft) says it
+		// instead, and Losses.Dirty stays raw.
+		if g.Dirty && !c.dirtCovered(ws) {
 			j.uniq(ReasonDirty, "uncommitted or untracked files")
 		}
 		if g.DetachedUnique && !c.detachedPreserved(ws) {
@@ -381,6 +389,13 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		c.minAge(&j, RefFact{Created: ws.HeadSince})
 		c.setAge(&row, RefFact{Created: ws.HeadSince})
 	}
+	// Covered dirt on a row whose commits the ladder (not the record)
+	// accounts for, a merged branch or a detached HEAD the base reaches: the
+	// record still applies, so the dirt is not silently left out of the
+	// reasons and the effective losses. The evidence stays the ladder's.
+	if row.Preserved == nil && len(j.blockers) == 0 && c.dirtCovered(ws) {
+		row.Preserved = c.preserve(&j, ws.Preserved)
+	}
 	c.capFallback(&j)
 	j.fill(&row)
 	return row
@@ -430,17 +445,45 @@ func (c *classifier) branchProven(h RefFact, covered bool) bool {
 }
 
 // preservable is whether ws's record may be applied at all: one was matched,
-// the gates read cleanly and found no dirt.
+// the gates read cleanly with no hard blocker, and any dirt they found is
+// held by the record too (CoversDirt).
 func preservable(ws WorktreeState) bool {
-	return ws.Preserved != nil && ws.GatesErr == "" && !ws.Gates.Dirty
+	return ws.Preserved != nil && ws.GatesErr == "" && len(ws.Gates.Blockers) == 0 &&
+		(!ws.Gates.Dirty || ws.Preserved.CoversDirt)
+}
+
+// dirtCovered is whether ws's uncommitted work reads as covered: the record
+// applies (preservable) and holds the dirt, the worktree is not on the
+// default branch, its HEAD is the head the record was written from, and for
+// a branch its fresh tip is that head too. When true the row gets Preserved
+// (from the ladder's rescued rung or the attach step in worktree) and no
+// dirty reason; when false the row reads as with no record.
+func (c *classifier) dirtCovered(ws WorktreeState) bool {
+	w := ws.Fact
+	if !preservable(ws) || !ws.Gates.Dirty || !ws.Preserved.CoversDirt ||
+		!IsFullCommitID(w.Head) || w.Head != ws.Preserved.SourceHead {
+		return false
+	}
+	branch := strings.TrimPrefix(w.Branch, "refs/heads/")
+	switch {
+	case branch == "":
+		return w.Detached
+	case c.isDefault(branch):
+		return false
+	}
+	h, ok := c.head(w.Branch)
+	return ok && h.Tip == ws.Preserved.SourceHead
 }
 
 // branchPreserved is whether a rescue record covers the unpushed commits of
 // the worktree's branch h: the record applies, the tip has no merge proof
 // (NotMerged), its counted unpushed commits exist (> 0, never unknown), and
-// the fresh tip is the head the record was written from.
+// the fresh tip is the head the record was written from. A dirty worktree
+// also needs its dirt covered (dirtCovered), so a row never reads its commits
+// covered while it still shows the dirt.
 func (c *classifier) branchPreserved(ws WorktreeState, h RefFact) bool {
-	if !preservable(ws) || !IsFullCommitID(h.Tip) || h.Tip != ws.Preserved.SourceHead {
+	if !preservable(ws) || (ws.Gates.Dirty && !c.dirtCovered(ws)) ||
+		!IsFullCommitID(h.Tip) || h.Tip != ws.Preserved.SourceHead {
 		return false
 	}
 	p, ok := c.s.Proofs[h.Tip]
@@ -449,10 +492,11 @@ func (c *classifier) branchPreserved(ws WorktreeState, h RefFact) bool {
 
 // detachedPreserved is whether a rescue record covers a detached worktree's
 // HEAD: the record applies, the HEAD is unique (DetachedUnique), has no merge
-// proof (NotMerged) and is the head the record was written from.
+// proof (NotMerged) and is the head the record was written from; a dirty one
+// also needs its dirt covered (dirtCovered).
 func (c *classifier) detachedPreserved(ws WorktreeState) bool {
 	w := ws.Fact
-	if !w.Detached || !preservable(ws) || !ws.Gates.DetachedUnique ||
+	if !w.Detached || !preservable(ws) || (ws.Gates.Dirty && !c.dirtCovered(ws)) || !ws.Gates.DetachedUnique ||
 		!IsFullCommitID(w.Head) || w.Head != ws.Preserved.SourceHead {
 		return false
 	}
@@ -460,10 +504,17 @@ func (c *classifier) detachedPreserved(ws WorktreeState) bool {
 	return ok && p.Verdict == NotMerged
 }
 
-// preserve adds the informational preserved reason and returns the row's
-// copy of p. The trailer values are untrusted text, so they go through flat.
+// preserve adds the preserved reason and returns the row's copy of p. It is
+// soft when the record also holds uncommitted work (removing the original
+// then still needs the loss accepted), informational otherwise. The trailer
+// values are untrusted text, so they go through flat.
 func (c *classifier) preserve(j *judge, p *Preserved) *Preserved {
-	j.info = append(j.info, Reason{ReasonPreserved, "preserved by " + flat(p.Ref) + " (copy: " + flat(p.DestPath) + ")"})
+	detail := "preserved by " + flat(p.Ref) + " (copy: " + flat(p.DestPath) + ")"
+	if p.CoversDirt {
+		j.weak(ReasonPreserved, detail+", including its uncommitted changes")
+	} else {
+		j.info = append(j.info, Reason{ReasonPreserved, detail})
+	}
 	cp := *p
 	return &cp
 }
