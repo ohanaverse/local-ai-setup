@@ -91,8 +91,9 @@ func (rr rootRescue) release(f *fixture) RootRelease {
 
 // rootCall is one git call ReleaseRoot made through the runGit seam.
 type rootCall struct {
-	Dir  string
-	Args []string
+	Dir    string
+	Config []string // the -c settings the call ran with (cleanup.Git.Config)
+	Args   []string
 }
 
 // recordRootGit records the directory and argument vector of every git call
@@ -110,7 +111,7 @@ func recordRootGitAround(t *testing.T, around func(args []string, run func() (cl
 	t.Helper()
 	var calls []rootCall
 	stubRunGit(t, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
-		calls = append(calls, rootCall{Dir: g.Dir, Args: slices.Clone(args)})
+		calls = append(calls, rootCall{Dir: g.Dir, Config: slices.Clone(g.Config), Args: slices.Clone(args)})
 		run := func() (cleanup.Out, error) { return g.Run(args...) }
 		if around == nil {
 			return run()
@@ -1402,5 +1403,68 @@ func TestReleaseRootRefusesADetachedRoot(t *testing.T) {
 	}
 	if got := f.git("rev-parse", "HEAD"); got != tip {
 		t.Errorf("HEAD %s, want the detached commit %s", got, tip)
+	}
+}
+
+// staleFsmonitor points the root's core.fsmonitor at a hook that always
+// answers "nothing changed" (protocol v2: a token and an empty path list),
+// lets git record that answer in the index, then edits README: a git that
+// trusts the hook no longer sees the edit.
+func staleFsmonitor(t *testing.T, f *fixture) {
+	t.Helper()
+	hook := filepath.Join(t.TempDir(), "fsmonitor-hook")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'tok\\0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "core.fsmonitor", hook)
+	f.git("status", "--porcelain") // writes the fsmonitor extension into the index
+	f.write(f.Dir, "README", "edit fsmonitor hides")
+	if st := f.git("status", "--porcelain", "--", "README"); st != "" {
+		t.Skipf("this git does not trust the fake fsmonitor (status sees %q); nothing to test", st)
+	}
+}
+
+// TestReleaseRootIgnoresAStaleFsmonitor edits README behind a core.fsmonitor
+// hook that reports no changes, so a plain `git status` and `ls-files -v` see
+// a clean file, and releases the root in both modes with a fingerprint check
+// that reports no change (only ReleaseRoot's own gates stand): it must refuse,
+// run no write and keep the edit; every git call must carry
+// core.fsmonitor=false. Why: the reset trusts fsmonitor too, and the switch
+// would then overwrite the edit, which no copy or record holds.
+func TestReleaseRootIgnoresAStaleFsmonitor(t *testing.T) {
+	for _, mode := range []string{"nothing uncommitted", "dirty"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t)
+			f.rootOnBranch("topic")
+			var rel RootRelease
+			if mode == "dirty" {
+				f.write(f.Dir, "new.txt", "n")
+				rel = rescueRoot(t, f).release(f)
+			} else {
+				rel = RootRelease{Root: f.Dir, Default: "main", NothingUncommitted: true}
+			}
+			rel.Unchanged = func() (string, error) { return "", nil }
+			staleFsmonitor(t, f)
+			calls := recordRootGit(t)
+			_, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rel)
+			var refused *ReleaseRefused
+			if !errors.As(err, &refused) {
+				t.Fatalf("err = %v (%T), want *ReleaseRefused (the edit is visible with fsmonitor off)", err, err)
+			}
+			if w := writes(*calls); len(w) != 0 {
+				t.Errorf("a refusal ran writes %q", w)
+			}
+			if got := readFile(t, filepath.Join(f.Dir, "README")); got != "edit fsmonitor hides" {
+				t.Errorf("README = %q, want the edit kept", got)
+			}
+			if len(*calls) == 0 {
+				t.Fatal("no git call recorded")
+			}
+			for _, c := range *calls {
+				if !slices.Contains(c.Config, "core.fsmonitor=false") {
+					t.Errorf("git %q ran without core.fsmonitor=false (config %q)", c.Args, c.Config)
+				}
+			}
+		})
 	}
 }

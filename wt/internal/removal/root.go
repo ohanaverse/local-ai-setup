@@ -138,6 +138,13 @@ func (e *ReleaseFailed) Unwrap() error { return e.Err }
 //     neither the copy nor the record holds.
 //
 // So the last gates are the record check, then the ignored-files check.
+// A root with any skip-worktree entry (a sparse checkout) is refused by gate
+// 4, failing closed as cleanup's dirt check over-reports one.
+//
+// Every git call runs with core.fsmonitor=false, set after g's -c settings
+// so a caller cannot turn it back on: a stale or wrong fsmonitor hook would
+// hide an edit from the status and index-flag gates, and the reset trusts
+// it too.
 //
 // Then, each a stage of *ReleaseFailed: `git reset --hard HEAD`; removal of
 // exactly the carried untracked paths whose content still equals the record
@@ -150,8 +157,9 @@ func (e *ReleaseFailed) Unwrap() error { return e.Err }
 // left.
 //
 // Declared window: a change made to the root between the last gates (the
-// record check, then the ignored-files check) and the reset is lost, as in `wt remove` of a dirty rescued original (a carried
-// untracked file edited in that window is kept, by the content check).
+// record check, then the ignored-files check) and the reset is lost, as in
+// `wt remove` of a dirty rescued original (a carried untracked file edited in
+// that window is kept, by the content check).
 func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	var res ReleaseResult
 	refuse := func(format string, a ...any) (ReleaseResult, error) {
@@ -170,7 +178,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	if timeout == 0 {
 		timeout = DefaultRemoveTimeout
 	}
-	rg := cleanup.Git{Dir: root, Timeout: timeout, Config: slices.Clone(g.Config)}
+	rg := cleanup.Git{Dir: root, Timeout: timeout, Config: append(slices.Clone(g.Config), "core.fsmonitor=false")}
 
 	// 1. Inputs.
 	if why, err := checkReleaseInputs(rg, root, r.Default); err != nil {
@@ -285,8 +293,9 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 
 // checkReleaseInputs returns why root or def cannot be released ("" when
 // both hold): root must be the top of the primary checkout (not a linked
-// worktree or a subdirectory) and def an existing local branch that no other
-// worktree has checked out.
+// worktree or a subdirectory) and on a branch (not a detached HEAD, whose
+// commits would be left on no branch), and def an existing local branch that
+// no other worktree has checked out.
 func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 	if def == "" || strings.HasPrefix(def, "-") {
 		return fmt.Sprintf("%q is not a branch name", def), nil
@@ -738,8 +747,8 @@ func (t *recordTree) matches(p, full string, fi fs.FileInfo) (string, error) {
 // reset restored), means the path is gone (skipped); any other parent that
 // is a symlink or not a directory is an error. Index lookups are folded as
 // git compares names (pathFold); a parent whose name differs from the
-// tracked one only by Unicode normalization is not matched and is an error; the path itself must be a
-// regular file or a symlink whose content equals the record's (the link is
+// tracked one only by Unicode normalization is not matched and is an error;
+// the path itself must be a regular file or a symlink whose content equals the record's (the link is
 // removed, never its target), and one already gone is skipped. A directory,
 // anything else, or a file that differs from the record is an error and is
 // left. It stops at the first error.

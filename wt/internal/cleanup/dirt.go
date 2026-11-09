@@ -90,7 +90,8 @@ func RecordCoversDirt(g Git, root, head, recordRef string) (bool, error) {
 		if r.Ref != recordRef {
 			continue
 		}
-		wg := Git{Dir: root, Timeout: g.Timeout}
+		// fsmonitor off: a stale hook must not hide an edit from the check.
+		wg := Git{Dir: root, Timeout: g.Timeout, Config: []string{"core.fsmonitor=false"}}
 		w := WorktreeFact{Path: root, Head: head}
 		return len(dirtCoveredRecords(wg, w, []RescueRecord{r})) > 0, nil
 	}
