@@ -64,7 +64,7 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 			if e.ForRoot {
 				continue
 			}
-			return nil, refuse(CodePrimary, "this is the repository's primary checkout; moving its work off it is a separate step (#522)")
+			return nil, refuse(CodePrimary, "this is the repository's primary checkout, which `wt rescue` does not take; `wt restore-root` moves its branch and work into a worktree")
 		case cleanup.BlockOperation:
 			return nil, refuse(CodeOperation, fmt.Sprintf("an operation is in progress there (%s); finish or abort it first", cleanup.OneLine(b.Detail)))
 		case cleanup.BlockHeld:

@@ -139,6 +139,24 @@ func TestPreflightRefusals(t *testing.T) {
 	}
 }
 
+// TestPrimaryRefusalPointsAtRestoreRoot checks the refusal of the primary
+// checkout keeps its code `primary` and names `wt restore-root`, the command
+// that does move the root's branch and work. Why: the refusal is where a user
+// trying to rescue the root learns what to run instead.
+func TestPrimaryRefusalPointsAtRestoreRoot(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.Dir, "dirty.txt", "x")
+	eng, find := f.engine(f.Dir)
+	_, err := eng.Preflight(find(f.Dir), "")
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != CodePrimary {
+		t.Fatalf("Preflight = %v; want a refusal %q", err, CodePrimary)
+	}
+	if !strings.Contains(r.Message, "wt restore-root") {
+		t.Errorf("the refusal does not name wt restore-root: %s", r.Message)
+	}
+}
+
 // exec_ runs git in dir with stdin and fails the test on error.
 func exec_(t *testing.T, dir, stdin string, args ...string) string {
 	t.Helper()
