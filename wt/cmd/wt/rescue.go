@@ -5,7 +5,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -22,9 +21,7 @@ import (
 
 // rescueTTY says whether the y/N prompt can be asked: both its input and the
 // stream it is written to are terminals. Tests swap it.
-var rescueTTY = func(in io.Reader, out io.Writer) bool {
-	return isTerminalStream(in) && isTerminalStream(out)
-}
+var rescueTTY = bothTerminals
 
 // rescueStreams are the terminal streams the cleanup list's `r` key hands to
 // the rescue once the alt screen is gone. Tests swap them.
@@ -210,12 +207,7 @@ func promptRescue(ask io.Writer, answer io.Reader, p *rescue.Plan) bool {
 	if _, err := io.WriteString(ask, b.String()); err != nil {
 		return false
 	}
-	line, _ := bufio.NewReader(answer).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	}
-	return false
+	return confirmYN(answer)
 }
 
 // countsText is "2 commits, 1 staged, ..." for what a rescue carries.
@@ -249,33 +241,9 @@ func rescueExitCode(o rescue.Outcome) int {
 // stdout did not take goes to errOut: the copy happened, so its location must
 // not be lost.
 func writeRescueResult(out, errOut io.Writer, asJSON bool, meta rescue.Meta, o rescue.Outcome) error {
-	code := rescueExitCode(o)
-	notDone := errors.New("the work was not copied")
-	lost := func(err error) error {
-		printRescueText(errOut, meta, o)
-		return &exitCodeError{code: 2, err: fmt.Errorf("could not write the result to stdout (it is on stderr): %w", err)}
-	}
-	if asJSON {
-		b, err := rescue.EncodeResult(o, meta)
-		if err != nil {
-			printRescueText(errOut, meta, o)
-			return &exitCodeError{code: 2, err: fmt.Errorf("could not write the JSON result: %w", err)}
-		}
-		if _, err := out.Write(b); err != nil {
-			return lost(err)
-		}
-		if code != 0 {
-			return &exitCodeError{code: code, err: notDone, quiet: true}
-		}
-		return nil
-	}
-	if err := printRescueText(out, meta, o); err != nil {
-		return lost(err)
-	}
-	if code != 0 {
-		return &exitCodeError{code: code, err: notDone}
-	}
-	return nil
+	return writeResult(out, errOut, asJSON, rescueExitCode(o), "the work was not copied",
+		func() ([]byte, bool, error) { b, err := rescue.EncodeResult(o, meta); return b, false, err },
+		func(w io.Writer) error { return printRescueText(w, meta, o) })
 }
 
 // printRescueText is the human result.

@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -28,9 +27,7 @@ var (
 	removeNow = time.Now
 	// removeTTY says whether the y/N prompt can be asked: both its input and
 	// the stream it is written to are terminals.
-	removeTTY = func(in io.Reader, out io.Writer) bool {
-		return isTerminalStream(in) && isTerminalStream(out)
-	}
+	removeTTY = bothTerminals
 	// removeProcs is the live-process finder (a warning, never a refusal).
 	removeProcs = func() removal.ProcFinder { return removal.LsofFinder() }
 )
@@ -416,12 +413,7 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 	if _, err := io.WriteString(ask, b.String()); err != nil {
 		return false
 	}
-	line, _ := bufio.NewReader(answer).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	}
-	return false
+	return confirmYN(answer)
 }
 
 // originCount is how many of the items that will run delete an origin branch.
@@ -469,44 +461,17 @@ func removeOK(o removal.Outcome) bool {
 // writeRemoveResult prints the outcomes (the JSON envelope under asJSON,
 // else one text block per item on out) and returns the run's exit status as
 // an error (nil for 0). A JSON envelope that carries an error beside its
-// items is a partial report (Ruling O): printed whole, exit 2.
+// items is a partial report (Ruling O): printed whole, exit 2. A result
+// stdout did not take goes to errOut: the removals happened, so the text,
+// restore ids included, must not be lost.
 func writeRemoveResult(out, errOut io.Writer, asJSON bool, meta removal.Meta, outcomes []removal.Outcome) error {
-	code := removeExitCode(outcomes)
-	notRemoved := errors.New("some items were not removed")
+	notRemoved := "some items were not removed"
 	if meta.DryRun {
-		notRemoved = errors.New("some items would not be removed")
+		notRemoved = "some items would not be removed"
 	}
-	// lost is a result stdout did not take (a closed pipe): the removals
-	// happened, so the text, restore ids included, goes to stderr instead.
-	lost := func(err error) error {
-		printRemoveText(errOut, meta, outcomes)
-		return &exitCodeError{code: 2, err: fmt.Errorf("could not write the result to stdout (it is on stderr): %w", err)}
-	}
-	if asJSON {
-		b, partial, err := removal.EncodeReport(outcomes, meta)
-		if err != nil {
-			// The removals happened; say so in text rather than lose them.
-			printRemoveText(errOut, meta, outcomes)
-			return &exitCodeError{code: 2, err: fmt.Errorf("could not write the JSON result: %w", err)}
-		}
-		if _, err := out.Write(b); err != nil {
-			return lost(err)
-		}
-		if partial {
-			code = 2
-		}
-		if code != 0 {
-			return &exitCodeError{code: code, err: notRemoved, quiet: true}
-		}
-		return nil
-	}
-	if err := printRemoveText(out, meta, outcomes); err != nil {
-		return lost(err)
-	}
-	if code != 0 {
-		return &exitCodeError{code: code, err: notRemoved}
-	}
-	return nil
+	return writeResult(out, errOut, asJSON, removeExitCode(outcomes), notRemoved,
+		func() ([]byte, bool, error) { return removal.EncodeReport(outcomes, meta) },
+		func(w io.Writer) error { return printRemoveText(w, meta, outcomes) })
 }
 
 // printRemoveText is the human result: one line per item, then its losses,

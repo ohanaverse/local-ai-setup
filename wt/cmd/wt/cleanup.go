@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
@@ -33,12 +32,6 @@ var (
 	// ticked rows through the RemoveFuncs after a confirmation.
 	runCleanupList = tui.RunCleanupList
 )
-
-// isTerminalStream says whether s (a reader or writer) is a terminal file.
-func isTerminalStream(s any) bool {
-	f, ok := s.(*os.File)
-	return ok && term.IsTerminal(f.Fd())
-}
 
 func cleanupCmd(a *app) *cobra.Command {
 	var asJSON, noFetch, plain bool

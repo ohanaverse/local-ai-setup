@@ -104,7 +104,7 @@ func TestExecuteCarriesEachKindOfWork(t *testing.T) {
 			}
 			// Read with optional locks off, as the engine does: a plain git status
 			// on the source would itself refresh its index.
-			got, err := sgit{dir: dest}.out(nil, statusArgs...)
+			got, err := sgit{dir: dest}.out(nil, cleanup.StatusArgs()...)
 			if err != nil || string(got) != before.status {
 				t.Errorf("status differs (err %v):\n%q\n%q", err, got, before.status)
 			}
@@ -1025,7 +1025,7 @@ func TestExecuteIntoCarriesVerifiesAndRecords(t *testing.T) {
 	if got := trailer(t, f.Dir, o.Record.Commit, "Wt-Dest-Path"); got != dest {
 		t.Errorf("Wt-Dest-Path = %q, want %q", got, dest)
 	}
-	got, err := sgit{dir: dest}.out(nil, statusArgs...)
+	got, err := sgit{dir: dest}.out(nil, cleanup.StatusArgs()...)
 	if err != nil || string(got) != before.status {
 		t.Errorf("destination status differs (err %v):\n%q\n%q", err, got, before.status)
 	}

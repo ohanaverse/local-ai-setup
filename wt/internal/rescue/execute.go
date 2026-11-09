@@ -295,7 +295,7 @@ func verify(sg, dg sgit, p *Plan, madeDirs []string) error {
 // a plan with no dirt that is a clean destination. It needs no run to have
 // happened and stores nothing.
 func (p *Plan) DestinationMatches(dest string) (string, error) {
-	st, err := sgit{dir: dest}.out(nil, statusArgs...)
+	st, err := sgit{dir: dest}.out(nil, cleanup.StatusArgs()...)
 	if err != nil {
 		return "", err
 	}

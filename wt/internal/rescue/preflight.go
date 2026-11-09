@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -218,7 +217,7 @@ func (e Engine) readWork(sg sgit, p *Plan) error {
 			return refuse(CodeHiddenIndex, "a file is marked skip-worktree or assume-unchanged, so its edits are invisible to git and cannot be copied: "+cleanup.OneLine(strings.TrimLeft(t[1:], " ")))
 		}
 	}
-	st, err := sg.out(nil, statusArgs...)
+	st, err := sg.out(nil, cleanup.StatusArgs()...)
 	if err != nil {
 		return err
 	}
@@ -458,12 +457,7 @@ func tooLargeMessage() string {
 // safeRel reports whether rel is a relative path with no "..", empty or .git
 // component, so joining it under a root cannot leave the root.
 func safeRel(rel string) bool {
-	if rel == "" || filepath.IsAbs(rel) || strings.ContainsRune(rel, 0) {
-		return false
-	}
-	return !slices.ContainsFunc(strings.Split(rel, "/"), func(c string) bool {
-		return c == "" || c == ".." || c == "." || strings.EqualFold(c, ".git")
-	})
+	return cleanup.UnsafeRel(rel) == ""
 }
 
 // blobSizes is, per path, the larger of its index blob and its HEAD blob

@@ -312,17 +312,14 @@ func dirty(wg Git) (bool, error) {
 	if o.Stdout != "" {
 		return true, nil
 	}
-	return hiddenIndexFlags(wg)
+	return HiddenIndexFlags(wg)
 }
 
-// HiddenIndexFlags reports whether any index entry of the checkout g runs in
-// is skip-worktree or assume-unchanged: `git status` cannot see an edit to
-// such an entry. It only reads (removal.ReleaseRoot refuses on it).
-func HiddenIndexFlags(g Git) (bool, error) { return hiddenIndexFlags(g) }
-
-// hiddenIndexFlags reports whether `ls-files -v` tags any entry `S`
-// (skip-worktree) or with a lowercase letter (assume-unchanged).
-func hiddenIndexFlags(wg Git) (bool, error) {
+// HiddenIndexFlags reports whether `ls-files -v` tags any entry of the
+// checkout wg runs in `S` (skip-worktree) or with a lowercase letter
+// (assume-unchanged): `git status` cannot see an edit to such an entry. It
+// only reads (removal.ReleaseRoot refuses on it).
+func HiddenIndexFlags(wg Git) (bool, error) {
 	args := []string{"ls-files", "-v", "-z"}
 	o, err := wg.Run(args...)
 	if err != nil {

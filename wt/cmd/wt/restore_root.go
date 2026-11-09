@@ -7,14 +7,12 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -26,9 +24,7 @@ import (
 
 // restoreRootTTY says whether the y/N prompt can be asked: both its input
 // and the stream it is written to are terminals. Tests swap it.
-var restoreRootTTY = func(in io.Reader, out io.Writer) bool {
-	return isTerminalStream(in) && isTerminalStream(out)
-}
+var restoreRootTTY = bothTerminals
 
 // afterRestoreRootConfirm is a test seam, called after the confirmation (or
 // --yes) and just before Execute: the point where the root can change, or
@@ -171,8 +167,8 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 	var notes []string
 	if f.dryRun {
 		notes = append(notes, dryRunFetchNote)
-	} else if w := fetchFailedNote(snap.Fetch); w != "" {
-		notes = append(notes, w)
+	} else if failed := snap.Fetch.FailureSummary(); failed != "" {
+		notes = append(notes, "a fetch failed ("+failed+"); the fast-forward check used the last fetched state")
 	}
 
 	plan, err := eng.Preflight(f.to)
@@ -246,29 +242,8 @@ func holdSignals() (received func() []os.Signal, release func()) {
 			}
 		}
 	}
-	var once sync.Once
-	release = func() { once.Do(func() { signal.Stop(ch) }) }
+	release = func() { signal.Stop(ch) }
 	return received, release
-}
-
-// fetchFailedNote is the warning for a real run whose fetch of any remote
-// failed ("" when none did): each failed remote with git's (capped) error.
-func fetchFailedNote(fr cleanup.FetchResult) string {
-	var failed []string
-	seen := map[string]bool{}
-	for _, r := range fr.Remotes {
-		if r.Err != "" {
-			failed = append(failed, r.Name+": "+cleanup.OneLine(r.Err))
-			seen[r.Name] = true
-		}
-	}
-	if fr.Err != "" && !seen["origin"] {
-		failed = append([]string{"origin: " + cleanup.OneLine(fr.Err)}, failed...)
-	}
-	if len(failed) == 0 {
-		return ""
-	}
-	return "a fetch failed (" + strings.Join(failed, "; ") + "); the fast-forward check used the last fetched state"
 }
 
 // ffText says whether the default branch will be fast-forwarded and, when
@@ -300,12 +275,7 @@ func promptRestoreRoot(ask io.Writer, answer io.Reader, p *rootmove.Plan) bool {
 	if _, err := io.WriteString(ask, b.String()); err != nil {
 		return false
 	}
-	line, _ := bufio.NewReader(answer).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	}
-	return false
+	return confirmYN(answer)
 }
 
 // ignoredText is "1 ignored entry" or "N ignored entries".
@@ -333,33 +303,9 @@ func restoreRootExitCode(o rootmove.Outcome) int {
 // result stdout did not take goes to errOut: the move may have happened, so
 // where the work is must not be lost.
 func writeRestoreRootResult(out, errOut io.Writer, asJSON bool, meta rootmove.Meta, o rootmove.Outcome) error {
-	code := restoreRootExitCode(o)
-	notDone := errors.New("the branch was not moved")
-	lost := func(err error) error {
-		printRestoreRootText(errOut, meta, o)
-		return &exitCodeError{code: 2, err: fmt.Errorf("could not write the result to stdout (it is on stderr): %w", err)}
-	}
-	if asJSON {
-		b, err := rootmove.EncodeResult(o, meta)
-		if err != nil {
-			printRestoreRootText(errOut, meta, o)
-			return &exitCodeError{code: 2, err: fmt.Errorf("could not write the JSON result: %w", err)}
-		}
-		if _, err := out.Write(b); err != nil {
-			return lost(err)
-		}
-		if code != 0 {
-			return &exitCodeError{code: code, err: notDone, quiet: true}
-		}
-		return nil
-	}
-	if err := printRestoreRootText(out, meta, o); err != nil {
-		return lost(err)
-	}
-	if code != 0 {
-		return &exitCodeError{code: code, err: notDone}
-	}
-	return nil
+	return writeResult(out, errOut, asJSON, restoreRootExitCode(o), "the branch was not moved",
+		func() ([]byte, bool, error) { b, err := rootmove.EncodeResult(o, meta); return b, false, err },
+		func(w io.Writer) error { return printRestoreRootText(w, meta, o) })
 }
 
 // printRestoreRootText is the human result. Reasons, steps and warnings are
