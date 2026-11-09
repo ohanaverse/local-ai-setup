@@ -12,6 +12,8 @@
 package rescue
 
 import (
+	"slices"
+
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
 
@@ -99,8 +101,16 @@ type Counts struct {
 type Plan struct {
 	Repo     string // the primary checkout, where the new worktree is registered
 	Source   Source
-	Branch   string // the new branch, short name
+	Branch   string // the new branch, short name; in root mode the root's own branch
 	DestPath string // the new worktree
+	// Detached says the destination is a detached worktree of Branch, which
+	// already exists and stays checked out in the root (root mode): no branch
+	// is created. Branch is then the root's real branch, never empty, so the
+	// record's Wt-Dest-Branch trailer names it. DirName is the destination's
+	// directory name under .worktrees (before flattening); "" outside root
+	// mode, where the directory follows Branch.
+	Detached bool
+	DirName  string
 	Start    string // the commit the new branch starts at: the source's HEAD
 	Counts   Counts
 	Warnings []string
@@ -144,11 +154,17 @@ type Outcome struct {
 // Engine runs a rescue in one repository. G runs git in the repository (any
 // of its worktrees); Prior, In and Classify are what cleanup.Rescan needs to
 // re-check the source row, as internal/removal's engine takes them.
+//
+// ForRoot is root mode (`wt restore-root`): the source must be the primary
+// checkout on a branch, which is kept rather than copied into a new one, so
+// Preflight lifts the primary and nothing-to-keep refusals and plans a
+// detached destination (Plan.Detached). The zero value is `wt rescue`.
 type Engine struct {
 	G        cleanup.Git
 	Prior    cleanup.Snapshot
 	In       cleanup.GatherInputs
 	Classify cleanup.Options
+	ForRoot  bool
 }
 
 // SkipStartRecheck tells Execute that nothing happened between Preflight and
@@ -157,3 +173,25 @@ type Engine struct {
 // hashes every changed file a second time, is skipped. The comparison after
 // the copy still runs. Call it only on that path; the default re-checks.
 func (p *Plan) SkipStartRecheck() { p.skipStartRecheck = true }
+
+// HasDirt says the plan carries uncommitted work: a staged, unstaged or
+// untracked path. Without it there is nothing to copy and no record.
+func (p *Plan) HasDirt() bool {
+	return p.Counts.Staged+p.Counts.Unstaged+p.Counts.Untracked > 0
+}
+
+// UntrackedPaths is a copy of the untracked paths the plan carries, relative
+// to the source: exactly the list the copy writes, no more.
+func (p *Plan) UntrackedPaths() []string { return slices.Clone(p.untracked) }
+
+// SourceUnchanged reads the source afresh and compares it with the
+// fingerprint Preflight took and Execute checked the copy against: "" when
+// they agree, else what differs first. Any read failure is an error, never
+// "".
+func (p *Plan) SourceUnchanged() (string, error) {
+	now, err := takeFingerprint(sgit{dir: p.Source.Path})
+	if err != nil {
+		return "", err
+	}
+	return p.fp.diff(now), nil
+}

@@ -33,18 +33,54 @@ var beforeRecordRef = func(*Plan) {}
 // otherwise change what the diff carries.
 var patchArgs = []string{"diff", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"}
 
+// runState is one run's Outcome and the helpers that fill it, shared by
+// Execute and ExecuteInto so both write the same Outcome shape.
+type runState struct {
+	o    Outcome
+	p    *Plan
+	dest string // the destination once it exists
+}
+
+func newRun(p *Plan) *runState { return &runState{o: Outcome{Plan: *p}, p: p} }
+
+// fail ends the run as failed with code and the formatted reason.
+func (r *runState) fail(code, format string, a ...any) Outcome {
+	r.o.Status, r.o.Code, r.o.Reason = StatusFailed, code, fmt.Sprintf(format, a...)
+	return r.o
+}
+
+// at records that the destination exists at dest.
+func (r *runState) at(dest string) {
+	r.dest = dest
+	r.o.Created, r.p.DestPath, r.o.Plan.DestPath = true, dest, dest
+}
+
+// done records a finished step.
+func (r *runState) done(step string) { r.o.Completed = append(r.o.Completed, step) }
+
+// keep is fail once the destination exists: the reason says it was kept and
+// where. A detached plan created no branch, so only the worktree is named.
+func (r *runState) keep(code, format string, a ...any) Outcome {
+	what := "the new worktree and branch were"
+	if r.p.Detached {
+		what = "the new worktree was"
+	}
+	return r.fail(code, format+" (%s kept at %s)", append(a, what, r.dest)...)
+}
+
 // Execute carries out a checked plan: it creates the branch and worktree at
 // the source's HEAD, carries the staged changes, the unstaged changes and the
 // untracked files, and only then claims success, after the destination's
 // status and file contents match the source's. It never changes the source
 // and never deletes anything. A failure before the destination exists
 // creates nothing; one after it leaves the destination (Outcome.Created) and
-// says so.
+// says so. A Detached (root mode) plan is refused as failed create_failed
+// before anything is read or created: its caller creates the destination and
+// runs ExecuteInto.
 func (e Engine) Execute(p *Plan) Outcome {
-	o := Outcome{Plan: *p}
-	fail := func(code, format string, a ...any) Outcome {
-		o.Status, o.Code, o.Reason = StatusFailed, code, fmt.Sprintf(format, a...)
-		return o
+	r := newRun(p)
+	if p.Detached {
+		return r.fail(CodeCreateFailed, "a root plan is executed with ExecuteInto; nothing was created")
 	}
 	sg := sgit{dir: p.Source.Path}
 
@@ -55,12 +91,12 @@ func (e Engine) Execute(p *Plan) Outcome {
 	if !p.skipStartRecheck {
 		now, err := takeFingerprint(sg)
 		if err != nil {
-			return fail(CodeUnreadable, "could not read the source: %v", err)
+			return r.fail(CodeUnreadable, "could not read the source: %v", err)
 		}
 		if d := p.fp.diff(now); d != "" {
-			o.Status, o.Code = StatusRefused, CodeSourceChanged
-			o.Reason = "the source changed since it was checked (" + d + "); nothing was created"
-			return o
+			r.o.Status, r.o.Code = StatusRefused, CodeSourceChanged
+			r.o.Reason = "the source changed since it was checked (" + d + "); nothing was created"
+			return r.o
 		}
 	}
 
@@ -72,32 +108,51 @@ func (e Engine) Execute(p *Plan) Outcome {
 		case errors.As(err, &notMade) && notMade.NameUnavailable:
 			// The name was free at Preflight and is not now (the prompt waited):
 			// whatever holds it is someone else's, not ours to point `wt remove` at.
-			o.Status, o.Code = StatusRefused, CodeNameUnavailable
-			o.Reason = fmt.Sprintf("the new branch name or directory was taken since the check (%v); pass --to NAME to choose another; nothing was created", err)
-			return o
+			r.o.Status, r.o.Code = StatusRefused, CodeNameUnavailable
+			r.o.Reason = fmt.Sprintf("the new branch name or directory was taken since the check (%v); pass --to NAME to choose another; nothing was created", err)
+			return r.o
 		case errors.As(err, &addFailed) && (addFailed.BranchLeft || addFailed.DirLeft):
 			// git made the branch before it checked the worktree out, so a failure
 			// can leave the branch (and a directory) behind. Say so, with the name:
 			// a rerun is refused for that very name.
-			o.BranchKept, o.Created = addFailed.BranchLeft, addFailed.DirLeft
+			r.o.BranchKept, r.o.Created = addFailed.BranchLeft, addFailed.DirLeft
 			var kept []string
-			if o.BranchKept {
+			if r.o.BranchKept {
 				kept = append(kept, "the branch "+p.Branch)
 			}
-			if o.Created {
+			if r.o.Created {
 				kept = append(kept, "the directory "+p.DestPath)
 			}
-			return fail(CodeCreateFailed, "could not create the new worktree: %v (%s was kept; nothing was rolled back, `wt remove` can clear it)", err, strings.Join(kept, " and "))
+			return r.fail(CodeCreateFailed, "could not create the new worktree: %v (%s was kept; nothing was rolled back, `wt remove` can clear it)", err, strings.Join(kept, " and "))
 		}
-		return fail(CodeCreateFailed, "could not create the new worktree: %v; nothing was created", err)
+		return r.fail(CodeCreateFailed, "could not create the new worktree: %v; nothing was created", err)
 	}
-	o.Created, p.DestPath, o.Plan.DestPath = true, dest, dest
-	done := func(step string) { o.Completed = append(o.Completed, step) }
-	done("created branch " + p.Branch + " and its worktree at " + p.Start)
+	r.at(dest)
+	r.done("created branch " + p.Branch + " and its worktree at " + p.Start)
+	return e.executeInto(r)
+}
+
+// ExecuteInto carries a checked plan into dest, a worktree its caller has
+// already created at p.Start (root mode: detached, made by
+// worktree.CreateDetachedAt), then verifies and records it exactly as
+// Execute does after its own creation step. It does not re-check the source
+// at the start (the caller does, as Execute does unless SkipStartRecheck);
+// the comparison after the copy always runs. It never changes the source and
+// never deletes anything; a failure keeps dest (Outcome.Created is set, since
+// dest exists) and says so. A record that could not be written is a
+// record_not_written warning on a moved outcome with Record nil.
+func (e Engine) ExecuteInto(p *Plan, dest string) Outcome {
+	r := newRun(p)
+	r.at(dest)
+	return e.executeInto(r)
+}
+
+// executeInto is the carry, verify and record of a run whose destination
+// exists (r.dest).
+func (e Engine) executeInto(r *runState) Outcome {
+	p, dest, keep, done := r.p, r.dest, r.keep, r.done
+	sg := sgit{dir: p.Source.Path}
 	dg := sgit{dir: dest}
-	keep := func(code, format string, a ...any) Outcome {
-		return fail(code, format+" (the new worktree and branch were kept at %s)", append(a, dest)...)
-	}
 
 	// Staged changes: HEAD to index, applied to dest's index and files.
 	staged, err := sg.out(nil, append(patchArgs, "--cached")...)
@@ -162,7 +217,9 @@ func (e Engine) Execute(p *Plan) Outcome {
 		return keep(CodeSourceChangedMid, "the source changed while copying (%s), so the copy may be stale", d)
 	}
 
-	if err := verify(sg, dg, p, after, madeDirs); err != nil {
+	// The source was just proven equal to p.fp (the diff above), so comparing
+	// the destination with p.fp is comparing it with the source.
+	if err := verify(sg, dg, p, madeDirs); err != nil {
 		return keep(CodeVerifyFailed, "the copy does not match the source: %v", err)
 	}
 	done("verified status and file contents against the source")
@@ -173,6 +230,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	// record was read leaves no ref (the unreferenced objects are gc's).
 	// Whatever stops it leaves the rescue moved and says so in a warning.
 	afterVerify(p)
+	o := &r.o
 	warn := func(why string) {
 		o.Plan.Warnings = append(o.Plan.Warnings, RecordWarningPrefix+cleanup.OneLine(why))
 	}
@@ -180,7 +238,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	if err != nil {
 		warn(err.Error())
 		o.Status = StatusMoved
-		return o
+		return *o
 	}
 	beforeRecordRef(p)
 	if again, err := takeFingerprint(sg); err != nil {
@@ -194,14 +252,15 @@ func (e Engine) Execute(p *Plan) Outcome {
 		done("recorded the source at " + rec.Ref)
 	}
 	o.Status = StatusMoved
-	return o
+	return *o
 }
 
 // verify checks the destination reproduces the source: the same HEAD, the
-// same `status --porcelain=v2` listing byte for byte, the same content, mode
-// and link target at every path that listing names, and the same mode on
-// every directory the copy created.
-func verify(sg, dg sgit, p *Plan, src fingerprint, madeDirs []string) error {
+// same `status --porcelain=v2` listing and content, mode and link target at
+// every path that listing names (DestinationMatches, against the fingerprint
+// the caller proved equal to the source), and the same mode on every
+// directory the copy created.
+func verify(sg, dg sgit, p *Plan, madeDirs []string) error {
 	head, err := dg.text("rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -209,17 +268,10 @@ func verify(sg, dg sgit, p *Plan, src fingerprint, madeDirs []string) error {
 	if head != p.Start {
 		return fmt.Errorf("HEAD is %s, want %s", head, p.Start)
 	}
-	st, err := dg.out(nil, statusArgs...)
-	if err != nil {
+	if d, err := p.DestinationMatches(dg.dir); err != nil {
 		return err
-	}
-	if string(st) != src.status {
-		return fmt.Errorf("git status differs:\nsource:\n%s\ndestination:\n%s", printable(src.status), printable(string(st)))
-	}
-	for rel, want := range src.files {
-		if got := hashPath(dg.dir, rel); got != want {
-			return fmt.Errorf("%s differs (source %s, destination %s)", cleanup.OneLine(rel), shortHash(want), shortHash(got))
-		}
+	} else if d != "" {
+		return errors.New(d)
 	}
 	for _, rel := range madeDirs {
 		sm, serr := os.Lstat(filepath.Join(sg.dir, rel))
@@ -232,6 +284,36 @@ func verify(sg, dg sgit, p *Plan, src fingerprint, madeDirs []string) error {
 		}
 	}
 	return nil
+}
+
+// DestinationMatches reads dest the way verify does and compares it with
+// the source state the copy was verified against (the fingerprint Preflight
+// took, which ExecuteInto proved equal to the source before and after the
+// carry): the `status --porcelain=v2` listing byte for byte, and the content,
+// mode and link target of every path that listing names. "" when they agree,
+// else the first difference named; a failure to read dest is an error. For
+// a plan with no dirt that is a clean destination. It needs no run to have
+// happened and stores nothing.
+func (p *Plan) DestinationMatches(dest string) (string, error) {
+	st, err := sgit{dir: dest}.out(nil, statusArgs...)
+	if err != nil {
+		return "", err
+	}
+	if string(st) != p.fp.status {
+		return fmt.Sprintf("git status differs:\nsource:\n%s\ndestination:\n%s", printable(p.fp.status), printable(string(st))), nil
+	}
+	rels := make([]string, 0, len(p.fp.files))
+	for rel := range p.fp.files {
+		rels = append(rels, rel)
+	}
+	slices.Sort(rels)
+	for _, rel := range rels {
+		want := p.fp.files[rel]
+		if got := hashPath(dest, rel); got != want {
+			return fmt.Sprintf("%s differs (source %s, destination %s)", cleanup.OneLine(rel), shortHash(want), shortHash(got)), nil
+		}
+	}
+	return "", nil
 }
 
 // setFileModes gives each regular file in rels that exists in both trees the

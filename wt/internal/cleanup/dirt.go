@@ -1,6 +1,9 @@
 package cleanup
 
 import (
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,15 +71,68 @@ func dirtCovered(wg Git, w WorktreeFact, r RescueRecord) bool {
 	return len(dirtCoveredRecords(wg, w, []RescueRecord{r})) > 0
 }
 
-// dirtCoveredRecords keeps, in order, the records of rs dirtCovered accepts.
+// RecordCoversDirt reports whether the rescue record named by recordRef
+// covers the index and working tree of the checkout at root, whose HEAD is
+// head: the same check preservedOf applies to a linked worktree, which it
+// skips for the primary checkout. It only reads. A record that is not listed
+// or a failed read (a git call that errors or exits unexpectedly, such as a
+// timeout or an unreadable index) is false with the error; a state the record
+// does not cover, including a tree over the caps or one dirtsnap will not
+// describe, is false with a nil error.
+//
+// It checks content and head only: the record's source head, index tree and
+// working tree against the checkout. Unlike preservedOf it does not compare
+// the record's identity (its Wt-Source path and ref, or that the ref name is
+// the record's own commit id), so a caller must separately know that
+// recordRef is the record it just wrote for this checkout.
+func RecordCoversDirt(g Git, root, head, recordRef string) (bool, error) {
+	recs, err := ListRecords(g)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range recs {
+		if r.Ref != recordRef {
+			continue
+		}
+		// g's Env and -c settings are kept, with fsmonitor off appended after
+		// them (a caller cannot turn it back on): a stale hook must not hide an
+		// edit from the check.
+		wg := Git{Dir: root, Timeout: g.Timeout, Config: append(slices.Clone(g.Config), "core.fsmonitor=false"), Env: g.Env}
+		w := WorktreeFact{Path: root, Head: head}
+		covered, err := dirtCoveredErr(wg, w, []RescueRecord{r})
+		if err != nil {
+			return false, fmt.Errorf("could not read the root to check record %s: %w", recordRef, err)
+		}
+		return len(covered) > 0, nil
+	}
+	return false, fmt.Errorf("rescue record %s is not listed", recordRef)
+}
+
+// dirtCoveredRecords keeps, in order, the records of rs dirtCovered accepts;
+// every error reads as not covered (see dirtCoveredErr for the one caller that
+// tells them apart).
+func dirtCoveredRecords(wg Git, w WorktreeFact, rs []RescueRecord) []RescueRecord {
+	out, _ := dirtCoveredErr(wg, w, rs)
+	return out
+}
+
+// dirtCoveredErr is dirtCoveredRecords with the failures kept apart from the
+// answers. A state the records do not cover (a head, chain, index or tree that
+// differs, a hidden index flag, an intent-to-add entry, a working tree over the
+// caps or one dirtsnap will not describe) is the records dropped from the
+// result with a nil error; a git call that could not run or exited with a code
+// that is not its "differs" answer (a timeout, an unreadable index, a failed
+// hash) is an error, and the result is then nil. The checks of
+// dirtCovered's doc, in the same order.
+//
 // The checks that look only at the worktree (2, 3 and 5) run once for the
 // whole slice: a source rescued more than once at one head leaves a candidate
 // per rescue, and step 5 hashes every changed file. Step 1 still runs first
 // per record, so a worktree whose head is not a record's forks no process at
 // all (TestDirtCoveredCheapChecksFirst).
-func dirtCoveredRecords(wg Git, w WorktreeFact, rs []RescueRecord) []RescueRecord {
+func dirtCoveredErr(wg Git, w WorktreeFact, rs []RescueRecord) ([]RescueRecord, error) {
 	if w.Head == "" {
-		return nil
+		return nil, nil
 	}
 	type candidate struct {
 		r     RescueRecord
@@ -88,40 +144,67 @@ func dirtCoveredRecords(wg Git, w WorktreeFact, rs []RescueRecord) []RescueRecor
 			continue
 		}
 		o, err := wg.Run("rev-parse", "--verify", "--end-of-options", r.Commit+"^{tree}")
-		if err != nil || o.Code != 0 {
+		if err != nil {
+			return nil, err
+		}
+		if o.Code != 0 { // the record's objects are gone: not covered
 			continue
 		}
 		wtree := strings.TrimSpace(o.Stdout)
 		o, err = wg.Run("rev-parse", "--verify", "--end-of-options", r.Commit+"~2")
-		if err != nil || o.Code != 0 || strings.TrimSpace(o.Stdout) != r.SourceHead {
+		if err != nil {
+			return nil, err
+		}
+		if o.Code != 0 || strings.TrimSpace(o.Stdout) != r.SourceHead {
 			continue
 		}
 		cands = append(cands, candidate{r, wtree})
 	}
 	if len(cands) == 0 {
-		return nil
+		return nil, nil
 	}
-	if hidden, err := hiddenIndexFlags(wg); err != nil || hidden {
-		return nil
+	hidden, err := hiddenIndexFlags(wg)
+	if err != nil {
+		return nil, err
 	}
-	o, err := wg.Run("diff-files", "--diff-filter=A", "--name-only", "-z")
-	if err != nil || o.Code != 0 || o.Stdout != "" {
-		return nil
+	if hidden {
+		return nil, nil
+	}
+	diffFiles := []string{"diff-files", "--diff-filter=A", "--name-only", "-z"}
+	o, err := wg.Run(diffFiles...)
+	if err != nil {
+		return nil, err
+	}
+	if o.Code != 0 {
+		return nil, gitFailure(o, diffFiles...)
+	}
+	if o.Stdout != "" {
+		return nil, nil
 	}
 	var indexed []candidate
 	for _, c := range cands {
-		o, err := wg.Run("diff-index", "--cached", "--quiet", c.r.Commit+"^", "--")
-		if err != nil || o.Code != 0 {
-			continue
+		diffIndex := []string{"diff-index", "--cached", "--quiet", c.r.Commit + "^", "--"}
+		o, err := wg.Run(diffIndex...)
+		if err != nil {
+			return nil, err
 		}
-		indexed = append(indexed, c)
+		switch o.Code {
+		case 0:
+			indexed = append(indexed, c)
+		case 1: // --quiet: the index differs from I
+		default:
+			return nil, gitFailure(o, diffIndex...)
+		}
 	}
 	if len(indexed) == 0 {
-		return nil
+		return nil, nil
 	}
 	got, err := dirtsnap.Build(wg.Dir, dirtRunner(wg), false, dirtLimits)
+	if errors.Is(err, dirtsnap.ErrTooLarge) || errors.Is(err, dirtsnap.ErrUnsupported) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []RescueRecord
 	for _, c := range indexed {
@@ -129,5 +212,5 @@ func dirtCoveredRecords(wg Git, w WorktreeFact, rs []RescueRecord) []RescueRecor
 			out = append(out, c.r)
 		}
 	}
-	return out
+	return out, nil
 }

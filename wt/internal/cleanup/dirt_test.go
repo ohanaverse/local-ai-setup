@@ -384,3 +384,138 @@ func TestDirtCoveredRacyCleanEntry(t *testing.T) {
 	}
 	t.Fatalf("record %s not listed", ref)
 }
+
+// rootDirt is a dirty primary checkout: a staged-then-edited file, an edited
+// tracked file and an untracked file, with a Snapshot record taken of it.
+func rootDirt(t *testing.T) (d dirtFixture, head, ref string) {
+	t.Helper()
+	d = newDirtFixture(t)
+	root := d.f.Dir
+	d.dir = root
+	d.write(t, "a.txt", "a1")
+	d.write(t, "s.txt", "s1")
+	gitIn(t, root, "add", "s.txt")
+	d.write(t, "s.txt", "s2")
+	d.write(t, "u.txt", "u1")
+	ref = d.f.addRecord(t, root, recordOpts{Snapshot: true})
+	return d, gitIn(t, root, "rev-parse", "HEAD"), ref
+}
+
+// TestRecordCoversDirtOnPrimary pins that the exported check answers for the
+// primary checkout the way dirtCovered does for a linked worktree: covered
+// right after the record, and not covered after an edit, a new untracked
+// file, a restage, an exec-bit flip or a hidden index flag; an edit reverted
+// to identical bytes is still covered. Why: the root release gate trusts this
+// answer as its last check before the root is reset.
+func TestRecordCoversDirtOnPrimary(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(t *testing.T, d dirtFixture)
+		covered bool
+	}{
+		{"none", func(*testing.T, dirtFixture) {}, true},
+		{"edit tracked file", func(t *testing.T, d dirtFixture) { d.write(t, "a.txt", "a2") }, false},
+		{"extra untracked file", func(t *testing.T, d dirtFixture) { d.write(t, "new.txt", "n") }, false},
+		{"restage", func(t *testing.T, d dirtFixture) { gitIn(t, d.dir, "add", "a.txt") }, false},
+		{"exec bit flip", func(t *testing.T, d dirtFixture) {
+			if err := os.Chmod(filepath.Join(d.dir, "a.txt"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"hidden index flag", func(t *testing.T, d dirtFixture) {
+			gitIn(t, d.dir, "update-index", "--skip-worktree", "b.txt")
+			d.write(t, "b.txt", "edited after the flag")
+		}, false},
+		{"edit then revert", func(t *testing.T, d dirtFixture) {
+			d.write(t, "a.txt", "changed")
+			d.write(t, "a.txt", "a1")
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, head, ref := rootDirt(t)
+			c.mutate(t, d)
+			got, err := RecordCoversDirt(Git{Dir: d.dir}, d.dir, head, ref)
+			if err != nil || got != c.covered {
+				t.Fatalf("RecordCoversDirt = %v, %v; want %v, nil", got, err, c.covered)
+			}
+		})
+	}
+}
+
+// TestRecordCoversDirtUnknownRecord pins that a ref no record has is false
+// (the error may be nil or set; the answer must be false either way). Why:
+// a gate must never read a missing record as cover.
+func TestRecordCoversDirtUnknownRecord(t *testing.T) {
+	d, head, _ := rootDirt(t)
+	got, err := RecordCoversDirt(Git{Dir: d.dir}, d.dir, head, RecordRefPrefix+"0123456789ab")
+	if got {
+		t.Fatalf("RecordCoversDirt = true, %v for an unknown record", err)
+	}
+}
+
+// TestRecordCoversDirtReadFailureIsAnError pins that a git call that fails
+// inside the check (here an unreadable index, which the cheap record checks do
+// not touch) comes back as false with an error, while a state the record
+// simply does not cover stays false with a nil error. Why: ReleaseRoot tells
+// "could not check the record" (retry) from "the record does not hold the
+// root" (re-run rescue); swallowing the read error sent a retryable failure
+// down the wrong branch.
+func TestRecordCoversDirtReadFailureIsAnError(t *testing.T) {
+	d, head, ref := rootDirt(t)
+	idx := filepath.Join(d.dir, ".git", "index")
+	if err := os.WriteFile(idx, []byte("not an index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := RecordCoversDirt(Git{Dir: d.dir}, d.dir, head, ref)
+	if got || err == nil {
+		t.Fatalf("RecordCoversDirt = %v, %v; want false with a read error", got, err)
+	}
+}
+
+// TestRecordCoversDirtWrongHead pins that a head other than the record's
+// source head is not covered. Why: a record vouches only for the commit it
+// was taken at.
+func TestRecordCoversDirtWrongHead(t *testing.T) {
+	d, _, ref := rootDirt(t)
+	other := d.f.git("rev-parse", "HEAD~1")
+	got, err := RecordCoversDirt(Git{Dir: d.dir}, d.dir, other, ref)
+	if err != nil || got {
+		t.Fatalf("RecordCoversDirt = %v, %v; want false, nil", got, err)
+	}
+}
+
+// TestRecordCoversDirtDoesNotChangeClassification pins that the primary row
+// still carries no Preserved after the export exists, in Gather and Rescan.
+// Why: the root is never classified as preserved; only the release gate asks.
+func TestRecordCoversDirtDoesNotChangeClassification(t *testing.T) {
+	noGh(t)
+	d, _, _ := rootDirt(t)
+	s := gather(t, d.f)
+	found := false
+	for _, ws := range s.Worktrees {
+		if ws.Fact.Primary {
+			found = true
+			if ws.Preserved != nil {
+				t.Fatalf("Gather gave the primary Preserved = %+v", ws.Preserved)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no primary worktree in the snapshot")
+	}
+	rep := Classify(s, Options{})
+	for _, row := range rep.Rows {
+		if row.Kind == KindWorktree && resolve(row.Path) == resolve(d.f.Dir) {
+			if row.Preserved != nil {
+				t.Fatalf("primary row Preserved = %+v", row.Preserved)
+			}
+			r2 := mustRescan(t, d.f, s, Options{}, targetOf(row))
+			if r2.Preserved != nil {
+				t.Fatalf("Rescan primary Preserved = %+v", r2.Preserved)
+			}
+			return
+		}
+	}
+	t.Fatal("no primary row")
+}

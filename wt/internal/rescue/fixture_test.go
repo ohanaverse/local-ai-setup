@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // fixture is a real repository: a bare "origin" (a local directory, never a
@@ -32,6 +33,14 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureExcluding(t, true)
+}
+
+// newFixtureExcluding is newFixture, with .worktrees/ excluded only when
+// excludeWorktrees is set: a repository that does not ignore its own
+// worktree directory is a state a real user can be in.
+func newFixtureExcluding(t *testing.T, excludeWorktrees bool) *fixture {
+	t.Helper()
 	root := t.TempDir()
 	f := &fixture{t: t, Origin: filepath.Join(root, "origin.git"), Dir: filepath.Join(root, "repo")}
 	if b, err := exec.Command("git", "init", "--bare", "-b", "main", f.Origin).CombinedOutput(); err != nil {
@@ -44,7 +53,9 @@ func newFixture(t *testing.T) *fixture {
 	f.git("config", "user.name", "T")
 	f.git("config", "commit.gpgsign", "false")
 	f.git("checkout", "-B", "main")
-	f.exclude(".worktrees/")
+	if excludeWorktrees {
+		f.exclude(".worktrees/")
+	}
 	f.Commit(f.Dir, "README", "init", "init")
 	f.git("push", "-u", "origin", "main")
 	f.git("remote", "set-head", "origin", "main")
@@ -138,6 +149,57 @@ func (f *fixture) engine(cwd string) (Engine, func(path string) cleanup.Row) {
 		f.t.Fatalf("no worktree row for %s", path)
 		return cleanup.Row{}
 	}
+}
+
+// rootOnTopic switches the primary checkout to a new branch "topic" and
+// commits work.txt on it (unpushed): the root state `wt restore-root` moves.
+func (f *fixture) rootOnTopic() {
+	f.t.Helper()
+	f.git("switch", "-q", "-c", "topic")
+	f.Commit(f.Dir, "work.txt", "work", "work")
+}
+
+// rootEngine is engine(f.Dir) in root mode, with the primary checkout's row.
+func (f *fixture) rootEngine() (Engine, cleanup.Row) {
+	f.t.Helper()
+	eng, find := f.engine(f.Dir)
+	eng.ForRoot = true
+	return eng, find(f.Dir)
+}
+
+// rootInto is root mode up to the copy: the plan Preflight makes for the
+// primary checkout and the detached destination worktree.CreateDetachedAt
+// makes for it, as rootmove will call them.
+func (f *fixture) rootInto() (Engine, *Plan, string) {
+	f.t.Helper()
+	eng, row := f.rootEngine()
+	plan, err := eng.Preflight(row, "")
+	if err != nil {
+		f.t.Fatalf("Preflight: %v", err)
+	}
+	dest, err := worktree.CreateDetachedAt(f.Dir, plan.DirName, plan.Branch, plan.Start)
+	if err != nil {
+		f.t.Fatalf("CreateDetachedAt: %v", err)
+	}
+	return eng, plan, dest
+}
+
+// dirtyRoot gives the root (on topic) a staged new file, an unstaged edit, a
+// tracked file made executable, an untracked executable script and a nested
+// untracked file.
+func (f *fixture) dirtyRoot() {
+	f.t.Helper()
+	f.write(f.Dir, "staged.txt", "s")
+	f.git("add", "staged.txt")
+	f.write(f.Dir, "README", "edited")
+	if err := os.Chmod(filepath.Join(f.Dir, "work.txt"), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	f.write(f.Dir, "run.sh", "#!/bin/sh\necho hi\n")
+	if err := os.Chmod(filepath.Join(f.Dir, "run.sh"), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	f.write(f.Dir, "deep/er/note.txt", "note")
 }
 
 // world is everything outside the source that a failed or refused rescue
