@@ -446,6 +446,22 @@ func ignoredAtRisk(rg cleanup.Git, root string, fold func(string) string) (strin
 	return ignoredOnDisk(root, ignored, changedPaths(listing))
 }
 
+// RootIgnoredAtRisk is ReleaseRoot's ignored-files gate (gate 6) on its own,
+// for a caller that must refuse before anything is created: which ignored
+// entry of the root `git reset --hard HEAD` would delete or overwrite ("" none),
+// read through the same git ReleaseRoot builds (Dir = root, never g.Dir; g's
+// timeout and -c settings, then core.fsmonitor=false) and the same pathFold.
+// It only reads. An error is a failed read; the caller fails closed.
+func RootIgnoredAtRisk(g cleanup.Git, root string) (string, error) {
+	timeout := g.Timeout
+	if timeout == 0 {
+		timeout = DefaultRemoveTimeout
+	}
+	root = filepath.Clean(root)
+	rg := cleanup.Git{Dir: root, Timeout: timeout, Config: append(slices.Clone(g.Config), "core.fsmonitor=false")}
+	return ignoredAtRisk(rg, root, pathFold(rg))
+}
+
 // pathFold returns how the root's git compares path names: unchanged, or
 // case-folded when core.ignorecase is true. A config that cannot be read, or
 // reads as anything but a clean "unset" or a boolean, folds (fail closed:

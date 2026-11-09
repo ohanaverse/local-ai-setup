@@ -1475,3 +1475,40 @@ func TestReleaseRootIgnoresAStaleFsmonitor(t *testing.T) {
 		})
 	}
 }
+
+// TestRootIgnoredAtRiskIsTheGatesCheck calls the exported read-only wrapper
+// on each ignoredRiskStates state and on a safe root, with a Git standing in
+// another directory, and requires the gate's own answer (ignoredAtRisk) and
+// nothing written. Why: rootmove's Preflight asks it before anything is
+// created; a wrapper that drifted from the gate would let Preflight pass a
+// root ReleaseRoot then refuses after the copy and the record exist.
+func TestRootIgnoredAtRiskIsTheGatesCheck(t *testing.T) {
+	for _, st := range ignoredRiskStates {
+		t.Run(st.name, func(t *testing.T) {
+			f := newFixture(t)
+			ignoredRiskBase(f)
+			_, _, named := st.build(t, f)
+			want, err := ignoredAtRiskIn(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := snapshot(t, f.Dir)
+			got, err := RootIgnoredAtRisk(cleanup.Git{Dir: t.TempDir()}, f.Dir)
+			if err != nil || got != want || !strings.Contains(got, named) {
+				t.Errorf("RootIgnoredAtRisk = %q, %v; want the gate's %q", got, err, want)
+			}
+			if after := snapshot(t, f.Dir); after != before {
+				t.Errorf("RootIgnoredAtRisk changed the root")
+			}
+		})
+	}
+	t.Run("safe root", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		f.Ignored(f.Dir, "top.log")
+		got, err := RootIgnoredAtRisk(cleanup.Git{Dir: t.TempDir()}, f.Dir)
+		if err != nil || got != "" {
+			t.Errorf("RootIgnoredAtRisk = %q, %v; want nothing at risk", got, err)
+		}
+	})
+}
