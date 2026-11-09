@@ -1,6 +1,7 @@
 package removal
 
 import (
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -124,8 +125,8 @@ func (e *ReleaseFailed) Unwrap() error { return e.Err }
 //  3. the status now: empty with NothingUncommitted (and no carried list);
 //     otherwise Verified, RecordRef under refs/wt/rescued/, and the carried
 //     list exactly the status's untracked paths (each relative, clean, no
-//     `..`, no repeats), so nothing tracked, ignored or outside the root is
-//     ever on it;
+//     `..`, no `.git` component, no repeats), so nothing tracked, ignored,
+//     outside the root or under a `.git` directory is ever on it;
 //  4. no index entry is assume-unchanged or skip-worktree
 //     (cleanup.HiddenIndexFlags): status cannot see an edit to one, and with
 //     nothing uncommitted an empty status is the only content proof;
@@ -248,7 +249,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	}
 	// 6. Ignored files the reset would destroy, last: they are the one thing
 	// the record does not hold.
-	if why, err := ignoredAtRisk(rg, root); err != nil {
+	if why, err := ignoredAtRisk(rg, root, fold); err != nil {
 		return refuse("could not check the root's ignored files: %v", err)
 	} else if why != "" {
 		return refuse("%s; move it first", why)
@@ -358,9 +359,10 @@ func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 }
 
 // sameUntracked returns why carried is not exactly the untracked paths of the
-// status st ("" when it is): each carried path must be relative, clean and
-// inside the root, named once, and listed by git as untracked (not tracked,
-// not ignored), and every untracked path must be carried.
+// status st ("" when it is): each carried path must be relative, clean,
+// inside the root and naming no `.git` directory, named once, and listed by
+// git as untracked (not tracked, not ignored), and every untracked path must
+// be carried.
 func sameUntracked(st string, carried []string) string {
 	now := map[string]bool{}
 	for _, p := range entriesIn(st, "? ") {
@@ -400,14 +402,14 @@ func sameUntracked(st string, carried []string) string {
 //
 // Two passes, both needed. By name: the paths HEAD and the index track
 // against git's ignored listing, compared the way git compares them (folded
-// when core.ignorecase is on, pathFold). On disk (ignoredOnDisk): every path
+// when core.ignorecase is on, pathFold, which the caller read once).
+// On disk (ignoredOnDisk): every path
 // the status lists as changed is looked up in the filesystem, which resolves
 // case and Unicode normalization the way the volume does, and compared by
 // file identity with the ignored entries; this catches what folding cannot
 // (an NFD name on disk for an NFC name in git, on a normalization-insensitive
 // volume such as APFS).
-func ignoredAtRisk(rg cleanup.Git, root string) (string, error) {
-	fold := pathFold(rg)
+func ignoredAtRisk(rg cleanup.Git, root string, fold func(string) string) (string, error) {
 	head, err := runGitZ(rg, "ls-tree", "-r", "-z", "--name-only", "--full-tree", "HEAD")
 	if err != nil {
 		return "", err
@@ -605,7 +607,9 @@ func ignoredOnDisk(root string, ignored, changed []string) (string, error) {
 	return "", nil
 }
 
-// unsafeRel says why p cannot name a file inside the root, or "".
+// unsafeRel says why p cannot name a file inside the root (and outside any
+// .git directory of it, repository metadata rescue never carries), or "".
+// The rules are rescue's safeRel's.
 func unsafeRel(p string) string {
 	switch {
 	case p == "" || p == ".":
@@ -616,6 +620,10 @@ func unsafeRel(p string) string {
 		return "is not a clean relative path"
 	case slices.Contains(strings.Split(filepath.ToSlash(p), "/"), ".."):
 		return "leaves the root"
+	case slices.ContainsFunc(strings.Split(filepath.ToSlash(p), "/"), func(c string) bool {
+		return strings.EqualFold(c, ".git")
+	}):
+		return "names a .git directory, which is repository metadata, never a carried file"
 	}
 	return ""
 }
@@ -637,17 +645,20 @@ func entriesIn(st, kind string) []string {
 	return out
 }
 
-// statusPaths is a short, one-line list of the entries in a status listing.
+// statusPaths is a short, one-line list of the entries in a status listing,
+// with "..." only when entries were left unshown (a rename or copy consumes
+// two fields but is one entry).
 func statusPaths(st string) string {
 	var out []string
 	fields := strings.Split(strings.TrimRight(st, "\x00"), "\x00")
-	for i := 0; i < len(fields) && len(out) < 5; i++ {
+	i := 0
+	for ; i < len(fields) && len(out) < 5; i++ {
 		out = append(out, cleanup.OneLine(fields[i]))
 		if strings.HasPrefix(fields[i], "2 ") {
-			i++
+			i++ // a rename or copy is followed by its original path
 		}
 	}
-	if len(fields) > len(out) {
+	if i < len(fields) {
 		out = append(out, "...")
 	}
 	return strings.Join(out, "; ")
@@ -740,7 +751,8 @@ func (t *recordTree) matches(p, full string, fi fs.FileInfo) (string, error) {
 // removeCarried removes exactly the carried untracked paths from the root,
 // after the reset, and returns how many it removed. The index is read once
 // (one ls-files) and the record's tree was read before the reset. Per path:
-// it must be a clean relative path inside the root; a path the index tracks
+// it must be a clean relative path inside the root that names no `.git`
+// directory; a path the index tracks
 // now was restored from HEAD by the reset (`git rm --cached foo` with foo on
 // disk) and is skipped; a parent that is gone, or that the index tracks as a
 // file or symlink (one the root had replaced with a directory, which the
@@ -873,12 +885,15 @@ func gitText(rg cleanup.Git, args ...string) (string, error) {
 	return strings.TrimSpace(o.Stdout), nil
 }
 
-// gitWrite runs a write in the root; a timeout, a kill or a non-zero exit is
-// an error naming git's text.
+// gitWrite runs a write in the root; a timeout, a kill, a git that could not
+// run or a non-zero exit is an error naming git's text.
 func gitWrite(rg cleanup.Git, args ...string) error {
 	o, err := runGit(rg, args...)
 	if err != nil {
-		return fmt.Errorf("git did not finish (timeout %s): %w", rg.Timeout, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("git did not finish (timeout %s): %w", rg.Timeout, err)
+		}
+		return fmt.Errorf("git did not finish or could not run: %w", err)
 	}
 	if o.Code != 0 {
 		return fmt.Errorf("git exit %d: %s", o.Code, cleanup.OneLine(o.Stderr))

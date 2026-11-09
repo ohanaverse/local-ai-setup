@@ -43,6 +43,13 @@ func (f *fixture) dirtyRoot() []string {
 	return []string{"new.txt", "sub/deep.txt"}
 }
 
+// ignoredAtRiskIn is ignoredAtRisk over the fixture's root, with the name fold
+// the root's git config says (the read ReleaseRoot does once per release).
+func ignoredAtRiskIn(f *fixture) (string, error) {
+	g := cleanup.Git{Dir: f.Dir}
+	return ignoredAtRisk(g, f.Dir, pathFold(g))
+}
+
 // rootRescue is the root carried by the real rescue engine in root mode: the
 // plan, the detached destination, the record ref, and the fingerprint check
 // (plan.SourceUnchanged) a release compares against.
@@ -1060,7 +1067,7 @@ func TestIgnoredAtRiskSeesEachState(t *testing.T) {
 			f := newFixture(t)
 			ignoredRiskBase(f)
 			_, _, named := st.build(t, f)
-			why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
+			why, err := ignoredAtRiskIn(f)
 			if err != nil || !strings.Contains(why, named) {
 				t.Errorf("ignoredAtRisk = %q, %v; want it to name %s", why, err, named)
 			}
@@ -1084,7 +1091,7 @@ func TestIgnoredAtRiskSeesEachState(t *testing.T) {
 		f.git("commit", "-q", "-m", "keep")
 		f.write(f.Dir, "build/.keep", "edited")
 		f.write(f.Dir, "build/out.o", "o")
-		why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
+		why, err := ignoredAtRiskIn(f)
 		if err != nil || why != "" {
 			t.Errorf("ignoredAtRisk = %q, %v; want nothing at risk", why, err)
 		}
@@ -1320,7 +1327,7 @@ func TestIgnoredAtRiskOnDiskPassCatchesAliasedNames(t *testing.T) {
 			if !lexists(t, filepath.Join(f.Dir, c.tracked)) {
 				t.Skipf("this volume does not alias %q and %q", c.tracked, c.onDisk)
 			}
-			why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
+			why, err := ignoredAtRiskIn(f)
 			if err != nil || !strings.Contains(why, "local.secret") {
 				t.Errorf("ignoredAtRisk = %q, %v; want the ignored local.secret named", why, err)
 			}
