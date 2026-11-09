@@ -75,6 +75,12 @@ func dirtCovered(wg Git, w WorktreeFact, r RescueRecord) bool {
 // skips for the primary checkout. It only reads. A record that is not listed
 // or a failed read is false with the error; a state the record does not cover
 // is false with a nil error.
+//
+// It checks content and head only: the record's source head, index tree and
+// working tree against the checkout. Unlike preservedOf it does not compare
+// the record's identity (its Wt-Source path and ref, or that the ref name is
+// the record's own commit id), so a caller must separately know that
+// recordRef is the record it just wrote for this checkout.
 func RecordCoversDirt(g Git, root, head, recordRef string) (bool, error) {
 	recs, err := ListRecords(g)
 	if err != nil {

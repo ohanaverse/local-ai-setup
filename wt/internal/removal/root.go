@@ -86,14 +86,19 @@ func (e *ReleaseRefused) Error() string { return "the root was not released: " +
 
 // ReleaseFailed is a release that stopped at Stage (StageReset,
 // StageRemoveUntracked, StageVerifyClean or StageSwitch) after the gates
-// passed; Result says what had already happened. At StageReset nothing was
-// done unless git failed part-way through the reset; from
-// StageRemoveUntracked on, the root was reset and its work is in the copy and
-// the record.
+// passed; Result says what had certainly happened. Uncertain says the state
+// is not fully known: the reset or switch call itself failed (a non-zero
+// exit, a timeout or a kill), and git may have written part of the index or
+// working tree before it stopped, so Reset or Switched being false does not
+// mean nothing changed. It is set for every failure at StageReset and
+// StageSwitch and never at StageRemoveUntracked or StageVerifyClean, whose
+// Result is exact. From StageRemoveUntracked on, the root was reset and its
+// work is in the copy and the record.
 type ReleaseFailed struct {
-	Stage  string
-	Result ReleaseResult
-	Err    error
+	Stage     string
+	Result    ReleaseResult
+	Uncertain bool
+	Err       error
 }
 
 func (e *ReleaseFailed) Error() string {
@@ -112,21 +117,27 @@ func (e *ReleaseFailed) Unwrap() error { return e.Err }
 // touched:
 //
 //  1. Root is absolute; no variable of rootRepoEnv is set; Root is the top of
-//     the repository's primary checkout; Default names an existing local
-//     branch (not an option, a valid ref name) that no other worktree has
-//     checked out;
+//     the repository's primary checkout, on a branch (not detached); Default
+//     names an existing local branch (not an option, a valid ref name) that
+//     no other worktree has checked out;
 //  2. Unchanged is set and reports no difference (the fingerprint);
 //  3. the status now: empty with NothingUncommitted (and no carried list);
 //     otherwise Verified, RecordRef under refs/wt/rescued/, and the carried
 //     list exactly the status's untracked paths (each relative, clean, no
 //     `..`, no repeats), so nothing tracked, ignored or outside the root is
 //     ever on it;
-//  4. no ignored file is where the reset would delete or overwrite it
-//     (ignoredAtRisk): ignored files are in neither the copy nor the record;
-//  5. otherwise, last and nearest the reset, cleanup.RecordCoversDirt: the
-//     root's index and working tree equal the record (the check `wt remove`
-//     uses for a dirty rescued original, so the two agree by construction),
-//     and the record's tree is read for the removal's content check.
+//  4. no index entry is assume-unchanged or skip-worktree
+//     (cleanup.HiddenIndexFlags): status cannot see an edit to one, and with
+//     nothing uncommitted an empty status is the only content proof;
+//  5. otherwise, cleanup.RecordCoversDirt: the root's index and working tree
+//     equal the record (the check `wt remove` uses for a dirty rescued
+//     original, so the two agree by construction), and the record's tree is
+//     read for the removal's content check;
+//  6. last and nearest the reset, no ignored file is where the reset would
+//     delete or overwrite it (ignoredAtRisk): ignored files are the one thing
+//     neither the copy nor the record holds.
+//
+// So the last gates are the record check, then the ignored-files check.
 //
 // Then, each a stage of *ReleaseFailed: `git reset --hard HEAD`; removal of
 // exactly the carried untracked paths whose content still equals the record
@@ -138,8 +149,8 @@ func (e *ReleaseFailed) Unwrap() error { return e.Err }
 // off; the reads do not need it. Directories the removal leaves empty are
 // left.
 //
-// Declared window: a change made to the root between the last gate and the
-// reset is lost, as in `wt remove` of a dirty rescued original (a carried
+// Declared window: a change made to the root between the last gates (the
+// record check, then the ignored-files check) and the reset is lost, as in `wt remove` of a dirty rescued original (a carried
 // untracked file edited in that window is kept, by the content check).
 func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	var res ReleaseResult
@@ -199,13 +210,13 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 			return refuse("%s", why)
 		}
 	}
-	// 4. Ignored files the reset would destroy.
-	if why, err := ignoredAtRisk(rg, root); err != nil {
-		return refuse("could not check the root's ignored files: %v", err)
-	} else if why != "" {
-		return refuse("%s; move it first", why)
+	// 4. Edits status cannot see.
+	if hidden, err := cleanup.HiddenIndexFlags(rg); err != nil {
+		return refuse("could not read the root's index flags: %v", err)
+	} else if hidden {
+		return refuse("the root has an assume-unchanged or skip-worktree index entry, which status cannot see; clear it first (git update-index --no-assume-unchanged / --no-skip-worktree)")
 	}
-	// 5. The record, last.
+	// 5. The record.
 	fold := pathFold(rg)
 	var rec *recordTree
 	if !r.NothingUncommitted {
@@ -227,12 +238,24 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 			return refuse("could not read the record %s: %v", r.RecordRef, err)
 		}
 	}
+	// 6. Ignored files the reset would destroy, last: they are the one thing
+	// the record does not hold.
+	if why, err := ignoredAtRisk(rg, root); err != nil {
+		return refuse("could not check the root's ignored files: %v", err)
+	} else if why != "" {
+		return refuse("%s; move it first", why)
+	}
 
 	fail := func(stage string, err error) (ReleaseResult, error) {
 		return res, &ReleaseFailed{Stage: stage, Result: res, Err: err}
 	}
+	// A failed reset or switch call may have written part of the index or
+	// working tree: Uncertain.
+	failWrite := func(stage string, err error) (ReleaseResult, error) {
+		return res, &ReleaseFailed{Stage: stage, Result: res, Uncertain: true, Err: err}
+	}
 	if err := gitWrite(rg, "-c", rootHooksOff, "-c", rootNoSubRecurse, "reset", "--hard", "HEAD"); err != nil {
-		return fail(StageReset, err)
+		return failWrite(StageReset, err)
 	}
 	res.Reset = true
 
@@ -249,12 +272,12 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	}
 
 	if err := gitWrite(rg, "-c", rootHooksOff, "-c", rootNoSubRecurse, "switch", "--no-overwrite-ignore", r.Default); err != nil {
-		return fail(StageSwitch, err)
+		return failWrite(StageSwitch, err)
 	}
 	if ref, err := gitText(rg, "symbolic-ref", "-q", "HEAD"); err != nil {
-		return fail(StageSwitch, fmt.Errorf("could not read the root's branch after the switch: %w", err))
+		return failWrite(StageSwitch, fmt.Errorf("could not read the root's branch after the switch: %w", err))
 	} else if ref != "refs/heads/"+r.Default {
-		return fail(StageSwitch, fmt.Errorf("the root is on %q after the switch, not %s", ref, r.Default))
+		return failWrite(StageSwitch, fmt.Errorf("the root is on %q after the switch, not %s", ref, r.Default))
 	}
 	res.Switched = true
 	return res, nil
@@ -295,6 +318,16 @@ func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 	}
 	if cleanup.ResolvePath(gitDir) != cleanup.ResolvePath(common) {
 		return fmt.Sprintf("%s is a linked worktree, not the primary checkout", root), nil
+	}
+	// A detached root's commits may be on no branch: switching away would
+	// orphan them.
+	if o, err := runGit(rg, "symbolic-ref", "-q", "HEAD"); err != nil {
+		return "", err
+	} else if ref := strings.TrimSpace(o.Stdout); o.Code != 0 || !strings.HasPrefix(ref, "refs/heads/") || ref == "refs/heads/" {
+		if o.Code > 1 {
+			return "", fmt.Errorf("git symbolic-ref: exit %d: %s", o.Code, cleanup.OneLine(o.Stderr))
+		}
+		return fmt.Sprintf("%s is not on a branch (detached HEAD); its commits would be left on no branch", root), nil
 	}
 	o, err := runGit(rg, "worktree", "list", "--porcelain", "-z")
 	if err != nil {

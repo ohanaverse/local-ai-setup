@@ -26,8 +26,9 @@ var rootMutationAllowed = map[string]string{
 	"root.go#removeCarried": "os.Remove of exactly the untracked paths the verified copy carried",
 }
 
-// rootMutationArgs are the argv words that reset or switch a checkout.
-var rootMutationArgs = []string{"reset", "--hard", "switch"}
+// rootMutationArgs are the argv words that reset, switch or otherwise rewrite
+// a checkout's files (checkout, restore and stash discard or move work too).
+var rootMutationArgs = []string{"reset", "--hard", "switch", "checkout", "restore", "stash"}
 
 // rootMutations returns, per function of file ("<base>#<Recv.>Name"), the
 // root-mutating shapes it holds: an argv word of rootMutationArgs among a
@@ -164,6 +165,8 @@ func TestRootMutationScanSeesEachShape(t *testing.T) {
 		{`os.Remove(p)`, true},
 		{`f := os.RemoveAll; _ = f`, true},
 		{`syscall.Unlink(p)`, true},
+		{`runGit(g, "checkout", "-f", d)`, true},
+		{`runGit(g, "stash", "-u")`, true},
 		{`switch x { case 1: }`, false},
 		{`g.Run("status", "--porcelain=v2")`, false},
 		{`fmt.Println("the root is reset and switched")`, false},
@@ -183,9 +186,10 @@ func TestRootMutationScanSeesEachShape(t *testing.T) {
 }
 
 // hardResetWords are the argv words no non-test file outside internal/removal
-// may hold: a hard reset or a clean of a checkout (`"clean"` also catches
-// `clean -x`).
-var hardResetWords = []string{"--hard", "reset", "clean"}
+// may hold: a hard reset, a clean (`"clean"` also catches `clean -x`), and
+// checkout, restore and stash, which discard or move uncommitted work too.
+// None is used by any non-test source outside internal/removal.
+var hardResetWords = []string{"--hard", "reset", "clean", "checkout", "restore", "stash"}
 
 // hardResetLine matches a reset or clean written as one command-line literal
 // ("git reset --hard", "git clean -fdx").
@@ -234,8 +238,9 @@ func hardResetHits(fset *token.FileSet, rel string, file *ast.File) []finding {
 }
 
 // TestHardResetExistsNowhereOutsideRemoval reads every non-test .go file of
-// the wt module outside internal/removal and fails on a "--hard", "reset" or
-// "clean" argv word, or a reset/clean command-line literal. Why: a hard reset
+// the wt module outside internal/removal and fails on a hardResetWords argv
+// word ("--hard", "reset", "clean", "checkout", "restore", "stash"), or a
+// reset/clean command-line literal. Why: a hard reset
 // destroys uncommitted work, and the only one wt may run is ReleaseRoot's,
 // behind its three proofs; a reset or clean anywhere else (rootmove, a
 // command, a helper) would destroy the root's work with no proof at all.
@@ -314,6 +319,9 @@ func TestHardResetScanSeesEachShape(t *testing.T) {
 		{`g.Run("reset", "--hard", "HEAD")`, true},
 		{`g.Run("-c", "x=y", "reset", "HEAD")`, true},
 		{`g.Run("clean", "-fdx")`, true},
+		{`g.Run("checkout", "--", p)`, true},
+		{`g.Run("restore", "--staged", p)`, true},
+		{`g.Run("stash", "push")`, true},
 		{`_ = []string{"re" + "set", "--hard"}`, true},
 		{`exec.Command("sh", "-c", "git reset --hard")`, true},
 		{`exec.Command("sh", "-c", "git clean -fdx")`, true},

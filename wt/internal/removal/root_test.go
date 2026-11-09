@@ -363,6 +363,9 @@ func TestReleaseRootRefusesWithoutAnyOfTheThreeProofs(t *testing.T) {
 		{"default branch missing", func(_ *testing.T, _ *fixture, _ rootRescue, rel *RootRelease) { rel.Default = "nope" }},
 		{"default branch empty", func(_ *testing.T, _ *fixture, _ rootRescue, rel *RootRelease) { rel.Default = "" }},
 		{"default branch an option", func(_ *testing.T, _ *fixture, _ rootRescue, rel *RootRelease) { rel.Default = "-f" }},
+		{"root on a detached HEAD", func(t *testing.T, f *fixture, _ rootRescue, _ *RootRelease) {
+			f.git("switch", "-q", "--detach")
+		}},
 		{"default branch checked out in another worktree", func(t *testing.T, f *fixture, _ rootRescue, _ *RootRelease) {
 			f.git("worktree", "add", "-q", filepath.Join(f.Dir, ".worktrees", "on-main"), "main")
 		}},
@@ -400,6 +403,7 @@ func TestReleaseRootRefusesWithoutAnyOfTheThreeProofs(t *testing.T) {
 		"default branch an option":                       "is not a branch name",
 		"nothing uncommitted claimed on a dirty root":    "has uncommitted changes",
 		"default branch checked out in another worktree": "is checked out in another worktree",
+		"root on a detached HEAD":                        "is not on a branch",
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -416,6 +420,7 @@ func TestReleaseRootRefusesWithoutAnyOfTheThreeProofs(t *testing.T) {
 			c.mutate(t, f, rr, &rel)
 			before := snapshot(t, f.Dir)
 			destBefore := snapshot(t, rr.Dest)
+			headBefore := gitIn(t, f.Dir, "rev-parse", "--abbrev-ref", "HEAD")
 			calls := recordRootGit(t)
 
 			res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rel)
@@ -438,8 +443,8 @@ func TestReleaseRootRefusesWithoutAnyOfTheThreeProofs(t *testing.T) {
 			if after := snapshot(t, rr.Dest); after != destBefore {
 				t.Errorf("copy changed on a refusal")
 			}
-			if b := branchOf(t, f.Dir); b != "topic" {
-				t.Errorf("root on %q after a refusal, want topic", b)
+			if h := gitIn(t, f.Dir, "rev-parse", "--abbrev-ref", "HEAD"); h != headBefore {
+				t.Errorf("root on %q after a refusal, want %q", h, headBefore)
 			}
 			if got := readFile(t, escape); got != "outside" {
 				t.Errorf("file outside the root = %q", got)
@@ -710,12 +715,13 @@ func TestReleaseRootUntrackedSafety(t *testing.T) {
 // exactly what already happened.
 func TestReleaseRootFailureStages(t *testing.T) {
 	cases := []struct {
-		name   string
-		around func(f *fixture) func(args []string, run func() (cleanup.Out, error)) (cleanup.Out, error)
-		stage  string
-		result ReleaseResult
-		branch string
-		clean  bool
+		name      string
+		around    func(f *fixture) func(args []string, run func() (cleanup.Out, error)) (cleanup.Out, error)
+		stage     string
+		result    ReleaseResult
+		uncertain bool
+		branch    string
+		clean     bool
 	}{
 		{
 			name: "reset exits non-zero",
@@ -727,7 +733,7 @@ func TestReleaseRootFailureStages(t *testing.T) {
 					return run()
 				}
 			},
-			stage: StageReset, result: ReleaseResult{}, branch: "topic",
+			stage: StageReset, result: ReleaseResult{}, branch: "topic", uncertain: true,
 		},
 		{
 			name: "reset does not finish",
@@ -739,7 +745,7 @@ func TestReleaseRootFailureStages(t *testing.T) {
 					return run()
 				}
 			},
-			stage: StageReset, result: ReleaseResult{}, branch: "topic",
+			stage: StageReset, result: ReleaseResult{}, branch: "topic", uncertain: true,
 		},
 		{
 			name: "file left after the removal",
@@ -764,7 +770,7 @@ func TestReleaseRootFailureStages(t *testing.T) {
 					return run()
 				}
 			},
-			stage: StageSwitch, result: ReleaseResult{Reset: true, Removed: 2}, branch: "topic", clean: true,
+			stage: StageSwitch, result: ReleaseResult{Reset: true, Removed: 2}, branch: "topic", clean: true, uncertain: true,
 		},
 	}
 	for _, c := range cases {
@@ -777,6 +783,9 @@ func TestReleaseRootFailureStages(t *testing.T) {
 			recordRootGitAround(t, c.around(f))
 			res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rr.release(f))
 			rf := failedAt(t, err, c.stage)
+			if rf.Uncertain != c.uncertain {
+				t.Errorf("Uncertain = %v, want %v (a failed reset or switch call may have written part of the index or tree)", rf.Uncertain, c.uncertain)
+			}
 			if rf.Result != c.result || res != c.result {
 				t.Errorf("failure result %+v (returned %+v), want %+v", rf.Result, res, c.result)
 			}
@@ -911,7 +920,7 @@ type ignoredRiskState struct {
 	// so the release runs with the real proofs. Otherwise rescue's verify fails
 	// on it (rootmove never reaches the release), and the test releases with a
 	// record of the root before the change and a blind fingerprint check, so
-	// ReleaseRoot's own gate is what must refuse.
+	// ReleaseRoot's own gates are what must refuse (the record check first).
 	real  bool
 	build func(t *testing.T, f *fixture) (path, content, named string)
 }
@@ -984,10 +993,13 @@ func ignoredRiskBase(f *fixture) {
 // (inside a directory where HEAD tracks a file, also under another case with
 // core.ignorecase; at an index-deleted path; replacing a tracked directory;
 // under a directory-pattern ignore that hides paths HEAD tracks) and requires
-// a *ReleaseRefused naming it, with no write run and the root (the ignored
-// file included) unchanged. Why: ignored files are in neither the copy nor
-// the record, so a reset that removes one destroys data that exists nowhere
-// else; the real-rescue states pass the copy's verify and RecordCoversDirt.
+// a *ReleaseRefused with no write run and the root (the ignored file
+// included) unchanged. A real-rescue state passes the copy's verify and
+// RecordCoversDirt and must be refused by the ignored-file gate, naming the
+// entry; a state rescue cannot record is refused by the record check, which
+// runs first (TestIgnoredAtRiskSeesEachState pins that the detector sees it
+// too). Why: ignored files are in neither the copy nor the record, so a reset
+// that removes one destroys data that exists nowhere else.
 func TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles(t *testing.T) {
 	for _, st := range ignoredRiskStates {
 		t.Run(st.name, func(t *testing.T) {
@@ -1011,8 +1023,16 @@ func TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles(t *testing.T) {
 			if !errors.As(err, &refused) {
 				t.Fatalf("err = %v (%T), want *ReleaseRefused", err, err)
 			}
-			if !strings.Contains(refused.Reason, "ignored") || !strings.Contains(refused.Reason, named) {
-				t.Errorf("refused for %q, want the ignored-file gate naming %s", refused.Reason, named)
+			// The record check runs before the ignored-file check, so a state
+			// rescue cannot record is refused there (the record does not hold
+			// it); a real-rescue state passes the record and must meet the
+			// ignored-file gate.
+			if st.real {
+				if !strings.Contains(refused.Reason, "ignored") || !strings.Contains(refused.Reason, named) {
+					t.Errorf("refused for %q, want the ignored-file gate naming %s", refused.Reason, named)
+				}
+			} else if !strings.Contains(refused.Reason, "does not hold the root's current index and working tree") {
+				t.Errorf("refused for %q, want the record gate", refused.Reason)
 			}
 			if w := writes(*calls); len(w) != 0 {
 				t.Errorf("a refusal ran writes %q", w)
@@ -1304,5 +1324,83 @@ func TestIgnoredAtRiskOnDiskPassCatchesAliasedNames(t *testing.T) {
 				t.Errorf("ignoredAtRisk = %q, %v; want the ignored local.secret named", why, err)
 			}
 		})
+	}
+}
+
+// hideEdit edits README under an assume-unchanged or skip-worktree flag, so
+// `git status` (and rescue's fingerprint, which hashes `ls-files --stage`
+// and the status's paths) cannot see the edit.
+func hideEdit(t *testing.T, f *fixture, flag string) {
+	t.Helper()
+	f.git("update-index", flag, "README")
+	f.write(f.Dir, "README", "hidden edit")
+	if st := gitIn(t, f.Dir, "status", "--porcelain=v2", "--", "README"); st != "" {
+		t.Fatalf("precondition: status sees README under %s:\n%s", flag, st)
+	}
+}
+
+// TestReleaseRootRefusesHiddenIndexFlags takes a fingerprint (a clean root,
+// or a dirty one with a real copy and record), then edits README under an
+// assume-unchanged or skip-worktree flag: status and the fingerprint stay
+// the same, and ReleaseRoot must still refuse with no write run and the edit
+// intact. Why: with nothing uncommitted an empty status is the only content
+// proof, and a hidden edit would be reset away with no copy and no record.
+func TestReleaseRootRefusesHiddenIndexFlags(t *testing.T) {
+	for _, mode := range []string{"nothing uncommitted", "dirty"} {
+		for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
+			t.Run(mode+" "+flag, func(t *testing.T) {
+				f := newFixture(t)
+				f.rootOnBranch("topic")
+				var rel RootRelease
+				if mode == "dirty" {
+					f.write(f.Dir, "new.txt", "n")
+					rel = rescueRoot(t, f).release(f)
+				} else {
+					_, plan := rootPlan(t, f)
+					rel = RootRelease{Root: f.Dir, Default: "main", NothingUncommitted: true, Unchanged: plan.SourceUnchanged}
+				}
+				hideEdit(t, f, flag)
+				if d, err := rel.Unchanged(); err != nil || d != "" {
+					t.Fatalf("precondition: the fingerprint sees the hidden edit (%q, %v)", d, err)
+				}
+				calls := recordRootGit(t)
+				_, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rel)
+				var refused *ReleaseRefused
+				if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "assume-unchanged or skip-worktree") {
+					t.Fatalf("err = %v, want *ReleaseRefused naming the hidden index flag", err)
+				}
+				if w := writes(*calls); len(w) != 0 {
+					t.Errorf("a refusal ran writes %q", w)
+				}
+				if got := readFile(t, filepath.Join(f.Dir, "README")); got != "hidden edit" {
+					t.Errorf("README = %q, want the hidden edit kept", got)
+				}
+			})
+		}
+	}
+}
+
+// TestReleaseRootRefusesADetachedRoot detaches a clean root and commits on
+// it, then releases it with nothing uncommitted and a fingerprint check that
+// reports no change: it must refuse, the commit still HEAD. Why: switching a
+// detached root away orphans its commits, which no branch, copy or record
+// holds.
+func TestReleaseRootRefusesADetachedRoot(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnBranch("topic")
+	f.git("switch", "-q", "--detach")
+	tip := f.Commit(f.Dir, "orphan.txt", "o", "only here")
+	calls := recordRootGit(t)
+	_, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, RootRelease{Root: f.Dir, Default: "main", NothingUncommitted: true,
+		Unchanged: func() (string, error) { return "", nil }})
+	var refused *ReleaseRefused
+	if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "is not on a branch") {
+		t.Fatalf("err = %v, want *ReleaseRefused for a detached root", err)
+	}
+	if w := writes(*calls); len(w) != 0 {
+		t.Errorf("a refusal ran writes %q", w)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != tip {
+		t.Errorf("HEAD %s, want the detached commit %s", got, tip)
 	}
 }
