@@ -751,8 +751,7 @@ func TestExecuteRecordNotWritableBlocksRelease(t *testing.T) {
 // post-merge hooks that each touch a marker, runs a full move of a dirty root
 // whose default can fast-forward, and requires no marker, with Preflight's
 // post-checkout warning still in the outcome. Why: hooks are arbitrary code,
-// and the detached add, the root switch and the destination switch (and,
-// with Task 7b, the merge) all run with them off.
+// and the detached add, the root switch and the destination switch and the fast-forward all run with them off.
 func TestExecuteRunsNoHooks(t *testing.T) {
 	f := newFixture(t)
 	f.onBranch("topic")
@@ -769,6 +768,9 @@ func TestExecuteRunsNoHooks(t *testing.T) {
 	}
 	o := eng.Execute(p)
 	wantStatus(t, o, rescue.StatusMoved, "")
+	if !o.FastForwarded {
+		t.Errorf("FastForwarded = false, want true (warnings %q)", o.Plan.Warnings)
+	}
 	ents, _ := os.ReadDir(marks)
 	for _, e := range ents {
 		t.Errorf("the %s hook ran", e.Name())

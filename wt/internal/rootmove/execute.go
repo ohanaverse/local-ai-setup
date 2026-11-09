@@ -176,7 +176,7 @@ func (r *run) recovery(s step, rf *removal.ReleaseFailed) string {
 //     verified copy, the record and the fingerprint as its proofs: the one
 //     step that resets the root and switches it to the default;
 //  5. `git switch <branch>` in the destination, hooks off;
-//  6. the fast-forward of the default (Task 7b; nothing yet);
+//  6. the fast-forward of the default, only when strictly behind origin;
 //  7. a read-back of both checkouts; moved is claimed only after it.
 //
 // A failure stops at its step with nothing rolled back; the reason ends with
@@ -302,7 +302,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	}
 	r.done("switched the new worktree onto " + p.Branch)
 
-	// 6. The fast-forward of the default: Task 7b.
+	// 6. The fast-forward of the default (warnings only).
 	e.fastForward(rootGit, r)
 
 	// 7. Read back both checkouts; only then is it moved.
@@ -315,11 +315,6 @@ func (e Engine) Execute(p *Plan) Outcome {
 	r.o.Status = rescue.StatusMoved
 	return r.o
 }
-
-// fastForward is step 6, filled by Task 7b: in the root, `merge --ff-only`
-// of origin/<Default> when p.DefaultFF, through stepGit; a failure is a
-// warning, never a failed move. Nothing yet.
-func (e Engine) fastForward(rootGit cleanup.Git, r *run) {}
 
 // readBack is step 7: the root is on refs/heads/<Default> with an empty
 // status; the destination is on refs/heads/<Branch> at Head, the branch ref
