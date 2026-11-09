@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
@@ -205,6 +206,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		return refuse("%s; move it first", why)
 	}
 	// 5. The record, last.
+	fold := pathFold(rg)
 	var rec *recordTree
 	if !r.NothingUncommitted {
 		head, err := gitText(rg, "rev-parse", "--verify", "HEAD^{commit}")
@@ -234,7 +236,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	}
 	res.Reset = true
 
-	n, err := removeCarried(rg, root, r.Untracked, rec)
+	n, err := removeCarried(rg, root, r.Untracked, rec, fold)
 	res.Removed = n
 	if err != nil {
 		return fail(StageRemoveUntracked, err)
@@ -348,10 +350,22 @@ func sameUntracked(st string, carried []string) string {
 // or the index tracks, so an ignored entry is at risk when it is such a path
 // (an ignored file at an index-deleted path), lies under one (an ignored file
 // in a directory that replaced a tracked file: git removes the directory to
-// write the file), or is a non-directory where a tracked path needs a
-// directory (an ignored file replacing a tracked directory). Ignored entries
-// elsewhere, including inside tracked directories, are never touched.
+// write the file), or sits where a tracked path needs a directory: a
+// non-directory replacing a tracked directory, or a directory git lists as
+// ignored as a whole ("foo/", which it does only when the index has nothing
+// under it) while HEAD tracks paths inside it. Ignored entries elsewhere,
+// including ignored files inside tracked directories, are never touched.
+//
+// Two passes, both needed. By name: the paths HEAD and the index track
+// against git's ignored listing, compared the way git compares them (folded
+// when core.ignorecase is on, pathFold). On disk (ignoredOnDisk): every path
+// the status lists as changed is looked up in the filesystem, which resolves
+// case and Unicode normalization the way the volume does, and compared by
+// file identity with the ignored entries; this catches what folding cannot
+// (an NFD name on disk for an NFC name in git, on a normalization-insensitive
+// volume such as APFS).
 func ignoredAtRisk(rg cleanup.Git, root string) (string, error) {
+	fold := pathFold(rg)
 	head, err := runGitZ(rg, "ls-tree", "-r", "-z", "--name-only", "--full-tree", "HEAD")
 	if err != nil {
 		return "", err
@@ -360,48 +374,193 @@ func ignoredAtRisk(rg cleanup.Git, root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tracked, trackedDirs := pathSets(append(head, index...))
+	tracked, trackedDirs := pathSets(append(head, index...), fold)
 	st, err := runGitZ(rg, append(slices.Clone(rootStatusArgs), rootStatusIgnored)...)
 	if err != nil {
 		return "", err
 	}
-	for _, ig := range entriesIn(strings.Join(st, "\x00"), "! ") {
+	listing := strings.Join(st, "\x00")
+	ignored := entriesIn(listing, "! ")
+	for _, ig := range ignored {
 		name := strings.TrimSuffix(ig, "/")
-		if tracked[name] {
+		key := fold(name)
+		if tracked[key] {
 			return fmt.Sprintf("the reset would overwrite the ignored %s, a path HEAD or the index tracks", cleanup.OneLine(name)), nil
 		}
 		for a := path.Dir(name); a != "."; a = path.Dir(a) {
-			if tracked[a] {
+			if tracked[fold(a)] {
 				return fmt.Sprintf("the reset would delete the ignored %s: it is inside %s, which HEAD or the index tracks as a file", cleanup.OneLine(name), cleanup.OneLine(a)), nil
 			}
 		}
-		if trackedDirs[name] {
-			fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name)))
-			if err != nil {
-				return "", err
+		if trackedDirs[key] {
+			if strings.HasSuffix(ig, "/") {
+				return fmt.Sprintf("the reset would write paths HEAD tracks inside the ignored directory %s, whose contents it does not know", cleanup.OneLine(name)), nil
 			}
-			if !fi.IsDir() {
-				return fmt.Sprintf("the reset would replace the ignored %s with a tracked directory", cleanup.OneLine(name)), nil
-			}
+			return fmt.Sprintf("the reset would replace the ignored %s with a tracked directory", cleanup.OneLine(name)), nil
 		}
 	}
-	return "", nil
+	return ignoredOnDisk(root, ignored, changedPaths(listing))
+}
+
+// pathFold returns how the root's git compares path names: unchanged, or
+// case-folded when core.ignorecase is true. A config that cannot be read, or
+// reads as anything but a clean "unset" or a boolean, folds (fail closed:
+// folding only finds more conflicts). The fold is Unicode simple case folding
+// (upper then lower, so EqualFold-equal names share a key). It does not
+// normalize NFD/NFC: ignoredAtRisk's on-disk pass covers that by asking the
+// filesystem, and removeCarried treats a normalization-only difference as an
+// error, never a skip.
+func pathFold(rg cleanup.Git) func(string) string {
+	ignoreCase := true
+	if o, err := runGit(rg, "config", "--get", "--type=bool", "core.ignorecase"); err == nil {
+		switch v := strings.TrimSpace(o.Stdout); {
+		case o.Code == 0 && v == "false":
+			ignoreCase = false
+		case o.Code == 1 && v == "":
+			ignoreCase = false // unset: git's default is false
+		}
+	}
+	if !ignoreCase {
+		return func(s string) string { return s }
+	}
+	return func(s string) string { return strings.ToLower(strings.ToUpper(s)) }
 }
 
 // pathSets returns the set of paths and the set of their ancestor
-// directories (slash-separated, relative).
-func pathSets(paths []string) (files, dirs map[string]bool) {
+// directories (slash-separated, relative), keyed by fold.
+func pathSets(paths []string, fold func(string) string) (files, dirs map[string]bool) {
 	files, dirs = map[string]bool{}, map[string]bool{}
 	for _, p := range paths {
 		if p == "" {
 			continue
 		}
-		files[p] = true
-		for d := path.Dir(p); d != "." && !dirs[d]; d = path.Dir(d) {
-			dirs[d] = true
+		files[fold(p)] = true
+		for d := path.Dir(p); d != "." && !dirs[fold(d)]; d = path.Dir(d) {
+			dirs[fold(d)] = true
 		}
 	}
 	return files, dirs
+}
+
+// changedPaths returns the paths of a `status --porcelain=v2 -z` listing's
+// tracked entries (changed, renamed or copied with their original path, and
+// unmerged): every path the reset may write.
+func changedPaths(st string) []string {
+	var out []string
+	fields := strings.Split(st, "\x00")
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		var n int
+		switch {
+		case strings.HasPrefix(f, "1 "):
+			n = 9
+		case strings.HasPrefix(f, "2 "):
+			n = 10
+		case strings.HasPrefix(f, "u "):
+			n = 11
+		default:
+			continue
+		}
+		if parts := strings.SplitN(f, " ", n); len(parts) == n {
+			out = append(out, parts[n-1])
+		}
+		if n == 10 && i+1 < len(fields) {
+			i++
+			out = append(out, fields[i])
+		}
+	}
+	return out
+}
+
+// fileID is a file's identity on its volume.
+type fileID struct{ dev, ino uint64 }
+
+func idOf(fi fs.FileInfo) (fileID, error) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileID{}, fmt.Errorf("no file identity for %s", fi.Name())
+	}
+	return fileID{uint64(st.Dev), uint64(st.Ino)}, nil
+}
+
+// ignoredOnDisk is ignoredAtRisk's on-disk pass. It records the identity of
+// each ignored entry and of every directory holding one, then walks each
+// changed tracked path from the root down through the filesystem: an
+// ignored entry met on the way (the path, or a directory above it) would be
+// overwritten or have paths written into it; a changed path that is a
+// directory on disk holding an ignored entry would be deleted to write the
+// tracked file.
+func ignoredOnDisk(root string, ignored, changed []string) (string, error) {
+	self := map[fileID]string{}   // an ignored entry itself
+	within := map[fileID]string{} // a directory holding an ignored entry (or one that is ignored)
+	lstat := func(rel string) (fs.FileInfo, fileID, bool, error) {
+		fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return nil, fileID{}, false, nil
+		}
+		if err != nil {
+			return nil, fileID{}, false, err
+		}
+		id, err := idOf(fi)
+		return fi, id, err == nil, err
+	}
+	for _, ig := range ignored {
+		name := strings.TrimSuffix(ig, "/")
+		fi, id, ok, err := lstat(name)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			continue
+		}
+		if _, seen := self[id]; !seen {
+			self[id] = name
+		}
+		if fi.IsDir() {
+			if _, seen := within[id]; !seen {
+				within[id] = name
+			}
+		}
+		for a := path.Dir(name); a != "."; a = path.Dir(a) {
+			_, aid, ok, err := lstat(a)
+			if err != nil {
+				return "", err
+			}
+			if ok {
+				if _, seen := within[aid]; !seen {
+					within[aid] = name
+				}
+			}
+		}
+	}
+	if len(self) == 0 {
+		return "", nil
+	}
+	for _, p := range changed {
+		parts := strings.Split(p, "/")
+		for i := range parts {
+			q := strings.Join(parts[:i+1], "/")
+			fi, id, ok, err := lstat(q)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				break
+			}
+			if name, hit := self[id]; hit {
+				return fmt.Sprintf("the reset would overwrite or write into the ignored %s (on disk it is %s, which HEAD or the index tracks)", cleanup.OneLine(name), cleanup.OneLine(q)), nil
+			}
+			if i == len(parts)-1 && fi.IsDir() {
+				if name, hit := within[id]; hit {
+					return fmt.Sprintf("the reset would delete the ignored %s: it is inside %s, a directory on disk where HEAD or the index tracks a file", cleanup.OneLine(name), cleanup.OneLine(q)), nil
+				}
+			}
+			if !fi.IsDir() {
+				break
+			}
+		}
+	}
+	return "", nil
 }
 
 // unsafeRel says why p cannot name a file inside the root, or "".
@@ -542,14 +701,16 @@ func (t *recordTree) matches(p, full string, fi fs.FileInfo) (string, error) {
 // it must be a clean relative path inside the root; a path the index tracks
 // now was restored from HEAD by the reset (`git rm --cached foo` with foo on
 // disk) and is skipped; a parent that is gone, or that the index tracks as a
-// file (a tracked file the root had replaced with a directory, which the
+// file or symlink (one the root had replaced with a directory, which the
 // reset restored), means the path is gone (skipped); any other parent that
-// is a symlink or not a directory is an error; the path itself must be a
+// is a symlink or not a directory is an error. Index lookups are folded as
+// git compares names (pathFold); a parent whose name differs from the
+// tracked one only by Unicode normalization is not matched and is an error; the path itself must be a
 // regular file or a symlink whose content equals the record's (the link is
 // removed, never its target), and one already gone is skipped. A directory,
 // anything else, or a file that differs from the record is an error and is
 // left. It stops at the first error.
-func removeCarried(rg cleanup.Git, root string, carried []string, rec *recordTree) (int, error) {
+func removeCarried(rg cleanup.Git, root string, carried []string, rec *recordTree, fold func(string) string) (int, error) {
 	if len(carried) == 0 {
 		return 0, nil
 	}
@@ -560,13 +721,13 @@ func removeCarried(rg cleanup.Git, root string, carried []string, rec *recordTre
 	if err != nil {
 		return 0, fmt.Errorf("reading the index after the reset: %w", err)
 	}
-	tracked, trackedDirs := pathSets(index)
+	tracked, trackedDirs := pathSets(index, fold)
 	removed := 0
 	for _, p := range carried {
 		if why := unsafeRel(p); why != "" {
 			return removed, fmt.Errorf("the carried path %q %s", cleanup.OneLine(p), why)
 		}
-		if tracked[p] || trackedDirs[p] {
+		if tracked[fold(p)] || trackedDirs[fold(p)] {
 			continue // restored from HEAD by the reset: tracked, never removed
 		}
 		parts := strings.Split(p, "/")
@@ -582,13 +743,15 @@ func removeCarried(rg cleanup.Git, root string, carried []string, rec *recordTre
 			if err != nil {
 				return removed, err
 			}
-			if fi.Mode()&fs.ModeSymlink != 0 {
-				return removed, fmt.Errorf("the carried path %q is under a symlink (%s); nothing below it is removed", cleanup.OneLine(p), cleanup.OneLine(dir))
-			}
-			if !fi.IsDir() {
-				if tracked[rel] {
-					gone = true // the reset put the tracked file back in place of the directory
+			if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+				if tracked[fold(rel)] {
+					// The reset put the tracked file or symlink back in place
+					// of the directory the carried path was in.
+					gone = true
 					break
+				}
+				if fi.Mode()&fs.ModeSymlink != 0 {
+					return removed, fmt.Errorf("the carried path %q is under a symlink (%s); nothing below it is removed", cleanup.OneLine(p), cleanup.OneLine(dir))
 				}
 				return removed, fmt.Errorf("the carried path %q is under %s, which is not a directory", cleanup.OneLine(p), cleanup.OneLine(dir))
 			}

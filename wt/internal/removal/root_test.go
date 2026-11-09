@@ -902,74 +902,106 @@ func TestReleaseRootIgnoredCollisionKeepsFile(t *testing.T) {
 	}
 }
 
-// ignoredRisk builds, on a root on topic with new.txt untracked, one of the
-// states where `git reset --hard HEAD` would delete or overwrite an ignored
-// file: an ignored file inside a directory that replaced the tracked README;
-// an ignored file at README after `git rm --cached README`; an ignored file
-// replacing the tracked directory d/. It returns the ignored file's path,
-// relative to the root, and its content.
-func ignoredRisk(t *testing.T, f *fixture, variant string) (string, string) {
-	t.Helper()
-	switch variant {
-	case "ignored file inside a directory where HEAD tracks a file":
+// ignoredRiskState is one state where `git reset --hard HEAD` would delete or
+// overwrite an ignored file, built on a root on topic that also tracks d/a.txt,
+// foo/x and a/b/c and has new.txt untracked.
+type ignoredRiskState struct {
+	name string
+	// real says the real rescue engine moves this state and writes its record,
+	// so the release runs with the real proofs. Otherwise rescue's verify fails
+	// on it (rootmove never reaches the release), and the test releases with a
+	// record of the root before the change and a blind fingerprint check, so
+	// ReleaseRoot's own gate is what must refuse.
+	real  bool
+	build func(t *testing.T, f *fixture) (path, content, named string)
+}
+
+// ignoredRiskStates are the states, each returning the ignored file's path
+// (relative to the root), its content, and the name the refusal must give.
+var ignoredRiskStates = []ignoredRiskState{
+	{"ignored file inside a directory where HEAD tracks a file", true, func(t *testing.T, f *fixture) (string, string, string) {
 		f.exclude("*.secret")
 		if err := os.Remove(filepath.Join(f.Dir, "README")); err != nil {
 			t.Fatal(err)
 		}
 		f.write(f.Dir, "README/note.txt", "note")
 		f.write(f.Dir, "README/local.secret", "precious")
-		return "README/local.secret", "precious"
-	case "ignored file at an index-deleted path":
+		return "README/local.secret", "precious", "README/local.secret"
+	}},
+	{"ignored file inside a case-folded directory where HEAD tracks a file", true, func(t *testing.T, f *fixture) (string, string, string) {
+		// core.ignorecase is what git sets on a case-insensitive volume (the
+		// macOS default); set it so the state is the same on any filesystem.
+		f.git("config", "core.ignorecase", "true")
+		f.exclude("*.secret")
+		if err := os.Remove(filepath.Join(f.Dir, "README")); err != nil {
+			t.Fatal(err)
+		}
+		f.write(f.Dir, "readme/note.txt", "note")
+		f.write(f.Dir, "readme/local.secret", "precious")
+		return "readme/local.secret", "precious", "readme/local.secret"
+	}},
+	{"ignored file at an index-deleted path", false, func(t *testing.T, f *fixture) (string, string, string) {
 		f.exclude("README")
 		f.git("rm", "-q", "--cached", "README")
 		f.write(f.Dir, "README", "precious edit")
-		return "README", "precious edit"
-	case "ignored file replacing a tracked directory":
+		return "README", "precious edit", "README"
+	}},
+	{"ignored file replacing a tracked directory", false, func(t *testing.T, f *fixture) (string, string, string) {
 		if err := os.RemoveAll(filepath.Join(f.Dir, "d")); err != nil {
 			t.Fatal(err)
 		}
 		f.exclude("d")
 		f.write(f.Dir, "d", "precious")
-		return "d", "precious"
-	}
-	t.Fatalf("unknown variant %q", variant)
-	return "", ""
+		return "d", "precious", "d"
+	}},
+	{"edited file at an index-deleted path in a directory-pattern-ignored directory", false, func(t *testing.T, f *fixture) (string, string, string) {
+		f.git("rm", "-q", "--cached", "foo/x")
+		f.exclude("foo/")
+		f.write(f.Dir, "foo/x", "precious edit")
+		return "foo/x", "precious edit", "foo"
+	}},
+	{"ignored file where HEAD tracks a directory, in a directory-pattern-ignored directory", false, func(t *testing.T, f *fixture) (string, string, string) {
+		f.git("rm", "-q", "-r", "--cached", "a")
+		f.exclude("a/")
+		if err := os.RemoveAll(filepath.Join(f.Dir, "a/b")); err != nil {
+			t.Fatal(err)
+		}
+		f.write(f.Dir, "a/b", "precious")
+		return "a/b", "precious", "a"
+	}},
 }
 
-// ignoredRiskVariants are ignoredRisk's states. Only the first gets a record
-// from the real rescue engine (its verify fails on the other two, so rootmove
-// never reaches the release for them); the other two are released with a
-// record of the root before the change and a blind fingerprint check, so
-// ReleaseRoot's own gate is what must refuse.
-var ignoredRiskVariants = []string{
-	"ignored file inside a directory where HEAD tracks a file",
-	"ignored file at an index-deleted path",
-	"ignored file replacing a tracked directory",
+// ignoredRiskBase is the root every ignoredRiskStates state starts from.
+func ignoredRiskBase(f *fixture) {
+	f.rootOnBranch("topic")
+	f.Commit(f.Dir, "d/a.txt", "a", "tracked dir")
+	f.Commit(f.Dir, "foo/x", "orig", "foo")
+	f.Commit(f.Dir, "a/b/c", "orig", "abc")
 }
 
 // TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles builds each state
 // where `git reset --hard HEAD` would delete or overwrite an ignored file
-// (one inside a directory where HEAD tracks a file, one at an index-deleted
-// path, one replacing a tracked directory) and requires a *ReleaseRefused
-// naming the ignored file, with no write run and the root (the ignored file
-// included) unchanged. Why: ignored files are in neither the copy nor the
-// record, so a reset that removes one destroys data that exists nowhere
-// else; the first state passes the copy's verify and RecordCoversDirt.
+// (inside a directory where HEAD tracks a file, also under another case with
+// core.ignorecase; at an index-deleted path; replacing a tracked directory;
+// under a directory-pattern ignore that hides paths HEAD tracks) and requires
+// a *ReleaseRefused naming it, with no write run and the root (the ignored
+// file included) unchanged. Why: ignored files are in neither the copy nor
+// the record, so a reset that removes one destroys data that exists nowhere
+// else; the real-rescue states pass the copy's verify and RecordCoversDirt.
 func TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles(t *testing.T) {
-	for i, v := range ignoredRiskVariants {
-		t.Run(v, func(t *testing.T) {
+	for _, st := range ignoredRiskStates {
+		t.Run(st.name, func(t *testing.T) {
 			f := newFixture(t)
-			f.rootOnBranch("topic")
-			f.Commit(f.Dir, "d/a.txt", "a", "tracked dir")
+			ignoredRiskBase(f)
 			f.write(f.Dir, "new.txt", "n")
 			var rel RootRelease
-			var path, content string
-			if i == 0 {
-				path, content = ignoredRisk(t, f, v)
+			var path, content, named string
+			if st.real {
+				path, content, named = st.build(t, f)
 				rel = rescueRoot(t, f).release(f)
 			} else {
 				rel = rescueRoot(t, f).release(f)
-				path, content = ignoredRisk(t, f, v)
+				path, content, named = st.build(t, f)
 				rel.Unchanged = func() (string, error) { return "", nil }
 			}
 			before := snapshot(t, f.Dir)
@@ -979,8 +1011,8 @@ func TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles(t *testing.T) {
 			if !errors.As(err, &refused) {
 				t.Fatalf("err = %v (%T), want *ReleaseRefused", err, err)
 			}
-			if !strings.Contains(refused.Reason, "ignored") || !strings.Contains(refused.Reason, path) {
-				t.Errorf("refused for %q, want the ignored-file gate naming %s", refused.Reason, path)
+			if !strings.Contains(refused.Reason, "ignored") || !strings.Contains(refused.Reason, named) {
+				t.Errorf("refused for %q, want the ignored-file gate naming %s", refused.Reason, named)
 			}
 			if w := writes(*calls); len(w) != 0 {
 				t.Errorf("a refusal ran writes %q", w)
@@ -996,21 +1028,20 @@ func TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles(t *testing.T) {
 }
 
 // TestIgnoredAtRiskSeesEachState calls the detector directly on each
-// ignoredRisk state, and on look-alikes that are safe (an ignored file beside
-// tracked ones, an ignored file in a tracked directory, a directory replacing
-// a tracked file with no ignored entry in it). Why: the end-to-end test above
-// can reach the gate only through the gates before it; this pins what the
-// detector itself sees.
+// ignoredRiskStates state, and on look-alikes that are safe (an ignored file
+// beside tracked ones, an ignored file in a tracked directory, a directory
+// replacing a tracked file with no ignored entry in it). Why: the end-to-end
+// test above can reach the gate only through the gates before it; this pins
+// what the detector itself sees.
 func TestIgnoredAtRiskSeesEachState(t *testing.T) {
-	for _, v := range ignoredRiskVariants {
-		t.Run(v, func(t *testing.T) {
+	for _, st := range ignoredRiskStates {
+		t.Run(st.name, func(t *testing.T) {
 			f := newFixture(t)
-			f.rootOnBranch("topic")
-			f.Commit(f.Dir, "d/a.txt", "a", "tracked dir")
-			path, _ := ignoredRisk(t, f, v)
+			ignoredRiskBase(f)
+			_, _, named := st.build(t, f)
 			why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
-			if err != nil || !strings.Contains(why, path) {
-				t.Errorf("ignoredAtRisk = %q, %v; want it to name %s", why, err, path)
+			if err != nil || !strings.Contains(why, named) {
+				t.Errorf("ignoredAtRisk = %q, %v; want it to name %s", why, err, named)
 			}
 		})
 	}
@@ -1024,6 +1055,14 @@ func TestIgnoredAtRiskSeesEachState(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.write(f.Dir, "README/note.txt", "note")
+		// A directory-pattern-ignored directory holding a force-added, edited
+		// tracked file: git lists the ignored file inside, not "build/".
+		f.exclude("build/")
+		f.write(f.Dir, "build/.keep", "k")
+		f.git("add", "-f", "build/.keep")
+		f.git("commit", "-q", "-m", "keep")
+		f.write(f.Dir, "build/.keep", "edited")
+		f.write(f.Dir, "build/out.o", "o")
 		why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
 		if err != nil || why != "" {
 			t.Errorf("ignoredAtRisk = %q, %v; want nothing at risk", why, err)
@@ -1161,5 +1200,109 @@ func TestReleaseRootRefusesWithRepoEnvironment(t *testing.T) {
 	}
 	if got := gitIn(t, decoy, "status", "--porcelain=v2", "--untracked-files=all"); got != decoyBefore || readFile(t, filepath.Join(decoy, "decoy.txt")) != "decoy edit" {
 		t.Errorf("decoy changed:\n%s", got)
+	}
+}
+
+// TestReleaseRootTrackedFileBecameCaseFoldedDirectory is
+// TestReleaseRootTrackedFileBecameDirectory with the directory named readme/
+// and core.ignorecase on: on a case-insensitive volume the reset writes
+// README over readme/, and the carried readme/note.txt must be skipped as
+// gone, not fail at remove_untracked. Why: the parent's on-disk name differs
+// from the tracked one only by case, which git (and the volume) treat as the
+// same path.
+func TestReleaseRootTrackedFileBecameCaseFoldedDirectory(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnBranch("topic")
+	f.git("config", "core.ignorecase", "true")
+	if err := os.Remove(filepath.Join(f.Dir, "README")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.Dir, "readme/note.txt", "note")
+	f.write(f.Dir, "new.txt", "n")
+	rr := rescueRoot(t, f)
+	res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rr.release(f))
+	if err != nil {
+		t.Fatalf("ReleaseRoot: %v", err)
+	}
+	if !res.Reset || !res.Switched || res.Removed < 1 {
+		t.Errorf("result %+v, want reset, switched, new.txt removed", res)
+	}
+	requireReleasedClean(t, f.Dir)
+	if got := readFile(t, filepath.Join(rr.Dest, "readme/note.txt")); got != "note" {
+		t.Errorf("copy's readme/note.txt = %q, want the carried file", got)
+	}
+}
+
+// TestReleaseRootTrackedSymlinkBecameDirectory releases a root whose tracked
+// symlink lnk was replaced by a directory holding a carried note.txt: the
+// reset restores the symlink, so the carried lnk/note.txt is gone (skipped,
+// nothing followed through the link), and the release completes clean on
+// main. Why: a parent the index tracks was put back by the reset; only a
+// symlink parent the index does not track is a race to fail on.
+func TestReleaseRootTrackedSymlinkBecameDirectory(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnBranch("topic")
+	if err := os.Symlink("README", filepath.Join(f.Dir, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	f.git("add", "lnk")
+	f.git("commit", "-q", "-m", "lnk")
+	if err := os.Remove(filepath.Join(f.Dir, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.Dir, "lnk/note.txt", "note")
+	f.write(f.Dir, "new.txt", "n")
+	rr := rescueRoot(t, f)
+	res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rr.release(f))
+	if err != nil {
+		t.Fatalf("ReleaseRoot: %v", err)
+	}
+	if want := (ReleaseResult{Reset: true, Removed: 1, Switched: true}); res != want {
+		t.Errorf("result %+v, want %+v", res, want)
+	}
+	requireReleasedClean(t, f.Dir)
+	if got := readFile(t, filepath.Join(f.Dir, "README")); got != "init" {
+		t.Errorf("README (the link's target) = %q, want %q", got, "init")
+	}
+	if got := readFile(t, filepath.Join(rr.Dest, "lnk/note.txt")); got != "note" {
+		t.Errorf("copy's lnk/note.txt = %q, want the carried file", got)
+	}
+}
+
+// TestIgnoredAtRiskOnDiskPassCatchesAliasedNames turns git's own name
+// matching off (core.ignorecase=false, core.precomposeunicode=false) and
+// replaces a tracked file by a directory whose name differs only by case, or
+// only by Unicode normalization (NFD for an NFC name), holding an ignored
+// file: the name pass cannot see it, so the on-disk pass (the volume resolves
+// the tracked name to the directory) must. Each case skips on a volume that
+// does not alias those names, where the reset would not touch the directory.
+// Why: folding does not cover normalization, and a config that understates
+// how the volume compares names must not let the reset destroy the file.
+func TestIgnoredAtRiskOnDiskPassCatchesAliasedNames(t *testing.T) {
+	for _, c := range []struct{ name, tracked, onDisk string }{
+		{"case", "README", "readme"},
+		{"unicode normalization", "café", "café"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.rootOnBranch("topic")
+			f.git("config", "core.ignorecase", "false")
+			f.git("config", "core.precomposeunicode", "false")
+			if c.tracked != "README" {
+				f.Commit(f.Dir, c.tracked, "tracked", "tracked")
+			}
+			if err := os.Remove(filepath.Join(f.Dir, c.tracked)); err != nil {
+				t.Fatal(err)
+			}
+			f.exclude("*.secret")
+			f.write(f.Dir, c.onDisk+"/local.secret", "precious")
+			if !lexists(t, filepath.Join(f.Dir, c.tracked)) {
+				t.Skipf("this volume does not alias %q and %q", c.tracked, c.onDisk)
+			}
+			why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
+			if err != nil || !strings.Contains(why, "local.secret") {
+				t.Errorf("ignoredAtRisk = %q, %v; want the ignored local.secret named", why, err)
+			}
+		})
 	}
 }
