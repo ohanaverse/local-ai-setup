@@ -1,10 +1,16 @@
 package removal
 
 import (
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,14 +26,28 @@ const (
 	StageSwitch          = "switch"
 )
 
-// rootHooksOff is the -c setting every root write carries: a hook is
-// arbitrary code, and the reset fires reference-transaction and
-// post-index-change, the switch post-checkout too.
-const rootHooksOff = "core.hooksPath=/dev/null"
+// Settings the two root writes (the reset and the switch) carry as -c
+// options. Hooks off: a hook is arbitrary code, and the reset fires
+// reference-transaction and post-index-change, the switch post-checkout too.
+// Submodule recursion off: a user's submodule.recurse=true would make the
+// reset and the switch move submodule checkouts as well.
+const (
+	rootHooksOff      = "core.hooksPath=/dev/null"
+	rootNoSubRecurse  = "submodule.recurse=false"
+	rootStatusIgnored = "--ignored=matching"
+)
 
 // rootStatusArgs read every uncommitted change of the root: untracked files
 // one by one and submodule changes whatever their ignore config says.
 var rootStatusArgs = []string{"status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none"}
+
+// rootRepoEnv are the variables that override which repository, index or
+// object store `git -C <root>` uses. ReleaseRoot refuses while any is set
+// (even empty): stripping them is not possible through cleanup.Git, which
+// only appends to the environment. GIT_CEILING_DIRECTORIES is not listed: it
+// only stops discovery above a directory, and the root holds its own .git.
+var rootRepoEnv = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE"}
 
 // RootRelease is what `wt restore-root` hands ReleaseRoot: the primary
 // checkout and the default branch to switch it to, and the proofs that its
@@ -90,29 +110,36 @@ func (e *ReleaseFailed) Unwrap() error { return e.Err }
 // The gates, in order, all reads; any miss is a *ReleaseRefused with nothing
 // touched:
 //
-//  1. Root is absolute, the top of the repository's primary checkout, and
-//     Default names an existing local branch (not an option, a valid ref
-//     name);
+//  1. Root is absolute; no variable of rootRepoEnv is set; Root is the top of
+//     the repository's primary checkout; Default names an existing local
+//     branch (not an option, a valid ref name) that no other worktree has
+//     checked out;
 //  2. Unchanged is set and reports no difference (the fingerprint);
 //  3. the status now: empty with NothingUncommitted (and no carried list);
 //     otherwise Verified, RecordRef under refs/wt/rescued/, and the carried
 //     list exactly the status's untracked paths (each relative, clean, no
 //     `..`, no repeats), so nothing tracked, ignored or outside the root is
 //     ever on it;
-//  4. otherwise, last and nearest the reset, cleanup.RecordCoversDirt: the
+//  4. no ignored file is where the reset would delete or overwrite it
+//     (ignoredAtRisk): ignored files are in neither the copy nor the record;
+//  5. otherwise, last and nearest the reset, cleanup.RecordCoversDirt: the
 //     root's index and working tree equal the record (the check `wt remove`
-//     uses for a dirty rescued original, so the two agree by construction).
+//     uses for a dirty rescued original, so the two agree by construction),
+//     and the record's tree is read for the removal's content check.
 //
 // Then, each a stage of *ReleaseFailed: `git reset --hard HEAD`; removal of
-// exactly the carried untracked paths (never `clean`; see removeCarried); a
-// read-back that the status is empty; `git switch --no-overwrite-ignore
-// <Default>`, so an ignored file at a path the default tracks fails the
-// switch instead of being overwritten (the root is then reset and clean on
-// its branch, and the work is in the copy and the record). Every write runs
-// with hooks off. Directories the removal leaves empty are left.
+// exactly the carried untracked paths whose content still equals the record
+// (never `clean`; see removeCarried); a read-back that the status is empty;
+// `git switch --no-overwrite-ignore <Default>`, so an ignored file at a path
+// the default tracks fails the switch instead of being overwritten (the root
+// is then reset and clean on its branch, and the work is in the copy and the
+// record). The reset and the switch run with hooks and submodule recursion
+// off; the reads do not need it. Directories the removal leaves empty are
+// left.
 //
 // Declared window: a change made to the root between the last gate and the
-// reset is lost, as in `wt remove` of a dirty rescued original.
+// reset is lost, as in `wt remove` of a dirty rescued original (a carried
+// untracked file edited in that window is kept, by the content check).
 func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	var res ReleaseResult
 	refuse := func(format string, a ...any) (ReleaseResult, error) {
@@ -120,6 +147,11 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	}
 	if r.Root == "" || !filepath.IsAbs(r.Root) {
 		return refuse("the root path %q is not absolute", r.Root)
+	}
+	for _, v := range rootRepoEnv {
+		if _, set := os.LookupEnv(v); set {
+			return refuse("%s is set in the environment, so git would not act on the root alone; unset it", v)
+		}
 	}
 	root := filepath.Clean(r.Root)
 	timeout := g.Timeout
@@ -165,7 +197,16 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		if why := sameUntracked(st, r.Untracked); why != "" {
 			return refuse("%s", why)
 		}
-		// 4. The record, last.
+	}
+	// 4. Ignored files the reset would destroy.
+	if why, err := ignoredAtRisk(rg, root); err != nil {
+		return refuse("could not check the root's ignored files: %v", err)
+	} else if why != "" {
+		return refuse("%s; move it first", why)
+	}
+	// 5. The record, last.
+	var rec *recordTree
+	if !r.NothingUncommitted {
 		head, err := gitText(rg, "rev-parse", "--verify", "HEAD^{commit}")
 		if err != nil {
 			return refuse("could not read the root's HEAD: %v", err)
@@ -180,17 +221,20 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		if !covered {
 			return refuse("the record %s does not hold the root's current index and working tree", r.RecordRef)
 		}
+		if rec, err = readRecordTree(rg, r.RecordRef); err != nil {
+			return refuse("could not read the record %s: %v", r.RecordRef, err)
+		}
 	}
 
 	fail := func(stage string, err error) (ReleaseResult, error) {
 		return res, &ReleaseFailed{Stage: stage, Result: res, Err: err}
 	}
-	if err := gitWrite(rg, "-c", rootHooksOff, "reset", "--hard", "HEAD"); err != nil {
+	if err := gitWrite(rg, "-c", rootHooksOff, "-c", rootNoSubRecurse, "reset", "--hard", "HEAD"); err != nil {
 		return fail(StageReset, err)
 	}
 	res.Reset = true
 
-	n, err := removeCarried(rg, root, r.Untracked)
+	n, err := removeCarried(rg, root, r.Untracked, rec)
 	res.Removed = n
 	if err != nil {
 		return fail(StageRemoveUntracked, err)
@@ -202,7 +246,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		return fail(StageVerifyClean, fmt.Errorf("the root still has changes after the reset: %s", statusPaths(st)))
 	}
 
-	if err := gitWrite(rg, "-c", rootHooksOff, "switch", "--no-overwrite-ignore", r.Default); err != nil {
+	if err := gitWrite(rg, "-c", rootHooksOff, "-c", rootNoSubRecurse, "switch", "--no-overwrite-ignore", r.Default); err != nil {
 		return fail(StageSwitch, err)
 	}
 	if ref, err := gitText(rg, "symbolic-ref", "-q", "HEAD"); err != nil {
@@ -216,7 +260,8 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 
 // checkReleaseInputs returns why root or def cannot be released ("" when
 // both hold): root must be the top of the primary checkout (not a linked
-// worktree or a subdirectory) and def an existing local branch.
+// worktree or a subdirectory) and def an existing local branch that no other
+// worktree has checked out.
 func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 	if def == "" || strings.HasPrefix(def, "-") {
 		return fmt.Sprintf("%q is not a branch name", def), nil
@@ -249,6 +294,22 @@ func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 	if cleanup.ResolvePath(gitDir) != cleanup.ResolvePath(common) {
 		return fmt.Sprintf("%s is a linked worktree, not the primary checkout", root), nil
 	}
+	o, err := runGit(rg, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", err
+	}
+	if o.Code != 0 {
+		return "", fmt.Errorf("git worktree list: exit %d: %s", o.Code, cleanup.OneLine(o.Stderr))
+	}
+	cur := ""
+	for _, field := range strings.Split(o.Stdout, "\x00") {
+		if p, ok := strings.CutPrefix(field, "worktree "); ok {
+			cur = p
+		}
+		if field == "branch refs/heads/"+def && cleanup.ResolvePath(cur) != cleanup.ResolvePath(root) {
+			return fmt.Sprintf("the default branch %s is checked out in another worktree (%s)", def, cleanup.OneLine(cur)), nil
+		}
+	}
 	return "", nil
 }
 
@@ -258,7 +319,7 @@ func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 // not ignored), and every untracked path must be carried.
 func sameUntracked(st string, carried []string) string {
 	now := map[string]bool{}
-	for _, p := range untrackedIn(st) {
+	for _, p := range entriesIn(st, "? ") {
 		now[p] = true
 	}
 	seen := map[string]bool{}
@@ -282,6 +343,67 @@ func sameUntracked(st string, carried []string) string {
 	return ""
 }
 
+// ignoredAtRisk returns which ignored entry of the root `git reset --hard
+// HEAD` would delete or overwrite ("" none). The reset writes every path HEAD
+// or the index tracks, so an ignored entry is at risk when it is such a path
+// (an ignored file at an index-deleted path), lies under one (an ignored file
+// in a directory that replaced a tracked file: git removes the directory to
+// write the file), or is a non-directory where a tracked path needs a
+// directory (an ignored file replacing a tracked directory). Ignored entries
+// elsewhere, including inside tracked directories, are never touched.
+func ignoredAtRisk(rg cleanup.Git, root string) (string, error) {
+	head, err := runGitZ(rg, "ls-tree", "-r", "-z", "--name-only", "--full-tree", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	index, err := runGitZ(rg, "ls-files", "-z")
+	if err != nil {
+		return "", err
+	}
+	tracked, trackedDirs := pathSets(append(head, index...))
+	st, err := runGitZ(rg, append(slices.Clone(rootStatusArgs), rootStatusIgnored)...)
+	if err != nil {
+		return "", err
+	}
+	for _, ig := range entriesIn(strings.Join(st, "\x00"), "! ") {
+		name := strings.TrimSuffix(ig, "/")
+		if tracked[name] {
+			return fmt.Sprintf("the reset would overwrite the ignored %s, a path HEAD or the index tracks", cleanup.OneLine(name)), nil
+		}
+		for a := path.Dir(name); a != "."; a = path.Dir(a) {
+			if tracked[a] {
+				return fmt.Sprintf("the reset would delete the ignored %s: it is inside %s, which HEAD or the index tracks as a file", cleanup.OneLine(name), cleanup.OneLine(a)), nil
+			}
+		}
+		if trackedDirs[name] {
+			fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name)))
+			if err != nil {
+				return "", err
+			}
+			if !fi.IsDir() {
+				return fmt.Sprintf("the reset would replace the ignored %s with a tracked directory", cleanup.OneLine(name)), nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// pathSets returns the set of paths and the set of their ancestor
+// directories (slash-separated, relative).
+func pathSets(paths []string) (files, dirs map[string]bool) {
+	files, dirs = map[string]bool{}, map[string]bool{}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		files[p] = true
+		for d := path.Dir(p); d != "." && !dirs[d]; d = path.Dir(d) {
+			dirs[d] = true
+		}
+	}
+	return files, dirs
+}
+
 // unsafeRel says why p cannot name a file inside the root, or "".
 func unsafeRel(p string) string {
 	switch {
@@ -297,16 +419,16 @@ func unsafeRel(p string) string {
 	return ""
 }
 
-// untrackedIn returns the untracked paths ("? <path>" entries) of a
-// `status --porcelain=v2 -z` listing.
-func untrackedIn(st string) []string {
+// entriesIn returns the paths of a `status --porcelain=v2 -z` listing's
+// entries of one kind: "? " untracked, "! " ignored.
+func entriesIn(st, kind string) []string {
 	var out []string
 	fields := strings.Split(st, "\x00")
 	for i := 0; i < len(fields); i++ {
 		f := fields[i]
 		switch {
-		case strings.HasPrefix(f, "? "):
-			out = append(out, f[2:])
+		case strings.HasPrefix(f, kind):
+			out = append(out, f[len(kind):])
 		case strings.HasPrefix(f, "2 "):
 			i++ // a rename or copy is followed by its original path
 		}
@@ -330,36 +452,128 @@ func statusPaths(st string) string {
 	return strings.Join(out, "; ")
 }
 
+// recordTree is the record's working-state tree: per path, its mode and
+// object id, and the repository's object format (sha1 or sha256).
+type recordTree struct {
+	format  string
+	entries map[string]recordEntry
+}
+
+type recordEntry struct{ mode, oid string }
+
+// readRecordTree lists the record commit's tree (every path, recursively).
+func readRecordTree(rg cleanup.Git, ref string) (*recordTree, error) {
+	format, err := gitText(rg, "rev-parse", "--show-object-format")
+	if err != nil {
+		return nil, err
+	}
+	if format != "sha1" && format != "sha256" {
+		return nil, fmt.Errorf("unknown object format %q", format)
+	}
+	lines, err := runGitZ(rg, "ls-tree", "-r", "-z", "--full-tree", ref+"^{commit}")
+	if err != nil {
+		return nil, err
+	}
+	t := &recordTree{format: format, entries: map[string]recordEntry{}}
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		meta, p, ok := strings.Cut(l, "\t")
+		f := strings.Fields(meta)
+		if !ok || len(f) != 3 {
+			return nil, fmt.Errorf("unexpected ls-tree line %q", cleanup.OneLine(l))
+		}
+		t.entries[p] = recordEntry{mode: f[0], oid: f[2]}
+	}
+	return t, nil
+}
+
+// matches says why the file at full (relative path p, Lstat info fi) is not
+// what the record holds at p ("" when it is): same kind (a regular file or a
+// symlink) and the same blob, hashed as git does.
+func (t *recordTree) matches(p, full string, fi fs.FileInfo) (string, error) {
+	e, ok := t.entries[p]
+	if !ok {
+		return "the record does not hold it", nil
+	}
+	isLink := fi.Mode()&fs.ModeSymlink != 0
+	if isLink != (e.mode == "120000") {
+		return "its kind differs from the record's", nil
+	}
+	var h hash.Hash
+	if t.format == "sha256" {
+		h = sha256.New()
+	} else {
+		h = sha1.New()
+	}
+	if isLink {
+		tgt, err := os.Readlink(full)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "blob %d\x00%s", len(tgt), tgt)
+	} else {
+		fh, err := os.Open(full)
+		if err != nil {
+			return "", err
+		}
+		defer fh.Close()
+		st, err := fh.Stat()
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "blob %d\x00", st.Size())
+		if n, err := io.Copy(h, fh); err != nil {
+			return "", err
+		} else if n != st.Size() {
+			return "it changed while being read", nil
+		}
+	}
+	if hex.EncodeToString(h.Sum(nil)) != e.oid {
+		return "its content differs from the record's (changed after the copy)", nil
+	}
+	return "", nil
+}
+
 // removeCarried removes exactly the carried untracked paths from the root,
-// after the reset, and returns how many it removed. Per path: it must be a
-// clean relative path inside the root; a path the index tracks now was
-// restored from HEAD by the reset (`git rm --cached foo` with foo on disk)
-// and is skipped; a parent that is gone means the path is gone (skipped); a
-// parent that is a symlink or not a directory is an error; the path itself
-// must be a regular file or a symlink (the link is removed, never its
-// target), and one already gone is skipped. A directory or anything else is
-// an error. It stops at the first error.
-func removeCarried(rg cleanup.Git, root string, carried []string) (int, error) {
+// after the reset, and returns how many it removed. The index is read once
+// (one ls-files) and the record's tree was read before the reset. Per path:
+// it must be a clean relative path inside the root; a path the index tracks
+// now was restored from HEAD by the reset (`git rm --cached foo` with foo on
+// disk) and is skipped; a parent that is gone, or that the index tracks as a
+// file (a tracked file the root had replaced with a directory, which the
+// reset restored), means the path is gone (skipped); any other parent that
+// is a symlink or not a directory is an error; the path itself must be a
+// regular file or a symlink whose content equals the record's (the link is
+// removed, never its target), and one already gone is skipped. A directory,
+// anything else, or a file that differs from the record is an error and is
+// left. It stops at the first error.
+func removeCarried(rg cleanup.Git, root string, carried []string, rec *recordTree) (int, error) {
+	if len(carried) == 0 {
+		return 0, nil
+	}
+	if rec == nil {
+		return 0, errors.New("no record to check the carried files against")
+	}
+	index, err := runGitZ(rg, "ls-files", "-z")
+	if err != nil {
+		return 0, fmt.Errorf("reading the index after the reset: %w", err)
+	}
+	tracked, trackedDirs := pathSets(index)
 	removed := 0
 	for _, p := range carried {
 		if why := unsafeRel(p); why != "" {
 			return removed, fmt.Errorf("the carried path %q %s", cleanup.OneLine(p), why)
 		}
-		o, err := runGit(rg, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", p)
-		if err != nil {
-			return removed, fmt.Errorf("checking whether %q is tracked: %w", cleanup.OneLine(p), err)
-		}
-		switch o.Code {
-		case 0:
+		if tracked[p] || trackedDirs[p] {
 			continue // restored from HEAD by the reset: tracked, never removed
-		case 1:
-		default:
-			return removed, fmt.Errorf("checking whether %q is tracked: git ls-files: exit %d: %s", cleanup.OneLine(p), o.Code, cleanup.OneLine(o.Stderr))
 		}
-		parts := strings.Split(filepath.ToSlash(p), "/")
-		dir, gone := root, false
+		parts := strings.Split(p, "/")
+		rel, gone := "", false
 		for _, part := range parts[:len(parts)-1] {
-			dir = filepath.Join(dir, part)
+			rel = path.Join(rel, part)
+			dir := filepath.Join(root, filepath.FromSlash(rel))
 			fi, err := os.Lstat(dir)
 			if errors.Is(err, fs.ErrNotExist) {
 				gone = true
@@ -372,6 +586,10 @@ func removeCarried(rg cleanup.Git, root string, carried []string) (int, error) {
 				return removed, fmt.Errorf("the carried path %q is under a symlink (%s); nothing below it is removed", cleanup.OneLine(p), cleanup.OneLine(dir))
 			}
 			if !fi.IsDir() {
+				if tracked[rel] {
+					gone = true // the reset put the tracked file back in place of the directory
+					break
+				}
 				return removed, fmt.Errorf("the carried path %q is under %s, which is not a directory", cleanup.OneLine(p), cleanup.OneLine(dir))
 			}
 		}
@@ -388,6 +606,11 @@ func removeCarried(rg cleanup.Git, root string, carried []string) (int, error) {
 		}
 		if !fi.Mode().IsRegular() && fi.Mode()&fs.ModeSymlink == 0 {
 			return removed, fmt.Errorf("the carried path %q is now a %s, not a file; it is left", cleanup.OneLine(p), kindOf(fi.Mode()))
+		}
+		if why, err := rec.matches(p, full, fi); err != nil {
+			return removed, fmt.Errorf("checking %q against the record: %w", cleanup.OneLine(p), err)
+		} else if why != "" {
+			return removed, fmt.Errorf("the carried path %q is left: %s", cleanup.OneLine(p), why)
 		}
 		if err := os.Remove(full); err != nil {
 			return removed, err
@@ -415,6 +638,22 @@ func readRootStatus(rg cleanup.Git) (string, error) {
 		return "", fmt.Errorf("git status: exit %d: %s", o.Code, cleanup.OneLine(o.Stderr))
 	}
 	return o.Stdout, nil
+}
+
+// runGitZ runs a read in the root and splits its NUL-separated output.
+func runGitZ(rg cleanup.Git, args ...string) ([]string, error) {
+	o, err := runGit(rg, args...)
+	if err != nil {
+		return nil, err
+	}
+	if o.Code != 0 {
+		return nil, fmt.Errorf("git %s: exit %d: %s", args[0], o.Code, cleanup.OneLine(o.Stderr))
+	}
+	out := strings.Split(o.Stdout, "\x00")
+	if len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return out, nil
 }
 
 // gitText runs a read in the root and returns its trimmed output.

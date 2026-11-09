@@ -18,8 +18,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
-// hooksOffArg is the -c pair every root write carries.
-var hooksOffArg = []string{"-c", "core.hooksPath=/dev/null"}
+// hooksOffArg is the -c settings every root write carries: hooks off, and no
+// submodule recursion whatever the user's submodule.recurse says.
+var hooksOffArg = []string{"-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false"}
 
 // rootOnBranch switches the primary checkout to a new branch at HEAD and
 // commits one file on it (unpushed): the root state `wt restore-root` moves.
@@ -362,6 +363,9 @@ func TestReleaseRootRefusesWithoutAnyOfTheThreeProofs(t *testing.T) {
 		{"default branch missing", func(_ *testing.T, _ *fixture, _ rootRescue, rel *RootRelease) { rel.Default = "nope" }},
 		{"default branch empty", func(_ *testing.T, _ *fixture, _ rootRescue, rel *RootRelease) { rel.Default = "" }},
 		{"default branch an option", func(_ *testing.T, _ *fixture, _ rootRescue, rel *RootRelease) { rel.Default = "-f" }},
+		{"default branch checked out in another worktree", func(t *testing.T, f *fixture, _ rootRescue, _ *RootRelease) {
+			f.git("worktree", "add", "-q", filepath.Join(f.Dir, ".worktrees", "on-main"), "main")
+		}},
 		{"nothing uncommitted claimed on a dirty root", func(_ *testing.T, _ *fixture, _ rootRescue, rel *RootRelease) {
 			rel.NothingUncommitted, rel.Untracked = true, nil
 		}},
@@ -369,32 +373,33 @@ func TestReleaseRootRefusesWithoutAnyOfTheThreeProofs(t *testing.T) {
 	// refusalWhy pins, per case, the gate that must refuse it (a substring of
 	// the reason), so an earlier gate cannot pass a case for the wrong cause.
 	refusalWhy := map[string]string{
-		"not verified":                                 "no verified copy",
-		"empty record ref":                             "no rescue record",
-		"record prefix only":                           "no rescue record",
-		"foreign record ref":                           "no rescue record",
-		"another record's name":                        "is not listed",
-		"record deleted":                               "is not listed",
-		"fingerprint check nil":                        "no fingerprint",
-		"fingerprint differs":                          "changed since its copy was verified",
-		"fingerprint unreadable":                       "could not re-read the root",
-		"root edited after the record":                 "changed since its copy was verified",
-		"root edited, fingerprint blind (record gate)": "does not hold the root's current index and working tree",
-		"new untracked file, fingerprint blind":        "was not carried",
-		"carried list misses a path":                   "was not carried",
-		"carried list names a tracked file":            "is not an untracked file",
-		"carried list names an ignored file":           "is not an untracked file",
-		"carried list repeats a path":                  "listed twice",
-		"carried list escapes with ..":                 "leaves the root",
-		"carried list holds an absolute path":          "is absolute",
-		"relative root":                                "is not absolute",
-		"empty root":                                   "is not absolute",
-		"root is a subdirectory":                       "is not the top of a checkout",
-		"root is a linked worktree":                    "not the primary checkout",
-		"default branch missing":                       "does not exist locally",
-		"default branch empty":                         "is not a branch name",
-		"default branch an option":                     "is not a branch name",
-		"nothing uncommitted claimed on a dirty root":  "has uncommitted changes",
+		"not verified":                                   "no verified copy",
+		"empty record ref":                               "no rescue record",
+		"record prefix only":                             "no rescue record",
+		"foreign record ref":                             "no rescue record",
+		"another record's name":                          "is not listed",
+		"record deleted":                                 "is not listed",
+		"fingerprint check nil":                          "no fingerprint",
+		"fingerprint differs":                            "changed since its copy was verified",
+		"fingerprint unreadable":                         "could not re-read the root",
+		"root edited after the record":                   "changed since its copy was verified",
+		"root edited, fingerprint blind (record gate)":   "does not hold the root's current index and working tree",
+		"new untracked file, fingerprint blind":          "was not carried",
+		"carried list misses a path":                     "was not carried",
+		"carried list names a tracked file":              "is not an untracked file",
+		"carried list names an ignored file":             "is not an untracked file",
+		"carried list repeats a path":                    "listed twice",
+		"carried list escapes with ..":                   "leaves the root",
+		"carried list holds an absolute path":            "is absolute",
+		"relative root":                                  "is not absolute",
+		"empty root":                                     "is not absolute",
+		"root is a subdirectory":                         "is not the top of a checkout",
+		"root is a linked worktree":                      "not the primary checkout",
+		"default branch missing":                         "does not exist locally",
+		"default branch empty":                           "is not a branch name",
+		"default branch an option":                       "is not a branch name",
+		"nothing uncommitted claimed on a dirty root":    "has uncommitted changes",
+		"default branch checked out in another worktree": "is checked out in another worktree",
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -894,5 +899,267 @@ func TestReleaseRootIgnoredCollisionKeepsFile(t *testing.T) {
 	}
 	if b := branchOf(t, f.Dir); b != "topic" {
 		t.Errorf("root on %q, want topic", b)
+	}
+}
+
+// ignoredRisk builds, on a root on topic with new.txt untracked, one of the
+// states where `git reset --hard HEAD` would delete or overwrite an ignored
+// file: an ignored file inside a directory that replaced the tracked README;
+// an ignored file at README after `git rm --cached README`; an ignored file
+// replacing the tracked directory d/. It returns the ignored file's path,
+// relative to the root, and its content.
+func ignoredRisk(t *testing.T, f *fixture, variant string) (string, string) {
+	t.Helper()
+	switch variant {
+	case "ignored file inside a directory where HEAD tracks a file":
+		f.exclude("*.secret")
+		if err := os.Remove(filepath.Join(f.Dir, "README")); err != nil {
+			t.Fatal(err)
+		}
+		f.write(f.Dir, "README/note.txt", "note")
+		f.write(f.Dir, "README/local.secret", "precious")
+		return "README/local.secret", "precious"
+	case "ignored file at an index-deleted path":
+		f.exclude("README")
+		f.git("rm", "-q", "--cached", "README")
+		f.write(f.Dir, "README", "precious edit")
+		return "README", "precious edit"
+	case "ignored file replacing a tracked directory":
+		if err := os.RemoveAll(filepath.Join(f.Dir, "d")); err != nil {
+			t.Fatal(err)
+		}
+		f.exclude("d")
+		f.write(f.Dir, "d", "precious")
+		return "d", "precious"
+	}
+	t.Fatalf("unknown variant %q", variant)
+	return "", ""
+}
+
+// ignoredRiskVariants are ignoredRisk's states. Only the first gets a record
+// from the real rescue engine (its verify fails on the other two, so rootmove
+// never reaches the release for them); the other two are released with a
+// record of the root before the change and a blind fingerprint check, so
+// ReleaseRoot's own gate is what must refuse.
+var ignoredRiskVariants = []string{
+	"ignored file inside a directory where HEAD tracks a file",
+	"ignored file at an index-deleted path",
+	"ignored file replacing a tracked directory",
+}
+
+// TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles builds each state
+// where `git reset --hard HEAD` would delete or overwrite an ignored file
+// (one inside a directory where HEAD tracks a file, one at an index-deleted
+// path, one replacing a tracked directory) and requires a *ReleaseRefused
+// naming the ignored file, with no write run and the root (the ignored file
+// included) unchanged. Why: ignored files are in neither the copy nor the
+// record, so a reset that removes one destroys data that exists nowhere
+// else; the first state passes the copy's verify and RecordCoversDirt.
+func TestReleaseRootRefusesWhenTheResetWouldLoseIgnoredFiles(t *testing.T) {
+	for i, v := range ignoredRiskVariants {
+		t.Run(v, func(t *testing.T) {
+			f := newFixture(t)
+			f.rootOnBranch("topic")
+			f.Commit(f.Dir, "d/a.txt", "a", "tracked dir")
+			f.write(f.Dir, "new.txt", "n")
+			var rel RootRelease
+			var path, content string
+			if i == 0 {
+				path, content = ignoredRisk(t, f, v)
+				rel = rescueRoot(t, f).release(f)
+			} else {
+				rel = rescueRoot(t, f).release(f)
+				path, content = ignoredRisk(t, f, v)
+				rel.Unchanged = func() (string, error) { return "", nil }
+			}
+			before := snapshot(t, f.Dir)
+			calls := recordRootGit(t)
+			_, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rel)
+			var refused *ReleaseRefused
+			if !errors.As(err, &refused) {
+				t.Fatalf("err = %v (%T), want *ReleaseRefused", err, err)
+			}
+			if !strings.Contains(refused.Reason, "ignored") || !strings.Contains(refused.Reason, path) {
+				t.Errorf("refused for %q, want the ignored-file gate naming %s", refused.Reason, path)
+			}
+			if w := writes(*calls); len(w) != 0 {
+				t.Errorf("a refusal ran writes %q", w)
+			}
+			if after := snapshot(t, f.Dir); after != before {
+				t.Errorf("root changed on a refusal:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+			if got := readFile(t, filepath.Join(f.Dir, path)); got != content {
+				t.Errorf("ignored %s = %q, want %q", path, got, content)
+			}
+		})
+	}
+}
+
+// TestIgnoredAtRiskSeesEachState calls the detector directly on each
+// ignoredRisk state, and on look-alikes that are safe (an ignored file beside
+// tracked ones, an ignored file in a tracked directory, a directory replacing
+// a tracked file with no ignored entry in it). Why: the end-to-end test above
+// can reach the gate only through the gates before it; this pins what the
+// detector itself sees.
+func TestIgnoredAtRiskSeesEachState(t *testing.T) {
+	for _, v := range ignoredRiskVariants {
+		t.Run(v, func(t *testing.T) {
+			f := newFixture(t)
+			f.rootOnBranch("topic")
+			f.Commit(f.Dir, "d/a.txt", "a", "tracked dir")
+			path, _ := ignoredRisk(t, f, v)
+			why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
+			if err != nil || !strings.Contains(why, path) {
+				t.Errorf("ignoredAtRisk = %q, %v; want it to name %s", why, err, path)
+			}
+		})
+	}
+	t.Run("safe look-alikes", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnBranch("topic")
+		f.Commit(f.Dir, "d/a.txt", "a", "tracked dir")
+		f.Ignored(f.Dir, "top.log")
+		f.Ignored(f.Dir, "d/b.log")
+		if err := os.Remove(filepath.Join(f.Dir, "README")); err != nil {
+			t.Fatal(err)
+		}
+		f.write(f.Dir, "README/note.txt", "note")
+		why, err := ignoredAtRisk(cleanup.Git{Dir: f.Dir}, f.Dir)
+		if err != nil || why != "" {
+			t.Errorf("ignoredAtRisk = %q, %v; want nothing at risk", why, err)
+		}
+	})
+}
+
+// TestReleaseRootTrackedFileBecameDirectory releases a root whose tracked
+// README was replaced by a directory holding only an untracked, carried
+// note.txt: the reset restores README as a file, the carried README/note.txt
+// is then gone with its directory and is skipped, and the release completes
+// clean on main with README back and the other carried file removed. Why:
+// the parent is now a tracked file, which is the reset's doing, not a race;
+// failing there would strand the root half-released for no reason.
+func TestReleaseRootTrackedFileBecameDirectory(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnBranch("topic")
+	if err := os.Remove(filepath.Join(f.Dir, "README")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.Dir, "README/note.txt", "note")
+	f.write(f.Dir, "new.txt", "n")
+	rr := rescueRoot(t, f)
+	res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rr.release(f))
+	if err != nil {
+		t.Fatalf("ReleaseRoot: %v", err)
+	}
+	if want := (ReleaseResult{Reset: true, Removed: 1, Switched: true}); res != want {
+		t.Errorf("result %+v, want %+v", res, want)
+	}
+	if got := readFile(t, filepath.Join(f.Dir, "README")); got != "init" {
+		t.Errorf("README = %q, want main's %q", got, "init")
+	}
+	requireReleasedClean(t, f.Dir)
+	if got := readFile(t, filepath.Join(rr.Dest, "README/note.txt")); got != "note" {
+		t.Errorf("copy's README/note.txt = %q, want the carried file", got)
+	}
+}
+
+// TestReleaseRootReadsTheIndexOnce carries 40 untracked files and requires
+// one `ls-files` after the reset, not one per path. Why: the time between the
+// reset and the last removal is a window in which the root holds neither its
+// work nor its default branch; a process per path (up to 20000) stretches it.
+func TestReleaseRootReadsTheIndexOnce(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnBranch("topic")
+	for i := range 40 {
+		f.write(f.Dir, fmt.Sprintf("many/f%02d.txt", i), "x")
+	}
+	rr := rescueRoot(t, f)
+	calls := recordRootGit(t)
+	res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rr.release(f))
+	if err != nil {
+		t.Fatalf("ReleaseRoot: %v", err)
+	}
+	if res.Removed != 40 {
+		t.Errorf("removed %d, want 40", res.Removed)
+	}
+	afterReset, lsFiles := false, 0
+	for _, c := range *calls {
+		if isReset(c.Args) {
+			afterReset = true
+		}
+		if afterReset && slices.Contains(c.Args, "ls-files") {
+			lsFiles++
+		}
+	}
+	if lsFiles != 1 {
+		t.Errorf("%d ls-files calls after the reset, want 1", lsFiles)
+	}
+	requireReleasedClean(t, f.Dir)
+}
+
+// TestReleaseRootKeepsACarriedFileEditedAfterTheGates edits a carried
+// untracked file after the gates (during the reset): its content no longer
+// matches the record, so it is not removed and the release fails at
+// remove_untracked with the new content intact. Why: an edit made in the
+// window is in neither the copy nor the record; removing the file would
+// destroy it.
+func TestReleaseRootKeepsACarriedFileEditedAfterTheGates(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnBranch("topic")
+	f.dirtyRoot()
+	rr := rescueRoot(t, f)
+	recordRootGitAround(t, func(args []string, run func() (cleanup.Out, error)) (cleanup.Out, error) {
+		out, err := run()
+		if isReset(args) {
+			f.write(f.Dir, "sub/deep.txt", "edited in the window")
+		}
+		return out, err
+	})
+	res, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rr.release(f))
+	rf := failedAt(t, err, StageRemoveUntracked)
+	if !rf.Result.Reset || rf.Result.Switched || res != rf.Result {
+		t.Errorf("result %+v (returned %+v), want reset, not switched", rf.Result, res)
+	}
+	if got := readFile(t, filepath.Join(f.Dir, "sub/deep.txt")); got != "edited in the window" {
+		t.Errorf("sub/deep.txt = %q, want the edit kept", got)
+	}
+}
+
+// TestReleaseRootRefusesWithRepoEnvironment sets GIT_DIR and GIT_INDEX_FILE
+// to a decoy repository and releases a verified root: it must refuse before
+// running anything, leaving the root and the decoy unchanged. Why: those
+// variables override `git -C <root>`, so every gate would read, and the reset
+// would write, the decoy (or a mix of the two) instead of the root.
+func TestReleaseRootRefusesWithRepoEnvironment(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnBranch("topic")
+	f.dirtyRoot()
+	rr := rescueRoot(t, f)
+	decoy := t.TempDir()
+	gitIn(t, decoy, "init", "-q")
+	f.write(decoy, "decoy.txt", "decoy")
+	gitIn(t, decoy, "add", "decoy.txt")
+	f.write(decoy, "decoy.txt", "decoy edit")
+	before, decoyBefore := snapshot(t, f.Dir), gitIn(t, decoy, "status", "--porcelain=v2", "--untracked-files=all")
+	calls := recordRootGit(t)
+
+	t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(decoy, ".git", "index"))
+	_, err := ReleaseRoot(cleanup.Git{Dir: f.Dir}, rr.release(f))
+	os.Unsetenv("GIT_DIR")
+	os.Unsetenv("GIT_INDEX_FILE")
+
+	var refused *ReleaseRefused
+	if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "GIT_DIR") {
+		t.Fatalf("err = %v, want *ReleaseRefused naming GIT_DIR", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("git ran with the variables set: %q", *calls)
+	}
+	if after := snapshot(t, f.Dir); after != before {
+		t.Errorf("root changed")
+	}
+	if got := gitIn(t, decoy, "status", "--porcelain=v2", "--untracked-files=all"); got != decoyBefore || readFile(t, filepath.Join(decoy, "decoy.txt")) != "decoy edit" {
+		t.Errorf("decoy changed:\n%s", got)
 	}
 }
