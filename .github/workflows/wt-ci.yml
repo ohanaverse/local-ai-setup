@@ -48,17 +48,16 @@ jobs:
       # call-count assertions passed on a many-core dev machine and failed on
       # CI. macos-latest's core count is not ours to choose, so pin the worst
       # case here instead of depending on it.
-      # Not run on pull requests (the full single-P suite took ~19 minutes):
-      # it runs on pushes to main and by hand (workflow_dispatch), and only
-      # over the packages below. The git-heavy packages (removal, rescue,
-      # cleanup, rootmove) are the slow ones and do not depend on core count.
+      # Runs on every event, pull requests included: a core-count flake caught
+      # on a PR beats one found on main, and the subset costs far less than the
+      # suite above it. The git-heavy packages (removal, rescue, cleanup,
+      # rootmove) are the slow ones and do not depend on core count.
       # Add a package here when a test in it waits on a goroutine.
       # -count=1 is load-bearing: `go test`'s cache does not account for
       # GOMAXPROCS (verified — a single-core run after a parallel one reports
       # "(cached)"), so without it this step replays the step above and guards
       # nothing.
       - name: Single-P tests (goroutine-sensitive packages)
-        if: github.event_name != 'pull_request'
         run: >-
           GOMAXPROCS=1 go test -count=1
           ./cmd/wt
@@ -68,6 +67,14 @@ jobs:
           ./internal/config
           ./internal/litellm
           ./internal/cloudsync
+          ./internal/localmodels
+          ./internal/profiles
+          ./internal/refcount
+          ./internal/sessionclaim
+          ./internal/smoke
+          ./internal/spend
+          ./internal/survey
+          ./internal/usage
       # No test may create the real config directories; see the script for
       # why. Run right after the tests, before any later step could create
       # them for its own reasons.
