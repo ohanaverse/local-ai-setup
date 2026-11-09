@@ -405,7 +405,7 @@ wt restore-root --to spike --yes   # no prompt; --to names only the directory un
 
 | Flag | Meaning |
 |---|---|
-| `--to DIR-NAME` | the new worktree's directory under `.worktrees/` (default: the branch name flattened); never the branch name |
+| `--to DIR-NAME` | the new worktree's directory under `.worktrees/` (default: the branch name flattened); names only the directory; the branch is never renamed |
 | `--dry-run` | say what would happen; writes no ref, index or working file and does not fetch |
 | `--yes` | move without asking |
 | `--json` | one document, [restore-root-result.schema.json](../../docs/contracts/restore-root-result.schema.json) (samples beside it), printed on refusal and failure too |
@@ -461,15 +461,15 @@ message ends with where the root, the new worktree and the work are:
 
 | Failed at | Root | New worktree | Work |
 |---|---|---|---|
-| creating the worktree, the copy or the record | untouched | absent, half-built or the verified copy; kept, path named | all in the root |
+| creating the worktree, the copy or the record | untouched (a record that could not be written means the root was NOT released) | absent, half-built or the verified copy; kept, path named | all in the root (and, after the copy, in the kept copy too) |
 | the release, before the reset (a live session appeared, or a proof failed) | untouched | the verified copy | in the root and the copy |
 | the release, after the reset began (`release_failed`) | reset or partly changed; run `git status` there | the verified copy, detached at the branch tip | in the copy and the record; finish with `git switch <default>` in the root, then `git switch <branch>` in the new worktree (look at the root's `git status` first) |
-| switching the new worktree onto the branch (`switch_failed`) | on the default branch, clean | detached with all the work | in the copy and the record; `git switch <branch>` there finishes it |
+| switching the new worktree onto the branch (`switch_failed`) | on the default branch, clean | detached with all the work | in the copy and the record; `git switch <branch>` there finishes it, unless the branch moved during the run: then the message says not to switch blindly (that would lay the work over the moved branch), the new worktree stays detached at the old tip, and you decide where the work belongs first |
 | the fast-forward | on the default branch | on the branch | all moved; only the fast-forward is missing (a warning) |
 | the final read-back (`verify_failed`) | as read back | as read back | nothing is undone; in the copy and the record |
 
 Running `wt restore-root` again after a failure is refused while the kept
-directory exists; `wt remove` clears it once you have checked the work.
+directory exists; `wt remove` clears it with its usual approvals once you have checked the work (a copy holding uncommitted work is dirty and is never covered by a record, so expect `--accept-loss` and `--force`).
 
 **Declared losses.** Ignored files and empty directories stay in the root
 (ignored files are never overwritten or removed; the count is reported). File
@@ -481,8 +481,8 @@ source, so `wt cleanup` does not list the new worktree as preserved by it.
 `wt rescue` still truncates its messages at 200 characters; `wt restore-root`
 prints reasons, warnings and steps in full.
 
-When the root is on a non-default branch, the shared-root menu and the root
-gate print one line pointing here (hidden when `origin/HEAD` is not set).
+When the root is on a non-default branch, the shared-root menu, the root
+gate and the picker's shared-root screen print one line pointing here (hidden when `origin/HEAD` is not set).
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-08-wt-restore-root-design.md).

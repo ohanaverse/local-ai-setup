@@ -105,7 +105,7 @@ The window between that last check and `git reset --hard` is not zero, as in #55
 ## Surfacing
 
 - The shared-root menu (`c`/`w`/`q`) and the root gate in `cmd/wt/rootgate.go` print, when the root is on a non-default branch, one added line: ``run `wt restore-root` to move it and put the root back on <default>``. Text only, no new key (the user's decision). The line is hidden when `origin/HEAD` is unset (`worktree.DefaultBranch` is its source); `wt restore-root` itself still works there. In the confirmation prompt it is its own `wt:` line before the question. After the move the new worktree is not marked preserved by the record in `wt cleanup` (the record's source path is the root).
-- `docs/guides/08-maintenance-and-troubleshooting.md` §9 and `wt/docs/wt-cleanup.md` get a short pointer; `wt/CLAUDE.md` replaces the "#522 reuses the engine" bullet with the real description.
+- `docs/guides/08-maintenance-and-troubleshooting.md` §9 and `wt/docs/wt-cleanup.md` get a short pointer; `wt/CLAUDE.md` replaced the "#522 reuses the engine" bullet with the real description.
 
 ## Constraints
 
