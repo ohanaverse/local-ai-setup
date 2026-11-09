@@ -22,8 +22,8 @@ type Base struct {
 	FetchedAt time.Time // set by the caller after a fetch that worked; ResolveBase leaves it zero
 }
 
-// RefExists reports whether ref resolves to a commit.
-func RefExists(g Git, ref string) (bool, error) {
+// refExists reports whether ref resolves to a commit.
+func refExists(g Git, ref string) (bool, error) {
 	o, err := g.Run("rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil {
 		return false, err
@@ -105,7 +105,7 @@ func ResolveBase(g Git) (Base, error) {
 	}
 	if o.Code == 0 {
 		if name := strings.TrimPrefix(strings.TrimSpace(o.Stdout), "origin/"); name != "" {
-			if ok, err := RefExists(g, "refs/remotes/origin/"+name); err != nil {
+			if ok, err := refExists(g, "refs/remotes/origin/"+name); err != nil {
 				return Base{}, err
 			} else if ok {
 				return Base{Default: name, Ref: "origin/" + name}, nil
@@ -115,14 +115,14 @@ func ResolveBase(g Git) (Base, error) {
 	// local main, master. A local master beats origin/main only when no local
 	// main exists; the chain order is the spec's.
 	for _, name := range []string{"main", "master"} {
-		ok, err := RefExists(g, "refs/heads/"+name)
+		ok, err := refExists(g, "refs/heads/"+name)
 		if err != nil {
 			return Base{}, err
 		}
 		if !ok {
 			continue
 		}
-		remote, err := RefExists(g, "refs/remotes/origin/"+name)
+		remote, err := refExists(g, "refs/remotes/origin/"+name)
 		if err != nil {
 			return Base{}, err
 		}
@@ -133,7 +133,7 @@ func ResolveBase(g Git) (Base, error) {
 	}
 	// remote-only
 	for _, name := range []string{"main", "master"} {
-		ok, err := RefExists(g, "refs/remotes/origin/"+name)
+		ok, err := refExists(g, "refs/remotes/origin/"+name)
 		if err != nil {
 			return Base{}, err
 		}

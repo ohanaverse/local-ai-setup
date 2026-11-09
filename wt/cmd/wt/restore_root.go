@@ -304,7 +304,7 @@ func restoreRootExitCode(o rootmove.Outcome) int {
 // where the work is must not be lost.
 func writeRestoreRootResult(out, errOut io.Writer, asJSON bool, meta rootmove.Meta, o rootmove.Outcome) error {
 	return writeResult(out, errOut, asJSON, restoreRootExitCode(o), "the branch was not moved",
-		func() ([]byte, error) { return rootmove.EncodeResult(o, meta) },
+		func() ([]byte, bool, error) { b, err := rootmove.EncodeResult(o, meta); return b, false, err },
 		func(w io.Writer) error { return printRestoreRootText(w, meta, o) })
 }
 

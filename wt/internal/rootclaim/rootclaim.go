@@ -22,6 +22,7 @@ type Root struct {
 	Path      string // the primary checkout, symlinks resolved
 	CommonDir string // <git-common-dir>, where wt-sessions lives
 	Branch    string // the branch checked out there, "(detached)" when none
+	Default   string // the repository's default branch from origin/HEAD, "" when unknown
 }
 
 // Lookup reports the root checkout dir is. ok is false when dir is not a
@@ -40,6 +41,7 @@ func Lookup(dir string) (r Root, ok bool, err error) {
 	if r.Branch = worktree.CurrentBranchAt(path); r.Branch == "" {
 		r.Branch = "(detached)"
 	}
+	r.Default = worktree.DefaultBranch(path)
 	return r, true, nil
 }
 
@@ -48,14 +50,10 @@ func Lookup(dir string) (r Root, ok bool, err error) {
 // a detached HEAD, or when the default is unknown (origin/HEAD unset, a
 // declared limit: restore-root itself would still work there).
 func Hint(r Root) string {
-	if r.Branch == "(detached)" {
+	if r.Default == "" || r.Branch == "(detached)" || r.Branch == r.Default {
 		return ""
 	}
-	def := worktree.DefaultBranch(r.Path)
-	if def == "" || r.Branch == def {
-		return ""
-	}
-	return "run `wt restore-root` to move it and put the root back on " + def
+	return "run `wt restore-root` to move it and put the root back on " + r.Default
 }
 
 // Self is this process's claim on r for agent. err is a failure to read this

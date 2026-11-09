@@ -478,7 +478,8 @@ func RootIgnoredAtRiskFold(g cleanup.Git, root string, fold func(string) string)
 
 // rootGit builds the git every root read and write runs through: Dir = the
 // cleaned root (never g.Dir), g's timeout (DefaultRemoveTimeout when zero) and
-// -c settings, then core.fsmonitor=false.
+// -c settings, then core.fsmonitor=false. g.Env is deliberately dropped: the
+// root's git runs with the process environment alone.
 func rootGit(g cleanup.Git, root string) cleanup.Git {
 	g.Dir = filepath.Clean(root)
 	if g.Timeout == 0 {

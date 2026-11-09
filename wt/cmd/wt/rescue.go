@@ -242,7 +242,7 @@ func rescueExitCode(o rescue.Outcome) int {
 // not be lost.
 func writeRescueResult(out, errOut io.Writer, asJSON bool, meta rescue.Meta, o rescue.Outcome) error {
 	return writeResult(out, errOut, asJSON, rescueExitCode(o), "the work was not copied",
-		func() ([]byte, error) { return rescue.EncodeResult(o, meta) },
+		func() ([]byte, bool, error) { b, err := rescue.EncodeResult(o, meta); return b, false, err },
 		func(w io.Writer) error { return printRescueText(w, meta, o) })
 }
 

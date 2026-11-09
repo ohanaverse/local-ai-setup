@@ -152,7 +152,7 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 		if err != nil {
 			return nil, refuse(CodeNameUnavailable, fmt.Sprintf("pass --to NAME to choose another directory name (%v)", err))
 		}
-		p.Branch, p.DirName, p.DestPath = branch, dir, dest
+		p.Branch, p.DirName, p.DestPath, p.Detached = branch, dir, dest, true
 	} else {
 		branch := name
 		if branch == "" {

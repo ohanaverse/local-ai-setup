@@ -76,7 +76,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		return nil, fmt.Errorf("could not resolve the default branch: %w", err)
 	}
 	def := base.Default
-	localDef, ok, err := resolveCommit(rg, "refs/heads/"+def)
+	_, ok, err := resolveCommit(rg, "refs/heads/"+def)
 	if err != nil {
 		return nil, err
 	} else if !ok {
@@ -128,8 +128,8 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		return nil, refuse(rescue.CodeSourceChanged, "the root's branch or HEAD moved while it was being checked; run it again")
 	}
 
-	// core.ignorecase is read once for every comparison below, here and in
-	// Execute's release and fast-forward.
+	// core.ignorecase is read once for the two ignored-file checks below.
+	// Execute's release and fast-forward read it fresh: they guard writes.
 	fold := cleanup.FoldFor(cleanup.IgnoreCase(rg))
 	if why, err := removal.RootIgnoredAtRiskFold(rg, root, fold); err != nil {
 		return nil, fmt.Errorf("could not check the root's ignored files: %w", err)
@@ -143,7 +143,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 			cleanup.OneLine(hit), cleanup.OneLine(def))
 	}
 
-	ff, note, benign := defaultFF(rg, def, localDef)
+	ff, note, benign := defaultFF(rg, def)
 	return &Plan{
 		Repo:      rp.Repo,
 		Branch:    rp.Branch,
@@ -221,7 +221,8 @@ func (e Engine) heldBy(common, root string) (string, error) {
 // default branch tracks, or one that sits where that branch needs a
 // directory or a file ("" none): `git switch --no-overwrite-ignore` would
 // fail on it rather than overwrite it, but only after the root was reset.
-// Names are compared case-folded unless core.ignorecase is clearly false.
+// Names are compared with fold (case-folded unless core.ignorecase is clearly
+// false, see cleanup.FoldFor).
 func ignoredDefaultTracks(rg cleanup.Git, def string, fold func(string) string) (string, error) {
 	ignored, err := rg.Lines("ls-files", "-z", "--ignored", "--exclude-standard", "--others")
 	if err != nil {
@@ -252,8 +253,16 @@ func ignoredDefaultTracks(rg cleanup.Git, def string, fold func(string) string) 
 // defaultFF says whether origin/<def> is a strict descendant of the local
 // def, so a fast-forward would move def forward without a merge; when it is
 // not, the note says why. It never refuses: a failed read is "not known".
-func defaultFF(rg cleanup.Git, def, local string) (ok bool, note string, benign bool) {
+func defaultFF(rg cleanup.Git, def string) (ok bool, note string, benign bool) {
 	d := cleanup.OneLine(def)
+	// The local tip is read here, last, not reused from the existence check
+	// above, so the plan's fast-forward text describes the tip as it is now.
+	local, found, lerr := resolveCommit(rg, "refs/heads/"+def)
+	if lerr != nil {
+		return false, fmt.Sprintf("could not read %s (%v), so it is not fast-forwarded", d, lerr), false
+	} else if !found {
+		return false, fmt.Sprintf("%s no longer exists locally, so it is not fast-forwarded", d), false
+	}
 	o, err := rg.Run("rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+def+"^{commit}")
 	switch {
 	case err != nil:
