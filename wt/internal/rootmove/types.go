@@ -81,6 +81,10 @@ type Plan struct {
 
 	rp        *rescue.Plan // the root-mode rescue plan Execute copies with
 	skipStart bool         // see SkipStartRecheck
+	// common is the absolute git common dir Preflight read once; "" (a Plan
+	// not made by Preflight) is read again where used. core.ignorecase is
+	// deliberately not kept: Execute's checks read it fresh.
+	common string
 }
 
 // SkipStartRecheck tells Execute that nothing happened between Preflight and

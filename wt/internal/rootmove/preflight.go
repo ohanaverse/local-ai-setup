@@ -76,7 +76,8 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		return nil, fmt.Errorf("could not resolve the default branch: %w", err)
 	}
 	def := base.Default
-	if ok, err := hasCommit(rg, "refs/heads/"+def); err != nil {
+	localDef, ok, err := resolveCommit(rg, "refs/heads/"+def)
+	if err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, refuse(CodeNoDefaultBranch, "the default branch %s exists only as origin/%s; create it locally first (git branch %s origin/%s)",
@@ -92,7 +93,11 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		}
 	}
 
-	if held, err := e.heldBy(rg, root); err != nil {
+	common, err := commonDir(rg)
+	if err != nil {
+		return nil, err
+	}
+	if held, err := e.heldBy(common, root); err != nil {
 		return nil, err
 	} else if held != "" {
 		return nil, refuse(CodeRootHeld, "another wt session is running in the root: %s; end it first (Execute checks again just before the root changes)", held)
@@ -123,19 +128,22 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		return nil, refuse(rescue.CodeSourceChanged, "the root's branch or HEAD moved while it was being checked; run it again")
 	}
 
-	if why, err := removal.RootIgnoredAtRisk(rg, root); err != nil {
+	// core.ignorecase is read once for every comparison below, here and in
+	// Execute's release and fast-forward.
+	fold := cleanup.FoldFor(cleanup.IgnoreCase(rg))
+	if why, err := removal.RootIgnoredAtRiskFold(rg, root, fold); err != nil {
 		return nil, fmt.Errorf("could not check the root's ignored files: %w", err)
 	} else if why != "" {
 		return nil, refuse(CodeIgnoredCollision, "%s; move it out of the root first", why)
 	}
-	if hit, err := ignoredDefaultTracks(rg, def); err != nil {
+	if hit, err := ignoredDefaultTracks(rg, def, fold); err != nil {
 		return nil, fmt.Errorf("could not check the root's ignored files against %s: %w", cleanup.OneLine(def), err)
 	} else if hit != "" {
 		return nil, refuse(CodeIgnoredCollision, "the ignored %s is where the default branch %s tracks a file, so switching the root to it would overwrite it; move it out of the root first",
 			cleanup.OneLine(hit), cleanup.OneLine(def))
 	}
 
-	ff, note, benign := defaultFF(rg, def)
+	ff, note, benign := defaultFF(rg, def, localDef)
 	return &Plan{
 		Repo:      rp.Repo,
 		Branch:    rp.Branch,
@@ -149,18 +157,54 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		Counts:    rp.Counts,
 		Warnings:  slices.Clone(rp.Warnings),
 		rp:        rp,
+		common:    common,
 	}, nil
+}
+
+// commonDir reads the repository's absolute common directory, where the
+// session claims live.
+func commonDir(rg cleanup.Git) (string, error) {
+	common, err := rg.Text("rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf("could not read the repository's common directory: %w", err)
+	}
+	return common, nil
+}
+
+// heldNow is heldBy for a plan: the common dir Preflight read, or one read
+// now for a plan without it. The claims are always read fresh.
+func (e Engine) heldNow(rg cleanup.Git, p *Plan) (string, error) {
+	common := p.common
+	if common == "" {
+		var err error
+		if common, err = commonDir(rg); err != nil {
+			return "", err
+		}
+	}
+	return e.heldBy(common, p.Repo)
+}
+
+// resolveCommit resolves ref to a commit id; ok is false when the ref is
+// absent, and a git failure other than "absent" is an error.
+func resolveCommit(rg cleanup.Git, ref string) (id string, ok bool, err error) {
+	o, err := rg.Run("rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		return "", false, err
+	}
+	switch o.Code {
+	case 0:
+		return strings.TrimSpace(o.Stdout), true, nil
+	case 1:
+		return "", false, nil
+	}
+	return "", false, fmt.Errorf("git rev-parse %s: exit %d: %s", cleanup.OneLine(ref), o.Code, cleanup.OneLine(o.Stderr))
 }
 
 // heldBy describes the live wt sessions of other processes whose claim is on
 // root ("" none). It reads the claims without the lock and prunes nothing; a
 // stale claim (its process gone or restarted) does not hold the root. A
 // claims directory that cannot be read is an error.
-func (e Engine) heldBy(rg cleanup.Git, root string) (string, error) {
-	common, err := gitText(rg, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", fmt.Errorf("could not read the repository's common directory: %w", err)
-	}
+func (e Engine) heldBy(common, root string) (string, error) {
 	others, err := sessionclaim.Others(common, sessionclaim.Claim{PID: os.Getpid(), Path: cleanup.ResolvePath(root)})
 	if err != nil {
 		return "", fmt.Errorf("could not read the root's session claims: %w", err)
@@ -178,34 +222,26 @@ func (e Engine) heldBy(rg cleanup.Git, root string) (string, error) {
 // directory or a file ("" none): `git switch --no-overwrite-ignore` would
 // fail on it rather than overwrite it, but only after the root was reset.
 // Names are compared case-folded unless core.ignorecase is clearly false.
-func ignoredDefaultTracks(rg cleanup.Git, def string) (string, error) {
-	ignored, err := gitZ(rg, "ls-files", "-z", "--ignored", "--exclude-standard", "--others")
+func ignoredDefaultTracks(rg cleanup.Git, def string, fold func(string) string) (string, error) {
+	ignored, err := rg.Lines("ls-files", "-z", "--ignored", "--exclude-standard", "--others")
 	if err != nil {
 		return "", err
 	}
 	if len(ignored) == 0 {
 		return "", nil
 	}
-	tracked, err := gitZ(rg, "ls-tree", "-r", "--name-only", "-z", "--full-tree", "refs/heads/"+def)
+	tracked, err := rg.Lines("ls-tree", "-r", "--name-only", "-z", "--full-tree", "refs/heads/"+def)
 	if err != nil {
 		return "", err
 	}
-	fold := cleanup.PathFold(rg)
-	files := map[string]bool{}
-	dirs := map[string]bool{}
-	for _, p := range tracked {
-		files[fold(p)] = true
-		for d := path.Dir(p); d != "."; d = path.Dir(d) {
-			dirs[fold(d)] = true
-		}
-	}
+	files, dirs := cleanup.PathSets(tracked, fold)
 	for _, ig := range ignored {
 		k := fold(ig)
-		if files[k] || dirs[k] {
+		if files.Has(k) || dirs.Has(k) {
 			return ig, nil
 		}
 		for d := path.Dir(ig); d != "."; d = path.Dir(d) {
-			if files[fold(d)] {
+			if files.Has(fold(d)) {
 				return ig, nil
 			}
 		}
@@ -216,12 +252,8 @@ func ignoredDefaultTracks(rg cleanup.Git, def string) (string, error) {
 // defaultFF says whether origin/<def> is a strict descendant of the local
 // def, so a fast-forward would move def forward without a merge; when it is
 // not, the note says why. It never refuses: a failed read is "not known".
-func defaultFF(rg cleanup.Git, def string) (ok bool, note string, benign bool) {
+func defaultFF(rg cleanup.Git, def, local string) (ok bool, note string, benign bool) {
 	d := cleanup.OneLine(def)
-	local, err := gitText(rg, "rev-parse", "--verify", "--quiet", "refs/heads/"+def+"^{commit}")
-	if err != nil {
-		return false, fmt.Sprintf("could not read %s (%v), so it is not fast-forwarded", d, err), false
-	}
 	o, err := rg.Run("rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+def+"^{commit}")
 	switch {
 	case err != nil:
@@ -263,49 +295,4 @@ func defaultFF(rg cleanup.Git, def string) (ok bool, note string, benign bool) {
 		return false, fmt.Sprintf("%s is ahead of origin/%s (it has commits origin does not), so it is not fast-forwarded", d, d), false
 	}
 	return false, fmt.Sprintf("%s and origin/%s have diverged; no merge is made, so it is not fast-forwarded", d, d), false
-}
-
-// hasCommit says whether ref resolves to a commit; a git failure other than
-// "absent" is an error.
-func hasCommit(rg cleanup.Git, ref string) (bool, error) {
-	o, err := rg.Run("rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	if err != nil {
-		return false, err
-	}
-	switch o.Code {
-	case 0:
-		return true, nil
-	case 1:
-		return false, nil
-	}
-	return false, fmt.Errorf("git rev-parse %s: exit %d: %s", cleanup.OneLine(ref), o.Code, cleanup.OneLine(o.Stderr))
-}
-
-// gitText runs a read and returns its trimmed output; a non-zero exit is an
-// error.
-func gitText(rg cleanup.Git, args ...string) (string, error) {
-	o, err := rg.Run(args...)
-	if err != nil {
-		return "", err
-	}
-	if o.Code != 0 {
-		return "", fmt.Errorf("git %s: exit %d: %s", args[0], o.Code, cleanup.OneLine(o.Stderr))
-	}
-	return strings.TrimSpace(o.Stdout), nil
-}
-
-// gitZ runs a read and splits its NUL-separated output.
-func gitZ(rg cleanup.Git, args ...string) ([]string, error) {
-	o, err := rg.Run(args...)
-	if err != nil {
-		return nil, err
-	}
-	if o.Code != 0 {
-		return nil, fmt.Errorf("git %s: exit %d: %s", args[0], o.Code, cleanup.OneLine(o.Stderr))
-	}
-	out := strings.Split(o.Stdout, "\x00")
-	if len(out) > 0 && out[len(out)-1] == "" {
-		out = out[:len(out)-1]
-	}
-	return out, nil
 }

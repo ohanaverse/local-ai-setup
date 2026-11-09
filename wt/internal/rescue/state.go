@@ -8,11 +8,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-)
 
-// statusArgs read a worktree's state in full: porcelain v2, every untracked
-// file (not a directory summary), submodules never hidden.
-var statusArgs = []string{"status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none"}
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+)
 
 // entry is one path of `status --porcelain=v2`.
 type entry struct {
@@ -144,7 +142,7 @@ func takeFingerprint(sg sgit) (fingerprint, error) {
 		return fp, err
 	}
 	fp.index = fmt.Sprintf("%x", sha256.Sum256(idx))
-	st, err := sg.out(nil, statusArgs...)
+	st, err := sg.out(nil, cleanup.StatusArgs()...)
 	if err != nil {
 		return fp, err
 	}

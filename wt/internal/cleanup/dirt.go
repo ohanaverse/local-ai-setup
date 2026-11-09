@@ -3,7 +3,6 @@ package cleanup
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -97,7 +96,8 @@ func RecordCoversDirt(g Git, root, head, recordRef string) (bool, error) {
 		// g's Env and -c settings are kept, with fsmonitor off appended after
 		// them (a caller cannot turn it back on): a stale hook must not hide an
 		// edit from the check.
-		wg := Git{Dir: root, Timeout: g.Timeout, Config: append(slices.Clone(g.Config), "core.fsmonitor=false"), Env: g.Env}
+		wg := WithoutFSMonitor(g)
+		wg.Dir = root
 		w := WorktreeFact{Path: root, Head: head}
 		covered, err := dirtCoveredErr(wg, w, []RescueRecord{r})
 		if err != nil {
@@ -163,7 +163,7 @@ func dirtCoveredErr(wg Git, w WorktreeFact, rs []RescueRecord) ([]RescueRecord, 
 	if len(cands) == 0 {
 		return nil, nil
 	}
-	hidden, err := hiddenIndexFlags(wg)
+	hidden, err := HiddenIndexFlags(wg)
 	if err != nil {
 		return nil, err
 	}

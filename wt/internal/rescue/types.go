@@ -103,13 +103,10 @@ type Plan struct {
 	Source   Source
 	Branch   string // the new branch, short name; in root mode the root's own branch
 	DestPath string // the new worktree
-	// Detached says the destination is a detached worktree of Branch, which
-	// already exists and stays checked out in the root (root mode): no branch
-	// is created. Branch is then the root's real branch, never empty, so the
-	// record's Wt-Dest-Branch trailer names it. DirName is the destination's
-	// directory name under .worktrees (before flattening); "" outside root
-	// mode, where the directory follows Branch.
-	Detached bool
+	// DirName is the destination's directory name under .worktrees (before
+	// flattening) in root mode, where the destination is a detached worktree
+	// of Branch (see Detached); "" outside root mode, where the directory
+	// follows Branch.
 	DirName  string
 	Start    string // the commit the new branch starts at: the source's HEAD
 	Counts   Counts
@@ -166,6 +163,12 @@ type Engine struct {
 	Classify cleanup.Options
 	ForRoot  bool
 }
+
+// Detached says the destination is a detached worktree of Branch, which
+// already exists and stays checked out in the root (root mode): no branch is
+// created. Branch is then the root's real branch, never empty, so the
+// record's Wt-Dest-Branch trailer names it.
+func (p *Plan) Detached() bool { return p.DirName != "" }
 
 // SkipStartRecheck tells Execute that nothing happened between Preflight and
 // it that gave the source time to change (no prompt was shown), so the

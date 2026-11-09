@@ -125,43 +125,51 @@ func TestAskYesNoDefaultsToNo(t *testing.T) {
 	}
 }
 
+// gitIn runs git in dir and fails the test on error.
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// setOriginHead points origin/HEAD at origin/main, which makes main the
+// repository's known default branch.
+func setOriginHead(t *testing.T, root string) {
+	t.Helper()
+	gitIn(t, root, "update-ref", "refs/remotes/origin/main", "HEAD")
+	gitIn(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+}
+
 // TestHintNamesTheDefault checks the restore-root hint appears only when the
 // root sits on a named branch other than a known default: on the default, on a
 // detached HEAD or with no known default (origin/HEAD unset) it is empty, so
 // the line never points at a move there is nothing to do for or cannot name.
 func TestHintNamesTheDefault(t *testing.T) {
 	want := "run `wt restore-root` to move it and put the root back on main"
-	if got := Hint(Root{Branch: "topic", Default: "main"}); got != want {
+	look := func(root string) Root {
+		r, _, _ := Lookup(root)
+		return r
+	}
+
+	unknown := repo(t)
+	gitIn(t, unknown, "checkout", "-q", "-b", "topic")
+	if got := Hint(look(unknown)); got != "" {
+		t.Errorf("Hint(unknown default) = %q; want empty", got)
+	}
+
+	root := repo(t)
+	setOriginHead(t, root)
+	if got := Hint(look(root)); got != "" {
+		t.Errorf("Hint(on the default) = %q; want empty", got)
+	}
+	gitIn(t, root, "checkout", "-q", "-b", "topic")
+	if got := Hint(look(root)); got != want {
 		t.Errorf("Hint(topic on main) = %q; want %q", got, want)
 	}
-	for name, r := range map[string]Root{
-		"on the default":  {Branch: "main", Default: "main"},
-		"detached":        {Branch: "(detached)", Default: "main"},
-		"unknown default": {Branch: "topic", Default: ""},
-	} {
-		if got := Hint(r); got != "" {
-			t.Errorf("Hint(%s) = %q; want empty", name, got)
-		}
-	}
-}
-
-// TestLookupReadsTheDefault checks Lookup fills Root.Default from origin/HEAD
-// and leaves it empty without one, which is what hides the hint there.
-func TestLookupReadsTheDefault(t *testing.T) {
-	root := repo(t)
-	if r, _, _ := Lookup(root); r.Default != "" {
-		t.Errorf("Default = %q with no origin/HEAD; want empty", r.Default)
-	}
-	for _, args := range [][]string{
-		{"update-ref", "refs/remotes/origin/main", "HEAD"},
-		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
-	} {
-		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	if r, _, _ := Lookup(root); r.Default != "main" {
-		t.Errorf("Default = %q; want main", r.Default)
+	gitIn(t, root, "checkout", "-q", "--detach")
+	if got := Hint(look(root)); got != "" {
+		t.Errorf("Hint(detached) = %q; want empty", got)
 	}
 }
 
@@ -171,8 +179,13 @@ func TestLookupReadsTheDefault(t *testing.T) {
 // moment of choosing.
 func TestChooseAndConfirmRootPrintTheHint(t *testing.T) {
 	hint := "run `wt restore-root` to move it and put the root back on main"
-	off := Root{Path: "/r", Branch: "topic", Default: "main"}
-	on := Root{Path: "/r", Branch: "main", Default: "main"}
+	offRoot := repo(t)
+	setOriginHead(t, offRoot)
+	gitIn(t, offRoot, "checkout", "-q", "-b", "topic")
+	off, _, _ := Lookup(offRoot)
+	onRoot := repo(t)
+	setOriginHead(t, onRoot)
+	on, _, _ := Lookup(onRoot)
 
 	var out bytes.Buffer
 	Choose(off, nil, strings.NewReader("q"), &out)

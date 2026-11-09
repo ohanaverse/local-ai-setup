@@ -22,8 +22,8 @@ type Base struct {
 	FetchedAt time.Time // set by the caller after a fetch that worked; ResolveBase leaves it zero
 }
 
-// refExists reports whether ref resolves to a commit.
-func refExists(g Git, ref string) (bool, error) {
+// RefExists reports whether ref resolves to a commit.
+func RefExists(g Git, ref string) (bool, error) {
 	o, err := g.Run("rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil {
 		return false, err
@@ -49,6 +49,47 @@ func gitFailure(o Out, args ...string) error {
 		flat(strings.Join(args, " ")), o.Code, capRunes(flat(o.Stderr), gitErrMax))}
 }
 
+// Text runs a read in g and returns its trimmed stdout; a non-zero exit is an
+// error "git <args[0]>: exit N: <stderr>".
+func (g Git) Text(args ...string) (string, error) {
+	o, err := g.Run(args...)
+	if err != nil {
+		return "", err
+	}
+	return OutText(o, args...)
+}
+
+// Lines runs a read in g and splits its NUL-separated stdout, dropping the
+// trailing empty field.
+func (g Git) Lines(args ...string) ([]string, error) {
+	o, err := g.Run(args...)
+	if err != nil {
+		return nil, err
+	}
+	return OutLines(o, args...)
+}
+
+// OutText is Text for an already-run command (for callers that run git
+// through their own seam).
+func OutText(o Out, args ...string) (string, error) {
+	if o.Code != 0 {
+		return "", fmt.Errorf("git %s: exit %d: %s", args[0], o.Code, OneLine(o.Stderr))
+	}
+	return strings.TrimSpace(o.Stdout), nil
+}
+
+// OutLines is Lines for an already-run command.
+func OutLines(o Out, args ...string) ([]string, error) {
+	if o.Code != 0 {
+		return nil, fmt.Errorf("git %s: exit %d: %s", args[0], o.Code, OneLine(o.Stderr))
+	}
+	out := strings.Split(o.Stdout, "\x00")
+	if len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return out, nil
+}
+
 // ResolveBase finds the default branch and the ref to compare against. The
 // base is origin/<default>, not the local default: a local main with unpushed
 // commits must not make work look merged. Chain: origin/HEAD, local main,
@@ -64,7 +105,7 @@ func ResolveBase(g Git) (Base, error) {
 	}
 	if o.Code == 0 {
 		if name := strings.TrimPrefix(strings.TrimSpace(o.Stdout), "origin/"); name != "" {
-			if ok, err := refExists(g, "refs/remotes/origin/"+name); err != nil {
+			if ok, err := RefExists(g, "refs/remotes/origin/"+name); err != nil {
 				return Base{}, err
 			} else if ok {
 				return Base{Default: name, Ref: "origin/" + name}, nil
@@ -74,14 +115,14 @@ func ResolveBase(g Git) (Base, error) {
 	// local main, master. A local master beats origin/main only when no local
 	// main exists; the chain order is the spec's.
 	for _, name := range []string{"main", "master"} {
-		ok, err := refExists(g, "refs/heads/"+name)
+		ok, err := RefExists(g, "refs/heads/"+name)
 		if err != nil {
 			return Base{}, err
 		}
 		if !ok {
 			continue
 		}
-		remote, err := refExists(g, "refs/remotes/origin/"+name)
+		remote, err := RefExists(g, "refs/remotes/origin/"+name)
 		if err != nil {
 			return Base{}, err
 		}
@@ -92,7 +133,7 @@ func ResolveBase(g Git) (Base, error) {
 	}
 	// remote-only
 	for _, name := range []string{"main", "master"} {
-		ok, err := refExists(g, "refs/remotes/origin/"+name)
+		ok, err := RefExists(g, "refs/remotes/origin/"+name)
 		if err != nil {
 			return Base{}, err
 		}
@@ -125,6 +166,24 @@ type RemoteFetch struct {
 	OK      bool
 	Err     string
 	Skipped bool // remote.<name>.skipFetchAll is true: not fetched
+}
+
+// FailureSummary names each remote whose fetch failed with git's error cut to
+// one line ("origin: ...; other: ..."), origin first, and is "" when none
+// failed. A skip is not a failure.
+func (fr FetchResult) FailureSummary() string {
+	var failed []string
+	seen := map[string]bool{}
+	for _, r := range fr.Remotes {
+		if r.Err != "" {
+			failed = append(failed, r.Name+": "+OneLine(r.Err))
+			seen[r.Name] = true
+		}
+	}
+	if fr.Err != "" && !seen["origin"] {
+		failed = append([]string{"origin: " + OneLine(fr.Err)}, failed...)
+	}
+	return strings.Join(failed, "; ")
 }
 
 // fetchTimeout bounds each remote's fetch when g.Timeout is zero: a fetch

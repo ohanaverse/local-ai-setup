@@ -46,15 +46,6 @@ var (
 	afterRelease = func() {}
 )
 
-// destSwitchConfig are the -c settings of the destination's switch: hooks
-// off (a hook is arbitrary code) and no submodule recursion, as the root's
-// own switch in removal.ReleaseRoot.
-var destSwitchConfig = []string{"-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false"}
-
-// readStatusArgs read every uncommitted change of a checkout, untracked
-// files one by one and submodule changes whatever their config says.
-var readStatusArgs = []string{"status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none"}
-
 // step names a step of Execute that can fail: the key of the recovery
 // table.
 type step int
@@ -201,7 +192,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 		} else if d != "" {
 			return r.refuse(rescue.CodeSourceChanged, "the root changed since it was checked (%s); nothing was created", cleanup.OneLine(d))
 		}
-		if held, err := e.heldBy(rootGit, p.Repo); err != nil {
+		if held, err := e.heldNow(rootGit, p); err != nil {
 			return r.refuse(rescue.CodeUnreadable, "%s; nothing was created", cleanup.Flatten(err.Error()))
 		} else if held != "" {
 			return r.refuse(CodeRootHeld, "another wt session started in the root since it was checked: %s; nothing was created", held)
@@ -256,7 +247,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 
 	// 4. The claim once more, then the release.
 	beforeRelease()
-	if held, err := e.heldBy(rootGit, p.Repo); err != nil {
+	if held, err := e.heldNow(rootGit, p); err != nil {
 		return r.fail(stepBeforeReset, nil, CodeReleaseRefused, "%v, so the root was not released", err)
 	} else if held != "" {
 		return r.fail(stepBeforeReset, nil, CodeRootHeld, "another wt session started in the root: %s, so the root was not released", held)
@@ -293,7 +284,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	} else if tip != p.Head {
 		return r.fail(stepBranchMoved, nil, CodeSwitchFailed, "the branch %s moved to %s since the move started, so the new worktree was not switched onto it", p.Branch, tip)
 	}
-	if o, err := stepGit(destGit, slices.Concat(destSwitchConfig, []string{"switch", "--no-overwrite-ignore", p.Branch})...); err != nil {
+	if o, err := stepGit(destGit, slices.Concat(cleanup.WriteConfig(), []string{"switch", "--no-overwrite-ignore", p.Branch})...); err != nil {
 		return r.fail(stepDestSwitch, nil, CodeSwitchFailed, "git switch %s in the new worktree: %v", p.Branch, err)
 	} else if o.Code != 0 {
 		return r.fail(stepDestSwitch, nil, CodeSwitchFailed, "git switch %s in the new worktree: exit %d: %s", p.Branch, o.Code, cleanup.OneLine(o.Stderr))
@@ -329,7 +320,7 @@ func (e Engine) readBack(rootGit, destGit cleanup.Git, p *Plan) (string, error) 
 	if rootRef != "refs/heads/"+p.Default {
 		bad = append(bad, fmt.Sprintf("the root is on %s, not %s", describeRef(rootRef), p.Default))
 	}
-	st, err := gitText(rootGit, readStatusArgs...)
+	st, err := rootGit.Text(cleanup.StatusArgs()...)
 	if err != nil {
 		return "", fmt.Errorf("the root's status: %w", err)
 	}

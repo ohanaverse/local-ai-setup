@@ -378,8 +378,8 @@ func TestPreflightForRootAcceptsPrimary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Preflight(%q): %v", tc.name, err)
 		}
-		if !plan.Detached || plan.Branch != "topic" || plan.DirName != tc.dir {
-			t.Errorf("Preflight(%q): detached %v, branch %q, dir %q", tc.name, plan.Detached, plan.Branch, plan.DirName)
+		if !plan.Detached() || plan.Branch != "topic" || plan.DirName != tc.dir {
+			t.Errorf("Preflight(%q): detached %v, branch %q, dir %q", tc.name, plan.Detached(), plan.Branch, plan.DirName)
 		}
 		if want := filepath.Join(cleanup.ResolvePath(f.Dir), ".worktrees", strings.ReplaceAll(tc.dir, "/", "-")); plan.DestPath != want {
 			t.Errorf("Preflight(%q): DestPath %q, want %q", tc.name, plan.DestPath, want)
@@ -422,7 +422,7 @@ func TestPreflightForRootCleanRootIsNotNothingToKeep(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ForRoot: %v", err)
 			}
-			if plan.HasDirt() || plan.Branch != "topic" || !plan.Detached {
+			if plan.HasDirt() || plan.Branch != "topic" || !plan.Detached() {
 				t.Errorf("plan %+v", plan)
 			}
 			if want := map[bool]int{true: 0, false: 1}[pushed]; plan.Counts.Commits != want {

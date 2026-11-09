@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -28,9 +27,7 @@ var (
 	removeNow = time.Now
 	// removeTTY says whether the y/N prompt can be asked: both its input and
 	// the stream it is written to are terminals.
-	removeTTY = func(in io.Reader, out io.Writer) bool {
-		return isTerminalStream(in) && isTerminalStream(out)
-	}
+	removeTTY = bothTerminals
 	// removeProcs is the live-process finder (a warning, never a refusal).
 	removeProcs = func() removal.ProcFinder { return removal.LsofFinder() }
 )
@@ -416,12 +413,7 @@ func promptRemove(ask io.Writer, answer io.Reader, items []plannedItem, runnable
 	if _, err := io.WriteString(ask, b.String()); err != nil {
 		return false
 	}
-	line, _ := bufio.NewReader(answer).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	}
-	return false
+	return confirmYN(answer)
 }
 
 // originCount is how many of the items that will run delete an origin branch.

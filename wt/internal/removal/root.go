@@ -28,20 +28,15 @@ const (
 	StageSwitch          = "switch"
 )
 
-// Settings the two root writes (the reset and the switch) carry as -c
-// options. Hooks off: a hook is arbitrary code, and the reset fires
+// rootStatusIgnored makes status list a wholly ignored directory as one
+// "dir/" entry, which the dir-level ignored checks rely on.
+const rootStatusIgnored = "--ignored=matching"
+
+// The two root writes (the reset and the switch) carry cleanup.WriteConfig()
+// as -c options. Hooks off: a hook is arbitrary code, and the reset fires
 // reference-transaction and post-index-change, the switch post-checkout too.
 // Submodule recursion off: a user's submodule.recurse=true would make the
 // reset and the switch move submodule checkouts as well.
-const (
-	rootHooksOff      = "core.hooksPath=/dev/null"
-	rootNoSubRecurse  = "submodule.recurse=false"
-	rootStatusIgnored = "--ignored=matching"
-)
-
-// rootStatusArgs read every uncommitted change of the root: untracked files
-// one by one and submodule changes whatever their ignore config says.
-var rootStatusArgs = []string{"status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none"}
 
 // rootRepoEnv are the variables that override which repository, index or
 // object store `git -C <root>` uses. ReleaseRoot refuses while any is set
@@ -175,11 +170,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		}
 	}
 	root := filepath.Clean(r.Root)
-	timeout := g.Timeout
-	if timeout == 0 {
-		timeout = DefaultRemoveTimeout
-	}
-	rg := cleanup.Git{Dir: root, Timeout: timeout, Config: append(slices.Clone(g.Config), "core.fsmonitor=false")}
+	rg := rootGit(g, root)
 
 	// 1. Inputs.
 	if why, err := checkReleaseInputs(rg, root, r.Default); err != nil {
@@ -226,7 +217,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		return refuse("the root has an assume-unchanged or skip-worktree index entry, which status cannot see; clear it first (git update-index --no-assume-unchanged / --no-skip-worktree)")
 	}
 	// 5. The record.
-	fold := cleanup.PathFold(rg)
+	fold := cleanup.PathFold(rg) // fresh: it guards the reset below
 	var rec *recordTree
 	if !r.NothingUncommitted {
 		head, err := gitText(rg, "rev-parse", "--verify", "HEAD^{commit}")
@@ -263,7 +254,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 	failWrite := func(stage string, err error) (ReleaseResult, error) {
 		return res, &ReleaseFailed{Stage: stage, Result: res, Uncertain: true, Err: err}
 	}
-	if err := gitWrite(rg, "-c", rootHooksOff, "-c", rootNoSubRecurse, "reset", "--hard", "HEAD"); err != nil {
+	if err := gitWrite(rg, slices.Concat(cleanup.WriteConfig(), []string{"reset", "--hard", "HEAD"})...); err != nil {
 		return failWrite(StageReset, err)
 	}
 	res.Reset = true
@@ -280,7 +271,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		return fail(StageVerifyClean, fmt.Errorf("the root still has changes after the reset: %s", statusPaths(st)))
 	}
 
-	if err := gitWrite(rg, "-c", rootHooksOff, "-c", rootNoSubRecurse, "switch", "--no-overwrite-ignore", r.Default); err != nil {
+	if err := gitWrite(rg, slices.Concat(cleanup.WriteConfig(), []string{"switch", "--no-overwrite-ignore", r.Default})...); err != nil {
 		return failWrite(StageSwitch, err)
 	}
 	if ref, err := gitText(rg, "symbolic-ref", "-q", "HEAD"); err != nil {
@@ -311,20 +302,12 @@ func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 	} else if o.Code != 0 {
 		return fmt.Sprintf("the default branch %s does not exist locally", def), nil
 	}
-	top, err := gitText(rg, "rev-parse", "--show-toplevel")
+	top, gitDir, common, err := rootIdentity(rg)
 	if err != nil {
 		return "", err
 	}
 	if cleanup.ResolvePath(top) != cleanup.ResolvePath(root) {
 		return fmt.Sprintf("%s is not the top of a checkout (%s is)", root, top), nil
-	}
-	gitDir, err := gitText(rg, "rev-parse", "--path-format=absolute", "--git-dir")
-	if err != nil {
-		return "", err
-	}
-	common, err := gitText(rg, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", err
 	}
 	if cleanup.ResolvePath(gitDir) != cleanup.ResolvePath(common) {
 		return fmt.Sprintf("%s is a linked worktree, not the primary checkout", root), nil
@@ -358,6 +341,30 @@ func checkReleaseInputs(rg cleanup.Git, root, def string) (string, error) {
 	return "", nil
 }
 
+// rootIdentity reads the root's top, git dir and common dir (all absolute) in
+// one rev-parse. Anything but exactly three non-empty lines at exit 0 (a path
+// holding a newline, a failure) falls back to the three separate reads, so
+// the result and the error are those of the single reads.
+func rootIdentity(rg cleanup.Git) (top, gitDir, common string, err error) {
+	o, err := runGit(rg, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
+	if err == nil && o.Code == 0 {
+		lines := strings.Split(strings.TrimSuffix(o.Stdout, "\n"), "\n")
+		if len(lines) == 3 && lines[0] != "" && lines[1] != "" && lines[2] != "" {
+			return strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]), strings.TrimSpace(lines[2]), nil
+		}
+	}
+	if top, err = gitText(rg, "rev-parse", "--show-toplevel"); err != nil {
+		return "", "", "", err
+	}
+	if gitDir, err = gitText(rg, "rev-parse", "--path-format=absolute", "--git-dir"); err != nil {
+		return "", "", "", err
+	}
+	if common, err = gitText(rg, "rev-parse", "--path-format=absolute", "--git-common-dir"); err != nil {
+		return "", "", "", err
+	}
+	return top, gitDir, common, nil
+}
+
 // sameUntracked returns why carried is not exactly the untracked paths of the
 // status st ("" when it is): each carried path must be relative, clean,
 // inside the root and naming no `.git` directory, named once, and listed by
@@ -370,7 +377,7 @@ func sameUntracked(st string, carried []string) string {
 	}
 	seen := map[string]bool{}
 	for _, p := range carried {
-		if why := unsafeRel(p); why != "" {
+		if why := cleanup.UnsafeRel(p); why != "" {
 			return fmt.Sprintf("the carried path %q %s", cleanup.OneLine(p), why)
 		}
 		if seen[p] {
@@ -418,8 +425,8 @@ func ignoredAtRisk(rg cleanup.Git, root string, fold func(string) string) (strin
 	if err != nil {
 		return "", err
 	}
-	tracked, trackedDirs := pathSets(append(head, index...), fold)
-	st, err := runGitZ(rg, append(slices.Clone(rootStatusArgs), rootStatusIgnored)...)
+	tracked, trackedDirs := cleanup.PathSets(append(head, index...), fold)
+	st, err := runGitZ(rg, append(cleanup.StatusArgs(), rootStatusIgnored)...)
 	if err != nil {
 		return "", err
 	}
@@ -428,15 +435,15 @@ func ignoredAtRisk(rg cleanup.Git, root string, fold func(string) string) (strin
 	for _, ig := range ignored {
 		name := strings.TrimSuffix(ig, "/")
 		key := fold(name)
-		if tracked[key] {
+		if tracked.Has(key) {
 			return fmt.Sprintf("the reset would overwrite the ignored %s, a path HEAD or the index tracks", cleanup.OneLine(name)), nil
 		}
 		for a := path.Dir(name); a != "."; a = path.Dir(a) {
-			if tracked[fold(a)] {
+			if tracked.Has(fold(a)) {
 				return fmt.Sprintf("the reset would delete the ignored %s: it is inside %s, which HEAD or the index tracks as a file", cleanup.OneLine(name), cleanup.OneLine(a)), nil
 			}
 		}
-		if trackedDirs[key] {
+		if trackedDirs.Has(key) {
 			if strings.HasSuffix(ig, "/") {
 				return fmt.Sprintf("the reset would write paths HEAD tracks inside the ignored directory %s, whose contents it does not know", cleanup.OneLine(name)), nil
 			}
@@ -454,29 +461,31 @@ func ignoredAtRisk(rg cleanup.Git, root string, fold func(string) string) (strin
 // cleanup.PathFold.
 // It only reads. An error is a failed read; the caller fails closed.
 func RootIgnoredAtRisk(g cleanup.Git, root string) (string, error) {
-	timeout := g.Timeout
-	if timeout == 0 {
-		timeout = DefaultRemoveTimeout
-	}
-	root = filepath.Clean(root)
-	rg := cleanup.Git{Dir: root, Timeout: timeout, Config: append(slices.Clone(g.Config), "core.fsmonitor=false")}
-	return ignoredAtRisk(rg, root, cleanup.PathFold(rg))
+	return RootIgnoredAtRiskFold(g, root, nil)
 }
 
-// pathSets returns the set of paths and the set of their ancestor
-// directories (slash-separated, relative), keyed by fold.
-func pathSets(paths []string, fold func(string) string) (files, dirs map[string]bool) {
-	files, dirs = map[string]bool{}, map[string]bool{}
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		files[fold(p)] = true
-		for d := path.Dir(p); d != "." && !dirs[fold(d)]; d = path.Dir(d) {
-			dirs[fold(d)] = true
-		}
+// RootIgnoredAtRiskFold is RootIgnoredAtRisk with the path-name comparison
+// already read by the caller (cleanup.FoldFor); nil reads it with
+// cleanup.PathFold.
+func RootIgnoredAtRiskFold(g cleanup.Git, root string, fold func(string) string) (string, error) {
+	root = filepath.Clean(root)
+	rg := rootGit(g, root)
+	if fold == nil {
+		fold = cleanup.PathFold(rg)
 	}
-	return files, dirs
+	return ignoredAtRisk(rg, root, fold)
+}
+
+// rootGit builds the git every root read and write runs through: Dir = the
+// cleaned root (never g.Dir), g's timeout (DefaultRemoveTimeout when zero) and
+// -c settings, then core.fsmonitor=false.
+func rootGit(g cleanup.Git, root string) cleanup.Git {
+	g.Dir = filepath.Clean(root)
+	if g.Timeout == 0 {
+		g.Timeout = DefaultRemoveTimeout
+	}
+	g.Env = nil
+	return cleanup.WithoutFSMonitor(g)
 }
 
 // changedPaths returns the paths of a `status --porcelain=v2 -z` listing's
@@ -598,27 +607,6 @@ func ignoredOnDisk(root string, ignored, changed []string) (string, error) {
 		}
 	}
 	return "", nil
-}
-
-// unsafeRel says why p cannot name a file inside the root (and outside any
-// .git directory of it, repository metadata rescue never carries), or "".
-// The rules are rescue's safeRel's.
-func unsafeRel(p string) string {
-	switch {
-	case p == "" || p == ".":
-		return "is empty"
-	case filepath.IsAbs(p) || strings.HasPrefix(p, "/"):
-		return "is absolute"
-	case filepath.Clean(p) != filepath.FromSlash(p) || strings.Contains(p, "\x00"):
-		return "is not a clean relative path"
-	case slices.Contains(strings.Split(filepath.ToSlash(p), "/"), ".."):
-		return "leaves the root"
-	case slices.ContainsFunc(strings.Split(filepath.ToSlash(p), "/"), func(c string) bool {
-		return strings.EqualFold(c, ".git")
-	}):
-		return "names a .git directory, which is repository metadata, never a carried file"
-	}
-	return ""
 }
 
 // entriesIn returns the paths of a `status --porcelain=v2 -z` listing's
@@ -768,13 +756,13 @@ func removeCarried(rg cleanup.Git, root string, carried []string, rec *recordTre
 	if err != nil {
 		return 0, fmt.Errorf("reading the index after the reset: %w", err)
 	}
-	tracked, trackedDirs := pathSets(index, fold)
+	tracked, trackedDirs := cleanup.PathSets(index, fold)
 	removed := 0
 	for _, p := range carried {
-		if why := unsafeRel(p); why != "" {
+		if why := cleanup.UnsafeRel(p); why != "" {
 			return removed, fmt.Errorf("the carried path %q %s", cleanup.OneLine(p), why)
 		}
-		if tracked[fold(p)] || trackedDirs[fold(p)] {
+		if tracked.Has(fold(p)) || trackedDirs.Has(fold(p)) {
 			continue // restored from HEAD by the reset: tracked, never removed
 		}
 		parts := strings.Split(p, "/")
@@ -791,7 +779,7 @@ func removeCarried(rg cleanup.Git, root string, carried []string, rec *recordTre
 				return removed, err
 			}
 			if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
-				if tracked[fold(rel)] {
+				if tracked.Has(fold(rel)) {
 					// The reset put the tracked file or symlink back in place
 					// of the directory the carried path was in.
 					gone = true
@@ -840,7 +828,7 @@ func kindOf(m fs.FileMode) string {
 
 // readRootStatus is the root's full status listing ("" when clean).
 func readRootStatus(rg cleanup.Git) (string, error) {
-	o, err := runGit(rg, rootStatusArgs...)
+	o, err := runGit(rg, cleanup.StatusArgs()...)
 	if err != nil {
 		return "", err
 	}
@@ -850,32 +838,24 @@ func readRootStatus(rg cleanup.Git) (string, error) {
 	return o.Stdout, nil
 }
 
-// runGitZ runs a read in the root and splits its NUL-separated output.
+// runGitZ runs a read in the root through the runGit seam and splits its
+// NUL-separated output.
 func runGitZ(rg cleanup.Git, args ...string) ([]string, error) {
 	o, err := runGit(rg, args...)
 	if err != nil {
 		return nil, err
 	}
-	if o.Code != 0 {
-		return nil, fmt.Errorf("git %s: exit %d: %s", args[0], o.Code, cleanup.OneLine(o.Stderr))
-	}
-	out := strings.Split(o.Stdout, "\x00")
-	if len(out) > 0 && out[len(out)-1] == "" {
-		out = out[:len(out)-1]
-	}
-	return out, nil
+	return cleanup.OutLines(o, args...)
 }
 
-// gitText runs a read in the root and returns its trimmed output.
+// gitText runs a read in the root through the runGit seam and returns its
+// trimmed output.
 func gitText(rg cleanup.Git, args ...string) (string, error) {
 	o, err := runGit(rg, args...)
 	if err != nil {
 		return "", err
 	}
-	if o.Code != 0 {
-		return "", fmt.Errorf("git %s: exit %d: %s", args[0], o.Code, cleanup.OneLine(o.Stderr))
-	}
-	return strings.TrimSpace(o.Stdout), nil
+	return cleanup.OutText(o, args...)
 }
 
 // gitWrite runs a write in the root; a timeout, a kill, a git that could not

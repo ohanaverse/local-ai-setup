@@ -62,7 +62,7 @@ func (r *runState) done(step string) { r.o.Completed = append(r.o.Completed, ste
 // where. A detached plan created no branch, so only the worktree is named.
 func (r *runState) keep(code, format string, a ...any) Outcome {
 	what := "the new worktree and branch were"
-	if r.p.Detached {
+	if r.p.Detached() {
 		what = "the new worktree was"
 	}
 	return r.fail(code, format+" (%s kept at %s)", append(a, what, r.dest)...)
@@ -79,7 +79,7 @@ func (r *runState) keep(code, format string, a ...any) Outcome {
 // runs ExecuteInto.
 func (e Engine) Execute(p *Plan) Outcome {
 	r := newRun(p)
-	if p.Detached {
+	if p.Detached() {
 		return r.fail(CodeCreateFailed, "a root plan is executed with ExecuteInto; nothing was created")
 	}
 	sg := sgit{dir: p.Source.Path}
@@ -295,7 +295,7 @@ func verify(sg, dg sgit, p *Plan, madeDirs []string) error {
 // a plan with no dirt that is a clean destination. It needs no run to have
 // happened and stores nothing.
 func (p *Plan) DestinationMatches(dest string) (string, error) {
-	st, err := sgit{dir: dest}.out(nil, statusArgs...)
+	st, err := sgit{dir: dest}.out(nil, cleanup.StatusArgs()...)
 	if err != nil {
 		return "", err
 	}
