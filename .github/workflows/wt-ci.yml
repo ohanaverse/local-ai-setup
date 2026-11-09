@@ -42,22 +42,45 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
-      # The packages that spawn goroutines or sleep, on a single P. A test that
-      # asserts on something a spawned goroutine did is ordered correctly only
-      # by luck of the runner's core count: the tui start flow's startModel
-      # call-count assertions passed on a many-core dev machine and failed on
-      # CI. macos-latest's core count is not ours to choose, so pin the worst
-      # case here instead of depending on it.
-      # Runs on every event, pull requests included: a core-count flake caught
-      # on a PR beats one found on main, and the subset costs far less than the
-      # suite above it. The git-heavy packages (removal, rescue, cleanup,
-      # rootmove) are the slow ones and do not depend on core count.
-      # Add a package here when a test in it waits on a goroutine.
-      # -count=1 is load-bearing: `go test`'s cache does not account for
-      # GOMAXPROCS (verified — a single-core run after a parallel one reports
-      # "(cached)"), so without it this step replays the step above and guards
-      # nothing.
-      - name: Single-P tests (goroutine-sensitive packages)
+      # No test may create the real config directories; see the script for
+      # why. Run right after the tests, before any later step could create
+      # them for its own reasons.
+      - name: Tests left the real config directories alone
+        run: ../bin/check-config-dirs-untouched
+
+  # The packages that spawn goroutines or sleep, on a single P. A test that
+  # asserts on something a spawned goroutine did is ordered correctly only
+  # by luck of the runner's core count: the tui start flow's startModel
+  # call-count assertions passed on a many-core dev machine and failed on
+  # CI. macos-latest's core count is not ours to choose, so pin the worst
+  # case here instead of depending on it.
+  # Its own job beside test (deliberately no needs:, so they run at once):
+  # at one P the pass is fully serial and slow on the runner, so as a step it
+  # adds its whole duration to PR wall clock, while as a job it adds only
+  # runner minutes. Runs on every event, pull requests included: a
+  # core-count flake caught on a PR beats one found on main. The git-heavy
+  # packages (removal, rescue, cleanup, rootmove) are the slow ones and do
+  # not depend on core count. Add a package here when a test in it waits on
+  # a goroutine.
+  # -count=1 is load-bearing: `go test`'s cache does not account for
+  # GOMAXPROCS (verified — a single-core run after a parallel one reports
+  # "(cached)"), and setup-go restores that cache across jobs and runs, so
+  # without it this job replays the multi-P run from cache and guards
+  # nothing.
+  single-p:
+    name: Single-P tests (goroutine-sensitive packages)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: wt
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.7"
+          # See the test job for why this is set explicitly.
+          cache-dependency-path: wt/go.sum
+      - name: GOMAXPROCS=1 go test (goroutine-sensitive packages)
         run: >-
           GOMAXPROCS=1 go test -count=1
           ./cmd/wt
@@ -75,8 +98,7 @@ jobs:
           ./internal/spend
           ./internal/survey
           ./internal/usage
-      # No test may create the real config directories; see the script for
-      # why. Run right after the tests, before any later step could create
-      # them for its own reasons.
+      # This job runs tests too, so it carries the same guard as test's last
+      # step — two jobs, two runner VMs, two config homes to keep untouched.
       - name: Tests left the real config directories alone
         run: ../bin/check-config-dirs-untouched
