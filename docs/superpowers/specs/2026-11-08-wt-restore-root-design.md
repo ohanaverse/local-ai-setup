@@ -1,6 +1,6 @@
 # `wt restore-root`: move the root's branch into a worktree and put the root back on the default branch — Design
 
-**Status:** draft (2026-11-08). Issue #522. Written from the issue, the rescue engine (#529, #542, #547, #550) and the root-claim code, with no interview: the user asked for a draft straight from the issue. Every decision below is therefore **my call**, marked `[call]`, for the user to confirm or overturn. Nothing is built.
+**Status:** approved by the user for planning (2026-11-08). Issue #522. Written from the issue, the rescue engine (#529, #542, #547, #550) and the root-claim code. The five open questions of the first draft are answered (see "Decisions"): the user confirmed all five as drafted. Anything still marked `[call]` is my call, not yet confirmed. Nothing is built.
 
 All paths are relative to `wt/` unless they start with `docs/`.
 
@@ -27,11 +27,11 @@ Work sometimes starts directly in the repository root, leaving it on a branch ot
 
 ## Non-goals
 
-- A detached root. There is no branch to keep (the issue says refuse). `[call]` v1 refuses and names `git switch -c <name>` first. A rescue-style `rescued/` branch for a detached root is a later option.
+- A detached root. There is no branch to keep (the issue says refuse). **The user's decision:** v1 refuses and names `git switch -c <name>` first. A rescue-style `rescued/` branch for a detached root is a later option.
 - A root already on the default branch (nothing to do; exit 0 with that message).
 - Carrying ignored files (they stay in the root, as in `wt rescue`; the count is shown).
 - Anything the rescue engine already refuses (see "Refusals"). Lifting those is `wt rescue`'s job, and both commands improve together.
-- A TUI row/key. `[call]` v1 is a command plus a hint line; a `wt cleanup` list key can follow.
+- A TUI row/key. **The user's decision:** v1 is a command plus a hint line; a `wt cleanup` list key can follow.
 - Pruning records (#543).
 - Stashing as a fallback. `git stash` is a shared stack and loses untracked/mode fidelity; the verified copy plus the record is the safer carrier.
 
@@ -44,7 +44,7 @@ Work sometimes starts directly in the repository root, leaving it on a branch ot
 
 ## Decisions (all `[call]`)
 
-1. **Command:** `wt restore-root [--to DIR-NAME] [--dry-run] [--yes] [--json] [--no-fetch]`, run from anywhere in the repository (like `--root`, it finds the primary checkout). `[call]` the name; `wt root restore` and `wt rescue --root` are the alternatives. A new command because `rescue` creates a *new* branch and leaves the source untouched, while this moves the *same* branch and changes the root.
+1. **Command (the user's):** `wt restore-root [--to DIR-NAME] [--dry-run] [--yes] [--json] [--no-fetch]`, run from anywhere in the repository (like `--root`, it finds the primary checkout). The user chose this name over `wt root restore` and `wt rescue --root`. A new command because `rescue` creates a *new* branch and leaves the source untouched, while this moves the *same* branch and changes the root.
 2. **Same branch moves, via a detached first step.** Git will not check one branch out in two worktrees, so the order is: (a) add the new worktree **detached** at the branch's HEAD, (b) carry and verify the uncommitted work into it with the rescue engine, (c) write the record, (d) release the root, (e) switch the new worktree onto the branch. The root is untouched until (d).
 3. **The destructive step (d) lives in `internal/removal`**, which owns deletion, behind its own guard tests; `internal/rescue` and `internal/cleanup` stay deletion-free. A new package `internal/rootmove` composes: rescue's `Preflight`/carry/verify/record, then removal's `ReleaseRoot`, then the final switch and fast-forward.
 4. **Reuse rescue's refusals unchanged**, plus the root-specific ones below. `[call]` the destination can reach the same object database, so a stronger carrier (check out W's tree, `read-tree` I) could lift rescue's "path both staged and modified" refusal. Deliberately not done in v1: it would be a second carrier to prove. Recorded as a follow-up.
@@ -67,7 +67,7 @@ If there is **nothing uncommitted**, steps (b)-(c) are skipped: the move is just
 
 1. `git worktree add --detach <dest> <branch HEAD>` with hooks off (`CreateAt` gains a detached variant; branch-creating callers unchanged).
 2. Carry and verify the uncommitted work into `<dest>` with the rescue engine's existing copy and `verify` (status byte-for-byte equal, every path equal in kind, mode, content and link target).
-3. Write the record `refs/wt/rescued/<id>` exactly as `wt rescue` does (create-only `update-ref`, after re-taking the root fingerprint). `[call]` the move **requires** the record: if it cannot be written, step 4 does not run and the command reports `failed` with the new worktree kept. (`wt rescue` treats a missing record as a warning; here the record is what makes the next step safe.) With nothing uncommitted there is no record and no step 4 work.
+3. Write the record `refs/wt/rescued/<id>` exactly as `wt rescue` does (create-only `update-ref`, after re-taking the root fingerprint). **The user's decision:** the move **requires** the record: if it cannot be written, step 4 does not run and the command reports `failed` with the new worktree kept. (`wt rescue` treats a missing record as a warning; here the record is what makes the next step safe.) With nothing uncommitted there is no record and no step 4 work.
 4. **Release the root** (`removal.ReleaseRoot`), only if all three hold: the verified copy exists, the record ref exists, and the root fingerprint equals the one the copy was verified against (nothing changed since). It runs `git reset --hard HEAD` and removes **exactly the untracked paths the copy carried** (never `clean -x`, never a wildcard), then `git switch <default>`. If the fingerprint differs, it stops before touching anything: `failed`, code `source_changed_while_copying`, both places kept.
 5. In `<dest>`, `git switch <branch>` (the branch is free now). The branch's upstream and config are unchanged because the branch ref never moved.
 6. In the root, fast-forward `<default>` to `origin/<default>` with `git merge --ff-only` when `default_ff`; otherwise leave it and say why. Never a merge, never `--force`.
@@ -101,14 +101,14 @@ The window between that last check and `git reset --hard` is not zero, as in #55
 
 ## Surfacing
 
-- The shared-root menu (`c`/`w`/`q`) and the root gate in `cmd/wt/rootgate.go` print, when the root is on a non-default branch, one added line: ``run `wt restore-root` to move it and put the root back on <default>``. Text only, no new key. `[call]`
+- The shared-root menu (`c`/`w`/`q`) and the root gate in `cmd/wt/rootgate.go` print, when the root is on a non-default branch, one added line: ``run `wt restore-root` to move it and put the root back on <default>``. Text only, no new key (the user's decision).
 - `docs/guides/08-maintenance-and-troubleshooting.md` §9 and `wt/docs/wt-cleanup.md` get a short pointer; `wt/CLAUDE.md` replaces the "#522 reuses the engine" bullet with the real description.
 
 ## Constraints
 
 - Fail closed: any git/IO error, unexpected state or limit hit refuses before step 1, or stops at the step it occurs in with the table above.
 - Hooks off during `worktree add` (as rescue); a `post-checkout` hook warning is shown.
-- The command never fetches under `--dry-run`/`--no-fetch`; a real run fetches `origin` once, read-only (it rewrites remote-tracking refs only). `[call]`
+- The command never fetches under `--dry-run`/`--no-fetch`; a real run fetches `origin` once, read-only (it rewrites remote-tracking refs only) (the user's decision).
 - The destructive step is the only deletion; it is in `internal/removal`, covered by that package's deletion guard (extend its allow-list by one named function) and by a new test that fails if `ReleaseRoot` runs without a verified copy, a record or an unchanged fingerprint.
 - Ad-hoc `wt` runs against a scratch registry need `WT_LITELLM_CONFIG` as usual (this command touches no registry, but the test harness sets it).
 
@@ -133,10 +133,12 @@ Real scratch repos throughout, as in the rescue and removal tests:
 - Wording of messages, and the exact `--json` field names beyond those listed.
 - How the fetch is done (reuse `cleanup`'s fetch helper).
 
-## Open questions for the user (my calls to confirm)
+## Decisions confirmed by the user (2026-11-08)
 
-1. Command name: `wt restore-root` vs `wt root restore` vs `wt rescue --root`.
-2. A detached root: refuse (v1) vs offer a `rescued/` branch.
-3. Requiring the record for the move (the release step discards the root's dirt, so I made the record mandatory, unlike `wt rescue`).
-4. Fetching `origin` on a real run before the fast-forward, vs never fetching and fast-forwarding only to the last-fetched `origin/<default>`.
-5. Surfacing only as a hint line now, or also as a `wt cleanup` list key in the same PR.
+1. Command name `wt restore-root`.
+2. A detached root is refused in v1.
+3. The record is required before the root is released.
+4. A real run fetches `origin` once before the fast-forward; `--dry-run` and `--no-fetch` never fetch.
+5. Surfacing in v1 is the hint line only; a `wt cleanup` list key can follow.
+
+Still my calls (unconfirmed): refusing when the default branch is checked out in a linked worktree; the `internal/rootmove` package and `removal.ReleaseRoot` split; deferring a stronger carrier that would lift rescue's "path both staged and modified" refusal.
