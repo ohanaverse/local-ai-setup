@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
 
 // rescueOnce runs Preflight and Execute for the worktree at src and returns
@@ -955,4 +957,371 @@ func TestExecuteRecordIgnoresAFailingReferenceTransactionHook(t *testing.T) {
 	if got := gitIn(t, p, "rev-parse", o.Record.Ref); got != o.Record.Commit {
 		t.Errorf("ref points at %s, want %s", got, o.Record.Commit)
 	}
+}
+
+// fileMode is the permission bits of path (not following a link).
+func fileMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Mode().Perm()
+}
+
+// registered says git lists dest as a worktree of the repository at dir.
+func registered(t *testing.T, dir, dest string) bool {
+	t.Helper()
+	want := "worktree " + cleanup.ResolvePath(dest)
+	for _, l := range strings.Split(gitIn(t, dir, "worktree", "list", "--porcelain"), "\n") {
+		if l == want {
+			return true
+		}
+	}
+	return false
+}
+
+// recordWarnings are the record_not_written warnings of o.
+func recordWarnings(o Outcome) []string {
+	var got []string
+	for _, w := range o.Plan.Warnings {
+		if strings.HasPrefix(w, RecordWarningPrefix) {
+			got = append(got, w)
+		}
+	}
+	return got
+}
+
+// TestExecuteIntoCarriesVerifiesAndRecords checks root mode end to end up to
+// the record: a dirty root's plan carried by ExecuteInto into a detached
+// worktree made by CreateDetachedAt is moved, the destination's status is
+// byte-equal to the root's, modes are kept, a Record is written, Completed
+// lists the carry, verify and record steps but no "created branch" step, the
+// destination stays detached and the root is unchanged. Why: `wt restore-root`
+// creates the destination itself (the branch already exists in the root), so
+// rescue must carry, verify and record into a worktree it did not create,
+// with the same proof `wt rescue` gives.
+func TestExecuteIntoCarriesVerifiesAndRecords(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnTopic()
+	f.dirtyRoot()
+	eng, plan, dest := f.rootInto()
+	before := snapshot(t, f.Dir)
+
+	o := eng.ExecuteInto(plan, dest)
+
+	if o.Status != StatusMoved {
+		t.Fatalf("status %s (%s): %s", o.Status, o.Code, o.Reason)
+	}
+	if o.Record == nil {
+		t.Fatalf("no record; warnings %q", o.Plan.Warnings)
+	}
+	if got := gitIn(t, f.Dir, "rev-parse", o.Record.Ref); got != o.Record.Commit {
+		t.Errorf("record ref points at %s, want %s", got, o.Record.Commit)
+	}
+	if got := trailer(t, f.Dir, o.Record.Commit, "Wt-Dest-Branch"); got != "topic" {
+		t.Errorf("Wt-Dest-Branch = %q, want topic", got)
+	}
+	if got := trailer(t, f.Dir, o.Record.Commit, "Wt-Dest-Path"); got != dest {
+		t.Errorf("Wt-Dest-Path = %q, want %q", got, dest)
+	}
+	got, err := sgit{dir: dest}.out(nil, statusArgs...)
+	if err != nil || string(got) != before.status {
+		t.Errorf("destination status differs (err %v):\n%q\n%q", err, got, before.status)
+	}
+	for _, rel := range []string{"work.txt", "run.sh"} {
+		if m := fileMode(t, filepath.Join(dest, rel)); m != 0o755 {
+			t.Errorf("%s has mode %o, want 755", rel, m)
+		}
+	}
+	if out, err := execGit(dest, "symbolic-ref", "-q", "HEAD").CombinedOutput(); err == nil {
+		t.Errorf("the destination is on a branch (%s), want detached", out)
+	}
+	if !o.Created || o.Plan.DestPath != dest {
+		t.Errorf("Created %v, DestPath %q, want true and %q", o.Created, o.Plan.DestPath, dest)
+	}
+	want := []string{"carried staged changes", "carried unstaged changes", "copied 2 untracked files", "verified status and file contents against the source", "recorded the source at " + o.Record.Ref}
+	if strings.Join(o.Completed, "|") != strings.Join(want, "|") {
+		t.Errorf("Completed = %q, want %q", o.Completed, want)
+	}
+	if d := before.diff(snapshot(t, f.Dir)); d != "" {
+		t.Errorf("the root changed (%s)", d)
+	}
+	if got := f.git("symbolic-ref", "HEAD"); got != "refs/heads/topic" {
+		t.Errorf("the root is on %s", got)
+	}
+}
+
+// TestExecuteIntoFailureRows checks each way ExecuteInto stops short or
+// loses only the record: (a) a carry failure is failed/carry_failed, (b) a
+// root edit during the copy is failed/source_changed_while_copying, (c) a
+// record ref that cannot be created (a ref-path conflict made in
+// beforeRecordRef) is moved with one record_not_written warning and no
+// Record, (d) a destination edit after verify is moved with no warning and a
+// record (the engine verified what it carried and does not re-read), and
+// DestinationMatches then names the edit. Each keeps the destination
+// registered and leaves the root as it was (in (b), as the session left it).
+// Why: rootmove's recovery table rows 2, 3 and 7 rest on exactly these
+// outcomes; a failure that removed the destination or touched the root, or a
+// moved outcome hiding a missing record, would break the release's proof.
+func TestExecuteIntoFailureRows(t *testing.T) {
+	cases := []struct {
+		name   string
+		arm    func(f *fixture, p *Plan, dest string, expect *snap)
+		status Status
+		code   string
+		record bool
+		check  func(t *testing.T, f *fixture, p *Plan, dest string, o Outcome)
+	}{
+		{"carry failure", func(f *fixture, p *Plan, dest string, expect *snap) {
+			p.untracked = append(p.untracked, "ghost.txt") // vanished after the check
+		}, StatusFailed, CodeCarryFailed, false, func(t *testing.T, f *fixture, p *Plan, dest string, o Outcome) {
+			if !strings.Contains(o.Reason, "(the new worktree was kept at "+dest+")") {
+				t.Errorf("reason %q does not keep the new worktree at %s", o.Reason, dest)
+			}
+		}},
+		{"root edited while copying", func(f *fixture, p *Plan, dest string, expect *snap) {
+			afterCarry = func(*Plan) {
+				f.write(f.Dir, "README", "a session edited this")
+				*expect = snapshot(f.t, f.Dir)
+			}
+		}, StatusFailed, CodeSourceChangedMid, false, func(t *testing.T, f *fixture, p *Plan, dest string, o Outcome) {
+			if !strings.Contains(o.Reason, dest) {
+				t.Errorf("reason %q does not name %s", o.Reason, dest)
+			}
+		}},
+		{"record ref cannot be created", func(f *fixture, p *Plan, dest string, expect *snap) {
+			beforeRecordRef = func(*Plan) {
+				// refs/wt/rescued as a ref blocks every ref below it.
+				f.git("update-ref", "refs/wt/rescued", f.git("rev-parse", "HEAD"))
+			}
+		}, StatusMoved, "", false, func(t *testing.T, f *fixture, p *Plan, dest string, o Outcome) {
+			if w := recordWarnings(o); len(w) != 1 {
+				t.Errorf("record warnings %q, want one", w)
+			}
+			if got := f.git("for-each-ref", "refs/wt/rescued/"); got != "" {
+				t.Errorf("record refs: %s", got)
+			}
+		}},
+		{"destination edited after verify", func(f *fixture, p *Plan, dest string, expect *snap) {
+			afterVerify = func(*Plan) { f.write(dest, "README", "edited in the destination") }
+		}, StatusMoved, "", true, func(t *testing.T, f *fixture, p *Plan, dest string, o Outcome) {
+			if w := recordWarnings(o); len(w) != 0 {
+				t.Errorf("record warnings %q, want none", w)
+			}
+			d, err := p.DestinationMatches(dest)
+			if err != nil || !strings.Contains(d, "README") {
+				t.Errorf("DestinationMatches = %q, %v; want the README edit named", d, err)
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Cleanup(func() {
+				afterCarry, afterVerify, beforeRecordRef = func(*Plan) {}, func(*Plan) {}, func(*Plan) {}
+			})
+			f := newFixture(t)
+			f.rootOnTopic()
+			f.dirtyRoot()
+			eng, plan, dest := f.rootInto()
+			expect := snapshot(t, f.Dir)
+			c.arm(f, plan, dest, &expect)
+
+			o := eng.ExecuteInto(plan, dest)
+
+			if o.Status != c.status || o.Code != c.code || (o.Record != nil) != c.record {
+				t.Fatalf("outcome %s/%s record %v, want %s/%s record %v: %s", o.Status, o.Code, o.Record, c.status, c.code, c.record, o.Reason)
+			}
+			if !o.Created || o.Plan.DestPath != dest {
+				t.Errorf("Created %v, DestPath %q", o.Created, o.Plan.DestPath)
+			}
+			if _, err := os.Stat(dest); err != nil || !registered(t, f.Dir, dest) {
+				t.Errorf("the destination was not kept: %v", err)
+			}
+			if d := expect.diff(snapshot(t, f.Dir)); d != "" {
+				t.Errorf("the root changed (%s)", d)
+			}
+			c.check(t, f, plan, dest, o)
+		})
+	}
+}
+
+// TestPlanDestinationMatches checks DestinationMatches is "" for a
+// destination ExecuteInto just verified and names a difference after a
+// content edit, an extra untracked file and a restage there; and that a
+// plan with no dirt is "" against an untouched detached worktree and
+// non-empty once that worktree has a new file. Why: rootmove's read-back
+// re-asks this exact comparison after the release and the switch, and a
+// clean root (no copy) still needs a clean destination asserted.
+func TestPlanDestinationMatches(t *testing.T) {
+	edits := []struct {
+		name string
+		edit func(f *fixture, dest string)
+	}{
+		{"none", func(*fixture, string) {}},
+		{"content edit", func(f *fixture, dest string) { f.write(dest, "staged.txt", "changed") }},
+		{"extra untracked file", func(f *fixture, dest string) { f.write(dest, "extra.txt", "x") }},
+		{"restage", func(f *fixture, dest string) { gitIn(f.t, dest, "add", "README") }},
+	}
+	for _, e := range edits {
+		t.Run(e.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.rootOnTopic()
+			f.dirtyRoot()
+			eng, plan, dest := f.rootInto()
+			if o := eng.ExecuteInto(plan, dest); o.Status != StatusMoved {
+				t.Fatalf("status %s (%s): %s", o.Status, o.Code, o.Reason)
+			}
+			e.edit(f, dest)
+			d, err := plan.DestinationMatches(dest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (d == "") != (e.name == "none") {
+				t.Errorf("DestinationMatches = %q", d)
+			}
+		})
+	}
+	t.Run("no dirt", func(t *testing.T) {
+		f := newFixture(t)
+		f.rootOnTopic()
+		_, plan, dest := f.rootInto()
+		if plan.HasDirt() {
+			t.Fatalf("plan has dirt: %+v", plan.Counts)
+		}
+		if d, err := plan.DestinationMatches(dest); err != nil || d != "" {
+			t.Errorf("untouched: DestinationMatches = %q, %v", d, err)
+		}
+		f.write(dest, "new.txt", "n")
+		if d, err := plan.DestinationMatches(dest); err != nil || d == "" {
+			t.Errorf("with a new file: DestinationMatches = %q, %v; want a difference", d, err)
+		}
+	})
+}
+
+// TestExecuteRefusesADetachedPlan checks Execute given a root-mode plan
+// fails with create_failed, says to use ExecuteInto and creates nothing (no
+// directory, no ref, no worktree). Why: Execute creates a new branch, which
+// a root plan names as the root's existing one; it must never get as far as
+// git worktree add with it.
+func TestExecuteRefusesADetachedPlan(t *testing.T) {
+	f := newFixture(t)
+	f.rootOnTopic()
+	f.dirtyRoot()
+	eng, row := f.rootEngine()
+	plan, err := eng.Preflight(row, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, world := snapshot(t, f.Dir), f.world()
+
+	o := eng.Execute(plan)
+
+	if o.Status != StatusFailed || o.Code != CodeCreateFailed || o.Created || o.BranchKept {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if !strings.Contains(o.Reason, "a root plan is executed with ExecuteInto") {
+		t.Errorf("reason %q", o.Reason)
+	}
+	if _, err := os.Lstat(plan.DestPath); err == nil {
+		t.Errorf("%s was created", plan.DestPath)
+	}
+	if w := f.world(); w != world {
+		t.Errorf("refs or worktrees changed:\n%s\n--\n%s", world, w)
+	}
+	if d := before.diff(snapshot(t, f.Dir)); d != "" {
+		t.Errorf("the root changed (%s)", d)
+	}
+}
+
+// TestExecuteUnchangedForWorktrees checks a worktree rescue through the split
+// Execute still starts Completed with the "created branch" step and still
+// keeps "the new worktree and branch" on a carry failure. Why: Execute became
+// start re-check + CreateAt + the shared carry; `wt rescue`'s observable
+// output must not change (the rest of this file covers the rest of it).
+func TestExecuteUnchangedForWorktrees(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.Commit(p, "work.txt", "work", "work")
+	f.write(p, "u.txt", "untracked")
+	_, o := rescueOnce(t, f, p)
+	if o.Status != StatusMoved || len(o.Completed) == 0 || !strings.HasPrefix(o.Completed[0], "created branch rescued/topic and its worktree at ") {
+		t.Fatalf("outcome = %+v", o)
+	}
+
+	g := newFixture(t)
+	q := g.Worktree("topic")
+	g.Commit(q, "work.txt", "work", "work")
+	g.write(q, "u.txt", "untracked")
+	eng, find := g.engine(g.Dir)
+	plan, err := eng.Preflight(find(q), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.untracked = append(plan.untracked, "ghost.txt")
+	o = eng.Execute(plan)
+	if o.Code != CodeCarryFailed || !strings.HasSuffix(o.Reason, "(the new worktree and branch were kept at "+o.Plan.DestPath+")") {
+		t.Fatalf("outcome = %+v", o)
+	}
+}
+
+// TestExecuteIntoWithWorktreesDirNotIgnored records what root mode does
+// today when the repository does not ignore .worktrees/, where the
+// destination is created inside the root: (1) a dirty root whose plan was
+// made before the destination existed; (2) a clean root, read with
+// SourceUnchanged once the destination exists (the no-copy release path);
+// (3) a root that already holds another linked worktree under .worktrees/,
+// at Preflight. It asserts the behavior observed, not a wanted one. Why: an
+// open design risk for PR B: the destination's directory shows up in the
+// root's own status, so the source no longer reads as it did when checked.
+func TestExecuteIntoWithWorktreesDirNotIgnored(t *testing.T) {
+	t.Run("dirty root", func(t *testing.T) {
+		f := newFixtureExcluding(t, false)
+		f.rootOnTopic()
+		f.write(f.Dir, "README", "edited")
+		eng, plan, dest := f.rootInto()
+		// The new worktree is an untracked directory of the root now.
+		if d, err := plan.SourceUnchanged(); err != nil || d != "the status" {
+			t.Errorf("SourceUnchanged after CreateDetachedAt = %q, %v", d, err)
+		}
+
+		o := eng.ExecuteInto(plan, dest)
+
+		// Observed: the after-copy fingerprint sees ".worktrees/topic/" as a
+		// new untracked entry, so the copy is reported stale and kept.
+		if o.Status != StatusFailed || o.Code != CodeSourceChangedMid || !strings.Contains(o.Reason, "the status") {
+			t.Errorf("outcome %s/%s: %s", o.Status, o.Code, o.Reason)
+		}
+		if o.Record != nil {
+			t.Errorf("record written: %+v", o.Record)
+		}
+		if _, err := os.Stat(dest); err != nil {
+			t.Errorf("destination not kept: %v", err)
+		}
+	})
+	t.Run("clean root", func(t *testing.T) {
+		f := newFixtureExcluding(t, false)
+		f.rootOnTopic()
+		_, plan, _ := f.rootInto()
+		// Observed: the no-copy path's unchanged-fingerprint proof fails too.
+		if d, err := plan.SourceUnchanged(); err != nil || d != "the status" {
+			t.Errorf("SourceUnchanged = %q, %v", d, err)
+		}
+	})
+	t.Run("another worktree under .worktrees", func(t *testing.T) {
+		f := newFixtureExcluding(t, false)
+		f.Worktree("other")
+		f.rootOnTopic()
+		f.write(f.Dir, "README", "edited")
+		eng, row := f.rootEngine()
+
+		plan, err := eng.Preflight(row, "")
+
+		// Observed: Preflight refuses; the linked worktree reads as a nested
+		// repository among the root's untracked files.
+		var r *Refusal
+		if !errors.As(err, &r) || r.Code != CodeNestedRepo {
+			t.Errorf("Preflight = %+v, %v; want nested_repo", plan, err)
+		}
+	})
 }
