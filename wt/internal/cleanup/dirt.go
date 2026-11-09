@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -66,6 +67,28 @@ func dirtRunner(wg Git) dirtsnap.Runner {
 // empty directories. A change of only those still reads as covered.
 func dirtCovered(wg Git, w WorktreeFact, r RescueRecord) bool {
 	return len(dirtCoveredRecords(wg, w, []RescueRecord{r})) > 0
+}
+
+// RecordCoversDirt reports whether the rescue record named by recordRef
+// covers the index and working tree of the checkout at root, whose HEAD is
+// head: the same check preservedOf applies to a linked worktree, which it
+// skips for the primary checkout. It only reads. A record that is not listed
+// or a failed read is false with the error; a state the record does not cover
+// is false with a nil error.
+func RecordCoversDirt(g Git, root, head, recordRef string) (bool, error) {
+	recs, err := ListRecords(g)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range recs {
+		if r.Ref != recordRef {
+			continue
+		}
+		wg := Git{Dir: root, Timeout: g.Timeout}
+		w := WorktreeFact{Path: root, Head: head}
+		return len(dirtCoveredRecords(wg, w, []RescueRecord{r})) > 0, nil
+	}
+	return false, fmt.Errorf("rescue record %s is not listed", recordRef)
 }
 
 // dirtCoveredRecords keeps, in order, the records of rs dirtCovered accepts.
