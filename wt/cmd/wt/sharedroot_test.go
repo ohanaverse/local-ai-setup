@@ -556,3 +556,22 @@ func TestConfirmNewWorktreeDoesNotRecordAReusedWorktree(t *testing.T) {
 		t.Errorf("Recorded() = %+v; a reused worktree is not this launch's creation", rec)
 	}
 }
+
+// TestSharedRootMenuPrintsTheHint checks the shared-root menu printed by the
+// launch without the picker carries the restore-root hint once, before the
+// choose prompt, when the root is on a non-default branch.
+func TestSharedRootMenuPrintsTheHint(t *testing.T) {
+	root := sharedRootRepo(t)
+	setOriginDefault(t, root)
+	cgit(t, root, "switch", "-c", "topic")
+	liveOtherClaim(t, root, "codex")
+	var out bytes.Buffer
+	_, _, err := confirmSharedRoot(root, "claude", false, strings.NewReader("q"), &out, true)
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("err = %v; want errCancelled", err)
+	}
+	s := out.String()
+	if strings.Count(s, restoreRootHint) != 1 || strings.Index(s, restoreRootHint) > strings.Index(s, "choose [c/w/q]") {
+		t.Errorf("menu %q; want the hint once, before the prompt", s)
+	}
+}
