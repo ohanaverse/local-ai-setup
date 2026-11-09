@@ -48,7 +48,9 @@ var fileOpAllowed = map[string]allowedFileOps{
 
 // fileOpNever are files no allow-list entry may cover: the read-only cleanup
 // classifier and its command, and the copy-only rescue engine and its command (TestCleanupCmdContainsNoDeletion holds the same
-// line with a substring scan).
+// line with a substring scan). The one reset of a checkout in the module is
+// internal/removal's ReleaseRoot (TestRootMutationFunctionsAreExactlyTheAllowList,
+// TestHardResetExistsNowhereOutsideRemoval); this scan skips that package.
 func fileOpNever(rel string) bool {
 	return strings.HasPrefix(rel, "internal/cleanup/") ||
 		strings.HasPrefix(rel, "internal/rescue/") ||
