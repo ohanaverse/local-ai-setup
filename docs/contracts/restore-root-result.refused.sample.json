@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "outcome": "refused",
+  "code": "default_in_worktree",
+  "reason": "the default branch main is checked out in /Users/me/repo/.worktrees/main, so the root cannot switch to it; switch that worktree away from it first",
+  "created": false,
+  "completed": [],
+  "warnings": []
+}

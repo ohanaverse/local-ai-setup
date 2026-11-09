@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": true,
+  "outcome": "would_move",
+  "created": false,
+  "branch": "feature-x",
+  "default": "main",
+  "dest_path": "/Users/me/repo/.worktrees/feature-x",
+  "default_ff": true,
+  "carried": {
+    "commits": 2,
+    "staged": 1,
+    "unstaged": 3,
+    "untracked": 4,
+    "untracked_bytes": 1234
+  },
+  "left_behind": {
+    "ignored_entries": 2
+  },
+  "completed": [],
+  "warnings": [
+    "dry run: nothing was fetched, so remote-tracking refs (and what counts as unpushed or merged) are as of the last fetch"
+  ]
+}
