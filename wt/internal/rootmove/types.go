@@ -73,8 +73,11 @@ type Plan struct {
 	// FFNote says why not when it is false.
 	DefaultFF bool
 	FFNote    string
-	Counts    rescue.Counts
-	Warnings  []string
+	// FFBenign says the note is not a problem (the default is already at
+	// origin), so Execute logs it as a step, not a warning.
+	FFBenign bool
+	Counts   rescue.Counts
+	Warnings []string
 
 	rp        *rescue.Plan // the root-mode rescue plan Execute copies with
 	skipStart bool         // see SkipStartRecheck

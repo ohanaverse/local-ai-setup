@@ -135,7 +135,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 			cleanup.OneLine(hit), cleanup.OneLine(def))
 	}
 
-	ff, note := defaultFF(rg, def)
+	ff, note, benign := defaultFF(rg, def)
 	return &Plan{
 		Repo:      rp.Repo,
 		Branch:    rp.Branch,
@@ -145,6 +145,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		DestPath:  rp.DestPath,
 		DefaultFF: ff,
 		FFNote:    note,
+		FFBenign:  benign,
 		Counts:    rp.Counts,
 		Warnings:  slices.Clone(rp.Warnings),
 		rp:        rp,
@@ -228,24 +229,24 @@ func foldOf(rg cleanup.Git) func(string) string {
 // defaultFF says whether origin/<def> is a strict descendant of the local
 // def, so a fast-forward would move def forward without a merge; when it is
 // not, the note says why. It never refuses: a failed read is "not known".
-func defaultFF(rg cleanup.Git, def string) (bool, string) {
+func defaultFF(rg cleanup.Git, def string) (ok bool, note string, benign bool) {
 	d := cleanup.OneLine(def)
 	local, err := gitText(rg, "rev-parse", "--verify", "--quiet", "refs/heads/"+def+"^{commit}")
 	if err != nil {
-		return false, fmt.Sprintf("could not read %s (%v), so it is not fast-forwarded", d, err)
+		return false, fmt.Sprintf("could not read %s (%v), so it is not fast-forwarded", d, err), false
 	}
 	o, err := rg.Run("rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+def+"^{commit}")
 	switch {
 	case err != nil:
-		return false, fmt.Sprintf("could not read origin/%s (%v), so %s is not fast-forwarded", d, err, d)
+		return false, fmt.Sprintf("could not read origin/%s (%v), so %s is not fast-forwarded", d, err, d), false
 	case o.Code == 1:
-		return false, fmt.Sprintf("origin/%s does not exist, so there is nothing to fast-forward %s to", d, d)
+		return false, fmt.Sprintf("origin/%s does not exist, so there is nothing to fast-forward %s to", d, d), false
 	case o.Code != 0:
-		return false, fmt.Sprintf("could not read origin/%s (exit %d), so %s is not fast-forwarded", d, o.Code, d)
+		return false, fmt.Sprintf("could not read origin/%s (exit %d), so %s is not fast-forwarded", d, o.Code, d), false
 	}
 	remote := strings.TrimSpace(o.Stdout)
 	if local == remote {
-		return false, fmt.Sprintf("%s is already at origin/%s", d, d)
+		return false, fmt.Sprintf("%s is already at origin/%s", d, d), true
 	}
 	isAncestor := func(a, b string) (bool, error) {
 		o, err := rg.Run("merge-base", "--is-ancestor", a, b)
@@ -262,19 +263,19 @@ func defaultFF(rg cleanup.Git, def string) (bool, string) {
 	}
 	behind, err := isAncestor(local, remote)
 	if err != nil {
-		return false, fmt.Sprintf("could not compare %s with origin/%s (%v), so it is not fast-forwarded", d, d, err)
+		return false, fmt.Sprintf("could not compare %s with origin/%s (%v), so it is not fast-forwarded", d, d, err), false
 	}
 	if behind {
-		return true, ""
+		return true, "", false
 	}
 	ahead, err := isAncestor(remote, local)
 	switch {
 	case err != nil:
-		return false, fmt.Sprintf("could not compare %s with origin/%s (%v), so it is not fast-forwarded", d, d, err)
+		return false, fmt.Sprintf("could not compare %s with origin/%s (%v), so it is not fast-forwarded", d, d, err), false
 	case ahead:
-		return false, fmt.Sprintf("%s is ahead of origin/%s (it has commits origin does not), so it is not fast-forwarded", d, d)
+		return false, fmt.Sprintf("%s is ahead of origin/%s (it has commits origin does not), so it is not fast-forwarded", d, d), false
 	}
-	return false, fmt.Sprintf("%s and origin/%s have diverged; no merge is made, so it is not fast-forwarded", d, d)
+	return false, fmt.Sprintf("%s and origin/%s have diverged; no merge is made, so it is not fast-forwarded", d, d), false
 }
 
 // hasCommit says whether ref resolves to a commit; a git failure other than

@@ -2,6 +2,7 @@ package rootmove
 
 import (
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
@@ -19,19 +20,23 @@ var ffConfig = []string{"-c", "core.hooksPath=/dev/null"}
 //
 // A merge has no no-overwrite-ignore flag, so the files the fast-forward
 // would change are first intersected with the ignored files in the root
-// (compared case-folded when core.ignorecase is on); any hit skips it.
+// (compared case-folded when core.ignorecase is on), counting an ignored file
+// at a parent prefix of a changed path too; any hit skips it.
 func (e Engine) fastForward(rootGit cleanup.Git, r *run) {
 	p := r.p
 	warn := func(format string, a ...any) {
 		r.o.Plan.Warnings = append(r.o.Plan.Warnings, fmt.Sprintf(format, a...))
 	}
-	d := cleanup.OneLine(p.Default)
 	if !p.DefaultFF {
-		if p.FFNote != "" {
+		switch {
+		case p.FFBenign:
+			r.done(p.FFNote)
+		case p.FFNote != "":
 			warn("%s", p.FFNote)
 		}
 		return
 	}
+	d := cleanup.OneLine(p.Default)
 	remote := "refs/remotes/origin/" + p.Default
 	changed, err := nulList(rootGit, "diff", "--name-only", "-z", "HEAD", remote)
 	if err != nil {
@@ -49,9 +54,15 @@ func (e Engine) fastForward(rootGit cleanup.Git, r *run) {
 		inIgnored[fold(ig)] = ig
 	}
 	var hits []string
+	// A changed path collides with an ignored file at the path itself or at
+	// any parent prefix (an ignored file `sub` where origin adds `sub/f`:
+	// merge would replace the file by a directory).
 	for _, c := range changed {
-		if ig, ok := inIgnored[fold(c)]; ok {
-			hits = append(hits, ig)
+		for q := c; q != "." && q != "/" && q != ""; q = path.Dir(q) {
+			if ig, ok := inIgnored[fold(q)]; ok {
+				hits = append(hits, ig)
+				break
+			}
 		}
 	}
 	if len(hits) > 0 {

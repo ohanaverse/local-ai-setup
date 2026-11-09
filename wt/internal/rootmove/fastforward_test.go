@@ -1,7 +1,9 @@
 package rootmove
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -134,54 +136,118 @@ func TestExecuteFastForwardMergeFails(t *testing.T) {
 	}
 }
 
+// caseInsensitiveFS says whether the test's temp directory folds case.
+func caseInsensitiveFS(t *testing.T) bool {
+	t.Helper()
+	d := t.TempDir()
+	if err := os.WriteFile(filepath.Join(d, "probe"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := os.Stat(filepath.Join(d, "PROBE"))
+	return err == nil
+}
+
 // TestExecuteFastForwardIgnoredCollision puts an ignored file in the root at
-// a path the fast-forward would add, with exact and case-differing names.
-// The fast-forward must be skipped with a warning, the file's content kept,
-// and the status stay moved. Why: git merge has no no-overwrite-ignore flag
-// and would overwrite the ignored file (the root switch is the one that has
-// it); on a case-insensitive setting a name differing only in case collides.
+// a path the fast-forward would add, with exact and case-differing names, or
+// at a parent of an added path (an ignored file `sub` where origin adds
+// `sub/f`, or `a/b` where it adds `a/b/c/d`). The fast-forward must be
+// skipped with a warning naming the ignored file, its content kept, the tip
+// not advanced, status moved. With ignorecase off and a case-differing name
+// the outcome depends on the filesystem, so it is asserted either way
+// without claiming an ignored-file collision. Why: git merge has no
+// no-overwrite-ignore flag and silently replaces an ignored file by a
+// directory or overwrites it.
 func TestExecuteFastForwardIgnoredCollision(t *testing.T) {
 	cases := []struct {
 		name       string
 		ignorecase bool
-		file       string
+		ignored    string   // the ignored file in the root
+		upstream   []string // files origin adds
 		skipped    bool
 	}{
-		{"exact", false, "upstream-0.txt", true},
-		{"case differs, ignorecase on", true, "UPSTREAM-0.txt", true},
-		{"case differs, ignorecase off", false, "UPSTREAM-0.txt", false},
+		{"exact", false, "upstream-0.txt", []string{"upstream-0.txt"}, true},
+		{"case differs, ignorecase on", true, "UPSTREAM-0.txt", []string{"upstream-0.txt"}, true},
+		{"case differs, ignorecase off", false, "UPSTREAM-0.txt", []string{"upstream-0.txt"}, false},
+		{"ignored file is a parent", false, "sub", []string{"sub/f"}, true},
+		{"ignored file is a deeper parent", false, "a/b", []string{"a/b/c/d"}, true},
+		{"ignored parent, case differs, ignorecase on", true, "SUB", []string{"sub/f"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t)
 			f.onBranch("topic")
-			f.originAhead(1)
-			f.exclude(c.file)
-			f.write(f.Dir, c.file, "precious")
-			if c.ignorecase {
-				f.git("config", "core.ignorecase", "true")
-			} else {
-				f.git("config", "core.ignorecase", "false")
+			other := filepath.Join(t.TempDir(), "other")
+			if b, err := exec.Command("git", "clone", "-q", f.Origin, other).CombinedOutput(); err != nil {
+				t.Fatalf("clone: %v\n%s", err, b)
 			}
+			gitIn(t, other, "config", "user.email", "o@example.com")
+			gitIn(t, other, "config", "user.name", "O")
+			gitIn(t, other, "config", "commit.gpgsign", "false")
+			for _, u := range c.upstream {
+				f.write(other, u, "u")
+				gitIn(t, other, "add", u)
+			}
+			gitIn(t, other, "commit", "-m", "upstream")
+			gitIn(t, other, "push", "-q", "origin", "HEAD:main")
+			f.git("fetch", "-q", "origin")
+			f.exclude(c.ignored)
+			f.write(f.Dir, c.ignored, "precious")
+			f.git("config", "core.ignorecase", fmt.Sprint(c.ignorecase))
 			eng := f.engine()
 			p, err := eng.Preflight("")
 			if err != nil {
 				t.Fatalf("Preflight: %v", err)
 			}
+			before := rev(f.Dir, "refs/heads/main")
 			o := eng.Execute(p)
 			wantStatus(t, o, rescue.StatusMoved, "")
-			if c.skipped {
-				if o.FastForwarded || !hasWarning(o, "ignored", c.file) {
+			switch {
+			case c.skipped:
+				if o.FastForwarded || !hasWarning(o, "ignored file", c.ignored) {
 					t.Errorf("FastForwarded %v, warnings %q; want skipped with an ignored-file warning", o.FastForwarded, o.Plan.Warnings)
 				}
-				if got := rev(f.Dir, "refs/heads/main"); got == rev(f.Dir, "refs/remotes/origin/main") {
-					t.Errorf("main was fast-forwarded")
+				if got := rev(f.Dir, "refs/heads/main"); got != before {
+					t.Errorf("main advanced to %s", got)
+				}
+			case caseInsensitiveFS(t):
+				// git refuses to overwrite the untracked name: a merge-failure warning.
+				if o.FastForwarded || !hasWarning(o, "merge --ff-only") || hasWarning(o, "ignored file") {
+					t.Errorf("FastForwarded %v, warnings %q; want a plain merge-failure warning", o.FastForwarded, o.Plan.Warnings)
+				}
+			default:
+				if !o.FastForwarded {
+					t.Errorf("FastForwarded false, warnings %q; want it to fast-forward on a case-sensitive filesystem", o.Plan.Warnings)
 				}
 			}
-			b, err := os.ReadFile(filepath.Join(f.Dir, c.file))
+			b, err := os.ReadFile(filepath.Join(f.Dir, c.ignored))
 			if err != nil || string(b) != "precious" {
 				t.Errorf("ignored file = %q, %v; want it intact", b, err)
 			}
 		})
+	}
+}
+
+// TestExecuteFastForwardAlreadyAtOrigin moves a root whose default already
+// equals origin's. Nothing is fast-forwarded and nothing is wrong, so the
+// note is a step in Completed and not a warning. Why: a benign state must
+// not train users to ignore warnings.
+func TestExecuteFastForwardAlreadyAtOrigin(t *testing.T) {
+	f := newFixture(t)
+	f.onBranch("topic")
+	eng := f.engine()
+	p, err := eng.Preflight("")
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	o := eng.Execute(p)
+	wantStatus(t, o, rescue.StatusMoved, "")
+	if o.FastForwarded {
+		t.Errorf("FastForwarded = true, want false")
+	}
+	if hasWarning(o, "already at") {
+		t.Errorf("warnings %q, want no already-at note", o.Plan.Warnings)
+	}
+	if !slices.ContainsFunc(o.Completed, func(s string) bool { return strings.Contains(s, "already at origin") }) {
+		t.Errorf("Completed = %q, want a step saying main is already at origin", o.Completed)
 	}
 }
