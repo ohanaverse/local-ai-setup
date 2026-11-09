@@ -28,6 +28,27 @@
 
 ### Added
 
+- `wt restore-root [--to DIR-NAME] [--dry-run] [--yes] [--json] [--no-fetch]`
+  moves the branch the repository's root has checked out, with its staged,
+  unstaged and untracked work, into a new worktree under `.worktrees/` and puts
+  the root back on the default branch (the same branch, not a copy; the
+  default is fast-forwarded to `origin/<default>` only when that is a strict
+  descendant, never by a merge). The work is carried and verified by the
+  `wt rescue` engine and a record `refs/wt/rescued/<id>` is written before the
+  root is reset, so every failure leaves the work reachable and says where.
+  It refuses, creating nothing, a detached root, a root already on the
+  default branch (exit 0), a default branch checked out elsewhere, a root held
+  by another live `wt` session, a repository that does not ignore
+  `.worktrees/`, an ignored file the move would overwrite, assume-unchanged or
+  skip-worktree entries (so a sparse checkout) and every state `wt rescue`
+  refuses. Exit 0 moved (or would move, or already on the default), 1 could
+  not start, 2 refused or failed, 3 approval missing. New contract
+  `docs/contracts/restore-root-result.*`. Cost: one fetch of every remote
+  (none with `--dry-run` or `--no-fetch`) and one extra fingerprint at the
+  release. The shared-root menu and the confirmation print a hint pointing at
+  it when the root is on a non-default branch. `wt rescue` of the primary
+  checkout still refuses, now naming `wt restore-root`. See
+  `docs/wt-cleanup.md`.
 - `wt rescue` leaves a record after a verified copy: the ref
   `refs/wt/rescued/<id>` in the source's repository, holding the source's
   commits and its working state (staged, unstaged and untracked non-ignored

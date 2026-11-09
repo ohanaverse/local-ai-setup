@@ -670,6 +670,15 @@ wt rescue spike                        # asks y/N; the new branch is rescued/spi
 
 In the list, press `r` on the row. The new branch starts at the original's exact HEAD, so every commit comes with it, and staged, unstaged and untracked files are carried and checked against the original before it says they moved. It refuses (and creates nothing) for a rebase or merge in progress, a file both staged and modified, a nested git repository and the other cases in [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md#wt-rescue-keep-work-before-it-is-lost). The rescue never removes the original, but it leaves a record (`refs/wt/rescued/<id>`, printed as a `record:` line) that holds its commits and the working state, and `wt cleanup` reads it. A *clean* original (no staged, unstaged or untracked changes) whose commits the record keeps lists as proven with evidence `rescued` and the reason `preserved`, and `wt remove <path> --yes` removes it and its own branch with no other approval. An original with uncommitted changes whose index and working tree still equal the record lists as less sure with the same reason, and `wt remove <path> --accept-loss` removes it (no `--force`; it is re-checked right before removal, and the preview says where the changes are kept). Edit it after the rescue and it lists as having work that exists nowhere else again. Not kept even then: ignored files, file modes beyond the executable bit and empty directories. Ignored files, an open or unknown PR and a branch based on a local default keep their usual effect. To see how a worktree reads right now, run `wt cleanup --plain` (or `--json`) and look at its group, evidence and reasons. If a rescue fails after the new worktree exists, that worktree is kept and its path printed.
 
+**Work that started in the repository root.** `wt rescue` does not take the primary checkout. When the root itself is on a branch other than the default, `wt restore-root` moves that same branch and its uncommitted work into a worktree under `.worktrees/` and puts the root back on the default branch:
+
+```bash
+wt restore-root --dry-run   # what would move and what stays in the root; changes nothing, fetches nothing
+wt restore-root             # asks y/N; --yes when there is no terminal
+```
+
+It verifies a copy and writes a rescue record before the root is reset, and a failure part-way says where the root, the new worktree and the work are. It refuses a detached root, a root held by another live `wt` session and a repository that does not ignore `.worktrees/`, among other cases. Reference, refusal codes and recovery: [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md#wt-restore-root-move-the-roots-branch-into-a-worktree).
+
 ## Verification
 
 Everything this guide promises reduces to the TL;DR block being green — no destructive simulation is needed to verify it, and none was used. On the healthy 2026-08-29 stack, the block's verbatim output is pasted in TL;DR above; re-running it must reproduce: `401` on :4000, `200` on the two backend ports, five launchd rows with live PIDs (Ollama's row legitimately shows `-`), `accepting connections`, `PONG`.

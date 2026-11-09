@@ -10,7 +10,7 @@ components — fresh install starts at
 | `llmbench/` | benchmarks (throughput, agent, eval) and the provider isolation they need (`llmbench` CLI) |
 | `agent-utilities/` | read-only stdlib-Python helpers for specific coding agents (`claude-utilities/`: transcript and OTel speed estimates); run manually |
 | `modeltiers/` | advisory capability tiers for the models wt lists, from public benchmark sources (`modeltiers` CLI) |
-| `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims); `wt cleanup`, `wt remove` and `wt rescue` retire worktrees and branches ([reference](wt/docs/wt-cleanup.md), [guide 08 §9](docs/guides/08-maintenance-and-troubleshooting.md)) |
+| `wt/` | worktree agent launcher with model rotation (`wt` binary + `*-wt` shims); `wt cleanup`, `wt remove` and `wt rescue` retire worktrees and branches, and `wt restore-root` moves the root's branch into a worktree ([reference](wt/docs/wt-cleanup.md), [guide 08 §9](docs/guides/08-maintenance-and-troubleshooting.md)) |
 
 ## User guides (docs/guides/)
 
@@ -27,7 +27,7 @@ The how-to lives in the guides now; this README is just the index. Read
 | [`05-benchmarks.md`](docs/guides/05-benchmarks.md) | safe isolated llmbench runs |
 | [`06-wt-agents-and-models.md`](docs/guides/06-wt-agents-and-models.md) | pick worktree/agent/model, then launch |
 | [`07-usage-and-spend.md`](docs/guides/07-usage-and-spend.md) | reconcile wt launches vs LiteLLM spend |
-| [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades, cleaning up worktrees and branches (`wt cleanup`, `wt remove`, `wt rescue`, §9) |
+| [`08-maintenance-and-troubleshooting.md`](docs/guides/08-maintenance-and-troubleshooting.md) | health checks, restarts, log triage, upgrades, cleaning up worktrees and branches (`wt cleanup`, `wt remove`, `wt rescue`, `wt restore-root`, §9) |
 | [`09-agent-benchmarks.md`](docs/guides/09-agent-benchmarks.md) | agentic coding benchmark (`llmbench agent`) |
 | [`10-mlx-lm-quantization.md`](docs/guides/10-mlx-lm-quantization.md) | local mlx-lm quantization + `mlx_lm_server` speculative decoding |
 | [`11-capability-eval-benchmark.md`](docs/guides/11-capability-eval-benchmark.md) | cross-category capability benchmark (`llmbench eval`) |
