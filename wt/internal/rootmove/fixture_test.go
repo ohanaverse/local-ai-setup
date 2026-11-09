@@ -192,17 +192,21 @@ func (f *fixture) rootState() string {
 	for _, e := range ents {
 		names = append(names, e.Name())
 	}
+	// Every read runs with GIT_OPTIONAL_LOCKS=0: a status that refreshed the
+	// stat cache would rewrite the raw index this snapshot compares.
 	soft := func(args ...string) string {
-		b, _ := exec.Command("git", append([]string{"-C", f.Dir}, args...)...).CombinedOutput()
+		cmd := exec.Command("git", append([]string{"-C", f.Dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+		b, _ := cmd.CombinedOutput()
 		return string(b)
 	}
 	raw := "absent"
-	if b, err := os.ReadFile(filepath.Join(f.git("rev-parse", "--path-format=absolute", "--git-dir"), "index")); err == nil {
+	if b, err := os.ReadFile(filepath.Join(strings.TrimSpace(soft("rev-parse", "--path-format=absolute", "--git-dir")), "index")); err == nil {
 		raw = string(b)
 	}
 	return strings.Join([]string{
-		f.git("for-each-ref"),
-		f.git("worktree", "list", "--porcelain"),
+		soft("for-each-ref"),
+		soft("worktree", "list", "--porcelain"),
 		strings.Join(names, ","),
 		soft("symbolic-ref", "-q", "HEAD"),
 		soft("rev-parse", "-q", "--verify", "HEAD"),

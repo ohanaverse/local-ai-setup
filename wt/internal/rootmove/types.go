@@ -31,6 +31,12 @@ const (
 	CodeRecordNotWritten    = "record_not_written"
 	CodeWorktreesNotIgnored = "worktrees_not_ignored"
 	CodeHiddenIndex         = rescue.CodeHiddenIndex
+	// CodeReleaseFailed: removal.ReleaseRoot stopped after a write (a
+	// *removal.ReleaseFailed); CodeSwitchFailed: the new worktree could not
+	// be switched onto the branch (step 5). A read-back mismatch (step 7) is
+	// rescue's CodeVerifyFailed.
+	CodeReleaseFailed = "release_failed"
+	CodeSwitchFailed  = "switch_failed"
 )
 
 // Engine moves one repository's root. Rescue is the root-mode rescue engine
@@ -70,10 +76,13 @@ type Plan struct {
 	Counts    rescue.Counts
 	Warnings  []string
 
-	rp *rescue.Plan // the root-mode rescue plan Execute copies with
+	rp        *rescue.Plan // the root-mode rescue plan Execute copies with
+	skipStart bool         // see SkipStartRecheck
 }
 
 // SkipStartRecheck tells Execute that nothing happened between Preflight and
 // it that gave the root time to change (no prompt was shown); see
 // rescue.Plan.SkipStartRecheck.
-func (p *Plan) SkipStartRecheck() { p.rp.SkipStartRecheck() }
+// Execute then skips its start-of-run fingerprint and claim re-checks; the
+// checks after the copy and before the release still run.
+func (p *Plan) SkipStartRecheck() { p.skipStart = true; p.rp.SkipStartRecheck() }
