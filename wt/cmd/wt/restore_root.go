@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -109,7 +110,7 @@ func restoreRootArgs(cmd *cobra.Command, f restoreRootFlags, args []string) erro
 }
 
 // checkRestoreRootTo refuses a --to that names no usable directory: empty
-// or only whitespace, "." or "..", or .git or .worktrees in any case (the
+// or only whitespace, with leading or trailing whitespace, "." or "..", or .git or .worktrees in any case (the
 // repository's own metadata or the worktrees directory itself). A usage
 // error, like rescue's bad --min-age: nothing is read or created.
 func checkRestoreRootTo(to string) error {
@@ -117,6 +118,8 @@ func checkRestoreRootTo(to string) error {
 	switch {
 	case name == "":
 		return errors.New("--to names the new worktree's directory and must not be empty or only whitespace")
+	case name != to:
+		return fmt.Errorf("--to %q has leading or trailing whitespace, which would become part of the directory name", to)
 	case name == "." || name == "..":
 		return fmt.Errorf("--to %q is not a directory name", name)
 	case strings.EqualFold(name, ".git"), strings.EqualFold(name, ".worktrees"):
@@ -202,12 +205,14 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 	// From here on a signal must not end the process part-way through the
 	// move: it is remembered and reported after the result. The prompt above
 	// stays interruptible.
-	release := holdSignals()
+	// The hold lasts until the result and the interrupted line are written,
+	// so a signal then cannot cut the output short.
+	received, release := holdSignals()
+	defer release()
 	afterRestoreRootConfirm()
 	o := eng.Execute(plan)
-	got := release()
 	err = writeRestoreRootResult(out, errOut, f.json, meta, o)
-	if len(got) > 0 {
+	if got := received(); len(got) > 0 {
 		fmt.Fprintf(errOut, "interrupted (signal %v): the move was not stopped; see the result above\n", got[0])
 	}
 	return err
@@ -218,20 +223,20 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 var heldSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP}
 
 // holdSignals catches heldSignals on a buffered channel, so one that
-// arrives is remembered rather than lost or fatal, until release is called;
-// release stops the catching (signal.Stop on this channel only: other
-// handlers in the process, a test's included, are left alone, which
-// signal.Reset would not do) and returns the signals received, first first.
+// arrives is remembered rather than lost or fatal, until release is called.
+// received returns the signals caught so far, first first (it may be called
+// before release). release stops the catching (signal.Stop on this channel
+// only: other handlers in the process, a test's included, are left alone,
+// which signal.Reset would not do); it is safe to call more than once.
 // As in the cleanup list's removal run (internal/tui forwardSignals), only
 // wt is held: a git child in the terminal's foreground process group still
 // gets a Ctrl-C, and its failure then stops the move at that step with the
 // recovery text printed. SIGKILL cannot be held.
-func holdSignals() (release func() []os.Signal) {
+func holdSignals() (received func() []os.Signal, release func()) {
 	ch := make(chan os.Signal, 8)
 	signal.Notify(ch, heldSignals...)
-	return func() []os.Signal {
-		signal.Stop(ch)
-		var got []os.Signal
+	var got []os.Signal
+	received = func() []os.Signal {
 		for {
 			select {
 			case s := <-ch:
@@ -241,6 +246,9 @@ func holdSignals() (release func() []os.Signal) {
 			}
 		}
 	}
+	var once sync.Once
+	release = func() { once.Do(func() { signal.Stop(ch) }) }
+	return received, release
 }
 
 // fetchFailedNote is the warning for a real run whose fetch of any remote

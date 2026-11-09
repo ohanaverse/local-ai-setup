@@ -899,7 +899,8 @@ func TestRestoreRootCmdWarnsOnAFailedFetch(t *testing.T) {
 
 // TestRestoreRootCmdRejectsBadToNames checks --to refuses, as a usage error
 // (exit 1, the error document under --json, nothing created), a name that is
-// empty or only whitespace, "." or "..", or .git or .worktrees in any case.
+// empty or only whitespace, with leading or trailing whitespace, "." or "..",
+// or .git or .worktrees in any case.
 // Why: such a name made a directory literally called " " or
 // .worktrees/.worktrees, or would aim at the repository's own metadata.
 func TestRestoreRootCmdRejectsBadToNames(t *testing.T) {
@@ -907,7 +908,7 @@ func TestRestoreRootCmdRejectsBadToNames(t *testing.T) {
 	dir := cleanupRepo(t)
 	rootOnTopic(t, dir)
 	world, before := repoWorld(t, dir), rootState(t, dir)
-	for _, name := range []string{"", " ", "\t", ".", "..", ".git", ".GIT", ".worktrees", ".Worktrees", " .git "} {
+	for _, name := range []string{"", " ", "\t", ".", "..", ".git", ".GIT", ".worktrees", ".Worktrees", " .git ", " spike", "spike ", "\tspike", "spike\n"} {
 		stdout, _, err := runRestoreRoot(t, a, dir, "", "--to", name, "--yes", "--json", "--no-fetch")
 		if exitOf(err) != 1 {
 			t.Errorf("--to %q: exit %d\n%s", name, exitOf(err), stdout)
@@ -964,5 +965,63 @@ func TestRestoreRootCmdSignalDuringTheMoveDoesNotStopIt(t *testing.T) {
 	}
 	if rootBranch(t, dir) != "main" {
 		t.Errorf("root on %s", rootBranch(t, dir))
+	}
+}
+
+// signalOnWrite is a writer that sends SIGINT to the process on its first
+// write and waits until guard has it, then keeps the bytes.
+type signalOnWrite struct {
+	t     *testing.T
+	guard chan os.Signal
+	sent  bool
+	buf   bytes.Buffer
+}
+
+func (w *signalOnWrite) Write(p []byte) (int, error) {
+	if !w.sent {
+		w.sent = true
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			w.t.Fatal(err)
+		}
+		select {
+		case <-w.guard:
+		case <-time.After(5 * time.Second):
+			w.t.Fatal("SIGINT was not delivered")
+		}
+	}
+	return w.buf.Write(p)
+}
+
+// TestRestoreRootCmdSignalWhileWritingTheResultIsHeld sends SIGINT while the
+// result is being written to stdout: the signal is still held (and reported
+// after the result), so the output is complete. The test keeps its own
+// SIGINT handler so the test binary survives either way. Why: released
+// before the write, a signal then would end wt with the result cut short.
+func TestRestoreRootCmdSignalWhileWritingTheResultIsHeld(t *testing.T) {
+	guard := make(chan os.Signal, 1)
+	signal.Notify(guard, syscall.SIGINT)
+	t.Cleanup(func() { signal.Stop(guard) })
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	t.Chdir(dir)
+	cmd := restoreRootCmd(a)
+	out := &signalOnWrite{t: t, guard: guard}
+	var errOut bytes.Buffer
+	cmd.SetOut(out)
+	cmd.SetErr(&errOut)
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetArgs([]string{"--yes", "--json", "--no-fetch"})
+
+	err := cmd.Execute()
+
+	if exitOf(err) != 0 {
+		t.Fatalf("exit %d (%v)\n%s", exitOf(err), err, out.buf.String())
+	}
+	if env := decodeRestoreRoot(t, out.buf.String()); env.Outcome != "moved" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if strings.Count(errOut.String(), "interrupted (signal interrupt)") != 1 {
+		t.Errorf("stderr = %q, want the interrupted line once", errOut.String())
 	}
 }
