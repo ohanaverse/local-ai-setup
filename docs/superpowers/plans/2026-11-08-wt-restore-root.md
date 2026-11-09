@@ -303,6 +303,39 @@ Failure modes no task would otherwise exercise, most likely first (each has its 
 
 ---
 
+## Review rulings (2026-11-09)
+After `/code-review --fix` on the whole branch (PR #556):
+- **The fast-forward no longer destroys an ignored file.** The check
+  enumerated ignored paths in file form (`git ls-files --others --ignored
+  --exclude-standard` reports `build/x.o`, never `build/`) and matched only
+  exact paths and ancestor prefixes, so an ignored path *under* a changed
+  path was invisible: a root holding an ignored `build/x.o` and an upstream
+  adding a tracked file `build` had `git merge --ff-only` replace the
+  directory with the file and exit 0, the ignored content gone and no
+  warning. The step now also records the directories holding an ignored file
+  and skips the fast-forward when a changed path is one of them. This
+  restores the constraint above ("Ignored files are never overwritten or
+  removed ... the fast-forward is skipped ... when it would touch an ignored
+  path"), which the code did not honor; the warning says "overwrite or
+  remove".
+- **The fast-forward runs with submodule recursion off**
+  (`-c submodule.recurse=false`), like the root's reset and switch and the
+  destination switch. `merge` honors `submodule.recurse` on some git
+  versions, and a merge that moves a submodule's checkout inside the root is
+  a write the release path refuses everywhere else.
+- **One case-folding rule, not two.** `core.ignorecase` folding was
+  implemented twice (`rootmove.foldOf`, `removal.pathFold`); it is now one
+  exported `cleanup.PathFold(g Git)` used by both gates, so a later change
+  to the rule cannot leave the two comparing names differently.
+- **Left as it is: "origin/<default> does not exist" is a warning, not a
+  benign note.** It reads like the "already at origin" case, which the spec
+  (Output) names as the one benign note, a step in `completed`. But the spec
+  names exactly one benign case and this is a different condition (the
+  remote branch is absent, so there is nothing to fast-forward to), and
+  `fastforward_test.go`'s "no remote branch" case pins it as a warning.
+  Changing it would change what the command says on a repository with no
+  origin branch, so the spec is read as written and the code is left alone.
+
 ## Self-review
 
 - **Spec coverage:** Preflight 1-7 (Task 6, with rescue's refusals via Task 2); Execute 1-7 and the recovery table (Tasks 7a, 7b; rows 2-3 via the `executeInto` seam and Task 3's own seams); detached `CreateAt` variant (Task 1); rescue seams for primary source, no branch creation and a required record (Tasks 2, 3, 7a); release guard of verified copy, record and unchanged fingerprint, ending in cleanup's covered check (Tasks 4, 5); destructive function in `internal/removal` with the guard (Task 5); refusal codes (Tasks 6, 8); `--dry-run/--yes/--json/--no-fetch`, exit codes, prompt (Task 9); contract, samples and contract test (Task 8); hint line (Task 10); docs (Task 11); nothing-uncommitted path (Tasks 2, 5, 7a); fast-forward only strict, `--ff-only` (Tasks 6, 7b); acceptance (Task 12); the post-checkout warning in text and JSON (Tasks 6, 7a, 9, 12); `--to` and the hint on the built binary (Task 12). Deferred per spec: stronger carrier, detached-root `rescued/` branch, TUI key, record pruning (#543).

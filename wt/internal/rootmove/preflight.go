@@ -190,7 +190,7 @@ func ignoredDefaultTracks(rg cleanup.Git, def string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fold := foldOf(rg)
+	fold := cleanup.PathFold(rg)
 	files := map[string]bool{}
 	dirs := map[string]bool{}
 	for _, p := range tracked {
@@ -211,19 +211,6 @@ func ignoredDefaultTracks(rg cleanup.Git, def string) (string, error) {
 		}
 	}
 	return "", nil
-}
-
-// foldOf is how the root's git compares path names: unchanged when
-// core.ignorecase is false or unset, else case-folded (also when the setting
-// cannot be read: folding only finds more collisions).
-func foldOf(rg cleanup.Git) func(string) string {
-	if o, err := rg.Run("config", "--get", "--type=bool", "core.ignorecase"); err == nil {
-		v := strings.TrimSpace(o.Stdout)
-		if (o.Code == 0 && v == "false") || (o.Code == 1 && v == "") {
-			return func(s string) string { return s }
-		}
-	}
-	return func(s string) string { return strings.ToLower(strings.ToUpper(s)) }
 }
 
 // defaultFF says whether origin/<def> is a strict descendant of the local

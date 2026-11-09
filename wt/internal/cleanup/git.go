@@ -49,6 +49,29 @@ func NonInteractive(dir string) []string {
 	return append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 }
 
+// PathFold returns how the git in dir compares path names: unchanged, or
+// case-folded when core.ignorecase is true. A config that cannot be read, or
+// reads as anything but a clean "unset" or a boolean, folds (fail closed:
+// folding only finds more conflicts). The fold is Unicode simple case folding
+// (upper then lower, so EqualFold-equal names share a key). It does not
+// normalize NFD/NFC: a caller that must compare names on disk asks the
+// filesystem.
+func PathFold(g Git) func(string) string {
+	ignoreCase := true
+	if o, err := g.Run("config", "--get", "--type=bool", "core.ignorecase"); err == nil {
+		switch v := strings.TrimSpace(o.Stdout); {
+		case o.Code == 0 && v == "false":
+			ignoreCase = false
+		case o.Code == 1 && v == "":
+			ignoreCase = false // unset: git's default is false
+		}
+	}
+	if !ignoreCase {
+		return func(s string) string { return s }
+	}
+	return func(s string) string { return strings.ToLower(strings.ToUpper(s)) }
+}
+
 // Out is a finished git process: its output and exit code.
 type Out struct {
 	Stdout string

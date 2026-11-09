@@ -9,9 +9,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 )
 
-// ffConfig are the -c settings of the fast-forward: hooks off, as every other
-// git step that changes a checkout.
-var ffConfig = []string{"-c", "core.hooksPath=/dev/null"}
+// ffConfig are the -c settings of the fast-forward: hooks off and no
+// submodule recursion, as every other git step that changes a checkout.
+var ffConfig = []string{"-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false"}
 
 // fastForward is step 6: in the root (now on the default branch), `merge
 // --ff-only` of origin/<Default>, only when Preflight found it a strict
@@ -48,15 +48,28 @@ func (e Engine) fastForward(rootGit cleanup.Git, r *run) {
 		warn("%s was not fast-forwarded: could not list the ignored files: %v", d, err)
 		return
 	}
-	fold := foldOf(rootGit)
+	fold := cleanup.PathFold(rootGit)
 	inIgnored := map[string]string{}
 	for _, ig := range ignored {
 		inIgnored[fold(ig)] = ig
 	}
+	// The directories that hold an ignored file: the merge writes the changed
+	// paths as files, so a changed path that is one of these directories would
+	// replace the directory and delete the ignored file in it.
+	ignoredUnder := map[string]string{}
+	for _, ig := range ignored {
+		for d := path.Dir(ig); d != "." && d != "/" && d != ""; d = path.Dir(d) {
+			if _, ok := ignoredUnder[fold(d)]; !ok {
+				ignoredUnder[fold(d)] = ig
+			}
+		}
+	}
 	var hits []string
 	// A changed path collides with an ignored file at the path itself or at
 	// any parent prefix (an ignored file `sub` where origin adds `sub/f`:
-	// merge would replace the file by a directory).
+	// merge would replace the file by a directory), and with an ignored file
+	// under it (the root holds an ignored `build/x.o` and origin adds the
+	// file `build`: merge would replace the directory by the file).
 	for _, c := range changed {
 		for q := c; q != "." && q != "/" && q != ""; q = path.Dir(q) {
 			if ig, ok := inIgnored[fold(q)]; ok {
@@ -64,9 +77,12 @@ func (e Engine) fastForward(rootGit cleanup.Git, r *run) {
 				break
 			}
 		}
+		if ig, ok := ignoredUnder[fold(c)]; ok {
+			hits = append(hits, ig)
+		}
 	}
 	if len(hits) > 0 {
-		warn("%s was not fast-forwarded to origin/%s: it would overwrite the ignored file %s (git merge cannot be told to keep ignored files); update it yourself when ready", d, d, cleanup.OneLine(strings.Join(hits, ", ")))
+		warn("%s was not fast-forwarded to origin/%s: it would overwrite or remove the ignored file %s (git merge cannot be told to keep ignored files); update it yourself when ready", d, d, cleanup.OneLine(strings.Join(hits, ", ")))
 		return
 	}
 	o, err := stepGit(rootGit, slices.Concat(ffConfig, []string{"merge", "--ff-only", remote})...)

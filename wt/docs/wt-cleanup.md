@@ -422,7 +422,8 @@ untracked files removed (exactly those paths, never `git clean`) and the root
 switched to the default branch; the new worktree is switched onto the branch,
 and the default branch is fast-forwarded to `origin/<default>` when that is a
 strict descendant (never a merge; skipped with a warning, still `moved`, when
-the update would overwrite an ignored file). Git hooks do not run in any of
+the update would overwrite an ignored file, or remove one under a path the
+update replaces by a file). Git hooks do not run in any of
 these steps; a `post-checkout` hook gets the same warning as in `wt rescue`.
 `moved` is reported only after both checkouts are read back. A root with
 nothing uncommitted skips the copy and the record; it needs an unchanged

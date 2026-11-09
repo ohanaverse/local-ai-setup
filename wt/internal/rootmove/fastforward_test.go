@@ -166,6 +166,7 @@ func TestExecuteFastForwardIgnoredCollision(t *testing.T) {
 		skipped    bool
 	}{
 		{"exact", false, "upstream-0.txt", []string{"upstream-0.txt"}, true},
+		{"ignored file under a directory the merge replaces", false, "build/x.o", []string{"build"}, true},
 		{"case differs, ignorecase on", true, "UPSTREAM-0.txt", []string{"upstream-0.txt"}, true},
 		{"case differs, ignorecase off", false, "UPSTREAM-0.txt", []string{"upstream-0.txt"}, false},
 		{"ignored file is a parent", false, "sub", []string{"sub/f"}, true},

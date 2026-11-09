@@ -47,7 +47,7 @@ func (f *fixture) dirtyRoot() []string {
 // the root's git config says (the read ReleaseRoot does once per release).
 func ignoredAtRiskIn(f *fixture) (string, error) {
 	g := cleanup.Git{Dir: f.Dir}
-	return ignoredAtRisk(g, f.Dir, pathFold(g))
+	return ignoredAtRisk(g, f.Dir, cleanup.PathFold(g))
 }
 
 // rootRescue is the root carried by the real rescue engine in root mode: the
