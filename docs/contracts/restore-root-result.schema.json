@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "restore-root-result.schema.json",
+  "title": "wt restore-root result",
+  "description": "The one document `wt restore-root --json` prints, on success, refusal and failure (nothing else goes to stdout). `wt restore-root` moves the branch the repository's primary checkout (the root) has checked out into a new linked worktree under .worktrees, carrying the root's uncommitted work, and puts the root back on the default branch. `outcome` is one of `moved`, `would_move` (a dry run: it would), `refused` (a check failed before anything was created; `created` is false; `already_default` is a refusal whose process exit code is 0) or `failed` (something went wrong after a write; `created` says whether the new worktree exists: when true it is KEPT, never rolled back, at `dest_path`, and `reason` names the state of the root and the step that stopped). `code` is the stable refusal or failure code (rescue's codes except `primary` and `nothing_to_keep`, plus restore-root's own); `reason` one sanitised line. `branch` is the root's branch that moves, `default` the branch the root returns to, `dest_path` the new worktree. `record` is the rescue record (ref under refs/wt/rescued/ and the commit it names) that held the root's uncommitted work before the root was reset; it is absent when the root had nothing uncommitted or none was written. `carried` and `left_behind` count what is (or would be) copied and what is not (ignored entries stay in the root). `default_ff` and `fast_forwarded` describe the optional fast-forward of the default branch to origin. `completed` lists the steps that finished (a benign note such as the default already being at origin appears here, not in `warnings`); `warnings` holds sanitised lines (always arrays). A run that failed before any outcome has `error` and none of `outcome`, `branch`, `default`, `dest_path`, `carried`, `left_behind`. Branch names, paths and refs are raw identifiers carried verbatim: JSON escapes only C0 controls, so a consumer MUST escape them before printing to a terminal. Pinned to wt/internal/rootmove/json.go by wt/cmd/wt/restore_root_contract_test.go; a key or code added there must be added here and in the samples in the same change. Reuses the shapes of rescue-result.schema.json for `carried`, `left_behind`, `record` and `error`, which are unchanged.",
+  "type": "object",
+  "required": [
+    "version",
+    "repo",
+    "dry_run",
+    "created",
+    "completed",
+    "warnings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "repo": {
+      "type": "string",
+      "description": "The repository's primary checkout (the root)."
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "moved",
+        "would_move",
+        "refused",
+        "failed"
+      ]
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "not_worktree",
+        "gates_unknown",
+        "operation_in_progress",
+        "unmerged_paths",
+        "hidden_index_flags",
+        "submodule_change",
+        "staged_and_modified",
+        "intent_to_add",
+        "nested_repo",
+        "special_file",
+        "line_endings",
+        "content_filter",
+        "too_large",
+        "name_unavailable",
+        "source_changed",
+        "unreadable",
+        "verify_failed",
+        "carry_failed",
+        "create_failed",
+        "source_changed_while_copying",
+        "detached_root",
+        "already_default",
+        "default_in_worktree",
+        "root_held",
+        "no_commit",
+        "release_refused",
+        "release_failed",
+        "switch_failed",
+        "no_default_branch",
+        "ignored_collision",
+        "record_not_written",
+        "worktrees_not_ignored"
+      ],
+      "description": "Present for a refused or failed outcome. `already_default` is a refusal that exits 0: the root is already where it should be."
+    },
+    "reason": {
+      "type": "string"
+    },
+    "created": {
+      "type": "boolean",
+      "description": "Whether the new worktree directory exists now."
+    },
+    "branch": {
+      "type": "string",
+      "description": "The root's branch (short name): the branch that moves into the new worktree."
+    },
+    "default": {
+      "type": "string",
+      "description": "The default branch the root is (or would be) switched to."
+    },
+    "dest_path": {
+      "type": "string",
+      "description": "The new worktree under .worktrees. Present once it exists (`created`) and in a dry run, where it is where it would be."
+    },
+    "record": {
+      "$ref": "#/$defs/record"
+    },
+    "default_ff": {
+      "type": "boolean",
+      "description": "Present (true) only when origin/<default> is a strict descendant of the local default branch, so a fast-forward is possible; `fast_forwarded` says it happened."
+    },
+    "carried": {
+      "$ref": "#/$defs/carried"
+    },
+    "left_behind": {
+      "$ref": "#/$defs/left_behind"
+    },
+    "fast_forwarded": {
+      "type": "boolean",
+      "description": "Present (true) only when the default branch was fast-forwarded after the move. A fast-forward that is skipped or fails never undoes the move; the reason is a `warnings` line."
+    },
+    "completed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Sanitised lines. A line starting \"record_not_written: \" means the copy was verified but left no record."
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "carried": {
+      "type": "object",
+      "required": [
+        "commits",
+        "staged",
+        "unstaged",
+        "untracked",
+        "untracked_bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "commits": {
+          "type": "integer",
+          "description": "Commits reachable from no remote-tracking ref (0 only when there are none; an unreadable count stops the run)."
+        },
+        "staged": {
+          "type": "integer"
+        },
+        "unstaged": {
+          "type": "integer"
+        },
+        "untracked": {
+          "type": "integer"
+        },
+        "untracked_bytes": {
+          "type": "integer"
+        }
+      }
+    },
+    "left_behind": {
+      "type": "object",
+      "required": [
+        "ignored_entries"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ignored_entries": {
+          "type": "integer"
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "ref",
+        "commit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "type": "string",
+          "description": "The record ref, under refs/wt/rescued/."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Full commit id the record ref names."
+        }
+      }
+    }
+  }
+}

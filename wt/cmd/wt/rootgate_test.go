@@ -125,3 +125,49 @@ func TestRefuseRootBranch(t *testing.T) {
 		t.Errorf("linked worktree: err = %v, want nil", err)
 	}
 }
+
+// setOriginDefault gives the repository at root an origin/HEAD naming main,
+// the one thing the restore-root hint needs to know the default branch.
+func setOriginDefault(t *testing.T, root string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"update-ref", "refs/remotes/origin/main", "HEAD"},
+		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+const restoreRootHint = "run `wt restore-root` to move it and put the root back on main"
+
+// TestGateTerminalPrintsTheHint checks the gate's question carries the
+// restore-root hint once when the root is on a non-default branch, none on the
+// default, and that the no-terminal refusal stays a one-line error without it.
+func TestGateTerminalPrintsTheHint(t *testing.T) {
+	root := sharedRootRepo(t)
+	setOriginDefault(t, root)
+
+	var out bytes.Buffer
+	if err := gateRoot(root, "claude", strings.NewReader("n"), &out, true, launchRootRemedy); !errors.Is(err, errCancelled) {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(out.String(), "restore-root") {
+		t.Errorf("hint printed on main: %q", out.String())
+	}
+
+	cgit(t, root, "switch", "-c", "topic")
+	out.Reset()
+	if err := gateRoot(root, "claude", strings.NewReader("n"), &out, true, launchRootRemedy); !errors.Is(err, errCancelled) {
+		t.Fatalf("err = %v", err)
+	}
+	if s := out.String(); strings.Count(s, restoreRootHint) != 1 || !strings.Contains(s, "[y/N]") {
+		t.Errorf("output %q; want the hint once and [y/N]", s)
+	}
+
+	err := gateRoot(root, "claude", failReader{t}, &bytes.Buffer{}, false, launchRootRemedy)
+	if err == nil || strings.Contains(err.Error(), "restore-root") {
+		t.Errorf("no-terminal err = %v; want a refusal without the hint", err)
+	}
+}

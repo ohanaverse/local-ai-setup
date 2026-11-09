@@ -34,7 +34,7 @@ func TestOfferedScreensRowsWithoutGit(t *testing.T) {
 		{"locked and dirty", wt(cleanup.Losses{Dirty: true}, cleanup.BlockLocked, cleanup.BlockHeld), true, ""},
 		{"clean", wt(cleanup.Losses{}), false, "nothing to keep"},
 		{"ignored only", wt(cleanup.Losses{IgnoredEntries: 3}), false, "nothing to keep"},
-		{"primary", wt(cleanup.Losses{Dirty: true}, cleanup.BlockPrimary), false, "primary"},
+		{"primary", wt(cleanup.Losses{Dirty: true}, cleanup.BlockPrimary), false, "restore-root"},
 		{"operation", wt(cleanup.Losses{Dirty: true}, cleanup.BlockOperation), false, "operation"},
 		{"unreadable", wt(cleanup.Losses{GatesUnknown: true, Dirty: true}), false, "could not be read"},
 		{"branch", cleanup.Row{Kind: cleanup.KindBranch, Name: "b"}, false, "wt -W b"},

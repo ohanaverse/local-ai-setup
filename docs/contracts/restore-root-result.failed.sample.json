@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "outcome": "failed",
+  "code": "switch_failed",
+  "reason": "git switch feature-x in the new worktree: exit 128 (the root is on main and the work is at /Users/me/repo/.worktrees/feature-x, kept)",
+  "created": true,
+  "branch": "feature-x",
+  "default": "main",
+  "dest_path": "/Users/me/repo/.worktrees/feature-x",
+  "record": {
+    "ref": "refs/wt/rescued/0123456789abcdef",
+    "commit": "3b1c9e7a5d2f48608c1e9a7b4d5f60213a8e7c9d"
+  },
+  "carried": {
+    "commits": 2,
+    "staged": 1,
+    "unstaged": 3,
+    "untracked": 4,
+    "untracked_bytes": 1234
+  },
+  "left_behind": {
+    "ignored_entries": 2
+  },
+  "completed": [
+    "created a detached worktree at f92581ff5ac55df734270fc13d5b48260567e8a9",
+    "carried staged changes",
+    "recorded the root at refs/wt/rescued/0123456789abcdef",
+    "released the root onto main"
+  ],
+  "warnings": []
+}

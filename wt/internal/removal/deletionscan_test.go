@@ -47,14 +47,18 @@ var fileOpAllowed = map[string]allowedFileOps{
 }
 
 // fileOpNever are files no allow-list entry may cover: the read-only cleanup
-// classifier and its command, and the copy-only rescue engine and its command (TestCleanupCmdContainsNoDeletion holds the same
-// line with a substring scan). The one reset of a checkout in the module is
+// classifier and its command, the copy-only rescue engine and its command
+// (TestCleanupCmdContainsNoDeletion holds the same line with a substring
+// scan), and `wt restore-root`'s engine and command (internal/rootmove,
+// cmd/wt/restore_root*.go), which only name ReleaseRoot. The one reset of a checkout in the module is
 // internal/removal's ReleaseRoot (TestRootMutationFunctionsAreExactlyTheAllowList,
 // TestHardResetExistsNowhereOutsideRemoval); this scan skips that package.
 func fileOpNever(rel string) bool {
 	return strings.HasPrefix(rel, "internal/cleanup/") ||
 		strings.HasPrefix(rel, "internal/rescue/") ||
+		strings.HasPrefix(rel, "internal/rootmove/") ||
 		(strings.HasPrefix(rel, "cmd/wt/rescue") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/")) ||
+		(strings.HasPrefix(rel, "cmd/wt/restore_root") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/")) ||
 		(strings.HasPrefix(rel, "cmd/wt/cleanup") && !strings.Contains(strings.TrimPrefix(rel, "cmd/wt/"), "/"))
 }
 
@@ -584,5 +588,46 @@ func TestRescueIsInsideTheDeletionScanAndNeverAllowed(t *testing.T) {
 	git, fileOps := scanFile(token.NewFileSet(), "internal/rescue/execute.go", file)
 	if len(git) == 0 || len(fileOps) == 0 {
 		t.Errorf("the scan missed a deletion in the rescue package: git %v, files %v", git, fileOps)
+	}
+}
+
+// TestRootmoveIsInsideTheDeletionScanAndNeverAllowed is the rescue pin's twin
+// for `wt restore-root`: internal/rootmove and cmd/wt/restore_root*.go are
+// files the module scan reads, no allow-list entry can cover them, and the
+// scan flags a deletion written in them. Why: rootmove composes the one
+// destructive operation but must only name ReleaseRoot; a "tidy" rollback
+// (os.RemoveAll of the new worktree, `git worktree remove`) there is exactly
+// what the recovery table rules out. The restore_root*.go names are pinned
+// by name before Task 9 creates them.
+func TestRootmoveIsInsideTheDeletionScanAndNeverAllowed(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := filepath.Glob(filepath.Join(root, "internal", "rootmove", "*.go"))
+	if err != nil || len(pkg) == 0 {
+		t.Fatalf("no files under internal/rootmove (%v): the pin has nothing to pin", err)
+	}
+	for _, rel := range []string{"internal/rootmove/execute.go", "cmd/wt/restore_root.go", "cmd/wt/restore_root_json.go"} {
+		if !fileOpNever(rel) {
+			t.Errorf("fileOpNever(%q) is false: an allow-list entry could cover it", rel)
+		}
+	}
+	if fileOpNever("cmd/wt/restore_root/x.go") {
+		t.Errorf("fileOpNever covers a subdirectory of cmd/wt; it pins top-level files only")
+	}
+	for rel := range fileOpAllowed {
+		if strings.Contains(rel, "rootmove") || strings.Contains(rel, "restore_root") {
+			t.Errorf("fileOpAllowed names %s", rel)
+		}
+	}
+	src := "package rootmove\nimport (\"os\"; \"os/exec\")\nfunc f(d string) {\n os.RemoveAll(d)\n exec.Command(\"git\", \"worktree\", \"remove\", d)\n}\n"
+	file, err := parser.ParseFile(token.NewFileSet(), "execute.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git, fileOps := scanFile(token.NewFileSet(), "internal/rootmove/execute.go", file)
+	if len(git) == 0 || len(fileOps) == 0 {
+		t.Errorf("the scan missed a deletion in the rootmove package: git %v, files %v", git, fileOps)
 	}
 }

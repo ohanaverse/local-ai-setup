@@ -41,6 +41,16 @@ func TestMain(m *testing.M) {
 	// one in a temp directory or changes into a bare one to be outside any —
 	// gitenv.IsolateForTest carries the full rationale.
 	gitenv.IsolateForTest()
+	// No test may read the developer's global or system git config: a global
+	// core.hooksPath would send a test's hook into the real hooks directory, a
+	// global commit.gpgsign or excludes file changes what the fixtures do.
+	// HOME stays (config.IsolateConfigHomeForTest isolates XDG instead).
+	for k, v := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"} {
+		if err := os.Setenv(k, v); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 	// No model table may read the developer's tiers.toml (or the one a
 	// MODELTIERS_OUT in their shell names): every TIER cell is "-" unless a
 	// test names a file of its own (tiers.IsolateForTest).
@@ -252,5 +262,24 @@ func TestConfigHomeIsNotTheDevelopersOwn(t *testing.T) {
 		if strings.HasPrefix(pair[1], filepath.Join(home, ".config")) || !strings.Contains(pair[1], "wt-test-config-") {
 			t.Errorf("%s = %s, want a path under this package's throwaway config home", pair[0], pair[1])
 		}
+	}
+}
+
+// TestGitConfigIsNotTheDevelopersOwn checks TestMain keeps git off the
+// developer's global and system config: GIT_CONFIG_GLOBAL is the null device,
+// GIT_CONFIG_NOSYSTEM is set, and `git config --global --list` lists nothing.
+// Why: a global core.hooksPath once let a test write a hook into the real
+// global hooks directory, and a global gpgsign or excludes file changes what
+// the fixtures do.
+func TestGitConfigIsNotTheDevelopersOwn(t *testing.T) {
+	if got := os.Getenv("GIT_CONFIG_GLOBAL"); got != os.DevNull {
+		t.Errorf("GIT_CONFIG_GLOBAL = %q, want %q", got, os.DevNull)
+	}
+	if os.Getenv("GIT_CONFIG_NOSYSTEM") == "" {
+		t.Error("GIT_CONFIG_NOSYSTEM is not set")
+	}
+	out, _ := exec.Command("git", "config", "--global", "--list").CombinedOutput()
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("git config --global --list = %q, want nothing", out)
 	}
 }

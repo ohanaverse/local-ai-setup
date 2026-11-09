@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "created": false,
+  "completed": [],
+  "warnings": [],
+  "error": {
+    "message": "not inside a git repository"
+  }
+}

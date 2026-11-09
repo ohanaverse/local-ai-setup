@@ -22,6 +22,7 @@ type Root struct {
 	Path      string // the primary checkout, symlinks resolved
 	CommonDir string // <git-common-dir>, where wt-sessions lives
 	Branch    string // the branch checked out there, "(detached)" when none
+	Default   string // the repository's default branch from origin/HEAD, "" when unknown
 }
 
 // Lookup reports the root checkout dir is. ok is false when dir is not a
@@ -40,7 +41,19 @@ func Lookup(dir string) (r Root, ok bool, err error) {
 	if r.Branch = worktree.CurrentBranchAt(path); r.Branch == "" {
 		r.Branch = "(detached)"
 	}
+	r.Default = worktree.DefaultBranch(path)
 	return r, true, nil
+}
+
+// Hint is the one line that points at `wt restore-root` when the root r is on
+// a named branch other than its default, and "" otherwise: on the default, on
+// a detached HEAD, or when the default is unknown (origin/HEAD unset, a
+// declared limit: restore-root itself would still work there).
+func Hint(r Root) string {
+	if r.Default == "" || r.Branch == "(detached)" || r.Branch == r.Default {
+		return ""
+	}
+	return "run `wt restore-root` to move it and put the root back on " + r.Default
 }
 
 // Self is this process's claim on r for agent. err is a failure to read this
@@ -53,7 +66,11 @@ func (r Root) Self(agent string) (sessionclaim.Claim, error) {
 // from in: c continue here, w new worktree, q quit (Esc and Ctrl-C are q, and
 // so is the end of input). On a terminal it reads one key at a time.
 func Choose(r Root, others []sessionclaim.Claim, in io.Reader, out io.Writer) byte {
-	fmt.Fprint(out, "wt: "+sessionclaim.Menu(r.Path, others, time.Now())+"choose [c/w/q]: ")
+	fmt.Fprint(out, "wt: "+sessionclaim.Menu(r.Path, others, time.Now()))
+	if h := Hint(r); h != "" {
+		fmt.Fprintln(out, h)
+	}
+	fmt.Fprint(out, "choose [c/w/q]: ")
 	choice := readChoice(in)
 	fmt.Fprintln(out)
 	return choice
@@ -64,6 +81,9 @@ func Choose(r Root, others []sessionclaim.Claim, in io.Reader, out io.Writer) by
 // the end of input are no (the default). On a terminal it reads one key
 // without waiting for Enter.
 func ConfirmRoot(r Root, in io.Reader, out io.Writer) bool {
+	if h := Hint(r); h != "" {
+		fmt.Fprintf(out, "wt: %s\n", h)
+	}
 	return AskYesNo(fmt.Sprintf("%s is the repository root (branch %s). Work here instead of in a worktree?", r.Path, r.Branch), in, out)
 }
 

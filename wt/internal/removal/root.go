@@ -226,7 +226,7 @@ func ReleaseRoot(g cleanup.Git, r RootRelease) (ReleaseResult, error) {
 		return refuse("the root has an assume-unchanged or skip-worktree index entry, which status cannot see; clear it first (git update-index --no-assume-unchanged / --no-skip-worktree)")
 	}
 	// 5. The record.
-	fold := pathFold(rg)
+	fold := cleanup.PathFold(rg)
 	var rec *recordTree
 	if !r.NothingUncommitted {
 		head, err := gitText(rg, "rev-parse", "--verify", "HEAD^{commit}")
@@ -402,7 +402,7 @@ func sameUntracked(st string, carried []string) string {
 //
 // Two passes, both needed. By name: the paths HEAD and the index track
 // against git's ignored listing, compared the way git compares them (folded
-// when core.ignorecase is on, pathFold, which the caller read once).
+// when core.ignorecase is on, cleanup.PathFold, which the caller read once).
 // On disk (ignoredOnDisk): every path
 // the status lists as changed is looked up in the filesystem, which resolves
 // case and Unicode normalization the way the volume does, and compared by
@@ -446,28 +446,21 @@ func ignoredAtRisk(rg cleanup.Git, root string, fold func(string) string) (strin
 	return ignoredOnDisk(root, ignored, changedPaths(listing))
 }
 
-// pathFold returns how the root's git compares path names: unchanged, or
-// case-folded when core.ignorecase is true. A config that cannot be read, or
-// reads as anything but a clean "unset" or a boolean, folds (fail closed:
-// folding only finds more conflicts). The fold is Unicode simple case folding
-// (upper then lower, so EqualFold-equal names share a key). It does not
-// normalize NFD/NFC: ignoredAtRisk's on-disk pass covers that by asking the
-// filesystem, and removeCarried treats a normalization-only difference as an
-// error, never a skip.
-func pathFold(rg cleanup.Git) func(string) string {
-	ignoreCase := true
-	if o, err := runGit(rg, "config", "--get", "--type=bool", "core.ignorecase"); err == nil {
-		switch v := strings.TrimSpace(o.Stdout); {
-		case o.Code == 0 && v == "false":
-			ignoreCase = false
-		case o.Code == 1 && v == "":
-			ignoreCase = false // unset: git's default is false
-		}
+// RootIgnoredAtRisk is ReleaseRoot's ignored-files gate (gate 6) on its own,
+// for a caller that must refuse before anything is created: which ignored
+// entry of the root `git reset --hard HEAD` would delete or overwrite ("" none),
+// read through the same git ReleaseRoot builds (Dir = root, never g.Dir; g's
+// timeout and -c settings, then core.fsmonitor=false) and the same
+// cleanup.PathFold.
+// It only reads. An error is a failed read; the caller fails closed.
+func RootIgnoredAtRisk(g cleanup.Git, root string) (string, error) {
+	timeout := g.Timeout
+	if timeout == 0 {
+		timeout = DefaultRemoveTimeout
 	}
-	if !ignoreCase {
-		return func(s string) string { return s }
-	}
-	return func(s string) string { return strings.ToLower(strings.ToUpper(s)) }
+	root = filepath.Clean(root)
+	rg := cleanup.Git{Dir: root, Timeout: timeout, Config: append(slices.Clone(g.Config), "core.fsmonitor=false")}
+	return ignoredAtRisk(rg, root, cleanup.PathFold(rg))
 }
 
 // pathSets returns the set of paths and the set of their ancestor
@@ -758,7 +751,7 @@ func (t *recordTree) matches(p, full string, fi fs.FileInfo) (string, error) {
 // file or symlink (one the root had replaced with a directory, which the
 // reset restored), means the path is gone (skipped); any other parent that
 // is a symlink or not a directory is an error. Index lookups are folded as
-// git compares names (pathFold); a parent whose name differs from the
+// git compares names (cleanup.PathFold); a parent whose name differs from the
 // tracked one only by Unicode normalization is not matched and is an error;
 // the path itself must be a regular file or a symlink whose content equals the record's (the link is
 // removed, never its target), and one already gone is skipped. A directory,

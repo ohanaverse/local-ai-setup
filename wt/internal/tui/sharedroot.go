@@ -33,6 +33,7 @@ type sharedRootState struct {
 	from     phase
 	root     string
 	others   []sessionclaim.Claim
+	hint     string // rootclaim.Hint for the root, "" when none
 	creating bool
 	err      string
 }
@@ -77,7 +78,7 @@ func (m model) sharedRootCheck() *sharedRootState {
 	if err != nil || len(others) == 0 {
 		return nil
 	}
-	return &sharedRootState{from: m.phase, root: root.Path, others: others}
+	return &sharedRootState{from: m.phase, root: root.Path, others: others, hint: rootclaim.Hint(root)}
 }
 
 // handleSharedRootKey takes the screen's keys: c continues in the root, w
@@ -162,6 +163,9 @@ func (m model) sharedRootView() string {
 	lines := strings.Split(strings.TrimSuffix(sessionclaim.Menu(st.root, st.others, time.Now()), "\n"), "\n")
 	top, keys := lines[0], lines[len(lines)-1]
 	body := strings.Join(lines[1:len(lines)-1], "\n")
+	if st.hint != "" {
+		body += "\n" + st.hint
+	}
 	if st.creating {
 		body += "\n\ncreating a new worktree…"
 	}

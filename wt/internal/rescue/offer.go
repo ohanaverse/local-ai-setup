@@ -17,7 +17,7 @@ func Offered(row cleanup.Row) (bool, string) {
 	for _, b := range row.Blockers {
 		switch b.Code {
 		case cleanup.BlockPrimary:
-			return false, "the primary checkout is not rescued here (#522)"
+			return false, "the primary checkout is not rescued here; wt restore-root moves its branch into a worktree"
 		case cleanup.BlockOperation:
 			return false, "an operation is in progress there"
 		}

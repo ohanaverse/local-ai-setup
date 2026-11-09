@@ -101,6 +101,7 @@ Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a refer
 | `wt cleanup` | Lists worktrees, local branches and `origin` branches that can go, in four groups with the proof for each; on a terminal removes the ones you tick | [docs/wt-cleanup.md](docs/wt-cleanup.md), [guide 08 §9](../docs/guides/08-maintenance-and-troubleshooting.md) |
 | `wt remove <worktree-path-or-branch>...` | Removes named worktrees and branches through the same engine, re-checking each; `--dry-run` first | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-remove-arguments-output-and-exit-codes) |
 | `wt rescue <worktree-path-or-branch>` | Copies a worktree's local-only work into a new branch and worktree before you remove it | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-rescue-keep-work-before-it-is-lost) |
+| `wt restore-root` | Moves the root's branch and uncommitted work into a worktree and puts the root back on the default branch | [docs/wt-cleanup.md](docs/wt-cleanup.md#wt-restore-root-move-the-roots-branch-into-a-worktree) |
 | `wt start`, `wt stop`, `wt served`, `wt warm` | Start and stop local models | [docs/wt-start-stop.md](docs/wt-start-stop.md) |
 | `wt smoke` | One-shot prompt through every agent eligible for a model | [docs/wt-smoke.md](docs/wt-smoke.md) |
 | `wt model`, `wt config` | Registry and preferences | [docs/wt-model.md](docs/wt-model.md), [docs/wt-config.md](docs/wt-config.md) |

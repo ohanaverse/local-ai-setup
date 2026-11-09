@@ -1,4 +1,4 @@
-# `wt cleanup`, `wt remove` and `wt rescue`
+# `wt cleanup`, `wt remove`, `wt rescue` and `wt restore-root`
 
 `wt cleanup` lists the repository's worktrees, local branches and `origin`
 branches in four groups, by how sure wt is that each can go, with the
@@ -314,7 +314,7 @@ git update-ref -d refs/wt/rescued/<id>
 ```
 
 Refused, with nothing created (JSON `code` in brackets): nothing to keep
-(`nothing_to_keep`); the primary checkout (`primary`; #522); a rebase, merge
+(`nothing_to_keep`); the primary checkout (`primary`; [`wt restore-root`](#wt-restore-root-move-the-roots-branch-into-a-worktree) moves its branch and work into a worktree); a rebase, merge
 or similar in progress (`operation_in_progress`) or unmerged paths
 (`unmerged_paths`); a skip-worktree or assume-unchanged file
 (`hidden_index_flags`); a changed submodule (`submodule_change`); a file both
@@ -387,6 +387,121 @@ report says so in `warnings`.
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-04-wt-cleanup-design.md).
+
+## `wt restore-root`: move the root's branch into a worktree
+
+Work started directly in the repository root leaves it on a branch other than
+the default, which blocks sessions and tools that expect the default branch
+there. `wt restore-root` moves that same branch (its ref, commits, upstream and
+config stay; nothing is copied or renamed) into a new worktree under
+`.worktrees/` and puts the root back on the default branch. It runs from
+anywhere in the repository and builds on `wt rescue`'s engine.
+
+```bash
+wt restore-root --dry-run          # what would move and what stays; changes nothing, fetches nothing
+wt restore-root                    # asks Move? [y/N] on a terminal
+wt restore-root --to spike --yes   # no prompt; --to names only the directory under .worktrees/
+```
+
+| Flag | Meaning |
+|---|---|
+| `--to DIR-NAME` | the new worktree's directory under `.worktrees/` (default: the branch name flattened); names only the directory; the branch is never renamed |
+| `--dry-run` | say what would happen; writes no ref, index or working file and does not fetch |
+| `--yes` | move without asking |
+| `--json` | one document, [restore-root-result.schema.json](../../docs/contracts/restore-root-result.schema.json) (samples beside it), printed on refusal and failure too |
+| `--no-fetch` | do not fetch before the fast-forward check |
+
+A real run first fetches every remote (it updates remote-tracking refs,
+nothing else), exactly as `wt cleanup` does (one fetch of every remote). Uncommitted work is carried by the rescue engine:
+a new worktree is added detached at the branch's tip, staged, unstaged and
+untracked non-ignored files are copied into it and verified against the root
+(`git status` equal, every path equal in kind, mode, content and link target),
+and the record `refs/wt/rescued/<id>` is written. The record is required: with
+no record the root is not released. Only then is the root reset, the carried
+untracked files removed (exactly those paths, never `git clean`) and the root
+switched to the default branch; the new worktree is switched onto the branch,
+and the default branch is fast-forwarded to `origin/<default>` when that is a
+strict descendant (never a merge; skipped with a warning, still `moved`, when
+the update would overwrite an ignored file, or remove one under a path the
+update replaces by a file). Git hooks do not run in any of
+these steps; a `post-checkout` hook gets the same warning as in `wt rescue`.
+`moved` is reported only after both checkouts are read back. A root with
+nothing uncommitted skips the copy and the record; it needs an unchanged
+fingerprint and a clean status to be released. Copying untracked files is the
+slow part: measured at about 17 ms per file (2000 untracked files took about
+34 s), with no progress output while it runs; this is an observed cost, not a
+promise.
+
+Refused, with nothing created (JSON `code` in brackets): a detached HEAD
+(`detached_root`; run `git switch -c <name>` first); a root already on the
+default branch (`already_default`; exit 0, nothing to do); no commit yet
+(`no_commit`); no default branch, or one that exists only as `origin/<name>`
+(`no_default_branch`); the default branch checked out in another worktree
+(`default_in_worktree`); another live `wt` session in the root (`root_held`;
+checked again just before the root changes); a root that does not ignore
+`.worktrees/` (`worktrees_not_ignored`; the message gives the one-line fix, and
+wt writes nothing to the repository); an ignored file the reset would destroy,
+or one at a path the default branch tracks (`ignored_collision`; ignored files
+are never overwritten); any assume-unchanged or skip-worktree entry
+(`hidden_index_flags`, which includes a sparse checkout); and every state
+`wt rescue` refuses (see above), except that a root always counts as having
+something to keep. The JSON `code` of a failure after the new worktree exists
+is `create_failed`, `carry_failed`, `verify_failed`, `record_not_written` (the
+copy could not be recorded, so the root was not released), `release_refused`
+(a proof was missing at the release; the root was not changed),
+`release_failed` (the reset or switch stopped part-way), `switch_failed` (the
+new worktree could not be switched onto the branch) or
+`source_changed_while_copying` (the root changed during the copy).
+
+| Exit | Meaning |
+|---|---|
+| 0 | moved (with `--dry-run`: would move), or `already_default` |
+| 1 | could not start: not in a repository, a bad flag, the repository could not be read |
+| 2 | refused or failed |
+| 3 | approval missing: no `--yes` and no terminal, or the prompt was declined; nothing was changed |
+
+**Recovery.** A failure stops at its step and nothing is rolled back; the
+message ends with where the root, the new worktree and the work are:
+
+| Failed at | Root | New worktree | Work |
+|---|---|---|---|
+| creating the worktree, the copy or the record | untouched (a record that could not be written means the root was NOT released) | absent, half-built or the verified copy; kept, path named | all in the root (and, after the copy, in the kept copy too) |
+| the release, before the reset (a live session appeared, or a proof failed) | untouched | the verified copy | in the root and the copy |
+| the release, after the reset began (`release_failed`) | reset or partly changed; run `git status` there | the verified copy, detached at the branch tip | in the copy and the record; finish with `git switch <default>` in the root, then `git switch <branch>` in the new worktree (look at the root's `git status` first) |
+| switching the new worktree onto the branch (`switch_failed`) | on the default branch, clean | detached with all the work | in the copy and the record; `git switch <branch>` there finishes it, unless the branch moved during the run: then the message says not to switch blindly (that would lay the work over the moved branch), the new worktree stays detached at the old tip, and you decide where the work belongs first |
+| the fast-forward | on the default branch | on the branch | all moved; only the fast-forward is missing (a warning) |
+| the final read-back (`verify_failed`) | as read back | as read back | nothing is undone; in the copy and the record |
+
+Once the confirmation is answered (or with `--yes`), SIGINT, SIGTERM and
+SIGHUP to wt do not stop the move: wt finishes, prints the result and then
+`interrupted (signal ...): the move was not stopped; see the result above`. A
+Ctrl-C on the terminal also reaches the git command running at that moment;
+the step it kills fails and its row above is printed. A move killed from
+outside (SIGKILL, power loss) is recovered by the same table: the root is
+untouched until the release, and a half-built `.worktrees/<name>` is cleared
+with `wt remove <path> --force --accept-loss` (add `--yes` without a terminal).
+
+Running `wt restore-root` again after a failure is refused while the kept
+directory exists; check the work, then clear it with `wt remove`. For a kept
+copy holding uncommitted work, `wt remove <path> --yes --dry-run` says
+`refused: needs --force, --accept-loss` (verified on a half-built copy), so
+the command is `wt remove <path> --force --accept-loss`.
+
+**Declared losses.** Ignored files and empty directories stay in the root
+(ignored files are never overwritten or removed; the count is reported). File
+modes beyond the executable bit are not kept. A change made to the root in the
+instant between the last claim and record checks and the reset is lost, the
+same window as `wt remove` of a dirty rescued original (a carried untracked
+file edited then is kept). After the move the record names the root as its
+source, so `wt cleanup` does not list the new worktree as preserved by it.
+`wt rescue` still truncates its messages at 200 characters; `wt restore-root`
+prints reasons, warnings and steps in full.
+
+When the root is on a non-default branch, the shared-root menu, the root
+gate and the picker's shared-root screen print one line pointing here (hidden when `origin/HEAD` is not set).
+
+Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
+Design: [the spec](../../docs/superpowers/specs/2026-11-08-wt-restore-root-design.md).
 
 ## Deleting an origin branch
 

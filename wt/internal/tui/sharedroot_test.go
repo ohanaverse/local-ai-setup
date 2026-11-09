@@ -727,3 +727,40 @@ func TestSharedRootWorktreeChoiceDoesNotRecordAReusedWorktree(t *testing.T) {
 		t.Errorf("Recorded() = %+v; a reused worktree is not this launch's creation", rec)
 	}
 }
+
+// TestPickerSharedRootScreenShowsTheHint checks the shared-root screen at
+// 80x24 carries the restore-root hint once when the root is on a non-default
+// branch, keeps the keys line last, and shows none on the default branch.
+func TestPickerSharedRootScreenShowsTheHint(t *testing.T) {
+	root := rootRepo(t)
+	for _, args := range [][]string{
+		{"update-ref", "refs/remotes/origin/main", "HEAD"},
+		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	liveOther(t, root, "codex")
+	m, _, _ := pickRow(t, root)
+	if m.phase != phaseSharedRoot {
+		t.Fatalf("phase = %v; want the shared-root screen", m.phase)
+	}
+	if strings.Contains(m.View(), "restore-root") {
+		t.Errorf("hint shown on the default branch: %q", m.View())
+	}
+
+	if out, err := exec.Command("git", "-C", root, "switch", "-q", "-c", "topic").CombinedOutput(); err != nil {
+		t.Fatalf("git switch: %v\n%s", err, out)
+	}
+	m, _, _ = pickRow(t, root)
+	view := m.View()
+	flat := strings.Join(strings.Fields(view), " ")
+	if strings.Count(flat, "run `wt restore-root` to move it and put the root back on main") != 1 {
+		t.Errorf("screen %q does not show the hint once", view)
+	}
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if len(lines) > 24 || !strings.Contains(lines[len(lines)-1], "quit (Esc)") {
+		t.Errorf("screen is %d lines, last %q; want <= 24 with the keys last", len(lines), lines[len(lines)-1])
+	}
+}

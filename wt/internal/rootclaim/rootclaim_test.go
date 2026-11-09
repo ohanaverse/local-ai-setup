@@ -124,3 +124,70 @@ func TestAskYesNoDefaultsToNo(t *testing.T) {
 		}
 	}
 }
+
+// TestHintNamesTheDefault checks the restore-root hint appears only when the
+// root sits on a named branch other than a known default: on the default, on a
+// detached HEAD or with no known default (origin/HEAD unset) it is empty, so
+// the line never points at a move there is nothing to do for or cannot name.
+func TestHintNamesTheDefault(t *testing.T) {
+	want := "run `wt restore-root` to move it and put the root back on main"
+	if got := Hint(Root{Branch: "topic", Default: "main"}); got != want {
+		t.Errorf("Hint(topic on main) = %q; want %q", got, want)
+	}
+	for name, r := range map[string]Root{
+		"on the default":  {Branch: "main", Default: "main"},
+		"detached":        {Branch: "(detached)", Default: "main"},
+		"unknown default": {Branch: "topic", Default: ""},
+	} {
+		if got := Hint(r); got != "" {
+			t.Errorf("Hint(%s) = %q; want empty", name, got)
+		}
+	}
+}
+
+// TestLookupReadsTheDefault checks Lookup fills Root.Default from origin/HEAD
+// and leaves it empty without one, which is what hides the hint there.
+func TestLookupReadsTheDefault(t *testing.T) {
+	root := repo(t)
+	if r, _, _ := Lookup(root); r.Default != "" {
+		t.Errorf("Default = %q with no origin/HEAD; want empty", r.Default)
+	}
+	for _, args := range [][]string{
+		{"update-ref", "refs/remotes/origin/main", "HEAD"},
+		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if r, _, _ := Lookup(root); r.Default != "main" {
+		t.Errorf("Default = %q; want main", r.Default)
+	}
+}
+
+// TestChooseAndConfirmRootPrintTheHint checks the shared-root menu and the
+// root question each print the hint exactly once, before their key prompt, and
+// print none on the default branch, so the person learns of the move at the
+// moment of choosing.
+func TestChooseAndConfirmRootPrintTheHint(t *testing.T) {
+	hint := "run `wt restore-root` to move it and put the root back on main"
+	off := Root{Path: "/r", Branch: "topic", Default: "main"}
+	on := Root{Path: "/r", Branch: "main", Default: "main"}
+
+	var out bytes.Buffer
+	Choose(off, nil, strings.NewReader("q"), &out)
+	if s := out.String(); strings.Count(s, hint) != 1 || strings.Index(s, hint) > strings.Index(s, "choose [c/w/q]: ") {
+		t.Errorf("Choose printed %q; want the hint once, before the prompt", s)
+	}
+	out.Reset()
+	ConfirmRoot(off, strings.NewReader("n"), &out)
+	if s := out.String(); strings.Count(s, hint) != 1 || strings.Index(s, hint) > strings.Index(s, "[y/N]") {
+		t.Errorf("ConfirmRoot printed %q; want the hint once, before [y/N]", s)
+	}
+	out.Reset()
+	Choose(on, nil, strings.NewReader("q"), &out)
+	ConfirmRoot(on, strings.NewReader("n"), &out)
+	if strings.Contains(out.String(), "restore-root") {
+		t.Errorf("hint printed on the default branch: %q", out.String())
+	}
+}
