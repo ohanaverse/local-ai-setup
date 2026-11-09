@@ -110,7 +110,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 	if hidden, err := cleanup.HiddenIndexFlags(rg); err != nil {
 		return nil, fmt.Errorf("could not read the root's index flags: %w", err)
 	} else if hidden {
-		return nil, refuse(CodeHiddenIndex, "an index entry of the root is marked assume-unchanged or skip-worktree, so an edit to it is invisible to git and could not be carried (a sparse checkout is not supported); clear it first (git update-index --no-assume-unchanged / --no-skip-worktree)")
+		return nil, refuse(CodeHiddenIndex, "an index entry of the root is marked assume-unchanged or skip-worktree, so an edit to it is invisible to git and could not be carried (a sparse checkout is not supported); clear it first: an assume-unchanged entry with git update-index --no-assume-unchanged <path>, a sparse checkout with git sparse-checkout disable (a skip-worktree entry outside one with git update-index --no-skip-worktree <path>)")
 	}
 
 	r := e.Rescue

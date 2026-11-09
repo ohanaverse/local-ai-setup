@@ -59,7 +59,7 @@ Work sometimes starts directly in the repository root, leaving it on a branch ot
 4. Refuse if another live `wt` session holds the root (`sessionclaim.Others`, the same read `cleanup` uses): moving a branch under a running agent is the harm the claim exists to prevent. This command's own process holds no claim.
 5. Run rescue's `Preflight` against the root as a source through `rescue.Engine.ForRoot`, which skips `primary` and `nothing_to_keep` and takes a detached destination (the engine takes the root; the command layer decides which sources a command offers). All its refusals apply: operation in progress, unmerged paths, hidden index flags, submodule change, staged-and-modified path, intent-to-add, nested repository, special file, size caps (20000 files / 512 MiB), line-ending and content-filter conversions, unreadable state. After rescue's refusals: `ignored_collision` (an ignored file sits at a path the default branch tracks, or where the reset would destroy it; ignored files are never overwritten).
 6. Choose the destination (`worktree.CheckNewDetached`) and take the root's fingerprint.
-7. Compute `default_ff`: whether `origin/<default>` is a strict fast-forward of local `<default>` (using the last fetch; `--dry-run` and `--no-fetch` never fetch; a real run fetches once through `cleanup.Gather`, every remote, read-only, as `wt cleanup` does, before this step). Informational; a failure to fast-forward never refuses the move.
+7. Compute `default_ff`: whether `origin/<default>` is a strict fast-forward of local `<default>` (using the last fetch; `--dry-run` and `--no-fetch` never fetch; a real run fetches once through `cleanup.Gather`, every remote (it updates remote-tracking refs, nothing else), as `wt cleanup` does, before this step). Informational; a failure to fast-forward never refuses the move.
 
 If there is **nothing uncommitted**, steps (b)-(c) are skipped: the move is just `worktree add`, release and switch. The branch's commits need no copy; they live on the branch ref.
 
@@ -111,7 +111,7 @@ The window between that last check and `git reset --hard` is not zero, as in #55
 
 - Fail closed: any git/IO error, unexpected state or limit hit refuses before step 1, or stops at the step it occurs in with the table above.
 - Hooks off (`core.hooksPath=/dev/null`) for the detached `worktree add`, the root switch, the destination switch and the fast-forward; a `post-checkout` hook warning is shown. `--to` names only the directory, never the branch.
-- The command never fetches under `--dry-run`/`--no-fetch`; a real run fetches once through `cleanup.Gather`, every remote, read-only (it rewrites remote-tracking refs only), exactly as `wt cleanup` does (the user's decision, as built: see Amendments).
+- The command never fetches under `--dry-run`/`--no-fetch`; a real run fetches once through `cleanup.Gather`, every remote (it updates remote-tracking refs, nothing else), exactly as `wt cleanup` does (the user's decision, as built: see Amendments).
 - The destructive step is the only deletion; it is in `internal/removal`, covered by `TestRootMutationFunctionsAreExactlyTheAllowList` and `TestHardResetExistsNowhereOutsideRemoval` (the deletion scan skips `internal/removal`, so the guard is a function-set test plus a module-wide scan for the reset words), with `internal/rootmove` and `cmd/wt/restore_root*.go` joining the deletion scan under `rootmoveBanned`, and by a test that fails if `ReleaseRoot` runs without a verified copy, a record or an unchanged fingerprint.
 - Ad-hoc `wt` runs against a scratch registry need `WT_LITELLM_CONFIG` as usual (this command touches no registry, but the test harness sets it).
 
@@ -164,7 +164,7 @@ Written after the command was built (PR A: the engine seams; PR B: the command).
 10. **The envelope is flat** (`branch`, `dest_path` at top level), unlike rescue's nested shape; it always writes `version`, `repo`, `dry_run`, `created`, `completed` and `warnings`.
 11. **The record's `Wt-Source-Path` is the root** after the move, so `wt cleanup` does not mark the new worktree preserved by it. Accepted.
 12. **`ignored_collision`** (additive): ignored files are never overwritten. Preflight refuses an ignored file the reset would destroy or one at a path the default branch tracks; the root switch uses `--no-overwrite-ignore`; the fast-forward is skipped (a warning, still `moved`) when it would touch an ignored path or an ignored parent path (case-folded when `core.ignorecase`).
-13. **The fetch** is `cleanup.Gather`'s: every remote, read-only, once. The spec said `origin` once.
+13. **The fetch** is `cleanup.Gather`'s: every remote (it updates remote-tracking refs, nothing else), once. The spec said `origin` once.
 14. **A carried path the reset restored from HEAD** (a staged delete with an untracked twin) is skipped by `ReleaseRoot`, not a failure.
 15. **The `CodePrimary` refusal** of `wt rescue` now names `wt restore-root` (moved from PR A to PR B).
 16. **The hint** stays hidden when `origin/HEAD` is unset (a declared limit).
@@ -185,7 +185,7 @@ Found while building, beyond the numbered rulings:
 3. "`worktree.CheckNew`" and "`CreateAt` gains a detached variant": the destination is `worktree.CheckNewDetached`, created by `worktree.CreateDetachedAt` (a new function; `CreateAt` unchanged).
 4. Preflight step 3, "`rescue.DefaultBranch` / the `cleanup` resolver": `cleanup.ResolveBase`, with `no_default_branch` (ruling 3).
 5. Preflight step 5, "with `CodePrimary` lifted for this caller": `rescue.Engine.ForRoot` skips `primary` and `nothing_to_keep` and takes a detached destination.
-6. Preflight step 7, Constraints and Decision 4, "fetches `origin` once": a real run fetches once through `cleanup.Gather`, every remote, read-only (ruling 13).
+6. Preflight step 7, Constraints and Decision 4, "fetches `origin` once": a real run fetches once through `cleanup.Gather`, every remote, updating remote-tracking refs and nothing else (ruling 13).
 7. Execute step 3, "reports `failed`" with no code: the code is `record_not_written` (ruling 4).
 8. Execute step 4: the live-claim re-check before the release, `ReleaseRoot` running in the root, `--no-overwrite-ignore`, a carried path the reset restored skipped (ruling 14), empty directories left (ruling 7); "if the fingerprint differs ... code `source_changed_while_copying`" is now `release_refused` (fingerprint or proof missing at the release), `source_changed` / `source_changed_while_copying` remaining rescue's codes for the earlier checks; the nothing-uncommitted release needs an unchanged fingerprint and a clean status (ruling 8).
 9. Execute step 6: "only when `origin/<default>` is a strict descendant", skipped with a warning (status still `moved`) when it would overwrite an ignored file.

@@ -80,6 +80,11 @@ func restoreRootCmd(a *app) *cobra.Command {
 		Args:         func(cmd *cobra.Command, args []string) error { return restoreRootArgs(cmd, f, args) },
 		SilenceUsage: true, SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("to") {
+				if err := checkRestoreRootTo(f.to); err != nil {
+					return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
+				}
+			}
 			return restoreRootRun(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f)
 		},
 	}
@@ -99,6 +104,23 @@ func restoreRootCmd(a *app) *cobra.Command {
 func restoreRootArgs(cmd *cobra.Command, f restoreRootFlags, args []string) error {
 	if len(args) != 0 {
 		return restoreRootFail(cmd.OutOrStdout(), f, "", 1, fmt.Errorf("wt restore-root takes no arguments (got %q); it moves the root's own branch", cleanup.OneLine(strings.Join(args, " "))))
+	}
+	return nil
+}
+
+// checkRestoreRootTo refuses a --to that names no usable directory: empty
+// or only whitespace, "." or "..", or .git or .worktrees in any case (the
+// repository's own metadata or the worktrees directory itself). A usage
+// error, like rescue's bad --min-age: nothing is read or created.
+func checkRestoreRootTo(to string) error {
+	name := strings.TrimSpace(to)
+	switch {
+	case name == "":
+		return errors.New("--to names the new worktree's directory and must not be empty or only whitespace")
+	case name == "." || name == "..":
+		return fmt.Errorf("--to %q is not a directory name", name)
+	case strings.EqualFold(name, ".git"), strings.EqualFold(name, ".worktrees"):
+		return fmt.Errorf("--to %q is reserved: it names the repository's metadata or the worktrees directory itself", cleanup.OneLine(to))
 	}
 	return nil
 }
@@ -177,8 +199,48 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 		// prompt keeps them.
 		plan.SkipStartRecheck()
 	}
+	// From here on a signal must not end the process part-way through the
+	// move: it is remembered and reported after the result. The prompt above
+	// stays interruptible.
+	release := holdSignals()
 	afterRestoreRootConfirm()
-	return writeRestoreRootResult(out, errOut, f.json, meta, eng.Execute(plan))
+	o := eng.Execute(plan)
+	got := release()
+	err = writeRestoreRootResult(out, errOut, f.json, meta, o)
+	if len(got) > 0 {
+		fmt.Fprintf(errOut, "interrupted (signal %v): the move was not stopped; see the result above\n", got[0])
+	}
+	return err
+}
+
+// heldSignals are the signals holdSignals keeps from ending the process: an
+// interrupt, a termination request and a closed terminal.
+var heldSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP}
+
+// holdSignals catches heldSignals on a buffered channel, so one that
+// arrives is remembered rather than lost or fatal, until release is called;
+// release stops the catching (signal.Stop on this channel only: other
+// handlers in the process, a test's included, are left alone, which
+// signal.Reset would not do) and returns the signals received, first first.
+// As in the cleanup list's removal run (internal/tui forwardSignals), only
+// wt is held: a git child in the terminal's foreground process group still
+// gets a Ctrl-C, and its failure then stops the move at that step with the
+// recovery text printed. SIGKILL cannot be held.
+func holdSignals() (release func() []os.Signal) {
+	ch := make(chan os.Signal, 8)
+	signal.Notify(ch, heldSignals...)
+	return func() []os.Signal {
+		signal.Stop(ch)
+		var got []os.Signal
+		for {
+			select {
+			case s := <-ch:
+				got = append(got, s)
+			default:
+				return got
+			}
+		}
+	}
 }
 
 // fetchFailedNote is the warning for a real run whose fetch of any remote

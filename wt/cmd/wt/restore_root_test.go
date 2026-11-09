@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -114,6 +116,12 @@ func postCheckoutHook(t *testing.T, repo string) string {
 	t.Helper()
 	marker := filepath.Join(t.TempDir(), "hook-ran")
 	hook := cgit(t, repo, "rev-parse", "--path-format=absolute", "--git-path", "hooks/post-checkout")
+	// Never outside the repository: a core.hooksPath (global or local) would
+	// point --git-path at a shared hooks directory.
+	gitDir := cgit(t, repo, "rev-parse", "--path-format=absolute", "--git-dir")
+	if rel, err := filepath.Rel(gitDir, hook); err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("the post-checkout hook path %s is outside %s; refusing to write it", hook, gitDir)
+	}
 	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -252,21 +260,37 @@ func TestRestoreRootCmdDryRunChangesNothing(t *testing.T) {
 // terminal and an empty answer is exit 3 with nothing changed. Why: the
 // command resets the root, so it asks, and a script must not hang.
 func TestRestoreRootCmdApproval(t *testing.T) {
-	t.Run("no terminal", func(t *testing.T) {
-		a := restoreRootApp(t)
-		dir := cleanupRepo(t)
-		rootOnTopic(t, dir)
-		world, before := repoWorld(t, dir), rootState(t, dir)
+	// Piped input is never approval: with no terminal even "y" on stdin is
+	// approval missing, so `echo y | wt restore-root` changes nothing.
+	for name, c := range map[string]struct {
+		stdin string
+		json  bool
+	}{"no terminal": {"", false}, "piped y": {"y\n", false}, "piped y json": {"y\n", true}} {
+		t.Run(name, func(t *testing.T) {
+			a := restoreRootApp(t)
+			dir := cleanupRepo(t)
+			rootOnTopic(t, dir)
+			world, before := repoWorld(t, dir), rootState(t, dir)
+			args := []string{"--no-fetch"}
+			if c.json {
+				args = append(args, "--json")
+			}
 
-		_, _, err := runRestoreRoot(t, a, dir, "", "--no-fetch")
+			stdout, _, err := runRestoreRoot(t, a, dir, c.stdin, args...)
 
-		if exitOf(err) != 3 || !strings.Contains(err.Error(), "nothing was changed") {
-			t.Fatalf("err = %v (exit %d)", err, exitOf(err))
-		}
-		if repoWorld(t, dir) != world || rootState(t, dir) != before {
-			t.Error("a run without approval changed the repository")
-		}
-	})
+			if exitOf(err) != 3 || !strings.Contains(err.Error(), "approval missing") || !strings.Contains(err.Error(), "no terminal") {
+				t.Fatalf("err = %v (exit %d)", err, exitOf(err))
+			}
+			if c.json {
+				if env := decodeRestoreRoot(t, stdout); env.Error == nil || !strings.Contains(env.Error.Message, "approval missing") {
+					t.Errorf("envelope = %+v", env)
+				}
+			}
+			if repoWorld(t, dir) != world || rootState(t, dir) != before || rootBranch(t, dir) != "topic" {
+				t.Error("a run without approval changed the repository")
+			}
+		})
+	}
 	t.Run("yes", func(t *testing.T) {
 		a := restoreRootApp(t)
 		dir := cleanupRepo(t)
@@ -870,5 +894,75 @@ func TestRestoreRootCmdWarnsOnAFailedFetch(t *testing.T) {
 		if !strings.Contains(w, "a fetch failed ("+remote+":") || !strings.Contains(w, "the fast-forward check used the last fetched state") {
 			t.Errorf("%s: warnings = %q", remote, w)
 		}
+	}
+}
+
+// TestRestoreRootCmdRejectsBadToNames checks --to refuses, as a usage error
+// (exit 1, the error document under --json, nothing created), a name that is
+// empty or only whitespace, "." or "..", or .git or .worktrees in any case.
+// Why: such a name made a directory literally called " " or
+// .worktrees/.worktrees, or would aim at the repository's own metadata.
+func TestRestoreRootCmdRejectsBadToNames(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	world, before := repoWorld(t, dir), rootState(t, dir)
+	for _, name := range []string{"", " ", "\t", ".", "..", ".git", ".GIT", ".worktrees", ".Worktrees", " .git "} {
+		stdout, _, err := runRestoreRoot(t, a, dir, "", "--to", name, "--yes", "--json", "--no-fetch")
+		if exitOf(err) != 1 {
+			t.Errorf("--to %q: exit %d\n%s", name, exitOf(err), stdout)
+			continue
+		}
+		if env := decodeRestoreRoot(t, stdout); env.Error == nil || !strings.Contains(env.Error.Message, "--to") {
+			t.Errorf("--to %q: envelope = %+v", name, env)
+		}
+	}
+	if repoWorld(t, dir) != world || rootState(t, dir) != before {
+		t.Error("a bad --to changed the repository")
+	}
+	entries, _ := os.ReadDir(filepath.Join(dir, ".worktrees"))
+	if len(entries) != 0 {
+		t.Errorf(".worktrees holds %v", entries)
+	}
+}
+
+// TestRestoreRootCmdSignalDuringTheMoveDoesNotStopIt sends SIGINT to the
+// process after the confirmation, as the move starts: the move still runs to
+// the end, its result is printed, the exit code is the result's, and stderr
+// says the signal arrived and did not stop it. The test keeps its own
+// SIGINT handler for the duration so the test binary survives either way.
+// Why: a move killed part-way leaves a half-built copy or a partly reset
+// root with no word on which step was reached.
+func TestRestoreRootCmdSignalDuringTheMoveDoesNotStopIt(t *testing.T) {
+	guard := make(chan os.Signal, 1)
+	signal.Notify(guard, syscall.SIGINT)
+	t.Cleanup(func() { signal.Stop(guard) })
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	afterRestoreRootConfirm = func() {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			t.Fatal(err)
+		}
+		select { // delivered to every registered channel at once
+		case <-guard:
+		case <-time.After(5 * time.Second):
+			t.Fatal("SIGINT was not delivered")
+		}
+	}
+
+	stdout, stderr, err := runRestoreRoot(t, a, dir, "", "--yes", "--json", "--no-fetch")
+
+	if exitOf(err) != 0 {
+		t.Fatalf("exit %d (%v)\n%s\n%s", exitOf(err), err, stdout, stderr)
+	}
+	if env := decodeRestoreRoot(t, stdout); env.Outcome != "moved" {
+		t.Errorf("envelope = %+v", env)
+	}
+	if !strings.Contains(stderr, "interrupted (signal interrupt): the move was not stopped; see the result above") {
+		t.Errorf("stderr = %q", stderr)
+	}
+	if rootBranch(t, dir) != "main" {
+		t.Errorf("root on %s", rootBranch(t, dir))
 	}
 }

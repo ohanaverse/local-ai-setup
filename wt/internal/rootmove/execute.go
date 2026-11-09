@@ -168,7 +168,8 @@ func (r *run) recovery(s step, rf *removal.ReleaseFailed) string {
 //
 //  0. unless SkipStartRecheck: the root still equals Preflight's fingerprint
 //     (else refused source_changed) and no other live wt session holds it
-//     (else refused root_held); nothing is created before this;
+//     (else refused root_held); a re-check that cannot read is refused
+//     unreadable; nothing is created before this;
 //  1. worktree.CreateDetachedAt: the destination, detached at the branch tip;
 //  2. with uncommitted work, rescue's ExecuteInto carries and verifies it,
 //  3. and records it; the record is required (record_not_written otherwise);
@@ -194,17 +195,14 @@ func (e Engine) Execute(p *Plan) Outcome {
 
 	// 0. The root must still be what was checked and shown.
 	if !p.skipStart {
+		// A re-check that cannot read is refused: nothing exists yet.
 		if d, err := rp.SourceUnchanged(); err != nil {
-			r.o.Status, r.o.Code = rescue.StatusFailed, rescue.CodeUnreadable
-			r.o.Reason = fmt.Sprintf("could not re-read the root: %v; nothing was created", err)
-			return r.o
+			return r.refuse(rescue.CodeUnreadable, "could not re-read the root: %s; nothing was created", cleanup.Flatten(err.Error()))
 		} else if d != "" {
 			return r.refuse(rescue.CodeSourceChanged, "the root changed since it was checked (%s); nothing was created", cleanup.OneLine(d))
 		}
 		if held, err := e.heldBy(rootGit, p.Repo); err != nil {
-			r.o.Status, r.o.Code = rescue.StatusFailed, rescue.CodeUnreadable
-			r.o.Reason = fmt.Sprintf("%v; nothing was created", err)
-			return r.o
+			return r.refuse(rescue.CodeUnreadable, "%s; nothing was created", cleanup.Flatten(err.Error()))
 		} else if held != "" {
 			return r.refuse(CodeRootHeld, "another wt session started in the root since it was checked: %s; nothing was created", held)
 		}

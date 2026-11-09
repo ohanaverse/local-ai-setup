@@ -198,12 +198,12 @@ func TestPreflightRefusals(t *testing.T) {
 			f := topic(t)
 			f.git("update-index", "--assume-unchanged", "README")
 			return f
-		}, "", CodeHiddenIndex, []string{"assume-unchanged", "skip-worktree"}},
+		}, "", CodeHiddenIndex, []string{"assume-unchanged", "skip-worktree", "git update-index --no-assume-unchanged <path>", "git sparse-checkout disable"}},
 		{"skip-worktree entry on a clean root", func(t *testing.T) *fixture {
 			f := topic(t)
 			f.git("update-index", "--skip-worktree", "README")
 			return f
-		}, "", CodeHiddenIndex, []string{"sparse"}},
+		}, "", CodeHiddenIndex, []string{"sparse", "git sparse-checkout disable", "git update-index --no-assume-unchanged <path>"}},
 		{"operation in progress", func(t *testing.T) *fixture {
 			f := topic(t)
 			side := f.Worktree("side")

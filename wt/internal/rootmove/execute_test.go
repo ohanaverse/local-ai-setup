@@ -688,6 +688,22 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
 			wantReason(t, o, "is at "+other+", not the branch tip "+p.Head)
 		})
+		// The destination at the right commit but not on the branch: the
+		// commit check passes, so only the branch check can catch it.
+		t.Run("destination detached", func(t *testing.T) {
+			_, eng, p := dirtyPlan(t)
+			afterSwitch(t, func(dest string) { gitIn(t, dest, "switch", "-q", "--detach") })
+			o := eng.Execute(p)
+			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
+			wantReason(t, o, "the new worktree "+p.DestPath+" is on a detached HEAD, not topic")
+		})
+		t.Run("destination on another branch", func(t *testing.T) {
+			_, eng, p := dirtyPlan(t)
+			afterSwitch(t, func(dest string) { gitIn(t, dest, "switch", "-q", "-c", "other") })
+			o := eng.Execute(p)
+			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
+			wantReason(t, o, "is on refs/heads/other, not topic")
+		})
 		t.Run("branch moved", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			var other string
@@ -808,6 +824,29 @@ func TestExecuteStartRecheck(t *testing.T) {
 		noReset(t, trace(), f.Dir)
 		if after := f.rootCheckout(); after != before {
 			t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+	// A start re-check that cannot read the claims has created nothing, so it
+	// is refused (the schema's "before anything was created"), not failed.
+	t.Run("claims unreadable, rechecked", func(t *testing.T) {
+		f, eng, p := dirtyPlan(t)
+		sessions := filepath.Join(f.commonDir(), "wt-sessions")
+		if err := os.MkdirAll(sessions, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(sessions, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
+		before := f.rootState()
+		o := eng.Execute(p)
+		if o.Status == rescue.StatusMoved {
+			t.Skip("an unreadable claims directory is still readable here (root?)")
+		}
+		wantStatus(t, o, rescue.StatusRefused, rescue.CodeUnreadable)
+		wantReason(t, o, "nothing was created")
+		if after := f.rootState(); after != before || o.Created {
+			t.Errorf("Execute changed the repository (Created %v)", o.Created)
 		}
 	})
 	t.Run("claim, rechecked", func(t *testing.T) {

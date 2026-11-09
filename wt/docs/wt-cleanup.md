@@ -411,8 +411,8 @@ wt restore-root --to spike --yes   # no prompt; --to names only the directory un
 | `--json` | one document, [restore-root-result.schema.json](../../docs/contracts/restore-root-result.schema.json) (samples beside it), printed on refusal and failure too |
 | `--no-fetch` | do not fetch before the fast-forward check |
 
-A real run fetches every remote first, read-only, exactly as `wt cleanup` does
-(one fetch of every remote). Uncommitted work is carried by the rescue engine:
+A real run first fetches every remote (it updates remote-tracking refs,
+nothing else), exactly as `wt cleanup` does (one fetch of every remote). Uncommitted work is carried by the rescue engine:
 a new worktree is added detached at the branch's tip, staged, unstaged and
 untracked non-ignored files are copied into it and verified against the root
 (`git status` equal, every path equal in kind, mode, content and link target),
@@ -426,7 +426,10 @@ the update would overwrite an ignored file). Git hooks do not run in any of
 these steps; a `post-checkout` hook gets the same warning as in `wt rescue`.
 `moved` is reported only after both checkouts are read back. A root with
 nothing uncommitted skips the copy and the record; it needs an unchanged
-fingerprint and a clean status to be released.
+fingerprint and a clean status to be released. Copying untracked files is the
+slow part: measured at about 17 ms per file (2000 untracked files took about
+34 s), with no progress output while it runs; this is an observed cost, not a
+promise.
 
 Refused, with nothing created (JSON `code` in brackets): a detached HEAD
 (`detached_root`; run `git switch -c <name>` first); a root already on the
@@ -468,8 +471,20 @@ message ends with where the root, the new worktree and the work are:
 | the fast-forward | on the default branch | on the branch | all moved; only the fast-forward is missing (a warning) |
 | the final read-back (`verify_failed`) | as read back | as read back | nothing is undone; in the copy and the record |
 
+Once the confirmation is answered (or with `--yes`), SIGINT, SIGTERM and
+SIGHUP to wt do not stop the move: wt finishes, prints the result and then
+`interrupted (signal ...): the move was not stopped; see the result above`. A
+Ctrl-C on the terminal also reaches the git command running at that moment;
+the step it kills fails and its row above is printed. A move killed from
+outside (SIGKILL, power loss) is recovered by the same table: the root is
+untouched until the release, and a half-built `.worktrees/<name>` is cleared
+with `wt remove <path> --force --accept-loss` (add `--yes` without a terminal).
+
 Running `wt restore-root` again after a failure is refused while the kept
-directory exists; `wt remove` clears it with its usual approvals once you have checked the work (a copy holding uncommitted work is dirty and is never covered by a record, so expect `--accept-loss` and `--force`).
+directory exists; check the work, then clear it with `wt remove`. For a kept
+copy holding uncommitted work, `wt remove <path> --yes --dry-run` says
+`refused: needs --force, --accept-loss` (verified on a half-built copy), so
+the command is `wt remove <path> --force --accept-loss`.
 
 **Declared losses.** Ignored files and empty directories stay in the root
 (ignored files are never overwritten or removed; the count is reported). File
