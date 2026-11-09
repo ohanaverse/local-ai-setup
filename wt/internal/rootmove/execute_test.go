@@ -163,6 +163,13 @@ func noReset(t *testing.T, all []traced, root string) {
 	}
 }
 
+// otherCommit makes a commit on top of head (same tree) in dir's
+// repository without moving any ref, and returns it.
+func otherCommit(t *testing.T, dir, head string) string {
+	t.Helper()
+	return gitIn(t, dir, "commit-tree", head+"^{tree}", "-p", head, "-m", "elsewhere")
+}
+
 // dirtyPlan is a root on topic (one unpushed commit) with a staged file, an
 // unstaged edit and an untracked file, and its checked plan.
 func dirtyPlan(t *testing.T) (*fixture, Engine, *Plan) {
@@ -432,7 +439,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			trace := traceGit(t)
 			o := eng.Execute(p)
 			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
-			wantReason(t, o, "The root is untouched", "in the verified copy at "+p.DestPath)
+			wantReason(t, o, "nothing was reset or removed", "in the verified copy at "+p.DestPath)
 			noReset(t, trace(), f.Dir)
 			if after := f.rootCheckout(); after != edited {
 				t.Errorf("the root changed after the edit:\nwant:\n%s\ngot:\n%s", edited, after)
@@ -450,7 +457,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			trace := traceGit(t)
 			o := eng.Execute(p)
 			wantStatus(t, o, rescue.StatusFailed, CodeRootHeld)
-			wantReason(t, o, "The root is untouched", p.DestPath)
+			wantReason(t, o, "nothing was reset or removed", p.DestPath)
 			noReset(t, trace(), f.Dir)
 			if after := f.rootCheckout(); after != before {
 				t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
@@ -458,6 +465,31 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			wantCopy(t, p.DestPath, p.Head, pre, "")
 			if o.Record == nil || rev(f.Dir, o.Record.Ref) == "" {
 				t.Errorf("record = %v, want it kept", o.Record)
+			}
+		})
+		t.Run("claims unreadable", func(t *testing.T) {
+			f, eng, p := dirtyPlan(t)
+			before := f.rootCheckout()
+			sessions := filepath.Join(f.commonDir(), "wt-sessions")
+			swap(t, &beforeRelease, func() {
+				if err := os.MkdirAll(sessions, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(sessions, 0); err != nil {
+					t.Fatal(err)
+				}
+			})
+			t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
+			trace := traceGit(t)
+			o := eng.Execute(p)
+			if o.Status == rescue.StatusMoved {
+				t.Skip("an unreadable claims directory is still readable here (root?)")
+			}
+			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
+			wantReason(t, o, "not released", "nothing was reset or removed")
+			noReset(t, trace(), f.Dir)
+			if after := f.rootCheckout(); after != before {
+				t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
 			}
 		})
 		t.Run("release refused", func(t *testing.T) {
@@ -468,7 +500,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			})
 			o := eng.Execute(p)
 			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
-			wantReason(t, o, "planted refusal", "The root is untouched")
+			wantReason(t, o, "planted refusal", "nothing was reset or removed")
 			if after := f.rootCheckout(); after != before {
 				t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
 			}
@@ -480,6 +512,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 
 	t.Run("4 after the reset", func(t *testing.T) {
 		finish := []string{"git switch main", "git switch topic"}
+		statusFirst := "first run `git status` in the root"
 		stub := func(t *testing.T, rf *removal.ReleaseFailed) (*fixture, *Plan, Outcome) {
 			f, eng, p := dirtyPlan(t)
 			pre := statusOf(f.Dir)
@@ -496,21 +529,21 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		t.Run("switch", func(t *testing.T) {
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageSwitch, Result: removal.ReleaseResult{Reset: true, Removed: 1}, Err: errors.New("planted switch failure")})
 			wantReason(t, o, append(finish, "planted switch failure", "reset and clean on topic")...)
-			if strings.Contains(o.Reason, "partly changed") {
-				t.Errorf("a certain failure says the root may be partly changed: %q", o.Reason)
+			if strings.Contains(o.Reason, "partly changed") || strings.Contains(o.Reason, statusFirst) {
+				t.Errorf("a certain switch failure says the root may be partly changed or dirty: %q", o.Reason)
 			}
 		})
 		t.Run("switch uncertain", func(t *testing.T) {
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageSwitch, Result: removal.ReleaseResult{Reset: true, Removed: 1}, Uncertain: true, Err: errors.New("killed")})
-			wantReason(t, o, append(finish, "the root may be partly changed: run git status there")...)
+			wantReason(t, o, append(finish, "the root may be partly changed: run git status there", statusFirst)...)
 		})
 		t.Run("reset", func(t *testing.T) {
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageReset, Uncertain: true, Err: errors.New("planted reset failure")})
-			wantReason(t, o, append(finish, "the root may be partly changed: run git status there", "still on topic")...)
+			wantReason(t, o, append(finish, "the root may be partly changed: run git status there", "still on topic", statusFirst)...)
 		})
 		t.Run("verify_clean", func(t *testing.T) {
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageVerifyClean, Result: removal.ReleaseResult{Reset: true, Removed: 1}, Err: errors.New("planted leftovers")})
-			wantReason(t, o, append(finish, "was reset on topic but is not clean", "git status")...)
+			wantReason(t, o, append(finish, "was reset on topic but is not clean", statusFirst)...)
 		})
 		t.Run("real release, then the root back on the branch", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
@@ -572,7 +605,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 				t.Skipf("the read-only directory stopped the release before the reset: %s", o.Reason)
 			}
 			wantStatus(t, o, rescue.StatusFailed, CodeReleaseFailed)
-			wantReason(t, o, "was reset on topic", "carried untracked", "git status", "git switch main", "git switch topic")
+			wantReason(t, o, "was reset on topic", "carried untracked", "first run `git status` in the root", "git switch main", "git switch topic")
 			if b, err := os.ReadFile(filepath.Join(sub, "left.txt")); err != nil || string(b) != "left" {
 				t.Errorf("the leftover file = %q, %v; want it still in the root", b, err)
 			}
@@ -608,7 +641,64 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		}
 	})
 
+	t.Run("5 branch moved before the switch", func(t *testing.T) {
+		f, eng, p := dirtyPlan(t)
+		pre := statusOf(f.Dir)
+		var other string
+		swap(t, &afterRelease, func() {
+			other = otherCommit(t, f.Dir, p.Head)
+			gitIn(t, f.Dir, "update-ref", "refs/heads/topic", other)
+		})
+		o := eng.Execute(p)
+		wantStatus(t, o, rescue.StatusFailed, CodeSwitchFailed)
+		wantReason(t, o, "moved to "+other, "detached at "+p.Head, "nothing was lost", p.DestPath)
+		if strings.Contains(o.Reason, "finishes it") {
+			t.Errorf("a moved branch is told the switch finishes it: %q", o.Reason)
+		}
+		wantRootOnDefault(t, f)
+		wantCopy(t, p.DestPath, p.Head, pre, "")
+	})
+
 	t.Run("7 read-back", func(t *testing.T) {
+		t.Run("root not clean", func(t *testing.T) {
+			f, eng, p := dirtyPlan(t)
+			swap(t, &afterRelease, func() { f.write(f.Dir, "stray.txt", "after the release") })
+			o := eng.Execute(p)
+			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
+			wantReason(t, o, "the root is not clean", "stray.txt")
+		})
+		// afterSwitch runs the real destination switch, then move in dest.
+		afterSwitch := func(t *testing.T, move func(dest string)) {
+			swap(t, &stepGit, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+				o, err := g.Run(args...)
+				if err == nil && o.Code == 0 && slices.Contains(args, "switch") {
+					move(g.Dir)
+				}
+				return o, err
+			})
+		}
+		t.Run("destination HEAD moved", func(t *testing.T) {
+			f, eng, p := dirtyPlan(t)
+			var other string
+			afterSwitch(t, func(dest string) {
+				other = otherCommit(t, f.Dir, p.Head)
+				gitIn(t, dest, "update-ref", "--no-deref", "HEAD", other)
+			})
+			o := eng.Execute(p)
+			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
+			wantReason(t, o, "is at "+other+", not the branch tip "+p.Head)
+		})
+		t.Run("branch moved", func(t *testing.T) {
+			f, eng, p := dirtyPlan(t)
+			var other string
+			afterSwitch(t, func(dest string) {
+				other = otherCommit(t, f.Dir, p.Head)
+				gitIn(t, dest, "update-ref", "refs/heads/topic", other)
+			})
+			o := eng.Execute(p)
+			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
+			wantReason(t, o, "the branch topic is at "+other+", not "+p.Head)
+		})
 		t.Run("destination edited", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			swap(t, &afterRelease, func() { f.write(p.DestPath, "README", "changed after the release") })
@@ -712,9 +802,7 @@ func TestExecuteStartRecheck(t *testing.T) {
 		before := f.rootCheckout()
 		trace := traceGit(t)
 		o := eng.Execute(p)
-		if o.Status != rescue.StatusFailed {
-			t.Fatalf("outcome = %s %s (%s), want failed", o.Status, o.Code, o.Reason)
-		}
+		wantStatus(t, o, rescue.StatusFailed, rescue.CodeSourceChangedMid)
 		noReset(t, trace(), f.Dir)
 		if after := f.rootCheckout(); after != before {
 			t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)

@@ -66,6 +66,7 @@ const (
 	stepBeforeReset                 // 4, before the reset: the claim re-check or a refused release
 	stepAfterReset                  // 4, after the reset: a *removal.ReleaseFailed
 	stepDestSwitch                  // 5: the destination onto the branch
+	stepBranchMoved                 // 5, the branch moved before the switch: not switched
 	stepReadBack                    // 7: the final read-back
 )
 
@@ -107,6 +108,10 @@ func (r *run) recovery(s step, rf *removal.ReleaseFailed) string {
 	p := r.p
 	b, d, dest := p.Branch, p.Default, p.DestPath
 	finish := fmt.Sprintf("To finish by hand: `git switch %s` in the root, then `git switch %s` in %s (running `wt restore-root` again is refused, the directory exists).", d, b, dest)
+	// A root that may hold leftovers (the reset may not have run, carried
+	// files may remain) must be looked at before it is switched, or the
+	// switch carries them onto the default.
+	finishDirty := fmt.Sprintf("To finish by hand: first run `git status` in the root and make sure whatever it lists is also in the copy at %s before you clean it, then `git switch %s` in the root, then `git switch %s` in %s (running `wt restore-root` again is refused, the directory exists).", dest, d, b, dest)
 	switch s {
 	case stepCreate:
 		if r.o.Created {
@@ -122,9 +127,9 @@ func (r *run) recovery(s step, rf *removal.ReleaseFailed) string {
 		if r.o.Record != nil {
 			where += ", recorded at " + r.o.Record.Ref
 		} else if !p.rp.HasDirt() {
-			where = "the new worktree at " + dest + " is a clean checkout of it"
+			where = "the new worktree at " + dest + " is a clean checkout of " + b
 		}
-		return fmt.Sprintf("The root is untouched (still on %s, nothing was reset) and %s.", b, where)
+		return fmt.Sprintf("In the root nothing was reset or removed, and %s.", where)
 	case stepAfterReset:
 		var root string
 		switch rf.Stage {
@@ -142,9 +147,15 @@ func (r *run) recovery(s step, rf *removal.ReleaseFailed) string {
 		if rf.Uncertain {
 			root += "; the root may be partly changed: run git status there"
 		}
-		return fmt.Sprintf("%s. The new worktree at %s is the verified copy, detached at the tip of %s; %s. %s", root, dest, b, r.work(), finish)
+		how := finishDirty
+		if rf.Stage == removal.StageSwitch && !rf.Uncertain {
+			how = finish
+		}
+		return fmt.Sprintf("%s. The new worktree at %s is the verified copy, detached at the tip of %s; %s. %s", root, dest, b, r.work(), how)
 	case stepDestSwitch:
 		return fmt.Sprintf("The root is on %s, clean. The new worktree at %s is detached at the tip of %s with all the work (%s): `git switch %s` there finishes it.", d, dest, b, r.work(), b)
+	case stepBranchMoved:
+		return fmt.Sprintf("The root is on %s, clean. The new worktree at %s was left detached at %s with all the work (%s), so nothing was lost; do not switch it onto %s blindly, which would lay the work over the moved branch: decide where the work belongs first.", d, dest, p.Head, r.work(), b)
 	case stepReadBack:
 		return fmt.Sprintf("Nothing was undone; %s.", r.work())
 	}
@@ -282,7 +293,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	if tip, err := revCommit(destGit, "refs/heads/"+p.Branch); err != nil {
 		return r.fail(stepDestSwitch, nil, CodeSwitchFailed, "could not read the branch %s: %v", p.Branch, err)
 	} else if tip != p.Head {
-		return r.fail(stepDestSwitch, nil, CodeSwitchFailed, "the branch %s moved to %s since the move started, so the new worktree was not switched onto it", p.Branch, tip)
+		return r.fail(stepBranchMoved, nil, CodeSwitchFailed, "the branch %s moved to %s since the move started, so the new worktree was not switched onto it", p.Branch, tip)
 	}
 	if o, err := stepGit(destGit, slices.Concat(destSwitchConfig, []string{"switch", "--no-overwrite-ignore", p.Branch})...); err != nil {
 		return r.fail(stepDestSwitch, nil, CodeSwitchFailed, "git switch %s in the new worktree: %v", p.Branch, err)
