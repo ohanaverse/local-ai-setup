@@ -36,8 +36,9 @@ func DefaultBranch(ref, path string) string {
 // would be. It reads only, and creates nothing: every refusal is made here,
 // before anything exists. row is re-checked first (cleanup.Rescan: no fetch,
 // no gh), so the facts are as of now. name is the branch to create ("" for
-// DefaultBranch). A refusal is a *Refusal; any other error is a failure to
-// read.
+// DefaultBranch); with ForRoot it is the destination's directory name ("" for
+// the root's branch) and the plan is Detached. A refusal is a *Refusal; any
+// other error is a failure to read.
 func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 	switch row.Kind {
 	case cleanup.KindWorktree:
@@ -55,9 +56,14 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
 	p.Counts.IgnoredLeft = fresh.Losses.IgnoredEntries
 
+	primary := false
 	for _, b := range fresh.Blockers {
 		switch b.Code {
 		case cleanup.BlockPrimary:
+			primary = true
+			if e.ForRoot {
+				continue
+			}
 			return nil, refuse(CodePrimary, "this is the repository's primary checkout; moving its work off it is a separate step (#522)")
 		case cleanup.BlockOperation:
 			return nil, refuse(CodeOperation, fmt.Sprintf("an operation is in progress there (%s); finish or abort it first", cleanup.OneLine(b.Detail)))
@@ -65,12 +71,22 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 			p.Warnings = append(p.Warnings, "another wt session holds this worktree; if it edits files during the copy the rescue fails rather than copy a stale state")
 		}
 	}
+	if e.ForRoot {
+		// Root mode moves the root's own branch: a linked worktree is rescue's
+		// source, and a detached root has no branch to move.
+		if !primary {
+			return nil, refuse(CodeNotWorktree, "root mode takes only the repository's primary checkout")
+		}
+		if !strings.HasPrefix(fresh.Ref, "refs/heads/") || fresh.Ref == "refs/heads/" {
+			return nil, refuse(CodeNotWorktree, "a detached root has no branch to keep")
+		}
+	}
 	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
 	if fresh.Losses.GatesUnknown {
 		return nil, refuse(CodeGatesUnknown, "the worktree's state could not be read, so nothing can be copied faithfully")
 	}
 	// losses: raw, rescue reads what the worktree holds; a record must not hide it (a second rescue stays possible)
-	if !fresh.Losses.Dirty && fresh.Losses.Unpushed == 0 && !fresh.Losses.DetachedUnique {
+	if !e.ForRoot && !fresh.Losses.Dirty && fresh.Losses.Unpushed == 0 && !fresh.Losses.DetachedUnique {
 		return nil, refuse(CodeNothingToKeep, "nothing to keep: no uncommitted changes and no commits that exist only here")
 	}
 	if !cleanup.IsFullCommitID(fresh.Head) {
@@ -125,15 +141,30 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 	}
 	p.fp = fp
 
-	branch := name
-	if branch == "" {
-		branch = DefaultBranch(fresh.Ref, fresh.Path)
+	if e.ForRoot {
+		// The branch is the root's own; name is the directory, which defaults
+		// to the branch (the worktree package flattens its slashes).
+		branch := strings.TrimPrefix(fresh.Ref, "refs/heads/")
+		dir := name
+		if dir == "" {
+			dir = branch
+		}
+		dest, err := worktree.CheckNewDetached(p.Repo, dir, branch)
+		if err != nil {
+			return nil, refuse(CodeNameUnavailable, fmt.Sprintf("pass --to NAME to choose another directory name (%v)", err))
+		}
+		p.Branch, p.DirName, p.DestPath, p.Detached = branch, dir, dest, true
+	} else {
+		branch := name
+		if branch == "" {
+			branch = DefaultBranch(fresh.Ref, fresh.Path)
+		}
+		dest, err := worktree.CheckNew(p.Repo, branch)
+		if err != nil {
+			return nil, refuse(CodeNameUnavailable, fmt.Sprintf("pass --to NAME to choose another branch name (%v)", err))
+		}
+		p.Branch, p.DestPath = branch, dest
 	}
-	dest, err := worktree.CheckNew(p.Repo, branch)
-	if err != nil {
-		return nil, refuse(CodeNameUnavailable, fmt.Sprintf("pass --to NAME to choose another branch name (%v)", err))
-	}
-	p.Branch, p.DestPath = branch, dest
 	if w := postCheckoutHookWarning(p.Repo); w != "" {
 		p.Warnings = append(p.Warnings, w)
 	}

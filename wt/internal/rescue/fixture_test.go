@@ -140,6 +140,22 @@ func (f *fixture) engine(cwd string) (Engine, func(path string) cleanup.Row) {
 	}
 }
 
+// rootOnTopic switches the primary checkout to a new branch "topic" and
+// commits work.txt on it (unpushed): the root state `wt restore-root` moves.
+func (f *fixture) rootOnTopic() {
+	f.t.Helper()
+	f.git("switch", "-q", "-c", "topic")
+	f.Commit(f.Dir, "work.txt", "work", "work")
+}
+
+// rootEngine is engine(f.Dir) in root mode, with the primary checkout's row.
+func (f *fixture) rootEngine() (Engine, cleanup.Row) {
+	f.t.Helper()
+	eng, find := f.engine(f.Dir)
+	eng.ForRoot = true
+	return eng, find(f.Dir)
+}
+
 // world is everything outside the source that a failed or refused rescue
 // must leave alone: the refs, the registered worktrees and the files in
 // .worktrees.
