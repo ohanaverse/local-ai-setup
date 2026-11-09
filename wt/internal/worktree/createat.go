@@ -96,12 +96,8 @@ func (e *AddFailedError) Unwrap() error { return e.Err }
 // code in it. The errors are *NotCreatedError (nothing was made) or
 // *AddFailedError (git ran).
 func CreateAt(dir, name, start string) (string, error) {
-	if !fullCommitID.MatchString(start) {
-		return "", &NotCreatedError{Err: fmt.Errorf("start %q is not a full commit id", start)}
-	}
-	out, err := runGit(dir, "cat-file", "-t", start)
-	if err != nil || strings.TrimSpace(string(out)) != "commit" {
-		return "", &NotCreatedError{Err: fmt.Errorf("start %s is not a commit of this repository", start)}
+	if err := checkStartCommit(dir, start); err != nil {
+		return "", err
 	}
 	path, err := CheckNew(dir, name)
 	if err != nil {
@@ -140,4 +136,80 @@ func runGitCombined(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	return cmd.CombinedOutput()
+}
+
+// checkStartCommit refuses (as a *NotCreatedError) a start that is not a full
+// object id naming a commit of the repository at dir.
+func checkStartCommit(dir, start string) error {
+	if !fullCommitID.MatchString(start) {
+		return &NotCreatedError{Err: fmt.Errorf("start %q is not a full commit id", start)}
+	}
+	out, err := runGit(dir, "cat-file", "-t", start)
+	if err != nil || strings.TrimSpace(string(out)) != "commit" {
+		return &NotCreatedError{Err: fmt.Errorf("start %s is not a commit of this repository", start)}
+	}
+	return nil
+}
+
+// CheckNewDetached reports where CreateDetachedAt would put a detached
+// worktree for branch, named dirName, or why it cannot. The path is
+// .worktrees/<dirName flattened>. It writes nothing. Unlike CheckNew it never
+// asks classifyName (which would reuse the worktree that holds branch) and
+// never refuses the default branch: the branch is expected to exist and be
+// held elsewhere. It errors on a flattening failure, a path another branch's
+// worktree uses and a path that already exists.
+func CheckNewDetached(dir, dirName, branch string) (string, error) {
+	path, err := worktreePath(dir, dirName)
+	if err != nil {
+		return "", err
+	}
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		return "", err
+	}
+	if err := pathCollision(entries, path, branch); err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return "", fmt.Errorf("%s already exists", path)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return path, nil
+}
+
+// CreateDetachedAt adds a worktree under dir's .worktrees with a detached
+// HEAD at start and returns its path. It is how a branch the primary checkout
+// still holds gets a second checkout, which git refuses for a branch. start
+// must be a full commit id equal to the tip of refs/heads/branch, so the copy
+// is of the branch as it is now. No branch or ref is made. Hooks are
+// disabled (core.hooksPath=/dev/null) as in CreateAt. The errors are
+// *NotCreatedError (nothing was made; NameUnavailable for a name or path
+// problem) or *AddFailedError (git ran; BranchLeft is always false, DirLeft
+// says the path appeared).
+func CreateDetachedAt(dir, dirName, branch, start string) (string, error) {
+	if err := checkStartCommit(dir, start); err != nil {
+		return "", err
+	}
+	out, err := runGit(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		return "", &NotCreatedError{Err: fmt.Errorf("branch %q does not exist", branch)}
+	}
+	if tip := strings.TrimSpace(string(out)); tip != start {
+		return "", &NotCreatedError{Err: fmt.Errorf("branch %q is at %s, not the start %s", branch, tip, start)}
+	}
+	path, err := CheckNewDetached(dir, dirName, branch)
+	if err != nil {
+		return "", &NotCreatedError{NameUnavailable: true, Err: err}
+	}
+	_, e := os.Lstat(path)
+	dirBefore := e == nil
+	if out, err := runGitCombined(dir, "-c", "core.hooksPath="+os.DevNull, "worktree", "add", "--detach", path, start); err != nil {
+		fail := &AddFailedError{Err: fmt.Errorf("git worktree add --detach: %v: %s", err, strings.TrimSpace(string(out)))}
+		if _, e := os.Lstat(path); e == nil && !dirBefore {
+			fail.DirLeft = true
+		}
+		return "", fail
+	}
+	return path, nil
 }

@@ -207,3 +207,204 @@ func TestCreateAtTypesItsFailures(t *testing.T) {
 		t.Fatalf("failed add: %v, want AddFailedError{BranchLeft}", err)
 	}
 }
+
+// TestCreateDetachedAtLeavesHeadDetachedAtStart checks the worktree is made at
+// .worktrees/<branch> with a detached HEAD at start while the primary still
+// holds the branch, and that the branch ref and the primary's HEAD do not
+// move. Why: restore-root needs a copy of a branch's tip that git would
+// refuse as a second checkout of the branch.
+func TestCreateDetachedAtLeavesHeadDetachedAtStart(t *testing.T) {
+	dir, _, second := repoWithTwoCommits(t)
+	branch := strings.TrimSpace(gitOut(t, dir, "symbolic-ref", "--short", "HEAD"))
+	refBefore := gitOut(t, dir, "for-each-ref")
+	headBefore := gitOut(t, dir, "symbolic-ref", "HEAD")
+
+	path, err := CreateDetachedAt(dir, branch, branch, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, ".worktrees", branch); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if _, err := runGitCmd(path, "symbolic-ref", "-q", "HEAD"); err == nil {
+		t.Error("HEAD of the new worktree is not detached")
+	}
+	if got := strings.TrimSpace(gitOut(t, path, "rev-parse", "HEAD")); got != second {
+		t.Errorf("HEAD = %s, want %s", got, second)
+	}
+	if after := gitOut(t, dir, "for-each-ref"); after != refBefore {
+		t.Errorf("refs changed:\n%s\n--\n%s", refBefore, after)
+	}
+	if after := gitOut(t, dir, "symbolic-ref", "HEAD"); after != headBefore {
+		t.Errorf("primary HEAD changed: %s -> %s", headBefore, after)
+	}
+}
+
+// TestCreateDetachedAtRefusesAndCreatesNothing checks every bad input (a
+// start that is not a full id or not a commit or not the branch tip, an
+// absent branch, an existing path, a path another branch holds, a dirName
+// that flattens to "..") is a *NotCreatedError, makes no directory or ref, and
+// sets NameUnavailable only for the name and path rows. Why: the add must
+// refuse before anything exists, and the caller tells a taken name from a
+// bad start by type.
+func TestCreateDetachedAtRefusesAndCreatesNothing(t *testing.T) {
+	cases := []struct {
+		name     string
+		dirName  string
+		branch   string
+		start    func(first, second, tree string) string
+		setup    func(t *testing.T, dir string)
+		nameProb bool
+	}{
+		{"short start", "main", "main", func(_, s, _ string) string { return s[:12] }, nil, false},
+		{"not a commit", "main", "main", func(_, _, tr string) string { return tr }, nil, false},
+		{"tip differs", "main", "main", func(f, _, _ string) string { return f }, nil, false},
+		{"branch absent", "nope", "nope", func(_, s, _ string) string { return s }, nil, false},
+		{"path exists", "main", "main", func(_, s, _ string) string { return s }, func(t *testing.T, dir string) {
+			if err := os.MkdirAll(filepath.Join(dir, ".worktrees", "main"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"path used by another branch", "feature-x", "feature/x", func(_, s, _ string) string { return s }, func(t *testing.T, dir string) {
+			gitOut(t, dir, "worktree", "add", "-b", "feature-x", filepath.Join(dir, ".worktrees", "feature-x"))
+		}, true},
+		{"dirName flattens to ..", "..", "main", func(_, s, _ string) string { return s }, nil, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, first, second := repoWithTwoCommits(t)
+			if c.branch == "feature/x" {
+				// the branch must exist at the tip for the path row to be the failure
+				gitOut(t, dir, "branch", "-f", "feature/x", second)
+			}
+			tree := strings.TrimSpace(gitOut(t, dir, "rev-parse", "HEAD^{tree}"))
+			if c.setup != nil {
+				c.setup(t, dir)
+			}
+			refs := gitOut(t, dir, "for-each-ref")
+			wts := gitOut(t, dir, "worktree", "list", "--porcelain")
+			ents := dirEntries(t, filepath.Join(dir, ".worktrees"))
+
+			_, err := CreateDetachedAt(dir, c.dirName, c.branch, c.start(first, second, tree))
+			var nc *NotCreatedError
+			if !errors.As(err, &nc) {
+				t.Fatalf("err = %v, want *NotCreatedError", err)
+			}
+			if nc.NameUnavailable != c.nameProb {
+				t.Errorf("NameUnavailable = %v, want %v", nc.NameUnavailable, c.nameProb)
+			}
+			if after := gitOut(t, dir, "for-each-ref"); after != refs {
+				t.Errorf("refs changed")
+			}
+			if after := gitOut(t, dir, "worktree", "list", "--porcelain"); after != wts {
+				t.Errorf("worktrees changed")
+			}
+			if after := dirEntries(t, filepath.Join(dir, ".worktrees")); after != ents {
+				t.Errorf("directory changed: %q -> %q", ents, after)
+			}
+		})
+	}
+}
+
+// dirEntries lists a directory's names joined, empty when it is absent.
+func dirEntries(t *testing.T, d string) string {
+	t.Helper()
+	es, err := os.ReadDir(d)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, e := range es {
+		names = append(names, e.Name())
+	}
+	return strings.Join(names, ",")
+}
+
+// TestCheckNewDetachedMatchesCreateDetachedAt checks the read-only check gives
+// the path the create then makes, refuses the same name afterwards, and writes
+// nothing itself. Why: restore-root's preflight must refuse with the creator's
+// own rules before anything is written.
+func TestCheckNewDetachedMatchesCreateDetachedAt(t *testing.T) {
+	dir, _, second := repoWithTwoCommits(t)
+	branch := strings.TrimSpace(gitOut(t, dir, "symbolic-ref", "--short", "HEAD"))
+	refs := gitOut(t, dir, "for-each-ref")
+
+	want, err := CheckNewDetached(dir, branch, branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".worktrees")); err == nil {
+		t.Error("CheckNewDetached created .worktrees")
+	}
+	if after := gitOut(t, dir, "for-each-ref"); after != refs {
+		t.Error("CheckNewDetached changed refs")
+	}
+	got, err := CreateDetachedAt(dir, branch, branch, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("create path %q, check path %q", got, want)
+	}
+	if _, err := CheckNewDetached(dir, branch, branch); err == nil {
+		t.Error("CheckNewDetached accepted a path just used")
+	}
+	if _, err := CheckNewDetached(dir, "..", branch); err == nil {
+		t.Error("CheckNewDetached accepted a dirName flattening to ..")
+	}
+}
+
+// TestCreateDetachedAtRunsNoHooks checks a post-checkout hook does not run
+// for the detached add. Why: user code must not rewrite or fail a checkout
+// that has to be a faithful copy of the branch tip.
+func TestCreateDetachedAtRunsNoHooks(t *testing.T) {
+	dir, _, second := repoWithTwoCommits(t)
+	branch := strings.TrimSpace(gitOut(t, dir, "symbolic-ref", "--short", "HEAD"))
+	marker := filepath.Join(t.TempDir(), "ran")
+	hooks := filepath.Join(dir, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateDetachedAt(dir, branch, branch, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(marker); err == nil {
+		t.Error("the post-checkout hook ran")
+	}
+}
+
+// TestCreateDetachedAtTypesItsFailure checks a `git worktree add` that fails
+// is an *AddFailedError with BranchLeft false and DirLeft matching what
+// exists. Why: the caller reports leftovers by type, and this creator never
+// makes a branch.
+func TestCreateDetachedAtTypesItsFailure(t *testing.T) {
+	dir, _, second := repoWithTwoCommits(t)
+	branch := strings.TrimSpace(gitOut(t, dir, "symbolic-ref", "--short", "HEAD"))
+	wt := filepath.Join(dir, ".worktrees")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wt, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(wt, 0o755) })
+	if os.WriteFile(filepath.Join(wt, "probe"), nil, 0o644) == nil {
+		t.Skip("directory writable despite chmod (root?)")
+	}
+	_, err := CreateDetachedAt(dir, branch, branch, second)
+	var af *AddFailedError
+	if !errors.As(err, &af) {
+		t.Fatalf("err = %v, want *AddFailedError", err)
+	}
+	if af.BranchLeft {
+		t.Error("BranchLeft set")
+	}
+	_, statErr := os.Lstat(filepath.Join(wt, branch))
+	if af.DirLeft != (statErr == nil) {
+		t.Errorf("DirLeft = %v, but exists = %v", af.DirLeft, statErr == nil)
+	}
+}
