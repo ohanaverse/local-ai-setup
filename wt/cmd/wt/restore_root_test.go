@@ -158,8 +158,8 @@ func liveClaim(t *testing.T, repo string) {
 	}
 }
 
-// rootState is sourceState for the root: its HEAD, index bytes, status and
-// the hash of every file outside .git. sourceState would walk into the
+// rootState is sourceState for the root: its HEAD, index and .git/config
+// bytes, status and the hash of every file outside .git. sourceState would walk into the
 // root's .git directory, where `wt cleanup`'s merge proof may leave an
 // unreachable loose object (git gc collects it); that is no ref, index or
 // working file.
@@ -175,6 +175,8 @@ func rootState(t *testing.T, repo string) string {
 		return string(b)
 	}
 	idx, _ := os.ReadFile(filepath.Join(repo, ".git", "index"))
+	conf, _ := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	idx = append(idx, conf...)
 	h := sha256.New()
 	filepath.WalkDir(repo, func(p string, d os.DirEntry, err error) error {
 		switch {
@@ -276,7 +278,8 @@ func TestRestoreRootCmdApproval(t *testing.T) {
 		if exitOf(err) != 0 {
 			t.Fatalf("exit %d (%v)\nprompt: %s\nout: %s", exitOf(err), err, errOut, out)
 		}
-		for _, want := range []string{"2 commits, 1 staged, 1 unstaged, 1 untracked file", filepath.Join(".worktrees", "topic"), "main", "Move? [y/N] "} {
+		for _, want := range []string{"2 commits, 1 staged, 1 unstaged, 1 untracked file", filepath.Join(".worktrees", "topic"), "main",
+			"left behind   0 ignored entries", "fast-forward  no: main is already at origin/main", "Move? [y/N] "} {
 			if !strings.Contains(errOut, want) {
 				t.Errorf("prompt lacks %q:\n%s", want, errOut)
 			}
@@ -285,19 +288,24 @@ func TestRestoreRootCmdApproval(t *testing.T) {
 			t.Errorf("out %q, root on %s", out, rootBranch(t, dir))
 		}
 	})
-	t.Run("declined", func(t *testing.T) {
-		a := restoreRootApp(t)
-		dir := cleanupRepo(t)
-		rootOnTopic(t, dir)
-		restoreRootTTY = func(io.Reader, io.Writer) bool { return true }
-		world, before := repoWorld(t, dir), rootState(t, dir)
+	for name, answer := range map[string]string{"empty": "\n", "n": "n\n", "EOF": "", "yes please": "yes please\n"} {
+		t.Run("declined "+name, func(t *testing.T) {
+			a := restoreRootApp(t)
+			dir := cleanupRepo(t)
+			rootOnTopic(t, dir)
+			restoreRootTTY = func(io.Reader, io.Writer) bool { return true }
+			world, before := repoWorld(t, dir), rootState(t, dir)
 
-		_, _, err := runRestoreRoot(t, a, dir, "\n", "--no-fetch")
+			_, _, err := runRestoreRoot(t, a, dir, answer, "--no-fetch")
 
-		if exitOf(err) != 3 || repoWorld(t, dir) != world || rootState(t, dir) != before {
-			t.Fatalf("err = %v (exit %d)", err, exitOf(err))
-		}
-	})
+			if exitOf(err) != 3 || !strings.Contains(err.Error(), "not confirmed; nothing was changed") {
+				t.Fatalf("err = %v (exit %d)", err, exitOf(err))
+			}
+			if repoWorld(t, dir) != world || rootState(t, dir) != before {
+				t.Error("a declined run changed the repository")
+			}
+		})
+	}
 }
 
 // TestRestoreRootCmdYesJSON checks the whole path with --yes --json: exit 0,
@@ -366,6 +374,19 @@ func TestRestoreRootCmdExitCodes(t *testing.T) {
 			excludeWorktrees(t, dir)
 			return dir
 		}, rootmove.CodeNoCommit},
+		{"no default branch", func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "nodefault")
+			if b, err := exec.Command("git", "init", "-q", "-b", "trunk", dir).CombinedOutput(); err != nil {
+				t.Fatalf("init: %v\n%s", err, b)
+			}
+			cgit(t, dir, "config", "user.email", "t@example.com")
+			cgit(t, dir, "config", "user.name", "T")
+			cgit(t, dir, "config", "commit.gpgsign", "false")
+			cleanupCommit(t, dir, "README", "init")
+			cgit(t, dir, "switch", "-q", "-c", "topic")
+			excludeWorktrees(t, dir)
+			return dir
+		}, rootmove.CodeNoDefaultBranch},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			a := restoreRootApp(t)
@@ -720,5 +741,134 @@ func TestRestoreRootCmdPostCheckoutWarningInTextAndJSON(t *testing.T) {
 	}
 	if exists(marker2) {
 		t.Error("the post-checkout hook ran")
+	}
+}
+
+// TestRestoreRootCmdRemedyPrintedWhole checks the worktrees_not_ignored
+// refusal prints its one-line remedy whole, in the text and in the JSON
+// reason, and says "nothing was changed" once. Why: the reason is longer
+// than OneLine's 200-rune cap, which cut the remedy off mid-command.
+func TestRestoreRootCmdRemedyPrintedWhole(t *testing.T) {
+	const remedy = `echo '.worktrees/' >> "$(git rev-parse --git-path info/exclude)"`
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	// The developer's global excludes file may ignore .worktrees/; this
+	// repository must not.
+	cgit(t, dir, "config", "core.excludesFile", os.DevNull)
+	cgit(t, dir, "switch", "-q", "-c", "topic")
+
+	text, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--no-fetch")
+	if exitOf(err) != 2 || !strings.Contains(text, remedy) || strings.Count(text, "nothing was") != 1 {
+		t.Errorf("exit %d, text:\n%s", exitOf(err), text)
+	}
+	stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--json", "--no-fetch")
+	env := decodeRestoreRoot(t, stdout)
+	if exitOf(err) != 2 || env.Code != rootmove.CodeWorktreesNotIgnored || !strings.HasSuffix(env.Reason, remedy) {
+		t.Errorf("exit %d, envelope = %+v", exitOf(err), env)
+	}
+	dry, _, err := runRestoreRoot(t, a, dir, "", "--dry-run", "--no-fetch")
+	if exitOf(err) != 2 || strings.Count(dry, "nothing was changed") != 1 {
+		t.Errorf("dry-run refusal says nothing was changed %d times:\n%s", strings.Count(dry, "nothing was changed"), dry)
+	}
+}
+
+// TestRestoreRootCmdRecoveryPrintedWhole fails a --yes run just before the
+// release (a live claim appears after the confirmation) and checks the
+// recovery sentence, which names the copy and the record, reaches the text
+// and the JSON reason whole although the reason is over 200 runes, and that
+// the text does not also say nothing was changed. Why: the recovery table's
+// row is how the user finds the work after a failure.
+func TestRestoreRootCmdRecoveryPrintedWhole(t *testing.T) {
+	for _, asJSON := range []bool{false, true} {
+		a := restoreRootApp(t)
+		dir := cleanupRepo(t)
+		rootOnTopic(t, dir)
+		afterRestoreRootConfirm = func() { liveClaim(t, dir) }
+		args := []string{"--yes", "--no-fetch"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+
+		out, _, err := runRestoreRoot(t, a, dir, "", args...)
+
+		if exitOf(err) != 2 {
+			t.Fatalf("exit %d\n%s", exitOf(err), out)
+		}
+		refs := cgit(t, dir, "for-each-ref", "--format=%(refname)", "refs/wt/rescued/")
+		closing := ", recorded at " + refs + "."
+		reason := out
+		if asJSON {
+			reason = decodeRestoreRoot(t, out).Reason
+			if len([]rune(reason)) <= 200 {
+				t.Fatalf("the reason is only %d runes; the test proves nothing", len([]rune(reason)))
+			}
+		}
+		if !strings.Contains(reason, "In the root nothing was reset or removed") || !strings.Contains(reason, closing) {
+			t.Errorf("json=%v: the recovery sentence is cut:\n%s", asJSON, reason)
+		}
+		if !asJSON && (strings.Contains(out, "nothing was changed") || strings.Contains(out, " carries ")) {
+			t.Errorf("a failed run's text claims nothing changed or uses the dry-run verb:\n%s", out)
+		}
+	}
+}
+
+// TestRestoreRootTextAndJSONFlattenControls feeds a reason, warning and
+// step holding a newline and ESC bytes, and a tail past 200 runes, through
+// the text and the JSON: no raw ESC or newline inside a line, and the tail
+// kept. Why: reasons quote git and the file system; they must not drive the
+// terminal, and must not be cut either.
+func TestRestoreRootTextAndJSONFlattenControls(t *testing.T) {
+	evil := "bad\nline \x1b]0;title\x07 \x1b[31mred " + strings.Repeat("y", 250) + " TAIL"
+	o := rootmove.Outcome{Status: "failed", Code: "switch_failed", Reason: evil, Completed: []string{evil},
+		Plan: rootmove.Plan{Branch: "topic", Default: "main", Warnings: []string{evil}}, Created: true}
+	var b bytes.Buffer
+	if err := printRestoreRootText(&b, rootmove.Meta{}, o); err != nil {
+		t.Fatal(err)
+	}
+	enc, err := rootmove.EncodeResult(o, rootmove.Meta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := decodeRestoreRoot(t, string(enc))
+	for name, s := range map[string]string{"text": b.String(), "reason": env.Reason, "warning": env.Warnings[0], "completed": env.Completed[0]} {
+		if strings.ContainsAny(s, "\x1b\x07") {
+			t.Errorf("%s holds a control byte: %q", name, s)
+		}
+		if strings.Count(s, " TAIL") != map[bool]int{true: 3, false: 1}[name == "text"] {
+			t.Errorf("%s lost the tail: %q", name, s)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
+		if strings.HasPrefix(line, "line ") {
+			t.Errorf("an embedded newline split a line: %q", line)
+		}
+	}
+}
+
+// TestRestoreRootCmdWarnsOnAFailedFetch makes one remote unreachable (origin,
+// then another remote): a real run still moves and its warnings say a fetch
+// failed and the fast-forward check used the last fetched state. Why: a
+// silent failed fetch would make the fast-forward verdict look current.
+func TestRestoreRootCmdWarnsOnAFailedFetch(t *testing.T) {
+	for _, remote := range []string{"origin", "other"} {
+		a := restoreRootApp(t)
+		dir := cleanupRepo(t)
+		rootOnTopic(t, dir)
+		missing := filepath.Join(t.TempDir(), "gone.git")
+		if remote == "origin" {
+			cgit(t, dir, "remote", "set-url", "origin", missing)
+		} else {
+			cgit(t, dir, "remote", "add", "other", missing)
+		}
+
+		stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--json")
+
+		if exitOf(err) != 0 {
+			t.Fatalf("%s: exit %d\n%s", remote, exitOf(err), stdout)
+		}
+		w := strings.Join(decodeRestoreRoot(t, stdout).Warnings, "\n")
+		if !strings.Contains(w, "a fetch failed ("+remote+":") || !strings.Contains(w, "the fast-forward check used the last fetched state") {
+			t.Errorf("%s: warnings = %q", remote, w)
+		}
 	}
 }

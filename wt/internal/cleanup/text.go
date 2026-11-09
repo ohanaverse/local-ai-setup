@@ -34,6 +34,13 @@ func gitErrText(s string) string {
 // gitErrMax runes. It is gitErrText, exported for cmd/wt.
 func OneLine(s string) string { return gitErrText(s) }
 
+// Flatten is OneLine without the length cap: one sanitised line (every
+// control and bidi rune dropped or made a space, whitespace runs collapsed)
+// of any length. For messages wt composed itself whose end matters, such as
+// wt restore-root's recovery sentences and remedies; text that is git's
+// output stays capped through OneLine where it is quoted.
+func Flatten(s string) string { return flat(s) }
+
 // gitError is a gitFailure: its text is already one sanitised line with
 // only git's stderr capped, so it is never cut again.
 type gitError struct{ msg string }

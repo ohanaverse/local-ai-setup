@@ -146,8 +146,8 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 	var notes []string
 	if f.dryRun {
 		notes = append(notes, dryRunFetchNote)
-	} else if fr := snap.Fetch; !fr.OK && fr.Err != "" {
-		notes = append(notes, "the fetch of origin failed ("+cleanup.OneLine(fr.Err)+"), so the fast-forward check uses the last fetch")
+	} else if w := fetchFailedNote(snap.Fetch); w != "" {
+		notes = append(notes, w)
 	}
 
 	plan, err := eng.Preflight(f.to)
@@ -181,15 +181,35 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 	return writeRestoreRootResult(out, errOut, f.json, meta, eng.Execute(plan))
 }
 
+// fetchFailedNote is the warning for a real run whose fetch of any remote
+// failed ("" when none did): each failed remote with git's (capped) error.
+func fetchFailedNote(fr cleanup.FetchResult) string {
+	var failed []string
+	seen := map[string]bool{}
+	for _, r := range fr.Remotes {
+		if r.Err != "" {
+			failed = append(failed, r.Name+": "+cleanup.OneLine(r.Err))
+			seen[r.Name] = true
+		}
+	}
+	if fr.Err != "" && !seen["origin"] {
+		failed = append([]string{"origin: " + cleanup.OneLine(fr.Err)}, failed...)
+	}
+	if len(failed) == 0 {
+		return ""
+	}
+	return "a fetch failed (" + strings.Join(failed, "; ") + "); the fast-forward check used the last fetched state"
+}
+
 // ffText says whether the default branch will be fast-forwarded and, when
 // not, why.
 func ffText(p rootmove.Plan) string {
-	d := cleanup.OneLine(p.Default)
+	d := cleanup.Flatten(p.Default)
 	switch {
 	case p.DefaultFF:
 		return d + " will be fast-forwarded to origin/" + d
 	case p.FFNote != "":
-		return "no: " + cleanup.OneLine(p.FFNote)
+		return "no: " + cleanup.Flatten(p.FFNote)
 	}
 	return "no"
 }
@@ -197,14 +217,14 @@ func ffText(p rootmove.Plan) string {
 // promptRestoreRoot prints what the move will do and asks y/N (default No).
 func promptRestoreRoot(ask io.Writer, answer io.Reader, p *rootmove.Plan) bool {
 	var b strings.Builder
-	fmt.Fprintf(&b, "wt restore-root will move branch %s out of the root %s:\n", cleanup.OneLine(p.Branch), cleanup.OneLine(p.Repo))
+	fmt.Fprintf(&b, "wt restore-root will move branch %s out of the root %s:\n", cleanup.Flatten(p.Branch), cleanup.Flatten(p.Repo))
 	fmt.Fprintf(&b, "  carries       %s\n", countsText(p.Counts))
 	fmt.Fprintf(&b, "  left behind   %s in the root (not carried)\n", ignoredText(p.Counts.IgnoredLeft))
-	fmt.Fprintf(&b, "  new worktree  %s, on %s\n", cleanup.OneLine(p.DestPath), cleanup.OneLine(p.Branch))
-	fmt.Fprintf(&b, "  the root      goes back to %s, with no uncommitted changes\n", cleanup.OneLine(p.Default))
+	fmt.Fprintf(&b, "  new worktree  %s, on %s\n", cleanup.Flatten(p.DestPath), cleanup.Flatten(p.Branch))
+	fmt.Fprintf(&b, "  the root      goes back to %s, with no uncommitted changes\n", cleanup.Flatten(p.Default))
 	fmt.Fprintf(&b, "  fast-forward  %s\n", ffText(*p))
 	for _, w := range p.Warnings {
-		b.WriteString("  warning: " + cleanup.OneLine(w) + "\n")
+		b.WriteString("  warning: " + cleanup.Flatten(w) + "\n")
 	}
 	b.WriteString("The root gives up its copy of the work only after the new worktree is verified and the record is written.\nMove? [y/N] ")
 	if _, err := io.WriteString(ask, b.String()); err != nil {
@@ -272,8 +292,9 @@ func writeRestoreRootResult(out, errOut io.Writer, asJSON bool, meta rootmove.Me
 	return nil
 }
 
-// printRestoreRootText is the human result. Reasons are rootmove's, printed
-// as they are.
+// printRestoreRootText is the human result. Reasons, steps and warnings are
+// printed whole (cleanup.Flatten: one line, control runes dropped, no length
+// cap): a failure's reason ends with where the work is and how to finish.
 func printRestoreRootText(w io.Writer, meta rootmove.Meta, o rootmove.Outcome) error {
 	p := o.Plan
 	var b strings.Builder
@@ -283,45 +304,49 @@ func printRestoreRootText(w io.Writer, meta rootmove.Meta, o rootmove.Outcome) e
 	switch {
 	case o.Status == rescue.StatusWouldMove:
 		fmt.Fprintf(&b, "would move branch %s from the root %s to %s; the root would go back to %s\n",
-			cleanup.OneLine(p.Branch), cleanup.OneLine(p.Repo), cleanup.OneLine(p.DestPath), cleanup.OneLine(p.Default))
+			cleanup.Flatten(p.Branch), cleanup.Flatten(p.Repo), cleanup.Flatten(p.DestPath), cleanup.Flatten(p.Default))
 	case o.Status == rescue.StatusMoved:
 		fmt.Fprintf(&b, "moved branch %s from the root %s to %s; the root is on %s\n",
-			cleanup.OneLine(p.Branch), cleanup.OneLine(p.Repo), cleanup.OneLine(p.DestPath), cleanup.OneLine(p.Default))
+			cleanup.Flatten(p.Branch), cleanup.Flatten(p.Repo), cleanup.Flatten(p.DestPath), cleanup.Flatten(p.Default))
 	case o.Status == rescue.StatusFailed:
-		fmt.Fprintf(&b, "failed (%s): %s\n", o.Code, cleanup.OneLine(o.Reason))
+		fmt.Fprintf(&b, "failed (%s): %s\n", o.Code, cleanup.Flatten(o.Reason))
 	case o.Code == rootmove.CodeAlreadyDefault:
-		fmt.Fprintf(&b, "nothing to do: %s\n", cleanup.OneLine(o.Reason))
+		fmt.Fprintf(&b, "nothing to do: %s\n", cleanup.Flatten(o.Reason))
 	default:
-		fmt.Fprintf(&b, "refused (%s): %s\n", o.Code, cleanup.OneLine(o.Reason))
-		if !o.Created {
+		fmt.Fprintf(&b, "refused (%s): %s\n", o.Code, cleanup.Flatten(o.Reason))
+		// Once: a dry run said it above, and Execute's own refusals say
+		// "nothing was created".
+		if !o.Created && !meta.DryRun && !strings.Contains(o.Reason, "nothing was created") {
 			b.WriteString("    nothing was changed\n")
 		}
 	}
-	if p.Branch != "" {
-		verb := "carried"
-		if o.Status == rescue.StatusWouldMove {
-			verb = "carries"
-		}
-		fmt.Fprintf(&b, "    branch %s at %s %s %s\n", cleanup.OneLine(p.Branch), p.Head, verb, countsText(p.Counts))
+	// What the branch carries: "would carry" for a dry run, "carried" once
+	// the new worktree exists; a refusal that created nothing carried nothing.
+	verb := ""
+	switch {
+	case o.Status == rescue.StatusWouldMove:
+		verb = "would carry"
+	case o.Status == rescue.StatusMoved || o.Created:
+		verb = "carried"
+	}
+	if p.Branch != "" && verb != "" {
+		fmt.Fprintf(&b, "    branch %s at %s %s %s\n", cleanup.Flatten(p.Branch), p.Head, verb, countsText(p.Counts))
 		fmt.Fprintf(&b, "    left behind: %s in the root\n", ignoredText(p.Counts.IgnoredLeft))
 		if o.Status == rescue.StatusWouldMove {
 			fmt.Fprintf(&b, "    fast-forward: %s\n", ffText(p))
 		}
 	}
 	for _, s := range o.Completed {
-		b.WriteString("    done: " + cleanup.OneLine(s) + "\n")
+		b.WriteString("    done: " + cleanup.Flatten(s) + "\n")
 	}
 	if o.Record != nil {
-		b.WriteString("    record: " + cleanup.OneLine(o.Record.Ref) + " (holds the commits and the working state)\n")
+		b.WriteString("    record: " + cleanup.Flatten(o.Record.Ref) + " (holds the commits and the working state)\n")
 	}
 	if o.FastForwarded {
-		fmt.Fprintf(&b, "    fast-forward: %s now matches origin/%s\n", cleanup.OneLine(p.Default), cleanup.OneLine(p.Default))
+		fmt.Fprintf(&b, "    fast-forward: %s now matches origin/%s\n", cleanup.Flatten(p.Default), cleanup.Flatten(p.Default))
 	}
 	for _, s := range p.Warnings {
-		b.WriteString("    warning: " + cleanup.OneLine(s) + "\n")
-	}
-	if o.Status == rescue.StatusFailed && o.Created {
-		fmt.Fprintf(&b, "    the new worktree %s was kept\n", cleanup.OneLine(p.DestPath))
+		b.WriteString("    warning: " + cleanup.Flatten(s) + "\n")
 	}
 	_, err := io.WriteString(w, b.String())
 	return err

@@ -243,7 +243,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 			if code == "" {
 				code = rescue.CodeCarryFailed
 			}
-			return r.fail(stepCarry, nil, code, "%s", cleanup.OneLine(ro.Reason))
+			return r.fail(stepCarry, nil, code, "%s", cleanup.Flatten(ro.Reason))
 		case ro.Record == nil:
 			why := "the record could not be written"
 			for _, w := range ro.Plan.Warnings {
@@ -278,11 +278,11 @@ func (e Engine) Execute(p *Plan) Outcome {
 		var failed *removal.ReleaseFailed
 		switch {
 		case errors.As(err, &refused):
-			return r.fail(stepBeforeReset, nil, CodeReleaseRefused, "%s", cleanup.OneLine(err.Error()))
+			return r.fail(stepBeforeReset, nil, CodeReleaseRefused, "%s", cleanup.Flatten(err.Error()))
 		case errors.As(err, &failed):
-			return r.fail(stepAfterReset, failed, CodeReleaseFailed, "%s", cleanup.OneLine(err.Error()))
+			return r.fail(stepAfterReset, failed, CodeReleaseFailed, "%s", cleanup.Flatten(err.Error()))
 		}
-		return r.fail(stepAfterReset, &removal.ReleaseFailed{Uncertain: true}, CodeReleaseFailed, "releasing the root failed: %s", cleanup.OneLine(err.Error()))
+		return r.fail(stepAfterReset, &removal.ReleaseFailed{Uncertain: true}, CodeReleaseFailed, "releasing the root failed: %s", cleanup.Flatten(err.Error()))
 	}
 	r.done(fmt.Sprintf("released the root: reset, %d carried untracked files removed, switched to %s", res.Removed, p.Default))
 	afterRelease()

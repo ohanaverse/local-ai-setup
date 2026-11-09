@@ -71,7 +71,7 @@ var Codes = []string{
 func EncodeResult(o Outcome, m Meta) ([]byte, error) {
 	p := o.Plan
 	e := Envelope{Version: EnvelopeVersion, Repo: m.Repo, DryRun: m.DryRun,
-		Outcome: string(o.Status), Code: o.Code, Reason: cleanup.OneLine(o.Reason), Created: o.Created,
+		Outcome: string(o.Status), Code: o.Code, Reason: cleanup.Flatten(o.Reason), Created: o.Created,
 		Branch: p.Branch, Default: p.Default, DefaultFF: p.DefaultFF, FastForwarded: o.FastForwarded,
 		Completed: sanitised(o.Completed), Warnings: sanitised(p.Warnings)}
 	if o.Created || o.Status == rescue.StatusWouldMove {
@@ -92,7 +92,7 @@ func EncodeResult(o Outcome, m Meta) ([]byte, error) {
 func EncodeError(m Meta, err error) ([]byte, error) {
 	msg := "unknown error"
 	if err != nil {
-		msg = cleanup.OneLine(err.Error())
+		msg = cleanup.Flatten(err.Error())
 	}
 	return encode(Envelope{Version: EnvelopeVersion, Repo: m.Repo, DryRun: m.DryRun,
 		Completed: []string{}, Warnings: []string{}, Error: &rescue.ErrorJSON{Message: msg}})
@@ -101,7 +101,7 @@ func EncodeError(m Meta, err error) ([]byte, error) {
 func sanitised(ss []string) []string {
 	out := make([]string, 0, len(ss))
 	for _, s := range ss {
-		out = append(out, cleanup.OneLine(s))
+		out = append(out, cleanup.Flatten(s))
 	}
 	return out
 }
