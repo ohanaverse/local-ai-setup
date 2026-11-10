@@ -56,6 +56,8 @@ jobs:
         # Only the changed packages' own tests, not their dependents' - the
         # full suite still runs beside this job as the merge gate. A change
         # to no .go file under wt/ (docs, go.mod alone) tests nothing here.
+        # -timeout 20m matches test-git-heavy: a git-heavy package's suite can
+        # exceed go's default 10m per-package timeout on a slow runner.
         run: |
           set -euo pipefail
           base="origin/${{ github.base_ref }}"
@@ -68,7 +70,7 @@ jobs:
           fi
           echo "Changed packages:"
           echo "$dirs"
-          go test $(printf './%s ' $dirs)
+          go test -timeout 20m $(printf './%s ' $dirs)
       - name: Tests left the real config directories alone
         run: ../bin/check-config-dirs-untouched
 
