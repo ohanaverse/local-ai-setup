@@ -41,6 +41,8 @@ func TestSeedCloneIsolatesOrigins(t *testing.T) {
 	tpl := Seed(t, SeedOpts{})
 	originA, repoA := tpl.Clone(t)
 	originB, repoB := tpl.Clone(t)
+	Lineage(t, repoA)
+	Lineage(t, repoB)
 
 	// Commit on pair A's repo and push it to pair A's own origin.
 	if err := os.WriteFile(filepath.Join(repoA, "pair-a.txt"), []byte("a"), 0o644); err != nil {
@@ -80,6 +82,7 @@ func TestSeedCloneIsolatesOrigins(t *testing.T) {
 func TestLineageGateNamesThePoison(t *testing.T) {
 	tpl := Seed(t, SeedOpts{})
 	_, repo := tpl.Clone(t)
+	Lineage(t, repo)
 	if err := os.MkdirAll(filepath.Join(repo, ".worktrees"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +108,7 @@ func TestLineageGateNamesThePoison(t *testing.T) {
 func TestArmIndexProbeMakesAWriteVisible(t *testing.T) {
 	tpl := Seed(t, SeedOpts{})
 	_, repo := tpl.Clone(t)
+	Lineage(t, repo)
 	before := RawIndex(t, repo)
 	runGit(t, repo, "status")
 	if after := RawIndex(t, repo); after != before {
@@ -128,6 +132,7 @@ func TestArmIndexProbeMakesAWriteVisible(t *testing.T) {
 func TestRoundTripRejectsCorruptShape(t *testing.T) {
 	tpl := Seed(t, SeedOpts{})
 	_, repo := tpl.Clone(t)
+	Lineage(t, repo)
 	want := combined(t, repo, "worktree", "list", "--porcelain")
 	ghost := filepath.Join(repo, ".git", "worktrees", "ghost")
 	if err := os.MkdirAll(ghost, 0o755); err != nil {
