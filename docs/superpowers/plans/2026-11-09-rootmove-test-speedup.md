@@ -54,7 +54,7 @@
 - [ ] **Step 1: Capture per-test durations**
 
 Run: `cd wt && go test -count=1 -v ./internal/rootmove 2>&1 | grep -E '^(--- PASS|--- FAIL|ok  )'`
-Expected: PASS lines carrying `TestName (Ns)` for all 23 top-level tests plus subtest times, and one `ok ... rootmove Ns` package line.
+Expected: PASS lines carrying `TestName (Ns)` for all 25 top-level tests plus subtest times, and one `ok ... rootmove Ns` package line.
 
 - [ ] **Step 2: Capture the rung-level times**
 
@@ -68,7 +68,7 @@ Expected: the files `execute_test.go` and `preflight_test.go`; the containing to
 
 - [ ] **Step 4: Record both tables**
 
-Paste the duration table and the five-name island census into the PR description working file. No repo files change; no commit.
+Paste the duration table and the four-name island census into the PR description working file. No repo files change; no commit.
 
 ---
 
@@ -235,7 +235,7 @@ git commit -m "refactor(rootmove): per-engine Hooks replace package seam vars (R
 - [ ] **Step 1: Verify the suite is green before the change**
 
 Run: `cd wt && go test ./internal/rootmove`
-Expected: PASS (23 tests).
+Expected: PASS (27 tests — Task 1's 25 plus Task 4's two hooks tests).
 
 - [ ] **Step 2: Re-base the fixture**
 
@@ -248,7 +248,7 @@ Expected: PASS (23 tests).
 - [ ] **Step 4: Run the suite (and `-race`)**
 
 Run: `cd wt && go test ./internal/rootmove && go test -race ./internal/rootmove`
-Expected: PASS both — same 23 tests, same assertions.
+Expected: PASS both — same 27 tests, same assertions.
 
 - [ ] **Step 5: Commit**
 
