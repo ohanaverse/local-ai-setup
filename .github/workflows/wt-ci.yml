@@ -55,7 +55,8 @@ jobs:
       - name: go test the packages this PR touches
         # Only the changed packages' own tests, not their dependents' - the
         # full suite still runs beside this job as the merge gate. A change
-        # to no .go file under wt/ (docs, go.mod alone) tests nothing here.
+        # to nothing a wt test reads (docs, go.mod alone) tests nothing here;
+        # fixtures and testdata map to the packages that read them.
         # -timeout 20m matches test-git-heavy: a git-heavy package's suite can
         # exceed go's default 10m per-package timeout on a slow runner.
         run: |
@@ -63,9 +64,27 @@ jobs:
           base="origin/${GITHUB_BASE_REF}"
           # --diff-filter=d: a deleted .go file's directory may be gone (a
           # removed package), and `go test ./gone` would fail the gate.
-          dirs=$(git diff --name-only --diff-filter=d "$base"...HEAD \
-            | sed -n 's|^wt/\(.*\)/[^/]*\.go$|\1|p; s|^wt/\([^/]*\.go\)$|.|p' \
-            | sort -u)
+          changed=$(git diff --name-only --diff-filter=d "$base"...HEAD)
+          # A .go file maps to its own package. Any other file under wt/
+          # (testdata, a go:embed asset) maps to the package that owns it:
+          # strip a /testdata/... tail, keep the directory only if it holds
+          # .go files. A docs/contracts/ fixture maps to every package whose
+          # tests name docs/contracts (the cross-language contract tests).
+          dirs=$(
+            {
+              printf '%s\n' "$changed" \
+                | sed -n 's|^wt/\(.*\)/[^/]*\.go$|\1|p; s|^wt/\([^/]*\.go\)$|.|p'
+              printf '%s\n' "$changed" | grep -E '^wt/.+/' | grep -vE '\.go$' \
+                | sed 's|/testdata/.*|/x|; s|^wt/||; s|/[^/]*$||' \
+                | while IFS= read -r d; do
+                    ls "$d"/*.go >/dev/null 2>&1 && echo "$d"
+                  done
+              if printf '%s\n' "$changed" | grep -q '^docs/contracts/'; then
+                grep -rl --include='*_test.go' 'docs/contracts' . | xargs -n1 dirname \
+                  | sed 's|^\./||'
+              fi
+            } | sort -u | sed '/^$/d'
+          )
           if [ -z "$dirs" ]; then
             echo "No .go file under wt/ changed; nothing extra to test."
             exit 0
