@@ -61,7 +61,9 @@ jobs:
         run: |
           set -euo pipefail
           base="origin/${GITHUB_BASE_REF}"
-          dirs=$(git diff --name-only "$base"...HEAD \
+          # --diff-filter=d: a deleted .go file's directory may be gone (a
+          # removed package), and `go test ./gone` would fail the gate.
+          dirs=$(git diff --name-only --diff-filter=d "$base"...HEAD \
             | sed -n 's|^wt/\(.*\)/[^/]*\.go$|\1|p; s|^wt/\([^/]*\.go\)$|.|p' \
             | sort -u)
           if [ -z "$dirs" ]; then
@@ -106,7 +108,10 @@ jobs:
       - name: go test (all but the git-heavy packages)
         run: |
           set -euo pipefail
-          pkgs=$(go list ./... | grep -vE "$GIT_HEAVY_RE")
+          all=$(go list ./...)
+          # grep exits 1 on no match; under pipefail that would end the step
+          # before the guard below could name the cause.
+          pkgs=$(grep -vE "$GIT_HEAVY_RE" <<<"$all" || true)
           if [ -z "$pkgs" ]; then echo "No non-git-heavy packages: the split regex matched everything."; exit 1; fi
           go test $pkgs
       # No test may create the real config directories; see the script for
@@ -144,7 +149,8 @@ jobs:
         # themselves get fast.
         run: |
           set -euo pipefail
-          pkgs=$(go list ./... | grep -E "$GIT_HEAVY_RE")
+          all=$(go list ./...)
+          pkgs=$(grep -E "$GIT_HEAVY_RE" <<<"$all" || true)
           if [ -z "$pkgs" ]; then echo "GIT_HEAVY_RE matched no package."; exit 1; fi
           go test -timeout 20m $pkgs
       # This job runs tests too, so it carries the same guard as test's last
