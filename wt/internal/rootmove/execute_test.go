@@ -16,14 +16,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 )
 
-// swap sets a package seam for the test's duration.
-func swap[T any](t *testing.T, p *T, v T) {
-	t.Helper()
-	old := *p
-	*p = v
-	t.Cleanup(func() { *p = old })
-}
-
 // soft runs a read in dir with optional locks off and returns its output,
 // whatever the exit.
 func soft(dir string, args ...string) string {
@@ -390,11 +382,16 @@ func TestExecuteRecoveryRows(t *testing.T) {
 
 	t.Run("2 carry fails", func(t *testing.T) {
 		f, eng, p := dirtyPlan(t)
-		swap(t, &executeInto, func(_ rescue.Engine, rp *rescue.Plan, dest string) rescue.Outcome {
+		fired := false
+		eng.Hooks.ExecuteInto = func(_ rescue.Engine, rp *rescue.Plan, dest string) rescue.Outcome {
+			fired = true
 			return rescue.Outcome{Status: rescue.StatusFailed, Plan: *rp, Code: rescue.CodeCarryFailed, Reason: "planted carry failure", Created: true}
-		})
+		}
 		before := f.rootCheckout()
 		o := eng.Execute(p)
+		if !fired {
+			t.Fatal("ExecuteInto hook did not fire")
+		}
 		wantStatus(t, o, rescue.StatusFailed, rescue.CodeCarryFailed)
 		wantReason(t, o, "planted carry failure", "The root is untouched and all the work is still in it", p.DestPath)
 		if after := f.rootCheckout(); after != before {
@@ -408,14 +405,19 @@ func TestExecuteRecoveryRows(t *testing.T) {
 
 	t.Run("3 no record", func(t *testing.T) {
 		f, eng, p := dirtyPlan(t)
-		swap(t, &executeInto, func(_ rescue.Engine, rp *rescue.Plan, dest string) rescue.Outcome {
+		fired := false
+		eng.Hooks.ExecuteInto = func(_ rescue.Engine, rp *rescue.Plan, dest string) rescue.Outcome {
+			fired = true
 			pl := *rp
 			pl.Warnings = append(slices.Clone(pl.Warnings), rescue.RecordWarningPrefix+"planted")
 			return rescue.Outcome{Status: rescue.StatusMoved, Plan: pl, Created: true}
-		})
+		}
 		trace := traceGit(t)
 		before := f.rootCheckout()
 		o := eng.Execute(p)
+		if !fired {
+			t.Fatal("ExecuteInto hook did not fire")
+		}
 		wantStatus(t, o, rescue.StatusFailed, CodeRecordNotWritten)
 		wantReason(t, o, "planted", "The root is untouched", "not released", p.DestPath)
 		if after := f.rootCheckout(); after != before {
@@ -432,12 +434,17 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			pre := statusOf(f.Dir)
 			var edited string
-			swap(t, &beforeRelease, func() {
+			fired := false
+			eng.Hooks.BeforeRelease = func() {
+				fired = true
 				f.write(f.Dir, "README", "edited again")
 				edited = f.rootCheckout()
-			})
+			}
 			trace := traceGit(t)
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("BeforeRelease hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
 			wantReason(t, o, "nothing was reset or removed", "in the verified copy at "+p.DestPath)
 			noReset(t, trace(), f.Dir)
@@ -453,9 +460,16 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			pre := statusOf(f.Dir)
 			before := f.rootCheckout()
-			swap(t, &beforeRelease, func() { f.liveOther() })
+			fired := false
+			eng.Hooks.BeforeRelease = func() {
+				fired = true
+				f.liveOther()
+			}
 			trace := traceGit(t)
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("BeforeRelease hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, CodeRootHeld)
 			wantReason(t, o, "nothing was reset or removed", p.DestPath)
 			noReset(t, trace(), f.Dir)
@@ -471,17 +485,22 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			before := f.rootCheckout()
 			sessions := filepath.Join(f.commonDir(), "wt-sessions")
-			swap(t, &beforeRelease, func() {
+			fired := false
+			eng.Hooks.BeforeRelease = func() {
+				fired = true
 				if err := os.MkdirAll(sessions, 0o755); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Chmod(sessions, 0); err != nil {
 					t.Fatal(err)
 				}
-			})
+			}
 			t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
 			trace := traceGit(t)
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("BeforeRelease hook did not fire")
+			}
 			if o.Status == rescue.StatusMoved {
 				t.Skip("an unreadable claims directory is still readable here (root?)")
 			}
@@ -495,10 +514,15 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		t.Run("release refused", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			before := f.rootCheckout()
-			swap(t, &releaseRoot, func(cleanup.Git, removal.RootRelease) (removal.ReleaseResult, error) {
+			fired := false
+			eng.Hooks.ReleaseRoot = func(cleanup.Git, removal.RootRelease) (removal.ReleaseResult, error) {
+				fired = true
 				return removal.ReleaseResult{}, &removal.ReleaseRefused{Reason: "planted refusal"}
-			})
+			}
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("ReleaseRoot hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
 			wantReason(t, o, "planted refusal", "nothing was reset or removed")
 			if after := f.rootCheckout(); after != before {
@@ -516,8 +540,15 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		stub := func(t *testing.T, rf *removal.ReleaseFailed) (*fixture, *Plan, Outcome) {
 			f, eng, p := dirtyPlan(t)
 			pre := statusOf(f.Dir)
-			swap(t, &releaseRoot, func(cleanup.Git, removal.RootRelease) (removal.ReleaseResult, error) { return rf.Result, rf })
+			fired := false
+			eng.Hooks.ReleaseRoot = func(cleanup.Git, removal.RootRelease) (removal.ReleaseResult, error) {
+				fired = true
+				return rf.Result, rf
+			}
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("ReleaseRoot hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, CodeReleaseFailed)
 			wantCopy(t, p.DestPath, p.Head, pre, "")
 			if o.Record == nil || rev(f.Dir, o.Record.Ref) == "" {
@@ -549,7 +580,9 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			pre := statusOf(f.Dir)
 			trace := traceGit(t)
-			swap(t, &releaseRoot, func(g cleanup.Git, r removal.RootRelease) (removal.ReleaseResult, error) {
+			fired := false
+			eng.Hooks.ReleaseRoot = func(g cleanup.Git, r removal.RootRelease) (removal.ReleaseResult, error) {
+				fired = true
 				res, err := removal.ReleaseRoot(g, r)
 				if err != nil {
 					t.Errorf("the real release failed: %v", err)
@@ -557,8 +590,11 @@ func TestExecuteRecoveryRows(t *testing.T) {
 				gitIn(t, f.Dir, "switch", "-q", "topic") // the root holds the branch again
 				return removal.ReleaseResult{Reset: true, Removed: res.Removed},
 					&removal.ReleaseFailed{Stage: removal.StageSwitch, Result: removal.ReleaseResult{Reset: true, Removed: res.Removed}, Err: errors.New("planted conflict")}
-			})
+			}
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("ReleaseRoot hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, CodeReleaseFailed)
 			wantReason(t, o, append(finish, p.DestPath)...)
 			if !hasRun(trace(), resetArgv...) {
@@ -594,13 +630,18 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			}
 			pre := statusOf(f.Dir)
 			sub := filepath.Join(f.Dir, "sub")
-			swap(t, &beforeRelease, func() {
+			fired := false
+			eng.Hooks.BeforeRelease = func() {
+				fired = true
 				if err := os.Chmod(sub, 0o555); err != nil {
 					t.Fatal(err)
 				}
-			})
+			}
 			t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("BeforeRelease hook did not fire")
+			}
 			if o.Code == CodeReleaseRefused {
 				t.Skipf("the read-only directory stopped the release before the reset: %s", o.Reason)
 			}
@@ -625,13 +666,18 @@ func TestExecuteRecoveryRows(t *testing.T) {
 	t.Run("5 destination switch fails", func(t *testing.T) {
 		f, eng, p := dirtyPlan(t)
 		pre := statusOf(f.Dir)
-		swap(t, &stepGit, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+		fired := false
+		eng.Hooks.StepGit = func(g cleanup.Git, args ...string) (cleanup.Out, error) {
 			if slices.Contains(args, "switch") {
+				fired = true
 				return cleanup.Out{Code: 128, Stderr: "planted switch failure"}, nil
 			}
 			return g.Run(args...)
-		})
+		}
 		o := eng.Execute(p)
+		if !fired {
+			t.Fatal("StepGit hook did not fire at the switch")
+		}
 		wantStatus(t, o, rescue.StatusFailed, CodeSwitchFailed)
 		wantReason(t, o, "planted switch failure", "on main, clean", "git switch topic", p.DestPath, "finishes it")
 		wantRootOnDefault(t, f)
@@ -645,11 +691,16 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		f, eng, p := dirtyPlan(t)
 		pre := statusOf(f.Dir)
 		var other string
-		swap(t, &afterRelease, func() {
+		fired := false
+		eng.Hooks.AfterRelease = func() {
+			fired = true
 			other = otherCommit(t, f.Dir, p.Head)
 			gitIn(t, f.Dir, "update-ref", "refs/heads/topic", other)
-		})
+		}
 		o := eng.Execute(p)
+		if !fired {
+			t.Fatal("AfterRelease hook did not fire")
+		}
 		wantStatus(t, o, rescue.StatusFailed, CodeSwitchFailed)
 		wantReason(t, o, "moved to "+other, "detached at "+p.Head, "nothing was lost", p.DestPath)
 		if strings.Contains(o.Reason, "finishes it") {
@@ -662,25 +713,42 @@ func TestExecuteRecoveryRows(t *testing.T) {
 	t.Run("7 read-back", func(t *testing.T) {
 		t.Run("root not clean", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
-			swap(t, &afterRelease, func() { f.write(f.Dir, "stray.txt", "after the release") })
+			fired := false
+			eng.Hooks.AfterRelease = func() {
+				fired = true
+				f.write(f.Dir, "stray.txt", "after the release")
+			}
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("AfterRelease hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
 			wantReason(t, o, "the root is not clean", "stray.txt")
 		})
-		// afterSwitch runs the real destination switch, then move in dest.
-		afterSwitch := func(t *testing.T, move func(dest string)) {
-			swap(t, &stepGit, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+		// afterSwitch arms StepGit to run the real destination switch, then
+		// move in dest, and checks the hook fired at the switch when the test
+		// ends (the helper only arms it; the run is the caller's).
+		afterSwitch := func(t *testing.T, eng *Engine, move func(dest string)) {
+			t.Helper()
+			fired := false
+			eng.Hooks.StepGit = func(g cleanup.Git, args ...string) (cleanup.Out, error) {
 				o, err := g.Run(args...)
 				if err == nil && o.Code == 0 && slices.Contains(args, "switch") {
+					fired = true
 					move(g.Dir)
 				}
 				return o, err
+			}
+			t.Cleanup(func() {
+				if !fired {
+					t.Error("StepGit hook did not fire at the switch")
+				}
 			})
 		}
 		t.Run("destination HEAD moved", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			var other string
-			afterSwitch(t, func(dest string) {
+			afterSwitch(t, &eng, func(dest string) {
 				other = otherCommit(t, f.Dir, p.Head)
 				gitIn(t, dest, "update-ref", "--no-deref", "HEAD", other)
 			})
@@ -692,14 +760,14 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		// commit check passes, so only the branch check can catch it.
 		t.Run("destination detached", func(t *testing.T) {
 			_, eng, p := dirtyPlan(t)
-			afterSwitch(t, func(dest string) { gitIn(t, dest, "switch", "-q", "--detach") })
+			afterSwitch(t, &eng, func(dest string) { gitIn(t, dest, "switch", "-q", "--detach") })
 			o := eng.Execute(p)
 			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
 			wantReason(t, o, "the new worktree "+p.DestPath+" is on a detached HEAD, not topic")
 		})
 		t.Run("destination on another branch", func(t *testing.T) {
 			_, eng, p := dirtyPlan(t)
-			afterSwitch(t, func(dest string) { gitIn(t, dest, "switch", "-q", "-c", "other") })
+			afterSwitch(t, &eng, func(dest string) { gitIn(t, dest, "switch", "-q", "-c", "other") })
 			o := eng.Execute(p)
 			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
 			wantReason(t, o, "is on refs/heads/other, not topic")
@@ -707,7 +775,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		t.Run("branch moved", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			var other string
-			afterSwitch(t, func(dest string) {
+			afterSwitch(t, &eng, func(dest string) {
 				other = otherCommit(t, f.Dir, p.Head)
 				gitIn(t, dest, "update-ref", "refs/heads/topic", other)
 			})
@@ -717,8 +785,15 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		})
 		t.Run("destination edited", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
-			swap(t, &afterRelease, func() { f.write(p.DestPath, "README", "changed after the release") })
+			fired := false
+			eng.Hooks.AfterRelease = func() {
+				fired = true
+				f.write(p.DestPath, "README", "changed after the release")
+			}
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("AfterRelease hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
 			wantReason(t, o, "README", p.DestPath)
 			if o.Record == nil || rev(f.Dir, o.Record.Ref) == "" {
@@ -727,8 +802,15 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		})
 		t.Run("root switched away", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
-			swap(t, &afterRelease, func() { gitIn(t, f.Dir, "switch", "-q", "-c", "other") })
+			fired := false
+			eng.Hooks.AfterRelease = func() {
+				fired = true
+				gitIn(t, f.Dir, "switch", "-q", "-c", "other")
+			}
 			o := eng.Execute(p)
+			if !fired {
+				t.Fatal("AfterRelease hook did not fire")
+			}
 			wantStatus(t, o, rescue.StatusFailed, rescue.CodeVerifyFailed)
 			wantReason(t, o, "refs/heads/other", "not main")
 		})
@@ -895,15 +977,24 @@ func TestExecuteRunsGitInRootAndDestFromALinkedWorktree(t *testing.T) {
 	}
 	root, dest := cleanup.ResolvePath(f.Dir), cleanup.ResolvePath(p.DestPath)
 	var dirs []string
-	swap(t, &stepGit, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+	stepFired, releaseFired := false, false
+	eng.Hooks.StepGit = func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+		stepFired = true
 		dirs = append(dirs, g.Dir)
 		return g.Run(args...)
-	})
-	swap(t, &releaseRoot, func(g cleanup.Git, r removal.RootRelease) (removal.ReleaseResult, error) {
+	}
+	eng.Hooks.ReleaseRoot = func(g cleanup.Git, r removal.RootRelease) (removal.ReleaseResult, error) {
+		releaseFired = true
 		dirs = append(dirs, g.Dir, r.Root)
 		return removal.ReleaseRoot(g, r)
-	})
+	}
 	o := eng.Execute(p)
+	if !stepFired {
+		t.Fatal("StepGit hook did not fire")
+	}
+	if !releaseFired {
+		t.Fatal("ReleaseRoot hook did not fire")
+	}
 	wantStatus(t, o, rescue.StatusMoved, "")
 	if len(dirs) < 3 {
 		t.Fatalf("recorded only %q", dirs)

@@ -52,7 +52,7 @@ func (e Engine) fastForward(rootGit cleanup.Git, r *run) {
 		warn("%s was not fast-forwarded to origin/%s: it would overwrite or remove the ignored file %s (git merge cannot be told to keep ignored files); update it yourself when ready", d, d, cleanup.OneLine(strings.Join(hits, ", ")))
 		return
 	}
-	o, err := stepGit(rootGit, slices.Concat(cleanup.WriteConfig(), []string{"merge", "--ff-only", remote})...)
+	o, err := e.Hooks.step(rootGit, slices.Concat(cleanup.WriteConfig(), []string{"merge", "--ff-only", remote})...)
 	switch {
 	case err != nil:
 		warn("%s was not fast-forwarded: git merge --ff-only: %v", d, err)

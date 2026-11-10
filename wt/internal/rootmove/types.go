@@ -42,9 +42,11 @@ const (
 // Engine moves one repository's root. Rescue is the root-mode rescue engine
 // (its G, Prior, In and Classify as `wt rescue` builds them); Rescue.Prior.Repo
 // is the root. Rescue.G.Dir is the caller's directory, which may be a linked
-// worktree, so rootmove never runs git there: see gitAt.
+// worktree, so rootmove never runs git there: see gitAt. Hooks are this run's
+// test seams, set per Engine and never shared.
 type Engine struct {
 	Rescue rescue.Engine
+	Hooks  Hooks
 }
 
 // gitAt is the one way rootmove builds a Git: one that runs in dir with

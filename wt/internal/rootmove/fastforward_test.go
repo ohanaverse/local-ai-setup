@@ -113,13 +113,18 @@ func TestExecuteFastForwardMergeFails(t *testing.T) {
 		t.Fatalf("Preflight: %v", err)
 	}
 	before := rev(f.Dir, "refs/heads/main")
-	swap(t, &stepGit, func(g cleanup.Git, args ...string) (cleanup.Out, error) {
+	fired := false
+	eng.Hooks.StepGit = func(g cleanup.Git, args ...string) (cleanup.Out, error) {
 		if slices.Contains(args, "merge") {
+			fired = true
 			return cleanup.Out{Code: 128, Stderr: "fatal: simulated merge failure"}, nil
 		}
 		return g.Run(args...)
-	})
+	}
 	o := eng.Execute(p)
+	if !fired {
+		t.Fatal("StepGit hook did not fire at the merge")
+	}
 	wantStatus(t, o, rescue.StatusMoved, "")
 	if o.FastForwarded || !hasWarning(o, "merge", "simulated merge failure") {
 		t.Errorf("FastForwarded %v, warnings %q; want a merge-failure warning", o.FastForwarded, o.Plan.Warnings)
