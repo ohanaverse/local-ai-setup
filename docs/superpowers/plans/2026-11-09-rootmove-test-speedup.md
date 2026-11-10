@@ -64,7 +64,7 @@ Expected: one line per recovery rung case with its duration; record which five u
 - [ ] **Step 3: Produce the island census**
 
 Run: `cd wt && grep -ln 't\.Setenv(\|traceGit(' internal/rootmove/*_test.go`
-Expected: the files `execute_test.go` and `preflight_test.go`; the containing top-level tests are `TestExecuteRecoveryRows`, `TestExecuteRecordNotWritableBlocksRelease`, `TestExecuteStartRecheck`, `TestExecuteRunsGitInRootAndDestFromALinkedWorktree`, `TestPreflightNeverFetches`. Verify by locating each call's enclosing `func Test`.
+Expected: the files `execute_test.go` and `preflight_test.go`; the containing top-level tests (four islands) are `TestExecuteRecoveryRows` (traceGit 416/439/457/483/551), `TestExecuteRecordNotWritableBlocksRelease` (753), `TestExecuteStartRecheck` (821 and 867), `TestPreflightNeverFetches` (`preflight_test.go:425`). `TestExecuteRunsGitInRootAndDestFromALinkedWorktree` owns NO env and is not an island (it swaps seam vars, whose shared state Task 4 dissolves).
 
 - [ ] **Step 4: Record both tables**
 
@@ -82,11 +82,11 @@ Paste the duration table and the five-name island census into the PR description
 **Interfaces (Tasks 3–7 consume these exact names):**
 - `type SeedOpts struct{ ExcludeWorktrees bool }` — the only template dimension; each value is its own immutable lineage.
 - `func Seed(t testing.TB, opts SeedOpts) *Template` — memoized per `SeedOpts` behind `sync.OnceValues`; the template is a bare `origin.git` seeded with one `README` commit on `main`, `HEAD` → `main`, and (when `ExcludeWorktrees`) `.worktrees/` in its `info/exclude`. Never mutated after seeding. Template directories are process-scoped (`os.MkdirTemp("", "gittest-tpl-")` — never a test's `t.TempDir`, which would delete the shared template when its first caller ends) and cleaned via `CleanupTemplates()`.
-- `func CleanupTemplates()` — best-effort removal of every seeded template directory; each consuming package's `TestMain` calls it just before `os.Exit` (test files are outside the repo's `os.Remove*` ban).
+- `func CleanupTemplates()` — best-effort removal of every seeded template directory: `os.RemoveAll`, confined to this function, with ONE `fileOpAllowed` entry for `internal/gittest/gittest.go` in the deletion guard (the allow-list is that guard's designed remedy for self-created scratch cleanup; mirror `internal/config/fortest.go`'s precedent entry). Each consuming package's `TestMain` calls it just before `os.Exit`.
 - `func (tpl *Template) Clone(t testing.TB) (origin, repo string)` — per-test pair under `t.TempDir()`: `git clone --bare <tpl.Origin> <tmp>/origin.git`, then `git clone <tmp>/origin.git <tmp>/repo`, then repo config `user.email=t@example.com`, `user.name=T`, `commit.gpgsign=false`. Returns both absolute paths.
 - `func Lineage(t testing.TB, repo string)` — fails the test naming the poison on: any entry under `.worktrees/`, any ref under `refs/wt/rescued/`, any ref `refs/heads/topic`, `info/exclude` content other than the template's expected one, or HEAD not on `main`. (Core `lineageErr(repo string) error` is what tests call directly.)
 - `func RawIndex(t testing.TB, repo string) string` — raw `.git/index` bytes (`"absent"` if missing), read without optional locks, as `rootmove.rootState` reads them today.
-- `func ArmIndexProbe(t testing.TB, repo string)` — sets the raw index file's mtime one hour back (the racy-git shape from `internal/cleanup/dirt_test.go`'s `TestDirtCoveredRacyCleanEntry`, whose comment carries the flake history).
+- `func ArmIndexProbe(t testing.TB, repo string)` — re-times the repo's tracked worktree files AND the raw index file to the same past second (the racy-clean `set()` shape from `internal/cleanup/dirt_test.go`'s `TestDirtCoveredRacyCleanEntry`, whose comment carries the flake history). Index-mtime-only arming is mute: a locked status rewrite stays byte-identical (empirically verified on git 2.54).
 - `func AssertProbeArmed(t testing.TB, repo string)` — fails unless the index file's mtime reads older than 30 minutes.
 - `func RoundTrip(t testing.TB, repo, want string, args ...string)` — runs `git -C repo args...` ignoring the exit code and fails unless the combined output equals `want`. (Core `roundTripErr` returns the mismatch instead.)
 
@@ -106,7 +106,7 @@ Expected: FAIL — `undefined: Seed` (and friends).
 
 - [ ] **Step 3: Implement the kit in `gittest.go`**
 
-One rule shapes every helper: fixture state is created by real git (`init`, `clone --bare`, `clone`, `commit`, `push`, `switch -c`, `config`) and never deleted (banned argv words and `os.Remove*` keep the repo's deletion guards green without allow-list entries; seed commits run with `-c user.name=T -c user.email=t@example.com -c commit.gpgsign=false`). `Lineage` compares ref names exactly (never case-folded) and reads with `GIT_OPTIONAL_LOCKS=0`.
+One rule shapes every helper: fixture state is created by real git (`init`, `clone --bare`, `clone`, `add`, `commit`, `push`, `switch -c`, `config`) and never deleted (banned argv words keep `TestHardResetExistsNowhereOutsideRemoval` green; the guards' `os.Remove*` scan passes with at most the one `fileOpAllowed` entry `CleanupTemplates` needs — see Interfaces; seed commits run with `-c user.name=T -c user.email=t@example.com -c commit.gpgsign=false`). `Lineage` compares ref names exactly (never case-folded) and reads with `GIT_OPTIONAL_LOCKS=0`.
 
 - [ ] **Step 4: `testmain_test.go` calls `gitenv.IsolateForTest()` first**
 
@@ -272,7 +272,7 @@ git commit -m "test(rootmove): fixtures seed from gittest templates with lineage
 
 - [ ] **Step 1: Write the failing drift guard**
 
-`TestSerialIslandsAreExactlyTheEnvOwningTests` (with `//` comment): a name-keyed `go/ast` scan (the `losses_guard` style) of `internal/rootmove/*_test.go` for `t.Setenv(` and `traceGit(` calls; map each to its enclosing top-level `func Test`; assert the resulting set equals `serialIslands`'s keys exactly (a new env-owning test without a registry entry fails here — Review Focus 5). Seed the map with Task 1's census: `TestExecuteRecoveryRows`, `TestExecuteRecordNotWritableBlocksRelease`, `TestExecuteStartRecheck`, `TestExecuteRunsGitInRootAndDestFromALinkedWorktree`, `TestPreflightNeverFetches`, each with a one-line reason.
+`TestSerialIslandsAreExactlyTheEnvOwningTests` (with `//` comment): a name-keyed `go/ast` scan (the `losses_guard` style) of `internal/rootmove/*_test.go` for `t.Setenv(` and `traceGit(` calls; map each to its enclosing top-level `func Test`; assert the resulting set equals `serialIslands`'s keys exactly (a new env-owning test without a registry entry fails here — Review Focus 5). Seed the map with Task 1's census — the four env/trace owners: `TestExecuteRecoveryRows`, `TestExecuteRecordNotWritableBlocksRelease`, `TestExecuteStartRecheck`, `TestPreflightNeverFetches` — each with a one-line reason. Seam-var swapping is NOT an island criterion (Task 4 removes the shared state).
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -312,7 +312,7 @@ git commit -m "test(rootmove): parallel tests with a serial-island registry and 
 
 - [ ] **Step 1: Full suite plus guards**
 
-Run: `cd wt && go test ./... && go test -race ./internal/rootmove ./internal/gittest ./internal/cleanup && go vet ./... && make check`
+Run: `cd wt && go test ./... && go test -race ./internal/rootmove ./internal/gittest ./internal/cleanup ./cmd/wt && go vet ./... && make check`
 Expected: PASS (the deletion/argv/isolation guards scan the new code automatically).
 
 - [ ] **Step 2: Re-measure**
