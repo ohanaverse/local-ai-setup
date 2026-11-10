@@ -60,7 +60,7 @@ jobs:
         # exceed go's default 10m per-package timeout on a slow runner.
         run: |
           set -euo pipefail
-          base="origin/${{ github.base_ref }}"
+          base="origin/${GITHUB_BASE_REF}"
           dirs=$(git diff --name-only "$base"...HEAD \
             | sed -n 's|^wt/\(.*\)/[^/]*\.go$|\1|p; s|^wt/\([^/]*\.go\)$|.|p' \
             | sort -u)
@@ -70,7 +70,12 @@ jobs:
           fi
           echo "Changed packages:"
           echo "$dirs"
-          go test -timeout 20m $(printf './%s ' $dirs)
+          pkg_args=()
+          while IFS= read -r d; do
+            [ -n "$d" ] && pkg_args+=("./$d")
+          done <<< "$dirs"
+          if [ "${#pkg_args[@]}" -eq 0 ]; then echo "No changed packages to test."; exit 0; fi
+          go test -timeout 20m "${pkg_args[@]}"
       - name: Tests left the real config directories alone
         run: ../bin/check-config-dirs-untouched
 
@@ -103,7 +108,10 @@ jobs:
       # in test-git-heavy beside this job. Anything not matching
       # GIT_HEAVY_RE lands here automatically - no package can be forgotten.
       - name: go test (all but the git-heavy packages)
-        run: go test $(go list ./... | grep -vE "$GIT_HEAVY_RE")
+        run: |
+          pkgs=$(go list ./... | grep -vE "$GIT_HEAVY_RE" || true)
+          if [ -z "$pkgs" ]; then echo "No non-git-heavy packages; nothing to test."; exit 0; fi
+          go test $pkgs
       # No test may create the real config directories; see the script for
       # why. Run right after the tests, before any later step could create
       # them for its own reasons.
@@ -137,7 +145,10 @@ jobs:
         # out after 10m0s", FAIL 600.058s on a 15s-old test). 20m keeps hang
         # detection at 2x the worst observed until the git-heavy suites
         # themselves get fast.
-        run: go test -timeout 20m $(go list ./... | grep -E "$GIT_HEAVY_RE")
+        run: |
+          pkgs=$(go list ./... | grep -E "$GIT_HEAVY_RE" || true)
+          if [ -z "$pkgs" ]; then echo "No git-heavy packages; nothing to test."; exit 0; fi
+          go test -timeout 20m $pkgs
       # This job runs tests too, so it carries the same guard as test's last
       # step - every job that runs go test guards its own VM's config home.
       - name: Tests left the real config directories alone
