@@ -285,8 +285,7 @@ git-upgrade breakage, both green.**
    `afterUpdateRef`, `beforePush`, `afterReadWork`) gain parameters or move
    into the hooks struct; the gh seams move off `cleanup.StubPRListForTest`
    onto per-call state, migrating its ~252 swap sites (the ripple into
-   `cmd/wt`'s tests is included). The globals + fire-count fallback is
-   closed by ruling 2.
+   `cmd/wt`'s tests is included).
 2. **Race-clean: required, PR-verified.** The suites must stay
    `go test -race` clean under the speedup — structural under ruling 1's
    per-call seam state. Each implementing PR runs `go test -race` over the
