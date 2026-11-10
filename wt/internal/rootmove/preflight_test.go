@@ -86,6 +86,7 @@ func (f *fixture) liveOther() int {
 // default, the HEAD and DefaultFF. Why: the plan is what the prompt shows and
 // what Execute acts on; a wrong field moves the wrong thing.
 func TestPreflightHappyPlan(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.onBranch("topic")
 	f.dirty()
@@ -136,6 +137,7 @@ func TestPreflightHappyPlan(t *testing.T) {
 // with another code, would break the "refused means untouched" promise and
 // the JSON contract.
 func TestPreflightRefusals(t *testing.T) {
+	t.Parallel()
 	topic := func(t *testing.T) *fixture {
 		f := newFixture(t)
 		f.onBranch("topic")
@@ -254,6 +256,7 @@ func TestPreflightRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			f := c.build(t)
 			eng := f.engine()
 			before := f.rootState()
@@ -284,6 +287,7 @@ func TestPreflightRefusals(t *testing.T) {
 // untouched. Why: ReleaseRoot refuses it only after the copy and the record
 // exist; the user must hear it before anything is created.
 func TestPreflightRefusesWhatTheReleaseGateWouldRefuse(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.onBranch("topic")
 	f.git("config", "core.ignorecase", "true")
@@ -314,7 +318,9 @@ func TestPreflightRefusesWhatTheReleaseGateWouldRefuse(t *testing.T) {
 // failure, not a refusal and not a pass. Why: moving the root's branch from
 // under a running agent changes the files it is editing.
 func TestPreflightClaims(t *testing.T) {
+	t.Parallel()
 	t.Run("live other refuses", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		pid := f.liveOther()
@@ -325,6 +331,7 @@ func TestPreflightClaims(t *testing.T) {
 		}
 	})
 	t.Run("dead pid does not hold", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		cmd := exec.Command("true")
@@ -337,6 +344,7 @@ func TestPreflightClaims(t *testing.T) {
 		}
 	})
 	t.Run("own claim does not hold", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		self, err := sessionclaim.Self(cleanup.ResolvePath(f.Dir), "topic", "wt")
@@ -349,6 +357,7 @@ func TestPreflightClaims(t *testing.T) {
 		}
 	})
 	t.Run("unreadable claims directory is a read failure", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		eng := f.engine()
@@ -374,6 +383,7 @@ func TestPreflightClaims(t *testing.T) {
 // the fast-forward after the move is `merge --ff-only` and must never be
 // attempted (or reported as possible) when it would merge or lose commits.
 func TestDefaultFFTable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		setup func(f *fixture)
@@ -395,6 +405,7 @@ func TestDefaultFFTable(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			c.setup(f) // on main
 			f.onBranch("topic")
@@ -444,8 +455,10 @@ func TestPreflightNeverFetches(t *testing.T) {
 // off, so whatever the hook sets up is missing there and the user must be
 // told; a re-worded copy would drift from rescue's.
 func TestPreflightWarnsOfAPostCheckoutHook(t *testing.T) {
+	t.Parallel()
 	for _, dirty := range []bool{true, false} {
 		t.Run(fmt.Sprintf("dirty=%v", dirty), func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.onBranch("topic")
 			if dirty {
@@ -475,6 +488,7 @@ func TestPreflightWarnsOfAPostCheckoutHook(t *testing.T) {
 		})
 	}
 	t.Run("no hook", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		p, err := f.engine().Preflight("")
@@ -496,6 +510,7 @@ func TestPreflightWarnsOfAPostCheckoutHook(t *testing.T) {
 // directory, which may be a linked worktree; reading "the root" there would
 // read the wrong checkout.
 func TestGitAtCopiesTimeoutConfigEnvButNotDir(t *testing.T) {
+	t.Parallel()
 	e := Engine{Rescue: rescue.Engine{G: cleanup.Git{
 		Dir:     "/repo/.worktrees/side",
 		Timeout: 7 * time.Second,

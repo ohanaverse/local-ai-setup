@@ -18,6 +18,7 @@ import (
 // after it, 7, 5-6); a hook consulted at the wrong rung, twice or never would
 // make every row-based failure test lie about where a run stopped.
 func TestExecuteHooksFireAtTheirRungs(t *testing.T) {
+	t.Parallel()
 	f, eng, p := dirtyPlan(t)
 	var order []string
 	fired := map[string]int{}
@@ -60,6 +61,7 @@ func TestExecuteHooksFireAtTheirRungs(t *testing.T) {
 // Engine); a shared hook would arm one engine through the other and make the
 // rung tests interfere.
 func TestHooksAreNotSharedAcrossEngines(t *testing.T) {
+	t.Parallel()
 	rf := func() *removal.ReleaseFailed {
 		return &removal.ReleaseFailed{Stage: removal.StageSwitch, Result: removal.ReleaseResult{Reset: true, Removed: 1}, Err: errors.New("planted")}
 	}

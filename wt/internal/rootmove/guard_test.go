@@ -42,6 +42,7 @@ func riskyRootmoveSource(name, src string) []string {
 // one reset, file removal and root switch must stay in removal.ReleaseRoot
 // behind its proofs; rootmove only names that function.
 func TestRootmoveContainsNoDeletion(t *testing.T) {
+	t.Parallel()
 	files, _ := filepath.Glob("*.go")
 	more, _ := filepath.Glob("../../cmd/wt/restore_root*.go")
 	scanned := 0
@@ -68,6 +69,7 @@ func TestRootmoveContainsNoDeletion(t *testing.T) {
 // pass forever; one that matched the cleanup import or a "root is clean"
 // message could not pass at all.
 func TestRiskyRootmoveSourceBites(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, src string
 		bad       bool

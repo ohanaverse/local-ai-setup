@@ -31,6 +31,7 @@ func hasWarning(o Outcome, parts ...string) bool {
 // plan allows a fast-forward only when origin/<default> is a strict
 // descendant of the local default, and never a merge.
 func TestExecuteFastForward(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, f *fixture) Outcome {
 		t.Helper()
 		eng := f.engine()
@@ -41,6 +42,7 @@ func TestExecuteFastForward(t *testing.T) {
 		return eng.Execute(p)
 	}
 	t.Run("strictly behind", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		f.dirty()
@@ -59,6 +61,7 @@ func TestExecuteFastForward(t *testing.T) {
 		wantRootOnDefault(t, f)
 	})
 	t.Run("ahead", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.git("switch", "-q", "main")
 		f.Commit(f.Dir, "local.txt", "l", "local only")
@@ -70,6 +73,7 @@ func TestExecuteFastForward(t *testing.T) {
 		}
 	})
 	t.Run("diverged", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.git("switch", "-q", "main")
 		f.Commit(f.Dir, "local.txt", "l", "local only")
@@ -86,6 +90,7 @@ func TestExecuteFastForward(t *testing.T) {
 		}
 	})
 	t.Run("no remote branch", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		f.git("update-ref", "-d", "refs/remotes/origin/main")
@@ -103,6 +108,7 @@ func TestExecuteFastForward(t *testing.T) {
 // table). Why: a fast-forward is a convenience; its failure never undoes or
 // fails the move.
 func TestExecuteFastForwardMergeFails(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.onBranch("topic")
 	f.dirty()
@@ -163,6 +169,7 @@ func caseInsensitiveFS(t *testing.T) bool {
 // no-overwrite-ignore flag and silently replaces an ignored file by a
 // directory or overwrites it.
 func TestExecuteFastForwardIgnoredCollision(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		ignorecase bool
@@ -180,6 +187,7 @@ func TestExecuteFastForwardIgnoredCollision(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.onBranch("topic")
 			other := filepath.Join(t.TempDir(), "other")
@@ -238,6 +246,7 @@ func TestExecuteFastForwardIgnoredCollision(t *testing.T) {
 // note is a step in Completed and not a warning. Why: a benign state must
 // not train users to ignore warnings.
 func TestExecuteFastForwardAlreadyAtOrigin(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.onBranch("topic")
 	eng := f.engine()

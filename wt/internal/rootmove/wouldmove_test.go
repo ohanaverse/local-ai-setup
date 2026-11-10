@@ -15,6 +15,7 @@ import (
 // this, and it must run no git. (Schema validity of the encoded form is held
 // by cmd/wt's TestRestoreRootWouldMoveEncodesSchemaValid.)
 func TestWouldMove(t *testing.T) {
+	t.Parallel()
 	p := Plan{Repo: "/r", Branch: "feat", Default: "main", Head: "abc", DestPath: "/r/.worktrees/feat", DefaultFF: true,
 		Counts: rescue.Counts{Staged: 2}, Warnings: []string{"w1"}}
 	o := WouldMove(&p)

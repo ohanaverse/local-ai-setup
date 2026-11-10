@@ -230,6 +230,7 @@ func wantRootOnDefault(t *testing.T, f *fixture) {
 // 2), and "the same branch, not a copy" means the ref, its upstream and its
 // config survive untouched.
 func TestExecuteMovesCleanBranchWithUnpushedCommits(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.onBranch("topic")
 	f.git("push", "-q", "-u", "origin", "topic")
@@ -275,7 +276,9 @@ func TestExecuteMovesCleanBranchWithUnpushedCommits(t *testing.T) {
 // root must end clean on the default, and the ignored file must stay where
 // it was; the twin is the path the reset restores from HEAD.
 func TestExecuteMovesAllDirt(t *testing.T) {
+	t.Parallel()
 	t.Run("all kinds", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		f.Commit(f.Dir, "tool.sh", "#!/bin/sh\n", "tool")
@@ -325,6 +328,7 @@ func TestExecuteMovesAllDirt(t *testing.T) {
 		}
 	})
 	t.Run("rm --cached twin", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		f.onBranch("topic")
 		f.Commit(f.Dir, "foo", "foo v1", "foo")
@@ -355,6 +359,7 @@ func TestExecuteMovesAllDirt(t *testing.T) {
 // reset the root early, or claimed moved, loses work or lies.
 func TestExecuteRecoveryRows(t *testing.T) {
 	t.Run("1 create fails", func(t *testing.T) {
+		t.Parallel()
 		f, eng, p := dirtyPlan(t)
 		wt := filepath.Join(f.Dir, ".worktrees")
 		if err := os.MkdirAll(wt, 0o755); err != nil {
@@ -381,6 +386,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 	})
 
 	t.Run("2 carry fails", func(t *testing.T) {
+		t.Parallel()
 		f, eng, p := dirtyPlan(t)
 		fired := false
 		eng.Hooks.ExecuteInto = func(_ rescue.Engine, rp *rescue.Plan, dest string) rescue.Outcome {
@@ -512,6 +518,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			}
 		})
 		t.Run("release refused", func(t *testing.T) {
+			t.Parallel()
 			f, eng, p := dirtyPlan(t)
 			before := f.rootCheckout()
 			fired := false
@@ -558,6 +565,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			return f, p, o
 		}
 		t.Run("switch", func(t *testing.T) {
+			t.Parallel()
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageSwitch, Result: removal.ReleaseResult{Reset: true, Removed: 1}, Err: errors.New("planted switch failure")})
 			wantReason(t, o, append(finish, "planted switch failure", "reset and clean on topic")...)
 			if strings.Contains(o.Reason, "partly changed") || strings.Contains(o.Reason, statusFirst) {
@@ -565,14 +573,17 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			}
 		})
 		t.Run("switch uncertain", func(t *testing.T) {
+			t.Parallel()
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageSwitch, Result: removal.ReleaseResult{Reset: true, Removed: 1}, Uncertain: true, Err: errors.New("killed")})
 			wantReason(t, o, append(finish, "the root may be partly changed: run git status there", statusFirst)...)
 		})
 		t.Run("reset", func(t *testing.T) {
+			t.Parallel()
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageReset, Uncertain: true, Err: errors.New("planted reset failure")})
 			wantReason(t, o, append(finish, "the root may be partly changed: run git status there", "still on topic", statusFirst)...)
 		})
 		t.Run("verify_clean", func(t *testing.T) {
+			t.Parallel()
 			_, _, o := stub(t, &removal.ReleaseFailed{Stage: removal.StageVerifyClean, Result: removal.ReleaseResult{Reset: true, Removed: 1}, Err: errors.New("planted leftovers")})
 			wantReason(t, o, append(finish, "was reset on topic but is not clean", statusFirst)...)
 		})
@@ -619,6 +630,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			wantCopy(t, p.DestPath, p.Head, pre, "refs/heads/topic")
 		})
 		t.Run("remove_untracked, real", func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.onBranch("topic")
 			f.dirty()
@@ -664,6 +676,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 	})
 
 	t.Run("5 destination switch fails", func(t *testing.T) {
+		t.Parallel()
 		f, eng, p := dirtyPlan(t)
 		pre := statusOf(f.Dir)
 		fired := false
@@ -688,6 +701,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 	})
 
 	t.Run("5 branch moved before the switch", func(t *testing.T) {
+		t.Parallel()
 		f, eng, p := dirtyPlan(t)
 		pre := statusOf(f.Dir)
 		var other string
@@ -711,7 +725,9 @@ func TestExecuteRecoveryRows(t *testing.T) {
 	})
 
 	t.Run("7 read-back", func(t *testing.T) {
+		t.Parallel()
 		t.Run("root not clean", func(t *testing.T) {
+			t.Parallel()
 			f, eng, p := dirtyPlan(t)
 			fired := false
 			eng.Hooks.AfterRelease = func() {
@@ -746,6 +762,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			})
 		}
 		t.Run("destination HEAD moved", func(t *testing.T) {
+			t.Parallel()
 			f, eng, p := dirtyPlan(t)
 			var other string
 			afterSwitch(t, &eng, func(dest string) {
@@ -759,6 +776,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		// The destination at the right commit but not on the branch: the
 		// commit check passes, so only the branch check can catch it.
 		t.Run("destination detached", func(t *testing.T) {
+			t.Parallel()
 			_, eng, p := dirtyPlan(t)
 			afterSwitch(t, &eng, func(dest string) { gitIn(t, dest, "switch", "-q", "--detach") })
 			o := eng.Execute(p)
@@ -766,6 +784,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			wantReason(t, o, "the new worktree "+p.DestPath+" is on a detached HEAD, not topic")
 		})
 		t.Run("destination on another branch", func(t *testing.T) {
+			t.Parallel()
 			_, eng, p := dirtyPlan(t)
 			afterSwitch(t, &eng, func(dest string) { gitIn(t, dest, "switch", "-q", "-c", "other") })
 			o := eng.Execute(p)
@@ -773,6 +792,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			wantReason(t, o, "is on refs/heads/other, not topic")
 		})
 		t.Run("branch moved", func(t *testing.T) {
+			t.Parallel()
 			f, eng, p := dirtyPlan(t)
 			var other string
 			afterSwitch(t, &eng, func(dest string) {
@@ -784,6 +804,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			wantReason(t, o, "the branch topic is at "+other+", not "+p.Head)
 		})
 		t.Run("destination edited", func(t *testing.T) {
+			t.Parallel()
 			f, eng, p := dirtyPlan(t)
 			fired := false
 			eng.Hooks.AfterRelease = func() {
@@ -801,6 +822,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			}
 		})
 		t.Run("root switched away", func(t *testing.T) {
+			t.Parallel()
 			f, eng, p := dirtyPlan(t)
 			fired := false
 			eng.Hooks.AfterRelease = func() {
@@ -851,6 +873,7 @@ func TestExecuteRecordNotWritableBlocksRelease(t *testing.T) {
 // post-checkout warning still in the outcome. Why: hooks are arbitrary code,
 // and the detached add, the root switch and the destination switch and the fast-forward all run with them off.
 func TestExecuteRunsNoHooks(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.onBranch("topic")
 	f.dirty()
@@ -885,6 +908,7 @@ func TestExecuteRunsNoHooks(t *testing.T) {
 // in which the root can change (Review Focus 1).
 func TestExecuteStartRecheck(t *testing.T) {
 	t.Run("edit, rechecked", func(t *testing.T) {
+		t.Parallel()
 		f, eng, p := dirtyPlan(t)
 		f.write(f.Dir, "README", "edited during the prompt")
 		before := f.rootState()
@@ -911,6 +935,7 @@ func TestExecuteStartRecheck(t *testing.T) {
 	// A start re-check that cannot read the claims has created nothing, so it
 	// is refused (the schema's "before anything was created"), not failed.
 	t.Run("claims unreadable, rechecked", func(t *testing.T) {
+		t.Parallel()
 		f, eng, p := dirtyPlan(t)
 		sessions := filepath.Join(f.commonDir(), "wt-sessions")
 		if err := os.MkdirAll(sessions, 0o755); err != nil {
@@ -932,6 +957,7 @@ func TestExecuteStartRecheck(t *testing.T) {
 		}
 	})
 	t.Run("claim, rechecked", func(t *testing.T) {
+		t.Parallel()
 		f, eng, p := dirtyPlan(t)
 		f.liveOther()
 		before := f.rootState()
@@ -965,6 +991,7 @@ func TestExecuteStartRecheck(t *testing.T) {
 // rescue's G.Dir is the caller's directory; a step run there would switch or
 // reset the wrong checkout.
 func TestExecuteRunsGitInRootAndDestFromALinkedWorktree(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	side := f.Worktree("side")
 	f.onBranch("topic")
