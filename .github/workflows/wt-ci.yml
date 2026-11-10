@@ -70,12 +70,8 @@ jobs:
           fi
           echo "Changed packages:"
           echo "$dirs"
-          pkg_args=()
-          while IFS= read -r d; do
-            [ -n "$d" ] && pkg_args+=("./$d")
-          done <<< "$dirs"
-          if [ "${#pkg_args[@]}" -eq 0 ]; then echo "No changed packages to test."; exit 0; fi
-          go test -timeout 20m "${pkg_args[@]}"
+          # shellcheck disable=SC2046 # dirs are repo paths without spaces
+          go test -timeout 20m $(printf './%s\n' $dirs)
       - name: Tests left the real config directories alone
         run: ../bin/check-config-dirs-untouched
 
@@ -109,8 +105,9 @@ jobs:
       # GIT_HEAVY_RE lands here automatically - no package can be forgotten.
       - name: go test (all but the git-heavy packages)
         run: |
-          pkgs=$(go list ./... | grep -vE "$GIT_HEAVY_RE" || true)
-          if [ -z "$pkgs" ]; then echo "No non-git-heavy packages; nothing to test."; exit 0; fi
+          set -euo pipefail
+          pkgs=$(go list ./... | grep -vE "$GIT_HEAVY_RE")
+          if [ -z "$pkgs" ]; then echo "No non-git-heavy packages: the split regex matched everything."; exit 1; fi
           go test $pkgs
       # No test may create the real config directories; see the script for
       # why. Run right after the tests, before any later step could create
@@ -146,8 +143,9 @@ jobs:
         # detection at 2x the worst observed until the git-heavy suites
         # themselves get fast.
         run: |
-          pkgs=$(go list ./... | grep -E "$GIT_HEAVY_RE" || true)
-          if [ -z "$pkgs" ]; then echo "No git-heavy packages; nothing to test."; exit 0; fi
+          set -euo pipefail
+          pkgs=$(go list ./... | grep -E "$GIT_HEAVY_RE")
+          if [ -z "$pkgs" ]; then echo "GIT_HEAVY_RE matched no package."; exit 1; fi
           go test -timeout 20m $pkgs
       # This job runs tests too, so it carries the same guard as test's last
       # step - every job that runs go test guards its own VM's config home.
@@ -165,8 +163,8 @@ jobs:
   # so as a step it adds its whole duration to PR wall clock, while as a job
   # it adds only runner minutes. Runs on every event, pull requests included: a
   # core-count flake caught on a PR beats one found on main. The git-heavy
-  # packages (removal, rescue, cleanup, rootmove) are the slow ones and do
-  # not depend on core count.
+  # packages removal, rescue and rootmove are the slow ones and do not
+  # depend on core count; cleanup is enrolled in the list below.
   # The package list and the reason -count=1 is load-bearing live in
   # wt/Makefile's single-p target — edit the list there; the same target
   # runs the pass locally (`cd wt && make single-p`) and in test-all.
