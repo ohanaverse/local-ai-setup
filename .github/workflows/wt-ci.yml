@@ -16,7 +16,62 @@ on:
       - "bin/check-config-dirs-untouched"
       - ".github/workflows/wt-ci.yml"
 
+env:
+  # The subprocess-heavy packages run in their own test job (test-git-heavy);
+  # everything else runs in test. One pattern consumed by both jobs, so the
+  # split has a single source and a new package can only land in the bulk.
+  GIT_HEAVY_RE: /(removal|rescue|cleanup|rootmove)$
+
 jobs:
+  # The stack gate: green here means the PR is a sound base to build the next
+  # PR of a series on. It runs lint, build, vet and the tests of just the
+  # packages this PR touches, so a typical diff gets its verdict in ~2-3 min
+  # instead of waiting out the full suite. The full suite (test,
+  # test-git-heavy, single-p) stays the merge gate - green here is not a
+  # merge-able PR. Pull requests only: the changed set is the PR's own diff
+  # against its base branch, so a stacked PR judges only its own commits.
+  fast-verdict:
+    name: fast verdict (green = safe to stack the next PR on)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: wt
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history: the changed-set diff below needs the merge base
+          # with the PR's base branch.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.7"
+          cache-dependency-path: wt/go.sum
+      - run: brew install shellcheck
+      - run: make lint
+      - run: make go-format-check
+      - run: go build ./...
+      - run: go vet ./...
+      - name: go test the packages this PR touches
+        # Only the changed packages' own tests, not their dependents' - the
+        # full suite still runs beside this job as the merge gate. A change
+        # to no .go file under wt/ (docs, go.mod alone) tests nothing here.
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          dirs=$(git diff --name-only "$base"...HEAD \
+            | sed -n 's|^wt/\(.*\)/[^/]*\.go$|\1|p; s|^wt/\([^/]*\.go\)$|.|p' \
+            | sort -u)
+          if [ -z "$dirs" ]; then
+            echo "No .go file under wt/ changed; nothing extra to test."
+            exit 0
+          fi
+          echo "Changed packages:"
+          echo "$dirs"
+          go test $(printf './%s ' $dirs)
+      - name: Tests left the real config directories alone
+        run: ../bin/check-config-dirs-untouched
+
   test:
     runs-on: macos-latest
     defaults:
@@ -41,23 +96,55 @@ jobs:
       - run: make go-format-check
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./...
+      # The split: the git-heavy packages spawn a git process per operation
+      # and dominate the wall (removal alone ~9 min on the runner); they run
+      # in test-git-heavy beside this job. Anything not matching
+      # GIT_HEAVY_RE lands here automatically - no package can be forgotten.
+      - name: go test (all but the git-heavy packages)
+        run: go test $(go list ./... | grep -vE "$GIT_HEAVY_RE")
       # No test may create the real config directories; see the script for
       # why. Run right after the tests, before any later step could create
       # them for its own reasons.
       - name: Tests left the real config directories alone
         run: ../bin/check-config-dirs-untouched
 
-  # The packages whose tests spawn goroutines or sleep, on a single P. A
-  # test that asserts on something a spawned goroutine did is ordered
-  # correctly only by luck of the runner's core count: the tui start flow's
-  # startModel call-count assertions passed on a many-core dev machine and
-  # failed on CI. macos-latest's core count is not ours to choose, so pin
-  # the worst case here instead of depending on it.
+  # The git-heavy packages (removal, rescue, cleanup, rootmove): nearly every
+  # test spawns git subprocesses and they carry the suite - measured on
+  # macos-latest, removal 545s, cleanup 231s, rescue 209s, rootmove 125s,
+  # while the whole rest tops out at cmd/wt 240s. Their own job beside test
+  # (deliberately no needs:) so the wall is max(removal, everything else)
+  # instead of one blob, and their runner-speed wobble shows in one check.
+  # The set lives in GIT_HEAVY_RE (workflow env) - both split jobs read it.
+  test-git-heavy:
+    name: go test, git-heavy packages
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: wt
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.7"
+          # See the test job for why this is set explicitly.
+          cache-dependency-path: wt/go.sum
+      - name: go test (git-heavy)
+        run: go test $(go list ./... | grep -E "$GIT_HEAVY_RE")
+      # This job runs tests too, so it carries the same guard as test's last
+      # step - every job that runs go test guards its own VM's config home.
+      - name: Tests left the real config directories alone
+        run: ../bin/check-config-dirs-untouched
+
+  # The packages that spawn goroutines or sleep, on a single P. A test that
+  # asserts on something a spawned goroutine did is ordered correctly only
+  # by luck of the runner's core count: the tui start flow's startModel
+  # call-count assertions passed on a many-core dev machine and failed on
+  # CI. macos-latest's core count is not ours to choose, so pin the worst
+  # case here instead of depending on it.
   # Its own job beside test (deliberately no needs:, so they run at once):
-  # at one P the pass is fully serial and slow on the runner, so as a step it
-  # adds its whole duration to PR wall clock, while as a job it adds only
-  # runner minutes. Runs on every event, pull requests included: a
+  # at one P each test binary is serial and the pass is slow on the runner,
+  # so as a step it adds its whole duration to PR wall clock, while as a job
+  # it adds only runner minutes. Runs on every event, pull requests included: a
   # core-count flake caught on a PR beats one found on main. The git-heavy
   # packages (removal, rescue, cleanup, rootmove) are the slow ones and do
   # not depend on core count.
