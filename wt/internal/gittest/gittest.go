@@ -365,10 +365,11 @@ func indexFile(t testing.TB, repo string) string {
 // gitRun runs git -C dir args... and returns its combined output. Every kit
 // read runs with GIT_OPTIONAL_LOCKS=0: the kit promises to inspect a
 // repository without the optional index-lock write that would rewrite the raw
-// index a byte-diff proof is watching.
+// index a byte-diff proof is watching. LC_ALL=C pins git's messages so the
+// byte-compared outputs are locale-stable.
 func gitRun(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

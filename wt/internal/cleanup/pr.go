@@ -204,6 +204,7 @@ func lookupBranch(dir, branch, ownRepo string, in GatherInputs) PRResult {
 // at most parallel calls at once (<1 means 1). The gh call is in's per-call
 // PRList hook when set, else the legacy seam. It is read-only. Every branch
 // gets an entry; any failure for a branch is LookupUnknown, never LookupNone.
+// parallel is deliberately kept beside in GatherInputs and not folded into it: Rescan's live re-asks pass 1 where Gather passes in.Parallel, so folding would silently change re-ask concurrency at nil hooks.
 func LookupPRs(dir string, branches []string, ownRepo string, parallel int, in GatherInputs) map[string]PRResult {
 	if parallel < 1 {
 		parallel = 1
@@ -306,6 +307,7 @@ func lookupBaseOne(dir, name string, in GatherInputs) PRResult {
 // head repository), at most parallel calls at once. The gh call is in's
 // per-call PRBaseList hook when set, else the legacy seam. Every name gets an
 // entry; any failure is LookupUnknown, never LookupNone.
+// parallel is deliberately kept beside in GatherInputs and not folded into it: Rescan's live re-asks pass 1 where Gather passes in.Parallel, so folding would silently change re-ask concurrency at nil hooks.
 func LookupBaseOf(dir string, names []string, parallel int, in GatherInputs) map[string]PRResult {
 	if parallel < 1 {
 		parallel = 1

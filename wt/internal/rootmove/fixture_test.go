@@ -215,10 +215,12 @@ func (f *fixture) rootState() string {
 
 // hook installs an executable hooks/<name> in the root's repository that
 // touches marker when it runs. The file is the one hand-built .git shape in
-// this package, so it round-trips through the real git read the engine makes
-// (rescue's postCheckoutHookWarning resolves `rev-parse --git-path
-// hooks/<name>` and stats the path): a shape git resolves elsewhere would make
-// the warning tests exercise git's error path instead of the engine's read.
+// this package; the round-trip's want is derived independently (the absolute
+// git dir plus hooks/<name>), so it pins that git resolves the hook at the
+// repository's own hooks directory (rescue's postCheckoutHookWarning resolves
+// `rev-parse --git-path hooks/<name>` and stats the path): a shape git
+// resolved elsewhere would make the warning tests exercise git's error path
+// instead of the engine's read.
 func (f *fixture) hook(name, marker string) {
 	f.t.Helper()
 	p := f.git("rev-parse", "--path-format=absolute", "--git-path", "hooks/"+name)
@@ -228,5 +230,6 @@ func (f *fixture) hook(name, marker string) {
 	if err := os.WriteFile(p, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
-	gittest.RoundTrip(f.t, f.Dir, p+"\n", "rev-parse", "--path-format=absolute", "--git-path", "hooks/"+name)
+	gitDir := f.git("rev-parse", "--path-format=absolute", "--git-dir")
+	gittest.RoundTrip(f.t, f.Dir, filepath.Join(gitDir, "hooks", name)+"\n", "rev-parse", "--path-format=absolute", "--git-path", "hooks/"+name)
 }

@@ -854,12 +854,15 @@ func TestExecuteRecordNotWritableBlocksRelease(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(refs, "rescued"), []byte("not a directory\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The hand-built ref-namespace shape round-trips through the read the
-	// engine's record listing makes (cleanup.ListRecords' for-each-ref over
-	// refs/wt/rescued/): git ignores the file as a broken ref — the read names
-	// nothing, so no reader can take the shape for a record — and lists no
-	// record ref beneath it. A git that listed or refused the file instead
-	// would leave this fixture pinning the author's format model (Anti-goal 6).
+	// The engine's record listing (cleanup.ListRecords' for-each-ref over
+	// rescue.RecordRefPrefix) sees nothing for the hand-built broken ref: the
+	// read names nothing, so no reader can take the shape for a record. This
+	// is the Anti-goal-6 premise check.
+	gittest.RoundTrip(t, f.Dir, "", "for-each-ref", "--format=%(refname)", rescue.RecordRefPrefix)
+	// Characterization of git's broken-ref treatment for the
+	// prefix-without-slash pattern — not the engine's read, which is the
+	// round-trip above: git warns and ignores the file. The two patterns
+	// behave differently.
 	gittest.RoundTrip(t, f.Dir, "warning: ignoring broken ref refs/wt/rescued\n", "for-each-ref", "--format=%(refname)", "refs/wt/rescued")
 	before := f.rootCheckout()
 	trace := traceGit(t)
