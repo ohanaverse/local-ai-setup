@@ -129,7 +129,13 @@ jobs:
           # See the test job for why this is set explicitly.
           cache-dependency-path: wt/go.sum
       - name: go test (git-heavy)
-        run: go test $(go list ./... | grep -E "$GIT_HEAVY_RE")
+        # -timeout 20m: removal's serial test sum is ~545s on the runner,
+        # within 10% of go test's default 10m per-package timeout, and a
+        # 12-26% slower host crosses it (run 42728452039: "panic: test timed
+        # out after 10m0s", FAIL 600.058s on a 15s-old test). 20m keeps hang
+        # detection at 2x the worst observed until the git-heavy suites
+        # themselves get fast.
+        run: go test -timeout 20m $(go list ./... | grep -E "$GIT_HEAVY_RE")
       # This job runs tests too, so it carries the same guard as test's last
       # step - every job that runs go test guards its own VM's config home.
       - name: Tests left the real config directories alone
