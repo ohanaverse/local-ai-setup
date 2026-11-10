@@ -49,7 +49,7 @@ tests are the proof.
 - No engine behavior changes. Production edits are limited to the seam
   reshaping Ruling 1 authorizes (test-facing signatures only,
   behavior-identical).
-- No reduction in what is asserted (see Decisions pending: test-count merge).
+- No reduction in what is asserted (see Rulings, #3).
 - Not cross-package parallelism — the shard already runs the four packages
   concurrently; the cost is inside each package's serial test sum.
 - Not the `single-p` guard job's policy beyond re-validating one
