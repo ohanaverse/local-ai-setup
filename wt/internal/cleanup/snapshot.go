@@ -33,6 +33,15 @@ type GatherInputs struct {
 	// that could be deleted stays unverifiable (cannot_verify), which is fine
 	// for a caller that never offers it. Rescan asks regardless.
 	OriginRows bool
+	// PRList and PRBaseList are this call's gh pr-list hooks. When set they
+	// serve every lookup this call makes (and the fan-out it spawns) in place
+	// of the legacy package seams (ghPRList / ghPRBaseList, swapped globally
+	// by StubPRListForTest / StubPRBaseListForTest, which keep working); nil
+	// takes the legacy seam, so an unhooked call is byte-identical to before.
+	// The hook rides with the call (Ruling 1): concurrent runs can no longer
+	// cross-talk through a package var.
+	PRList     func(dir, branch string) ([]byte, error) // `gh pr list --head <branch>` JSON
+	PRBaseList func(dir, base string) ([]byte, error)   // `gh pr list --base <base> --state open` JSON
 }
 
 // RefFact is one branch ref from for-each-ref.
@@ -206,10 +215,10 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	if s.OwnRepo == "" {
 		s.OwnRepo = ownRepoFromURL(originURL(g))
 	}
-	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel)
+	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel, in)
 	s.checkMerges(g)
 	if in.OriginRows {
-		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel)
+		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel, in)
 	}
 	return s, nil
 }

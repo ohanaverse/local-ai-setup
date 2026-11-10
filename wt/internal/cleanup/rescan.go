@@ -189,12 +189,12 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		if s.PRs == nil {
 			s.PRs = map[string]PRResult{}
 		}
-		s.PRs[name] = LookupPRs(g.Dir, []string{name}, s.OwnRepo, 1)[name]
+		s.PRs[name] = LookupPRs(g.Dir, []string{name}, s.OwnRepo, 1, in)[name]
 		s.BasePRs = maps.Clone(prior.BasePRs)
 		if s.BasePRs == nil {
 			s.BasePRs = map[string]PRResult{}
 		}
-		s.BasePRs[name] = LookupBaseOf(g.Dir, []string{name}, 1)[name]
+		s.BasePRs[name] = LookupBaseOf(g.Dir, []string{name}, 1, in)[name]
 		mini.PRs = s.PRs
 	} else {
 		s.BasePRs = prior.BasePRs

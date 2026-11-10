@@ -34,7 +34,7 @@ func TestGHErrorTextIsSanitisedAtTheSource(t *testing.T) {
 	t.Cleanup(StubPRListForTest(func(string, string) ([]byte, error) {
 		return nil, errors.New(hostile)
 	}))
-	res := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+	res := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]
 	assertClean(t, "PRResult.Err", res.Err)
 	if !strings.Contains(res.Err, "evil") || !strings.Contains(res.Err, "more here") {
 		t.Errorf("sanitising lost the words: %q", res.Err)

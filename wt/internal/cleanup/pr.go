@@ -151,16 +151,16 @@ func (r ghPRRow) headRepo() string {
 // lookupOne is lookupBranch with its error text made one sanitised line
 // (oneLine): it is a row's detail, goes into the JSON and reaches the
 // terminal through the header's gh line.
-func lookupOne(dir, branch, ownRepo string) PRResult {
-	r := lookupBranch(dir, branch, ownRepo)
+func lookupOne(dir, branch, ownRepo string, in GatherInputs) PRResult {
+	r := lookupBranch(dir, branch, ownRepo, in)
 	if r.Err != "" {
 		r.Err = cmp.Or(oneLine(r.Err), "gh pr list failed")
 	}
 	return r
 }
 
-func lookupBranch(dir, branch, ownRepo string) PRResult {
-	out, err := ghPRList(dir, branch)
+func lookupBranch(dir, branch, ownRepo string, in GatherInputs) PRResult {
+	out, err := prListFn(in)(dir, branch)
 	if err != nil {
 		return PRResult{Lookup: LookupUnknown, Err: cmp.Or(err.Error(), "gh pr list failed")}
 	}
@@ -201,9 +201,10 @@ func lookupBranch(dir, branch, ownRepo string) PRResult {
 
 // LookupPRs asks gh for each branch's PRs (all states) in dir, keeping those
 // whose head repository is ownRepo (owner/repo, compared without case), with
-// at most parallel calls at once (<1 means 1). It is read-only. Every branch
+// at most parallel calls at once (<1 means 1). The gh call is in's per-call
+// PRList hook when set, else the legacy seam. It is read-only. Every branch
 // gets an entry; any failure for a branch is LookupUnknown, never LookupNone.
-func LookupPRs(dir string, branches []string, ownRepo string, parallel int) map[string]PRResult {
+func LookupPRs(dir string, branches []string, ownRepo string, parallel int, in GatherInputs) map[string]PRResult {
 	if parallel < 1 {
 		parallel = 1
 	}
@@ -223,7 +224,7 @@ func LookupPRs(dir string, branches []string, ownRepo string, parallel int) map[
 		go func(b string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := lookupOne(dir, b, ownRepo)
+			r := lookupOne(dir, b, ownRepo, in)
 			mu.Lock()
 			res[b] = r
 			mu.Unlock()
@@ -271,8 +272,8 @@ func realGhPRBaseList(dir, base string) ([]byte, error) {
 // a PR from a fork targeting the branch is closed by deleting it just as an
 // own-repo one is, so unlike lookupBranch there is no head-repo filter. A
 // failure, null, bad output or a possibly truncated page is LookupUnknown.
-func lookupBaseOne(dir, name string) PRResult {
-	out, err := ghPRBaseList(dir, name)
+func lookupBaseOne(dir, name string, in GatherInputs) PRResult {
+	out, err := prBaseListFn(in)(dir, name)
 	if err != nil {
 		return PRResult{Lookup: LookupUnknown, Err: cmp.Or(oneLine(err.Error()), "gh pr list --base failed")}
 	}
@@ -302,9 +303,10 @@ func lookupBaseOne(dir, name string) PRResult {
 }
 
 // LookupBaseOf asks gh, for each branch name, which open PRs target it (any
-// head repository), at most parallel calls at once. Every name gets an
+// head repository), at most parallel calls at once. The gh call is in's
+// per-call PRBaseList hook when set, else the legacy seam. Every name gets an
 // entry; any failure is LookupUnknown, never LookupNone.
-func LookupBaseOf(dir string, names []string, parallel int) map[string]PRResult {
+func LookupBaseOf(dir string, names []string, parallel int, in GatherInputs) map[string]PRResult {
 	if parallel < 1 {
 		parallel = 1
 	}
@@ -318,7 +320,7 @@ func LookupBaseOf(dir string, names []string, parallel int) map[string]PRResult 
 		go func(n string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := lookupBaseOne(dir, n)
+			r := lookupBaseOne(dir, n, in)
 			mu.Lock()
 			res[n] = r
 			mu.Unlock()
