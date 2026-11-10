@@ -40,7 +40,7 @@ check-links:
 test-all: lint
 	cd llmbench && uv sync && make check && make test
 	cd modeltiers && uv sync && make check && make test
-	cd wt && go build ./... && go vet ./... && go test -count=1 ./...
+	cd wt && go build ./... && go vet ./... && go test -count=1 ./... && make single-p
 
 install: ## Install all monorepo components (wt + llmbench + modeltiers).
 	cd wt && make install

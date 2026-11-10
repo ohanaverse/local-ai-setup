@@ -1,4 +1,4 @@
-.PHONY: help build install uninstall check lint format format-check go-format-check test test-agents clean
+.PHONY: help build install uninstall check lint format format-check go-format-check single-p test test-agents clean
 
 help:                   # Show available targets
 	@echo "Available targets:"
@@ -9,6 +9,7 @@ help:                   # Show available targets
 	@echo "  format    - Run shfmt on bin/*-wt and scripts/agents-smoke.sh, and gofmt on the Go tree"
 	@echo "  format-check - Check shfmt formatting on bin/*-wt and scripts/agents-smoke.sh"
 	@echo "  go-format-check - Check gofmt formatting of the Go tree"
+	@echo "  single-p      - One-P pass over the goroutine-sensitive packages (wt-ci's single-p job and test-all run this)"
 	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
 	@echo "  test-agents - Run live one-shot agent smoke tests in both routing modes via wt litellm on/off (snapshots/restores wt's config.toml; requires gateways/agent CLIs)"
@@ -68,6 +69,18 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 		echo "$$unformatted"; \
 		exit 1; \
 	fi
+
+# The goroutine-sensitive packages, for the one-P pass wt-ci's single-p job
+# runs. This target is the list's one home — CI's single-p job, `make
+# single-p` and test-all all run it: add a package here whenever a test in
+# it waits on a goroutine.
+# -count=1 is load-bearing: `go test`'s cache does not account for
+# GOMAXPROCS (verified — a single-core run after a parallel one reports
+# "(cached)"), and setup-go restores that cache across jobs and runs, so
+# without it wt-ci's single-p job replays the multi-P run from cache and
+# guards nothing.
+single-p:               # Run the goroutine-sensitive packages on one P
+	GOMAXPROCS=1 go test -count=1 ./cmd/wt ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/refcount ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage
 
 test-agents:            # Run live agent smoke tests
 	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }

@@ -48,25 +48,22 @@ jobs:
       - name: Tests left the real config directories alone
         run: ../bin/check-config-dirs-untouched
 
-  # The packages that spawn goroutines or sleep, on a single P. A test that
-  # asserts on something a spawned goroutine did is ordered correctly only
-  # by luck of the runner's core count: the tui start flow's startModel
-  # call-count assertions passed on a many-core dev machine and failed on
-  # CI. macos-latest's core count is not ours to choose, so pin the worst
-  # case here instead of depending on it.
+  # The packages whose tests spawn goroutines or sleep, on a single P. A
+  # test that asserts on something a spawned goroutine did is ordered
+  # correctly only by luck of the runner's core count: the tui start flow's
+  # startModel call-count assertions passed on a many-core dev machine and
+  # failed on CI. macos-latest's core count is not ours to choose, so pin
+  # the worst case here instead of depending on it.
   # Its own job beside test (deliberately no needs:, so they run at once):
   # at one P the pass is fully serial and slow on the runner, so as a step it
   # adds its whole duration to PR wall clock, while as a job it adds only
   # runner minutes. Runs on every event, pull requests included: a
   # core-count flake caught on a PR beats one found on main. The git-heavy
   # packages (removal, rescue, cleanup, rootmove) are the slow ones and do
-  # not depend on core count. Add a package here when a test in it waits on
-  # a goroutine.
-  # -count=1 is load-bearing: `go test`'s cache does not account for
-  # GOMAXPROCS (verified — a single-core run after a parallel one reports
-  # "(cached)"), and setup-go restores that cache across jobs and runs, so
-  # without it this job replays the multi-P run from cache and guards
-  # nothing.
+  # not depend on core count.
+  # The package list and the reason -count=1 is load-bearing live in
+  # wt/Makefile's single-p target — edit the list there; the same target
+  # runs the pass locally (`cd wt && make single-p`) and in test-all.
   single-p:
     name: Single-P tests (goroutine-sensitive packages)
     runs-on: macos-latest
@@ -81,23 +78,7 @@ jobs:
           # See the test job for why this is set explicitly.
           cache-dependency-path: wt/go.sum
       - name: GOMAXPROCS=1 go test (goroutine-sensitive packages)
-        run: >-
-          GOMAXPROCS=1 go test -count=1
-          ./cmd/wt
-          ./internal/tui
-          ./internal/lifecycle
-          ./internal/configeditor
-          ./internal/config
-          ./internal/litellm
-          ./internal/cloudsync
-          ./internal/localmodels
-          ./internal/profiles
-          ./internal/refcount
-          ./internal/sessionclaim
-          ./internal/smoke
-          ./internal/spend
-          ./internal/survey
-          ./internal/usage
+        run: make single-p
       # This job runs tests too, so it carries the same guard as test's last
       # step — two jobs, two runner VMs, two config homes to keep untouched.
       - name: Tests left the real config directories alone
