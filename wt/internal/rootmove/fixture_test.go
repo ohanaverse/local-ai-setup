@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 )
 
@@ -40,27 +41,17 @@ func newFixture(t *testing.T) *fixture {
 
 // newFixtureExcluding is newFixture, with .worktrees/ excluded only when
 // excludeWorktrees is set: a repository that does not ignore its own
-// worktree directory is a state a real user can be in.
+// worktree directory is a state a real user can be in. The origin/repo pair
+// is this test's clone of the shared gittest template for that lineage (the
+// template holds the seed commit and the exclusion — git clone copies
+// neither, so Clone carries the lineage's info/exclude into both), and
+// Lineage gates the clone before any test body trusts it (Constraint 4).
 func newFixtureExcluding(t *testing.T, excludeWorktrees bool) *fixture {
 	t.Helper()
-	root := t.TempDir()
-	f := &fixture{t: t, Origin: filepath.Join(root, "origin.git"), Dir: filepath.Join(root, "repo")}
-	if b, err := exec.Command("git", "init", "--bare", "-b", "main", f.Origin).CombinedOutput(); err != nil {
-		t.Fatalf("init bare: %v\n%s", err, b)
-	}
-	if b, err := exec.Command("git", "clone", f.Origin, f.Dir).CombinedOutput(); err != nil {
-		t.Fatalf("clone: %v\n%s", err, b)
-	}
-	f.git("config", "user.email", "t@example.com")
-	f.git("config", "user.name", "T")
-	f.git("config", "commit.gpgsign", "false")
-	f.git("checkout", "-B", "main")
-	if excludeWorktrees {
-		f.exclude(".worktrees/")
-	}
-	f.Commit(f.Dir, "README", "init", "init")
-	f.git("push", "-u", "origin", "main")
-	f.git("remote", "set-head", "origin", "main")
+	tpl := gittest.Seed(t, gittest.SeedOpts{ExcludeWorktrees: excludeWorktrees})
+	origin, repo := tpl.Clone(t)
+	f := &fixture{t: t, Origin: origin, Dir: repo}
+	gittest.Lineage(t, repo)
 	return f
 }
 
@@ -121,23 +112,23 @@ func (f *fixture) write(dir, file, content string) {
 // later is a clock an hour ahead so the min-age rule stays out of the way.
 func later() time.Time { return time.Now().Add(time.Hour) }
 
-// noGh stubs the gh seam with an answered, empty listing.
-func noGh(t *testing.T) {
-	t.Helper()
-	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
-}
-
 // The helpers below are rootmove's own (rescue's engine, snapshot and snap
 // are rescue-shaped or read its unexported fingerprint).
 
 // engine gathers and classifies the repository as `wt cleanup` does (no
 // fetch), standing in the root, and returns a root-mode Engine. A repository
 // with no default branch still gathers (cleanup returns the snapshot with
-// ErrNoDefaultBranch), so Preflight can refuse it itself.
+// ErrNoDefaultBranch), so Preflight can refuse it itself. The gh seam is
+// answered by this call's own PRList hook (an empty listing), never a
+// package stub; TestMain's poison is the forgetting-to-hook fallback.
 func (f *fixture) engine() Engine {
 	f.t.Helper()
-	noGh(f.t)
-	in := cleanup.GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+	in := cleanup.GatherInputs{
+		CWD:      f.Dir,
+		OwnRepo:  "o/r",
+		Parallel: 2,
+		PRList:   func(string, string) ([]byte, error) { return []byte("[]"), nil },
+	}
 	snap, err := cleanup.Gather(cleanup.Git{Dir: f.Dir}, in)
 	if err != nil && !errors.Is(err, cleanup.ErrNoDefaultBranch) {
 		f.t.Fatalf("Gather: %v", err)
@@ -185,6 +176,11 @@ func (f *fixture) originAhead(n int) {
 // refs, the registered worktrees and the names in .worktrees (rescue's
 // world()), HEAD, the full status, and the raw index file bytes (a status
 // that refreshed the stat cache would rewrite them).
+// The raw index is read through gittest's probe, armed first — it guards the
+// flake history of internal/cleanup/dirt_test.go's
+// TestDirtCoveredRacyCleanEntry. A root with no index file (an unborn
+// branch) arms nothing: "absent" staying "absent" already sees any write,
+// which would create the file.
 func (f *fixture) rootState() string {
 	f.t.Helper()
 	ents, _ := os.ReadDir(filepath.Join(f.Dir, ".worktrees"))
@@ -200,9 +196,11 @@ func (f *fixture) rootState() string {
 		b, _ := cmd.CombinedOutput()
 		return string(b)
 	}
-	raw := "absent"
-	if b, err := os.ReadFile(filepath.Join(strings.TrimSpace(soft("rev-parse", "--path-format=absolute", "--git-dir")), "index")); err == nil {
-		raw = string(b)
+	raw := gittest.RawIndex(f.t, f.Dir)
+	if raw != "absent" {
+		gittest.ArmIndexProbe(f.t, f.Dir)
+		gittest.AssertProbeArmed(f.t, f.Dir)
+		raw = gittest.RawIndex(f.t, f.Dir)
 	}
 	return strings.Join([]string{
 		soft("for-each-ref"),
