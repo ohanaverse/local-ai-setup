@@ -1,7 +1,7 @@
 # Git-heavy test suites: speedup design (wave 2)
 
 Date: 2026-11-09. Status: builder-reviewed; all rulings resolved (see
-"Rulings"). Follows the CI work in PRs #561/#563 (Refs #555); the
+"Rulings"). Follows the CI work in PRs #561/#567 (Refs #555); the
 drift-guard follow-up is #562.
 
 ## Intent and why
@@ -49,7 +49,7 @@ tests are the proof.
 - No engine behavior changes. Production edits are limited to the seam
   reshaping Ruling 1 authorizes (test-facing signatures only,
   behavior-identical).
-- No reduction in what is asserted (see Decisions pending: test-count merge).
+- No reduction in what is asserted (see Rulings, #3).
 - Not cross-package parallelism — the shard already runs the four packages
   concurrently; the cost is inside each package's serial test sum.
 - Not the `single-p` guard job's policy beyond re-validating one
@@ -86,11 +86,12 @@ restored per test: rescue's fingerprint seams `afterCarry`/`afterVerify`/
 and `cleanup.StubPRListForTest` (`cleanup/prseam.go:8`) which all four
 packages' `noGh` swaps. Under `t.Parallel` a neighbour's `t.Cleanup`
 restore-to-no-op lands inside the armed window and the injection never fires —
-the test passes green with zero evidence (`TestExecuteIgnoresChangesOutside-
-TheSource` asserts only `StatusMoved`, so a disarmed churn passes while the
+the test passes green with zero evidence
+(`TestExecuteIgnoresChangesOutsideTheSource` asserts only `StatusMoved`, so a
+disarmed churn passes while the
 "the fingerprint ignores unrelated refs" guard goes unexercised).
 Representatives: `TestSubmoduleCheckFailsClosed` (`removal/failclosed_test.go:
-29-75`), `TestExecuteFailsWhenTheSourceChangesWhileCopying`
+53-78`), `TestExecuteFailsWhenTheSourceChangesWhileCopying`
 (`rescue/execute_test.go:229`). **Missed if unfixed: fail-closed refusals and
 the poison-gh-stub guarantee pass vacuously; an unmerged branch reads proven.**
 
@@ -102,8 +103,8 @@ at a decoy repo; `removal/types_test.go:128-160` points `GIT_CONFIG_GLOBAL`
 at a failing `core.hooksPath`; PATH git shims intercepting every
 `exec.Command("git")` in `rescue/hardening_test.go:214-328`,
 `cleanup/dirt_test.go`, `cleanup/preserved_test.go`; `cleanup/git_test.go`
-sets `GIT_SSH_COMMAND`; rootmove's `traceGit` writes `GIT_TRACE` files at 9
-call sites in `execute_test.go`). There is no parallel-safe rewrite of the
+sets `GIT_SSH_COMMAND`; rootmove's `traceGit` writes `GIT_TRACE2_EVENT` files
+at 8 call sites in `execute_test.go`). There is no parallel-safe rewrite of the
 core ones: `TestReleaseRootRefusesWithRepoEnvironment`
 (`removal/root_test.go:1200-1235`) is the only proof that `ReleaseRoot`
 refuses `GIT_DIR`/`GIT_INDEX_FILE` before any write (`t.Setenv` panics under
@@ -111,8 +112,9 @@ refuses `GIT_DIR`/`GIT_INDEX_FILE` before any write (`t.Setenv` panics under
 (`removal/types_test.go:128-160`) is the only proof TestMain's HOME/XDG/
 GIT_CONFIG isolation defeats a hostile `core.hooksPath`; the PATH git-shim
 tests (`rescue/hardening_test.go:214-328`) intercept every `exec.Command("git")`
-process-wide; and GIT_TRACE-based never-fetch/argv checks
-(`rootmove/preflight_test.go:415-438`, `rootmove/execute_test.go:93-164`) read
+process-wide; and trace-file never-fetch/argv checks (a `GIT_TRACE` file at
+`rootmove/preflight_test.go:415-438`, a `GIT_TRACE2_EVENT` file at
+`rootmove/execute_test.go:93-164`) read
 a trace file whose lines can belong to another test. Per-exec `Env` injection
 silently disarms the PATH shims; `os.Setenv` leaks decoy `GIT_DIR` into every
 concurrent test's git children. **Missed if unfixed: the env-trap safety gate
@@ -138,9 +140,9 @@ read-only classifier and hidden-edit detection.**
 
 ### 5. Template lineage scales the masking hazard (masked bug)
 
-The fresh-repo-per-case rule exists because "one wrong success leaves
-`.worktrees/<name>`, and the path-collision error then masks every later case"
-(`removal/fixture_test.go:15-19`). Shared templates move that failure up one
+The fresh-repo-per-case rule exists because "a wrong success leaves a worktree
+behind that would mask every later case" (`removal/fixture_test.go:15-19`).
+Shared templates move that failure up one
 level: a wrong success while seeding, or a variant mutating a template in
 place, poisons every descendant copy at once. Repo-global state a template
 carries — `info/exclude` (append-only `IgnoredIn`, `cleanup/fixture_test.go:
@@ -222,9 +224,10 @@ git-upgrade breakage, both green.**
    the claimed state (the `worktree_test.go` read-back pattern). A shape real
    git rejects fails setup loudly. This turns Anti-goal 6 into a feature: git
    format drift fails the suite instead of hiding behind it.
-7. **The `single-p` classification is re-validated.** `removal`, `rescue`,
-   `cleanup`, `rootmove` are excluded from CI's GOMAXPROCS=1 flake-guard job
-   because "they do not depend on core count". If any test gains a
+7. **The `single-p` classification is re-validated.** `removal`, `rescue` and
+   `rootmove` are excluded from CI's GOMAXPROCS=1 flake-guard job because they
+   "do not depend on core count"; `cleanup` is already enrolled in it
+   (`wt/Makefile`'s `single-p` target). If any test gains a
    timing/ordering assertion or waits on a goroutine, its package joins the
    guard's list in the same change (and #562's drift guard, once built, covers
    it permanently).
@@ -282,8 +285,7 @@ git-upgrade breakage, both green.**
    `afterUpdateRef`, `beforePush`, `afterReadWork`) gain parameters or move
    into the hooks struct; the gh seams move off `cleanup.StubPRListForTest`
    onto per-call state, migrating its ~252 swap sites (the ripple into
-   `cmd/wt`'s tests is included). The globals + fire-count fallback is
-   closed by ruling 2.
+   `cmd/wt`'s tests is included).
 2. **Race-clean: required, PR-verified.** The suites must stay
    `go test -race` clean under the speedup — structural under ruling 1's
    per-call seam state. Each implementing PR runs `go test -race` over the
