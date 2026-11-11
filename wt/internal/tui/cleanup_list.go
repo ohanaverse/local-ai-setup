@@ -53,7 +53,17 @@ func cleanupLocked(r cleanup.Row) bool {
 	if r.Kind == cleanup.KindRemote && (!r.Tickable() || r.Remote != "origin") {
 		return true
 	}
-	return r.Status == cleanup.StatusInUse || len(r.Blockers) > 0
+	if r.Status == cleanup.StatusInUse || r.HardStop != "" {
+		return true
+	}
+	// Only a hard stop locks: held and default_branch are floors the user
+	// may tick past (the engine then asks --accept-loss's typed confirmation).
+	for _, b := range r.Blockers {
+		if cleanup.IsHardStop(b.Code, r.Kind) {
+			return true
+		}
+	}
+	return false
 }
 
 // Row geometry: "> " cursor, "[x] " box, the kind padded to 8, then the name

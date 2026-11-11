@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -152,7 +153,7 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 	r.Rows = append(r.Rows,
 		cleanup.Row{Kind: cleanup.KindWorktree, Name: "inuse-noblock", Path: "/repo/.worktrees/inuse-noblock", Status: cleanup.StatusInUse},
 		cleanup.Row{Kind: cleanup.KindBranch, Name: "blocked-lesssure", Branch: "blocked-lesssure", Status: cleanup.StatusLessSure,
-			Blockers: []cleanup.Reason{{Code: cleanup.BlockHeld}}},
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockOpenPR}}},
 		cleanup.Row{Kind: cleanup.KindBranch, Name: "blocked-proven", Branch: "blocked-proven", Status: cleanup.StatusProven,
 			Evidence: cleanup.EvAncestor, Blockers: []cleanup.Reason{{Code: cleanup.BlockBaseOfOpenPR}}},
 	)
@@ -169,6 +170,21 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 		if block := rowBlock(t, m.View(), name); !strings.HasPrefix(strings.TrimLeft(block, "> "), "[-]") {
 			t.Errorf("%s not drawn [-]: %q", name, block)
 		}
+	}
+}
+
+// TestCleanupListHeldRowIsToggleable pins that a floor blocker (held by
+// another wt session) does not lock a row: only hard stops do, so the user
+// may tick it and the removal asks for the typed confirmation.
+func TestCleanupListHeldRowIsToggleable(t *testing.T) {
+	r := cleanupFixture()
+	r.Rows = append(r.Rows, cleanup.Row{Kind: cleanup.KindBranch, Name: "held-lesssure", Branch: "held-lesssure", Status: cleanup.StatusLessSure,
+		Blockers: []cleanup.Reason{{Code: cleanup.BlockHeld}}})
+	m := newSizedCleanupList(t, r, 120, 50)
+	m = moveTo(t, m, "held-lesssure")
+	m = cleanupSend(t, m, spaceKey)
+	if !slices.Contains(m.tickedNames(), "held-lesssure") {
+		t.Errorf("held row was not ticked by space")
 	}
 }
 

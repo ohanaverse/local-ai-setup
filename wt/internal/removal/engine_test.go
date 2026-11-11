@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -206,12 +207,6 @@ func blockerCases() []blockerCase {
 			in.ProtectedPaths = []string{filepath.Join(p, "model.safetensors")}
 			return in, p, "topic"
 		}},
-		{cleanup.BlockDefaultBranch, func(f *fixture) (cleanup.GatherInputs, string, string) {
-			f.git("switch", "-c", "other")
-			p := filepath.Join(f.Dir, ".worktrees", "main")
-			f.git("worktree", "add", p, "main")
-			return f.inputs(), p, "main"
-		}},
 	}
 }
 
@@ -246,7 +241,7 @@ func runBlockerCases(t *testing.T, grant Needs) {
 
 // TestEngineRefusesEveryHardBlocker runs every hard blocker through the
 // engine: primary, current dir, locked, nested, operation in progress,
-// protected artifact and a default-branch worktree must each be refused with
+// protected artifact must each be refused with
 // its code, whatever status the user saw.
 func TestEngineRefusesEveryHardBlocker(t *testing.T) { runBlockerCases(t, Needs{}) }
 
@@ -717,5 +712,61 @@ func TestEngineIgnoresProcessFinderError(t *testing.T) {
 	}
 	if len(o.Warnings) != 1 || !strings.Contains(o.Warnings[0], "could not check for running processes") {
 		t.Errorf("warnings %q", o.Warnings)
+	}
+}
+
+// floorFixture builds a merged, otherwise-proven linked worktree "topic" and
+// returns its path; held says a live wt session holds it.
+func floorFixture(t *testing.T, floor string) (*fixture, cleanup.GatherInputs, string, string) {
+	t.Helper()
+	noGh(t)
+	f := newFixture(t)
+	switch floor {
+	case cleanup.BlockHeld:
+		p := f.mergedWorktree("topic")
+		t.Cleanup(cleanup.StubHeldForTest(p))
+		return f, f.inputs(), p, "topic"
+	case cleanup.BlockDefaultBranch:
+		f.git("switch", "-c", "other")
+		p := filepath.Join(f.Dir, ".worktrees", "main")
+		f.git("worktree", "add", p, "main")
+		return f, f.inputs(), p, "main"
+	}
+	t.Fatalf("unknown floor %s", floor)
+	return nil, cleanup.GatherInputs{}, "", ""
+}
+
+// TestHeldWorktreeNeedsConfirmNotRefused: held (and a worktree on the default
+// branch) are verdict floors, not hard stops. Why: the user decides; without
+// the typed confirmation the engine refuses naming the missing confirmation,
+// never "hard blocker", and the worktree stays; with it the worktree goes.
+func TestHeldWorktreeNeedsConfirmNotRefused(t *testing.T) {
+	for _, floor := range []string{cleanup.BlockHeld, cleanup.BlockDefaultBranch} {
+		t.Run(floor, func(t *testing.T) {
+			f, in, p, name := floorFixture(t, floor)
+			s, r := f.reportWith(in)
+			row := f.row(r, cleanup.KindWorktree, name)
+			if row.HardStop != "" || row.Status != cleanup.StatusLessSure || !slices.ContainsFunc(row.Blockers, func(b cleanup.Reason) bool { return b.Code == floor }) {
+				t.Fatalf("row status %s hard stop %q blockers %v, want less_sure, no hard stop, %s", row.Status, row.HardStop, row.Blockers, floor)
+			}
+			e := f.engine(s, in, Options{})
+			bare := itemOf(row)
+			bare.Approved = Needs{}
+			bare = seal(bare)
+			o := one(t, e, bare)
+			if o.Worktree != WtRefused || !strings.Contains(o.Reason, "needs confirmation") || strings.Contains(o.Reason, "hard blocker") {
+				t.Fatalf("unapproved outcome %+v, want refused needing confirmation", o)
+			}
+			if !exists(t, p) || !f.registered(p) {
+				t.Fatalf("worktree %s touched without approval", p)
+			}
+			o = one(t, e, itemOf(row))
+			if o.Worktree != WtRemoved {
+				t.Fatalf("approved outcome %+v, want removed", o)
+			}
+			if exists(t, p) {
+				t.Errorf("worktree %s still on disk", p)
+			}
+		})
 	}
 }

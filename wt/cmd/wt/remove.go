@@ -269,7 +269,7 @@ func planRemove(eng removal.Engine, rows []cleanup.Row, f removeFlags) []planned
 	var at []int
 	for i, row := range rows {
 		out[i].row = row
-		if row.Status == cleanup.StatusInUse {
+		if row.HardStop != "" {
 			o := removal.NewOutcome(removal.ItemFromRow(row), removal.WtRefused, removal.BrNotAttempted, inUseReason(row))
 			out[i].outcome = o
 			continue
@@ -337,7 +337,9 @@ func missingFlags(need, granted removal.Needs) string {
 func inUseReason(row cleanup.Row) string {
 	var codes []string
 	for _, b := range row.Blockers {
-		codes = append(codes, b.Code)
+		if cleanup.IsHardStop(b.Code, row.Kind) {
+			codes = append(codes, b.Code)
+		}
 	}
 	if len(codes) == 0 {
 		return "in use"

@@ -30,7 +30,7 @@ wt remove origin/merged-topic --remote --yes       # delete a proven branch on o
 | Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing; or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read; also a rescued original whose uncommitted changes still equal its record. |
 | Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR. |
-| In use / locked | A primary, current, locked, nested or mid-operation worktree, a held session claim, a registered model artifact (`protected_artifact`), or the default branch (`default_branch`). |
+| In use / locked | A primary, current, locked, nested or mid-operation worktree, a registered model artifact (`protected_artifact`) or an open-PR row: hard stops no flag overrides. A held session claim (`held`) or a worktree on the default branch (`default_branch`) is not a hard stop: the row reads less sure and `wt remove` needs `--accept-loss` for it. |
 
 `origin` branches are rows in these same groups, judged the same way (a proven
 one is the only kind that can be removed).
