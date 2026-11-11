@@ -40,12 +40,14 @@ func Heading(s Status) string {
 }
 
 // Groups splits r into its groups in GroupOrder, each keeping the row order
-// of r. A group with no rows is left out.
+// of r. A group with no rows is left out. A remote ref folded into a local
+// row is still listed as its own row (AllRows).
 func Groups(r Report) []Group {
 	var out []Group
+	rows := r.AllRows()
 	for _, st := range GroupOrder {
 		g := Group{Status: st, Heading: Heading(st)}
-		for _, row := range r.Rows {
+		for _, row := range rows {
 			if row.Status == st {
 				g.Rows = append(g.Rows, row)
 			}
@@ -353,7 +355,7 @@ const (
 func ghCauseText(r Report) string {
 	var causes []string
 	seen := map[string]bool{}
-	for _, row := range r.Rows {
+	for _, row := range r.AllRows() {
 		for _, re := range row.Reasons {
 			if re.Code != ReasonPRUnknown && re.Code != ReasonCannotVerify {
 				continue

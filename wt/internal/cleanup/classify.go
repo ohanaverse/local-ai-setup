@@ -117,8 +117,12 @@ type Row struct {
 	// outright (IsHardStop), "" when none does: the other blockers (held,
 	// default_branch) are verdict floors a user may accept. Not serialised.
 	HardStop string
-	Primary  bool    // the repository's primary checkout (the root)
-	Current  bool    // the worktree holding the cwd
+	Primary  bool // the repository's primary checkout (the root)
+	Current  bool // the worktree holding the cwd
+	// Upstream is a branch or worktree row's remote ref folded into it (see
+	// Report.Folded), or its upstream that no longer exists (Gone); nil when
+	// it has neither. Not serialised yet.
+	Upstream *Upstream
 	PR       *PRInfo // the PR the verdict rests on, if any
 	AgeDays  int
 	AgeKnown bool // AgeDays is a real age (0 then means under a day), not "could not tell"
@@ -197,7 +201,13 @@ type Report struct {
 	Base  Base
 	Fetch FetchResult
 	GH    GHState
-	Rows  []Row
+	// Rows is one row per worktree, per local branch no worktree holds, and
+	// per remote-tracking ref no local row folds in.
+	Rows []Row
+	// Folded are the remote rows folded into a local row (Row.Upstream),
+	// still fully classified, in Classify's order. RemoteRows lists them with
+	// the remote rows of Rows; AllRows with every row.
+	Folded []Row
 	// MinAge is the Options.MinAge Classify used (DefaultMinAge when none
 	// was given). Not part of the JSON contract.
 	MinAge time.Duration
@@ -282,12 +292,23 @@ func Classify(s Snapshot, o Options) Report {
 		c.ghNote = "gh answered for no branch"
 	}
 	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, MinAge: o.MinAge}
+	// Every remote ref is classified first, so a local row that folds one in
+	// can carry its verdict.
+	f := folder{remotes: make([]Row, len(s.Remotes)), byRef: map[string]int{}, folded: make([]bool, len(s.Remotes))}
+	for i, rf := range s.Remotes {
+		f.remotes[i] = c.remoteRow(rf)
+		f.byRef[rf.Ref] = i
+	}
 	held := map[string]bool{}
 	for _, ws := range s.Worktrees {
-		r.Rows = append(r.Rows, c.worktree(ws))
+		row := c.worktree(ws)
 		if ws.Fact.Branch != "" {
 			held[strings.ToLower(ws.Fact.Branch)] = true
+			if h, ok := c.head(ws.Fact.Branch); ok {
+				row.Upstream = f.fold(h)
+			}
 		}
+		r.Rows = append(r.Rows, row)
 	}
 	for _, h := range s.Heads {
 		// Folded case: on a case-insensitive volume a worktree's HEAD may
@@ -296,21 +317,109 @@ func Classify(s Snapshot, o Options) Report {
 		if held[strings.ToLower(h.Ref)] {
 			continue
 		}
-		r.Rows = append(r.Rows, c.branchRow(h))
+		row := c.branchRow(h)
+		row.Upstream = f.fold(h)
+		r.Rows = append(r.Rows, row)
 	}
-	for _, rf := range s.Remotes {
-		r.Rows = append(r.Rows, c.remoteRow(rf))
+	for i, row := range f.remotes {
+		if f.folded[i] {
+			r.Folded = append(r.Folded, row)
+		} else {
+			r.Rows = append(r.Rows, row)
+		}
 	}
-	slices.SortStableFunc(r.Rows, func(a, b Row) int {
-		return cmp.Or(
-			cmp.Compare(a.Status.Rank(), b.Status.Rank()),
-			cmp.Compare(kindOrder(a.Kind), kindOrder(b.Kind)),
-			cmp.Compare(a.Name, b.Name),
-			cmp.Compare(a.Remote, b.Remote),
-			cmp.Compare(a.Path, b.Path),
-		)
-	})
+	slices.SortStableFunc(r.Rows, rowOrder)
+	slices.SortStableFunc(r.Folded, rowOrder)
 	return r
+}
+
+// rowOrder is the order Classify lists rows in: status, then kind, name,
+// remote and path.
+func rowOrder(a, b Row) int {
+	return cmp.Or(
+		cmp.Compare(a.Status.Rank(), b.Status.Rank()),
+		cmp.Compare(kindOrder(a.Kind), kindOrder(b.Kind)),
+		cmp.Compare(a.Name, b.Name),
+		cmp.Compare(a.Remote, b.Remote),
+		cmp.Compare(a.Path, b.Path),
+	)
+}
+
+// Upstream is the remote side of a local row: the remote-tracking ref folded
+// into it, with that ref's own verdict, or (Gone) an upstream that no longer
+// exists, which has no row and no verdict.
+type Upstream struct {
+	Ref      string // full refname, refs/remotes/<Remote>/<Name>
+	Remote   string
+	Name     string // the branch name on the remote ("" when Ref is not under refs/remotes/<Remote>/)
+	Tip      string // "" when Gone
+	Gone     bool
+	Status   Status   // the folded row's; "" when Gone
+	Evidence Evidence // the folded row's
+}
+
+// folder folds remote rows into local rows.
+type folder struct {
+	remotes []Row          // every remote ref's row, in s.Remotes order
+	byRef   map[string]int // full refname -> index in remotes
+	folded  []bool         // remotes[i] is folded into some local row
+}
+
+// fold returns the Upstream of a local head's row and marks the remote row
+// it folds in. The ref folded is the head's upstream when that is the
+// same-named branch of its remote, origin/<name> when the head has no
+// upstream; refnames are matched exactly, so a name differing only in case
+// never folds. A gone upstream is a field with no row, and never falls back
+// to origin. An upstream of another name, or a local one, folds nothing.
+func (f *folder) fold(h RefFact) *Upstream {
+	if h.Gone && h.Upstream != "" {
+		name := ""
+		if rest, ok := strings.CutPrefix(h.Upstream, "refs/remotes/"+h.Remote+"/"); ok && h.Remote != "" {
+			name = rest
+		}
+		return &Upstream{Ref: h.Upstream, Remote: h.Remote, Name: name, Gone: true}
+	}
+	target := ""
+	switch {
+	case h.Upstream == "":
+		target = "refs/remotes/origin/" + h.Name
+	case h.Remote != "" && h.Upstream == "refs/remotes/"+h.Remote+"/"+h.Name:
+		target = h.Upstream
+	}
+	i, ok := f.byRef[target]
+	if target == "" || !ok {
+		return nil
+	}
+	f.folded[i] = true
+	rr := f.remotes[i]
+	return &Upstream{Ref: rr.Ref, Remote: rr.Remote, Name: rr.Name, Tip: rr.Tip, Status: rr.Status, Evidence: rr.Evidence}
+}
+
+// AllRows is every classified row, the folded remote rows included, in
+// Classify's order: the list as it was before folding.
+//
+// It merges the two (each already in that order) without re-sorting Rows, so
+// a report built by hand keeps its own order, and without Folded it is Rows.
+func (r Report) AllRows() []Row {
+	all := make([]Row, 0, len(r.Rows)+len(r.Folded))
+	i, j := 0, 0
+	for i < len(r.Rows) || j < len(r.Folded) {
+		if j == len(r.Folded) || (i < len(r.Rows) && rowOrder(r.Rows[i], r.Folded[j]) <= 0) {
+			all = append(all, r.Rows[i])
+			i++
+		} else {
+			all = append(all, r.Folded[j])
+			j++
+		}
+	}
+	return all
+}
+
+// RemoteRows is every remote row, those in Rows and those folded into a
+// local row, in Classify's order. Code that looks a remote ref up by its row
+// goes through it, never through Rows alone.
+func (r Report) RemoteRows() []Row {
+	return slices.DeleteFunc(r.AllRows(), func(row Row) bool { return row.Kind != KindRemote })
 }
 
 func kindOrder(k Kind) int { return slices.Index([]Kind{KindWorktree, KindBranch, KindRemote}, k) }

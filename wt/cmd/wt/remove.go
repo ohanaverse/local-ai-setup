@@ -221,6 +221,10 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 // more than one, is a usage error naming the argument. An argument naming a
 // row an earlier one already named adds nothing.
 func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.Row, error) {
+	// The local rows, then every remote row: an origin ref folded into its
+	// local branch's row is not in Rows but is still a target by its name.
+	cands := slices.DeleteFunc(slices.Clone(r.Rows), func(row cleanup.Row) bool { return row.Kind == cleanup.KindRemote })
+	cands = append(cands, r.RemoteRows()...)
 	var rows []cleanup.Row
 	seen := map[int]bool{}
 	for _, arg := range args {
@@ -234,7 +238,7 @@ func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.R
 		}
 		p = cleanup.ResolvePath(p)
 		var hits []int
-		for i, row := range r.Rows {
+		for i, row := range cands {
 			byPath := row.Kind == cleanup.KindWorktree && row.Path != "" && cleanup.ResolvePath(row.Path) == p
 			byRef := (row.Kind == cleanup.KindWorktree || row.Kind == cleanup.KindBranch) && row.Ref != "" && row.Ref == "refs/heads/"+arg
 			byOrigin := row.Kind == cleanup.KindRemote && row.Remote == "origin" && row.Ref != "" && row.Ref == "refs/remotes/"+arg
@@ -250,7 +254,7 @@ func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.R
 		}
 		if !seen[hits[0]] {
 			seen[hits[0]] = true
-			rows = append(rows, r.Rows[hits[0]])
+			rows = append(rows, cands[hits[0]])
 		}
 	}
 	return rows, nil

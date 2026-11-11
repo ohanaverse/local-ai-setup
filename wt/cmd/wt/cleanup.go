@@ -363,7 +363,7 @@ func printCleanupPlain(w io.Writer, r cleanup.Report, now time.Time) error {
 		b.WriteString("\nnothing to clean up: no other worktree or branch\n")
 	}
 	nameW := 0
-	for _, row := range r.Rows {
+	for _, row := range r.AllRows() {
 		nameW = max(nameW, len(cleanup.DisplayName(row)))
 	}
 	for _, g := range groups {

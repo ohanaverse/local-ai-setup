@@ -206,7 +206,13 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		s.Worktrees = append(s.Worktrees, WorktreeState{Fact: w, GatesErr: notReadByRescan})
 	}
 
-	for _, row := range Classify(s, o).Rows {
+	rep := Classify(s, o)
+	rows := rep.Rows
+	if t.Kind == KindRemote {
+		// A remote ref folded into its local branch's row is in Folded.
+		rows = rep.RemoteRows()
+	}
+	for _, row := range rows {
 		switch {
 		case t.Kind == KindWorktree && row.Kind == KindWorktree && resolve(row.Path) == self:
 			return row, nil

@@ -28,17 +28,22 @@ func gather(t *testing.T, f *fixture) Snapshot {
 }
 
 // findRow returns the row of kind k named name, failing when there is not
-// exactly one.
+// exactly one. A remote row is looked up through RemoteRows, so a remote ref
+// folded into a local row is found too.
 func findRow(t *testing.T, r Report, k Kind, name string) Row {
 	t.Helper()
+	rows := r.Rows
+	if k == KindRemote {
+		rows = r.RemoteRows()
+	}
 	var got []Row
-	for _, row := range r.Rows {
+	for _, row := range rows {
 		if row.Kind == k && row.Name == name {
 			got = append(got, row)
 		}
 	}
 	if len(got) != 1 {
-		t.Fatalf("%d rows of kind %s named %q, want 1; rows: %s", len(got), k, name, dumpRows(r.Rows))
+		t.Fatalf("%d rows of kind %s named %q, want 1; rows: %s", len(got), k, name, dumpRows(r.AllRows()))
 	}
 	return got[0]
 }
@@ -1004,7 +1009,7 @@ func TestClassifyIgnoredCountWording(t *testing.T) {
 
 func countRows(r Report, k Kind, name string) int {
 	n := 0
-	for _, row := range r.Rows {
+	for _, row := range r.AllRows() {
 		if row.Kind == k && row.Name == name {
 			n++
 		}
@@ -1049,7 +1054,7 @@ func TestDefaultBranchIsListedOnce(t *testing.T) {
 	r := Classify(gather(t, f), Options{Now: later()})
 	for _, k := range []Kind{KindBranch, KindRemote} {
 		if n := countRows(r, k, "main"); n != 1 {
-			t.Errorf("%d %s rows for main, want 1%s", n, k, dumpRows(r.Rows))
+			t.Errorf("%d %s rows for main, want 1%s", n, k, dumpRows(r.AllRows()))
 		}
 	}
 	if n := countRows(r, KindWorktree, "main"); n != 0 {

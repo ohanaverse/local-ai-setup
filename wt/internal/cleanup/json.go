@@ -122,13 +122,15 @@ func marshal(e Envelope) ([]byte, error) {
 }
 
 // Encode renders a report as the envelope, rows in the order Classify made.
+// A remote ref folded into a local row is still its own row here (AllRows).
 func Encode(r Report) ([]byte, error) {
+	rows := r.AllRows()
 	e := Envelope{
 		Version: EnvelopeVersion,
 		Repo:    r.Repo,
 		GH:      string(r.GH),
 		Notes:   NoteLines(r),
-		Rows:    make([]RowJSON, 0, len(r.Rows)),
+		Rows:    make([]RowJSON, 0, len(rows)),
 	}
 	// base is absent when no default branch was found; fetch is absent when
 	// no fetch ran ("not attempted"), a zero At being the sign of that.
@@ -153,7 +155,7 @@ func Encode(r Report) ([]byte, error) {
 			}
 		}
 	}
-	for _, row := range r.Rows {
+	for _, row := range rows {
 		rj := RowJSON{
 			Kind: string(row.Kind), Name: row.Name, Path: row.Path, Branch: row.Branch,
 			Remote: row.Remote, Status: string(row.Status), Evidence: string(row.Evidence),
