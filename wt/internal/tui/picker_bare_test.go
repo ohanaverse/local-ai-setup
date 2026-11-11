@@ -76,3 +76,16 @@ func TestPickerBareRepoRowIsTaggedAndNotLaunchable(t *testing.T) {
 		t.Errorf("status line missing; view:\n%s", m.View())
 	}
 }
+
+// TestPickerBareRepoDetailDoesNotOfferLaunch: the detail pane under the
+// bare repository's row must not say "launching is fine" (enter refuses
+// there); it says why neither launching nor removing is possible.
+func TestPickerBareRepoDetailDoesNotOfferLaunch(t *testing.T) {
+	m := bareRepoPicker(t)
+	m.rows.cursor = bareRowIndex(t, m)
+	m, _ = updateMsg(m, tea.WindowSizeMsg{Width: 120, Height: 50})
+	v := m.View()
+	if strings.Contains(v, "launching is fine") || !strings.Contains(v, "cannot be launched in or removed (a bare repository has no working tree)") {
+		t.Errorf("detail pane wrong:\n%s", v)
+	}
+}

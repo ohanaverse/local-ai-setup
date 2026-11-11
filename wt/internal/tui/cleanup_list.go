@@ -808,6 +808,8 @@ func (m *cleanupListModel) detail() string {
 	switch {
 	case it.newWorktree:
 		text = "create a new branch and worktree, then launch in it"
+	case m.launch() && it.row.Bare:
+		text = "cannot be launched in or removed (a bare repository has no working tree): " + text
 	case m.launch() && it.locked:
 		text = "cannot be removed (launching is fine): " + text
 	case m.launch():
