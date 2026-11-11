@@ -32,10 +32,13 @@ wt remove origin/merged-topic --remote --yes       # delete a proven branch on o
 Every worktree, including the primary checkout (the root) and the one you are
 in, every local branch, and the remote branches, are rows. The default branch
 is listed too: as its own row when no worktree holds it, and `origin/<default>`
-folds into it like any other same-named pair. A remote branch with the same
-name as a local branch is not a separate row: it is the local row's `upstream`
-(`ref`, `gone`, and its own status and evidence). On a terminal REMOTE BRANCHES therefore lists only the
-branches no local branch tracks (`--plain` and `--json` still list every ref). On a terminal the list shows
+folds into it like any other pair. A remote ref folds into a local row only
+when it is that branch's own upstream, or `origin/<name>` when the branch has
+no upstream: in the terminal list it is the row's `upstream` (`ref`, `gone`,
+and its own status and evidence) and not a row of its own, so
+`upstream/foo` beside a local `foo` that tracks `origin/foo` stays its own row.
+`--plain` and `--json` still list every ref as its own row as well (the JSON
+row also carries the `upstream` field). On a terminal the list shows
 every remote's branches and does not fetch when it opens (`r` is not a
 refresh; run `git fetch` or use `--json`/`--plain`, which fetch first unless
 `--no-fetch`). Each row carries tags such as `root`, `you are here`, `held`,
@@ -43,8 +46,10 @@ refresh; run `git fetch` or use `--json`/`--plain`, which fetch first unless
 
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
-progress, a registered model artifact, an open PR); the row's `hard_stop` JSON
-field names it. A **floor** is a verdict ceiling the user can accept: a held
+progress, a registered model artifact, or an open PR on an `origin` branch
+or one that targets it); the row's `hard_stop` JSON field names it. A local
+branch or worktree with an open PR is not a hard stop: it reads unique work and
+needs `--accept-loss` and `-D`. A **floor** is a verdict ceiling the user can accept: a held
 session claim (`held`), the default branch (`default_branch`) and an unknown
 pull request (`pr_unknown`) leave the row `less_sure` at best, so `wt remove`
 needs `--accept-loss` for it, and, for a branch that is not proven merged,
@@ -53,7 +58,9 @@ needs `--accept-loss` for it, and, for a branch that is not proven merged,
 An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
 failed) floors a row below proven, with a `PR ?` tag, because a merged PR is
 part of the proof. The exception is a repository whose `origin` is not on
-GitHub: the lookup does not apply there, so it floors nothing and shows no
+GitHub: the lookup does not apply there (an origin wt does not recognise as
+github.com, such as an ssh host alias, an `insteadOf` short form or GitHub
+Enterprise, counts as having no pull requests), so it floors nothing and shows no
 tag or `needs gh` wording on any row. An `origin` branch there is still never
 proven by a PR: its row reads `not_checked` (no pull request is checked) and
 stays less sure or worse.
@@ -64,8 +71,8 @@ stays less sure or worse.
 |---|---|
 | Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing; or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read; also a rescued original whose uncommitted changes still equal its record. |
-| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR. |
-| In use / locked | A primary, current, locked, nested or mid-operation worktree, a registered model artifact (`protected_artifact`) or an open-PR row: hard stops no flag overrides (the row's `hard_stop`). A held session claim (`held`), the default branch (`default_branch`) and an unknown PR (`pr_unknown`) are floors, not hard stops: the row reads less sure and `wt remove` needs `--accept-loss` for it. |
+| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR on a local branch or worktree. |
+| In use / locked | A primary, current, locked, nested or mid-operation worktree, a registered model artifact (`protected_artifact`) or an `origin` branch with an open PR, or one an open PR targets: hard stops no flag overrides (the row's `hard_stop`). A held session claim (`held`), the default branch (`default_branch`) and an unknown PR (`pr_unknown`) are floors, not hard stops: the row reads less sure and `wt remove` needs `--accept-loss` for it. |
 
 `origin` branches are rows in these same groups, judged the same way (a proven
 one is the only kind that can be removed).
@@ -176,7 +183,7 @@ worktree needs `--force --accept-loss`, an unmerged branch `-D
 naming the missing flags) and the others go on. No approval overrides a hard
 blocker: the primary checkout, the directory you are in, a locked or nested
 worktree, a rebase or merge in progress, a registered model artifact, or an
-open PR. A held session and the default branch are floors, not blockers:
+open PR on an `origin` branch (or one that targets it). A held session and the default branch are floors, not blockers:
 `--accept-loss` approves them (and `-D` a branch that is not proven merged;
 `origin/<default>` is still never deleted). A registry that did not load refuses
 every removal.

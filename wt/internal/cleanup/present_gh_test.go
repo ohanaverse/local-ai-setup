@@ -150,3 +150,13 @@ func TestNotCheckedRowIsNotAGHProblem(t *testing.T) {
 		t.Errorf("gh line %q", line)
 	}
 }
+
+// TestHeaderNonGitHubOriginDoesNotBlameGH: with no own repository the header
+// says origin is not on GitHub, not that gh is unavailable.
+func TestHeaderNonGitHubOriginDoesNotBlameGH(t *testing.T) {
+	r := ghDownReport()
+	r.PRNotApplicable = true
+	if got, want := ghLine(t, r), "gh:    origin is not on GitHub; no PR evidence"; got != want {
+		t.Errorf("header = %q, want %q", got, want)
+	}
+}

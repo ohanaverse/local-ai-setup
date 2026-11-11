@@ -208,6 +208,10 @@ type Report struct {
 	Base  Base
 	Fetch FetchResult
 	GH    GHState
+	// PRNotApplicable mirrors Snapshot.PRNotApplicable: origin is not on
+	// GitHub, so the header says there is no PR evidence instead of blaming gh.
+	// Not part of the JSON contract.
+	PRNotApplicable bool
 	// Rows is one row per worktree, per local branch no worktree holds, and
 	// per remote-tracking ref no local row folds in.
 	Rows []Row
@@ -298,7 +302,7 @@ func Classify(s Snapshot, o Options) Report {
 	if c.gh == GHUnavailable {
 		c.ghNote = "gh answered for no branch"
 	}
-	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, MinAge: o.MinAge}
+	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, PRNotApplicable: s.PRNotApplicable, MinAge: o.MinAge}
 	// Every remote ref is classified first, so a local row that folds one in
 	// can carry its verdict.
 	f := folder{remotes: make([]Row, len(s.Remotes)), byRef: map[string]int{}, folded: make([]bool, len(s.Remotes))}

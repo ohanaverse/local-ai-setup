@@ -9,11 +9,14 @@
   BRANCHES) with per-row tags, lists the primary checkout, the default branch
   and held worktrees, shows every remote's branches and does not fetch when it
   opens; `--json`, `--plain` and a pipe still fetch first unless `--no-fetch`.
-  A remote ref folds into the same-named local row as its `upstream`. A held
+  In the list a remote ref folds into the local row it belongs to (the head's own
+  upstream, else `origin/<name>`) as its `upstream`; `--json` and `--plain` still
+  list it as its own row too. A held
   session and the default branch are floors, not hard stops: the row reads
   less sure and `wt remove` needs `--accept-loss` (and `-D` for a branch not
   proven merged). An unknown PR lookup also floors a row below proven (`PR ?`),
-  except when `origin` is not on GitHub. `cleanup-list` gains `hard_stop` and
+  except when `origin` is not on GitHub (or not recognised as github.com). An
+  open PR is a hard stop only on an `origin` branch or one that targets it. `cleanup-list` gains `hard_stop` and
   `upstream` (additive, version 1 unchanged). The launch picker is a view over
   the same rows. See `docs/wt-cleanup.md`.
 

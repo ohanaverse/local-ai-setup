@@ -718,7 +718,9 @@ func originURL(g Git) string {
 var githubURL = regexp.MustCompile(`^(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$`)
 
 // ownRepoFromURL parses a github.com remote URL (https, ssh:// or scp form)
-// to owner/repo; "" for anything else, which leaves PR facts unknown.
+// to owner/repo; "" for anything else (an ssh host alias, an insteadOf short
+// form, GitHub Enterprise, a path), which makes PR state not applicable
+// (Snapshot.PRNotApplicable): no row is floored by it.
 func ownRepoFromURL(url string) string {
 	m := githubURL.FindStringSubmatch(url)
 	if m == nil {

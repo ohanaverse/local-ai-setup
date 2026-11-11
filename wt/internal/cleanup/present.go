@@ -412,6 +412,11 @@ func HeaderLines(r Report, now time.Time) []string {
 		lines = append(lines, "fetch: FAILED ("+fetchErrText(r.Fetch.Err)+"); the base may be stale, merges since the last fetch may be missed"+otherRemotesText(r.Fetch))
 	}
 
+	switch {
+	case r.PRNotApplicable:
+		lines = append(lines, "gh:    origin is not on GitHub; no PR evidence")
+		return append(lines, NoteLines(r)...)
+	}
 	switch r.GH {
 	case GHOK:
 		lines = append(lines, "gh:    ok")

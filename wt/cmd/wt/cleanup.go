@@ -43,7 +43,7 @@ func worktreesCmd(a *app) *cobra.Command {
 		Aliases: []string{"cleanup"},
 		Short:   "List worktrees and branches, and which are safe to remove, with the proof (alias: cleanup)",
 		Long: "`wt cleanup` is an alias of this command.\n\n" +
-			"List the repository's worktrees, local branches and origin branches, by how\n" +
+			"List the repository's worktrees, local branches and remote branches (a terminal list shows every remote's), by how\n" +
 			"sure wt is that each can go (on a terminal grouped by kind; --plain groups by\n" +
 			"verdict): PROVEN MERGED, LOOKS MERGED (LESS\n" +
 			"SURE), HAS WORK THAT EXISTS NOWHERE ELSE, and IN USE / LOCKED. Each row says\n" +
@@ -53,7 +53,7 @@ func worktreesCmd(a *app) *cobra.Command {
 			"terminal, enter removes the ticked\n" +
 			"rows after a confirmation that lists what each would lose: y when every\n" +
 			"row is proven, the typed word delete when any is not proven or loses\n" +
-			"something. A proven origin branch is tickable too (never ticked for you), and\n" +
+			"something. A proven origin branch no local branch tracks is tickable too (never ticked for you; a tracked one is removed with `wt remove origin/<name> --remote`), and\n" +
 			"deleting it needs its own typed phrase, delete origin. r copies the work of\n" +
 			"the row under the cursor into a new branch and worktree first (`wt rescue`).\n\n" +
 			"It runs `git fetch --prune <remote>` for every remote first (origin first, the\n" +
