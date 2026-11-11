@@ -107,7 +107,9 @@ func result(out BranchOutcome, reason string, warnings ...string) branchResult {
 //
 //  1. no branch (a detached worktree): not_attempted;
 //  2. the default branch (any case, or a <remote>/<default> spelling), or
-//     no default branch resolved: retained_default (fail closed);
+//     no default branch resolved: retained_default (fail closed); a
+//     branch-only item on exactly refs/heads/<default> is allowed through
+//     only when the base is a remote default (not Base.Fallback);
 //  3. the ref is not refs/heads/ or its tip is not a 40-hex commit id
 //     (sha256 repositories are not supported for branch deletion in this
 //     release: "object format not supported"); or the row is Unknown,
@@ -153,7 +155,10 @@ func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) branchResult {
 	// refs/heads/<default>) is the user's to delete: the row carries the
 	// default_branch floor, so the gate already required the typed approval.
 	// Any other spelling of the default, and a worktree item's branch, stay.
-	listedDefault := ic.item.Kind == cleanup.KindBranch && ref == "refs/heads/"+e.Prior.Base.Default
+	// So does the default when it is the base itself (Base.Fallback, no
+	// remote default): only a different, remote base can prove it.
+	listedDefault := ic.item.Kind == cleanup.KindBranch && ref == "refs/heads/"+e.Prior.Base.Default &&
+		!e.Prior.Base.Fallback
 	if !listedDefault && isDefaultForm(ref, e.Prior.Base.Default) {
 		return result(BrRetainedDefault, fmt.Sprintf("branch %s kept: it is the default branch", ref))
 	}

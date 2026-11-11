@@ -615,9 +615,13 @@ func (c *classifier) branchRow(h RefFact) Row {
 	if c.isDefault(h.Name) {
 		j.block(BlockDefaultBranch, h.Name)
 	}
-	if c.s.NoDefault {
+	switch {
+	case c.s.NoDefault:
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
-	} else {
+	case c.s.Base.Fallback && c.isDefault(h.Name):
+		row.Losses.Unpushed = c.selfBase(&j, h)
+		c.setAge(&row, h)
+	default:
 		row.Losses.Unpushed = c.unpushedOf(h)
 		c.local(&j, h, false)
 		c.setAge(&row, h)
@@ -626,6 +630,31 @@ func (c *classifier) branchRow(h RefFact) Row {
 	j.fill(&row)
 	row.BranchProven = row.Status == StatusProven
 	return row
+}
+
+// selfBase judges the local default branch when it is the base itself (no
+// remote default, Base.Fallback): the ladder would compare it with itself
+// and find it same-commit, so it gets no merge evidence. Its commits on no
+// remote-tracking ref (all of them when there is no remote) are unique work;
+// it returns that count for Losses.Unpushed (-1 when unknown).
+func (c *classifier) selfBase(j *judge, h RefFact) int {
+	j.weak(ReasonBaseIsLocal, "the base is the local "+c.s.Base.Ref+" itself, so nothing else proves its commits")
+	p, ok := c.s.Proofs[h.Tip]
+	switch {
+	case !ok:
+		j.unsure(ReasonUnpushedUnknown, "its commits could not be counted")
+		return -1
+	case p.Unpushed < 0:
+		j.unsure(ReasonUnpushedUnknown, p.UnpushedErr)
+		return -1
+	case p.Unpushed > 0:
+		noun := "commits"
+		if p.Unpushed == 1 {
+			noun = "commit"
+		}
+		j.uniq(ReasonUnpushed, fmt.Sprintf("%d %s on no remote-tracking ref", p.Unpushed, noun))
+	}
+	return p.Unpushed
 }
 
 // branchProven is Ruling A: h's own judgement, the one a worktree row on it

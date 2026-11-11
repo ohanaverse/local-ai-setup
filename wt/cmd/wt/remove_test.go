@@ -948,3 +948,26 @@ func TestRemoveCmdPrimaryAndCwdStillRefusedWithAcceptLoss(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoveCmdLocalBaseDefaultBranchKept: with no remote default the base
+// is the local main itself; `wt remove main --yes --accept-loss -D` must keep
+// it (retained_default, exit 2): nothing different proves its commits.
+func TestRemoveCmdLocalBaseDefaultBranchKept(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	cgit(t, dir, "remote", "remove", "origin")
+	cgit(t, dir, "switch", "-c", "topic")
+	cgit(t, dir, "switch", "main")
+	cleanupCommit(t, dir, "only.txt", "only-on-main")
+	cgit(t, dir, "switch", "topic")
+	stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--accept-loss", "-D", "--json", "main")
+	if exitOf(err) != 2 {
+		t.Fatalf("exit %d, want 2\nstdout=%s\nstderr=%s", exitOf(err), stdout, stderr)
+	}
+	if !hasBranch(t, dir, "main") {
+		t.Fatal("main deleted although the base is main itself")
+	}
+	if !strings.Contains(stdout, "retained_default") {
+		t.Errorf("stdout lacks retained_default:\n%s", stdout)
+	}
+}

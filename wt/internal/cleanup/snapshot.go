@@ -450,7 +450,11 @@ func (s *Snapshot) prove(g Git) {
 	for i := range s.Heads {
 		h := &s.Heads[i]
 		p := run(h.Tip)
-		if (p.Verdict != Merged || treeProof(p.Evidence)) && !counted[h.Tip] {
+		// The local default when it is the base itself (Base.Fallback):
+		// its proof compares it with itself, so its own commits are counted
+		// too (classifier.selfBase reads them).
+		selfBase := s.Base.Fallback && h.Name == s.Base.Default
+		if (p.Verdict != Merged || treeProof(p.Evidence) || selfBase) && !counted[h.Tip] {
 			counted[h.Tip] = true
 			p.Unpushed, p.UnpushedErr = unpushed(g, h.Tip)
 			s.Proofs[h.Tip] = p
