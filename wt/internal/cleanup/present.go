@@ -482,14 +482,112 @@ func otherRemotesText(f FetchResult) string {
 	return "; " + strings.Join(parts, "; ")
 }
 
-// RowTags is the PR tag of a row, a first version Task 107 extends: "PR ?"
-// while the PR state is unknown, "#N state" once a PR is known, "" for none.
-func RowTags(row Row) []string {
+// KindGroup is one kind-based group of the unified list.
+type KindGroup struct {
+	Heading string
+	Rows    []Row
+}
+
+// Kind-group headings, in list order.
+const (
+	HeadingWorktrees = "WORKTREES"
+	HeadingLocal     = "LOCAL BRANCHES"
+	HeadingRemote    = "REMOTE BRANCHES"
+)
+
+// KindGroups splits the report by kind: worktrees (the root first, then the
+// others in the report's order), local branches without a worktree, remote
+// branches (folded ones included, via RemoteRows). Empty groups are left out.
+func KindGroups(r Report) []KindGroup {
+	var wt, local []Row
+	for _, row := range r.AllRows() {
+		switch row.Kind {
+		case KindWorktree:
+			if row.Primary {
+				wt = append([]Row{row}, wt...)
+				// keep several primaries (never expected) in report order
+				continue
+			}
+			wt = append(wt, row)
+		case KindBranch:
+			local = append(local, row)
+		}
+	}
+	var out []KindGroup
+	for _, g := range []KindGroup{
+		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, r.RemoteRows()},
+	} {
+		if len(g.Rows) > 0 {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// TagSeverity says how a tag should be coloured.
+type TagSeverity int
+
+const (
+	// TagInfo is a plain fact (root, you are here, PR, +remote).
+	TagInfo TagSeverity = iota
+	// TagWarn is a risk: removal could lose work or the row is held.
+	TagWarn
+)
+
+// Tag is one short fact about a row.
+type Tag struct {
+	Text     string
+	Severity TagSeverity
+}
+
+// RowTags is every fact tag of a row, in a fixed order: root, you are here,
+// PR ("PR ?" while unknown, "#N state" once known), +remote, then the risk
+// tags dirty, unpushed, upstream gone, held by session <id>, locked.
+func RowTags(row Row) []Tag {
+	var tags []Tag
+	add := func(sev TagSeverity, text string) { tags = append(tags, Tag{text, sev}) }
+	hasBlock := func(code string) (Reason, bool) {
+		for _, b := range row.Blockers {
+			if b.Code == code {
+				return b, true
+			}
+		}
+		return Reason{}, false
+	}
+	if row.Primary {
+		add(TagInfo, "root")
+	}
+	if _, ok := hasBlock(BlockCurrent); ok || row.Current || row.HardStop == BlockCurrent {
+		add(TagInfo, "you are here")
+	}
 	switch {
 	case row.PRUnknown:
-		return []string{"PR ?"}
+		add(TagInfo, "PR ?")
 	case row.PRTag != nil:
-		return []string{fmt.Sprintf("#%d %s", row.PRTag.Number, strings.ToLower(row.PRTag.State))}
+		add(TagInfo, fmt.Sprintf("#%d %s", row.PRTag.Number, strings.ToLower(row.PRTag.State)))
 	}
-	return nil
+	if row.Upstream != nil && !row.Upstream.Gone {
+		add(TagInfo, "+remote")
+	}
+	l := row.EffectiveLosses()
+	if l.Dirty {
+		add(TagWarn, "dirty")
+	}
+	if l.Unpushed > 0 {
+		add(TagWarn, "unpushed")
+	}
+	if row.Upstream != nil && row.Upstream.Gone {
+		add(TagWarn, "upstream gone")
+	}
+	if b, ok := hasBlock(BlockHeld); ok {
+		text := "held by session"
+		if b.Detail != "" {
+			text += " " + b.Detail
+		}
+		add(TagWarn, text)
+	}
+	if _, ok := hasBlock(BlockLocked); ok || row.HardStop == BlockLocked {
+		add(TagWarn, "locked")
+	}
+	return tags
 }

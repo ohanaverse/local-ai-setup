@@ -41,6 +41,7 @@ var lossSites = map[string]lossCounts{
 	"internal/cleanup/classify.go#classifier.branchRow": {write: 2},
 	"internal/cleanup/classify.go#Row.EffectiveLosses":  {raw: 1},
 	"internal/cleanup/present.go#LossLines":             {effective: 1},
+	"internal/cleanup/present.go#RowTags":               {effective: 1},
 
 	// The removal engine: approvals, the lapse check and the seal read the
 	// effective view; two gates read raw values the view never changes or

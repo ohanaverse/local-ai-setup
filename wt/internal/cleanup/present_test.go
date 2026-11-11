@@ -255,14 +255,80 @@ func TestRowTextCollapsesNestedWorktrees(t *testing.T) {
 	}
 }
 
+func tagTexts(row Row) []string {
+	var out []string
+	for _, t := range RowTags(row) {
+		out = append(out, t.Text)
+	}
+	return out
+}
+
 func TestRowTagsShowsPRQuestionMarkWhileUnknown(t *testing.T) {
-	if got := RowTags(Row{PRUnknown: true}); !slices.Equal(got, []string{"PR ?"}) {
+	if got := tagTexts(Row{PRUnknown: true}); !slices.Equal(got, []string{"PR ?"}) {
 		t.Errorf("unknown: %v", got)
 	}
-	if got := RowTags(Row{PRTag: &PRInfo{Number: 7, State: "MERGED"}}); !slices.Equal(got, []string{"#7 merged"}) {
+	if got := tagTexts(Row{PRTag: &PRInfo{Number: 7, State: "MERGED"}}); !slices.Equal(got, []string{"#7 merged"}) {
 		t.Errorf("known: %v", got)
 	}
 	if got := RowTags(Row{}); got != nil {
 		t.Errorf("none: %v", got)
+	}
+}
+
+func TestRowTagsEveryFact(t *testing.T) {
+	cases := []struct {
+		name string
+		row  Row
+		want string
+		sev  TagSeverity
+	}{
+		{"root", Row{Primary: true}, "root", TagInfo},
+		{"current", Row{Current: true}, "you are here", TagInfo},
+		{"current hard stop", Row{HardStop: BlockCurrent}, "you are here", TagInfo},
+		{"held", Row{Blockers: []Reason{{BlockHeld, "abc123"}}}, "held by session abc123", TagWarn},
+		{"dirty", Row{Losses: Losses{Dirty: true}}, "dirty", TagWarn},
+		{"unpushed", Row{Losses: Losses{Unpushed: 2}}, "unpushed", TagWarn},
+		{"upstream gone", Row{Upstream: &Upstream{Gone: true}}, "upstream gone", TagWarn},
+		{"pr merged", Row{PRTag: &PRInfo{Number: 9, State: "MERGED"}}, "#9 merged", TagInfo},
+		{"pr open", Row{PRTag: &PRInfo{Number: 3, State: "OPEN"}}, "#3 open", TagInfo},
+		{"pr closed", Row{PRTag: &PRInfo{Number: 4, State: "CLOSED"}}, "#4 closed", TagInfo},
+		{"pr unknown", Row{PRUnknown: true}, "PR ?", TagInfo},
+		{"locked", Row{HardStop: BlockLocked, Blockers: []Reason{{BlockLocked, ""}}}, "locked", TagWarn},
+		{"+remote", Row{Upstream: &Upstream{Ref: "refs/remotes/origin/x"}}, "+remote", TagInfo},
+	}
+	for _, c := range cases {
+		got := RowTags(c.row)
+		if len(got) != 1 || got[0].Text != c.want || got[0].Severity != c.sev {
+			t.Errorf("%s: got %+v, want one %q (%d)", c.name, got, c.want, c.sev)
+		}
+	}
+	if got := RowTags(Row{Upstream: &Upstream{Gone: true}}); slices.ContainsFunc(got, func(t Tag) bool { return t.Text == "+remote" }) {
+		t.Errorf("gone upstream must not read +remote: %+v", got)
+	}
+}
+
+func TestKindGroupsOrder(t *testing.T) {
+	rep := Report{Rows: []Row{
+		{Kind: KindRemote, Name: "r"},
+		{Kind: KindBranch, Name: "b"},
+		{Kind: KindWorktree, Name: "w"},
+		{Kind: KindWorktree, Name: "root", Primary: true},
+	}, Folded: []Row{{Kind: KindRemote, Name: "folded"}}}
+	gs := KindGroups(rep)
+	var heads []string
+	for _, g := range gs {
+		heads = append(heads, g.Heading)
+	}
+	if !slices.Equal(heads, []string{"WORKTREES", "LOCAL BRANCHES", "REMOTE BRANCHES"}) {
+		t.Fatalf("headings %v", heads)
+	}
+	if gs[0].Rows[0].Name != "root" || gs[0].Rows[1].Name != "w" {
+		t.Errorf("worktrees %+v", gs[0].Rows)
+	}
+	if len(gs[2].Rows) != 2 {
+		t.Errorf("remote group should include the folded row: %+v", gs[2].Rows)
+	}
+	if got := KindGroups(Report{Rows: []Row{{Kind: KindBranch}}}); len(got) != 1 || got[0].Heading != "LOCAL BRANCHES" {
+		t.Errorf("empty groups must be omitted: %+v", got)
 	}
 }
