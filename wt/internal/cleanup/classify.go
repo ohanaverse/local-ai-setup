@@ -304,7 +304,9 @@ func Classify(s Snapshot, o Options) Report {
 	f := folder{remotes: make([]Row, len(s.Remotes)), byRef: map[string]int{}, folded: make([]bool, len(s.Remotes))}
 	for i, rf := range s.Remotes {
 		f.remotes[i] = c.remoteRow(rf)
-		c.tagPR(&f.remotes[i], rf.Name)
+		if rf.Remote == "origin" { // PR lookups describe origin only
+			c.tagPR(&f.remotes[i], rf.Name)
+		}
 		f.byRef[rf.Ref] = i
 	}
 	held := map[string]bool{}

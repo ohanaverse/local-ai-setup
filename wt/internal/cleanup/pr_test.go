@@ -490,7 +490,8 @@ func TestFillPRsMatchesAFullGather(t *testing.T) {
 	f.Branch("done")
 	f.Push("done")
 	f.Worktree("topic")
-	noGh(t)
+	tip := f.git("rev-parse", "done")
+	mergedPRStub(t, "done", 5, tip, f.git("rev-parse", "main")) // Merges and BasePRs get exercised
 	full, err := Gather(Git{Dir: f.Dir}, gatherIn(f))
 	if err != nil {
 		t.Fatal(err)
@@ -501,9 +502,12 @@ func TestFillPRsMatchesAFullGather(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	FillPRs(&s, in)
+	FillPRs(Git{Dir: f.Dir}, &s, in)
 	if !s.PRsAsked || s.PRsSkipped {
 		t.Fatalf("after FillPRs: PRsAsked %v PRsSkipped %v", s.PRsAsked, s.PRsSkipped)
+	}
+	if len(full.Merges) == 0 || len(full.BasePRs) == 0 {
+		t.Fatalf("fixture exercises no Merges/BasePRs: %+v %+v", full.Merges, full.BasePRs)
 	}
 	if !reflect.DeepEqual(s, full) {
 		t.Fatalf("filled snapshot differs from a full Gather:\n got  %+v\n want %+v", s, full)
@@ -579,14 +583,80 @@ func TestPRUnknownAppliesToWorktreeBranchAndOriginRows(t *testing.T) {
 	}
 }
 
-// TestPRTagOnceKnown: after a fill the proven row has no PR ? and the PR tag shows.
+// TestPRTagOnceKnown: a known PR shows its tag and no PR ?.
 func TestPRTagOnceKnown(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("done")
-	noGh(t)
-	s := gather(t, f)
+	tip := f.git("rev-parse", "done")
+	mergedPRStub(t, "done", 5, tip, tip)
+	row := findRow(t, Classify(gather(t, f), Options{Now: later()}), KindBranch, "done")
+	if row.PRUnknown || row.PRTag == nil || row.PRTag.Number != 5 {
+		t.Fatalf("row %+v", row)
+	}
+	if got := RowTags(row); len(got) != 1 || got[0] != "#5 merged" {
+		t.Fatalf("tags %v", got)
+	}
+}
+
+// TestTagPRSelectionOrder: the verdict's own PR, else an open one, else the first.
+func TestTagPRSelectionOrder(t *testing.T) {
+	s := Snapshot{PRsAsked: true, PRs: map[string]PRResult{"b": {Lookup: LookupKnown, PRs: []PRInfo{{Number: 1, State: "MERGED"}, {Number: 2, State: "OPEN"}, {Number: 3, State: "CLOSED"}}},
+		"c": {Lookup: LookupKnown, PRs: []PRInfo{{Number: 4, State: "MERGED"}, {Number: 5, State: "CLOSED"}}}}}
+	c := classifier{s: s}
+	check := func(name string, row Row, want int) {
+		t.Helper()
+		c.tagPR(&row, name)
+		if row.PRTag == nil || row.PRTag.Number != want {
+			t.Errorf("%s: tag %+v, want #%d", name, row.PRTag, want)
+		}
+	}
+	check("b", Row{Kind: KindBranch, PR: &PRInfo{Number: 3, State: "CLOSED"}}, 3)
+	check("b", Row{Kind: KindBranch}, 2)
+	check("c", Row{Kind: KindBranch}, 4)
+}
+
+// TestNonGitHubOriginIsNotPRUnknown: no own repository means no PR can exist;
+// a git-proven row stays proven and shows no tag.
+func TestNonGitHubOriginIsNotPRUnknown(t *testing.T) {
+	f := newFixture(t) // origin is a bare path
+	f.Branch("done")
+	failGh(t)
+	for _, skip := range []bool{false, true} {
+		in := GatherInputs{CWD: f.Dir, Parallel: 2, OriginRows: true, SkipPRs: skip}
+		s, err := Gather(Git{Dir: f.Dir}, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := findRow(t, Classify(s, Options{Now: later()}), KindBranch, "done")
+		if row.Status != StatusProven || row.PRUnknown || hasReason(row, ReasonPRUnknown) || len(RowTags(row)) != 0 {
+			t.Fatalf("skip=%v: row %+v", skip, row)
+		}
+	}
+}
+
+// TestGHFailureOnGitHubOriginFloorsProven: gh down with a known own repo.
+func TestGHFailureOnGitHubOriginFloorsProven(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	failGh(t)
+	s := gather(t, f) // OwnRepo o/r
 	row := findRow(t, Classify(s, Options{Now: later()}), KindBranch, "done")
-	if row.PRUnknown || row.Status != StatusProven {
-		t.Fatalf("filled row %+v", row)
+	if row.Status != StatusLessSure || !hasReason(row, ReasonPRUnknown) {
+		t.Fatalf("row %+v", row)
+	}
+}
+
+// TestOnlyOriginRemoteRowsAreTagged: another remote has no PR lookup.
+func TestOnlyOriginRemoteRowsAreTagged(t *testing.T) {
+	s := Snapshot{PRsAsked: true, Base: Base{Default: "main"}, PRs: map[string]PRResult{}}
+	s.Remotes = []RefFact{
+		{Ref: "refs/remotes/origin/foo", Remote: "origin", Name: "foo"},
+		{Ref: "refs/remotes/upstream/foo", Remote: "upstream", Name: "foo"},
+	}
+	rep := Classify(s, Options{Now: later()})
+	for _, row := range rep.RemoteRows() {
+		if got := row.PRUnknown; got != (row.Remote == "origin") {
+			t.Errorf("%s/%s PRUnknown=%v", row.Remote, row.Name, got)
+		}
 	}
 }

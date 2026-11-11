@@ -227,7 +227,9 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		s.OwnRepo = ownRepoFromURL(originURL(g))
 	}
 	if in.SkipPRs {
-		s.PRsSkipped = true
+		// With no own repository (origin is not on GitHub) no PR can exist:
+		// PR state is not applicable, so nothing is pending.
+		s.PRsSkipped = s.OwnRepo != ""
 		return s, nil
 	}
 	s.askPRs(g, in)
@@ -242,18 +244,21 @@ func (s *Snapshot) askPRs(g Git, in GatherInputs) {
 	if in.OriginRows {
 		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel, in)
 	}
-	s.PRsAsked, s.PRsSkipped = true, false
+	// An unknown own repository (a non-GitHub origin) has no PRs to ask
+	// about: the state is "not applicable", never "unknown", so the floor
+	// does not apply and no row reads "PR ?".
+	s.PRsAsked, s.PRsSkipped = s.OwnRepo != "", false
 }
 
 // FillPRs runs the lookups a Gather with in.SkipPRs left out, so that
 // Gather(SkipPRs) then FillPRs equals a full Gather. in is the same
-// GatherInputs. A snapshot with no default branch (nothing was looked up) is
-// left as it is.
-func FillPRs(s *Snapshot, in GatherInputs) {
+// GatherInputs and g the Git Gather was given. A snapshot with no default
+// branch (nothing was looked up) is left as it is.
+func FillPRs(g Git, s *Snapshot, in GatherInputs) {
 	if s.NoDefault {
 		return
 	}
-	s.askPRs(Git{Dir: s.Repo}, in)
+	s.askPRs(g, in)
 }
 
 // baseCandidates are the names of the origin branches that could be offered
