@@ -42,6 +42,7 @@ func cleanupCommit(t *testing.T, dir, file, msg string) {
 // pushed and origin/HEAD set. Each test gets its own.
 func cleanupRepo(t *testing.T) string {
 	t.Helper()
+	stubCleanupGH(t) // an unknown PR lookup is never proven; tests that want gh down stub it again
 	root := t.TempDir()
 	origin, dir := filepath.Join(root, "origin.git"), filepath.Join(root, "repo")
 	if b, err := exec.Command("git", "init", "--bare", "-b", "main", origin).CombinedOutput(); err != nil {
@@ -57,6 +58,9 @@ func cleanupRepo(t *testing.T) string {
 	cleanupCommit(t, dir, "README", "init")
 	cgit(t, dir, "push", "-u", "origin", "main")
 	cgit(t, dir, "remote", "set-head", "origin", "main")
+	// A github.com URL names the own repository, which PR lookups need; insteadOf keeps git on the bare origin.
+	cgit(t, dir, "config", "url."+origin+".insteadOf", "https://github.com/o/r.git")
+	cgit(t, dir, "remote", "set-url", "origin", "https://github.com/o/r.git")
 	return dir
 }
 
@@ -343,10 +347,10 @@ func TestCleanupCmdGhFailureKeepsRowsOneLine(t *testing.T) {
 	a, _ := newTestApp(t)
 	speech := "To get started with GitHub CLI, please run:  gh auth login\n" +
 		"Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"
+	dir := cleanupRepo(t) // stubs gh ok; the failing stub below replaces it
 	t.Cleanup(cleanup.StubPRListForTest(func(string, string) ([]byte, error) {
 		return nil, errors.New(speech)
 	}))
-	dir := cleanupRepo(t)
 	cgit(t, dir, "checkout", "-b", "topic")
 	cleanupCommit(t, dir, "t", "topic work")
 	cgit(t, dir, "push", "-u", "origin", "topic")

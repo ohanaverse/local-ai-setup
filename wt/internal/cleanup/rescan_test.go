@@ -584,3 +584,29 @@ func TestRescanDefaultBranchBranchRowReturnsARow(t *testing.T) {
 		t.Fatalf("main: %s blockers %v", row.Status, reasonCodes(row.Blockers))
 	}
 }
+
+// TestRescanKeepsPriorPRsAsked: a re-check of a filled snapshot behaves like
+// Gather (PRsAsked carried), so a branch with no PR answer stays PR ? and
+// never proven, and a snapshot never filled stays unproven.
+func TestRescanKeepsPriorPRsAsked(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	noGh(t)
+	o := Options{Now: later()}
+	s := gather(t, f)
+	row := findRow(t, Classify(s, o), KindBranch, "done")
+	if row.Status != StatusProven {
+		t.Fatalf("setup: %+v", row)
+	}
+	delete(s.PRs, "done") // the answer for this branch is gone: unknown
+	got := mustRescan(t, f, s, o, targetOf(row))
+	if got.Status == StatusProven || !got.PRUnknown {
+		t.Fatalf("asked snapshot with unknown PR rescanned as %+v", got)
+	}
+	skipped := s
+	skipped.PRsAsked, skipped.PRsSkipped = false, true
+	got = mustRescan(t, f, skipped, o, targetOf(row))
+	if got.Status == StatusProven {
+		t.Fatalf("unfilled snapshot rescanned as proven: %+v", got)
+	}
+}

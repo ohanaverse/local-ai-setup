@@ -124,8 +124,15 @@ type Row struct {
 	// it has neither. Not serialised yet.
 	Upstream *Upstream
 	PR       *PRInfo // the PR the verdict rests on, if any
-	AgeDays  int
-	AgeKnown bool // AgeDays is a real age (0 then means under a day), not "could not tell"
+	// PRUnknown is true while the row's PR state is unknown (the lookup was
+	// skipped, still to run, or gave no usable answer); the row reads "PR ?"
+	// and is never proven on git evidence alone. PRTag is the PR once known
+	// (the verdict's own, else an open one, else the first). Neither is
+	// serialised.
+	PRUnknown bool
+	PRTag     *PRInfo
+	AgeDays   int
+	AgeKnown  bool // AgeDays is a real age (0 then means under a day), not "could not tell"
 
 	// The facts below serve removal only and are never serialised (RowJSON
 	// is built field by field; TestCleanupJSONUnchangedByNewRowFields).
@@ -297,12 +304,14 @@ func Classify(s Snapshot, o Options) Report {
 	f := folder{remotes: make([]Row, len(s.Remotes)), byRef: map[string]int{}, folded: make([]bool, len(s.Remotes))}
 	for i, rf := range s.Remotes {
 		f.remotes[i] = c.remoteRow(rf)
+		c.tagPR(&f.remotes[i], rf.Name)
 		f.byRef[rf.Ref] = i
 	}
 	held := map[string]bool{}
 	for _, ws := range s.Worktrees {
 		row := c.worktree(ws)
 		if ws.Fact.Branch != "" {
+			c.tagPR(&row, row.Branch)
 			held[strings.ToLower(ws.Fact.Branch)] = true
 			if h, ok := c.head(ws.Fact.Branch); ok {
 				row.Upstream = f.fold(h)
@@ -318,6 +327,7 @@ func Classify(s Snapshot, o Options) Report {
 			continue
 		}
 		row := c.branchRow(h)
+		c.tagPR(&row, h.Name)
 		row.Upstream = f.fold(h)
 		r.Rows = append(r.Rows, row)
 	}
@@ -440,6 +450,38 @@ func ghState(prs map[string]PRResult) GHState {
 		return GHUnavailable
 	}
 	return GHPartial
+}
+
+// prPending is whether name's PR state is unknown for a reason a floor must
+// honour: the lookups ran (or were skipped) and gave no usable answer for it
+// (a miss counts). A snapshot with neither flag is hand-built or older and
+// keeps the earlier rule (the PR rung only).
+func (c *classifier) prPending(name string) bool {
+	return (c.s.PRsAsked || c.s.PRsSkipped) && c.s.PRs[name].Lookup == LookupUnknown
+}
+
+// tagPR sets row.PRUnknown and row.PRTag from name's lookup. Not serialised.
+func (c *classifier) tagPR(row *Row, name string) {
+	if c.isDefault(name) && row.Kind != KindRemote {
+		return
+	}
+	if c.prPending(name) {
+		row.PRUnknown = true
+		return
+	}
+	res := c.s.PRs[name]
+	if res.Lookup != LookupKnown || len(res.PRs) == 0 {
+		return
+	}
+	pr := row.PR
+	if pr == nil {
+		pr = findPR(res, func(p PRInfo) bool { return p.State == "OPEN" })
+	}
+	if pr == nil {
+		pr = &res.PRs[0]
+	}
+	cp := *pr
+	row.PRTag = &cp
 }
 
 func (c *classifier) isDefault(name string) bool {
@@ -737,6 +779,12 @@ func (c *classifier) local(j *judge, h RefFact, covered bool) {
 				j.ev = EvRescued
 			}
 		}
+	}
+	if j.ev != "" && c.prPending(h.Name) && !slices.ContainsFunc(j.unknown, func(r Reason) bool { return r.Code == ReasonPRUnknown }) {
+		// Fail closed: git alone proves the content, but nobody has said
+		// whether a PR still holds this branch (no gh, offline, or not
+		// asked yet).
+		j.weak(ReasonPRUnknown, cmp.Or(res.Err, noPRLookupDetail))
 	}
 	c.minAge(j, h)
 }

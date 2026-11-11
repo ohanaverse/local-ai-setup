@@ -481,3 +481,15 @@ func otherRemotesText(f FetchResult) string {
 	}
 	return "; " + strings.Join(parts, "; ")
 }
+
+// RowTags is the PR tag of a row, a first version Task 107 extends: "PR ?"
+// while the PR state is unknown, "#N state" once a PR is known, "" for none.
+func RowTags(row Row) []string {
+	switch {
+	case row.PRUnknown:
+		return []string{"PR ?"}
+	case row.PRTag != nil:
+		return []string{fmt.Sprintf("#%d %s", row.PRTag.Number, strings.ToLower(row.PRTag.State))}
+	}
+	return nil
+}

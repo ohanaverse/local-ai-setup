@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -440,5 +442,151 @@ func TestPRHookFallbackStillPoisoned(t *testing.T) {
 	}
 	if _, err := prBaseListFn(GatherInputs{})("", "topic"); !errors.Is(err, errGhUnderTest) {
 		t.Fatalf("prBaseListFn(zero Inputs) err = %v, want %v", err, errGhUnderTest)
+	}
+}
+
+// failGh makes every gh call fail, as with no gh or no network.
+func failGh(t *testing.T) {
+	t.Helper()
+	stubGh(t, func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") })
+	stubGhBase(t, func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") })
+}
+
+func countingGh(t *testing.T) *int32 {
+	t.Helper()
+	var n int32
+	stubGh(t, func(string, string) ([]byte, error) { atomic.AddInt32(&n, 1); return []byte("[]"), nil })
+	stubGhBase(t, func(string, string) ([]byte, error) { atomic.AddInt32(&n, 1); return []byte("[]"), nil })
+	return &n
+}
+
+func gatherIn(f *fixture) GatherInputs {
+	return GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2, OriginRows: true}
+}
+
+// TestGatherSkipPRsMakesNoGhCall: the list must render from git state alone.
+func TestGatherSkipPRsMakesNoGhCall(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	f.Push("done")
+	n := countingGh(t)
+	in := gatherIn(f)
+	in.SkipPRs = true
+	s, err := Gather(Git{Dir: f.Dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *n != 0 {
+		t.Fatalf("Gather(SkipPRs) made %d gh calls", *n)
+	}
+	if s.PRsAsked {
+		t.Fatal("PRsAsked is true after a skipped Gather")
+	}
+}
+
+// TestFillPRsMatchesAFullGather: skip then fill equals one full Gather.
+func TestFillPRsMatchesAFullGather(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	f.Push("done")
+	f.Worktree("topic")
+	noGh(t)
+	full, err := Gather(Git{Dir: f.Dir}, gatherIn(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := gatherIn(f)
+	in.SkipPRs = true
+	s, err := Gather(Git{Dir: f.Dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	FillPRs(&s, in)
+	if !s.PRsAsked || s.PRsSkipped {
+		t.Fatalf("after FillPRs: PRsAsked %v PRsSkipped %v", s.PRsAsked, s.PRsSkipped)
+	}
+	if !reflect.DeepEqual(s, full) {
+		t.Fatalf("filled snapshot differs from a full Gather:\n got  %+v\n want %+v", s, full)
+	}
+}
+
+// TestPRUnknownIsNeverProvenWhenAsked: git proves the content, gh is down:
+// less_sure with pr_unknown, tagged "PR ?" (Review Focus 2).
+func TestPRUnknownIsNeverProvenWhenAsked(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	failGh(t)
+	s := gather(t, f)
+	if !s.PRsAsked {
+		t.Fatal("a full Gather must set PRsAsked")
+	}
+	row := findRow(t, Classify(s, Options{Now: later()}), KindBranch, "done")
+	if row.Evidence == "" {
+		t.Fatalf("fixture has no git proof: %+v", row)
+	}
+	if row.Status == StatusProven || !row.PRUnknown || !hasReason(row, ReasonPRUnknown) {
+		t.Fatalf("row = %+v, want not proven, PRUnknown, pr_unknown", row)
+	}
+	if got := RowTags(row); len(got) != 1 || got[0] != "PR ?" {
+		t.Fatalf("tags %v", got)
+	}
+}
+
+func hasReason(r Row, code string) bool {
+	return slices.ContainsFunc(r.Reasons, func(x Reason) bool { return x.Code == code })
+}
+
+// TestPRUnknownAppliesToWorktreeBranchAndOriginRows covers a skipped
+// snapshot (nothing asked) and a failed one.
+func TestPRUnknownAppliesToWorktreeBranchAndOriginRows(t *testing.T) {
+	for _, mode := range []string{"skipped", "failed"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t)
+			f.Branch("bdone")
+			f.Branch("wdone")
+			f.git("worktree", "add", filepath.Join(filepath.Dir(f.Dir), "wdone"), "wdone")
+			f.Branch("odone")
+			f.Push("odone")
+			in := gatherIn(f)
+			if mode == "skipped" {
+				in.SkipPRs = true
+				stubGh(t, func(string, string) ([]byte, error) { t.Error("gh called"); return nil, errors.New("x") })
+			} else {
+				failGh(t)
+			}
+			s, err := Gather(Git{Dir: f.Dir}, in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rep := Classify(s, Options{Now: later()})
+			for _, row := range []Row{
+				findRow(t, rep, KindBranch, "bdone"),
+				findRow(t, rep, KindWorktree, "wdone"),
+				findRow(t, rep, KindRemote, "odone"),
+			} {
+				if row.Status == StatusProven || !row.PRUnknown {
+					t.Errorf("%s %s: status %s PRUnknown %v", row.Kind, row.Name, row.Status, row.PRUnknown)
+				}
+			}
+			if mode == "skipped" {
+				for _, row := range rep.Rows {
+					if row.Status == StatusProven {
+						t.Errorf("not-yet-filled snapshot produced proven row %s %s", row.Kind, row.Name)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestPRTagOnceKnown: after a fill the proven row has no PR ? and the PR tag shows.
+func TestPRTagOnceKnown(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	noGh(t)
+	s := gather(t, f)
+	row := findRow(t, Classify(s, Options{Now: later()}), KindBranch, "done")
+	if row.PRUnknown || row.Status != StatusProven {
+		t.Fatalf("filled row %+v", row)
 	}
 }

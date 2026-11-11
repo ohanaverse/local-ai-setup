@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -251,5 +252,17 @@ func TestRowTextCollapsesNestedWorktrees(t *testing.T) {
 		if got := RowText(rep, row); got != c.want {
 			t.Errorf("n=%d: RowText = %q\nwant           %q", c.n, got, c.want)
 		}
+	}
+}
+
+func TestRowTagsShowsPRQuestionMarkWhileUnknown(t *testing.T) {
+	if got := RowTags(Row{PRUnknown: true}); !slices.Equal(got, []string{"PR ?"}) {
+		t.Errorf("unknown: %v", got)
+	}
+	if got := RowTags(Row{PRTag: &PRInfo{Number: 7, State: "MERGED"}}); !slices.Equal(got, []string{"#7 merged"}) {
+		t.Errorf("known: %v", got)
+	}
+	if got := RowTags(Row{}); got != nil {
+		t.Errorf("none: %v", got)
 	}
 }

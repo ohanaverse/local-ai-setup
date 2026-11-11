@@ -42,6 +42,10 @@ type GatherInputs struct {
 	// cross-talk through a package var.
 	PRList     func(dir, branch string) ([]byte, error) // `gh pr list --head <branch>` JSON
 	PRBaseList func(dir, base string) ([]byte, error)   // `gh pr list --base <base> --state open` JSON
+	// SkipPRs makes Gather make no gh call: the Snapshot comes back with
+	// PRsAsked false and PRsSkipped true, and every row reads "PR ?" and is
+	// never proven until FillPRs runs the lookups.
+	SkipPRs bool
 }
 
 // RefFact is one branch ref from for-each-ref.
@@ -125,10 +129,17 @@ type Snapshot struct {
 	// BasePRs is, for an origin branch that could be a deletion candidate, the
 	// live answer to "which open PRs (any head repository) target this
 	// branch?", by branch name. A miss is LookupUnknown.
-	BasePRs   map[string]PRResult
-	Merges    map[string]Tri // merged PR merge commit -> is it an ancestor of the base
-	Claims    []sessionclaim.Claim
-	ClaimsErr string
+	BasePRs map[string]PRResult
+	Merges  map[string]Tri // merged PR merge commit -> is it an ancestor of the base
+	// PRsAsked is true once the PR lookups ran (a full Gather, FillPRs). A
+	// row whose lookup is then unknown reads "PR ?" and is never proven.
+	PRsAsked bool
+	// PRsSkipped is true after Gather(SkipPRs) until FillPRs: no lookup has
+	// run, so every row's PR state is unknown and none is proven. A
+	// hand-built Snapshot has neither flag and keeps the older behavior.
+	PRsSkipped bool
+	Claims     []sessionclaim.Claim
+	ClaimsErr  string
 	// Records are the well-formed rescue records; a failed listing leaves none.
 	Records []RescueRecord
 }
@@ -215,12 +226,34 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	if s.OwnRepo == "" {
 		s.OwnRepo = ownRepoFromURL(originURL(g))
 	}
+	if in.SkipPRs {
+		s.PRsSkipped = true
+		return s, nil
+	}
+	s.askPRs(g, in)
+	return s, nil
+}
+
+// askPRs runs the gh lookups (PRs, the merge-commit checks, BasePRs) and
+// marks the snapshot as asked.
+func (s *Snapshot) askPRs(g Git, in GatherInputs) {
 	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel, in)
 	s.checkMerges(g)
 	if in.OriginRows {
 		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel, in)
 	}
-	return s, nil
+	s.PRsAsked, s.PRsSkipped = true, false
+}
+
+// FillPRs runs the lookups a Gather with in.SkipPRs left out, so that
+// Gather(SkipPRs) then FillPRs equals a full Gather. in is the same
+// GatherInputs. A snapshot with no default branch (nothing was looked up) is
+// left as it is.
+func FillPRs(s *Snapshot, in GatherInputs) {
+	if s.NoDefault {
+		return
+	}
+	s.askPRs(Git{Dir: s.Repo}, in)
 }
 
 // baseCandidates are the names of the origin branches that could be offered
