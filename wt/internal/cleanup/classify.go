@@ -663,6 +663,11 @@ func (c *classifier) netZeroUnpushed(j *judge, p Proof) {
 func (c *classifier) remoteRow(rf RefFact) Row {
 	row := Row{Kind: KindRemote, Name: rf.Name, Branch: rf.Name, Remote: rf.Remote, Ref: rf.Ref, Tip: rf.Tip}
 	j := judge{kind: KindRemote}
+	if c.isDefault(rf.Name) {
+		// The remote ref of the default branch (origin/main): a floor, like
+		// the local head's.
+		j.block(BlockDefaultBranch, rf.Remote+"/"+rf.Name)
+	}
 	if c.s.NoDefault {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
 		j.fill(&row)

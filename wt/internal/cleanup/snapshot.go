@@ -288,7 +288,8 @@ func qualifiedBase(b Base) string {
 }
 
 // readRefs fills Heads and Remotes from one for-each-ref. Symbolic refs
-// (origin/HEAD), non-commits and the default branch in any form are left out.
+// (origin/HEAD) and non-commits are left out; the default branch's head and
+// remote ref are kept (they are rows with the default_branch floor).
 // Remote refs are kept for origin and for every remote a local head's
 // upstream names.
 func (s *Snapshot) readRefs(g Git) error {
@@ -317,14 +318,10 @@ func (s *Snapshot) readRefs(g Git) error {
 			if r.Remote != "" && r.Remote != "." {
 				remotes[r.Remote] = true
 			}
-			if !s.isDefault(r.Name) {
-				s.Heads = append(s.Heads, r)
-			}
+			s.Heads = append(s.Heads, r)
 			continue
 		}
-		if !s.isDefault(r.Name) {
-			remoteRefs = append(remoteRefs, r)
-		}
+		remoteRefs = append(remoteRefs, r)
 	}
 	for _, r := range remoteRefs {
 		if remotes[r.Remote] {

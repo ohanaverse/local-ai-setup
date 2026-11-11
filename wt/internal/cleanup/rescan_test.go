@@ -558,17 +558,29 @@ func TestRescanRemoteHeadMoved(t *testing.T) {
 }
 
 // TestRescanRemoteGoneAndDefault rescans a vanished tracking ref and the
-// default branch's. What: gone is ErrTargetGone; the default branch is a plain
-// error that says so. Why: a vanished ref must read "skipped: no longer
-// exists", never "is the default branch" (the old wording for any empty set).
+// default branch's. What: gone is ErrTargetGone; the default branch's remote
+// ref is a row carrying the default_branch floor. Why: a vanished ref must
+// read "skipped: no longer exists"; the default ref is listed, not an error.
 func TestRescanRemoteGoneAndDefault(t *testing.T) {
 	f, s, o, tg := remoteFixture(t)
-	if _, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, Target{Kind: KindRemote, Ref: "refs/remotes/origin/main"}); err == nil ||
-		errors.Is(err, ErrTargetGone) || !strings.Contains(err.Error(), "default branch") {
-		t.Fatalf("default branch: %v", err)
+	row := mustRescan(t, f, s, o, Target{Kind: KindRemote, Ref: "refs/remotes/origin/main"})
+	if row.Status != StatusLessSure || !slices.Contains(reasonCodes(row.Blockers), BlockDefaultBranch) {
+		t.Fatalf("default branch: %s blockers %v", row.Status, reasonCodes(row.Blockers))
 	}
 	f.git("update-ref", "-d", "refs/remotes/origin/topic")
 	if _, err := Rescan(Git{Dir: f.Dir}, s, rescanInputs(f), o, tg); !errors.Is(err, ErrTargetGone) {
 		t.Fatalf("vanished ref: %v, want ErrTargetGone", err)
+	}
+}
+
+// TestRescanDefaultBranchBranchRowReturnsARow: a local main no worktree holds.
+func TestRescanDefaultBranchBranchRowReturnsARow(t *testing.T) {
+	f := newFixture(t)
+	f.git("switch", "-c", "feat")
+	noGh(t)
+	s := gather(t, f)
+	row := mustRescan(t, f, s, Options{Now: later()}, Target{Kind: KindBranch, Ref: "refs/heads/main"})
+	if row.Status != StatusLessSure || !slices.Contains(reasonCodes(row.Blockers), BlockDefaultBranch) {
+		t.Fatalf("main: %s blockers %v", row.Status, reasonCodes(row.Blockers))
 	}
 }

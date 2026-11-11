@@ -149,7 +149,12 @@ func (e Engine) deleteBranch(ic itemCtx, fresh cleanup.Row) branchResult {
 	if e.Prior.NoDefault || e.Prior.Base.Default == "" {
 		return result(BrRetainedDefault, fmt.Sprintf("branch %s kept: the default branch could not be resolved", ref))
 	}
-	if isDefaultForm(ref, e.Prior.Base.Default) {
+	// The listed default-branch row itself (a branch-only item on exactly
+	// refs/heads/<default>) is the user's to delete: the row carries the
+	// default_branch floor, so the gate already required the typed approval.
+	// Any other spelling of the default, and a worktree item's branch, stay.
+	listedDefault := ic.item.Kind == cleanup.KindBranch && ref == "refs/heads/"+e.Prior.Base.Default
+	if !listedDefault && isDefaultForm(ref, e.Prior.Base.Default) {
 		return result(BrRetainedDefault, fmt.Sprintf("branch %s kept: it is the default branch", ref))
 	}
 	// 3.

@@ -326,10 +326,9 @@ func TestClassify(t *testing.T) {
 					t.Errorf("blockers %v lack %q", reasonCodes(row.Blockers), code)
 				}
 			}
-			for _, row := range r.Rows {
-				if row.Kind != KindWorktree && row.Name == "main" {
-					t.Errorf("default branch listed as a %s row%s", row.Kind, dumpRows(r.Rows))
-				}
+			// The root holds main: no separate local-branch row for it.
+			if n := countRows(r, KindBranch, "main"); n != 0 {
+				t.Errorf("default branch held by the root also listed as %d branch rows%s", n, dumpRows(r.Rows))
 			}
 			// The root on main is in use for two reasons, and nothing else.
 			root := findRow(t, r, KindWorktree, "main")
@@ -999,6 +998,88 @@ func TestClassifyIgnoredCountWording(t *testing.T) {
 		}
 		if !strings.HasPrefix(got, want) || strings.HasSuffix(got, " 1 bytes") {
 			t.Errorf("%s: ignored detail = %q, want prefix %q%s", name, got, want, dumpRows(r.Rows))
+		}
+	}
+}
+
+func countRows(r Report, k Kind, name string) int {
+	n := 0
+	for _, row := range r.Rows {
+		if row.Kind == k && row.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+// TestGatherListsTheDefaultBranchWhenNoWorktreeHoldsIt: the root is switched
+// to feat, so no worktree holds main. What: main's local head and origin/main
+// are both rows carrying the default_branch floor (less_sure, never proven,
+// not a hard stop). Why: the list shows every row; the user decides.
+func TestGatherListsTheDefaultBranchWhenNoWorktreeHoldsIt(t *testing.T) {
+	f := newFixture(t)
+	f.git("switch", "-c", "feat")
+	noGh(t)
+	r := Classify(gather(t, f), Options{Now: later()})
+	for _, k := range []Kind{KindBranch, KindRemote} {
+		row := findRow(t, r, k, "main")
+		if row.Status != StatusLessSure || row.HardStop != "" || !slices.Contains(reasonCodes(row.Blockers), BlockDefaultBranch) {
+			t.Errorf("%s main: status %s hardstop %q blockers %v, want less_sure, no hard stop, default_branch",
+				k, row.Status, row.HardStop, reasonCodes(row.Blockers))
+		}
+	}
+}
+
+// TestGatherDefaultBranchOnTheRootIsOneRow / TestDefaultBranchIsListedOnce:
+// a worktree on main keeps main one row (the worktree), plus origin/main.
+func TestGatherDefaultBranchOnTheRootIsOneRow(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	r := Classify(gather(t, f), Options{Now: later()})
+	if n := countRows(r, KindBranch, "main"); n != 0 {
+		t.Errorf("%d branch rows for main, want 0 (the worktree row holds it)%s", n, dumpRows(r.Rows))
+	}
+	findRow(t, r, KindWorktree, "main")
+}
+
+func TestDefaultBranchIsListedOnce(t *testing.T) {
+	f := newFixture(t)
+	f.git("switch", "-c", "feat")
+	noGh(t)
+	r := Classify(gather(t, f), Options{Now: later()})
+	for _, k := range []Kind{KindBranch, KindRemote} {
+		if n := countRows(r, k, "main"); n != 1 {
+			t.Errorf("%d %s rows for main, want 1%s", n, k, dumpRows(r.Rows))
+		}
+	}
+	if n := countRows(r, KindWorktree, "main"); n != 0 {
+		t.Errorf("%d worktree rows for main, want 0", n)
+	}
+}
+
+// TestNoDefaultKnownStillListsEveryRow: with no resolvable default and a
+// detached root, every ref is still a row, Unknown, and no default is invented.
+func TestNoDefaultKnownStillListsEveryRow(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	if b, err := exec.Command("git", "init", "-b", "trunk", dir).CombinedOutput(); err != nil {
+		t.Fatalf("init: %v\n%s", err, b)
+	}
+	gitIn(t, dir, "config", "user.email", "t@example.com")
+	gitIn(t, dir, "config", "user.name", "T")
+	gitIn(t, dir, "config", "commit.gpgsign", "false")
+	gitIn(t, dir, "commit", "--allow-empty", "-m", "init")
+	gitIn(t, dir, "branch", "topic")
+	gitIn(t, dir, "checkout", "--detach")
+	noGh(t)
+	s, err := Gather(Git{Dir: dir}, GatherInputs{CWD: dir, OwnRepo: "o/r"})
+	if !errors.Is(err, ErrNoDefaultBranch) {
+		t.Fatalf("Gather err = %v", err)
+	}
+	r := Classify(s, Options{Now: later()})
+	for _, name := range []string{"trunk", "topic"} {
+		row := findRow(t, r, KindBranch, name)
+		if !row.Unknown || slices.Contains(reasonCodes(row.Blockers), BlockDefaultBranch) {
+			t.Errorf("%s: unknown %v blockers %v, want Unknown and no default_branch", name, row.Unknown, reasonCodes(row.Blockers))
 		}
 	}
 }

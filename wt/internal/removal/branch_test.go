@@ -1360,3 +1360,35 @@ func TestBranchGcCaveatOnlyForUnreachableTip(t *testing.T) {
 		}
 	})
 }
+
+// TestDeleteDefaultBranchRowNeedsAcceptLoss: the default branch's local head,
+// listed with the default_branch floor, is refused without accept-loss and
+// allowed with it.
+func TestDeleteDefaultBranchRowNeedsAcceptLoss(t *testing.T) {
+	noGh(t)
+	f := newFixture(t)
+	f.git("switch", "-c", "feat")
+	s, r := f.report()
+	row := f.row(r, cleanup.KindBranch, "main")
+	if row.Status != cleanup.StatusLessSure || row.HardStop != "" {
+		t.Fatalf("precondition: %s hardstop %q", row.Status, row.HardStop)
+	}
+	e := f.engine(s, f.inputs(), Options{})
+	bare := itemOf(row)
+	bare.Approved = Needs{}
+	bare = seal(bare)
+	o := one(t, e, bare)
+	if o.Branch == BrDeleted || !strings.Contains(o.Reason, "needs confirmation") {
+		t.Fatalf("without accept-loss: %+v, want refused needing confirmation", o)
+	}
+	if _, ok := f.refTip("refs/heads/main"); !ok {
+		t.Fatal("main deleted without accept-loss")
+	}
+	o = one(t, e, approve(itemOf(row), false, true))
+	if o.Branch != BrDeleted {
+		t.Fatalf("with accept-loss: %+v, want deleted", o)
+	}
+	if _, ok := f.refTip("refs/heads/main"); ok {
+		t.Error("main still exists")
+	}
+}
