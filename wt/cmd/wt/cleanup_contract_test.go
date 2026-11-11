@@ -560,8 +560,14 @@ func TestCleanupSchemaEnumsCoverEveryCode(t *testing.T) {
 			got["reasons"] = append(got["reasons"], c.val)
 		case c.typ == "" && strings.HasPrefix(c.name, "Block"):
 			got["blockers"] = append(got["blockers"], c.val)
+			for _, k := range []cleanup.Kind{cleanup.KindWorktree, cleanup.KindBranch, cleanup.KindRemote} {
+				if cleanup.IsHardStop(c.val, k) && !slices.Contains(got["hard_stop"], c.val) {
+					got["hard_stop"] = append(got["hard_stop"], c.val)
+				}
+			}
 		}
 	}
+	got["upstream.status"], got["upstream.evidence"] = got["status"], got["evidence"]
 	schema := readJSONFile(t, cleanupSchema).(map[string]any)
 	enumOf := func(def string, path ...string) []string {
 		t.Helper()
@@ -574,6 +580,10 @@ func TestCleanupSchemaEnumsCoverEveryCode(t *testing.T) {
 		"reasons":  enumOf("row", "properties", "reasons", "items", "properties", "code"),
 		"blockers": enumOf("row", "properties", "blockers", "items", "properties", "code"),
 		"gh":       schemaEnum2(schema),
+
+		"hard_stop":         enumOf("row", "properties", "hard_stop"),
+		"upstream.status":   enumOf("row", "properties", "upstream", "properties", "status"),
+		"upstream.evidence": enumOf("row", "properties", "upstream", "properties", "evidence"),
 	}
 	checkEnumsEqual(t, got, want)
 }

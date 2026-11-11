@@ -56,6 +56,11 @@
     }
   },
   "$defs": {
+    "status": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use"]},
+    "evidence": {
+      "type": "string",
+      "enum": ["same-commit", "ancestor", "trees-match", "no-added-changes", "merge-adds-nothing", "pr-tip", "cherry-equivalent", "patch-id", "rescued"]
+    },
     "row": {
       "type": "object",
       "required": ["kind", "name", "status", "unknown", "reasons", "blockers"],
@@ -66,11 +71,8 @@
         "path": {"type": "string"},
         "branch": {"type": "string"},
         "remote": {"type": "string"},
-        "status": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use"]},
-        "evidence": {
-          "type": "string",
-          "enum": ["same-commit", "ancestor", "trees-match", "no-added-changes", "merge-adds-nothing", "pr-tip", "cherry-equivalent", "patch-id", "rescued"]
-        },
+        "status": {"$ref": "#/$defs/status"},
+        "evidence": {"$ref": "#/$defs/evidence"},
         "unknown": {"type": "boolean"},
         "age_days": {"type": "integer"},
         "reasons": {
@@ -114,11 +116,8 @@
             "name": {"type": "string"},
             "tip": {"type": "string"},
             "gone": {"type": "boolean"},
-            "status": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use"]},
-            "evidence": {
-              "type": "string",
-              "enum": ["same-commit", "ancestor", "trees-match", "no-added-changes", "merge-adds-nothing", "pr-tip", "cherry-equivalent", "patch-id", "rescued"]
-            }
+            "status": {"$ref": "#/$defs/status"},
+            "evidence": {"$ref": "#/$defs/evidence"}
           }
         },
         "pr": {
