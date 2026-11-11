@@ -6,7 +6,7 @@ Rules and gotchas live here; mechanisms, function lists and step-by-step detail 
 
 The `wt` binary (`cmd/wt/`) launches an AI coding agent CLI (claude, codex, copilot, pi, agy, opencode) or a shell command in a chosen worktree, branch, and model. Three launch inputs:
 
-1. **Where** — `--root` (the primary checkout, from anywhere), `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree; a new name asks before it creates, `--new` answers), or the worktree picker (which has no root row). Outside a repository `-W` refuses (`not in a git repo`).
+1. **Where** — `--root` (the primary checkout, from anywhere), `--cwd` (the current directory; no git repository needed), `-W <name>` (named worktree; a new name asks before it creates, `--new` answers), or the worktree picker (internal/cleanup's rows: the root, the default branch and held rows included, each launchable). Outside a repository `-W` refuses (`not in a git repo`).
 2. **What** — `-A <name>`: an LLM agent, or `shell` for a plain command. **Never defaulted**: omitting `-A` always shows the agent/command picker.
 3. **Which model** — `-M <provider>/<name>`, filtered by `-T <tags>` / `-F <family>`, or picked (eligible models rotate on successive launches).
 
@@ -246,7 +246,7 @@ Read [docs/internals/litellm-routes.md](docs/internals/litellm-routes.md) before
 
 `internal/tui` is the Bubble Tea shell (`tea.WithAltScreen()`): worktree → agent+command → model picker → launch, plus starting, routing, slot-profile, replace-confirm and ollama-warning screens; a picker is skipped when its selection is resolved.
 
-- **A view fits the terminal** (`internal/tuilayout`): every list screen renders through a `listFrame`, sized only by `fitTo` in `Update` (`TestEveryListPhaseFitsTheTerminal`).
+- **A view fits the terminal** (`internal/tuilayout`): every bubbles list screen renders through a `listFrame`, sized only by `fitTo` in `Update`; the worktree picker's row list is sized by `fitLists` and lays itself out (`TestEveryListPhaseFitsTheTerminal` covers both).
 - **The update goroutine never waits**: use non-blocking `tryEnsureModelRoute`; waits run in a command behind `phaseRouting` (`settleStart`, #343).
 - **A start prints into the flow, not onto the screen** (#275) and cannot be cancelled from the routing stage on (`pastCancel`).
 - **A slot-profile launch waits behind `phaseSlot`**; `flushRouteNotesAfterRun` settles any restart still owed on every way out.
@@ -268,15 +268,15 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **A launch that has a directory needs no repository**: the repo root handed to `runLaunchPath` gates the guard install and nothing else (state is keyed by model, agent and pid). Only `-W` and the worktree picker refuse outside one; don't key new launch state on the repository. [Details](docs/internals/launch-flow.md#launch-directory-and-the-repository).
 
-> **`Enumerate` fetches before listing** (`git fetch --all --prune`, 5s; failure silently ignored); `-W`/`--cwd` skip it, and creation never fetches (`Resolve`, `Plan.Ensure` and `EnsureForName` read only the remote-tracking refs already present).
+> **The picker fetches when it opens** (`worktree.FetchRemotes`: `git fetch --all --prune`, 5s; failure silently ignored); `Enumerate` (only `--debug-worktrees` still uses it) does not, `-W`/`--cwd` skip the picker, and creation never fetches (`Resolve`, `Plan.Ensure` and `EnsureForName` read only the remote-tracking refs already present).
 
-> **The picker's pull request tags never hold it up** (`worktree.PRs`, #384, #387, #388, #390): `gh pr list` runs in its own command, a failed listing adds nothing and no message, PRs are keyed by head repository and branch (`prFor` is the one lookup, and forks no git: staleness is answered off the update goroutine, #451). Seam `listPRs` (`worktree.StubPRListForTest`). [Details](docs/internals/tui.md).
+> **The picker is a view over `internal/cleanup`'s rows and its PR tags never hold it up** (`internal/tui/picker_rows.go`, #384, #390): it paints from `cleanup.Gather` with `SkipPRs` (`PR ?`), then `loadRowPRsCmd` runs `cleanup.FillPRs` off the update goroutine and swaps the report in, the cursor kept; `dropStalePRTags` clears a reused branch name's ended PR (#451). Seams `cleanup.StubPRListForTest`/`StubPRBaseListForTest` or `GatherInputs.PRList`. [Details](docs/internals/tui.md).
 
 > **Creation routes record what they made** for the exit prompt: `-W` (`worktree.Resolve`, then `Plan.Ensure`), the picker's new-worktree row and the shared-root `w` choice call `exitprompt.RecordNote(w, path, branch)` only when their `worktree.Resolve` plan says (`Plan.Creates`) they create the *branch* as well as the worktree. The plan is one classification: the create question reads `Start`, `Plan.Ensure` creates from the same object (a moved base is refused, never created from a base the user was not shown; #525); `EnsureForName`/`WouldCreate` remain as one-shot wrappers. A reused worktree, a new worktree on an existing branch (the picker's bare-branch row), `--cwd` and `--root` record nothing, so they never prompt. A new creation route must record too, or the prompt will never see it.
 
 > **`IsRepo` uses `rev-parse --git-dir`, not `--show-toplevel`.** Bare repos and directories inside `.git` have no worktree; don't "simplify" `IsRepo` to delegate to `RepoRootAt`.
 
-> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it when typed as a remote-tracking form like `origin/<default>` or `<remote>/HEAD`, the forms where it is not already checked out (`EnsureForName` returns an already-checked-out branch's path *before* that refusal, so `-W main` with the root on `main` resolves to the root; `cmd/wt`'s `refuseRootBranch` then refuses it and points at `--root`) (one `refuseDefaultBranch` guard; matched only while that ref lives under `refs/remotes/` and no local branch has the same name), and `-W origin/feature` resolves like the picker (a local `feature` tracking it). The picker skips bare default-branch rows.
+> **Default branch is never a linked worktree.** main/master may only ever be the primary checkout — both creation functions refuse it when typed as a remote-tracking form like `origin/<default>` or `<remote>/HEAD`, the forms where it is not already checked out (`EnsureForName` returns an already-checked-out branch's path *before* that refusal, so `-W main` with the root on `main` resolves to the root; `cmd/wt`'s `refuseRootBranch` then refuses it and points at `--root`) (one `refuseDefaultBranch` guard; matched only while that ref lives under `refs/remotes/` and no local branch has the same name), and `-W origin/feature` resolves like the picker (a local `feature` tracking it). The picker lists the default branch's rows; choosing its remote form hits the same refusal.
 
 ## Cleanup classifier and removal (`wt cleanup`, `wt remove`)
 

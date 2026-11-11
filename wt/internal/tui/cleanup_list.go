@@ -32,7 +32,9 @@ import (
 //   - launch (the picker): a first item "+ New worktree…" (enter or `n`
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
 //     the root, an in-use or held row too: launching warns, it never blocks
-//     — and nothing is ticked.
+//     — and nothing is ticked. Rows carry a "current" and a "default" tag,
+//     `/` filters the rows by name (row_list_launch.go), and the PR tags
+//     arrive later (withReport).
 //
 // In both modes `x` removes the ticked rows, or the highlighted row when
 // nothing is ticked (always, in launch mode), through the same confirm flow.
@@ -254,6 +256,12 @@ type cleanupListModel struct {
 	// hands it to RemoveFuncs.Rescue once the alt screen is gone.
 	rescueRow *cleanup.Row
 	clock     func() time.Time // the list's clock on a rebuild
+
+	// Launch mode's type-to-filter (row_list_launch.go): filter is the
+	// query, filtering is true while it is being typed (every printable key
+	// goes into it then).
+	filter    string
+	filtering bool
 }
 
 // newCleanupList is the manage-mode list `wt cleanup` shows.
@@ -267,6 +275,7 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 // ticked; in launch mode nothing is. The cursor starts on the first item.
 func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
+	here := deepestCurrent(r)
 	if o.Mode == modeLaunch {
 		m.items = append(m.items, cleanupItem{newWorktree: true})
 		m.cursor = 0
@@ -276,6 +285,9 @@ func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 		m.items = append(m.items, cleanupItem{heading: g.Heading})
 		for _, row := range g.Rows {
 			it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row), locked: cleanupLocked(row)}
+			if o.Mode == modeLaunch {
+				it.tags = append(launchTags(r, row, here), it.tags...)
+			}
 			if o.Mode == modeManage && row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
 				m.ticked[len(m.items)] = true
 			}
@@ -423,6 +435,11 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = ""
+		if m.launch() {
+			if next, cmd, ok := m.filterKey(msg); ok {
+				return next, cmd
+			}
+		}
 		if m.empty() {
 			// "nothing to clean up": any key leaves.
 			m.done = true
@@ -486,6 +503,9 @@ func emit(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
 // choose is launch mode's enter: the new-worktree item or the highlighted
 // row, whatever its verdict (launching warns, never blocks).
 func (m cleanupListModel) choose() tea.Cmd {
+	if m.hidden(m.cursor) || m.items[m.cursor].heading != "" {
+		return nil
+	}
 	if m.items[m.cursor].newWorktree {
 		return emit(newWorktreeChosenMsg{})
 	}
@@ -498,6 +518,9 @@ func (m cleanupListModel) choose() tea.Cmd {
 func (m cleanupListModel) removeKey() (cleanupListModel, tea.Cmd) {
 	rows := m.tickedRows()
 	if len(rows) == 0 {
+		if m.hidden(m.cursor) {
+			return m, nil
+		}
 		it := m.items[m.cursor]
 		switch {
 		case it.newWorktree:
@@ -518,7 +541,7 @@ func (m *cleanupListModel) move(dir, n int) {
 	for ; n > 0; n-- {
 		next := -1
 		for j := m.cursor + dir; j >= 0 && j < len(m.items); j += dir {
-			if m.items[j].heading == "" {
+			if m.items[j].heading == "" && !m.hidden(j) {
 				next = j
 				break
 			}
@@ -562,6 +585,9 @@ func (m *cleanupListModel) nameWidth() int {
 // column, the text's first part) and the rest of its text wrapped under the
 // text column, a warn tag in the warning style.
 func (m *cleanupListModel) itemLines(i int) []string {
+	if m.hidden(i) {
+		return nil
+	}
 	it := m.items[i]
 	if it.heading != "" {
 		style := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader)).Bold(true)
@@ -729,18 +755,19 @@ func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	if m.launch() {
-		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · x remove · q quit")
+		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · x remove · / filter · q quit")
 	}
 	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter remove ticked · r rescue · q quit")
 }
 
 // statusBlock is the status, wrapped, with its line break; "" without one.
 func (m *cleanupListModel) statusBlock() string {
-	if m.status == "" {
-		return ""
-	}
 	st := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent))
-	return st.Render(clip(tuilayout.WrapText(m.status, m.width), m.width)) + "\n"
+	out := m.filterLine()
+	if m.status == "" {
+		return out
+	}
+	return out + st.Render(clip(tuilayout.WrapText(m.status, m.width), m.width)) + "\n"
 }
 
 // headerBlock is cleanup.HeaderLines, wrapped: the fetch failure ends in
@@ -755,6 +782,9 @@ func (m *cleanupListModel) headerBlock() string {
 // sentence and age, wrapped, never cut. A row that can never be ticked says
 // so first.
 func (m *cleanupListModel) detail() string {
+	if m.hidden(m.cursor) {
+		return "no row matches the filter"
+	}
 	it := m.items[m.cursor]
 	name := cleanup.DisplayName(it.row)
 	if it.newWorktree {
@@ -802,7 +832,7 @@ func (m cleanupListModel) View() string {
 	}
 	switch m.phase {
 	case cleanupPhasePreviewing:
-		return m.waitView(fmt.Sprintf("wt cleanup · re-checking %d ticked items; nothing is removed yet (ctrl+c leaves)", m.pending))
+		return m.waitView(fmt.Sprintf("%s · re-checking %d %s items; nothing is removed yet (ctrl+c leaves)", m.screenName(), m.pending, m.chosenWord()))
 	case cleanupPhaseConfirm:
 		return m.confirmView()
 	case cleanupPhaseRunning:
@@ -810,7 +840,7 @@ func (m cleanupListModel) View() string {
 	case cleanupPhaseResults:
 		return m.resultsView()
 	case cleanupPhaseRefreshing:
-		return m.waitView("wt cleanup · re-reading the repository")
+		return m.waitView(m.screenName() + " · re-reading the repository")
 	}
 	if m.empty() {
 		body := m.headerBlock() + "\n\n" + m.statusBlock() + "nothing to clean up: no other worktree or branch\n\npress any key to quit"
@@ -848,12 +878,16 @@ func capLines(s string, height int) string {
 	return strings.Join(lines[:height], "\n")
 }
 
-// selectedRow is the highlighted row; false on an empty list.
+// selectedRow is the highlighted row; false on an empty list, on launch
+// mode's new-worktree item, on a heading and on a row the filter hides.
 func (m cleanupListModel) selectedRow() (cleanup.Row, bool) {
-	if m.cursor < 0 {
+	if m.cursor < 0 || m.hidden(m.cursor) {
 		return cleanup.Row{}, false
 	}
-	return m.items[m.cursor].row, true
+	if it := m.items[m.cursor]; it.heading == "" && !it.newWorktree {
+		return it.row, true
+	}
+	return cleanup.Row{}, false
 }
 
 // tickedItems are the ticked rows in list order.

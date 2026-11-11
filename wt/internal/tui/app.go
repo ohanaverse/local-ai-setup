@@ -47,8 +47,13 @@ type model struct {
 	width  int
 	height int
 
-	list  list.Model
-	ready bool
+	// rows is the worktree picker: the row list in launch mode over
+	// internal/cleanup's rows (picker_rows.go); ready once the first load
+	// arrived. rowsGen numbers the loads, so a PR fill for an older one is
+	// dropped.
+	rows    cleanupListModel
+	rowsGen int
+	ready   bool
 
 	phase phase
 	agent string         // current agent name
@@ -99,9 +104,6 @@ type model struct {
 	// (profiles.ValidateSlots). nil means the picker shows no profile row.
 	slotChecks []profiles.SlotCheck
 
-	// default-branch guard warning (title-only; the confirm prompt was removed)
-	defaultBranch string // repo default branch (e.g. main)
-
 	// ollama availability warning
 	ollamaWarnModel list.Model // confirmation choices for unavailable model
 
@@ -134,33 +136,9 @@ type model struct {
 	newInput         textinput.Model
 	newError         string
 	pendingHighlight string // branch name to focus after re-enumerating
-	repoRoot         string // cached from entriesLoadedMsg to avoid a second rev-parse
+	repoRoot         string // cached from rowsLoadedMsg to avoid a second rev-parse
 	creating         bool   // true while a create is in flight (guards double-Enter)
 	listError        string // reload error shown above the list when ready
-
-	// prs is each head's (repository and branch) pull request, merged from
-	// the `gh pr list` listings a picker open runs (loadPRsCmd, one per
-	// worktree.PRListStates) as each answers; not Loaded() until the first
-	// does, empty when every one so far failed.
-	// Every build of the worktree list (the first, and the reload after a
-	// create) is tagged from it.
-	prs worktree.PRSet
-	// ownRepos is the owner/repo of every remote the repository has
-	// (worktree.EnumerateRepos), from the latest entry load: a local or
-	// worktree row with no known push/tracking repository is tagged only with
-	// a PR from one of them or from the listed repository itself
-	// (worktree.PRSet.ForBranch), never with a stranger's fork PR of the same
-	// branch name.
-	ownRepos worktree.RepoSet
-	// stale is each worktree or local row's answer to "has the branch moved
-	// past its ended PR" (staleKey), resolved off the update goroutine by
-	// resolveStaleCmd and read by prFor. It is kept across an entry reload
-	// and each of its keys asked again there, so the tags do not flash back
-	// while the new answers are on their way (#451).
-	stale staleSet
-	// staleAsked holds the keys whose answer is on its way, so a listing
-	// arriving before the first answers return does not ask them again.
-	staleAsked map[staleKey]bool
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -191,25 +169,17 @@ func (m model) Init() tea.Cmd {
 	return loadPickerCmd()
 }
 
-// loadPickerCmd is a picker open's first command: it resolves the repository
-// root once (#390) and answers with a batch that loads the entries and runs
-// each PR listing (worktree.PRListStates) in that root, each in its own
-// command. The listings run beside the enumeration, never before it: the
-// picker shows as soon as the worktrees are in, and the tags appear as each
-// listing answers (prsLoadedMsg) — the open PRs' usually first, every
-// state's filled in after — whichever comes first. Outside a repository the
-// entry load reports the lookup's error and each listing answers a loaded,
-// empty set without running gh.
+// loadPickerCmd loads the worktree picker: it resolves the repository root
+// once (#390) and gathers its rows there (loadRowsCmd, which fetches first,
+// as the picker always has). The PR lookups follow once the rows are on
+// screen (gotRows, loadRowPRsCmd). Outside a repository the load reports the
+// lookup's error. The reload after a create goes through it too, in
+// whatever directory wt is in by then.
 func loadPickerCmd() tea.Cmd {
 	return func() tea.Msg {
 		root, err := findRepoRoot()
-		cmds := tea.BatchMsg{loadEntriesAtCmd(root, err)}
-		// No repository: root is "" and each listing answers an empty set
-		// without running gh.
-		for _, state := range worktree.PRListStates {
-			cmds = append(cmds, loadPRsCmd(root, state))
-		}
-		return cmds
+		cwd, _ := os.Getwd()
+		return loadRowsCmd(root, err, pickerInputs(cwd), true)()
 	}
 }
 
@@ -221,7 +191,7 @@ func (m model) isTyping() bool {
 	if m.phase == phaseNewWorktree {
 		return true
 	}
-	if m.phase == phaseList && m.ready && m.list.FilterState() == list.Filtering {
+	if m.phase == phaseList && m.ready && m.rows.filtering {
 		return true
 	}
 	if m.phase == phaseAgent && m.agentList.FilterState() == list.Filtering {
@@ -243,22 +213,6 @@ func (m model) openNewWorktreePrompt() model {
 // Update handles messages and returns the new state plus optional commands.
 // Whatever the message did, the list on screen is then fitted to the lines its
 // screen prints around it (fitLists, layout.go).
-// askStale starts resolveStaleCmd for the jobs not already in flight and
-// marks them so; nil when none is left to ask.
-func (m *model) askStale(jobs []staleJob) tea.Cmd {
-	if m.staleAsked == nil {
-		m.staleAsked = map[staleKey]bool{}
-	}
-	fresh := jobs[:0:0]
-	for _, j := range jobs {
-		if !m.staleAsked[j.key] {
-			m.staleAsked[j.key] = true
-			fresh = append(fresh, j)
-		}
-	}
-	return resolveStaleCmd(fresh)
-}
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	next.fitLists()
@@ -310,99 +264,31 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if m.phase == phaseNewWorktree {
 			m.newInput.Width = msg.Width - 4
 		}
-	case entriesLoadedMsg:
-		if msg.err != nil {
-			if m.ready {
-				// Reload after a create: the list is still usable, but the
-				// error must be visible — View renders it above the list.
-				m.listError = msg.err.Error()
-			} else {
-				m.status = "error: " + msg.err.Error()
-			}
+	case rowsLoadedMsg:
+		return m.gotRows(msg)
+	case rowPRsLoadedMsg:
+		// The PR lookups of the latest load arrived: swapped in with the
+		// cursor, the filter and the scroll kept (withReport).
+		if m.ready && msg.gen == m.rowsGen {
+			m.rows = m.rows.withReport(msg.Report)
+		}
+		return m, nil
+	case rowChosenMsg:
+		// Enter on a picker row: the launch flow's own message, so the
+		// bare-branch create and the shared-root check run as they always did.
+		if m.creating {
 			return m, nil
 		}
-		m.listError = ""
-		// The load is over: take the placeholder down. Only the placeholder —
-		// a status another path set while the load was in flight (a pinned
-		// agent's config error, say) is still worth showing.
-		if m.status == loadingStatus {
-			m.status = ""
+		return m, emit(selectedEntryMsg{entry: entryOfRow(msg.Row)})
+	case newWorktreeChosenMsg:
+		if m.creating {
+			return m, nil
 		}
-		// Pass the three groups straight to buildList, which interleaves them
-		// into the picker (sentinel → worktrees → locals → separator → remotes)
-		// and tags the (current)/(default) markers on entryItem.
-		m.defaultBranch = msg.defaultBranch
-		m.repoRoot = msg.repoRoot
-		m.ownRepos = msg.ownRepos
-		m.list = buildList(msg.groups, msg.defaultBranch, msg.repoRoot, m.theme, m.width-2, m.height-2)
-		if m.prs.Loaded() {
-			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
-		}
-		m.ready = true
-
-		// Default-branch warning: if the only picker target is the current
-		// worktree on the repo default branch (no other worktrees, no local
-		// branches), warn the user they're working directly on the protected
-		// branch. Same intent as before, just on the new grouped shape.
-		if isDefaultBranchOnly(msg.groups, m.defaultBranch) {
-			m.list.Title = "WARNING: you are on the default branch (" + msg.defaultBranch + ")"
-		}
-		// Apply a pending highlight (set after a successful
-		// new-worktree create) by selecting the matching entry. If
-		// the branch isn't found (shouldn't happen post-create),
-		// leave the cursor at its default.
-		if m.pendingHighlight != "" {
-			selectFirstEntry(&m.list, func(ei entryItem) bool {
-				return ei.entry.Branch == m.pendingHighlight
-			})
-			m.pendingHighlight = ""
-		} else {
-			// Default the cursor to the entry for the directory the
-			// user already is in, so Enter relaunches there without an
-			// extra keystroke. buildList pins the (current) entry at
-			// index 1 (right after the sentinel) when one exists — a
-			// linked worktree's row. The repository root's row is never
-			// listed, so standing in the root leaves the cursor on the
-			// "+ New worktree…" sentinel.
-			selectFirstEntry(&m.list, func(ei entryItem) bool {
-				return ei.label == "(current)"
-			})
-		}
-		// The branch tips were read again: ask every ended PR's question anew.
-		if m.prs.Loaded() {
-			m.staleAsked = nil
-			return m, m.askStale(staleJobs(m.list.Items(), m.prs, m.ownRepos, nil))
-		}
-		return m, nil
-	case prsLoadedMsg:
-		// One listing's pull requests arrived: merged with any listing
-		// already in (one PR per head repository and branch, by
-		// worktree.MergePRs' rule, so arrival order does not matter),
-		// kept for any later build of the list, and put on the list
-		// already on screen in place, so the cursor, the filter and the
-		// page stay where the user left them. A listing
-		// that failed adds nothing: msg.prs is then empty.
-		m.prs = worktree.MergePRs(m.prs, msg.prs)
-		if m.ready {
-			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
-			cmds := []tea.Cmd{m.askStale(staleJobs(m.list.Items(), m.prs, m.ownRepos, m.stale))}
-			if note := remoteTagsHidden(m.list.Items(), m.prs); note != "" {
-				cmds = append(cmds, m.list.NewStatusMessage(note))
-			}
-			return m, tea.Batch(cmds...)
-		}
-		return m, nil
-	case staleResolvedMsg:
-		// The git answers for the ended PRs on screen arrived: kept for later
-		// builds of the list, and a row whose branch moved past its PR loses
-		// the tag now.
-		var changed bool
-		m.stale, changed = m.stale.merge(msg.verdicts)
-		for k := range msg.verdicts {
-			delete(m.staleAsked, k)
-		}
-		if changed && m.ready && m.prs.Loaded() {
-			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
+		return m.openNewWorktreePrompt(), nil
+	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg:
+		// The picker's `x`: its removal flow runs inside the row list.
+		if m.ready && m.phase == phaseList {
+			return m.updateRows(msg)
 		}
 		return m, nil
 	case selectedEntryMsg:
@@ -443,7 +329,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		m.pendingHighlight = msg.name
 		m.phase = phaseList
-		return m, loadEntriesCmd()
+		return m, loadPickerCmd()
 	case tea.KeyMsg:
 		// An in-flight start owns the keyboard: esc/q/ctrl+c cancel and a
 		// further press quits; every other key is ignored (before the picker
@@ -465,6 +351,20 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// the general q/esc handling below.
 		if m.phase == phaseSharedRoot && m.sharedRoot != nil {
 			return m.handleSharedRootKey(msg)
+		}
+		// The worktree picker is the row list: every key is its own (q and
+		// esc quit there, `/` filters, and while the filter is typed every
+		// printable key goes into it). ctrl+c always quits; while a
+		// bare-branch create is in flight, enter and n wait, so a second
+		// selection cannot race a second `git worktree add`.
+		if m.phase == phaseList && m.ready {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if m.creating && !m.rows.filtering && (msg.String() == "enter" || msg.String() == "n") {
+				return m, nil
+			}
+			return m.updateRows(msg)
 		}
 		// A status that has the screen to itself (statusAlone) is taken down
 		// by the next key, which does nothing else: the table was not on
@@ -568,35 +468,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				// Agent: validate the model catalog, then build the picker
 				// list and position the cursor.
 				return m.enterModelPhaseForAgent()
-			case phaseList:
-				if !m.ready {
-					return m, nil
-				}
-				// A bare-branch worktree create is in flight; ignore Enter so
-				// a second selection can't race a second `git worktree add`.
-				if m.creating {
-					return m, nil
-				}
-				item, ok := m.list.SelectedItem().(entryItem)
-				if !ok {
-					return m, nil
-				}
-				if item.kind == kindNewWorktree {
-					return m.openNewWorktreePrompt(), nil
-				}
-				// Separators are non-selectable visual dividers: they carry
-				// a zero-value worktree.Entry, so Enter must never forward
-				// one to selectedEntryMsg (it would launch the agent in wt's
-				// CWD with cmd.Dir=""). Ignore the keypress instead.
-				if item.kind == kindSeparator {
-					return m, nil
-				}
-				// Default-branch warning: previously gated here, but the
-				// picker title (isDefaultBranchOnly) already flags the
-				// "nothing-but-default" case and the user opted into
-				// main by the new cursor defaulting. Skip the prompt so
-				// Enter launches straight through.
-				return m, func() tea.Msg { return selectedEntryMsg{entry: item.entry} }
 			case phaseModel:
 				// While the '/' filter input is focused, Enter must apply
 				// the filter query (bubbles/list's own AcceptWhileFiltering
@@ -712,14 +583,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				m.creating = true
 				return m, ensureNewWorktreeCmd(m.repoRoot, m.newInput.Value())
 			}
-		case "n":
-			// Open the new-worktree prompt. Skip while the list filter is
-			// being typed so 'n' can appear in filter queries, and while a
-			// bare-branch create is in flight so the prompt can't be yanked
-			// away by the create's completion.
-			if m.phase == phaseList && m.ready && !m.creating && m.list.FilterState() != list.Filtering {
-				return m.openNewWorktreePrompt(), nil
-			}
 		}
 	}
 
@@ -732,16 +595,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	if m.phase == phaseAgent && m.width > 0 && m.height > 0 {
 		var cmd tea.Cmd
 		m.agentList, cmd = m.agentList.Update(msg)
-		return m, cmd
-	}
-	if m.ready && m.phase == phaseList {
-		var cmd tea.Cmd
-		m.list, cmd = m.list.Update(msg)
-		// A filter run a keystroke started before the latest tags arrived
-		// matched the items as they were then; its rows carry the old tags.
-		if _, ok := msg.(list.FilterMatchesMsg); ok && m.prs.Loaded() && !prsCurrent(m.list.VisibleItems(), m.prs, m.ownRepos, m.stale) {
-			applyPRs(&m.list, m.prs, m.ownRepos, m.stale)
-		}
 		return m, cmd
 	}
 	if m.phase == phaseOllamaWarn && m.width > 0 && m.height > 0 {
@@ -830,7 +683,7 @@ func (m model) View() string {
 	if !m.ready {
 		return m.status
 	}
-	return m.worktreeFrame()(m.list.View())
+	return m.worktreeFrame()(m.rows.View())
 }
 
 // launchCommand builds and runs a command (no model layer) — e.g. the shell
@@ -1394,118 +1247,6 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 // (worktree.RepoRoot), a seam so a test can count the lookups a picker open
 // makes (#390).
 var findRepoRoot = worktree.RepoRoot
-
-// loadEntriesCmd returns a command that looks the repo root up afresh and
-// enumerates worktrees/branches there: the reload after a create, which runs
-// in whatever directory wt is in by then. A picker open goes through
-// loadPickerCmd instead, which shares one lookup with the PR listings.
-func loadEntriesCmd() tea.Cmd {
-	return func() tea.Msg {
-		root, err := findRepoRoot()
-		return loadEntriesAtCmd(root, err)()
-	}
-}
-
-// loadEntriesAtCmd returns a command that enumerates worktrees/branches in
-// root, the repo root findRepoRoot answered (lookupErr its error), and
-// captures it for the new-worktree prompt. The returned message carries the
-// three-group Enumerate shape, which the picker (buildList) interleaves into
-// sentinel → worktrees → locals → separator → remotes.
-func loadEntriesAtCmd(root string, lookupErr error) tea.Cmd {
-	return func() tea.Msg {
-		if lookupErr != nil {
-			return entriesLoadedMsg{err: lookupErr}
-		}
-		groups, own, err := worktree.EnumerateRepos(root, root)
-		defaultBranch := worktree.DefaultBranch(root)
-		return entriesLoadedMsg{groups: groups, defaultBranch: defaultBranch, repoRoot: root, ownRepos: own, err: err}
-	}
-}
-
-// loadPRsCmd returns a command that runs one listing of the pull requests of
-// the repository at root with gh (worktree.PRs with state: one call, five
-// seconds at most, every failure an empty set) for the worktree picker's
-// tags. Each listing runs beside the entry load and the other listings, so
-// the picker never waits for it. An empty root (no repository) answers a
-// loaded, empty set without running gh.
-func loadPRsCmd(root, state string) tea.Cmd {
-	return func() tea.Msg {
-		if root == "" {
-			return prsLoadedMsg{prs: worktree.EmptyPRSet()}
-		}
-		return prsLoadedMsg{prs: worktree.PRs(root, state)}
-	}
-}
-
-// prsLoadedMsg carries one loadPRsCmd's answer: each head's pull request in
-// that listing, keyed by head repository and branch; loaded but empty when
-// the listing failed.
-type prsLoadedMsg struct {
-	prs worktree.PRSet
-}
-
-// selectFirstEntry selects the first kindEntry item in l matching pred.
-// Shared by the pendingHighlight, default-branch, and current-checkout cursor
-// placements in Update so a future change to the iteration shape (e.g.
-// skipping separator rows) only needs to happen once.
-func selectFirstEntry(l *list.Model, pred func(entryItem) bool) {
-	for i, it := range l.Items() {
-		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && pred(ei) {
-			l.Select(i)
-			return
-		}
-	}
-}
-
-// isCurrentOnDefaultBranch returns true when the entry is the current
-// worktree and its branch matches the repo default branch.
-func isCurrentOnDefaultBranch(e worktree.Entry, defaultBranch string) bool {
-	return defaultBranch != "" && e.Type == worktree.TypeCurrent && e.Branch == defaultBranch
-}
-
-// isDefaultBranchOnly reports whether the user is working directly on the
-// repo default branch with nothing else to switch to — the situation where
-// a default-branch warning in the picker title is warranted. Returns true
-// when the current worktree is on the default branch and the picker, after
-// default-branch filtering, contains no other pickable entries. Any other
-// surviving entry — a different branch, a detached worktree, or a second
-// worktree on main — means there is something to switch to, so the warning is
-// suppressed. Entries that buildList would filter out (bare local default
-// branch, remote-tracking default-branch refs) are ignored.
-func isDefaultBranchOnly(groups []worktree.EntryGroup, defaultBranch string) bool {
-	if defaultBranch == "" {
-		return false
-	}
-	onDefault := false
-	for _, g := range groups {
-		for _, e := range g.Entries {
-			if worktree.SkipInPicker(g.Kind, e, defaultBranch) {
-				continue
-			}
-			if isCurrentOnDefaultBranch(e, defaultBranch) {
-				onDefault = true
-				continue
-			}
-			// Any other surviving entry means there's something to switch to.
-			return false
-		}
-	}
-	return onDefault
-}
-
-// entriesLoadedMsg carries the enumeration result to Update. groups is
-// the three-group shape from worktree.Enumerate (worktrees / local
-// branches / remote branches); the handler passes them straight to
-// buildList, which interleaves them with a separator between locals
-// and remotes. repoRoot is the git repo root, captured at load time so
-// the new-worktree prompt can use it without re-resolving.
-type entriesLoadedMsg struct {
-	groups        []worktree.EntryGroup
-	defaultBranch string
-	repoRoot      string
-	ownRepos      worktree.RepoSet
-	err           error
-}
 
 // loadingStatus is the placeholder View shows until the worktree list
 // arrives. It lives in m.status, so the load has to take it back down: every

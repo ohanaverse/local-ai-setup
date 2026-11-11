@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
@@ -23,7 +24,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // compactModelList builds a 78x22 list.Model from buildTable rows for models
@@ -218,22 +218,19 @@ func TestMain(m *testing.M) {
 	ollamacheck.StubListForTest(func(origin string) ([]string, bool, error) {
 		return nil, true, errors.New("ollamacheck list not stubbed in this test (ollama list at " + origin + ")")
 	})
-	// The worktree picker's pull request tags (loadPRsCmd): unstubbed, a
-	// test that runs Init's commands would run the developer's gh against
-	// GitHub. Tests that want tags call stubPRList.
-	worktree.StubPRListForTest(func(string, string) ([]byte, error) {
+	// The worktree picker's PR lookups (loadRowPRsCmd, cleanup.FillPRs):
+	// unstubbed, a test that runs a picker load's commands would run the
+	// developer's gh against GitHub. A test that wants PRs passes its own
+	// GatherInputs.PRList or stubs cleanup's seams for itself.
+	cleanup.StubPRListForTest(func(string, string) ([]byte, error) {
 		return nil, errors.New("gh pr list not stubbed in this test")
+	})
+	cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) {
+		return nil, errors.New("gh pr list --base not stubbed in this test")
 	})
 	code := m.Run()
 	rmConfigHome()
 	os.Exit(code)
-}
-
-// stubPRList makes the worktree picker's `gh pr list` answer with the JSON
-// data for the duration of a test.
-func stubPRList(t *testing.T, data string) {
-	t.Helper()
-	t.Cleanup(worktree.StubPRListForTest(func(string, string) ([]byte, error) { return []byte(data), nil }))
 }
 
 // stubOllamaList makes the picker's pre-launch ollama check see an installed

@@ -250,7 +250,7 @@ func previewCmd(preview func([]cleanup.Row) []removal.ItemPreview, rows []cleanu
 		}()
 		ps := preview(rows)
 		if len(ps) != len(rows) {
-			return cleanupPreviewMsg{err: fmt.Errorf("the re-check answered %d items for %d ticked", len(ps), len(rows))}
+			return cleanupPreviewMsg{err: fmt.Errorf("the re-check answered %d items for %d asked", len(ps), len(rows))}
 		}
 		for i, p := range ps {
 			r := rows[i]
@@ -943,7 +943,7 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 			parts = append(parts, fmt.Sprintf("%d %s", k, confirmCountWords[g.approval]))
 		}
 	}
-	sum := fmt.Sprintf("remove %d of %d ticked (%s); nothing has been removed yet", n, all, strings.Join(parts, ", "))
+	sum := fmt.Sprintf("remove %d of %d %s (%s); nothing has been removed yet", n, all, m.chosenWord(), strings.Join(parts, ", "))
 	if k := c.originCount(); k > 0 {
 		noun := "branches"
 		if k == 1 {
@@ -951,7 +951,7 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 		}
 		sum += fmt.Sprintf(" · %d %s on origin, visible to everyone with access to the repository; no open PR uses them as of the re-check, and GitHub can restore a deleted branch from its merged PR", k, noun)
 	}
-	return []string{accent.Render(clip("wt cleanup · confirm", m.width))}, wrapIndented(sum, "", m.width)
+	return []string{accent.Render(clip(m.screenName()+" · confirm", m.width))}, wrapIndented(sum, "", m.width)
 }
 
 // confirmHints are the confirm screen's key hints.
@@ -1146,7 +1146,7 @@ func (m *cleanupListModel) framedRoom(top, body []string, offset, room int, foot
 func (m *cleanupListModel) runningView() string {
 	r := m.run
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
-	top := []string{accent.Render(clip(fmt.Sprintf("wt cleanup · removing %d items", len(r.items)), m.width))}
+	top := []string{accent.Render(clip(fmt.Sprintf("%s · removing %d items", m.screenName(), len(r.items)), m.width))}
 	var body []string
 	for k, i := range r.runAt {
 		e := r.entries[i]
@@ -1176,7 +1176,7 @@ func (m *cleanupListModel) runningView() string {
 func (m *cleanupListModel) resultsView() string {
 	r := m.run
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
-	top := []string{accent.Render(clip("wt cleanup · results: "+removedSummary(r.results), m.width))}
+	top := []string{accent.Render(clip(m.screenName()+" · results: "+removedSummary(r.results), m.width))}
 	if r.err != nil {
 		top = append(top, wrapIndented("the run did not finish cleanly: "+cleanup.OneLine(r.err.Error()), "", m.width)...)
 	}
