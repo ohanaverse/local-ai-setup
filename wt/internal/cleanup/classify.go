@@ -771,7 +771,7 @@ func (c *classifier) local(j *judge, h RefFact, covered bool) {
 			}
 		}
 		if ok && p.Verdict == NotMerged {
-			if res.Lookup == LookupUnknown {
+			if res.Lookup == LookupUnknown && !c.s.PRNotApplicable {
 				j.unsure(ReasonPRUnknown, cmp.Or(res.Err, noPRLookupDetail))
 			}
 			if len(p.Weak) > 0 {
@@ -837,8 +837,13 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	// nor has a lookup of its own (nothing asks gh about upstream/foo), so
 	// it is judged on git's proofs, and its PR state is unknown (below).
 	origin := rf.Remote == "origin"
+	// With no own repository (origin is not on GitHub) there are no pull
+	// requests to look up, so origin's row has no lookup to fail either: it is
+	// judged on git's proofs like another remote's, and no origin-only check
+	// (gh answers, the origin fetch, the open PRs that target it) applies.
+	prLookups := origin && !c.s.PRNotApplicable
 	var res PRResult // zero value (LookupUnknown) for another remote's row, which has no lookup
-	if origin {
+	if prLookups {
 		res = c.s.PRs[rf.Name] // a miss is LookupUnknown
 		switch {
 		case res.Lookup == LookupUnknown:
@@ -846,6 +851,8 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 		case c.gh != GHOK:
 			j.unsure(ReasonCannotVerify, c.ghNote)
 		}
+	} else if origin {
+		j.unsure(ReasonNotChecked, noGitHubDetail)
 	} else {
 		// Fail closed: nothing asks gh about another remote's branch, so its
 		// pull-request state is unknown, never "no PR". The row can read at
@@ -873,13 +880,13 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	// branch" query, the PR rung the removal engine re-verifies) apply to an
 	// origin row only: they are origin facts, keyed by a bare name, and
 	// nothing deletes any other remote's branch.
-	if origin {
+	if prLookups {
 		if why := c.originFetchProblem(); why != "" {
 			j.unsure(ReasonCannotVerify, why)
 		}
 	}
 	candidate := j.ev != ""
-	deps, baseErr := c.dependants(rf.Name, candidate, origin)
+	deps, baseErr := c.dependants(rf.Name, candidate, prLookups)
 	if baseErr != "" {
 		j.unsure(ReasonCannotVerify, baseErr)
 	}

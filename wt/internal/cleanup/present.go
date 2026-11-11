@@ -242,6 +242,13 @@ func RowText(rep Report, row Row) string {
 	if len(parts) == 0 {
 		return "no evidence"
 	}
+	// The same wording twice (a PR-lookup reason per failed lookup) reads once.
+	seen := map[string]bool{}
+	parts = slices.DeleteFunc(parts, func(p string) bool {
+		dup := seen[p]
+		seen[p] = true
+		return dup
+	})
 	return strings.Join(parts, "; ")
 }
 
@@ -515,13 +522,19 @@ func KindGroups(r Report) []KindGroup {
 	}
 	var out []KindGroup
 	for _, g := range []KindGroup{
-		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, r.RemoteRows()},
+		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, remoteOnly(r)},
 	} {
 		if len(g.Rows) > 0 {
 			out = append(out, g)
 		}
 	}
 	return out
+}
+
+// remoteOnly is the remote rows no local row folds: a folded ref is its local
+// row's Upstream (one row per branch), still reachable through RemoteRows.
+func remoteOnly(r Report) []Row {
+	return slices.DeleteFunc(slices.Clone(r.Rows), func(row Row) bool { return row.Kind != KindRemote })
 }
 
 // TagSeverity says how a tag should be coloured.

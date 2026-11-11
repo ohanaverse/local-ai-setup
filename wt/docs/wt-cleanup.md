@@ -34,7 +34,8 @@ in, every local branch, and the remote branches, are rows. The default branch
 is listed too: as its own row when no worktree holds it, and `origin/<default>`
 folds into it like any other same-named pair. A remote branch with the same
 name as a local branch is not a separate row: it is the local row's `upstream`
-(`ref`, `gone`, and its own status and evidence). On a terminal the list shows
+(`ref`, `gone`, and its own status and evidence). On a terminal REMOTE BRANCHES therefore lists only the
+branches no local branch tracks (`--plain` and `--json` still list every ref). On a terminal the list shows
 every remote's branches and does not fetch when it opens (`r` is not a
 refresh; run `git fetch` or use `--json`/`--plain`, which fetch first unless
 `--no-fetch`). Each row carries tags such as `root`, `you are here`, `held`,
@@ -53,7 +54,9 @@ An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
 failed) floors a row below proven, with a `PR ?` tag, because a merged PR is
 part of the proof. The exception is a repository whose `origin` is not on
 GitHub: the lookup does not apply there, so it floors nothing and shows no
-tag.
+tag or `needs gh` wording on any row. An `origin` branch there is still never
+proven by a PR: its row reads `not_checked` (no pull request is checked) and
+stays less sure or worse.
 
 ## Groups
 

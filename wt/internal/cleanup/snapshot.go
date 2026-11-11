@@ -143,8 +143,12 @@ type Snapshot struct {
 	// run, so every row's PR state is unknown and none is proven. A
 	// hand-built Snapshot has neither flag and keeps the older behavior.
 	PRsSkipped bool
-	Claims     []sessionclaim.Claim
-	ClaimsErr  string
+	// PRNotApplicable is true when the repository has no known own
+	// repository (origin is not on GitHub): there is no PR lookup to fail, so
+	// no row reads "PR ?", "PR lookup failed" or "needs gh".
+	PRNotApplicable bool
+	Claims          []sessionclaim.Claim
+	ClaimsErr       string
 	// Records are the well-formed rescue records; a failed listing leaves none.
 	Records []RescueRecord
 }
@@ -231,6 +235,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	if s.OwnRepo == "" {
 		s.OwnRepo = ownRepoFromURL(originURL(g))
 	}
+	s.PRNotApplicable = s.OwnRepo == ""
 	if in.SkipPRs {
 		// With no own repository (origin is not on GitHub) no PR can exist:
 		// PR state is not applicable, so nothing is pending.

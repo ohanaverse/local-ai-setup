@@ -325,10 +325,25 @@ func TestKindGroupsOrder(t *testing.T) {
 	if gs[0].Rows[0].Name != "root" || gs[0].Rows[1].Name != "w" {
 		t.Errorf("worktrees %+v", gs[0].Rows)
 	}
-	if len(gs[2].Rows) != 2 {
-		t.Errorf("remote group should include the folded row: %+v", gs[2].Rows)
+	if len(gs[2].Rows) != 1 || gs[2].Rows[0].Name != "r" {
+		t.Errorf("remote group should list only the remote-only row, not the folded one: %+v", gs[2].Rows)
 	}
 	if got := KindGroups(Report{Rows: []Row{{Kind: KindBranch}}}); len(got) != 1 || got[0].Heading != "LOCAL BRANCHES" {
 		t.Errorf("empty groups must be omitted: %+v", got)
+	}
+}
+
+// TestRowTextDropsRepeatedReasonWording pins that one sentence never says the
+// same thing twice: several PR-lookup reasons (one per lookup that failed)
+// read as one "needs gh (PR lookup failed)".
+func TestRowTextDropsRepeatedReasonWording(t *testing.T) {
+	row := Row{Kind: KindRemote, Name: "origin/x", Reasons: []Reason{
+		{Code: ReasonCannotVerify, Detail: "gh exited 1"},
+		{Code: ReasonCannotVerify, Detail: "gh exited 1"},
+		{Code: ReasonCannotVerify, Detail: "gh exited 1"},
+	}}
+	got := RowText(Report{GH: GHUnavailable}, row)
+	if n := strings.Count(got, "needs gh"); n != 1 {
+		t.Errorf("%q says needs gh %d times, want once", got, n)
 	}
 }

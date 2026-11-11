@@ -84,6 +84,8 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		// "PR ?" (nothing proven on it).
 		PRsAsked:   prior.PRsAsked,
 		PRsSkipped: prior.PRsSkipped,
+
+		PRNotApplicable: prior.PRNotApplicable,
 	}
 	if !s.NoDefault {
 		var ok bool
@@ -95,7 +97,7 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 
 	// mini holds the target's fresh entries only; prove runs on it, so the
 	// ladder, unpushed counts and ages are computed for nothing else.
-	mini := Snapshot{CommonDir: s.CommonDir, NoDefault: s.NoDefault, Base: s.Base, BaseTip: s.BaseTip, PRs: s.PRs, PRsAsked: s.PRsAsked, PRsSkipped: s.PRsSkipped}
+	mini := Snapshot{CommonDir: s.CommonDir, NoDefault: s.NoDefault, Base: s.Base, BaseTip: s.BaseTip, PRs: s.PRs, PRsAsked: s.PRsAsked, PRsSkipped: s.PRsSkipped, PRNotApplicable: s.PRNotApplicable}
 	var self string // the target worktree's resolved path
 	var refs []string
 	switch t.Kind {

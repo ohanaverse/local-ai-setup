@@ -660,3 +660,59 @@ func TestOnlyOriginRemoteRowsAreTagged(t *testing.T) {
 		}
 	}
 }
+
+// TestNonGitHubOriginHasNoPRWordingOnAnyRowKind: with no own repository (origin
+// is a bare path) there is no PR lookup to fail. An unmerged worktree row and a
+// remote-only origin row carry no pr_unknown / cannot_verify, no PR tag and no
+// "needs gh" wording. The remote row is still less_sure, for the non-PR reason
+// that nothing checks a pull request for it (not_checked): never proven.
+func TestNonGitHubOriginHasNoPRWordingOnAnyRowKind(t *testing.T) {
+	f := newFixture(t)
+	failGh(t)
+	f.git("checkout", "-b", "feat")
+	f.Commit("feat.txt", "x", "feat work")
+	f.git("push", "origin", "HEAD:refs/heads/only-remote")
+	f.git("fetch", "origin")
+	for _, skip := range []bool{false, true} {
+		in := GatherInputs{CWD: f.Dir, Parallel: 2, OriginRows: true, SkipPRs: skip}
+		s, err := Gather(Git{Dir: f.Dir}, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep := Classify(s, Options{Now: later()})
+		wtRow := findRow(t, rep, KindWorktree, "feat")
+		rem := findRow(t, rep, KindRemote, "only-remote")
+		for _, row := range []Row{wtRow, rem} {
+			if row.PRUnknown || hasReason(row, ReasonPRUnknown) || hasReason(row, ReasonCannotVerify) {
+				t.Errorf("skip=%v %s %s: PR failure state on a non-GitHub origin: %+v", skip, row.Kind, row.Name, row.Reasons)
+			}
+			if txt := RowText(rep, row); strings.Contains(txt, "needs gh") || strings.Contains(txt, "PR lookup failed") {
+				t.Errorf("skip=%v %s: misleading wording %q", skip, row.Name, txt)
+			}
+		}
+		if rem.Status == StatusProven || !hasReason(rem, ReasonNotChecked) {
+			t.Errorf("skip=%v remote row must not be proven and says nothing is checked: %+v", skip, rem)
+		}
+	}
+}
+
+// TestGHDownOnGitHubOriginStillFloorsEveryRowKind: the floor and the wording
+// stay when the own repository is known and gh is down.
+func TestGHDownOnGitHubOriginStillFloorsEveryRowKind(t *testing.T) {
+	f := newFixture(t)
+	failGh(t)
+	f.git("checkout", "-b", "feat")
+	f.Commit("feat.txt", "x", "feat work")
+	f.git("push", "origin", "HEAD:refs/heads/only-remote")
+	f.git("fetch", "origin")
+	s, err := Gather(Git{Dir: f.Dir}, gatherIn(f)) // OwnRepo o/r
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := Classify(s, Options{Now: later()})
+	wtRow := findRow(t, rep, KindWorktree, "feat")
+	rem := findRow(t, rep, KindRemote, "only-remote")
+	if !hasReason(wtRow, ReasonPRUnknown) || !hasReason(rem, ReasonCannotVerify) {
+		t.Errorf("gh down on a GitHub origin: worktree %+v remote %+v", wtRow.Reasons, rem.Reasons)
+	}
+}
