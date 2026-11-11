@@ -215,10 +215,17 @@ func (m cleanupListModel) tickedRows() []cleanup.Row {
 // preview, or the status says why not.
 func (m cleanupListModel) startRemoval() (cleanupListModel, tea.Cmd) {
 	rows := m.tickedRows()
-	switch {
-	case len(rows) == 0:
-		m.status = "nothing ticked: space ticks the highlighted row"
+	if len(rows) == 0 {
+		m.status = "nothing ticked: space ticks the highlighted row, x removes it"
 		return m, nil
+	}
+	return m.startRemovalOf(rows)
+}
+
+// startRemovalOf hands rows (enter's ticked rows, or `x`'s) to the engine's
+// preview, or the status says why not.
+func (m cleanupListModel) startRemovalOf(rows []cleanup.Row) (cleanupListModel, tea.Cmd) {
+	switch {
 	case m.rm.Off != "":
 		m.status = cleanup.OneLine(m.rm.Off)
 		return m, nil
@@ -687,11 +694,13 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 		m.exitErr = fmt.Errorf("could not re-read the repository after removing: %w", msg.err)
 		return m, tea.Quit
 	}
-	n := newCleanupList(msg.report, m.theme, m.clock())
+	o := m.opts
+	o.Theme, o.Now = m.theme, m.clock()
+	n := newRowList(msg.report, o)
 	n.rm, n.log, n.clock = m.rm, m.log, m.clock
 	n.width, n.height = m.width, m.height
 	n.status = removedSummary(m.run.results) + "; the results print again when you quit"
-	if n.rows > 0 {
+	if !n.empty() {
 		n.offset = n.layout().offset
 	}
 	return n, nil

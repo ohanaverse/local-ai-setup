@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -64,10 +65,11 @@ func keyRunes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes
 
 var spaceKey = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
 
-// moveTo moves the cursor down until the highlighted row has the given
-// display name, failing when it is never reached.
+// moveTo moves the cursor to the top, then down until the highlighted row
+// has the given display name, failing when it is never reached.
 func moveTo(t *testing.T, m cleanupListModel, name string) cleanupListModel {
 	t.Helper()
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyHome})
 	for i := 0; i < 50; i++ {
 		if row, ok := m.selectedRow(); ok && cleanup.DisplayName(row) == name {
 			return m
@@ -78,15 +80,17 @@ func moveTo(t *testing.T, m cleanupListModel, name string) cleanupListModel {
 	return m
 }
 
-// TestCleanupListGroupOrder pins that the list shows the four group headings
-// in the spec's order (PROVEN, LESS SURE, UNIQUE WORK, IN USE) whatever order
-// the report's rows came in: the order is how the user reads "safe first".
-func TestCleanupListGroupOrder(t *testing.T) {
+// TestCleanupListGroupsByKind pins that the list is grouped by kind
+// (WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES, cleanup.KindGroups' order,
+// the root first) instead of by status, whatever order the report's rows came
+// in, and that each row still says its verdict (proven / less sure / unique
+// work / in use): the status headings are gone, so the verdict must travel
+// with the row or the user loses "is this safe" at a glance.
+func TestCleanupListGroupsByKind(t *testing.T) {
 	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
 	view := m.View()
 	last := -1
-	for _, st := range cleanup.GroupOrder {
-		h := cleanup.Heading(st)
+	for _, h := range []string{cleanup.HeadingWorktrees, cleanup.HeadingLocal, cleanup.HeadingRemote} {
 		i := strings.Index(view, h)
 		if i < 0 {
 			t.Fatalf("heading %q missing from view:\n%s", h, view)
@@ -96,9 +100,284 @@ func TestCleanupListGroupOrder(t *testing.T) {
 		}
 		last = i
 	}
-	// Rows sit under their own heading: a proven row before LESS SURE.
-	if strings.Index(view, "fix-default-guard") > strings.Index(view, cleanup.Heading(cleanup.StatusLessSure)) {
-		t.Errorf("proven row drawn below the LESS SURE heading:\n%s", view)
+	for _, st := range cleanup.GroupOrder {
+		if strings.Contains(view, cleanup.Heading(st)) {
+			t.Errorf("status heading %q still drawn:\n%s", cleanup.Heading(st), view)
+		}
+	}
+	// Rows sit under their own kind heading, the root first among worktrees.
+	wtAt, localAt, remoteAt := strings.Index(view, cleanup.HeadingWorktrees), strings.Index(view, cleanup.HeadingLocal), strings.Index(view, cleanup.HeadingRemote)
+	for name, want := range map[string][2]int{
+		"worktree  main": {wtAt, localAt}, "worktree  deep": {wtAt, localAt}, "fix-default-guard": {localAt, remoteAt},
+		"spike-picker": {localAt, remoteAt}, "origin/merged-remote": {remoteAt, len(view)},
+	} {
+		if i := strings.Index(view, name); i < want[0] || i > want[1] {
+			t.Errorf("%s drawn outside its group:\n%s", name, view)
+		}
+	}
+	if strings.Index(view, "worktree  main") > strings.Index(view, "worktree  full-branch") {
+		t.Errorf("root is not the first worktree row:\n%s", view)
+	}
+	for name, verdict := range map[string]string{
+		"full-branch-name-paths": "proven", "spike-picker": "less sure", "mtplx-profiles": "unique work", "deep": "in use",
+	} {
+		if block := rowBlock(t, view, name); !strings.Contains(block, verdict) {
+			t.Errorf("%s does not say its verdict %q: %q", name, verdict, block)
+		}
+	}
+}
+
+// TestRowListTagsWarnStyled pins that a row carries its cleanup.RowTags and
+// that a TagWarn tag (unpushed, dirty, held, ...) is drawn in the warning
+// style while an info tag (the PR, +remote) is not: the warning colour is
+// what makes a risky row stand out in a long list.
+func TestRowListTagsWarnStyled(t *testing.T) {
+	r := cleanupFixture()
+	r.Rows[3].Losses = cleanup.Losses{Unpushed: 4}           // mtplx-profiles
+	r.Rows[2].Upstream = &cleanup.Upstream{Remote: "origin"} // full-branch-name-paths
+	r.Rows[2].PRTag = &cleanup.PRInfo{Number: 517, State: "MERGED"}
+	m := newSizedCleanupList(t, r, 120, 40)
+	warn := map[string]bool{}
+	for _, it := range m.items {
+		if it.heading != "" || it.newWorktree {
+			continue
+		}
+		for _, u := range rowUnits(it) {
+			if u.warn {
+				warn[cleanup.DisplayName(it.row)+":"+u.text] = true
+			}
+		}
+	}
+	if !warn["mtplx-profiles:unpushed"] {
+		t.Errorf("unpushed is not a warn unit: %v", warn)
+	}
+	for k := range warn {
+		if strings.HasPrefix(k, "full-branch-name-paths:") {
+			t.Errorf("info tag drawn as a warning: %s", k)
+		}
+	}
+	view := m.View()
+	for name, tag := range map[string]string{"mtplx-profiles": "unpushed", "full-branch-name-paths": "#517 merged"} {
+		if !strings.Contains(rowBlock(t, view, name), tag) {
+			t.Errorf("%s does not show tag %q:\n%s", name, tag, view)
+		}
+	}
+	if !strings.Contains(rowBlock(t, view, "full-branch-name-paths"), "+remote") {
+		t.Errorf("+remote tag missing:\n%s", view)
+	}
+}
+
+// newLaunchList builds the list in launch mode and sizes it.
+func newLaunchList(t *testing.T, r cleanup.Report, w, h int) cleanupListModel {
+	t.Helper()
+	m := newRowList(r, rowListOpts{Mode: modeLaunch, Theme: themes.Default, Now: time.Now()})
+	return cleanupSend(t, m, tea.WindowSizeMsg{Width: w, Height: h})
+}
+
+// TestLaunchModeEnterChoosesTheRow pins that in launch mode Enter on any row
+// emits rowChosenMsg with that row — the primary checkout and an in-use
+// (current) worktree too: launching warns, it never blocks — and removes
+// nothing (no preview, no phase change).
+func TestLaunchModeEnterChoosesTheRow(t *testing.T) {
+	for _, name := range []string{"main", "deep", "spike-picker", "origin/old-remote"} {
+		m := newLaunchList(t, cleanupFixture(), 120, 40)
+		m.rm.Preview = func([]cleanup.Row) []removal.ItemPreview {
+			t.Errorf("%s: enter previewed a removal", name)
+			return nil
+		}
+		m = moveTo(t, m, name)
+		next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatalf("%s: enter returned no command", name)
+		}
+		got, ok := cmd().(rowChosenMsg)
+		if !ok || cleanup.DisplayName(got.Row) != name {
+			t.Errorf("%s: enter emitted %#v, want rowChosenMsg for it", name, cmd())
+		}
+		if fm := next.(cleanupListModel); fm.phase != cleanupPhaseList {
+			t.Errorf("%s: enter changed the phase to %v", name, fm.phase)
+		}
+	}
+}
+
+// TestLaunchModeNewWorktreeRow pins launch mode's first item, "+ New
+// worktree…": it is drawn above the first group, the cursor starts on it,
+// Enter on it (and `n` anywhere) emits newWorktreeChosenMsg, and launch mode
+// ticks nothing (no default ticks, no boxes, space and `a` do nothing).
+func TestLaunchModeNewWorktreeRow(t *testing.T) {
+	m := newLaunchList(t, cleanupFixture(), 120, 40)
+	view := m.View()
+	ni, wi := strings.Index(view, "+ New worktree…"), strings.Index(view, cleanup.HeadingWorktrees)
+	if ni < 0 || ni > wi {
+		t.Fatalf("new-worktree item missing or not first:\n%s", view)
+	}
+	if !strings.Contains(view, "> + New worktree…") {
+		t.Errorf("cursor does not start on the new-worktree item:\n%s", view)
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on the new-worktree item returned no command")
+	}
+	if _, ok := cmd().(newWorktreeChosenMsg); !ok {
+		t.Errorf("enter on new worktree emitted %#v", cmd())
+	}
+	m = moveTo(t, m, "spike-picker")
+	_, cmd = m.Update(keyRunes("n"))
+	if cmd == nil {
+		t.Fatal("n returned no command")
+	}
+	if _, ok := cmd().(newWorktreeChosenMsg); !ok {
+		t.Errorf("n emitted %#v", cmd())
+	}
+	m = cleanupSend(t, m, spaceKey)
+	m = cleanupSend(t, m, keyRunes("a"))
+	if names := m.tickedNames(); len(names) != 0 {
+		t.Errorf("launch mode ticked %v", names)
+	}
+	if v := m.View(); strings.Contains(v, "[x]") || strings.Contains(v, "[ ]") || strings.Contains(v, "[-]") {
+		t.Errorf("launch mode draws tick boxes:\n%s", v)
+	}
+
+	// Manage mode has no new-worktree item and `n` does nothing.
+	mm := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	if strings.Contains(mm.View(), "New worktree") {
+		t.Errorf("manage mode shows the new-worktree item:\n%s", mm.View())
+	}
+	if _, cmd := mm.Update(keyRunes("n")); cmd != nil {
+		t.Errorf("n in manage mode returned %#v", cmd())
+	}
+
+	// A launch list with no rows still offers the new worktree.
+	empty := cleanupFixture()
+	empty.Rows = nil
+	e := newLaunchList(t, empty, 80, 24)
+	if !strings.Contains(e.View(), "+ New worktree…") {
+		t.Errorf("empty launch list:\n%s", e.View())
+	}
+	_, cmd = e.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on an empty launch list returned no command")
+	}
+	if _, ok := cmd().(newWorktreeChosenMsg); !ok {
+		t.Errorf("enter on an empty launch list emitted %#v", cmd())
+	}
+}
+
+// previewRecorder is a RemoveFuncs.Preview that records the rows it was
+// asked about.
+func previewRecorder(got *[]string) func([]cleanup.Row) []removal.ItemPreview {
+	return func(rows []cleanup.Row) []removal.ItemPreview {
+		for _, r := range rows {
+			*got = append(*got, cleanup.DisplayName(r))
+		}
+		return nil
+	}
+}
+
+// runPreview sends key and runs the preview command it returns, returning
+// the names the preview was asked about and the new model.
+func runPreview(t *testing.T, m cleanupListModel, key tea.KeyMsg) ([]string, cleanupListModel) {
+	t.Helper()
+	var got []string
+	m.rm.Preview = previewRecorder(&got)
+	next, cmd := m.Update(key)
+	if cmd != nil {
+		cmd()
+	}
+	return got, next.(cleanupListModel)
+}
+
+// TestManageModeEnterStillRemovesTicked pins that manage mode built through
+// newRowList keeps the tick-and-Enter semantics: Enter previews exactly the
+// ticked rows (not the highlighted one) and emits no rowChosenMsg.
+func TestManageModeEnterStillRemovesTicked(t *testing.T) {
+	m := newRowList(cleanupFixture(), rowListOpts{Mode: modeManage, Theme: themes.Default, Now: time.Now()})
+	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = moveTo(t, m, "spike-picker")
+	got, fm := runPreview(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if strings.Join(got, ",") != "full-branch-name-paths,fix-default-guard" {
+		t.Errorf("enter previewed %v, want the two ticked rows", got)
+	}
+	if fm.phase != cleanupPhasePreviewing {
+		t.Errorf("phase = %v, want previewing", fm.phase)
+	}
+}
+
+// TestXRemovesTickedInBothModes pins `x`: it removes the ticked rows when
+// any are ticked, else the highlighted row, in both modes (launch mode ticks
+// nothing, so there it is always the highlighted row). A locked row (a hard
+// stop) and the new-worktree item are never handed to the engine: the status
+// line says why.
+func TestXRemovesTickedInBothModes(t *testing.T) {
+	// Manage, with ticks: the ticked rows, not the highlighted one.
+	m := moveTo(t, newSizedCleanupList(t, cleanupFixture(), 120, 40), "spike-picker")
+	if got, _ := runPreview(t, m, keyRunes("x")); strings.Join(got, ",") != "full-branch-name-paths,fix-default-guard" {
+		t.Errorf("manage x with ticks previewed %v", got)
+	}
+	// Manage, nothing ticked: the highlighted row.
+	m = moveTo(t, m, "full-branch-name-paths")
+	m = cleanupSend(t, m, spaceKey)
+	m = moveTo(t, m, "fix-default-guard")
+	m = cleanupSend(t, m, spaceKey)
+	m = moveTo(t, m, "spike-picker")
+	if got, _ := runPreview(t, m, keyRunes("x")); strings.Join(got, ",") != "spike-picker" {
+		t.Errorf("manage x with nothing ticked previewed %v, want the highlighted row", got)
+	}
+
+	// Launch: the highlighted row.
+	l := moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "fix-default-guard")
+	got, fl := runPreview(t, l, keyRunes("x"))
+	if strings.Join(got, ",") != "fix-default-guard" || fl.phase != cleanupPhasePreviewing {
+		t.Errorf("launch x previewed %v (phase %v), want the highlighted row", got, fl.phase)
+	}
+	// Launch, a locked row: nothing previewed, the status says why.
+	l = moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "deep")
+	got, fl = runPreview(t, l, keyRunes("x"))
+	if len(got) != 0 || fl.phase != cleanupPhaseList || !strings.Contains(fl.status, "cannot be removed") {
+		t.Errorf("launch x on a locked row: previewed %v, phase %v, status %q", got, fl.phase, fl.status)
+	}
+	// Launch, the new-worktree item: nothing previewed.
+	got, fl = runPreview(t, newLaunchList(t, cleanupFixture(), 120, 40), keyRunes("x"))
+	if len(got) != 0 || fl.phase != cleanupPhaseList || fl.status == "" {
+		t.Errorf("launch x on new worktree: previewed %v, phase %v, status %q", got, fl.phase, fl.status)
+	}
+}
+
+// TestRowListRefreshKeepsTheMode pins that the list rebuilt after a removal
+// run stays in the mode it was opened in: a launch list must not come back
+// as a manage list with boxes and default ticks.
+func TestRowListRefreshKeepsTheMode(t *testing.T) {
+	m := newLaunchList(t, cleanupFixture(), 120, 40)
+	m.phase = cleanupPhaseRefreshing
+	m.run = &cleanupRun{}
+	m = cleanupSend(t, m, cleanupRefreshMsg{report: cleanupFixture()})
+	if m.opts.Mode != modeLaunch || len(m.tickedNames()) != 0 || !strings.Contains(m.View(), "+ New worktree…") {
+		t.Errorf("after refresh: mode %v ticked %v\n%s", m.opts.Mode, m.tickedNames(), m.View())
+	}
+}
+
+// TestRowListFits80x24 pins the 80x24 layout in both modes with the long
+// rows: walking the cursor over every item, the view is never taller than 24
+// lines or wider than 80 columns, and the highlighted row is on screen.
+func TestRowListFits80x24(t *testing.T) {
+	for _, mode := range []listMode{modeManage, modeLaunch} {
+		m := newRowList(longRowsFixture(), rowListOpts{Mode: mode, Theme: themes.Default, Now: time.Now()})
+		m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		for i := 0; i < 30; i++ {
+			view := m.View()
+			if h := lipgloss.Height(view); h > 24 {
+				t.Fatalf("mode %v step %d: view is %d lines:\n%s", mode, i, h, view)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if w := lipgloss.Width(line); w > 80 {
+					t.Fatalf("mode %v step %d: line %d wide: %q", mode, i, w, line)
+				}
+			}
+			if !strings.Contains(view, "> ") {
+				t.Fatalf("mode %v step %d: no highlighted item on screen:\n%s", mode, i, view)
+			}
+			m = cleanupSend(t, m, keyRunes("j"))
+		}
 	}
 }
 
@@ -431,7 +710,7 @@ func TestCleanupListWrappedRowStaysOnScreen(t *testing.T) {
 		m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyUp})
 	}
 	view = m.View()
-	if !strings.Contains(view, cleanup.Heading(cleanup.StatusProven)) || !strings.Contains(view, "> [x] worktree") {
+	if !strings.Contains(view, cleanup.HeadingWorktrees) || !strings.Contains(view, "> [-] worktree  main") {
 		t.Errorf("top of the list not back on screen:\n%s", view)
 	}
 }

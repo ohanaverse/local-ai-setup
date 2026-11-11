@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -15,28 +16,69 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 )
 
-// The `wt cleanup` tick list (layout A of the design): the report's header,
-// its rows in cleanup.Groups' four groups with a checkbox column, and a
-// detail line under the list that explains the highlighted row. The words —
-// headings, the evidence sentence, the header lines, which rows are tickable
-// — are all internal/cleanup/present.go's; this file only lays them out and
-// styles them.
+// The row list (layout A of the cleanup design, unified by the user-driven
+// cleanup design's "The list"): the report's header, then every row grouped
+// by kind (cleanup.KindGroups: WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES),
+// each row carrying its verdict (proven / less sure / unique work / in use),
+// its cleanup.RowTags (a TagWarn tag in the warning colour) and its
+// sentence, and a detail line under the list that explains the highlighted
+// row. The words — headings, tags, the evidence sentence, the header lines,
+// which rows are tickable — are all internal/cleanup/present.go's; this file
+// only lays them out and styles them.
 //
-// A row's sentence is never cut: when it does not fit beside the name it
-// wraps onto continuation lines under the evidence column, so a row is as
-// many lines as its sentence needs. That is why this screen is a small list
-// of its own rather than a bubbles list, whose delegate gives every item the
-// same height. The name column is what gives way to the width.
+// One component, two modes (rowListOpts.Mode):
+//   - manage (`wt cleanup`): a checkbox column; space ticks, `a` ticks every
+//     proven row, enter removes the ticked rows, `r` hands a row to rescue.
+//   - launch (the picker): a first item "+ New worktree…" (enter or `n`
+//     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
+//     the root, an in-use or held row too: launching warns, it never blocks
+//     — and nothing is ticked.
 //
-// enter removes the ticked rows, through a confirm screen and the removal
-// engine (cleanup_confirm.go); this file runs no git and removes nothing.
+// In both modes `x` removes the ticked rows, or the highlighted row when
+// nothing is ticked (always, in launch mode), through the same confirm flow.
+//
+// A row's text is never cut: when it does not fit beside the name it wraps
+// onto continuation lines under the text column, so a row is as many lines
+// as its text needs. That is why this screen is a small list of its own
+// rather than a bubbles list, whose delegate gives every item the same
+// height. The name column is what gives way to the width.
+//
+// Removal goes through a confirm screen and the removal engine
+// (cleanup_confirm.go); this file runs no git and removes nothing.
 
-// cleanupItem is one entry of the list: a group heading or a row.
+// listMode is which entry point the list serves.
+type listMode int
+
+const (
+	modeManage listMode = iota // `wt cleanup`: tick and remove
+	modeLaunch                 // the picker: choose a row to launch in
+)
+
+// rowListOpts configures newRowList.
+type rowListOpts struct {
+	Mode  listMode
+	Theme themes.Theme
+	Now   time.Time // the header's clock
+}
+
+// rowChosenMsg is launch mode's enter on a row: launch there.
+type rowChosenMsg struct{ Row cleanup.Row }
+
+// newWorktreeChosenMsg is launch mode's enter on "+ New worktree…", or `n`.
+type newWorktreeChosenMsg struct{}
+
+// newWorktreeLabel is launch mode's first item.
+const newWorktreeLabel = "+ New worktree…"
+
+// cleanupItem is one entry of the list: a group heading, a row, or launch
+// mode's new-worktree item.
 type cleanupItem struct {
-	heading string // set on a heading; the rest is then unset
-	row     cleanup.Row
-	text    string // cleanup.RowText for the row
-	locked  bool   // can never be ticked: drawn [-], space does nothing
+	heading     string // set on a heading; the rest is then unset
+	newWorktree bool   // launch mode's "+ New worktree…"; the rest is unset
+	row         cleanup.Row
+	text        string        // cleanup.RowText for the row
+	tags        []cleanup.Tag // the tags drawn for the row (rowTags)
+	locked      bool          // can never be ticked or removed: drawn [-], space does nothing
 }
 
 // cleanupLocked reports whether a row can never be ticked: an in-use row, a
@@ -66,31 +108,133 @@ func cleanupLocked(r cleanup.Row) bool {
 	return false
 }
 
-// Row geometry: "> " cursor, "[x] " box, the kind padded to 8, then the name
-// and the sentence, two spaces apart. The name column narrows to
-// cleanupMinNameW so sentences fit on one line, and below that (a terminal
-// too narrow to give the sentence cleanupMinTextW columns beside it) to
-// cleanupFloorNameW.
+// rowTags are the tags the list draws for a row: cleanup.RowTags without
+// "you are here", which RowTags gives every worktree holding the caller's
+// directory; the row's sentence (cleanup.RowText) already says it, on the
+// innermost one only.
+func rowTags(r cleanup.Row) []cleanup.Tag {
+	var out []cleanup.Tag
+	for _, t := range cleanup.RowTags(r) {
+		if t.Text != "you are here" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// verdictText is the row's status in words: what the status headings said
+// before the list was grouped by kind.
+func verdictText(s cleanup.Status) string {
+	return strings.ReplaceAll(string(s), "_", " ")
+}
+
+// unit is one unbreakable piece of a row's text: the verdict, a tag, a word
+// of the sentence or of the age. sep goes before it when it follows another
+// unit on the same line.
+type unit struct {
+	sep, text string
+	warn      bool // drawn in the warning style (a TagWarn tag)
+}
+
+// rowUnits is a row's text as units: verdict · tags · sentence  age.
+func rowUnits(it cleanupItem) []unit {
+	out := []unit{{text: verdictText(it.row.Status)}}
+	for _, t := range it.tags {
+		out = append(out, unit{sep: " · ", text: t.Text, warn: t.Severity == cleanup.TagWarn})
+	}
+	for k, w := range strings.Fields(it.text) {
+		sep := " "
+		if k == 0 {
+			sep = " · "
+		}
+		out = append(out, unit{sep: sep, text: w})
+	}
+	for k, w := range strings.Fields(cleanup.AgeText(it.row)) {
+		sep := " "
+		if k == 0 {
+			sep = "  "
+		}
+		out = append(out, unit{sep: sep, text: w})
+	}
+	return out
+}
+
+// unitsText is units on one line.
+func unitsText(us []unit) string {
+	var b strings.Builder
+	for k, u := range us {
+		if k > 0 {
+			b.WriteString(u.sep)
+		}
+		b.WriteString(u.text)
+	}
+	return b.String()
+}
+
+// flowUnits lays units out on lines of at most width runes, breaking only
+// between units (tuilayout.Flow's rule, with each unit's own separator); a
+// unit longer than a whole line is cut at the line's end. width <= 0 is one
+// line.
+func flowUnits(us []unit, width int) [][]unit {
+	if width <= 0 {
+		return [][]unit{us}
+	}
+	var lines [][]unit
+	var cur []unit
+	curW := 0
+	for _, u := range us {
+		w := utf8.RuneCountInString(u.text)
+		if len(cur) > 0 {
+			if curW+utf8.RuneCountInString(u.sep)+w <= width {
+				cur, curW = append(cur, u), curW+utf8.RuneCountInString(u.sep)+w
+				continue
+			}
+			lines, cur, curW = append(lines, cur), nil, 0
+		}
+		runes := []rune(u.text)
+		for len(runes) > width {
+			lines = append(lines, []unit{{text: string(runes[:width]), warn: u.warn}})
+			runes = runes[width:]
+		}
+		u.text = string(runes)
+		cur, curW = []unit{u}, len(runes)
+	}
+	if len(cur) > 0 {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// Row geometry: "> " cursor, "[x] " box (manage mode only), the kind padded
+// to 8, then the name and the text, two spaces apart. Names stay whole while
+// that leaves the text cleanupRoomyTextW columns (the text wraps instead: a
+// wrapped text loses nothing, a cut name hides which row it is). Otherwise
+// the name column narrows to cleanupMinNameW so texts fit on one line, and
+// below that (a terminal too narrow to give the text cleanupMinTextW columns
+// beside it) to cleanupFloorNameW.
 const (
 	cleanupKindW      = 8
-	cleanupFixedW     = 2 + 4 + cleanupKindW + 2 + 2
+	cleanupBoxW       = 4
+	cleanupFixedW     = 2 + cleanupBoxW + cleanupKindW + 2 + 2
 	cleanupMinNameW   = 16
 	cleanupMinTextW   = 24
+	cleanupRoomyTextW = 40
 	cleanupFloorNameW = 4
 )
 
-// cleanupListModel is the tick list's Bubble Tea model.
+// cleanupListModel is the row list's Bubble Tea model.
 type cleanupListModel struct {
+	opts          rowListOpts
 	report        cleanup.Report
 	theme         themes.Theme
 	now           time.Time
 	items         []cleanupItem
 	ticked        map[int]bool // by item index
-	cursor        int          // item index of the highlighted row; -1 with no rows
+	cursor        int          // item index of the highlighted item; -1 with none
 	offset        int          // the first list line on screen
-	rows          int          // number of row items (headings excluded)
+	rows          int          // number of row items (headings and the new-worktree item excluded)
 	maxName       int          // the longest display name
-	maxText       int          // the longest sentence (with its age)
+	maxText       int          // the longest row text (verdict, tags, sentence, age)
 	width, height int
 	done          bool
 
@@ -112,28 +256,47 @@ type cleanupListModel struct {
 	clock     func() time.Time // the list's clock on a rebuild
 }
 
-// newCleanupList builds the list for r: every group's heading and rows in
-// cleanup.Groups' order, Tickable rows ticked, the cursor on the first row.
+// newCleanupList is the manage-mode list `wt cleanup` shows.
 func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupListModel {
-	m := cleanupListModel{report: r, theme: th, now: now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
-	for _, g := range cleanup.Groups(r) {
+	return newRowList(r, rowListOpts{Mode: modeManage, Theme: th, Now: now})
+}
+
+// newRowList builds the list for r in o.Mode: launch mode's new-worktree
+// item first, then every kind group's heading and rows in
+// cleanup.KindGroups' order. In manage mode Tickable local rows start
+// ticked; in launch mode nothing is. The cursor starts on the first item.
+func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
+	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
+	if o.Mode == modeLaunch {
+		m.items = append(m.items, cleanupItem{newWorktree: true})
+		m.cursor = 0
+		m.maxName = lipgloss.Width(newWorktreeLabel)
+	}
+	for _, g := range cleanup.KindGroups(r) {
 		m.items = append(m.items, cleanupItem{heading: g.Heading})
 		for _, row := range g.Rows {
-			it := cleanupItem{row: row, text: cleanup.RowText(r, row), locked: cleanupLocked(row)}
-			if row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
+			it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row), locked: cleanupLocked(row)}
+			if o.Mode == modeManage && row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
 				m.ticked[len(m.items)] = true
 			}
 			if m.cursor < 0 {
 				m.cursor = len(m.items)
 			}
 			m.maxName = max(m.maxName, lipgloss.Width(cleanup.DisplayName(row)))
-			m.maxText = max(m.maxText, lipgloss.Width(rowSentence(it)))
+			m.maxText = max(m.maxText, lipgloss.Width(unitsText(rowUnits(it))))
 			m.items = append(m.items, it)
 			m.rows++
 		}
 	}
 	return m
 }
+
+// launch reports whether the list is in launch mode.
+func (m *cleanupListModel) launch() bool { return m.opts.Mode == modeLaunch }
+
+// empty reports whether the list has nothing to highlight: a manage list
+// with no rows (a launch list always has its new-worktree item).
+func (m *cleanupListModel) empty() bool { return m.cursor < 0 }
 
 // RunCleanupList shows r as the tick list on the alt screen. enter removes
 // the ticked rows through rm after a confirmation; once the screen is gone,
@@ -260,7 +423,7 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = ""
-		if m.rows == 0 {
+		if m.empty() {
 			// "nothing to clean up": any key leaves.
 			m.done = true
 			return m, tea.Quit
@@ -270,19 +433,12 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.done = true
 			return m, tea.Quit
 		case "enter":
+			if m.launch() {
+				return m, m.choose()
+			}
 			return m.startRemoval()
-		case "r":
-			return m.startRescue()
-		case " ":
-			if it := m.items[m.cursor]; !it.locked {
-				m.ticked[m.cursor] = !m.ticked[m.cursor]
-			}
-		case "a":
-			for i, it := range m.items {
-				if it.heading == "" && !it.locked && it.row.Tickable() && it.row.Kind != cleanup.KindRemote {
-					m.ticked[i] = true
-				}
-			}
+		case "x":
+			return m.removeKey()
 		case "up", "k":
 			m.move(-1, 1)
 		case "down", "j":
@@ -295,15 +451,68 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(-1, len(m.items))
 		case "end", "G":
 			m.move(1, len(m.items))
+		default:
+			if m.launch() {
+				if msg.String() == "n" {
+					return m, emit(newWorktreeChosenMsg{})
+				}
+				break
+			}
+			switch msg.String() {
+			case "r":
+				return m.startRescue()
+			case " ":
+				if it := m.items[m.cursor]; !it.locked {
+					m.ticked[m.cursor] = !m.ticked[m.cursor]
+				}
+			case "a":
+				for i, it := range m.items {
+					if it.heading == "" && !it.locked && it.row.Tickable() && it.row.Kind != cleanup.KindRemote {
+						m.ticked[i] = true
+					}
+				}
+			}
 		}
 	}
-	if m.rows > 0 {
+	if !m.empty() {
 		m.offset = m.layout().offset
 	}
 	return m, nil
 }
 
-// move moves the cursor n rows in direction dir, skipping headings and
+// emit is a command that delivers msg.
+func emit(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
+
+// choose is launch mode's enter: the new-worktree item or the highlighted
+// row, whatever its verdict (launching warns, never blocks).
+func (m cleanupListModel) choose() tea.Cmd {
+	if m.items[m.cursor].newWorktree {
+		return emit(newWorktreeChosenMsg{})
+	}
+	return emit(rowChosenMsg{Row: m.items[m.cursor].row})
+}
+
+// removeKey is `x`: the ticked rows, or the highlighted row when nothing is
+// ticked (always in launch mode, which ticks nothing), go to the removal
+// flow; a locked row or the new-worktree item says why not.
+func (m cleanupListModel) removeKey() (cleanupListModel, tea.Cmd) {
+	rows := m.tickedRows()
+	if len(rows) == 0 {
+		it := m.items[m.cursor]
+		switch {
+		case it.newWorktree:
+			m.status = "x removes the highlighted worktree or branch; this item creates one"
+			return m, nil
+		case it.locked:
+			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
+			return m, nil
+		}
+		rows = []cleanup.Row{it.row}
+	}
+	return m.startRemovalOf(rows)
+}
+
+// move moves the cursor n items in direction dir, skipping headings and
 // stopping at either end.
 func (m *cleanupListModel) move(dir, n int) {
 	for ; n > 0; n-- {
@@ -321,62 +530,92 @@ func (m *cleanupListModel) move(dir, n int) {
 	}
 }
 
-// rowSentence is a row's sentence with its age after it.
-func rowSentence(it cleanupItem) string {
-	if age := cleanup.AgeText(it.row); age != "" {
-		return it.text + "  " + age
+// fixedW is the row's fixed columns: cursor, box (manage mode), kind, gaps.
+func (m *cleanupListModel) fixedW() int {
+	if m.launch() {
+		return cleanupFixedW - cleanupBoxW
 	}
-	return it.text
+	return cleanupFixedW
 }
 
 // nameWidth is the name column's width: as wide as the longest name when
-// every sentence fits beside it on one line, otherwise narrower, down to
-// cleanupMinNameW (sentences longer than that leaves wrap); on a terminal
-// too narrow to leave a sentence cleanupMinTextW columns, narrower still.
+// that leaves the text cleanupRoomyTextW columns or every row's text fits
+// beside it on one line, otherwise narrower, down to
+// cleanupMinNameW (texts longer than that leaves wrap); on a terminal too
+// narrow to leave a text cleanupMinTextW columns, narrower still.
 func (m *cleanupListModel) nameWidth() int {
 	if m.width <= 0 {
 		return m.maxName
 	}
-	nw := max(cleanupMinNameW, m.width-cleanupFixedW-m.maxText)
-	if m.width-cleanupFixedW-nw < cleanupMinTextW {
-		nw = max(cleanupFloorNameW, m.width-cleanupFixedW-cleanupMinTextW)
+	if m.width-m.fixedW()-m.maxName >= cleanupRoomyTextW {
+		return m.maxName
+	}
+	nw := max(cleanupMinNameW, m.width-m.fixedW()-m.maxText)
+	if m.width-m.fixedW()-nw < cleanupMinTextW {
+		nw = max(cleanupFloorNameW, m.width-m.fixedW()-cleanupMinTextW)
 	}
 	return min(m.maxName, nw)
 }
 
-// itemLines renders item i: a heading is one line; a row is its first line
-// (cursor, box, kind, the name cut to the name column, the sentence's first
-// part) and the rest of its sentence wrapped under the sentence column.
+// itemLines renders item i: a heading or the new-worktree item is one line;
+// a row is its first line (cursor, box, kind, the name cut to the name
+// column, the text's first part) and the rest of its text wrapped under the
+// text column, a warn tag in the warning style.
 func (m *cleanupListModel) itemLines(i int) []string {
 	it := m.items[i]
 	if it.heading != "" {
 		style := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader)).Bold(true)
 		return []string{style.Render(clip(it.heading, m.width))}
 	}
+	cursor := "  "
+	if i == m.cursor {
+		cursor = "> "
+	}
+	style := m.rowStyle(it, i == m.cursor)
+	if it.newWorktree {
+		return []string{style.Render(clip(cursor+newWorktreeLabel, m.width))}
+	}
 	nameW := m.nameWidth()
 	name := cleanup.DisplayName(it.row)
 	if lipgloss.Width(name) > nameW {
 		name = cutLines(name, nameW)
 	}
-	cursor := "  "
-	if i == m.cursor {
-		cursor = "> "
+	box := ""
+	if !m.launch() {
+		box = m.box(i) + " "
 	}
-	prefix := cursor + m.box(i) + " " + tuilayout.PadRunes(string(it.row.Kind), cleanupKindW) + "  " + padCols(name, nameW) + "  "
+	prefix := cursor + box + tuilayout.PadRunes(string(it.row.Kind), cleanupKindW) + "  " + padCols(name, nameW) + "  "
 	textW := 0 // no width yet: one line
 	if m.width > 0 {
 		textW = max(1, m.width-lipgloss.Width(prefix))
 	}
-	parts := strings.Split(tuilayout.WrapText(rowSentence(it), textW), "\n")
+	warn := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning)).Bold(i == m.cursor)
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
-	style := m.rowStyle(it, i == m.cursor)
-	out := make([]string, len(parts))
-	for k, p := range parts {
+	var out []string
+	for k, line := range flowUnits(rowUnits(it), textW) {
 		lead := indent
 		if k == 0 {
 			lead = prefix
 		}
-		out[k] = style.Render(clip(strings.TrimRight(lead+p, " "), m.width))
+		plain := strings.TrimRight(lead+unitsText(line), " ")
+		if m.width > 0 && lipgloss.Width(plain) > m.width {
+			// A terminal narrower than the prefix: clip, one style.
+			out = append(out, style.Render(clip(plain, m.width)))
+			continue
+		}
+		var b strings.Builder
+		b.WriteString(style.Render(lead))
+		for j, u := range line {
+			if j > 0 {
+				b.WriteString(style.Render(u.sep))
+			}
+			if u.warn {
+				b.WriteString(warn.Render(u.text))
+			} else {
+				b.WriteString(style.Render(u.text))
+			}
+		}
+		out = append(out, b.String())
 	}
 	return out
 }
@@ -489,6 +728,9 @@ func (m *cleanupListModel) layout() cleanupLayout {
 func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	if m.launch() {
+		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · x remove · q quit")
+	}
 	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter remove ticked · r rescue · q quit")
 }
 
@@ -514,7 +756,11 @@ func (m *cleanupListModel) headerBlock() string {
 // so first.
 func (m *cleanupListModel) detail() string {
 	it := m.items[m.cursor]
-	rule := "── " + cleanup.DisplayName(it.row) + " "
+	name := cleanup.DisplayName(it.row)
+	if it.newWorktree {
+		name = newWorktreeLabel
+	}
+	rule := "── " + name + " "
 	if m.width > 0 {
 		rule = cutLines(rule, m.width)
 		rule += strings.Repeat("─", max(0, m.width-lipgloss.Width(rule)))
@@ -524,6 +770,11 @@ func (m *cleanupListModel) detail() string {
 		text += " [" + age + "]"
 	}
 	switch {
+	case it.newWorktree:
+		text = "create a new branch and worktree, then launch in it"
+	case m.launch() && it.locked:
+		text = "cannot be removed (launching is fine): " + text
+	case m.launch():
 	case it.locked && it.row.Kind == cleanup.KindRemote && it.row.Remote != "origin":
 		text = "cannot be ticked (wt removes only origin branches): " + text
 	case it.locked && it.row.Kind == cleanup.KindRemote:
@@ -561,7 +812,7 @@ func (m cleanupListModel) View() string {
 	case cleanupPhaseRefreshing:
 		return m.waitView("wt cleanup · re-reading the repository")
 	}
-	if m.rows == 0 {
+	if m.empty() {
 		body := m.headerBlock() + "\n\n" + m.statusBlock() + "nothing to clean up: no other worktree or branch\n\npress any key to quit"
 		return capLines(clip(body, m.width), m.height)
 	}
