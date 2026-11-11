@@ -40,7 +40,9 @@ type rowPRsLoadedMsg struct {
 
 // pickerInputs are the GatherInputs a picker load uses in cwd: this
 // process's claim (so it does not hold its own root), four gh calls at a
-// time once the PR fill runs. Registered model artifacts are not read here
+// time once the PR fill runs, and every remote's branches (AllRemotes: the
+// list shows everything local, not only what `wt cleanup --json` lists).
+// Registered model artifacts are not read here
 // (that needs the registry, which cmd/wt owns), so no row carries a
 // protected_artifact blocker in the picker; removal re-checks in the engine.
 func pickerInputs(cwd string) cleanup.GatherInputs {
@@ -48,7 +50,7 @@ func pickerInputs(cwd string) cleanup.GatherInputs {
 	if err != nil {
 		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: "wt"}
 	}
-	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4}
+	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true}
 }
 
 // loadRowsCmd gathers root's rows for the picker: the fetch the picker has
@@ -61,8 +63,14 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 		if lookupErr != nil {
 			return rowsLoadedMsg{err: lookupErr}
 		}
-		if fetch && worktree.FetchRemotes(root) == nil {
-			in.Fetched = cleanup.FetchResult{OK: true, At: time.Now()}
+		if fetch {
+			// The header says how the fetch went: ok, or failed with git's
+			// line (never "skipped", which would hide a dead remote).
+			if err := worktree.FetchRemotes(root); err != nil {
+				in.Fetched = cleanup.FetchResult{At: time.Now(), Err: err.Error()}
+			} else {
+				in.Fetched = cleanup.FetchResult{OK: true, At: time.Now()}
+			}
 		}
 		in.Fetch, in.SkipPRs = false, true
 		snap, err := cleanup.Gather(cleanup.Git{Dir: root}, in)

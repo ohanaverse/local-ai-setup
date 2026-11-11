@@ -755,7 +755,7 @@ func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	if m.launch() {
-		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · x remove · / filter · q quit")
+		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · / filter · q quit")
 	}
 	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter remove ticked · r rescue · q quit")
 }

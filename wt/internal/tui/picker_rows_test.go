@@ -84,12 +84,16 @@ func pickerEnter(t *testing.T, m model) (model, selectedEntryMsg) {
 	return m, selectedEntryMsg{}
 }
 
-// pickerLoad runs loadRowsCmd for dir (no fetch, PR lookups through prList)
+// pickerLoad runs loadRowsCmd for dir with pickerInputs (no fetch, PR
+// lookups through prList)
 // and applies its message: the picker as it first paints.
 func pickerLoad(t *testing.T, dir string, prList func(dir, branch string) ([]byte, error)) (model, tea.Cmd) {
 	t.Helper()
-	in := cleanup.GatherInputs{CWD: dir, OwnRepo: "o/r", Parallel: 2, PRList: prList,
-		PRBaseList: func(string, string) ([]byte, error) { return []byte("[]"), nil }}
+	// The production inputs, with the PR hooks and own repository a test
+	// needs (a local-path origin names no GitHub repository).
+	in := pickerInputs(dir)
+	in.OwnRepo, in.PRList = "o/r", prList
+	in.PRBaseList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
 	msg := loadRowsCmd(dir, nil, in, false)()
 	m := model{width: 120, height: 50, theme: themes.Default, cfg: &config.Config{}}
 	return updateMsg(m, msg)
@@ -163,8 +167,9 @@ func TestPickerLoadsRowsFromCleanupAndRendersRootDefaultAndHeld(t *testing.T) {
 			t.Errorf("view lacks %q:\n%s", want, v)
 		}
 	}
-	// Every row is launchable: enter on the held root and on the default
-	// branch both choose it.
+	// Enter on the held root and on the default branch's bare row each emit
+	// a selectedEntryMsg for that row. (Launching the default branch's bare
+	// row still errors in EnsureForBranch until Part 2 removes the refusal.)
 	for _, name := range []string{"drift", "main"} {
 		mm := pickerCursorTo(t, m, name)
 		if _, sel := pickerEnter(t, mm); sel.entry.Branch != name {
@@ -489,5 +494,74 @@ func TestSelectedRowIsFalseOffRows(t *testing.T) {
 	}
 	if _, ok := m.selectedRow(); ok {
 		t.Error("selectedRow ok on a heading")
+	}
+}
+
+// TestPickerListsBranchesOfAnUntrackedRemote pins "show everything local":
+// a remote no local branch tracks (upstream here) still has its branches in
+// the picker, through GatherInputs.AllRemotes, while the default Gather (what
+// `wt cleanup --json` and --plain run) keeps omitting them, so that output
+// does not change.
+func TestPickerListsBranchesOfAnUntrackedRemote(t *testing.T) {
+	r := newRmRepo(t)
+	up := filepath.Join(t.TempDir(), "upstream.git")
+	rmGit(t, r.dir, "init", "--bare", "-b", "main", up)
+	r.git("remote", "add", "upstream", up)
+	r.git("push", "upstream", "main:foo")
+	r.git("fetch", "upstream")
+	m, _ := pickerLoad(t, r.dir, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	m = pickerCursorTo(t, m, "upstream/foo")
+	if _, sel := pickerEnter(t, m); sel.entry.Branch != "upstream/foo" || sel.entry.RemoteBranch != "foo" {
+		t.Errorf("entry = %+v, want upstream/foo", sel.entry)
+	}
+
+	snap, err := cleanup.Gather(cleanup.Git{Dir: r.dir}, cleanup.GatherInputs{CWD: r.dir, OwnRepo: "o/r", SkipPRs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range cleanup.Classify(snap, cleanup.Options{Now: time.Now()}).AllRows() {
+		if row.Remote == "upstream" && row.Kind == cleanup.KindRemote {
+			t.Errorf("the default Gather lists %s/%s; its output must not change", row.Remote, row.Name)
+		}
+	}
+}
+
+// TestPickerFailedFetchReadsAsFailed pins that a fetch on open that failed
+// is reported as failed in the list's header, not as "fetch: skipped".
+func TestPickerFailedFetchReadsAsFailed(t *testing.T) {
+	r := newRmRepo(t)
+	r.git("remote", "add", "dead", filepath.Join(t.TempDir(), "missing.git"))
+	msg := loadRowsCmd(r.dir, nil, cleanup.GatherInputs{CWD: r.dir, OwnRepo: "o/r"}, true)().(rowsLoadedMsg)
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	if msg.report.Fetch.Err == "" || msg.report.Fetch.OK {
+		t.Errorf("fetch = %+v, want a failure", msg.report.Fetch)
+	}
+	header := strings.Join(cleanup.HeaderLines(msg.report, time.Now()), "\n")
+	if !strings.Contains(header, "fetch: FAILED") {
+		t.Errorf("header does not say the fetch failed:\n%s", header)
+	}
+}
+
+// TestPickerTitleDoesNotOfferRemoval pins that the picker's title does not
+// advertise `x remove` while the picker has no removal wired in (every `x`
+// would answer "not available").
+func TestPickerTitleDoesNotOfferRemoval(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	if title := m.rows.titleLine(); strings.Contains(title, "x remove") || !strings.Contains(title, "enter launch") {
+		t.Errorf("title = %q", title)
+	}
+}
+
+// TestPRFillKeepsTheStatusLine pins that a PR fill landing right after a
+// status message (a refused x, say) leaves the message on screen: withReport
+// keeps what the user was shown, not only the cursor and filter.
+func TestPRFillKeepsTheStatusLine(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	m.rows.status = "cannot be removed: primary checkout"
+	m, _ = updateMsg(m, rowPRsLoadedMsg{Report: pickerFixture(), gen: m.rowsGen})
+	if m.rows.status != "cannot be removed: primary checkout" {
+		t.Errorf("status after the fill = %q", m.rows.status)
 	}
 }

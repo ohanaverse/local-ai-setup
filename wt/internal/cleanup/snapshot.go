@@ -46,6 +46,11 @@ type GatherInputs struct {
 	// PRsAsked false and PRsSkipped true, and every row reads "PR ?" and is
 	// never proven until FillPRs runs the lookups.
 	SkipPRs bool
+	// AllRemotes keeps every remote's branches in Remotes. Without it only
+	// origin's and those of remotes a local head's upstream names are kept
+	// (what `wt cleanup --json` and --plain list). The interactive lists set
+	// it, so a branch of a remote nothing tracks is still shown.
+	AllRemotes bool
 }
 
 // RefFact is one branch ref from for-each-ref.
@@ -203,7 +208,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		}
 	}
 
-	if err := s.readRefs(g); err != nil {
+	if err := s.readRefs(g, in.AllRemotes); err != nil {
 		return Snapshot{}, err
 	}
 
@@ -329,8 +334,8 @@ func qualifiedBase(b Base) string {
 // (origin/HEAD) and non-commits are left out; the default branch's head and
 // remote ref are kept (they are rows with the default_branch floor).
 // Remote refs are kept for origin and for every remote a local head's
-// upstream names.
-func (s *Snapshot) readRefs(g Git) error {
+// upstream names, or for every remote with all.
+func (s *Snapshot) readRefs(g Git, all bool) error {
 	args := []string{"for-each-ref", "--format=" + refFormat, "refs/heads", "refs/remotes"}
 	o, err := g.Run(args...)
 	if err != nil {
@@ -362,7 +367,7 @@ func (s *Snapshot) readRefs(g Git) error {
 		remoteRefs = append(remoteRefs, r)
 	}
 	for _, r := range remoteRefs {
-		if remotes[r.Remote] {
+		if all || remotes[r.Remote] {
 			s.Remotes = append(s.Remotes, r)
 		}
 	}

@@ -72,14 +72,18 @@ func keyOf(r cleanup.Row) rowKey {
 }
 
 // withReport is the list rebuilt from rep (the same repository, its PR
-// lookups now run) with everything the user did kept: the size, the removal
-// funcs, the filter, the scroll position and the highlighted item (the same
-// row by kind, ref, path and name; the new-worktree item stays itself).
+// lookups now run) with everything the user did or was shown kept: the size,
+// the removal funcs, the filter, the status line, the scroll position, any
+// removal phase in progress (with its rescue choice and quit state) and the
+// highlighted item (the same row by kind, ref, path and name; the
+// new-worktree item stays itself).
 func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	next := newRowList(rep, m.opts)
 	next.rm, next.width, next.height, next.offset = m.rm, m.width, m.height, m.offset
 	next.filter, next.filtering = m.filter, m.filtering
 	next.phase, next.conf, next.run, next.log, next.pending = m.phase, m.conf, m.run, m.log, m.pending
+	next.status, next.exitErr, next.quitAfterRun, next.rescueRow, next.done = m.status, m.exitErr, m.quitAfterRun, m.rescueRow, m.done
+	next.clock, next.now = m.clock, m.now
 	if m.cursor >= 0 && m.cursor < len(m.items) {
 		cur := m.items[m.cursor]
 		switch {
