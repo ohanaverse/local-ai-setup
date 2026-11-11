@@ -44,7 +44,7 @@ func removeCmd(a *app) *cobra.Command {
 		Short: "Remove the named worktrees, local branches and origin branches, re-checking each first",
 		Long: "Remove each named worktree (by its path), local branch (by its exact name) or\n" +
 			"origin branch (origin/<name>), and a removed worktree's branch when it is\n" +
-			"proven merged. Each target is classified as `wt cleanup` lists it, then\n" +
+			"proven merged. Each target is classified as `wt worktrees` lists it, then\n" +
 			"re-checked immediately before it is touched; one that changed since is skipped.\n\n" +
 			"Approvals are per item and each flag means one thing:\n" +
 			"  --yes          go ahead without the y/N prompt (a proven item needs nothing else)\n" +

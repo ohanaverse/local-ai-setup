@@ -1,4 +1,4 @@
-// wt cleanup — which worktrees and branches are safe to remove, and why.
+// wt worktrees (alias cleanup) — which worktrees and branches are safe to remove, and why.
 // This file and internal/cleanup hold no deletion code: the tick list
 // removes what the user confirms through internal/removal's engine (wired
 // in cleanupRemoveFuncs), the one package allowed to delete.
@@ -31,15 +31,19 @@ var (
 	// runCleanupList shows the report as the tick list; enter removes the
 	// ticked rows through the RemoveFuncs after a confirmation.
 	runCleanupList = tui.RunCleanupList
+	// cleanupGather is cleanup.Gather, so a test can see the GatherInputs.
+	cleanupGather = cleanup.Gather
 )
 
-func cleanupCmd(a *app) *cobra.Command {
+func worktreesCmd(a *app) *cobra.Command {
 	var asJSON, noFetch, plain bool
 	var minAge time.Duration
 	c := &cobra.Command{
-		Use:   "cleanup",
-		Short: "Show which worktrees and branches are safe to remove, with the proof",
-		Long: "List the repository's worktrees, local branches and origin branches in four\n" +
+		Use:     "worktrees",
+		Aliases: []string{"cleanup"},
+		Short: "List worktrees and branches, and which are safe to remove, with the proof (alias: cleanup)",
+		Long: "`wt cleanup` is an alias of this command.\n\n" +
+			"List the repository's worktrees, local branches and origin branches in four\n" +
 			"groups, by how sure wt is that each can go: PROVEN MERGED, LOOKS MERGED (LESS\n" +
 			"SURE), HAS WORK THAT EXISTS NOWHERE ELSE, and IN USE / LOCKED. Each row says\n" +
 			"why. Apart from the fetch's remote-tracking refs (--no-fetch skips it),\n" +
@@ -61,12 +65,14 @@ func cleanupCmd(a *app) *cobra.Command {
 			"status. Exit 0 means a list was produced; exit 1 means the repository could\n" +
 			"not be classified at all (not a repository, no default branch). With --json\n" +
 			"the one JSON document is printed on failure too.\n\n" +
-			"On a terminal the list is interactive; --plain, --json and a pipe print text.\n" +
+			"On a terminal the list is interactive and does not fetch when it opens (every\n" +
+			"remote's branches are listed from the refs already there); --plain, --json and\n" +
+			"a pipe fetch first and print text.\n" +
 			"A branch younger than --min-age (default 10m, at least 1m) that sits at or\n" +
 			"behind the base is never proven merged: a brand-new branch looks merged. A\n" +
 			"value below 10m is named in the header, as is a registry wt could not read\n" +
 			"(registered local_path artifacts are then not marked).",
-		Example:      "  wt cleanup\n  wt cleanup --plain --no-fetch\n  wt cleanup --json",
+		Example:      "  wt worktrees\n  wt worktrees --plain --no-fetch\n  wt worktrees --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		// main prints the error line; cobra's copy would repeat it.
@@ -137,7 +143,14 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	// Listing only reads, so a registry that cannot be read does not stop
 	// it: the header says protection is off (and a removal refuses).
 	protected, protErr := protectedPaths(a)
-	snap, err := cleanup.Gather(cleanup.Git{Dir: cwd}, cleanupListInputs(cwd, !f.noFetch, protected, "wt-cleanup"))
+	interactive := !f.json && !f.plain && isTerminalWriter(out)
+	in := cleanupListInputs(cwd, !f.noFetch, protected, "wt-cleanup")
+	if interactive {
+		// The list never fetches on open and shows every remote's branches.
+		// PRs stay synchronous here: RunCleanupList takes a finished report.
+		in.Fetch, in.AllRemotes = false, true
+	}
+	snap, err := cleanupGather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {
 		repo := snap.Repo
 		if repo == "" {
@@ -155,8 +168,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		}
 		_, err = out.Write(b)
 		return err
-	case !f.plain && isTerminalWriter(out):
-		in := cleanupListInputs(cwd, false, protected, "wt-cleanup")
+	case interactive:
 		return runCleanupList(report, a.theme, cleanupRemoveFuncs(a, snap, in, f.minAge, protErr))
 	}
 	return printCleanupPlain(out, report, time.Now())

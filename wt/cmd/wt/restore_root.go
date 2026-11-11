@@ -65,7 +65,7 @@ func restoreRootCmd(a *app) *cobra.Command {
 			"exists.\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing what\n" +
 			"moves, where, and what the root becomes; with no terminal it changes\n" +
-			"nothing. A real run fetches every remote first, as `wt cleanup` does;\n" +
+			"nothing. A real run fetches every remote first, as `wt worktrees` does;\n" +
 			"--dry-run says what would happen and changes nothing (no ref, index or\n" +
 			"working file, and no fetch); --no-fetch skips the fetch.\n\n" +
 			"Exit 0: moved (or, with --dry-run, would move; or already on the default).\n" +

@@ -41,7 +41,7 @@ type rowPRsLoadedMsg struct {
 // pickerInputs are the GatherInputs a picker load uses in cwd: this
 // process's claim (so it does not hold its own root), four gh calls at a
 // time once the PR fill runs, and every remote's branches (AllRemotes: the
-// list shows everything local, not only what `wt cleanup --json` lists).
+// list shows everything local, not only what `wt worktrees --json` lists).
 // Registered model artifacts are not read here
 // (that needs the registry, which cmd/wt owns), so no row carries a
 // protected_artifact blocker in the picker; removal re-checks in the engine.
