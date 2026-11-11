@@ -37,9 +37,10 @@ when it is that branch's own upstream, or `origin/<name>` when the branch has
 no upstream: in the terminal list it is the row's `upstream` (`ref`, `gone`,
 and its own status and evidence) and not a row of its own, so
 `upstream/foo` beside a local `foo` that tracks `origin/foo` stays its own row.
-`--plain` and `--json` still list every ref as its own row as well (the JSON
-row also carries the `upstream` field). On a terminal the list shows
-every remote's branches and does not fetch when it opens (`r` is not a
+`--plain` and `--json` still list a folded ref as its own row as well (the
+JSON row also carries the `upstream` field), but they list only `origin`'s
+branches and those of remotes a local branch tracks; the terminal list shows
+every remote's. On a terminal the list does not fetch when it opens (`r` is not a
 refresh; run `git fetch` or use `--json`/`--plain`, which fetch first unless
 `--no-fetch`). Each row carries tags such as `root`, `you are here`, `held`,
 `dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. A bare

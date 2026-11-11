@@ -63,8 +63,10 @@ func removeCmd(a *app) *cobra.Command {
 			"                 listed, so a branch someone pushed to since is left alone, and\n" +
 			"                 the result prints the sha and the command that restores it.\n" +
 			"An item whose flag is missing is refused and the others go on. No flag\n" +
-			"overrides a hard blocker (primary or current checkout, locked, in use,\n" +
-			"a registered model artifact, the default branch...).\n\n" +
+			"overrides a hard stop (the primary or current checkout, a locked or nested\n" +
+			"worktree, an operation in progress, a registered model artifact, an open PR\n" +
+			"on an origin branch or one that targets it). A held item and the default\n" +
+			"branch need --accept-loss (and -D when the branch is not proven merged).\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing every\n" +
 			"item's losses and running processes; with no terminal it removes nothing.\n\n" +
 			"Exit 0: everything named was removed (a worktree's unmerged branch kept is\n" +

@@ -678,3 +678,47 @@ func schemaEnum2(schema map[string]any) []string {
 	}
 	return out
 }
+
+// TestCleanupSampleFoldedRefsAreRowsToo: --json lists every ref as its own
+// row (Report.AllRows), so in the sample each local row's live `upstream`
+// must also appear as a `remote` row with the same name, remote and verdict.
+// Why: the sample is what consumers read to learn the format; an upstream
+// with no row would teach them a folded ref is missing from `rows`.
+func TestCleanupSampleFoldedRefsAreRowsToo(t *testing.T) {
+	raw, err := os.ReadFile(cleanupFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	remote := map[string]map[string]any{}
+	for _, r := range doc.Rows {
+		if r["kind"] == "remote" {
+			remote[r["remote"].(string)+"/"+r["name"].(string)] = r
+		}
+	}
+	checked := 0
+	for _, r := range doc.Rows {
+		up, ok := r["upstream"].(map[string]any)
+		if !ok || up["gone"] == true {
+			continue
+		}
+		checked++
+		key := up["remote"].(string) + "/" + up["name"].(string)
+		row, ok := remote[key]
+		if !ok {
+			t.Errorf("upstream %s of row %q has no remote row", key, r["name"])
+			continue
+		}
+		if row["status"] != up["status"] || row["evidence"] != up["evidence"] {
+			t.Errorf("remote row %s reads %v/%v, its upstream %v/%v", key, row["status"], row["evidence"], up["status"], up["evidence"])
+		}
+	}
+	if checked == 0 {
+		t.Fatal("the sample has no live upstream to check")
+	}
+}
