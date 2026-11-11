@@ -28,17 +28,22 @@ var serialIslands = map[string]string{
 }
 
 // envOwningTests returns the top-level `func Test` names of file that reach
-// process-global environment: a `t.Setenv(` call at any depth (a hook closure
-// counts) or a `traceGit(` call (the one helper that owns
-// t.Setenv("GIT_TRACE2_EVENT", ...) on a test's behalf). The scan is name-keyed
-// (the losses_guard style, no go/types): a call outside a Test — the helper's
-// own body — maps to no test and is not counted, because its callers are (the
-// `traceGit(` rule).
+// process-global environment: a `t.Setenv(`/`t.Chdir(` call at any depth (a
+// hook closure counts), an `os.Setenv`/`os.Unsetenv`/`os.Chdir` call (the
+// t.Setenv-to-os.Setenv conversion Constraint 2 forbids — the runtime's
+// parallel guard covers only the `t.*` forms, so the `os.*` ones must be
+// caught here), or a `traceGit(`
+// call (the one helper that owns t.Setenv("GIT_TRACE2_EVENT", ...) on a
+// test's behalf). The scan is name-keyed (the losses_guard style, no
+// go/types): a call outside a Test — the helper's own body — maps to no test
+// and is not counted, because its callers are (the `traceGit(` rule).
+// TestMain is skipped: it owns the process environment by design (it runs
+// before and after every test).
 func envOwningTests(file *ast.File) map[string]bool {
 	out := map[string]bool{}
 	for _, d := range file.Decls {
 		fd, ok := d.(*ast.FuncDecl)
-		if !ok || fd.Body == nil || !strings.HasPrefix(fd.Name.Name, "Test") {
+		if !ok || fd.Body == nil || fd.Name.Name == "TestMain" || !strings.HasPrefix(fd.Name.Name, "Test") {
 			continue
 		}
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
@@ -52,7 +57,14 @@ func envOwningTests(file *ast.File) map[string]bool {
 					out[fd.Name.Name] = true
 				}
 			case *ast.SelectorExpr:
-				if id, ok := fun.X.(*ast.Ident); ok && id.Name == "t" && fun.Sel.Name == "Setenv" {
+				id, ok := fun.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if id.Name == "t" && (fun.Sel.Name == "Setenv" || fun.Sel.Name == "Chdir") {
+					out[fd.Name.Name] = true
+				}
+				if id.Name == "os" && (fun.Sel.Name == "Setenv" || fun.Sel.Name == "Unsetenv" || fun.Sel.Name == "Chdir") {
 					out[fd.Name.Name] = true
 				}
 			}
@@ -63,13 +75,17 @@ func envOwningTests(file *ast.File) map[string]bool {
 }
 
 // TestSerialIslandsAreExactlyTheEnvOwningTests scans every *_test.go of this
-// package for the two env-owning call forms (`t.Setenv(` and `traceGit(`) and
-// requires the set of top-level tests enclosing them to equal serialIslands'
-// keys exactly. Why: a t.Setenv owner may never call t.Parallel (the runtime
-// panics), so these tests are permanently serial islands holding exclusive
-// process-global env; a new one added without a registry entry would race its
-// parallel siblings' git children through the shared environment (Review
-// Focus 5), and a stale entry would keep a parallelizable test serial.
+// package for the env-owning call forms (`t.Setenv(`/`t.Chdir(`,
+// `os.Setenv`/`os.Unsetenv`/`os.Chdir`, and `traceGit(`) and requires the set
+// of top-level tests enclosing them to equal serialIslands' keys exactly. Why:
+// a t.Setenv owner may never call t.Parallel (the runtime panics), so these
+// tests are permanently serial islands holding exclusive process-global env;
+// a new one added without a registry entry would race its parallel siblings'
+// git children through the shared environment (Review Focus 5), and a stale
+// entry would keep a parallelizable test serial. The `os.*` forms matter
+// most: converting a `t.Setenv` to `os.Setenv` (Constraint 2's forbidden
+// move) evades the runtime's panic, and only this scan still names the test
+// as an island.
 func TestSerialIslandsAreExactlyTheEnvOwningTests(t *testing.T) {
 	t.Parallel()
 	files, err := filepath.Glob("*_test.go")
@@ -95,12 +111,12 @@ func TestSerialIslandsAreExactlyTheEnvOwningTests(t *testing.T) {
 	var bad []string
 	for name := range got {
 		if _, ok := serialIslands[name]; !ok {
-			bad = append(bad, fmt.Sprintf("%s owns env state (a t.Setenv( or traceGit( call) but is not in serialIslands; add it with a one-line reason and keep the test serial", name))
+			bad = append(bad, fmt.Sprintf("%s owns env state (a t.Setenv(/t.Chdir(/os.Setenv/os.Unsetenv/os.Chdir( or traceGit( call) but is not in serialIslands; add it with a one-line reason and keep the test serial", name))
 		}
 	}
 	for name := range serialIslands {
 		if !got[name] {
-			bad = append(bad, fmt.Sprintf("%s is in serialIslands but no t.Setenv( or traceGit( call maps to it; drop the entry (and t.Parallel() the test)", name))
+			bad = append(bad, fmt.Sprintf("%s is in serialIslands but no t.Setenv(/t.Chdir(/os.Setenv/os.Unsetenv/os.Chdir( or traceGit( call maps to it; drop the entry (and t.Parallel() the test)", name))
 		}
 	}
 	slices.Sort(bad)

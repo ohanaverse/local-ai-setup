@@ -381,7 +381,6 @@ func TestPRHooksArePerCall(t *testing.T) {
 	var head, base [2]atomic.Int64
 	var ins [2]GatherInputs
 	for i, tag := range tags {
-		i, tag := i, tag
 		ins[i] = GatherInputs{
 			PRList: func(_, branch string) ([]byte, error) {
 				head[i].Add(1)
