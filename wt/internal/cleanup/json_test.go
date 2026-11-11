@@ -371,7 +371,7 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 	full[1].Ref, full[1].Tip = "refs/heads/solo", tip
 	full[1].Losses = Losses{Unpushed: 3}
 	// Display-only fields never serialize.
-	full[0].Primary, full[0].Current = true, true
+	full[0].Primary, full[0].Current, full[0].Bare = true, true, true
 	full[0].PRUnknown, full[1].PRTag = true, &PRInfo{Number: 9, State: "OPEN"}
 	rep := func(rows []Row) Report {
 		return Report{Repo: "/r", GH: GHOK, Base: Base{Default: "main", Ref: "origin/main"}, Rows: rows}

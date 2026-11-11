@@ -451,7 +451,7 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			if m.launch() {
-				return m, m.choose()
+				return m.choose()
 			}
 			return m.startRemoval()
 		case "x":
@@ -501,15 +501,21 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func emit(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
 
 // choose is launch mode's enter: the new-worktree item or the highlighted
-// row, whatever its verdict (launching warns, never blocks).
-func (m cleanupListModel) choose() tea.Cmd {
+// row, whatever its verdict (launching warns, never blocks). The one
+// refusal is a bare repository's own row: it has no directory to run an
+// agent in, so enter only says so.
+func (m cleanupListModel) choose() (cleanupListModel, tea.Cmd) {
 	if m.hidden(m.cursor) || m.items[m.cursor].heading != "" {
-		return nil
+		return m, nil
 	}
 	if m.items[m.cursor].newWorktree {
-		return emit(newWorktreeChosenMsg{})
+		return m, emit(newWorktreeChosenMsg{})
 	}
-	return emit(rowChosenMsg{Row: m.items[m.cursor].row})
+	if m.items[m.cursor].row.Bare {
+		m.status = "a bare repository has no working tree to launch in"
+		return m, nil
+	}
+	return m, emit(rowChosenMsg{Row: m.items[m.cursor].row})
 }
 
 // removeKey is `x`: the ticked rows, or the highlighted row when nothing is

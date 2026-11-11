@@ -119,6 +119,10 @@ type Row struct {
 	HardStop string
 	Primary  bool // the repository's primary checkout (the root)
 	Current  bool // the worktree holding the cwd
+	// Bare is a bare repository's own entry (the primary of a repository
+	// with no main working tree): there is no directory to launch in. Not
+	// serialised.
+	Bare bool
 	// Upstream is a branch or worktree row's remote ref folded into it (see
 	// Report.Folded), or its upstream that no longer exists (Gone); nil when
 	// it has neither. Not serialised yet.
@@ -504,7 +508,7 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		// Unknown until the branch's head is found and its proof read.
 		row.Losses.Unpushed = -1
 	}
-	row.Primary, row.Current = w.Primary, w.Current
+	row.Primary, row.Current, row.Bare = w.Primary, w.Current, w.Bare
 	j := judge{kind: KindWorktree}
 	g := ws.Gates
 	// The blockers found before a gates error still block: in use wins.

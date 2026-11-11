@@ -560,7 +560,7 @@ type Tag struct {
 	Severity TagSeverity
 }
 
-// RowTags is every fact tag of a row, in a fixed order: root, you are here,
+// RowTags is every fact tag of a row, in a fixed order: root, bare, you are here,
 // PR ("PR ?" while unknown, "#N state" once known), +remote, then the risk
 // tags dirty, unpushed, upstream gone, held by session <id>, locked.
 func RowTags(row Row) []Tag {
@@ -576,6 +576,9 @@ func RowTags(row Row) []Tag {
 	}
 	if row.Primary {
 		add(TagInfo, "root")
+	}
+	if row.Bare {
+		add(TagInfo, "bare")
 	}
 	if _, ok := hasBlock(BlockCurrent); ok || row.Current || row.HardStop == BlockCurrent {
 		add(TagInfo, "you are here")

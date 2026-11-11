@@ -42,7 +42,10 @@ row also carries the `upstream` field). On a terminal the list shows
 every remote's branches and does not fetch when it opens (`r` is not a
 refresh; run `git fetch` or use `--json`/`--plain`, which fetch first unless
 `--no-fetch`). Each row carries tags such as `root`, `you are here`, `held`,
-`dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown.
+`dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. A bare
+repository's own entry is listed as the root with a `bare` tag: it is never
+removable, and in the launch picker enter on it only says that a bare
+repository has no working tree to launch in.
 
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
