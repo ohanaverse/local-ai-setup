@@ -8,13 +8,15 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/gitenv"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/gittest"
 )
 
 // TestMain keeps git, in this package's tests, to the repositories they make
 // (gitenv.IsolateForTest carries the rationale), keeps the developer's global
 // git config out (a hooksPath, template or merge driver would change what the
-// fixtures do), and makes the gh seam fail so a test that forgets noGh errors
-// instead of asking a GitHub account anything.
+// fixtures do), and makes the gh seam fail so a test that forgets its
+// GatherInputs.PRList hook errors instead of asking a GitHub account
+// anything.
 func TestMain(m *testing.M) {
 	gitenv.IsolateForTest()
 	home, err := os.MkdirTemp("", "rootmove-home-")
@@ -35,6 +37,7 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("test forgot to stub the gh pr list seam")
 	})
 	code := m.Run()
+	gittest.CleanupTemplates()
 	_ = os.RemoveAll(home)
 	os.Exit(code)
 }

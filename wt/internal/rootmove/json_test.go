@@ -20,6 +20,7 @@ import (
 // about a destination or a copy; printing zero counts would read as "nothing to
 // carry".
 func TestEncodeResultKeepsUnknownCountsOut(t *testing.T) {
+	t.Parallel()
 	b, err := EncodeResult(Outcome{Status: rescue.StatusRefused, Code: CodeDetachedRoot, Reason: "a\nb"}, Meta{Repo: "/r"})
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +51,7 @@ func TestEncodeResultKeepsUnknownCountsOut(t *testing.T) {
 // dest_path. Why: the keys are the contract; a refusal must not name a
 // directory that does not exist.
 func TestEncodeResultCarriesPlanFacts(t *testing.T) {
+	t.Parallel()
 	p := Plan{Repo: "/r", Branch: "feat", Default: "main", DestPath: "/r/.worktrees/feat", DefaultFF: true,
 		Counts: rescue.Counts{Commits: 2, Staged: 1, Unstaged: 3, Untracked: 4, UntrackedBytes: 9, IgnoredLeft: 5}, Warnings: []string{"w"}}
 	b, err := EncodeResult(Outcome{Status: rescue.StatusMoved, Plan: p, Created: true, Completed: []string{"s"},
@@ -84,6 +86,7 @@ func TestEncodeResultCarriesPlanFacts(t *testing.T) {
 // is built from Codes; a code rootmove can emit but the contract lacks makes a
 // consumer's validator reject a real document.
 func TestCodesCoverEveryCodeRootmoveEmits(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	rescueVals := map[string]string{}
 	rpkgs, err := parser.ParseDir(fset, "../rescue", func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)

@@ -34,6 +34,7 @@ var fileOpAllowed = map[string]allowedFileOps{
 	"cmd/wt/cloudsync_catalog.go":           {1, "saveFailedHTML: removes a same-named stale page in TMPDIR before writing a refused pricing page (O_EXCL)"},
 	"internal/config/config.go":             {2, "atomic config write: removes its own temp file, renames it over the target"},
 	"internal/config/fortest.go":            {1, "test helper's scratch config dir (RemoveAll of a temp dir it made)"},
+	"internal/gittest/gittest.go":           {1, "test helper's scratch template dirs (RemoveAll of MkdirTemp dirs it created)"},
 	"internal/guard/guard.go":               {2, "guard uninstall: removes the block-main-commit pre-commit hook wt installed"},
 	"internal/lifecycle/pidproc.go":         {3, "removes a process server's pidfile and start record"},
 	"internal/lifecycle/server_loading.go":  {5, "pidfile and .wt start record: atomic write (temp + rename) and removal once the process is gone"},

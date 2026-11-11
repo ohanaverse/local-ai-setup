@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -40,7 +41,7 @@ func mustJSON(t *testing.T, v any) []byte {
 // message, never "none": a false "no PR" would remove an open-PR veto.
 func TestPRLookupFailureIsUnknown(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) { return nil, errors.New("boom") })
-	r := LookupPRs("", []string{"topic"}, "o/r", 2)["topic"]
+	r := LookupPRs("", []string{"topic"}, "o/r", 2, GatherInputs{})["topic"]
 	if r.Lookup != LookupUnknown || r.Err == "" {
 		t.Fatalf("got %+v", r)
 	}
@@ -50,7 +51,7 @@ func TestPRLookupFailureIsUnknown(t *testing.T) {
 // is UNKNOWN too.
 func TestPRLookupBadJSONIsUnknown(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) { return []byte("not json"), nil })
-	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupUnknown {
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]; r.Lookup != LookupUnknown {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -58,7 +59,7 @@ func TestPRLookupBadJSONIsUnknown(t *testing.T) {
 // TestPRLookupEmptyIsNone checks an answered, empty listing is "none".
 func TestPRLookupEmptyIsNone(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
-	r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+	r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]
 	if r.Lookup != LookupNone || len(r.PRs) != 0 {
 		t.Fatalf("got %+v", r)
 	}
@@ -69,7 +70,7 @@ func TestPRLookupKnownFields(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) {
 		return mustJSON(t, []any{prJSON(7, "MERGED", "O/R")}), nil
 	})
-	r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+	r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]
 	want := PRInfo{Number: 7, State: "MERGED", HeadRefOid: "abc", BaseRef: "main", MergeCommit: "def"}
 	if r.Lookup != LookupKnown || len(r.PRs) != 1 || r.PRs[0] != want {
 		t.Fatalf("got %+v", r)
@@ -82,13 +83,13 @@ func TestPRLookupFiltersForkPRs(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) {
 		return mustJSON(t, []any{prJSON(1, "OPEN", "someone/r")}), nil
 	})
-	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupNone {
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]; r.Lookup != LookupNone {
 		t.Fatalf("got %+v", r)
 	}
 	stubGh(t, func(string, string) ([]byte, error) {
 		return mustJSON(t, []any{prJSON(1, "OPEN", "someone/r"), prJSON(2, "OPEN", "o/r")}), nil
 	})
-	r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+	r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]
 	if r.Lookup != LookupKnown || len(r.PRs) != 1 || r.PRs[0].Number != 2 {
 		t.Fatalf("got %+v", r)
 	}
@@ -100,7 +101,7 @@ func TestPRLookupHeadRepoFromOwnerAndName(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) {
 		return []byte(`[{"number":3,"state":"OPEN","headRepository":{"name":"r"},"headRepositoryOwner":{"login":"O"}}]`), nil
 	})
-	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupKnown {
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]; r.Lookup != LookupKnown {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -113,7 +114,7 @@ func TestPRLookupTruncatedIsUnknown(t *testing.T) {
 		prs = append(prs, prJSON(i, "CLOSED", "someone/r"))
 	}
 	stubGh(t, func(string, string) ([]byte, error) { return mustJSON(t, prs), nil })
-	r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+	r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]
 	if r.Lookup != LookupUnknown || r.Err == "" {
 		t.Fatalf("got %+v", r)
 	}
@@ -138,12 +139,12 @@ func TestPRLookupManyBranchesBounded(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		bs = append(bs, fmt.Sprintf("topic-%d", i))
 	}
-	got := LookupPRs("", bs, "o/r", 3)
+	got := LookupPRs("", bs, "o/r", 3, GatherInputs{})
 	if len(got) != 20 || peak.Load() > 3 {
 		t.Fatalf("len=%d peak=%d", len(got), peak.Load())
 	}
 	// parallel < 1 behaves as 1.
-	if got := LookupPRs("", bs[:2], "o/r", 0); len(got) != 2 {
+	if got := LookupPRs("", bs[:2], "o/r", 0, GatherInputs{}); len(got) != 2 {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -171,7 +172,7 @@ func TestPRLookupRenamedRepoSameRepoPRIsKnown(t *testing.T) {
 		row["isCrossRepository"] = false
 		return mustJSON(t, []any{row}), nil
 	})
-	r := LookupPRs("", []string{"topic"}, "old/name", 1)["topic"]
+	r := LookupPRs("", []string{"topic"}, "old/name", 1, GatherInputs{})["topic"]
 	if r.Lookup != LookupKnown || len(r.PRs) != 1 {
 		t.Fatalf("got %+v", r)
 	}
@@ -185,7 +186,7 @@ func TestPRLookupCrossRepoOtherRepoDropped(t *testing.T) {
 		row["isCrossRepository"] = true
 		return mustJSON(t, []any{row}), nil
 	})
-	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupNone {
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]; r.Lookup != LookupNone {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -196,13 +197,13 @@ func TestPRLookupNullHeadRepository(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) {
 		return []byte(`[{"number":1,"state":"OPEN","headRepository":null,"isCrossRepository":false}]`), nil
 	})
-	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupKnown {
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]; r.Lookup != LookupKnown {
 		t.Fatalf("same-repo got %+v", r)
 	}
 	stubGh(t, func(string, string) ([]byte, error) {
 		return []byte(`[{"number":1,"state":"OPEN","headRepository":null,"isCrossRepository":true}]`), nil
 	})
-	if r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]; r.Lookup != LookupNone {
+	if r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]; r.Lookup != LookupNone {
 		t.Fatalf("deleted fork got %+v", r)
 	}
 }
@@ -212,7 +213,7 @@ func TestPRLookupNullHeadRepository(t *testing.T) {
 func TestPRLookupEmptyOwnRepoIsUnknown(t *testing.T) {
 	var calls atomic.Int32
 	stubGh(t, func(string, string) ([]byte, error) { calls.Add(1); return []byte("[]"), nil })
-	got := LookupPRs("", []string{"a", "b"}, "  ", 2)
+	got := LookupPRs("", []string{"a", "b"}, "  ", 2, GatherInputs{})
 	if calls.Load() != 0 || len(got) != 2 {
 		t.Fatalf("calls=%d got=%v", calls.Load(), got)
 	}
@@ -233,7 +234,7 @@ func TestPRLookupSchemaDriftIsUnknown(t *testing.T) {
 		"null":   `null`,
 	} {
 		stubGh(t, func(string, string) ([]byte, error) { return []byte(body), nil })
-		r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+		r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]
 		if r.Lookup != LookupUnknown || r.Err == "" {
 			t.Fatalf("%s: %+v", name, r)
 		}
@@ -266,7 +267,7 @@ func TestGhFailureIsOneLine(t *testing.T) {
 // list, the plain output and the JSON; a newline in it breaks the row.
 func TestPRLookupErrorIsOneLine(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) { return nil, errors.New(ghLoginSpeech) })
-	r := LookupPRs("", []string{"topic"}, "o/r", 1)["topic"]
+	r := LookupPRs("", []string{"topic"}, "o/r", 1, GatherInputs{})["topic"]
 	if r.Lookup != LookupUnknown || strings.ContainsAny(r.Err, "\r\n") || !strings.HasPrefix(r.Err, "To get started") {
 		t.Fatalf("got %+v, want Unknown with a one-line Err", r)
 	}
@@ -305,7 +306,7 @@ func TestLookupBaseOfIsTriState(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			stubGhBase(t, func(string, string) ([]byte, error) { return c.body, c.err })
-			got := LookupBaseOf("", []string{"topic"}, 1)["topic"]
+			got := LookupBaseOf("", []string{"topic"}, 1, GatherInputs{})["topic"]
 			if got.Lookup != c.want || (c.want == LookupUnknown && got.Err == "") {
 				t.Fatalf("got %+v, want lookup %v (with an error text when unknown)", got, c.want)
 			}
@@ -366,5 +367,78 @@ func TestGatherBaseQueryFailureMakesTheRowUnsure(t *testing.T) {
 	row := findRow(t, Classify(s, Options{Now: later()}), KindRemote, "topic")
 	if row.Status == StatusProven || !row.Unknown || !slices.Contains(reasonCodes(row.Reasons), ReasonCannotVerify) {
 		t.Fatalf("row %s unknown=%v %v", row.Status, row.Unknown, reasonCodes(row.Reasons))
+	}
+}
+
+// TestPRHooksArePerCall proves the gh pr-list hooks are per-call state on
+// GatherInputs, not the swapped package vars: two concurrent lookups, each
+// carrying its own PRList and PRBaseList hooks, are served only by their own
+// hook and land on their own answer. Why: Ruling 1 — parallel test suites
+// share one process, so a package-var seam lets one test's stub leak into
+// another test's run (or be overwritten by it).
+func TestPRHooksArePerCall(t *testing.T) {
+	tags := [2]string{"a", "b"}
+	var head, base [2]atomic.Int64
+	var ins [2]GatherInputs
+	for i, tag := range tags {
+		ins[i] = GatherInputs{
+			PRList: func(_, branch string) ([]byte, error) {
+				head[i].Add(1)
+				if branch != tag+"-head" {
+					t.Errorf("PRList hook of %q called for branch %q", tag, branch)
+				}
+				return []byte("[]"), nil
+			},
+			PRBaseList: func(_, name string) ([]byte, error) {
+				base[i].Add(1)
+				if name != tag+"-base" {
+					t.Errorf("PRBaseList hook of %q called for base %q", tag, name)
+				}
+				return []byte("[]"), nil
+			},
+		}
+	}
+	var heads, bases [2]map[string]PRResult
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := range ins {
+		go func(i int) {
+			defer wg.Done()
+			heads[i] = LookupPRs("", []string{tags[i] + "-head"}, "o/r", 1, ins[i])
+			bases[i] = LookupBaseOf("", []string{tags[i] + "-base"}, 1, ins[i])
+		}(i)
+	}
+	wg.Wait()
+	for i, tag := range tags {
+		if head[i].Load() < 1 || base[i].Load() < 1 {
+			t.Errorf("hooks of %q: %d head and %d base calls, want at least one each", tag, head[i].Load(), base[i].Load())
+		}
+		// Each run lands on its own hook's clean answer, for its own name and
+		// nothing else: the outputs carry no cross-talk between the two runs.
+		if r := heads[i][tags[i]+"-head"]; len(heads[i]) != 1 || r.Lookup != LookupNone || r.Err != "" {
+			t.Errorf("head results of %q: %+v", tag, heads[i])
+		}
+		if r := bases[i][tags[i]+"-base"]; len(bases[i]) != 1 || r.Lookup != LookupNone || r.Err != "" {
+			t.Errorf("base results of %q: %+v", tag, bases[i])
+		}
+	}
+}
+
+// TestPRHookFallbackStillPoisoned checks a zero GatherInputs resolves to the
+// legacy seam, whose real call refuses in a test binary (errGhUnderTest): a
+// test that forgets both the stub and the hooks errors instead of asking the
+// developer's GitHub account. Why: the forgetting-to-stub guarantee must
+// survive the per-call hooks (Ruling 1).
+func TestPRHookFallbackStillPoisoned(t *testing.T) {
+	// Put the seams back at their production default (TestMain replaces them
+	// with its own poison): the real call is what an unstubbed, unhooked
+	// lookup gets.
+	t.Cleanup(StubPRListForTest(realGhPRList))
+	t.Cleanup(StubPRBaseListForTest(realGhPRBaseList))
+	if _, err := prListFn(GatherInputs{})("", "topic"); !errors.Is(err, errGhUnderTest) {
+		t.Fatalf("prListFn(zero Inputs) err = %v, want %v", err, errGhUnderTest)
+	}
+	if _, err := prBaseListFn(GatherInputs{})("", "topic"); !errors.Is(err, errGhUnderTest) {
+		t.Fatalf("prBaseListFn(zero Inputs) err = %v, want %v", err, errGhUnderTest)
 	}
 }

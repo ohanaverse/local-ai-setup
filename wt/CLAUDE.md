@@ -71,7 +71,7 @@ Read [docs/internals/launch-flow.md](docs/internals/launch-flow.md) before chang
 
 Every `Test*` has a top-level `//` comment stating **what** it tests and **why** it matters.
 
-- **Test seams** are package-level vars (`var x = realX`) that tests swap; `internal/lifecycle` keeps its seams in one `env` struct.
+- **Test seams are per-call values, not package globals** — pass hooks and inputs where the call happens (`rootmove.Engine.Hooks`, `cleanup.GatherInputs.PRList`/`PRBaseList`, `internal/lifecycle`'s `env` struct), so parallel tests cannot leak stub state into each other. A package-var seam (`var x = realX`, swapped and restored around the test) is the migrating exception, not the rule: convert it to per-call when you touch its package.
 - **Tests stay off the developer's machine**: each package's `TestMain` isolates what it reaches — `lifecycle.IsolateProcessesForTest()` (every process family's pidfile, signals, the wired-limit read), `tiers.IsolateForTest` (model-table packages), `config.IsolateConfigHomeForTest` (anything reaching `config.Dir()`), `gitenv.IsolateForTest()` (anything that can run git; `TestEveryPackageThatRunsGitIsolatesIt`). A new package or launch path needs the same (route check via `stubEnsureRoute(t)`); no test runs `psql`; scratch registries go through `WT_REGISTRY`.
 - **Assert on unexported functions directly**; parsing rendered lipgloss output flakes under forced-color ANSI.
 - **A test that creates worktrees builds a fresh repo per case** (`t.TempDir()` + `gitInit`): one wrong success leaves `.worktrees/<name>`, and the path-collision error then masks every later case. Use a branch name like `topic`, not `feature`, when a case also needs `feature/<x>` (git forbids a ref that is both a leaf and a directory).

@@ -19,3 +19,22 @@ func StubPRBaseListForTest(fn func(dir, base string) ([]byte, error)) (restore f
 	ghPRBaseList = fn
 	return func() { ghPRBaseList = old }
 }
+
+// prListFn resolves the `gh pr list --head` call for one lookup: in's
+// per-call PRList hook when set, else the legacy package seam. Every consult
+// reads the seam through it.
+func prListFn(in GatherInputs) func(dir, branch string) ([]byte, error) {
+	if in.PRList != nil {
+		return in.PRList
+	}
+	return ghPRList
+}
+
+// prBaseListFn resolves the `gh pr list --base` call for one lookup: in's
+// per-call PRBaseList hook when set, else the legacy package seam.
+func prBaseListFn(in GatherInputs) func(dir, base string) ([]byte, error) {
+	if in.PRBaseList != nil {
+		return in.PRBaseList
+	}
+	return ghPRBaseList
+}

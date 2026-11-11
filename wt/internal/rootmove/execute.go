@@ -27,25 +27,6 @@ type Outcome struct {
 	FastForwarded bool
 }
 
-// Test seams. Each is a package variable only so a test can make one step
-// fail or watch it; production code never reassigns them.
-var (
-	// executeInto is steps 2-3: carry, verify and record into the new
-	// worktree (recovery rows 2 and 3).
-	executeInto = func(e rescue.Engine, p *rescue.Plan, dest string) rescue.Outcome { return e.ExecuteInto(p, dest) }
-	// beforeRelease fires after the work was carried and recorded, just
-	// before the claim re-check and the release (row 4 before the reset).
-	beforeRelease = func() {}
-	// releaseRoot is step 4, the one step that resets and switches the root;
-	// rootmove only names it (row 4 after the reset).
-	releaseRoot = removal.ReleaseRoot
-	// stepGit runs the git of steps 5-6 (rows 5 and 6). Not runGit, which
-	// is internal/removal's unrelated seam.
-	stepGit = func(g cleanup.Git, args ...string) (cleanup.Out, error) { return g.Run(args...) }
-	// afterRelease fires once the release succeeded, before step 5 (row 7).
-	afterRelease = func() {}
-)
-
 // step names a step of Execute that can fail: the key of the recovery
 // table.
 type step int
@@ -221,7 +202,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	if rp.HasDirt() {
 		re := e.Rescue
 		re.ForRoot = true
-		ro := executeInto(re, rp, dest)
+		ro := e.Hooks.into(re, rp, dest)
 		r.o.Completed = append(r.o.Completed, ro.Completed...)
 		if n := len(rp.Warnings); len(ro.Plan.Warnings) > n {
 			r.o.Plan.Warnings = append(r.o.Plan.Warnings, ro.Plan.Warnings[n:]...)
@@ -246,7 +227,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	}
 
 	// 4. The claim once more, then the release.
-	beforeRelease()
+	e.Hooks.before()
 	if held, err := e.heldNow(rootGit, p); err != nil {
 		return r.fail(stepBeforeReset, nil, CodeReleaseRefused, "%v, so the root was not released", err)
 	} else if held != "" {
@@ -261,7 +242,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	if rp.HasDirt() {
 		rel.Verified, rel.RecordRef, rel.Untracked = true, r.o.Record.Ref, rp.UntrackedPaths()
 	}
-	res, err := releaseRoot(rootGit, rel)
+	res, err := e.Hooks.release(rootGit, rel)
 	if err != nil {
 		var refused *removal.ReleaseRefused
 		var failed *removal.ReleaseFailed
@@ -274,7 +255,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 		return r.fail(stepAfterReset, &removal.ReleaseFailed{Uncertain: true}, CodeReleaseFailed, "releasing the root failed: %s", cleanup.Flatten(err.Error()))
 	}
 	r.done(fmt.Sprintf("released the root: reset, %d carried untracked files removed, switched to %s", res.Removed, p.Default))
-	afterRelease()
+	e.Hooks.after()
 
 	// 5. The destination onto the branch, which the root no longer holds.
 	// The branch ref never moves; if it did, the switch would carry the
@@ -284,7 +265,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	} else if tip != p.Head {
 		return r.fail(stepBranchMoved, nil, CodeSwitchFailed, "the branch %s moved to %s since the move started, so the new worktree was not switched onto it", p.Branch, tip)
 	}
-	if o, err := stepGit(destGit, slices.Concat(cleanup.WriteConfig(), []string{"switch", "--no-overwrite-ignore", p.Branch})...); err != nil {
+	if o, err := e.Hooks.step(destGit, slices.Concat(cleanup.WriteConfig(), []string{"switch", "--no-overwrite-ignore", p.Branch})...); err != nil {
 		return r.fail(stepDestSwitch, nil, CodeSwitchFailed, "git switch %s in the new worktree: %v", p.Branch, err)
 	} else if o.Code != 0 {
 		return r.fail(stepDestSwitch, nil, CodeSwitchFailed, "git switch %s in the new worktree: exit %d: %s", p.Branch, o.Code, cleanup.OneLine(o.Stderr))
