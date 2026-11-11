@@ -42,13 +42,13 @@ func launchTags(r cleanup.Report, row cleanup.Row, here string) []cleanup.Tag {
 	return out
 }
 
-// screenName is the title the removal screens carry: `wt cleanup` in manage
+// screenName is the title the removal screens carry: `wt worktrees` in manage
 // mode, plain `wt` in the picker.
 func (m *cleanupListModel) screenName() string {
 	if m.launch() {
 		return "wt"
 	}
-	return "wt cleanup"
+	return "wt worktrees"
 }
 
 // chosenWord is how the removal screens name what is being removed: "ticked"

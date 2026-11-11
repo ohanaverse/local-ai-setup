@@ -174,7 +174,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	// git too old to know the option echoes it back and is let through).
 	if o, err := g.Run("rev-parse", "--show-object-format"); err == nil && o.Code == 0 {
 		if f := strings.TrimSpace(o.Stdout); f != "" && f != "sha1" && !strings.HasPrefix(f, "-") {
-			return Snapshot{}, fmt.Errorf("cleanup: this repository uses the %s object format, which is not supported by wt cleanup and wt remove (sha1 only)", OneLine(f))
+			return Snapshot{}, fmt.Errorf("cleanup: this repository uses the %s object format, which is not supported by wt worktrees and wt remove (sha1 only)", OneLine(f))
 		}
 	}
 

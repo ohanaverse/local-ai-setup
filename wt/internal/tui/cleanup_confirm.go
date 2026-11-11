@@ -738,7 +738,7 @@ func logText(log []removal.Outcome) string {
 	if len(log) == 0 {
 		return ""
 	}
-	lines := []string{"wt cleanup: " + removedSummary(log) + " items"}
+	lines := []string{"wt worktrees: " + removedSummary(log) + " items"}
 	for _, o := range log {
 		lines = append(lines, outcomeLines(o)...)
 	}

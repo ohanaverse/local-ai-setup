@@ -126,7 +126,7 @@ func TestConfirmKeepsTitleSummaryHintsWhenTheyFit(t *testing.T) {
 	h := r.harness()
 	m := press(t, setTicks(t, h.list(80, 24), "done", "kept"), enterKey)
 	v := m.View()
-	for _, want := range []string{"wt cleanup · confirm", "remove 2 of 2 ticked (1 proven, 1 not proven", "tab: also delete"} {
+	for _, want := range []string{"wt worktrees · confirm", "remove 2 of 2 ticked (1 proven, 1 not proven", "tab: also delete"} {
 		if !strings.Contains(squash(v), squash(want)) {
 			t.Errorf("80x24 confirm screen lacks %q:\n%s", want, v)
 		}

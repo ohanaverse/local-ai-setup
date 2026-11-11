@@ -4,6 +4,19 @@
 
 ### Changed
 
+- `wt cleanup` is now `wt worktrees` (`wt cleanup` stays as an alias). On a
+  terminal the list is grouped by kind (WORKTREES, LOCAL BRANCHES, REMOTE
+  BRANCHES) with per-row tags, lists the primary checkout, the default branch
+  and held worktrees, shows every remote's branches and does not fetch when it
+  opens; `--json`, `--plain` and a pipe still fetch first unless `--no-fetch`.
+  A remote ref folds into the same-named local row as its `upstream`. A held
+  session and the default branch are floors, not hard stops: the row reads
+  less sure and `wt remove` needs `--accept-loss` (and `-D` for a branch not
+  proven merged). An unknown PR lookup also floors a row below proven (`PR ?`),
+  except when `origin` is not on GitHub. `cleanup-list` gains `hard_stop` and
+  `upstream` (additive, version 1 unchanged). The launch picker is a view over
+  the same rows. See `docs/wt-cleanup.md`.
+
 - A dirty original that `wt rescue` has copied now reads removable with
   `--accept-loss` when its index and working tree are exactly what the record
   captured: the row is `less_sure` (reason `preserved`, never default-ticked),

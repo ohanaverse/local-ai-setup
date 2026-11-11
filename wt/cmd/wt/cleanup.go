@@ -41,10 +41,11 @@ func worktreesCmd(a *app) *cobra.Command {
 	c := &cobra.Command{
 		Use:     "worktrees",
 		Aliases: []string{"cleanup"},
-		Short: "List worktrees and branches, and which are safe to remove, with the proof (alias: cleanup)",
+		Short:   "List worktrees and branches, and which are safe to remove, with the proof (alias: cleanup)",
 		Long: "`wt cleanup` is an alias of this command.\n\n" +
-			"List the repository's worktrees, local branches and origin branches in four\n" +
-			"groups, by how sure wt is that each can go: PROVEN MERGED, LOOKS MERGED (LESS\n" +
+			"List the repository's worktrees, local branches and origin branches, by how\n" +
+			"sure wt is that each can go (on a terminal grouped by kind; --plain groups by\n" +
+			"verdict): PROVEN MERGED, LOOKS MERGED (LESS\n" +
 			"SURE), HAS WORK THAT EXISTS NOWHERE ELSE, and IN USE / LOCKED. Each row says\n" +
 			"why. Apart from the fetch's remote-tracking refs (--no-fetch skips it),\n" +
 			"--plain and --json write no ref, index or working file (the merge proof\n" +

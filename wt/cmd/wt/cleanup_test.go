@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -616,7 +617,26 @@ func TestWorktreesCmdRegisteredWithCleanupAlias(t *testing.T) {
 // TestWorktreesCmdTTYHandsOffToManageList is the interactive hand-off: one
 // call with the report on a terminal; --json and --plain never call it.
 func TestWorktreesCmdTTYHandsOffToManageList(t *testing.T) {
-	TestCleanupCmdTTYHandsOffToList(t)
+	newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	calls := 0
+	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { calls++; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+	for _, name := range []string{"worktrees", "cleanup"} {
+		calls = 0
+		root := rootCmd()
+		var out bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{name, "--no-fetch"})
+		t.Chdir(dir)
+		if err := root.Execute(); err != nil || calls != 1 || out.Len() != 0 {
+			t.Errorf("%s on a terminal: err=%v calls=%d out=%q, want the list handed off once and no output", name, err, calls, out.String())
+		}
+	}
 }
 
 // TestWorktreesCmdTTYDoesNotFetchOnOpen verifies the interactive path gathers
@@ -653,11 +673,11 @@ func TestWorktreesCmdTTYDoesNotFetchOnOpen(t *testing.T) {
 // TestWorktreesCmdJSONSameUnderBothNames verifies both names print the same
 // bytes and accept the same flags.
 func TestWorktreesCmdJSONSameUnderBothNames(t *testing.T) {
-	a, _ := newTestApp(t)
+	newTestApp(t)
 	stubCleanupGH(t)
 	dir := cleanupRepo(t)
 	// No extra branch: a fresh branch's reason text carries its age in seconds,
-	// which could tick between the two runs.
+	// which the comparison below normalizes.
 	t.Chdir(dir)
 	run := func(name string) string {
 		root := rootCmd()
@@ -670,8 +690,10 @@ func TestWorktreesCmdJSONSameUnderBothNames(t *testing.T) {
 		}
 		return out.String()
 	}
-	_ = a
-	w, c := run("worktrees"), run("cleanup")
+	// A row's reason names its age in seconds, which can tick between the runs.
+	age := regexp.MustCompile(`only \d+[smh]\d* old`)
+	norm := func(s string) string { return age.ReplaceAllString(s, "only N old") }
+	w, c := norm(run("worktrees")), norm(run("cleanup"))
 	if w == "" || w != c {
 		t.Errorf("worktrees and cleanup --json differ:\n%s\n---\n%s", w, c)
 	}

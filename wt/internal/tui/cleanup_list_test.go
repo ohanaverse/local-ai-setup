@@ -822,7 +822,7 @@ func TestCleanupListNestedPrimaryRowIsShort(t *testing.T) {
 	if h := lipgloss.Height(view); h > 24 {
 		t.Errorf("view is %d lines at 24", h)
 	}
-	for _, want := range []string{"wt cleanup", "q quit", "base:  origin/main", "── main ─", "contains 30 other worktrees"} {
+	for _, want := range []string{"wt worktrees", "q quit", "base:  origin/main", "── main ─", "contains 30 other worktrees"} {
 		if !strings.Contains(strings.Join(strings.Fields(view), " "), strings.Join(strings.Fields(want), " ")) {
 			t.Errorf("highlighted primary at 80x24 lacks %q:\n%s", want, view)
 		}

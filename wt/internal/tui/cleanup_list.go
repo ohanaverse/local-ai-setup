@@ -757,7 +757,7 @@ func (m *cleanupListModel) titleLine() string {
 	if m.launch() {
 		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · / filter · q quit")
 	}
-	return accent.Render("wt cleanup") + dim.Render("   space tick · a all proven · enter remove ticked · r rescue · q quit")
+	return accent.Render("wt worktrees") + dim.Render("   space tick · a proven · enter remove ticked · r rescue · q quit")
 }
 
 // statusBlock is the status, wrapped, with its line break; "" without one.
@@ -919,7 +919,7 @@ func (m cleanupListModel) exitMessage() string {
 	}
 	// Ended mid-run anyway: say what has no outcome (Ruling T).
 	if text == "" {
-		text = "wt cleanup: removed 0 items"
+		text = "wt worktrees: removed 0 items"
 	}
 	lines := append([]string{text, "the run did not finish:"}, m.run.unfinishedLines()...)
 	return strings.Join(lines, "\n")
