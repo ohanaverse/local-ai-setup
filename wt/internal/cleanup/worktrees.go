@@ -41,7 +41,8 @@ type Reason struct {
 }
 
 // Gates are a worktree's facts that do not depend on its branch. Blockers
-// are hard (never removable); Dirty, ignored files and a unique detached HEAD
+// are the codes above: IsHardStop says which refuse a removal outright, the
+// rest (held) are verdict floors that only cap the row below proven; Dirty, ignored files and a unique detached HEAD
 // are soft: they move a row out of PROVEN.
 type Gates struct {
 	Blockers       []Reason

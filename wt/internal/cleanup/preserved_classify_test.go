@@ -444,7 +444,7 @@ func TestClassifyDirtyCoveredDoesNotOverride(t *testing.T) {
 			func(t *testing.T, s Snapshot, wt string) Snapshot {
 				s.Base.Default = "topic"
 				return s
-			}, StatusInUse, []string{ReasonDirty}, false},
+			}, StatusUniqueWork, []string{ReasonDirty}, false}, // default branch is a floor now; the dirt still reads as unique work
 		{"hard blocker", func(t *testing.T, f *fixture, wt string) { noGh(t) },
 			func(t *testing.T, s Snapshot, wt string) Snapshot {
 				// Gather never matches a locked worktree; force the covering

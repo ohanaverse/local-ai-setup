@@ -71,6 +71,19 @@ const (
 	BlockBaseOfOpenPR  = "base_of_open_pr" // remote rows: an open PR targets this branch
 )
 
+// IsHardStop reports whether a blocker code refuses a removal outright, for a
+// row of kind k. The rest (held, default_branch) are verdict floors: the row
+// is never proven, but --accept-loss may remove it. Every code applies to
+// every kind today; k is part of the signature so a later code can differ.
+func IsHardStop(code string, k Kind) bool {
+	switch code {
+	case BlockPrimary, BlockCurrent, BlockLocked, BlockNested, BlockOperation,
+		BlockProtectedArtifact, BlockOpenPR, BlockBaseOfOpenPR:
+		return true
+	}
+	return false
+}
+
 // DefaultMinAge is how old a branch (or detached HEAD) at or behind the base
 // must be before same-commit or ancestor proves anything: a branch made a
 // minute ago looks merged.
@@ -100,6 +113,12 @@ type Row struct {
 	Unknown  bool     // some fact could not be determined; never proven then
 	Reasons  []Reason
 	Blockers []Reason
+	// HardStop is the code of the first blocker that refuses a removal
+	// outright (IsHardStop), "" when none does: the other blockers (held,
+	// default_branch) are verdict floors a user may accept. Not serialised.
+	HardStop string
+	Primary  bool    // the repository's primary checkout (the root)
+	Current  bool    // the worktree holding the cwd
 	PR       *PRInfo // the PR the verdict rests on, if any
 	AgeDays  int
 	AgeKnown bool // AgeDays is a real age (0 then means under a day), not "could not tell"
@@ -193,6 +212,7 @@ type Report struct {
 type judge struct {
 	blockers, unique, unknown, soft []Reason
 	info                            []Reason
+	kind                            Kind
 	ev                              Evidence
 	pr                              *PRInfo
 }
@@ -202,14 +222,26 @@ func (j *judge) uniq(code, detail string)   { j.unique = append(j.unique, Reason
 func (j *judge) unsure(code, detail string) { j.unknown = append(j.unknown, Reason{code, detail}) }
 func (j *judge) weak(code, detail string)   { j.soft = append(j.soft, Reason{code, detail}) }
 
-// status is first match wins: in use, unique work, less sure, proven.
+// hardStop is the first blocker that refuses a removal outright, "" if none.
+func (j *judge) hardStop() string {
+	for _, b := range j.blockers {
+		if IsHardStop(b.Code, j.kind) {
+			return b.Code
+		}
+	}
+	return ""
+}
+
+// status is first match wins: in use (a hard stop only), unique work, less
+// sure, proven. A floor blocker (held, default branch) caps proven at less
+// sure.
 func (j *judge) status() Status {
 	switch {
-	case len(j.blockers) > 0:
+	case j.hardStop() != "":
 		return StatusInUse
 	case len(j.unique) > 0:
 		return StatusUniqueWork
-	case len(j.unknown) > 0 || len(j.soft) > 0 || j.ev == "":
+	case len(j.blockers) > 0 || len(j.unknown) > 0 || len(j.soft) > 0 || j.ev == "":
 		return StatusLessSure
 	}
 	return StatusProven
@@ -223,6 +255,7 @@ func (j *judge) fill(r *Row) {
 	r.Evidence = j.ev
 	r.Unknown = len(j.unknown) > 0
 	r.Blockers = j.blockers
+	r.HardStop = j.hardStop()
 	r.Reasons = slices.Concat(j.unique, j.unknown, j.soft, j.info)
 	if j.pr != nil {
 		pr := *j.pr
@@ -314,7 +347,8 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		// Unknown until the branch's head is found and its proof read.
 		row.Losses.Unpushed = -1
 	}
-	var j judge
+	row.Primary, row.Current = w.Primary, w.Current
+	j := judge{kind: KindWorktree}
 	g := ws.Gates
 	// The blockers found before a gates error still block: in use wins.
 	j.blockers = append(j.blockers, g.Blockers...)
@@ -420,7 +454,10 @@ func (c *classifier) head(ref string) (RefFact, bool) {
 func (c *classifier) branchRow(h RefFact) Row {
 	row := Row{Kind: KindBranch, Name: h.Name, Branch: h.Name, Remote: h.Remote, Ref: h.Ref, Tip: h.Tip}
 	row.Losses.Unpushed = -1
-	var j judge
+	j := judge{kind: KindBranch}
+	if c.isDefault(h.Name) {
+		j.block(BlockDefaultBranch, h.Name)
+	}
 	if c.s.NoDefault {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
 	} else {
@@ -625,7 +662,7 @@ func (c *classifier) netZeroUnpushed(j *judge, p Proof) {
 // content in the base.
 func (c *classifier) remoteRow(rf RefFact) Row {
 	row := Row{Kind: KindRemote, Name: rf.Name, Branch: rf.Name, Remote: rf.Remote, Ref: rf.Ref, Tip: rf.Tip}
-	var j judge
+	j := judge{kind: KindRemote}
 	if c.s.NoDefault {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
 		j.fill(&row)
