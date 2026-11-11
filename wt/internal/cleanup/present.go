@@ -228,6 +228,11 @@ func RowText(rep Report, row Row) string {
 			continue
 		}
 		detail := r.Detail
+		if IsOriginFetchReason(r) {
+			// Not about gh: its own words, with no "needs gh" label.
+			parts = append(parts, detail)
+			continue
+		}
 		if rep.GH == GHUnavailable && (r.Code == ReasonPRUnknown || r.Code == ReasonCannotVerify) {
 			// gh answered for no branch: the header's gh line says so and
 			// names the distinct causes (ghCauseText); gh's own text under
@@ -364,7 +369,7 @@ func ghCauseText(r Report) string {
 	seen := map[string]bool{}
 	for _, row := range r.AllRows() {
 		for _, re := range row.Reasons {
-			if re.Code != ReasonPRUnknown && re.Code != ReasonCannotVerify {
+			if re.Code != ReasonPRUnknown && re.Code != ReasonCannotVerify || IsOriginFetchReason(re) {
 				continue
 			}
 			c := capRunes(flat(re.Detail), ghCauseMax)

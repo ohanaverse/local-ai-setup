@@ -952,6 +952,18 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	return row
 }
 
+// originFetchPrefix starts every originFetchProblem text: the reason reuses
+// the cannot_verify code (no new JSON code), and IsOriginFetchReason tells it
+// from gh's own cannot_verify reasons by it.
+const originFetchPrefix = "origin was not "
+
+// IsOriginFetchReason is whether r is the origin-fetch cannot_verify reason
+// (originFetchProblem), which is about the fetch, not gh: the text view shows
+// it without the "needs gh" label and keeps it out of the gh header line.
+func IsOriginFetchReason(r Reason) bool {
+	return r.Code == ReasonCannotVerify && strings.HasPrefix(r.Detail, originFetchPrefix)
+}
+
 // originFetchProblem says why this run's fetch does not support deleting
 // origin branch name, or "": origin must have been fetched cleanly now, or a
 // PR opened against the branch since the last fetch is invisible. The
@@ -963,13 +975,13 @@ func (c *classifier) originFetchProblem(name string) string {
 	case f.OK:
 		return ""
 	case f.NotAttempted:
-		return "origin was not refreshed in this list; open pull requests that target this branch may be missed (wt remove origin/" + name + " --remote re-checks after a fetch)"
+		return originFetchPrefix + "refreshed in this list; open pull requests that target this branch may be missed (wt remove origin/" + name + " --remote re-checks after a fetch)"
 	case f.Skipped != "":
-		return "origin was not fetched (" + f.Skipped + "); open pull requests that target this branch may be missed"
+		return originFetchPrefix + "fetched (" + f.Skipped + "); open pull requests that target this branch may be missed"
 	case f.At.IsZero():
-		return "origin was not fetched this run (--no-fetch); open pull requests that target this branch may be missed"
+		return originFetchPrefix + "fetched this run (--no-fetch); open pull requests that target this branch may be missed"
 	}
-	return "origin was not fetched cleanly this run (" + fetchErrText(f.Err) + "); open pull requests that target this branch may be missed"
+	return originFetchPrefix + "fetched cleanly this run (" + fetchErrText(f.Err) + "); open pull requests that target this branch may be missed"
 }
 
 // dependants are the open PRs, from any head repository, that target name:

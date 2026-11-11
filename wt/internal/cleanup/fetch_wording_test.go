@@ -49,3 +49,32 @@ func TestHeaderFetchNotAttempted(t *testing.T) {
 		t.Errorf("header:\n%s", lines)
 	}
 }
+
+// TestOriginFetchReasonIsNotAGhReason: the origin-fetch reason reuses the
+// cannot_verify code, but it is not about gh: the row shows its own words
+// (no "needs gh" label, not folded into "PR lookup failed") and the header's
+// gh line does not list it as a gh cause.
+func TestOriginFetchReasonIsNotAGhReason(t *testing.T) {
+	for _, f := range []FetchResult{{NotAttempted: true}, {}} {
+		s := remoteSnap(func(s *Snapshot, _ string) { s.Fetch = f })
+		rep := Classify(s, Options{Now: later()})
+		row := rowByRef(t, rep, "refs/remotes/origin/topic")
+		text := RowText(rep, row)
+		if strings.Contains(text, "needs gh") || !strings.Contains(text, "origin was not") {
+			t.Errorf("fetch %+v: row text %q, want the fetch reason without a gh label", f, text)
+		}
+		// gh down too: the fetch reason still reads as itself, and the gh
+		// line names only gh's causes.
+		s.PRs = map[string]PRResult{"topic": {Err: "gh: not found"}}
+		rep = Classify(s, Options{Now: later()})
+		row = rowByRef(t, rep, "refs/remotes/origin/topic")
+		if text := RowText(rep, row); !strings.Contains(text, "origin was not") {
+			t.Errorf("fetch %+v, gh down: row text %q lost the fetch reason", f, text)
+		}
+		for _, l := range HeaderLines(rep, time.Now()) {
+			if strings.HasPrefix(l, "gh:") && strings.Contains(l, "origin was not") {
+				t.Errorf("fetch %+v: gh line %q names the fetch as a gh cause", f, l)
+			}
+		}
+	}
+}
