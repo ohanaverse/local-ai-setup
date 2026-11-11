@@ -53,8 +53,9 @@ func worktreesCmd(a *app) *cobra.Command {
 			"terminal, enter removes the ticked\n" +
 			"rows after a confirmation that lists what each would lose: y when every\n" +
 			"row is proven, the typed word delete when any is not proven or loses\n" +
-			"something. A proven origin branch no local branch tracks is tickable too (never ticked for you; a tracked one is removed with `wt remove origin/<name> --remote`), and\n" +
-			"deleting it needs its own typed phrase, delete origin. r copies the work of\n" +
+			"something. Origin rows there read less sure (the list has not fetched, so it\n" +
+			"cannot prove them); remove an origin branch with `wt remove origin/<name>\n" +
+			"--remote`, which fetches first and needs its own approval. r copies the work of\n" +
 			"the row under the cursor into a new branch and worktree first (`wt rescue`).\n\n" +
 			"It runs `git fetch --prune <remote>` for every remote first (origin first, the\n" +
 			"others at the same time), never prompting (git's prompts are off and ssh uses\n" +
@@ -150,6 +151,11 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		// The list never fetches on open and shows every remote's branches.
 		// PRs stay synchronous here: RunCleanupList takes a finished report.
 		in.Fetch, in.AllRemotes = false, true
+		if !f.noFetch {
+			// Not --no-fetch: the list just does not fetch. Origin rows
+			// say so instead of naming a flag the user did not pass.
+			in.Fetched = cleanup.FetchResult{NotAttempted: true}
+		}
 	}
 	snap, err := cleanupGather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {

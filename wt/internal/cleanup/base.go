@@ -156,6 +156,11 @@ type FetchResult struct {
 	// ("no origin remote", "no remotes"); "" otherwise. A skip is neither ok
 	// nor a failure.
 	Skipped string
+	// NotAttempted means the terminal list did not fetch (it never does when
+	// it opens), as opposed to a fetch the user turned off with --no-fetch
+	// (At zero, NotAttempted false). Not part of the JSON contract: the JSON
+	// view always fetches unless --no-fetch.
+	NotAttempted bool
 	// Remotes is every remote considered, in `git remote` order.
 	Remotes []RemoteFetch
 }

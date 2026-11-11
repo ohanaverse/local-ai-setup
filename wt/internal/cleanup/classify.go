@@ -914,7 +914,7 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	// origin row only: they are origin facts, keyed by a bare name, and
 	// nothing deletes any other remote's branch.
 	if prLookups {
-		if why := c.originFetchProblem(); why != "" {
+		if why := c.originFetchProblem(rf.Name); why != "" {
 			j.unsure(ReasonCannotVerify, why)
 		}
 	}
@@ -948,14 +948,18 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	return row
 }
 
-// originFetchProblem says why this run's fetch does not support deleting an
-// origin branch, or "": origin must have been fetched cleanly now, or a PR
-// opened against the branch since the last fetch is invisible.
-func (c *classifier) originFetchProblem() string {
+// originFetchProblem says why this run's fetch does not support deleting
+// origin branch name, or "": origin must have been fetched cleanly now, or a
+// PR opened against the branch since the last fetch is invisible. The
+// terminal list (Fetch.NotAttempted) never fetched, and says so rather than
+// naming --no-fetch.
+func (c *classifier) originFetchProblem(name string) string {
 	f := c.s.Fetch
 	switch {
 	case f.OK:
 		return ""
+	case f.NotAttempted:
+		return "origin was not refreshed in this list; open pull requests that target this branch may be missed (wt remove origin/" + name + " --remote re-checks after a fetch)"
 	case f.Skipped != "":
 		return "origin was not fetched (" + f.Skipped + "); open pull requests that target this branch may be missed"
 	case f.At.IsZero():

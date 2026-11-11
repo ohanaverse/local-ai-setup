@@ -742,3 +742,30 @@ func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 		t.Errorf("scanned only %d sources", scanned)
 	}
 }
+
+// TestWorktreesCmdTTYMarksFetchNotAttempted: the terminal list does not fetch
+// on open and says so (FetchResult.NotAttempted), so origin rows do not
+// blame a --no-fetch the user never passed; with --no-fetch it stays the
+// flag's plain skip.
+func TestWorktreesCmdTTYMarksFetchNotAttempted(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	var got []cleanup.FetchResult
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error {
+		got = append(got, r.Fetch)
+		return nil
+	}
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+	isTerminalWriter = func(io.Writer) bool { return true }
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got[0].NotAttempted || got[1].NotAttempted {
+		t.Errorf("fetch results %+v, want NotAttempted without --no-fetch only", got)
+	}
+}

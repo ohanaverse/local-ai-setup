@@ -6,11 +6,11 @@ list is grouped by kind (WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES), each
 row with a verdict (how sure wt is that it can go, with the evidence) and
 tags; `--plain` and `--json` carry the same verdict per row, `--plain` grouped
 by verdict instead (see [Groups](#groups)). On a terminal the list removes the
-worktrees, local branches and (with a typed phrase) proven `origin` branches
-you tick, after a confirmation. `wt remove` does the same for
+worktrees and local branches you tick, after a confirmation (its `origin`
+rows read less sure, because the list has not fetched). `wt remove` does the same for
 targets named on the command line. Both use one removal engine, which also
 deletes a **proven `origin` branch** when you give it the approval no other
-flag implies (`--remote`, or the typed phrase `delete origin`): see
+flag implies (`--remote`): see
 [Deleting an origin branch](#deleting-an-origin-branch).
 
 ```bash
@@ -175,7 +175,7 @@ Approvals are per item. Each one means exactly one thing (`--dry-run` lists the 
 | accept the loss | `--accept-loss` | the typed word `delete` | any item that is not proven or loses something (ignored files such as `.venv`, commits only on this machine, a fresh branch, a PR state wt could not read) |
 | force | `--force` | the typed word `delete` | also lose a worktree's uncommitted changes, or a detached HEAD's commits |
 | delete unmerged branch | `-D` | `tab` on that entry, then `delete` | delete a branch not proven merged: a named branch, or (per entry) a removed worktree's branch |
-| delete on origin | `--remote` | the typed phrase `delete origin` | a proven `origin/<name>` row; no other approval grants it |
+| delete on origin | `--remote` | the typed phrase `delete origin` (not reachable from the terminal list today: its origin rows are never proven) | a proven `origin/<name>` row; no other approval grants it |
 
 `--force` never implies `-D`, and neither implies `--accept-loss`: a dirty
 worktree needs `--force --accept-loss`, an unmerged branch `-D
@@ -207,12 +207,13 @@ what it would lose, running processes, and the approvals it needs. When every
 entry is proven `y` confirms; otherwise only the typed word `delete` then
 enter does, and any other key cancels. The prompt always states how many
 items will be removed and how many need force or `-D`, and how many are not
-on screen. A proven `origin` row can be ticked, but is never ticked for you
-(`a` skips it too); any other remote row cannot. A confirmation that includes
-an `origin` branch has its own group (`ORIGIN BRANCHES`), says how many
-branches are on `origin` and that they are visible to everyone with access to
-the repository, refuses `y` and the plain `delete`, and needs `delete origin`
-typed. While removal runs, keys,
+on screen. The list does not fetch when it opens, so an `origin` row is
+never proven there: its reason says `origin was not refreshed in this list`
+(not `--no-fetch`, which you did not pass), and it cannot be ticked. Remove an
+`origin` branch with `wt remove origin/<name> --remote`, which fetches first.
+(The confirmation still has an `ORIGIN BRANCHES` group that names how many
+branches are on `origin`, refuses `y` and the plain `delete`, and needs
+`delete origin` typed, for when the list can refresh.) While removal runs, keys,
 ctrl+c and termination and hangup signals wait until it ends; the results screen shows
 every outcome and the same outcomes print again when wt exits.
 
@@ -549,8 +550,9 @@ Design: [the spec](../../docs/superpowers/specs/2026-11-08-wt-restore-root-desig
 
 ## Deleting an origin branch
 
-`wt remove origin/<name> --remote` (or an origin row ticked in the list and
-confirmed with `delete origin`) deletes the branch on `origin`. It is visible
+`wt remove origin/<name> --remote` deletes the branch on `origin` (the
+terminal list does not fetch, so its origin rows are never proven and cannot
+be ticked). It is visible
 to everyone with access to the repository and this tool cannot undo it, so
 the rules are narrower than for a local branch:
 
@@ -558,9 +560,11 @@ the rules are narrower than for a local branch:
   branch whose head is exactly the branch's tip, whose merge commit is in the
   base; no open PR with the branch as head; no open PR (from this repository or
   a fork) with it as base; content in the base; and `origin` fetched cleanly
-  **this run**. `--no-fetch`, a failed fetch, a missing `gh` or a failed
-  query each make the row unproven. There is no `--accept-loss` or `-D` path.
-- The approval is its own: `--remote` on the CLI, `delete origin` in the list.
+  **this run**. `--no-fetch`, the terminal list (which does not fetch when it
+  opens), a failed fetch, a missing `gh` or a failed query each make the row
+  unproven. There is no `--accept-loss` or `-D` path.
+- The approval is its own: `--remote` on the CLI (`delete origin` in the list's
+  confirmation, once the list can prove an origin row).
   `--yes`, `y`, `--accept-loss`, `-D`, `--force` and the plain `delete` never
   grant it, and `--remote` grants nothing else.
 - Right before the push the engine re-asks `gh` about this one branch (so a PR
