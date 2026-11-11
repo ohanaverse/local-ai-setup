@@ -200,8 +200,11 @@ func Lineage(t testing.TB, repo string) {
 // lineageErr is Lineage's verdict: nil for a pristine clone, an error naming
 // the poison otherwise (an entry under .worktrees/, a ref under
 // refs/wt/rescued/, a refs/heads/topic ref, info/exclude content outside the
-// template's expected shape, or a HEAD not on main). Every git read runs with
-// GIT_OPTIONAL_LOCKS=0: the gate judges a repo it promises not to change.
+// template's expected shape, or a HEAD not on main). The reads it makes
+// (for-each-ref, rev-parse, symbolic-ref) are ones git never refreshes the
+// index's stat cache for, so the gate judges a repo it does not change. The
+// GIT_OPTIONAL_LOCKS=0 gitRun adds is belt and braces only: it suppresses
+// `git status`'s refresh but NOT `git diff`'s (see gitRun).
 func lineageErr(repo string) error {
 	ents, err := os.ReadDir(filepath.Join(repo, ".worktrees"))
 	if err != nil && !os.IsNotExist(err) {
@@ -362,11 +365,15 @@ func indexFile(t testing.TB, repo string) string {
 	return filepath.Join(strings.TrimSpace(out), "index")
 }
 
-// gitRun runs git -C dir args... and returns its combined output. Every kit
-// read runs with GIT_OPTIONAL_LOCKS=0: the kit promises to inspect a
-// repository without the optional index-lock write that would rewrite the raw
-// index a byte-diff proof is watching. LC_ALL=C pins git's messages so the
-// byte-compared outputs are locale-stable.
+// gitRun runs git -C dir args... and returns its combined output. The kit
+// promises to inspect a repository without rewriting the raw index a byte-diff
+// proof is watching, and keeps that promise because the reads it makes
+// (for-each-ref, ls-files, rev-parse, symbolic-ref) are ones git never
+// refreshes the index's stat cache for — not because of GIT_OPTIONAL_LOCKS=0,
+// which is set too but only suppresses `git status`'s refresh. It does NOT
+// suppress `git diff`'s, which rewrites stale-stat entries even with it off, so
+// never add a diff-shaped read here on the strength of that variable. LC_ALL=C
+// pins git's messages so the byte-compared outputs are locale-stable.
 func gitRun(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")

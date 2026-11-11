@@ -98,6 +98,67 @@ func TestLineageGateNamesThePoison(t *testing.T) {
 	}
 }
 
+// TestLineageGateNamesEachPoison checks lineageErr's remaining verdicts name
+// their poison too: a surviving rescue record ref, a leftover topic branch, an
+// appended info/exclude line (and a second .worktrees/ line, which only the
+// ExcludeWorktrees lineage may carry once) and a HEAD moved off main. Why: the
+// gate exists to fail loudly on exactly these cross-test leaks, and a verdict
+// no test exercises can rot into accepting the poison it was written to refuse
+// — the .worktrees/ entry above covers only one of the five shapes.
+func TestLineageGateNamesEachPoison(t *testing.T) {
+	appendExclude := func(t *testing.T, repo, line string) {
+		t.Helper()
+		ex := runGit(t, repo, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+		f, err := os.OpenFile(ex, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(line + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name  string
+		want  string
+		setup func(t *testing.T, repo string)
+	}{
+		{"rescued record ref", "refs/wt/rescued/", func(t *testing.T, repo string) {
+			runGit(t, repo, "update-ref", "refs/wt/rescued/0123456789abcdef", "HEAD")
+		}},
+		{"topic branch", "refs/heads/topic", func(t *testing.T, repo string) {
+			runGit(t, repo, "branch", "topic")
+		}},
+		{"appended exclude line", "scratch/", func(t *testing.T, repo string) {
+			appendExclude(t, repo, "scratch/")
+		}},
+		{"second worktrees line", ".worktrees/", func(t *testing.T, repo string) {
+			appendExclude(t, repo, ".worktrees/")
+			appendExclude(t, repo, ".worktrees/")
+		}},
+		{"head moved", "not refs/heads/main", func(t *testing.T, repo string) {
+			runGit(t, repo, "switch", "-q", "-c", "other")
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tpl := Seed(t, SeedOpts{})
+			_, repo := tpl.Clone(t)
+			Lineage(t, repo)
+			c.setup(t, repo)
+			err := lineageErr(repo)
+			if err == nil {
+				t.Fatalf("lineageErr accepted a repo holding %s", c.name)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("lineageErr said %q; the message must name the poison (%s)", err, c.want)
+			}
+		})
+	}
+}
+
 // TestArmIndexProbeMakesAWriteVisible checks arming turns the raw-index
 // byte-diff proof from mute to biting: on a fresh copy a locking `git status`
 // rewrite is byte-identical (the proof passes while a write happens), while on
