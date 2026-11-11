@@ -5,6 +5,6 @@
   "fetch": {"ok": false, "error": "fatal: unable to access 'https://example.invalid/project.git/': Could not resolve host", "at": "2026-11-04T12:00:00Z", "remotes": [{"name": "origin", "ok": false, "error": "fatal: unable to access 'https://example.invalid/project.git/': Could not resolve host"}, {"name": "mirror", "ok": false, "skipped": true}]},
   "gh": "ok",
   "rows": [
-    {"kind": "worktree", "name": "main", "path": "/home/owner/src/project", "branch": "main", "status": "in_use", "unknown": false, "reasons": [], "blockers": [{"code": "primary", "detail": "/home/owner/src/project"}, {"code": "default_branch", "detail": "main"}]}
+    {"kind": "worktree", "name": "main", "path": "/home/owner/src/project", "branch": "main", "status": "in_use", "unknown": false, "reasons": [], "blockers": [{"code": "primary", "detail": "/home/owner/src/project"}, {"code": "default_branch", "detail": "main"}], "hard_stop": "primary"}
   ]
 }

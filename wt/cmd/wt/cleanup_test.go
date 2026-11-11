@@ -116,6 +116,45 @@ func TestCleanupCmdJSONIsOneDocument(t *testing.T) {
 	}
 }
 
+// TestCleanupCmdJSONIncludesRootDefaultAndHeldRows runs --json from a root on a
+// feature branch: the root row carries hard_stop "primary", the default
+// branch appears as a row, and a pushed branch folds its remote ref into an
+// upstream field.
+func TestCleanupCmdJSONIncludesRootDefaultAndHeldRows(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	cgit(t, dir, "checkout", "-b", "feature")
+	cleanupCommit(t, dir, "f", "feature work")
+	cgit(t, dir, "push", "-u", "origin", "feature")
+	stdout, _, err := runCleanup(t, a, dir, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env cleanup.Envelope
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("not an envelope: %v\n%s", err, stdout)
+	}
+	var root, def *cleanup.RowJSON
+	for i, r := range env.Rows {
+		switch {
+		case r.Kind == "worktree" && r.HardStop == cleanup.BlockPrimary:
+			root = &env.Rows[i]
+		case r.Kind == "branch" && r.Name == "main":
+			def = &env.Rows[i]
+		}
+	}
+	if root == nil || root.Branch != "feature" {
+		t.Errorf("no root row with hard_stop primary on feature:\n%s", stdout)
+	}
+	if def == nil {
+		t.Fatalf("no row for the default branch main:\n%s", stdout)
+	}
+	if def.Upstream == nil || def.Upstream.Ref != "refs/remotes/origin/main" {
+		t.Errorf("main upstream = %+v:\n%s", def.Upstream, stdout)
+	}
+}
+
 // TestCleanupCmdPlainGroupsInOrder verifies the plain output prints the four
 // group headings in the order proven, less sure, unique work, in use, and
 // puts each row under its own heading. The order is the contract with the

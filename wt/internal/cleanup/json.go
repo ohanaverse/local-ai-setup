@@ -93,6 +93,24 @@ type RowJSON struct {
 	Reasons  []ReasonJSON `json:"reasons"`
 	Blockers []ReasonJSON `json:"blockers"`
 	PR       *PRJSON      `json:"pr,omitempty"`
+	// HardStop is the code of the first blocker that refuses a removal
+	// outright (Row.HardStop); absent when none does.
+	HardStop string `json:"hard_stop,omitempty"`
+	// Upstream is the remote ref folded into a local row (Row.Upstream);
+	// absent when none is.
+	Upstream *UpstreamJSON `json:"upstream,omitempty"`
+}
+
+// UpstreamJSON is an Upstream. Gone is a remote ref that no longer exists, and
+// then tip, status and evidence are absent.
+type UpstreamJSON struct {
+	Ref      string `json:"ref"`
+	Remote   string `json:"remote,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Tip      string `json:"tip,omitempty"`
+	Gone     bool   `json:"gone"`
+	Status   string `json:"status,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
 }
 
 func reasonsJSON(rs []Reason) []ReasonJSON {
@@ -161,6 +179,11 @@ func Encode(r Report) ([]byte, error) {
 			Remote: row.Remote, Status: string(row.Status), Evidence: string(row.Evidence),
 			Unknown: row.Unknown,
 			Reasons: reasonsJSON(row.Reasons), Blockers: reasonsJSON(row.Blockers),
+			HardStop: row.HardStop,
+		}
+		if u := row.Upstream; u != nil {
+			rj.Upstream = &UpstreamJSON{Ref: u.Ref, Remote: u.Remote, Name: u.Name, Tip: u.Tip,
+				Gone: u.Gone, Status: string(u.Status), Evidence: string(u.Evidence)}
 		}
 		if row.AgeKnown {
 			days := row.AgeDays
