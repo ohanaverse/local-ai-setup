@@ -355,9 +355,10 @@ func TestExecuteMovesAllDirt(t *testing.T) {
 // TestExecuteRecoveryRows drives a failure into each row of the spec's
 // recovery table (1-5, and the read-back, 7) and checks the row's Root, New
 // worktree and Work columns against a before/after snapshot, the outcome
-// code and the row's sentence in the reason. Why: every failure must stop
-// where it happens with the work reachable, and say where it is; a row that
-// reset the root early, or claimed moved, loses work or lies.
+// code and the row's sentence in the reason; case 4 (before the reset) also
+// pins that a live claim no longer fails the move. Why: every failure must
+// stop where it happens with the work reachable, and say where it is; a row
+// that reset the root early, or claimed moved, loses work or lies.
 func TestExecuteRecoveryRows(t *testing.T) {
 	t.Run("1 create fails", func(t *testing.T) {
 		t.Parallel()
@@ -909,12 +910,14 @@ func TestExecuteStartRecheck(t *testing.T) {
 	})
 }
 
-// TestExecuteIgnoresClaimsEntirely makes the repository's wt-sessions
-// directory unreadable (mode 0) after Preflight has read it, then runs a full
-// move of a dirty root and requires it to succeed. Why: Execute must not read
-// the session claims at all — a held root rides the plan as a warning and the
-// user decides — so an unreadable claims directory cannot refuse or fail a
-// move; the one claim read left is Preflight's.
+// TestExecuteIgnoresClaimsEntirely creates the repository's wt-sessions
+// directory (Preflight planned with it absent) and makes it unreadable
+// (mode 0), then runs a full move of a dirty root and requires it to
+// succeed. Why: Execute must not read the session claims at all — a held
+// root rides the plan as a warning and the user decides — so an unreadable
+// claims directory cannot refuse or fail a move; the one claim read left is
+// Preflight's. It skips when the platform refuses chmod 0 or a 0-mode
+// directory stays readable (root), restoring the permissions either way.
 func TestExecuteIgnoresClaimsEntirely(t *testing.T) {
 	t.Parallel()
 	f, eng, p := dirtyPlan(t)
