@@ -341,20 +341,30 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 	}
 }
 
-// TestTailsRunStopPickerThenSummary pins the run's post-exit tail: the stop
-// picker runs, then the summary line — with NO removal offer between them and
-// NO gh call. Cleanup is user-driven (`wt worktrees` / `wt remove`), so the
-// automatic exit-prompt removal offer and its gh PR gather at exit are gone.
-// Why: this is the regression guard for deleting the exit prompt — a re-added
-// offer step (an "offer" between picker and summary), a re-printed "Remove it
-// and its branch" question, or a re-added gh gather all fail here. It copies
-// the tail-order pattern of the removed TestExitPromptRunsAfterTheStopPicker…
-// but asserts the offer is ABSENT (no offer step), which is why it fails until
-// the exit prompt is deleted and passes after.
+// TestTailsRunStopPickerThenSummary pins the non-TUI run tail: the stop picker
+// runs, then the summary line — and no removal-offer wording and no gh gather
+// run in it (cleanup is user-driven: `wt worktrees` / `wt remove`). This is a
+// plain pin of the tail's shape, not a red→green guard (R303a — no RED
+// theater). The old removal offer acted only on a terminal, when not kept, and
+// with a creation record; the first two are staged here (stdin reports a TTY
+// and `[launch] exit_prompt` is not "keep") and the verified mutation supplies
+// the third (a creation record), so an offer step re-inserted into the tail
+// acts (does not early-return) and its wording / gh gather is caught. Verified
+// by mutation:
+// re-inserting an offer step into the tail with a creation record that prints
+// "Remove it and its branch" / "was created for this session" and runs a
+// `gh pr list` gather makes this test fail — the wording and gh assertions
+// fire.
 func TestTailsRunStopPickerThenSummary(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	// No gh at exit: the exit prompt's `gh pr list` gather is gone. Fail if any
-	// returns (the removal offer that made it has been deleted).
+	// A removal offer acted only on a terminal and when not kept; stage both
+	// (the empty Config keeps the offer) so a re-added offer step does not
+	// early-return silently.
+	oldTTY := stdinTTY
+	stdinTTY = func() bool { return true }
+	t.Cleanup(func() { stdinTTY = oldTTY })
+	// No gh at exit: the exit-prompt `gh pr list` gather is gone. Fail if any
+	// runs in the tail (a re-added removal offer would make exactly this call).
 	t.Cleanup(cleanup.StubPRListForTest(func(dir, branch string) ([]byte, error) {
 		t.Errorf("gh pr list ran in the run's tail (%s in %s)", branch, dir)
 		return []byte("[]"), nil

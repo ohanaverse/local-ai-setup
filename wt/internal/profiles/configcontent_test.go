@@ -1498,8 +1498,9 @@ func TestCleanupRestoresALeafPastFloat64sExactRange(t *testing.T) {
 // surgical restore hands back the stored snapshot byte for byte when the
 // session left the file as the merge wrote it (#530): a tracked
 // .claude/settings.local.json must not come back reformatted, or git sees a
-// modification and the exit prompt is withheld. A session that did change
-// something still gets the per-leaf merge (the neighbouring tests).
+// spurious modification (the user-driven cleanup then counts the worktree as
+// changed). A session that did change something still gets the per-leaf merge
+// (the neighbouring tests).
 func TestCleanupRestoresOriginalBytesWhenSessionChangedNothing(t *testing.T) {
 	for name, original := range map[string]string{
 		"compact":              `{"a":1}`,

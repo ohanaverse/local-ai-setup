@@ -28,10 +28,6 @@ var flushTTY = realFlushTTY
 
 func realFlushTTY() { _ = drainTTYInput(int(os.Stdin.Fd())) }
 
-// FlushInput discards unread keys from the real terminal, so typeahead left
-// when an agent exits cannot answer the next prompt.
-func FlushInput() { flushTTY() }
-
 // Enabled says whether the post-session survey is asked. It is off
 // (2026-10-05, #136): the questions were skipped often, and the speed rating
 // in particular barely told models apart, so the survey is paused while what
