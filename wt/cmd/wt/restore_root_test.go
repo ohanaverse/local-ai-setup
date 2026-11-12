@@ -762,6 +762,9 @@ func TestRestoreRootCmdHeldRootPromptNamesHolder(t *testing.T) {
 	case at > confirm:
 		t.Errorf("the holder is named at %d, after the confirm at %d:\n%s", at, confirm, errOut)
 	}
+	if !strings.Contains(errOut, ", started on topic)") {
+		t.Errorf("the holder's rendering drops the branch (want %q):\n%s", ", started on topic)", errOut)
+	}
 	if !strings.Contains(errOut, rootmove.HeldWarningPrefix) {
 		t.Errorf("the prompt carries no %q warning line:\n%s", rootmove.HeldWarningPrefix, errOut)
 	}
