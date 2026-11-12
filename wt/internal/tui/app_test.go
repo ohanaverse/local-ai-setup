@@ -976,11 +976,14 @@ func TestRePickClearsAnAbandonedCreation(t *testing.T) {
 	}
 }
 
-// TestSecondEnterAtTheCommitPointIsIgnored checks the commit point takes the
-// one launch a session makes: a second Enter pressed before the terminal is
-// released must not start a second run command — with it a second creation
-// binding, a second gate and a second agent. The old m.creating guard that
-// serialized selections went with the create flow it guarded.
+// TestSecondEnterAtTheCommitPointIsIgnored checks the commit point serializes
+// the launch in flight: a second Enter pressed before the terminal is released
+// must not start a second run command — with it a second creation binding, a
+// second gate and a second agent. A session can still commit again after the
+// slot applier's failure returns it to the picker (TestRetryAfterASlotAbort…);
+// the quit path holds the guard to process exit (TestLaunchDoneKeeps…). The
+// old m.creating guard that serialized selections went with the create flow it
+// guarded.
 func TestSecondEnterAtTheCommitPointIsIgnored(t *testing.T) {
 	m, first, _ := pickRow(t, "/repo/.worktrees/feat")
 	if first == nil {
@@ -1008,11 +1011,12 @@ func TestSecondEnterAtLaunchAndRecordIsIgnored(t *testing.T) {
 }
 
 // TestRetryAfterASlotAbortDispatchesARunCommand checks the commit-point guard
-// is an in-flight guard, not a latch: a run command's outcome releases it, so
-// the deliberate retry path after a slotAbortMsg (the slot applier failed; the
-// flow returns to the model picker) can commit again. A guard that never
-// released left the session silently dead — every later Enter dispatched
-// nothing.
+// is an in-flight guard, not a latch: the slot applier's failure (slotAbortMsg;
+// the flow returns to the model picker) releases it, so the deliberate retry
+// can commit again. The guard releases on exactly that one outcome — the quit
+// path holds it to process exit (TestLaunchDoneKeepsTheCommitGuardLatched). A
+// guard that never released left the session silently dead — every later Enter
+// dispatched nothing.
 func TestRetryAfterASlotAbortDispatchesARunCommand(t *testing.T) {
 	m, first, _ := pickRow(t, "/repo/.worktrees/feat")
 	if first == nil {
