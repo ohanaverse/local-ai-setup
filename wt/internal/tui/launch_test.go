@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -468,5 +469,84 @@ func TestPickerLaunchesStraightThroughAPriorSession(t *testing.T) {
 		if a == "--resume" || a == "--continue" || strings.Contains(a, "prior-session") {
 			t.Fatalf("launch args %v carry a resume flag wt added", built.Args)
 		}
+	}
+}
+
+// readClaimFields parses one claim file's key=value lines — the cross-repo
+// contract format (docs/contracts/session-claims.md). A missing file gives
+// nil: the agent saw no claim.
+func readClaimFields(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			fields[k] = v
+		}
+	}
+	return fields
+}
+
+// TestPickerLaunchClaimsPickedWorktree checks the picker's launch claims the
+// worktree it picked: the claim names the picked worktree's own top level in
+// git's text, its branch and the agent, live exactly while the agent runs.
+// Why: every launch path claims after the worktree exists (Task 405) — the
+// picker is one, and a session in a picked linked worktree was invisible to
+// the "in use by another session" warning while claims were root-only.
+func TestPickerLaunchClaimsPickedWorktree(t *testing.T) {
+	keepPendingPostExit(t)
+	t.Cleanup(releaseRootClaim)
+	profileApplier = nil
+	root := rootRepo(t)
+	picked := linkedWorktree(t, root)
+
+	// A claude that copies the claim its repository holds for this process
+	// while it runs; the claim file is released before the launch returns.
+	claimCopy := filepath.Join(t.TempDir(), "claim")
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/" + strconv.Itoa(os.Getpid()) + "\" '" + claimCopy + "' 2>/dev/null\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tempStateDir(t)
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	answerOnStdio(t, "")
+
+	native := config.Model{ID: "claude/native", ProviderID: "claude", ModelName: "native", Native: true}
+	m := model{cfg: &config.Config{}, phase: phaseModel, agent: "claude", tag: "code", selectedPath: picked, width: 80, height: 24, models: singleModelList(native)}
+	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next := got.(model)
+	if cmd == nil || strings.Contains(next.status, "launch failed") {
+		t.Fatalf("no launch command: phase = %v status = %q", next.phase, next.status)
+	}
+	done, ok := cmd().(launchDoneMsg)
+	if !ok || done.err != nil {
+		t.Fatalf("msg = %#v; the picked-worktree launch did not run clean", done)
+	}
+	claim := readClaimFields(t, claimCopy)
+	if claim == nil {
+		t.Fatal("no claim was written for the picked worktree")
+	}
+	if claim["path"] != picked {
+		t.Errorf("claim path = %q; want the picked worktree %q", claim["path"], picked)
+	}
+	if claim["branch"] != "feature" {
+		t.Errorf("claim branch = %q; want %q", claim["branch"], "feature")
+	}
+	if claim["agent"] != "claude" {
+		t.Errorf("claim agent = %q; want %q", claim["agent"], "claude")
+	}
+	if claimExists(root) {
+		t.Error("the claim outlived the agent")
 	}
 }

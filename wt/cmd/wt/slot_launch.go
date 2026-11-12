@@ -16,7 +16,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
 // launchSlotChecks is the process-wide set of slot profiles resolveModel
@@ -298,8 +300,23 @@ func runSlotAgentCmd(cmd *exec.Cmd, agent string, row catalog.Row, cfg *config.C
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// Every launch claims the worktree the agent runs in, for exactly the
+	// agent's run (Task 405) — a slot-profile launch is a launch path like
+	// any other. The site is read from cmd.Dir, after any worktree creation.
+	// HoldLaunch's others are dropped on purpose: the launch warnings' pass
+	// (RunE's confirmLaunch, or the TUI's gate) named any other holder
+	// already, and a launch prints exactly one held line. A claim that
+	// cannot be read or written is one note and never a refusal.
+	claimRelease, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
+	defer claimRelease() // every exit path below releases; safe twice
+	if cerr != nil {
+		fmt.Fprintf(osStderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+	}
+
 	duration, err := agents.RunAndCleanup(cmd, cleanup)
 	// Explicit, not deferred: the os.Exit below would skip a deferred release.
+	// Both releases take down the same claim file and are safe twice.
+	claimRelease()
 	releaseRootClaim()
 
 	releaseSession()

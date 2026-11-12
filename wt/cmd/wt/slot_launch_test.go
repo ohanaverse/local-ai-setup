@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1321,5 +1322,45 @@ func TestRunLaunchPathRefusesANonStringOverrideTarget(t *testing.T) {
 	}
 	if got := seams.log(); got != "" {
 		t.Errorf("the refused launch drove the engine: steps %q, want none", got)
+	}
+}
+
+// TestSlotLaunchWritesClaim checks a slot-profile launch claims the worktree
+// it runs in, as every other launch does: the claim names the worktree's top
+// level in git's text, its branch and the agent, live exactly while the agent
+// runs. Why: the slot flow is a launch path like any other (Task 405), and a
+// session it starts must be visible to the "in use by another session"
+// warning.
+func TestSlotLaunchWritesClaim(t *testing.T) {
+	slotLaunchEnv(t) // its own config home; the launch itself runs in a real worktree
+	root := sharedRootRepo(t)
+	claimCopy := filepath.Join(t.TempDir(), "claim")
+	seams := stubSlotSeams(t)
+	seams.cmd = exec.Command("/bin/sh", "-c",
+		"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0")
+	stubSlotChecks(t, slotFixtureCheck(0, "p", "opus", slotCloud()))
+
+	var err error
+	captureFile(t, &os.Stdout, func() {
+		err = pinSlotProfile(root, slotFixtureConfig(), "profile/p")
+	})
+	if err != nil {
+		t.Fatalf("launch error = %v", err)
+	}
+	claim := readClaimFields(t, claimCopy)
+	if claim == nil {
+		t.Fatal("no claim was written for the slot-profile launch")
+	}
+	if got := claim["path"]; got != root {
+		t.Errorf("claim path = %q; want the launched worktree %q", got, root)
+	}
+	if got := claim["branch"]; got != "main" {
+		t.Errorf("claim branch = %q; want %q", got, "main")
+	}
+	if got := claim["agent"]; got != "claude" {
+		t.Errorf("claim agent = %q; want %q", got, "claude")
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("the claim outlived the agent")
 	}
 }

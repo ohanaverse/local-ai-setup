@@ -16,7 +16,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -496,6 +498,22 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// Every launch claims the worktree the agent runs in, for exactly the
+	// agent's run (Task 405): another launch there warns about this session
+	// (held) while it lasts. The site is read from cmd.Dir — the directory
+	// the agent will actually run in — after any worktree creation, so a
+	// bare-branch launch claims the worktree it created, never the root.
+	// holdRoot's root claim (launchHere) is the same claim file for a root
+	// launch, twice-safe. HoldLaunch's others are dropped on purpose: RunE's
+	// confirmLaunch named any other holder already, and a launch prints
+	// exactly one held line. A claim that cannot be read or written is one
+	// note and never a refusal.
+	claimRelease, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
+	defer claimRelease() // every exit path below releases; safe twice
+	if cerr != nil {
+		fmt.Fprintf(osStderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+	}
+
 	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp)
 	if perr != nil {
 		// Mirrors the ollama-check failure path in launchFilteredImpl above:
@@ -513,7 +531,9 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 
 	duration, err := agents.RunAndCleanup(cmd, profileCleanup)
 	// Explicit, not deferred, for the same reason as profileCleanup: the
-	// os.Exit below would skip a deferred release.
+	// os.Exit below would skip a deferred release. Both releases take down
+	// the same claim file and are safe twice.
+	claimRelease()
 	releaseRootClaim()
 	summary := agents.Summary(agent, m, duration)
 

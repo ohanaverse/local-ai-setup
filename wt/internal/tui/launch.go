@@ -13,6 +13,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
 // GateError is a launch-gate failure carried out as the run's error: wt's own
@@ -209,8 +211,8 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (boo
 // after recording) and returns the status its errors make, "" for none. gate,
 // when non-nil, is the launch's one question (m.launchGate, through
 // m.gateFor) at the commit point; a decline calls record never, so it leaves
-// no trace. A nil gate is a direct test call: it asks nothing and claims
-// nothing.
+// no trace. A nil gate is a direct test call: it asks nothing — the claim is
+// the run's own and is taken either way, once the gate (if any) is past.
 func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error)) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
@@ -283,8 +285,23 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 				return launchDoneMsg{err: gerr}
 			}
 		}
+		// Every launch claims the worktree the agent runs in, for exactly
+		// the agent's run (Task 405) — the run's own claim and release,
+		// taken after the gate (a declined gate claims nothing) and after
+		// any worktree creation the gate made. The run commands that cannot
+		// claim for themselves (the slot flow's waiter) are covered by the
+		// gate's own claim of the same claim file; here it is twice-safe.
+		// HoldLaunch's others are dropped on purpose: the gate's warning
+		// pass named any other holder already, and a launch prints exactly
+		// one held line. A claim that cannot be read or written is one note
+		// and never a refusal.
+		claimRelease, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
+		defer claimRelease()
+		if cerr != nil {
+			fmt.Fprintf(os.Stderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+		}
 		// The commit point: the agent runs next. The gate has made any
-		// worktree this pick owed and claimed the root for the run.
+		// worktree this pick owed and claimed the run for the agent.
 		status := record()
 		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
 		releaseRootClaim()

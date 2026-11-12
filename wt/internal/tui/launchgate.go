@@ -38,12 +38,12 @@ func (c *launchCreation) ensure() (string, error) {
 	return c.plan.Ensure()
 }
 
-// rootClaimRelease removes this session's claim on the repository root. It is
-// set by claimRoot and called through releaseRootClaim, mirroring cmd/wt.
+// rootClaimRelease removes this session's claim on the launch's worktree. It
+// is set by claimLaunch and called through releaseRootClaim, mirroring cmd/wt.
 var rootClaimRelease = func() {}
 
-// releaseRootClaim removes this session's claim on the repository root, if it
-// holds one. Safe to call more than once: every run command calls it after
+// releaseRootClaim removes this session's claim on the launch's worktree, if
+// it holds one. Safe to call more than once: every run command calls it after
 // the agent exits, and a declined gate before any claim is a no-op.
 func releaseRootClaim() {
 	release := rootClaimRelease
@@ -146,8 +146,8 @@ func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
 // choice: err is that error and nothing is printed here, so it travels out as
 // the run's error and main prints it once and exits non-zero, exactly as
 // cmd/wt's -W path does through refuse. Either way the owed worktree is made
-// only here, and the root is claimed for exactly the agent's run; every
-// claims failure is one "wt: note:", never a refusal.
+// only here, and the run's worktree is claimed for exactly the agent's run;
+// every claims failure is one "wt: note:", never a refusal.
 //
 // A preset path (m.prePath: -W, --cwd, --root through the flag paths) was
 // judged and answered in RunE's confirmLaunch already. This is its second
@@ -155,7 +155,7 @@ func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
 // a root launch is asked at most once — and only claims.
 func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error) {
 	if m.prePath != "" {
-		m.claimRoot(t.Dir)
+		m.claimLaunch(t.Dir)
 		return true, nil
 	}
 	warnings, info := launchwarn.Collect(*t)
@@ -189,18 +189,21 @@ func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error)
 			return false, cerr
 		}
 	}
-	m.claimRoot(t.Dir)
+	m.claimLaunch(t.Dir)
 	return true, nil
 }
 
-// claimRoot writes this session's claim when dir is a repository's primary
-// checkout — claims are root-only until a later task extends them — and keeps
-// the release for releaseRootClaim, so other launches warn about it (held)
-// exactly while the agent runs. A linked worktree claims nothing. Another
-// live holder is not a question here: launchwarn's held warning has named
-// them, and the person has answered it. A claim that cannot be read or
-// written is one note and never a refusal.
-func (m model) claimRoot(dir string) {
+// claimLaunch writes this session's claim on the worktree dir sits in — the
+// root or a linked one, every launch (Task 405) — and keeps the release for
+// releaseRootClaim, so other launches warn about it (held) exactly while the
+// agent runs. It is the claim of the run commands that cannot claim for
+// themselves (the slot flow's waiter); runRecordAndWaitCmd claims its own run
+// the same way — two claims of one process are one claim file, twice-safe.
+// Another live holder is not a question here: launchwarn's held warning has
+// named them, and the person has answered it. HoldLaunch's others are dropped
+// for the same reason: a launch prints exactly one held line. A claim that
+// cannot be read or written is one note and never a refusal.
+func (m model) claimLaunch(dir string) {
 	if dir == "" {
 		// A zero Target names no directory — it is the not-a-checkout
 		// outcome (or a path that never resolved); a real read failure
@@ -211,25 +214,9 @@ func (m model) claimRoot(dir string) {
 		// for the same empty Dir; the claim goes with it.
 		return
 	}
-	root, ok, err := rootclaim.Lookup(dir)
-	if !ok {
-		return
-	}
-	note := func(err error) {
-		fmt.Fprintf(os.Stderr, "wt: note: %s\n", sessionclaim.CheckFailed(root.Path, err))
-	}
+	release, _, err := rootclaim.HoldLaunch(dir, m.agent)
 	if err != nil {
-		note(err)
-		return
-	}
-	self, err := root.Self(m.agent)
-	if err != nil {
-		note(err)
-		return
-	}
-	release, _, err := sessionclaim.Join(root.CommonDir, self, func([]sessionclaim.Claim) bool { return true })
-	if err != nil {
-		note(err)
+		fmt.Fprintf(os.Stderr, "wt: note: %s\n", sessionclaim.CheckFailed(dir, err))
 		return
 	}
 	rootClaimRelease = release

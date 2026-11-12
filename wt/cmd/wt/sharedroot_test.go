@@ -127,11 +127,12 @@ func TestHoldRootClaimsTheRootOnly(t *testing.T) {
 
 // TestNamedWorktreeLaunchDecidesOnTheResolvedDir checks a launch is judged by
 // the directory it resolves to, not the flag that named it: -W naming a linked
-// worktree is never warned about or claimed even while another session holds
-// the root, and a launch in the root claims it for the agent's run — held by
-// another live session it warns (naming the holder) and proceeds. Why: the
-// warnings must describe the place the agent will actually start; the old
-// shared-root refusal and its c/w/q menu are gone.
+// worktree is never warned about even while another session holds the root —
+// it claims its own worktree for the agent's run (Task 405) — and a launch in
+// the root claims it for the agent's run too: held by another live session it
+// warns (naming the holder) and proceeds. Why: the warnings must describe the
+// place the agent will actually start; the old shared-root refusal and its
+// c/w/q menu are gone.
 func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
 	t.Run("linked worktree", func(t *testing.T) {
 		root := sharedRootRepo(t)
@@ -146,8 +147,11 @@ func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
 		if s := notes.String(); strings.Contains(s, "in use by another session") || strings.Contains(s, "is the repository root") {
 			t.Errorf("notes = %q; a linked worktree is not the root", s)
 		}
-		if res.claimSeen || fileExists(ownClaim(root)) {
-			t.Error("a linked-worktree launch claimed the root")
+		if !res.claimSeen {
+			t.Error("the agent did not see the linked worktree's claim while it ran")
+		}
+		if fileExists(ownClaim(root)) {
+			t.Error("the claim outlived the agent")
 		}
 	})
 	t.Run("root, held", func(t *testing.T) {

@@ -48,13 +48,14 @@ func TestLaunchGateRootNoOthersWarnsAndClaims(t *testing.T) {
 	}
 }
 
-// TestLaunchGateLinkedWorktreePrintsInfoAndClaimsNothing checks R1b's rule
-// for the ordinary pick: every pick with a directory states where it launches
-// (the one informational line) and, when nothing warns, asks nothing and
-// claims nothing — even while another session holds the root. The line is
-// the pick's acknowledgement, cmd/wt confirmLaunch's parity; claims stay
-// root-only.
-func TestLaunchGateLinkedWorktreePrintsInfoAndClaimsNothing(t *testing.T) {
+// TestLaunchGateLinkedWorktreePrintsInfoAndClaimsItsWorktree checks R1b's
+// rule for the ordinary pick: every pick with a directory states where it
+// launches (the one informational line) and, when nothing warns, asks nothing
+// — even while another session holds the root — and claims the picked
+// worktree itself, named in the claim's path (Task 405: every launch claims
+// its own worktree, not only the root). The line is the pick's
+// acknowledgement, cmd/wt confirmLaunch's parity.
+func TestLaunchGateLinkedWorktreePrintsInfoAndClaimsItsWorktree(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
 	root := rootRepo(t)
 	linked := linkedWorktree(t, root)
@@ -71,8 +72,12 @@ func TestLaunchGateLinkedWorktreePrintsInfoAndClaimsNothing(t *testing.T) {
 	if got, want := stderr(), "wt: launching in "+tg.Dir+"\n"; got != want {
 		t.Errorf("gate printed %q; want the one informational line %q and no question", got, want)
 	}
-	if claimExists(root) {
-		t.Error("a linked-worktree launch claimed the root")
+	if !claimExists(root) {
+		t.Fatal("a linked-worktree launch wrote no claim")
+	}
+	claim := readClaimFields(t, myClaim(root))
+	if claim["path"] != linked {
+		t.Errorf("claim path = %q; want the picked worktree %q (never the root %q)", claim["path"], linked, root)
 	}
 }
 
@@ -301,20 +306,25 @@ func TestSlotRootLaunchClaimsUntilTheAgentExits(t *testing.T) {
 	}
 }
 
-// TestLinkedLaunchWritesNoClaim checks a launch in a linked worktree never
-// writes a claim through the gate or the run command: claims are for the root
-// only, so a session in a worktree is invisible to other launches.
-func TestLinkedLaunchWritesNoClaim(t *testing.T) {
+// TestLinkedLaunchClaimsForTheAgentsRun checks a launch in a linked worktree
+// claims that worktree through the gate and the run command, live exactly for
+// the agent's run: the agent sees a claim naming the worktree and it is gone
+// once the agent exits (Task 405 — claims cover every worktree, not only the
+// root, and never outlive the run).
+func TestLinkedLaunchClaimsForTheAgentsRun(t *testing.T) {
 	keepPendingPostExit(t)
 	t.Cleanup(releaseRootClaim)
 	root := rootRepo(t)
 	linked := linkedWorktree(t, root)
 	answerOnStdio(t, "")
-	agent := exec.Command("sh", "-c", "test ! -e '"+myClaim(root)+"'")
+	agent := exec.Command("sh", "-c", "grep -qFx 'path="+linked+"' '"+myClaim(root)+"'")
 	agent.Dir = linked
 	m := model{agent: "claude", selectedPath: linked}
 	if done, ok := runAndWaitCmd(agent, "claude", config.Model{}, m.gateFor())().(launchDoneMsg); !ok || done.err != nil {
-		t.Fatal("a claim was written for a linked-worktree launch")
+		t.Fatal("the agent did not see the linked worktree's claim while it ran")
+	}
+	if claimExists(root) {
+		t.Error("the claim outlived the agent")
 	}
 }
 
@@ -562,7 +572,7 @@ func TestPickRemoteRowCarriesPRIntoTheCreationTarget(t *testing.T) {
 }
 
 // TestZeroTargetGateClaimsNothing checks a gate on the zero Target (the
-// not-a-checkout outcome) writes no session claim. claimRoot(t.Dir) with an
+// not-a-checkout outcome) writes no session claim. claimLaunch(t.Dir) with an
 // empty Dir claims filepath.Abs(""): the process's working directory, whose
 // repository root then carries a false held warning for every other session
 // at a root this launch never named. confirmLaunch suppresses its info line
