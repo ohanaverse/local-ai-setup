@@ -114,9 +114,11 @@
   targeting it, origin fetched this run, so `--no-fetch` refuses it), and the
   push is a lease on the listed commit, so a branch pushed to since is left
   alone. The result prints the commit and `git push origin <sha>:refs/heads/<n>`
-  to restore it. `wt cleanup` now fetches every remote (never prompting) and
-  its header and JSON (`fetch.remotes`) say which; origin rows whose tip moved
-  after their PR merged are now less sure.
+  to restore it. Fetching is the user's call now (it used to run on every
+  list, never prompting); `--json` and `--plain` still fetch by default,
+  `--no-fetch` stops them, and the header and JSON (`fetch.remotes`) say what
+  was fetched or that nothing was. Origin rows whose tip moved after their PR
+  merged are now less sure.
 - `wt rescue <worktree-path-or-branch>` copies a worktree's local-only work into a new branch (`rescued/<name>`, or `--to NAME`) and worktree under `.worktrees/`: the branch starts at the original's exact HEAD (so its commits come along) and carries staged, unstaged and untracked files, then checks the copy against the original before it reports `moved`. The original is only read (a later change lets a clean one read removable once its record exists; see the Unreleased entry). Refuses, creating nothing, a rebase or merge in progress, unmerged paths, skip-worktree files, a changed submodule, a file both staged and modified, a nested repository and similar; a failure after the new worktree exists keeps it. `--dry-run`, `--yes`, `--json` ([contract](../docs/contracts/rescue-result.schema.json)); exit 0 done, 1 could not start, 2 refused or failed, 3 approval missing. In `wt cleanup`'s list, `r` rescues the row under the cursor. Every git call `wt cleanup` and `wt remove` make now runs with `GIT_OPTIONAL_LOCKS=0`, so listing no longer refreshes a worktree's index.
 - When the agent exits, `wt` offers to remove the worktree and branch this
   launch created if nothing changed in them: `<path> was created for this
