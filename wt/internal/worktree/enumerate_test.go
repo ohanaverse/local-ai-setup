@@ -626,8 +626,10 @@ func TestLastFetched(t *testing.T) {
 		t.Fatalf("LastFetched at a linked root with no fetch = %v, true; want false (its own stamp, not the primary's)", got)
 	}
 
-	// A fetch at the linked root advances the linked stamp past the
-	// primary's, which stays exactly as it was.
+	// A fetch at the linked root gives it its own stamp, never an older
+	// time than the primary's (non-strict: a filesystem coarser than the
+	// inter-fetch gap may stamp both alike) — while the primary's stays
+	// exactly as it was.
 	if err := FetchRemotes(linked); err != nil {
 		t.Fatalf("FetchRemotes(linked): %v", err)
 	}
@@ -635,8 +637,8 @@ func TestLastFetched(t *testing.T) {
 	if !ok {
 		t.Fatal("LastFetched after FetchRemotes at the linked root = false; want true")
 	}
-	if !got.After(primary) {
-		t.Errorf("linked stamp %v did not advance past the primary's %v", got, primary)
+	if got.Before(primary) {
+		t.Errorf("linked stamp %v is older than the primary's %v", got, primary)
 	}
 	if after, ok := LastFetched(cloneDir); !ok || !after.Equal(primary) {
 		t.Errorf("the linked fetch moved the primary stamp: %v, %v; want %v, true", after, ok, primary)

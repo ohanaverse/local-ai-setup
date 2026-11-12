@@ -54,9 +54,10 @@ func pickerInputs(cwd string) cleanup.GatherInputs {
 }
 
 // loadRowsCmd gathers root's rows for the picker: the fetch the picker has
-// always done on open (worktree.FetchRemotes, best effort, at most five
-// seconds, a failure silent) when fetch is set, then cleanup.Gather with in
-// (never fetching itself, never asking gh: SkipPRs) and Classify. A
+// always done on open (worktree.FetchRemotes, at most five seconds; ok or
+// failure recorded in in.Fetched for the header to render — a failure is
+// shown there, never swallowed) when fetch is set, then cleanup.Gather with
+// in (never fetching itself, never asking gh: SkipPRs) and Classify. A
 // repository with no default branch still lists, every row Unknown.
 func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bool) tea.Cmd {
 	return func() tea.Msg {
