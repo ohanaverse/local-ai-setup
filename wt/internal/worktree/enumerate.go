@@ -49,6 +49,24 @@ func FetchRemotes(root string) error {
 	return fmt.Errorf("git fetch --all --prune: %w", err)
 }
 
+// LastFetched returns when a git fetch last rewrote the repository's
+// remote-tracking refs — the mtime of FETCH_HEAD, which git writes on every
+// fetch, a manual one included — and false when there is none: never fetched
+// here, which the list shows as "not refreshed here". Fetch state belongs to
+// the repository, so the stamp is read from the common git directory and
+// every linked worktree shares it.
+func LastFetched(root string) (time.Time, bool) {
+	common, err := CommonDirAt(root)
+	if err != nil {
+		return time.Time{}, false
+	}
+	fi, err := os.Stat(filepath.Join(common, "FETCH_HEAD"))
+	if err != nil || fi.IsDir() {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
+}
+
 // Type of a pickable target.
 type Type string
 
@@ -392,9 +410,9 @@ func IsDefaultBranchForm(branch, db string) bool {
 // Enumerate returns every worktree and branch grouped by kind: worktrees
 // first, then local branches, then remote branches. It hides nothing: a
 // branch a worktree holds is also a local branch, and a remote branch with a
-// same-named local branch is listed too. It does not fetch (FetchRemotes
-// does). Only `wt --debug-worktrees` uses it; the picker lists
-// internal/cleanup's rows.
+// same-named local branch is listed too. It is read-only: it fetches and
+// prunes nothing (FetchRemotes does both, on request). Only `wt
+// --debug-worktrees` uses it; the picker lists internal/cleanup's rows.
 func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 	groups, _, err := EnumerateRepos(dir, cwdRoot)
 	return groups, err

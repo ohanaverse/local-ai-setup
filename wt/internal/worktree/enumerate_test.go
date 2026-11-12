@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // gitInit creates a minimal git repo with one commit on main/master so
@@ -380,12 +381,13 @@ func TestEnumerateListsARemoteBranchBesideItsLocal(t *testing.T) {
 	}
 }
 
-// TestFetchRemotesFetchesNewRemoteBranches pins FetchRemotes, the one home
-// of the picker's fetch: a branch a teammate pushed since the last manual
-// fetch is a remote-tracking ref after it. Enumerate itself no longer
-// fetches (the picker calls FetchRemotes on open; Part 3 moves that to a
-// refresh key), so the branch is absent before the call.
-func TestFetchRemotesFetchesNewRemoteBranches(t *testing.T) {
+// TestEnumerateDoesNotFetch pins Enumerate as read-only in what it shows: a
+// branch a teammate pushed since the last fetch is not listed, and no
+// remote-tracking ref appears. Enumeration refreshes nothing — that is
+// FetchRemotes' job (the picker calls it on open; Part 3 moves that to a
+// refresh key) — so the list and the launch warnings never fetch behind the
+// user's back.
+func TestEnumerateDoesNotFetch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
@@ -413,35 +415,32 @@ func TestFetchRemotesFetchesNewRemoteBranches(t *testing.T) {
 		t.Fatalf("git push teammate-feature: %v\n%s", err, out)
 	}
 
-	has := func() bool {
-		groups, err := Enumerate(dir, dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, g := range groups {
-			for _, e := range g.Entries {
-				if e.Branch == "origin/teammate-feature" {
-					return true
-				}
+	// The branch is genuinely unfetched before Enumerate looks, so its
+	// absence below is about Enumerate, not about the setup.
+	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/teammate-feature"); strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("teammate-feature already fetched into dir: %s", out)
+	}
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			if e.Branch == "origin/teammate-feature" {
+				t.Fatal("Enumerate fetched: origin/teammate-feature listed without FetchRemotes")
 			}
 		}
-		return false
 	}
-	if has() {
-		t.Fatal("Enumerate fetched: origin/teammate-feature listed before FetchRemotes")
-	}
-	if err := FetchRemotes(dir); err != nil {
-		t.Fatalf("FetchRemotes: %v", err)
-	}
-	if !has() {
-		t.Fatal("origin/teammate-feature missing after FetchRemotes")
+	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/teammate-feature"); strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("Enumerate fetched: origin/teammate-feature appeared: %s", out)
 	}
 }
 
-// TestFetchRemotesPrunesDeletedRemoteBranches pins --prune: a
-// remote-tracking ref for a branch deleted upstream is gone after
-// FetchRemotes, instead of lingering as a stale row.
-func TestFetchRemotesPrunesDeletedRemoteBranches(t *testing.T) {
+// TestEnumerateDoesNotPrune pins the other half of the same contract: the
+// remote-tracking ref of a branch deleted upstream is still listed. Stale
+// rows stay until FetchRemotes --prune removes them — a read-only
+// enumeration never silently shrinks the list under the user.
+func TestEnumerateDoesNotPrune(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
@@ -462,22 +461,84 @@ func TestFetchRemotesPrunesDeletedRemoteBranches(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+	// Upstream deletion leaves dir's origin/gone-soon stale.
 	if out, err := exec.Command("git", "-C", remoteDir, "branch", "-D", "gone-soon").CombinedOutput(); err != nil {
 		t.Fatalf("git -C remote branch -D gone-soon: %v\n%s", err, out)
 	}
 
+	groups, err := Enumerate(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, g := range groups {
+		for _, e := range g.Entries {
+			found = found || e.Branch == "origin/gone-soon"
+		}
+	}
+	if !found {
+		t.Fatalf("Enumerate pruned origin/gone-soon (deleted upstream): %+v", groups)
+	}
+}
+
+// TestFetchRemotesFetchesNewAndPrunesDeleted pins FetchRemotes, the one
+// explicit ref refresh (`git fetch --all --prune`, at most fetchTimeout): a
+// branch a teammate pushed becomes a remote-tracking ref, and the ref of a
+// branch deleted upstream goes away instead of lingering as a stale row.
+func TestFetchRemotesFetchesNewAndPrunesDeleted(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	remoteDir := filepath.Join(dir, "remote.git")
+	// -b main pins the bare repo's HEAD whatever init.defaultBranch says.
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare remote: %v\n%s", err, out)
+	}
+	// gone-soon is pushed and fetched here, then deleted upstream, leaving
+	// dir's origin/gone-soon stale before FetchRemotes runs.
+	for _, args := range [][]string{
+		{"remote", "add", "origin", remoteDir},
+		{"push", "-u", "origin", "main"},
+		{"checkout", "-b", "gone-soon"},
+		{"push", "origin", "gone-soon"},
+		{"checkout", "main"},
+		{"fetch", "origin"},
+		{"branch", "-d", "gone-soon"},
+	} {
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if out, err := exec.Command("git", "-C", remoteDir, "branch", "-D", "gone-soon").CombinedOutput(); err != nil {
+		t.Fatalf("git -C remote branch -D gone-soon: %v\n%s", err, out)
+	}
+	// A teammate then pushes a branch dir has never fetched.
+	cloneDir := t.TempDir()
+	if out, err := exec.Command("git", "clone", remoteDir, cloneDir).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(cloneDir, "checkout", "-b", "teammate-feature"); err != nil {
+		t.Fatalf("git checkout -b teammate-feature: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(cloneDir, "push", "origin", "teammate-feature"); err != nil {
+		t.Fatalf("git push teammate-feature: %v\n%s", err, out)
+	}
+
 	if err := FetchRemotes(dir); err != nil {
 		t.Fatalf("FetchRemotes: %v", err)
+	}
+	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/teammate-feature"); strings.TrimSpace(string(out)) == "" {
+		t.Fatal("origin/teammate-feature missing after FetchRemotes")
 	}
 	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/gone-soon"); strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("origin/gone-soon should have been pruned: %s", out)
 	}
 }
 
-// TestFetchRemotesReportsFailureInOneLine pins FetchRemotes' error: a dead
-// remote is an error the caller may ignore (the picker does, silently), its
-// text one line, and Enumerate is unaffected by it.
-func TestFetchRemotesReportsFailureInOneLine(t *testing.T) {
+// TestFetchRemotesReportsFailure pins FetchRemotes' error: a dead remote is
+// an error the caller may ignore (the picker does, silently), its text one
+// line, and Enumerate is unaffected by it.
+func TestFetchRemotesReportsFailure(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
@@ -497,6 +558,46 @@ func TestFetchRemotesReportsFailureInOneLine(t *testing.T) {
 	}
 	if len(groups) != 3 {
 		t.Fatalf("got %d groups, want 3", len(groups))
+	}
+}
+
+// TestLastFetched pins LastFetched, the source of the list's "refreshed
+// when" note: the mtime of FETCH_HEAD, the file git rewrites on every fetch
+// (a manual one counts too), and false when there is none — "not refreshed
+// here". Fetch state belongs to the repository, so a linked worktree reads
+// the same stamp through the common git directory.
+func TestLastFetched(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	if got, ok := LastFetched(dir); ok {
+		t.Fatalf("LastFetched with no FETCH_HEAD = %v, true; want false", got)
+	}
+
+	fetchHead := filepath.Join(dir, ".git", "FETCH_HEAD")
+	if err := os.WriteFile(fetchHead, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Truncated to a second: filesystem timestamp resolution varies, and
+	// the contract is the mtime itself, not sub-second precision.
+	want := time.Now().Add(-3 * time.Minute).Truncate(time.Second)
+	if err := os.Chtimes(fetchHead, want, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := LastFetched(dir)
+	if !ok {
+		t.Fatal("LastFetched with FETCH_HEAD present = false; want true")
+	}
+	if !got.Equal(want) {
+		t.Errorf("LastFetched = %v, want FETCH_HEAD mtime %v", got, want)
+	}
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	if out, err := runGitCmd(dir, "worktree", "add", "-b", "linked-stamp", linked); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	if got, ok := LastFetched(linked); !ok || !got.Equal(want) {
+		t.Errorf("LastFetched(linked worktree) = %v, %v; want %v, true", got, ok, want)
 	}
 }
 
