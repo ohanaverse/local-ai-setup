@@ -32,8 +32,9 @@ func refuse(code, format string, a ...any) *rescue.Refusal {
 //
 // The order: the primary checkout (bare or unreadable: a read failure; no
 // commit yet: no_commit); detached_root; no_default_branch (none resolves, or
-// it exists only as origin/<d>); already_default; default_in_worktree;
-// worktrees_not_ignored; hidden_index_flags (assume-unchanged or
+// it exists only as origin/<d>); already_default; default_in_worktree; the
+// root's held read (refuses nothing, but its read failure preempts what
+// follows); worktrees_not_ignored; hidden_index_flags (assume-unchanged or
 // skip-worktree, a sparse checkout included); rescue's root-mode Preflight
 // with its own refusals; ignored_collision (an ignored file the reset would
 // destroy, removal.RootIgnoredAtRisk, or one at a path the default branch
@@ -222,16 +223,16 @@ func (e Engine) heldBy(common, root string) (string, error) {
 		return "", fmt.Errorf("could not read the root's session claims: %w", err)
 	}
 	key := cleanup.ResolvePath(root)
-	var mine []sessionclaim.Claim
+	var onRoot []sessionclaim.Claim
 	for path, cs := range holders {
 		if cleanup.ResolvePath(path) == key {
-			mine = append(mine, cs...)
+			onRoot = append(onRoot, cs...)
 		}
 	}
-	slices.SortFunc(mine, func(a, b sessionclaim.Claim) int { return a.PID - b.PID })
+	slices.SortFunc(onRoot, func(a, b sessionclaim.Claim) int { return a.PID - b.PID })
 	now := time.Now()
-	names := make([]string, 0, len(mine))
-	for _, o := range mine {
+	names := make([]string, 0, len(onRoot))
+	for _, o := range onRoot {
 		names = append(names, cleanup.OneLine(sessionclaim.Describe(o, now)))
 	}
 	return strings.Join(names, "; "), nil

@@ -6,10 +6,9 @@ import (
 	"time"
 )
 
-// Describe names one other session in the warning or refusal text it is
-// rendered into — the launch warnings' held entry and `wt restore-root`'s
-// root-held refusals: its agent, pid, how long it has run at now, and its
-// branch.
+// Describe names one other session in the warning text it is rendered into
+// — the launch warnings' held entry and `wt restore-root`'s root-held
+// warning: its agent, pid, how long it has run at now, and its branch.
 func Describe(c Claim, now time.Time) string {
 	running := now.Sub(time.Unix(c.Started, 0)).Round(time.Second)
 	return fmt.Sprintf("%s (pid %d, running %s, started on %s)", c.Agent, c.PID, running, c.Branch)
