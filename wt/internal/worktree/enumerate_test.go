@@ -718,7 +718,7 @@ func TestRootOfPrimaryYes(t *testing.T) {
 }
 
 // TestRootOfLinkedWorktreeNo checks a linked worktree is not the root, so a
-// launch there never shows the shared-root warning.
+// launch there never shows the root warning.
 func TestRootOfLinkedWorktreeNo(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -768,8 +768,9 @@ func TestRootOfSymlinkedRootYes(t *testing.T) {
 
 // TestRootOfMiscasedPathYes checks a root reached by a path that differs only
 // in letter case (the same directory on a case-insensitive filesystem) is
-// still the root, because the root gate must not be skipped by typing the
-// path in another case. It skips where the filesystem is case-sensitive.
+// still the root, because the root warning and the root claim must not be
+// skipped by typing the path in another case. It skips where the filesystem
+// is case-sensitive.
 func TestRootOfMiscasedPathYes(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
