@@ -183,23 +183,23 @@ var buildPassthrough = agents.BuildPassthroughCmd
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
 // launchDoneMsg. It records nothing: a command or passthrough launch has no
 // model to record.
-func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
-	return runRecordAndWaitCmd(cmd, agent, m, nil)
+func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() bool) tea.Cmd {
+	return runRecordAndWaitCmd(cmd, agent, m, nil, gate)
 }
 
 // runRecordAndWaitCmd is runAndWaitCmd with the launch's state writes:
-// record, when non-nil, is called once the launch is committed (the root is
-// held and the agent starts next, or the profile failed, as it always did
-// after recording) and returns the status its errors make, "" for none. A
-// quit at the root prompt calls it never, so it leaves no trace.
-func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string) tea.Cmd {
+// record, when non-nil, is called once the launch is committed (the gate is
+// past and the agent starts next, or the profile failed, as it always did
+// after recording) and returns the status its errors make, "" for none. gate,
+// when non-nil, is the launch's one question (m.launchGate, through
+// m.gateFor) at the commit point; a decline calls record never, so it leaves
+// no trace. A nil gate is a direct test call: it asks nothing and claims
+// nothing.
+func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() bool) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
 	}
 	return func() tea.Msg {
-		// The directory the agent was built for, read before a profile can
-		// touch the command: a root launch claims it for the run (holdRoot).
-		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			// defer the restore so a panic in cmd.Run() still returns
@@ -245,18 +245,19 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 		if profileCleanup == nil {
 			profileCleanup = func() error { return nil }
 		}
-		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
-		if !held {
-			// The person quit at the root prompt: nothing runs and nothing
-			// is recorded or summarised, as when quitting the picker.
+		if gate != nil && !gate() {
+			// The person declined at the launch gate: nothing runs and
+			// nothing is created, claimed, recorded or summarised, as when
+			// quitting the picker.
 			_ = profileCleanup()
 			return launchDoneMsg{}
 		}
-		// The commit point: the agent runs next.
+		// The commit point: the agent runs next. The gate has made any
+		// worktree this pick owed and claimed the root for the run.
 		status := record()
 		exitprompt.Launched(cmd.Dir)
 		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
-		release()
+		releaseRootClaim()
 		// Capture (do not print) the summary line. Printing here would
 		// land inside the alt-screen buffer, which bubbletea discards at
 		// tea.Quit shutdown. Run() reads pendingSummary after p.Run()

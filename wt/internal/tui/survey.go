@@ -47,7 +47,7 @@ func realRunStopPhase(cfg *config.Config) {
 }
 
 // ExitPrompt is cmd/wt's Env for the post-exit worktree prompt (its registry
-// and protected artifacts), set before Run like SharedRoot.
+// and protected artifacts), set by cmd/wt before Run.
 var ExitPrompt exitprompt.Env
 
 // offerExitPrompt is a seam for tests: production offers to remove the

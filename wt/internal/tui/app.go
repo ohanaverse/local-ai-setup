@@ -38,7 +38,6 @@ const (
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
-	phaseSharedRoot                  // another live session holds the repository root the launch resolved to; c/w/q
 )
 
 // model holds the entire UI state.
@@ -128,9 +127,10 @@ type model struct {
 	slot    *slotFlow // in-flight profile launch; nil when idle
 	slotRun int       // monotonically increasing run id; stale messages are dropped by id
 
-	// shared-root screen: the launch resolved to the repository root while
-	// another live session holds it (sharedroot.go).
-	sharedRoot *sharedRootState // phaseSharedRoot; nil when not shown
+	// creation is the pick that owes its worktree at the commit point (a bare
+	// branch or a remote-only branch): resolved read-only here, made only once
+	// the launch gate says go (launchgate.go). nil for every other pick.
+	creation *launchCreation
 
 	// new-worktree prompt
 	newInput         textinput.Model
@@ -274,8 +274,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case rowChosenMsg:
-		// Enter on a picker row: the launch flow's own message, so the
-		// bare-branch create and the shared-root check run as they always did.
+		// Enter on a picker row: the launch flow's own message, so an owed
+		// creation is bound to the launch (selectedEntryMsg).
 		if m.creating {
 			return m, nil
 		}
@@ -292,26 +292,25 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case selectedEntryMsg:
-		// Bare branches (TypeBranch, Path="") have no worktree yet. Create
-		// one via EnsureForBranch before proceeding, so the agent launches
-		// in a worktree rather than in wt's CWD (cmd.Dir="").
+		// Bare branches (TypeBranch, Path="") and remote-only branches have
+		// no worktree yet. The pick owes one: resolve the plan read-only here
+		// — so the launch gate can state the creation in launchwarn's frozen
+		// wording and a declined gate creates nothing — and let the commit
+		// point make it (launchCreation). The plan's path is where the agent
+		// launches, rather than wt's CWD (cmd.Dir="").
 		if msg.entry.Type == worktree.TypeBranch && msg.entry.Path == "" {
-			m.creating = true
-			return m, ensureBranchWorktreeCmd(m.repoRoot, msg.entry.Branch)
+			plan, err := worktree.Resolve(m.repoRoot, msg.entry.Branch)
+			if err != nil {
+				m.listError = err.Error()
+				m.phase = phaseList
+				return m, nil
+			}
+			m.creation = &launchCreation{repoRoot: m.repoRoot, name: msg.entry.Branch, plan: plan}
+			m.selectedPath = plan.Path()
+			return m.proceedFromSelectedPath()
 		}
 		m.selectedPath = msg.entry.Path
 		return m.proceedFromSelectedPath()
-	case branchWorktreeCreatedMsg:
-		m.creating = false
-		if msg.err != nil {
-			m.listError = msg.err.Error()
-			m.phase = phaseList
-			return m, nil
-		}
-		m.selectedPath = msg.path
-		return m.proceedFromSelectedPath()
-	case sharedRootWorktreeMsg:
-		return m.handleSharedRootWorktree(msg)
 	case launchDoneMsg:
 		if msg.status != "" {
 			m.status = msg.status
@@ -346,11 +345,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// And a profile launch's route stage, for the same reason.
 		if m.phase == phaseSlot && m.slot != nil {
 			return m.handleSlotKey(msg)
-		}
-		// The shared-root screen takes its own keys (c, w, q, Esc), before
-		// the general q/esc handling below.
-		if m.phase == phaseSharedRoot && m.sharedRoot != nil {
-			return m.handleSharedRootKey(msg)
 		}
 		// The worktree picker is the row list: every key is its own (q and
 		// esc quit there, `/` filters, and while the filter is typed every
@@ -656,12 +650,6 @@ func (m model) View() string {
 		}
 		return clip(m.slotView(), m.width)
 	}
-	if m.phase == phaseSharedRoot && m.sharedRoot != nil {
-		if m.width <= 0 || m.height <= 0 {
-			return "shared root (waiting for window size)"
-		}
-		return m.sharedRootView()
-	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
 			return "replace confirm (waiting for window size)"
@@ -697,7 +685,7 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
-	return m, runAndWaitCmd(cmd, name, config.Model{})
+	return m, runAndWaitCmd(cmd, name, config.Model{}, m.gateFor())
 }
 
 // launchPassthrough builds and runs a model-driven agent that has no
@@ -713,14 +701,13 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 		return m, nil
 	}
 	queueLaunchNotes(name, cmd, m.extraArgs)
-	return m, runAndWaitCmd(cmd, name, config.Model{})
+	return m, runAndWaitCmd(cmd, name, config.Model{}, m.gateFor())
 }
 
 // proceedFromSelectedPath continues the launch flow once m.selectedPath is
-// resolved — either directly from a worktree/current entry, or after
-// EnsureForBranch materialized a worktree for a bare branch. It is the body
-// of the old selectedEntryMsg handler, extracted so both the direct pick and
-// the post-create path share it.
+// resolved — either directly from a worktree/current entry, or as the plan
+// path of a pick that owes its worktree (m.creation, made at the commit
+// point). It is the body of the old selectedEntryMsg handler.
 //
 // PR 2: the agent/command picker is the new explicit entry point. When the
 // user pinned an agent via --agent, mirror the pre-PR-2 UX: a shell --agent
@@ -728,23 +715,16 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 // to phaseModel. This keeps `wt --agent shell` and `wt --agent claude` exactly
 // as they behaved before PR 2 — only the unpinned path shows the picker.
 //
-// It is also where the shared-root check runs (sharedRootCheck): every launch
-// the TUI makes — a command, a passthrough agent, a model or a slot profile,
-// from a picker row or a preset path — learns its directory here, before
-// anything starts. A root another live session holds gets the shared-root
-// screen first, which continues in proceedWithPath.
+// The warnings every launch shows — root, held, PR merged, upstream gone,
+// default branch, dirty and held — are one question at the commit point
+// (launchGate), not a screen here: the pick proceeds through the flow and the
+// gate speaks when the agent is about to run.
 func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
-	if st := m.sharedRootCheck(); st != nil {
-		m.sharedRoot = st
-		m.phase = phaseSharedRoot
-		m.status = ""
-		return m, nil
-	}
 	return m.proceedWithPath()
 }
 
-// proceedWithPath is proceedFromSelectedPath once the shared-root check has
-// passed or the person chose to continue.
+// proceedWithPath is proceedFromSelectedPath: the flow continues to the agent
+// or the model screen.
 func (m model) proceedWithPath() (model, tea.Cmd) {
 	if m.initialAgent != "" {
 		m.agent = m.initialAgent
@@ -1221,9 +1201,9 @@ func (m model) launchSelected() (model, tea.Cmd) {
 // last-launched (so the next picker entry advances rotation) and a
 // live-session refcount entry for the model picker's "in use" column.
 // Recording is the single commit point, reached only after the ollama check
-// has been satisfied and, in the run command, once the root is held — so a
-// cancelled ollama warning, a failed ollama check or a quit at the root
-// prompt never advances the rotation or the refcount. Both state writes are
+// has been satisfied and, in the run command, once the launch gate is past —
+// so a cancelled ollama warning, a failed ollama check or a declined gate
+// never advances the rotation or the refcount. Both state writes are
 // best-effort: a failure of either (or both) surfaces in m.status (through
 // launchDoneMsg) and the launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
@@ -1240,7 +1220,7 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 		}
 		return strings.Join(errs, "; ")
 	}
-	return m, runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record)
+	return m, runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record, m.gateFor())
 }
 
 // findRepoRoot is the picker's `git rev-parse --show-toplevel`

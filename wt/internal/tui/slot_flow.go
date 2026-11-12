@@ -382,7 +382,7 @@ func (m model) launchSlot() (model, tea.Cmd) {
 	// called once more before the terminal is released, and every way the
 	// run command can fail returns to the model picker.
 	m.phase = phaseModel
-	return m, runSlotAndWaitCmd(cmd, m.agent, row)
+	return m, runSlotAndWaitCmd(cmd, m.agent, row, m.gateFor())
 }
 
 // runSlotAndWaitCmd is runAndWaitCmd for a slot-profile launch. It releases
@@ -390,11 +390,11 @@ func (m model) launchSlot() (model, tea.Cmd) {
 // wrapper through slotApplier, records the launch, runs the agent and
 // captures the summary. It never calls profileApplier: an automatic profile
 // is not applied to a slot-profile launch. An applier error, or no applier,
-// runs nothing and records nothing, and comes back as a slotAbortMsg.
-func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
+// runs nothing and records nothing, and comes back as a slotAbortMsg. gate is
+// the launch's one question at the commit point (runRecordAndWaitCmd's); a
+// decline runs nothing and records nothing.
+func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func() bool) tea.Cmd {
 	return func() tea.Msg {
-		// Read before the applier can touch the command, as runAndWaitCmd does.
-		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			defer func() {
@@ -418,10 +418,9 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		if cleanup == nil {
 			cleanup = func() error { return nil }
 		}
-		// A root another session now holds is asked about before anything is
-		// recorded, so quitting there leaves no trace of the launch.
-		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
-		if !held {
+		// The launch gate asks before anything is recorded, so declining
+		// there leaves no trace of the launch.
+		if gate != nil && !gate() {
 			_ = cleanup()
 			return launchDoneMsg{}
 		}
@@ -442,7 +441,7 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		cmd.Stderr = os.Stderr
 		exitprompt.Launched(cmd.Dir)
 		duration, runErr := agents.RunAndCleanup(cmd, cleanup)
-		release()
+		releaseRootClaim()
 		shown := config.Model{ID: row.Model.ID}
 		pendingSummary = agents.Summary(agent, shown, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}

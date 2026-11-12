@@ -143,11 +143,10 @@ func runLaunchPath(
 	// a picker is up, so a launch that went through the TUI says it again
 	// once the TUI has returned and the terminal is the user's.
 	runTUI := func() error {
-		// The TUI still runs its own shared-root screen (internal/tui);
-		// replacing it with the launch warnings is a later task. The flag
-		// that used to pre-approve it is gone, so its Allow is always false —
-		// the screen's behavior with that flag never given.
-		tui.SharedRoot = tui.RootCheck{}
+		// The TUI asks its one launch question at the commit point
+		// (internal/tui's launchGate) — except for a preset path, which
+		// RunE's confirmLaunch above has already asked about, so a root
+		// launch is asked at most once.
 		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
 		printSlotNotes()
 		// tui.Run returns the agent's run error after its post-exit flow;

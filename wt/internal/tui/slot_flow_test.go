@@ -551,7 +551,7 @@ func TestSlotApplierErrorAbortsTheLaunch(t *testing.T) {
 			}
 			oldStderr := os.Stderr
 			os.Stderr = w
-			msg := runSlotAndWaitCmd(exec.Command("touch", sentinel), "claude", row)()
+			msg := runSlotAndWaitCmd(exec.Command("touch", sentinel), "claude", row, nil)()
 			os.Stderr = oldStderr
 			_ = w.Close()
 			stderr, _ := io.ReadAll(r)

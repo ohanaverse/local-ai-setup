@@ -45,7 +45,7 @@ func TestPickerLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			keepPendingPostExit(t)
 			profileApplier = nil
-			msg := runAndWaitCmd(exec.Command("sh", "-c", c.script), "shell", config.Model{})()
+			msg := runAndWaitCmd(exec.Command("sh", "-c", c.script), "shell", config.Model{}, nil)()
 			m, _ := updateMsg(model{cfg: testConfig()}, msg)
 			err := runResult(m, nil)
 			if c.want == 0 {
@@ -72,7 +72,7 @@ func TestPickerProfileErrorIsReturned(t *testing.T) {
 	profileApplier = func(*exec.Cmd, string, config.Model) (func() error, error) {
 		return nil, errors.New("wrapper missing")
 	}
-	msg := runAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "shell", config.Model{})()
+	msg := runAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "shell", config.Model{}, nil)()
 	m, _ := updateMsg(model{cfg: testConfig()}, msg)
 	err := runResult(m, nil)
 	if err == nil || err.Error() != "wrapper missing" {
@@ -87,7 +87,7 @@ func TestSlotProfileLaunchReturnsTheAgentsExitStatus(t *testing.T) {
 	m := slotFlowFixture(t, idleOmlxSnapshot(), cloudProfile())
 	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
-	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row)()
+	msg := runSlotAndWaitCmd(exec.Command("sh", "-c", "exit 3"), "claude", row, nil)()
 	m, _ = updateMsg(m, msg)
 	if got := exitStatusOf(runResult(m, nil)); got != 3 {
 		t.Fatalf("result status = %d, want the agent's exit status 3", got)

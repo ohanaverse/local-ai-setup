@@ -59,7 +59,7 @@ func TestRunAndWaitCmdWiresStdio(t *testing.T) {
 		t.Skip("true not available")
 	}
 	cmd := exec.Command(truePath)
-	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
+	msg := runAndWaitCmd(cmd, "shell", config.Model{}, nil)()
 	done, ok := msg.(launchDoneMsg)
 	if !ok {
 		t.Fatalf("msg = %T, want launchDoneMsg", msg)
@@ -95,7 +95,7 @@ func TestRunAndWaitCmdCapturesSummaryOnSuccess(t *testing.T) {
 	t.Cleanup(func() { pendingSummary = prev })
 
 	cmd := exec.Command(truePath)
-	msg := runAndWaitCmd(cmd, "claude", config.Model{ID: "claude/sonnet"})()
+	msg := runAndWaitCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil)()
 	if _, ok := msg.(launchDoneMsg); !ok {
 		t.Fatalf("msg = %T, want launchDoneMsg", msg)
 	}
@@ -135,7 +135,7 @@ func TestRunAndWaitCmdCapturesSummaryOnFailure(t *testing.T) {
 	t.Cleanup(func() { pendingSummary = prev })
 
 	cmd := exec.Command(falsePath)
-	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
+	msg := runAndWaitCmd(cmd, "shell", config.Model{}, nil)()
 	done, ok := msg.(launchDoneMsg)
 	if !ok {
 		t.Fatalf("msg = %T, want launchDoneMsg", msg)
@@ -168,7 +168,7 @@ func TestRunAndWaitCmdCapturesPendingSurvey(t *testing.T) {
 	t.Cleanup(func() { pendingSurveyState = prev })
 
 	cmd := exec.Command(truePath)
-	msg := runAndWaitCmd(cmd, "claude", config.Model{ID: "claude/sonnet"})()
+	msg := runAndWaitCmd(cmd, "claude", config.Model{ID: "claude/sonnet"}, nil)()
 	if _, ok := msg.(launchDoneMsg); !ok {
 		t.Fatalf("msg = %T, want launchDoneMsg", msg)
 	}
@@ -236,7 +236,7 @@ func TestRunAndWaitCmdAppliesProfileApplier(t *testing.T) {
 
 	cmd := exec.Command("true")
 	m := config.Model{ID: "ollama/x", ModelName: "x"}
-	msg := runAndWaitCmd(cmd, "claude", m)()
+	msg := runAndWaitCmd(cmd, "claude", m, nil)()
 
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a successful launchDoneMsg", msg)
@@ -280,7 +280,7 @@ func TestRunAndWaitCmdProfileApplierErrorSkipsRun(t *testing.T) {
 	cmd := exec.Command("touch", sentinel)
 	m := config.Model{ID: "ollama/x", ModelName: "x"}
 
-	msg := runAndWaitCmd(cmd, "pi", m)()
+	msg := runAndWaitCmd(cmd, "pi", m, nil)()
 
 	done, ok := msg.(launchDoneMsg)
 	if !ok || done.err == nil {
@@ -311,7 +311,7 @@ func TestRunAndWaitCmdNilProfileApplierIsNoop(t *testing.T) {
 	t.Cleanup(func() { profileApplier = oldApplier })
 
 	cmd := exec.Command("true")
-	msg := runAndWaitCmd(cmd, "shell", config.Model{})()
+	msg := runAndWaitCmd(cmd, "shell", config.Model{}, nil)()
 	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a successful launchDoneMsg", msg)
 	}

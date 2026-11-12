@@ -50,7 +50,7 @@ func TestRunAndWaitCmdProfileSlotVarWinsOverSingleModelLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if done, ok := runAndWaitCmd(cmd, "claude", m)().(launchDoneMsg); !ok || done.err != nil {
+	if done, ok := runAndWaitCmd(cmd, "claude", m, nil)().(launchDoneMsg); !ok || done.err != nil {
 		t.Fatalf("runAndWaitCmd() = %#v, want a successful launchDoneMsg", done)
 	}
 

@@ -138,9 +138,10 @@ func ancestor(g cleanup.Git, a, b string) cleanup.Tri {
 // entryOfRow is the launch target a picker row stands for, in the shape the
 // old picker's entries had: the root and every worktree are their path and
 // branch (the root marked Root); a local branch with no worktree is a branch
-// entry with no path, so selectedEntryMsg creates its worktree; a remote-only
-// branch is its remote spelling ("origin/x") with RemoteBranch the bare
-// name, which EnsureForBranch turns into a local tracking branch.
+// entry with no path, so selectedEntryMsg binds the worktree its launch gate
+// creates at the commit point; a remote-only branch is its remote spelling
+// ("origin/x") with RemoteBranch the bare name, which that creation turns
+// into a local tracking branch.
 func entryOfRow(r cleanup.Row) worktree.Entry {
 	switch r.Kind {
 	case cleanup.KindBranch:

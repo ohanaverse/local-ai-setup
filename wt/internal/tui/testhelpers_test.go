@@ -3,13 +3,16 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,6 +27,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tiers"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // compactModelList builds a 78x22 list.Model from buildTable rows for models
@@ -438,6 +442,124 @@ func routeDoneFrom(t *testing.T, cmd tea.Cmd) routeDoneMsg {
 		t.Fatalf("first batched command returned %T, want routeDoneMsg", done)
 	}
 	return done
+}
+
+// rootRepo makes a repository with one commit on main and returns its root
+// with symlinks resolved, the spelling claims are written with.
+func rootRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", dir},
+		{"-C", dir, "config", "user.email", "test@test"},
+		{"-C", dir, "config", "user.name", "Test"},
+		{"-C", dir, "symbolic-ref", "HEAD", "refs/heads/main"},
+		{"-C", dir, "commit", "--allow-empty", "-q", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// linkedWorktree adds a linked worktree of root on a new branch and returns
+// its path.
+func linkedWorktree(t *testing.T, root string) string {
+	t.Helper()
+	path := filepath.Join(root, ".worktrees", "feature")
+	if out, err := exec.Command("git", "-C", root, "worktree", "add", "-q", "-b", "feature", path).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	return path
+}
+
+// liveOther writes a claim on root for a real, running process (a sleep
+// child killed on cleanup), so the liveness check sees a live session.
+func liveOther(t *testing.T, root, agent string) int {
+	t.Helper()
+	child := exec.Command("sleep", "60")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Unix()
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	pid := child.Process.Pid
+	dir := filepath.Join(root, ".git", "wt-sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=%s\n", pid, started, root, agent)
+	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(pid)), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+// myClaim is the path of this process's claim file on root.
+func myClaim(root string) string {
+	return filepath.Join(root, ".git", "wt-sessions", strconv.Itoa(os.Getpid()))
+}
+
+// claimExists reports whether this process's claim is on root right now.
+func claimExists(root string) bool { _, err := os.Stat(myClaim(root)); return err == nil }
+
+// stubShellLaunch swaps the shell launch for one that records the directory
+// it was built for and runs nothing, so a test sees whether, and where, the
+// command launch happened.
+func stubShellLaunch(t *testing.T) *[]string {
+	t.Helper()
+	var dirs []string
+	old := buildPassthrough
+	buildPassthrough = func(agent, worktreePath string, yolo bool, extraArgs []string) (*exec.Cmd, error) {
+		dirs = append(dirs, worktreePath)
+		return exec.Command("true"), nil
+	}
+	t.Cleanup(func() { buildPassthrough = old })
+	t.Cleanup(stubInstalled("opencode"))
+	return &dirs
+}
+
+// pickRow is the picker after Enter on a row at path, with an installed but
+// unconfigured agent pinned so a launch is one buildPassthrough call.
+func pickRow(t *testing.T, path string) (model, tea.Cmd, *[]string) {
+	t.Helper()
+	launched := stubShellLaunch(t)
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
+	m, cmd := updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: path}})
+	return m, cmd, launched
+}
+
+// answerOnStdio points os.Stdin at a file holding answer and os.Stderr at a
+// file whose text the returned func reads, until the test ends: the run
+// commands' commit-point gate asks on the real stdio (the terminal is the
+// user's by then), so a test answers it here.
+func answerOnStdio(t *testing.T, answer string) func() string {
+	t.Helper()
+	dir := t.TempDir()
+	in := filepath.Join(dir, "stdin")
+	if err := os.WriteFile(in, []byte(answer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.Create(filepath.Join(dir, "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldIn, oldErr := os.Stdin, os.Stderr
+	os.Stdin, os.Stderr = stdin, stderr
+	t.Cleanup(func() { os.Stdin, os.Stderr = oldIn, oldErr; stdin.Close(); stderr.Close() })
+	return func() string {
+		data, _ := os.ReadFile(stderr.Name())
+		return string(data)
+	}
 }
 
 // TestConfigHomeIsNotTheDevelopersOwn pins TestMain's throwaway config home:

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -275,41 +276,52 @@ func TestSelectedEntryMsgTransitionsToAgentPhase(t *testing.T) {
 	}
 }
 
-// TestBranchWorktreeCreatedSuccessProceeds asserts that a successful
-// bare-branch create sets selectedPath to the created worktree and proceeds
-// to the agent picker. Without this, the created worktree would be ignored
-// and the agent would still launch in wt's CWD.
-func TestBranchWorktreeCreatedSuccessProceeds(t *testing.T) {
+// TestSelectedEntryMsgBareBranchPlansTheCreation asserts that a bare-branch
+// pick binds the creation it owes — a read-only plan whose path the agent
+// will launch in, rather than wt's CWD (cmd.Dir="") — and proceeds to the
+// agent picker, creating nothing yet: the commit point's launch gate makes
+// the worktree only once the person continues, so a declined gate creates
+// nothing.
+func TestSelectedEntryMsgBareBranchPlansTheCreation(t *testing.T) {
 	tempStateDir(t) // isolate XDG_CONFIG_HOME so rotation state is fresh
-	m := model{cfg: testConfig(), width: 80, height: 24, creating: true}
-	got, _ := m.Update(branchWorktreeCreatedMsg{path: "/tmp/repo/.worktrees/feature", branch: "feature"})
-	gotModel := got.(model)
-	if gotModel.creating {
-		t.Error("creating = true, want false after create completes")
+	root := t.TempDir()
+	gitInit(t, root)
+	if out, err := exec.Command("git", "-C", root, "branch", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("git branch feature: %v\n%s", err, out)
 	}
-	if gotModel.selectedPath != "/tmp/repo/.worktrees/feature" {
-		t.Errorf("selectedPath = %q, want /tmp/repo/.worktrees/feature", gotModel.selectedPath)
+	m := model{cfg: testConfig(), width: 80, height: 24, repoRoot: root}
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"}})
+	gotModel := got.(model)
+	if gotModel.creation == nil {
+		t.Fatal("creation = nil; the pick owes a worktree and must carry its plan")
+	}
+	if gotModel.creation.name != "feature" {
+		t.Errorf("creation.name = %q, want feature", gotModel.creation.name)
+	}
+	if gotModel.selectedPath != gotModel.creation.plan.Path() {
+		t.Errorf("selectedPath = %q, want the plan path %q", gotModel.selectedPath, gotModel.creation.plan.Path())
 	}
 	if gotModel.phase != phaseAgent {
 		t.Errorf("phase = %v, want phaseAgent", gotModel.phase)
 	}
+	if _, err := os.Stat(gotModel.selectedPath); err == nil {
+		t.Errorf("%s exists at pick time; the creation belongs to the commit point", gotModel.selectedPath)
+	}
 }
 
-// TestBranchWorktreeCreatedErrorReturnsToList asserts that a failed
-// bare-branch create surfaces the error and returns to the list. A silent
-// failure would leave the user on a stale screen with no feedback.
-func TestBranchWorktreeCreatedErrorReturnsToList(t *testing.T) {
-	m := model{phase: phaseList, width: 80, height: 24, creating: true}
-	got, _ := m.Update(branchWorktreeCreatedMsg{err: errMock("git worktree add: boom")})
+// TestSelectedEntryMsgBareBranchResolveErrorReturnsToList asserts that a
+// bare-branch pick whose plan cannot be resolved surfaces the error and
+// returns to the list. A silent failure would leave the user on a stale
+// screen with no feedback.
+func TestSelectedEntryMsgBareBranchResolveErrorReturnsToList(t *testing.T) {
+	m := model{phase: phaseList, width: 80, height: 24, repoRoot: t.TempDir()} // not a git repo
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeBranch, Branch: "feature"}})
 	gotModel := got.(model)
-	if gotModel.creating {
-		t.Error("creating = true, want false after create completes")
-	}
 	if gotModel.phase != phaseList {
 		t.Errorf("phase = %v, want phaseList", gotModel.phase)
 	}
 	if gotModel.listError == "" {
-		t.Error("listError = empty, want error from msg")
+		t.Error("listError = empty, want the resolve error")
 	}
 }
 
