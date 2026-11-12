@@ -1112,13 +1112,17 @@ func TestWouldCreate(t *testing.T) {
 		{name: "default branch checked out in the root", arg: "main"},
 		{name: "empty name", arg: "", wantErr: true},
 		// The default branch's remote form is an ordinary remote-tracking
-		// name now (the refusal is gone): no create question and no error at
-		// classification. The local-branch conflict Ensure would report later
-		// is pinned by TestRemoteConflictsWithLocal.
+		// name: no form-specific refusal at classification. Its local branch
+		// is deleted here so the case tests that form alone — with a local
+		// branch left unheld, the name is a local-branch conflict instead,
+		// refused at the classification (the -W and typed-name
+		// TrackingNameWithLocalBranch tests) and, on EnsureForBranch, at the
+		// commit point (TestRemoteConflictsWithLocal).
 		{name: "default branch remote form", arg: "origin/main",
 			prepare: func(t *testing.T, dir string) {
 				setupDefaultRemote(t, dir)
 				git(t, dir, "checkout", "-b", "topic")
+				git(t, dir, "branch", "-D", "main")
 			}},
 		{name: "path collision", arg: "feature/x", wantErr: true,
 			prepare: func(t *testing.T, dir string) {

@@ -410,3 +410,66 @@ func TestPickerCreationRoutesRecordOnlyACreatedBranch(t *testing.T) {
 		}
 	})
 }
+
+// TestTypedNameVanishedWorktreeRefusesNamingGitWorktreePrune checks the typed
+// name's twin of cmd/wt's -W refusal: a branch registered to a worktree whose
+// directory was deleted resolves to a reuse that creates nothing, so Enter
+// must refuse before any creation is bound (nothing may announce a creation
+// the commit point will not make) and name the fix — git worktree prune frees
+// the registration. The prompt keeps the person's input for a correction.
+func TestTypedNameVanishedWorktreeRefusesNamingGitWorktreePrune(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	held, err := worktree.EnsureForName(dir, "feat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(held); err != nil {
+		t.Fatal(err)
+	}
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, newInput: newInputModel(80)}
+	m.newInput.SetValue("feat")
+	got, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.creation != nil {
+		t.Errorf("creation = %+v, want none: the plan is a reuse and creates nothing", got.creation)
+	}
+	if got.newError == "" || !strings.Contains(got.newError, "git worktree prune") || !strings.Contains(got.newError, "gone") {
+		t.Errorf("newError = %q, want the vanished-worktree refusal naming git worktree prune", got.newError)
+	}
+	if got.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want to stay on the prompt", got.phase)
+	}
+}
+
+// TestTypedNameTrackingNameWithLocalBranchRefusesBeforeAnnouncing checks the
+// typed twin of cmd/wt's early tracking refusal: "origin/foo" with a local foo
+// held by no worktree must be refused at Enter — before any creation is bound,
+// because the commit point's addTrackingWorktree would refuse it after the
+// creation line already promised it. The prompt keeps the input for a
+// correction; the name is never reinterpreted as reusing local foo.
+func TestTypedNameTrackingNameWithLocalBranchRefusesBeforeAnnouncing(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("commit", "--allow-empty", "-m", "init")
+	git("remote", "add", "origin", filepath.Join(dir, "remote.git"))
+	git("update-ref", "refs/remotes/origin/foo", "HEAD")
+	git("branch", "foo")
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, newInput: newInputModel(80)}
+	m.newInput.SetValue("origin/foo")
+	got, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.creation != nil {
+		t.Errorf("creation = %+v, want none: the tracking creation would be refused at the commit point", got.creation)
+	}
+	if got.newError == "" || !strings.Contains(got.newError, `local branch "foo" already exists`) || !strings.Contains(got.newError, `cannot create from remote "origin/foo"`) {
+		t.Errorf("newError = %q, want the early local-branch conflict refusal", got.newError)
+	}
+	if got.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want to stay on the prompt", got.phase)
+	}
+}

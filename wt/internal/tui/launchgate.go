@@ -186,9 +186,12 @@ func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error)
 		// here — cmd/wt's -W runs it unconditionally after the question
 		// (main.go:551). A reused worktree is Ensure's idempotent no-op and
 		// keeps this silent; a path that is only debris (a partial add, a
-		// half-deleted worktree, a stray file) is git's own error instead of
-		// a launch at a directory that is not a worktree, where every git
-		// command resolves to the repository root.
+		// stray file) is git's own error instead of a launch at a directory
+		// that is not a worktree, where every git command resolves to the
+		// repository root. A registered worktree whose directory is gone
+		// never reaches here at all: worktree.Resolve refuses the name (run
+		// git worktree prune), so nothing announces or launches at a path
+		// that does not exist.
 		if _, cerr := m.typedPlan.Ensure(); cerr != nil {
 			return false, cerr
 		}

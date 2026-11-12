@@ -330,3 +330,53 @@ func TestWorktreeFlagRecordsOnlyACreatedBranch(t *testing.T) {
 		}
 	})
 }
+
+// TestDashWVanishedWorktreeRefusesNamingGitWorktreePrune checks a name whose
+// registered worktree directory is gone (git lists the entry, prunable) is
+// refused before anything is announced or asked. The plan is a reuse — it
+// creates nothing — yet the missing path used to route it to ForNew, which
+// announced `creating worktree <p> for branch <b>` and then created nothing:
+// the agent died at chdir. The refusal names the fix (git worktree prune frees
+// the registration; wt never prunes on its own).
+func TestDashWVanishedWorktreeRefusesNamingGitWorktreePrune(t *testing.T) {
+	root := sharedRootRepo(t)
+	linked := addLinkedWorktree(t, root, "feat")
+	if err := os.RemoveAll(linked); err != nil {
+		t.Fatal(err)
+	}
+	notes := captureNotes(t)
+	stubStdinTTY(t, false)
+	res := runPinnedLaunch(t, root, []string{"-W", "feat"})
+	if res.err == nil || !strings.Contains(res.err.Error(), "git worktree prune") || !strings.Contains(res.err.Error(), "gone") {
+		t.Fatalf("err = %v; want the vanished-worktree refusal naming git worktree prune", res.err)
+	}
+	if strings.Contains(notes.String(), "creating") {
+		t.Errorf("a creation was announced for a plan that creates nothing: %q", notes.String())
+	}
+}
+
+// TestDashWTrackingNameWithLocalBranchRefusesBeforeAnnouncing checks
+// `wt -W origin/foo` with a local foo (no worktree) is refused at the name —
+// before any creation line or question. The plan is a tracking creation whose
+// commit point would refuse `local branch "foo" already exists — cannot create
+// from remote "origin/foo"` only after `creating worktree <p> for branch foo
+// tracking origin/foo` has already promised it; the failure is knowable at
+// classify time. The name is not reinterpreted as reusing local foo (wt -W foo
+// covers that).
+func TestDashWTrackingNameWithLocalBranchRefusesBeforeAnnouncing(t *testing.T) {
+	root := sharedRootRepo(t)
+	// origin/foo exists as a remote-tracking ref and its local branch foo
+	// exists too, held by no worktree.
+	cgit(t, root, "remote", "add", "origin", filepath.Join(root, "remote.git"))
+	cgit(t, root, "update-ref", "refs/remotes/origin/foo", "HEAD")
+	cgit(t, root, "branch", "foo")
+	notes := captureNotes(t)
+	stubStdinTTY(t, false)
+	res := runPinnedLaunch(t, root, []string{"-W", "origin/foo"})
+	if res.err == nil || !strings.Contains(res.err.Error(), `local branch "foo" already exists`) || !strings.Contains(res.err.Error(), `cannot create from remote "origin/foo"`) {
+		t.Fatalf("err = %v; want the early local-branch conflict refusal", res.err)
+	}
+	if strings.Contains(notes.String(), "creating") {
+		t.Errorf("a creation was announced for a plan that will be refused: %q", notes.String())
+	}
+}

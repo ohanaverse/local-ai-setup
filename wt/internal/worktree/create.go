@@ -42,7 +42,7 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	// Already checked out in a worktree? Use it.
 	for _, e := range entries {
 		if e.Branch == name && e.Path != "" {
-			return nameClass{kind: nameReuseWorktree, path: e.Path}, nil
+			return reuseClass(name, e.Path)
 		}
 	}
 
@@ -63,8 +63,17 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 		}
 		for _, e := range entries {
 			if e.Branch == short && e.Path != "" {
-				return nameClass{kind: nameReuseWorktree, path: e.Path}, nil
+				return reuseClass(short, e.Path)
 			}
+		}
+		// The local branch the tracking creation would create already exists
+		// (and no worktree holds it): `worktree add -b` cannot make a branch
+		// that exists, and the name is not a reuse of that branch either (the
+		// picker's local row, or typing the bare name, covers that). Refuse
+		// here with the commit point's own message (addTrackingWorktree) —
+		// before any creation line or question promises the creation.
+		if refExists(dir, "refs/heads/"+short) {
+			return nameClass{}, localBranchExistsError(short, name)
 		}
 		return nameClass{kind: nameTrackRemote, short: short}, nil
 	}
@@ -83,8 +92,11 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	if err := pathCollision(entries, path, name); err != nil {
 		return nameClass{}, err
 	}
-	if _, registered := branchAtPath(entries, path); registered {
-		return nameClass{kind: nameReuseWorktree, path: path}, nil
+	if b, registered := branchAtPath(entries, path); registered {
+		if b == "" {
+			b = name // a detached registration names no branch; name is what the person typed
+		}
+		return reuseClass(b, path)
 	}
 
 	if refExists(dir, "refs/heads/"+name) {
@@ -116,6 +128,32 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 // the other branch under the wrong name.
 func caseVariantError(name string) error {
 	return fmt.Errorf("branch %q differs only in case from an existing branch; use that branch's exact name", name)
+}
+
+// localBranchExistsError is the one refusal for a remote-tracking name whose
+// local branch already exists and no worktree holds it: a tracking creation
+// makes the local branch, and this one exists. classifyName refuses with it at
+// the classification (before the creation is announced) and addTrackingWorktree
+// with the same words at the commit point (a branch another session made
+// between the classification and the creation), so the two can never disagree.
+func localBranchExistsError(short, remoteRef string) error {
+	return fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)
+}
+
+// reuseClass is the reuse classification for the registered worktree at path
+// holding branch — unless only the registration is left. git marks a worktree
+// whose directory was deleted prunable and keeps its `git worktree list` entry
+// (listWorktrees parses it as ordinary), so the name still classifies as a
+// reuse while the path does not exist. A reuse announces no creation and
+// Plan.Ensure creates nothing for it, so launching here would promise a
+// worktree and then die at chdir. Refuse early and clearly — before any
+// creation line or question — naming the fix: `git worktree prune` frees the
+// registration (wt never prunes on its own).
+func reuseClass(branch, path string) (nameClass, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nameClass{}, fmt.Errorf("branch %q is registered to worktree %s, whose directory is gone; run git worktree prune to free it", branch, path)
+	}
+	return nameClass{kind: nameReuseWorktree, path: path}, nil
 }
 
 // refExactly reports whether the fully-qualified ref exists with exactly that
@@ -525,7 +563,7 @@ func addTrackingWorktree(dir, remoteRef, short string) (string, Created, error) 
 		return path, made, nil
 	}
 	if refExists(dir, "refs/heads/"+short) {
-		return "", Created{}, fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)
+		return "", Created{}, localBranchExistsError(short, remoteRef)
 	}
 	if _, err := runGit(dir, "worktree", "add", "-b", short, path, remoteRef); err != nil {
 		return "", Created{}, gitError(fmt.Sprintf("git worktree add -b %s %s", short, remoteRef), err)
