@@ -183,7 +183,7 @@ Approvals are per item. Each one means exactly one thing (`--dry-run` lists the 
 | accept the loss | `--accept-loss` | the typed word `delete` | any item that is not proven or loses something (ignored files such as `.venv`, commits only on this machine, a fresh branch, a PR state wt could not read) |
 | force | `--force` | the typed word `delete` | also lose a worktree's uncommitted changes, or a detached HEAD's commits |
 | delete unmerged branch | `-D` | `tab` on that entry, then `delete` | delete a branch not proven merged: a named branch, or (per entry) a removed worktree's branch |
-| delete on origin | `--remote` | the typed phrase `delete origin` (not reachable from the terminal list today: its origin rows are never proven) | a proven `origin/<name>` row; no other approval grants it |
+| delete on origin | `--remote` | the typed phrase `delete origin` (reachable from the list once a fetch proved the row — tick it, type `delete origin` at the confirmation) | a proven `origin/<name>` row; no other approval grants it |
 
 `--force` never implies `-D`, and neither implies `--accept-loss`: a dirty
 worktree needs `--force --accept-loss`, an unmerged branch `-D
@@ -216,9 +216,13 @@ entry is proven `y` confirms; otherwise only the typed word `delete` then
 enter does, and any other key cancels. The prompt always states how many
 items will be removed and how many need force or `-D`, and how many are not
 on screen. The list does not fetch when it opens, so without a fetch this run
-(`--fetch`, or the list's `F`) an `origin` row is
-never proven: its reason says `origin was not refreshed in this list`
-(not `--no-fetch`, which you did not pass), and it cannot be ticked — only a
+(`--fetch`, or the list's `F`) an `origin` row is never proven. With no fetch
+flags its reason says `origin was not refreshed in this list` (it names no
+flag, since you passed none) and the header says
+`fetch: not run (this list does not fetch when it opens)`. With `--no-fetch`
+the reason names the flag instead —
+`origin was not fetched this run (--no-fetch)` — and the header says
+`fetch: skipped`. Either way the row cannot be ticked — only a
 proven `origin` row can be, and one you ticked is removed only through the
 confirmation's `ORIGIN BRANCHES` group, which names how many
 branches are on `origin`, refuses `y` and the plain `delete`, and needs

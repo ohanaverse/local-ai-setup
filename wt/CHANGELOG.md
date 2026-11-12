@@ -83,8 +83,11 @@
   `--no-fetch`. It prints text with `--plain` or a pipe and one JSON
   document with `--json` (`docs/contracts/cleanup-list.*`), and a branch
   at or behind the base and younger than `--min-age` (default 10m) is never proven merged. On a
-  terminal, enter removes the ticked worktrees and local branches after a
-  confirmation (`y` when all are proven, the typed word `delete` otherwise).
+  terminal, enter removes the ticked worktrees, local branches and proven
+  `origin` branches after a confirmation (`y` when every entry is proven, the
+  typed word `delete` otherwise; when any entry deletes an `origin` branch the
+  required word is `delete origin`, and `y` and the plain `delete` never grant
+  it).
   `wt remove <worktree-path-or-branch>...` removes named targets through the
   same engine, re-checking each first, with one flag per approval (`--yes`
   for a proven item, `--accept-loss`, `--force`, `-D`), plus `--dry-run`,
