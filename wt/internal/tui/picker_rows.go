@@ -171,12 +171,18 @@ func entryOfRow(r cleanup.Row) worktree.Entry {
 	return worktree.Entry{Type: t, Branch: branch, Path: r.Path, Root: r.Primary}
 }
 
-// gotRows applies a picker load: the list in launch mode, the cursor on the
-// innermost worktree holding the caller's directory, and the PR fill when the
-// load skipped one. Any load's outcome — this open, a reload, a `F` refresh
-// that failed — ends the refresh-in-flight guard and keeps the inputs, so the
-// next `F` re-runs exactly this load.
+// gotRows applies a picker load. The open (and the reload after a create)
+// builds the list in launch mode with the cursor on the innermost worktree
+// holding the caller's directory. A `F` refresh's reload is a report swap
+// like the PR fill's: withReport keeps the filter, the highlighted row and
+// the scroll, and the header's clock moves to now so the refresh note counts
+// from this reload — the same whether the fetch succeeded or failed while
+// the re-gather succeeded (the fetch's outcome is the header's line either
+// way). Either way the load's outcome ends the refresh-in-flight guard and
+// keeps the inputs, so the next `F` re-runs exactly this load; the PR fill
+// follows when the load skipped one.
 func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
+	refreshing := m.rowsRefreshing
 	m.rowsRefreshing = false
 	if msg.err != nil {
 		if m.ready {
@@ -198,10 +204,18 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	m.repoRoot = msg.repoRoot
 	m.rowsIn = msg.in
 	m.rowsGen++
-	rows := newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot})
-	rows.width, rows.height = m.rows.width, m.rows.height
-	if here := deepestCurrent(msg.report); here != "" {
-		rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })
+	var rows cleanupListModel
+	if refreshing {
+		base := m.rows
+		base.now = base.clock()
+		base.opts.Now, base.opts.Root = base.now, msg.repoRoot
+		rows = base.withReport(msg.report)
+	} else {
+		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot})
+		rows.width, rows.height = m.rows.width, m.rows.height
+		if here := deepestCurrent(msg.report); here != "" {
+			rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })
+		}
 	}
 	m.rows, m.ready = rows, true
 	if !msg.snap.PRsSkipped {

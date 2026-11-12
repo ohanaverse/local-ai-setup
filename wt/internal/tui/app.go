@@ -332,7 +332,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.rowsRefreshing = true
 		return m, loadRowsCmd(m.repoRoot, nil, m.rowsIn, true)
 	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg, cleanupRefetchMsg:
-		// The picker's `x`: its removal flow runs inside the row list.
+		// The row list runs its own flows inside itself: the `x` removal
+		// run (preview, progress, done, the post-run refresh) and, in
+		// manage mode, the `F` re-read's answer.
 		if m.ready && m.phase == phaseList {
 			return m.updateRows(msg)
 		}

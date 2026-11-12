@@ -546,6 +546,21 @@ func TestPickerFailedFetchReadsAsFailed(t *testing.T) {
 	}
 }
 
+// TestPickerOpenFetchReadsAsNotRun pins the open's fetch wording, live
+// behavior with no change behind it: the header reads "fetch: not run (this
+// list does not fetch when it opens)" from the NotAttempted marker
+// pickerInputs gives every open. Deleting that marker reverts the header to
+// the zero value's "fetch: skipped; …" (which names a --no-fetch flag the
+// picker does not have) with every other test green; this pin fails then.
+func TestPickerOpenFetchReadsAsNotRun(t *testing.T) {
+	r := newRmRepo(t)
+	empty := func(string, string) ([]byte, error) { return []byte("[]"), nil }
+	m, _ := pickerLoad(t, r.dir, empty)
+	if header := m.rows.headerBlock(); !strings.Contains(header, "fetch: not run") {
+		t.Errorf("the open's header does not read \"fetch: not run\":\n%s", header)
+	}
+}
+
 // TestPickerTitleDoesNotOfferRemoval pins that the picker's title does not
 // advertise `x remove` while the picker has no removal wired in (every `x`
 // would answer "not available").

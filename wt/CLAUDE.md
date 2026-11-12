@@ -268,7 +268,7 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 
 > **A launch that has a directory needs no repository**: the repo root handed to `runLaunchPath` gates the guard install and nothing else (state is keyed by model, agent and pid). Only `-W` and the worktree picker refuse outside one; don't key new launch state on the repository. [Details](docs/internals/launch-flow.md#launch-directory-and-the-repository).
 
-> **The picker fetches when it opens** (`worktree.FetchRemotes`: `git fetch --all --prune`, 5s; failure silently ignored); `Enumerate` (only `--debug-worktrees` still uses it) does not, `-W`/`--cwd` skip the picker, and creation never fetches (`Resolve`, `Plan.Ensure` and `EnsureForName` read only the remote-tracking refs already present).
+> **The picker fetches on the user's `F`, never when it opens** (`worktree.FetchRemotes`: `git fetch --all --prune`, 5s; the outcome is rendered in the header — `fetch: ok, …` / `fetch: FAILED (…)` — a failure is never silently ignored); `Enumerate` (only `--debug-worktrees` still uses it) does not, `-W`/`--cwd` skip the picker, and creation never fetches (`Resolve`, `Plan.Ensure` and `EnsureForName` read only the remote-tracking refs already present).
 
 > **The picker is a view over `internal/cleanup`'s rows and its PR tags never hold it up** (`internal/tui/picker_rows.go`, #384, #390): it paints from `cleanup.Gather` with `SkipPRs` (`PR ?`), then `loadRowPRsCmd` runs `cleanup.FillPRs` off the update goroutine and swaps the report in, the cursor kept; `dropStalePRTags` clears a reused branch name's ended PR (#451). Seams `cleanup.StubPRListForTest`/`StubPRBaseListForTest` or `GatherInputs.PRList`. [Details](docs/internals/tui.md).
 

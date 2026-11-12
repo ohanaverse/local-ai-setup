@@ -1093,15 +1093,16 @@ func TestReloadErrorVisibleAboveList(t *testing.T) {
 
 // pickerOpenOn opens the picker on r's repository through a rows load that
 // carries a counting fetch hook (the picker's `F` refresh runs exactly that
-// hook), and returns the ready model with the hook's counter.
-func pickerOpenOn(t *testing.T, r *rmRepo) (model, func() int) {
+// hook, reporting fetchErr — nil: the fetch succeeds), and returns the ready
+// model with the hook's counter.
+func pickerOpenOn(t *testing.T, r *rmRepo, fetchErr error) (model, func() int) {
 	t.Helper()
 	in := pickerInputs(r.dir)
 	in.OwnRepo = "o/r"
 	in.PRList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
 	in.PRBaseList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
 	fetches := 0
-	in.FetchRemotes = func(string) error { fetches++; return nil }
+	in.FetchRemotes = func(string) error { fetches++; return fetchErr }
 	m := model{width: 120, height: 50, theme: themes.Default, cfg: &config.Config{}}
 	m, _ = updateMsg(m, loadRowsCmd(r.dir, nil, in, false)())
 	if !m.ready {
@@ -1129,7 +1130,7 @@ func pickerRowListed(m model, name string) bool {
 // about the open and not about the setup.
 func TestPickerOpenDoesNotFetch(t *testing.T) {
 	r := newRmRepo(t)
-	_, fetches := pickerOpenOn(t, r)
+	_, fetches := pickerOpenOn(t, r, nil)
 	if fetches() != 0 {
 		t.Errorf("the rows load fetched %d times; opening the list must fetch nothing", fetches())
 	}
@@ -1150,7 +1151,7 @@ func TestPickerOpenDoesNotFetch(t *testing.T) {
 // fetches nothing.
 func TestPickerFKeyRefreshes(t *testing.T) {
 	r := newRmRepo(t)
-	m, fetches := pickerOpenOn(t, r)
+	m, fetches := pickerOpenOn(t, r, nil)
 	r.loose("afterwards") // born after the load: only a re-gather can show it
 	m, cmd := updateMsg(m, keyRunes("F"))
 	if cmd == nil {
@@ -1165,6 +1166,50 @@ func TestPickerFKeyRefreshes(t *testing.T) {
 	}
 	if !pickerRowListed(m, "afterwards") {
 		t.Errorf("the refreshed list lacks afterwards:\n%s", m.View())
+	}
+}
+
+// TestPickerFKeyRefreshKeepsFilterCursorScroll: a `F` refresh's reload is a
+// report swap like the PR fill's — it keeps what the user was doing: the
+// typed filter, the highlighted row and the scroll position survive
+// (withReport, the preservation every other swap already had). Both of the
+// refresh's outcomes count: the fetch succeeding, and the fetch failing
+// while the re-gather still succeeds — the failure is the header's line,
+// and neither may throw a review back to the top with its filter dropped.
+func TestPickerFKeyRefreshKeepsFilterCursorScroll(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fetchErr error
+	}{
+		{"fetch ok", nil},
+		{"fetch failed", errMock("no route to origin")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRmRepo(t)
+			r.loose("afterwards")
+			m, _ := pickerOpenOn(t, r, tc.fetchErr)
+			// The user filters to the one row, keeps the query (enter),
+			// highlights it and scrolls.
+			m, _ = updateMsg(m, keyRunes("/"))
+			m, _ = updateMsg(m, keyRunes("after"))
+			m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+			m = pickerCursorTo(t, m, "afterwards")
+			m.rows.offset = 1
+			m, cmd := updateMsg(m, keyRunes("F"))
+			if cmd == nil {
+				t.Fatal("F dispatched no refresh")
+			}
+			m = drainCmds(t, m, cmd)
+			if m.rows.filter != "after" || m.rows.filtering {
+				t.Errorf("filter = %q filtering = %v after F; the reload keeps the query", m.rows.filter, m.rows.filtering)
+			}
+			if row, ok := m.rows.selectedRow(); !ok || row.Name != "afterwards" {
+				t.Errorf("cursor = %+v ok=%v after F; the reload keeps the highlighted row", row, ok)
+			}
+			if m.rows.offset != 1 {
+				t.Errorf("offset = %d after F; the reload keeps the scroll", m.rows.offset)
+			}
+		})
 	}
 }
 
@@ -1189,7 +1234,7 @@ func TestPickerFKeyIgnoredWhileTyping(t *testing.T) {
 // never a stampede on key repeat.
 func TestPickerFKeyIgnoredWhileRefreshing(t *testing.T) {
 	r := newRmRepo(t)
-	m, fetches := pickerOpenOn(t, r)
+	m, fetches := pickerOpenOn(t, r, nil)
 	// The first F starts the refresh; its load command is kept unrun (the
 	// fetch is in flight).
 	m, cmd := updateMsg(m, keyRunes("F"))
