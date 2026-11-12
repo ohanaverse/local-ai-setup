@@ -1,5 +1,7 @@
 # `wt restore-root`: move the root's branch into a worktree and put the root back on the default branch — Design
 
+> **Superseded by `docs/superpowers/specs/2026-11-11-wt-user-driven-cleanup-design.md`.** This design note keeps its as-of-date wording; where the two disagree, that design describes the release.
+
 **Status:** approved by the user for planning (2026-11-08). Issue #522. Written from the issue, the rescue engine (#529, #542, #547, #550) and the root-claim code. The five open questions of the first draft are answered (see "Decisions"): the user confirmed all five as drafted. Anything still marked `[call]` is my call, not yet confirmed. Built in two PRs (A: engine seams, B: the command); this document is amended to match (see Amendments).
 
 All paths are relative to `wt/` unless they start with `docs/`.
