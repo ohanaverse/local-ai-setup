@@ -3,10 +3,8 @@ package tui
 import (
 	"os"
 
-	"github.com/charmbracelet/x/term"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -44,22 +42,6 @@ var runStopPhase = realRunStopPhase
 
 func realRunStopPhase(cfg *config.Config) {
 	survey.Picker(os.Stdin, os.Stdout, cfg)
-}
-
-// ExitPrompt is cmd/wt's Env for the post-exit worktree prompt (its registry
-// and protected artifacts), set by cmd/wt before Run.
-var ExitPrompt exitprompt.Env
-
-// offerExitPrompt is a seam for tests: production offers to remove the
-// worktree and branch this launch created when nothing in them changed,
-// after the stop picker and before the summary line (exitprompt.Offer).
-var offerExitPrompt = realOfferExitPrompt
-
-func realOfferExitPrompt(cfg *config.Config) {
-	env := ExitPrompt
-	env.Flush = survey.FlushInput
-	env.Keep = cfg.ExitPromptKeep()
-	exitprompt.Offer(env, os.Stdin, os.Stdout, term.IsTerminal(os.Stdin.Fd()))
 }
 
 // releaseSession is a seam for tests: production releases this wt process's own

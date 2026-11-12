@@ -117,14 +117,13 @@ agent-toolkit deploy home --dry-run    # Preview changes
 
 ### Exit prompt setting
 
-When an agent exits in a worktree and branch that `wt` created for that launch and nothing changed in, `wt` asks whether to remove both (Enter keeps). `~/.config/agent-wt/config.toml` controls it:
+`[launch] exit_prompt` in `~/.config/agent-wt/config.toml` is a legacy key, tolerated and ignored: the exit prompt it once controlled is removed (nothing is offered when an agent exits; cleanup is user-driven with `wt worktrees` and `wt remove`), no value is validated or consulted, and any value survives wt's saves. A non-empty value prints one note per process:
 
-```toml
-[launch]
-exit_prompt = "ask"   # default when absent; "keep" never asks
+```
+wt: note: config.toml: [launch] exit_prompt is no longer used and is ignored
 ```
 
-Any other value is rejected, naming the key. There is no value that removes a worktree without a keypress. See `wt/docs/wt-agents/README.md#post-exit-order`.
+The `wt config` editor neither shows nor writes the `[launch]` table. See `wt/docs/wt-agents/README.md#post-exit-order`.
 
 ## References
 

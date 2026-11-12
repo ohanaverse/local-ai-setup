@@ -109,7 +109,7 @@ Beyond launching, `wt` has subcommands; `wt --help` lists them. Each has a refer
 
 ## Configuration
 
-The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag, plus the hand-edited `[launch] exit_prompt` setting (see [Exit prompt](#exit-prompt-for-an-untouched-worktree)).
+The Go tool uses `~/.config/agent-wt/config.toml` (TOML) for wt-owned state — Agents (AI coding tool with supported providers and optional default) and the default rotation tag, plus the legacy `[launch]` table (its `exit_prompt` key is tolerated and ignored; see [Exit prompt](#exit-prompt-for-an-untouched-worktree)).
 
 Providers (model source with auth config: ollama, openrouter, claude, copilot) and Models (a variant from a provider, grouped by family and tagged, e.g. `code`, `design`) are no longer stored in `config.toml`. They live in `~/.config/local-ai/registry.toml`. `wt model init` creates that file and adds the default provider rows; models are listed, added, edited and removed with `wt model list|add|edit|rm`, or on the Models tab of `wt config` (`wt model`) — see `docs/wt-model.md`. `wt` joins the registry in memory with `config.toml`; nothing writes providers or models into `config.toml`.
 
@@ -173,7 +173,7 @@ wt notes each launch in a repository's root checkout (not a linked worktree). If
 
 ## Main guard
 
-Launchers auto-install a `block-main-commit` pre-commit hook on every invocation when inside a git repo. It blocks commits to `main`/`master` unless bypassed:
+Launchers auto-install a `block-main-commit` pre-commit hook on every invocation when inside a git repo, and `wt --init` installs it too. A first-time install prints one line on stderr — `wt: installed the block-main-commit hook (--no-guard to skip)` — on every install path; a hook already present is left alone and prints nothing. It blocks commits to `main`/`master` unless bypassed:
 
 - `git commit --no-verify` (emergency)
 - `WT_SKIP_MAIN_BLOCK=1` env var (CI/automation)
@@ -194,7 +194,7 @@ claude's `--continue` means the most recent conversation in the current director
 
 ## Exit prompt for an untouched worktree
 
-When the agent exits, `wt` offers to remove a worktree (and its branch) that this launch created and nothing touched: `<path> was created for this session and nothing changed in it. Remove it and its branch <name>?` Enter keeps it; `y` removes both through the same engine as `wt remove`. Only a brand-new branch and the worktree `wt` created for it in that launch qualify (not an existing worktree or branch, a worktree and local branch created for a remote-tracking name, `--cwd` or `--root`), and anything changed, committed, ignored-but-present or still running is kept silently, as is any launch with no terminal. The prompt comes after the stop picker and before the summary line, and never changes the exit status. `[launch] exit_prompt = "keep"` in `~/.config/agent-wt/config.toml` turns it off. See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-exit-order).
+There is no exit prompt: when the agent exits, `wt` asks nothing about the worktree, and cleanup is user-driven — `wt cleanup` / `wt worktrees` ([docs/wt-cleanup.md](docs/wt-cleanup.md)) lists what can go and `wt remove` removes named targets. The `[launch] exit_prompt` key in `~/.config/agent-wt/config.toml` (the old prompt's off-switch) is tolerated and ignored: any value parses and survives wt's saves, nothing validates or consults it, and a non-empty value prints one note per process — `wt: note: config.toml: [launch] exit_prompt is no longer used and is ignored`. The tail never changes the agent's exit status. See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-exit-order).
 
 ## Post-run summary line
 

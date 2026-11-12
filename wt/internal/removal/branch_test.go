@@ -1271,8 +1271,9 @@ func TestBranchDeleteDropsUpstreamConfig(t *testing.T) {
 // truth (#531): a deleted branch whose tip another ref still holds (the
 // creation commit on main, a remote-tracking ref, a sibling branch) loses
 // nothing to a gc, so no caveat; a tip only the deleted branch held keeps
-// it. Why it matters: the exit prompt printed the warning for a fresh
-// branch sitting on main, which alarmed for nothing.
+// it. Why it matters: a gc caveat on a fresh branch sitting on main alarms
+// for nothing, so the user-driven cleanup list must reserve it for a truly
+// unreachable tip.
 func TestBranchGcCaveatOnlyForUnreachableTip(t *testing.T) {
 	run := func(t *testing.T, setup func(f *fixture) string, del bool) Outcome {
 		t.Helper()

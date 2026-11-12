@@ -19,6 +19,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 func cgit(t *testing.T, dir string, args ...string) string {
@@ -767,5 +768,447 @@ func TestWorktreesCmdTTYMarksFetchNotAttempted(t *testing.T) {
 	}
 	if len(got) != 2 || !got[0].NotAttempted || got[1].NotAttempted {
 		t.Errorf("fetch results %+v, want NotAttempted without --no-fetch only", got)
+	}
+}
+
+// TestCleanupCmdTerminalDoesNotFetchOnOpen: pin — the terminal list gathers
+// with no fetch at all (a fetch is the user's `--fetch` now, no automatic
+// behaviors), marks the fetch "not run" rather than blaming a --no-fetch the
+// user never passed, and leaves the repository's fetch stamp untouched.
+// Already true at the base commit (the list stopped fetching on open before
+// this task); written as a pin so `--fetch` cannot regress it — no RED.
+func TestCleanupCmdTerminalDoesNotFetchOnOpen(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	before, hadBefore := worktree.LastFetched(dir)
+	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+	isTerminalWriter = func(io.Writer) bool { return true }
+
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 || ins[0].Fetch || !ins[0].Fetched.NotAttempted {
+		t.Errorf("open gather = %+v, want one gather with Fetch false and the fetch marked not attempted", ins)
+	}
+	ins = nil
+	if _, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 || ins[0].Fetch || ins[0].Fetched.NotAttempted || !ins[0].Fetched.At.IsZero() {
+		t.Errorf("--no-fetch gather = %+v, want the flag's plain skip (Fetch false, no NotAttempted marker)", ins)
+	}
+	after, hadAfter := worktree.LastFetched(dir)
+	if hadAfter != hadBefore || (hadAfter && !after.Equal(before)) {
+		t.Errorf("opening the list moved the fetch stamp (%v/%v -> %v/%v); it fetches nothing", hadBefore, before, hadAfter, after)
+	}
+}
+
+// TestCleanupCmdTerminalFetchFlagFetches: `--fetch` is the terminal list's
+// explicit fetch — every remote is fetched once before the list opens (the
+// gather itself never fetches, so the run fetches exactly once), the fetched
+// refs reach the report, and the header's fetch note reads the result (the
+// wording contract the picker's F established). It fetches at the report's
+// ROOT — the primary worktree — even when the command runs from a linked
+// worktree: the root's fetch stamp (worktree.LastFetched there, what feeds
+// the header's refreshed line) advances and the cwd worktree's own stamp does
+// not. FETCH_HEAD stamps are per-worktree, so a fetch at cwd would move the
+// wrong stamp, leave the refreshed line unmoved and fetch at the wrong place
+// altogether — this runs from a linked worktree so the two are told apart.
+func TestCleanupCmdTerminalFetchFlagFetches(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	// "late" and "uplate" exist only on the remotes: a second clone puts
+	// them there, so only a fetch can bring their remote-tracking refs into
+	// dir. Two remotes prove every remote is fetched, not just origin.
+	other := filepath.Join(t.TempDir(), "other")
+	if b, err := exec.Command("git", "clone", "-q", filepath.Join(filepath.Dir(dir), "origin.git"), other).CombinedOutput(); err != nil {
+		t.Fatalf("clone other: %v\n%s", err, b)
+	}
+	cgit(t, other, "config", "user.email", "t@example.com")
+	cgit(t, other, "config", "user.name", "T")
+	cgit(t, other, "push", "origin", "HEAD:refs/heads/late")
+	up := filepath.Join(t.TempDir(), "up.git")
+	if b, err := exec.Command("git", "init", "--bare", "-b", "main", up).CombinedOutput(); err != nil {
+		t.Fatalf("init up: %v\n%s", err, b)
+	}
+	cgit(t, other, "push", up, "HEAD:refs/heads/uplate")
+	cgit(t, dir, "remote", "add", "up", up)
+	// The command runs from a LINKED worktree: cwd is not the report's root
+	// (that is the primary), so where the fetch runs shows in which
+	// worktree's fetch stamp moves.
+	linked := filepath.Join(t.TempDir(), "linked")
+	cgit(t, dir, "worktree", "add", "-b", "linked", linked)
+	rootBefore, rootHad := worktree.LastFetched(dir)
+	cwdBefore, cwdHad := worktree.LastFetched(linked)
+
+	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	var got cleanup.Report
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { got = r; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+	isTerminalWriter = func(io.Writer) bool { return true }
+
+	if _, _, err := runCleanup(t, a, linked, "--fetch"); err != nil {
+		t.Fatal(err)
+	}
+	// The report is the primary's whatever directory the command ran from
+	// (compared resolved: macOS spells t.TempDir() /var where git answers
+	// /private/var).
+	if cleanup.ResolvePath(got.Repo) != cleanup.ResolvePath(dir) {
+		t.Fatalf("report root = %q, want the primary worktree %q (run from the linked worktree %q)", got.Repo, dir, linked)
+	}
+	// The gather itself never fetches (exactly one fetch, the explicit one)
+	// and the fetch's outcome rides the snapshot for the header to render.
+	if len(ins) != 1 || ins[0].Fetch || !ins[0].Fetched.OK || ins[0].Fetched.NotAttempted {
+		t.Errorf("gather = %+v, want one gather with Fetch false and a successful explicit fetch recorded", ins)
+	}
+	// The fetched refs reached the report that was listed.
+	names := map[string]bool{}
+	for _, r := range got.Rows {
+		names[r.Name] = true
+	}
+	if !names["late"] || !names["uplate"] {
+		t.Errorf("rows lack the fetched branches (late=%v uplate=%v); --fetch must fetch before listing", names["late"], names["uplate"])
+	}
+	// The header's fetch note reflects the fetch.
+	if hdr := strings.Join(cleanup.HeaderLines(got, time.Now()), "\n"); !strings.Contains(hdr, "fetch: ok") {
+		t.Errorf("header does not read the fetch:\n%s", hdr)
+	}
+	// The refreshed line is fed by LastFetched at the report's root: the
+	// explicit fetch must advance the ROOT's stamp — and only that one (it
+	// runs exactly once, there).
+	rootAfter, rootHadAfter := worktree.LastFetched(got.Repo)
+	if !rootHadAfter || !rootAfter.After(rootBefore) {
+		t.Errorf("the root's fetch stamp did not advance (%v/%v -> %v/%v); the refreshed line would not show the fetch", rootHad, rootBefore, rootHadAfter, rootAfter)
+	}
+	cwdAfter, cwdHadAfter := worktree.LastFetched(linked)
+	if cwdHadAfter != cwdHad || (cwdHadAfter && !cwdAfter.Equal(cwdBefore)) {
+		t.Errorf("the cwd worktree's fetch stamp moved (%v/%v -> %v/%v); --fetch fetches at the report's root only", cwdHad, cwdBefore, cwdHadAfter, cwdAfter)
+	}
+}
+
+// TestCleanupCmdTerminalFetchFailureStillOpensTheList: pin — a failing --fetch
+// is a recorded value, never an error. With a remote that cannot be reached,
+// `wt worktrees --fetch` still opens the list (exit 0) and the header reads
+// "fetch: FAILED (...)" — the wording contract (present.go's fetch note) the
+// picker's F and Refetch already render. A script reading the list finds the
+// failure in the header, never in the exit status (exit 1 is reserved for a
+// repository that could not be classified at all).
+func TestCleanupCmdTerminalFetchFailureStillOpensTheList(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	// A remote whose URL cannot be reached: the one `git fetch --all --prune`
+	// fails on it (fast — a missing local path, not a network).
+	cgit(t, dir, "remote", "add", "dead", filepath.Join(t.TempDir(), "no-such.git"))
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	var got cleanup.Report
+	listed := 0
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { got, listed = r, listed+1; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+
+	if _, _, err := runCleanup(t, a, dir, "--fetch"); err != nil {
+		t.Fatalf("a failing fetch must still open the list (exit 0): %v", err)
+	}
+	if listed != 1 {
+		t.Errorf("list calls = %d, want the list opened exactly once", listed)
+	}
+	if got.Fetch.OK || got.Fetch.Err == "" {
+		t.Errorf("report.Fetch = %+v, want the fetch failure recorded", got.Fetch)
+	}
+	if hdr := strings.Join(cleanup.HeaderLines(got, time.Now()), "\n"); !strings.Contains(hdr, "fetch: FAILED (") {
+		t.Errorf("the header does not read the failure:\n%s", hdr)
+	}
+}
+
+// TestCleanupCmdJSONStillFetchesByDefault: pin — --json's fetch-first (every
+// remote, then one JSON document) is its documented default, not the terminal
+// list's new opt-in: it runs through the gather's own fetch unless --no-fetch
+// opts out. --json --fetch is pinned redundant-but-harmless: it fetches
+// exactly as much as --json alone (one gather per run, the outcome recorded
+// once, in the report; --fetch adds no fetch and no record of its own).
+// Already true at the base; written as a pin so `--fetch` cannot regress it —
+// no RED.
+func TestCleanupCmdJSONStillFetchesByDefault(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldGather := cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	t.Cleanup(func() { cleanupGather = oldGather })
+
+	alone, _, err := runCleanup(t, a, dir, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--json", "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	redundant, _, err := runCleanup(t, a, dir, "--json", "--fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 3 || !ins[0].Fetch || ins[1].Fetch || !ins[2].Fetch {
+		t.Errorf("gathers = %+v, want the default fetch on, --no-fetch off, --fetch adding nothing", ins)
+	}
+	if r := ins[2].Fetched; r.OK || r.NotAttempted || r.Err != "" || !r.At.IsZero() {
+		t.Errorf("--json --fetch also recorded an explicit fetch: %+v; the json path's outcome lives in the report only", r)
+	}
+	var envAlone, envFetch cleanup.Envelope
+	if err := json.Unmarshal([]byte(alone), &envAlone); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(redundant), &envFetch); err != nil {
+		t.Fatal(err)
+	}
+	if envAlone.Fetch == nil || envFetch.Fetch == nil || envAlone.Fetch.OK != envFetch.Fetch.OK || len(envAlone.Fetch.Remotes) != len(envFetch.Fetch.Remotes) {
+		t.Errorf("fetched differently: --json = %+v, --json --fetch = %+v; --fetch must fetch exactly as much and no more", envAlone.Fetch, envFetch.Fetch)
+	}
+}
+
+// TestCleanupCmdPlainStillFetchesByDefault: pin — --plain fetches first like
+// --json (its documented default), and --no-fetch is its opt-out. --plain
+// --fetch is pinned redundant-but-harmless exactly like --json --fetch: one
+// gather per run, the outcome recorded once in the report's header, and
+// --fetch adding no fetch and no record of its own. Already true at the base;
+// written as a pin, not RED.
+func TestCleanupCmdPlainStillFetchesByDefault(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldGather := cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	t.Cleanup(func() { cleanupGather = oldGather })
+
+	alone, _, err := runCleanup(t, a, dir, "--plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	redundant, _, err := runCleanup(t, a, dir, "--plain", "--fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 3 || !ins[0].Fetch || ins[1].Fetch || !ins[2].Fetch {
+		t.Errorf("gathers = %+v, want the default fetch on, --no-fetch off, --fetch adding nothing", ins)
+	}
+	if r := ins[2].Fetched; r.OK || r.NotAttempted || r.Err != "" || !r.At.IsZero() {
+		t.Errorf("--plain --fetch also recorded an explicit fetch: %+v; the plain path's outcome lives in the header only", r)
+	}
+	for name, out := range map[string]string{"--plain": alone, "--plain --fetch": redundant} {
+		if !strings.Contains(out, "fetch: ok") {
+			t.Errorf("%s does not read the fetch in its header:\n%s", name, out)
+		}
+	}
+}
+
+// TestCleanupCmdFetchAndNoFetchConflict: --fetch asks for the fetch and
+// --no-fetch refuses it, so the pair is a usage error naming both flags — in
+// any output mode, before anything runs.
+func TestCleanupCmdFetchAndNoFetchConflict(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldGather := cleanupGather
+	gathers := 0
+	cleanupGather = func(cleanup.Git, cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		gathers++
+		return cleanup.Snapshot{}, errors.New("gather must not run")
+	}
+	t.Cleanup(func() { cleanupGather = oldGather })
+
+	for _, args := range [][]string{
+		{"--fetch", "--no-fetch"},
+		{"--json", "--fetch", "--no-fetch"},
+		{"--plain", "--no-fetch", "--fetch"},
+	} {
+		stdout, _, err := runCleanup(t, a, dir, args...)
+		if err == nil {
+			t.Fatalf("%v: no usage error", args)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "--fetch") || !strings.Contains(msg, "--no-fetch") {
+			t.Errorf("%v: error %q, want it naming both --fetch and --no-fetch", args, msg)
+		}
+		if stdout != "" || gathers != 0 {
+			t.Errorf("%v: ran despite the conflict (out %q, gathers %d)", args, stdout, gathers)
+		}
+	}
+}
+
+// TestCleanupRemoveFuncsRefetchFetches: the manage list's `F` reaches
+// RemoveFuncs.Refetch, which fetches once at the report's root — the same
+// root the report was built from (a fetch at another worktree stamps that
+// one, and the header's refreshed line would not move) — and re-reads, so the
+// fresh report's header carries the fetch's result: the note advances from
+// "fetch: not run" to "fetch: ok". A failing fetch is that contract's other
+// half: a recorded value, never an error — Refetch's error is the re-read's
+// own and the header reads "fetch: FAILED (...)".
+func TestCleanupRemoveFuncsRefetchFetches(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	var roots []string
+	in := cleanupListInputs(dir, false, nil, "wt-cleanup")
+	in.Fetched = cleanup.FetchResult{NotAttempted: true} // the list's open state
+	// The hook stands in for worktree.FetchRemotes (cleanupRemoveFuncs takes
+	// its inputs by value, so it is set once): the first F fetches clean, the
+	// second fails for the failure half of the contract below.
+	fails := false
+	in.FetchRemotes = func(root string) error {
+		roots = append(roots, root)
+		if fails {
+			return errors.New("fetch exploded")
+		}
+		return nil
+	}
+	snap, err := cleanupGather(cleanup.Git{Dir: dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := cleanupClassify(snap, cleanup.Options{Now: time.Now()})
+	before := strings.Join(cleanup.HeaderLines(rep, time.Now()), "\n")
+	rm := cleanupRemoveFuncs(a, snap, in, 0, nil)
+	if rm.Refetch == nil {
+		t.Fatal("RemoveFuncs.Refetch is nil; the list's F has no fetch")
+	}
+	fresh, err := rm.Refetch()
+	if err != nil {
+		t.Fatalf("Refetch: %v", err)
+	}
+	if len(roots) != 1 || roots[0] != rep.Repo {
+		t.Errorf("fetch roots = %v, want exactly one at the report's root %q", roots, rep.Repo)
+	}
+	if !strings.Contains(before, "fetch: not run") {
+		t.Fatalf("the old header does not read as not-run:\n%s", before)
+	}
+	if after := strings.Join(cleanup.HeaderLines(fresh, time.Now()), "\n"); !strings.Contains(after, "fetch: ok") {
+		t.Errorf("the fresh header did not advance past the not-run note:\n%s", after)
+	}
+	// The failure half of the contract: the fetch's own error must never be
+	// Refetch's error (F just re-reads whatever the fetch left), it travels
+	// in report.Fetch for the header to render.
+	fails = true
+	failed, err := rm.Refetch()
+	if err != nil {
+		t.Fatalf("Refetch returned the fetch's own error %v; it must travel in report.Fetch instead", err)
+	}
+	if failed.Fetch.OK || failed.Fetch.Err == "" {
+		t.Errorf("report.Fetch = %+v, want the fetch failure recorded", failed.Fetch)
+	}
+	if hdr := strings.Join(cleanup.HeaderLines(failed, time.Now()), "\n"); !strings.Contains(hdr, "fetch: FAILED (") {
+		t.Errorf("the header does not read the failure:\n%s", hdr)
+	}
+	if len(roots) != 2 || roots[1] != rep.Repo {
+		t.Errorf("fetch roots = %v, want exactly one more at the report's root %q", roots, rep.Repo)
+	}
+}
+
+// squashMergedOriginRepo is a repository whose origin (a local bare repo that
+// git reaches through url.insteadOf, so wt reads a GitHub-shaped URL and knows
+// the own repository) holds a branch "topic" whose one commit the base holds
+// as a squashed copy: the content is in the base but the tip is neither the
+// base's commit nor its ancestor, so the row reads proven on the trees-match
+// rung — which, unlike same-commit and ancestor, the fresh-branch floor does
+// not gate. It also answers gh: topic's one PR is merged (#8, head the topic
+// tip, merged by the squash commit) and nothing is based on topic.
+func squashMergedOriginRepo(t *testing.T) string {
+	t.Helper()
+	dir := cleanupRepo(t)
+	bare := filepath.Join(filepath.Dir(dir), "origin.git")
+	cgit(t, dir, "checkout", "-b", "topic")
+	cleanupCommit(t, dir, "topic.txt", "topic work")
+	tip := cgit(t, dir, "rev-parse", "HEAD")
+	cgit(t, dir, "push", "-u", "origin", "topic")
+	cgit(t, dir, "checkout", "main")
+	// A squashed copy of topic's commit: same content, its own commit, so
+	// the tip is not an ancestor and the proof is the tree comparison.
+	cgit(t, dir, "cherry-pick", "-n", "topic")
+	cgit(t, dir, "commit", "-m", "topic work (squash)")
+	squash := cgit(t, dir, "rev-parse", "HEAD")
+	cgit(t, dir, "push", "origin", "main")
+	cgit(t, dir, "config", "url."+bare+".insteadOf", "https://github.com/o/r.git")
+	cgit(t, dir, "remote", "set-url", "origin", "https://github.com/o/r.git")
+	merged := `[{"number":8,"state":"MERGED","headRefOid":"` + tip + `","baseRefName":"main","mergeCommit":{"oid":"` + squash + `"},"isCrossRepository":false,"headRepository":{"name":"r","nameWithOwner":"o/r"}}]`
+	t.Cleanup(cleanup.StubPRListForTest(func(_, b string) ([]byte, error) {
+		if b == "topic" {
+			return []byte(merged), nil
+		}
+		return []byte("[]"), nil
+	}))
+	t.Cleanup(cleanup.StubPRBaseListForTest(func(string, string) ([]byte, error) { return []byte("[]"), nil }))
+	return dir
+}
+
+// TestCleanupRemoveFuncsRefetchRepointsTheRemovalEngine: the list's `F` must
+// leave the removal engine standing on the snapshot it just fetched for. The
+// engine's re-check before any removal (removal.Engine's Rescan) reuses the
+// fetch state of the snapshot it was built with, so a Refetch that re-reads
+// but does not repoint the engine makes remoteGate refuse the very origin row
+// the fetch just proved ("origin was not refreshed in this list"). What: a
+// squash-merged origin row is proven once the fetch is recorded (it is not
+// proven in the list that opens without one), and Preview right after Refetch
+// must offer it (needs_remote), not refuse it. Why: F is the user's fetch; a
+// removal straight after must see it, or F proves rows the tick list cannot
+// act on and the fetch looks useless.
+func TestCleanupRemoveFuncsRefetchRepointsTheRemovalEngine(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := squashMergedOriginRepo(t)
+	in := cleanupListInputs(dir, false, nil, "wt-cleanup")
+	in.Fetched = cleanup.FetchResult{NotAttempted: true} // the list's open state
+	in.FetchRemotes = func(string) error { return nil }  // the fetch itself is not under test here
+	snap, err := cleanupGather(cleanup.Git{Dir: dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm := cleanupRemoveFuncs(a, snap, in, 0, nil)
+	fresh, err := rm.Refetch()
+	if err != nil {
+		t.Fatalf("Refetch: %v", err)
+	}
+	var row cleanup.Row
+	found := false
+	for _, r := range fresh.AllRows() {
+		if r.Kind == cleanup.KindRemote && r.Name == "topic" {
+			row, found = r, true
+		}
+	}
+	if !found {
+		t.Fatalf("the fresh report holds no origin/topic row: %+v", fresh.AllRows())
+	}
+	if row.Status != cleanup.StatusProven {
+		t.Fatalf("F did not prove origin/topic (status %q, reasons %+v); the re-check below would prove nothing", row.Status, row.Reasons)
+	}
+	ps := rm.Preview([]cleanup.Row{row})
+	if len(ps) != 1 {
+		t.Fatalf("preview: %+v", ps)
+	}
+	// The re-check right before a removal must read the fetch F recorded: a
+	// proven, loss-free origin row passes the gate and asks for --remote.
+	if ps[0].Approval != removal.ApprovalNeedsRemote {
+		t.Errorf("preview after F = %+v, want needs_remote (the re-check must see the fresh snapshot F left)", ps)
 	}
 }

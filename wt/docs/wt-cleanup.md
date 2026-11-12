@@ -41,7 +41,8 @@ and its own status and evidence) and not a row of its own, so
 JSON row also carries the `upstream` field), but they list only `origin`'s
 branches and those of remotes a local branch tracks; the terminal list shows
 every remote's. On a terminal the list does not fetch when it opens (`r` is not a
-refresh; run `git fetch` or use `--json`/`--plain`, which fetch first unless
+refresh; `--fetch` fetches every remote first and the list's `F` fetches while
+it is open; `--json`/`--plain` fetch first unless
 `--no-fetch`). Each row carries tags such as `root`, `you are here`, `held`,
 `dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. A bare
 repository's own entry is listed as the root with a `bare` tag: it is never
@@ -87,14 +88,17 @@ less sure, never proven.
 Apart from the fetch, which updates and prunes every remote's remote-tracking
 refs (`--no-fetch` skips it), listing writes no ref, index or working file.
 It reads the `wt rescue` records under `refs/wt/rescued/` (one `for-each-ref`).
-The fetch takes `origin` first and on its own (it alone drives classification,
-120s), then every other remote concurrently with a shorter limit (30s); the
-header and `fetch.remotes` in the JSON report each remote's result, also when
-the repository has no `origin` (`fetch.skipped`). It never prompts: git's
+The per-remote fetch (`--json`, `--plain` and a pipe) takes `origin` first
+and on its own (it alone drives classification, 120s), then every other
+remote concurrently with a shorter limit (30s); the header and
+`fetch.remotes` in the JSON report each remote's result, also when the
+repository has no `origin` (`fetch.skipped`). It never prompts: git's
 terminal and credential-manager prompts are off, and ssh runs with
 `-o BatchMode=yes` unless you set `GIT_SSH_COMMAND` or `core.sshCommand`
 yourself, in which case your ssh command is used as it is and any question it
-asks is yours.
+asks is yours. The terminal list's explicit fetches (`--fetch`, the list's
+`F`) are one `git fetch --all --prune`, capped at 5s, at the repository's
+root: one result for every remote at once, not one per remote.
 The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
 object store, which `git gc` collects.
@@ -179,7 +183,7 @@ Approvals are per item. Each one means exactly one thing (`--dry-run` lists the 
 | accept the loss | `--accept-loss` | the typed word `delete` | any item that is not proven or loses something (ignored files such as `.venv`, commits only on this machine, a fresh branch, a PR state wt could not read) |
 | force | `--force` | the typed word `delete` | also lose a worktree's uncommitted changes, or a detached HEAD's commits |
 | delete unmerged branch | `-D` | `tab` on that entry, then `delete` | delete a branch not proven merged: a named branch, or (per entry) a removed worktree's branch |
-| delete on origin | `--remote` | the typed phrase `delete origin` (not reachable from the terminal list today: its origin rows are never proven) | a proven `origin/<name>` row; no other approval grants it |
+| delete on origin | `--remote` | the typed phrase `delete origin` (reachable from the list once a fetch proved the row — tick it, type `delete origin` at the confirmation) | a proven `origin/<name>` row; no other approval grants it |
 
 `--force` never implies `-D`, and neither implies `--accept-loss`: a dirty
 worktree needs `--force --accept-loss`, an unmerged branch `-D
@@ -211,13 +215,22 @@ what it would lose, running processes, and the approvals it needs. When every
 entry is proven `y` confirms; otherwise only the typed word `delete` then
 enter does, and any other key cancels. The prompt always states how many
 items will be removed and how many need force or `-D`, and how many are not
-on screen. The list does not fetch when it opens, so an `origin` row is
-never proven there: its reason says `origin was not refreshed in this list`
-(not `--no-fetch`, which you did not pass), and it cannot be ticked. Remove an
-`origin` branch with `wt remove origin/<name> --remote`, which fetches first.
-(The confirmation still has an `ORIGIN BRANCHES` group that names how many
+on screen. The list does not fetch when it opens, so without a fetch this run
+(`--fetch`, or the list's `F`) an `origin` row is never proven. These
+fetch reasons appear only where pull requests are checked (a
+GitHub-recognised origin); a non-GitHub origin's rows read `not_checked`
+(above) and never name the fetch state. With no fetch
+flags its reason says `origin was not refreshed in this list` (it names no
+flag, since you passed none) and the header says
+`fetch: not run (this list does not fetch when it opens)`. With `--no-fetch`
+the reason names the flag instead —
+`origin was not fetched this run (--no-fetch)` — and the header says
+`fetch: skipped`. Either way the row cannot be ticked — only a
+proven `origin` row can be, and one you ticked is removed only through the
+confirmation's `ORIGIN BRANCHES` group, which names how many
 branches are on `origin`, refuses `y` and the plain `delete`, and needs
-`delete origin` typed, for when the list can refresh.) While removal runs, keys,
+`delete origin` typed. `wt remove origin/<name> --remote` removes one by name
+instead, fetching first. While removal runs, keys,
 ctrl+c and termination and hangup signals wait until it ends; the results screen shows
 every outcome and the same outcomes print again when wt exits.
 
@@ -349,8 +362,7 @@ Then the row's evidence is `rescued` and it carries the informational reason
 `preserved` (`preserved by <record ref> (copy: <path>)`; it never lowers the
 status). Everything else keeps its usual effect: an open or unknown PR, a
 branch judged against a local default, and ignored files (the row stays less
-sure and needs `--accept-loss`). `rescued` rows are not age-gated. The
-worktree-exit prompt does not offer a rescued original. The source ref must
+sure and needs `--accept-loss`). `rescued` rows are not age-gated. The source ref must
 match the record exactly: on a case-insensitive volume, a worktree whose HEAD
 spells the branch in a different case from the ref's spelling does not read
 removable (it fails closed; `--accept-loss` still works). Only the source of a
@@ -461,7 +473,8 @@ wt restore-root --to spike --yes   # no prompt; --to names only the directory un
 | `--no-fetch` | do not fetch before the fast-forward check |
 
 A real run first fetches every remote (it updates remote-tracking refs,
-nothing else), exactly as `wt cleanup` does (one fetch of every remote). Uncommitted work is carried by the rescue engine:
+nothing else), exactly as `wt cleanup` does (one `git fetch --prune` per
+remote). Uncommitted work is carried by the rescue engine:
 a new worktree is added detached at the branch's tip, staged, unstaged and
 untracked non-ignored files are copied into it and verified against the root
 (`git status` equal, every path equal in kind, mode, content and link target),
@@ -556,7 +569,8 @@ Design: [the spec](../../docs/superpowers/specs/2026-11-08-wt-restore-root-desig
 ## Deleting an origin branch
 
 `wt remove origin/<name> --remote` deletes the branch on `origin` (the
-terminal list does not fetch, so its origin rows are never proven and cannot
+terminal list does not fetch when it opens, so without `--fetch`/`F` its
+origin rows are never proven and cannot
 be ticked). It is visible
 to everyone with access to the repository and this tool cannot undo it, so
 the rules are narrower than for a local branch:
@@ -565,8 +579,9 @@ the rules are narrower than for a local branch:
   branch whose head is exactly the branch's tip, whose merge commit is in the
   base; no open PR with the branch as head; no open PR (from this repository or
   a fork) with it as base; content in the base; and `origin` fetched cleanly
-  **this run**. `--no-fetch`, the terminal list (which does not fetch when it
-  opens), a failed fetch, a missing `gh` or a failed query each make the row
+  **this run**. `--no-fetch`, a terminal list that fetched nothing (it does
+  not fetch when it opens; `--fetch` and the list's `F` fetch), a failed fetch,
+  a missing `gh` or a failed query each make the row
   unproven. There is no `--accept-loss` or `-D` path.
 - The approval is its own: `--remote` on the CLI (`delete origin` in the list's
   confirmation, once the list can prove an origin row).

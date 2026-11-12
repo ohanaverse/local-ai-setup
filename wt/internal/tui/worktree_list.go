@@ -17,3 +17,10 @@ type selectedEntryMsg struct {
 	entry worktree.Entry
 	row   *cleanup.Row
 }
+
+// refreshRowsChosenMsg is launch mode's `F`: the list asks for a refresh —
+// the remotes fetched, the rows re-gathered (the picker's only fetch, since
+// opening fetches nothing). The app runs it (app.go's refreshRowsChosenMsg
+// handler): it holds the rows' gather inputs and the in-flight guard that
+// drops a second `F` while one refresh is running.
+type refreshRowsChosenMsg struct{}

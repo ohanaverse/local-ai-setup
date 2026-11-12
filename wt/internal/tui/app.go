@@ -54,6 +54,12 @@ type model struct {
 	rows    cleanupListModel
 	rowsGen int
 	ready   bool
+	// rowsIn is the gather inputs the last rows load ran with (the claim,
+	// the PR hooks, the fetch hook): the `F` refresh re-runs exactly them.
+	rowsIn cleanup.GatherInputs
+	// rowsRefreshing is true from the picker's `F` until its load lands: a
+	// second `F` while one is in flight is dropped, one fetch per request.
+	rowsRefreshing bool
 
 	phase phase
 	agent string         // current agent name
@@ -201,16 +207,15 @@ func (m model) Init() tea.Cmd {
 }
 
 // loadPickerCmd loads the worktree picker: it resolves the repository root
-// once (#390) and gathers its rows there (loadRowsCmd, which fetches first,
-// as the picker always has). The PR lookups follow once the rows are on
-// screen (gotRows, loadRowPRsCmd). Outside a repository the load reports the
-// lookup's error. The reload after a create goes through it too, in
-// whatever directory wt is in by then.
+// once (#390) and gathers its rows there (loadRowsCmd; it fetches nothing —
+// the list's one fetch is the user's `F`, refreshRowsChosenMsg). The PR
+// lookups follow once the rows are on screen (gotRows, loadRowPRsCmd).
+// Outside a repository the load reports the lookup's error.
 func loadPickerCmd() tea.Cmd {
 	return func() tea.Msg {
 		root, err := findRepoRoot()
 		cwd, _ := os.Getwd()
-		return loadRowsCmd(root, err, pickerInputs(cwd), true)()
+		return loadRowsCmd(root, err, pickerInputs(cwd), false)()
 	}
 }
 
@@ -315,8 +320,20 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m, emit(selectedEntryMsg{entry: entryOfRow(msg.Row), row: &msg.Row})
 	case newWorktreeChosenMsg:
 		return m.openNewWorktreePrompt(), nil
-	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg:
-		// The picker's `x`: its removal flow runs inside the row list.
+	case refreshRowsChosenMsg:
+		// Launch mode's `F`: fetch the remotes and re-gather the rows, the
+		// picker's only fetch. A refresh already in flight owns the key:
+		// the message is dropped, never a second fetch stacked on the first.
+		if !m.ready || m.phase != phaseList || m.rowsRefreshing {
+			return m, nil
+		}
+		m.rowsRefreshing = true
+		m.rows.fetching = true
+		return m, loadRowsCmd(m.repoRoot, nil, m.rowsIn, true)
+	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg, cleanupRefetchMsg:
+		// The row list runs its own flows inside itself: the `x` removal
+		// run (preview, progress, done, the post-run refresh) and, in
+		// manage mode, the `F` re-read's answer.
 		if m.ready && m.phase == phaseList {
 			return m.updateRows(msg)
 		}
@@ -1503,7 +1520,6 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 		// profile is not one priced registry model.
 		releaseSession()
 		runStopPhase(cfg)
-		offerExitPrompt(cfg)
 		if summary != "" {
 			fmt.Println("\n" + summary)
 		}
@@ -1520,7 +1536,6 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 		if launched.m.ID != "" && !launched.m.Native {
 			runStopPhase(cfg)
 		}
-		offerExitPrompt(cfg)
 	}
 	if summary != "" {
 		// Leading "\n" guards against the agent's last byte being

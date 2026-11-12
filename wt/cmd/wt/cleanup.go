@@ -36,7 +36,7 @@ var (
 )
 
 func worktreesCmd(a *app) *cobra.Command {
-	var asJSON, noFetch, plain bool
+	var asJSON, fetch, noFetch, plain bool
 	var minAge time.Duration
 	c := &cobra.Command{
 		Use:     "worktrees",
@@ -53,14 +53,14 @@ func worktreesCmd(a *app) *cobra.Command {
 			"terminal, enter removes the ticked\n" +
 			"rows after a confirmation that lists what each would lose: y when every\n" +
 			"row is proven, the typed word delete when any is not proven or loses\n" +
-			"something. Origin rows there read less sure (the list has not fetched, so it\n" +
-			"cannot prove them); remove an origin branch with `wt remove origin/<name>\n" +
+			"something. Origin rows there read less sure (without --fetch the list has not\n" +
+			"fetched, so it cannot prove them); remove an origin branch with `wt remove origin/<name>\n" +
 			"--remote`, which fetches first and needs its own approval. r copies the work of\n" +
 			"the row under the cursor into a new branch and worktree first (`wt rescue`).\n\n" +
-			"It runs `git fetch --prune <remote>` for every remote first (origin first, the\n" +
-			"others at the same time), never prompting (git's prompts are off and ssh uses\n" +
-			"BatchMode unless you set GIT_SSH_COMMAND or core.sshCommand, which is then\n" +
-			"left alone)\n" +
+			"With --json, --plain or a pipe it runs `git fetch --prune <remote>` for every\n" +
+			"remote first (origin first, the others at the same time), never prompting\n" +
+			"(git's prompts are off and ssh uses BatchMode unless you set GIT_SSH_COMMAND\n" +
+			"or core.sshCommand, which is then left alone)\n" +
 			"(--no-fetch skips it; an origin branch is then not removable) and says in the\n" +
 			"header how that went (a repository with no remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
@@ -68,13 +68,15 @@ func worktreesCmd(a *app) *cobra.Command {
 			"not be classified at all (not a repository, no default branch). With --json\n" +
 			"the one JSON document is printed on failure too.\n\n" +
 			"On a terminal the list is interactive and does not fetch when it opens (every\n" +
-			"remote's branches are listed from the refs already there); --plain, --json and\n" +
-			"a pipe fetch first and print text.\n" +
+			"remote's branches are listed from the refs already there; --fetch runs one\n" +
+			"`git fetch --all --prune`, capped at 5s, at the repository's root first, and\n" +
+			"the header says how it went); --plain, --json and a pipe fetch first (the\n" +
+			"per-remote way above) and print text.\n" +
 			"A branch younger than --min-age (default 10m, at least 1m) that sits at or\n" +
 			"behind the base is never proven merged: a brand-new branch looks merged. A\n" +
 			"value below 10m is named in the header, as is a registry wt could not read\n" +
 			"(registered local_path artifacts are then not marked).",
-		Example:      "  wt worktrees\n  wt worktrees --plain --no-fetch\n  wt worktrees --json",
+		Example:      "  wt worktrees\n  wt worktrees --fetch\n  wt worktrees --plain --no-fetch\n  wt worktrees --json",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		// main prints the error line; cobra's copy would repeat it.
@@ -83,11 +85,15 @@ func worktreesCmd(a *app) *cobra.Command {
 			if err := checkMinAge(cmd, minAge); err != nil {
 				return err
 			}
-			return executeCleanup(cmd, a, cleanupFlags{json: asJSON, noFetch: noFetch, plain: plain, minAge: minAge})
+			if fetch && noFetch {
+				return fmt.Errorf("--fetch and --no-fetch contradict: --fetch fetches every remote before listing, --no-fetch skips that fetch")
+			}
+			return executeCleanup(cmd, a, cleanupFlags{json: asJSON, fetch: fetch, noFetch: noFetch, plain: plain, minAge: minAge})
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
-	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first")
+	c.Flags().BoolVar(&fetch, "fetch", false, "fetch every remote once before a terminal list (one git fetch --all --prune at the repository's root, capped at 5s; --json and --plain fetch first their own way, per remote, and --fetch adds nothing there)")
+	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first (the fetch --json and --plain run; together with --fetch it is a usage error)")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
@@ -132,8 +138,8 @@ func cleanupListInputs(cwd string, fetch bool, protected []string, label string)
 }
 
 type cleanupFlags struct {
-	json, noFetch, plain bool
-	minAge               time.Duration
+	json, fetch, noFetch, plain bool
+	minAge                      time.Duration
 }
 
 func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
@@ -151,7 +157,13 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		// The list never fetches on open and shows every remote's branches.
 		// PRs stay synchronous here: RunCleanupList takes a finished report.
 		in.Fetch, in.AllRemotes = false, true
-		if !f.noFetch {
+		switch {
+		case f.fetch:
+			// The user's explicit fetch: every remote once at the root the
+			// report is built from, recorded the way the header's fetch note
+			// reads it (and, through LastFetched there, the refreshed line).
+			in.Fetched = cleanup.RecordFetch(in.FetchRemotes, listRoot(cwd))
+		case !f.noFetch:
 			// Not --no-fetch: the list just does not fetch. Origin rows
 			// say so instead of naming a flag the user did not pass.
 			in.Fetched = cleanup.FetchResult{NotAttempted: true}
@@ -193,29 +205,74 @@ func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr 
 	return report
 }
 
+// listRoot is the root the report is built from — the primary worktree's
+// path, exactly what Gather reports as Repo — so an explicit fetch there is
+// what the header's refreshed line counts (LastFetched reads that worktree's
+// own fetch stamp). cwd answers only when the worktree list cannot be read:
+// the gather then fails with the real error anyway.
+func listRoot(cwd string) string {
+	if facts, err := cleanup.ListWorktrees(cleanup.Git{Dir: cwd}, cwd); err == nil && len(facts) > 0 {
+		return facts[0].Path
+	}
+	return cwd
+}
+
 // cleanupRemoveFuncs connects the tick list to the removal engine, with the
 // settings `wt remove` uses (its clock and process finder): Preview turns
 // the ticked rows into preview inputs (ItemFromRow) and previews them; Run
 // removes the items the list confirmed; Refresh re-reads the repository (no
-// fetch) for the rebuilt list and points the engine at the new snapshot. A
-// registry that did not load turns removal off (plan call 7): enter then
+// fetch) for the rebuilt list and points the engine at the new snapshot;
+// Refetch (the list's `F`) fetches every remote once at the report's root and
+// re-reads the same way. A registry that did not load turns removal off (plan
+// call 7): enter then
 // says so and previews nothing. Rescue (the `r` key) runs `wt rescue`'s
 // executor on the list's current snapshot and is wired either way: it never
-// removes anything, so the registry does not matter to it.
+// removes anything, so the registry does not matter to it. Refetch is wired
+// either way for the same reason.
 func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
 	in.Fetch = false // a re-check never fetches
 	in.Fetched = snap.Fetch
 	// cur is the snapshot the list currently stands on: Refresh replaces it,
-	// and `r` rescues against it.
+	// and `r` rescues against it. eng is the removal engine (built below,
+	// only when the registry loaded): a successful re-read repoints it too,
+	// because its re-check before a removal reuses the snapshot it was built
+	// with — a fetch F just made would otherwise be invisible to it. With no
+	// engine there is nothing to repoint.
 	cur := &snap
+	var eng *removal.Engine
 	rescueRowFn := func(row cleanup.Row) error {
 		answer, out, errOut := rescueStreams()
 		return rescueRow(answer, out, errOut, rescueFlags{minAge: minAge}, *cur, in, row)
 	}
-	if protErr != nil {
-		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Rescue: rescueRowFn}
+	// reGather re-reads the repository (never fetching) and stands the list
+	// — and the engine, when there is one — on the fresh snapshot.
+	reGather := func() (cleanup.Snapshot, error) {
+		fresh, err := cleanup.Gather(cleanup.Git{Dir: in.CWD}, in)
+		if err != nil {
+			return cleanup.Snapshot{}, err
+		}
+		*cur = fresh
+		if eng != nil {
+			eng.Prior = fresh
+		}
+		return fresh, nil
 	}
-	eng := &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
+	// refetch is the list's `F`: every remote fetched once at the report's
+	// root (the same root this report was built from), then the re-read. A
+	// fetch failure is not this error — it travels in the report's Fetch
+	// field, which the header renders; this error is the re-read's own.
+	refetch := func() (cleanup.Report, error) {
+		in.Fetched = cleanup.RecordFetch(in.FetchRemotes, snap.Repo)
+		fresh, err := reGather()
+		if err != nil {
+			return cleanup.Report{}, err
+		}
+		return cleanupReport(a, fresh, minAge, protErr), nil
+	}
+	if protErr != nil {
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn}
+	}
+	eng = &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
 	return tui.RemoveFuncs{
 		Rescue: rescueRowFn,
@@ -230,14 +287,13 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 			return eng.Run(items, progress)
 		},
 		Refresh: func() (cleanup.Report, error) {
-			fresh, err := cleanup.Gather(eng.G, in)
+			fresh, err := reGather()
 			if err != nil {
 				return cleanup.Report{}, err
 			}
-			eng.Prior = fresh
-			*cur = fresh
 			return cleanupReport(a, fresh, minAge, nil), nil
 		},
+		Refetch: refetch,
 	}
 }
 

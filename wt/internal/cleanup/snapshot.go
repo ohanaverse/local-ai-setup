@@ -13,7 +13,25 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
+
+// RecordFetch runs one explicit fetch — fn, a caller's per-call hook
+// (GatherInputs.FetchRemotes), or worktree.FetchRemotes when fn is nil — at
+// root and records the outcome the way the header's fetch note reads it: ok,
+// or failed with git's line. A failure is a value, never an error: the list
+// still opens and the header says how the fetch went. It is the one home of
+// that wording for the picker's `F`, the manage list's `F` and `wt worktrees
+// --fetch`.
+func RecordFetch(fn func(root string) error, root string) FetchResult {
+	if fn == nil {
+		fn = worktree.FetchRemotes
+	}
+	if err := fn(root); err != nil {
+		return FetchResult{At: time.Now(), Err: err.Error()}
+	}
+	return FetchResult{OK: true, At: time.Now()}
+}
 
 // GatherInputs are what Gather cannot learn from git.
 type GatherInputs struct {
@@ -22,7 +40,13 @@ type GatherInputs struct {
 	// Fetched is the result of an earlier fetch of this run, reported as the
 	// snapshot's when Fetch is false: a re-read after a removal (the tick
 	// list's refresh) must not suddenly find every origin row "not fetched".
-	Fetched        FetchResult
+	Fetched FetchResult
+	// FetchRemotes is this call's fetch hook for a caller that fetches
+	// outside Gather (the picker's rows load): what that load runs in place
+	// of worktree.FetchRemotes when set, so a test can count the fetches and
+	// the hook rides with the call (as PRList does). Gather itself never
+	// calls it: its own Fetch is the per-remote fetch in base.go.
+	FetchRemotes   func(root string) error
 	OwnRepo        string             // owner/repo for PR filtering; "" parses origin's URL
 	ProtectedPaths []string           // registered local_path model artifacts
 	Claim          sessionclaim.Claim // this process's claim (its PID); Path is set to the root

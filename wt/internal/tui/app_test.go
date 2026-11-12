@@ -5,14 +5,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -1085,6 +1088,248 @@ func TestReloadErrorVisibleAboveList(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "boom") {
 		t.Errorf("View missing reload error, got:\n%s", view)
+	}
+}
+
+// pickerOpenOn opens the picker on r's repository through a rows load that
+// carries a counting fetch hook (the picker's `F` refresh runs exactly that
+// hook, reporting fetchErr — nil: the fetch succeeds), and returns the ready
+// model with the hook's counter.
+func pickerOpenOn(t *testing.T, r *rmRepo, fetchErr error) (model, func() int) {
+	t.Helper()
+	in := pickerInputs(r.dir)
+	in.OwnRepo = "o/r"
+	in.PRList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
+	in.PRBaseList = func(string, string) ([]byte, error) { return []byte("[]"), nil }
+	fetches := 0
+	in.FetchRemotes = func(string) error { fetches++; return fetchErr }
+	m := model{width: 120, height: 50, theme: themes.Default, cfg: &config.Config{}}
+	m, _ = updateMsg(m, loadRowsCmd(r.dir, nil, in, false)())
+	if !m.ready {
+		t.Fatalf("not ready after the rows load; status %q", m.status)
+	}
+	return m, func() int { return fetches }
+}
+
+// pickerRowListed reports whether the picker's list carries a row named name.
+func pickerRowListed(m model, name string) bool {
+	for _, it := range m.rows.items {
+		if it.heading == "" && !it.newWorktree && it.row.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPickerOpenDoesNotFetch: opening the picker runs no fetch and leaves
+// the repository's fetch stamp alone — fetching is the user's `F` now (no
+// automatic behaviors). The hook counts any fetch a rows load would run;
+// the stamp check then walks the whole open path (loadPickerCmd) with the
+// real fetch function, the one that used to run on every open and write
+// FETCH_HEAD. A fresh clone has no fetch stamp at all, so the check is
+// about the open and not about the setup.
+func TestPickerOpenDoesNotFetch(t *testing.T) {
+	r := newRmRepo(t)
+	_, fetches := pickerOpenOn(t, r, nil)
+	if fetches() != 0 {
+		t.Errorf("the rows load fetched %d times; opening the list must fetch nothing", fetches())
+	}
+	old := findRepoRoot
+	findRepoRoot = func() (string, error) { return r.dir, nil }
+	t.Cleanup(func() { findRepoRoot = old })
+	if _, ok := loadPickerCmd()().(rowsLoadedMsg); !ok {
+		t.Fatal("the open load did not answer rowsLoadedMsg")
+	}
+	if _, ok := worktree.LastFetched(r.dir); ok {
+		t.Error("opening the picker wrote a fetch stamp; it fetches nothing")
+	}
+}
+
+// TestPickerFKeyRefreshes: `F` in the picker fetches (exactly once, through
+// the rows load's fetch hook) and re-gathers the rows, so a branch born
+// after the open shows up. It is the list's only refresh, since opening
+// fetches nothing.
+func TestPickerFKeyRefreshes(t *testing.T) {
+	r := newRmRepo(t)
+	m, fetches := pickerOpenOn(t, r, nil)
+	r.loose("afterwards") // born after the load: only a re-gather can show it
+	m, cmd := updateMsg(m, keyRunes("F"))
+	if cmd == nil {
+		t.Fatal("F dispatched no refresh")
+	}
+	m = drainCmds(t, m, cmd)
+	if fetches() != 1 {
+		t.Errorf("F fetched %d times, want 1", fetches())
+	}
+	if !m.ready || m.listError != "" {
+		t.Fatalf("ready=%v listError=%q after F; want the refreshed list", m.ready, m.listError)
+	}
+	if !pickerRowListed(m, "afterwards") {
+		t.Errorf("the refreshed list lacks afterwards:\n%s", m.View())
+	}
+}
+
+// TestPickerFKeyRefreshKeepsFilterCursorScroll: a `F` refresh's reload is a
+// report swap like the PR fill's — it keeps what the user was doing: the
+// typed filter, the highlighted row and the scroll position survive
+// (withReport, the preservation every other swap already had). The
+// highlighted-row claim pins the BY-KEY cursor restore specifically: the
+// fixture has two rows the filter keeps visible, and the cursor is moved to
+// the one a re-seat would not pick (settleCursor falls back to the filter's
+// first visible row), so a reload that lost the cursor lands there and
+// fails. Both of the refresh's outcomes count: the fetch succeeding, and the
+// fetch failing while the re-gather still succeeds — the failure is the
+// header's line, and neither may throw a review back to the top with its
+// filter dropped.
+func TestPickerFKeyRefreshKeepsFilterCursorScroll(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fetchErr error
+	}{
+		{"fetch ok", nil},
+		{"fetch failed", errMock("no route to origin")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRmRepo(t)
+			// Two rows match "after" below: the cursor claim needs two
+			// visible rows, or a re-seat passes it.
+			r.loose("aftermath")
+			r.loose("afterwards")
+			m, _ := pickerOpenOn(t, r, tc.fetchErr)
+			// The user filters to the two rows and keeps the query (enter).
+			m, _ = updateMsg(m, keyRunes("/"))
+			m, _ = updateMsg(m, keyRunes("after"))
+			m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+			// Move the cursor off the row settleCursor would re-seat (the
+			// filter's first visible row) and onto the other match.
+			seated, ok := m.rows.selectedRow()
+			if !ok {
+				t.Fatal("no highlighted row under the filter")
+			}
+			m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+			want, ok := m.rows.selectedRow()
+			if !ok || want.Name == seated.Name {
+				t.Fatalf("the filter left one visible row (cursor on %v); the cursor claim needs two", seated)
+			}
+			m.rows.offset = 1
+			m, cmd := updateMsg(m, keyRunes("F"))
+			if cmd == nil {
+				t.Fatal("F dispatched no refresh")
+			}
+			m = drainCmds(t, m, cmd)
+			if m.rows.filter != "after" || m.rows.filtering {
+				t.Errorf("filter = %q filtering = %v after F; the reload keeps the query", m.rows.filter, m.rows.filtering)
+			}
+			if row, ok := m.rows.selectedRow(); !ok || row.Name != want.Name {
+				t.Errorf("cursor = %+v ok=%v after F; the reload keeps the highlighted row (%q, restored by key)", row, ok, want.Name)
+			}
+			if m.rows.offset != 1 {
+				t.Errorf("offset = %d after F; the reload keeps the scroll", m.rows.offset)
+			}
+		})
+	}
+}
+
+// TestPickerFKeyIgnoredWhileTyping: while the filter query is being typed,
+// `F` is a letter of that query, never a refresh (the same rule as q, n and
+// x there). Without it a filter for anything with a capital F would fetch
+// behind the user's back.
+func TestPickerFKeyIgnoredWhileTyping(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	m, _ = updateMsg(m, keyRunes("/"))
+	m, cmd := updateMsg(m, keyRunes("F"))
+	if cmd != nil {
+		t.Error("F while typing dispatched a command; it is filter text")
+	}
+	if !m.rows.filtering || m.rows.filter != "F" {
+		t.Errorf("filtering=%v filter=%q, want the query to read F", m.rows.filtering, m.rows.filter)
+	}
+}
+
+// TestPickerFKeyIgnoredWhileRefreshing: a second `F` while the first
+// refresh's load is still in flight starts nothing — one fetch per request,
+// never a stampede on key repeat.
+func TestPickerFKeyIgnoredWhileRefreshing(t *testing.T) {
+	r := newRmRepo(t)
+	m, fetches := pickerOpenOn(t, r, nil)
+	// The first F starts the refresh; its load command is kept unrun (the
+	// fetch is in flight).
+	m, cmd := updateMsg(m, keyRunes("F"))
+	if cmd == nil {
+		t.Fatal("F started no refresh")
+	}
+	m, load := updateMsg(m, cmd())
+	if load == nil {
+		t.Fatal("the refresh message started no rows load")
+	}
+	if fetches() != 0 {
+		t.Fatal("the rows load fetched before its command ran")
+	}
+	// The second F, mid-refresh: its message is dropped, no second load.
+	m, cmd2 := updateMsg(m, keyRunes("F"))
+	if cmd2 != nil {
+		if _, extra := updateMsg(m, cmd2()); extra != nil {
+			t.Fatal("F while refreshing started a second rows load")
+		}
+	}
+	m = drainCmds(t, m, load)
+	if fetches() != 1 {
+		t.Errorf("fetches = %d, want 1 (the second F is ignored while refreshing)", fetches())
+	}
+}
+
+// TestPickerRefreshFailureShowsNote: a refresh that cannot re-read the
+// repository leaves the list as it was and says why in one line above it —
+// a failed refresh must never empty the picker or bury the rows it had.
+func TestPickerRefreshFailureShowsNote(t *testing.T) {
+	m := model{width: 100, height: 40, theme: themes.Default, cfg: &config.Config{}}
+	m, _ = updateMsg(m, rowsLoadedMsg{report: pickerFixture(), repoRoot: t.TempDir(),
+		in: cleanup.GatherInputs{FetchRemotes: func(string) error { return nil }}})
+	if !m.ready {
+		t.Fatalf("not ready after the rows load; status %q", m.status)
+	}
+	m, cmd := updateMsg(m, keyRunes("F"))
+	m = drainCmds(t, m, cmd)
+	if m.listError == "" {
+		t.Fatal("no note after a refresh that could not re-read the repository")
+	}
+	if strings.Contains(m.listError, "\n") {
+		t.Errorf("the note is not one line: %q", m.listError)
+	}
+	if !m.ready {
+		t.Fatal("the list went away on a failed refresh")
+	}
+	if row, ok := m.rows.selectedRow(); !ok || row.Name != "deep" {
+		t.Errorf("cursor = %+v ok=%v; the old list keeps its rows and its cursor", row, ok)
+	}
+}
+
+// TestPickerHeaderShowsLastRefreshed: the header carries the list's refresh
+// note — "not refreshed here" while the repository has no fetch stamp (a
+// fresh clone has none), and "refreshed 3m ago" once a fetch ran there. The
+// stamp is FETCH_HEAD's mtime (LastFetched), so the test ages it three
+// minutes to make the rendering deterministic without sleeping.
+func TestPickerHeaderShowsLastRefreshed(t *testing.T) {
+	empty := func(string, string) ([]byte, error) { return []byte("[]"), nil }
+	r := newRmRepo(t)
+	m, _ := pickerLoad(t, r.dir, empty)
+	if note := m.rows.headerBlock(); !strings.Contains(note, "not refreshed here") {
+		t.Errorf("a fresh clone's header lacks the note:\n%s", note)
+	}
+	if err := worktree.FetchRemotes(r.dir); err != nil {
+		t.Fatal(err)
+	}
+	stamp := r.git("rev-parse", "--git-path", "FETCH_HEAD")
+	if !filepath.IsAbs(stamp) {
+		stamp = filepath.Join(r.dir, stamp)
+	}
+	ago := time.Now().Add(-3 * time.Minute)
+	if err := os.Chtimes(stamp, ago, ago); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = pickerLoad(t, r.dir, empty)
+	if note := m.rows.headerBlock(); !strings.Contains(note, "refreshed 3m ago") {
+		t.Errorf("header note is not \"refreshed 3m ago\" in:\n%s", note)
 	}
 }
 

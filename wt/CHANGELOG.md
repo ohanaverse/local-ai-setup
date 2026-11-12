@@ -8,7 +8,8 @@
   terminal the list is grouped by kind (WORKTREES, LOCAL BRANCHES, REMOTE
   BRANCHES) with per-row tags, lists the primary checkout, the default branch
   and held worktrees, shows every remote's branches and does not fetch when it
-  opens; `--json`, `--plain` and a pipe still fetch first unless `--no-fetch`.
+  opens (`--fetch` fetches every remote first, the list's `F` while it is
+  open); `--json`, `--plain` and a pipe still fetch first unless `--no-fetch`.
   In the list a remote ref folds into the local row it belongs to (the head's own
   upstream, else `origin/<name>`) as its `upstream`; `--json` and `--plain` still
   list it as its own row too. A held
@@ -37,8 +38,7 @@
   `preserved`, and `wt remove <path> --yes` removes it and its own branch
   with no other approval. A row with uncommitted changes stays unique work
   (`--accept-loss --force -D`) unless B2 below covers it. Ignored files, an open or
-  unknown PR and a local base keep their usual effect, and the worktree-exit
-  prompt does not offer a rescued original. `cleanup-list` gains the evidence
+  unknown PR and a local base keep their usual effect. `cleanup-list` gains the evidence
   value `rescued` and the reason code `preserved` (additive, version 1
   unchanged); `remove-result` is unchanged. See `docs/wt-cleanup.md`.
 
@@ -59,8 +59,8 @@
   skip-worktree entries (so a sparse checkout) and every state `wt rescue`
   refuses. Exit 0 moved (or would move, or already on the default), 1 could
   not start, 2 refused or failed, 3 approval missing. New contract
-  `docs/contracts/restore-root-result.*`. Cost: one fetch of every remote
-  (none with `--dry-run` or `--no-fetch`) and one extra fingerprint at the
+  `docs/contracts/restore-root-result.*`. Cost: one `git fetch --prune` per
+  remote (none with `--dry-run` or `--no-fetch`) and one extra fingerprint at the
   release. The one launch confirmation (`wt: continue? [Y/n]`, which lists
   the warnings) prints a hint pointing at it when the root is on a non-default
   branch. `wt rescue` of the primary
@@ -77,12 +77,17 @@
   `docs/wt-cleanup.md`.
 - `wt cleanup` lists the repository's worktrees, local branches and origin
   branches in four groups by how sure wt is each can go (proven merged, looks merged and less sure, has work that exists nowhere
-  else, in use or locked), with the evidence per row. It fetches first
-  (`--no-fetch` skips it), prints text with `--plain` or a pipe and one JSON
+  else, in use or locked), with the evidence per row. A terminal list does not
+  fetch when it opens (`--fetch` fetches every remote first, the list's `F`
+  while it is open); `--json`, `--plain` and a pipe fetch first unless
+  `--no-fetch`. It prints text with `--plain` or a pipe and one JSON
   document with `--json` (`docs/contracts/cleanup-list.*`), and a branch
   at or behind the base and younger than `--min-age` (default 10m) is never proven merged. On a
-  terminal, enter removes the ticked worktrees and local branches after a
-  confirmation (`y` when all are proven, the typed word `delete` otherwise).
+  terminal, enter removes the ticked worktrees, local branches and proven
+  `origin` branches after a confirmation (`y` when every entry is proven, the
+  typed word `delete` otherwise; when any entry deletes an `origin` branch the
+  required word is `delete origin`, and `y` and the plain `delete` never grant
+  it).
   `wt remove <worktree-path-or-branch>...` removes named targets through the
   same engine, re-checking each first, with one flag per approval (`--yes`
   for a proven item, `--accept-loss`, `--force`, `-D`), plus `--dry-run`,
@@ -114,24 +119,23 @@
   targeting it, origin fetched this run, so `--no-fetch` refuses it), and the
   push is a lease on the listed commit, so a branch pushed to since is left
   alone. The result prints the commit and `git push origin <sha>:refs/heads/<n>`
-  to restore it. `wt cleanup` now fetches every remote (never prompting) and
-  its header and JSON (`fetch.remotes`) say which; origin rows whose tip moved
-  after their PR merged are now less sure.
+  to restore it. Fetching is the user's call now (it used to run on every
+  list, never prompting); `--json` and `--plain` still fetch by default,
+  `--no-fetch` stops them, and the header and JSON (`fetch.remotes`) say what
+  was fetched or that nothing was. Origin rows whose tip moved after their PR
+  merged are now less sure.
 - `wt rescue <worktree-path-or-branch>` copies a worktree's local-only work into a new branch (`rescued/<name>`, or `--to NAME`) and worktree under `.worktrees/`: the branch starts at the original's exact HEAD (so its commits come along) and carries staged, unstaged and untracked files, then checks the copy against the original before it reports `moved`. The original is only read (a later change lets a clean one read removable once its record exists; see the Unreleased entry). Refuses, creating nothing, a rebase or merge in progress, unmerged paths, skip-worktree files, a changed submodule, a file both staged and modified, a nested repository and similar; a failure after the new worktree exists keeps it. `--dry-run`, `--yes`, `--json` ([contract](../docs/contracts/rescue-result.schema.json)); exit 0 done, 1 could not start, 2 refused or failed, 3 approval missing. In `wt cleanup`'s list, `r` rescues the row under the cursor. Every git call `wt cleanup` and `wt remove` make now runs with `GIT_OPTIONAL_LOCKS=0`, so listing no longer refreshes a worktree's index.
-- When the agent exits, `wt` offers to remove the worktree and branch this
-  launch created if nothing changed in them: `<path> was created for this
-  session and nothing changed in it. Remove it and its branch <name>?` Enter
-  keeps (default no); `y` removes both through the `wt remove` engine, which
-  still refuses anything that moved. Only a brand-new branch and its
-  worktree, created by this launch, qualify (not a reused worktree, a new
-  worktree on an existing branch, a worktree and local branch made for a
-  remote-tracking name, `--cwd` or `--root`); a changed, committed-in (even if the commit
-  was later undone by `reset --hard`), ignored-file or still-running worktree
-  is kept silently, and so is any launch with no
-  terminal. The prompt runs after the stop picker and before the summary
-  line, and the agent's exit status is unchanged. New setting `[launch]
-  exit_prompt = "ask" | "keep"` in `config.toml`; no value removes without a
-  keypress.
+- A `[launch] exit_prompt` key in `config.toml` is tolerated and ignored (the
+  exit prompt it once configured is removed — nothing is offered when an agent
+  exits, and cleanup is user-driven: `wt worktrees` lists what can go, `wt
+  remove` removes named targets). Any value parses and survives wt's saves;
+  nothing validates it and nothing consults it, and a non-empty value prints
+  one note per process: `wt: note: config.toml: [launch] exit_prompt is no
+  longer used and is ignored`.
+- A first-time install of the `block-main-commit` hook is announced on stderr:
+  `wt: installed the block-main-commit hook (--no-guard to skip)`. Every
+  install path prints it — a launch inside a git repo and `wt --init` alike —
+  and a hook already present is left alone and prints nothing.
 - `-W <name>` uses or creates a branch and worktree for the name without a
   question of its own: a name that creates anything is announced first by its
   creation line, one shape per case: `creating branch <b> and worktree <p>` (a

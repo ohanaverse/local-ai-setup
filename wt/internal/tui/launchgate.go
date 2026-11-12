@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/charmbracelet/x/term"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -33,17 +32,10 @@ func (c *launchCreation) target() (launchwarn.Target, error) {
 }
 
 // ensure creates (or reuses) the worktree the pick owes and returns its path.
-// A branch it creates is recorded for the exit prompt (exitprompt.RecordNote),
-// exactly as cmd/wt's -W path records one once its plan creates the branch; a
-// branch or worktree that already existed is history this launch did not make
-// and records nothing.
+// plan.Ensure is idempotent: a branch or worktree that already existed is
+// reused unchanged.
 func (c *launchCreation) ensure() (string, error) {
-	creates := c.plan.Creates()
-	path, err := c.plan.Ensure()
-	if err == nil && creates {
-		exitprompt.RecordNote(os.Stderr, path, c.name)
-	}
-	return path, err
+	return c.plan.Ensure()
 }
 
 // rootClaimRelease removes this session's claim on the repository root. It is

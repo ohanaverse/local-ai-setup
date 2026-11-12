@@ -527,8 +527,9 @@ func TestPickerListsBranchesOfAnUntrackedRemote(t *testing.T) {
 	}
 }
 
-// TestPickerFailedFetchReadsAsFailed pins that a fetch on open that failed
-// is reported as failed in the list's header, not as "fetch: skipped".
+// TestPickerFailedFetchReadsAsFailed pins that the `F` refresh's fetch, when
+// it fails, is reported as failed in the list's header, not as "fetch:
+// skipped".
 func TestPickerFailedFetchReadsAsFailed(t *testing.T) {
 	r := newRmRepo(t)
 	r.git("remote", "add", "dead", filepath.Join(t.TempDir(), "missing.git"))
@@ -542,6 +543,23 @@ func TestPickerFailedFetchReadsAsFailed(t *testing.T) {
 	header := strings.Join(cleanup.HeaderLines(msg.report, time.Now()), "\n")
 	if !strings.Contains(header, "fetch: FAILED") {
 		t.Errorf("header does not say the fetch failed:\n%s", header)
+	}
+}
+
+// TestPickerOpenFetchReadsAsNotRun pins the open's fetch wording, live
+// behavior with no change behind it: the header reads "fetch: not run (this
+// list does not fetch when it opens)" from the NotAttempted marker
+// pickerInputs gives every open. Deleting that marker reverts the header
+// line to the zero value's "fetch: skipped; …" with every other test green;
+// this pin fails then. (The zero value's --no-fetch naming is the origin
+// rows', not this line's: classify.go's originFetchProblem answers "origin
+// was not fetched this run (--no-fetch)" for it there.)
+func TestPickerOpenFetchReadsAsNotRun(t *testing.T) {
+	r := newRmRepo(t)
+	empty := func(string, string) ([]byte, error) { return []byte("[]"), nil }
+	m, _ := pickerLoad(t, r.dir, empty)
+	if header := m.rows.headerBlock(); !strings.Contains(header, "fetch: not run") {
+		t.Errorf("the open's header does not read \"fetch: not run\":\n%s", header)
 	}
 }
 

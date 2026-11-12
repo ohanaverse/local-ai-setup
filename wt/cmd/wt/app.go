@@ -1,11 +1,44 @@
 package main
 
 import (
+	"fmt"
+	"io"
+
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
+
+// ignoredLaunchWarned makes the legacy-key note a once-per-process note:
+// newApp runs per command, and a stale [launch] exit_prompt should be
+// noticed once, not on every command. resetIgnoredLaunchWarnForTest is the
+// per-test reset path, so no test depends on another's having run first
+// (wt/CLAUDE.md).
+var ignoredLaunchWarned bool
+
+// resetIgnoredLaunchWarnForTest clears the once-per-process legacy-key note
+// state; tests call it (and t.Cleanup it) so warn order never matters.
+func resetIgnoredLaunchWarnForTest() { ignoredLaunchWarned = false }
+
+// warnIgnoredLaunchKeys prints one note per process naming each legacy
+// config key (config.IgnoredLaunchKeys) that wt tolerates but no longer
+// reads — the retired [launch] exit_prompt today. R305a: such a key is
+// tolerated and ignored, never a validation error. w is the caller's output
+// seam (newApp passes osStderr).
+func warnIgnoredLaunchKeys(w io.Writer, cfg *config.Config) {
+	if ignoredLaunchWarned {
+		return
+	}
+	keys := cfg.IgnoredLaunchKeys()
+	if len(keys) == 0 {
+		return
+	}
+	ignoredLaunchWarned = true
+	for _, key := range keys {
+		fmt.Fprintf(w, "wt: note: config.toml: %s is no longer used and is ignored\n", key)
+	}
+}
 
 // app holds shared dependencies loaded once at startup.
 type app struct {
@@ -118,6 +151,9 @@ func newApp() (*app, error) {
 	if cfgErr == nil {
 		cfgErr = cfg.Validate()
 	}
+	// A legacy [launch] exit_prompt is tolerated and ignored (R305a), never a
+	// load failure; notice it once per process instead.
+	warnIgnoredLaunchKeys(osStderr, cfg)
 	// Load the active theme. I/O and TOML parse errors are hard failures.
 	// An unknown or empty theme name falls back to Default so a typo in
 	// themes.toml never crashes the launcher — the user can still run

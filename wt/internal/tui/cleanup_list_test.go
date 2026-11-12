@@ -933,6 +933,66 @@ func TestCleanupListRKeyExplainsWhenNotOffered(t *testing.T) {
 	}
 }
 
+// TestCleanupListFKeyRefetches: `F` in the manage list re-reads the
+// repository through RemoveFuncs.Refetch and rebuilds the list from the
+// fresh report; when the re-read fails the list keeps its rows and the
+// status says why in one line (nothing was removed here, so a failure never
+// ends the program the way the post-run refresh's failure does).
+func TestCleanupListFKeyRefetches(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	calls := 0
+	m.rm.Refetch = func() (cleanup.Report, error) {
+		calls++
+		rep := cleanupFixture()
+		rep.Rows = append(rep.Rows, cleanup.Row{Kind: cleanup.KindBranch, Name: "fresh-branch", Branch: "fresh-branch", Status: cleanup.StatusLessSure})
+		return rep, nil
+	}
+	m = press(t, m, keyRunes("F"))
+	if calls != 1 {
+		t.Fatalf("Refetch called %d times, want 1", calls)
+	}
+	if v := m.View(); !strings.Contains(v, "fresh-branch") {
+		t.Errorf("the list was not rebuilt from the fresh report:\n%s", v)
+	}
+	if m.phase != cleanupPhaseList {
+		t.Errorf("phase = %v, want the list again after the refetch", m.phase)
+	}
+
+	m.rm.Refetch = func() (cleanup.Report, error) { calls++; return cleanup.Report{}, errMock("re-read failed") }
+	m = press(t, m, keyRunes("F"))
+	if calls != 2 {
+		t.Fatalf("Refetch called %d times, want 2", calls)
+	}
+	if m.status == "" || strings.Contains(m.status, "\n") {
+		t.Errorf("status = %q, want a one-line failure note", m.status)
+	}
+	if m.phase != cleanupPhaseList {
+		t.Errorf("phase = %v; a failed refetch stays in the list", m.phase)
+	}
+	if v := m.View(); !strings.Contains(v, "fresh-branch") {
+		t.Errorf("a failed refetch dropped the old list:\n%s", v)
+	}
+}
+
+// TestCleanupListRKeyStillRescues: adding `F` must not displace `r` — the
+// manage list still hands the highlighted row to rescue and quits, and no
+// refetch runs on the way (`F` is the only refetch key).
+func TestCleanupListRKeyStillRescues(t *testing.T) {
+	m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
+	refetches := 0
+	m.rm.Refetch = func() (cleanup.Report, error) { refetches++; return cleanupFixture(), nil }
+	m.rm.Rescue = func(cleanup.Row) error { return nil }
+	m = moveTo(t, m, "spike")
+	next, cmd := m.Update(keyRunes("r"))
+	fm := next.(cleanupListModel)
+	if cmd == nil || fm.rescueRow == nil || fm.rescueRow.Name != "spike" || !fm.done {
+		t.Fatalf("cmd=%v rescueRow=%+v done=%v; want quit with the spike row", cmd, fm.rescueRow, fm.done)
+	}
+	if refetches != 0 {
+		t.Errorf("r ran %d refetches; only F refetches", refetches)
+	}
+}
+
 // TestRunRescueStopsSignalForwardingFirst checks the r key's hand-off stops
 // the signal forwarding before rm.Rescue runs, and does nothing when no row
 // was chosen. Why: the Bubble Tea program has finished by then, so forwarded

@@ -9,7 +9,6 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
@@ -105,11 +104,6 @@ func runLaunchPath(
 	// must run even for shell-wt (which never builds a model picker) to
 	// keep other concurrent sessions' counts accurate. Best-effort.
 	sweepRefcounts()
-
-	// The post-exit worktree prompt reads this run's registry through the
-	// app; the TUI is handed the same Env.
-	exitPromptEnv = newExitPromptEnv(a)
-	tui.ExitPrompt = exitPromptEnv
 
 	// applyProfile closes over a's already-loaded profiles.toml state
 	// (newApp() loaded and validated it once) so the TUI launch path
@@ -416,9 +410,16 @@ func rootCmd() *cobra.Command {
 				} else {
 					fmt.Printf("wt: seeded: %s\n", strings.Join(res.Created, ", "))
 				}
-				// Also auto-install the guard, like a normal launch would.
-				if _, err := guard.Install(); err != nil {
+				// Also auto-install the guard, like a normal launch would,
+				// and announce a first-time install the same way so the hook
+				// never appears silently. A hook already present prints
+				// nothing, and an install failure returns as before.
+				installed, err := guard.Install()
+				if err != nil {
 					return err
+				}
+				if installed {
+					announceGuardInstall()
 				}
 				return nil
 			}
@@ -545,13 +546,9 @@ func rootCmd() *cobra.Command {
 					}
 					return refuse(err)
 				}
-				creates := plan.Creates()
 				path, err := plan.Ensure()
 				if err != nil {
 					return refuse(err)
-				}
-				if creates {
-					exitprompt.RecordNote(osStderr, path, name)
 				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, path, root)
 			}

@@ -28,6 +28,7 @@ type rowsLoadedMsg struct {
 	snap     cleanup.Snapshot
 	in       cleanup.GatherInputs
 	repoRoot string
+	stamp    refreshStamp // the root's fetch stamp, read in the command
 	gen      int
 	err      error
 }
@@ -42,6 +43,9 @@ type rowPRsLoadedMsg struct {
 // process's claim (so it does not hold its own root), four gh calls at a
 // time once the PR fill runs, and every remote's branches (AllRemotes: the
 // list shows everything local, not only what `wt worktrees --json` lists).
+// Fetched reads "not run": the picker fetches nothing on its own, and the
+// header and the origin rows must say so rather than name a --no-fetch flag
+// there is none of (a `F` refresh overwrites it with the fetch's result).
 // Registered model artifacts are not read here
 // (that needs the registry, which cmd/wt owns), so no row carries a
 // protected_artifact blocker in the picker; removal re-checks in the engine.
@@ -50,14 +54,18 @@ func pickerInputs(cwd string) cleanup.GatherInputs {
 	if err != nil {
 		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: "wt"}
 	}
-	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true}
+	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true,
+		Fetched: cleanup.FetchResult{NotAttempted: true}}
 }
 
-// loadRowsCmd gathers root's rows for the picker: the fetch the picker has
-// always done on open (worktree.FetchRemotes, best effort, at most five
-// seconds, a failure silent) when fetch is set, then cleanup.Gather with in
-// (never fetching itself, never asking gh: SkipPRs) and Classify. A
-// repository with no default branch still lists, every row Unknown.
+// loadRowsCmd gathers root's rows for the picker. With fetch set (the
+// picker's `F`, refreshRowsChosenMsg) it fetches the remotes first —
+// in.FetchRemotes when the call carries one, else worktree.FetchRemotes, at
+// most five seconds; ok or failure recorded in in.Fetched for the header to
+// render, a failure shown there, never swallowed. Without it (every open)
+// nothing fetches. Then cleanup.Gather with in (never fetching itself,
+// never asking gh: SkipPRs) and Classify. A repository with no default
+// branch still lists, every row Unknown.
 func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bool) tea.Cmd {
 	return func() tea.Msg {
 		if lookupErr != nil {
@@ -66,11 +74,7 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 		if fetch {
 			// The header says how the fetch went: ok, or failed with git's
 			// line (never "skipped", which would hide a dead remote).
-			if err := worktree.FetchRemotes(root); err != nil {
-				in.Fetched = cleanup.FetchResult{At: time.Now(), Err: err.Error()}
-			} else {
-				in.Fetched = cleanup.FetchResult{OK: true, At: time.Now()}
-			}
+			in.Fetched = cleanup.RecordFetch(in.FetchRemotes, root)
 		}
 		in.Fetch, in.SkipPRs = false, true
 		snap, err := cleanup.Gather(cleanup.Git{Dir: root}, in)
@@ -78,7 +82,7 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 			return rowsLoadedMsg{err: err}
 		}
 		rep := cleanup.Classify(snap, cleanup.Options{Now: time.Now()})
-		return rowsLoadedMsg{report: rep, snap: snap, in: in, repoRoot: root}
+		return rowsLoadedMsg{report: rep, snap: snap, in: in, repoRoot: root, stamp: readRefreshStamp(refreshRoot(root, rep))}
 	}
 }
 
@@ -160,14 +164,25 @@ func entryOfRow(r cleanup.Row) worktree.Entry {
 	return worktree.Entry{Type: t, Branch: branch, Path: r.Path, Root: r.Primary}
 }
 
-// gotRows applies a picker load: the list in launch mode, the cursor on the
-// innermost worktree holding the caller's directory, and the PR fill when the
-// load skipped one.
+// gotRows applies a picker load. The initial open builds the list in launch
+// mode with the cursor on the innermost worktree holding the caller's
+// directory — the fresh build serves the open alone: a creation happens at
+// the launch gate's commit point and reloads nothing. A `F` refresh's reload is a report swap
+// like the PR fill's: withReport keeps the filter, the highlighted row and
+// the scroll, and the header's clock moves to now so the refresh note counts
+// from this reload — the same whether the fetch succeeded or failed while
+// the re-gather succeeded (the fetch's outcome is the header's line either
+// way). Either way the load's outcome ends the refresh-in-flight guard and
+// keeps the inputs, so the next `F` re-runs exactly this load; the PR fill
+// follows when the load skipped one.
 func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
+	refreshing := m.rowsRefreshing
+	m.rowsRefreshing = false
+	m.rows.fetching = false
 	if msg.err != nil {
 		if m.ready {
-			// Reload after a create: the list is still usable, but the error
-			// must be visible: View renders it above the list.
+			// A `F` refresh whose re-read failed: the list is still usable,
+			// but the error must be visible: View renders it above the list.
 			m.listError = msg.err.Error()
 		} else {
 			m.status = "error: " + msg.err.Error()
@@ -182,11 +197,23 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 		m.status = ""
 	}
 	m.repoRoot = msg.repoRoot
+	m.rowsIn = msg.in
 	m.rowsGen++
-	rows := newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now()})
-	rows.width, rows.height = m.rows.width, m.rows.height
-	if here := deepestCurrent(msg.report); here != "" {
-		rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })
+	var rows cleanupListModel
+	if refreshing {
+		base := m.rows
+		base.now = base.clock()
+		base.opts.Now, base.opts.Root = base.now, msg.repoRoot
+		st := msg.stamp
+		base.opts.Stamp = &st
+		base.fetching = false
+		rows = base.withReport(msg.report)
+	} else {
+		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot, Stamp: &msg.stamp})
+		rows.width, rows.height = m.rows.width, m.rows.height
+		if here := deepestCurrent(msg.report); here != "" {
+			rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })
+		}
 	}
 	m.rows, m.ready = rows, true
 	if !msg.snap.PRsSkipped {
