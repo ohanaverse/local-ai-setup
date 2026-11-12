@@ -76,7 +76,7 @@ func TestLookupNotRoot(t *testing.T) {
 
 // TestAskYesNoDefaultsToNo checks only y or Y answers yes; Enter, n, q, Esc,
 // Ctrl-C and end of input all answer no, and the prompt text and the [y/N]
-// default are printed, so a stray key never confirms the removal it is asked
+// default are printed, so a stray key never confirms the action it is asked
 // about.
 func TestAskYesNoDefaultsToNo(t *testing.T) {
 	cases := map[string]bool{"y": true, "Y": true, "n": false, "\n": false, "q": false, "\x1b": false, "\x03": false, "": false}
