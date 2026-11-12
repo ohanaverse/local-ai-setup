@@ -43,7 +43,7 @@ type Target struct {
 	PRNumber                         int
 	Holders                          []sessionclaim.Claim // live sessions on Dir
 	Creation                         *Creation            // non-nil when the launch creates the worktree; Check's concern, Collect ignores it
-	Hint                             string               // optional trailing advice; the caller's to append (Task 203), Collect ignores it
+	Hint                             string               // optional trailing advice; the caller's to append, Collect ignores it
 }
 
 // Warning is one thing worth saying before the launch. Text is plain, with no

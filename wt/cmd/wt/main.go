@@ -534,9 +534,7 @@ func rootCmd() *cobra.Command {
 				// described while it is still only planned.
 				var t launchwarn.Target
 				var terr error
-				if plan.Creates() || plan.Tracks() != "" {
-					t, terr = launchwarn.ForNew(root, plan)
-				} else if _, serr := os.Stat(plan.Path()); serr != nil {
+				if _, serr := os.Stat(plan.Path()); plan.Creates() || plan.Tracks() != "" || serr != nil {
 					t, terr = launchwarn.ForNew(root, plan)
 				} else {
 					t, terr = launchwarn.ForDir(plan.Path())

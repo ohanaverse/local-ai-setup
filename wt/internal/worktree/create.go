@@ -75,6 +75,13 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 		if refExists(dir, "refs/heads/"+short) {
 			return nameClass{}, localBranchExistsError(short, name)
 		}
+		// The local name the creation would take must be one git accepts:
+		// <remote>/HEAD is a symbolic alias whose short name, HEAD, is not a
+		// branch name, and `worktree add -b HEAD` fails only at the commit
+		// point, after the creation line promised it.
+		if err := checkBranchName(dir, short); err != nil {
+			return nameClass{}, err
+		}
 		return nameClass{kind: nameTrackRemote, short: short}, nil
 	}
 

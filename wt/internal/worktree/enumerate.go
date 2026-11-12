@@ -292,7 +292,13 @@ func isNotARepo(err error) bool {
 // are ErrNotACheckout refusals (see its doc): "nothing to launch into", not a
 // read failure.
 func PrimaryOf(dir string) (string, error) {
-	out, err := runGit(dir, "worktree", "list", "--porcelain")
+	// LC_ALL=C: isNotARepo matches git's English message, which a translated
+	// git would otherwise word differently, turning "outside any repository"
+	// into a real read failure.
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
 	if err != nil {
 		if isNotARepo(err) {
 			return "", notACheckout(err)

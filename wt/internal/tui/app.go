@@ -620,9 +620,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				m.creation = nil
 				m.typedPlan = plan
 				m.pickedRow = nil // a typed name is not a row pick
-				if plan.Creates() || plan.Tracks() != "" {
-					m.creation = &launchCreation{repoRoot: m.repoRoot, name: name, plan: plan}
-				} else if _, serr := os.Stat(plan.Path()); serr != nil {
+				if _, serr := os.Stat(plan.Path()); plan.Creates() || plan.Tracks() != "" || serr != nil {
 					m.creation = &launchCreation{repoRoot: m.repoRoot, name: name, plan: plan}
 				}
 				m.selectedPath = plan.Path()
