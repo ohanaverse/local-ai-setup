@@ -236,6 +236,34 @@ func Resolve(dir, name string) (*Plan, error) {
 // checking out an existing or remote-tracking branch.
 func (p *Plan) Creates() bool { return p.cls.kind == nameCreate }
 
+// Branch is the branch the planned worktree checks out: the typed name, or the
+// local branch a remote-tracking name creates.
+func (p *Plan) Branch() string {
+	if p.cls.kind == nameTrackRemote {
+		return p.cls.short
+	}
+	return p.name
+}
+
+// Tracks is the remote-tracking ref the new local branch tracks, "" when the
+// plan tracks nothing.
+func (p *Plan) Tracks() string {
+	if p.cls.kind == nameTrackRemote {
+		return p.name
+	}
+	return ""
+}
+
+// Path is where the planned worktree is (reused) or goes (created); "" when a
+// tracking plan's path cannot be derived (Ensure reports why).
+func (p *Plan) Path() string {
+	if p.cls.kind == nameTrackRemote {
+		path, _ := newWorktreePath(p.dir, p.cls.short)
+		return path
+	}
+	return p.cls.path
+}
+
 // Start is how the branch Ensure would create starts — the phrase the create
 // question joins after "create it": "from <current branch>", "from detached
 // HEAD <short sha>", or "as an empty orphan branch with no shared history
