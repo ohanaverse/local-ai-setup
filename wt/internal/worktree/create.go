@@ -289,7 +289,7 @@ func (p *Plan) Ensure() (string, error) {
 			return "", err
 		}
 		if now != p.start {
-			return "", fmt.Errorf("the repository changed while asking: %q was to be created %s, it would now start %s; run the command again", p.name, p.start, now)
+			return "", fmt.Errorf("the repository changed since the plan was read: %q was to be created %s, it would now start %s; run the command again", p.name, p.start, now)
 		}
 		if _, err := runGit(p.dir, "worktree", "add", "-b", p.name, p.cls.path); err != nil {
 			return "", gitError("git worktree add -b", err)

@@ -1506,8 +1506,8 @@ func TestResolveEnsureCreatesWhatWasAsked(t *testing.T) {
 }
 
 // TestPlanEnsureRefusesAChangedBase pins that a creation whose base moved
-// after the question was built is refused rather than made from a base the
-// user was not shown. The stale-prompt race is #525's whole point.
+// after the plan was read is refused rather than made from a base other than
+// the one the plan read. The stale-prompt race is #525's whole point.
 func TestPlanEnsureRefusesAChangedBase(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -1517,8 +1517,8 @@ func TestPlanEnsureRefusesAChangedBase(t *testing.T) {
 	}
 	gitRun(t, dir, "checkout", "-b", "elsewhere")
 	_, err = p.Ensure()
-	if err == nil || !strings.Contains(err.Error(), "from main") || !strings.Contains(err.Error(), "from elsewhere") {
-		t.Fatalf("error = %v, want one naming both bases", err)
+	if err == nil || !strings.Contains(err.Error(), "the repository changed since the plan was read") || !strings.Contains(err.Error(), "from main") || !strings.Contains(err.Error(), "from elsewhere") {
+		t.Fatalf("error = %v, want one naming both bases and the plan it read", err)
 	}
 	if out := gitRun(t, dir, "for-each-ref", "refs/heads/brand-new"); strings.TrimSpace(out) != "" {
 		t.Fatalf("branch was created anyway: %q", out)
