@@ -58,10 +58,10 @@ func worktreesCmd(a *app) *cobra.Command {
 			"fetched, so it cannot prove them); remove an origin branch with `wt remove origin/<name>\n" +
 			"--remote`, which fetches first and needs its own approval. r copies the work of\n" +
 			"the row under the cursor into a new branch and worktree first (`wt rescue`).\n\n" +
-			"It runs `git fetch --prune <remote>` for every remote first (origin first, the\n" +
-			"others at the same time), never prompting (git's prompts are off and ssh uses\n" +
-			"BatchMode unless you set GIT_SSH_COMMAND or core.sshCommand, which is then\n" +
-			"left alone)\n" +
+			"With --json, --plain or a pipe it runs `git fetch --prune <remote>` for every\n" +
+			"remote first (origin first, the others at the same time), never prompting\n" +
+			"(git's prompts are off and ssh uses BatchMode unless you set GIT_SSH_COMMAND\n" +
+			"or core.sshCommand, which is then left alone)\n" +
 			"(--no-fetch skips it; an origin branch is then not removable) and says in the\n" +
 			"header how that went (a repository with no remote skips it). A failed\n" +
 			"fetch, a missing gh and a row wt could not judge are shown, never an exit\n" +
@@ -69,9 +69,10 @@ func worktreesCmd(a *app) *cobra.Command {
 			"not be classified at all (not a repository, no default branch). With --json\n" +
 			"the one JSON document is printed on failure too.\n\n" +
 			"On a terminal the list is interactive and does not fetch when it opens (every\n" +
-			"remote's branches are listed from the refs already there; --fetch fetches every\n" +
-			"remote once first and the header says how it went); --plain, --json and\n" +
-			"a pipe fetch first and print text.\n" +
+			"remote's branches are listed from the refs already there; --fetch runs one\n" +
+			"`git fetch --all --prune`, capped at 5s, at the repository's root first, and\n" +
+			"the header says how it went); --plain, --json and a pipe fetch first (the\n" +
+			"per-remote way above) and print text.\n" +
 			"A branch younger than --min-age (default 10m, at least 1m) that sits at or\n" +
 			"behind the base is never proven merged: a brand-new branch looks merged. A\n" +
 			"value below 10m is named in the header, as is a registry wt could not read\n" +
@@ -92,8 +93,8 @@ func worktreesCmd(a *app) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as one JSON document (docs/contracts/cleanup-list.schema.json)")
-	c.Flags().BoolVar(&fetch, "fetch", false, "fetch every remote once before listing (a terminal list fetches nothing without it; --json and --plain already fetch)")
-	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first")
+	c.Flags().BoolVar(&fetch, "fetch", false, "fetch every remote once before a terminal list (one git fetch --all --prune at the repository's root, capped at 5s; --json and --plain fetch first their own way, per remote, and --fetch adds nothing there)")
+	c.Flags().BoolVar(&noFetch, "no-fetch", false, "do not run git fetch --prune on every remote first (the fetch --json and --plain run; together with --fetch it is a usage error)")
 	c.Flags().BoolVar(&plain, "plain", false, "print text even on a terminal")
 	c.Flags().DurationVar(&minAge, "min-age", 0, "how old a branch at or behind the base must be to count as merged (default 10m; at least 1m)")
 	return c
@@ -249,20 +250,28 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	in.Fetch = false // a re-check never fetches
 	in.Fetched = snap.Fetch
 	// cur is the snapshot the list currently stands on: Refresh replaces it,
-	// and `r` rescues against it.
+	// and `r` rescues against it. eng is the removal engine (built below,
+	// only when the registry loaded): a successful re-read repoints it too,
+	// because its re-check before a removal reuses the snapshot it was built
+	// with — a fetch F just made would otherwise be invisible to it. With no
+	// engine there is nothing to repoint.
 	cur := &snap
+	var eng *removal.Engine
 	rescueRowFn := func(row cleanup.Row) error {
 		answer, out, errOut := rescueStreams()
 		return rescueRow(answer, out, errOut, rescueFlags{minAge: minAge}, *cur, in, row)
 	}
 	// reGather re-reads the repository (never fetching) and stands the list
-	// on the fresh snapshot.
+	// — and the engine, when there is one — on the fresh snapshot.
 	reGather := func() (cleanup.Snapshot, error) {
 		fresh, err := cleanup.Gather(cleanup.Git{Dir: in.CWD}, in)
 		if err != nil {
 			return cleanup.Snapshot{}, err
 		}
 		*cur = fresh
+		if eng != nil {
+			eng.Prior = fresh
+		}
 		return fresh, nil
 	}
 	// refetch is the list's `F`: every remote fetched once at the report's
@@ -280,7 +289,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	if protErr != nil {
 		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn}
 	}
-	eng := &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
+	eng = &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
 	return tui.RemoveFuncs{
 		Rescue: rescueRowFn,
@@ -299,7 +308,6 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 			if err != nil {
 				return cleanup.Report{}, err
 			}
-			eng.Prior = fresh
 			return cleanupReport(a, fresh, minAge, nil), nil
 		},
 		Refetch: refetch,
