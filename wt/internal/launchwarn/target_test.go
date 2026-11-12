@@ -218,21 +218,60 @@ func TestForDirHoldersAreLiveOthers(t *testing.T) {
 	}
 }
 
-// When an ancestor process holds the root, RootChosen is set and Holders is
-// empty: a nested launch under an agent at the root is not a shared root.
-func TestForDirNestedUnderAHeldRootHasNoHolders(t *testing.T) {
+// TestForDirAncestorHeldRootNamesTheUnrelatedHolders checks a nested launch
+// under an ancestor that holds the root still names the root's other live
+// sessions. The test this replaces (…NestedUnderAHeldRootHasNoHolders) named
+// a nested case its body never built — it read at the root — and pinned the
+// bug: an ancestor-held root dropped every stranger from Holders, so two
+// agents at one root never warned about each other. This builds the real
+// nested case (a read at a subdirectory under the held root) beside the root
+// case: at both depths the ancestor is absent from Holders (Others skips
+// ancestor pids, so the ancestor never self-warns) and the unrelated holder
+// is named — Collect turns it into held, and dirty_held when the target is
+// dirty. At the root the ancestor's consent (RootChosen) stays.
+func TestForDirAncestorHeldRootNamesTheUnrelatedHolders(t *testing.T) {
 	repo := cloneRepo(t)
 	common := filepath.Join(repo, ".git")
+	sub := filepath.Join(repo, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	ppid := os.Getppid()
 	writeClaim(t, common, repo, "claude", ppid, processStartedAt(t, ppid))
-	liveOtherClaim(t, common, repo, "codex")
+	other := liveOtherClaim(t, common, repo, "codex")
+	if err := os.WriteFile(filepath.Join(sub, "new.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	tg, err := ForDir(repo)
+	onlyCodex := func(t *testing.T, tg Target) {
+		t.Helper()
+		if len(tg.Holders) != 1 || tg.Holders[0].PID != other || tg.Holders[0].Agent != "codex" {
+			t.Errorf("holders = %+v, want only the unrelated codex session (never ancestor pid %d)", tg.Holders, ppid)
+		}
+	}
+	nested, err := ForDir(sub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !tg.RootChosen || tg.Holders != nil {
-		t.Errorf("chosen=%v holders=%v, want chosen and no holders", tg.RootChosen, tg.Holders)
+	onlyCodex(t, nested)
+	if !nested.Dirty {
+		t.Fatal("the nested target is not dirty; the dirty_held half needs it")
+	}
+	ws, _ := Collect(nested)
+	if _, ok := has(ws, CodeHeld); !ok {
+		t.Errorf("codes = %v, want held", codes(ws))
+	}
+	if _, ok := has(ws, CodeDirtyHeld); !ok {
+		t.Errorf("codes = %v, want dirty_held", codes(ws))
+	}
+
+	atRoot, err := ForDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onlyCodex(t, atRoot)
+	if !atRoot.RootChosen {
+		t.Error("RootChosen = false at the root; the ancestor's hold is the consent")
 	}
 	if _, err := os.Stat(filepath.Join(common, "wt-sessions", strconv.Itoa(ppid))); err != nil {
 		t.Errorf("the parent's claim was deleted: %v", err)

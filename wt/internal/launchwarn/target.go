@@ -81,8 +81,13 @@ func forDir(dir string, knownDirt *bool) (Target, error) {
 		return t, err
 	}
 	if held {
+		// A nested launch under an ancestor that holds this root carries
+		// that consent at the root (RootChosen) and never warns about the
+		// ancestor — Others skips this session's ancestor pids, which is why
+		// filling Holders below cannot bring the ancestor back. But the
+		// root's other live sessions are strangers still: dropping them here
+		// meant two agents at one root never warned about each other.
 		t.RootChosen = t.IsRoot
-		return t, nil
 	}
 	t.Holders, err = sessionclaim.Others(commonDir, me)
 	return t, err
