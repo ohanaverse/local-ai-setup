@@ -81,6 +81,8 @@ func processStartedAt(t *testing.T, pid int) int64 {
 	return started.Unix()
 }
 
+// A clean clone reads as the root on the default branch with nothing to warn
+// about — the baseline every other case deviates from.
 func TestForDirRoot(t *testing.T) {
 	repo := cloneRepo(t)
 	tg, err := ForDir(repo)
@@ -95,6 +97,8 @@ func TestForDirRoot(t *testing.T) {
 	}
 }
 
+// A root left on a non-default branch records the drift in RootBranch and
+// earns a root_drift warning, so a stray checkout cannot launch silently.
 func TestForDirRootDrift(t *testing.T) {
 	repo := cloneRepo(t)
 	git(t, repo, "checkout", "-q", "-b", "topic")
@@ -111,6 +115,8 @@ func TestForDirRootDrift(t *testing.T) {
 	}
 }
 
+// A linked worktree is not the root and takes no Holders from a claim on the
+// root — claims belong to one checkout, or every worktree would read shared.
 func TestForDirLinkedWorktree(t *testing.T) {
 	repo := cloneRepo(t)
 	linked := addWorktree(t, repo, "feat")
@@ -128,6 +134,8 @@ func TestForDirLinkedWorktree(t *testing.T) {
 	}
 }
 
+// Outside any repository ForDir returns a zero Target and no error, because
+// --cwd launches there and a missing git context is not a failure to report.
 func TestForDirNotARepo(t *testing.T) {
 	tg, err := ForDir(t.TempDir())
 	if err != nil {
@@ -138,6 +146,8 @@ func TestForDirNotARepo(t *testing.T) {
 	}
 }
 
+// A bare repository is a zero Target too: it has no checkout to launch into,
+// and must never read as the root of a working tree.
 func TestForDirBareRepoIsEmpty(t *testing.T) {
 	origin, _ := gittest.Seed(t, gittest.SeedOpts{ExcludeWorktrees: true}).Clone(t)
 	tg, err := ForDir(origin)
@@ -149,6 +159,8 @@ func TestForDirBareRepoIsEmpty(t *testing.T) {
 	}
 }
 
+// A subdirectory of the root is a non-root Target at that path: "root" means
+// the checkout's toplevel, so root-only warnings cannot fire from a subdir.
 func TestForDirSubdirOfRootIsNotRoot(t *testing.T) {
 	repo := cloneRepo(t)
 	sub := filepath.Join(repo, "sub")
@@ -180,6 +192,9 @@ func TestForDirSeesTheRootThroughASymlink(t *testing.T) {
 	}
 }
 
+// Holders lists only claims whose process is live and not this session, and
+// ForDir never prunes: a stale claim must not block, and gathering must not
+// mutate the claims store (it runs before the user has chosen anything).
 func TestForDirHoldersAreLiveOthers(t *testing.T) {
 	repo := cloneRepo(t)
 	common := filepath.Join(repo, ".git")
@@ -203,6 +218,8 @@ func TestForDirHoldersAreLiveOthers(t *testing.T) {
 	}
 }
 
+// When an ancestor process holds the root, RootChosen is set and Holders is
+// empty: a nested launch under an agent at the root is not a shared root.
 func TestForDirNestedUnderAHeldRootHasNoHolders(t *testing.T) {
 	repo := cloneRepo(t)
 	common := filepath.Join(repo, ".git")
@@ -222,6 +239,8 @@ func TestForDirNestedUnderAHeldRootHasNoHolders(t *testing.T) {
 	}
 }
 
+// An untracked file marks the target Dirty — the input the warnings weigh
+// before offering to move or clean the checkout.
 func TestForDirDirty(t *testing.T) {
 	repo := cloneRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("x"), 0o644); err != nil {
@@ -233,6 +252,8 @@ func TestForDirDirty(t *testing.T) {
 	}
 }
 
+// ForNew carries the planned Creation (branch, tracks, new-branch, path) and
+// a hint: the about-to-create worktree is the warning path's whole subject.
 func TestForNewCarriesTheCreation(t *testing.T) {
 	repo := cloneRepo(t)
 	git(t, repo, "checkout", "-q", "-b", "topic")
