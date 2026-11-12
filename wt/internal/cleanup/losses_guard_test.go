@@ -64,6 +64,10 @@ var lossSites = map[string]lossCounts{
 	"internal/exitprompt/exitprompt.go#Eligible":    {raw: 1},
 	"internal/rescue/preflight.go#Engine.Preflight": {raw: 8},
 	"internal/rescue/offer.go#Offered":              {raw: 4},
+
+	// Deliberately raw: the launch warning's dirt is what is physically in
+	// the worktree, whatever a rescue record covers.
+	"internal/launchwarn/row.go#FromRow": {raw: 1},
 }
 
 // rawMarker starts the comment a raw read carries.

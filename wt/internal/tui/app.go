@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -142,6 +143,14 @@ type model struct {
 	// a launch at a directory that is not a worktree. Cleared by every
 	// selection, as creation is.
 	typedPlan *worktree.Plan
+
+	// pickedRow is the unified-list row this launch was picked from (nil for
+	// a typed name or a preset path). The gate's Target carries its PR,
+	// upstream and dirt facts — the ones only the list gathered — over the
+	// live read (launchwarn.FromRow, folded in by launchTarget). Rebound by
+	// every selection, as creation and typedPlan are, so an abandoned pick's
+	// row never rides along with a later one.
+	pickedRow *cleanup.Row
 
 	// committed is the commit point's in-flight guard: the first selection
 	// that reaches a run command takes it (commitLaunch) and every further
@@ -301,8 +310,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m, nil
 	case rowChosenMsg:
 		// Enter on a picker row: the launch flow's own message, so an owed
-		// creation is bound to the launch (selectedEntryMsg).
-		return m, emit(selectedEntryMsg{entry: entryOfRow(msg.Row)})
+		// creation is bound to the launch (selectedEntryMsg) and the row's
+		// own PR/upstream facts ride with it to the gate.
+		return m, emit(selectedEntryMsg{entry: entryOfRow(msg.Row), row: &msg.Row})
 	case newWorktreeChosenMsg:
 		return m.openNewWorktreePrompt(), nil
 	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg:
@@ -324,6 +334,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// launches, rather than wt's CWD (cmd.Dir="").
 		m.creation = nil
 		m.typedPlan = nil
+		m.pickedRow = msg.row
 		if msg.entry.Type == worktree.TypeBranch && msg.entry.Path == "" {
 			plan, err := worktree.Resolve(m.repoRoot, msg.entry.Branch)
 			if err != nil {
@@ -608,6 +619,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				// question (main.go:551).
 				m.creation = nil
 				m.typedPlan = plan
+				m.pickedRow = nil // a typed name is not a row pick
 				if plan.Creates() || plan.Tracks() != "" {
 					m.creation = &launchCreation{repoRoot: m.repoRoot, name: name, plan: plan}
 				} else if _, serr := os.Stat(plan.Path()); serr != nil {

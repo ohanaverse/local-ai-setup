@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -449,5 +450,104 @@ func TestDeclinedSlotGateKeepsTheStopTail(t *testing.T) {
 	}
 	if !pendingSurveyState.profile || pendingSurveyState.agent != "claude" {
 		t.Errorf("pendingSurveyState = %+v; the slot decline left no stop-tail state", pendingSurveyState)
+	}
+}
+
+// TestPickRowTargetCarriesPRAndUpstream checks a pick from the unified list
+// reaches the launch gate as that row's target: the PR state and number and
+// the folded/gone upstream — facts only the list gathered, never re-probed
+// live — ride into the Target the gate asks about and so into its warnings.
+// Without it a row's merged PR and dead upstream never warn at launch.
+func TestPickRowTargetCarriesPRAndUpstream(t *testing.T) {
+	t.Cleanup(releaseRootClaim)
+	stubShellLaunch(t)
+	root := rootRepo(t)
+	linked := linkedWorktree(t, root)
+	row := cleanup.Row{
+		Kind:     cleanup.KindWorktree,
+		Name:     "feature",
+		Branch:   "feature",
+		Path:     linked,
+		Ref:      "refs/heads/feature",
+		PRTag:    &cleanup.PRInfo{Number: 42, State: "MERGED"},
+		Upstream: &cleanup.Upstream{Ref: "refs/remotes/origin/feature", Remote: "origin", Name: "feature", Gone: true},
+	}
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
+	m, cmd := updateMsg(m, rowChosenMsg{Row: row}) // the row list's Enter
+	if cmd == nil {
+		t.Fatal("enter on a picker row emitted no selection")
+	}
+	m, _ = updateMsg(m, cmd()) // selectedEntryMsg binds the row to the launch
+
+	tg, err := m.launchTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.PRState != "merged" || tg.PRNumber != 42 || !tg.UpstreamGone {
+		t.Errorf("target = %+v; want the row's merged PR #42 and its gone upstream", tg)
+	}
+	stderr := answerOnStdio(t, "y")
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); want go after a yes", ok, gerr)
+	}
+	got := stderr()
+	if !strings.Contains(got, "PR #42 is merged") || !strings.Contains(got, "its upstream branch is gone") {
+		t.Errorf("gate printed %q; want the row's PR and upstream warnings", got)
+	}
+}
+
+// TestPickRemoteRowCarriesPRIntoTheCreationTarget checks a remote-only row's
+// pick keeps the plan's creation at the gate AND carries the row's PR facts
+// with it: the launch creates the tracking worktree exactly as the pick
+// planned (one creation path, its frozen wording), and a merged PR still
+// warns before it does.
+func TestPickRemoteRowCarriesPRIntoTheCreationTarget(t *testing.T) {
+	t.Cleanup(releaseRootClaim)
+	stubShellLaunch(t)
+	root := rootRepo(t)
+	if out, err := exec.Command("git", "-C", root, "remote", "add", "origin", "https://example.invalid/origin.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", root, "update-ref", "refs/remotes/origin/qa", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("git update-ref: %v\n%s", err, out)
+	}
+	row := cleanup.Row{
+		Kind:   cleanup.KindRemote,
+		Name:   "qa",
+		Branch: "qa",
+		Remote: "origin",
+		Ref:    "refs/remotes/origin/qa",
+		PRTag:  &cleanup.PRInfo{Number: 5, State: "MERGED"},
+	}
+	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode", repoRoot: root}
+	m, cmd := updateMsg(m, rowChosenMsg{Row: row}) // the row list's Enter
+	if cmd == nil {
+		t.Fatal("enter on a picker row emitted no selection")
+	}
+	m, _ = updateMsg(m, cmd()) // selectedEntryMsg binds the row to the launch
+
+	tg, err := m.launchTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.Creation == nil || tg.Creation.Branch != "qa" || tg.Creation.Tracks != "origin/qa" {
+		t.Fatalf("creation = %+v; want the pick's planned tracking worktree", tg.Creation)
+	}
+	if tg.PRState != "merged" || tg.PRNumber != 5 {
+		t.Errorf("target = %+v; want the row's merged PR #5 carried in", tg)
+	}
+	stderr := answerOnStdio(t, "y")
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); want go after a yes", ok, gerr)
+	}
+	got := stderr()
+	if !strings.Contains(got, "creating worktree "+tg.Dir+" for branch qa tracking origin/qa") {
+		t.Errorf("gate printed %q; want the planned creation line", got)
+	}
+	if !strings.Contains(got, "PR #5 is merged") {
+		t.Errorf("gate printed %q; want the row's PR warning", got)
+	}
+	if _, err := os.Stat(tg.Dir); err != nil {
+		t.Errorf("worktree %s not created after a yes: %v", tg.Dir, err)
 	}
 }

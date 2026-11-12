@@ -63,8 +63,9 @@ func releaseRootClaim() {
 // to: the owed creation's (ForNew) when the pick was a bare or remote-only
 // branch, otherwise the directory's (ForDir) — read when the run command
 // runs, so a session that appeared after the pick is named in the warnings
-// like any other. A read failure is the caller's to note (gateFor); the
-// partial Target still carries what was learned.
+// like any other — with the picked list row's own facts folded in (rowFacts).
+// A read failure is the caller's to note (gateFor); the partial Target still
+// carries what was learned.
 //
 // The picker's root row names the repository root explicitly and carries the
 // root warning into the one confirmation like every other warning: choosing
@@ -74,13 +75,33 @@ func releaseRootClaim() {
 // root; one another session holds names the holder in that same question.
 func (m model) launchTarget() (launchwarn.Target, error) {
 	if m.creation != nil {
-		return m.creation.target()
+		t, err := m.creation.target()
+		return m.rowFacts(t), err
 	}
 	dir := m.selectedPath
 	if dir == "" {
 		dir = m.prePath
 	}
-	return launchwarn.ForDir(dir)
+	t, err := launchwarn.ForDir(dir)
+	return m.rowFacts(t), err
+}
+
+// rowFacts folds the picked list row's facts into the live read: row facts
+// win for the PR state and number, the dirt and the gone upstream — exactly
+// what ForDir and ForNew leave zero "for a caller that has a cleanup row to
+// set them" (launchwarn.FromRow). Everything else keeps its existing source —
+// the holders, the root's branch and default, the hint, and the creation the
+// pick's plan owns (one creation path) — and nothing the row already holds is
+// re-probed. A pick that came from no row (a typed name, a preset path) is
+// untouched.
+func (m model) rowFacts(t launchwarn.Target) launchwarn.Target {
+	if m.pickedRow == nil {
+		return t
+	}
+	r := launchwarn.FromRow(*m.pickedRow)
+	t.PRState, t.PRNumber = r.PRState, r.PRNumber
+	t.UpstreamGone, t.Dirty = r.UpstreamGone, r.Dirty
+	return t
 }
 
 // gateFor binds this model's launchGate to the launch it is about to make, as
