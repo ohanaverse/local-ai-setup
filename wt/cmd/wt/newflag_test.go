@@ -162,26 +162,16 @@ func TestWorktreeFlagExistingNamesNeverAsk(t *testing.T) {
 
 // TestWorktreeFlagInvalidNameErrorsBeforeTheQuestion checks a name
 // EnsureForName rejects fails with that error on a terminal without being
-// asked first, so "y" is never the way to learn the name was bad.
+// asked first, so "y" is never the way to learn the name was bad. (The
+// default branch's remote form, origin/main, used to sit in this table; it is
+// a valid name now — internal/worktree no longer refuses the default branch —
+// and resolves like any other name.)
 func TestWorktreeFlagInvalidNameErrorsBeforeTheQuestion(t *testing.T) {
 	for _, tc := range []struct{ name, want string }{
-		{name: "origin/main", want: "default branch"},
 		{name: strings.Repeat("a", 300), want: "too long"},
 	} {
 		t.Run(tc.name[:min(len(tc.name), 12)], func(t *testing.T) {
 			root := sharedRootRepo(t)
-			// origin/main is a default-branch form only when origin exists,
-			// has a remote-tracking main, and origin/HEAD names it: the
-			// refusal is gated on DefaultBranch, which reads origin/HEAD.
-			for _, args := range [][]string{
-				{"remote", "add", "origin", root},
-				{"update-ref", "refs/remotes/origin/main", "HEAD"},
-				{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
-			} {
-				if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
-					t.Fatalf("git %v: %v\n%s", args, err, out)
-				}
-			}
 			stubStdinTTY(t, true)
 			notes := captureNotes(t)
 			res := runPinnedLaunch(t, root, []string{"-W", tc.name})

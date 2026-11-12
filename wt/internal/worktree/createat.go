@@ -154,10 +154,10 @@ func checkStartCommit(dir, start string) error {
 // CheckNewDetached reports where CreateDetachedAt would put a detached
 // worktree for branch, named dirName, or why it cannot. The path is
 // .worktrees/<dirName flattened>. It writes nothing. Unlike CheckNew it never
-// asks classifyName (which would reuse the worktree that holds branch) and
-// never refuses the default branch: the branch is expected to exist and be
-// held elsewhere. It errors on a flattening failure, a path another branch's
-// worktree uses and a path that already exists.
+// asks classifyName (which would reuse the worktree that holds branch): the
+// branch is expected to exist and be held elsewhere. It errors on a flattening
+// failure, a path another branch's worktree uses and a path that already
+// exists.
 func CheckNewDetached(dir, dirName, branch string) (string, error) {
 	path, err := worktreePath(dir, dirName)
 	if err != nil {

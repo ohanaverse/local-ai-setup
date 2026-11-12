@@ -68,7 +68,7 @@ type branchWorktreeCreatedMsg struct {
 // CWD (cmd.Dir="").
 func ensureBranchWorktreeCmd(root, branch string) tea.Cmd {
 	return func() tea.Msg {
-		path, err := worktree.EnsureForBranch(root, branch)
+		path, _, err := worktree.EnsureForBranch(root, branch)
 		return branchWorktreeCreatedMsg{path: path, branch: branch, err: err}
 	}
 }

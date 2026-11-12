@@ -336,8 +336,8 @@ func DefaultBranch(dir string) string {
 // The match is by name alone: a local branch whose name happens to end in
 // "/<db>" (e.g. "feature/main") also matches. Callers that can distinguish a
 // local branch from a real remote-tracking ref must add that context to avoid
-// falsely refusing such branches. The hard-refusal path does exactly that:
-// refuseDefaultBranch confirms the ref under refs/remotes/.
+// treating such branches as the default; classifyName does exactly that:
+// remoteRefParts confirms the ref under refs/remotes/ first.
 func IsDefaultBranchForm(branch, db string) bool {
 	if db == "" {
 		return false
