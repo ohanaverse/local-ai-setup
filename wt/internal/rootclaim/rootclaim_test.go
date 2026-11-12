@@ -74,52 +74,18 @@ func TestLookupNotRoot(t *testing.T) {
 	}
 }
 
-// TestChooseKeys checks each key maps to its choice, Esc, Ctrl-C and end of
-// input are q, other keys are skipped, and the menu is printed first.
-func TestChooseKeys(t *testing.T) {
-	cases := map[string]byte{"c": 'c', "C": 'c', "w": 'w', "q": 'q', "\x1b": 'q', "\x03": 'q', "": 'q', "xyzw": 'w'}
-	for in, want := range cases {
-		var out bytes.Buffer
-		if got := Choose(Root{Path: "/r"}, nil, strings.NewReader(in), &out); got != want {
-			t.Errorf("Choose(%q) = %q; want %q", in, got, want)
-		}
-		if !strings.Contains(out.String(), "choose [c/w/q]: ") {
-			t.Errorf("Choose(%q) printed %q; want the prompt", in, out.String())
-		}
-	}
-}
-
-// TestConfirmRootDefaultsToNo checks only y or Y confirms working in the root;
-// Enter, n, q, Esc, Ctrl-C and end of input all decline, and the prompt names
-// the root, its branch and the [y/N] default, so a stray key never lands a
-// session in the root.
-func TestConfirmRootDefaultsToNo(t *testing.T) {
-	cases := map[string]bool{"y": true, "Y": true, "n": false, "\n": false, "q": false, "\x1b": false, "\x03": false, "": false}
-	for in, want := range cases {
-		var out bytes.Buffer
-		if got := ConfirmRoot(Root{Path: "/r", Branch: "feat"}, strings.NewReader(in), &out); got != want {
-			t.Errorf("ConfirmRoot(%q) = %v; want %v", in, got, want)
-		}
-		for _, s := range []string{"/r", "feat", "[y/N]"} {
-			if !strings.Contains(out.String(), s) {
-				t.Errorf("ConfirmRoot(%q) printed %q; want it to contain %q", in, out.String(), s)
-			}
-		}
-	}
-}
-
 // TestAskYesNoDefaultsToNo checks only y or Y answers yes; Enter, n, q, Esc,
 // Ctrl-C and end of input all answer no, and the prompt text and the [y/N]
-// default are printed, so a stray key never confirms an action that creates
-// something.
+// default are printed, so a stray key never confirms the action it is asked
+// about.
 func TestAskYesNoDefaultsToNo(t *testing.T) {
 	cases := map[string]bool{"y": true, "Y": true, "n": false, "\n": false, "q": false, "\x1b": false, "\x03": false, "": false}
 	for in, want := range cases {
 		var out bytes.Buffer
-		if got := AskYesNo("create it?", strings.NewReader(in), &out); got != want {
+		if got := AskYesNo("remove it?", strings.NewReader(in), &out); got != want {
 			t.Errorf("AskYesNo(%q) = %v; want %v", in, got, want)
 		}
-		if want := "wt: create it? [y/N]: "; !strings.Contains(out.String(), want) {
+		if want := "wt: remove it? [y/N]: "; !strings.Contains(out.String(), want) {
 			t.Errorf("AskYesNo(%q) printed %q; want it to contain %q", in, out.String(), want)
 		}
 	}
@@ -165,29 +131,20 @@ func TestLookupReadsTheDefault(t *testing.T) {
 	}
 }
 
-// TestChooseAndConfirmRootPrintTheHint checks the shared-root menu and the
-// root question each print the hint exactly once, before their key prompt, and
-// print none on the default branch, so the person learns of the move at the
-// moment of choosing.
-func TestChooseAndConfirmRootPrintTheHint(t *testing.T) {
-	hint := "run `wt restore-root` to move it and put the root back on main"
-	off := Root{Path: "/r", Branch: "topic", Default: "main"}
-	on := Root{Path: "/r", Branch: "main", Default: "main"}
-
-	var out bytes.Buffer
-	Choose(off, nil, strings.NewReader("q"), &out)
-	if s := out.String(); strings.Count(s, hint) != 1 || strings.Index(s, hint) > strings.Index(s, "choose [c/w/q]: ") {
-		t.Errorf("Choose printed %q; want the hint once, before the prompt", s)
-	}
-	out.Reset()
-	ConfirmRoot(off, strings.NewReader("n"), &out)
-	if s := out.String(); strings.Count(s, hint) != 1 || strings.Index(s, hint) > strings.Index(s, "[y/N]") {
-		t.Errorf("ConfirmRoot printed %q; want the hint once, before [y/N]", s)
-	}
-	out.Reset()
-	Choose(on, nil, strings.NewReader("q"), &out)
-	ConfirmRoot(on, strings.NewReader("n"), &out)
-	if strings.Contains(out.String(), "restore-root") {
-		t.Errorf("hint printed on the default branch: %q", out.String())
+// TestAskContinueDefaultsToYes checks an empty line, y and Y continue and
+// anything else, including Esc, Ctrl-C and the end of input, stops.
+func TestAskContinueDefaultsToYes(t *testing.T) {
+	for in, want := range map[string]bool{
+		"\n": true, "y\n": true, "Y\n": true, " y \n": true,
+		"n\n": false, "N\n": false, "x\n": false, "\x1b\n": false, "\x03\n": false,
+		"yes please\n": false, "": false,
+	} {
+		var out bytes.Buffer
+		if got := AskContinue(strings.NewReader(in), &out); got != want {
+			t.Errorf("AskContinue(%q) = %v, want %v", in, got, want)
+		}
+		if strings.Contains(out.String(), "[Y/n]") {
+			t.Errorf("AskContinue printed a prompt: %q", out.String())
+		}
 	}
 }

@@ -1,5 +1,7 @@
 # `wt cleanup` — Design
 
+> **Superseded by `docs/superpowers/specs/2026-11-11-wt-user-driven-cleanup-design.md`.** This design note keeps its as-of-date wording; where the two disagree, that design describes the release.
+
 **Status:** built (status note 2026-11-07): PR A (#518 and follow-ups), B #520, C #528, D #529. Originally a draft for approval (2026-11-04). Supersedes PRs 2–3 of
 `2026-11-04-worktrunk-ports-design.md`; PRs 4–6 of that series are unchanged.
 

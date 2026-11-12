@@ -44,7 +44,7 @@ The refresh action runs `git fetch --prune origin` (all remotes, as today's clea
 
 ### Warnings at launch
 
-Selecting a row always proceeds after at most one confirmation line listing every warning that applies (root; held by another session; PR merged; upstream gone; default branch; dirty and held). Default answer is yes for warnings, with no typed phrases. Non-TTY launches print the warnings and continue. This replaces `gateRoot`, `refuseRootBranch`, `confirmCreate`, `confirmSharedRoot` and the `--cwd`-in-root refusal as separate gates with one `launch warnings` function. Bare-branch rows still create a worktree on selection, but state it in the confirmation line.
+Selecting a row always proceeds after at most one confirmation line listing every warning that applies (root; root drift (`root is on <b>, not <d>`); held by another session; PR merged; upstream gone; default branch; dirty and held). Default answer is yes for warnings, with no typed phrases. Non-TTY launches print the warnings and continue. This replaces `gateRoot`, `refuseRootBranch`, `confirmCreate`, `confirmSharedRoot` and the `--cwd`-in-root refusal as separate gates with one `launch warnings` function. Bare-branch rows still create a worktree on selection, but state it in the confirmation line.
 
 `-W <branch>` follows the same rule: naming the root's branch or the default branch launches in the root (or reuses the existing worktree) with a warning instead of refusing. Creating a linked worktree for the default branch is allowed when asked for explicitly. [My call; the original refusal exists because git forbids two worktrees on one branch, so the builder should keep git's own error for that case.]
 

@@ -377,6 +377,43 @@ func TestCwdInAGitDirectoryWithNoCheckoutLaunches(t *testing.T) {
 	wantCwdBookkeeping(t, res)
 }
 
+// TestCwdOutsideACheckoutSaysNothing pins the one launch line: outside a
+// checkout root there is no directory to name, so `wt --cwd` must print
+// nothing at all — `wt: launching in ` with nothing after it (or any note) is
+// noise where the launch used to say nothing. It covers a plain directory and
+// a bare repository alike: launchwarn.ForDir resolves neither to a target, so
+// both must suppress the line (and every other note).
+func TestCwdOutsideACheckoutSaysNothing(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		dir  func(t *testing.T) string
+	}{
+		{"not a repository", func(t *testing.T) string { return t.TempDir() }},
+		{"bare repository", func(t *testing.T) string {
+			dir := t.TempDir()
+			if out, err := exec.Command("git", "init", "--bare", dir).CombinedOutput(); err != nil {
+				t.Fatalf("git init --bare: %v\n%s", err, out)
+			}
+			return dir
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := c.dir(t)
+			notes := captureNotes(t)
+			res := runCwdLaunch(t, dir)
+			if res.err != nil {
+				t.Fatalf("wt --cwd %s: %v", c.name, res.err)
+			}
+			if want := physical(t, dir); res.agentDir != want {
+				t.Errorf("the agent started in %q, want the current directory %q", res.agentDir, want)
+			}
+			if s := notes.String(); s != "" {
+				t.Errorf("notes = %q; want nothing printed for a launch with no checkout root", s)
+			}
+		})
+	}
+}
+
 // runCwdPlain runs `wt --cwd <args>` from dir against an empty scratch config
 // home (no agents configured, no registry) with a claude on PATH that records
 // the directory it was started in. It returns the error, the directory the

@@ -24,12 +24,10 @@ shell-wt -- ls -la
 shell-wt -- rm --init
 
 # No command: open an interactive bash in the existing worktree or branch
-# (a name matching neither asks before creating; with no terminal that is
-# refused unless --new is passed)
+# (a name matching neither is created and announced)
 shell-wt -W my-feature
 
-# Skip picker, use a named worktree; --new answers the create question
-# for a branch that may not exist yet
+# Skip picker, use a named worktree (--new is accepted and ignored)
 shell-wt -W my-feature --new -- make test
 
 # Run in the current directory (skip picker)
@@ -69,10 +67,10 @@ still refused): put it before the command.
 
 | Flag | Description |
 |------|-------------|
-| `-W <name>`, `--worktree <name>` | Use the worktree for a branch, skip worktree picker; a name matching no worktree or branch asks before creating it (refused with no terminal unless `--new`) |
-| `--new` | Answer yes to the create-this-branch question; valid only with `-W` |
-| `--cwd` | Run in the current directory (inside a git repository or not), skip worktree picker. Standing in a repository root it asks first (default no); with no terminal it refuses and names `--root`, so a script running `shell-wt --cwd -- npm test` at a root needs `--root` |
-| `--root` | Run in the repository's primary checkout, from anywhere; asks no consent question (a shared-root menu still runs when another wt session holds the root; `--allow-shared-root` answers it). Exclusive with `--cwd` and `-W` |
+| `-W <name>`, `--worktree <name>` | Use the worktree for a branch, skip worktree picker; a name matching no worktree or branch is created and announced (one default-yes question first only when a warning also applies, on a terminal) |
+| `--new` | Accepted and ignored (kept for old scripts); valid only with `-W` |
+| `--cwd` | Run in the current directory (inside a git repository or not), skip worktree picker. Standing in a repository root it warns and proceeds (a terminal with any warning is asked one default-yes question first), so a script running `shell-wt --cwd -- npm test` at a root runs there |
+| `--root` | Run in the repository's primary checkout, from anywhere; accepts the root warning, though any other warning still asks. Exclusive with `--cwd` and `-W` |
 | `--init` | Seed agent instruction files (AGENTS.md) and exit |
 | `--no-guard` | Remove main-branch commit guard |
 | `--check-guard` | Report guard status |

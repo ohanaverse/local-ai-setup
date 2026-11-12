@@ -73,7 +73,7 @@ func TestEnsureForBranchNewBranch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	path, err := EnsureForBranch(dir, "feature/x")
+	path, _, err := EnsureForBranch(dir, "feature/x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestEnsureForBranchRemote(t *testing.T) {
 	gitInit(t, dir)
 	setupRemote(t, dir, "temp", "feature")
 
-	path, err := EnsureForBranch(dir, "origin/feature")
+	path, _, err := EnsureForBranch(dir, "origin/feature")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestEnsureForBranchLocalWithSlash(t *testing.T) {
 		t.Fatalf("git checkout main: %v\n%s", err, out)
 	}
 
-	path, err := EnsureForBranch(dir, "feature/x")
+	path, _, err := EnsureForBranch(dir, "feature/x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestEnsureForBranchRemoteWithSlash(t *testing.T) {
 	gitInit(t, dir)
 	setupRemote(t, dir, "temp", "feature/x")
 
-	path, err := EnsureForBranch(dir, "origin/feature/x")
+	path, _, err := EnsureForBranch(dir, "origin/feature/x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestRemoteConflictsWithLocal(t *testing.T) {
 		t.Fatalf("git fetch: %v\n%s", err, out)
 	}
 
-	_, err := EnsureForBranch(dir, "origin/foo")
+	_, _, err := EnsureForBranch(dir, "origin/foo")
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("want already-exists error, got %v", err)
 	}
@@ -401,9 +401,9 @@ func TestRemoteConflictsWithLocal(t *testing.T) {
 // existing worktree for a DIFFERENT branch. Full-name derivation flattens
 // slashes, so "feature/x" and "feature-x" share .worktrees/feature-x: typing
 // "feature/x" while feature-x's worktree sits there must error rather than
-// silently return the wrong worktree, so the TUI's pendingHighlight finds no
-// stale match and the user cannot land on the wrong branch believing they
-// created "feature/x".
+// silently return the wrong worktree — and the typed-name path surfaces that
+// collision through Resolve/Plan.Ensure before any create, so the user
+// cannot land on the wrong branch believing they created "feature/x".
 func TestEnsureForNameCollisionErrors(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -477,7 +477,7 @@ func TestEnsureForBranchCollisionErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			pick := setup(t, dir)
-			_, err := EnsureForBranch(dir, pick)
+			_, _, err := EnsureForBranch(dir, pick)
 			if err == nil || !strings.Contains(err.Error(), "already in use by branch \"feature/x\"") {
 				t.Fatalf("EnsureForBranch(%q) error = %v, want 'already in use by branch \"feature/x\"'", pick, err)
 			}
@@ -597,7 +597,7 @@ func TestEnsureRefusesOverlongBranchName(t *testing.T) {
 	if _, err := EnsureForName(dir, name); err == nil || !strings.Contains(err.Error(), "255") {
 		t.Errorf("EnsureForName error = %v, want the 255-byte limit", err)
 	}
-	if _, err := EnsureForBranch(dir, name); err == nil || !strings.Contains(err.Error(), "255") {
+	if _, _, err := EnsureForBranch(dir, name); err == nil || !strings.Contains(err.Error(), "255") {
 		t.Errorf("EnsureForBranch error = %v, want the 255-byte limit", err)
 	}
 	if refExists(dir, "refs/heads/"+name) {
@@ -648,9 +648,9 @@ func TestEnsureForNameRejectsDot(t *testing.T) {
 
 // setupDefaultRemote creates a bare remote, adds it as origin, pushes the
 // current branch, and points origin/HEAD at it so DefaultBranch() resolves.
-// Returns the default branch name (main or master). The default-branch
-// refusal in EnsureForName/EnsureForBranch is gated on DefaultBranch(), which
-// reads origin/HEAD, so these tests need a real remote.
+// Returns the default branch name (main or master). The default-branch tests
+// name the default through DefaultBranch(), which reads origin/HEAD, so they
+// need a real remote.
 func setupDefaultRemote(t *testing.T, dir string) string {
 	t.Helper()
 	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
@@ -676,28 +676,41 @@ func setupDefaultRemote(t *testing.T, dir string) string {
 	return db
 }
 
-// EnsureForName must refuse to create a linked worktree for the default
-// branch when it isn't already checked out. Creating .worktrees/main would
-// put the default branch in a linked worktree — a dead end the guard makes
-// read-only and the tool's model forbids.
-func TestEnsureForNameRefusesDefaultBranch(t *testing.T) {
+// EnsureForName must create a linked worktree for the default branch at
+// .worktrees/<default> when the root checkout has moved to another branch —
+// the default is an ordinary existing branch there, and the old refusal to
+// ever link it is gone — and a second call must reuse that worktree without
+// error and at the same path, so -W <default> is idempotent.
+func TestEnsureForNameCreatesDefaultBranchWorktree(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 	db := setupDefaultRemote(t, dir)
 
-	// Move the primary checkout off the default branch so it is "free".
-	cmd := exec.Command("git", "checkout", "-b", "feature")
+	// Move the primary checkout off the default branch so nothing holds it.
+	cmd := exec.Command("git", "checkout", "-b", "topic")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
+		t.Fatalf("git checkout -b topic: %v\n%s", err, out)
 	}
 
-	_, err := EnsureForName(dir, db)
-	if err == nil {
-		t.Fatalf("EnsureForName(%q) = nil error, want refusal", db)
+	path, err := EnsureForName(dir, db)
+	if err != nil {
+		t.Fatalf("EnsureForName(%q) = %v, want the default branch's worktree", db, err)
 	}
-	if !strings.Contains(err.Error(), "default branch") {
-		t.Fatalf("error = %q, want it to mention 'default branch'", err)
+	if want := filepath.Join(dir, ".worktrees", db); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("worktree not created: %v", err)
+	}
+	second, err := EnsureForName(dir, db)
+	if err != nil {
+		t.Fatalf("second EnsureForName(%q) = %v, want a reuse", db, err)
+	}
+	resolvedFirst, _ := filepath.EvalSymlinks(path)
+	resolvedSecond, _ := filepath.EvalSymlinks(second)
+	if resolvedFirst != resolvedSecond {
+		t.Fatalf("second call paths differ: %q vs %q", path, second)
 	}
 }
 
@@ -720,13 +733,15 @@ func TestEnsureForNameReusesDefaultBranchPrimary(t *testing.T) {
 	}
 }
 
-// EnsureForName must refuse every selectable form of the default branch (bare,
-// <remote>/<default>, <remote>/HEAD) and resolve other remote-tracking names
-// like the picker does. A local branch ending in "/<default>" is a feature
-// branch and must not be refused. Each case builds a fresh repo because a
+// EnsureForName must treat every form of the default branch as an ordinary
+// name: with the old refusal gone, <remote>/<default> — the default reachable
+// only as a remote ref — creates its tracking worktree at
+// .worktrees/<default> and a second call reuses it, while lookalikes (a local
+// branch ending in "/<default>", a remote whose name ends in the default)
+// resolve like the picker would. Each case builds a fresh repo because a
 // wrong success creates .worktrees/<default>, and the path-collision guard
 // would then mask later cases' failures.
-func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
+func TestEnsureForNameDefaultBranchForms(t *testing.T) {
 	newRepo := func(t *testing.T) (string, string, func(...string)) {
 		t.Helper()
 		dir := t.TempDir()
@@ -739,49 +754,72 @@ func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
 				t.Fatalf("git %v: %v\n%s", args, err, out)
 			}
 		}
-		// Move the primary checkout off the default branch so it is
-		// "free" — the state where creating .worktrees/<db> would become
-		// the default's only checkout. "topic" (not "feature") so
-		// refs/heads/feature doesn't block creating the feature/<db>
-		// branch in the precision case below (git forbids a ref that is
-		// both a leaf and a directory).
+		// Move the primary checkout off the default branch. "topic" (not
+		// "feature") so refs/heads/feature doesn't block creating the
+		// feature/<db> branch in the precision case below (git forbids a ref
+		// that is both a leaf and a directory).
 		run("checkout", "-b", "topic")
 		return dir, db, run
 	}
 
-	refusal := func(t *testing.T, dir, name string) {
+	// createsAt asserts the name lands at .worktrees/<dirName> and that a
+	// second EnsureForName for the same name reuses that worktree.
+	createsAt := func(t *testing.T, dir, name, dirName string) {
 		t.Helper()
-		_, err := EnsureForName(dir, name)
-		if err == nil {
-			t.Fatalf("EnsureForName(%q) = nil error, want refusal", name)
+		path, err := EnsureForName(dir, name)
+		if err != nil {
+			t.Fatalf("EnsureForName(%q) = %v, want the default branch's worktree", name, err)
 		}
-		if !strings.Contains(err.Error(), "default branch") {
-			t.Fatalf("EnsureForName(%q) error = %q, want it to mention 'default branch'", name, err)
+		if want := filepath.Join(dir, ".worktrees", dirName); path != want {
+			t.Fatalf("path = %q, want %q", path, want)
+		}
+		second, err := EnsureForName(dir, name)
+		if err != nil {
+			t.Fatalf("second EnsureForName(%q) = %v, want a reuse", name, err)
+		}
+		resolvedFirst, _ := filepath.EvalSymlinks(path)
+		resolvedSecond, _ := filepath.EvalSymlinks(second)
+		if resolvedFirst != resolvedSecond {
+			t.Fatalf("second call paths differ: %q vs %q", path, second)
 		}
 	}
 
-	t.Run("origin form", func(t *testing.T) {
-		dir, db, _ := newRepo(t)
-		refusal(t, dir, "origin/"+db)
+	t.Run("origin form creates the tracking worktree", func(t *testing.T) {
+		dir, db, run := newRepo(t)
+		// The fork-workflow shape where the default branch is reachable only
+		// as origin/<default>: no local branch of that name remains.
+		run("branch", "-D", db)
+		createsAt(t, dir, "origin/"+db, db)
 	})
 
-	t.Run("upstream form", func(t *testing.T) {
+	t.Run("upstream form creates the tracking worktree", func(t *testing.T) {
 		dir, db, run := newRepo(t)
 		// A second remote so refs/remotes/upstream/<db> exists too — the
 		// fork-workflow shape where the default branch is reachable via a
-		// non-origin remote.
+		// non-origin remote only.
 		upstreamDir := filepath.Join(dir, "upstream.git")
 		if err := exec.Command("git", "init", "--bare", upstreamDir).Run(); err != nil {
 			t.Fatal(err)
 		}
 		run("remote", "add", "upstream", upstreamDir)
 		run("push", "upstream", db)
-		refusal(t, dir, "upstream/"+db)
+		run("branch", "-D", db)
+		createsAt(t, dir, "upstream/"+db, db)
 	})
 
-	t.Run("origin HEAD alias", func(t *testing.T) {
+	t.Run("origin HEAD alias names no branch", func(t *testing.T) {
 		dir, _, _ := newRepo(t)
-		refusal(t, dir, "origin/HEAD")
+		// origin/HEAD is a symbolic alias, not a branch of its own: the local
+		// branch it would create is literally called "HEAD", and git refuses
+		// that name with its own message. The default-branch refusal is gone;
+		// resolving the alias to <remote>/<default> is not this change's job.
+		_, err := EnsureForName(dir, "origin/HEAD")
+		if err == nil || !strings.Contains(err.Error(), "not a valid branch name") {
+			t.Fatalf("EnsureForName(origin/HEAD) error = %v, want git's 'not a valid branch name'", err)
+		}
+		if strings.Contains(err.Error(), "default branch") {
+			t.Fatalf("error = %q, want no default-branch refusal", err)
+		}
 	})
 
 	t.Run("remote-tracking feature gets a tracking branch", func(t *testing.T) {
@@ -802,12 +840,12 @@ func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
 		}
 	})
 
-	t.Run("local branch named like a remote form is not refused", func(t *testing.T) {
+	t.Run("local branch named like a remote form resolves", func(t *testing.T) {
 		dir, db, run := newRepo(t)
 		run("branch", "origin/"+db+"-x")
 		run("branch", "origin/"+db+"/y")
 		if _, err := EnsureForName(dir, "origin/"+db+"/y"); err != nil {
-			t.Fatalf("local branch origin/%s/y refused: %v", db, err)
+			t.Fatalf("local branch origin/%s/y failed: %v", db, err)
 		}
 	})
 
@@ -823,7 +861,7 @@ func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
 		// refs/remotes/rel/<db>/topic belongs to remote "rel/<db>" branch
 		// "topic": a feature branch, not the default.
 		if _, err := EnsureForName(dir, "rel/"+db+"/topic"); err != nil {
-			t.Fatalf("feature branch on remote rel/%s refused: %v", db, err)
+			t.Fatalf("feature branch on remote rel/%s failed: %v", db, err)
 		}
 	})
 
@@ -840,37 +878,56 @@ func TestEnsureForNameRefusesDefaultBranchRemoteForm(t *testing.T) {
 	})
 }
 
-// EnsureForBranch must refuse the default branch and its remote-tracking
-// form. The picker path must not create a linked worktree for the default
-// branch, even when it is reachable only as origin/<default>.
-func TestEnsureForBranchRefusesDefaultBranch(t *testing.T) {
+// EnsureForBranch — the picker's bare-branch path — must create the default
+// branch's worktree at .worktrees/<default> when the root checkout has moved
+// to another branch, exactly like any other branch (the old refusal is gone),
+// and a second call must reuse that worktree with no error and the same path.
+func TestEnsureForBranchCreatesDefaultBranchWorktree(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 	db := setupDefaultRemote(t, dir)
 
-	for _, branch := range []string{db, "origin/" + db, "origin/HEAD"} {
-		if _, err := EnsureForBranch(dir, branch); err == nil {
-			t.Errorf("EnsureForBranch(%q) = nil error, want refusal", branch)
-		}
+	// Move the primary checkout off the default branch so nothing holds it.
+	cmd := exec.Command("git", "checkout", "-b", "topic")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b topic: %v\n%s", err, out)
+	}
+
+	path, _, err := EnsureForBranch(dir, db)
+	if err != nil {
+		t.Fatalf("EnsureForBranch(%q) = %v, want the default branch's worktree", db, err)
+	}
+	if want := filepath.Join(dir, ".worktrees", db); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("worktree not created: %v", err)
+	}
+	second, _, err := EnsureForBranch(dir, db)
+	if err != nil {
+		t.Fatalf("second EnsureForBranch(%q) = %v, want a reuse", db, err)
+	}
+	resolvedFirst, _ := filepath.EvalSymlinks(path)
+	resolvedSecond, _ := filepath.EvalSymlinks(second)
+	if resolvedFirst != resolvedSecond {
+		t.Fatalf("second call paths differ: %q vs %q", path, second)
 	}
 }
 
-// EnsureForBranch must refuse the default branch reachable via ANY remote,
-// not just origin. In a fork workflow the default branch may only be
-// reachable as upstream/<default>; selecting it would create a local
-// <default> in a linked worktree — exactly the state the invariant forbids.
-// The refusal must also be precise: a local branch whose name ends in
-// "/<default>" (e.g. feature/main) is a feature branch, not the default, and
-// must NOT be refused — the name-only suffix match is gated on the ref
-// actually existing under refs/remotes/.
-func TestEnsureForBranchRefusesDefaultBranchAnyRemote(t *testing.T) {
+// EnsureForBranch must materialize the default branch from a remote form of
+// ANY remote — the fork-workflow shape where it is reachable only as
+// upstream/<default> — landing at .worktrees/<default> like any
+// remote-tracking name (the old any-remote refusal is gone), and it must stay
+// precise: a local branch whose name ends in "/<default>" (feature/main) is a
+// feature branch, never the default.
+func TestEnsureForBranchDefaultBranchAnyRemoteForm(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 	db := setupDefaultRemote(t, dir)
 
 	// Add a second remote "upstream" and push the default branch to it so
-	// refs/remotes/upstream/<db> exists — the fork-workflow shape where the
-	// default branch is only reachable via a non-origin remote.
+	// refs/remotes/upstream/<db> exists.
 	upstreamDir := filepath.Join(dir, "upstream.git")
 	if err := exec.Command("git", "init", "--bare", upstreamDir).Run(); err != nil {
 		t.Fatal(err)
@@ -885,23 +942,108 @@ func TestEnsureForBranchRefusesDefaultBranchAnyRemote(t *testing.T) {
 	run("remote", "add", "upstream", upstreamDir)
 	run("push", "upstream", db)
 
-	// Move the primary checkout off the default branch so it is "free".
-	// Use "topic" (not "feature") so refs/heads/feature doesn't block
-	// creating the feature/<db> branch below (git forbids a ref that is
-	// both a leaf and a directory: refs/heads/feature vs feature/main).
+	// Move the primary checkout off the default branch and drop the local
+	// default, so it is reachable only as upstream/<db>. Use "topic" (not
+	// "feature") so refs/heads/feature doesn't block creating the
+	// feature/<db> branch below (git forbids a ref that is both a leaf and a
+	// directory: refs/heads/feature vs feature/main).
 	run("checkout", "-b", "topic")
+	run("branch", "-D", db)
 
-	// upstream/<db> must be refused — the invariant holds across remotes.
-	if _, err := EnsureForBranch(dir, "upstream/"+db); err == nil {
-		t.Errorf("EnsureForBranch(upstream/%s) = nil error, want refusal", db)
+	path, _, err := EnsureForBranch(dir, "upstream/"+db)
+	if err != nil {
+		t.Fatalf("EnsureForBranch(upstream/%s) = %v, want the default branch's worktree", db, err)
+	}
+	if want := filepath.Join(dir, ".worktrees", db); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	second, _, err := EnsureForBranch(dir, "upstream/"+db)
+	if err != nil {
+		t.Fatalf("second EnsureForBranch(upstream/%s) = %v, want a reuse", db, err)
+	}
+	resolvedFirst, _ := filepath.EvalSymlinks(path)
+	resolvedSecond, _ := filepath.EvalSymlinks(second)
+	if resolvedFirst != resolvedSecond {
+		t.Fatalf("second call paths differ: %q vs %q", path, second)
 	}
 
 	// A local branch ending in "/<db>" is a feature branch, not the default.
-	// It must NOT be refused: without the refs/remotes/ existence check, the
-	// name-only suffix match would wrongly refuse it.
 	run("branch", "feature/"+db)
-	if _, err := EnsureForBranch(dir, "feature/"+db); err != nil {
+	if _, _, err := EnsureForBranch(dir, "feature/"+db); err != nil {
 		t.Errorf("EnsureForBranch(feature/%s) = %v, want nil (feature branch, not the default)", db, err)
+	}
+}
+
+// EnsureForBranch must keep git's own error when the branch is already
+// checked out elsewhere (the default branch in the primary checkout here):
+// git alone refuses two worktrees on one branch, and its "already used by
+// worktree" message — surfaced verbatim, never wrapped away or replaced by a
+// friendlier refusal — is what tells the user where the branch lives. This is
+// exactly the case the removed default-branch refusal used to shadow.
+func TestEnsureForBranchAlreadyCheckedOutKeepsGitsError(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	db := setupDefaultRemote(t, dir)
+
+	_, _, err := EnsureForBranch(dir, db)
+	if err == nil {
+		t.Fatalf("EnsureForBranch(%q) = nil error, want git's refusal", db)
+	}
+	msg := err.Error()
+	// Git says "is already used by worktree at" since 2.35; older git said
+	// "is already checked out at".
+	if !strings.Contains(msg, "already used by worktree") && !strings.Contains(msg, "already checked out") {
+		t.Fatalf("error = %q, want git's own 'already used by worktree' message", msg)
+	}
+	if strings.Contains(msg, "default branch") {
+		t.Fatalf("error = %q, want no wt-style default-branch refusal in place of git's", msg)
+	}
+}
+
+// EnsureForBranch must report exactly what it made (Created) in each of its
+// cases — a brand-new branch (NewBranch), an existing local branch (checked
+// out as is) and a remote-tracking branch (NewBranch plus Tracks) — and a
+// reused worktree must report no creation at all. The picker's launch line
+// states "creates branch/worktree" from this and must never claim a creation
+// that did not happen.
+func TestEnsureForBranchDetail(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  string
+		prep func(t *testing.T, dir string)
+		want Created
+	}{
+		{name: "new branch", arg: "feat", want: Created{Branch: "feat", NewBranch: true}},
+		{name: "existing local branch", arg: "topic", want: Created{Branch: "topic"},
+			prep: func(t *testing.T, dir string) {
+				if out, err := runGitCmd(dir, "branch", "topic"); err != nil {
+					t.Fatalf("git branch: %v\n%s", err, out)
+				}
+			}},
+		{name: "remote-tracking branch", arg: "origin/feat", want: Created{Branch: "feat", Tracks: "origin/feat", NewBranch: true},
+			prep: func(t *testing.T, dir string) { setupRemote(t, dir, "seed", "feat") }},
+		{name: "reused worktree", arg: "feat", want: Created{Branch: "feat"},
+			prep: func(t *testing.T, dir string) {
+				if _, _, err := EnsureForBranch(dir, "feat"); err != nil {
+					t.Fatal(err)
+				}
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			gitInit(t, dir)
+			if c.prep != nil {
+				c.prep(t, dir)
+			}
+			_, got, err := EnsureForBranch(dir, c.arg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("made %+v, want %+v", got, c.want)
+			}
+		})
 	}
 }
 
@@ -927,125 +1069,13 @@ func TestEnsureForNameNewBranchStartsAtHead(t *testing.T) {
 	}
 }
 
-// WouldCreate must say true only for the case where EnsureForName would run
-// `git worktree add -b` for a branch that does not exist, name how that case
-// would start (the phrase the question joins after "create it": "from
-// <branch>" or "from detached HEAD <sha>"), and return the very error
-// EnsureForName returns for invalid names, so the question is never asked
-// about a name that would be rejected after "y". Every case builds a fresh
-// repo because a wrong creation would leave a branch that masks the next
-// case.
-func TestWouldCreate(t *testing.T) {
-	type tc struct {
-		name     string
-		prepare  func(t *testing.T, dir string)
-		arg      string
-		creates  bool
-		base     string // exact base, or prefix when basePrefix
-		basePref bool
-		wantErr  bool
-	}
-	git := func(t *testing.T, dir string, args ...string) {
-		t.Helper()
-		if out, err := runGitCmd(dir, args...); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	cases := []tc{
-		{name: "unknown name on a branch", arg: "brand-new", creates: true, base: "from main"},
-		{name: "unknown name on a non-default branch", arg: "brand-new", creates: true, base: "from topic",
-			prepare: func(t *testing.T, dir string) { git(t, dir, "checkout", "-b", "topic") }},
-		{name: "unknown name on a detached HEAD", arg: "brand-new", creates: true, base: "from detached HEAD ", basePref: true,
-			prepare: func(t *testing.T, dir string) { git(t, dir, "checkout", "--detach") }},
-		{name: "existing worktree", arg: "wt-branch",
-			prepare: func(t *testing.T, dir string) {
-				git(t, dir, "worktree", "add", "-b", "wt-branch", filepath.Join(dir, ".worktrees", "wt-branch"))
-			}},
-		{name: "existing local branch without a worktree", arg: "lonely",
-			prepare: func(t *testing.T, dir string) { git(t, dir, "branch", "lonely") }},
-		{name: "remote-tracking name", arg: "origin/feat",
-			prepare: func(t *testing.T, dir string) {
-				setupRemote(t, dir, "feat", "feat")
-			}},
-		{name: "default branch checked out in the root", arg: "main"},
-		{name: "empty name", arg: "", wantErr: true},
-		{name: "default branch remote form", arg: "origin/main", wantErr: true,
-			prepare: func(t *testing.T, dir string) {
-				setupDefaultRemote(t, dir)
-				git(t, dir, "checkout", "-b", "topic")
-			}},
-		{name: "path collision", arg: "feature/x", wantErr: true,
-			prepare: func(t *testing.T, dir string) {
-				git(t, dir, "worktree", "add", "-b", "feature-x", filepath.Join(dir, ".worktrees", "feature-x"))
-			}},
-		{name: "overlong name", arg: strings.Repeat("ab/", 100) + "x", wantErr: true},
-		{name: "double dot is not a ref name", arg: "a..b", wantErr: true},
-		{name: ".lock suffix is not a ref name", arg: "foo.lock", wantErr: true},
-		{name: "tilde is not a ref name", arg: "x~1", wantErr: true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			dir := t.TempDir()
-			gitInit(t, dir)
-			if c.prepare != nil {
-				c.prepare(t, dir)
-			}
-			creates, base, err := WouldCreate(dir, c.arg)
-			if c.wantErr {
-				if err == nil {
-					t.Fatal("WouldCreate error = nil, want one")
-				}
-				if creates {
-					t.Error("creates = true alongside an error")
-				}
-				// Same input, same error text from EnsureForName.
-				_, ensureErr := EnsureForName(dir, c.arg)
-				if ensureErr == nil || ensureErr.Error() != err.Error() {
-					t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if creates != c.creates {
-				t.Fatalf("creates = %v, want %v", creates, c.creates)
-			}
-			if !c.creates {
-				return
-			}
-			if c.basePref && !strings.HasPrefix(base, c.base) || !c.basePref && base != c.base {
-				t.Errorf("base = %q, want %q", base, c.base)
-			}
-			if c.basePref {
-				sha, err := runGitCmd(dir, "rev-parse", "--short", "HEAD")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if want := c.base + strings.TrimSpace(string(sha)); base != want {
-					t.Errorf("base = %q, want %q", base, want)
-				}
-			}
-			out, err := runGitCmd(dir, "for-each-ref", "--format=%(refname)", "refs/heads/"+c.arg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, l := range strings.Split(string(out), "\n") {
-				if strings.TrimSpace(l) == "refs/heads/"+c.arg {
-					t.Error("WouldCreate created the branch")
-				}
-			}
-		})
-	}
-}
-
-// A name git cannot use as a branch must be refused by WouldCreate, with git's
-// own reason in the error, so the caller never asks "create it?" about a name
-// that is bound to fail.
-func TestWouldCreateInvalidRefNameQuotesGit(t *testing.T) {
+// A name git cannot use as a branch must be refused by Resolve, with git's own
+// reason in the error, so the caller never announces a creation for a name that
+// is bound to fail.
+func TestResolveInvalidRefNameQuotesGit(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
-	_, _, err := WouldCreate(dir, "a..b")
+	_, err := Resolve(dir, "a..b")
 	if err == nil || !strings.Contains(err.Error(), "a..b") || !strings.Contains(err.Error(), "not a valid branch name") {
 		t.Fatalf("error = %v, want git's 'not a valid branch name' naming a..b", err)
 	}
@@ -1053,7 +1083,7 @@ func TestWouldCreateInvalidRefNameQuotesGit(t *testing.T) {
 
 // On a case-insensitive volume refs/heads/Main resolves to main's ref file. A
 // case-only variant of an existing branch must be an error, not a silent
-// second checkout of that branch and not a create question.
+// second checkout of that branch.
 func TestClassifyNameCaseVariantOfBranch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -1065,9 +1095,9 @@ func TestClassifyNameCaseVariantOfBranch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "caseprobe")); err != nil {
 		t.Skip("case-sensitive volume: Main and main are different branches")
 	}
-	_, _, err := WouldCreate(dir, "Main")
+	_, err := Resolve(dir, "Main")
 	if err == nil || !strings.Contains(err.Error(), "differs only in case") {
-		t.Fatalf("WouldCreate(Main) error = %v, want a 'differs only in case' error", err)
+		t.Fatalf("Resolve(Main) error = %v, want a 'differs only in case' error", err)
 	}
 	if _, err := EnsureForName(dir, "Main"); err == nil {
 		t.Fatal("EnsureForName(Main) succeeded, want the same refusal")
@@ -1080,11 +1110,10 @@ func TestClassifyNameCaseVariantOfBranch(t *testing.T) {
 // On a case-insensitive volume show-ref resolves refs/remotes/origin/Feat
 // through origin/feat's ref file. A case-only variant of a remote-tracking
 // name must be refused exactly like a local one, never tracked: `worktree add
-// -b Feat … origin/Feat` would check out origin/feat under the wrong name, and
-// origin/Main (the default branch form) would put the default branch in a
-// linked worktree — the invariant refuseDefaultBranch exists for. The
-// filesystem probe decides whether this test runs; assertions read
-// for-each-ref, never refExists.
+// -b Feat … origin/Feat` would check out origin/feat under the wrong name
+// (origin/Main, the default branch form, included). The filesystem probe
+// decides whether this test runs; assertions read for-each-ref, never
+// refExists.
 func TestClassifyNameCaseVariantOfRemoteRef(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1112,8 +1141,8 @@ func TestClassifyNameCaseVariantOfRemoteRef(t *testing.T) {
 				t.Skip("case-sensitive volume: the typed case names a different ref")
 			}
 			c.setup(t, dir)
-			if _, _, err := WouldCreate(dir, c.arg); err == nil || !strings.Contains(err.Error(), "differs only in case") {
-				t.Fatalf("WouldCreate(%s) error = %v; want a 'differs only in case' error", c.arg, err)
+			if _, err := Resolve(dir, c.arg); err == nil || !strings.Contains(err.Error(), "differs only in case") {
+				t.Fatalf("Resolve(%s) error = %v; want a 'differs only in case' error", c.arg, err)
 			}
 			if _, err := EnsureForName(dir, c.arg); err == nil || !strings.Contains(err.Error(), "differs only in case") {
 				t.Fatalf("EnsureForName(%s) error = %v; want the same refusal", c.arg, err)
@@ -1137,10 +1166,10 @@ func TestClassifyNameCaseVariantOfRemoteRef(t *testing.T) {
 
 // A name git cannot create because a local branch sits on its ref path — a
 // leaf branch above it (feature blocks feature/x) or a branch nested under it
-// (feature/x blocks feature) — must be refused before the create question,
-// naming the branch in the way. Git nests refs as directories and would fail
-// at the ref lock after "y"; the question and git's own failure must agree.
-func TestWouldCreateRefNamespaceConflictNamesTheBlocker(t *testing.T) {
+// (feature/x blocks feature) — must be refused at the classification, naming
+// the branch in the way. Git nests refs as directories and would fail at the
+// ref lock; the announcement and git's own failure must agree.
+func TestResolveRefNamespaceConflictNamesTheBlocker(t *testing.T) {
 	for _, c := range []struct {
 		name, arg, blocker string
 		prep               []string
@@ -1154,13 +1183,13 @@ func TestWouldCreateRefNamespaceConflictNamesTheBlocker(t *testing.T) {
 			if out, err := runGitCmd(dir, c.prep...); err != nil {
 				t.Fatalf("git %v: %v\n%s", c.prep, err, out)
 			}
-			_, _, err := WouldCreate(dir, c.arg)
+			_, err := Resolve(dir, c.arg)
 			if err == nil || !strings.Contains(err.Error(), c.arg) || !strings.Contains(err.Error(), c.blocker) {
-				t.Fatalf("WouldCreate(%s) error = %v; want it to name %q and %q", c.arg, err, c.arg, c.blocker)
+				t.Fatalf("Resolve(%s) error = %v; want it to name %q and %q", c.arg, err, c.arg, c.blocker)
 			}
 			_, ensureErr := EnsureForName(dir, c.arg)
 			if ensureErr == nil || ensureErr.Error() != err.Error() {
-				t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
+				t.Errorf("Resolve error = %q, EnsureForName error = %v; want equal", err, ensureErr)
 			}
 		})
 	}
@@ -1168,43 +1197,43 @@ func TestWouldCreateRefNamespaceConflictNamesTheBlocker(t *testing.T) {
 
 // On an unborn HEAD (a fresh `git init`, no commits) `git worktree add -b`
 // prints "No possible source branch, inferring --orphan" and creates a branch
-// sharing no history — not one off the unborn current branch. The start
-// phrase the create question shows must say that, never "from <branch>", or
-// the question promises a base git would not use.
-func TestWouldCreateUnbornHeadDescribesAnOrphan(t *testing.T) {
+// sharing no history — not one off the unborn current branch. The start phrase
+// the plan carries must say that, never "from <branch>", or the plan promises a
+// base git would not use.
+func TestResolveUnbornHeadDescribesAnOrphan(t *testing.T) {
 	dir := t.TempDir()
 	// gitInit's commit is deliberately absent: HEAD must be unborn.
 	if out, err := runGitCmd(dir, "init", "-b", "main"); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-	creates, start, err := WouldCreate(dir, "topic")
+	p, err := Resolve(dir, "topic")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !creates {
-		t.Fatal("creates = false; want true")
+	if !p.Creates() {
+		t.Fatal("Creates() = false; want true")
 	}
 	const want = "as an empty orphan branch with no shared history (this repository has no commits yet)"
-	if start != want {
-		t.Errorf("start = %q; want %q", start, want)
+	if p.start != want {
+		t.Errorf("start = %q; want %q", p.start, want)
 	}
 	out, err := runGitCmd(dir, "for-each-ref", "--format=%(refname)", "refs/heads")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(string(out)) != "" {
-		t.Errorf("branches exist after the question: %s", out)
+		t.Errorf("branches exist after the classification: %s", out)
 	}
 }
 
 // On a case-insensitive volume a case-folded ref-namespace conflict must be
-// refused before the create question exactly like the exact-case one: with
+// refused at the classification exactly like the exact-case one: with
 // `feature` existing, `git branch Feature/x` fails at the ref lock
 // ("'refs/heads/Feature' exists") because git nests refs as directories, so
-// the question would be asked about a creation that can never happen. The
+// the announcement would name a creation that can never happen. The
 // filesystem probe decides whether this case can happen at all; assertions
 // read for-each-ref, never refExists.
-func TestWouldCreateCaseFoldedRefNamespaceConflict(t *testing.T) {
+func TestResolveCaseFoldedRefNamespaceConflict(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "CaseProbe"), nil, 0o644); err != nil {
@@ -1216,20 +1245,120 @@ func TestWouldCreateCaseFoldedRefNamespaceConflict(t *testing.T) {
 	if out, err := runGitCmd(dir, "branch", "feature"); err != nil {
 		t.Fatalf("git branch feature: %v\n%s", err, out)
 	}
-	_, _, err := WouldCreate(dir, "Feature/x")
+	_, err := Resolve(dir, "Feature/x")
 	if err == nil || !strings.Contains(err.Error(), `"Feature/x"`) || !strings.Contains(err.Error(), `"feature"`) {
-		t.Fatalf("WouldCreate(Feature/x) error = %v; want it to name %q and %q", err, "Feature/x", "feature")
+		t.Fatalf("Resolve(Feature/x) error = %v; want it to name %q and %q", err, "Feature/x", "feature")
 	}
 	_, ensureErr := EnsureForName(dir, "Feature/x")
 	if ensureErr == nil || ensureErr.Error() != err.Error() {
-		t.Errorf("WouldCreate error = %q, EnsureForName error = %v; want equal", err, ensureErr)
+		t.Errorf("Resolve error = %q, EnsureForName error = %v; want equal", err, ensureErr)
 	}
 }
 
+// TestPlanAccessors pins Plan's read accessors — Branch, Tracks, Path,
+// Creates — on every classification form, so the launch line describes exactly
+// what Ensure will do. The remote-tracking
+// form matters most: Branch is the local branch the plan creates (never the
+// typed origin/… name) and Tracks is the ref it follows.
+func TestPlanAccessors(t *testing.T) {
+	t.Run("new branch", func(t *testing.T) {
+		dir := t.TempDir()
+		gitInit(t, dir)
+		p, err := Resolve(dir, "feat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !p.Creates() {
+			t.Error("Creates() = false, want true for a brand-new branch")
+		}
+		if p.Branch() != "feat" || p.Tracks() != "" {
+			t.Errorf("Branch/Tracks = %q/%q, want %q/\"\"", p.Branch(), p.Tracks(), "feat")
+		}
+		if want := filepath.Join(dir, ".worktrees", "feat"); p.Path() != want {
+			t.Errorf("Path() = %q, want %q", p.Path(), want)
+		}
+	})
+
+	t.Run("existing local branch", func(t *testing.T) {
+		dir := t.TempDir()
+		gitInit(t, dir)
+		if out, err := runGitCmd(dir, "branch", "topic"); err != nil {
+			t.Fatalf("git branch: %v\n%s", err, out)
+		}
+		p, err := Resolve(dir, "topic")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Creates() {
+			t.Error("Creates() = true, want false for an existing branch")
+		}
+		if p.Branch() != "topic" || p.Tracks() != "" {
+			t.Errorf("Branch/Tracks = %q/%q, want %q/\"\"", p.Branch(), p.Tracks(), "topic")
+		}
+		if want := filepath.Join(dir, ".worktrees", "topic"); p.Path() != want {
+			t.Errorf("Path() = %q, want %q", p.Path(), want)
+		}
+	})
+
+	t.Run("worktree already holds the branch", func(t *testing.T) {
+		dir := t.TempDir()
+		gitInit(t, dir)
+		held, err := EnsureForName(dir, "topic")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := Resolve(dir, "topic")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Creates() {
+			t.Error("Creates() = true, want false for a held branch")
+		}
+		resolvedPath, _ := filepath.EvalSymlinks(p.Path())
+		resolvedHeld, _ := filepath.EvalSymlinks(held)
+		if resolvedPath != resolvedHeld {
+			t.Errorf("Path() = %q, want the holding worktree %q", p.Path(), held)
+		}
+	})
+
+	t.Run("the root holds the branch", func(t *testing.T) {
+		dir := t.TempDir()
+		gitInit(t, dir)
+		p, err := Resolve(dir, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolvedPath, _ := filepath.EvalSymlinks(p.Path())
+		resolvedDir, _ := filepath.EvalSymlinks(dir)
+		if resolvedPath != resolvedDir {
+			t.Errorf("Path() = %q, want the primary checkout %q", p.Path(), dir)
+		}
+	})
+
+	t.Run("remote-tracking name", func(t *testing.T) {
+		dir := t.TempDir()
+		gitInit(t, dir)
+		setupRemote(t, dir, "seed", "feat")
+		p, err := Resolve(dir, "origin/feat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Creates() {
+			t.Error("Creates() = true, want false (a tracking branch is not the create question)")
+		}
+		if p.Branch() != "feat" || p.Tracks() != "origin/feat" {
+			t.Errorf("Branch/Tracks = %q/%q, want %q/%q", p.Branch(), p.Tracks(), "feat", "origin/feat")
+		}
+		if want := filepath.Join(dir, ".worktrees", "feat"); p.Path() != want {
+			t.Errorf("Path() = %q, want %q", p.Path(), want)
+		}
+	})
+}
+
 // TestResolveEnsureCreatesWhatWasAsked pins that a Plan carries one
-// classification from the question to the creation: Creates and Start match
-// WouldCreate, and Ensure makes the worktree and branch the question described.
-// It matters because -W and both picker routes now ask and create through the
+// classification from Resolve to the creation: its Creates and base are fixed
+// at Resolve, and Ensure makes the worktree and branch the plan described. It
+// matters because -W and both picker routes now announce and create through the
 // same object (#525).
 func TestResolveEnsureCreatesWhatWasAsked(t *testing.T) {
 	dir := t.TempDir()
@@ -1238,9 +1367,8 @@ func TestResolveEnsureCreatesWhatWasAsked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creates, start, _ := WouldCreate(dir, "brand-new")
-	if !p.Creates() || p.Start() != start || creates != p.Creates() || p.Start() != "from main" {
-		t.Fatalf("plan = creates %v start %q, WouldCreate = %v %q", p.Creates(), p.Start(), creates, start)
+	if !p.Creates() || p.start != "from main" {
+		t.Fatalf("plan = creates %v start %q, want creates true start %q", p.Creates(), p.start, "from main")
 	}
 	path, err := p.Ensure()
 	if err != nil {
@@ -1252,8 +1380,8 @@ func TestResolveEnsureCreatesWhatWasAsked(t *testing.T) {
 }
 
 // TestPlanEnsureRefusesAChangedBase pins that a creation whose base moved
-// after the question was built is refused rather than made from a base the
-// user was not shown. The stale-prompt race is #525's whole point.
+// after the plan was read is refused rather than made from a base other than
+// the one the plan read. The stale-prompt race is #525's whole point.
 func TestPlanEnsureRefusesAChangedBase(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -1263,8 +1391,8 @@ func TestPlanEnsureRefusesAChangedBase(t *testing.T) {
 	}
 	gitRun(t, dir, "checkout", "-b", "elsewhere")
 	_, err = p.Ensure()
-	if err == nil || !strings.Contains(err.Error(), "from main") || !strings.Contains(err.Error(), "from elsewhere") {
-		t.Fatalf("error = %v, want one naming both bases", err)
+	if err == nil || !strings.Contains(err.Error(), "the repository changed since the plan was read") || !strings.Contains(err.Error(), "from main") || !strings.Contains(err.Error(), "from elsewhere") {
+		t.Fatalf("error = %v, want one naming both bases and the plan it read", err)
 	}
 	if out := gitRun(t, dir, "for-each-ref", "refs/heads/brand-new"); strings.TrimSpace(out) != "" {
 		t.Fatalf("branch was created anyway: %q", out)

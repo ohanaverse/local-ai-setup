@@ -110,7 +110,7 @@ curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
 # Interactive
 wt -A pi -M openrouter/z-ai/glm-5.3-flash
 
-# One-shot (at a repository root --cwd asks first, or refuses with no terminal; use --root instead of --cwd to launch there on purpose)
+# One-shot (at a repository root --cwd warns and proceeds; use --root instead of --cwd to accept the root warning up front)
 wt --cwd -A pi -M openrouter/z-ai/glm-5.3-flash -- -p "Your prompt"
 ```
 
@@ -288,7 +288,7 @@ LITELLM_MASTER_KEY=$(awk '/<key>LITELLM_MASTER_KEY<\/key>/{getline; sub(/.*<stri
 curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   http://localhost:4000/v1/models | grep -A 2 "glm-5.3-flash"
 
-# Manual agent test (at a repository root --cwd asks first; run it from another directory, or use --root instead)
+# Manual agent test (at a repository root --cwd warns and proceeds; use --root to accept the root warning up front)
 wt --cwd -A pi -M openrouter/z-ai/glm-5.3-flash -- -p "Say hello"
 ```
 

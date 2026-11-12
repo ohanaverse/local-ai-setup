@@ -69,7 +69,7 @@ Run the Go test block in [CLAUDE.md](../../CLAUDE.md#go-tests) before any commit
 
 ```bash
 wt                                   # interactive TUI (needs TTY)
-wt -W my-feature -A claude           # named worktree + launch (a new name asks; --new answers)
+wt -W my-feature -A claude           # named worktree + launch (a new name is created and said so)
 wt --cwd -A codex                    # current directory
 claude-wt --cwd                      # shim forwards to wt
 wt --init                            # seed agent instruction files

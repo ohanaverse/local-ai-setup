@@ -382,7 +382,7 @@ func (m model) launchSlot() (model, tea.Cmd) {
 	// called once more before the terminal is released, and every way the
 	// run command can fail returns to the model picker.
 	m.phase = phaseModel
-	return m, runSlotAndWaitCmd(cmd, m.agent, row)
+	return m.commitLaunch(runSlotAndWaitCmd(cmd, m.agent, row, m.gateFor()))
 }
 
 // runSlotAndWaitCmd is runAndWaitCmd for a slot-profile launch. It releases
@@ -390,11 +390,11 @@ func (m model) launchSlot() (model, tea.Cmd) {
 // wrapper through slotApplier, records the launch, runs the agent and
 // captures the summary. It never calls profileApplier: an automatic profile
 // is not applied to a slot-profile launch. An applier error, or no applier,
-// runs nothing and records nothing, and comes back as a slotAbortMsg.
-func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
+// runs nothing and records nothing, and comes back as a slotAbortMsg. gate is
+// the launch's one question at the commit point (runRecordAndWaitCmd's); a
+// decline runs nothing and records nothing.
+func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func() (bool, error)) tea.Cmd {
 	return func() tea.Msg {
-		// Read before the applier can touch the command, as runAndWaitCmd does.
-		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			defer func() {
@@ -418,12 +418,23 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		if cleanup == nil {
 			cleanup = func() error { return nil }
 		}
-		// A root another session now holds is asked about before anything is
-		// recorded, so quitting there leaves no trace of the launch.
-		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
-		if !held {
-			_ = cleanup()
-			return launchDoneMsg{}
+		// The launch gate asks before anything is recorded, so declining
+		// there leaves no trace of the launch — while a creation that failed
+		// after the person continued travels out as the run's error (a
+		// GateError: main's one line, non-zero, never a quiet decline and
+		// never a quiet agent exit). Either way the profile
+		// tail's state stays: the standard stop picker offers whatever the
+		// start flow left loaded (nothing auto-stops), as after a real exit.
+		if gate != nil {
+			if ok, gerr := gate(); !ok {
+				_ = cleanup()
+				shown := config.Model{ID: row.Model.ID}
+				pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}
+				if gerr != nil {
+					gerr = GateError{Err: gerr}
+				}
+				return launchDoneMsg{err: gerr}
+			}
 		}
 		// The commit point: the applier succeeded and the agent runs next.
 		// Both writes are best-effort, as launchAndRecord's are.
@@ -442,7 +453,7 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row) tea.Cmd {
 		cmd.Stderr = os.Stderr
 		exitprompt.Launched(cmd.Dir)
 		duration, runErr := agents.RunAndCleanup(cmd, cleanup)
-		release()
+		releaseRootClaim()
 		shown := config.Model{ID: row.Model.ID}
 		pendingSummary = agents.Summary(agent, shown, duration)
 		pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}

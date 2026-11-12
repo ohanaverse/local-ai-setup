@@ -27,8 +27,9 @@ type nameClass struct {
 }
 
 // classifyName decides what name means in dir, given the registered worktree
-// entries. It is the one decision order behind EnsureForName and WouldCreate,
-// so a question about creating is asked about exactly the case that creates.
+// entries. It is the one decision order behind EnsureForName,
+// so a creation is announced for exactly the case that creates (and a reuse
+// announces nothing).
 // path is the worktree to reuse (nameReuseWorktree) or to add (the others,
 // except nameTrackRemote, whose path addTrackingWorktree derives from short).
 // A name that cannot be used (empty, default-branch form, path collision, too
@@ -41,15 +42,8 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	// Already checked out in a worktree? Use it.
 	for _, e := range entries {
 		if e.Branch == name && e.Path != "" {
-			return nameClass{kind: nameReuseWorktree, path: e.Path}, nil
+			return reuseClass(name, e.Path)
 		}
-	}
-
-	// The default branch must never be a linked worktree, whether typed as
-	// the bare name or as a remote-tracking form (origin/<default>,
-	// <remote>/HEAD, ...).
-	if err := refuseDefaultBranch(dir, name); err != nil {
-		return nameClass{}, err
 	}
 
 	// A remote-tracking name (origin/feature) resolves like the picker does:
@@ -58,8 +52,7 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	// case-insensitive volume matches in any case; only an exact ref is
 	// tracked, by the same rule as the local branch below — tracking a
 	// case-only variant would check out the other branch under the wrong
-	// name (and for a default-branch form like origin/Main put the default
-	// branch in a linked worktree).
+	// name.
 	if _, short, ok := remoteRefParts(dir, name); ok {
 		exact, err := refExactly(dir, "refs/remotes/"+name)
 		if err != nil {
@@ -70,8 +63,24 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 		}
 		for _, e := range entries {
 			if e.Branch == short && e.Path != "" {
-				return nameClass{kind: nameReuseWorktree, path: e.Path}, nil
+				return reuseClass(short, e.Path)
 			}
+		}
+		// The local branch the tracking creation would create already exists
+		// (and no worktree holds it): `worktree add -b` cannot make a branch
+		// that exists, and the name is not a reuse of that branch either (the
+		// picker's local row, or typing the bare name, covers that). Refuse
+		// here with the commit point's own message (addTrackingWorktree) —
+		// before any creation line or question promises the creation.
+		if refExists(dir, "refs/heads/"+short) {
+			return nameClass{}, localBranchExistsError(short, name)
+		}
+		// The local name the creation would take must be one git accepts:
+		// <remote>/HEAD is a symbolic alias whose short name, HEAD, is not a
+		// branch name, and `worktree add -b HEAD` fails only at the commit
+		// point, after the creation line promised it.
+		if err := checkBranchName(dir, short); err != nil {
+			return nameClass{}, err
 		}
 		return nameClass{kind: nameTrackRemote, short: short}, nil
 	}
@@ -90,8 +99,11 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 	if err := pathCollision(entries, path, name); err != nil {
 		return nameClass{}, err
 	}
-	if _, registered := branchAtPath(entries, path); registered {
-		return nameClass{kind: nameReuseWorktree, path: path}, nil
+	if b, registered := branchAtPath(entries, path); registered {
+		if b == "" {
+			b = name // a detached registration names no branch; name is what the person typed
+		}
+		return reuseClass(b, path)
 	}
 
 	if refExists(dir, "refs/heads/"+name) {
@@ -107,8 +119,8 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 		}
 		return nameClass{kind: nameExistingBranch, path: path}, nil
 	}
-	// Last, so a name git would refuse is an error before anyone is asked to
-	// create it (the question and git's own failure must agree).
+	// Last, so a name git would refuse is an error before the creation is
+	// announced (the announcement and git's own failure must agree).
 	if err := checkBranchName(dir, name); err != nil {
 		return nameClass{}, err
 	}
@@ -123,6 +135,32 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 // the other branch under the wrong name.
 func caseVariantError(name string) error {
 	return fmt.Errorf("branch %q differs only in case from an existing branch; use that branch's exact name", name)
+}
+
+// localBranchExistsError is the one refusal for a remote-tracking name whose
+// local branch already exists and no worktree holds it: a tracking creation
+// makes the local branch, and this one exists. classifyName refuses with it at
+// the classification (before the creation is announced) and addTrackingWorktree
+// with the same words at the commit point (a branch another session made
+// between the classification and the creation), so the two can never disagree.
+func localBranchExistsError(short, remoteRef string) error {
+	return fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)
+}
+
+// reuseClass is the reuse classification for the registered worktree at path
+// holding branch — unless only the registration is left. git marks a worktree
+// whose directory was deleted prunable and keeps its `git worktree list` entry
+// (listWorktrees parses it as ordinary), so the name still classifies as a
+// reuse while the path does not exist. A reuse announces no creation and
+// Plan.Ensure creates nothing for it, so launching here would promise a
+// worktree and then die at chdir. Refuse early and clearly — before any
+// creation line or question — naming the fix: `git worktree prune` frees the
+// registration (wt never prunes on its own).
+func reuseClass(branch, path string) (nameClass, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nameClass{}, fmt.Errorf("branch %q is registered to worktree %s, whose directory is gone; run git worktree prune to free it", branch, path)
+	}
+	return nameClass{kind: nameReuseWorktree, path: path}, nil
 }
 
 // refExactly reports whether the fully-qualified ref exists with exactly that
@@ -145,7 +183,7 @@ func refExactly(dir, ref string) (bool, error) {
 // a local branch already sits on its path: a leaf branch above it (feature
 // blocks feature/x) or a branch nested under it (feature/x blocks feature).
 // Git nests refs as directories and refuses both at the ref lock — after the
-// create question has already been asked — so it is refused here instead.
+// creation has already been announced — so it is refused here instead.
 // With core.ignorecase (git init writes it true on a case-insensitive
 // volume) the comparison folds case, so feature blocks Feature/x exactly as
 // it blocks feature/x (git's mkdir of refs/heads/Feature collides with the
@@ -197,14 +235,14 @@ func checkBranchName(dir, name string) error {
 	return nil
 }
 
-// Plan is one classification of a typed -W name, resolved once: the create
-// question reads it (Creates, Start) and the creation consumes the same
-// object (Ensure), so the phrase a user answered and the branch that is made
+// Plan is one classification of a typed -W name, resolved once: the creation
+// line reads it (Creates, Branch, Tracks, Path) and the creation consumes the
+// same object (Ensure), so what a user is told and the branch that is made
 // come from one set of git probes instead of two.
 type Plan struct {
 	dir, name string
 	cls       nameClass
-	start     string // the phrase Start returns; empty unless cls creates
+	start     string // the phrase startPhrase returns; empty unless cls creates
 }
 
 // Resolve classifies name against the repo at dir once and returns the plan.
@@ -236,29 +274,51 @@ func Resolve(dir, name string) (*Plan, error) {
 // checking out an existing or remote-tracking branch.
 func (p *Plan) Creates() bool { return p.cls.kind == nameCreate }
 
-// Start is how the branch Ensure would create starts — the phrase the create
-// question joins after "create it": "from <current branch>", "from detached
-// HEAD <short sha>", or "as an empty orphan branch with no shared history
-// (this repository has no commits yet)" on an unborn HEAD, where git infers
-// --orphan rather than a base. Empty when the plan does not create.
-func (p *Plan) Start() string { return p.start }
+// Branch is the branch the planned worktree checks out: the typed name, or the
+// local branch a remote-tracking name creates.
+func (p *Plan) Branch() string {
+	if p.cls.kind == nameTrackRemote {
+		return p.cls.short
+	}
+	return p.name
+}
+
+// Tracks is the remote-tracking ref the new local branch tracks, "" when the
+// plan tracks nothing.
+func (p *Plan) Tracks() string {
+	if p.cls.kind == nameTrackRemote {
+		return p.name
+	}
+	return ""
+}
+
+// Path is where the planned worktree is (reused) or goes (created); "" when a
+// tracking plan's path cannot be derived (Ensure reports why).
+func (p *Plan) Path() string {
+	if p.cls.kind == nameTrackRemote {
+		path, _ := newWorktreePath(p.dir, p.cls.short)
+		return path
+	}
+	return p.cls.path
+}
 
 // Ensure returns the worktree path for the planned name, creating it if
 // needed. A reused worktree is returned as is (idempotent).
 //
 // The classification is not repeated, but a creation re-checks the two things
-// that could have moved while the user was being asked: the base (a changed
-// Start is an error naming both phrases, never a branch made from a base the
-// user was not shown) and the name itself (git refuses `worktree add -b` for
-// a branch another wt made meanwhile, so an approved creation is never
+// that could have moved since the plan was read: the base (a changed start phrase is
+// an error naming both phrases, never a branch made from a base other than
+// the one the plan read) and the name itself (git refuses `worktree add -b`
+// for a branch another wt made meanwhile, so a planned creation is never
 // silently turned into a reuse of someone else's branch).
 func (p *Plan) Ensure() (string, error) {
 	switch p.cls.kind {
 	case nameTrackRemote:
-		return addTrackingWorktree(p.dir, p.name, p.cls.short)
+		path, _, err := addTrackingWorktree(p.dir, p.name, p.cls.short)
+		return path, err
 	case nameExistingBranch:
 		if _, err := runGit(p.dir, "worktree", "add", p.cls.path, p.name); err != nil {
-			return "", fmt.Errorf("git worktree add: %w", err)
+			return "", gitError("git worktree add", err)
 		}
 	case nameCreate:
 		now, err := startPhrase(p.dir)
@@ -266,16 +326,16 @@ func (p *Plan) Ensure() (string, error) {
 			return "", err
 		}
 		if now != p.start {
-			return "", fmt.Errorf("the repository changed while asking: %q was to be created %s, it would now start %s; run the command again", p.name, p.start, now)
+			return "", fmt.Errorf("the repository changed since the plan was read: %q was to be created %s, it would now start %s; run the command again", p.name, p.start, now)
 		}
 		if _, err := runGit(p.dir, "worktree", "add", "-b", p.name, p.cls.path); err != nil {
-			return "", fmt.Errorf("git worktree add -b: %w", err)
+			return "", gitError("git worktree add -b", err)
 		}
 	}
 	return p.cls.path, nil
 }
 
-// startPhrase says how a branch created now would start (see Plan.Start).
+// startPhrase says how a branch created now would start.
 func startPhrase(dir string) (string, error) {
 	// An unborn HEAD (a fresh `git init`) is not a base: git prints "No
 	// possible source branch, inferring --orphan" and the branch shares no
@@ -296,25 +356,15 @@ func startPhrase(dir string) (string, error) {
 
 // EnsureForName returns the worktree path for branch name, creating it if needed.
 // dir is the repo root. If the branch is already checked out somewhere, that
-// path is returned (idempotent). Callers that ask before creating use Resolve
-// and Plan.Ensure so the question and the creation share one classification.
+// path is returned (idempotent). Callers that announce a creation use Resolve
+// and Plan.Ensure so the announcement and the creation share one
+// classification.
 func EnsureForName(dir, name string) (string, error) {
 	p, err := Resolve(dir, name)
 	if err != nil {
 		return "", err
 	}
 	return p.Ensure()
-}
-
-// WouldCreate reports whether EnsureForName(dir, name) would create a new
-// branch, and how it would start (see Plan.Start). It creates nothing.
-// Resolve is the form that also carries the classification into the creation.
-func WouldCreate(dir, name string) (creates bool, start string, err error) {
-	p, err := Resolve(dir, name)
-	if err != nil {
-		return false, "", err
-	}
-	return p.Creates(), p.Start(), nil
 }
 
 // maxDirNameBytes is the filesystem's per-entry name limit (NAME_MAX on macOS
@@ -438,24 +488,38 @@ func branchAtPath(entries []Entry, path string) (string, bool) {
 	return "", false
 }
 
-// EnsureForBranch creates (or reuses) a worktree for a picked branch.
-// Handles local, remote-tracking, and new branches.
-func EnsureForBranch(dir, branch string) (string, error) {
-	if err := refuseDefaultBranch(dir, branch); err != nil {
-		return "", err
-	}
+// Created is what an Ensure made (or reused): the branch the worktree checks
+// out, the remote-tracking ref a new local branch tracks ("" when it tracks
+// nothing), and whether the branch itself is new (git worktree add -b). A
+// reused worktree reports NewBranch false and Tracks "".
+type Created struct {
+	Branch    string
+	Tracks    string
+	NewBranch bool
+}
+
+// EnsureForBranch creates (or reuses) a worktree for a picked branch and
+// reports what it made (Created). Handles local, remote-tracking, and new
+// branches. A branch whose derived path already holds it is reused as is
+// (idempotent); a branch checked out at a different path is left to git, whose
+// own "already used by worktree" error — surfaced verbatim — stays the message
+// the user sees.
+func EnsureForBranch(dir, branch string) (string, Created, error) {
 	switch {
 	case refExists(dir, "refs/heads/"+branch):
 		// Local branch (possibly with slashes) — the directory derives from
 		// the full name.
 		path, err := newWorktreePath(dir, branch)
 		if err != nil {
-			return "", err
+			return "", Created{}, err
+		}
+		if made, ok := reusedWorktree(dir, path, branch); ok {
+			return path, made, nil
 		}
 		if _, err := runGit(dir, "worktree", "add", path, branch); err != nil {
-			return "", fmt.Errorf("git worktree add: %w", err)
+			return "", Created{}, gitError("git worktree add", err)
 		}
-		return path, nil
+		return path, Created{Branch: branch}, nil
 
 	case refExists(dir, "refs/remotes/"+branch):
 		// Remote-tracking branch — create a local branch tracking it.
@@ -466,39 +530,62 @@ func EnsureForBranch(dir, branch string) (string, error) {
 		// Brand-new branch.
 		path, err := newWorktreePath(dir, branch)
 		if err != nil {
-			return "", err
+			return "", Created{}, err
 		}
 		if _, err := runGit(dir, "worktree", "add", "-b", branch, path); err != nil {
-			return "", fmt.Errorf("git worktree add -b: %w", err)
+			return "", Created{}, gitError("git worktree add -b", err)
 		}
-		return path, nil
+		return path, Created{Branch: branch, NewBranch: true}, nil
 	}
 }
 
-// addTrackingWorktree creates a worktree on a new local branch short that
-// tracks the remote-tracking ref remoteRef.
-func addTrackingWorktree(dir, remoteRef, short string) (string, error) {
+// addTrackingWorktree creates (or reuses) a worktree on a new local branch
+// short that tracks the remote-tracking ref remoteRef, and reports what it
+// made (Created).
+func addTrackingWorktree(dir, remoteRef, short string) (string, Created, error) {
 	path, err := newWorktreePath(dir, short)
 	if err != nil {
-		return "", err
+		return "", Created{}, err
+	}
+	if made, ok := reusedWorktree(dir, path, short); ok {
+		return path, made, nil
 	}
 	if refExists(dir, "refs/heads/"+short) {
-		return "", fmt.Errorf("local branch %q already exists — cannot create from remote %q", short, remoteRef)
+		return "", Created{}, localBranchExistsError(short, remoteRef)
 	}
 	if _, err := runGit(dir, "worktree", "add", "-b", short, path, remoteRef); err != nil {
-		return "", fmt.Errorf("git worktree add -b %s %s: %w", short, remoteRef, err)
+		return "", Created{}, gitError(fmt.Sprintf("git worktree add -b %s %s", short, remoteRef), err)
 	}
-	return path, nil
+	return path, Created{Branch: short, Tracks: remoteRef, NewBranch: true}, nil
 }
 
-// refuseDefaultBranch is the one default-branch guard for both creation
-// paths. It errors when name selects the repo default branch, naming it as the
-// user typed it.
-func refuseDefaultBranch(dir, name string) error {
-	if db := DefaultBranch(dir); db != "" && isDefaultBranchSelection(name, db, dir) {
-		return fmt.Errorf("refusing to create a worktree for the default branch %q; check it out in the primary checkout instead", name)
+// reusedWorktree returns the Created for a worktree already registered at
+// path holding exactly branch — a second Ensure for the same name reuses it,
+// idempotent. A worktree at path on another branch is a pathCollision the
+// caller checks first; a branch checked out at a different path is not a
+// reuse here and reaches git, whose own error stays.
+func reusedWorktree(dir, path, branch string) (Created, bool) {
+	entries, err := listWorktrees(dir, dir)
+	if err != nil {
+		return Created{}, false
 	}
-	return nil
+	if b, registered := branchAtPath(entries, path); registered && b == branch {
+		return Created{Branch: branch}, true
+	}
+	return Created{}, false
+}
+
+// gitError surfaces a failed git command's own message: what the user sees is
+// what git printed (its captured stderr), never a friendlier replacement for
+// it. With no stderr the plain error is used.
+func gitError(op string, err error) error {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {
+			return fmt.Errorf("%s: %s", op, msg)
+		}
+	}
+	return fmt.Errorf("%s: %w", op, err)
 }
 
 // remoteRefParts splits name into (remote, branch) when it is a real
@@ -523,16 +610,4 @@ func remoteRefParts(dir, name string) (remote, short string, ok bool) {
 		return "", "", false
 	}
 	return remote, name[len(remote)+1:], true
-}
-
-// isDefaultBranchSelection reports whether picking branch would create (or
-// reuse) a worktree on the repo default branch db: the bare local default, or
-// a real remote-tracking ref (see remoteRefParts) whose branch is db or HEAD
-// (<remote>/HEAD is a symbolic alias for the default).
-func isDefaultBranchSelection(branch, db, dir string) bool {
-	if branch == db {
-		return true
-	}
-	_, short, ok := remoteRefParts(dir, branch)
-	return ok && (short == db || short == "HEAD")
 }

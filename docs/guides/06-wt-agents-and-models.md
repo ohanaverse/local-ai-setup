@@ -29,16 +29,16 @@
 ```bash
 # from: any git repo, e.g. ~/github/ohanaverse/local-ai-setup
 claude-wt                    # TUI: pick worktree/branch + model (advances rotation)
-claude-wt -W my-feature      # skip worktree picker; a new name asks "create it?" (default no)
-claude-wt -W my-feature --new  # create it without asking (required with no terminal)
+claude-wt -W my-feature      # skip worktree picker; a new name is created and said so
+claude-wt -W my-feature --new  # --new is accepted and ignored (kept for old scripts)
 claude-wt -W my-feature -A claude -M ollama/qwen3.8:27b-mlx   # skip everything (example id — use one of yours)
 ```
 
 `-W` (uppercase) is the real worktree flag — confirmed by `wt --help` (both the installed binary and repo source, which agree).
 
-`-W <name>` reuses an existing worktree or branch silently. A name that matches neither asks `create it from <base>? [y/N]` (default no) before it creates anything — with no commits in the repository the question names an empty orphan branch instead of a base, which is what git creates; `--new` answers yes, and a launch with no terminal (a script) is refused without it. The picker's "+ New worktree…" prompt and the shared-root `w` choice do not ask.
+`-W <name>` opens what the name matches: an existing worktree (one `launching in …` line when nothing warns, no question), an existing branch with no worktree (`creating worktree <p> for branch <b>`), or a remote-tracking name (a new local branch for it: `creating worktree <p> for branch <b> tracking <r>`). A name that matches neither is created and announced before it exists — `creating branch <b> and worktree <p>`; the base is not announced. Only a launch warning (the root itself, a drifted root, a session holding it) asks anything first: one default-yes `continue?` question on a terminal. With no terminal the warnings print and the launch proceeds; `--new` is accepted and ignored. The picker's "+ New worktree…" prompt never asks, and its bare-branch and remote-only rows announce their creation the same way before the launch commits.
 
-**When the agent exits**, wt offers to remove a worktree and branch that this launch created if nothing changed in them: `<path> was created for this session and nothing changed in it. Remove it and its branch <name>?` Enter keeps it; `y` removes both through the same engine as `wt remove`. A reused worktree, a new worktree on an existing branch, `--cwd`, `--root`, a worktree where anything changed (an uncommitted or ignored file, a commit, a process still running) and any launch with no terminal are kept silently. The prompt comes after the stop picker and before the summary line, and the agent's exit status is unchanged. To turn it off, set `exit_prompt = "keep"` under `[launch]` in `~/.config/agent-wt/config.toml` (the default is `"ask"`; no value removes without a keypress).
+**When the agent exits**, wt offers to remove the worktree and branch this launch created together from a brand-new branch name, when nothing changed in them: `<path> was created for this session and nothing changed in it. Remove it and its branch <name>?` Enter keeps it; `y` removes both through the same engine as `wt remove`. A reused worktree, a new worktree on an existing branch, a worktree and local branch created for a remote-tracking name, `--cwd`, `--root`, a worktree where anything changed (an uncommitted or ignored file, a commit, a process still running) and any launch with no terminal are kept silently. The prompt comes after the stop picker and before the summary line, and the agent's exit status is unchanged. To turn it off, set `exit_prompt = "keep"` under `[launch]` in `~/.config/agent-wt/config.toml` (the default is `"ask"`; no value removes without a keypress).
 
 ## Steps
 
@@ -221,8 +221,8 @@ Start the model first (`wt start sushi/…`) or let the smoke run do it; either 
 
   Observed: `wt: main guard is installed in this repo.`
 - `--yolo` — exists in 0.1.0, verified in `wt --help` and `cmd/wt/main.go`; prepends the agent's skip-permissions flag (claude: `--dangerously-skip-permissions`). Source-verified caveat: pi has no such flag, so `--yolo` is a no-op there (`internal/agents/agents_test.go`: "Pi has no yolo flag").
-- `--cwd` — launch in the current directory, inside a git repository or not, with no pickers (the one launch that stays where you typed it; `-W` and the picker start at a worktree's root). The agent starts in that directory, so its own continue flag after `--` (`claude-wt --cwd -- --continue`) finds the sessions of that directory; wt itself never resumes one. Run from a repository's root, `--cwd` needs your say-so: on a terminal it asks, with no terminal it refuses and names `--root` (a nested launch under an agent that already holds the root, and a root another wt session holds, which gets the shared-root menu instead, are not asked). The worktree picker no longer offers the root, and `-W <name>` refuses a name that is the root's checked-out branch.
-- `--root` — launch in the repository's primary checkout from anywhere; the flag is the consent, so nothing is asked (the shared-root menu still runs). Exclusive with `--cwd` and `-W`; an error outside a repository.
+- `--cwd` — launch in the current directory, inside a git repository or not, with no pickers (the one launch that stays where you typed it; `-W` and the picker start at a worktree's root). The agent starts in that directory, so its own continue flag after `--` (`claude-wt --cwd -- --continue`) finds the sessions of that directory; wt itself never resumes one. Run from a repository's root, `--cwd` warns and proceeds (a terminal with any warning is asked one default-yes question first; a nested launch under an agent that already holds the root carries that consent, so the root warning is not shown — though root drift and any other warning still ask). `-W <name>` naming the root's checked-out branch launches in the root with the root warning.
+- `--root` — launch in the repository's primary checkout from anywhere; the flag consents to the root warning alone, so a root another session holds (or any other warning) is still asked the one question. Exclusive with `--cwd` and `-W`; an error outside a repository.
 - `--debug-worktrees` — test helper printing worktrees/branches; not for daily use, one line, moving on.
 - Removed subcommands now fail loudly instead of passing the word to the agent as its first argument: `wt models` → error "wt models is removed; use wt config to view models", same shape for `wt agents` (source-verified guard in `cmd/wt/main.go`). A word after `--` is a passthrough command and is not refused: `wt -A shell -- models` runs a command named `models`.
 
@@ -334,7 +334,7 @@ Full reference — every field, every blocked reason, what Claude Code is given:
 Live-ran (2026-08-29, all read-only):
 
 - `wt --version` → `wt 0.1.0`
-- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide). A dated capture: later builds add `--new`, `--root`, `--allow-shared-root`, `--others` and `--replace`, so read the current list from `wt --help`
+- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide). A dated capture: later builds add `--new`, `--root`, `--others` and `--replace`, so read the current list from `wt --help`
 - `wt --check-guard` → `wt: main guard is installed in this repo.`
 - `wt rotate code` → one model id (example: `ollama/kimi-k2.7-code:cloud`), exit 0, no files touched
 - `wt -w foo` → `Error: -w is removed; use -W or --worktree` (followed by the usage text), exit 1, and `git worktree list` confirmed nothing was created

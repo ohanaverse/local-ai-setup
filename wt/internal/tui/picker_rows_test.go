@@ -217,8 +217,8 @@ func TestPickerStartsOnCurrentRow(t *testing.T) {
 
 // TestPickerEnterOnRootRowLaunchesViaSelectedEntryMsg pins that the root row
 // launches through the same selectedEntryMsg every other pick uses, as an
-// entry marked Root with the root's path, so the shared-root check and the
-// rest of the flow see it unchanged.
+// entry marked Root with the root's path, so the launch gate and the rest of
+// the flow see it unchanged.
 func TestPickerEnterOnRootRowLaunchesViaSelectedEntryMsg(t *testing.T) {
 	m := pickerCursorTo(t, pickerReady(t, pickerFixture()), "main")
 	_, sel := pickerEnter(t, m)
@@ -227,11 +227,13 @@ func TestPickerEnterOnRootRowLaunchesViaSelectedEntryMsg(t *testing.T) {
 	}
 }
 
-// TestPickerEnterOnBareBranchRowCreatesWorktree pins that a local branch with
-// no worktree still gets one when chosen: entryOfRow makes a branch entry
-// with no path, and selectedEntryMsg's handler creates the worktree through
-// ensureBranchWorktreeCmd, as the old picker's bare-branch row did.
-func TestPickerEnterOnBareBranchRowCreatesWorktree(t *testing.T) {
+// TestPickerEnterOnBareBranchRowPlansTheCreation pins what choosing a local
+// branch with no worktree does: entryOfRow makes a branch entry with no path,
+// and selectedEntryMsg's handler binds the owed creation — a read-only plan
+// whose path becomes the launch directory — without creating anything yet.
+// The commit point's launch gate makes the worktree, so a declined gate
+// creates nothing and the agent never launches in wt's CWD (cmd.Dir="").
+func TestPickerEnterOnBareBranchRowPlansTheCreation(t *testing.T) {
 	r := newRmRepo(t)
 	r.loose("loose")
 	m, _ := pickerLoad(t, r.dir, func(string, string) ([]byte, error) { return []byte("[]"), nil })
@@ -240,23 +242,22 @@ func TestPickerEnterOnBareBranchRowCreatesWorktree(t *testing.T) {
 	if sel.entry.Type != worktree.TypeBranch || sel.entry.Path != "" || sel.entry.Branch != "loose" {
 		t.Fatalf("entry = %+v, want a bare branch entry for loose", sel.entry)
 	}
-	m, cmd := updateMsg(m, sel)
-	if !m.creating || cmd == nil {
-		t.Fatalf("creating %v, cmd %v: want a worktree create in flight", m.creating, cmd != nil)
+	m, _ = updateMsg(m, sel)
+	if m.creation == nil || m.creation.name != "loose" {
+		t.Fatalf("creation = %+v, want the owed plan for loose", m.creation)
 	}
-	created, ok := cmd().(branchWorktreeCreatedMsg)
-	if !ok || created.err != nil {
-		t.Fatalf("create = %+v", created)
+	if m.selectedPath != m.creation.plan.Path() {
+		t.Errorf("selectedPath = %q, want the plan path %q", m.selectedPath, m.creation.plan.Path())
 	}
-	if fi, err := os.Stat(created.path); err != nil || !fi.IsDir() {
-		t.Errorf("worktree %s not created: %v", created.path, err)
+	if _, err := os.Stat(m.selectedPath); err == nil {
+		t.Errorf("%s exists at pick time; the creation belongs to the commit point", m.selectedPath)
 	}
 }
 
 // TestPickerEnterOnRemoteOnlyRowUsesOriginForm pins the remote-only row's
-// entry: the origin spelling ("origin/teammate") the old picker passed to
-// EnsureForBranch, with RemoteBranch the bare name, so choosing it creates a
-// local tracking branch and worktree as before.
+// entry: the origin spelling ("origin/teammate") handed to worktree.Resolve,
+// with RemoteBranch the bare name, so choosing it plans a local tracking
+// branch and worktree the commit point makes.
 func TestPickerEnterOnRemoteOnlyRowUsesOriginForm(t *testing.T) {
 	m := pickerCursorTo(t, pickerReady(t, pickerFixture()), "origin/teammate")
 	_, sel := pickerEnter(t, m)

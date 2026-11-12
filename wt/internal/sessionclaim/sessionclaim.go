@@ -282,7 +282,7 @@ func AncestorHolds(commonDir string, c Claim) (bool, error) {
 		// An ancestor's claim is honored only while live: pid alone would
 		// trust a SIGKILLed wt's leftover file once the system recycles
 		// that pid into an ancestor of a new launch — the stale file would
-		// silently waive the root gate.
+		// silently waive the root warning the launch warnings owe.
 		if alive, _ := live(f.c); !alive {
 			continue
 		}

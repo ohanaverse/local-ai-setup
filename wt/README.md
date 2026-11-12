@@ -40,10 +40,10 @@ The `*-wt` shims just `exec wt --agent <name>`, so the installed `wt` must be on
 # Launch in any git repo — TUI picker for worktrees and branches
 claude-wt
 
-# Work on a specific branch directly (skip TUI); a new name asks before creating it
+# Work on a specific branch directly (skip TUI); a new name is created and said so
 claude-wt -W my-feature
 
-# Create it without the question (needed when there is no terminal)
+# --new is accepted and ignored (kept for old scripts)
 claude-wt -W my-feature --new
 
 # Run in the current directory (no worktree picker; works outside a git repo too)
@@ -73,12 +73,11 @@ All launchers support:
 
 | Flag | Description |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing branch or worktree is reused silently; a new name asks `create it from <base>? [y/N]` (default no; with no commits in the repository the question names an empty orphan branch instead of a base) before creating anything, and with no terminal is refused unless `--new` is passed |
-| `--new` | With `-W`, create the branch and worktree for a name that does not exist yet without asking. A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root` |
-| `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and asks no consent question (the shared-root menu still runs when another live wt session holds the root; `--allow-shared-root` answers it). Exclusive with `--cwd` and `-W`. |
-| `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. Standing in the repository root it asks first (default no); with no terminal it refuses and names `--root`. The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
+| `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing worktree is reused with no question of its own (one `launching in …` line when nothing warns). A name that creates anything is announced first by its creation line, one shape per case: `creating branch <b> and worktree <p>` (a new branch), `creating worktree <p> for branch <b>` (a worktree for an existing branch), `creating worktree <p> for branch <b> tracking <r>` (a local branch tracking a remote-tracking name). The one default-yes question is asked before it only when a launch warning also applies, on a terminal. The root's own branch names the root and launches there with the root warning |
+| `--new` | Accepted and ignored: a name that does not exist yet is created and said so either way (kept for old scripts). A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root` |
+| `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and accepts the root warning, though any other warning still asks. Exclusive with `--cwd` and `-W`. |
+| `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. Standing in the repository root it warns and proceeds (a terminal with any warning is asked the one question first). The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
 | `--agent <name>` | Pin the agent (claude, codex, copilot, pi, agy, opencode, shell) |
-| `--allow-shared-root` | Launch in the repository root without asking even when another wt session is running there (with no terminal the launch otherwise refuses) |
 | `-M <provider>/<name>`, `--model <provider>/<name>` | Pin the model (or `profile/<name>` for a slot profile); skips the model picker |
 | `-T <tags>`, `--tags <tags>` | Filter the model list by tag (comma-delimited, OR within the flag) |
 | `-F <families>`, `--family <families>` | Filter the model list by family (comma-delimited, OR within the flag) |
@@ -170,7 +169,7 @@ The base URL is the resolved route's origin plus `/v1`. On a direct route that o
 
 ## Two sessions in one checkout
 
-wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, wt names it (agent, pid, how long, branch) and asks: `c` continue here, `w` start in a new worktree (a fresh `session-<pid>-<time>` branch under `.worktrees/`), or `q` / Esc to quit without launching. Launching in a linked worktree (`-W <name>` or a worktree row) never asks; `-W` naming the root's branch is refused (use `--root`). The worktree picker has no root row; `--root` and `--cwd` (after a yes) are the ways in. A launch in a subdirectory of the root is not checked. `--allow-shared-root` continues without asking; with no terminal and no flag, wt refuses and says which session holds the root. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
+wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, the launch warnings name it (agent, pid, how long, branch) and, on a terminal, ask one default-yes question before proceeding — the picker's launches ask the same one question at the commit point, just before the agent runs. Launching in a linked worktree (`-W <name>` or a worktree row) gets no root or held warning (other warnings can still ask once); `-W` naming the root's branch launches in the root with the root warning. The picker's root row, `--root` and `--cwd` name the root directly. A launch in a subdirectory of the root is judged as the root checkout for claims, so it carries that checkout's hold warning and the warnings its own directory earns (a drifted root, a default branch) — never the root warning, since only the root's own top level is the root — and writes no claim of its own. A linked worktree is the only launch judged strictly on its own directory: no root and no held warning. With no terminal the warnings print and the launch proceeds; a no at the question ends the launch quietly. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
 
 ## Main guard
 
@@ -195,7 +194,7 @@ claude's `--continue` means the most recent conversation in the current director
 
 ## Exit prompt for an untouched worktree
 
-When the agent exits, `wt` offers to remove a worktree (and its branch) that this launch created and nothing touched: `<path> was created for this session and nothing changed in it. Remove it and its branch <name>?` Enter keeps it; `y` removes both through the same engine as `wt remove`. Only a branch `wt` created in that launch qualifies (not an existing worktree or branch, `--cwd` or `--root`), and anything changed, committed, ignored-but-present or still running is kept silently, as is any launch with no terminal. The prompt comes after the stop picker and before the summary line, and never changes the exit status. `[launch] exit_prompt = "keep"` in `~/.config/agent-wt/config.toml` turns it off. See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-exit-order).
+When the agent exits, `wt` offers to remove a worktree (and its branch) that this launch created and nothing touched: `<path> was created for this session and nothing changed in it. Remove it and its branch <name>?` Enter keeps it; `y` removes both through the same engine as `wt remove`. Only a brand-new branch and the worktree `wt` created for it in that launch qualify (not an existing worktree or branch, a worktree and local branch created for a remote-tracking name, `--cwd` or `--root`), and anything changed, committed, ignored-but-present or still running is kept silently, as is any launch with no terminal. The prompt comes after the stop picker and before the summary line, and never changes the exit status. `[launch] exit_prompt = "keep"` in `~/.config/agent-wt/config.toml` turns it off. See [docs/wt-agents/README.md](docs/wt-agents/README.md#post-exit-order).
 
 ## Post-run summary line
 

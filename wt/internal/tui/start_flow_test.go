@@ -1660,7 +1660,7 @@ func TestRunAndWaitCmdPrintsRouteNotesAboveTheAgent(t *testing.T) {
 	// leave the test process's stderr pointing at a closed pipe.
 	t.Cleanup(func() { os.Stderr = old })
 	os.Stderr = w
-	msg := runAndWaitCmd(exec.Command("sh", "-c", "echo agent-output >&2"), "shell", config.Model{})()
+	msg := runAndWaitCmd(exec.Command("sh", "-c", "echo agent-output >&2"), "shell", config.Model{}, nil)()
 	w.Close()
 	os.Stderr = old
 	out, _ := io.ReadAll(r)

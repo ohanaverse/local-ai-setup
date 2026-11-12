@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -38,7 +39,6 @@ const (
 	phaseReplaceConfirm              // confirm replacing the running occupant before starting
 	phaseRouting                     // a launch wrote the model's missing LiteLLM route; the proxy restarts, with elapsed time (#192)
 	phaseSlot                        // a slot-profile launch is writing its routes, restarting or probing the proxy
-	phaseSharedRoot                  // another live session holds the repository root the launch resolved to; c/w/q
 )
 
 // model holds the entire UI state.
@@ -128,17 +128,48 @@ type model struct {
 	slot    *slotFlow // in-flight profile launch; nil when idle
 	slotRun int       // monotonically increasing run id; stale messages are dropped by id
 
-	// shared-root screen: the launch resolved to the repository root while
-	// another live session holds it (sharedroot.go).
-	sharedRoot *sharedRootState // phaseSharedRoot; nil when not shown
+	// creation is the pick that owes its worktree at the commit point (a bare
+	// branch, a remote-only branch, or a typed name that owes one): resolved
+	// read-only here, made only once the launch gate says go (launchgate.go).
+	// nil for every other pick, and cleared by every selection, so an
+	// abandoned pick's plan never rides along with a later one.
+	creation *launchCreation
+
+	// typedPlan is the plan behind a typed name, kept even when no creation
+	// is announced: cmd/wt's -W runs plan.Ensure() unconditionally after its
+	// one question (main.go:551), so the commit point runs it here too. A
+	// reused worktree is Ensure's idempotent no-op (nothing announced,
+	// nothing made); a path that is only debris is git's own error instead of
+	// a launch at a directory that is not a worktree. Cleared by every
+	// selection, as creation is.
+	typedPlan *worktree.Plan
+
+	// pickedRow is the unified-list row this launch was picked from (nil for
+	// a typed name or a preset path). The gate's Target carries its PR,
+	// upstream and dirt facts — the ones only the list gathered — over the
+	// live read (launchwarn.FromRow, folded in by launchTarget). Rebound by
+	// every selection, as creation and typedPlan are, so an abandoned pick's
+	// row never rides along with a later one.
+	pickedRow *cleanup.Row
+
+	// committed is the commit point's in-flight guard: the first selection
+	// that reaches a run command takes it (commitLaunch) and every further
+	// Enter is ignored while that launch runs. It releases on exactly one
+	// outcome — the slot applier's failure (slotAbortMsg), whose return to
+	// the model picker is a retry path that must be able to commit again —
+	// and otherwise holds to process exit. The agent's own exit
+	// (launchDoneMsg) must NOT release it: the terminal is handed back just
+	// before that message is processed, so a key queued during teardown can
+	// still reach Update before the QuitMsg and would otherwise commit a
+	// duplicate run command (a second agent, a second rotation/usage
+	// record).
+	committed bool
 
 	// new-worktree prompt
-	newInput         textinput.Model
-	newError         string
-	pendingHighlight string // branch name to focus after re-enumerating
-	repoRoot         string // cached from rowsLoadedMsg to avoid a second rev-parse
-	creating         bool   // true while a create is in flight (guards double-Enter)
-	listError        string // reload error shown above the list when ready
+	newInput  textinput.Model
+	newError  string
+	repoRoot  string // cached from rowsLoadedMsg to avoid a second rev-parse
+	listError string // reload error shown above the list when ready
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -234,8 +265,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m.handleSlotMsg(msg)
 	case slotAbortMsg:
 		// The slot applier failed after the terminal was released: no agent
-		// ran and nothing was recorded.
+		// ran and nothing was recorded. The run command's outcome is
+		// processed, so the commit point's guard releases: the return to the
+		// model picker is a retry path, and its next Enter must be able to
+		// commit again.
 		m.status = "launch failed: " + msg.err.Error()
+		m.committed = false
 		m.phase = phaseModel
 		return m.refreshTable()
 	case tableRefreshedMsg:
@@ -274,16 +309,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case rowChosenMsg:
-		// Enter on a picker row: the launch flow's own message, so the
-		// bare-branch create and the shared-root check run as they always did.
-		if m.creating {
-			return m, nil
-		}
-		return m, emit(selectedEntryMsg{entry: entryOfRow(msg.Row)})
+		// Enter on a picker row: the launch flow's own message, so an owed
+		// creation is bound to the launch (selectedEntryMsg) and the row's
+		// own PR/upstream facts ride with it to the gate.
+		return m, emit(selectedEntryMsg{entry: entryOfRow(msg.Row), row: &msg.Row})
 	case newWorktreeChosenMsg:
-		if m.creating {
-			return m, nil
-		}
 		return m.openNewWorktreePrompt(), nil
 	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg:
 		// The picker's `x`: its removal flow runs inside the row list.
@@ -292,26 +322,32 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case selectedEntryMsg:
-		// Bare branches (TypeBranch, Path="") have no worktree yet. Create
-		// one via EnsureForBranch before proceeding, so the agent launches
-		// in a worktree rather than in wt's CWD (cmd.Dir="").
+		// Every selection rebinds the launch: a creation an earlier pick owed
+		// — and the typed name's plan behind it — is dropped first, so esc
+		// back to the list and a re-pick can never drive the abandoned pick's
+		// worktree at the commit point. Bare
+		// branches (TypeBranch, Path="") and remote-only branches have no
+		// worktree yet. The pick owes one: resolve the plan read-only here
+		// — so the launch gate can state the creation in launchwarn's frozen
+		// wording and a declined gate creates nothing — and let the commit
+		// point make it (launchCreation). The plan's path is where the agent
+		// launches, rather than wt's CWD (cmd.Dir="").
+		m.creation = nil
+		m.typedPlan = nil
+		m.pickedRow = msg.row
 		if msg.entry.Type == worktree.TypeBranch && msg.entry.Path == "" {
-			m.creating = true
-			return m, ensureBranchWorktreeCmd(m.repoRoot, msg.entry.Branch)
+			plan, err := worktree.Resolve(m.repoRoot, msg.entry.Branch)
+			if err != nil {
+				m.listError = err.Error()
+				m.phase = phaseList
+				return m, nil
+			}
+			m.creation = &launchCreation{repoRoot: m.repoRoot, name: msg.entry.Branch, plan: plan}
+			m.selectedPath = plan.Path()
+			return m.proceedFromSelectedPath()
 		}
 		m.selectedPath = msg.entry.Path
 		return m.proceedFromSelectedPath()
-	case branchWorktreeCreatedMsg:
-		m.creating = false
-		if msg.err != nil {
-			m.listError = msg.err.Error()
-			m.phase = phaseList
-			return m, nil
-		}
-		m.selectedPath = msg.path
-		return m.proceedFromSelectedPath()
-	case sharedRootWorktreeMsg:
-		return m.handleSharedRootWorktree(msg)
 	case launchDoneMsg:
 		if msg.status != "" {
 			m.status = msg.status
@@ -320,16 +356,13 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			m.status = "agent exited: " + msg.err.Error()
 		}
 		m.agentErr = msg.err
+		// The guard is deliberately NOT released here: the run command's
+		// closure hands the terminal back (input restarts at RestoreTerminal)
+		// just before this message is processed, so a KeyMsg already queued
+		// is handled before the QuitMsg and must not commit a duplicate run
+		// command. Held to process exit, the guard makes that race harmless.
+		// Only the retry path (slotAbortMsg) releases it.
 		return m, tea.Quit
-	case newWorktreeCreatedMsg:
-		m.creating = false
-		if msg.err != nil {
-			m.newError = msg.err.Error()
-			return m, nil
-		}
-		m.pendingHighlight = msg.name
-		m.phase = phaseList
-		return m, loadPickerCmd()
 	case tea.KeyMsg:
 		// An in-flight start owns the keyboard: esc/q/ctrl+c cancel and a
 		// further press quits; every other key is ignored (before the picker
@@ -347,22 +380,14 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if m.phase == phaseSlot && m.slot != nil {
 			return m.handleSlotKey(msg)
 		}
-		// The shared-root screen takes its own keys (c, w, q, Esc), before
-		// the general q/esc handling below.
-		if m.phase == phaseSharedRoot && m.sharedRoot != nil {
-			return m.handleSharedRootKey(msg)
-		}
 		// The worktree picker is the row list: every key is its own (q and
 		// esc quit there, `/` filters, and while the filter is typed every
-		// printable key goes into it). ctrl+c always quits; while a
-		// bare-branch create is in flight, enter and n wait, so a second
-		// selection cannot race a second `git worktree add`.
+		// printable key goes into it). ctrl+c always quits. A double Enter
+		// cannot start two launches: the commit point takes one (the
+		// committed guard at each run command's birth, commitLaunch).
 		if m.phase == phaseList && m.ready {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
-			}
-			if m.creating && !m.rows.filtering && (msg.String() == "enter" || msg.String() == "n") {
-				return m, nil
 			}
 			return m.updateRows(msg)
 		}
@@ -570,18 +595,36 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					}
 				}
 			case phaseNewWorktree:
-				if m.creating {
-					// A create is already in flight; ignore the second Enter
-					// so two concurrent `git worktree add` calls can't race.
-					return m, nil
-				}
-				if errMsg := validateNewWorktreeName(m.newInput.Value()); errMsg != "" {
+				name := m.newInput.Value()
+				if errMsg := validateNewWorktreeName(name); errMsg != "" {
 					m.newError = errMsg
 					return m, nil
 				}
+				plan, err := worktree.Resolve(m.repoRoot, name)
+				if err != nil {
+					m.newError = err.Error()
+					return m, nil
+				}
 				m.newError = ""
-				m.creating = true
-				return m, ensureNewWorktreeCmd(m.repoRoot, m.newInput.Value())
+				// A typed name is a pick, not a create: cmd/wt's -W rule
+				// decides which side of the gate it lands on. A name that
+				// owes its worktree — a new branch, a remote tracking branch,
+				// or a branch no worktree holds yet (and no directory at the
+				// plan's path) — is a creation pick, bound here read-only and
+				// made at the commit point exactly like a bare-branch row; the
+				// rest launch into the worktree they name. Nothing is created
+				// here, so a declined gate leaves nothing behind. The plan
+				// is kept either way (typedPlan): the commit point runs its
+				// Ensure unconditionally, as cmd/wt's -W does after its one
+				// question (main.go:551).
+				m.creation = nil
+				m.typedPlan = plan
+				m.pickedRow = nil // a typed name is not a row pick
+				if _, serr := os.Stat(plan.Path()); plan.Creates() || plan.Tracks() != "" || serr != nil {
+					m.creation = &launchCreation{repoRoot: m.repoRoot, name: name, plan: plan}
+				}
+				m.selectedPath = plan.Path()
+				return m.proceedFromSelectedPath()
 			}
 		}
 	}
@@ -625,11 +668,7 @@ func (m model) View() string {
 		if m.newError != "" {
 			body += "\n" + ErrorStyle(m.theme).Render(m.newError)
 		}
-		if m.creating {
-			body += "\ncreating " + m.newInput.Value() + "…"
-		} else {
-			body += "\n[enter] create   [esc] cancel"
-		}
+		body += "\n[enter] create   [esc] cancel"
 		return body
 	}
 	if m.phase == phaseOllamaWarn {
@@ -655,12 +694,6 @@ func (m model) View() string {
 			return "slot profile launch (waiting for window size)"
 		}
 		return clip(m.slotView(), m.width)
-	}
-	if m.phase == phaseSharedRoot && m.sharedRoot != nil {
-		if m.width <= 0 || m.height <= 0 {
-			return "shared root (waiting for window size)"
-		}
-		return m.sharedRootView()
 	}
 	if m.phase == phaseReplaceConfirm {
 		if m.width <= 0 || m.height <= 0 {
@@ -697,7 +730,7 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
-	return m, runAndWaitCmd(cmd, name, config.Model{})
+	return m.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, m.gateFor()))
 }
 
 // launchPassthrough builds and runs a model-driven agent that has no
@@ -713,14 +746,29 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 		return m, nil
 	}
 	queueLaunchNotes(name, cmd, m.extraArgs)
-	return m, runAndWaitCmd(cmd, name, config.Model{})
+	return m.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, m.gateFor()))
+}
+
+// commitLaunch binds a run command to the launch in flight. The first caller
+// to reach it takes the launch (committed) and gets the command; while
+// committed, every further call returns nil — a second Enter pressed before
+// the terminal is released must not start a second run command (with it a
+// second creation binding, a second gate and a second agent). The guard
+// releases only where a retry must be able to commit (slotAbortMsg); on the
+// quit path it holds to process exit, so a key queued during teardown cannot
+// start a second launch.
+func (m model) commitLaunch(cmd tea.Cmd) (model, tea.Cmd) {
+	if m.committed {
+		return m, nil
+	}
+	m.committed = true
+	return m, cmd
 }
 
 // proceedFromSelectedPath continues the launch flow once m.selectedPath is
-// resolved — either directly from a worktree/current entry, or after
-// EnsureForBranch materialized a worktree for a bare branch. It is the body
-// of the old selectedEntryMsg handler, extracted so both the direct pick and
-// the post-create path share it.
+// resolved — either directly from a worktree/current entry, or as the plan
+// path of a pick that owes its worktree (m.creation, made at the commit
+// point). It is the body of the old selectedEntryMsg handler.
 //
 // PR 2: the agent/command picker is the new explicit entry point. When the
 // user pinned an agent via --agent, mirror the pre-PR-2 UX: a shell --agent
@@ -728,23 +776,16 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 // to phaseModel. This keeps `wt --agent shell` and `wt --agent claude` exactly
 // as they behaved before PR 2 — only the unpinned path shows the picker.
 //
-// It is also where the shared-root check runs (sharedRootCheck): every launch
-// the TUI makes — a command, a passthrough agent, a model or a slot profile,
-// from a picker row or a preset path — learns its directory here, before
-// anything starts. A root another live session holds gets the shared-root
-// screen first, which continues in proceedWithPath.
+// The warnings every launch shows — root, held, PR merged, upstream gone,
+// default branch, dirty and held — are one question at the commit point
+// (launchGate), not a screen here: the pick proceeds through the flow and the
+// gate speaks when the agent is about to run.
 func (m model) proceedFromSelectedPath() (model, tea.Cmd) {
-	if st := m.sharedRootCheck(); st != nil {
-		m.sharedRoot = st
-		m.phase = phaseSharedRoot
-		m.status = ""
-		return m, nil
-	}
 	return m.proceedWithPath()
 }
 
-// proceedWithPath is proceedFromSelectedPath once the shared-root check has
-// passed or the person chose to continue.
+// proceedWithPath is proceedFromSelectedPath: the flow continues to the agent
+// or the model screen.
 func (m model) proceedWithPath() (model, tea.Cmd) {
 	if m.initialAgent != "" {
 		m.agent = m.initialAgent
@@ -1221,9 +1262,9 @@ func (m model) launchSelected() (model, tea.Cmd) {
 // last-launched (so the next picker entry advances rotation) and a
 // live-session refcount entry for the model picker's "in use" column.
 // Recording is the single commit point, reached only after the ollama check
-// has been satisfied and, in the run command, once the root is held — so a
-// cancelled ollama warning, a failed ollama check or a quit at the root
-// prompt never advances the rotation or the refcount. Both state writes are
+// has been satisfied and, in the run command, once the launch gate is past —
+// so a cancelled ollama warning, a failed ollama check or a declined gate
+// never advances the rotation or the refcount. Both state writes are
 // best-effort: a failure of either (or both) surfaces in m.status (through
 // launchDoneMsg) and the launch still proceeds.
 func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
@@ -1240,7 +1281,7 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 		}
 		return strings.Join(errs, "; ")
 	}
-	return m, runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record)
+	return m.commitLaunch(runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record, m.gateFor()))
 }
 
 // findRepoRoot is the picker's `git rev-parse --show-toplevel`

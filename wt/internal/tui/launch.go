@@ -16,11 +16,28 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
+// GateError is a launch-gate failure carried out as the run's error: wt's own
+// failure at the commit point (the creation or validation the gate ran), as
+// opposed to the agent's own exit. It wraps the failure with no Unwrap method
+// on purpose: a git failure can carry git's *exec.ExitError (gitError's
+// empty-stderr branch, startPhrase's rev-parse failure), and cmd/wt's
+// agentExitStatus reads any error with an *exec.ExitError anywhere in its
+// chain as the agent's own quiet exit (#412) — printing nothing and exiting
+// with git's status. Held this way the failure stays a plain error: main
+// prints it once as its "wt:" line and exits 1, exactly as cmd/wt's -W path
+// refuses a creation. The field is exported because the routing seam
+// (agentExitStatus, reportExit) lives in package main and its tests build
+// this type.
+type GateError struct{ Err error }
+
+// Error is the failure's own message, unchanged.
+func (e GateError) Error() string { return e.Err.Error() }
+
 // launchDoneMsg is emitted after the agent subprocess exits.
 type launchDoneMsg struct {
 	// err is what running the agent returned, or the profile error that
-	// kept it from starting. Run returns either one, so wt exits as
-	// runAgentCmd does (#412).
+	// kept it from starting, or the launch gate's own failure (GateError).
+	// Run returns either one, so wt exits as runAgentCmd does (#412).
 	err error
 	// status is what the launch's own state writes reported (record's
 	// errors), shown on the status line as launchAndRecord used to set it.
@@ -183,23 +200,23 @@ var buildPassthrough = agents.BuildPassthroughCmd
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
 // launchDoneMsg. It records nothing: a command or passthrough launch has no
 // model to record.
-func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model) tea.Cmd {
-	return runRecordAndWaitCmd(cmd, agent, m, nil)
+func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (bool, error)) tea.Cmd {
+	return runRecordAndWaitCmd(cmd, agent, m, nil, gate)
 }
 
 // runRecordAndWaitCmd is runAndWaitCmd with the launch's state writes:
-// record, when non-nil, is called once the launch is committed (the root is
-// held and the agent starts next, or the profile failed, as it always did
-// after recording) and returns the status its errors make, "" for none. A
-// quit at the root prompt calls it never, so it leaves no trace.
-func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string) tea.Cmd {
+// record, when non-nil, is called once the launch is committed (the gate is
+// past and the agent starts next, or the profile failed, as it always did
+// after recording) and returns the status its errors make, "" for none. gate,
+// when non-nil, is the launch's one question (m.launchGate, through
+// m.gateFor) at the commit point; a decline calls record never, so it leaves
+// no trace. A nil gate is a direct test call: it asks nothing and claims
+// nothing.
+func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error)) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
 	}
 	return func() tea.Msg {
-		// The directory the agent was built for, read before a profile can
-		// touch the command: a root launch claims it for the run (holdRoot).
-		dir := cmd.Dir
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
 			// defer the restore so a panic in cmd.Run() still returns
@@ -245,18 +262,34 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 		if profileCleanup == nil {
 			profileCleanup = func() error { return nil }
 		}
-		release, held := holdRoot(dir, agent, os.Stdin, os.Stderr)
-		if !held {
-			// The person quit at the root prompt: nothing runs and nothing
-			// is recorded or summarised, as when quitting the picker.
-			_ = profileCleanup()
-			return launchDoneMsg{}
+		if gate != nil {
+			if ok, gerr := gate(); !ok {
+				// A "no" at the launch gate is a choice, not a failure: the
+				// run does not start and nothing is created, claimed,
+				// recorded or summarised, as when quitting the picker. A
+				// creation that failed after the person continued (gerr
+				// non-nil) is a failure, not a choice: it travels out as the
+				// run's error — as a GateError, so main's exit routing never
+				// reads a git exit status inside it as the agent's own quiet
+				// exit — and main prints it once and exits non-zero, cmd/wt's
+				// -W path through refuse. Either
+				// way the start flow may already have loaded a model and
+				// written its routes; pendingSurveyState keeps the standard
+				// tail (the stop picker — nothing auto-stops) for them.
+				_ = profileCleanup()
+				pendingSurveyState = pendingSurvey{agent: agent, m: m}
+				if gerr != nil {
+					gerr = GateError{Err: gerr}
+				}
+				return launchDoneMsg{err: gerr}
+			}
 		}
-		// The commit point: the agent runs next.
+		// The commit point: the agent runs next. The gate has made any
+		// worktree this pick owed and claimed the root for the run.
 		status := record()
 		exitprompt.Launched(cmd.Dir)
 		duration, err := agents.RunAndCleanup(cmd, profileCleanup)
-		release()
+		releaseRootClaim()
 		// Capture (do not print) the summary line. Printing here would
 		// land inside the alt-screen buffer, which bubbletea discards at
 		// tea.Quit shutdown. Run() reads pendingSummary after p.Run()

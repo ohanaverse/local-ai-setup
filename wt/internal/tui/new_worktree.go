@@ -1,15 +1,11 @@
 package tui
 
 import (
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // newWorktreePlaceholder is the textinput placeholder shown in the
@@ -23,54 +19,6 @@ const newWorktreePlaceholder = "branch-or-worktree-name"
 // (e.g. internal/configeditor) render errors identically.
 func ErrorStyle(theme themes.Theme) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Token(themes.TokenError))
-}
-
-// newWorktreeCreatedMsg is emitted after a create attempt. On
-// success, path is the worktree path and name is the branch name.
-// On failure, err is set and the other fields are zero.
-type newWorktreeCreatedMsg struct {
-	path string
-	name string
-	err  error
-}
-
-// ensureNewWorktreeCmd returns a tea.Cmd that creates a worktree
-// for name in the repo at root via EnsureForName and reports the
-// result. Run it from the model via dispatching the returned
-// command from Update.
-func ensureNewWorktreeCmd(root, name string) tea.Cmd {
-	return func() tea.Msg {
-		plan, err := worktree.Resolve(root, name)
-		if err != nil {
-			return newWorktreeCreatedMsg{name: name, err: err}
-		}
-		path, err := plan.Ensure()
-		if err == nil && plan.Creates() {
-			exitprompt.RecordNote(os.Stderr, path, name)
-		}
-		return newWorktreeCreatedMsg{path: path, name: name, err: err}
-	}
-}
-
-// branchWorktreeCreatedMsg is emitted after EnsureForBranch creates (or
-// reuses) a worktree for a picked bare branch. On success, path is the
-// worktree path; on failure, err is set and path is empty.
-type branchWorktreeCreatedMsg struct {
-	path   string
-	branch string
-	err    error
-}
-
-// ensureBranchWorktreeCmd returns a tea.Cmd that creates a worktree for a
-// bare branch via EnsureForBranch and reports the resolved path. Bare
-// branches (TypeBranch, Path="") have no worktree yet; selecting one must
-// materialize a worktree so the agent launches there rather than in wt's
-// CWD (cmd.Dir="").
-func ensureBranchWorktreeCmd(root, branch string) tea.Cmd {
-	return func() tea.Msg {
-		path, err := worktree.EnsureForBranch(root, branch)
-		return branchWorktreeCreatedMsg{path: path, branch: branch, err: err}
-	}
 }
 
 // newInputModel builds a focused textinput sized to the terminal

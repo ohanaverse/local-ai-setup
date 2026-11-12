@@ -226,7 +226,7 @@ func TestConcurrentJoinOnlyOneSeesEmpty(t *testing.T) {
 }
 
 // TestConcurrentJoinDoesNotWaitOnAnotherAsk checks the lock is not held while
-// ask runs: a launch whose menu waits on the person must not block another
+// ask runs: a launch whose question waits on the person must not block another
 // launch of the same root, and once the waiting one continues it is claimed.
 func TestConcurrentJoinDoesNotWaitOnAnotherAsk(t *testing.T) {
 	fakeProcs(t, map[int]int64{100: 1000, 900: 5000, 901: 5000})
@@ -408,8 +408,9 @@ func TestAncestorHoldsSeesAParentsClaim(t *testing.T) {
 }
 
 // TestAncestorHoldsIgnoresOtherSessions checks a live claim by a process that
-// is not an ancestor does not count: another session on the root is the
-// shared-root menu's business, not a reason to skip the root gate.
+// is not an ancestor does not count: an ancestor's claim is the same session
+// family — this launch runs inside it — while another session on the root
+// surfaces as the launch warnings' held entry.
 func TestAncestorHoldsIgnoresOtherSessions(t *testing.T) {
 	child := exec.Command("sleep", "60")
 	if err := child.Start(); err != nil {
@@ -459,7 +460,8 @@ func TestAncestorHoldsOtherPath(t *testing.T) {
 // pid runs AND the process started when the claim says): a SIGKILLed wt
 // leaves its claim behind, and once that pid is recycled into an ancestor of
 // a new launch, pid-in-ancestors alone would let the stale file silently
-// waive the root gate.
+// waive the root warning the launch warnings owe (another session on the root
+// is their `held` entry, not a waiver).
 func TestAncestorHoldsIgnoresAStaleAncestorsClaim(t *testing.T) {
 	ppid := os.Getppid()
 	dir := t.TempDir()

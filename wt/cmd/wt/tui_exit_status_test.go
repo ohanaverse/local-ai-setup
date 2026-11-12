@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os/exec"
 	"testing"
 
@@ -81,6 +82,33 @@ func TestPickerLaunchExitsWithTheAgentsStatus(t *testing.T) {
 func TestPickerLaunchThatSucceededStaysZero(t *testing.T) {
 	if _, err := runPickerLaunch(t, nil); err != nil {
 		t.Fatalf("launch = %v, want nil", err)
+	}
+}
+
+// TestPickerLaunchGateErrorPrintsOnceAndExitsOne pins the routing seam's one
+// discrimination: a gate/creation failure is wt's own failure and must reach
+// main as a plain error — one "wt:" line and exit 1 — even when git's own
+// exit status rides along inside it (gitError's empty-stderr branch wraps an
+// *exec.ExitError; untyped, agentExitStatus reads that as the agent's own
+// quiet exit and prints nothing at all). GateError is the type
+// agentExitStatus cannot mistake for the agent's run error.
+func TestPickerLaunchGateErrorPrintsOnceAndExitsOne(t *testing.T) {
+	// gitError's empty-stderr branch wraps git's exit status exactly so.
+	wrapped := fmt.Errorf("git worktree add: %w", exec.Command("false").Run())
+	gateErr := tui.GateError{Err: wrapped}
+	out, err := runPickerLaunch(t, gateErr)
+	if err == nil {
+		t.Fatal("launch returned nil; a gate failure must end non-zero")
+	}
+	if out != "" {
+		t.Errorf("cobra printed %q, want nothing: no Error: line after the gate's own failure", out)
+	}
+	var stderr bytes.Buffer
+	if got := reportExit(err, &stderr); got != 1 {
+		t.Errorf("exit status = %d, want 1: a gate failure is never the agent's status", got)
+	}
+	if want := "wt: " + gateErr.Error() + "\n"; stderr.String() != want {
+		t.Errorf("stderr = %q, want the one line %q", stderr.String(), want)
 	}
 }
 

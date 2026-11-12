@@ -1,12 +1,18 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -86,117 +92,219 @@ func TestNewInputModelWidth(t *testing.T) {
 	}
 }
 
-// TestEnsureNewWorktreeCmdSuccess is the happy-path integration
-// test. In a fresh temp git repo, the command must create a
-// worktree and emit a newWorktreeCreatedMsg with err == nil and
-// a path under .worktrees/. A regression here means the feature
-// silently does nothing.
-func TestEnsureNewWorktreeCmdSuccess(t *testing.T) {
+// TestTypedNameDefersCreationToTheCommitPoint checks the "+ New worktree…"
+// prompt's Enter is a pick, not a create: it resolves the plan read-only and
+// binds the creation to the launch flow exactly like a bare-branch row, so
+// nothing exists until the commit point says go. It matters because the old
+// prompt-time `git worktree add` ran before any confirm — a decline after the
+// prompt could not take the creation back.
+func TestTypedNameDefersCreationToTheCommitPoint(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
-
-	cmd := ensureNewWorktreeCmd(dir, "fresh-feature")
-	msg := cmd()
-	got, ok := msg.(newWorktreeCreatedMsg)
-	if !ok {
-		t.Fatalf("cmd returned %T, want newWorktreeCreatedMsg", msg)
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, newInput: newInputModel(80)}
+	m.newInput.SetValue("my-feature")
+	got, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.creation == nil || got.creation.name != "my-feature" {
+		t.Fatalf("creation = %+v, want the typed name's plan", got.creation)
 	}
-	if got.err != nil {
-		t.Fatalf("err = %v, want nil", got.err)
+	want := filepath.Join(dir, ".worktrees", "my-feature")
+	if got.selectedPath != want {
+		t.Errorf("selectedPath = %q, want %q", got.selectedPath, want)
 	}
-	if got.name != "fresh-feature" {
-		t.Errorf("name = %q, want fresh-feature", got.name)
+	if got.phase != phaseAgent {
+		t.Errorf("phase = %v, want the launch flow's agent picker", got.phase)
 	}
-	wantPath := filepath.Join(dir, ".worktrees", "fresh-feature")
-	if got.path != wantPath {
-		t.Errorf("path = %q, want %q", got.path, wantPath)
+	if _, err := os.Stat(want); err == nil {
+		t.Error("the prompt created the worktree; the commit point creates it")
 	}
-	if _, err := os.Stat(wantPath); err != nil {
-		t.Errorf("worktree not created at %q: %v", wantPath, err)
+	if cmd != nil {
+		t.Error("the prompt dispatched a create command; creation is the commit point's")
 	}
 }
 
-// TestEnsureNewWorktreeCmdNeverAsksTheWFlagQuestion pins the L2 promise that
+// TestTypedNameCreationNeverAsksTheWFlagQuestion pins the L2 promise that
 // the picker's "+ New worktree…" prompt creates a new name without the
 // create-it? question `wt -W <new name>` asks: the person already typed the
 // name on purpose. Stdin is at end-of-file, where any y/N question would
-// answer no, so a worktree that still gets created proves none was asked.
-func TestEnsureNewWorktreeCmdNeverAsksTheWFlagQuestion(t *testing.T) {
-	devnull, err := os.Open(os.DevNull)
+// answer no, so a worktree that still gets made — at the commit point, after
+// the gate states its creation line — proves none was asked.
+func TestTypedNameCreationNeverAsksTheWFlagQuestion(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, agent: "claude", newInput: newInputModel(80)}
+	m.newInput.SetValue("typed-on-purpose")
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.creation == nil {
+		t.Fatal("no creation bound for the typed name")
+	}
+	tg, err := m.launchTarget()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer devnull.Close()
-	saved := os.Stdin
-	os.Stdin = devnull
-	t.Cleanup(func() { os.Stdin = saved })
-
-	dir := t.TempDir()
-	gitInit(t, dir)
-
-	got, ok := ensureNewWorktreeCmd(dir, "typed-on-purpose")().(newWorktreeCreatedMsg)
-	if !ok || got.err != nil {
-		t.Fatalf("ensureNewWorktreeCmd = %+v, ok=%v; want a created worktree with no error", got, ok)
+	stderr := answerOnStdio(t, "") // EOF: a question here would read it as "no"
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); a typed name must create with no question", ok, gerr)
+	}
+	got := stderr()
+	if strings.Contains(got, "continue?") {
+		t.Errorf("gate asked the create question a typed name never needs: %q", got)
+	}
+	want := fmt.Sprintf("creating branch %s and worktree %s", "typed-on-purpose", m.creation.plan.Path())
+	if !strings.Contains(got, "wt: "+want+"\n") {
+		t.Errorf("gate printed %q; want the creation line %q", got, want)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".worktrees", "typed-on-purpose")); err != nil {
-		t.Errorf("worktree not created: %v", err)
+		t.Errorf("worktree not created at the commit point: %v", err)
 	}
 }
 
-// TestEnsureNewWorktreeCmdGitError asserts that git errors are
-// surfaced to the caller rather than swallowed. The traversal
-// name flattens to a harmless directory name and git rejects the
-// branch name itself; either way the error must surface to the
-// caller.
-func TestEnsureNewWorktreeCmdGitError(t *testing.T) {
-	dir := t.TempDir()
-	gitInit(t, dir)
-
-	cmd := ensureNewWorktreeCmd(dir, "../evil")
-	msg := cmd()
-	got, ok := msg.(newWorktreeCreatedMsg)
-	if !ok {
-		t.Fatalf("cmd returned %T, want newWorktreeCreatedMsg", msg)
+// TestTypedNameLeftoverDirIsAnErrorNotALaunch checks the typed-name path runs
+// the plan's Ensure at the commit point even when nothing is announced (the
+// contract cmd/wt's -W holds by running plan.Ensure() unconditionally after
+// its one question, main.go:551): a branch with an unregistered leftover
+// directory at the plan's path — a partial `git worktree add`, a half-deleted
+// worktree, a stray file — must come back as git's own error with the agent
+// never run, never as a launch at a directory that is not a worktree, where
+// every git command resolves to the repository root.
+func TestTypedNameLeftoverDirIsAnErrorNotALaunch(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	if out, err := exec.Command("git", "-C", root, "branch", "fresh").CombinedOutput(); err != nil {
+		t.Fatalf("git branch: %v\n%s", err, out)
 	}
-	if got.err == nil {
-		t.Fatal("err = nil, want non-nil for traversal name")
+	// The branch has no worktree; debris sits where one would go, and no
+	// registration knows about it. It has contents — the way a partial `git
+	// worktree add` or a half-deleted worktree leaves the directory — since
+	// git adopts a clean empty directory as the new worktree and refuses only
+	// one that is already occupied.
+	if err := os.MkdirAll(filepath.Join(root, ".worktrees", "fresh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".worktrees", "fresh", "leftover.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: root, agent: "claude", newInput: newInputModel(80)}
+	m.newInput.SetValue("fresh")
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	marker := filepath.Join(t.TempDir(), "ran")
+	answerOnStdio(t, "")
+	msg := runAndWaitCmd(exec.Command("sh", "-c", "touch '"+marker+"'"), "claude", config.Model{}, m.gateFor())()
+	done, ok := msg.(launchDoneMsg)
+	if !ok || done.err == nil {
+		t.Fatalf("msg = %#v; want git's own error, not a launch at the leftover directory", msg)
+	}
+	if !strings.Contains(done.err.Error(), "already exists") {
+		t.Errorf("err = %q; want git's own message about the path that is already there", done.err.Error())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the agent ran at the leftover directory; git resolves every command there to the repository root")
 	}
 }
 
-// TestEnsureBranchWorktreeCmdSuccess is the happy-path integration test for
-// the bare-branch path. In a fresh temp git repo, the command must create a
-// worktree for an existing local branch and emit a branchWorktreeCreatedMsg
-// with err == nil and a path under .worktrees/. A regression here means
-// selecting a bare branch silently does nothing.
-func TestEnsureBranchWorktreeCmdSuccess(t *testing.T) {
+// TestTypedNameRegisteredReuseLaunchesWithNoCreationLine checks the other half
+// of the same contract: a typed name that is a true registered worktree runs
+// the plan's Ensure as its idempotent no-op and launches, silent — no creation
+// line (the binding/announcement rule is unchanged: only a pick that owes a
+// worktree announces one) and no question.
+func TestTypedNameRegisteredReuseLaunchesWithNoCreationLine(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	linked := linkedWorktree(t, root)
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: root, agent: "claude", newInput: newInputModel(80)}
+	m.newInput.SetValue("feature")
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	marker := filepath.Join(t.TempDir(), "ran")
+	stderr := answerOnStdio(t, "")
+	agent := exec.Command("sh", "-c", "touch '"+marker+"'")
+	agent.Dir = linked
+	msg := runAndWaitCmd(agent, "claude", config.Model{}, m.gateFor())()
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+		t.Fatalf("msg = %#v; a registered worktree is reused, not refused", msg)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the agent did not launch in the reused worktree: %v", err)
+	}
+	if got := stderr(); strings.Contains(got, "creating") {
+		t.Errorf("gate printed %q; a true reuse announces no creation", got)
+	}
+}
+
+// TestDeclinedConfirmAfterATypedNameLeavesNothing checks the deferral holds
+// through a decline: a typed name the one question declines leaves no branch,
+// no directory and no worktree registration — the confirm is the only thing
+// that may make them. It matters because the prompt used to create first and
+// never ask, so any later "no" had already spent the repository's state.
+func TestDeclinedConfirmAfterATypedNameLeavesNothing(t *testing.T) {
+	t.Cleanup(releaseRootClaim)
 	dir := t.TempDir()
 	gitInit(t, dir)
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, agent: "claude", newInput: newInputModel(80)}
+	m.newInput.SetValue("fresh")
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.creation == nil {
+		t.Fatal("no creation bound for the typed name")
+	}
+	tg, err := m.launchTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A holder forces the one question; "n" declines it.
+	tg.Holders = []sessionclaim.Claim{{PID: 4242, Started: time.Now().Unix(), Path: dir, Branch: "main", Agent: "codex"}}
+	answerOnStdio(t, "n")
+	if ok, gerr := m.launchGate(&tg, true); ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); want a quiet no", ok, gerr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".worktrees", "fresh")); err == nil {
+		t.Error("worktree directory created after a declined confirm")
+	}
+	if out, err := exec.Command("git", "-C", dir, "show-ref", "--verify", "refs/heads/fresh").Output(); err == nil {
+		t.Errorf("branch ref created after a declined confirm: %s", out)
+	}
+	out, _ := exec.Command("git", "-C", dir, "worktree", "list", "--porcelain").Output()
+	if strings.Contains(string(out), "fresh") {
+		t.Errorf("worktree registered after a declined confirm:\n%s", out)
+	}
+}
 
-	// Create a feature branch without checking it out, so EnsureForBranch
-	// takes the local-branch path and git worktree add can check it out.
-	if out, err := exec.Command("git", "-C", dir, "branch", "feature").CombinedOutput(); err != nil {
-		t.Fatalf("git branch feature: %v\n%s", err, out)
+// TestTypedNameGitErrorStaysOnThePrompt asserts a name git would reject is
+// refused inline at the prompt, before any launch or creation is bound:
+// worktree.Resolve pre-rejects what Ensure would reject, so the person sees
+// the error where they can fix it. The traversal name flattens to a harmless
+// directory name and git rejects the branch name itself.
+func TestTypedNameGitErrorStaysOnThePrompt(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, newInput: newInputModel(80)}
+	m.newInput.SetValue("../evil")
+	got, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.newError == "" {
+		t.Error("newError = empty, want the git error surfaced at the prompt")
 	}
+	if got.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree (stays on error)", got.phase)
+	}
+	if got.creation != nil {
+		t.Errorf("creation = %+v, want nil for a refused name", got.creation)
+	}
+	if cmd != nil {
+		t.Error("a command was dispatched despite the error")
+	}
+}
 
-	cmd := ensureBranchWorktreeCmd(dir, "feature")
-	msg := cmd()
-	got, ok := msg.(branchWorktreeCreatedMsg)
-	if !ok {
-		t.Fatalf("cmd returned %T, want branchWorktreeCreatedMsg", msg)
+// typedCreation resolves name the way the prompt's Enter does and wraps the
+// plan in the creation the commit point ensures, so the record tests drive
+// exactly the production object.
+func typedCreation(t *testing.T, dir, name string) *launchCreation {
+	t.Helper()
+	plan, err := worktree.Resolve(dir, name)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got.err != nil {
-		t.Fatalf("err = %v, want nil", got.err)
-	}
-	if got.branch != "feature" {
-		t.Errorf("branch = %q, want feature", got.branch)
-	}
-	wantPath := filepath.Join(dir, ".worktrees", "feature")
-	if got.path != wantPath {
-		t.Errorf("path = %q, want %q", got.path, wantPath)
-	}
-	if _, err := os.Stat(wantPath); err != nil {
-		t.Errorf("worktree not created at %q: %v", wantPath, err)
-	}
+	return &launchCreation{repoRoot: dir, name: name, plan: plan}
 }
 
 // gitInit is a test helper that creates a fresh git repo in dir.
@@ -235,22 +343,25 @@ func gitInit(t *testing.T, dir string) {
 }
 
 // TestPickerCreationRoutesRecordOnlyACreatedBranch checks the exit prompt's
-// source of truth on the picker: a typed new name records the branch it made,
-// while a typed existing name, an existing worktree and a bare-branch row
-// (EnsureForBranch, history this launch did not make) record nothing.
+// source of truth at the commit point (launchCreation.ensure): only a branch
+// this launch creates is recorded. A typed new name records the branch it
+// made; a typed existing name (a worktree for an existing branch), a reused
+// worktree and a bare-branch row's owed creation are history this launch did
+// not make, and record nothing.
 func TestPickerCreationRoutesRecordOnlyACreatedBranch(t *testing.T) {
 	t.Run("typed new name", func(t *testing.T) {
 		exitprompt.Reset()
 		t.Cleanup(exitprompt.Reset)
 		dir := t.TempDir()
 		gitInit(t, dir)
-		got, ok := ensureNewWorktreeCmd(dir, "fresh")().(newWorktreeCreatedMsg)
-		if !ok || got.err != nil {
-			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		c := typedCreation(t, dir, "fresh")
+		path, err := c.ensure()
+		if err != nil {
+			t.Fatal(err)
 		}
 		rec, ok := exitprompt.Recorded()
-		if !ok || rec.Path != got.path || rec.Branch != "fresh" || rec.Tip == "" {
-			t.Errorf("Recorded() = %+v, %v; want fresh at %s", rec, ok, got.path)
+		if !ok || rec.Path != path || rec.Branch != "fresh" || rec.Tip == "" {
+			t.Errorf("Recorded() = %+v, %v; want fresh at %s", rec, ok, path)
 		}
 	})
 	t.Run("typed existing branch", func(t *testing.T) {
@@ -261,8 +372,8 @@ func TestPickerCreationRoutesRecordOnlyACreatedBranch(t *testing.T) {
 		if out, err := exec.Command("git", "-C", dir, "branch", "topic").CombinedOutput(); err != nil {
 			t.Fatalf("git branch: %v\n%s", err, out)
 		}
-		if got, ok := ensureNewWorktreeCmd(dir, "topic")().(newWorktreeCreatedMsg); !ok || got.err != nil {
-			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		if _, err := typedCreation(t, dir, "topic").ensure(); err != nil {
+			t.Fatal(err)
 		}
 		if rec, ok := exitprompt.Recorded(); ok {
 			t.Errorf("Recorded() = %+v; want nothing for an existing branch", rec)
@@ -276,8 +387,8 @@ func TestPickerCreationRoutesRecordOnlyACreatedBranch(t *testing.T) {
 		if _, err := worktree.EnsureForName(dir, "again"); err != nil {
 			t.Fatal(err)
 		}
-		if got, ok := ensureNewWorktreeCmd(dir, "again")().(newWorktreeCreatedMsg); !ok || got.err != nil {
-			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		if _, err := typedCreation(t, dir, "again").ensure(); err != nil {
+			t.Fatal(err)
 		}
 		if rec, ok := exitprompt.Recorded(); ok {
 			t.Errorf("Recorded() = %+v; want nothing for a reused worktree", rec)
@@ -291,11 +402,74 @@ func TestPickerCreationRoutesRecordOnlyACreatedBranch(t *testing.T) {
 		if out, err := exec.Command("git", "-C", dir, "branch", "feature").CombinedOutput(); err != nil {
 			t.Fatalf("git branch: %v\n%s", err, out)
 		}
-		if got, ok := ensureBranchWorktreeCmd(dir, "feature")().(branchWorktreeCreatedMsg); !ok || got.err != nil {
-			t.Fatalf("msg = %+v, ok=%v", got, ok)
+		if _, err := typedCreation(t, dir, "feature").ensure(); err != nil {
+			t.Fatal(err)
 		}
 		if rec, ok := exitprompt.Recorded(); ok {
 			t.Errorf("Recorded() = %+v; want nothing for a bare-branch row", rec)
 		}
 	})
+}
+
+// TestTypedNameVanishedWorktreeRefusesNamingGitWorktreePrune checks the typed
+// name's twin of cmd/wt's -W refusal: a branch registered to a worktree whose
+// directory was deleted resolves to a reuse that creates nothing, so Enter
+// must refuse before any creation is bound (nothing may announce a creation
+// the commit point will not make) and name the fix — git worktree prune frees
+// the registration. The prompt keeps the person's input for a correction.
+func TestTypedNameVanishedWorktreeRefusesNamingGitWorktreePrune(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	held, err := worktree.EnsureForName(dir, "feat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(held); err != nil {
+		t.Fatal(err)
+	}
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, newInput: newInputModel(80)}
+	m.newInput.SetValue("feat")
+	got, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.creation != nil {
+		t.Errorf("creation = %+v, want none: the plan is a reuse and creates nothing", got.creation)
+	}
+	if got.newError == "" || !strings.Contains(got.newError, "git worktree prune") || !strings.Contains(got.newError, "gone") {
+		t.Errorf("newError = %q, want the vanished-worktree refusal naming git worktree prune", got.newError)
+	}
+	if got.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want to stay on the prompt", got.phase)
+	}
+}
+
+// TestTypedNameTrackingNameWithLocalBranchRefusesBeforeAnnouncing checks the
+// typed twin of cmd/wt's early tracking refusal: "origin/foo" with a local foo
+// held by no worktree must be refused at Enter — before any creation is bound,
+// because the commit point's addTrackingWorktree would refuse it after the
+// creation line already promised it. The prompt keeps the input for a
+// correction; the name is never reinterpreted as reusing local foo.
+func TestTypedNameTrackingNameWithLocalBranchRefusesBeforeAnnouncing(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("commit", "--allow-empty", "-m", "init")
+	git("remote", "add", "origin", filepath.Join(dir, "remote.git"))
+	git("update-ref", "refs/remotes/origin/foo", "HEAD")
+	git("branch", "foo")
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: dir, newInput: newInputModel(80)}
+	m.newInput.SetValue("origin/foo")
+	got, _ := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.creation != nil {
+		t.Errorf("creation = %+v, want none: the tracking creation would be refused at the commit point", got.creation)
+	}
+	if got.newError == "" || !strings.Contains(got.newError, `local branch "foo" already exists`) || !strings.Contains(got.newError, `cannot create from remote "origin/foo"`) {
+		t.Errorf("newError = %q, want the early local-branch conflict refusal", got.newError)
+	}
+	if got.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want to stay on the prompt", got.phase)
+	}
 }

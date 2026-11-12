@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // answerOnStdin makes os.Stdin a pipe that holds answer and ends, until the
@@ -54,61 +56,70 @@ func wantNothingCreated(t *testing.T, root, name string) {
 	}
 }
 
-// TestWorktreeFlagUnknownNameWithoutTerminalRefusesNamingNew checks -W with a
-// name that exists nowhere, and no terminal to ask on, refuses naming --new,
-// so a typo in a script cannot create a branch; nothing is created or claimed.
-func TestWorktreeFlagUnknownNameWithoutTerminalRefusesNamingNew(t *testing.T) {
+// setOriginDefault gives the repository at root an origin/HEAD naming main,
+// the one thing the launch warnings' drift rule needs to know the default
+// branch.
+func setOriginDefault(t *testing.T, root string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"update-ref", "refs/remotes/origin/main", "HEAD"},
+		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// TestWorktreeFlagUnknownNameWithoutTerminalCreatesAndSaysSo checks -W with a
+// name that exists nowhere creates the branch and worktree even with no
+// terminal, printing one informational line about the creation first and
+// nothing else. Why: creation is not gated on a question any more — a script
+// gets the worktree it named, and the line is what replaces the question
+// ("creates and says so"); no warnings means no question on any path.
+func TestWorktreeFlagUnknownNameWithoutTerminalCreatesAndSaysSo(t *testing.T) {
 	root := sharedRootRepo(t)
 	stubStdinTTY(t, false)
+	notes := captureNotes(t)
 	res := runPinnedLaunch(t, root, []string{"-W", "typo"})
-	if res.err == nil || !strings.Contains(res.err.Error(), "--new") {
-		t.Fatalf("err = %v; want a refusal naming --new", res.err)
+	want := physical(t, filepath.Join(root, ".worktrees", "typo"))
+	if res.err != nil || res.agentDir != want {
+		t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, want)
 	}
-	if res.agentDir != "" || fileExists(ownClaim(root)) {
-		t.Errorf("launched or claimed: agentDir=%q", res.agentDir)
+	if s := notes.String(); !strings.Contains(s, "creating branch typo and worktree") {
+		t.Errorf("notes = %q; want the creation line", s)
 	}
-	wantNothingCreated(t, root, "typo")
+	if strings.Contains(notes.String(), "continue?") {
+		t.Errorf("notes = %q; no warnings means no question", notes.String())
+	}
 }
 
-// TestWorktreeFlagUnknownNameAskedOnATerminal checks on a terminal the
-// question names the typed name and the base, no leaves nothing behind and
-// ends quietly, and y creates the branch and worktree and launches in it.
-func TestWorktreeFlagUnknownNameAskedOnATerminal(t *testing.T) {
-	t.Run("no", func(t *testing.T) {
-		root := sharedRootRepo(t)
-		stubStdinTTY(t, true)
-		answerOnStdin(t, "n")
-		notes := captureNotes(t)
-		res := runPinnedLaunch(t, root, []string{"-W", "typo"})
-		if res.err != nil {
-			t.Fatalf("err = %v; want nil", res.err)
-		}
-		if !strings.Contains(notes.String(), `no branch or worktree named "typo"; create it from main?`) {
-			t.Errorf("question = %q", notes.String())
-		}
-		if res.agentDir != "" || res.claimSeen || fileExists(ownClaim(root)) {
-			t.Errorf("launched or claimed: agentDir=%q", res.agentDir)
-		}
-		wantNothingCreated(t, root, "typo")
-	})
-	t.Run("yes", func(t *testing.T) {
-		root := sharedRootRepo(t)
-		stubStdinTTY(t, true)
-		answerOnStdin(t, "y")
-		captureNotes(t)
-		res := runPinnedLaunch(t, root, []string{"-W", "typo"})
-		want := physical(t, filepath.Join(root, ".worktrees", "typo"))
-		if res.err != nil || res.agentDir != want {
-			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, want)
-		}
-	})
-}
-
-// TestWorktreeFlagNewCreatesWithoutAsking checks --new is the answer already
-// given: with an unknown name and a terminal available it creates and
-// launches printing no question. Stdin is at end of input, so a question asked
+// TestWorktreeFlagUnknownNameDoesNotAskOnATerminal checks the terminal half:
+// an unknown name is created and launched with only the creation line — the
+// create-it question is gone. Stdin is at end of input, so a question asked
 // anyway would answer no and fail the launch check below, instead of reading
 // the terminal this test runs from.
+func TestWorktreeFlagUnknownNameDoesNotAskOnATerminal(t *testing.T) {
+	root := sharedRootRepo(t)
+	stubStdinTTY(t, true)
+	answerOnStdin(t, "")
+	notes := captureNotes(t)
+	res := runPinnedLaunch(t, root, []string{"-W", "typo"})
+	want := physical(t, filepath.Join(root, ".worktrees", "typo"))
+	if res.err != nil || res.agentDir != want {
+		t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, want)
+	}
+	if s := notes.String(); !strings.Contains(s, "creating branch typo and worktree") || strings.Contains(s, "continue?") {
+		t.Errorf("notes = %q; want the creation line and no question", s)
+	}
+}
+
+// TestWorktreeFlagNewCreatesWithoutAsking checks --new is still accepted and
+// changes nothing: an unknown name is created and launched with the creation
+// line and no question, --new or not. Stdin is at end of input, so a question
+// asked anyway would answer no and fail the launch check below, instead of
+// reading the terminal this test runs from. Why: --new must not become a
+// usage error for scripts that still pass it.
 func TestWorktreeFlagNewCreatesWithoutAsking(t *testing.T) {
 	root := sharedRootRepo(t)
 	stubStdinTTY(t, true)
@@ -119,15 +130,16 @@ func TestWorktreeFlagNewCreatesWithoutAsking(t *testing.T) {
 	if res.err != nil || res.agentDir != want {
 		t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, want)
 	}
-	if strings.Contains(notes.String(), "[y/N]") {
-		t.Errorf("a question was printed: %q", notes.String())
+	if s := notes.String(); strings.Contains(s, "[y/N]") || strings.Contains(s, "continue?") {
+		t.Errorf("a question was printed: %q", s)
 	}
 }
 
 // TestWorktreeFlagExistingNamesNeverAsk checks the names that are not a
 // creation (an existing local branch with no worktree, an existing worktree)
-// launch with no question and no terminal, and the root's branch is still
-// refused with the --root remedy rather than the creation question.
+// launch with no question and no terminal. The root's branch is not in this
+// table any more: it launches in the root with the root warning
+// (TestWorktreeFlagNamingTheRootBranchLaunchesWithWarning).
 func TestWorktreeFlagExistingNamesNeverAsk(t *testing.T) {
 	t.Run("local branch without a worktree", func(t *testing.T) {
 		root := sharedRootRepo(t)
@@ -150,38 +162,20 @@ func TestWorktreeFlagExistingNamesNeverAsk(t *testing.T) {
 			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, linked)
 		}
 	})
-	t.Run("root branch", func(t *testing.T) {
-		root := sharedRootRepo(t)
-		stubStdinTTY(t, false)
-		res := runPinnedLaunch(t, root, []string{"-W", "main"})
-		if res.err == nil || !strings.Contains(res.err.Error(), "--root") || strings.Contains(res.err.Error(), "--new") {
-			t.Fatalf("err = %v; want the --root refusal", res.err)
-		}
-	})
 }
 
-// TestWorktreeFlagInvalidNameErrorsBeforeTheQuestion checks a name
-// EnsureForName rejects fails with that error on a terminal without being
-// asked first, so "y" is never the way to learn the name was bad.
-func TestWorktreeFlagInvalidNameErrorsBeforeTheQuestion(t *testing.T) {
+// TestWorktreeFlagInvalidNameErrorsBeforeTheCreationLine checks a name the
+// worktree plan rejects fails with that error before anything is announced,
+// so the creation line never promises a worktree git would not make. (The
+// default branch's remote form, origin/main, used to sit in this table; it is
+// a valid name now — internal/worktree no longer refuses the default branch —
+// and resolves like any other name.)
+func TestWorktreeFlagInvalidNameErrorsBeforeTheCreationLine(t *testing.T) {
 	for _, tc := range []struct{ name, want string }{
-		{name: "origin/main", want: "default branch"},
 		{name: strings.Repeat("a", 300), want: "too long"},
 	} {
 		t.Run(tc.name[:min(len(tc.name), 12)], func(t *testing.T) {
 			root := sharedRootRepo(t)
-			// origin/main is a default-branch form only when origin exists,
-			// has a remote-tracking main, and origin/HEAD names it: the
-			// refusal is gated on DefaultBranch, which reads origin/HEAD.
-			for _, args := range [][]string{
-				{"remote", "add", "origin", root},
-				{"update-ref", "refs/remotes/origin/main", "HEAD"},
-				{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
-			} {
-				if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
-					t.Fatalf("git %v: %v\n%s", args, err, out)
-				}
-			}
 			stubStdinTTY(t, true)
 			notes := captureNotes(t)
 			res := runPinnedLaunch(t, root, []string{"-W", tc.name})
@@ -191,8 +185,8 @@ func TestWorktreeFlagInvalidNameErrorsBeforeTheQuestion(t *testing.T) {
 			if !strings.Contains(res.err.Error(), tc.want) {
 				t.Errorf("err = %v; want it to say %q", res.err, tc.want)
 			}
-			if strings.Contains(res.err.Error(), "--new") || strings.Contains(notes.String(), "[y/N]") {
-				t.Errorf("asked before rejecting: err=%v notes=%q", res.err, notes.String())
+			if s := notes.String(); strings.Contains(s, "creating") || strings.Contains(s, "continue?") {
+				t.Errorf("announced before rejecting: err=%v notes=%q", res.err, s)
 			}
 		})
 	}
@@ -226,78 +220,19 @@ func TestNewFlagUsage(t *testing.T) {
 	})
 }
 
-// TestConfirmCreate checks the question itself: --new and y say yes, n is
-// errCancelled, and with no terminal and no --new the error names --new
-// without reading input.
-func TestConfirmCreate(t *testing.T) {
-	var out bytes.Buffer
-	if err := confirmCreate("x", "from main", true, failReader{t}, &out, false); err != nil || out.Len() != 0 {
-		t.Errorf("--new: err=%v out=%q", err, out.String())
-	}
-	if err := confirmCreate("x", "from main", false, strings.NewReader("y"), &out, true); err != nil {
-		t.Errorf("y: err=%v", err)
-	}
-	if err := confirmCreate("x", "from main", false, strings.NewReader("n"), &out, true); err != errCancelled {
-		t.Errorf("n: err=%v; want errCancelled", err)
-	}
-	err := confirmCreate("x", "from main", false, failReader{t}, &out, false)
-	if err == nil || !strings.Contains(err.Error(), `no branch or worktree named "x"; pass --new to create it`) {
-		t.Errorf("no terminal: err=%v", err)
-	}
-}
-
-// TestOtherCreationPathsDoNotAsk checks the shared-root "w" choice creates its
-// worktree with no creation question: it already is an explicit choice, and
-// its generated name could never be a typo. (The picker's new-worktree prompt
-// calls EnsureForName directly, which has no question to ask.)
-func TestOtherCreationPathsDoNotAsk(t *testing.T) {
-	root := sharedRootRepo(t)
-	liveOtherClaim(t, root, "codex")
-	var out bytes.Buffer
-	dir, release, err := confirmSharedRoot(root, "claude", false, strings.NewReader("w"), &out, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	release()
-	if !fileExists(dir) || strings.Contains(out.String(), "no branch or worktree named") {
-		t.Errorf("dir=%q out=%q; want a created worktree and no creation question", dir, out.String())
-	}
-}
-
-// TestConfirmCreateRendersTheStartPhrase checks the question joins "create
-// it" with worktree.WouldCreate's start phrase verbatim, so an unborn
-// repository is asked about "an empty orphan branch with no shared history" —
-// never "from <branch>", which git would not use there (it infers --orphan).
-func TestConfirmCreateRendersTheStartPhrase(t *testing.T) {
-	for _, c := range []struct{ start, want string }{
-		{start: "from main", want: `no branch or worktree named "x"; create it from main?`},
-		{start: "as an empty orphan branch with no shared history (this repository has no commits yet)",
-			want: `no branch or worktree named "x"; create it as an empty orphan branch with no shared history (this repository has no commits yet)?`},
-	} {
-		t.Run(c.start, func(t *testing.T) {
-			var out bytes.Buffer
-			if err := confirmCreate("x", c.start, false, strings.NewReader("n"), &out, true); err != errCancelled {
-				t.Fatalf("err = %v; want errCancelled", err)
-			}
-			if !strings.Contains(out.String(), c.want) {
-				t.Errorf("question = %q; want it to contain %q", out.String(), c.want)
-			}
-		})
-	}
-}
-
 // TestWorktreeFlagRecordsOnlyACreatedBranch checks the exit prompt's source of
 // truth: -W records the branch and worktree only when this launch created the
-// branch (a "y" or --new on an unknown name), and records nothing for an
-// existing worktree, an existing branch with no worktree, --root or --cwd,
-// because the prompt may only ever offer to remove what this launch made.
+// branch (an unknown name, --new or not), and records nothing for an existing
+// worktree, an existing branch with no worktree, --root or --cwd, or when the
+// one launch question is declined — because the prompt may only ever offer to
+// remove what this launch made.
 func TestWorktreeFlagRecordsOnlyACreatedBranch(t *testing.T) {
-	t.Run("asked and yes", func(t *testing.T) {
+	t.Run("created", func(t *testing.T) {
 		exitprompt.Reset()
 		t.Cleanup(exitprompt.Reset)
 		root := sharedRootRepo(t)
 		stubStdinTTY(t, true)
-		answerOnStdin(t, "y")
+		answerOnStdin(t, "")
 		captureNotes(t)
 		res := runPinnedLaunch(t, root, []string{"-W", "typo"})
 		if res.err != nil {
@@ -321,14 +256,29 @@ func TestWorktreeFlagRecordsOnlyACreatedBranch(t *testing.T) {
 			t.Errorf("Recorded() = %+v, %v; want branch fresh", got, ok)
 		}
 	})
-	t.Run("answered no", func(t *testing.T) {
+	t.Run("declined at the warning prompt", func(t *testing.T) {
 		exitprompt.Reset()
 		t.Cleanup(exitprompt.Reset)
 		root := sharedRootRepo(t)
+		// Root drift (root on topic, default main) is the warning that makes
+		// a creation ask; the trailing restore-root hint rides along.
+		setOriginDefault(t, root)
+		cgit(t, root, "switch", "-c", "topic")
 		stubStdinTTY(t, true)
-		answerOnStdin(t, "n")
-		captureNotes(t)
-		runPinnedLaunch(t, root, []string{"-W", "typo"})
+		answerOnStdin(t, "n\n")
+		notes := captureNotes(t)
+		res := runPinnedLaunch(t, root, []string{"-W", "typo"})
+		if res.err != nil {
+			t.Fatalf("err = %v; a no is a choice, not a failure", res.err)
+		}
+		s := notes.String()
+		if !strings.Contains(s, "continue? [Y/n]") || !strings.Contains(s, "restore-root") {
+			t.Errorf("notes = %q; want the question and the restore-root hint", s)
+		}
+		if res.agentDir != "" {
+			t.Errorf("the agent ran in %q despite the no", res.agentDir)
+		}
+		wantNothingCreated(t, root, "typo")
 		if got, ok := exitprompt.Recorded(); ok {
 			t.Errorf("Recorded() = %+v; want nothing after a no", got)
 		}
@@ -381,4 +331,90 @@ func TestWorktreeFlagRecordsOnlyACreatedBranch(t *testing.T) {
 			t.Errorf("Recorded() = %+v; want nothing for --cwd", got)
 		}
 	})
+}
+
+// TestDashWVanishedWorktreeRefusesNamingGitWorktreePrune checks a name whose
+// registered worktree directory is gone (git lists the entry, prunable) is
+// refused before anything is announced or asked. The plan is a reuse — it
+// creates nothing — yet the missing path used to route it to ForNew, which
+// announced `creating worktree <p> for branch <b>` and then created nothing:
+// the agent died at chdir. The refusal names the fix (git worktree prune frees
+// the registration; wt never prunes on its own).
+func TestDashWVanishedWorktreeRefusesNamingGitWorktreePrune(t *testing.T) {
+	root := sharedRootRepo(t)
+	linked := addLinkedWorktree(t, root, "feat")
+	if err := os.RemoveAll(linked); err != nil {
+		t.Fatal(err)
+	}
+	notes := captureNotes(t)
+	stubStdinTTY(t, false)
+	res := runPinnedLaunch(t, root, []string{"-W", "feat"})
+	if res.err == nil || !strings.Contains(res.err.Error(), "git worktree prune") || !strings.Contains(res.err.Error(), "gone") {
+		t.Fatalf("err = %v; want the vanished-worktree refusal naming git worktree prune", res.err)
+	}
+	if strings.Contains(notes.String(), "creating") {
+		t.Errorf("a creation was announced for a plan that creates nothing: %q", notes.String())
+	}
+}
+
+// TestDashWTrackingNameWithLocalBranchRefusesBeforeAnnouncing checks
+// `wt -W origin/foo` with a local foo (no worktree) is refused at the name —
+// before any creation line or question. The plan is a tracking creation whose
+// commit point would refuse `local branch "foo" already exists — cannot create
+// from remote "origin/foo"` only after `creating worktree <p> for branch foo
+// tracking origin/foo` has already promised it; the failure is knowable at
+// classify time. The name is not reinterpreted as reusing local foo (wt -W foo
+// covers that).
+func TestDashWTrackingNameWithLocalBranchRefusesBeforeAnnouncing(t *testing.T) {
+	root := sharedRootRepo(t)
+	// origin/foo exists as a remote-tracking ref and its local branch foo
+	// exists too, held by no worktree.
+	cgit(t, root, "remote", "add", "origin", filepath.Join(root, "remote.git"))
+	cgit(t, root, "update-ref", "refs/remotes/origin/foo", "HEAD")
+	cgit(t, root, "branch", "foo")
+	notes := captureNotes(t)
+	stubStdinTTY(t, false)
+	res := runPinnedLaunch(t, root, []string{"-W", "origin/foo"})
+	if res.err == nil || !strings.Contains(res.err.Error(), `local branch "foo" already exists`) || !strings.Contains(res.err.Error(), `cannot create from remote "origin/foo"`) {
+		t.Fatalf("err = %v; want the early local-branch conflict refusal", res.err)
+	}
+	if strings.Contains(notes.String(), "creating") {
+		t.Errorf("a creation was announced for a plan that will be refused: %q", notes.String())
+	}
+}
+
+// TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation checks the whole
+// read-failure contract on the -W path: a forced PrimaryOf failure (a real
+// git error, not "not a repository") surfaces as the one "wt: note:" line and
+// the launch proceeds — with the frozen creation line still announced, from
+// ForNew's partial Target, so the person reads what the commit point will
+// make. Warn but never prevent.
+func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
+	root := sharedRootRepo(t)
+	plan, err := worktree.Resolve(root, "brand-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force a real git failure at the repository: .git/config becomes a
+	// directory and git exits "unknown error occurred while reading the
+	// configuration files" — not its "not a git repository" refusal.
+	cfg := filepath.Join(root, ".git", "config")
+	if err := os.Remove(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tg, readErr := launchwarn.ForNew(root, plan)
+	notes := captureNotes(t)
+	if err := confirmLaunch(tg, readErr, strings.NewReader(""), osStderr, false); err != nil {
+		t.Fatal(err)
+	}
+	got := notes.String()
+	if !strings.Contains(got, "wt: note:") {
+		t.Errorf("output = %q, want the read-failure note", got)
+	}
+	if !strings.Contains(got, "creating branch brand-new and worktree "+plan.Path()) {
+		t.Errorf("output = %q, want the frozen creation line from the partial Target", got)
+	}
 }
