@@ -11,7 +11,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -295,18 +294,6 @@ func TestTypedNameGitErrorStaysOnThePrompt(t *testing.T) {
 	}
 }
 
-// typedCreation resolves name the way the prompt's Enter does and wraps the
-// plan in the creation the commit point ensures, so the record tests drive
-// exactly the production object.
-func typedCreation(t *testing.T, dir, name string) *launchCreation {
-	t.Helper()
-	plan, err := worktree.Resolve(dir, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &launchCreation{repoRoot: dir, name: name, plan: plan}
-}
-
 // gitInit is a test helper that creates a fresh git repo in dir.
 // Duplicated from internal/worktree/create_test.go to keep this
 // package's tests self-contained.
@@ -340,75 +327,6 @@ func gitInit(t *testing.T, dir string) {
 		// the test setup is broken, not the code under test.
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
-}
-
-// TestPickerCreationRoutesRecordOnlyACreatedBranch checks the exit prompt's
-// source of truth at the commit point (launchCreation.ensure): only a branch
-// this launch creates is recorded. A typed new name records the branch it
-// made; a typed existing name (a worktree for an existing branch), a reused
-// worktree and a bare-branch row's owed creation are history this launch did
-// not make, and record nothing.
-func TestPickerCreationRoutesRecordOnlyACreatedBranch(t *testing.T) {
-	t.Run("typed new name", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		dir := t.TempDir()
-		gitInit(t, dir)
-		c := typedCreation(t, dir, "fresh")
-		path, err := c.ensure()
-		if err != nil {
-			t.Fatal(err)
-		}
-		rec, ok := exitprompt.Recorded()
-		if !ok || rec.Path != path || rec.Branch != "fresh" || rec.Tip == "" {
-			t.Errorf("Recorded() = %+v, %v; want fresh at %s", rec, ok, path)
-		}
-	})
-	t.Run("typed existing branch", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		dir := t.TempDir()
-		gitInit(t, dir)
-		if out, err := exec.Command("git", "-C", dir, "branch", "topic").CombinedOutput(); err != nil {
-			t.Fatalf("git branch: %v\n%s", err, out)
-		}
-		if _, err := typedCreation(t, dir, "topic").ensure(); err != nil {
-			t.Fatal(err)
-		}
-		if rec, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing for an existing branch", rec)
-		}
-	})
-	t.Run("typed existing worktree", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		dir := t.TempDir()
-		gitInit(t, dir)
-		if _, err := worktree.EnsureForName(dir, "again"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := typedCreation(t, dir, "again").ensure(); err != nil {
-			t.Fatal(err)
-		}
-		if rec, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing for a reused worktree", rec)
-		}
-	})
-	t.Run("bare branch row", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		dir := t.TempDir()
-		gitInit(t, dir)
-		if out, err := exec.Command("git", "-C", dir, "branch", "feature").CombinedOutput(); err != nil {
-			t.Fatalf("git branch: %v\n%s", err, out)
-		}
-		if _, err := typedCreation(t, dir, "feature").ensure(); err != nil {
-			t.Fatal(err)
-		}
-		if rec, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing for a bare-branch row", rec)
-		}
-	})
 }
 
 // TestTypedNameVanishedWorktreeRefusesNamingGitWorktreePrune checks the typed

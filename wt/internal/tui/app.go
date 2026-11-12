@@ -1519,7 +1519,6 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 		// profile is not one priced registry model.
 		releaseSession()
 		runStopPhase(cfg)
-		offerExitPrompt(cfg)
 		if summary != "" {
 			fmt.Println("\n" + summary)
 		}
@@ -1536,7 +1535,6 @@ func printPendingSummaryAndSurvey(cfg *config.Config) {
 		if launched.m.ID != "" && !launched.m.Native {
 			runStopPhase(cfg)
 		}
-		offerExitPrompt(cfg)
 	}
 	if summary != "" {
 		// Leading "\n" guards against the agent's last byte being

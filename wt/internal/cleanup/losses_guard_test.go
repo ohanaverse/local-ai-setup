@@ -58,10 +58,8 @@ var lossSites = map[string]lossCounts{
 	"internal/removal/preview.go#ItemPreview.confirm": {seal: 1},
 	"internal/removal/types.go#sealOf":                {seal: 1},
 
-	// Deliberately raw: the exit prompt never offers a row that would lose
-	// anything, and rescue must still see (and could rescue again) a
+	// Deliberately raw: rescue must still see (and could rescue again) a
 	// preserved original's commits.
-	"internal/exitprompt/exitprompt.go#Eligible":    {raw: 1},
 	"internal/rescue/preflight.go#Engine.Preflight": {raw: 8},
 	"internal/rescue/offer.go#Offered":              {raw: 4},
 
@@ -242,7 +240,7 @@ func compareLossSites(got, want map[string]lossCounts) []string {
 // rescued original's raw Losses still count the commits its record keeps; a
 // consumer that reads them raw by mistake would refuse or mis-warn about a
 // preserved original, and one that reads the view where raw is meant (rescue,
-// the exit prompt, git's --force) would offer or force what it must not. A
+// git's --force) would offer or force what it must not. A
 // new read site fails here until its author labels it.
 func TestEveryLossesReadSiteIsLabelled(t *testing.T) {
 	root := filepath.Join("..", "..")

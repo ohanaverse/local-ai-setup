@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -220,117 +223,36 @@ func TestNewFlagUsage(t *testing.T) {
 	})
 }
 
-// TestWorktreeFlagRecordsOnlyACreatedBranch checks the exit prompt's source of
-// truth: -W records the branch and worktree only when this launch created the
-// branch (an unknown name, --new or not), and records nothing for an existing
-// worktree, an existing branch with no worktree, --root or --cwd, or when the
-// one launch question is declined — because the prompt may only ever offer to
-// remove what this launch made.
-func TestWorktreeFlagRecordsOnlyACreatedBranch(t *testing.T) {
-	t.Run("created", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		root := sharedRootRepo(t)
-		stubStdinTTY(t, true)
-		answerOnStdin(t, "")
-		captureNotes(t)
-		res := runPinnedLaunch(t, root, []string{"-W", "typo"})
-		if res.err != nil {
-			t.Fatal(res.err)
-		}
-		got, ok := exitprompt.Recorded()
-		if !ok || got.Branch != "typo" || physical(t, got.Path) != res.agentDir || got.Tip == "" {
-			t.Errorf("Recorded() = %+v, %v; want branch typo at %s", got, ok, res.agentDir)
-		}
-	})
-	t.Run("new flag", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		root := sharedRootRepo(t)
-		stubStdinTTY(t, false)
-		res := runPinnedLaunch(t, root, []string{"-W", "fresh", "--new"})
-		if res.err != nil {
-			t.Fatal(res.err)
-		}
-		if got, ok := exitprompt.Recorded(); !ok || got.Branch != "fresh" {
-			t.Errorf("Recorded() = %+v, %v; want branch fresh", got, ok)
-		}
-	})
-	t.Run("declined at the warning prompt", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		root := sharedRootRepo(t)
-		// Root drift (root on topic, default main) is the warning that makes
-		// a creation ask; the trailing restore-root hint rides along.
-		setOriginDefault(t, root)
-		cgit(t, root, "switch", "-c", "topic")
-		stubStdinTTY(t, true)
-		answerOnStdin(t, "n\n")
-		notes := captureNotes(t)
-		res := runPinnedLaunch(t, root, []string{"-W", "typo"})
-		if res.err != nil {
-			t.Fatalf("err = %v; a no is a choice, not a failure", res.err)
-		}
-		s := notes.String()
-		if !strings.Contains(s, "continue? [Y/n]") || !strings.Contains(s, "restore-root") {
-			t.Errorf("notes = %q; want the question and the restore-root hint", s)
-		}
-		if res.agentDir != "" {
-			t.Errorf("the agent ran in %q despite the no", res.agentDir)
-		}
-		wantNothingCreated(t, root, "typo")
-		if got, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing after a no", got)
-		}
-	})
-	t.Run("existing worktree", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		root := sharedRootRepo(t)
-		addLinkedWorktree(t, root, "feat")
-		stubStdinTTY(t, false)
-		runPinnedLaunch(t, root, []string{"-W", "feat"})
-		if got, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing for a reused worktree", got)
-		}
-	})
-	t.Run("existing branch without a worktree", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		root := sharedRootRepo(t)
-		if out, err := exec.Command("git", "-C", root, "branch", "topic").CombinedOutput(); err != nil {
-			t.Fatalf("branch: %v\n%s", err, out)
-		}
-		stubStdinTTY(t, false)
-		res := runPinnedLaunch(t, root, []string{"-W", "topic"})
-		if res.err != nil {
-			t.Fatal(res.err)
-		}
-		if got, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing: the branch's history was not made by this launch", got)
-		}
-	})
-	t.Run("root", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		root := sharedRootRepo(t)
-		stubStdinTTY(t, false)
-		runPinnedLaunch(t, root, []string{"--root"})
-		if got, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing for --root", got)
-		}
-	})
-	t.Run("cwd", func(t *testing.T) {
-		exitprompt.Reset()
-		t.Cleanup(exitprompt.Reset)
-		root := sharedRootRepo(t)
-		linked := addLinkedWorktree(t, root, "feat")
-		stubStdinTTY(t, false)
-		runPinnedLaunch(t, linked, []string{"--cwd"})
-		if got, ok := exitprompt.Recorded(); ok {
-			t.Errorf("Recorded() = %+v; want nothing for --cwd", got)
-		}
-	})
+// TestWorktreeFlagDeclinedAtTheWarningCreatesNothing checks a "no" at the one
+// launch question makes the -W creation nothing: no branch, no .worktrees/<name>
+// directory, and the agent never runs. The warning that raises the question here
+// is root drift (root on topic, default main), with the restore-root hint riding
+// along. Why: "warn but never prevent" turns on this — the question's no is a
+// choice, not a failure (nil error, exit 0), and a declined creation leaves no
+// trace for a later cleanup to find. This is the surviving half of the deleted
+// exit-prompt record test's "declined" case (which asserted the same
+// non-creation through the now-removed Recorded()).
+func TestWorktreeFlagDeclinedAtTheWarningCreatesNothing(t *testing.T) {
+	root := sharedRootRepo(t)
+	// Root drift (root on topic, default main) is the warning that makes
+	// a creation ask; the trailing restore-root hint rides along.
+	setOriginDefault(t, root)
+	cgit(t, root, "switch", "-c", "topic")
+	stubStdinTTY(t, true)
+	answerOnStdin(t, "n\n")
+	notes := captureNotes(t)
+	res := runPinnedLaunch(t, root, []string{"-W", "typo"})
+	if res.err != nil {
+		t.Fatalf("err = %v; a no is a choice, not a failure", res.err)
+	}
+	s := notes.String()
+	if !strings.Contains(s, "continue? [Y/n]") || !strings.Contains(s, "restore-root") {
+		t.Errorf("notes = %q; want the question and the restore-root hint", s)
+	}
+	if res.agentDir != "" {
+		t.Errorf("the agent ran in %q despite the no", res.agentDir)
+	}
+	wantNothingCreated(t, root, "typo")
 }
 
 // TestDashWVanishedWorktreeRefusesNamingGitWorktreePrune checks a name whose
@@ -416,5 +338,71 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 	}
 	if !strings.Contains(got, "creating branch brand-new and worktree "+plan.Path()) {
 		t.Errorf("output = %q, want the frozen creation line from the partial Target", got)
+	}
+}
+
+// TestTailsRunStopPickerThenSummary pins the run's post-exit tail: the stop
+// picker runs, then the summary line — with NO removal offer between them and
+// NO gh call. Cleanup is user-driven (`wt worktrees` / `wt remove`), so the
+// automatic exit-prompt removal offer and its gh PR gather at exit are gone.
+// Why: this is the regression guard for deleting the exit prompt — a re-added
+// offer step (an "offer" between picker and summary), a re-printed "Remove it
+// and its branch" question, or a re-added gh gather all fail here. It copies
+// the tail-order pattern of the removed TestExitPromptRunsAfterTheStopPicker…
+// but asserts the offer is ABSENT (no offer step), which is why it fails until
+// the exit prompt is deleted and passes after.
+func TestTailsRunStopPickerThenSummary(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// No gh at exit: the exit prompt's `gh pr list` gather is gone. Fail if any
+	// returns (the removal offer that made it has been deleted).
+	t.Cleanup(cleanup.StubPRListForTest(func(dir, branch string) ([]byte, error) {
+		t.Errorf("gh pr list ran in the run's tail (%s in %s)", branch, dir)
+		return []byte("[]"), nil
+	}))
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("`true` not available")
+	}
+	cases := []struct {
+		name string
+		run  func() error
+		want string // the tail's seam order: no "offer" step
+		sum  string // the summary line's stable prefix
+	}{
+		{"single model", func() error {
+			return runAgentCmd(exec.Command(truePath), "claude", config.Model{ID: "ollama/qwen3.8"}, &config.Config{}, nil)
+		}, "release,picker,notice", "wt: claude · ollama/qwen3.8 ·"},
+		{"slot profile", func() error {
+			row := catalog.Row{Model: config.Model{ID: "profile/p"}}
+			return runSlotAgentCmd(exec.Command(truePath), "claude", row, &config.Config{}, func() error { return nil })
+		}, "release,picker", "wt: claude · profile/p ·"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var order []string
+			pr, pp, pn := releaseSession, runStopPicker, emitPriceNotice
+			t.Cleanup(func() { releaseSession, runStopPicker, emitPriceNotice = pr, pp, pn })
+			releaseSession = func() { order = append(order, "release") }
+			runStopPicker = func(*config.Config) { order = append(order, "picker"); fmt.Fprint(os.Stdout, "PICKER-MARKER\n") }
+			emitPriceNotice = func(*config.Config) { order = append(order, "notice") }
+
+			var runErr error
+			s := captureFile(t, &os.Stdout, func() { runErr = c.run() })
+			if runErr != nil {
+				t.Fatalf("run: %v", runErr)
+			}
+			// The tail is release, stop picker, summary (then the notice): no
+			// offer step between the picker and the summary.
+			if got := strings.Join(order, ","); got != c.want {
+				t.Errorf("tail order = %s, want %s (no removal offer)", got, c.want)
+			}
+			p, sum := strings.Index(s, "PICKER-MARKER"), strings.Index(s, c.sum)
+			if p < 0 || sum < 0 || p > sum {
+				t.Errorf("stdout = %q, want the stop picker before the summary line", s)
+			}
+			if strings.Contains(s, "Remove it and its branch") || strings.Contains(s, "was created for this session") {
+				t.Errorf("stdout = %q, want no removal offer", s)
+			}
+		})
 	}
 }

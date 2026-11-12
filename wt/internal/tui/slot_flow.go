@@ -15,7 +15,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -451,7 +450,6 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		exitprompt.Launched(cmd.Dir)
 		duration, runErr := agents.RunAndCleanup(cmd, cleanup)
 		releaseRootClaim()
 		shown := config.Model{ID: row.Model.ID}
