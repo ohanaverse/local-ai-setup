@@ -389,7 +389,7 @@ passes in both modes; its stale xfail mark was removed from the matrix.
 
 **Workaround (kept for history):** Manual testing with natural prompts works fine:
 ```bash
-# at a repository root --cwd warns and proceeds; use --root to accept the root warning up front
+# at a repository root --cwd asks first (no terminal: refuses); use --root to launch there on purpose
 wt --cwd -A claude -M openrouter/z-ai/glm-5.3-flash -- -p "What is 2+2?"
 ```
 

@@ -2,6 +2,8 @@
 
 > **Status note (2026-11-07).** This is a research snapshot of 2026-11-04. wt has since gained `wt cleanup`, `wt remove` (including `--remote` for origin branches) and `wt rescue`, with JSON contracts and a removal engine that checks dirty state, merge proof and age (see [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md)). Where the text below says wt has no removal or cleanup, that gap is closed; the comparison of what each tool does is otherwise as of 2026-11-04.
 
+> **Status note (2026-11-11).** One more wt change after the snapshot: the launch-warnings flow replaced the shared-root `c`/`w`/`q` menu on the plain-terminal launch paths with named warnings and one default-yes `continue?` question (the picker keeps its shared-root screen), and replaced the create-this-branch question with a creation line announced before the creation. `cmd/wt/sharedroot.go` and `cmd/wt/rootgate.go` have become `cmd/wt/launchwarn.go`. The Multi-session coordination row and the Sources file list below keep their 2026-11-04 wording (the earlier flow, wt as read at `9b702c0f`); this note is the update.
+
 **Research date:** 2026-11-04
 **Scope:** worktree/branch management. wt's model/provider stack (registry, LiteLLM, slot profiles, smoke) appears only as *switch cost* — what replacing wt's worktree layer would put at risk.
 **Method:** read-only docs + source audit of both tools (worktrunk at `main` `3bf9166`, release v0.81.0-era; wt at `9b702c0f`), each report adversarially cross-checked against primary sources by a second reader prompted to refute. Neither tool was executed — see [Gaps](#gaps-not-verified). Evidence tiers: **verified** (adversarially confirmed), **reported** (grounded, single-source), **unverified** (static reading only).
@@ -83,7 +85,7 @@
 | Commit guard | none (local CI via `[[pre-merge]]` hooks) | `block-main-commit` pre-commit hook in `<git-common-dir>/hooks/` (covers all worktrees; preserves the user's hook; auto-installed) |
 | Dirty detection | remove/prune only | **none anywhere** |
 | Self-concurrency | trash-drain lock (one deleter per repo), CAS branch deletion (`git update-ref -d` expected-tip → `retained_raced`), TOCTOU revalidation after hooks, semaphore (32 git commands), atomic no-overwrite renames; **concurrent hooks documented as racy** | n/a (few mutating operations) |
-| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, a held-session warning with one default-yes question, and the picker's shared-root menu `c`/`w`/`q`); contract read by `repo-cleanup` ([session-claims.md](../contracts/session-claims.md)) |
+| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, shared-root menu `c`/`w`/`q`); contract read by `repo-cleanup` ([session-claims.md](../contracts/session-claims.md)) |
 
 ### Automation & extension
 
@@ -217,6 +219,6 @@ Method: seven-agent research fan-out (worktrunk docs, worktrunk source audit, wt
 
 - worktrunk: [repository](https://github.com/max-sixty/worktrunk), [README](https://github.com/max-sixty/worktrunk/blob/main/README.md), [docs site](https://worktrunk.dev), [CHANGELOG](https://github.com/max-sixty/worktrunk/blob/main/CHANGELOG.md), [releases](https://github.com/max-sixty/worktrunk/releases), [issue #4683](https://github.com/max-sixty/worktrunk/issues/4683), [issue #4624](https://github.com/max-sixty/worktrunk/issues/4624), [list JSON Schema](https://worktrunk.dev/schema/list-v2.json) (all verified live 2026-11-04)
 - worktrunk source audit: `src/cli/mod.rs`, `src/cli/step.rs`, `src/cli/hook.rs`, `src/config/expansion.rs`, `src/git/remove.rs`, `src/git/ref_deletion.rs`, `src/git/repository/integration.rs`, `src/commands/step/prune.rs`, `src/commands/worktree/switch.rs`, `src/output/handlers.rs` (clone at `3bf9166`)
-- wt: [wt/CLAUDE.md](../../wt/CLAUDE.md), [launch-flow.md](../../wt/docs/internals/launch-flow.md), [tui.md](../../wt/docs/internals/tui.md), [session-claims.md](../contracts/session-claims.md), `wt/cmd/wt/{main,commands,launchwarn}.go`, `wt/internal/worktree/{create,enumerate,remotes,prs}.go`, `wt/internal/{sessionclaim,rootclaim,guard}/`, `wt/internal/agents/agents.go`
+- wt: [wt/CLAUDE.md](../../wt/CLAUDE.md), [launch-flow.md](../../wt/docs/internals/launch-flow.md), [tui.md](../../wt/docs/internals/tui.md), [session-claims.md](../contracts/session-claims.md), `wt/cmd/wt/{main,commands,sharedroot}.go`, `wt/internal/worktree/{create,enumerate,remotes,prs}.go`, `wt/internal/{sessionclaim,rootclaim,guard}/`, `wt/internal/agents/agents.go`
 - ecosystem: `repo-cleanup` skill (`~/.claude/skills/repo-cleanup/SKILL.md`)
 - repo health (stars, contributors, issues): `gh api` / `gh issue list`, 2026-11-04
