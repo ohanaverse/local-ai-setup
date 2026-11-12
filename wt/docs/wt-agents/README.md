@@ -357,8 +357,9 @@ user does next (0 on quitting), since no agent status exists to report.
   (the default is no); `y` removes the worktree **and** its branch through the
   same engine as `wt remove`, so its rescan and hard blockers still apply, and
   anything that moved since is refused and kept (the engine's reason is
-  printed). A worktree qualifies only when the launch created the branch and
-  the worktree (a reused worktree, a new worktree on an existing branch,
+  printed). A worktree qualifies only when the launch created a brand-new
+  branch and its worktree (a reused worktree, a new worktree on an existing
+  branch, a worktree and local branch created for a remote-tracking name,
   `--cwd` and `--root` never do), the branch still sits at the commit it
   started on, and the engine finds no uncommitted or ignored file, no
   commit of its own and no running process in it. Anything else is kept silently,
