@@ -91,9 +91,11 @@
   no terminal, or declined); `docs/contracts/remove-result.*`. See
   `docs/wt-cleanup.md` (#520).
 - `--root` launches in the repository's primary checkout from anywhere and
-  asks no consent question (a root another live session holds is named in the
-  warnings and asked about by the one launch confirmation `wt: continue?
-  [Y/n]`; the shared-root menu and `--allow-shared-root` are gone). A `--cwd`
+  consents to the root warning alone — only that warning is then not shown;
+  root drift (`root is on <b>, not <d>`), a root another live session holds, and
+  any other warning still ask the one launch confirmation `wt: continue?
+  [Y/n]` on a terminal (the shared-root menu and `--allow-shared-root` are
+  gone). A `--cwd`
   or `wt smoke --cwd` launch standing in a repository root, and `-W <the
   root's branch>`, warn and proceed — on a terminal the one launch question
   `wt: continue? [Y/n]` (default yes) comes first; with no terminal the
@@ -131,9 +133,11 @@
   exit_prompt = "ask" | "keep"` in `config.toml`; no value removes without a
   keypress.
 - `-W <name>` uses or creates a branch and worktree for the name without a
-  question of its own: a name that does not exist is announced first
-  (`creating branch <b> and worktree <p>`, `creating worktree <p> for branch
-  <b>`, or `creating worktree <p> for branch <b> tracking <r>`) and made
+  question of its own: a name that creates anything is announced first by its
+  creation line, one shape per case: `creating branch <b> and worktree <p>` (a
+  new branch), `creating worktree <p> for branch <b>` (a worktree for an
+  existing branch), or `creating worktree <p> for branch <b> tracking <r>` (a
+  local branch tracking a remote-tracking name) — and made
   unless the one launch question `wt: continue? [Y/n]` (asked on a terminal
   when a warning applies, default yes) is declined — a decline exits 0 with
   nothing created — and with no terminal the warnings print and the creation

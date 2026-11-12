@@ -32,7 +32,7 @@ Any combination of `-W`, `-A`, `-M`, `-T`, `-F` is valid; missing flags come fro
 | `--others=keep\|stop` | Answer without asking when a start loads a model beside other providers' models (picker: `-M` row only). Unset: ask; with no TTY keep them and warn once (#412) |
 | `-T <tags>`, `--tags <tags>` | Filter models by tag (comma-delimited, OR) |
 | `-F <family>`, `--family <family>` | Filter models by family (comma-delimited, OR) |
-| `--root` | Launch in the repository's primary checkout, found from anywhere (a linked worktree or subdirectory too); the flag consents to the root warning, which is then not shown (a root another session holds still asks). Exclusive with `--cwd` and `-W`; refuses outside a repository and in a bare one |
+| `--root` | Launch in the repository's primary checkout, found from anywhere (a linked worktree or subdirectory too); the flag consents to the root warning, which is then not shown (any other warning still asks). Exclusive with `--cwd` and `-W`; refuses outside a repository and in a bare one |
 | `--cwd` | Launch in the current directory, repository or not. Standing in the repository root it warns and proceeds, terminal or not (a terminal with any warning is asked the one launch question first). Takes no value: a first argument before `--` naming an existing directory is refused (#392) unless `shell`'s first word is a bare name on `$PATH` |
 | `--yolo` | Prepend the agent's skip-permissions flag |
 | `--init` / `--check-guard` / `--no-guard` | Seed AGENTS.md + pointer files then exit / check / remove the `block-main-commit` guard |

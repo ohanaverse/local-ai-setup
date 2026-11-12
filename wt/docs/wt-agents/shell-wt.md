@@ -70,7 +70,7 @@ still refused): put it before the command.
 | `-W <name>`, `--worktree <name>` | Use the worktree for a branch, skip worktree picker; a name matching no worktree or branch is created and announced (one default-yes question first only when a warning also applies, on a terminal) |
 | `--new` | Accepted and ignored (kept for old scripts); valid only with `-W` |
 | `--cwd` | Run in the current directory (inside a git repository or not), skip worktree picker. Standing in a repository root it warns and proceeds (a terminal with any warning is asked one default-yes question first), so a script running `shell-wt --cwd -- npm test` at a root runs there |
-| `--root` | Run in the repository's primary checkout, from anywhere; accepts the root warning, though a root another session holds still asks. Exclusive with `--cwd` and `-W` |
+| `--root` | Run in the repository's primary checkout, from anywhere; accepts the root warning, though any other warning still asks. Exclusive with `--cwd` and `-W` |
 | `--init` | Seed agent instruction files (AGENTS.md) and exit |
 | `--no-guard` | Remove main-branch commit guard |
 | `--check-guard` | Report guard status |
