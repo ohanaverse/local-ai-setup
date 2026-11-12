@@ -121,6 +121,21 @@ func reasonsJSON(rs []Reason) []ReasonJSON {
 	return out
 }
 
+// blockersJSON renders a row's blockers for the wire. Held is a label, never
+// a blocker — it travels as the held reason, carrying the claim description —
+// so a held-coded entry (the legacy gate shape the held test seam still
+// builds) is not serialized. The array is always present, never null.
+func blockersJSON(rs []Reason) []ReasonJSON {
+	out := make([]ReasonJSON, 0, len(rs))
+	for _, r := range rs {
+		if r.Code == ReasonHeld {
+			continue
+		}
+		out = append(out, ReasonJSON{Code: r.Code, Detail: r.Detail})
+	}
+	return out
+}
+
 func timeJSON(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -178,7 +193,7 @@ func Encode(r Report) ([]byte, error) {
 			Kind: string(row.Kind), Name: row.Name, Path: row.Path, Branch: row.Branch,
 			Remote: row.Remote, Status: string(row.Status), Evidence: string(row.Evidence),
 			Unknown: row.Unknown,
-			Reasons: reasonsJSON(row.Reasons), Blockers: reasonsJSON(row.Blockers),
+			Reasons: reasonsJSON(row.Reasons), Blockers: blockersJSON(row.Blockers),
 			HardStop: row.HardStop,
 		}
 		if u := row.Upstream; u != nil {

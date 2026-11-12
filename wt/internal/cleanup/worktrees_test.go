@@ -108,8 +108,8 @@ func TestListWorktreesCurrentFromSubdirectory(t *testing.T) {
 // TestGatesBlockers sets up one hard blocker per case on a linked worktree
 // (or the primary) and checks CheckGates names exactly that code. Why: each
 // blocker is a way removal would destroy something live (the repo, the
-// shell's cwd, another session, a lock, a nested checkout, a half-done
-// rebase, a model artifact); a missing one is data loss.
+// shell's cwd, a lock, a nested checkout, a half-done rebase, a model
+// artifact); a missing one is data loss.
 func TestGatesBlockers(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -122,9 +122,6 @@ func TestGatesBlockers(t *testing.T) {
 		{"current", func(t *testing.T, f *fixture, wt string) (string, string, GateInputs) {
 			return wt, wt, GateInputs{}
 		}, "current"},
-		{"held", func(t *testing.T, f *fixture, wt string) (string, string, GateInputs) {
-			return wt, t.TempDir(), GateInputs{HeldBy: func(string) bool { return true }}
-		}, "held"},
 		{"locked", func(t *testing.T, f *fixture, wt string) (string, string, GateInputs) {
 			gitIn(t, f.Dir, "worktree", "lock", wt)
 			return wt, t.TempDir(), GateInputs{}
@@ -266,7 +263,7 @@ func TestGatesNoBlockersOnPlainWorktree(t *testing.T) {
 	f := newFixture(t)
 	wt := f.Worktree("topic")
 	w := factFor(t, f, t.TempDir(), wt)
-	g, err := CheckGates(Git{Dir: f.Dir}, w, GateInputs{Base: baseRef, HeldBy: func(string) bool { return false }})
+	g, err := CheckGates(Git{Dir: f.Dir}, w, GateInputs{Base: baseRef})
 	if err != nil {
 		t.Fatal(err)
 	}
