@@ -1029,6 +1029,46 @@ func TestRetryAfterASlotAbortDispatchesARunCommand(t *testing.T) {
 	}
 }
 
+// TestLaunchDoneKeepsTheCommitGuardLatched checks the two run-command outcomes
+// treat the commit-point guard differently on purpose: the slot applier's
+// abort is the one retry path and releases it
+// (TestRetryAfterASlotAbortDispatchesARunCommand), while the agent's own exit
+// quits and keeps the guard latched through teardown. It matters because the
+// run command's closure hands the terminal back (input restarts at
+// RestoreTerminal) just before launchDoneMsg is processed, so a KeyMsg already
+// queued is handled before the QuitMsg and would commit a duplicate run
+// command — a second agent, a second rotation/usage record — against a
+// released guard. What this pin observes: the guard's state after each
+// outcome, and that a selection fed during teardown dispatches nothing. What
+// it cannot observe: the queued-key race itself — that ordering is
+// bubbletea's, around tea.Quit, and is not reachable from an Update-level
+// test; the pin holds the precondition that makes the race harmless.
+func TestLaunchDoneKeepsTheCommitGuardLatched(t *testing.T) {
+	m, first, _ := pickRow(t, "/repo/.worktrees/feat")
+	if first == nil {
+		t.Fatal("the first Enter did not start a run command")
+	}
+	// The agent exited and the program is quitting: the guard must still be
+	// held when the quit is processed.
+	done, _ := updateMsg(m, launchDoneMsg{err: errMock("exit status 1")})
+	if !done.committed {
+		t.Error("launchDoneMsg released the guard; a key queued at RestoreTerminal can commit a duplicate run command before the QuitMsg")
+	}
+	// The observable consequence: a selection already queued when the quit is
+	// processed must dispatch no run command.
+	if _, queued := updateMsg(done, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo/.worktrees/feat"}}); queued != nil {
+		t.Error("a selection fed during teardown dispatched a run command; the quit path holds the guard")
+	}
+	// Contrast: the slot applier's abort returns to the model picker and
+	// releases the guard so the retry's Enter can commit
+	// (TestRetryAfterASlotAbortDispatchesARunCommand drives the dispatch).
+	m.models = compactModelList(t, nil)
+	abort, _ := updateMsg(m, slotAbortMsg{err: errMock("no slot-profile applier")})
+	if abort.committed {
+		t.Error("slotAbortMsg kept the guard; the return to the model picker must be able to commit a retry")
+	}
+}
+
 // TestReloadErrorVisibleAboveList asserts that a reload failure after
 // a successful create renders above the list. Before the fix the error
 // was stored in m.status, which View only shows while !m.ready, so the

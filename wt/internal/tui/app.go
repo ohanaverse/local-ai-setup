@@ -145,10 +145,15 @@ type model struct {
 
 	// committed is the commit point's in-flight guard: the first selection
 	// that reaches a run command takes it (commitLaunch) and every further
-	// Enter is ignored while that launch runs. It releases when the run
-	// command's outcome is processed (launchDoneMsg or slotAbortMsg), so a
-	// flow that deliberately returns to a picker — the slot applier's failure
-	// — can commit its retry instead of meeting a latch.
+	// Enter is ignored while that launch runs. It releases on exactly one
+	// outcome — the slot applier's failure (slotAbortMsg), whose return to
+	// the model picker is a retry path that must be able to commit again —
+	// and otherwise holds to process exit. The agent's own exit
+	// (launchDoneMsg) must NOT release it: the terminal is handed back just
+	// before that message is processed, so a key queued during teardown can
+	// still reach Update before the QuitMsg and would otherwise commit a
+	// duplicate run command (a second agent, a second rotation/usage
+	// record).
 	committed bool
 
 	// new-worktree prompt
@@ -340,9 +345,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			m.status = "agent exited: " + msg.err.Error()
 		}
 		m.agentErr = msg.err
-		// The run command's outcome is processed: the in-flight guard is
-		// spent with the launch it guarded.
-		m.committed = false
+		// The guard is deliberately NOT released here: the run command's
+		// closure hands the terminal back (input restarts at RestoreTerminal)
+		// just before this message is processed, so a KeyMsg already queued
+		// is handled before the QuitMsg and must not commit a duplicate run
+		// command. Held to process exit, the guard makes that race harmless.
+		// Only the retry path (slotAbortMsg) releases it.
 		return m, tea.Quit
 	case tea.KeyMsg:
 		// An in-flight start owns the keyboard: esc/q/ctrl+c cancel and a
@@ -735,9 +743,10 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 // to reach it takes the launch (committed) and gets the command; while
 // committed, every further call returns nil — a second Enter pressed before
 // the terminal is released must not start a second run command (with it a
-// second creation binding, a second gate and a second agent). The guard is
-// released where the run command's outcome is processed, so it guards one
-// launch in flight and never latches the session shut.
+// second creation binding, a second gate and a second agent). The guard
+// releases only where a retry must be able to commit (slotAbortMsg); on the
+// quit path it holds to process exit, so a key queued during teardown cannot
+// start a second launch.
 func (m model) commitLaunch(cmd tea.Cmd) (model, tea.Cmd) {
 	if m.committed {
 		return m, nil

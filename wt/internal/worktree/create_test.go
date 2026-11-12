@@ -401,9 +401,9 @@ func TestRemoteConflictsWithLocal(t *testing.T) {
 // existing worktree for a DIFFERENT branch. Full-name derivation flattens
 // slashes, so "feature/x" and "feature-x" share .worktrees/feature-x: typing
 // "feature/x" while feature-x's worktree sits there must error rather than
-// silently return the wrong worktree, so the TUI's pendingHighlight finds no
-// stale match and the user cannot land on the wrong branch believing they
-// created "feature/x".
+// silently return the wrong worktree — and the typed-name path surfaces that
+// collision through Resolve/Plan.Ensure before any create, so the user
+// cannot land on the wrong branch believing they created "feature/x".
 func TestEnsureForNameCollisionErrors(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
