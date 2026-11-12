@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -557,5 +558,27 @@ func TestPickRemoteRowCarriesPRIntoTheCreationTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(tg.Dir); err != nil {
 		t.Errorf("worktree %s not created after a yes: %v", tg.Dir, err)
+	}
+}
+
+// TestZeroTargetGateClaimsNothing checks a gate on the zero Target — a
+// Target read failure — writes no session claim. claimRoot(t.Dir) with an
+// empty Dir claims filepath.Abs(""): the process's working directory, whose
+// repository root then carries a false held warning for every other session
+// at a root this launch never named. confirmLaunch suppresses its info line
+// for the same empty Dir; the claim must be suppressed with it. The test
+// stands in a scratch repository on purpose: only there does the empty Dir
+// resolve to a claimable root.
+func TestZeroTargetGateClaimsNothing(t *testing.T) {
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	t.Chdir(root)
+	m := model{agent: "claude"}
+	tg := launchwarn.Target{}
+	if ok, err := m.launchGate(&tg, false); !ok || err != nil {
+		t.Fatalf("launchGate = (%v, %v); a zero Target proceeds", ok, err)
+	}
+	if claimExists(root) {
+		t.Error("the zero Target claimed the working directory's repository root")
 	}
 }
