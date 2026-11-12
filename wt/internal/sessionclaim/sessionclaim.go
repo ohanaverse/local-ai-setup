@@ -238,6 +238,39 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 	return release, others, err
 }
 
+// Hold claims c's path in commonDir/wt-sessions for this process without
+// asking about other sessions: every launch is a claim — the warning readers
+// must see all of them — and asking belongs to the callers. It first prunes
+// the stale claims (a dead pid or a reused one, per the contract's liveness
+// rule), so a killed wt's leftovers never pile up; the prune and the write run
+// under one lock, and the prune runs before the write so a leftover named by
+// c's own pid cannot delete the fresh claim. c is written atomically and
+// release removes only that file; calling release twice is safe. release is
+// never nil, so a caller may defer it even when err is set.
+func Hold(commonDir string, c Claim) (release func(), err error) {
+	release = func() {}
+	dir := filepath.Join(commonDir, "wt-sessions")
+	mine := filepath.Join(dir, strconv.Itoa(c.PID))
+	// The parent chain costs a `ps` per generation, so it is walked before the
+	// lock, not under it, and only when there is a claim file to compare with:
+	// a claim by this process or one of its parents is kept, never pruned.
+	var parents map[int]bool
+	if hasClaims(dir) {
+		parents = ancestors()
+	}
+	err = withLock(dir, func() error {
+		if _, err := scan(dir, c, parents, true); err != nil {
+			return err
+		}
+		if err := config.WriteFileAtomic(mine, c.encode(), 0o644); err != nil {
+			return err
+		}
+		release = func() { _ = os.Remove(mine) }
+		return nil
+	})
+	return release, err
+}
+
 // Others returns the live claims in commonDir/wt-sessions on c.Path other than
 // c's own, without taking the lock or changing anything: a caller that must
 // ask before it claims (the picker's screen) reads first and joins after.
