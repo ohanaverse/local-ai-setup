@@ -500,9 +500,9 @@ func TestHoldWritesClaimWithoutAsking(t *testing.T) {
 // TestHoldPrunesStaleBeforeWriting checks Hold deletes stale claims before it
 // writes its own: a dead pid's leftover and a live pid whose start time
 // differs by more than the 5-second tolerance (the OS reused the pid) must not
-// pile up, while a live claim survives. The leftover named by this claim's own
-// pid proves the order — pruned first and written after — because a prune
-// after the write would delete the fresh claim it just wrote.
+// pile up, while a live claim survives. The order — pruned first and written
+// after — is pinned by this claim's own pid being dead to the fake table: a
+// prune after the write would delete the fresh claim it just wrote.
 func TestHoldPrunesStaleBeforeWriting(t *testing.T) {
 	fakeProcs(t, map[int]int64{100: 1000, 102: 1100})
 	dir := t.TempDir()
