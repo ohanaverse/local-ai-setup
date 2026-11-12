@@ -633,7 +633,7 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
-	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; accepts the root warning, though a root another session holds still asks (default for a bare wt is a worktree)")
+	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; accepts the root warning, though any other warning still asks (default for a bare wt is a worktree)")
 	cmd.Flags().Bool("new", false, "With -W, accepted and ignored: a name that exists nowhere is created and said so either way (kept for old scripts)")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
