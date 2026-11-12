@@ -23,7 +23,6 @@ const (
 	CodeDetachedRoot        = "detached_root"
 	CodeAlreadyDefault      = "already_default"
 	CodeDefaultInWorktree   = "default_in_worktree"
-	CodeRootHeld            = "root_held"
 	CodeNoCommit            = "no_commit"
 	CodeReleaseRefused      = "release_refused"
 	CodeNoDefaultBranch     = "no_default_branch"
@@ -38,6 +37,14 @@ const (
 	CodeReleaseFailed = "release_failed"
 	CodeSwitchFailed  = "switch_failed"
 )
+
+// HeldWarningPrefix starts the one warnings line a held root rides the plan
+// on: the established held rendering after this prefix. Held is a label the
+// user acknowledges, never a refusal — the plan proceeds — and never a code:
+// the word before the colon is not in Codes and no outcome carries it (see
+// TestCodesCoverEveryCodeRootmoveEmits). The contract
+// (docs/contracts/restore-root-result.*) documents the line under `warnings`.
+const HeldWarningPrefix = "root_held: "
 
 // Engine moves one repository's root. Rescue is the root-mode rescue engine
 // (its G, Prior, In and Classify as `wt rescue` builds them); Rescue.Prior.Repo

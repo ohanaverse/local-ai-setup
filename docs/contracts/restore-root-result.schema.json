@@ -60,7 +60,6 @@
         "detached_root",
         "already_default",
         "default_in_worktree",
-        "root_held",
         "no_commit",
         "release_refused",
         "release_failed",
@@ -119,7 +118,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Sanitised lines. A line starting \"record_not_written: \" means the copy was verified but left no record."
+      "description": "Sanitised lines. A line starting \"record_not_written: \" means the copy was verified but left no record. A line starting \"root_held: \" names the live wt session(s) holding the root: held warns (the move proceeds) and is never a `code`."
     },
     "error": {
       "type": "object",

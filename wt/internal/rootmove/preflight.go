@@ -33,13 +33,14 @@ func refuse(code, format string, a ...any) *rescue.Refusal {
 // The order: the primary checkout (bare or unreadable: a read failure; no
 // commit yet: no_commit); detached_root; no_default_branch (none resolves, or
 // it exists only as origin/<d>); already_default; default_in_worktree;
-// root_held (a live wt session of another process in the root);
 // worktrees_not_ignored; hidden_index_flags (assume-unchanged or
 // skip-worktree, a sparse checkout included); rescue's root-mode Preflight
 // with its own refusals; ignored_collision (an ignored file the reset would
 // destroy, removal.RootIgnoredAtRisk, or one at a path the default branch
 // tracks, which the switch would overwrite). DefaultFF is then read and
-// never refuses.
+// never refuses. A live wt session of another process in the root refuses
+// nothing: it rides the plan as one HeldWarningPrefix warning and the plan
+// proceeds (Execute checks the claims again just before the root changes).
 func (e Engine) Preflight(dirName string) (*Plan, error) {
 	root := e.Rescue.Prior.Repo
 	if root == "" {
@@ -97,10 +98,14 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Held is a label on the plan (one HeldWarningPrefix warning naming the
+	// holder), never a refusal: the move proceeds and the user decides. The
+	// line is the established held rendering after the prefix.
+	var heldWarn string
 	if held, err := e.heldBy(common, root); err != nil {
 		return nil, err
 	} else if held != "" {
-		return nil, refuse(CodeRootHeld, "another wt session is running in the root: %s; end it first (Execute checks again just before the root changes)", held)
+		heldWarn = HeldWarningPrefix + fmt.Sprintf("another wt session is running in the root: %s; end it first (Execute checks again just before the root changes)", held)
 	}
 
 	switch o, err := rg.Run("check-ignore", "-q", ".worktrees/"); {
@@ -143,6 +148,10 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 			cleanup.OneLine(hit), cleanup.OneLine(def))
 	}
 
+	warnings := slices.Clone(rp.Warnings)
+	if heldWarn != "" {
+		warnings = append(warnings, heldWarn)
+	}
 	ff, note, benign := defaultFF(rg, def)
 	return &Plan{
 		Repo:      rp.Repo,
@@ -155,7 +164,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		FFNote:    note,
 		FFBenign:  benign,
 		Counts:    rp.Counts,
-		Warnings:  slices.Clone(rp.Warnings),
+		Warnings:  warnings,
 		rp:        rp,
 		common:    common,
 	}, nil
@@ -202,16 +211,27 @@ func resolveCommit(rg cleanup.Git, ref string) (id string, ok bool, err error) {
 
 // heldBy describes the live wt sessions of other processes whose claim is on
 // root ("" none). It reads the claims without the lock and prunes nothing; a
-// stale claim (its process gone or restarted) does not hold the root. A
-// claims directory that cannot be read is an error.
+// stale claim (its process gone or restarted) does not hold the root. The
+// match folds symlink spellings of one directory (cleanup.ResolvePath, the
+// HeldOn keying), never raw string equality: a claim on a linked worktree's
+// path is not a claim on the root. A claims directory that cannot be read is
+// an error.
 func (e Engine) heldBy(common, root string) (string, error) {
-	others, err := sessionclaim.Others(common, sessionclaim.Claim{PID: os.Getpid(), Path: cleanup.ResolvePath(root)})
+	holders, err := sessionclaim.Holders(common, sessionclaim.Claim{PID: os.Getpid()})
 	if err != nil {
 		return "", fmt.Errorf("could not read the root's session claims: %w", err)
 	}
+	key := cleanup.ResolvePath(root)
+	var mine []sessionclaim.Claim
+	for path, cs := range holders {
+		if cleanup.ResolvePath(path) == key {
+			mine = append(mine, cs...)
+		}
+	}
+	slices.SortFunc(mine, func(a, b sessionclaim.Claim) int { return a.PID - b.PID })
 	now := time.Now()
-	var names []string
-	for _, o := range others {
+	names := make([]string, 0, len(mine))
+	for _, o := range mine {
 		names = append(names, cleanup.OneLine(sessionclaim.Describe(o, now)))
 	}
 	return strings.Join(names, "; "), nil

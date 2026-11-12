@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
 )
 
@@ -378,12 +379,6 @@ func TestRestoreRootCmdExitCodes(t *testing.T) {
 			cgit(t, dir, "switch", "-q", "--detach")
 			return dir
 		}, rootmove.CodeDetachedRoot},
-		{"held", func(t *testing.T) string {
-			dir := cleanupRepo(t)
-			rootOnTopic(t, dir)
-			liveClaim(t, dir)
-			return dir
-		}, rootmove.CodeRootHeld},
 		{"default in a worktree", func(t *testing.T) string {
 			dir := cleanupRepo(t)
 			rootOnTopic(t, dir)
@@ -609,10 +604,11 @@ func TestRestoreRootCmdDryRunText(t *testing.T) {
 
 // TestRestoreRootCmdClaimWhilePromptHeld claims the root for another live
 // process while the confirmation is held. Prompted, Execute's start re-check
-// refuses root_held with nothing created; with --yes (no start re-check) the
-// claim is caught just before the release: failed root_held, the root still
-// on topic with its work and the new worktree kept with the copy. Why: the
-// claim is checked again exactly where a running agent would lose work.
+// refuses source_changed (the claim is a change since the check) with nothing
+// created; with --yes (no start re-check) the claim is caught just before the
+// release: failed release_refused, the root still on topic with its work and
+// the new worktree kept with the copy. Why: the claim is checked again exactly
+// where a running agent would lose work.
 func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 	t.Run("prompted", func(t *testing.T) {
 		a := restoreRootApp(t)
@@ -627,7 +623,7 @@ func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 		if exitOf(err) != 2 {
 			t.Fatalf("exit %d\n%s", exitOf(err), stdout)
 		}
-		if env := decodeRestoreRoot(t, stdout); env.Code != rootmove.CodeRootHeld || env.Created {
+		if env := decodeRestoreRoot(t, stdout); env.Code != rescue.CodeSourceChanged || env.Created {
 			t.Errorf("envelope = %+v", env)
 		}
 		if rootBranch(t, dir) != "topic" || repoWorld(t, dir) != world {
@@ -646,7 +642,7 @@ func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 			t.Fatalf("exit %d\n%s", exitOf(err), stdout)
 		}
 		env := decodeRestoreRoot(t, stdout)
-		if env.Outcome != "failed" || env.Code != rootmove.CodeRootHeld || !env.Created {
+		if env.Outcome != "failed" || env.Code != rootmove.CodeReleaseRefused || !env.Created {
 			t.Fatalf("envelope = %+v", env)
 		}
 		if rootBranch(t, dir) != "topic" {

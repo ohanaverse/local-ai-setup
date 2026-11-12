@@ -139,9 +139,10 @@ func (r *run) recovery(s step, rf *removal.ReleaseFailed) string {
 // branch. The steps, each re-checking the one before:
 //
 //  0. unless SkipStartRecheck: the root still equals Preflight's fingerprint
-//     (else refused source_changed) and no other live wt session holds it
-//     (else refused root_held); a re-check that cannot read is refused
-//     unreadable; nothing is created before this;
+//     (else refused source_changed) and no other live wt session holds it (a
+//     claim that appeared since the check is refused source_changed too); a
+//     re-check that cannot read is refused unreadable; nothing is created
+//     before this;
 //  1. worktree.CreateDetachedAt: the destination, detached at the branch tip;
 //  2. with uncommitted work, rescue's ExecuteInto carries and verifies it,
 //  3. and records it; the record is required (record_not_written otherwise);
@@ -176,7 +177,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 		if held, err := e.heldNow(rootGit, p); err != nil {
 			return r.refuse(rescue.CodeUnreadable, "%s; nothing was created", cleanup.Flatten(err.Error()))
 		} else if held != "" {
-			return r.refuse(CodeRootHeld, "another wt session started in the root since it was checked: %s; nothing was created", held)
+			return r.refuse(rescue.CodeSourceChanged, "another wt session started in the root since it was checked: %s; nothing was created", held)
 		}
 	}
 
@@ -231,7 +232,7 @@ func (e Engine) Execute(p *Plan) Outcome {
 	if held, err := e.heldNow(rootGit, p); err != nil {
 		return r.fail(stepBeforeReset, nil, CodeReleaseRefused, "%v, so the root was not released", err)
 	} else if held != "" {
-		return r.fail(stepBeforeReset, nil, CodeRootHeld, "another wt session started in the root: %s, so the root was not released", held)
+		return r.fail(stepBeforeReset, nil, CodeReleaseRefused, "another wt session started in the root: %s, so the root was not released", held)
 	}
 	rel := removal.RootRelease{
 		Root:               p.Repo,

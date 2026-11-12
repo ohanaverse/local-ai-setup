@@ -53,14 +53,16 @@ var Outcomes = []rescue.Status{rescue.StatusMoved, rescue.StatusWouldMove, rescu
 // Codes is every code an Outcome or Refusal can carry: rescue's, which reach
 // the caller unchanged, except `primary` (a root is always the primary
 // checkout) and `nothing_to_keep` (a clean root still moves), plus rootmove's
-// own. TestCodesCoverEveryCodeRootmoveEmits holds it to the sources.
+// own. A held root is none of these: it rides `warnings` as a
+// HeldWarningPrefix line, never a code.
+// TestCodesCoverEveryCodeRootmoveEmits holds it to the sources.
 var Codes = []string{
 	rescue.CodeNotWorktree, rescue.CodeGatesUnknown, rescue.CodeOperation, rescue.CodeUnmerged,
 	rescue.CodeHiddenIndex, rescue.CodeSubmodule, rescue.CodeStagedAndEdited, rescue.CodeIntentToAdd,
 	rescue.CodeNestedRepo, rescue.CodeSpecialFile, rescue.CodeTooLarge, rescue.CodeLineEndings,
 	rescue.CodeContentFilter, rescue.CodeNameUnavailable, rescue.CodeSourceChanged, rescue.CodeUnreadable,
 	rescue.CodeVerifyFailed, rescue.CodeCarryFailed, rescue.CodeCreateFailed, rescue.CodeSourceChangedMid,
-	CodeDetachedRoot, CodeAlreadyDefault, CodeDefaultInWorktree, CodeRootHeld, CodeNoCommit,
+	CodeDetachedRoot, CodeAlreadyDefault, CodeDefaultInWorktree, CodeNoCommit,
 	CodeReleaseRefused, CodeReleaseFailed, CodeSwitchFailed, CodeNoDefaultBranch, CodeIgnoredCollision,
 	CodeRecordNotWritten, CodeWorktreesNotIgnored,
 }

@@ -477,7 +477,7 @@ func TestExecuteRecoveryRows(t *testing.T) {
 			if !fired {
 				t.Fatal("BeforeRelease hook did not fire")
 			}
-			wantStatus(t, o, rescue.StatusFailed, CodeRootHeld)
+			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
 			wantReason(t, o, "nothing was reset or removed", p.DestPath)
 			noReset(t, trace(), f.Dir)
 			if after := f.rootCheckout(); after != before {
@@ -973,7 +973,7 @@ func TestExecuteStartRecheck(t *testing.T) {
 		f.liveOther()
 		before := f.rootState()
 		o := eng.Execute(p)
-		wantStatus(t, o, rescue.StatusRefused, CodeRootHeld)
+		wantStatus(t, o, rescue.StatusRefused, rescue.CodeSourceChanged)
 		if after := f.rootState(); after != before || o.Created {
 			t.Errorf("Execute changed the repository (Created %v)", o.Created)
 		}
@@ -985,7 +985,7 @@ func TestExecuteStartRecheck(t *testing.T) {
 		before := f.rootCheckout()
 		trace := traceGit(t)
 		o := eng.Execute(p)
-		wantStatus(t, o, rescue.StatusFailed, CodeRootHeld)
+		wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
 		noReset(t, trace(), f.Dir)
 		if after := f.rootCheckout(); after != before {
 			t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
