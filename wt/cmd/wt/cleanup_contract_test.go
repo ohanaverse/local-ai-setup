@@ -230,6 +230,12 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 		if _, has := r["evidence"]; !has {
 			seen["no-evidence"] = true
 		}
+		if _, has := r["hard_stop"]; has {
+			seen["hard_stop"] = true
+		}
+		if _, has := r["upstream"]; has {
+			seen["upstream"] = true
+		}
 		if r["evidence"] == string(cleanup.EvRescued) {
 			seen["rescued"] = true
 		}
@@ -245,7 +251,7 @@ func TestCleanupFixtureMatchesEnvelopeShape(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"rescued", "preserved", "status:proven", "status:less_sure", "status:unique_work", "status:in_use",
-		"kind:worktree", "kind:branch", "kind:remote", "unknown", "blockers", "no-evidence"} {
+		"kind:worktree", "kind:branch", "kind:remote", "unknown", "blockers", "no-evidence", "hard_stop", "upstream"} {
 		if !seen[want] {
 			t.Errorf("the fixture has no row for %q", want)
 		}
@@ -554,8 +560,14 @@ func TestCleanupSchemaEnumsCoverEveryCode(t *testing.T) {
 			got["reasons"] = append(got["reasons"], c.val)
 		case c.typ == "" && strings.HasPrefix(c.name, "Block"):
 			got["blockers"] = append(got["blockers"], c.val)
+			for _, k := range []cleanup.Kind{cleanup.KindWorktree, cleanup.KindBranch, cleanup.KindRemote} {
+				if cleanup.IsHardStop(c.val, k) && !slices.Contains(got["hard_stop"], c.val) {
+					got["hard_stop"] = append(got["hard_stop"], c.val)
+				}
+			}
 		}
 	}
+	got["upstream.status"], got["upstream.evidence"] = got["status"], got["evidence"]
 	schema := readJSONFile(t, cleanupSchema).(map[string]any)
 	enumOf := func(def string, path ...string) []string {
 		t.Helper()
@@ -568,6 +580,10 @@ func TestCleanupSchemaEnumsCoverEveryCode(t *testing.T) {
 		"reasons":  enumOf("row", "properties", "reasons", "items", "properties", "code"),
 		"blockers": enumOf("row", "properties", "blockers", "items", "properties", "code"),
 		"gh":       schemaEnum2(schema),
+
+		"hard_stop":         enumOf("row", "properties", "hard_stop"),
+		"upstream.status":   enumOf("row", "properties", "upstream", "properties", "status"),
+		"upstream.evidence": enumOf("row", "properties", "upstream", "properties", "evidence"),
 	}
 	checkEnumsEqual(t, got, want)
 }
@@ -661,4 +677,48 @@ func schemaEnum2(schema map[string]any) []string {
 		out = append(out, e.(string))
 	}
 	return out
+}
+
+// TestCleanupSampleFoldedRefsAreRowsToo: --json lists every ref as its own
+// row (Report.AllRows), so in the sample each local row's live `upstream`
+// must also appear as a `remote` row with the same name, remote and verdict.
+// Why: the sample is what consumers read to learn the format; an upstream
+// with no row would teach them a folded ref is missing from `rows`.
+func TestCleanupSampleFoldedRefsAreRowsToo(t *testing.T) {
+	raw, err := os.ReadFile(cleanupFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	remote := map[string]map[string]any{}
+	for _, r := range doc.Rows {
+		if r["kind"] == "remote" {
+			remote[r["remote"].(string)+"/"+r["name"].(string)] = r
+		}
+	}
+	checked := 0
+	for _, r := range doc.Rows {
+		up, ok := r["upstream"].(map[string]any)
+		if !ok || up["gone"] == true {
+			continue
+		}
+		checked++
+		key := up["remote"].(string) + "/" + up["name"].(string)
+		row, ok := remote[key]
+		if !ok {
+			t.Errorf("upstream %s of row %q has no remote row", key, r["name"])
+			continue
+		}
+		if row["status"] != up["status"] || row["evidence"] != up["evidence"] {
+			t.Errorf("remote row %s reads %v/%v, its upstream %v/%v", key, row["status"], row["evidence"], up["status"], up["evidence"])
+		}
+	}
+	if checked == 0 {
+		t.Fatal("the sample has no live upstream to check")
+	}
 }

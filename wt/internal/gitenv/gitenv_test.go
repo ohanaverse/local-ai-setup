@@ -157,7 +157,7 @@ func TestIsolateForTestStopsAtEveryTempRoot(t *testing.T) {
 // TestIsolateForTestSetsTheNetworkGuards checks that IsolateForTest sets
 // GIT_SSH_COMMAND to "false" and GIT_TERMINAL_PROMPT to "0", over whatever the
 // developer's shell exported. Without them a test whose fixture names a real
-// ssh remote (worktree.Enumerate fetches every remote) reaches the network
+// ssh remote (the picker's worktree.FetchRemotes fetches every remote) reaches the network
 // with the developer's ssh keys, and one that hits a credential question
 // waits on the terminal for an answer nobody gives.
 func TestIsolateForTestSetsTheNetworkGuards(t *testing.T) {

@@ -42,6 +42,15 @@ type GatherInputs struct {
 	// cross-talk through a package var.
 	PRList     func(dir, branch string) ([]byte, error) // `gh pr list --head <branch>` JSON
 	PRBaseList func(dir, base string) ([]byte, error)   // `gh pr list --base <base> --state open` JSON
+	// SkipPRs makes Gather make no gh call: the Snapshot comes back with
+	// PRsAsked false and PRsSkipped true, and every row reads "PR ?" and is
+	// never proven until FillPRs runs the lookups.
+	SkipPRs bool
+	// AllRemotes keeps every remote's branches in Remotes. Without it only
+	// origin's and those of remotes a local head's upstream names are kept
+	// (what `wt cleanup --json` and --plain list). The interactive lists set
+	// it, so a branch of a remote nothing tracks is still shown.
+	AllRemotes bool
 }
 
 // RefFact is one branch ref from for-each-ref.
@@ -125,10 +134,21 @@ type Snapshot struct {
 	// BasePRs is, for an origin branch that could be a deletion candidate, the
 	// live answer to "which open PRs (any head repository) target this
 	// branch?", by branch name. A miss is LookupUnknown.
-	BasePRs   map[string]PRResult
-	Merges    map[string]Tri // merged PR merge commit -> is it an ancestor of the base
-	Claims    []sessionclaim.Claim
-	ClaimsErr string
+	BasePRs map[string]PRResult
+	Merges  map[string]Tri // merged PR merge commit -> is it an ancestor of the base
+	// PRsAsked is true once the PR lookups ran (a full Gather, FillPRs). A
+	// row whose lookup is then unknown reads "PR ?" and is never proven.
+	PRsAsked bool
+	// PRsSkipped is true after Gather(SkipPRs) until FillPRs: no lookup has
+	// run, so every row's PR state is unknown and none is proven. A
+	// hand-built Snapshot has neither flag and keeps the older behavior.
+	PRsSkipped bool
+	// PRNotApplicable is true when the repository has no known own
+	// repository (origin is not on GitHub): there is no PR lookup to fail, so
+	// no row reads "PR ?", "PR lookup failed" or "needs gh".
+	PRNotApplicable bool
+	Claims          []sessionclaim.Claim
+	ClaimsErr       string
 	// Records are the well-formed rescue records; a failed listing leaves none.
 	Records []RescueRecord
 }
@@ -158,7 +178,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	// git too old to know the option echoes it back and is let through).
 	if o, err := g.Run("rev-parse", "--show-object-format"); err == nil && o.Code == 0 {
 		if f := strings.TrimSpace(o.Stdout); f != "" && f != "sha1" && !strings.HasPrefix(f, "-") {
-			return Snapshot{}, fmt.Errorf("cleanup: this repository uses the %s object format, which is not supported by wt cleanup and wt remove (sha1 only)", OneLine(f))
+			return Snapshot{}, fmt.Errorf("cleanup: this repository uses the %s object format, which is not supported by wt worktrees and wt remove (sha1 only)", OneLine(f))
 		}
 	}
 
@@ -192,7 +212,7 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		}
 	}
 
-	if err := s.readRefs(g); err != nil {
+	if err := s.readRefs(g, in.AllRemotes); err != nil {
 		return Snapshot{}, err
 	}
 
@@ -215,12 +235,40 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	if s.OwnRepo == "" {
 		s.OwnRepo = ownRepoFromURL(originURL(g))
 	}
+	s.PRNotApplicable = s.OwnRepo == ""
+	if in.SkipPRs {
+		// With no own repository (origin is not on GitHub) no PR can exist:
+		// PR state is not applicable, so nothing is pending.
+		s.PRsSkipped = s.OwnRepo != ""
+		return s, nil
+	}
+	s.askPRs(g, in)
+	return s, nil
+}
+
+// askPRs runs the gh lookups (PRs, the merge-commit checks, BasePRs) and
+// marks the snapshot as asked.
+func (s *Snapshot) askPRs(g Git, in GatherInputs) {
 	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel, in)
 	s.checkMerges(g)
 	if in.OriginRows {
 		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel, in)
 	}
-	return s, nil
+	// An unknown own repository (a non-GitHub origin) has no PRs to ask
+	// about: the state is "not applicable", never "unknown", so the floor
+	// does not apply and no row reads "PR ?".
+	s.PRsAsked, s.PRsSkipped = s.OwnRepo != "", false
+}
+
+// FillPRs runs the lookups a Gather with in.SkipPRs left out, so that
+// Gather(SkipPRs) then FillPRs equals a full Gather. in is the same
+// GatherInputs and g the Git Gather was given. A snapshot with no default
+// branch (nothing was looked up) is left as it is.
+func FillPRs(g Git, s *Snapshot, in GatherInputs) {
+	if s.NoDefault {
+		return
+	}
+	s.askPRs(g, in)
 }
 
 // baseCandidates are the names of the origin branches that could be offered
@@ -288,10 +336,11 @@ func qualifiedBase(b Base) string {
 }
 
 // readRefs fills Heads and Remotes from one for-each-ref. Symbolic refs
-// (origin/HEAD), non-commits and the default branch in any form are left out.
+// (origin/HEAD) and non-commits are left out; the default branch's head and
+// remote ref are kept (they are rows with the default_branch floor).
 // Remote refs are kept for origin and for every remote a local head's
-// upstream names.
-func (s *Snapshot) readRefs(g Git) error {
+// upstream names, or for every remote with all.
+func (s *Snapshot) readRefs(g Git, all bool) error {
 	args := []string{"for-each-ref", "--format=" + refFormat, "refs/heads", "refs/remotes"}
 	o, err := g.Run(args...)
 	if err != nil {
@@ -317,17 +366,13 @@ func (s *Snapshot) readRefs(g Git) error {
 			if r.Remote != "" && r.Remote != "." {
 				remotes[r.Remote] = true
 			}
-			if !s.isDefault(r.Name) {
-				s.Heads = append(s.Heads, r)
-			}
+			s.Heads = append(s.Heads, r)
 			continue
 		}
-		if !s.isDefault(r.Name) {
-			remoteRefs = append(remoteRefs, r)
-		}
+		remoteRefs = append(remoteRefs, r)
 	}
 	for _, r := range remoteRefs {
-		if remotes[r.Remote] {
+		if all || remotes[r.Remote] {
 			s.Remotes = append(s.Remotes, r)
 		}
 	}
@@ -405,7 +450,11 @@ func (s *Snapshot) prove(g Git) {
 	for i := range s.Heads {
 		h := &s.Heads[i]
 		p := run(h.Tip)
-		if (p.Verdict != Merged || treeProof(p.Evidence)) && !counted[h.Tip] {
+		// The local default when it is the base itself (Base.Fallback):
+		// its proof compares it with itself, so its own commits are counted
+		// too (classifier.selfBase reads them).
+		selfBase := s.Base.Fallback && h.Name == s.Base.Default
+		if (p.Verdict != Merged || treeProof(p.Evidence) || selfBase) && !counted[h.Tip] {
 			counted[h.Tip] = true
 			p.Unpushed, p.UnpushedErr = unpushed(g, h.Tip)
 			s.Proofs[h.Tip] = p
@@ -673,7 +722,9 @@ func originURL(g Git) string {
 var githubURL = regexp.MustCompile(`^(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$`)
 
 // ownRepoFromURL parses a github.com remote URL (https, ssh:// or scp form)
-// to owner/repo; "" for anything else, which leaves PR facts unknown.
+// to owner/repo; "" for anything else (an ssh host alias, an insteadOf short
+// form, GitHub Enterprise, a path), which makes PR state not applicable
+// (Snapshot.PRNotApplicable): no row is floored by it.
 func ownRepoFromURL(url string) string {
 	m := githubURL.FindStringSubmatch(url)
 	if m == nil {

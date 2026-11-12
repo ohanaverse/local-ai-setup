@@ -384,7 +384,10 @@ func (m *model) fitLists() {
 		m.fitTo(&m.models, m.modelFrames()...)
 	case phaseList:
 		if m.ready {
-			m.fitTo(&m.list, m.worktreeFrame())
+			// The row list draws its own frame inside the room the worktree
+			// frame (a reload error or a status line) leaves.
+			m.rows.width = m.width
+			m.rows.height = max(1, m.height-(lipgloss.Height(m.worktreeFrame()(""))-1))
 		}
 	case phaseReplaceConfirm:
 		frames := m.replaceFrames()

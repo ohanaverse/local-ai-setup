@@ -137,28 +137,14 @@ func TestEnumerateFindsBranch(t *testing.T) {
 	}
 }
 
-// TestEnumerateSkipsDefaultBranchWhenCheckedOut asserts that when the default
-// branch is already checked out in a worktree it does NOT appear as a bare
-// TypeBranch row. The bare duplicate was confusing: it has no worktree path,
-// so selecting it would launch the agent in wt's CWD rather than in a
-// worktree, and git worktree add cannot create a second worktree for a
-// branch that is already checked out.
-func TestEnumerateSkipsDefaultBranchWhenCheckedOut(t *testing.T) {
+// TestEnumerateListsACheckedOutDefaultBranchToo pins the end of the picker's
+// `!used[b]` fold: the default branch checked out in the root is listed as
+// the current worktree and as a local branch both. Enumerate shows what git
+// has; it no longer hides a branch because a worktree holds it (the list's
+// one-row-per-branch shape now comes from internal/cleanup).
+func TestEnumerateListsACheckedOutDefaultBranchToo(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
-
-	out, err := runGitCmd(dir, "symbolic-ref", "--short", "HEAD")
-	if err != nil {
-		t.Fatalf("detect default branch: %v\n%s", err, out)
-	}
-	defaultBranch := strings.TrimSpace(string(out))
-
-	if out, err := runGitCmd(dir, "update-ref", "refs/remotes/origin/"+defaultBranch, "refs/heads/"+defaultBranch); err != nil {
-		t.Fatalf("git update-ref origin/%s: %v\n%s", defaultBranch, err, out)
-	}
-	if out, err := runGitCmd(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+defaultBranch); err != nil {
-		t.Fatalf("git symbolic-ref origin/HEAD: %v\n%s", err, out)
-	}
 
 	groups, err := Enumerate(dir, dir)
 	if err != nil {
@@ -168,7 +154,7 @@ func TestEnumerateSkipsDefaultBranchWhenCheckedOut(t *testing.T) {
 	foundBare := false
 	for _, g := range groups {
 		for _, e := range g.Entries {
-			if e.Branch != defaultBranch {
+			if e.Branch != "main" {
 				continue
 			}
 			if e.Type == TypeCurrent {
@@ -179,11 +165,8 @@ func TestEnumerateSkipsDefaultBranchWhenCheckedOut(t *testing.T) {
 			}
 		}
 	}
-	if !foundCurrent {
-		t.Fatalf("expected current worktree on %q, got %+v", defaultBranch, groups)
-	}
-	if foundBare {
-		t.Fatalf("default branch %q must NOT appear as bare TypeBranch when checked out, got %+v", defaultBranch, groups)
+	if !foundCurrent || !foundBare {
+		t.Fatalf("current %v, bare %v: want main listed as both, got %+v", foundCurrent, foundBare, groups)
 	}
 }
 
@@ -224,30 +207,18 @@ func TestEnumerateIncludesDefaultBranchWhenNotCheckedOut(t *testing.T) {
 	}
 }
 
-// A branch checked out in a worktree must appear as TypeWorktree, not as a
-// bare TypeBranch. Duplicating it would clutter the picker and could lead
-// to the user trying to create a second worktree for the same branch.
+// TestEnumerateWorktreeAndBranch pins that a branch checked out in a linked
+// worktree is listed as that worktree and, since the `!used[b]` fold is gone,
+// as a local branch too: Enumerate lists every ref git has.
 func TestEnumerateWorktreeAndBranch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	// Create a worktree for a feature branch.
-	cmd := exec.Command("git", "checkout", "-b", "feature")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
+	if out, err := runGitCmd(dir, "branch", "feature"); err != nil {
+		t.Fatalf("git branch feature: %v\n%s", err, out)
 	}
-
-	// Switch back to default before adding worktree (can't add a branch
-	// that's already checked out in the current worktree).
-	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
-		t.Fatalf("git checkout main: %v\n%s", err, out)
-	}
-
 	wtDir := filepath.Join(dir, ".worktrees", "feature")
-	cmd = exec.Command("git", "worktree", "add", wtDir, "feature")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runGitCmd(dir, "worktree", "add", wtDir, "feature"); err != nil {
 		t.Fatalf("git worktree add: %v\n%s", err, out)
 	}
 
@@ -267,11 +238,8 @@ func TestEnumerateWorktreeAndBranch(t *testing.T) {
 			}
 		}
 	}
-	if !foundWorktree {
-		t.Fatalf("expected worktree entry for feature, got %+v", groups)
-	}
-	if foundBranch {
-		t.Fatalf("feature should not appear as bare branch when checked out in worktree, got %+v", groups)
+	if !foundWorktree || !foundBranch {
+		t.Fatalf("worktree %v, branch %v: want feature listed as both, got %+v", foundWorktree, foundBranch, groups)
 	}
 }
 
@@ -374,77 +342,56 @@ func TestRepoRootAt(t *testing.T) {
 	}
 }
 
-// This prevents duplicate entries like "feature" and "origin/feature" when
-// both resolve to the same worktree target. The local branch takes priority.
-func TestEnumerateRemoteBranchShadowedByLocal(t *testing.T) {
+// TestEnumerateListsARemoteBranchBesideItsLocal pins the end of the
+// `localSet` fold: origin/feature is listed even though a local feature
+// exists. Enumerate shows every ref; folding a remote into its local row is
+// internal/cleanup's job (Row.Upstream).
+func TestEnumerateListsARemoteBranchBesideItsLocal(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
-	// Set up a fake remote with a branch that also exists locally.
 	remoteDir := filepath.Join(dir, "remote.git")
 	if err := exec.Command("git", "init", "--bare", remoteDir).Run(); err != nil {
 		t.Fatal(err)
 	}
-
-	cmd := exec.Command("git", "remote", "add", "origin", remoteDir)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git remote add: %v\n%s", err, out)
-	}
-
-	// Create local branch "feature" and push it.
-	cmd = exec.Command("git", "checkout", "-b", "feature")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git checkout -b feature: %v\n%s", err, out)
-	}
-	cmd = exec.Command("git", "push", "-u", "origin", "feature")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git push: %v\n%s", err, out)
-	}
-
-	// Switch back to default.
-	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
-		t.Fatalf("git checkout main: %v\n%s", err, out)
-	}
-
-	// Fetch so origin/feature is known.
-	cmd = exec.Command("git", "fetch", "origin")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git fetch: %v\n%s", err, out)
+	for _, args := range [][]string{
+		{"remote", "add", "origin", remoteDir},
+		{"checkout", "-b", "feature"},
+		{"push", "-u", "origin", "feature"},
+		{"checkout", "main"},
+	} {
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
 	}
 
 	groups, err := Enumerate(dir, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	found := false
 	for _, g := range groups {
 		for _, e := range g.Entries {
-			if e.Branch == "origin/feature" {
-				t.Fatalf("origin/feature should be shadowed by local feature, got %+v", groups)
-			}
+			found = found || e.Branch == "origin/feature"
 		}
+	}
+	if !found {
+		t.Fatalf("origin/feature missing beside local feature: %+v", groups)
 	}
 }
 
-// TestEnumerateFetchesNewRemoteBranches verifies Enumerate refreshes
-// remote-tracking refs before listing branches, so a branch a teammate
-// pushed since the last manual `git fetch` still shows up in the picker's
-// remote-branches group without the user having to fetch by hand.
-func TestEnumerateFetchesNewRemoteBranches(t *testing.T) {
+// TestFetchRemotesFetchesNewRemoteBranches pins FetchRemotes, the one home
+// of the picker's fetch: a branch a teammate pushed since the last manual
+// fetch is a remote-tracking ref after it. Enumerate itself no longer
+// fetches (the picker calls FetchRemotes on open; Part 3 moves that to a
+// refresh key), so the branch is absent before the call.
+func TestFetchRemotesFetchesNewRemoteBranches(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
 	remoteDir := filepath.Join(dir, "remote.git")
-	// -b main pins the bare repo's HEAD to refs/heads/main regardless of the
-	// host's init.defaultBranch config; without it, a host defaulting to
-	// "master" leaves the bare repo's HEAD pointing at a branch that's never
-	// pushed, so the clone below checks out an unborn HEAD and the later
-	// `checkout -b teammate-feature` + push fails with "src refspec ... does
-	// not match any" instead of exercising the fetch behavior under test.
+	// -b main pins the bare repo's HEAD whatever init.defaultBranch says, so
+	// the clone below checks out main rather than an unborn HEAD.
 	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remoteDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare remote: %v\n%s", err, out)
 	}
@@ -455,9 +402,6 @@ func TestEnumerateFetchesNewRemoteBranches(t *testing.T) {
 		t.Fatalf("git push -u origin main: %v\n%s", err, out)
 	}
 
-	// Simulate a teammate pushing a new branch straight to the bare remote,
-	// via a separate clone — dir's local repo never runs `git fetch` and
-	// has no on-disk knowledge of this branch.
 	cloneDir := t.TempDir()
 	if out, err := exec.Command("git", "clone", remoteDir, cloneDir).CombinedOutput(); err != nil {
 		t.Fatalf("git clone: %v\n%s", err, out)
@@ -469,28 +413,35 @@ func TestEnumerateFetchesNewRemoteBranches(t *testing.T) {
 		t.Fatalf("git push teammate-feature: %v\n%s", err, out)
 	}
 
-	groups, err := Enumerate(dir, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	found := false
-	for _, g := range groups {
-		for _, e := range g.Entries {
-			if e.Branch == "origin/teammate-feature" {
-				found = true
+	has := func() bool {
+		groups, err := Enumerate(dir, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range groups {
+			for _, e := range g.Entries {
+				if e.Branch == "origin/teammate-feature" {
+					return true
+				}
 			}
 		}
+		return false
 	}
-	if !found {
-		t.Fatalf("expected origin/teammate-feature to appear after Enumerate fetched, got %+v", groups)
+	if has() {
+		t.Fatal("Enumerate fetched: origin/teammate-feature listed before FetchRemotes")
+	}
+	if err := FetchRemotes(dir); err != nil {
+		t.Fatalf("FetchRemotes: %v", err)
+	}
+	if !has() {
+		t.Fatal("origin/teammate-feature missing after FetchRemotes")
 	}
 }
 
-// TestEnumeratePrunesDeletedRemoteBranches verifies Enumerate's fetch runs
-// with --prune, so a remote-tracking ref for a branch deleted upstream is
-// removed from the picker instead of lingering as a stale, unselectable entry.
-func TestEnumeratePrunesDeletedRemoteBranches(t *testing.T) {
+// TestFetchRemotesPrunesDeletedRemoteBranches pins --prune: a
+// remote-tracking ref for a branch deleted upstream is gone after
+// FetchRemotes, instead of lingering as a stale row.
+func TestFetchRemotesPrunesDeletedRemoteBranches(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
@@ -498,66 +449,54 @@ func TestEnumeratePrunesDeletedRemoteBranches(t *testing.T) {
 	if out, err := exec.Command("git", "init", "--bare", remoteDir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare remote: %v\n%s", err, out)
 	}
-	if out, err := runGitCmd(dir, "remote", "add", "origin", remoteDir); err != nil {
-		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	for _, args := range [][]string{
+		{"remote", "add", "origin", remoteDir},
+		{"push", "-u", "origin", "main"},
+		{"checkout", "-b", "gone-soon"},
+		{"push", "origin", "gone-soon"},
+		{"checkout", "main"},
+		{"fetch", "origin"},
+		{"branch", "-d", "gone-soon"},
+	} {
+		if out, err := runGitCmd(dir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
 	}
-	if out, err := runGitCmd(dir, "push", "-u", "origin", "main"); err != nil {
-		t.Fatalf("git push -u origin main: %v\n%s", err, out)
-	}
-	if out, err := runGitCmd(dir, "checkout", "-b", "gone-soon"); err != nil {
-		t.Fatalf("git checkout -b gone-soon: %v\n%s", err, out)
-	}
-	if out, err := runGitCmd(dir, "push", "origin", "gone-soon"); err != nil {
-		t.Fatalf("git push gone-soon: %v\n%s", err, out)
-	}
-	if out, err := runGitCmd(dir, "checkout", "main"); err != nil {
-		t.Fatalf("git checkout main: %v\n%s", err, out)
-	}
-	if out, err := runGitCmd(dir, "fetch", "origin"); err != nil {
-		t.Fatalf("git fetch origin: %v\n%s", err, out)
-	}
-	if out, err := runGitCmd(dir, "branch", "-d", "gone-soon"); err != nil {
-		t.Fatalf("git branch -d gone-soon: %v\n%s", err, out)
-	}
-	// dir now has a stale refs/remotes/origin/gone-soon even though the
-	// branch is about to be deleted upstream too.
 	if out, err := exec.Command("git", "-C", remoteDir, "branch", "-D", "gone-soon").CombinedOutput(); err != nil {
 		t.Fatalf("git -C remote branch -D gone-soon: %v\n%s", err, out)
 	}
 
-	groups, err := Enumerate(dir, dir)
-	if err != nil {
-		t.Fatal(err)
+	if err := FetchRemotes(dir); err != nil {
+		t.Fatalf("FetchRemotes: %v", err)
 	}
-
-	for _, g := range groups {
-		for _, e := range g.Entries {
-			if e.Branch == "origin/gone-soon" {
-				t.Fatalf("origin/gone-soon should have been pruned, got %+v", groups)
-			}
-		}
+	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/gone-soon"); strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("origin/gone-soon should have been pruned: %s", out)
 	}
 }
 
-// TestEnumerateToleratesFetchFailure verifies a failing fetch (e.g. no
-// network, a dead/misconfigured remote) never blocks the picker — Enumerate
-// must still succeed using whatever local refs already exist, matching the
-// non-fatal, best-effort convention used elsewhere in this package (e.g.
-// DefaultBranch).
-func TestEnumerateToleratesFetchFailure(t *testing.T) {
+// TestFetchRemotesReportsFailureInOneLine pins FetchRemotes' error: a dead
+// remote is an error the caller may ignore (the picker does, silently), its
+// text one line, and Enumerate is unaffected by it.
+func TestFetchRemotesReportsFailureInOneLine(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
 
 	if out, err := runGitCmd(dir, "remote", "add", "origin", "/nonexistent/does-not-exist.git"); err != nil {
 		t.Fatalf("git remote add origin: %v\n%s", err, out)
 	}
-
+	err := FetchRemotes(dir)
+	if err == nil {
+		t.Fatal("FetchRemotes with a dead remote returned nil")
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Errorf("error is not one line: %q", err)
+	}
 	groups, err := Enumerate(dir, dir)
 	if err != nil {
-		t.Fatalf("Enumerate() error = %v, want nil (fetch failure must be non-fatal)", err)
+		t.Fatalf("Enumerate() error = %v", err)
 	}
 	if len(groups) != 3 {
-		t.Fatalf("got %d groups, want 3 even with a failing remote", len(groups))
+		t.Fatalf("got %d groups, want 3", len(groups))
 	}
 }
 
@@ -613,6 +552,17 @@ func runGitCmd(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	return cmd.CombinedOutput()
+}
+
+// gitRun is runGitCmd that fails the test on an error and returns the
+// trimmed output.
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := runGitCmd(dir, args...)
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // setupTestRepoWithManyBranches mirrors setupTestRepo but seeds enough
@@ -709,9 +659,9 @@ func TestEnumerateReturnsGroups(t *testing.T) {
 	}
 }
 
-// TestEnumerateAlwaysIncludesDefaultBranch verifies that the default branch
-// is always available in the picker: when checked out it appears as a
-// worktree entry, and when not checked out it appears as a bare branch row.
+// TestEnumerateAlwaysIncludesDefaultBranch pins that the default branch is
+// always listed: checked out in the root it appears as the worktree and, with
+// the folds gone, as a local branch too.
 func TestEnumerateAlwaysIncludesDefaultBranch(t *testing.T) {
 	dir := setupTestRepo(t)
 	groups, err := Enumerate(dir, dir)
@@ -731,43 +681,8 @@ func TestEnumerateAlwaysIncludesDefaultBranch(t *testing.T) {
 			}
 		}
 	}
-	// main is checked out in the current worktree, so it should appear as a
-	// worktree but NOT as a bare branch.
-	if foundAsBranch {
-		t.Error("default branch 'main' must not appear as bare branch when checked out in a worktree")
-	}
-	if !foundAsWorktree {
-		t.Error("default branch 'main' missing from worktrees group")
-	}
-}
-
-// TestSkipInPicker verifies the filtering predicate used by the picker.
-// Bare local default branches and bare remote default-branch forms must be
-// skipped; a checked-out worktree on the default branch, a non-default branch,
-// and a local branch whose name ends in "/main" must remain pickable.
-func TestSkipInPicker(t *testing.T) {
-	db := "main"
-	tests := []struct {
-		name     string
-		group    GroupKind
-		entry    Entry
-		wantSkip bool
-	}{
-		{"bare local default", GroupLocalBranches, Entry{Type: TypeBranch, Branch: "main", Path: ""}, true},
-		{"bare remote origin/default", GroupRemoteBranches, Entry{Type: TypeBranch, Branch: "origin/main", Path: ""}, true},
-		{"bare remote upstream/default", GroupRemoteBranches, Entry{Type: TypeBranch, Branch: "upstream/main", Path: ""}, true},
-		{"current worktree on default", GroupWorktrees, Entry{Type: TypeCurrent, Branch: "main", Path: "/repo"}, false},
-		{"worktree on default", GroupWorktrees, Entry{Type: TypeWorktree, Branch: "main", Path: "/repo/.worktrees/main"}, false},
-		{"non-default local branch", GroupLocalBranches, Entry{Type: TypeBranch, Branch: "feature", Path: ""}, false},
-		{"feature/main local branch", GroupLocalBranches, Entry{Type: TypeBranch, Branch: "feature/main", Path: ""}, false},
-		{"non-default remote branch", GroupRemoteBranches, Entry{Type: TypeBranch, Branch: "origin/dev", Path: ""}, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := SkipInPicker(tc.group, tc.entry, db); got != tc.wantSkip {
-				t.Errorf("SkipInPicker(%v, %+v, %q) = %v, want %v", tc.group, tc.entry, db, got, tc.wantSkip)
-			}
-		})
+	if !foundAsBranch || !foundAsWorktree {
+		t.Errorf("main as branch %v, as worktree %v: want both", foundAsBranch, foundAsWorktree)
 	}
 }
 

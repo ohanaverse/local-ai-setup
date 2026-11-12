@@ -48,7 +48,7 @@ func rescueCmd(a *app) *cobra.Command {
 			"are not copied (the count left behind is reported).\n\n" +
 			"The original is only read and is never changed, switched or removed. It is\n" +
 			"not removed either, but once its record exists a clean original (no staged,\n" +
-			"unstaged or untracked changes) reads removable in `wt cleanup`: the record\n" +
+			"unstaged or untracked changes) reads removable in `wt worktrees`: the record\n" +
 			"holds its commits. An original with uncommitted changes reads removable\n" +
 			"too, with --accept-loss (not --force), while its index and working tree are\n" +
 			"exactly what the record captured; any change that leaves either different\n" +
@@ -282,7 +282,7 @@ func printRescueText(w io.Writer, meta rescue.Meta, o rescue.Outcome) error {
 		if o.Record != nil {
 			fmt.Fprintf(&b, "    the original is untouched; with the record above, a clean one reads removable (`wt remove %s`), and one with uncommitted changes reads removable with --accept-loss while it still matches the record; ignored files, an open or unknown PR or a local base keep it below proven; anything not proven still needs the approvals it names\n", cleanup.OneLine(p.Source.Path))
 		} else {
-			fmt.Fprintf(&b, "    the original is untouched, but no record was written (see the warning above), so `wt cleanup` reads it as holding work only it has; removing it takes `wt remove %s` with the approvals it names\n", cleanup.OneLine(p.Source.Path))
+			fmt.Fprintf(&b, "    the original is untouched, but no record was written (see the warning above), so `wt worktrees` reads it as holding work only it has; removing it takes `wt remove %s` with the approvals it names\n", cleanup.OneLine(p.Source.Path))
 		}
 	}
 	if o.Status == rescue.StatusFailed && o.BranchKept && !o.Created {

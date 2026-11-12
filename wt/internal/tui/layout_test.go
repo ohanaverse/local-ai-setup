@@ -17,7 +17,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // layoutHeights and layoutWidths are the terminal sizes every layout test
@@ -581,12 +580,9 @@ func modelPhase(build func(t *testing.T, width, height int) model) sizedView {
 // terminal loses its top lines on a real screen, which is where each of them
 // puts its header; one wider than it loses its right edge.
 func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
-	entries := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-	}}}
 	worktreeList := func(mutate func(*model)) sizedView {
 		return modelPhase(func(t *testing.T, width, height int) model {
-			m, _ := updateMsg(model{width: width, height: height}, entriesLoadedMsg{groups: entries})
+			m, _ := updateMsg(model{width: width, height: height}, rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"})
 			mutate(&m)
 			return m
 		})
@@ -865,16 +861,14 @@ func TestDrawnFrameIsTheFrameTheListWasSizedFor(t *testing.T) {
 // one of them. A status some other path set while the load was in flight is
 // not the placeholder and must survive.
 func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-	}}}
+	loadedMsg := rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"}
 	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", &config.Config{})
 	fresh.width, fresh.height = 80, 24
 	if !strings.Contains(fresh.View(), "loading worktrees") {
 		t.Fatalf("before the load the view is %q, want the loading placeholder", fresh.View())
 	}
 
-	loaded, _ := updateMsg(fresh, entriesLoadedMsg{groups: groups})
+	loaded, _ := updateMsg(fresh, loadedMsg)
 	if loaded.status != "" {
 		t.Errorf("status after a successful load = %q, want it cleared", loaded.status)
 	}
@@ -884,12 +878,12 @@ func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
 
 	other := fresh
 	other.status = "config error: boom"
-	kept, _ := updateMsg(other, entriesLoadedMsg{groups: groups})
+	kept, _ := updateMsg(other, loadedMsg)
 	if kept.status != "config error: boom" {
 		t.Errorf("status = %q, want a status that is not the placeholder kept", kept.status)
 	}
 
-	failed, _ := updateMsg(fresh, entriesLoadedMsg{err: errors.New("not a git repo")})
+	failed, _ := updateMsg(fresh, rowsLoadedMsg{err: errors.New("not a git repo")})
 	if !strings.Contains(failed.status, "not a git repo") {
 		t.Errorf("status after a failed load = %q, want the error", failed.status)
 	}

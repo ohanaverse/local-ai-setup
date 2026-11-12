@@ -38,9 +38,10 @@ type lossCounts struct{ raw, effective, seal, write, unlabelled int }
 var lossSites = map[string]lossCounts{
 	// The classifier builds the raw value; the view is made from it.
 	"internal/cleanup/classify.go#classifier.worktree":  {write: 7},
-	"internal/cleanup/classify.go#classifier.branchRow": {write: 2},
+	"internal/cleanup/classify.go#classifier.branchRow": {write: 3},
 	"internal/cleanup/classify.go#Row.EffectiveLosses":  {raw: 1},
 	"internal/cleanup/present.go#LossLines":             {effective: 1},
+	"internal/cleanup/present.go#RowTags":               {effective: 1},
 
 	// The removal engine: approvals, the lapse check and the seal read the
 	// effective view; two gates read raw values the view never changes or

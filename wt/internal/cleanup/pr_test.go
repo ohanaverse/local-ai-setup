@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -440,5 +442,277 @@ func TestPRHookFallbackStillPoisoned(t *testing.T) {
 	}
 	if _, err := prBaseListFn(GatherInputs{})("", "topic"); !errors.Is(err, errGhUnderTest) {
 		t.Fatalf("prBaseListFn(zero Inputs) err = %v, want %v", err, errGhUnderTest)
+	}
+}
+
+// failGh makes every gh call fail, as with no gh or no network.
+func failGh(t *testing.T) {
+	t.Helper()
+	stubGh(t, func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") })
+	stubGhBase(t, func(string, string) ([]byte, error) { return nil, errors.New("gh: offline") })
+}
+
+func countingGh(t *testing.T) *int32 {
+	t.Helper()
+	var n int32
+	stubGh(t, func(string, string) ([]byte, error) { atomic.AddInt32(&n, 1); return []byte("[]"), nil })
+	stubGhBase(t, func(string, string) ([]byte, error) { atomic.AddInt32(&n, 1); return []byte("[]"), nil })
+	return &n
+}
+
+func gatherIn(f *fixture) GatherInputs {
+	return GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2, OriginRows: true}
+}
+
+// TestGatherSkipPRsMakesNoGhCall: the list must render from git state alone.
+func TestGatherSkipPRsMakesNoGhCall(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	f.Push("done")
+	n := countingGh(t)
+	in := gatherIn(f)
+	in.SkipPRs = true
+	s, err := Gather(Git{Dir: f.Dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *n != 0 {
+		t.Fatalf("Gather(SkipPRs) made %d gh calls", *n)
+	}
+	if s.PRsAsked {
+		t.Fatal("PRsAsked is true after a skipped Gather")
+	}
+}
+
+// TestFillPRsMatchesAFullGather: skip then fill equals one full Gather.
+func TestFillPRsMatchesAFullGather(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	f.Push("done")
+	f.Worktree("topic")
+	tip := f.git("rev-parse", "done")
+	mergedPRStub(t, "done", 5, tip, f.git("rev-parse", "main")) // Merges and BasePRs get exercised
+	full, err := Gather(Git{Dir: f.Dir}, gatherIn(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := gatherIn(f)
+	in.SkipPRs = true
+	s, err := Gather(Git{Dir: f.Dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	FillPRs(Git{Dir: f.Dir}, &s, in)
+	if !s.PRsAsked || s.PRsSkipped {
+		t.Fatalf("after FillPRs: PRsAsked %v PRsSkipped %v", s.PRsAsked, s.PRsSkipped)
+	}
+	if len(full.Merges) == 0 || len(full.BasePRs) == 0 {
+		t.Fatalf("fixture exercises no Merges/BasePRs: %+v %+v", full.Merges, full.BasePRs)
+	}
+	if !reflect.DeepEqual(s, full) {
+		t.Fatalf("filled snapshot differs from a full Gather:\n got  %+v\n want %+v", s, full)
+	}
+}
+
+// TestPRUnknownIsNeverProvenWhenAsked: git proves the content, gh is down:
+// less_sure with pr_unknown, tagged "PR ?" (Review Focus 2).
+func TestPRUnknownIsNeverProvenWhenAsked(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	failGh(t)
+	s := gather(t, f)
+	if !s.PRsAsked {
+		t.Fatal("a full Gather must set PRsAsked")
+	}
+	row := findRow(t, Classify(s, Options{Now: later()}), KindBranch, "done")
+	if row.Evidence == "" {
+		t.Fatalf("fixture has no git proof: %+v", row)
+	}
+	if row.Status == StatusProven || !row.PRUnknown || !hasReason(row, ReasonPRUnknown) {
+		t.Fatalf("row = %+v, want not proven, PRUnknown, pr_unknown", row)
+	}
+	if got := RowTags(row); len(got) != 1 || got[0].Text != "PR ?" {
+		t.Fatalf("tags %v", got)
+	}
+}
+
+func hasReason(r Row, code string) bool {
+	return slices.ContainsFunc(r.Reasons, func(x Reason) bool { return x.Code == code })
+}
+
+// TestPRUnknownAppliesToWorktreeBranchAndOriginRows covers a skipped
+// snapshot (nothing asked) and a failed one.
+func TestPRUnknownAppliesToWorktreeBranchAndOriginRows(t *testing.T) {
+	for _, mode := range []string{"skipped", "failed"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t)
+			f.Branch("bdone")
+			f.Branch("wdone")
+			f.git("worktree", "add", filepath.Join(filepath.Dir(f.Dir), "wdone"), "wdone")
+			f.Branch("odone")
+			f.Push("odone")
+			in := gatherIn(f)
+			if mode == "skipped" {
+				in.SkipPRs = true
+				stubGh(t, func(string, string) ([]byte, error) { t.Error("gh called"); return nil, errors.New("x") })
+			} else {
+				failGh(t)
+			}
+			s, err := Gather(Git{Dir: f.Dir}, in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rep := Classify(s, Options{Now: later()})
+			for _, row := range []Row{
+				findRow(t, rep, KindBranch, "bdone"),
+				findRow(t, rep, KindWorktree, "wdone"),
+				findRow(t, rep, KindRemote, "odone"),
+			} {
+				if row.Status == StatusProven || !row.PRUnknown {
+					t.Errorf("%s %s: status %s PRUnknown %v", row.Kind, row.Name, row.Status, row.PRUnknown)
+				}
+			}
+			if mode == "skipped" {
+				for _, row := range rep.Rows {
+					if row.Status == StatusProven {
+						t.Errorf("not-yet-filled snapshot produced proven row %s %s", row.Kind, row.Name)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestPRTagOnceKnown: a known PR shows its tag and no PR ?.
+func TestPRTagOnceKnown(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	tip := f.git("rev-parse", "done")
+	mergedPRStub(t, "done", 5, tip, tip)
+	row := findRow(t, Classify(gather(t, f), Options{Now: later()}), KindBranch, "done")
+	if row.PRUnknown || row.PRTag == nil || row.PRTag.Number != 5 {
+		t.Fatalf("row %+v", row)
+	}
+	if got := RowTags(row); len(got) != 1 || got[0].Text != "#5 merged" {
+		t.Fatalf("tags %v", got)
+	}
+}
+
+// TestTagPRSelectionOrder: the verdict's own PR, else an open one, else the first.
+func TestTagPRSelectionOrder(t *testing.T) {
+	s := Snapshot{PRsAsked: true, PRs: map[string]PRResult{"b": {Lookup: LookupKnown, PRs: []PRInfo{{Number: 1, State: "MERGED"}, {Number: 2, State: "OPEN"}, {Number: 3, State: "CLOSED"}}},
+		"c": {Lookup: LookupKnown, PRs: []PRInfo{{Number: 4, State: "MERGED"}, {Number: 5, State: "CLOSED"}}}}}
+	c := classifier{s: s}
+	check := func(name string, row Row, want int) {
+		t.Helper()
+		c.tagPR(&row, name)
+		if row.PRTag == nil || row.PRTag.Number != want {
+			t.Errorf("%s: tag %+v, want #%d", name, row.PRTag, want)
+		}
+	}
+	check("b", Row{Kind: KindBranch, PR: &PRInfo{Number: 3, State: "CLOSED"}}, 3)
+	check("b", Row{Kind: KindBranch}, 2)
+	check("c", Row{Kind: KindBranch}, 4)
+}
+
+// TestNonGitHubOriginIsNotPRUnknown: no own repository means no PR can exist;
+// a git-proven row stays proven and shows no tag.
+func TestNonGitHubOriginIsNotPRUnknown(t *testing.T) {
+	f := newFixture(t) // origin is a bare path
+	f.Branch("done")
+	failGh(t)
+	for _, skip := range []bool{false, true} {
+		in := GatherInputs{CWD: f.Dir, Parallel: 2, OriginRows: true, SkipPRs: skip}
+		s, err := Gather(Git{Dir: f.Dir}, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := findRow(t, Classify(s, Options{Now: later()}), KindBranch, "done")
+		if row.Status != StatusProven || row.PRUnknown || hasReason(row, ReasonPRUnknown) || len(RowTags(row)) != 0 {
+			t.Fatalf("skip=%v: row %+v", skip, row)
+		}
+	}
+}
+
+// TestGHFailureOnGitHubOriginFloorsProven: gh down with a known own repo.
+func TestGHFailureOnGitHubOriginFloorsProven(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("done")
+	failGh(t)
+	s := gather(t, f) // OwnRepo o/r
+	row := findRow(t, Classify(s, Options{Now: later()}), KindBranch, "done")
+	if row.Status != StatusLessSure || !hasReason(row, ReasonPRUnknown) {
+		t.Fatalf("row %+v", row)
+	}
+}
+
+// TestOnlyOriginRemoteRowsAreTagged: another remote has no PR lookup.
+func TestOnlyOriginRemoteRowsAreTagged(t *testing.T) {
+	s := Snapshot{PRsAsked: true, Base: Base{Default: "main"}, PRs: map[string]PRResult{}}
+	s.Remotes = []RefFact{
+		{Ref: "refs/remotes/origin/foo", Remote: "origin", Name: "foo"},
+		{Ref: "refs/remotes/upstream/foo", Remote: "upstream", Name: "foo"},
+	}
+	rep := Classify(s, Options{Now: later()})
+	for _, row := range rep.RemoteRows() {
+		if got := row.PRUnknown; got != (row.Remote == "origin") {
+			t.Errorf("%s/%s PRUnknown=%v", row.Remote, row.Name, got)
+		}
+	}
+}
+
+// TestNonGitHubOriginHasNoPRWordingOnAnyRowKind: with no own repository (origin
+// is a bare path) there is no PR lookup to fail. An unmerged worktree row and a
+// remote-only origin row carry no pr_unknown / cannot_verify, no PR tag and no
+// "needs gh" wording. The remote row is still less_sure, for the non-PR reason
+// that nothing checks a pull request for it (not_checked): never proven.
+func TestNonGitHubOriginHasNoPRWordingOnAnyRowKind(t *testing.T) {
+	f := newFixture(t)
+	failGh(t)
+	f.git("checkout", "-b", "feat")
+	f.Commit("feat.txt", "x", "feat work")
+	f.git("push", "origin", "HEAD:refs/heads/only-remote")
+	f.git("fetch", "origin")
+	for _, skip := range []bool{false, true} {
+		in := GatherInputs{CWD: f.Dir, Parallel: 2, OriginRows: true, SkipPRs: skip}
+		s, err := Gather(Git{Dir: f.Dir}, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep := Classify(s, Options{Now: later()})
+		wtRow := findRow(t, rep, KindWorktree, "feat")
+		rem := findRow(t, rep, KindRemote, "only-remote")
+		for _, row := range []Row{wtRow, rem} {
+			if row.PRUnknown || hasReason(row, ReasonPRUnknown) || hasReason(row, ReasonCannotVerify) {
+				t.Errorf("skip=%v %s %s: PR failure state on a non-GitHub origin: %+v", skip, row.Kind, row.Name, row.Reasons)
+			}
+			if txt := RowText(rep, row); strings.Contains(txt, "needs gh") || strings.Contains(txt, "PR lookup failed") {
+				t.Errorf("skip=%v %s: misleading wording %q", skip, row.Name, txt)
+			}
+		}
+		if rem.Status == StatusProven || !hasReason(rem, ReasonNotChecked) {
+			t.Errorf("skip=%v remote row must not be proven and says nothing is checked: %+v", skip, rem)
+		}
+	}
+}
+
+// TestGHDownOnGitHubOriginStillFloorsEveryRowKind: the floor and the wording
+// stay when the own repository is known and gh is down.
+func TestGHDownOnGitHubOriginStillFloorsEveryRowKind(t *testing.T) {
+	f := newFixture(t)
+	failGh(t)
+	f.git("checkout", "-b", "feat")
+	f.Commit("feat.txt", "x", "feat work")
+	f.git("push", "origin", "HEAD:refs/heads/only-remote")
+	f.git("fetch", "origin")
+	s, err := Gather(Git{Dir: f.Dir}, gatherIn(f)) // OwnRepo o/r
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := Classify(s, Options{Now: later()})
+	wtRow := findRow(t, rep, KindWorktree, "feat")
+	rem := findRow(t, rep, KindRemote, "only-remote")
+	if !hasReason(wtRow, ReasonPRUnknown) || !hasReason(rem, ReasonCannotVerify) {
+		t.Errorf("gh down on a GitHub origin: worktree %+v remote %+v", wtRow.Reasons, rem.Reasons)
 	}
 }

@@ -4,15 +4,14 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
@@ -45,7 +44,7 @@ func TestInitLoadsEntries(t *testing.T) {
 	m := model{status: "loading worktrees..."}
 	cmd := m.Init()
 	if cmd == nil {
-		t.Fatal("Init returned nil cmd; expected loadEntriesCmd")
+		t.Fatal("Init returned nil cmd; expected loadPickerCmd")
 	}
 }
 
@@ -179,407 +178,79 @@ func TestViewBeforeWindowSizeDoesNotPanic(t *testing.T) {
 	_ = m.View()
 }
 
-// TestEntriesLoadedMsg asserts receiving worktree data builds the list and
-// marks the model ready. Without this the TUI would never transition from the
-// loading screen to the picker.
-//
-// After Ruling 17 (Task 3) removed the m.entries field, this test asserts
-// directly against the built list instead: the picker still contains the
-// sentinel + the single entry, in that order, which is what the user sees.
-func TestEntriesLoadedMsg(t *testing.T) {
-	m := model{width: 80, height: 24}
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
+// TestRowsLoadedMsgBuildsTheList asserts a picker load builds the row list in
+// launch mode and marks the model ready: "+ New worktree…" first, then the
+// report's rows. Without this the TUI would never leave the loading screen.
+func TestRowsLoadedMsgBuildsTheList(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	if !m.rows.launch() {
+		t.Error("the picker's list is not in launch mode")
 	}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
+	if !m.rows.items[0].newWorktree {
+		t.Errorf("items[0] = %+v, want the new-worktree item", m.rows.items[0])
 	}
-	if !gotModel.ready {
-		t.Errorf("ready = false, want true")
-	}
-	items := gotModel.list.Items()
-	// Sentinel + one real entry = 2 items.
-	if len(items) != 2 {
-		t.Fatalf("list items = %d, want 2 (sentinel + entry)", len(items))
-	}
-	first, ok := items[0].(entryItem)
-	if !ok || first.kind != kindNewWorktree {
-		t.Errorf("items[0] = %+v, want sentinel (kindNewWorktree)", items[0])
-	}
-	second, ok := items[1].(entryItem)
-	if !ok {
-		t.Fatalf("items[1] is %T, want entryItem", items[1])
-	}
-	if second.entry.Branch != "main" {
-		t.Errorf("items[1] branch = %q, want main", second.entry.Branch)
+	if m.rows.rows != len(pickerFixture().Rows) {
+		t.Errorf("rows = %d, want %d", m.rows.rows, len(pickerFixture().Rows))
 	}
 }
 
-// TestEntriesLoadedSetsDefaultBranchWarning asserts that when the only
-// pickable target is the current worktree on the repo's default branch, the
-// list title is updated to warn the user. Without this, a user on main could
-// launch an agent without realizing they are working directly on the
-// protected branch.
-func TestEntriesLoadedSetsDefaultBranchWarning(t *testing.T) {
-	cfg := &config.Config{DefaultTag: "code"}
-	m := model{cfg: cfg, width: 80, height: 24}
-
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
-	}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
-	mm := newM.(model)
-
-	if mm.defaultBranch != "main" {
-		t.Fatalf("defaultBranch = %q, want main", mm.defaultBranch)
-	}
-	if !strings.Contains(mm.list.Title, "main") {
-		t.Fatalf("expected title to contain default branch warning, got %q", mm.list.Title)
-	}
-}
-
-// TestEntriesLoadedNoWarningForMultipleEntries asserts that when there are
-// multiple choices, no default-branch warning is shown.
-func TestEntriesLoadedNoWarningForMultipleEntries(t *testing.T) {
-	cfg := &config.Config{DefaultTag: "code"}
-	m := model{cfg: cfg, width: 80, height: 24}
-
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
-		{Type: worktree.TypeBranch, Branch: "feature"},
-	}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
-	mm := newM.(model)
-
-	if strings.Contains(mm.list.Title, "WARNING") {
-		t.Fatalf("expected no warning title, got %q", mm.list.Title)
-	}
-}
-
-// TestViewReady asserts the rendered list contains the title. This confirms
-// the list widget was built and is visible once worktrees are loaded.
+// TestViewReady asserts the rendered picker shows the list's title line and
+// its rows once loaded.
 func TestViewReady(t *testing.T) {
-	m := model{width: 80, height: 24}
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-	}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups})
-	gotModel := got.(model)
-	view := gotModel.View()
-	if !strings.Contains(view, "Pick a worktree or branch") {
-		t.Errorf("View missing list title: %q", view)
-	}
-}
-
-// TestEntriesLoadedPositionsCursorOnRepoRoot asserts that when the picker
-// loads, the cursor lands on the repo-root ((current)) entry as the starting
-// selection — so Enter relaunches where the user already is without any
-// extra keystrokes. This holds regardless of which branch the repo root is
-// on, and even when a separate worktree exists for the repo's default
-// branch: repo root is always the starting selection now, replacing the old
-// rule that preferred the default-branch entry first.
-func TestEntriesLoadedPositionsCursorOnRepoRoot(t *testing.T) {
-	// A real, existing directory so filepath.EvalSymlinks (used by buildList
-	// to tag the (current) entry) actually resolves the repo root; a
-	// nonexistent fixture path would resolve to "" and falsely match every
-	// other nonexistent worktree path in this group.
-	repoRoot := t.TempDir()
-	m := model{width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: repoRoot},
-			{Type: worktree.TypeWorktree, Branch: "feature", Path: filepath.Join(repoRoot, ".worktrees", "feature")},
-		}},
-		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "other"},
-		}},
-	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: repoRoot})
-	m = got.(model)
-
-	selected := m.list.SelectedItem().(entryItem)
-	if selected.kind != kindEntry {
-		t.Fatalf("cursor on sentinel/separator (%v), want the repo-root entry", selected.kind)
-	}
-	if selected.entry.Branch != "main" {
-		t.Errorf("cursor on branch %q, want main", selected.entry.Branch)
-	}
-	if selected.entry.Path != repoRoot {
-		t.Errorf("cursor on path %q, want current worktree %q", selected.entry.Path, repoRoot)
-	}
-
-	// The current worktree is on a non-default branch, and a separate
-	// worktree holds the default branch. The cursor must still land on the
-	// repo root (develop), not jump to the default-branch worktree.
-	groups2 := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "develop", Path: repoRoot},
-			{Type: worktree.TypeWorktree, Branch: "main", Path: filepath.Join(repoRoot, ".worktrees", "main")},
-		}},
-	}
-	m2 := model{width: 80, height: 24}
-	got2, _ := m2.Update(entriesLoadedMsg{groups: groups2, defaultBranch: "main", repoRoot: repoRoot})
-	m2 = got2.(model)
-	selected2 := m2.list.SelectedItem().(entryItem)
-	if selected2.kind != kindEntry || selected2.entry.Branch != "develop" {
-		t.Errorf("cursor = %+v, want the repo-root entry (develop) even though a separate worktree holds the default branch", selected2)
-	}
-}
-
-// TestEntriesLoadedDefaultsToCurrentWorktreeOnNonDefaultBranch is the
-// regression guard for a picker where the user's current checkout sits on a
-// non-default branch and no linked worktree also holds the default branch.
-// Without the fallback the default-branch loop matches nothing, leaving the
-// cursor on the "+ New worktree…" sentinel, so a bare Enter would open the
-// new-worktree prompt instead of relaunching in the repo the user is in.
-// The cursor must instead land on the current checkout, even on that
-// non-default branch.
-func TestEntriesLoadedDefaultsToCurrentWorktreeOnNonDefaultBranch(t *testing.T) {
-	// A real, existing directory so filepath.EvalSymlinks (used by buildList
-	// to tag the (current) entry) actually resolves both sides instead of
-	// both failing on a nonexistent path and coincidentally comparing equal.
-	repoRoot := t.TempDir()
-	m := model{width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "work", Path: repoRoot},
-		}},
-		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "other"},
-		}},
-	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: repoRoot})
-	m = got.(model)
-	selected := m.list.SelectedItem().(entryItem)
-	if selected.kind != kindEntry {
-		t.Fatalf("cursor on sentinel/separator (%v), want the current-checkout entry", selected.kind)
-	}
-	if selected.entry.Branch != "work" {
-		t.Errorf("cursor on branch %q, want the current non-default branch work", selected.entry.Branch)
-	}
-	if selected.entry.Path != repoRoot {
-		t.Errorf("cursor on path %q, want current worktree %q", selected.entry.Path, repoRoot)
-	}
-}
-
-// TestEntriesLoadedDefaultsToCurrentWorktreeWhenDefaultBranchUnknown is the
-// regression guard for repos where DefaultBranch can't be determined at all
-// (no remote, or origin/HEAD never set — worktree.DefaultBranch returns ""
-// in that non-fatal case). The fallback must still fire even though the
-// defaultBranch match loop is skipped entirely when defaultBranch == "".
-func TestEntriesLoadedDefaultsToCurrentWorktreeWhenDefaultBranchUnknown(t *testing.T) {
-	repoRoot := t.TempDir()
-	m := model{width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "work", Path: repoRoot},
-		}},
-	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "", repoRoot: repoRoot})
-	m = got.(model)
-	selected := m.list.SelectedItem().(entryItem)
-	if selected.kind != kindEntry {
-		t.Fatalf("cursor on sentinel/separator (%v), want the current-checkout entry", selected.kind)
-	}
-	if selected.entry.Branch != "work" {
-		t.Errorf("cursor on branch %q, want the current-checkout branch work", selected.entry.Branch)
-	}
-}
-
-// TestEnterSelectsEntry asserts that pressing Enter when the list is ready
-// emits a selectedEntryMsg carrying the current entry. This is the primary
-// selection affordance for the worktree picker. (The list's first item is
-// the "+ New worktree…" sentinel; we step down to a real entry before
-// pressing Enter, since Enter on the sentinel opens the new-worktree
-// prompt instead.)
-func TestEnterSelectsEntry(t *testing.T) {
-	m := model{width: 80, height: 24}
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-		{Type: worktree.TypeBranch, Branch: "feature", Path: ""},
-	}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups})
-	m = got.(model)
-	// Move down past the sentinel (index 0) to the first real entry.
-	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyDown})
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("Enter returned nil cmd, want selectedEntryMsg")
-	}
-	msg := cmd()
-	selected, ok := msg.(selectedEntryMsg)
-	if !ok {
-		t.Fatalf("cmd returned %T, want selectedEntryMsg", msg)
-	}
-	if selected.entry.Branch != "main" {
-		t.Errorf("selected branch = %q, want main", selected.entry.Branch)
-	}
-}
-
-// TestEnterOnDefaultBranchSkipsGuard asserts that selecting the current
-// worktree on the default branch launches straight through — the previous
-// phaseGuardWarn prompt is gone now that the picker cursor defaults to main.
-// The picker title still flags the "default branch only" case via
-// isDefaultBranchOnly, but Enter must dispatch selectedEntryMsg directly so
-// the user reaches the agent/model screen in one keystroke. A non-default
-// branch must keep its bare-branch create path.
-func TestEnterOnDefaultBranchSkipsGuard(t *testing.T) {
-	m := model{width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-		}},
-		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "other"},
-		}},
-	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
-	m = got.(model)
-
-	// Select the current worktree on the default branch.
-	idx := pickEntryIndex(t, m, func(ei entryItem) bool {
-		return ei.kind == kindEntry && ei.entry.Type == worktree.TypeCurrent && ei.entry.Branch == "main"
-	})
-	m.list.Select(idx)
-	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm := newM.(model)
-	if cmd == nil {
-		t.Fatal("current default row: expected a cmd (selectedEntryMsg), got nil")
-	}
-	msg := cmd()
-	selected, ok := msg.(selectedEntryMsg)
-	if !ok {
-		t.Fatalf("current default row: cmd returned %T, want selectedEntryMsg", msg)
-	}
-	if selected.entry.Branch != "main" {
-		t.Errorf("current default row: selected branch = %q, want main", selected.entry.Branch)
-	}
-
-	// A non-default branch must keep dispatching a bare-branch worktree create.
-	mm.phase = phaseList // reset for the contrast case
-	otherIdx := pickEntryIndex(t, mm, func(ei entryItem) bool {
-		return ei.kind == kindEntry && ei.entry.Branch == "other"
-	})
-	mm.list.Select(otherIdx)
-	_, cmd2 := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd2 == nil {
-		t.Fatal("other row: expected a cmd (bare branch dispatches ensureBranchWorktreeCmd), got nil")
-	}
-}
-
-// TestEnterOnSeparatorIsIgnored asserts that pressing Enter on the
-// locals→remotes separator row does nothing rather than forwarding a
-// zero-value worktree.Entry to selectedEntryMsg — which would launch the
-// agent in wt's CWD with cmd.Dir="". The separator is a visual divider
-// only; it carries no pickable target.
-func TestEnterOnSeparatorIsIgnored(t *testing.T) {
-	m := model{width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-		}},
-		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "feature"},
-		}},
-		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "origin/dev"},
-		}},
-	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
-	m = got.(model)
-
-	idx := -1
-	for i, it := range m.list.Items() {
-		if ei, ok := it.(entryItem); ok && ei.kind == kindSeparator {
-			idx = i
-			break
+	m := pickerReady(t, pickerFixture())
+	view := m.View()
+	for _, want := range []string{"enter launch", "WORKTREES", "loose"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View missing %q:\n%s", want, view)
 		}
 	}
-	if idx < 0 {
-		t.Fatal("separator row not found in list")
+}
+
+// TestRowsLoadedCursorOnRootWithNoDefaultBranch is the regression guard for
+// a repository whose default branch cannot be determined: the cursor still
+// lands on the checkout the user stands in (the root here), not on
+// "+ New worktree…", so a bare Enter relaunches there.
+func TestRowsLoadedCursorOnRootWithNoDefaultBranch(t *testing.T) {
+	rep := pickerFixture()
+	rep.Base = cleanup.Base{}
+	rep.Rows = rep.Rows[:1]
+	rep.Rows[0].Branch, rep.Rows[0].Name = "work", "work"
+	m := pickerReady(t, rep)
+	if row, ok := m.rows.selectedRow(); !ok || row.Name != "work" {
+		t.Errorf("cursor on %+v (ok %v), want the root on work", row, ok)
 	}
-	m.list.Select(idx)
-	newM, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm := newM.(model)
-	if mm.phase != phaseList {
-		t.Fatalf("separator Enter: phase = %v, want phaseList (must not transition)", mm.phase)
+}
+
+// TestEnterSelectsEntry asserts that pressing Enter on a picker row emits a
+// selectedEntryMsg carrying that row's worktree. This is the primary
+// selection affordance for the worktree picker.
+func TestEnterSelectsEntry(t *testing.T) {
+	m := pickerCursorTo(t, pickerReady(t, pickerFixture()), "other")
+	_, sel := pickerEnter(t, m)
+	if sel.entry.Branch != "other" || sel.entry.Path != "/repo/.worktrees/other" {
+		t.Errorf("selected %+v, want the other worktree", sel.entry)
+	}
+}
+
+// TestEnterOnHeadingIsIgnored asserts that Enter on a group heading does
+// nothing rather than forwarding a zero-value row: its entry would launch
+// the agent in wt's CWD with cmd.Dir="". The cursor never stops on a heading
+// by itself; this pins the guard should it get there.
+func TestEnterOnHeadingIsIgnored(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	m.rows.cursor = 1
+	if m.rows.items[1].heading == "" {
+		t.Fatal("item 1 is not a heading")
+	}
+	m, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != phaseList {
+		t.Fatalf("phase = %v, want phaseList", m.phase)
 	}
 	if cmd != nil {
-		t.Errorf("separator Enter: expected nil cmd, got %T (would forward a zero entry to launch)", cmd())
-	}
-}
-
-// TestDefaultBranchWarningFiresWhenOnlyDefaultBranch asserts that the
-// default-branch warning still fires when the only entry is the current
-// worktree on main with no other branches or worktrees. This is the
-// minimal-repo scenario where the user has nowhere else to switch.
-func TestDefaultBranchWarningFiresWhenOnlyDefaultBranch(t *testing.T) {
-	cfg := &config.Config{DefaultTag: "code"}
-	m := model{cfg: cfg, width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
-		}},
-	}
-	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
-	mm := newM.(model)
-	if !strings.Contains(mm.list.Title, "WARNING") {
-		t.Fatalf("expected default-branch warning title, got %q", mm.list.Title)
-	}
-}
-
-// TestDefaultBranchWarningFiresWhenOnlyRemoteDefaultBranch asserts the
-// default-branch warning still fires when the only other ref is a remote form
-// of the default branch that buildList will filter out. The picker ends up
-// with just the current worktree on main, so the user has no other target and
-// the title must warn.
-func TestDefaultBranchWarningFiresWhenOnlyRemoteDefaultBranch(t *testing.T) {
-	cfg := &config.Config{DefaultTag: "code"}
-	m := model{cfg: cfg, width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
-		}},
-		{Kind: worktree.GroupRemoteBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "origin/main"},
-		}},
-	}
-	newM, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
-	mm := newM.(model)
-	if !strings.Contains(mm.list.Title, "WARNING") {
-		t.Fatalf("expected default-branch warning title, got %q", mm.list.Title)
-	}
-	// The remote default-branch entry must have been filtered from the list.
-	for _, it := range mm.list.Items() {
-		if ei, ok := it.(entryItem); ok && ei.entry.Branch == "origin/main" {
-			t.Errorf("origin/main should have been filtered out, got item %+v", ei)
+		if msg := cmd(); msg != nil {
+			t.Errorf("heading Enter produced %T, want nothing", msg)
 		}
 	}
-}
-
-// pickEntryIndex returns the index of the first list item matching match, or
-// fails the test. Used by Enter-handler tests to position the cursor on a
-// specific entry without depending on list ordering.
-func pickEntryIndex(t *testing.T, m model, match func(entryItem) bool) int {
-	t.Helper()
-	for i, it := range m.list.Items() {
-		ei, ok := it.(entryItem)
-		if !ok {
-			continue
-		}
-		if match(ei) {
-			return i
-		}
-	}
-	t.Fatal("no list item matched the requested entry")
-	return -1
 }
 
 // TestSelectedEntryMsgTransitionsToAgentPhase asserts that choosing a
@@ -601,56 +272,6 @@ func TestSelectedEntryMsgTransitionsToAgentPhase(t *testing.T) {
 	}
 	if len(gotModel.agentList.Items()) == 0 {
 		t.Error("agentList is empty; expected at least one configured agent")
-	}
-}
-
-// TestEnterOnBareBranchDispatchesCreate asserts that selecting a bare
-// branch (TypeBranch, Path="") dispatches ensureBranchWorktreeCmd rather
-// than proceeding straight to the agent picker. Without this, the agent
-// would launch in wt's CWD (cmd.Dir="") instead of a worktree for the
-// branch.
-func TestEnterOnBareBranchDispatchesCreate(t *testing.T) {
-	m := model{width: 80, height: 24}
-	groups := []worktree.EntryGroup{
-		{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{
-			{Type: worktree.TypeCurrent, Branch: "main", Path: "/tmp/repo"},
-		}},
-		{Kind: worktree.GroupLocalBranches, Entries: []worktree.Entry{
-			{Type: worktree.TypeBranch, Branch: "feature"},
-		}},
-	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main", repoRoot: "/tmp/repo"})
-	m = got.(model)
-
-	idx := pickEntryIndex(t, m, func(ei entryItem) bool {
-		return ei.kind == kindEntry && ei.entry.Branch == "feature"
-	})
-	m.list.Select(idx)
-
-	// Enter emits selectedEntryMsg (the guard check passes for a non-default
-	// branch), which the runtime would feed back into Update.
-	_, selCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if selCmd == nil {
-		t.Fatal("Enter returned nil cmd, want selectedEntryMsg")
-	}
-	selMsg := selCmd()
-	selected, ok := selMsg.(selectedEntryMsg)
-	if !ok {
-		t.Fatalf("Enter cmd returned %T, want selectedEntryMsg", selMsg)
-	}
-
-	// Feeding selectedEntryMsg back in must dispatch the worktree create.
-	newM, createCmd := m.Update(selected)
-	mm := newM.(model)
-	if !mm.creating {
-		t.Error("creating = false, want true while the bare-branch create is in flight")
-	}
-	if createCmd == nil {
-		t.Fatal("cmd = nil, want ensureBranchWorktreeCmd")
-	}
-	msg := createCmd()
-	if _, ok := msg.(branchWorktreeCreatedMsg); !ok {
-		t.Errorf("cmd returned %T, want branchWorktreeCreatedMsg", msg)
 	}
 }
 
@@ -961,17 +582,14 @@ func TestOllamaWarnHasProceedAndCancelOnly(t *testing.T) {
 }
 
 // TestNKeyOpensNewWorktreePhase asserts pressing `n` on the picker
-// list transitions to phaseNewWorktree. Without this wiring, the
-// keyboard shortcut is dead and only the sentinel is reachable.
+// transitions to phaseNewWorktree. Without this wiring, the keyboard
+// shortcut is dead and only the "+ New worktree…" item is reachable.
 func TestNKeyOpensNewWorktreePhase(t *testing.T) {
-	m := model{phase: phaseList, ready: true, width: 80, height: 24}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.phase != phaseNewWorktree {
-		t.Errorf("phase = %v, want phaseNewWorktree", gotModel.phase)
+	m := pickerReady(t, pickerFixture())
+	m, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = drainCmds(t, m, cmd)
+	if m.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree", m.phase)
 	}
 }
 
@@ -991,44 +609,29 @@ func TestNKeyIgnoredWhileLoading(t *testing.T) {
 	}
 }
 
-// TestEnterOnSentinelOpensNewWorktreePhase asserts picking the
-// sentinel and pressing Enter transitions to phaseNewWorktree. The
-// sentinel must be Enter-able, not just `n`-able.
+// TestEnterOnSentinelOpensNewWorktreePhase asserts Enter on
+// "+ New worktree…" transitions to phaseNewWorktree. The item must be
+// Enter-able, not just `n`-able.
 func TestEnterOnSentinelOpensNewWorktreePhase(t *testing.T) {
-	// Build a list with just the sentinel as the selected item.
-	l := buildList(nil, "", "/tmp/repo", themes.Default, 80, 24)
-	m := model{
-		phase: phaseList, ready: true, width: 80, height: 24,
-		list: l,
-	}
-	// Sentinel is the first (and only) item, so the cursor is on it.
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.phase != phaseNewWorktree {
-		t.Errorf("phase = %v, want phaseNewWorktree", gotModel.phase)
+	m := pickerReady(t, pickerFixture())
+	m.rows.cursor = 0
+	m, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drainCmds(t, m, cmd)
+	if m.phase != phaseNewWorktree {
+		t.Errorf("phase = %v, want phaseNewWorktree", m.phase)
 	}
 }
 
-// TestEnterOnSentinelIgnoredWhileLoading asserts the sentinel
-// cannot be picked before the list is ready. Consistent with the
-// existing list-unready guard and the `n` keypress guard.
+// TestEnterOnSentinelIgnoredWhileLoading asserts Enter does nothing before
+// the picker is ready. Consistent with the `n` keypress guard.
 func TestEnterOnSentinelIgnoredWhileLoading(t *testing.T) {
-	// Even with a sentinel-bearing list, ready=false short-circuits.
-	l := buildList(nil, "", "/tmp/repo", themes.Default, 80, 24)
-	m := model{
-		phase: phaseList, ready: false, width: 80, height: 24,
-		list: l,
-	}
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.phase == phaseNewWorktree {
+	m := model{phase: phaseList, ready: false, width: 80, height: 24}
+	got, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got.phase == phaseNewWorktree {
 		t.Errorf("phase = phaseNewWorktree, want phaseList (loading not complete)")
+	}
+	if cmd != nil {
+		t.Errorf("Enter while loading returned a command")
 	}
 }
 
@@ -1140,7 +743,7 @@ func TestNewWorktreeCreatedErrorStaysOnPrompt(t *testing.T) {
 
 // TestNewWorktreeCreatedSuccessTriggersReload asserts a successful
 // create sets pendingHighlight, transitions back to phaseList, and
-// dispatches loadEntriesCmd. The reload + highlight flow is what
+// dispatches loadPickerCmd. The reload + highlight flow is what
 // brings the user back to the picker on the new entry.
 func TestNewWorktreeCreatedSuccessTriggersReload(t *testing.T) {
 	m := model{phase: phaseNewWorktree, width: 80, height: 24}
@@ -1156,70 +759,21 @@ func TestNewWorktreeCreatedSuccessTriggersReload(t *testing.T) {
 		t.Errorf("pendingHighlight = %q, want x", gotModel.pendingHighlight)
 	}
 	if cmd == nil {
-		t.Fatal("cmd = nil, want loadEntriesCmd")
+		t.Fatal("cmd = nil, want loadPickerCmd")
 	}
 }
 
-// TestEntriesLoadedAppliesPendingHighlight asserts that after a
-// reload, the list cursor moves to the entry matching the
-// pendingHighlight branch. This is the "you just created this,
-// here it is" feedback.
-func TestEntriesLoadedAppliesPendingHighlight(t *testing.T) {
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
-		{Type: worktree.TypeWorktree, Branch: "x", Path: "/repo/.worktrees/x"},
+// TestRowsLoadedAppliesPendingHighlight asserts that after the reload that
+// follows a create, the cursor moves to the worktree of the branch just
+// created. This is the "you just created this, here it is" feedback.
+func TestRowsLoadedAppliesPendingHighlight(t *testing.T) {
+	m := model{width: 80, height: 24, pendingHighlight: "other"}
+	m, _ = updateMsg(m, rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"})
+	if row, ok := m.rows.selectedRow(); !ok || row.Name != "other" {
+		t.Errorf("cursor on %+v (ok %v), want the other worktree", row, ok)
 	}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	m := model{
-		width:            80,
-		height:           24,
-		pendingHighlight: "x",
-	}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	// Find the index of "x" — should be selected.
-	items := gotModel.list.Items()
-	var xIdx int = -1
-	for i, it := range items {
-		if ei, ok := it.(entryItem); ok && ei.kind == kindEntry && ei.entry.Branch == "x" {
-			xIdx = i
-			break
-		}
-	}
-	if xIdx < 0 {
-		t.Fatal("entry x not found in reloaded list")
-	}
-	if gotModel.list.Index() != xIdx {
-		t.Errorf("list.Index() = %d, want %d (x)", gotModel.list.Index(), xIdx)
-	}
-	if gotModel.pendingHighlight != "" {
-		t.Errorf("pendingHighlight = %q, want cleared after applying", gotModel.pendingHighlight)
-	}
-}
-
-// TestEntriesLoadedNoPendingHighlightLeavesCursorAtZero asserts
-// that without a pendingHighlight, the list cursor stays at the
-// default (top). This is the normal reload path — cursor reset is
-// fine.
-func TestEntriesLoadedNoPendingHighlightLeavesCursorAtZero(t *testing.T) {
-	entries := []worktree.Entry{
-		{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"},
-	}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	m := model{width: 80, height: 24}
-	got, _ := m.Update(entriesLoadedMsg{groups: groups, defaultBranch: "main"})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	// After a fresh build, the cursor is at 0 (the sentinel). That's
-	// acceptable behavior — this test just guards against
-	// pendingHighlight being unexpectedly set.
-	if gotModel.pendingHighlight != "" {
-		t.Errorf("pendingHighlight = %q, want empty", gotModel.pendingHighlight)
+	if m.pendingHighlight != "" {
+		t.Errorf("pendingHighlight = %q, want cleared after applying", m.pendingHighlight)
 	}
 }
 
@@ -1244,28 +798,21 @@ func TestQTypesInNewWorktreePrompt(t *testing.T) {
 	}
 }
 
-// TestQDoesNotQuitWhileFiltering asserts that 'q' types into the list
-// filter (bubbles/list incremental filter) rather than quitting. The
-// filter is opened with '/'; a query like "quality" would otherwise
-// quit the TUI on the first 'q'.
+// TestQDoesNotQuitWhileFiltering asserts that 'q' types into the picker's
+// filter rather than quitting. The filter is opened with '/'; a query like
+// "quality" would otherwise quit the TUI on the first 'q'.
 func TestQDoesNotQuitWhileFiltering(t *testing.T) {
-	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	m := model{phase: phaseList, ready: true, width: 80, height: 24}
-	m.list = buildList(groups, "", "/repo", themes.Default, 78, 22)
-	// Open the filter exactly like a user pressing '/'.
-	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	if m.list.FilterState() != list.Filtering {
-		t.Fatalf("filter state = %v, want Filtering", m.list.FilterState())
+	m := pickerReady(t, pickerFixture())
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !m.rows.filtering {
+		t.Fatal("'/' did not open the filter")
 	}
-
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
+	m, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		t.Errorf("'q' while filtering returned a command (quit?)")
 	}
-	if !strings.Contains(gotModel.list.FilterInput.Value(), "q") {
-		t.Errorf("filter input = %q, want to contain q (quit hijacked the key)", gotModel.list.FilterInput.Value())
+	if !strings.Contains(m.rows.filter, "q") {
+		t.Errorf("filter = %q, want to contain q (quit hijacked the key)", m.rows.filter)
 	}
 }
 
@@ -1455,32 +1002,19 @@ func TestModelPickerWrapsFromBottomToTop(t *testing.T) {
 	}
 }
 
-// TestNNotHijackedWhileFiltering asserts that 'n' types into the list
-// filter instead of opening the new-worktree prompt. Before the fix,
-// the 'n' keypress was intercepted before bubbles/list saw it, so no
-// filter query could ever contain 'n' — branches with 'n' in their
-// name became unfilterable by typing.
+// TestNNotHijackedWhileFiltering asserts that 'n' types into the picker's
+// filter instead of opening the new-worktree prompt, so branches with 'n' in
+// their name stay filterable by typing.
 func TestNNotHijackedWhileFiltering(t *testing.T) {
-	entries := []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}
-	groups := []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: entries}}
-	m := model{phase: phaseList, ready: true, width: 80, height: 24}
-	m.list = buildList(groups, "", "/repo", themes.Default, 78, 22)
-	// Open the filter exactly like a user pressing '/'.
-	m.list, _ = m.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	if m.list.FilterState() != list.Filtering {
-		t.Fatalf("filter state = %v, want Filtering", m.list.FilterState())
-	}
-
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.phase == phaseNewWorktree {
+	m := pickerReady(t, pickerFixture())
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = drainCmds(t, m, cmd)
+	if m.phase == phaseNewWorktree {
 		t.Error("phase = phaseNewWorktree, want phaseList (n hijacked the filter)")
 	}
-	if !strings.Contains(gotModel.list.FilterInput.Value(), "n") {
-		t.Errorf("filter input = %q, want to contain n", gotModel.list.FilterInput.Value())
+	if !strings.Contains(m.rows.filter, "n") {
+		t.Errorf("filter = %q, want to contain n", m.rows.filter)
 	}
 }
 
@@ -1556,24 +1090,12 @@ func TestNewWorktreeCreatedClearsCreating(t *testing.T) {
 // was stored in m.status, which View only shows while !m.ready, so the
 // user saw a stale list with no explanation after the reload failed.
 func TestReloadErrorVisibleAboveList(t *testing.T) {
-	m := model{width: 80, height: 24}
-	got, _ := m.Update(entriesLoadedMsg{
-		groups: []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}}},
-	})
-	m = got.(model) // ready == true
-	if !m.ready {
-		t.Fatal("setup failed: model not ready")
-	}
-
-	got, _ = m.Update(entriesLoadedMsg{err: errMock("git worktree list: boom")})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.listError == "" {
+	m := pickerReady(t, pickerFixture())
+	m, _ = updateMsg(m, rowsLoadedMsg{err: errMock("git worktree list: boom")})
+	if m.listError == "" {
 		t.Fatal("listError = empty, want reload error")
 	}
-	if view := gotModel.View(); !strings.Contains(view, "boom") {
+	if view := m.View(); !strings.Contains(view, "boom") {
 		t.Errorf("View missing reload error, got:\n%s", view)
 	}
 }

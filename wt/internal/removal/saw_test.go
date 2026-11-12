@@ -366,7 +366,10 @@ func TestPreReCheckMismatches(t *testing.T) {
 		{"another record ref", func(r *cleanup.Row) { p := *r.Preserved; p.Ref += "0"; r.Preserved = &p }},
 		{"another record commit", func(r *cleanup.Row) { p := *r.Preserved; p.Commit = strings.Repeat("e", 40); r.Preserved = &p }},
 		{"tip moved", func(r *cleanup.Row) { r.Tip = strings.Repeat("e", 40) }},
-		{"blocker", func(r *cleanup.Row) { r.Blockers = []cleanup.Reason{{Code: cleanup.BlockLocked}} }},
+		{"blocker", func(r *cleanup.Row) {
+			r.Blockers = []cleanup.Reason{{Code: cleanup.BlockLocked}}
+			r.HardStop = cleanup.BlockLocked
+		}},
 		{"in use", func(r *cleanup.Row) { r.Status = cleanup.StatusInUse }},
 		{"gates unknown", func(r *cleanup.Row) { r.Losses.GatesUnknown = true }},
 		{"worse status", func(r *cleanup.Row) { r.Status = cleanup.StatusUniqueWork }},

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -369,6 +370,9 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 	full[0].Preserved = &Preserved{Ref: RecordRefPrefix + tip[:16], Commit: tip, SourceHead: tip, DestBranch: "rescued/topic", DestPath: "/w/rescued"}
 	full[1].Ref, full[1].Tip = "refs/heads/solo", tip
 	full[1].Losses = Losses{Unpushed: 3}
+	// Display-only fields never serialize.
+	full[0].Primary, full[0].Current, full[0].Bare = true, true, true
+	full[0].PRUnknown, full[1].PRTag = true, &PRInfo{Number: 9, State: "OPEN"}
 	rep := func(rows []Row) Report {
 		return Report{Repo: "/r", GH: GHOK, Base: Base{Default: "main", Ref: "origin/main"}, Rows: rows}
 	}
@@ -389,7 +393,7 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 	if err := json.Unmarshal(got, &doc); err != nil {
 		t.Fatal(err)
 	}
-	prA := []string{"kind", "name", "path", "branch", "remote", "status", "evidence", "unknown", "age_days", "reasons", "blockers", "pr"}
+	prA := []string{"kind", "name", "path", "branch", "remote", "status", "evidence", "unknown", "age_days", "reasons", "blockers", "pr", "hard_stop", "upstream"}
 	for _, row := range doc.Rows {
 		for k := range row {
 			if !slices.Contains(prA, k) {
@@ -487,5 +491,49 @@ func TestNoOriginRepoReportsItsOtherRemotesFetch(t *testing.T) {
 	raw, _ = Encode(Report{Repo: "/r", Fetch: FetchResult{Skipped: "no remotes"}})
 	if strings.Contains(string(raw), `"fetch"`) {
 		t.Errorf("no remotes at all gave a fetch block:\n%s", raw)
+	}
+}
+
+// TestEncodeHardStopAndUpstream pins hard_stop (the first hard-stop code,
+// absent when none) and upstream (the folded remote ref; absent when nil).
+func TestEncodeHardStopAndUpstream(t *testing.T) {
+	rep := Report{Repo: "/r", GH: GHOK, Base: Base{Default: "main", Ref: "origin/main"}, Rows: []Row{
+		{Kind: KindWorktree, Name: "root", Path: "/r", Branch: "topic", Status: StatusInUse, HardStop: BlockPrimary,
+			Blockers: []Reason{{BlockPrimary, "/r"}}},
+		{Kind: KindBranch, Name: "a", Branch: "a", Status: StatusProven, Evidence: EvAncestor,
+			Upstream: &Upstream{Ref: "refs/remotes/origin/a", Remote: "origin", Name: "a", Tip: "abc", Status: StatusProven, Evidence: EvAncestor}},
+		{Kind: KindBranch, Name: "b", Branch: "b", Status: StatusUniqueWork,
+			Upstream: &Upstream{Ref: "refs/remotes/origin/b", Remote: "origin", Name: "b", Gone: true}},
+		{Kind: KindBranch, Name: "c", Branch: "c", Status: StatusUniqueWork},
+	}}
+	raw, err := Encode(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Rows[0]["hard_stop"]; got != BlockPrimary {
+		t.Errorf("root hard_stop = %v, want primary", got)
+	}
+	up, _ := doc.Rows[1]["upstream"].(map[string]any)
+	want := map[string]any{"ref": "refs/remotes/origin/a", "remote": "origin", "name": "a", "tip": "abc", "gone": false, "status": "proven", "evidence": "ancestor"}
+	if !reflect.DeepEqual(up, want) {
+		t.Errorf("upstream = %v, want %v", up, want)
+	}
+	gone, _ := doc.Rows[2]["upstream"].(map[string]any)
+	if gone["gone"] != true || gone["tip"] != nil || gone["status"] != nil {
+		t.Errorf("gone upstream = %v", gone)
+	}
+	for _, i := range []int{1, 2, 3} {
+		if _, has := doc.Rows[i]["hard_stop"]; has {
+			t.Errorf("row %d has hard_stop", i)
+		}
+	}
+	if _, has := doc.Rows[3]["upstream"]; has {
+		t.Error("row without upstream has an upstream key")
 	}
 }

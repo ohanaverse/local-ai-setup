@@ -882,3 +882,92 @@ func TestRemoveJSONUsageErrorsPrintTheEnvelope(t *testing.T) {
 		t.Errorf("no --json, no target: exit %d, stdout %q; want 1 and none", exitOf(err), stdout)
 	}
 }
+
+// TestRemoveCmdHeldNeedsAcceptLoss verifies a worktree held by another wt
+// session is a verdict floor, not a hard stop: without --accept-loss the
+// command exits 2 saying it needs --accept-loss and removes nothing; with it
+// the worktree is removed. The user decides.
+func TestRemoveCmdHeldNeedsAcceptLoss(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	t.Cleanup(cleanup.StubHeldForTest(p))
+	stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", p)
+	if exitOf(err) != 2 || !strings.Contains(stdout+stderr, "needs --accept-loss") {
+		t.Fatalf("without: exit %d (%v), want 2 naming --accept-loss\nstdout=%s\nstderr=%s", exitOf(err), err, stdout, stderr)
+	}
+	if !exists(p) {
+		t.Fatalf("worktree removed without --accept-loss")
+	}
+	stdout, stderr, err = runRemove(t, a, dir, "", "--no-fetch", "--yes", "--accept-loss", p)
+	if exitOf(err) != 0 || exists(p) {
+		t.Fatalf("with: exit %d (%v) worktree there=%v\nstdout=%s\nstderr=%s", exitOf(err), err, exists(p), stdout, stderr)
+	}
+}
+
+// TestRemoveCmdDefaultBranchWorktreeNeedsAcceptLoss: a linked worktree on the
+// default branch needs --accept-loss the same way (a floor, not a refusal).
+func TestRemoveCmdDefaultBranchWorktreeNeedsAcceptLoss(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	cgit(t, dir, "switch", "-c", "other")
+	p := filepath.Join(filepath.Dir(dir), "wt-main")
+	cgit(t, dir, "worktree", "add", p, "main")
+	stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", p)
+	if exitOf(err) != 2 || !strings.Contains(stdout+stderr, "needs --accept-loss") || !exists(p) {
+		t.Fatalf("without: exit %d (%v) there=%v\nstdout=%s\nstderr=%s", exitOf(err), err, exists(p), stdout, stderr)
+	}
+	stdout, stderr, err = runRemove(t, a, dir, "", "--no-fetch", "--yes", "--accept-loss", p)
+	if exitOf(err) != 0 || exists(p) {
+		t.Fatalf("with: exit %d (%v) there=%v\nstdout=%s\nstderr=%s", exitOf(err), err, exists(p), stdout, stderr)
+	}
+}
+
+// TestRemoveCmdPrimaryAndCwdStillRefusedWithAcceptLoss: no flag overrides the
+// primary checkout, the worktree the command runs in, or one holding the
+// cwd (a subdirectory of it): each exits 2 and stays on disk.
+func TestRemoveCmdPrimaryAndCwdStillRefusedWithAcceptLoss(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	p := mergedWorktree(t, dir, "topic")
+	sub := filepath.Join(p, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flags := []string{"--no-fetch", "--yes", "--accept-loss", "--force", "-D"}
+	for _, c := range []struct{ name, cwd, target string }{
+		{"primary", p, dir},
+		{"cwd", p, p},
+		{"ancestor of cwd", sub, p},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stdout, stderr, err := runRemove(t, a, c.cwd, "", append(flags, c.target)...)
+			if exitOf(err) != 2 || !exists(c.target) {
+				t.Fatalf("exit %d (%v) there=%v\nstdout=%s\nstderr=%s", exitOf(err), err, exists(c.target), stdout, stderr)
+			}
+		})
+	}
+}
+
+// TestRemoveCmdLocalBaseDefaultBranchKept: with no remote default the base
+// is the local main itself; `wt remove main --yes --accept-loss -D` must keep
+// it (retained_default, exit 2): nothing different proves its commits.
+func TestRemoveCmdLocalBaseDefaultBranchKept(t *testing.T) {
+	a, _ := removeApp(t)
+	dir := cleanupRepo(t)
+	cgit(t, dir, "remote", "remove", "origin")
+	cgit(t, dir, "switch", "-c", "topic")
+	cgit(t, dir, "switch", "main")
+	cleanupCommit(t, dir, "only.txt", "only-on-main")
+	cgit(t, dir, "switch", "topic")
+	stdout, stderr, err := runRemove(t, a, dir, "", "--no-fetch", "--yes", "--accept-loss", "-D", "--json", "main")
+	if exitOf(err) != 2 {
+		t.Fatalf("exit %d, want 2\nstdout=%s\nstderr=%s", exitOf(err), stdout, stderr)
+	}
+	if !hasBranch(t, dir, "main") {
+		t.Fatal("main deleted although the base is main itself")
+	}
+	if !strings.Contains(stdout, "retained_default") {
+		t.Errorf("stdout lacks retained_default:\n%s", stdout)
+	}
+}

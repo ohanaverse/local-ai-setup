@@ -267,11 +267,10 @@ func (e Engine) worktreeGate(it Item) gated {
 	}
 
 	// 5. Hard blockers: no option overrides them.
-	if len(fresh.Blockers) > 0 {
-		return stop(refuse(it, blockerReason(fresh.Blockers)))
-	}
-	if fresh.Status == cleanup.StatusInUse {
-		return stop(refuse(it, "in use"))
+	// Floors (held, default_branch) are not here: they read less_sure and
+	// need --accept-loss through needsOf.
+	if fresh.HardStop != "" {
+		return stop(refuse(it, blockerReason(fresh.Blockers, fresh.Kind)))
 	}
 
 	// 6. An unknown is never approved, Force or not.
@@ -450,7 +449,7 @@ func coverLapsed(it Item, gate, now cleanup.Row) bool {
 	switch {
 	case q == nil || !q.CoversDirt || p == nil || q.Ref != p.Ref || q.Commit != p.Commit,
 		now.Ref != gate.Ref || rowTip(now) == "" || rowTip(now) != rowTip(gate) || rowTip(now) != it.SawTip,
-		len(now.Blockers) > 0 || now.Status == cleanup.StatusInUse,
+		now.HardStop != "",
 		now.Losses.GatesUnknown, // losses: raw, the view never clears GatesUnknown (same value either way)
 		now.Status.WorseThan(it.Saw),
 		lossesWorse(now.EffectiveLosses(), it.SawLosses):
@@ -508,11 +507,8 @@ func (e Engine) branchGate(it Item) gated {
 	}
 
 	// 4. Hard blockers.
-	if len(fresh.Blockers) > 0 {
-		return refuseB(blockerReason(fresh.Blockers))
-	}
-	if fresh.Status == cleanup.StatusInUse {
-		return refuseB("in use")
+	if fresh.HardStop != "" {
+		return refuseB(blockerReason(fresh.Blockers, fresh.Kind))
 	}
 
 	// 5. Changed since the user saw it.
@@ -657,15 +653,26 @@ func (e Engine) invalidPath(p string) string {
 	return ""
 }
 
-// blockerReason names every hard blocker's code, the first one's detail.
-func blockerReason(bs []cleanup.Reason) string {
-	codes := make([]string, len(bs))
-	for i, b := range bs {
+// blockerReason names every hard stop's code (floors such as held and
+// default_branch are left out: they need --accept-loss, they do not refuse),
+// the first one's detail.
+func blockerReason(bs []cleanup.Reason, k cleanup.Kind) string {
+	var hard []cleanup.Reason
+	for _, b := range bs {
+		if cleanup.IsHardStop(b.Code, k) {
+			hard = append(hard, b)
+		}
+	}
+	if len(hard) == 0 {
+		return "in use"
+	}
+	codes := make([]string, len(hard))
+	for i, b := range hard {
 		codes[i] = b.Code
 	}
 	s := "hard blocker: " + strings.Join(codes, ", ")
-	if bs[0].Detail != "" {
-		s += " (" + bs[0].Detail + ")"
+	if hard[0].Detail != "" {
+		s += " (" + hard[0].Detail + ")"
 	}
 	return s
 }

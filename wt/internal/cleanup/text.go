@@ -15,6 +15,10 @@ const noPRLookupDetail = "no PR lookup for this branch"
 // gh line never names it.
 const notCheckedDetail = "the pull-request state of another remote's branch is not checked"
 
+// noGitHubDetail is the origin row's not_checked detail when origin is not on
+// GitHub: there are no pull requests, so none is looked up or missing.
+const noGitHubDetail = "origin is not on GitHub, so no pull request is checked"
+
 // fetchErrMax caps a fetch error's length in runes.
 const fetchErrMax = 200
 

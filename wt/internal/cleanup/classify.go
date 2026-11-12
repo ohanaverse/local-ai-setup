@@ -71,6 +71,19 @@ const (
 	BlockBaseOfOpenPR  = "base_of_open_pr" // remote rows: an open PR targets this branch
 )
 
+// IsHardStop reports whether a blocker code refuses a removal outright, for a
+// row of kind k. The rest (held, default_branch) are verdict floors: the row
+// is never proven, but --accept-loss may remove it. Every code applies to
+// every kind today; k is part of the signature so a later code can differ.
+func IsHardStop(code string, k Kind) bool {
+	switch code {
+	case BlockPrimary, BlockCurrent, BlockLocked, BlockNested, BlockOperation,
+		BlockProtectedArtifact, BlockOpenPR, BlockBaseOfOpenPR:
+		return true
+	}
+	return false
+}
+
 // DefaultMinAge is how old a branch (or detached HEAD) at or behind the base
 // must be before same-commit or ancestor proves anything: a branch made a
 // minute ago looks merged.
@@ -100,9 +113,30 @@ type Row struct {
 	Unknown  bool     // some fact could not be determined; never proven then
 	Reasons  []Reason
 	Blockers []Reason
+	// HardStop is the code of the first blocker that refuses a removal
+	// outright (IsHardStop), "" when none does: the other blockers (held,
+	// default_branch) are verdict floors a user may accept. Not serialised.
+	HardStop string
+	Primary  bool // the repository's primary checkout (the root)
+	Current  bool // the worktree holding the cwd
+	// Bare is a bare repository's own entry (the primary of a repository
+	// with no main working tree): there is no directory to launch in. Not
+	// serialised.
+	Bare bool
+	// Upstream is a branch or worktree row's remote ref folded into it (see
+	// Report.Folded), or its upstream that no longer exists (Gone); nil when
+	// it has neither. Not serialised yet.
+	Upstream *Upstream
 	PR       *PRInfo // the PR the verdict rests on, if any
-	AgeDays  int
-	AgeKnown bool // AgeDays is a real age (0 then means under a day), not "could not tell"
+	// PRUnknown is true while the row's PR state is unknown (the lookup was
+	// skipped, still to run, or gave no usable answer); the row reads "PR ?"
+	// and is never proven on git evidence alone. PRTag is the PR once known
+	// (the verdict's own, else an open one, else the first). Neither is
+	// serialised.
+	PRUnknown bool
+	PRTag     *PRInfo
+	AgeDays   int
+	AgeKnown  bool // AgeDays is a real age (0 then means under a day), not "could not tell"
 
 	// The facts below serve removal only and are never serialised (RowJSON
 	// is built field by field; TestCleanupJSONUnchangedByNewRowFields).
@@ -178,7 +212,17 @@ type Report struct {
 	Base  Base
 	Fetch FetchResult
 	GH    GHState
-	Rows  []Row
+	// PRNotApplicable mirrors Snapshot.PRNotApplicable: origin is not on
+	// GitHub, so the header says there is no PR evidence instead of blaming gh.
+	// Not part of the JSON contract.
+	PRNotApplicable bool
+	// Rows is one row per worktree, per local branch no worktree holds, and
+	// per remote-tracking ref no local row folds in.
+	Rows []Row
+	// Folded are the remote rows folded into a local row (Row.Upstream),
+	// still fully classified, in Classify's order. RemoteRows lists them with
+	// the remote rows of Rows; AllRows with every row.
+	Folded []Row
 	// MinAge is the Options.MinAge Classify used (DefaultMinAge when none
 	// was given). Not part of the JSON contract.
 	MinAge time.Duration
@@ -193,6 +237,7 @@ type Report struct {
 type judge struct {
 	blockers, unique, unknown, soft []Reason
 	info                            []Reason
+	kind                            Kind
 	ev                              Evidence
 	pr                              *PRInfo
 }
@@ -202,14 +247,26 @@ func (j *judge) uniq(code, detail string)   { j.unique = append(j.unique, Reason
 func (j *judge) unsure(code, detail string) { j.unknown = append(j.unknown, Reason{code, detail}) }
 func (j *judge) weak(code, detail string)   { j.soft = append(j.soft, Reason{code, detail}) }
 
-// status is first match wins: in use, unique work, less sure, proven.
+// hardStop is the first blocker that refuses a removal outright, "" if none.
+func (j *judge) hardStop() string {
+	for _, b := range j.blockers {
+		if IsHardStop(b.Code, j.kind) {
+			return b.Code
+		}
+	}
+	return ""
+}
+
+// status is first match wins: in use (a hard stop only), unique work, less
+// sure, proven. A floor blocker (held, default branch) caps proven at less
+// sure.
 func (j *judge) status() Status {
 	switch {
-	case len(j.blockers) > 0:
+	case j.hardStop() != "":
 		return StatusInUse
 	case len(j.unique) > 0:
 		return StatusUniqueWork
-	case len(j.unknown) > 0 || len(j.soft) > 0 || j.ev == "":
+	case len(j.blockers) > 0 || len(j.unknown) > 0 || len(j.soft) > 0 || j.ev == "":
 		return StatusLessSure
 	}
 	return StatusProven
@@ -223,6 +280,7 @@ func (j *judge) fill(r *Row) {
 	r.Evidence = j.ev
 	r.Unknown = len(j.unknown) > 0
 	r.Blockers = j.blockers
+	r.HardStop = j.hardStop()
 	r.Reasons = slices.Concat(j.unique, j.unknown, j.soft, j.info)
 	if j.pr != nil {
 		pr := *j.pr
@@ -248,13 +306,28 @@ func Classify(s Snapshot, o Options) Report {
 	if c.gh == GHUnavailable {
 		c.ghNote = "gh answered for no branch"
 	}
-	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, MinAge: o.MinAge}
+	r := Report{Repo: s.Repo, Base: s.Base, Fetch: s.Fetch, GH: c.gh, PRNotApplicable: s.PRNotApplicable, MinAge: o.MinAge}
+	// Every remote ref is classified first, so a local row that folds one in
+	// can carry its verdict.
+	f := folder{remotes: make([]Row, len(s.Remotes)), byRef: map[string]int{}, folded: make([]bool, len(s.Remotes))}
+	for i, rf := range s.Remotes {
+		f.remotes[i] = c.remoteRow(rf)
+		if rf.Remote == "origin" { // PR lookups describe origin only
+			c.tagPR(&f.remotes[i], rf.Name)
+		}
+		f.byRef[rf.Ref] = i
+	}
 	held := map[string]bool{}
 	for _, ws := range s.Worktrees {
-		r.Rows = append(r.Rows, c.worktree(ws))
+		row := c.worktree(ws)
 		if ws.Fact.Branch != "" {
+			c.tagPR(&row, row.Branch)
 			held[strings.ToLower(ws.Fact.Branch)] = true
+			if h, ok := c.head(ws.Fact.Branch); ok {
+				row.Upstream = f.fold(h)
+			}
 		}
+		r.Rows = append(r.Rows, row)
 	}
 	for _, h := range s.Heads {
 		// Folded case: on a case-insensitive volume a worktree's HEAD may
@@ -263,21 +336,110 @@ func Classify(s Snapshot, o Options) Report {
 		if held[strings.ToLower(h.Ref)] {
 			continue
 		}
-		r.Rows = append(r.Rows, c.branchRow(h))
+		row := c.branchRow(h)
+		c.tagPR(&row, h.Name)
+		row.Upstream = f.fold(h)
+		r.Rows = append(r.Rows, row)
 	}
-	for _, rf := range s.Remotes {
-		r.Rows = append(r.Rows, c.remoteRow(rf))
+	for i, row := range f.remotes {
+		if f.folded[i] {
+			r.Folded = append(r.Folded, row)
+		} else {
+			r.Rows = append(r.Rows, row)
+		}
 	}
-	slices.SortStableFunc(r.Rows, func(a, b Row) int {
-		return cmp.Or(
-			cmp.Compare(a.Status.Rank(), b.Status.Rank()),
-			cmp.Compare(kindOrder(a.Kind), kindOrder(b.Kind)),
-			cmp.Compare(a.Name, b.Name),
-			cmp.Compare(a.Remote, b.Remote),
-			cmp.Compare(a.Path, b.Path),
-		)
-	})
+	slices.SortStableFunc(r.Rows, rowOrder)
+	slices.SortStableFunc(r.Folded, rowOrder)
 	return r
+}
+
+// rowOrder is the order Classify lists rows in: status, then kind, name,
+// remote and path.
+func rowOrder(a, b Row) int {
+	return cmp.Or(
+		cmp.Compare(a.Status.Rank(), b.Status.Rank()),
+		cmp.Compare(kindOrder(a.Kind), kindOrder(b.Kind)),
+		cmp.Compare(a.Name, b.Name),
+		cmp.Compare(a.Remote, b.Remote),
+		cmp.Compare(a.Path, b.Path),
+	)
+}
+
+// Upstream is the remote side of a local row: the remote-tracking ref folded
+// into it, with that ref's own verdict, or (Gone) an upstream that no longer
+// exists, which has no row and no verdict.
+type Upstream struct {
+	Ref      string // full refname, refs/remotes/<Remote>/<Name>
+	Remote   string
+	Name     string // the branch name on the remote ("" when Ref is not under refs/remotes/<Remote>/)
+	Tip      string // "" when Gone
+	Gone     bool
+	Status   Status   // the folded row's; "" when Gone
+	Evidence Evidence // the folded row's
+}
+
+// folder folds remote rows into local rows.
+type folder struct {
+	remotes []Row          // every remote ref's row, in s.Remotes order
+	byRef   map[string]int // full refname -> index in remotes
+	folded  []bool         // remotes[i] is folded into some local row
+}
+
+// fold returns the Upstream of a local head's row and marks the remote row
+// it folds in. The ref folded is the head's upstream when that is the
+// same-named branch of its remote, origin/<name> when the head has no
+// upstream; refnames are matched exactly, so a name differing only in case
+// never folds. A gone upstream is a field with no row, and never falls back
+// to origin. An upstream of another name, or a local one, folds nothing.
+func (f *folder) fold(h RefFact) *Upstream {
+	if h.Gone && h.Upstream != "" {
+		name := ""
+		if rest, ok := strings.CutPrefix(h.Upstream, "refs/remotes/"+h.Remote+"/"); ok && h.Remote != "" {
+			name = rest
+		}
+		return &Upstream{Ref: h.Upstream, Remote: h.Remote, Name: name, Gone: true}
+	}
+	target := ""
+	switch {
+	case h.Upstream == "":
+		target = "refs/remotes/origin/" + h.Name
+	case h.Remote != "" && h.Upstream == "refs/remotes/"+h.Remote+"/"+h.Name:
+		target = h.Upstream
+	}
+	i, ok := f.byRef[target]
+	if target == "" || !ok {
+		return nil
+	}
+	f.folded[i] = true
+	rr := f.remotes[i]
+	return &Upstream{Ref: rr.Ref, Remote: rr.Remote, Name: rr.Name, Tip: rr.Tip, Status: rr.Status, Evidence: rr.Evidence}
+}
+
+// AllRows is every classified row, the folded remote rows included, in
+// Classify's order: the list as it was before folding.
+//
+// It merges the two (each already in that order) without re-sorting Rows, so
+// a report built by hand keeps its own order, and without Folded it is Rows.
+func (r Report) AllRows() []Row {
+	all := make([]Row, 0, len(r.Rows)+len(r.Folded))
+	i, j := 0, 0
+	for i < len(r.Rows) || j < len(r.Folded) {
+		if j == len(r.Folded) || (i < len(r.Rows) && rowOrder(r.Rows[i], r.Folded[j]) <= 0) {
+			all = append(all, r.Rows[i])
+			i++
+		} else {
+			all = append(all, r.Folded[j])
+			j++
+		}
+	}
+	return all
+}
+
+// RemoteRows is every remote row, those in Rows and those folded into a
+// local row, in Classify's order. Code that looks a remote ref up by its row
+// goes through it, never through Rows alone.
+func (r Report) RemoteRows() []Row {
+	return slices.DeleteFunc(r.AllRows(), func(row Row) bool { return row.Kind != KindRemote })
 }
 
 func kindOrder(k Kind) int { return slices.Index([]Kind{KindWorktree, KindBranch, KindRemote}, k) }
@@ -300,6 +462,38 @@ func ghState(prs map[string]PRResult) GHState {
 	return GHPartial
 }
 
+// prPending is whether name's PR state is unknown for a reason a floor must
+// honour: the lookups ran (or were skipped) and gave no usable answer for it
+// (a miss counts). A snapshot with neither flag is hand-built or older and
+// keeps the earlier rule (the PR rung only).
+func (c *classifier) prPending(name string) bool {
+	return (c.s.PRsAsked || c.s.PRsSkipped) && c.s.PRs[name].Lookup == LookupUnknown
+}
+
+// tagPR sets row.PRUnknown and row.PRTag from name's lookup. Not serialised.
+func (c *classifier) tagPR(row *Row, name string) {
+	if c.isDefault(name) && row.Kind != KindRemote {
+		return
+	}
+	if c.prPending(name) {
+		row.PRUnknown = true
+		return
+	}
+	res := c.s.PRs[name]
+	if res.Lookup != LookupKnown || len(res.PRs) == 0 {
+		return
+	}
+	pr := row.PR
+	if pr == nil {
+		pr = findPR(res, func(p PRInfo) bool { return p.State == "OPEN" })
+	}
+	if pr == nil {
+		pr = &res.PRs[0]
+	}
+	cp := *pr
+	row.PRTag = &cp
+}
+
 func (c *classifier) isDefault(name string) bool {
 	return !c.s.NoDefault && c.s.isDefault(name)
 }
@@ -314,7 +508,8 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		// Unknown until the branch's head is found and its proof read.
 		row.Losses.Unpushed = -1
 	}
-	var j judge
+	row.Primary, row.Current, row.Bare = w.Primary, w.Current, w.Bare
+	j := judge{kind: KindWorktree}
 	g := ws.Gates
 	// The blockers found before a gates error still block: in use wins.
 	j.blockers = append(j.blockers, g.Blockers...)
@@ -420,10 +615,17 @@ func (c *classifier) head(ref string) (RefFact, bool) {
 func (c *classifier) branchRow(h RefFact) Row {
 	row := Row{Kind: KindBranch, Name: h.Name, Branch: h.Name, Remote: h.Remote, Ref: h.Ref, Tip: h.Tip}
 	row.Losses.Unpushed = -1
-	var j judge
-	if c.s.NoDefault {
+	j := judge{kind: KindBranch}
+	if c.isDefault(h.Name) {
+		j.block(BlockDefaultBranch, h.Name)
+	}
+	switch {
+	case c.s.NoDefault:
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
-	} else {
+	case c.s.Base.Fallback && c.isDefault(h.Name):
+		row.Losses.Unpushed = c.selfBase(&j, h)
+		c.setAge(&row, h)
+	default:
 		row.Losses.Unpushed = c.unpushedOf(h)
 		c.local(&j, h, false)
 		c.setAge(&row, h)
@@ -432,6 +634,31 @@ func (c *classifier) branchRow(h RefFact) Row {
 	j.fill(&row)
 	row.BranchProven = row.Status == StatusProven
 	return row
+}
+
+// selfBase judges the local default branch when it is the base itself (no
+// remote default, Base.Fallback): the ladder would compare it with itself
+// and find it same-commit, so it gets no merge evidence. Its commits on no
+// remote-tracking ref (all of them when there is no remote) are unique work;
+// it returns that count for Losses.Unpushed (-1 when unknown).
+func (c *classifier) selfBase(j *judge, h RefFact) int {
+	j.weak(ReasonBaseIsLocal, "the base is the local "+c.s.Base.Ref+" itself, so nothing else proves its commits")
+	p, ok := c.s.Proofs[h.Tip]
+	switch {
+	case !ok:
+		j.unsure(ReasonUnpushedUnknown, "its commits could not be counted")
+		return -1
+	case p.Unpushed < 0:
+		j.unsure(ReasonUnpushedUnknown, p.UnpushedErr)
+		return -1
+	case p.Unpushed > 0:
+		noun := "commits"
+		if p.Unpushed == 1 {
+			noun = "commit"
+		}
+		j.uniq(ReasonUnpushed, fmt.Sprintf("%d %s on no remote-tracking ref", p.Unpushed, noun))
+	}
+	return p.Unpushed
 }
 
 // branchProven is Ruling A: h's own judgement, the one a worktree row on it
@@ -581,7 +808,7 @@ func (c *classifier) local(j *judge, h RefFact, covered bool) {
 			}
 		}
 		if ok && p.Verdict == NotMerged {
-			if res.Lookup == LookupUnknown {
+			if res.Lookup == LookupUnknown && !c.s.PRNotApplicable {
 				j.unsure(ReasonPRUnknown, cmp.Or(res.Err, noPRLookupDetail))
 			}
 			if len(p.Weak) > 0 {
@@ -591,6 +818,12 @@ func (c *classifier) local(j *judge, h RefFact, covered bool) {
 				j.ev = EvRescued
 			}
 		}
+	}
+	if j.ev != "" && c.prPending(h.Name) && !slices.ContainsFunc(j.unknown, func(r Reason) bool { return r.Code == ReasonPRUnknown }) {
+		// Fail closed: git alone proves the content, but nobody has said
+		// whether a PR still holds this branch (no gh, offline, or not
+		// asked yet).
+		j.weak(ReasonPRUnknown, cmp.Or(res.Err, noPRLookupDetail))
 	}
 	c.minAge(j, h)
 }
@@ -625,7 +858,12 @@ func (c *classifier) netZeroUnpushed(j *judge, p Proof) {
 // content in the base.
 func (c *classifier) remoteRow(rf RefFact) Row {
 	row := Row{Kind: KindRemote, Name: rf.Name, Branch: rf.Name, Remote: rf.Remote, Ref: rf.Ref, Tip: rf.Tip}
-	var j judge
+	j := judge{kind: KindRemote}
+	if c.isDefault(rf.Name) {
+		// The remote ref of the default branch (origin/main): a floor, like
+		// the local head's.
+		j.block(BlockDefaultBranch, rf.Remote+"/"+rf.Name)
+	}
 	if c.s.NoDefault {
 		j.unsure(ReasonNoDefaultBranch, "no default branch, so no base to compare with")
 		j.fill(&row)
@@ -636,8 +874,13 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	// nor has a lookup of its own (nothing asks gh about upstream/foo), so
 	// it is judged on git's proofs, and its PR state is unknown (below).
 	origin := rf.Remote == "origin"
+	// With no own repository (origin is not on GitHub) there are no pull
+	// requests to look up, so origin's row has no lookup to fail either: it is
+	// judged on git's proofs like another remote's, and no origin-only check
+	// (gh answers, the origin fetch, the open PRs that target it) applies.
+	prLookups := origin && !c.s.PRNotApplicable
 	var res PRResult // zero value (LookupUnknown) for another remote's row, which has no lookup
-	if origin {
+	if prLookups {
 		res = c.s.PRs[rf.Name] // a miss is LookupUnknown
 		switch {
 		case res.Lookup == LookupUnknown:
@@ -645,6 +888,8 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 		case c.gh != GHOK:
 			j.unsure(ReasonCannotVerify, c.ghNote)
 		}
+	} else if origin {
+		j.unsure(ReasonNotChecked, noGitHubDetail)
 	} else {
 		// Fail closed: nothing asks gh about another remote's branch, so its
 		// pull-request state is unknown, never "no PR". The row can read at
@@ -672,13 +917,13 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	// branch" query, the PR rung the removal engine re-verifies) apply to an
 	// origin row only: they are origin facts, keyed by a bare name, and
 	// nothing deletes any other remote's branch.
-	if origin {
-		if why := c.originFetchProblem(); why != "" {
+	if prLookups {
+		if why := c.originFetchProblem(rf.Name); why != "" {
 			j.unsure(ReasonCannotVerify, why)
 		}
 	}
 	candidate := j.ev != ""
-	deps, baseErr := c.dependants(rf.Name, candidate, origin)
+	deps, baseErr := c.dependants(rf.Name, candidate, prLookups)
 	if baseErr != "" {
 		j.unsure(ReasonCannotVerify, baseErr)
 	}
@@ -707,20 +952,36 @@ func (c *classifier) remoteRow(rf RefFact) Row {
 	return row
 }
 
-// originFetchProblem says why this run's fetch does not support deleting an
-// origin branch, or "": origin must have been fetched cleanly now, or a PR
-// opened against the branch since the last fetch is invisible.
-func (c *classifier) originFetchProblem() string {
+// originFetchPrefix starts every originFetchProblem text: the reason reuses
+// the cannot_verify code (no new JSON code), and IsOriginFetchReason tells it
+// from gh's own cannot_verify reasons by it.
+const originFetchPrefix = "origin was not "
+
+// IsOriginFetchReason is whether r is the origin-fetch cannot_verify reason
+// (originFetchProblem), which is about the fetch, not gh: the text view shows
+// it without the "needs gh" label and keeps it out of the gh header line.
+func IsOriginFetchReason(r Reason) bool {
+	return r.Code == ReasonCannotVerify && strings.HasPrefix(r.Detail, originFetchPrefix)
+}
+
+// originFetchProblem says why this run's fetch does not support deleting
+// origin branch name, or "": origin must have been fetched cleanly now, or a
+// PR opened against the branch since the last fetch is invisible. The
+// terminal list (Fetch.NotAttempted) never fetched, and says so rather than
+// naming --no-fetch.
+func (c *classifier) originFetchProblem(name string) string {
 	f := c.s.Fetch
 	switch {
 	case f.OK:
 		return ""
+	case f.NotAttempted:
+		return originFetchPrefix + "refreshed in this list; open pull requests that target this branch may be missed (wt remove origin/" + name + " --remote re-checks after a fetch)"
 	case f.Skipped != "":
-		return "origin was not fetched (" + f.Skipped + "); open pull requests that target this branch may be missed"
+		return originFetchPrefix + "fetched (" + f.Skipped + "); open pull requests that target this branch may be missed"
 	case f.At.IsZero():
-		return "origin was not fetched this run (--no-fetch); open pull requests that target this branch may be missed"
+		return originFetchPrefix + "fetched this run (--no-fetch); open pull requests that target this branch may be missed"
 	}
-	return "origin was not fetched cleanly this run (" + fetchErrText(f.Err) + "); open pull requests that target this branch may be missed"
+	return originFetchPrefix + "fetched cleanly this run (" + fetchErrText(f.Err) + "); open pull requests that target this branch may be missed"
 }
 
 // dependants are the open PRs, from any head repository, that target name:

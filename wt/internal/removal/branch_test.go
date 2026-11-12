@@ -1360,3 +1360,61 @@ func TestBranchGcCaveatOnlyForUnreachableTip(t *testing.T) {
 		}
 	})
 }
+
+// TestDeleteDefaultBranchRowNeedsAcceptLoss: the default branch's local head,
+// listed with the default_branch floor, is refused without accept-loss and
+// allowed with it.
+func TestDeleteDefaultBranchRowNeedsAcceptLoss(t *testing.T) {
+	noGh(t)
+	f := newFixture(t)
+	f.git("switch", "-c", "feat")
+	s, r := f.report()
+	row := f.row(r, cleanup.KindBranch, "main")
+	if row.Status != cleanup.StatusLessSure || row.HardStop != "" {
+		t.Fatalf("precondition: %s hardstop %q", row.Status, row.HardStop)
+	}
+	e := f.engine(s, f.inputs(), Options{})
+	bare := itemOf(row)
+	bare.Approved = Needs{}
+	bare = seal(bare)
+	o := one(t, e, bare)
+	if o.Branch == BrDeleted || !strings.Contains(o.Reason, "needs confirmation") {
+		t.Fatalf("without accept-loss: %+v, want refused needing confirmation", o)
+	}
+	if _, ok := f.refTip("refs/heads/main"); !ok {
+		t.Fatal("main deleted without accept-loss")
+	}
+	o = one(t, e, approve(itemOf(row), false, true))
+	if o.Branch != BrDeleted {
+		t.Fatalf("with accept-loss: %+v, want deleted", o)
+	}
+	if _, ok := f.refTip("refs/heads/main"); ok {
+		t.Error("main still exists")
+	}
+}
+
+// TestDeleteFallbackDefaultBranchRefused: with no remote default the base is
+// the local main itself, so nothing different proves it; main stays
+// (retained_default) even with every approval, and its own commits survive.
+func TestDeleteFallbackDefaultBranchRefused(t *testing.T) {
+	noGh(t)
+	f := newFixture(t)
+	f.git("remote", "remove", "origin")
+	f.git("switch", "-c", "topic")
+	f.git("switch", "main")
+	f.Commit(f.Dir, "only.txt", "only", "only-on-main")
+	f.git("switch", "topic")
+	s, r := f.report()
+	if !s.Base.Fallback {
+		t.Fatalf("precondition: base %+v, want the local main", s.Base)
+	}
+	row := f.row(r, cleanup.KindBranch, "main")
+	e := f.engine(s, f.inputs(), Options{})
+	o := one(t, e, approve(itemOf(row), false, true))
+	if o.Branch != BrRetainedDefault {
+		t.Fatalf("outcome %+v, want %s", o, BrRetainedDefault)
+	}
+	if _, ok := f.refTip("refs/heads/main"); !ok {
+		t.Fatal("main deleted although the base is main itself")
+	}
+}

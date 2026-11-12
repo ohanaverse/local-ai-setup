@@ -557,6 +557,8 @@ func TestRemoteRowsNeverEnterTheSelection(t *testing.T) {
 	r := newRmRepo(t)
 	r.merged("done")
 	r.loose("loose")
+	// origin/done folds into its local row; a remote-only ref stays a row.
+	r.git("update-ref", "refs/remotes/origin/remote-only", "main")
 	h := r.harness()
 	m := h.list(120, 50)
 	remotes := 0

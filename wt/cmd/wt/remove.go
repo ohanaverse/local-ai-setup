@@ -44,7 +44,7 @@ func removeCmd(a *app) *cobra.Command {
 		Short: "Remove the named worktrees, local branches and origin branches, re-checking each first",
 		Long: "Remove each named worktree (by its path), local branch (by its exact name) or\n" +
 			"origin branch (origin/<name>), and a removed worktree's branch when it is\n" +
-			"proven merged. Each target is classified as `wt cleanup` lists it, then\n" +
+			"proven merged. Each target is classified as `wt worktrees` lists it, then\n" +
 			"re-checked immediately before it is touched; one that changed since is skipped.\n\n" +
 			"Approvals are per item and each flag means one thing:\n" +
 			"  --yes          go ahead without the y/N prompt (a proven item needs nothing else)\n" +
@@ -63,8 +63,10 @@ func removeCmd(a *app) *cobra.Command {
 			"                 listed, so a branch someone pushed to since is left alone, and\n" +
 			"                 the result prints the sha and the command that restores it.\n" +
 			"An item whose flag is missing is refused and the others go on. No flag\n" +
-			"overrides a hard blocker (primary or current checkout, locked, in use,\n" +
-			"a registered model artifact, the default branch...).\n\n" +
+			"overrides a hard stop (the primary or current checkout, a locked or nested\n" +
+			"worktree, an operation in progress, a registered model artifact, an open PR\n" +
+			"on an origin branch or one that targets it). A held item and the default\n" +
+			"branch need --accept-loss (and -D when the branch is not proven merged).\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing every\n" +
 			"item's losses and running processes; with no terminal it removes nothing.\n\n" +
 			"Exit 0: everything named was removed (a worktree's unmerged branch kept is\n" +
@@ -221,6 +223,10 @@ func executeRemove(cmd *cobra.Command, a *app, f removeFlags, args []string) err
 // more than one, is a usage error naming the argument. An argument naming a
 // row an earlier one already named adds nothing.
 func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.Row, error) {
+	// The local rows, then every remote row: an origin ref folded into its
+	// local branch's row is not in Rows but is still a target by its name.
+	cands := slices.DeleteFunc(slices.Clone(r.Rows), func(row cleanup.Row) bool { return row.Kind == cleanup.KindRemote })
+	cands = append(cands, r.RemoteRows()...)
 	var rows []cleanup.Row
 	seen := map[int]bool{}
 	for _, arg := range args {
@@ -234,7 +240,7 @@ func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.R
 		}
 		p = cleanup.ResolvePath(p)
 		var hits []int
-		for i, row := range r.Rows {
+		for i, row := range cands {
 			byPath := row.Kind == cleanup.KindWorktree && row.Path != "" && cleanup.ResolvePath(row.Path) == p
 			byRef := (row.Kind == cleanup.KindWorktree || row.Kind == cleanup.KindBranch) && row.Ref != "" && row.Ref == "refs/heads/"+arg
 			byOrigin := row.Kind == cleanup.KindRemote && row.Remote == "origin" && row.Ref != "" && row.Ref == "refs/remotes/"+arg
@@ -250,7 +256,7 @@ func resolveRemoveArgs(r cleanup.Report, cwd string, args []string) ([]cleanup.R
 		}
 		if !seen[hits[0]] {
 			seen[hits[0]] = true
-			rows = append(rows, r.Rows[hits[0]])
+			rows = append(rows, cands[hits[0]])
 		}
 	}
 	return rows, nil
@@ -269,7 +275,7 @@ func planRemove(eng removal.Engine, rows []cleanup.Row, f removeFlags) []planned
 	var at []int
 	for i, row := range rows {
 		out[i].row = row
-		if row.Status == cleanup.StatusInUse {
+		if row.HardStop != "" {
 			o := removal.NewOutcome(removal.ItemFromRow(row), removal.WtRefused, removal.BrNotAttempted, inUseReason(row))
 			out[i].outcome = o
 			continue
@@ -337,7 +343,9 @@ func missingFlags(need, granted removal.Needs) string {
 func inUseReason(row cleanup.Row) string {
 	var codes []string
 	for _, b := range row.Blockers {
-		codes = append(codes, b.Code)
+		if cleanup.IsHardStop(b.Code, row.Kind) {
+			codes = append(codes, b.Code)
+		}
 	}
 	if len(codes) == 0 {
 		return "in use"

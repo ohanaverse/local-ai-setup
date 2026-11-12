@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -72,7 +73,7 @@ func stubCleanupGH(t *testing.T) {
 func runCleanup(t *testing.T, a *app, dir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	t.Chdir(dir)
-	cmd := cleanupCmd(a)
+	cmd := worktreesCmd(a)
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -113,6 +114,45 @@ func TestCleanupCmdJSONIsOneDocument(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no row for branch topic:\n%s", stdout)
+	}
+}
+
+// TestCleanupCmdJSONIncludesRootDefaultAndHeldRows runs --json from a root on a
+// feature branch: the root row carries hard_stop "primary", the default
+// branch appears as a row, and a pushed branch folds its remote ref into an
+// upstream field.
+func TestCleanupCmdJSONIncludesRootDefaultAndHeldRows(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	cgit(t, dir, "checkout", "-b", "feature")
+	cleanupCommit(t, dir, "f", "feature work")
+	cgit(t, dir, "push", "-u", "origin", "feature")
+	stdout, _, err := runCleanup(t, a, dir, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env cleanup.Envelope
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("not an envelope: %v\n%s", err, stdout)
+	}
+	var root, def *cleanup.RowJSON
+	for i, r := range env.Rows {
+		switch {
+		case r.Kind == "worktree" && r.HardStop == cleanup.BlockPrimary:
+			root = &env.Rows[i]
+		case r.Kind == "branch" && r.Name == "main":
+			def = &env.Rows[i]
+		}
+	}
+	if root == nil || root.Branch != "feature" {
+		t.Errorf("no root row with hard_stop primary on feature:\n%s", stdout)
+	}
+	if def == nil {
+		t.Fatalf("no row for the default branch main:\n%s", stdout)
+	}
+	if def.Upstream == nil || def.Upstream.Ref != "refs/remotes/origin/main" {
+		t.Errorf("main upstream = %+v:\n%s", def.Upstream, stdout)
 	}
 }
 
@@ -556,12 +596,106 @@ func TestCleanupListRemovalOffWithoutRegistry(t *testing.T) {
 	}
 }
 
-// TestCleanupCmdRegisteredOnRoot verifies `wt cleanup` is a root subcommand.
-func TestCleanupCmdRegisteredOnRoot(t *testing.T) {
+// TestWorktreesCmdRegisteredWithCleanupAlias verifies `wt worktrees` is the
+// root subcommand and `wt cleanup` the same command object under an alias.
+func TestWorktreesCmdRegisteredWithCleanupAlias(t *testing.T) {
 	newTestApp(t)
-	c, _, err := rootCmd().Find([]string{"cleanup"})
-	if err != nil || c == nil || c.Name() != "cleanup" {
-		t.Errorf("Find(cleanup) = %v, %v", c, err)
+	root := rootCmd()
+	w, _, err := root.Find([]string{"worktrees"})
+	if err != nil || w == nil || w.Name() != "worktrees" {
+		t.Fatalf("Find(worktrees) = %v, %v", w, err)
+	}
+	c, _, err := root.Find([]string{"cleanup"})
+	if err != nil || c != w {
+		t.Errorf("Find(cleanup) = %v, %v; want the worktrees command", c, err)
+	}
+	if !slices.Contains(w.Aliases, "cleanup") {
+		t.Errorf("Aliases = %v, want cleanup", w.Aliases)
+	}
+}
+
+// TestWorktreesCmdTTYHandsOffToManageList is the interactive hand-off: one
+// call with the report on a terminal; --json and --plain never call it.
+func TestWorktreesCmdTTYHandsOffToManageList(t *testing.T) {
+	newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	isTerminalWriter = func(io.Writer) bool { return true }
+	calls := 0
+	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { calls++; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+	for _, name := range []string{"worktrees", "cleanup"} {
+		calls = 0
+		root := rootCmd()
+		var out bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{name, "--no-fetch"})
+		t.Chdir(dir)
+		if err := root.Execute(); err != nil || calls != 1 || out.Len() != 0 {
+			t.Errorf("%s on a terminal: err=%v calls=%d out=%q, want the list handed off once and no output", name, err, calls, out.String())
+		}
+	}
+}
+
+// TestWorktreesCmdTTYDoesNotFetchOnOpen verifies the interactive path gathers
+// without fetching and with every remote's branches, while --json fetches.
+func TestWorktreesCmdTTYDoesNotFetchOnOpen(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+
+	isTerminalWriter = func(io.Writer) bool { return true }
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 || ins[0].Fetch || !ins[0].AllRemotes {
+		t.Errorf("tty gather = %+v, want one gather with Fetch false and AllRemotes", ins)
+	}
+	ins = nil
+	if _, _, err := runCleanup(t, a, dir, "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 || !ins[0].Fetch || ins[0].AllRemotes {
+		t.Errorf("--json gather = %+v, want Fetch true and no AllRemotes", ins)
+	}
+}
+
+// TestWorktreesCmdJSONSameUnderBothNames verifies both names print the same
+// bytes and accept the same flags.
+func TestWorktreesCmdJSONSameUnderBothNames(t *testing.T) {
+	newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	// No extra branch: a fresh branch's reason text carries its age in seconds,
+	// which the comparison below normalizes.
+	t.Chdir(dir)
+	run := func(name string) string {
+		root := rootCmd()
+		var out bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{name, "--json", "--no-fetch", "--min-age", "20m"})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return out.String()
+	}
+	// A row's reason names its age in seconds, which can tick between the runs.
+	age := regexp.MustCompile(`only \d+[smh]\d* old`)
+	norm := func(s string) string { return age.ReplaceAllString(s, "only N old") }
+	w, c := norm(run("worktrees")), norm(run("cleanup"))
+	if w == "" || w != c {
+		t.Errorf("worktrees and cleanup --json differ:\n%s\n---\n%s", w, c)
 	}
 }
 
@@ -606,5 +740,32 @@ func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 	}
 	if scanned < 5 {
 		t.Errorf("scanned only %d sources", scanned)
+	}
+}
+
+// TestWorktreesCmdTTYMarksFetchNotAttempted: the terminal list does not fetch
+// on open and says so (FetchResult.NotAttempted), so origin rows do not
+// blame a --no-fetch the user never passed; with --no-fetch it stays the
+// flag's plain skip.
+func TestWorktreesCmdTTYMarksFetchNotAttempted(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldTTY, oldList := isTerminalWriter, runCleanupList
+	var got []cleanup.FetchResult
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error {
+		got = append(got, r.Fetch)
+		return nil
+	}
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
+	isTerminalWriter = func(io.Writer) bool { return true }
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got[0].NotAttempted || got[1].NotAttempted {
+		t.Errorf("fetch results %+v, want NotAttempted without --no-fetch only", got)
 	}
 }

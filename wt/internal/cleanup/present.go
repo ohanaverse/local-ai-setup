@@ -40,12 +40,14 @@ func Heading(s Status) string {
 }
 
 // Groups splits r into its groups in GroupOrder, each keeping the row order
-// of r. A group with no rows is left out.
+// of r. A group with no rows is left out. A remote ref folded into a local
+// row is still listed as its own row (AllRows).
 func Groups(r Report) []Group {
 	var out []Group
+	rows := r.AllRows()
 	for _, st := range GroupOrder {
 		g := Group{Status: st, Heading: Heading(st)}
-		for _, row := range r.Rows {
+		for _, row := range rows {
 			if row.Status == st {
 				g.Rows = append(g.Rows, row)
 			}
@@ -226,6 +228,11 @@ func RowText(rep Report, row Row) string {
 			continue
 		}
 		detail := r.Detail
+		if IsOriginFetchReason(r) {
+			// Not about gh: its own words, with no "needs gh" label.
+			parts = append(parts, detail)
+			continue
+		}
 		if rep.GH == GHUnavailable && (r.Code == ReasonPRUnknown || r.Code == ReasonCannotVerify) {
 			// gh answered for no branch: the header's gh line says so and
 			// names the distinct causes (ghCauseText); gh's own text under
@@ -240,6 +247,13 @@ func RowText(rep Report, row Row) string {
 	if len(parts) == 0 {
 		return "no evidence"
 	}
+	// The same wording twice (a PR-lookup reason per failed lookup) reads once.
+	seen := map[string]bool{}
+	parts = slices.DeleteFunc(parts, func(p string) bool {
+		dup := seen[p]
+		seen[p] = true
+		return dup
+	})
 	return strings.Join(parts, "; ")
 }
 
@@ -353,9 +367,9 @@ const (
 func ghCauseText(r Report) string {
 	var causes []string
 	seen := map[string]bool{}
-	for _, row := range r.Rows {
+	for _, row := range r.AllRows() {
 		for _, re := range row.Reasons {
-			if re.Code != ReasonPRUnknown && re.Code != ReasonCannotVerify {
+			if re.Code != ReasonPRUnknown && re.Code != ReasonCannotVerify || IsOriginFetchReason(re) {
 				continue
 			}
 			c := capRunes(flat(re.Detail), ghCauseMax)
@@ -395,6 +409,8 @@ func HeaderLines(r Report, now time.Time) []string {
 	switch {
 	case r.Fetch.Skipped != "":
 		lines = append(lines, "fetch: skipped ("+r.Fetch.Skipped+")"+otherRemotesText(r.Fetch))
+	case r.Fetch.NotAttempted:
+		lines = append(lines, "fetch: not run (this list does not fetch when it opens); the base is as old as the last fetch, merges since may be missed")
 	case r.Fetch.At.IsZero():
 		lines = append(lines, "fetch: skipped; the base is as old as the last fetch, merges since may be missed")
 	case r.Fetch.OK:
@@ -403,6 +419,11 @@ func HeaderLines(r Report, now time.Time) []string {
 		lines = append(lines, "fetch: FAILED ("+fetchErrText(r.Fetch.Err)+"); the base may be stale, merges since the last fetch may be missed"+otherRemotesText(r.Fetch))
 	}
 
+	switch {
+	case r.PRNotApplicable:
+		lines = append(lines, "gh:    origin is not on GitHub; no PR evidence")
+		return append(lines, NoteLines(r)...)
+	}
 	switch r.GH {
 	case GHOK:
 		lines = append(lines, "gh:    ok")
@@ -478,4 +499,123 @@ func otherRemotesText(f FetchResult) string {
 		return ""
 	}
 	return "; " + strings.Join(parts, "; ")
+}
+
+// KindGroup is one kind-based group of the unified list.
+type KindGroup struct {
+	Heading string
+	Rows    []Row
+}
+
+// Kind-group headings, in list order.
+const (
+	HeadingWorktrees = "WORKTREES"
+	HeadingLocal     = "LOCAL BRANCHES"
+	HeadingRemote    = "REMOTE BRANCHES"
+)
+
+// KindGroups splits the report by kind: worktrees (the root first, then the
+// others in the report's order), local branches without a worktree, remote
+// branches (folded ones included, via RemoteRows). Empty groups are left out.
+func KindGroups(r Report) []KindGroup {
+	var wt, local []Row
+	for _, row := range r.AllRows() {
+		switch row.Kind {
+		case KindWorktree:
+			if row.Primary {
+				wt = append([]Row{row}, wt...)
+				// keep several primaries (never expected) in report order
+				continue
+			}
+			wt = append(wt, row)
+		case KindBranch:
+			local = append(local, row)
+		}
+	}
+	var out []KindGroup
+	for _, g := range []KindGroup{
+		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, remoteOnly(r)},
+	} {
+		if len(g.Rows) > 0 {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// remoteOnly is the remote rows no local row folds: a folded ref is its local
+// row's Upstream (one row per branch), still reachable through RemoteRows.
+func remoteOnly(r Report) []Row {
+	return slices.DeleteFunc(slices.Clone(r.Rows), func(row Row) bool { return row.Kind != KindRemote })
+}
+
+// TagSeverity says how a tag should be coloured.
+type TagSeverity int
+
+const (
+	// TagInfo is a plain fact (root, you are here, PR, +remote).
+	TagInfo TagSeverity = iota
+	// TagWarn is a risk: removal could lose work or the row is held.
+	TagWarn
+)
+
+// Tag is one short fact about a row.
+type Tag struct {
+	Text     string
+	Severity TagSeverity
+}
+
+// RowTags is every fact tag of a row, in a fixed order: root, bare, you are here,
+// PR ("PR ?" while unknown, "#N state" once known), +remote, then the risk
+// tags dirty, unpushed, upstream gone, held by session <id>, locked.
+func RowTags(row Row) []Tag {
+	var tags []Tag
+	add := func(sev TagSeverity, text string) { tags = append(tags, Tag{text, sev}) }
+	hasBlock := func(code string) (Reason, bool) {
+		for _, b := range row.Blockers {
+			if b.Code == code {
+				return b, true
+			}
+		}
+		return Reason{}, false
+	}
+	if row.Primary {
+		add(TagInfo, "root")
+	}
+	if row.Bare {
+		add(TagInfo, "bare")
+	}
+	if _, ok := hasBlock(BlockCurrent); ok || row.Current || row.HardStop == BlockCurrent {
+		add(TagInfo, "you are here")
+	}
+	switch {
+	case row.PRUnknown:
+		add(TagInfo, "PR ?")
+	case row.PRTag != nil:
+		add(TagInfo, fmt.Sprintf("#%d %s", row.PRTag.Number, strings.ToLower(row.PRTag.State)))
+	}
+	if row.Upstream != nil && !row.Upstream.Gone {
+		add(TagInfo, "+remote")
+	}
+	l := row.EffectiveLosses()
+	if l.Dirty {
+		add(TagWarn, "dirty")
+	}
+	if l.Unpushed > 0 {
+		add(TagWarn, "unpushed")
+	}
+	if row.Upstream != nil && row.Upstream.Gone {
+		add(TagWarn, "upstream gone")
+	}
+	if b, ok := hasBlock(BlockHeld); ok {
+		text := "held by session"
+		if b.Detail != "" {
+			text += " " + b.Detail
+		}
+		add(TagWarn, text)
+	}
+	if _, ok := hasBlock(BlockLocked); ok || row.HardStop == BlockLocked {
+		add(TagWarn, "locked")
+	}
+	return tags
 }

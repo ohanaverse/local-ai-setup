@@ -17,6 +17,9 @@ func (r *rmRepo) originBranch(branch string) string {
 	r.t.Helper()
 	r.git("branch", branch)
 	r.git("push", "-u", "origin", branch)
+	// A remote ref with a same-named local branch folds into that row and is
+	// not listed on its own; drop the local branch so origin/<branch> is one.
+	r.git("branch", "-D", branch)
 	tip := r.git("rev-parse", "main")
 	merged := fmt.Sprintf(`[{"number":8,"state":"MERGED","headRefOid":%q,"baseRefName":"main","mergeCommit":{"oid":%q},"isCrossRepository":false,"headRepository":{"name":"r","nameWithOwner":"o/r"}}]`, tip, tip)
 	r.t.Cleanup(cleanup.StubPRListForTest(func(_, b string) ([]byte, error) {

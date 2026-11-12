@@ -225,7 +225,7 @@ func TestPinnedAgentEmptyListStatusUsesFirstActiveTag(t *testing.T) {
 		width:        80,
 		height:       24,
 	}
-	got, _ := m.Update(entriesLoadedMsg{groups: []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}}}, defaultBranch: "main", repoRoot: "/repo"})
+	got, _ := m.Update(rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"})
 	m = got.(model)
 	got, _ = m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
 	gotModel := got.(model)
@@ -249,7 +249,7 @@ func TestPinnedAgentErrorRenderedOnList(t *testing.T) {
 	m := model{cfg: cfg, initialAgent: "claude", width: 80, height: 24}
 	// Load the worktree list first so m.ready is true; the pinned-path
 	// error then must render on the ready list, not via the loading branch.
-	got, _ := m.Update(entriesLoadedMsg{groups: []worktree.EntryGroup{{Kind: worktree.GroupWorktrees, Entries: []worktree.Entry{{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo"}}}}, defaultBranch: "main", repoRoot: "/repo"})
+	got, _ := m.Update(rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"})
 	m = got.(model)
 	got, _ = m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature", Path: "/tmp/feature"}})
 	gotModel := got.(model)

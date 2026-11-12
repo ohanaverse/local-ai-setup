@@ -40,7 +40,9 @@ func ItemFromRow(r cleanup.Row) Item {
 // seals it as SawTip, and the gate and the re-check before git compare
 // against it.
 func rowTip(r cleanup.Row) string {
-	if r.Ref == "" {
+	// A worktree on the default branch has a Ref but no Tip (the classifier
+	// reads no branch tip for it): its HEAD is that branch's tip.
+	if r.Ref == "" || r.Tip == "" {
 		return r.Head
 	}
 	return r.Tip

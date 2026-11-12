@@ -16,27 +16,36 @@ import (
 	"time"
 )
 
-// fetchTimeout bounds how long Enumerate waits on `git fetch` before giving
-// up and falling back to whatever local refs already exist — an
-// unreachable remote must never block the picker from showing.
+// fetchTimeout bounds how long FetchRemotes waits on `git fetch` before
+// giving up: an unreachable remote must never hold up the picker.
 const fetchTimeout = 5 * time.Second
 
-// fetchRemotes refreshes remote-tracking refs (and prunes ones deleted
-// upstream) so the picker's remote-branches group reflects branches pushed
-// since the user's last manual `git fetch`/`pull`/`push`. Fetches every
-// configured remote, not just "origin", matching the fork-workflow support
-// already built into IsDefaultBranchForm (origin/main, upstream/main, ...).
-// Failure — offline, no remotes configured, timeout — is silently ignored;
-// Enumerate falls back to whatever local refs already exist, the same
-// non-fatal convention DefaultBranch uses below.
-func fetchRemotes(dir string) {
+// FetchRemotes refreshes remote-tracking refs and prunes the ones deleted
+// upstream (`git fetch --all --prune`, every configured remote, at most
+// fetchTimeout). It is the one home of the picker's fetch: the picker calls
+// it when it opens and ignores the error (offline, no remotes, a timeout),
+// listing whatever refs exist. The error is one line: git's first line of
+// output, else the process error.
+func FetchRemotes(root string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "fetch", "--all", "--prune")
-	if dir != "" {
-		cmd.Dir = dir
+	if root != "" {
+		cmd.Dir = root
 	}
-	_ = cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("git fetch --all --prune: timed out after %s", fetchTimeout)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return fmt.Errorf("git fetch --all --prune: %s", line)
+		}
+	}
+	return fmt.Errorf("git fetch --all --prune: %w", err)
 }
 
 // Type of a pickable target.
@@ -306,17 +315,6 @@ func splitLines(b []byte) []string {
 	return out
 }
 
-// inUse returns the set of branch names checked out in any worktree.
-func inUse(entries []Entry) map[string]bool {
-	m := make(map[string]bool)
-	for _, e := range entries {
-		if e.Branch != "" && e.Branch != "(detached)" {
-			m[e.Branch] = true
-		}
-	}
-	return m
-}
-
 // DefaultBranch returns the repo default branch (e.g. main) from origin/HEAD,
 // or "" when there is no remote or origin/HEAD is not set, which is non-fatal.
 func DefaultBranch(dir string) string {
@@ -338,9 +336,8 @@ func DefaultBranch(dir string) string {
 // The match is by name alone: a local branch whose name happens to end in
 // "/<db>" (e.g. "feature/main") also matches. Callers that can distinguish a
 // local branch from a real remote-tracking ref must add that context to avoid
-// falsely refusing such branches. The hard-refusal paths do exactly that:
-// refuseDefaultBranch confirms the ref under refs/remotes/, and buildList
-// checks the entry's group kind.
+// falsely refusing such branches. The hard-refusal path does exactly that:
+// refuseDefaultBranch confirms the ref under refs/remotes/.
 func IsDefaultBranchForm(branch, db string) bool {
 	if db == "" {
 		return false
@@ -348,29 +345,12 @@ func IsDefaultBranchForm(branch, db string) bool {
 	return branch == db || strings.HasSuffix(branch, "/"+db)
 }
 
-// SkipInPicker reports whether a bare default-branch entry should be omitted
-// from the worktree picker. The default branch must never be offered as a
-// create-target for a linked worktree, so we skip bare local default branches
-// and bare remote-tracking refs that name the default branch across any
-// remote. A checked-out worktree on the default branch (Path != "") is kept so
-// it can be marked (current) or (default).
-func SkipInPicker(groupKind GroupKind, e Entry, defaultBranch string) bool {
-	if defaultBranch == "" {
-		return false
-	}
-	if e.Path != "" {
-		return false
-	}
-	if e.Branch == defaultBranch {
-		return true
-	}
-	return groupKind == GroupRemoteBranches && IsDefaultBranchForm(e.Branch, defaultBranch)
-}
-
-// Enumerate returns pickable targets grouped by kind: worktrees
-// first, then local branches, then remote branches. Branches already
-// checked out in a worktree are omitted from the bare-branch lists
-// so the picker never shows duplicates.
+// Enumerate returns every worktree and branch grouped by kind: worktrees
+// first, then local branches, then remote branches. It hides nothing: a
+// branch a worktree holds is also a local branch, and a remote branch with a
+// same-named local branch is listed too. It does not fetch (FetchRemotes
+// does). Only `wt --debug-worktrees` uses it; the picker lists
+// internal/cleanup's rows.
 func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 	groups, _, err := EnumerateRepos(dir, cwdRoot)
 	return groups, err
@@ -380,13 +360,10 @@ func Enumerate(dir, cwdRoot string) ([]EntryGroup, error) {
 // remote (the RepoSet of RemoteRepos, read once for the whole enumeration).
 // The set is empty when err is not nil.
 func EnumerateRepos(dir, cwdRoot string) ([]EntryGroup, RepoSet, error) {
-	fetchRemotes(dir)
-
 	worktreeEntries, err := listWorktrees(dir, cwdRoot)
 	if err != nil {
 		return nil, nil, err
 	}
-	used := inUse(worktreeEntries)
 
 	local, remotes, trackRemote, err := listBranches(dir)
 	if err != nil {
@@ -397,28 +374,18 @@ func EnumerateRepos(dir, cwdRoot string) ([]EntryGroup, RepoSet, error) {
 	for i := range worktreeEntries {
 		worktreeEntries[i].TrackRepo = trackRepo(worktreeEntries[i].Branch)
 	}
-	localSet := make(map[string]bool, len(local))
 	var localEntries []Entry
 	for _, b := range local {
-		localSet[b] = true
-		if !used[b] {
-			localEntries = append(localEntries, Entry{Type: TypeBranch, Branch: b, TrackRepo: trackRepo(b)})
-		}
+		localEntries = append(localEntries, Entry{Type: TypeBranch, Branch: b, TrackRepo: trackRepo(b)})
 	}
 
 	var remoteEntries []Entry
 	for _, r := range remotes {
-		short := r[strings.IndexByte(r, '/')+1:]
-		if localSet[short] {
-			continue
+		e := Entry{Type: TypeBranch, Branch: r}
+		if name, branch, ok := SplitRemoteBranch(r, remoteRepos); ok {
+			e.RemoteRepo, e.RemoteBranch = remoteRepos[name], branch
 		}
-		if !used[r] {
-			e := Entry{Type: TypeBranch, Branch: r}
-			if name, branch, ok := SplitRemoteBranch(r, remoteRepos); ok {
-				e.RemoteRepo, e.RemoteBranch = remoteRepos[name], branch
-			}
-			remoteEntries = append(remoteEntries, e)
-		}
+		remoteEntries = append(remoteEntries, e)
 	}
 
 	// Sort each group by branch name (with remote prefix stripped for remotes).

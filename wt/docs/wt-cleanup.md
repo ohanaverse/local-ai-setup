@@ -1,21 +1,25 @@
-# `wt cleanup`, `wt remove`, `wt rescue` and `wt restore-root`
+# `wt worktrees`, `wt remove`, `wt rescue` and `wt restore-root`
 
-`wt cleanup` lists the repository's worktrees, local branches and `origin`
-branches in four groups, by how sure wt is that each can go, with the
-evidence for every row. On a terminal the list removes the worktrees, local
-branches and (with a typed phrase) proven `origin` branches you tick, after a
-confirmation. `wt remove` does the same for
+`wt worktrees` (`wt cleanup` is an alias that does the same) lists the
+repository's worktrees, local branches and remote branches. On a terminal the
+list is grouped by kind (WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES), each
+row with a verdict (how sure wt is that it can go, with the evidence) and
+tags; `--plain` and `--json` carry the same verdict per row, `--plain` grouped
+by verdict instead (see [Groups](#groups)). On a terminal the list removes the
+worktrees and local branches you tick, after a confirmation (its `origin`
+rows read less sure, because the list has not fetched). `wt remove` does the same for
 targets named on the command line. Both use one removal engine, which also
 deletes a **proven `origin` branch** when you give it the approval no other
-flag implies (`--remote`, or the typed phrase `delete origin`): see
+flag implies (`--remote`): see
 [Deleting an origin branch](#deleting-an-origin-branch).
 
 ```bash
-wt cleanup                  # interactive tick list on a terminal; enter removes the ticked rows
-wt cleanup --plain          # text list, also used when output is a pipe (removes nothing)
-wt cleanup --json           # one JSON document (printed on failure too; removes nothing)
-wt cleanup --no-fetch       # skip `git fetch --prune <remote>` for every remote
-wt cleanup --min-age 30m    # raise the fresh-branch threshold (default 10m)
+wt worktrees                # interactive tick list on a terminal; enter removes the ticked rows
+wt worktrees --plain        # text list, also used when output is a pipe (removes nothing)
+wt worktrees --json         # one JSON document (printed on failure too; removes nothing)
+wt worktrees --no-fetch     # skip `git fetch --prune <remote>` for every remote
+wt worktrees --min-age 30m  # raise the fresh-branch threshold (default 10m)
+wt cleanup ...              # the same command under its old name
 
 wt remove <worktree-path-or-branch>... --dry-run   # what would happen; changes nothing
 wt remove ../repo-wt/topic                         # asks y/N on a terminal
@@ -23,14 +27,56 @@ wt remove topic old-spike --yes --accept-loss -D   # non-interactive, with expli
 wt remove origin/merged-topic --remote --yes       # delete a proven branch on origin
 ```
 
+## What is listed
+
+Every worktree, including the primary checkout (the root) and the one you are
+in, every local branch, and the remote branches, are rows. The default branch
+is listed too: as its own row when no worktree holds it, and `origin/<default>`
+folds into it like any other pair. A remote ref folds into a local row only
+when it is that branch's own upstream, or `origin/<name>` when the branch has
+no upstream: in the terminal list it is the row's `upstream` (`ref`, `gone`,
+and its own status and evidence) and not a row of its own, so
+`upstream/foo` beside a local `foo` that tracks `origin/foo` stays its own row.
+`--plain` and `--json` still list a folded ref as its own row as well (the
+JSON row also carries the `upstream` field), but they list only `origin`'s
+branches and those of remotes a local branch tracks; the terminal list shows
+every remote's. On a terminal the list does not fetch when it opens (`r` is not a
+refresh; run `git fetch` or use `--json`/`--plain`, which fetch first unless
+`--no-fetch`). Each row carries tags such as `root`, `you are here`, `held`,
+`dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. A bare
+repository's own entry is listed as the root with a `bare` tag: it is never
+removable, and in the launch picker enter on it only says that a bare
+repository has no working tree to launch in.
+
+A **hard stop** is a state no flag overrides (the primary checkout, the
+directory you are in, a locked or nested worktree, a rebase or merge in
+progress, a registered model artifact, or an open PR on an `origin` branch
+or one that targets it); the row's `hard_stop` JSON field names it. A local
+branch or worktree with an open PR is not a hard stop: it reads unique work and
+needs `--accept-loss` and `-D`. A **floor** is a verdict ceiling the user can accept: a held
+session claim (`held`), the default branch (`default_branch`) and an unknown
+pull request (`pr_unknown`) leave the row `less_sure` at best, so `wt remove`
+needs `--accept-loss` for it, and, for a branch that is not proven merged,
+`-D` as well (the engine asks for `-D` for any unproven branch).
+
+An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
+failed) floors a row below proven, with a `PR ?` tag, because a merged PR is
+part of the proof. The exception is a repository whose `origin` is not on
+GitHub: the lookup does not apply there (an origin wt does not recognise as
+github.com, such as an ssh host alias, an `insteadOf` short form or GitHub
+Enterprise, counts as having no pull requests), so it floors nothing and shows no
+tag or `needs gh` wording on any row. An `origin` branch there is still never
+proven by a PR: its row reads `not_checked` (no pull request is checked) and
+stays less sure or worse.
+
 ## Groups
 
 | Group | Meaning |
 |---|---|
 | Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing; or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read; also a rescued original whose uncommitted changes still equal its record. |
-| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR. |
-| In use / locked | A primary, current, locked, nested or mid-operation worktree, a held session claim, a registered model artifact (`protected_artifact`), or the default branch (`default_branch`). |
+| Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR on a local branch or worktree. |
+| In use / locked | A primary, current, locked, nested or mid-operation worktree, a registered model artifact (`protected_artifact`) or an `origin` branch with an open PR, or one an open PR targets: hard stops no flag overrides (the row's `hard_stop`). A held session claim (`held`), the default branch (`default_branch`) and an unknown PR (`pr_unknown`) are floors, not hard stops: the row reads less sure and `wt remove` needs `--accept-loss` for it. |
 
 `origin` branches are rows in these same groups, judged the same way (a proven
 one is the only kind that can be removed).
@@ -53,7 +99,7 @@ The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
 object store, which `git gc` collects.
 
-## `wt cleanup` flags
+## `wt worktrees` flags
 
 | Flag | Effect |
 |---|---|
@@ -62,7 +108,7 @@ object store, which `git gc` collects.
 | `--min-age <duration>` | A branch younger than this that sits at or behind the base is never proven merged (a brand-new branch looks merged). At least `1m` (less is a usage error, exit 1); a value below the default `10m` is named in the header. |
 | `--plain` | Text output on a terminal. |
 
-## `wt cleanup` exit codes
+## `wt worktrees` exit codes
 
 0: a list was produced. 1: the repository could not be classified (not a
 repository, no default branch), or a usage error (an unknown flag, an
@@ -133,15 +179,17 @@ Approvals are per item. Each one means exactly one thing (`--dry-run` lists the 
 | accept the loss | `--accept-loss` | the typed word `delete` | any item that is not proven or loses something (ignored files such as `.venv`, commits only on this machine, a fresh branch, a PR state wt could not read) |
 | force | `--force` | the typed word `delete` | also lose a worktree's uncommitted changes, or a detached HEAD's commits |
 | delete unmerged branch | `-D` | `tab` on that entry, then `delete` | delete a branch not proven merged: a named branch, or (per entry) a removed worktree's branch |
-| delete on origin | `--remote` | the typed phrase `delete origin` | a proven `origin/<name>` row; no other approval grants it |
+| delete on origin | `--remote` | the typed phrase `delete origin` (not reachable from the terminal list today: its origin rows are never proven) | a proven `origin/<name>` row; no other approval grants it |
 
 `--force` never implies `-D`, and neither implies `--accept-loss`: a dirty
 worktree needs `--force --accept-loss`, an unmerged branch `-D
 --accept-loss`. An item whose approval is missing is refused (`refused`,
 naming the missing flags) and the others go on. No approval overrides a hard
 blocker: the primary checkout, the directory you are in, a locked or nested
-worktree, a rebase or merge in progress, a registered model artifact, the
-default branch, or a live session. A registry that did not load refuses
+worktree, a rebase or merge in progress, a registered model artifact, or an
+open PR on an `origin` branch (or one that targets it). A held session and the default branch are floors, not blockers:
+`--accept-loss` approves them (and `-D` a branch that is not proven merged;
+`origin/<default>` is still never deleted). A registry that did not load refuses
 every removal.
 
 `wt remove` without `--yes` asks on a terminal (default No), after listing
@@ -163,12 +211,13 @@ what it would lose, running processes, and the approvals it needs. When every
 entry is proven `y` confirms; otherwise only the typed word `delete` then
 enter does, and any other key cancels. The prompt always states how many
 items will be removed and how many need force or `-D`, and how many are not
-on screen. A proven `origin` row can be ticked, but is never ticked for you
-(`a` skips it too); any other remote row cannot. A confirmation that includes
-an `origin` branch has its own group (`ORIGIN BRANCHES`), says how many
-branches are on `origin` and that they are visible to everyone with access to
-the repository, refuses `y` and the plain `delete`, and needs `delete origin`
-typed. While removal runs, keys,
+on screen. The list does not fetch when it opens, so an `origin` row is
+never proven there: its reason says `origin was not refreshed in this list`
+(not `--no-fetch`, which you did not pass), and it cannot be ticked. Remove an
+`origin` branch with `wt remove origin/<name> --remote`, which fetches first.
+(The confirmation still has an `ORIGIN BRANCHES` group that names how many
+branches are on `origin`, refuses `y` and the plain `delete`, and needs
+`delete origin` typed, for when the list can refresh.) While removal runs, keys,
 ctrl+c and termination and hangup signals wait until it ends; the results screen shows
 every outcome and the same outcomes print again when wt exits.
 
@@ -186,7 +235,7 @@ two different targets, stops the run before anything is touched.
 flag) included: it prints the error document and exits 1. A bad flag is seen
 as a `--json` request only when `--json` comes before it. If stdout cannot be written (a closed pipe) the result
 goes to stderr as text, restore ids included, and the exit is 2. `--no-fetch`
-and `--min-age` behave as for `wt cleanup`.
+and `--min-age` behave as for `wt worktrees`.
 
 | Exit | Meaning |
 |---|---|
@@ -505,8 +554,9 @@ Design: [the spec](../../docs/superpowers/specs/2026-11-08-wt-restore-root-desig
 
 ## Deleting an origin branch
 
-`wt remove origin/<name> --remote` (or an origin row ticked in the list and
-confirmed with `delete origin`) deletes the branch on `origin`. It is visible
+`wt remove origin/<name> --remote` deletes the branch on `origin` (the
+terminal list does not fetch, so its origin rows are never proven and cannot
+be ticked). It is visible
 to everyone with access to the repository and this tool cannot undo it, so
 the rules are narrower than for a local branch:
 
@@ -514,9 +564,11 @@ the rules are narrower than for a local branch:
   branch whose head is exactly the branch's tip, whose merge commit is in the
   base; no open PR with the branch as head; no open PR (from this repository or
   a fork) with it as base; content in the base; and `origin` fetched cleanly
-  **this run**. `--no-fetch`, a failed fetch, a missing `gh` or a failed
-  query each make the row unproven. There is no `--accept-loss` or `-D` path.
-- The approval is its own: `--remote` on the CLI, `delete origin` in the list.
+  **this run**. `--no-fetch`, the terminal list (which does not fetch when it
+  opens), a failed fetch, a missing `gh` or a failed query each make the row
+  unproven. There is no `--accept-loss` or `-D` path.
+- The approval is its own: `--remote` on the CLI (`delete origin` in the list's
+  confirmation, once the list can prove an origin row).
   `--yes`, `y`, `--accept-loss`, `-D`, `--force` and the plain `delete` never
   grant it, and `--remote` grants nothing else.
 - Right before the push the engine re-asks `gh` about this one branch (so a PR

@@ -80,6 +80,12 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		Fetch:     prior.Fetch,
 		OwnRepo:   prior.OwnRepo,
 		PRs:       prior.PRs,
+		// A filled snapshot re-checks like Gather; one never filled stays
+		// "PR ?" (nothing proven on it).
+		PRsAsked:   prior.PRsAsked,
+		PRsSkipped: prior.PRsSkipped,
+
+		PRNotApplicable: prior.PRNotApplicable,
 	}
 	if !s.NoDefault {
 		var ok bool
@@ -91,7 +97,7 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 
 	// mini holds the target's fresh entries only; prove runs on it, so the
 	// ladder, unpushed counts and ages are computed for nothing else.
-	mini := Snapshot{CommonDir: s.CommonDir, NoDefault: s.NoDefault, Base: s.Base, BaseTip: s.BaseTip, PRs: s.PRs}
+	mini := Snapshot{CommonDir: s.CommonDir, NoDefault: s.NoDefault, Base: s.Base, BaseTip: s.BaseTip, PRs: s.PRs, PRsAsked: s.PRsAsked, PRsSkipped: s.PRsSkipped, PRNotApplicable: s.PRNotApplicable}
 	var self string // the target worktree's resolved path
 	var refs []string
 	switch t.Kind {
@@ -162,21 +168,10 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		if err != nil {
 			return Row{}, err
 		}
-		for _, h := range heads {
-			if !s.isDefault(h.Name) {
-				mini.Heads = append(mini.Heads, h)
-			}
-		}
-		for _, r := range remotes {
-			if !s.isDefault(r.Name) {
-				mini.Remotes = append(mini.Remotes, r)
-			}
-		}
+		mini.Heads = append(mini.Heads, heads...)
+		mini.Remotes = append(mini.Remotes, remotes...)
 		if (t.Kind == KindBranch && len(heads) == 0) || (t.Kind == KindRemote && len(remotes) == 0) {
 			return Row{}, ErrTargetGone
-		}
-		if t.Kind != KindWorktree && len(mini.Heads)+len(mini.Remotes) == 0 {
-			return Row{}, fmt.Errorf("cleanup: %s is the default branch", flat(t.Ref))
 		}
 	}
 
@@ -217,7 +212,13 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		s.Worktrees = append(s.Worktrees, WorktreeState{Fact: w, GatesErr: notReadByRescan})
 	}
 
-	for _, row := range Classify(s, o).Rows {
+	rep := Classify(s, o)
+	rows := rep.Rows
+	if t.Kind == KindRemote {
+		// A remote ref folded into its local branch's row is in Folded.
+		rows = rep.RemoteRows()
+	}
+	for _, row := range rows {
 		switch {
 		case t.Kind == KindWorktree && row.Kind == KindWorktree && resolve(row.Path) == self:
 			return row, nil

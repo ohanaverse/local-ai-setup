@@ -180,7 +180,12 @@ func (f *fixture) row(r cleanup.Report, k cleanup.Kind, name string) cleanup.Row
 	f.t.Helper()
 	var got []cleanup.Row
 	var all []string
-	for _, row := range r.Rows {
+	rows := r.Rows
+	if k == cleanup.KindRemote {
+		// A remote ref folded into its local branch's row is in Folded.
+		rows = r.RemoteRows()
+	}
+	for _, row := range rows {
 		all = append(all, fmt.Sprintf("%s %q status=%s", row.Kind, row.Name, row.Status))
 		if row.Kind == k && row.Name == name {
 			got = append(got, row)

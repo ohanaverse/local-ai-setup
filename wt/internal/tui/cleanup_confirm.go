@@ -215,10 +215,17 @@ func (m cleanupListModel) tickedRows() []cleanup.Row {
 // preview, or the status says why not.
 func (m cleanupListModel) startRemoval() (cleanupListModel, tea.Cmd) {
 	rows := m.tickedRows()
-	switch {
-	case len(rows) == 0:
-		m.status = "nothing ticked: space ticks the highlighted row"
+	if len(rows) == 0 {
+		m.status = "nothing ticked: space ticks the highlighted row, x removes it"
 		return m, nil
+	}
+	return m.startRemovalOf(rows)
+}
+
+// startRemovalOf hands rows (enter's ticked rows, or `x`'s) to the engine's
+// preview, or the status says why not.
+func (m cleanupListModel) startRemovalOf(rows []cleanup.Row) (cleanupListModel, tea.Cmd) {
+	switch {
 	case m.rm.Off != "":
 		m.status = cleanup.OneLine(m.rm.Off)
 		return m, nil
@@ -243,7 +250,7 @@ func previewCmd(preview func([]cleanup.Row) []removal.ItemPreview, rows []cleanu
 		}()
 		ps := preview(rows)
 		if len(ps) != len(rows) {
-			return cleanupPreviewMsg{err: fmt.Errorf("the re-check answered %d items for %d ticked", len(ps), len(rows))}
+			return cleanupPreviewMsg{err: fmt.Errorf("the re-check answered %d items for %d asked", len(ps), len(rows))}
 		}
 		for i, p := range ps {
 			r := rows[i]
@@ -687,11 +694,13 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 		m.exitErr = fmt.Errorf("could not re-read the repository after removing: %w", msg.err)
 		return m, tea.Quit
 	}
-	n := newCleanupList(msg.report, m.theme, m.clock())
+	o := m.opts
+	o.Theme, o.Now = m.theme, m.clock()
+	n := newRowList(msg.report, o)
 	n.rm, n.log, n.clock = m.rm, m.log, m.clock
 	n.width, n.height = m.width, m.height
 	n.status = removedSummary(m.run.results) + "; the results print again when you quit"
-	if n.rows > 0 {
+	if !n.empty() {
 		n.offset = n.layout().offset
 	}
 	return n, nil
@@ -729,7 +738,7 @@ func logText(log []removal.Outcome) string {
 	if len(log) == 0 {
 		return ""
 	}
-	lines := []string{"wt cleanup: " + removedSummary(log) + " items"}
+	lines := []string{"wt worktrees: " + removedSummary(log) + " items"}
 	for _, o := range log {
 		lines = append(lines, outcomeLines(o)...)
 	}
@@ -934,7 +943,7 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 			parts = append(parts, fmt.Sprintf("%d %s", k, confirmCountWords[g.approval]))
 		}
 	}
-	sum := fmt.Sprintf("remove %d of %d ticked (%s); nothing has been removed yet", n, all, strings.Join(parts, ", "))
+	sum := fmt.Sprintf("remove %d of %d %s (%s); nothing has been removed yet", n, all, m.chosenWord(), strings.Join(parts, ", "))
 	if k := c.originCount(); k > 0 {
 		noun := "branches"
 		if k == 1 {
@@ -942,7 +951,7 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 		}
 		sum += fmt.Sprintf(" · %d %s on origin, visible to everyone with access to the repository; no open PR uses them as of the re-check, and GitHub can restore a deleted branch from its merged PR", k, noun)
 	}
-	return []string{accent.Render(clip("wt cleanup · confirm", m.width))}, wrapIndented(sum, "", m.width)
+	return []string{accent.Render(clip(m.screenName()+" · confirm", m.width))}, wrapIndented(sum, "", m.width)
 }
 
 // confirmHints are the confirm screen's key hints.
@@ -1137,7 +1146,7 @@ func (m *cleanupListModel) framedRoom(top, body []string, offset, room int, foot
 func (m *cleanupListModel) runningView() string {
 	r := m.run
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
-	top := []string{accent.Render(clip(fmt.Sprintf("wt cleanup · removing %d items", len(r.items)), m.width))}
+	top := []string{accent.Render(clip(fmt.Sprintf("%s · removing %d items", m.screenName(), len(r.items)), m.width))}
 	var body []string
 	for k, i := range r.runAt {
 		e := r.entries[i]
@@ -1167,7 +1176,7 @@ func (m *cleanupListModel) runningView() string {
 func (m *cleanupListModel) resultsView() string {
 	r := m.run
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
-	top := []string{accent.Render(clip("wt cleanup · results: "+removedSummary(r.results), m.width))}
+	top := []string{accent.Render(clip(m.screenName()+" · results: "+removedSummary(r.results), m.width))}
 	if r.err != nil {
 		top = append(top, wrapIndented("the run did not finish cleanly: "+cleanup.OneLine(r.err.Error()), "", m.width)...)
 	}
