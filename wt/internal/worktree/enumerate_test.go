@@ -969,6 +969,45 @@ func TestPrimaryOfBareAndOutside(t *testing.T) {
 	}
 }
 
+// TestToplevelOfRootLinkedSubdirAndSymlink checks ToplevelOf answers with
+// git's own absolute top-level text — the physical path, so a /var and a
+// /private/var spelling of one checkout name one claim path — from the root,
+// a linked worktree, a subdirectory of each and a symlinked spelling of the
+// root: session claims and the cleanup rows key by exactly this string.
+func TestToplevelOfRootLinkedSubdirAndSymlink(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	wantRoot, _ := filepath.EvalSymlinks(dir)
+	linked := filepath.Join(dir, ".worktrees", "feat")
+	if out, err := runGitCmd(dir, "worktree", "add", "-b", "feat", linked); err != nil {
+		t.Fatalf("worktree add: %v\n%s", err, out)
+	}
+	wantLinked, _ := filepath.EvalSymlinks(linked)
+	rootSub := filepath.Join(dir, "sub")
+	linkedSub := filepath.Join(linked, "sub")
+	for _, sub := range []string{rootSub, linkedSub} {
+		if err := os.Mkdir(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, from, want string }{
+		{"root", dir, wantRoot},
+		{"root subdirectory", rootSub, wantRoot},
+		{"linked worktree", linked, wantLinked},
+		{"linked subdirectory", linkedSub, wantLinked},
+		{"symlinked spelling of the root", link, wantRoot},
+	} {
+		got, err := ToplevelOf(tc.from)
+		if err != nil || got != tc.want {
+			t.Errorf("ToplevelOf(%s) = %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+}
+
 // TestListWorktreesMarksOnlyThePrimary checks exactly the primary checkout's
 // entry carries Root, and none does in a bare repository, because the picker
 // drops the Root row and must not drop a linked worktree.

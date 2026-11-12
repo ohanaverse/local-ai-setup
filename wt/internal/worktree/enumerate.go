@@ -323,6 +323,17 @@ func isNotARepo(err error) bool {
 	return errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "not a git repository")
 }
 
+// isNotAWorkTree reports whether err is git's own refusal for want of a work
+// tree ("fatal: this operation must be run in a work tree") — a bare
+// repository's answer to a question about its checkout. Like isNotARepo it
+// means there is no checkout here: the ErrNotACheckout class, never a read
+// failure. The message is matched in English for the same reason isNotARepo's
+// is (see ToplevelOf's LC_ALL=C).
+func isNotAWorkTree(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "must be run in a work tree")
+}
+
 // PrimaryOf returns the primary checkout (the first entry of `git worktree
 // list`) of the repository that owns dir, with symlinks resolved. It works
 // from the root, a linked worktree or a subdirectory, and errors for a bare
@@ -359,6 +370,31 @@ func PrimaryOf(dir string) (string, error) {
 		return "", fmt.Errorf("git's worktree list named no worktree entry for %s", dir)
 	}
 	return filepath.EvalSymlinks(path)
+}
+
+// ToplevelOf returns the top level of the worktree dir sits in, in the exact
+// form git words it: `rev-parse --path-format=absolute --show-toplevel`. git
+// resolves the path itself, so every spelling of one checkout (a /var and a
+// /private/var path on macOS) yields one text — and that text is the
+// cross-contract claim path (docs/contracts/session-claims.md): claims,
+// Holders' keys and the cleanup rows all name a worktree this way. A directory
+// outside any repository, or in a bare one, is an ErrNotACheckout refusal
+// (there is no checkout to name), like PrimaryOf's; any other failure is a
+// real read failure.
+func ToplevelOf(dir string) (string, error) {
+	// LC_ALL=C: the classification below matches git's English message (see
+	// PrimaryOf).
+	cmd := exec.Command("git", "rev-parse", "--path-format=absolute", "--show-toplevel")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
+	if err != nil {
+		if isNotARepo(err) || isNotAWorkTree(err) {
+			return "", notACheckout(err)
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // CommonDirAt returns the absolute path of dir's repository's common git
