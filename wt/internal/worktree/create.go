@@ -27,7 +27,7 @@ type nameClass struct {
 }
 
 // classifyName decides what name means in dir, given the registered worktree
-// entries. It is the one decision order behind EnsureForName and WouldCreate,
+// entries. It is the one decision order behind EnsureForName,
 // so a creation is announced for exactly the case that creates (and a reuse
 // announces nothing).
 // path is the worktree to reuse (nameReuseWorktree) or to add (the others,
@@ -235,7 +235,7 @@ func checkBranchName(dir, name string) error {
 type Plan struct {
 	dir, name string
 	cls       nameClass
-	start     string // the phrase Start returns; empty unless cls creates
+	start     string // the phrase startPhrase returns; empty unless cls creates
 }
 
 // Resolve classifies name against the repo at dir once and returns the plan.
@@ -295,19 +295,11 @@ func (p *Plan) Path() string {
 	return p.cls.path
 }
 
-// Start is how the branch Ensure would create starts: "from <current
-// branch>", "from detached HEAD <short sha>", or "as an empty orphan branch
-// with no shared history (this repository has no commits yet)" on an unborn
-// HEAD, where git infers --orphan rather than a base. Empty when the plan
-// does not create. Ensure's change check reports it when the repository
-// moved between the classification and the creation.
-func (p *Plan) Start() string { return p.start }
-
 // Ensure returns the worktree path for the planned name, creating it if
 // needed. A reused worktree is returned as is (idempotent).
 //
 // The classification is not repeated, but a creation re-checks the two things
-// that could have moved since the plan was read: the base (a changed Start is
+// that could have moved since the plan was read: the base (a changed start phrase is
 // an error naming both phrases, never a branch made from a base other than
 // the one the plan read) and the name itself (git refuses `worktree add -b`
 // for a branch another wt made meanwhile, so a planned creation is never
@@ -336,7 +328,7 @@ func (p *Plan) Ensure() (string, error) {
 	return p.cls.path, nil
 }
 
-// startPhrase says how a branch created now would start (see Plan.Start).
+// startPhrase says how a branch created now would start.
 func startPhrase(dir string) (string, error) {
 	// An unborn HEAD (a fresh `git init`) is not a base: git prints "No
 	// possible source branch, inferring --orphan" and the branch shares no
@@ -366,17 +358,6 @@ func EnsureForName(dir, name string) (string, error) {
 		return "", err
 	}
 	return p.Ensure()
-}
-
-// WouldCreate reports whether EnsureForName(dir, name) would create a new
-// branch, and how it would start (see Plan.Start). It creates nothing.
-// Resolve is the form that also carries the classification into the creation.
-func WouldCreate(dir, name string) (creates bool, start string, err error) {
-	p, err := Resolve(dir, name)
-	if err != nil {
-		return false, "", err
-	}
-	return p.Creates(), p.Start(), nil
 }
 
 // maxDirNameBytes is the filesystem's per-entry name limit (NAME_MAX on macOS

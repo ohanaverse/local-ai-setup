@@ -535,9 +535,9 @@ func rootCmd() *cobra.Command {
 				var t launchwarn.Target
 				var terr error
 				if plan.Creates() || plan.Tracks() != "" {
-					t, terr = launchwarn.ForNew(root, name, plan)
+					t, terr = launchwarn.ForNew(root, plan)
 				} else if _, serr := os.Stat(plan.Path()); serr != nil {
-					t, terr = launchwarn.ForNew(root, name, plan)
+					t, terr = launchwarn.ForNew(root, plan)
 				} else {
 					t, terr = launchwarn.ForDir(plan.Path())
 				}

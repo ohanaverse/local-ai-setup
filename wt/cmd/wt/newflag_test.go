@@ -405,7 +405,7 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 	if err := os.Mkdir(cfg, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tg, readErr := launchwarn.ForNew(root, "brand-new", plan)
+	tg, readErr := launchwarn.ForNew(root, plan)
 	notes := captureNotes(t)
 	if err := confirmLaunch(tg, readErr, strings.NewReader(""), osStderr, false); err != nil {
 		t.Fatal(err)

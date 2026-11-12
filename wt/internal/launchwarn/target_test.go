@@ -336,7 +336,7 @@ func TestForNewCarriesTheCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tg, err := ForNew(repo, "feat/x", plan)
+	tg, err := ForNew(repo, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestForDirAndForNewCarryTheGoneUpstreamFact(t *testing.T) {
 				if perr != nil {
 					t.Fatal(perr)
 				}
-				tg, err = ForNew(repo, "topic", plan)
+				tg, err = ForNew(repo, plan)
 			} else {
 				tg, err = ForDir(repo)
 			}
@@ -450,7 +450,7 @@ func TestForNewRealGitFailureKeepsTheCreationAndErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	breakRepoConfig(t, repo)
-	tg, err := ForNew(repo, "feat/x", plan)
+	tg, err := ForNew(repo, plan)
 	if err == nil {
 		t.Fatalf("target = %+v, want a surfaced error for a real git failure", tg)
 	}

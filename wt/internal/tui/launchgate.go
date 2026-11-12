@@ -29,7 +29,7 @@ type launchCreation struct {
 // branch, its tracking ref and the path it goes to), so Check prints the
 // creation line as the one informational line before anything exists.
 func (c *launchCreation) target() (launchwarn.Target, error) {
-	return launchwarn.ForNew(c.repoRoot, c.name, c.plan)
+	return launchwarn.ForNew(c.repoRoot, c.plan)
 }
 
 // ensure creates (or reuses) the worktree the pick owes and returns its path.

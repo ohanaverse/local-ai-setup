@@ -100,11 +100,8 @@ func forDir(dir string, knownDirt *bool) (Target, error) {
 // the error, and that partial keeps the plan's Creation — its facts do not
 // depend on PrimaryOf, so the frozen creation line still announces exactly
 // what the commit point creates.
-func ForNew(repoRoot, branch string, plan *worktree.Plan) (Target, error) {
+func ForNew(repoRoot string, plan *worktree.Plan) (Target, error) {
 	t := Target{Dir: plan.Path(), Branch: plan.Branch()}
-	if t.Branch == "" {
-		t.Branch = branch
-	}
 	t.UpstreamGone = upstreamGone(repoRoot, t.Branch)
 	t.Creation = &Creation{Branch: t.Branch, Tracks: plan.Tracks(), NewBranch: plan.Creates(), Path: plan.Path()}
 	primary, err := worktree.PrimaryOf(repoRoot)

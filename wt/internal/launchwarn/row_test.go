@@ -187,7 +187,7 @@ func TestFromRowCreationMirrorsThePickPlan(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			planned, err := ForNew(root, tc.pick, plan)
+			planned, err := ForNew(root, plan)
 			if err != nil {
 				t.Fatal(err)
 			}
