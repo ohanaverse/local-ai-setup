@@ -171,9 +171,10 @@ func entryOfRow(r cleanup.Row) worktree.Entry {
 	return worktree.Entry{Type: t, Branch: branch, Path: r.Path, Root: r.Primary}
 }
 
-// gotRows applies a picker load. The open (and the reload after a create)
-// builds the list in launch mode with the cursor on the innermost worktree
-// holding the caller's directory. A `F` refresh's reload is a report swap
+// gotRows applies a picker load. The initial open builds the list in launch
+// mode with the cursor on the innermost worktree holding the caller's
+// directory — the fresh build serves the open alone: a creation happens at
+// the launch gate's commit point and reloads nothing. A `F` refresh's reload is a report swap
 // like the PR fill's: withReport keeps the filter, the highlighted row and
 // the scroll, and the header's clock moves to now so the refresh note counts
 // from this reload — the same whether the fetch succeeded or failed while
@@ -186,8 +187,8 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	m.rowsRefreshing = false
 	if msg.err != nil {
 		if m.ready {
-			// Reload after a create: the list is still usable, but the error
-			// must be visible: View renders it above the list.
+			// A `F` refresh whose re-read failed: the list is still usable,
+			// but the error must be visible: View renders it above the list.
 			m.listError = msg.err.Error()
 		} else {
 			m.status = "error: " + msg.err.Error()

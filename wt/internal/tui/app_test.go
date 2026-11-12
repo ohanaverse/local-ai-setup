@@ -1172,10 +1172,15 @@ func TestPickerFKeyRefreshes(t *testing.T) {
 // TestPickerFKeyRefreshKeepsFilterCursorScroll: a `F` refresh's reload is a
 // report swap like the PR fill's — it keeps what the user was doing: the
 // typed filter, the highlighted row and the scroll position survive
-// (withReport, the preservation every other swap already had). Both of the
-// refresh's outcomes count: the fetch succeeding, and the fetch failing
-// while the re-gather still succeeds — the failure is the header's line,
-// and neither may throw a review back to the top with its filter dropped.
+// (withReport, the preservation every other swap already had). The
+// highlighted-row claim pins the BY-KEY cursor restore specifically: the
+// fixture has two rows the filter keeps visible, and the cursor is moved to
+// the one a re-seat would not pick (settleCursor falls back to the filter's
+// first visible row), so a reload that lost the cursor lands there and
+// fails. Both of the refresh's outcomes count: the fetch succeeding, and the
+// fetch failing while the re-gather still succeeds — the failure is the
+// header's line, and neither may throw a review back to the top with its
+// filter dropped.
 func TestPickerFKeyRefreshKeepsFilterCursorScroll(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1186,14 +1191,26 @@ func TestPickerFKeyRefreshKeepsFilterCursorScroll(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRmRepo(t)
+			// Two rows match "after" below: the cursor claim needs two
+			// visible rows, or a re-seat passes it.
+			r.loose("aftermath")
 			r.loose("afterwards")
 			m, _ := pickerOpenOn(t, r, tc.fetchErr)
-			// The user filters to the one row, keeps the query (enter),
-			// highlights it and scrolls.
+			// The user filters to the two rows and keeps the query (enter).
 			m, _ = updateMsg(m, keyRunes("/"))
 			m, _ = updateMsg(m, keyRunes("after"))
 			m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-			m = pickerCursorTo(t, m, "afterwards")
+			// Move the cursor off the row settleCursor would re-seat (the
+			// filter's first visible row) and onto the other match.
+			seated, ok := m.rows.selectedRow()
+			if !ok {
+				t.Fatal("no highlighted row under the filter")
+			}
+			m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+			want, ok := m.rows.selectedRow()
+			if !ok || want.Name == seated.Name {
+				t.Fatalf("the filter left one visible row (cursor on %v); the cursor claim needs two", seated)
+			}
 			m.rows.offset = 1
 			m, cmd := updateMsg(m, keyRunes("F"))
 			if cmd == nil {
@@ -1203,8 +1220,8 @@ func TestPickerFKeyRefreshKeepsFilterCursorScroll(t *testing.T) {
 			if m.rows.filter != "after" || m.rows.filtering {
 				t.Errorf("filter = %q filtering = %v after F; the reload keeps the query", m.rows.filter, m.rows.filtering)
 			}
-			if row, ok := m.rows.selectedRow(); !ok || row.Name != "afterwards" {
-				t.Errorf("cursor = %+v ok=%v after F; the reload keeps the highlighted row", row, ok)
+			if row, ok := m.rows.selectedRow(); !ok || row.Name != want.Name {
+				t.Errorf("cursor = %+v ok=%v after F; the reload keeps the highlighted row (%q, restored by key)", row, ok, want.Name)
 			}
 			if m.rows.offset != 1 {
 				t.Errorf("offset = %d after F; the reload keeps the scroll", m.rows.offset)

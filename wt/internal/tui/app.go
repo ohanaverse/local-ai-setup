@@ -210,9 +210,7 @@ func (m model) Init() tea.Cmd {
 // once (#390) and gathers its rows there (loadRowsCmd; it fetches nothing —
 // the list's one fetch is the user's `F`, refreshRowsChosenMsg). The PR
 // lookups follow once the rows are on screen (gotRows, loadRowPRsCmd).
-// Outside a repository the load reports the lookup's error. The reload
-// after a create goes through it too, in whatever directory wt is in by
-// then.
+// Outside a repository the load reports the lookup's error.
 func loadPickerCmd() tea.Cmd {
 	return func() tea.Msg {
 		root, err := findRepoRoot()
