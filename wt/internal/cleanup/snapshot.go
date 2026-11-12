@@ -171,10 +171,12 @@ type Snapshot struct {
 	// repository (origin is not on GitHub): there is no PR lookup to fail, so
 	// no row reads "PR ?", "PR lookup failed" or "needs gh".
 	PRNotApplicable bool
-	// Claims are the live claims holding any checkout of this repository
+	// Claims are every live claim recorded in this repository's wt-sessions
 	// (sessionclaim.Holders, read only: one Claim per holding session, the
-	// paths sorted and each path's claims PID-ascending); ClaimsErr is why
-	// they could not be read. HeldOn finds a row's holders among them.
+	// paths sorted and each path's claims PID-ascending — keyed by the
+	// recorded path, which may name a directory that is no longer a
+	// checkout); ClaimsErr is why they could not be read. HeldOn finds a
+	// row's holders among them.
 	Claims    []sessionclaim.Claim
 	ClaimsErr string
 	// Records are the well-formed rescue records; a failed listing leaves none.
