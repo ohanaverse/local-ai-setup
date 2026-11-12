@@ -381,12 +381,11 @@ func TestEnumerateListsARemoteBranchBesideItsLocal(t *testing.T) {
 	}
 }
 
-// TestEnumerateDoesNotFetch pins Enumerate as read-only in what it shows: a
-// branch a teammate pushed since the last fetch is not listed, and no
-// remote-tracking ref appears. Enumeration refreshes nothing — that is
+// TestEnumerateDoesNotFetch pins Enumerate as fetch-free: a branch a
+// teammate pushed since the last fetch is not listed, and no remote-tracking
+// ref appears. Enumeration itself never fetches or prunes — refreshing is
 // FetchRemotes' job (the picker calls it on open; Part 3 moves that to a
-// refresh key) — so the list and the launch warnings never fetch behind the
-// user's back.
+// refresh key).
 func TestEnumerateDoesNotFetch(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -437,9 +436,11 @@ func TestEnumerateDoesNotFetch(t *testing.T) {
 }
 
 // TestEnumerateDoesNotPrune pins the other half of the same contract: the
-// remote-tracking ref of a branch deleted upstream is still listed. Stale
-// rows stay until FetchRemotes --prune removes them — a read-only
-// enumeration never silently shrinks the list under the user.
+// remote-tracking ref of a branch deleted upstream is still listed, and its
+// ref survives the call — proved with for-each-ref before and after, so
+// setup drift cannot pass the test. Stale rows stay until FetchRemotes
+// --prune removes them; a read-only enumeration never silently shrinks the
+// list under the user.
 func TestEnumerateDoesNotPrune(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -461,9 +462,14 @@ func TestEnumerateDoesNotPrune(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	// Upstream deletion leaves dir's origin/gone-soon stale.
+	// Upstream deletion leaves dir's origin/gone-soon stale — proved present
+	// here, so the listing below is about Enumerate and not about setup
+	// drift.
 	if out, err := exec.Command("git", "-C", remoteDir, "branch", "-D", "gone-soon").CombinedOutput(); err != nil {
 		t.Fatalf("git -C remote branch -D gone-soon: %v\n%s", err, out)
+	}
+	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/gone-soon"); strings.TrimSpace(string(out)) == "" {
+		t.Fatal("origin/gone-soon missing before Enumerate; setup drifted, nothing to prove")
 	}
 
 	groups, err := Enumerate(dir, dir)
@@ -479,12 +485,16 @@ func TestEnumerateDoesNotPrune(t *testing.T) {
 	if !found {
 		t.Fatalf("Enumerate pruned origin/gone-soon (deleted upstream): %+v", groups)
 	}
+	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/gone-soon"); strings.TrimSpace(string(out)) == "" {
+		t.Fatal("Enumerate pruned: the origin/gone-soon ref is gone after enumeration")
+	}
 }
 
-// TestFetchRemotesFetchesNewAndPrunesDeleted pins FetchRemotes, the one
-// explicit ref refresh (`git fetch --all --prune`, at most fetchTimeout): a
-// branch a teammate pushed becomes a remote-tracking ref, and the ref of a
-// branch deleted upstream goes away instead of lingering as a stale row.
+// TestFetchRemotesFetchesNewAndPrunesDeleted pins FetchRemotes, the
+// worktree package's explicit ref refresh (`git fetch --all --prune`, at
+// most fetchTimeout): a branch a teammate pushed becomes a remote-tracking
+// ref, and the ref of a branch deleted upstream goes away instead of
+// lingering as a stale row.
 func TestFetchRemotesFetchesNewAndPrunesDeleted(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -524,6 +534,11 @@ func TestFetchRemotesFetchesNewAndPrunesDeleted(t *testing.T) {
 		t.Fatalf("git push teammate-feature: %v\n%s", err, out)
 	}
 
+	// The soon-gone ref exists before FetchRemotes — else the prune below
+	// would pass on a ref that never was.
+	if out, _ := runGitCmd(dir, "for-each-ref", "refs/remotes/origin/gone-soon"); strings.TrimSpace(string(out)) == "" {
+		t.Fatal("origin/gone-soon missing before FetchRemotes; setup drifted, nothing to prune")
+	}
 	if err := FetchRemotes(dir); err != nil {
 		t.Fatalf("FetchRemotes: %v", err)
 	}
@@ -535,9 +550,9 @@ func TestFetchRemotesFetchesNewAndPrunesDeleted(t *testing.T) {
 	}
 }
 
-// TestFetchRemotesReportsFailure pins FetchRemotes' error: a dead remote is
-// an error the caller may ignore (the picker does, silently), its text one
-// line, and Enumerate is unaffected by it.
+// TestFetchRemotesReportsFailure pins FetchRemotes' error: a dead remote
+// returns a non-nil error of one line for the caller to handle (never a
+// multi-line dump), and Enumerate is unaffected by it.
 func TestFetchRemotesReportsFailure(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -562,42 +577,69 @@ func TestFetchRemotesReportsFailure(t *testing.T) {
 }
 
 // TestLastFetched pins LastFetched, the source of the list's "refreshed
-// when" note: the mtime of FETCH_HEAD, the file git rewrites on every fetch
-// (a manual one counts too), and false when there is none — "not refreshed
-// here". Fetch state belongs to the repository, so a linked worktree reads
-// the same stamp through the common git directory.
+// when" note, against real fetches: the stamp is when `git fetch` last ran
+// at that root, and every worktree keeps its own. false means no readable
+// FETCH_HEAD there — a fresh clone has none until a fetch runs at its root.
+// FetchRemotes(root) advances exactly the stamp LastFetched(root) reads, and
+// one worktree's fetch leaves the other stamps alone.
 func TestLastFetched(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
-
-	if got, ok := LastFetched(dir); ok {
-		t.Fatalf("LastFetched with no FETCH_HEAD = %v, true; want false", got)
+	remoteDir := filepath.Join(dir, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare remote: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "remote", "add", "origin", remoteDir); err != nil {
+		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	}
+	if out, err := runGitCmd(dir, "push", "-u", "origin", "main"); err != nil {
+		t.Fatalf("git push -u origin main: %v\n%s", err, out)
 	}
 
-	fetchHead := filepath.Join(dir, ".git", "FETCH_HEAD")
-	if err := os.WriteFile(fetchHead, nil, 0o644); err != nil {
-		t.Fatal(err)
+	// A clone runs no fetch at its new root, so it has no stamp yet.
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	if out, err := exec.Command("git", "clone", remoteDir, cloneDir).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
 	}
-	// Truncated to a second: filesystem timestamp resolution varies, and
-	// the contract is the mtime itself, not sub-second precision.
-	want := time.Now().Add(-3 * time.Minute).Truncate(time.Second)
-	if err := os.Chtimes(fetchHead, want, want); err != nil {
-		t.Fatal(err)
+	if got, ok := LastFetched(cloneDir); ok {
+		t.Fatalf("LastFetched after a fresh clone = %v, true; want false (the clone wrote no FETCH_HEAD)", got)
 	}
-	got, ok := LastFetched(dir)
+
+	// A real fetch at the primary root stamps it.
+	if err := FetchRemotes(cloneDir); err != nil {
+		t.Fatalf("FetchRemotes(clone): %v", err)
+	}
+	primary, ok := LastFetched(cloneDir)
 	if !ok {
-		t.Fatal("LastFetched with FETCH_HEAD present = false; want true")
+		t.Fatal("LastFetched after FetchRemotes at the primary root = false; want true")
 	}
-	if !got.Equal(want) {
-		t.Errorf("LastFetched = %v, want FETCH_HEAD mtime %v", got, want)
+	if time.Since(primary) > time.Minute {
+		t.Errorf("primary stamp %v is not the fetch that just ran", primary)
 	}
 
+	// A linked worktree made afterwards starts with its own empty stamp.
 	linked := filepath.Join(t.TempDir(), "linked")
-	if out, err := runGitCmd(dir, "worktree", "add", "-b", "linked-stamp", linked); err != nil {
+	if out, err := runGitCmd(cloneDir, "worktree", "add", "-b", "linked-stamp", linked); err != nil {
 		t.Fatalf("git worktree add: %v\n%s", err, out)
 	}
-	if got, ok := LastFetched(linked); !ok || !got.Equal(want) {
-		t.Errorf("LastFetched(linked worktree) = %v, %v; want %v, true", got, ok, want)
+	if got, ok := LastFetched(linked); ok {
+		t.Fatalf("LastFetched at a linked root with no fetch = %v, true; want false (its own stamp, not the primary's)", got)
+	}
+
+	// A fetch at the linked root advances the linked stamp past the
+	// primary's, which stays exactly as it was.
+	if err := FetchRemotes(linked); err != nil {
+		t.Fatalf("FetchRemotes(linked): %v", err)
+	}
+	got, ok := LastFetched(linked)
+	if !ok {
+		t.Fatal("LastFetched after FetchRemotes at the linked root = false; want true")
+	}
+	if !got.After(primary) {
+		t.Errorf("linked stamp %v did not advance past the primary's %v", got, primary)
+	}
+	if after, ok := LastFetched(cloneDir); !ok || !after.Equal(primary) {
+		t.Errorf("the linked fetch moved the primary stamp: %v, %v; want %v, true", after, ok, primary)
 	}
 }
 

@@ -23,10 +23,10 @@ const fetchTimeout = 5 * time.Second
 
 // FetchRemotes refreshes remote-tracking refs and prunes the ones deleted
 // upstream (`git fetch --all --prune`, every configured remote, at most
-// fetchTimeout). It is the one home of the picker's fetch: the picker calls
-// it when it opens and ignores the error (offline, no remotes, a timeout),
-// listing whatever refs exist. The error is one line: git's first line of
-// output, else the process error.
+// fetchTimeout). It is the worktree package's explicit fetch: enumeration
+// never fetches on its own. A run at root advances exactly the stamp
+// LastFetched(root) reads. The error is one line — git's first line of
+// output, else the process error — returned for the caller to handle.
 func FetchRemotes(root string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
@@ -49,22 +49,42 @@ func FetchRemotes(root string) error {
 	return fmt.Errorf("git fetch --all --prune: %w", err)
 }
 
-// LastFetched returns when a git fetch last rewrote the repository's
-// remote-tracking refs — the mtime of FETCH_HEAD, which git writes on every
-// fetch, a manual one included — and false when there is none: never fetched
-// here, which the list shows as "not refreshed here". Fetch state belongs to
-// the repository, so the stamp is read from the common git directory and
-// every linked worktree shares it.
+// LastFetched returns when `git fetch` last ran at root — the mtime of the
+// FETCH_HEAD git writes on every fetch there, an up-to-date fetch included
+// (a manual fetch counts) — and false when root has no readable FETCH_HEAD:
+// a fresh clone has none until a fetch runs there, and a read error folds
+// into the same false. Every worktree keeps its own stamp: LastFetched(root)
+// reads exactly the file a fetch at root writes, so FetchRemotes(root)
+// advances this stamp while a fetch at another worktree does not.
 func LastFetched(root string) (time.Time, bool) {
-	common, err := CommonDirAt(root)
-	if err != nil {
+	p := fetchHeadPath(root)
+	if p == "" {
 		return time.Time{}, false
 	}
-	fi, err := os.Stat(filepath.Join(common, "FETCH_HEAD"))
+	fi, err := os.Stat(p)
 	if err != nil || fi.IsDir() {
 		return time.Time{}, false
 	}
 	return fi.ModTime(), true
+}
+
+// fetchHeadPath returns the FETCH_HEAD a fetch at root writes — git keeps
+// one per worktree, and `rev-parse --git-path` resolves exactly which (the
+// linked worktrees' live under .git/worktrees/<id>) — absolutized against
+// root when git answers with a relative path. "" when git cannot say.
+func fetchHeadPath(root string) string {
+	out, err := runGit(root, "rev-parse", "--git-path", "FETCH_HEAD")
+	if err != nil {
+		return ""
+	}
+	p := strings.TrimSpace(string(out))
+	if p == "" {
+		return ""
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	return p
 }
 
 // Type of a pickable target.
