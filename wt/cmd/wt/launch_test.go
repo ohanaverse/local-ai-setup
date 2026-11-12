@@ -1969,8 +1969,11 @@ func runClaimLaunch(t *testing.T, dir string, where []string, extra ...string) c
 			t.Fatal(err)
 		}
 	}
+	// config.toml is already native-provider aligned — it carries the agy
+	// agent migrateAgentRefs would insert — so the load migrates nothing and
+	// these tests print nothing.
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
-		[]byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\ndefault_provider = \"claude\"\n"), 0o644); err != nil {
+		[]byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\ndefault_provider = \"claude\"\n[[agents]]\nname = \"agy\"\nsupported_providers = [\"agy\"]\ndefault_provider = \"agy\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
@@ -2169,6 +2172,42 @@ func TestLaunchRootWritesClaimAndDoesNotBlockOnAnother(t *testing.T) {
 	}
 	if got := res.claim["path"]; got != root {
 		t.Errorf("claim path = %q; want the root %q", got, root)
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("the claim outlived the agent")
+	}
+}
+
+// TestZeroDirLaunchClaimsNothing checks a direct call with a bare
+// exec.Command — cmd.Dir unset, exactly as the in-process test seams drive
+// it — writes no claim at all. Why: HoldLaunch("") resolves to the working
+// directory, so the claim would land in whatever repository the test binary
+// runs in and give a concurrent wt launch there a false "in use by another
+// session" naming the test binary (a killed run would even leave it behind).
+// A launch claims the worktree it named, or nothing (Task 405).
+func TestZeroDirLaunchClaimsNothing(t *testing.T) {
+	root := sharedRootRepo(t) // a scratch repository: the pin itself never touches the real one
+	t.Chdir(root)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	prevRelease, prevPicker := releaseSession, runStopPicker
+	t.Cleanup(func() { releaseSession, runStopPicker = prevRelease, prevPicker })
+	releaseSession, runStopPicker = func() {}, func(*config.Config) {}
+
+	// The launched command copies this session's claim while it runs: the
+	// claim is released before runAgentCmd returns, so only the agent's own
+	// window can observe it.
+	claimCopy := filepath.Join(t.TempDir(), "claim")
+	var err error
+	captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(exec.Command("/bin/sh", "-c",
+			"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0"),
+			"shell", config.Model{}, &config.Config{}, nil)
+	})
+	if err != nil {
+		t.Fatalf("runAgentCmd: %v", err)
+	}
+	if claim := readClaimFields(t, claimCopy); claim != nil {
+		t.Errorf("a launch with no Dir claimed the working directory's repository: %v", claim)
 	}
 	if fileExists(ownClaim(root)) {
 		t.Error("the claim outlived the agent")

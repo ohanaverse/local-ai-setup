@@ -58,7 +58,7 @@ func TestDescribeNamesTheSession(t *testing.T) {
 
 // TestCheckFailedNote checks the one-line note the root-claim step prints
 // when the claims cannot be read or written, which never stops the launch
-// (cmd/wt's holdRoot and the TUI's claimRoot both render it as `wt: note:`).
+// (cmd/wt's holdRoot and the TUI's claimLaunch both render it as `wt: note:`).
 func TestCheckFailedNote(t *testing.T) {
 	got := CheckFailed("/repo", errors.New("permission denied"))
 	if want := "could not check other sessions in /repo (permission denied); launching anyway"; got != want {

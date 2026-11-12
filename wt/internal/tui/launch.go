@@ -290,16 +290,24 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 		// taken after the gate (a declined gate claims nothing) and after
 		// any worktree creation the gate made. The run commands that cannot
 		// claim for themselves (the slot flow's waiter) are covered by the
-		// gate's own claim of the same claim file; here it is twice-safe.
+		// gate's own claim of the same claim file; here it is twice-safe. A
+		// command with no Dir names no directory and claims nothing, as
+		// claimLaunch decrees for the same empty Dir (filepath.Abs("") is
+		// the working directory: a claim there would give every other
+		// session a false held warning for a root this launch never named).
 		// HoldLaunch's others are dropped on purpose: the gate's warning
 		// pass named any other holder already, and a launch prints exactly
 		// one held line. A claim that cannot be read or written is one note
 		// and never a refusal.
-		claimRelease, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
-		defer claimRelease()
-		if cerr != nil {
-			fmt.Fprintf(os.Stderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+		claimRelease := func() {} // the no-Dir release, so the defer below is unconditional
+		if cmd.Dir != "" {
+			release, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
+			claimRelease = release
+			if cerr != nil {
+				fmt.Fprintf(os.Stderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+			}
 		}
+		defer claimRelease()
 		// The commit point: the agent runs next. The gate has made any
 		// worktree this pick owed and claimed the run for the agent.
 		status := record()

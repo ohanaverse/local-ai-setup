@@ -503,16 +503,23 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	// (held) while it lasts. The site is read from cmd.Dir — the directory
 	// the agent will actually run in — after any worktree creation, so a
 	// bare-branch launch claims the worktree it created, never the root.
-	// holdRoot's root claim (launchHere) is the same claim file for a root
-	// launch, twice-safe. HoldLaunch's others are dropped on purpose: RunE's
-	// confirmLaunch named any other holder already, and a launch prints
-	// exactly one held line. A claim that cannot be read or written is one
-	// note and never a refusal.
-	claimRelease, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
-	defer claimRelease() // every exit path below releases; safe twice
-	if cerr != nil {
-		fmt.Fprintf(osStderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+	// A command with no Dir names no directory and claims nothing:
+	// filepath.Abs("") is the working directory, and a claim there would
+	// give every other session a false held warning for a root this launch
+	// never named (claimLaunch guards the same way). holdRoot's root claim
+	// (launchHere) is the same claim file for a root launch, twice-safe.
+	// HoldLaunch's others are dropped on purpose: RunE's confirmLaunch named
+	// any other holder already, and a launch prints exactly one held line. A
+	// claim that cannot be read or written is one note and never a refusal.
+	claimRelease := func() {} // the no-Dir release, so the defer below is unconditional
+	if cmd.Dir != "" {
+		release, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
+		claimRelease = release
+		if cerr != nil {
+			fmt.Fprintf(osStderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+		}
 	}
+	defer claimRelease() // every exit path below releases; safe twice
 
 	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp)
 	if perr != nil {
