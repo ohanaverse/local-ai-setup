@@ -59,8 +59,8 @@
   skip-worktree entries (so a sparse checkout) and every state `wt rescue`
   refuses. Exit 0 moved (or would move, or already on the default), 1 could
   not start, 2 refused or failed, 3 approval missing. New contract
-  `docs/contracts/restore-root-result.*`. Cost: one fetch of every remote
-  (none with `--dry-run` or `--no-fetch`) and one extra fingerprint at the
+  `docs/contracts/restore-root-result.*`. Cost: one `git fetch --prune` per
+  remote (none with `--dry-run` or `--no-fetch`) and one extra fingerprint at the
   release. The one launch confirmation (`wt: continue? [Y/n]`, which lists
   the warnings) prints a hint pointing at it when the root is on a non-default
   branch. `wt rescue` of the primary

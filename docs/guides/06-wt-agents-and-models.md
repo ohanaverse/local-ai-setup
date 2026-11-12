@@ -212,8 +212,8 @@ Start the model first (`wt start sushi/…`) or let the smoke run do it; either 
 
 ### 7. Extras
 
-- `--init` — seed `AGENTS.md` (if missing) plus an agent-specific pointer file, then exit (`internal/initseed/`).
-- `--check-guard` / `--no-guard` — inspect/remove the `block-main-commit` pre-commit hook that every launch auto-installs in a git repo (blocks commits to `main`/`master`; `git commit --no-verify` is the emergency bypass). Live read-only run in `wt`-managed repo:
+- `--init` — seed `AGENTS.md` (if missing) plus an agent-specific pointer file, install the `block-main-commit` hook in a git repo (a first-time install is announced, below), then exit (`internal/initseed/`).
+- `--check-guard` / `--no-guard` — inspect/remove the `block-main-commit` pre-commit hook that every launch auto-installs in a git repo (blocks commits to `main`/`master`; `git commit --no-verify` is the emergency bypass). A first-time install prints one line on stderr — `wt: installed the block-main-commit hook (--no-guard to skip)` — on every install path (a launch inside a git repo and `wt --init` alike); a hook already present is left alone and prints nothing. Live read-only run in `wt`-managed repo:
 
   ```bash
   wt --check-guard        # from: /Users/keith/github/ohanaverse/local-ai-setup
