@@ -66,6 +66,28 @@ type rowListOpts struct {
 	// at this root is what "refreshed" means (worktree.FetchRemotes, and
 	// RemoveFuncs.Refetch, run there). Empty falls back to the report's Repo.
 	Root string
+	// Stamp is the fetch stamp the header's refresh note shows, read by the
+	// load command (off the update loop). Nil reads it here, once, when the
+	// list is first built; the list then keeps the value in its opts so a
+	// report swap (withReport) never reads git again.
+	Stamp *refreshStamp
+}
+
+// refreshStamp is when git fetch last ran at a root (worktree.LastFetched):
+// OK false means there is no stamp.
+type refreshStamp struct {
+	At time.Time
+	OK bool
+}
+
+// readRefreshStamp reads root's stamp: two git/stat calls, so callers run
+// it in a command, never in Update.
+func readRefreshStamp(root string) refreshStamp {
+	if root == "" {
+		return refreshStamp{}
+	}
+	at, ok := worktree.LastFetched(root)
+	return refreshStamp{At: at, OK: ok}
 }
 
 // rowChosenMsg is launch mode's enter on a row: launch there.
@@ -264,7 +286,9 @@ type cleanupListModel struct {
 	// refreshNote is the header's last line — "refreshed 3m ago" or "not
 	// refreshed here" — read once when the list was built (refreshedNote):
 	// it is a git read, and View must not spawn git every frame.
-	refreshNote string
+	stamp refreshStamp
+	// fetching is true while the picker's `F` runs: the header says so.
+	fetching bool
 
 	// Launch mode's type-to-filter (row_list_launch.go): filter is the
 	// query, filtering is true while it is being typed (every printable key
@@ -284,11 +308,14 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 // ticked; in launch mode nothing is. The cursor starts on the first item.
 func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
-	root := o.Root
-	if root == "" {
-		root = r.Repo
+	root := refreshRoot(o.Root, r)
+	if o.Stamp != nil {
+		m.stamp = *o.Stamp
+	} else {
+		m.stamp = readRefreshStamp(root)
 	}
-	m.refreshNote = refreshedNote(root, o.Now)
+	st := m.stamp
+	m.opts.Stamp = &st
 	here := deepestCurrent(r)
 	if o.Mode == modeLaunch {
 		m.items = append(m.items, cleanupItem{newWorktree: true})
@@ -806,25 +833,33 @@ func (m *cleanupListModel) statusBlock() string {
 // this list was last refreshed here.
 func (m *cleanupListModel) headerBlock() string {
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	lines := append(cleanup.HeaderLines(m.report, m.now), m.refreshNote)
+	lines := cleanup.HeaderLines(m.report, m.now)
+	if m.fetching {
+		lines = append(lines, "fetching every remote… (up to 5s)")
+	}
+	if note := refreshedNote(m.stamp, m.now, m.report.Fetch); note != "" {
+		lines = append(lines, note)
+	}
 	text := tuilayout.WrapText(strings.Join(lines, "\n"), m.width)
 	return clip(dim.Render(text), m.width)
 }
 
 // refreshedNote is the header's one line about the list's fetch stamp:
-// "refreshed 3m ago" when git fetch last ran at root (worktree.LastFetched
-// reads the FETCH_HEAD every fetch there rewrites, an up-to-date one
-// included), and "not refreshed here" when root has no stamp at all — a
-// fresh clone has none until a fetch runs there.
-func refreshedNote(root string, now time.Time) string {
-	if root == "" {
+// "refreshed 3m ago" from the stamp (worktree.LastFetched reads the
+// FETCH_HEAD every fetch rewrites, an up-to-date one included) and "not
+// refreshed here" when root has none — a fresh clone has none until a fetch
+// runs there. A fetch this list recorded as failed gets no note: git
+// truncates FETCH_HEAD when a fetch starts, so a failed or timed-out fetch
+// advances the stamp too, and "refreshed 0s ago" under "fetch: FAILED"
+// would contradict it.
+func refreshedNote(s refreshStamp, now time.Time, f cleanup.FetchResult) string {
+	if !f.OK && f.Err != "" {
+		return ""
+	}
+	if !s.OK {
 		return "not refreshed here"
 	}
-	at, ok := worktree.LastFetched(root)
-	if !ok {
-		return "not refreshed here"
-	}
-	return "refreshed " + sinceUnit(now.Sub(at)) + " ago"
+	return "refreshed " + sinceUnit(now.Sub(s.At)) + " ago"
 }
 
 // sinceUnit is d as one truncated unit — "0s", "3m", "2h", "5d" — the shape
@@ -991,4 +1026,13 @@ func (m cleanupListModel) exitMessage() string {
 	}
 	lines := append([]string{text, "the run did not finish:"}, m.run.unfinishedLines()...)
 	return strings.Join(lines, "\n")
+}
+
+// refreshRoot is the root the refresh stamp is read at: root, else the
+// report's Repo.
+func refreshRoot(root string, r cleanup.Report) string {
+	if root == "" {
+		return r.Repo
+	}
+	return root
 }

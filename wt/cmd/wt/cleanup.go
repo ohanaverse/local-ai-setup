@@ -19,7 +19,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -163,7 +162,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 			// The user's explicit fetch: every remote once at the root the
 			// report is built from, recorded the way the header's fetch note
 			// reads it (and, through LastFetched there, the refreshed line).
-			in.Fetched = fetchRemotesRecord(in.FetchRemotes, listRoot(cwd))
+			in.Fetched = cleanup.RecordFetch(in.FetchRemotes, listRoot(cwd))
 		case !f.noFetch:
 			// Not --no-fetch: the list just does not fetch. Origin rows
 			// say so instead of naming a flag the user did not pass.
@@ -204,22 +203,6 @@ func cleanupReport(a *app, snap cleanup.Snapshot, minAge time.Duration, protErr 
 		report.Notes = append(report.Notes, "registry: none at "+cleanup.OneLine(config.RegistryPath())+"; no model artifacts are registered")
 	}
 	return report
-}
-
-// fetchRemotesRecord runs one explicit fetch — the call's own hook (fn, the
-// per-call GatherInputs.FetchRemotes seam) or worktree.FetchRemotes — at root
-// and records the outcome the way the header's fetch note reads it: ok, or
-// failed with git's line (the wording contract the picker's `F` established).
-// A failure is a value, never an error: the list still opens and the header
-// says how the fetch went.
-func fetchRemotesRecord(fn func(string) error, root string) cleanup.FetchResult {
-	if fn == nil {
-		fn = worktree.FetchRemotes
-	}
-	if err := fn(root); err != nil {
-		return cleanup.FetchResult{At: time.Now(), Err: err.Error()}
-	}
-	return cleanup.FetchResult{OK: true, At: time.Now()}
 }
 
 // listRoot is the root the report is built from — the primary worktree's
@@ -279,7 +262,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	// fetch failure is not this error — it travels in the report's Fetch
 	// field, which the header renders; this error is the re-read's own.
 	refetch := func() (cleanup.Report, error) {
-		in.Fetched = fetchRemotesRecord(in.FetchRemotes, snap.Repo)
+		in.Fetched = cleanup.RecordFetch(in.FetchRemotes, snap.Repo)
 		fresh, err := reGather()
 		if err != nil {
 			return cleanup.Report{}, err

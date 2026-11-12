@@ -130,6 +130,7 @@ type (
 	// the post-run one: its failure keeps the program alive).
 	cleanupRefetchMsg struct {
 		report cleanup.Report
+		stamp  refreshStamp
 		err    error
 	}
 	// cleanupSignalMsg is a SIGINT or SIGTERM to the process (forwardSignals).
@@ -731,11 +732,11 @@ func (m cleanupListModel) startRefetch() (cleanupListModel, tea.Cmd) {
 		return m, nil
 	}
 	m.phase = cleanupPhaseRefreshing
-	return m, refetchCmd(m.rm.Refetch)
+	return m, refetchCmd(m.rm.Refetch, m.opts.Root)
 }
 
 // refetchCmd runs the `F` re-read off the update loop; a panic is an error.
-func refetchCmd(refetch func() (cleanup.Report, error)) tea.Cmd {
+func refetchCmd(refetch func() (cleanup.Report, error), root string) tea.Cmd {
 	return func() (msg tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -743,7 +744,7 @@ func refetchCmd(refetch func() (cleanup.Report, error)) tea.Cmd {
 			}
 		}()
 		rep, err := refetch()
-		return cleanupRefetchMsg{report: rep, err: err}
+		return cleanupRefetchMsg{report: rep, stamp: readRefreshStamp(refreshRoot(root, rep)), err: err}
 	}
 }
 
@@ -763,6 +764,8 @@ func (m cleanupListModel) gotRefetch(msg cleanupRefetchMsg) (tea.Model, tea.Cmd)
 	}
 	m.now = m.clock()
 	m.opts.Now = m.now
+	st := msg.stamp
+	m.opts.Stamp = &st
 	return m.withReport(msg.report), nil
 }
 

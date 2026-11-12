@@ -1,0 +1,41 @@
+package tui
+
+import (
+	"testing"
+	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+)
+
+func TestRefreshedNote(t *testing.T) {
+	now := time.Now()
+	st := refreshStamp{At: now.Add(-3 * time.Minute), OK: true}
+	cases := []struct {
+		name string
+		s    refreshStamp
+		f    cleanup.FetchResult
+		want string
+	}{
+		{"stamped", st, cleanup.FetchResult{}, "refreshed 3m ago"},
+		{"no stamp", refreshStamp{}, cleanup.FetchResult{}, "not refreshed here"},
+		{"ok fetch", st, cleanup.FetchResult{OK: true}, "refreshed 3m ago"},
+		// git truncates FETCH_HEAD when a fetch starts, so a failed fetch
+		// moves the stamp: no note may contradict "fetch: FAILED".
+		{"failed fetch", st, cleanup.FetchResult{Err: "timed out"}, ""},
+	}
+	for _, c := range cases {
+		if got := refreshedNote(c.s, now, c.f); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A report swap keeps the stamp the list was built with: no git read.
+func TestWithReportKeepsStamp(t *testing.T) {
+	st := refreshStamp{At: time.Now().Add(-time.Hour), OK: true}
+	m := newRowList(cleanupFixture(), rowListOpts{Mode: modeLaunch, Now: time.Now(), Root: "/nonexistent", Stamp: &st})
+	n := m.withReport(cleanupFixture())
+	if n.stamp != st {
+		t.Fatalf("stamp after swap = %+v, want %+v", n.stamp, st)
+	}
+}

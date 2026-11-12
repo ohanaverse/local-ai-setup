@@ -28,6 +28,7 @@ type rowsLoadedMsg struct {
 	snap     cleanup.Snapshot
 	in       cleanup.GatherInputs
 	repoRoot string
+	stamp    refreshStamp // the root's fetch stamp, read in the command
 	gen      int
 	err      error
 }
@@ -73,15 +74,7 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 		if fetch {
 			// The header says how the fetch went: ok, or failed with git's
 			// line (never "skipped", which would hide a dead remote).
-			fn := in.FetchRemotes
-			if fn == nil {
-				fn = worktree.FetchRemotes
-			}
-			if err := fn(root); err != nil {
-				in.Fetched = cleanup.FetchResult{At: time.Now(), Err: err.Error()}
-			} else {
-				in.Fetched = cleanup.FetchResult{OK: true, At: time.Now()}
-			}
+			in.Fetched = cleanup.RecordFetch(in.FetchRemotes, root)
 		}
 		in.Fetch, in.SkipPRs = false, true
 		snap, err := cleanup.Gather(cleanup.Git{Dir: root}, in)
@@ -89,7 +82,7 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 			return rowsLoadedMsg{err: err}
 		}
 		rep := cleanup.Classify(snap, cleanup.Options{Now: time.Now()})
-		return rowsLoadedMsg{report: rep, snap: snap, in: in, repoRoot: root}
+		return rowsLoadedMsg{report: rep, snap: snap, in: in, repoRoot: root, stamp: readRefreshStamp(refreshRoot(root, rep))}
 	}
 }
 
@@ -185,6 +178,7 @@ func entryOfRow(r cleanup.Row) worktree.Entry {
 func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	refreshing := m.rowsRefreshing
 	m.rowsRefreshing = false
+	m.rows.fetching = false
 	if msg.err != nil {
 		if m.ready {
 			// A `F` refresh whose re-read failed: the list is still usable,
@@ -210,9 +204,12 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 		base := m.rows
 		base.now = base.clock()
 		base.opts.Now, base.opts.Root = base.now, msg.repoRoot
+		st := msg.stamp
+		base.opts.Stamp = &st
+		base.fetching = false
 		rows = base.withReport(msg.report)
 	} else {
-		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot})
+		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot, Stamp: &msg.stamp})
 		rows.width, rows.height = m.rows.width, m.rows.height
 		if here := deepestCurrent(msg.report); here != "" {
 			rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })

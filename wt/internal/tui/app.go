@@ -328,6 +328,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			return m, nil
 		}
 		m.rowsRefreshing = true
+		m.rows.fetching = true
 		return m, loadRowsCmd(m.repoRoot, nil, m.rowsIn, true)
 	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg, cleanupRefetchMsg:
 		// The row list runs its own flows inside itself: the `x` removal
