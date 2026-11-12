@@ -14,8 +14,9 @@ import (
 // ForDir reads the Target for a launch that starts in dir, from live git and
 // the session claims. A directory outside a repository, or in a bare one,
 // yields the zero Target and a nil error: no launch warns there. It is
-// read-only (it prunes no claim), and the PR and upstream facts stay zero for
-// a caller that has a cleanup row to set them.
+// read-only (it prunes no claim). Only the PR facts stay zero now, for a
+// caller that has a cleanup row to set them: the upstream fact is read here
+// from git (upstreamGone), as ForNew reads it.
 func ForDir(dir string) (Target, error) {
 	return forDir(dir, nil)
 }
@@ -49,6 +50,7 @@ func forDir(dir string, knownDirt *bool) (Target, error) {
 	t := rootTarget(primary)
 	t.Dir = resolved
 	t.Branch = branchOr(resolved)
+	t.UpstreamGone = upstreamGone(resolved, t.Branch)
 	_, t.IsRoot = worktree.RootOf(resolved)
 	if knownDirt != nil {
 		t.Dirty = *knownDirt
@@ -92,6 +94,7 @@ func ForNew(repoRoot, branch string, plan *worktree.Plan) (Target, error) {
 	if t.Branch == "" {
 		t.Branch = branch
 	}
+	t.UpstreamGone = upstreamGone(repoRoot, t.Branch)
 	t.Creation = &Creation{Branch: t.Branch, Tracks: plan.Tracks(), NewBranch: plan.Creates(), Path: plan.Path()}
 	return t, nil
 }
@@ -117,4 +120,25 @@ func dirty(dir string) bool {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+// upstreamGone reports whether branch's configured upstream's remote-tracking
+// ref no longer exists — the fact a cleanup row carries, read here from pure
+// git for the flag and typed launch paths (no network, no gh). Git records the
+// upstream on the branch itself (branch.<n>.remote/.merge, which
+// `for-each-ref %(upstream)` prints whether or not the ref is still there —
+// `@{upstream}` by contrast fails once the ref is gone), and show-ref says
+// whether that ref exists. A branch with no configured upstream, or one git
+// cannot answer for, is not gone: this is a warning's input, not a gate.
+func upstreamGone(dir, branch string) bool {
+	cmd := exec.Command("git", "for-each-ref", "--format=%(upstream)", "refs/heads/"+branch)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	upstream := strings.TrimSpace(string(out))
+	if err != nil || upstream == "" {
+		return false
+	}
+	ref := exec.Command("git", "show-ref", "--verify", "--quiet", upstream)
+	ref.Dir = dir
+	return ref.Run() != nil
 }

@@ -100,9 +100,10 @@ func (m model) launchTarget() (launchwarn.Target, error) {
 
 // foldRowFacts folds the picked list row's mapped facts (launchwarn.FromRow;
 // nil when the pick came from no row) into the live read t: row facts win for
-// the PR state and number, the dirt and the gone upstream. The PR and
-// upstream are what ForDir and ForNew leave zero "for a caller that has a
-// cleanup row to set them"; the dirt is the row's raw answer, which the
+// the PR state and number, the dirt and the gone upstream. The PR facts are
+// what ForDir and ForNew leave zero "for a caller that has a cleanup row to
+// set them" (the upstream is read live from git now, and a row's gathered
+// answer still wins here); the dirt is the row's raw answer, which the
 // ForDir branch passes in as the gathered value so no probe runs to be
 // overwritten (ForDir probes dirt for the callers that have no row — preset
 // paths, typed names, cmd/wt's confirmLaunch — and keeps doing so).

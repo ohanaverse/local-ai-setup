@@ -312,3 +312,55 @@ func TestForNewCarriesTheCreation(t *testing.T) {
 		t.Errorf("plan.Path() = %q", plan.Path())
 	}
 }
+
+// TestForDirAndForNewCarryTheGoneUpstreamFact checks the flag and typed
+// launch paths read the upstream fact the list rows carry: ForDir and ForNew
+// set UpstreamGone from pure git facts — the branch's configured upstream and
+// whether its remote-tracking ref still exists — so -W, --root, --cwd and the
+// typed path warn upstream_gone like a row pick does. No network and no gh
+// (only the PR facts stay zero for a caller with a cleanup row); a live
+// upstream ref warns nothing.
+func TestForDirAndForNewCarryTheGoneUpstreamFact(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		forNew bool
+		gone   bool
+	}{
+		{name: "ForDir, live upstream"},
+		{name: "ForDir, gone upstream", gone: true},
+		{name: "ForNew, live upstream", forNew: true},
+		{name: "ForNew, gone upstream", forNew: true, gone: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			repo := cloneRepo(t)
+			git(t, repo, "checkout", "-q", "-b", "topic")
+			git(t, repo, "config", "branch.topic.remote", "origin")
+			git(t, repo, "config", "branch.topic.merge", "refs/heads/topic")
+			git(t, repo, "update-ref", "refs/remotes/origin/topic", "HEAD")
+			if c.gone {
+				git(t, repo, "update-ref", "-d", "refs/remotes/origin/topic")
+			}
+			var tg Target
+			var err error
+			if c.forNew {
+				plan, perr := worktree.Resolve(repo, "topic")
+				if perr != nil {
+					t.Fatal(perr)
+				}
+				tg, err = ForNew(repo, "topic", plan)
+			} else {
+				tg, err = ForDir(repo)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tg.UpstreamGone != c.gone {
+				t.Errorf("UpstreamGone = %v, want %v", tg.UpstreamGone, c.gone)
+			}
+			ws, _ := Collect(tg)
+			if _, warned := has(ws, CodeUpstreamGone); warned != c.gone {
+				t.Errorf("codes = %v, want upstream_gone warned=%v", codes(ws), c.gone)
+			}
+		})
+	}
+}
