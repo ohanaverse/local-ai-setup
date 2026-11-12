@@ -420,8 +420,9 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 		}
 		// The launch gate asks before anything is recorded, so declining
 		// there leaves no trace of the launch — while a creation that failed
-		// after the person continued travels out as the run's error (main's
-		// one line, non-zero), never a quiet decline. Either way the profile
+		// after the person continued travels out as the run's error (a
+		// GateError: main's one line, non-zero, never a quiet decline and
+		// never a quiet agent exit). Either way the profile
 		// tail's state stays: the standard stop picker offers whatever the
 		// start flow left loaded (nothing auto-stops), as after a real exit.
 		if gate != nil {
@@ -429,6 +430,9 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 				_ = cleanup()
 				shown := config.Model{ID: row.Model.ID}
 				pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}
+				if gerr != nil {
+					gerr = GateError{Err: gerr}
+				}
 				return launchDoneMsg{err: gerr}
 			}
 		}

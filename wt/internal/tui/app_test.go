@@ -950,7 +950,9 @@ func TestNNotHijackedWhileFiltering(t *testing.T) {
 // launch: a later pick of an existing worktree must clear the creation plan
 // an earlier pick left behind. Without this, esc back to the list and a
 // re-pick still drove the launch — and at the commit point created — the
-// abandoned pick's worktree.
+// abandoned pick's worktree. The typed name's plan goes with it: it is owed
+// the same commit-point Ensure, and an abandoned one must never run it for a
+// later pick.
 func TestRePickClearsAnAbandonedCreation(t *testing.T) {
 	stubShellLaunch(t)
 	m := model{
@@ -960,10 +962,14 @@ func TestRePickClearsAnAbandonedCreation(t *testing.T) {
 		height:       24,
 		initialAgent: "opencode",
 		creation:     &launchCreation{repoRoot: "/repo", name: "abandoned"},
+		typedPlan:    &worktree.Plan{},
 	}
 	m, _ = updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeWorktree, Branch: "kept", Path: "/repo/.worktrees/kept"}})
 	if m.creation != nil {
 		t.Errorf("creation = %+v, want nil after picking an existing worktree", m.creation)
+	}
+	if m.typedPlan != nil {
+		t.Errorf("typedPlan = %+v, want nil after picking an existing worktree", m.typedPlan)
 	}
 	if m.selectedPath != "/repo/.worktrees/kept" {
 		t.Errorf("selectedPath = %q, want the re-pick's path", m.selectedPath)
@@ -983,6 +989,43 @@ func TestSecondEnterAtTheCommitPointIsIgnored(t *testing.T) {
 	_, second := updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo/.worktrees/feat"}})
 	if second != nil {
 		t.Error("a second Enter started a second run command; the commit point takes one launch")
+	}
+}
+
+// TestSecondEnterAtLaunchAndRecordIsIgnored pins the same guard at the model
+// path's own commit point (launchAndRecord), where a session with a model
+// actually launches: two Enters there must produce one run command, never two
+// recordings, two gates and two agents.
+func TestSecondEnterAtLaunchAndRecordIsIgnored(t *testing.T) {
+	m := model{cfg: &config.Config{}, agent: "claude", launchModel: config.Model{ID: "prov/m"}}
+	m1, first := m.launchAndRecord(exec.Command("true"))
+	if first == nil {
+		t.Fatal("the first Enter did not start a run command")
+	}
+	if _, second := m1.launchAndRecord(exec.Command("true")); second != nil {
+		t.Error("a second Enter started a second run command at launchAndRecord; the commit point takes one launch")
+	}
+}
+
+// TestRetryAfterASlotAbortDispatchesARunCommand checks the commit-point guard
+// is an in-flight guard, not a latch: a run command's outcome releases it, so
+// the deliberate retry path after a slotAbortMsg (the slot applier failed; the
+// flow returns to the model picker) can commit again. A guard that never
+// released left the session silently dead — every later Enter dispatched
+// nothing.
+func TestRetryAfterASlotAbortDispatchesARunCommand(t *testing.T) {
+	m, first, _ := pickRow(t, "/repo/.worktrees/feat")
+	if first == nil {
+		t.Fatal("the first Enter did not start a run command")
+	}
+	// The abort returns to the model picker, whose list the fixture must
+	// carry for Update's final fit (the real picker always has one).
+	m.models = compactModelList(t, nil)
+	// The run command's outcome came back as a slotAbortMsg and returned to
+	// the picker; the retry's Enter must start a run command of its own.
+	m, _ = updateMsg(m, slotAbortMsg{err: errMock("no slot-profile applier")})
+	if _, retry := updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo/.worktrees/feat"}}); retry == nil {
+		t.Error("the retry's Enter dispatched nothing; the guard latched instead of guarding the launch in flight")
 	}
 }
 

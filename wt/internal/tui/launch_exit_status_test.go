@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"testing"
 
@@ -25,6 +26,36 @@ func exitStatusOf(err error) int {
 		return -2
 	}
 	return ee.ExitCode()
+}
+
+// TestGateFailureIsNeverReadAsTheAgentsExit checks the one discrimination the
+// exit routing depends on (#412's edge): a gate/creation failure can wrap
+// git's own *exec.ExitError (gitError's empty-stderr branch and startPhrase's
+// rev-parse failure both %w one), and cmd/wt's agentExitStatus reads any
+// error carrying an *exec.ExitError as the agent's own quiet exit — printing
+// nothing and exiting with git's status instead of the gate failure's one
+// line. The gate's error must travel out of the run command with no
+// *exec.ExitError in its chain, which is exactly what exitStatusOf's -2
+// reports here and agentExitStatus's errors.As sees there.
+func TestGateFailureIsNeverReadAsTheAgentsExit(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	// gitError's empty-stderr branch wraps git's exit status exactly so.
+	synthetic := fmt.Errorf("git worktree add: %w", exec.Command("false").Run())
+	msg := runAndWaitCmd(exec.Command("true"), "claude", config.Model{}, func() (bool, error) { return false, synthetic })()
+	done, ok := msg.(launchDoneMsg)
+	if !ok {
+		t.Fatalf("msg = %#v, want launchDoneMsg", msg)
+	}
+	if done.err == nil {
+		t.Fatal("the gate's failure did not travel out as the run's error")
+	}
+	if got := exitStatusOf(done.err); got != -2 {
+		t.Errorf("exitStatusOf = %d, want -2: agentExitStatus would exit quietly with an agent status instead of printing the gate's failure once", got)
+	}
+	if done.err.Error() != synthetic.Error() {
+		t.Errorf("err = %q, want the failure's own message %q", done.err.Error(), synthetic.Error())
+	}
 }
 
 // TestPickerLaunchReturnsTheAgentsExitStatus pins #412 for a single-model

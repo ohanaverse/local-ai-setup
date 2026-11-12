@@ -146,6 +146,17 @@ func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error)
 		if _, cerr := m.creation.ensure(); cerr != nil {
 			return false, cerr
 		}
+	} else if m.typedPlan != nil {
+		// A typed name that announced nothing still runs its plan's Ensure
+		// here — cmd/wt's -W runs it unconditionally after the question
+		// (main.go:551). A reused worktree is Ensure's idempotent no-op and
+		// keeps this silent; a path that is only debris (a partial add, a
+		// half-deleted worktree, a stray file) is git's own error instead of
+		// a launch at a directory that is not a worktree, where every git
+		// command resolves to the repository root.
+		if _, cerr := m.typedPlan.Ensure(); cerr != nil {
+			return false, cerr
+		}
 	}
 	m.claimRoot(t.Dir)
 	return true, nil

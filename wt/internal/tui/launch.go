@@ -16,11 +16,28 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
+// GateError is a launch-gate failure carried out as the run's error: wt's own
+// failure at the commit point (the creation or validation the gate ran), as
+// opposed to the agent's own exit. It wraps the failure with no Unwrap method
+// on purpose: a git failure can carry git's *exec.ExitError (gitError's
+// empty-stderr branch, startPhrase's rev-parse failure), and cmd/wt's
+// agentExitStatus reads any error with an *exec.ExitError anywhere in its
+// chain as the agent's own quiet exit (#412) — printing nothing and exiting
+// with git's status. Held this way the failure stays a plain error: main
+// prints it once as its "wt:" line and exits 1, exactly as cmd/wt's -W path
+// refuses a creation. The field is exported because the routing seam
+// (agentExitStatus, reportExit) lives in package main and its tests build
+// this type.
+type GateError struct{ Err error }
+
+// Error is the failure's own message, unchanged.
+func (e GateError) Error() string { return e.Err.Error() }
+
 // launchDoneMsg is emitted after the agent subprocess exits.
 type launchDoneMsg struct {
 	// err is what running the agent returned, or the profile error that
-	// kept it from starting. Run returns either one, so wt exits as
-	// runAgentCmd does (#412).
+	// kept it from starting, or the launch gate's own failure (GateError).
+	// Run returns either one, so wt exits as runAgentCmd does (#412).
 	err error
 	// status is what the launch's own state writes reported (record's
 	// errors), shown on the status line as launchAndRecord used to set it.
@@ -252,13 +269,18 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 				// recorded or summarised, as when quitting the picker. A
 				// creation that failed after the person continued (gerr
 				// non-nil) is a failure, not a choice: it travels out as the
-				// run's error, so Run returns it and main prints it once and
-				// exits non-zero — cmd/wt's -W path through refuse. Either
+				// run's error — as a GateError, so main's exit routing never
+				// reads a git exit status inside it as the agent's own quiet
+				// exit — and main prints it once and exits non-zero, cmd/wt's
+				// -W path through refuse. Either
 				// way the start flow may already have loaded a model and
 				// written its routes; pendingSurveyState keeps the standard
 				// tail (the stop picker — nothing auto-stops) for them.
 				_ = profileCleanup()
 				pendingSurveyState = pendingSurvey{agent: agent, m: m}
+				if gerr != nil {
+					gerr = GateError{Err: gerr}
+				}
 				return launchDoneMsg{err: gerr}
 			}
 		}

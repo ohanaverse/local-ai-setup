@@ -134,9 +134,21 @@ type model struct {
 	// abandoned pick's plan never rides along with a later one.
 	creation *launchCreation
 
+	// typedPlan is the plan behind a typed name, kept even when no creation
+	// is announced: cmd/wt's -W runs plan.Ensure() unconditionally after its
+	// one question (main.go:551), so the commit point runs it here too. A
+	// reused worktree is Ensure's idempotent no-op (nothing announced,
+	// nothing made); a path that is only debris is git's own error instead of
+	// a launch at a directory that is not a worktree. Cleared by every
+	// selection, as creation is.
+	typedPlan *worktree.Plan
+
 	// committed is the commit point's in-flight guard: the first selection
 	// that reaches a run command takes it (commitLaunch) and every further
-	// Enter is ignored while that launch runs — one launch per session.
+	// Enter is ignored while that launch runs. It releases when the run
+	// command's outcome is processed (launchDoneMsg or slotAbortMsg), so a
+	// flow that deliberately returns to a picker — the slot applier's failure
+	// — can commit its retry instead of meeting a latch.
 	committed bool
 
 	// new-worktree prompt
@@ -239,8 +251,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m.handleSlotMsg(msg)
 	case slotAbortMsg:
 		// The slot applier failed after the terminal was released: no agent
-		// ran and nothing was recorded.
+		// ran and nothing was recorded. The run command's outcome is
+		// processed, so the commit point's guard releases: the return to the
+		// model picker is a retry path, and its next Enter must be able to
+		// commit again.
 		m.status = "launch failed: " + msg.err.Error()
+		m.committed = false
 		m.phase = phaseModel
 		return m.refreshTable()
 	case tableRefreshedMsg:
@@ -292,8 +308,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m, nil
 	case selectedEntryMsg:
 		// Every selection rebinds the launch: a creation an earlier pick owed
-		// is dropped first, so esc back to the list and a re-pick can never
-		// drive the abandoned pick's worktree at the commit point. Bare
+		// — and the typed name's plan behind it — is dropped first, so esc
+		// back to the list and a re-pick can never drive the abandoned pick's
+		// worktree at the commit point. Bare
 		// branches (TypeBranch, Path="") and remote-only branches have no
 		// worktree yet. The pick owes one: resolve the plan read-only here
 		// — so the launch gate can state the creation in launchwarn's frozen
@@ -301,6 +318,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// point make it (launchCreation). The plan's path is where the agent
 		// launches, rather than wt's CWD (cmd.Dir="").
 		m.creation = nil
+		m.typedPlan = nil
 		if msg.entry.Type == worktree.TypeBranch && msg.entry.Path == "" {
 			plan, err := worktree.Resolve(m.repoRoot, msg.entry.Branch)
 			if err != nil {
@@ -322,6 +340,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 			m.status = "agent exited: " + msg.err.Error()
 		}
 		m.agentErr = msg.err
+		// The run command's outcome is processed: the in-flight guard is
+		// spent with the launch it guarded.
+		m.committed = false
 		return m, tea.Quit
 	case tea.KeyMsg:
 		// An in-flight start owns the keyboard: esc/q/ctrl+c cancel and a
@@ -573,8 +594,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				// plan's path) — is a creation pick, bound here read-only and
 				// made at the commit point exactly like a bare-branch row; the
 				// rest launch into the worktree they name. Nothing is created
-				// here, so a declined gate leaves nothing behind.
+				// here, so a declined gate leaves nothing behind. The plan
+				// is kept either way (typedPlan): the commit point runs its
+				// Ensure unconditionally, as cmd/wt's -W does after its one
+				// question (main.go:551).
 				m.creation = nil
+				m.typedPlan = plan
 				if plan.Creates() || plan.Tracks() != "" {
 					m.creation = &launchCreation{repoRoot: m.repoRoot, name: name, plan: plan}
 				} else if _, serr := os.Stat(plan.Path()); serr != nil {
@@ -706,11 +731,13 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 	return m.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, m.gateFor()))
 }
 
-// commitLaunch binds a run command to the one launch this session makes. The
-// first caller to reach it takes the launch (committed) and gets the command;
-// while committed, every further call returns nil — a second Enter pressed
-// before the terminal is released must not start a second run command (with
-// it a second creation binding, a second gate and a second agent).
+// commitLaunch binds a run command to the launch in flight. The first caller
+// to reach it takes the launch (committed) and gets the command; while
+// committed, every further call returns nil — a second Enter pressed before
+// the terminal is released must not start a second run command (with it a
+// second creation binding, a second gate and a second agent). The guard is
+// released where the run command's outcome is processed, so it guards one
+// launch in flight and never latches the session shut.
 func (m model) commitLaunch(cmd tea.Cmd) (model, tea.Cmd) {
 	if m.committed {
 		return m, nil

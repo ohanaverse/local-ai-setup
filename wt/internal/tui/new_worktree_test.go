@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,11 +149,87 @@ func TestTypedNameCreationNeverAsksTheWFlagQuestion(t *testing.T) {
 	if strings.Contains(got, "continue?") {
 		t.Errorf("gate asked the create question a typed name never needs: %q", got)
 	}
-	if !strings.Contains(got, "creating branch typed-on-purpose and worktree ") {
-		t.Errorf("gate printed %q; want the frozen creation line for a new branch", got)
+	want := fmt.Sprintf("creating branch %s and worktree %s", "typed-on-purpose", m.creation.plan.Path())
+	if !strings.Contains(got, "wt: "+want+"\n") {
+		t.Errorf("gate printed %q; want the creation line %q", got, want)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".worktrees", "typed-on-purpose")); err != nil {
 		t.Errorf("worktree not created at the commit point: %v", err)
+	}
+}
+
+// TestTypedNameLeftoverDirIsAnErrorNotALaunch checks the typed-name path runs
+// the plan's Ensure at the commit point even when nothing is announced (the
+// contract cmd/wt's -W holds by running plan.Ensure() unconditionally after
+// its one question, main.go:551): a branch with an unregistered leftover
+// directory at the plan's path — a partial `git worktree add`, a half-deleted
+// worktree, a stray file — must come back as git's own error with the agent
+// never run, never as a launch at a directory that is not a worktree, where
+// every git command resolves to the repository root.
+func TestTypedNameLeftoverDirIsAnErrorNotALaunch(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	if out, err := exec.Command("git", "-C", root, "branch", "fresh").CombinedOutput(); err != nil {
+		t.Fatalf("git branch: %v\n%s", err, out)
+	}
+	// The branch has no worktree; debris sits where one would go, and no
+	// registration knows about it. It has contents — the way a partial `git
+	// worktree add` or a half-deleted worktree leaves the directory — since
+	// git adopts a clean empty directory as the new worktree and refuses only
+	// one that is already occupied.
+	if err := os.MkdirAll(filepath.Join(root, ".worktrees", "fresh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".worktrees", "fresh", "leftover.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: root, agent: "claude", newInput: newInputModel(80)}
+	m.newInput.SetValue("fresh")
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	marker := filepath.Join(t.TempDir(), "ran")
+	answerOnStdio(t, "")
+	msg := runAndWaitCmd(exec.Command("sh", "-c", "touch '"+marker+"'"), "claude", config.Model{}, m.gateFor())()
+	done, ok := msg.(launchDoneMsg)
+	if !ok || done.err == nil {
+		t.Fatalf("msg = %#v; want git's own error, not a launch at the leftover directory", msg)
+	}
+	if !strings.Contains(done.err.Error(), "already exists") {
+		t.Errorf("err = %q; want git's own message about the path that is already there", done.err.Error())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the agent ran at the leftover directory; git resolves every command there to the repository root")
+	}
+}
+
+// TestTypedNameRegisteredReuseLaunchesWithNoCreationLine checks the other half
+// of the same contract: a typed name that is a true registered worktree runs
+// the plan's Ensure as its idempotent no-op and launches, silent — no creation
+// line (the binding/announcement rule is unchanged: only a pick that owes a
+// worktree announces one) and no question.
+func TestTypedNameRegisteredReuseLaunchesWithNoCreationLine(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	linked := linkedWorktree(t, root)
+	m := model{cfg: &config.Config{}, phase: phaseNewWorktree, width: 80, height: 24, repoRoot: root, agent: "claude", newInput: newInputModel(80)}
+	m.newInput.SetValue("feature")
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	marker := filepath.Join(t.TempDir(), "ran")
+	stderr := answerOnStdio(t, "")
+	agent := exec.Command("sh", "-c", "touch '"+marker+"'")
+	agent.Dir = linked
+	msg := runAndWaitCmd(agent, "claude", config.Model{}, m.gateFor())()
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+		t.Fatalf("msg = %#v; a registered worktree is reused, not refused", msg)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the agent did not launch in the reused worktree: %v", err)
+	}
+	if got := stderr(); strings.Contains(got, "creating") {
+		t.Errorf("gate printed %q; a true reuse announces no creation", got)
 	}
 }
 
