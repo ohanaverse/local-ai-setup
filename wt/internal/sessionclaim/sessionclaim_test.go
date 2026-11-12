@@ -226,7 +226,7 @@ func TestConcurrentJoinOnlyOneSeesEmpty(t *testing.T) {
 }
 
 // TestConcurrentJoinDoesNotWaitOnAnotherAsk checks the lock is not held while
-// ask runs: a launch whose menu waits on the person must not block another
+// ask runs: a launch whose question waits on the person must not block another
 // launch of the same root, and once the waiting one continues it is claimed.
 func TestConcurrentJoinDoesNotWaitOnAnotherAsk(t *testing.T) {
 	fakeProcs(t, map[int]int64{100: 1000, 900: 5000, 901: 5000})

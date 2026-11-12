@@ -103,7 +103,7 @@
   scripts swapped `claude-wt --cwd` for `--root`; `-W <the root's branch>` was
   refused and pointed at `--root`; `wt smoke --cwd` asked at a root). The
   worktree picker dropped the root row (#523); the unified worktree list
-  shows it again, warning-tagged.
+  shows it again, tagged `root`.
 - `wt remove origin/<name> --remote` (and, in the `wt cleanup` list, a proven
   `origin` row ticked by hand and confirmed by typing `delete origin`) deletes
   a merged branch on origin. Nothing else grants it (`--yes`, `y`,
