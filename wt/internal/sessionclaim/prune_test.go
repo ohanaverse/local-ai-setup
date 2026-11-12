@@ -23,6 +23,7 @@ func TestPruneRemovesDeadAndReusedKeepsLiveAndUnknown(t *testing.T) {
 	// (fakeProcs walks the parent chain to pid 1), so only liveness decides.
 	fakeProcs(t, map[int]int64{100: 1000, 102: 1100, 103: 1000})
 	base := startTime
+	defer func() { startTime = base }() // restored here, not left to fakeProcs' t.Cleanup
 	startTime = func(pid int) (int64, error) {
 		if pid == 103 {
 			return 0, fmt.Errorf("ps failed")
