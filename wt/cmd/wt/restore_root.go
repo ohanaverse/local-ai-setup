@@ -54,15 +54,17 @@ func restoreRootCmd(a *app) *cobra.Command {
 			"is fast-forwarded to it; never a merge.\n\n" +
 			"It refuses, creating nothing, a root on a detached HEAD, already on the\n" +
 			"default branch (exit 0, nothing to do), with no commit, with the default\n" +
-			"branch checked out in another worktree, held by another live wt session,\n" +
-			"that does not ignore .worktrees/, with an ignored file the move would\n" +
-			"overwrite, and every state `wt rescue` refuses (an operation in progress,\n" +
-			"unmerged paths, skip-worktree or assume-unchanged entries, a changed\n" +
-			"submodule, a nested repository, content filters, size limits and similar).\n" +
+			"branch checked out in another worktree, that does not ignore .worktrees/,\n" +
+			"with an ignored file the move would overwrite, and every state `wt rescue`\n" +
+			"refuses (an operation in progress, unmerged paths, skip-worktree or\n" +
+			"assume-unchanged entries, a changed submodule, a nested repository, content\n" +
+			"filters, size limits and similar).\n" +
 			"A failure part-way stops at that step and says where the root, the new\n" +
 			"worktree and the work are; nothing is rolled back and the work stays\n" +
 			"reachable. Git hooks do not run; the plan warns when a post-checkout hook\n" +
-			"exists.\n\n" +
+			"exists. A live wt session of another process in the root is a warning too,\n" +
+			"never a refusal: a \"root_held: \" line names the holder, and the move goes\n" +
+			"on once confirmed (nothing checks the claims again).\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing what\n" +
 			"moves, where, and what the root becomes; with no terminal it changes\n" +
 			"nothing. A real run fetches every remote first, as `wt worktrees` does;\n" +
