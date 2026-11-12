@@ -828,6 +828,48 @@ func TestNoGuardFlagStillSkips(t *testing.T) {
 	}
 }
 
+// TestInitAnnouncesTheGuardInstall pins that `wt --init`'s guard install is
+// announced like the launch-time one: the exact one stderr line when --init
+// actually installs the hook (its first run in a repo), and silence on the
+// next run, where the hook is already present. Why: the design spec says wt
+// announces whenever it installs the hook, without qualifying the path, so
+// --init's direct install must not be the silent exception — and exactly one
+// note, not two, must appear per install.
+func TestInitAnnouncesTheGuardInstall(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	dir := t.TempDir()
+	gitInit(t, dir)
+	t.Chdir(dir)
+
+	const want = "wt: installed the block-main-commit hook (--no-guard to skip)\n"
+	var stdout string
+	first := captureFile(t, &os.Stderr, func() {
+		stdout = captureFile(t, &os.Stdout, func() {
+			if _, err := runWT(t, "--init"); err != nil {
+				t.Errorf("wt --init: %v", err)
+			}
+		})
+	})
+	if first != want {
+		t.Fatalf("first --init stderr = %q, want %q (stdout was %q)", first, want, stdout)
+	}
+	if guard.Check() != guard.Installed {
+		t.Fatal("the guard is not installed after the --init run that announced it")
+	}
+
+	second := captureFile(t, &os.Stderr, func() {
+		captureFile(t, &os.Stdout, func() {
+			if _, err := runWT(t, "--init"); err != nil {
+				t.Errorf("wt --init (second): %v", err)
+			}
+		})
+	})
+	if second != "" {
+		t.Fatalf("second --init stderr = %q, want silence (the hook is present)", second)
+	}
+}
+
 // A malformed (not merely missing) registry.toml must still fail closed with
 // the repair hint, for every agent — only config.ErrRegistryMissing is
 // tolerated by the launch-path gate, never a real parse error. Regression

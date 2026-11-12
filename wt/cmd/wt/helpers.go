@@ -58,6 +58,13 @@ func renderTable(headers []string, rows [][]string, theme themes.Theme) string {
 	return t.Render()
 }
 
+// announceGuardInstall prints the one note for a hook install that just
+// happened. Both install paths print it — maybeInstallGuard's launch-time
+// install and `wt --init`'s explicit one — so the wording lives here once.
+func announceGuardInstall() {
+	fmt.Fprintln(os.Stderr, "wt: installed the block-main-commit hook (--no-guard to skip)")
+}
+
 // maybeInstallGuard installs the main guard. Callers must ensure the
 // current directory is inside a git repo before invoking this helper. Errors
 // are written to stderr and ignored so that a guard-install failure does not
@@ -74,7 +81,7 @@ var maybeInstallGuard = func() {
 		return
 	}
 	if installed {
-		fmt.Fprintln(os.Stderr, "wt: installed the block-main-commit hook (--no-guard to skip)")
+		announceGuardInstall()
 	}
 }
 

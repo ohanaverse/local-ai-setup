@@ -410,9 +410,16 @@ func rootCmd() *cobra.Command {
 				} else {
 					fmt.Printf("wt: seeded: %s\n", strings.Join(res.Created, ", "))
 				}
-				// Also auto-install the guard, like a normal launch would.
-				if _, err := guard.Install(); err != nil {
+				// Also auto-install the guard, like a normal launch would,
+				// and announce a first-time install the same way so the hook
+				// never appears silently. A hook already present prints
+				// nothing, and an install failure returns as before.
+				installed, err := guard.Install()
+				if err != nil {
 					return err
+				}
+				if installed {
+					announceGuardInstall()
 				}
 				return nil
 			}
