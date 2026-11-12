@@ -561,8 +561,8 @@ func TestPickRemoteRowCarriesPRIntoTheCreationTarget(t *testing.T) {
 	}
 }
 
-// TestZeroTargetGateClaimsNothing checks a gate on the zero Target — a
-// Target read failure — writes no session claim. claimRoot(t.Dir) with an
+// TestZeroTargetGateClaimsNothing checks a gate on the zero Target (the
+// not-a-checkout outcome) writes no session claim. claimRoot(t.Dir) with an
 // empty Dir claims filepath.Abs(""): the process's working directory, whose
 // repository root then carries a false held warning for every other session
 // at a root this launch never named. confirmLaunch suppresses its info line

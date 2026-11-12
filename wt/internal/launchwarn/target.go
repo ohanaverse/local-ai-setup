@@ -57,7 +57,10 @@ func forDir(dir string, knownDirt *bool) (Target, error) {
 	t := rootTarget(primary)
 	t.Dir = resolved
 	t.Branch = branchOr(resolved)
-	t.UpstreamGone = upstreamGone(resolved, t.Branch)
+	// The probe takes the raw current branch, never branchOr's "(detached)"
+	// display sentinel: git accepts a branch literally named (detached), and
+	// its upstream state must not reach a detached launch's warnings.
+	t.UpstreamGone = upstreamGone(resolved, worktree.CurrentBranchAt(resolved))
 	_, t.IsRoot = worktree.RootOf(resolved)
 	if knownDirt != nil {
 		t.Dirty = *knownDirt
@@ -148,6 +151,12 @@ func dirty(dir string) bool {
 // whether that ref exists. A branch with no configured upstream, or one git
 // cannot answer for, is not gone: this is a warning's input, not a gate.
 func upstreamGone(dir, branch string) bool {
+	if branch == "" {
+		// Detached HEAD: there is no branch to probe, and the pattern
+		// refs/heads/ would match every branch and lend the first one's
+		// upstream to a target that has none.
+		return false
+	}
 	cmd := exec.Command("git", "for-each-ref", "--format=%(upstream)", "refs/heads/"+branch)
 	cmd.Dir = dir
 	out, err := cmd.Output()

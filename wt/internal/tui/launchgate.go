@@ -210,11 +210,13 @@ func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error)
 // written is one note and never a refusal.
 func (m model) claimRoot(dir string) {
 	if dir == "" {
-		// A zero Target (a read failure) names no directory, and
-		// filepath.Abs("") is the working directory: claiming its root would
-		// give every other session a false held warning for a root this
-		// launch never named. confirmLaunch suppresses its info line for the
-		// same empty Dir; the claim goes with it.
+		// A zero Target names no directory — it is the not-a-checkout
+		// outcome (or a path that never resolved); a real read failure
+		// returns a partial Target that names one and is claimed normally.
+		// Here filepath.Abs("") is the working directory: claiming its root
+		// would give every other session a false held warning for a root
+		// this launch never named. confirmLaunch suppresses its info line
+		// for the same empty Dir; the claim goes with it.
 		return
 	}
 	root, ok, err := rootclaim.Lookup(dir)

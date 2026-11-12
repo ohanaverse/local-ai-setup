@@ -404,6 +404,38 @@ func TestForDirAndForNewCarryTheGoneUpstreamFact(t *testing.T) {
 	}
 }
 
+// TestForDirDetachedWarnsNothingAboutARealDetachedBranch checks the upstream
+// probe never sees branchOr's "(detached)" display sentinel as a branch name:
+// git accepts a branch literally named (detached), and without this its gone
+// upstream would warn upstream_gone on every detached-HEAD launch that shares
+// the repository. The same branch checked out (the raw name) is still probed
+// and does warn.
+func TestForDirDetachedWarnsNothingAboutARealDetachedBranch(t *testing.T) {
+	repo := cloneRepo(t)
+	git(t, repo, "checkout", "-q", "-b", "(detached)")
+	git(t, repo, "config", "branch.(detached).remote", "origin")
+	git(t, repo, "config", "branch.(detached).merge", "refs/heads/gone")
+	tg, err := ForDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tg.UpstreamGone {
+		t.Errorf("checked-out branch named (detached): UpstreamGone = false; want true (its upstream is gone)")
+	}
+	git(t, repo, "checkout", "-q", "--detach")
+	tg, err = ForDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.UpstreamGone {
+		t.Errorf("detached HEAD: UpstreamGone = true; want false (a branch named (detached) must not lend its upstream)")
+	}
+	ws, _ := Collect(tg)
+	if _, warned := has(ws, CodeUpstreamGone); warned {
+		t.Errorf("codes = %v; want no upstream_gone for a detached HEAD", codes(ws))
+	}
+}
+
 // breakRepoConfig makes git fail at the repository with a real error, not its
 // "not a git repository" refusal: .git/config becomes a directory, so git
 // exits "fatal: unknown error occurred while reading the configuration
