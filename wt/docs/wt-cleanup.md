@@ -216,7 +216,10 @@ entry is proven `y` confirms; otherwise only the typed word `delete` then
 enter does, and any other key cancels. The prompt always states how many
 items will be removed and how many need force or `-D`, and how many are not
 on screen. The list does not fetch when it opens, so without a fetch this run
-(`--fetch`, or the list's `F`) an `origin` row is never proven. With no fetch
+(`--fetch`, or the list's `F`) an `origin` row is never proven. These
+fetch reasons appear only where pull requests are checked (a
+GitHub-recognised origin); a non-GitHub origin's rows read `not_checked`
+(above) and never name the fetch state. With no fetch
 flags its reason says `origin was not refreshed in this list` (it names no
 flag, since you passed none) and the header says
 `fetch: not run (this list does not fetch when it opens)`. With `--no-fetch`
