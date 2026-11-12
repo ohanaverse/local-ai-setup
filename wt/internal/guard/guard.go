@@ -85,6 +85,20 @@ func Install() (bool, error) {
 	return true, nil
 }
 
+// EnsureOnLaunch makes sure the guard is installed for this launch and
+// reports which of the two happened: installed is true when this call
+// installed the hook (a repo seeing its first guarded launch) and false when
+// the hook was already present and was left untouched. Callers key their
+// install note on the result. It decides with Check and writes through
+// Install — the marker scan and the preservation of a user's own hook live
+// only there — so there is no third copy of the installation detection.
+func EnsureOnLaunch() (installed bool, err error) {
+	if Check() == Installed {
+		return false, nil
+	}
+	return Install()
+}
+
 // Uninstall removes the guard, restoring any preserved original hook.
 func Uninstall() error {
 	common, err := CommonDir()

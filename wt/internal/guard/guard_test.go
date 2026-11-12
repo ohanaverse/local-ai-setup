@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -267,5 +268,81 @@ func TestUninstallNoHook(t *testing.T) {
 
 	if err := Uninstall(); err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
+	}
+}
+
+// TestEnsureOnLaunchInstallsOnceAndReportsIt pins what the launch-time
+// install note is keyed on: the call that finds no guard installs the hook
+// and reports installed (true), and the next call finds it present and
+// reports false. Why: maybeInstallGuard prints its one stderr note from this
+// result, so a launch must report an install it made and must not claim one
+// it did not.
+func TestEnsureOnLaunchInstallsOnceAndReportsIt(t *testing.T) {
+	dir := inRepo(t)
+
+	installed, err := EnsureOnLaunch()
+	if err != nil {
+		t.Fatalf("first EnsureOnLaunch() error = %v", err)
+	}
+	if !installed {
+		t.Fatal("first EnsureOnLaunch() installed = false, want true: no hook was present")
+	}
+	if Check() != Installed {
+		t.Fatal("Check() != Installed after EnsureOnLaunch reported an install")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "hooks", "pre-commit")); err != nil {
+		t.Fatalf("hook not written: %v", err)
+	}
+
+	installed, err = EnsureOnLaunch()
+	if err != nil {
+		t.Fatalf("second EnsureOnLaunch() error = %v", err)
+	}
+	if installed {
+		t.Fatal("second EnsureOnLaunch() installed = true, want false: the hook is already present")
+	}
+}
+
+// TestEnsureOnLaunchLeavesAnExistingHookAlone pins the "found it present"
+// half: with the guard already installed, EnsureOnLaunch reports false and
+// the hook keeps its exact bytes and its mtime — read, never rewritten. Why:
+// the contract is that a present hook is left untouched (and stays
+// unannounced), so a launch must not churn a hook that is already there.
+func TestEnsureOnLaunchLeavesAnExistingHookAlone(t *testing.T) {
+	dir := inRepo(t)
+	if _, err := Install(); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	before, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	statBefore, err := os.Stat(hookPath)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+
+	installed, err := EnsureOnLaunch()
+	if err != nil {
+		t.Fatalf("EnsureOnLaunch() error = %v", err)
+	}
+	if installed {
+		t.Fatal("EnsureOnLaunch() installed = true, want false: the hook was already present")
+	}
+
+	after, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("ReadFile after: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Errorf("hook was rewritten:\n got %q\nwant %q", after, before)
+	}
+	statAfter, err := os.Stat(hookPath)
+	if err != nil {
+		t.Fatalf("Stat after: %v", err)
+	}
+	if !statAfter.ModTime().Equal(statBefore.ModTime()) {
+		t.Errorf("hook mtime moved (%v -> %v): the file was rewritten", statBefore.ModTime(), statAfter.ModTime())
 	}
 }

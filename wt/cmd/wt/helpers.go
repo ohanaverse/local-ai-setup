@@ -61,12 +61,20 @@ func renderTable(headers []string, rows [][]string, theme themes.Theme) string {
 // maybeInstallGuard installs the main guard. Callers must ensure the
 // current directory is inside a git repo before invoking this helper. Errors
 // are written to stderr and ignored so that a guard-install failure does not
-// block the agent launch. It is a package-level var so tests can stub it
-// out — the real guard.Install operates on the test process's cwd, which
-// would otherwise install the hook into the repo under test.
+// block the agent launch. An install this call actually made is announced on
+// stderr once — the hook must never appear silently; a hook already present
+// is left untouched and prints nothing. It is a package-level var so tests
+// can stub it out — the real guard.EnsureOnLaunch operates on the test
+// process's cwd, which would otherwise install the hook into the repo under
+// test.
 var maybeInstallGuard = func() {
-	if _, err := guard.Install(); err != nil {
+	installed, err := guard.EnsureOnLaunch()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "wt: failed to auto-install main guard: %v\n", err)
+		return
+	}
+	if installed {
+		fmt.Fprintln(os.Stderr, "wt: installed the block-main-commit hook (--no-guard to skip)")
 	}
 }
 

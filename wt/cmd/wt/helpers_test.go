@@ -235,6 +235,27 @@ func TestMaybeInstallGuardIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestMaybeInstallGuardAnnouncesTheInstall pins the install note: the exact
+// one stderr line when this call installed the block-main-commit hook, and
+// silence when the hook is already present. Why: the contract is "announced,
+// never silent" at install and untouched-and-silent when present, and the
+// wording is pinned verbatim because it is the user's only pointer to the
+// hook existing and to --no-guard removing it.
+func TestMaybeInstallGuardAnnouncesTheInstall(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+
+	t.Chdir(dir)
+
+	const want = "wt: installed the block-main-commit hook (--no-guard to skip)\n"
+	if got := captureFile(t, &os.Stderr, maybeInstallGuard); got != want {
+		t.Fatalf("install stderr = %q, want %q", got, want)
+	}
+	if got := captureFile(t, &os.Stderr, maybeInstallGuard); got != "" {
+		t.Fatalf("second call stderr = %q, want silence (the hook is present)", got)
+	}
+}
+
 // TestCheckGuardStatusInstalled reports Installed when the guard has been
 // installed in the current repo.
 func TestCheckGuardStatusInstalled(t *testing.T) {

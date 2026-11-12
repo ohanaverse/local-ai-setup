@@ -12,6 +12,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/configeditor"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -777,6 +778,53 @@ func TestCommandAgentSkipsMissingRegistryGate(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected tuiRun to be called (gate should be skipped for command agent)")
+	}
+}
+
+// TestNoGuardFlagStillSkips pins `wt --no-guard` unchanged now that the
+// launch-time install announces itself: the flag still removes the guard and
+// exits before any launch-time install, prints only its removal line and no
+// install note, and leaves no hook behind. Why: the install note tells users
+// "--no-guard to skip", so the flag must keep doing exactly that, and a run
+// that installs nothing must print no install note.
+func TestNoGuardFlagStillSkips(t *testing.T) {
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	dir := t.TempDir()
+	gitInit(t, dir)
+	t.Chdir(dir)
+	if _, err := guard.Install(); err != nil {
+		t.Fatalf("guard.Install: %v", err)
+	}
+
+	// Tripwires: --no-guard returns before the launch path, so neither launch
+	// seam may be reached on the way out.
+	oldTUI, oldGuard := tuiRun, maybeInstallGuard
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
+		t.Error("tuiRun was called: wt --no-guard must exit before any launch")
+		return nil
+	}
+	maybeInstallGuard = func() {
+		t.Error("maybeInstallGuard was called: wt --no-guard must exit before the launch-time install")
+	}
+	t.Cleanup(func() { tuiRun, maybeInstallGuard = oldTUI, oldGuard })
+
+	var stdout, stderr string
+	stdout = captureFile(t, &os.Stdout, func() {
+		stderr = captureFile(t, &os.Stderr, func() {
+			if _, err := runWT(t, "--no-guard"); err != nil {
+				t.Errorf("wt --no-guard: %v", err)
+			}
+		})
+	})
+	if !strings.Contains(stdout, "wt: main guard removed.") {
+		t.Errorf("stdout = %q, want the removal line", stdout)
+	}
+	if strings.Contains(stderr, "installed the block-main-commit hook") {
+		t.Errorf("stderr = %q: --no-guard installs nothing, so it must not print the install note", stderr)
+	}
+	if guard.Check() != guard.NotInstalled {
+		t.Fatal("the guard is still installed after wt --no-guard")
 	}
 }
 
