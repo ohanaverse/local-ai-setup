@@ -10,7 +10,9 @@ import (
 
 // TestOthersReadsLiveClaimsWithoutWriting checks Others reports the live
 // claims on the path, skips this process's own and another path's, and
-// changes nothing on disk: the picker asks before anything is written.
+// changes nothing on disk: the ask before Join's write is the launch
+// confirmation (rootclaim.AskContinue via launchwarn.Check) on whichever
+// launch path runs.
 func TestOthersReadsLiveClaimsWithoutWriting(t *testing.T) {
 	fakeProcs(t, map[int]int64{100: 1000, 101: 1000, 900: 5000})
 	dir := t.TempDir()

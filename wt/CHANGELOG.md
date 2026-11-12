@@ -61,8 +61,9 @@
   not start, 2 refused or failed, 3 approval missing. New contract
   `docs/contracts/restore-root-result.*`. Cost: one fetch of every remote
   (none with `--dry-run` or `--no-fetch`) and one extra fingerprint at the
-  release. The shared-root menu and the confirmation print a hint pointing at
-  it when the root is on a non-default branch. `wt rescue` of the primary
+  release. The one launch confirmation (`wt: continue? [Y/n]`, which lists
+  the warnings) prints a hint pointing at it when the root is on a non-default
+  branch. `wt rescue` of the primary
   checkout still refuses, now naming `wt restore-root`. See
   `docs/wt-cleanup.md`.
 - `wt rescue` leaves a record after a verified copy: the ref
@@ -90,8 +91,9 @@
   no terminal, or declined); `docs/contracts/remove-result.*`. See
   `docs/wt-cleanup.md` (#520).
 - `--root` launches in the repository's primary checkout from anywhere and
-  asks no consent question (the shared-root menu still runs when another
-  session holds the root; `--allow-shared-root` answers it). A `--cwd` launch
+  asks no consent question (a root another live session holds is named in the
+  warnings and asked about by the one launch confirmation `wt: continue?
+  [Y/n]`; the shared-root menu and `--allow-shared-root` are gone). A `--cwd` launch
   standing in a repository root now asks first (default no), and **breaking
   for scripts:** with no terminal it refuses and names `--root`, so
   `claude-wt --cwd` at a root needs `--root` instead. `-W <the root's branch>`
@@ -162,10 +164,12 @@
   ranks registry models by tier score and price. Hand editing stays valid. See
   `docs/wt-agents/slot-profiles.md` ("Managing the file").
 - A launch in a repository's root checkout now notices another live wt
-  session there and asks `c` continue / `w` new worktree / `q` quit (Esc
-  quits), in both the plain launch and the picker. Launches in a linked
-  worktree (`-W` or a picker row) are never asked. `--allow-shared-root` continues without asking; with
-  no terminal wt refuses instead. Each root session writes a claim file under
+  session there: the launch warnings name it (`held`) and the one launch
+  confirmation `wt: continue? [Y/n]` lists the warnings and asks before the
+  launch, in both the plain launch and the picker (no `c`/`w`/`q` menu;
+  `--allow-shared-root` is gone). Launches in a linked worktree (`-W` or a
+  picker row) never see this warning. With no terminal the warnings print and
+  the launch proceeds. Each root session writes a claim file under
   `<git-common-dir>/wt-sessions/`, in the format
   `docs/contracts/session-claims.md` fixes so `repo-cleanup` can read it. A
   claims failure prints a note and never stops the launch.

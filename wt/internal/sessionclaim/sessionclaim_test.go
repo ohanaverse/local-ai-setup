@@ -408,8 +408,9 @@ func TestAncestorHoldsSeesAParentsClaim(t *testing.T) {
 }
 
 // TestAncestorHoldsIgnoresOtherSessions checks a live claim by a process that
-// is not an ancestor does not count: another session on the root is the
-// shared-root menu's business, not a reason to skip the root gate.
+// is not an ancestor does not count: an ancestor's claim is the same session
+// family — this launch runs inside it — while another session on the root
+// surfaces as the launch warnings' held entry.
 func TestAncestorHoldsIgnoresOtherSessions(t *testing.T) {
 	child := exec.Command("sleep", "60")
 	if err := child.Start(); err != nil {
