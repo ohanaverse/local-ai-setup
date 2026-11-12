@@ -61,9 +61,10 @@ func releaseRootClaim() {
 
 // launchTarget is the already-read Target of the launch this model is bound
 // to: the owed creation's (ForNew) when the pick was a bare or remote-only
-// branch, otherwise the directory's (ForDir) — read when the run command
-// runs, so a session that appeared after the pick is named in the warnings
-// like any other — with the picked list row's own facts folded in (rowFacts).
+// branch, otherwise the directory's (ForDir, or ForDirKnownDirt when a list
+// row holds the dirt already) — read when the run command runs, so a session
+// that appeared after the pick is named in the warnings like any other — with
+// the picked list row's own facts folded in (foldRowFacts).
 // A read failure is the caller's to note (gateFor); the partial Target still
 // carries what was learned.
 //
@@ -74,33 +75,46 @@ func releaseRootClaim() {
 // A root nobody else holds therefore still asks its one question naming the
 // root; one another session holds names the holder in that same question.
 func (m model) launchTarget() (launchwarn.Target, error) {
+	var row *launchwarn.Target
+	if m.pickedRow != nil {
+		row = launchwarn.FromRow(*m.pickedRow)
+	}
 	if m.creation != nil {
 		t, err := m.creation.target()
-		return m.rowFacts(t), err
+		return foldRowFacts(t, row), err
 	}
 	dir := m.selectedPath
 	if dir == "" {
 		dir = m.prePath
 	}
-	t, err := launchwarn.ForDir(dir)
-	return m.rowFacts(t), err
+	if row != nil {
+		// A list pick's row already holds the dirt (raw losses): its answer
+		// goes in place of ForDir's probe (ForDirKnownDirt), so the
+		// full-tree `git status` scan is skipped outright — not run and its
+		// answer thrown away — while the person waits at the commit point.
+		t, err := launchwarn.ForDirKnownDirt(dir, row.Dirty)
+		return foldRowFacts(t, row), err
+	}
+	return launchwarn.ForDir(dir)
 }
 
-// rowFacts folds the picked list row's facts into the live read: row facts
-// win for the PR state and number, the dirt and the gone upstream — exactly
-// what ForDir and ForNew leave zero "for a caller that has a cleanup row to
-// set them" (launchwarn.FromRow). Everything else keeps its existing source —
-// the holders, the root's branch and default, the hint, and the creation the
-// pick's plan owns (one creation path) — and nothing the row already holds is
-// re-probed. A pick that came from no row (a typed name, a preset path) is
-// untouched.
-func (m model) rowFacts(t launchwarn.Target) launchwarn.Target {
-	if m.pickedRow == nil {
+// foldRowFacts folds the picked list row's mapped facts (launchwarn.FromRow;
+// nil when the pick came from no row) into the live read t: row facts win for
+// the PR state and number, the dirt and the gone upstream. The PR and
+// upstream are what ForDir and ForNew leave zero "for a caller that has a
+// cleanup row to set them"; the dirt is the row's raw answer, which the
+// ForDir branch passes in as the gathered value so no probe runs to be
+// overwritten (ForDir probes dirt for the callers that have no row — preset
+// paths, typed names, cmd/wt's confirmLaunch — and keeps doing so).
+// Everything else keeps its existing source — the holders, the root's branch
+// and default, the hint, and the creation the pick's plan owns (one creation
+// path). A typed-name or preset-path pick (row nil) is untouched.
+func foldRowFacts(t launchwarn.Target, row *launchwarn.Target) launchwarn.Target {
+	if row == nil {
 		return t
 	}
-	r := launchwarn.FromRow(*m.pickedRow)
-	t.PRState, t.PRNumber = r.PRState, r.PRNumber
-	t.UpstreamGone, t.Dirty = r.UpstreamGone, r.Dirty
+	t.PRState, t.PRNumber = row.PRState, row.PRNumber
+	t.UpstreamGone, t.Dirty = row.UpstreamGone, row.Dirty
 	return t
 }
 

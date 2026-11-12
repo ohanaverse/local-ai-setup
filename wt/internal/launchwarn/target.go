@@ -17,6 +17,22 @@ import (
 // read-only (it prunes no claim), and the PR and upstream facts stay zero for
 // a caller that has a cleanup row to set them.
 func ForDir(dir string) (Target, error) {
+	return forDir(dir, nil)
+}
+
+// ForDirKnownDirt is ForDir with the dirt already known: dirty is the
+// caller's gathered answer (a unified-list row's raw losses), so the
+// full-tree `git status --porcelain` probe is skipped entirely and
+// Target.Dirty is exactly that value. Everything else is read live as ForDir
+// reads it. A caller with no gathered answer uses ForDir and gets a probed
+// answer.
+func ForDirKnownDirt(dir string, dirty bool) (Target, error) {
+	return forDir(dir, &dirty)
+}
+
+// forDir is the body ForDir and ForDirKnownDirt share; knownDirt, non-nil, is
+// the caller's gathered dirt answer in place of the probe.
+func forDir(dir string, knownDirt *bool) (Target, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return Target{}, err
@@ -33,7 +49,11 @@ func ForDir(dir string) (Target, error) {
 	t.Dir = resolved
 	t.Branch = branchOr(resolved)
 	_, t.IsRoot = worktree.RootOf(resolved)
-	t.Dirty = dirty(resolved)
+	if knownDirt != nil {
+		t.Dirty = *knownDirt
+	} else {
+		t.Dirty = dirty(resolved)
+	}
 
 	commonDir, err := worktree.CommonDirAt(resolved)
 	if err != nil {

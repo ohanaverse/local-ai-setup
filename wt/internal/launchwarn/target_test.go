@@ -252,6 +252,42 @@ func TestForDirDirty(t *testing.T) {
 	}
 }
 
+// TestForDirKnownDirtSkipsTheProbe checks the gathered-dirt form of ForDir
+// trusts the caller's answer instead of probing: an actually dirty repository
+// read with a known-clean answer comes back not dirty (the probe would say
+// dirty), a known-dirty answer survives a clean one, and plain ForDir still
+// probes. It matters because the probe is a full-tree `git status` at the
+// commit point: a list pick's row already holds the dirt, and scanning only
+// to throw the answer away makes the person wait for nothing — while every
+// caller without a gathered answer must keep the probe.
+func TestForDirKnownDirtSkipsTheProbe(t *testing.T) {
+	repo := cloneRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg, err := ForDirKnownDirt(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.Dirty {
+		t.Error("ForDirKnownDirt probed (the repository is dirty) instead of taking the caller's answer")
+	}
+	probed, err := ForDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probed.Dirty {
+		t.Error("ForDir stopped probing; a caller with no gathered answer must get a probed Target.Dirty")
+	}
+	tg, err = ForDirKnownDirt(cloneRepo(t), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tg.Dirty {
+		t.Error("ForDirKnownDirt dropped the caller's dirty answer")
+	}
+}
+
 // ForNew carries the planned Creation (branch, tracks, new-branch, path) and
 // a hint: the about-to-create worktree is the warning path's whole subject.
 func TestForNewCarriesTheCreation(t *testing.T) {

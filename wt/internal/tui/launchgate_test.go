@@ -454,10 +454,14 @@ func TestDeclinedSlotGateKeepsTheStopTail(t *testing.T) {
 }
 
 // TestPickRowTargetCarriesPRAndUpstream checks a pick from the unified list
-// reaches the launch gate as that row's target: the PR state and number and
-// the folded/gone upstream — facts only the list gathered, never re-probed
-// live — ride into the Target the gate asks about and so into its warnings.
-// Without it a row's merged PR and dead upstream never warn at launch.
+// reaches the launch gate as that row's target: the PR state and number, the
+// folded/gone upstream and the raw dirt — facts only the list gathered — ride
+// into the Target the gate asks about and so into its warnings. The dirt
+// assertion pins that the row's raw losses reach the gate's Target.Dirty and
+// win over any probe (the worktree itself is clean, so a probed answer would
+// be false). Without it a row's merged PR and dead upstream never warn at
+// launch, and its uncommitted work is judged by a probe the row's facts
+// should decide.
 func TestPickRowTargetCarriesPRAndUpstream(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
 	stubShellLaunch(t)
@@ -471,6 +475,7 @@ func TestPickRowTargetCarriesPRAndUpstream(t *testing.T) {
 		Ref:      "refs/heads/feature",
 		PRTag:    &cleanup.PRInfo{Number: 42, State: "MERGED"},
 		Upstream: &cleanup.Upstream{Ref: "refs/remotes/origin/feature", Remote: "origin", Name: "feature", Gone: true},
+		Losses:   cleanup.Losses{Dirty: true},
 	}
 	m := model{cfg: &config.Config{}, phase: phaseList, width: 80, height: 24, initialAgent: "opencode"}
 	m, cmd := updateMsg(m, rowChosenMsg{Row: row}) // the row list's Enter
@@ -485,6 +490,9 @@ func TestPickRowTargetCarriesPRAndUpstream(t *testing.T) {
 	}
 	if tg.PRState != "merged" || tg.PRNumber != 42 || !tg.UpstreamGone {
 		t.Errorf("target = %+v; want the row's merged PR #42 and its gone upstream", tg)
+	}
+	if !tg.Dirty {
+		t.Errorf("target = %+v; want Dirty from the row's raw losses (the worktree is clean, so a probe would say false and must lose)", tg)
 	}
 	stderr := answerOnStdio(t, "y")
 	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
