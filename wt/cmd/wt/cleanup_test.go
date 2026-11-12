@@ -19,6 +19,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 func cgit(t *testing.T, dir string, args ...string) string {
@@ -767,5 +768,239 @@ func TestWorktreesCmdTTYMarksFetchNotAttempted(t *testing.T) {
 	}
 	if len(got) != 2 || !got[0].NotAttempted || got[1].NotAttempted {
 		t.Errorf("fetch results %+v, want NotAttempted without --no-fetch only", got)
+	}
+}
+
+// TestCleanupCmdTerminalDoesNotFetchOnOpen: pin — the terminal list gathers
+// with no fetch at all (a fetch is the user's `--fetch` now, no automatic
+// behaviors), marks the fetch "not run" rather than blaming a --no-fetch the
+// user never passed, and leaves the repository's fetch stamp untouched.
+// Already true at the base commit (the list stopped fetching on open before
+// this task); written as a pin so `--fetch` cannot regress it — no RED.
+func TestCleanupCmdTerminalDoesNotFetchOnOpen(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	before, hadBefore := worktree.LastFetched(dir)
+	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+	isTerminalWriter = func(io.Writer) bool { return true }
+
+	if _, _, err := runCleanup(t, a, dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 || ins[0].Fetch || !ins[0].Fetched.NotAttempted {
+		t.Errorf("open gather = %+v, want one gather with Fetch false and the fetch marked not attempted", ins)
+	}
+	ins = nil
+	if _, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 1 || ins[0].Fetch || ins[0].Fetched.NotAttempted || !ins[0].Fetched.At.IsZero() {
+		t.Errorf("--no-fetch gather = %+v, want the flag's plain skip (Fetch false, no NotAttempted marker)", ins)
+	}
+	after, hadAfter := worktree.LastFetched(dir)
+	if hadAfter != hadBefore || (hadAfter && !after.Equal(before)) {
+		t.Errorf("opening the list moved the fetch stamp (%v/%v -> %v/%v); it fetches nothing", hadBefore, before, hadAfter, after)
+	}
+}
+
+// TestCleanupCmdTerminalFetchFlagFetches: `--fetch` is the terminal list's
+// explicit fetch — every remote is fetched once before the list opens (the
+// gather itself never fetches, so the run fetches exactly once), the fetched
+// refs reach the report, and the header's fetch note reads the result (the
+// wording contract the picker's F established). The stamp that feeds the
+// header's refreshed line (worktree.LastFetched at the report's root)
+// advances with it.
+func TestCleanupCmdTerminalFetchFlagFetches(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	// "late" and "uplate" exist only on the remotes: a second clone puts
+	// them there, so only a fetch can bring their remote-tracking refs into
+	// dir. Two remotes prove every remote is fetched, not just origin.
+	other := filepath.Join(t.TempDir(), "other")
+	if b, err := exec.Command("git", "clone", "-q", filepath.Join(filepath.Dir(dir), "origin.git"), other).CombinedOutput(); err != nil {
+		t.Fatalf("clone other: %v\n%s", err, b)
+	}
+	cgit(t, other, "config", "user.email", "t@example.com")
+	cgit(t, other, "config", "user.name", "T")
+	cgit(t, other, "push", "origin", "HEAD:refs/heads/late")
+	up := filepath.Join(t.TempDir(), "up.git")
+	if b, err := exec.Command("git", "init", "--bare", "-b", "main", up).CombinedOutput(); err != nil {
+		t.Fatalf("init up: %v\n%s", err, b)
+	}
+	cgit(t, other, "push", up, "HEAD:refs/heads/uplate")
+	cgit(t, dir, "remote", "add", "up", up)
+	before, hadBefore := worktree.LastFetched(dir)
+
+	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	var got cleanup.Report
+	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { got = r; return nil }
+	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+	isTerminalWriter = func(io.Writer) bool { return true }
+
+	if _, _, err := runCleanup(t, a, dir, "--fetch"); err != nil {
+		t.Fatal(err)
+	}
+	// The gather itself never fetches (exactly one fetch, the explicit one)
+	// and the fetch's outcome rides the snapshot for the header to render.
+	if len(ins) != 1 || ins[0].Fetch || !ins[0].Fetched.OK || ins[0].Fetched.NotAttempted {
+		t.Errorf("gather = %+v, want one gather with Fetch false and a successful explicit fetch recorded", ins)
+	}
+	// The fetched refs reached the report that was listed.
+	names := map[string]bool{}
+	for _, r := range got.Rows {
+		names[r.Name] = true
+	}
+	if !names["late"] || !names["uplate"] {
+		t.Errorf("rows lack the fetched branches (late=%v uplate=%v); --fetch must fetch before listing", names["late"], names["uplate"])
+	}
+	// The header's fetch note reflects the fetch.
+	if hdr := strings.Join(cleanup.HeaderLines(got, time.Now()), "\n"); !strings.Contains(hdr, "fetch: ok") {
+		t.Errorf("header does not read the fetch:\n%s", hdr)
+	}
+	// The refreshed line is fed by LastFetched at the report's root: the
+	// explicit fetch must advance that stamp.
+	after, hadAfter := worktree.LastFetched(got.Repo)
+	if !hadAfter || (hadBefore && after.Before(before)) {
+		t.Errorf("the fetch stamp did not advance (%v/%v -> %v/%v); the refreshed line would not show the fetch", hadBefore, before, hadAfter, after)
+	}
+}
+
+// TestCleanupCmdJSONStillFetchesByDefault: pin — --json's fetch-first (every
+// remote, then one JSON document) is its documented default, not the terminal
+// list's new opt-in: it runs through the gather's own fetch unless --no-fetch
+// opts out. Already true at the base; written as a pin so `--fetch` (which
+// changes nothing here) cannot regress it — no RED.
+func TestCleanupCmdJSONStillFetchesByDefault(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldGather := cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	t.Cleanup(func() { cleanupGather = oldGather })
+
+	if _, _, err := runCleanup(t, a, dir, "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--json", "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 2 || !ins[0].Fetch || ins[1].Fetch {
+		t.Errorf("gathers = %+v, want the default fetch on and --no-fetch off", ins)
+	}
+}
+
+// TestCleanupCmdPlainStillFetchesByDefault: pin — --plain fetches first like
+// --json (its documented default), and --no-fetch is its opt-out. Already
+// true at the base; written as a pin, not RED.
+func TestCleanupCmdPlainStillFetchesByDefault(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldGather := cleanupGather
+	var ins []cleanup.GatherInputs
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldGather(g, in)
+	}
+	t.Cleanup(func() { cleanupGather = oldGather })
+
+	if _, _, err := runCleanup(t, a, dir, "--plain"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 2 || !ins[0].Fetch || ins[1].Fetch {
+		t.Errorf("gathers = %+v, want the default fetch on and --no-fetch off", ins)
+	}
+}
+
+// TestCleanupCmdFetchAndNoFetchConflict: --fetch asks for the fetch and
+// --no-fetch refuses it, so the pair is a usage error naming both flags — in
+// any output mode, before anything runs.
+func TestCleanupCmdFetchAndNoFetchConflict(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	oldGather := cleanupGather
+	gathers := 0
+	cleanupGather = func(cleanup.Git, cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		gathers++
+		return cleanup.Snapshot{}, errors.New("gather must not run")
+	}
+	t.Cleanup(func() { cleanupGather = oldGather })
+
+	for _, args := range [][]string{
+		{"--fetch", "--no-fetch"},
+		{"--json", "--fetch", "--no-fetch"},
+		{"--plain", "--no-fetch", "--fetch"},
+	} {
+		stdout, _, err := runCleanup(t, a, dir, args...)
+		if err == nil {
+			t.Fatalf("%v: no usage error", args)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "--fetch") || !strings.Contains(msg, "--no-fetch") {
+			t.Errorf("%v: error %q, want it naming both --fetch and --no-fetch", args, msg)
+		}
+		if stdout != "" || gathers != 0 {
+			t.Errorf("%v: ran despite the conflict (out %q, gathers %d)", args, stdout, gathers)
+		}
+	}
+}
+
+// TestCleanupRemoveFuncsRefetchFetches: the manage list's `F` reaches
+// RemoveFuncs.Refetch, which fetches once at the report's root — the same
+// root the report was built from (a fetch at another worktree stamps that
+// one, and the header's refreshed line would not move) — and re-reads, so the
+// fresh report's header carries the fetch's result: the note advances from
+// "fetch: not run" to "fetch: ok".
+func TestCleanupRemoveFuncsRefetchFetches(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	var roots []string
+	in := cleanupListInputs(dir, false, nil, "wt-cleanup")
+	in.Fetched = cleanup.FetchResult{NotAttempted: true} // the list's open state
+	in.FetchRemotes = func(root string) error { roots = append(roots, root); return nil }
+	snap, err := cleanupGather(cleanup.Git{Dir: dir}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := cleanupClassify(snap, cleanup.Options{Now: time.Now()})
+	before := strings.Join(cleanup.HeaderLines(rep, time.Now()), "\n")
+	rm := cleanupRemoveFuncs(a, snap, in, 0, nil)
+	if rm.Refetch == nil {
+		t.Fatal("RemoveFuncs.Refetch is nil; the list's F has no fetch")
+	}
+	fresh, err := rm.Refetch()
+	if err != nil {
+		t.Fatalf("Refetch: %v", err)
+	}
+	if len(roots) != 1 || roots[0] != rep.Repo {
+		t.Errorf("fetch roots = %v, want exactly one at the report's root %q", roots, rep.Repo)
+	}
+	if !strings.Contains(before, "fetch: not run") {
+		t.Fatalf("the old header does not read as not-run:\n%s", before)
+	}
+	if after := strings.Join(cleanup.HeaderLines(fresh, time.Now()), "\n"); !strings.Contains(after, "fetch: ok") {
+		t.Errorf("the fresh header did not advance past the not-run note:\n%s", after)
 	}
 }
