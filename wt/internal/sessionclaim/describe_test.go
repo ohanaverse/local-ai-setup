@@ -65,3 +65,26 @@ func TestCheckFailedNote(t *testing.T) {
 		t.Fatalf("CheckFailed = %q; want %q", got, want)
 	}
 }
+
+// TestDescribeAllJoinsDescriptions checks the one-line rendering of a path's
+// holders — the cleanup list's held reason and the launch warnings name every
+// session on a checkout: Describe's entry per claim, in the order given,
+// joined with "; " (the join the held warning already uses). One claim reads
+// exactly as Describe, and none gives "".
+func TestDescribeAllJoinsDescriptions(t *testing.T) {
+	now := time.Unix(1250, 0)
+	cs := []Claim{
+		{PID: 123, Started: 1000, Path: root, Branch: "main", Agent: "codex"},
+		{PID: 456, Started: 1200, Path: root, Branch: "topic", Agent: "claude"},
+	}
+	got := DescribeAll(cs, now)
+	if want := "codex (pid 123, running 4m10s, started on main); claude (pid 456, running 50s, started on topic)"; got != want {
+		t.Fatalf("DescribeAll = %q; want %q", got, want)
+	}
+	if one := DescribeAll(cs[:1], now); one != Describe(cs[0], now) {
+		t.Errorf("DescribeAll of one claim = %q; want Describe's %q", one, Describe(cs[0], now))
+	}
+	if none := DescribeAll(nil, now); none != "" {
+		t.Errorf("DescribeAll of none = %q; want %q", none, "")
+	}
+}

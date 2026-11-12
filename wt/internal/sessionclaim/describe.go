@@ -2,6 +2,7 @@ package sessionclaim
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -18,4 +19,16 @@ func Describe(c Claim, now time.Time) string {
 // read or written. It never stops the launch.
 func CheckFailed(root string, err error) string {
 	return fmt.Sprintf("could not check other sessions in %s (%v); launching anyway", root, err)
+}
+
+// DescribeAll names every session in cs on one line, in the order given:
+// Describe's entry per claim joined with "; " — the join the launch warnings'
+// held entry uses. It renders Holders' values for the cleanup list's held
+// reason and the launch warnings; no claims give "".
+func DescribeAll(cs []Claim, now time.Time) string {
+	parts := make([]string, len(cs))
+	for i, c := range cs {
+		parts[i] = Describe(c, now)
+	}
+	return strings.Join(parts, "; ")
 }
