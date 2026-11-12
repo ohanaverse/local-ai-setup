@@ -36,8 +36,8 @@ type Target struct {
 	PRState                          string // "merged", "open", "closed", "" or "unknown"
 	PRNumber                         int
 	Holders                          []sessionclaim.Claim // live sessions on Dir
-	Creation                         *Creation            // non-nil when the launch creates the worktree
-	Hint                             string               // optional trailing advice
+	Creation                         *Creation            // non-nil when the launch creates the worktree; Check's concern, Collect ignores it
+	Hint                             string               // optional trailing advice; the caller's to append (Task 203), Collect ignores it
 }
 
 // Warning is one thing worth saying before the launch. Text is plain, with no
@@ -48,7 +48,8 @@ type Warning struct{ Code, Text string }
 var now = time.Now
 
 // Collect returns every warning that applies to t, in a fixed order, and the
-// one-line note of where the launch goes.
+// one-line note of where the launch goes. info is returned even when there
+// are warnings; Check prints it only when there are none.
 func Collect(t Target) (warnings []Warning, info string) {
 	add := func(code, text string) { warnings = append(warnings, Warning{code, text}) }
 	if t.IsRoot && !t.RootChosen {

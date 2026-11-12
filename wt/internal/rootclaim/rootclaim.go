@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/term"
@@ -132,4 +133,36 @@ func readKey(in io.Reader, pick func(byte) (byte, bool)) byte {
 			return r
 		}
 	}
+}
+
+// AskContinue reads one line from in and reports whether to continue: an empty
+// line, y or Y (surrounding space ignored) is yes, the default; n, Esc, Ctrl-C,
+// any other text and the end of input are no. It prints no prompt (the caller
+// owns the "[Y/n]"); it prints a newline only when input ended with no answer,
+// so the next line starts clean. It reads byte by byte, so it takes nothing
+// past the newline from a shared reader.
+func AskContinue(in io.Reader, out io.Writer) bool {
+	var line []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := in.Read(buf)
+		if n == 1 {
+			if buf[0] == '\n' {
+				break
+			}
+			line = append(line, buf[0])
+		}
+		if err != nil {
+			if len(line) == 0 {
+				fmt.Fprintln(out)
+				return false
+			}
+			break
+		}
+	}
+	switch strings.TrimSpace(string(line)) {
+	case "", "y", "Y":
+		return true
+	}
+	return false
 }

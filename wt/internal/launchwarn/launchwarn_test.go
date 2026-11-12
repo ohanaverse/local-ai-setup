@@ -123,3 +123,58 @@ func TestCollectPRMergedUpstreamGoneDirtyHeld(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectExactTexts(t *testing.T) {
+	fixedNow(t)
+	tg := base()
+	tg.Dir, tg.Branch, tg.IsRoot = "/r", "main", true
+	ws, _ := Collect(tg)
+	if w, _ := has(ws, CodeRoot); w.Text != "/r is the repository root; a launch here shares it with every other session (--root accepts this)" {
+		t.Errorf("root = %q", w.Text)
+	}
+	tg = base()
+	tg.Dirty, tg.UpstreamGone = true, true
+	tg.Holders = []sessionclaim.Claim{
+		{PID: 1, Started: 1000, Branch: "x", Agent: "pi"},
+		{PID: 2, Started: 1000, Branch: "x", Agent: "claude"},
+	}
+	ws, _ = Collect(tg)
+	w, _ := has(ws, CodeHeld)
+	if !strings.HasPrefix(w.Text, "in use by another session: ") || !strings.Contains(w.Text, ");") {
+		t.Errorf("held = %q", w.Text)
+	}
+	if w, _ := has(ws, CodeDirtyHeld); w.Text != "it has uncommitted changes and another session is using it" {
+		t.Errorf("dirty_held = %q", w.Text)
+	}
+	if w, _ := has(ws, CodeUpstreamGone); w.Text != "its upstream branch is gone" {
+		t.Errorf("upstream_gone = %q", w.Text)
+	}
+}
+
+func TestCollectDirtyWithoutHoldersIsQuiet(t *testing.T) {
+	tg := base()
+	tg.Dirty = true
+	if ws, _ := Collect(tg); len(ws) != 0 {
+		t.Errorf("warnings = %v", codes(ws))
+	}
+}
+
+func TestCollectRootNotChosenWithDriftEmitsBoth(t *testing.T) {
+	tg := base()
+	tg.Dir, tg.Branch, tg.IsRoot, tg.RootBranch = "/r", "feat", true, "feat"
+	if got := strings.Join(codes(mustCollect(tg)), ","); got != CodeRoot+","+CodeRootDrift {
+		t.Errorf("codes = %s", got)
+	}
+}
+
+// TestCollectNonRootTargetStillNotesDriftedRoot: a launch in a linked
+// worktree still says the root is off the default branch.
+func TestCollectNonRootTargetStillNotesDriftedRoot(t *testing.T) {
+	tg := base()
+	tg.RootBranch = "feat"
+	if got := strings.Join(codes(mustCollect(tg)), ","); got != CodeRootDrift {
+		t.Errorf("codes = %s", got)
+	}
+}
+
+func mustCollect(tg Target) []Warning { ws, _ := Collect(tg); return ws }

@@ -191,3 +191,21 @@ func TestChooseAndConfirmRootPrintTheHint(t *testing.T) {
 		t.Errorf("hint printed on the default branch: %q", out.String())
 	}
 }
+
+// TestAskContinueDefaultsToYes checks an empty line, y and Y continue and
+// anything else, including Esc, Ctrl-C and the end of input, stops.
+func TestAskContinueDefaultsToYes(t *testing.T) {
+	for in, want := range map[string]bool{
+		"\n": true, "y\n": true, "Y\n": true, " y \n": true,
+		"n\n": false, "N\n": false, "x\n": false, "\x1b\n": false, "\x03\n": false,
+		"yes please\n": false, "": false,
+	} {
+		var out bytes.Buffer
+		if got := AskContinue(strings.NewReader(in), &out); got != want {
+			t.Errorf("AskContinue(%q) = %v, want %v", in, got, want)
+		}
+		if strings.Contains(out.String(), "[Y/n]") {
+			t.Errorf("AskContinue printed a prompt: %q", out.String())
+		}
+	}
+}
