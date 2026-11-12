@@ -460,7 +460,8 @@ func TestAncestorHoldsOtherPath(t *testing.T) {
 // pid runs AND the process started when the claim says): a SIGKILLed wt
 // leaves its claim behind, and once that pid is recycled into an ancestor of
 // a new launch, pid-in-ancestors alone would let the stale file silently
-// waive the root gate.
+// waive the root warning the launch warnings owe (another session on the root
+// is their `held` entry, not a waiver).
 func TestAncestorHoldsIgnoresAStaleAncestorsClaim(t *testing.T) {
 	ppid := os.Getppid()
 	dir := t.TempDir()

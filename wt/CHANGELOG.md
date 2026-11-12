@@ -93,12 +93,17 @@
 - `--root` launches in the repository's primary checkout from anywhere and
   asks no consent question (a root another live session holds is named in the
   warnings and asked about by the one launch confirmation `wt: continue?
-  [Y/n]`; the shared-root menu and `--allow-shared-root` are gone). A `--cwd` launch
-  standing in a repository root now asks first (default no), and **breaking
-  for scripts:** with no terminal it refuses and names `--root`, so
-  `claude-wt --cwd` at a root needs `--root` instead. `-W <the root's branch>`
-  is refused and points at `--root`, `wt smoke --cwd` asks at a root, and the
-  worktree picker no longer lists the root as a row (#523).
+  [Y/n]`; the shared-root menu and `--allow-shared-root` are gone). A `--cwd`
+  or `wt smoke --cwd` launch standing in a repository root, and `-W <the
+  root's branch>`, warn and proceed — on a terminal the one launch question
+  `wt: continue? [Y/n]` (default yes) comes first; with no terminal the
+  warnings print and the launch proceeds, never refusing (first shipped in
+  #523 as gates: `--cwd` at a root asked a default-no question and,
+  **breaking for scripts,** refused with no terminal and named `--root`, so
+  scripts swapped `claude-wt --cwd` for `--root`; `-W <the root's branch>` was
+  refused and pointed at `--root`; `wt smoke --cwd` asked at a root). The
+  worktree picker dropped the root row (#523); the unified worktree list
+  shows it again, warning-tagged.
 - `wt remove origin/<name> --remote` (and, in the `wt cleanup` list, a proven
   `origin` row ticked by hand and confirmed by typing `delete origin`) deletes
   a merged branch on origin. Nothing else grants it (`--yes`, `y`,
@@ -124,19 +129,25 @@
   line, and the agent's exit status is unchanged. New setting `[launch]
   exit_prompt = "ask" | "keep"` in `config.toml`; no value removes without a
   keypress.
-- `-W <name>` now asks `create it from <base>? [y/N]` before it creates a
-  branch and worktree for a name that does not exist (Enter or `n` declines,
-  exit 0, nothing created). New `--new` answers yes in advance. **Breaking for
-  scripts:** with no terminal, `claude-wt -W newname` now refuses naming
-  `--new`; add `--new` to keep creating. Existing branches and worktrees are
-  reused without a question. In a repository with no commits the question says
-  `create it as an empty orphan branch with no shared history …` — git creates
-  an orphan there, never a branch off the unborn HEAD. An invalid branch name
-  (`a..b`, `foo.lock`) is refused before the question with git's reason, a
-  name another branch blocks (`feature` vs `feature/x`, or `Feature/x` on a
-  case-insensitive volume) names that branch and is refused too, and a
-  case-only variant of an existing branch or remote-tracking ref is an error,
-  not a second checkout of that branch.
+- `-W <name>` uses or creates a branch and worktree for the name without a
+  question of its own: a name that does not exist is announced first
+  (`creating branch <b> and worktree <p>`, `creating worktree <p> for branch
+  <b>`, or `creating worktree <p> for branch <b> tracking <r>`) and made
+  unless the one launch question `wt: continue? [Y/n]` (asked on a terminal
+  when a warning applies, default yes) is declined — a decline exits 0 with
+  nothing created — and with no terminal the warnings print and the creation
+  proceeds. It once asked `create it from <base>? [y/N]` first (Enter or `n`
+  declined), and with no terminal refused and named `--new`. `--new` is
+  accepted and ignored, kept for old scripts (it once answered yes in
+  advance). Existing branches and worktrees are reused without a question. In
+  a repository with no commits a created branch starts as an empty orphan
+  branch with no shared history — git creates an orphan there, never a branch
+  off the unborn HEAD. An invalid branch name (`a..b`, `foo.lock`) is refused
+  before anything is created with git's reason, a name another branch blocks
+  (`feature` vs `feature/x`, or `Feature/x` on a case-insensitive volume)
+  names that branch and is refused too, and a case-only variant of an existing
+  branch or remote-tracking ref is an error, not a second checkout of that
+  branch.
 - Sushi is a local provider: `wt start|stop|list` manage it, and `wt -A
   claude|pi -M sushi/...` launches on it. `wt model add sushi ...` adds
   `sushi` to the `supported_providers` of claude and pi in config.toml when
@@ -605,10 +616,14 @@
 
 ### Fixed
 
-- `wt -W origin/<default>` (and `upstream/<default>`, `<remote>/HEAD`) is
-  refused like the bare default branch, instead of creating a linked
-  worktree on a local branch literally named `origin/main`. A local
-  `feature/<default>` branch is still allowed (#516).
+- `wt -W origin/<default>` (and `upstream/<default>`) never creates a linked
+  worktree on a local branch literally named `origin/main`: the remote form
+  names the default branch itself — its tracking worktree goes at
+  `.worktrees/<default>`, or the checkout already holding the branch is
+  reused. Refused like the bare default branch at first, these are ordinary
+  names now; `<remote>/HEAD` gets only git's "not a valid branch name" (the
+  alias names no branch), and a local `feature/<default>` branch is still
+  allowed (#516).
 - `wt` now writes `general_settings.cancel_on_disconnect: true` into LiteLLM's
   `config.yaml` when the key is absent, so the proxy cancels the upstream call
   when a client abandons a non-streamed request. Before, LiteLLM never noticed
