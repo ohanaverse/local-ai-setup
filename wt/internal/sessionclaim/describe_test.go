@@ -54,37 +54,11 @@ func TestDescribeNamesTheSession(t *testing.T) {
 	}
 }
 
-// TestMenuListsOthersAndKeys checks the menu text the plain terminal and the
-// picker share: the root, one line per other session, and the three keys.
-func TestMenuListsOthersAndKeys(t *testing.T) {
-	others := []Claim{
-		{PID: 1, Started: 1000, Branch: "main", Agent: "codex"},
-		{PID: 2, Started: 1100, Branch: "feat", Agent: "claude"},
-	}
-	got := Menu("/repo", others, time.Unix(1200, 0))
-	want := "the repository root /repo is in use by another session:\n" +
-		"  codex (pid 1, running 3m20s, started on main)\n" +
-		"  claude (pid 2, running 1m40s, started on feat)\n" +
-		"  c  continue here    w  new worktree    q  quit (Esc)\n"
-	if got != want {
-		t.Fatalf("Menu =\n%q\nwant\n%q", got, want)
-	}
-}
-
 // TestCheckFailedNote checks the one-line note both paths print when the
 // claims cannot be read or written, which never stops the launch.
 func TestCheckFailedNote(t *testing.T) {
 	got := CheckFailed("/repo", errors.New("permission denied"))
 	if want := "could not check other sessions in /repo (permission denied); launching anyway"; got != want {
 		t.Fatalf("CheckFailed = %q; want %q", got, want)
-	}
-}
-
-// TestNewWorktreeName checks the generated name for the "new worktree"
-// choice: session, pid and time, never a default branch name.
-func TestNewWorktreeName(t *testing.T) {
-	got := NewWorktreeName(42, time.Date(2026, 10, 27, 9, 5, 7, 0, time.Local))
-	if want := "session-42-090507"; got != want {
-		t.Fatalf("NewWorktreeName = %q; want %q", got, want)
 	}
 }

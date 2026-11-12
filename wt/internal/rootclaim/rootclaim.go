@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/x/term"
 
@@ -63,31 +62,6 @@ func (r Root) Self(agent string) (sessionclaim.Claim, error) {
 	return sessionclaim.Self(r.Path, r.Branch, agent)
 }
 
-// Choose prints the shared-root menu on out after "wt: " and reads one key
-// from in: c continue here, w new worktree, q quit (Esc and Ctrl-C are q, and
-// so is the end of input). On a terminal it reads one key at a time.
-func Choose(r Root, others []sessionclaim.Claim, in io.Reader, out io.Writer) byte {
-	fmt.Fprint(out, "wt: "+sessionclaim.Menu(r.Path, others, time.Now()))
-	if h := Hint(r); h != "" {
-		fmt.Fprintln(out, h)
-	}
-	fmt.Fprint(out, "choose [c/w/q]: ")
-	choice := readChoice(in)
-	fmt.Fprintln(out)
-	return choice
-}
-
-// ConfirmRoot asks on out whether to work in the root r instead of a worktree
-// and reads one key from in: y or Y is yes; every other key, Esc, Ctrl-C and
-// the end of input are no (the default). On a terminal it reads one key
-// without waiting for Enter.
-func ConfirmRoot(r Root, in io.Reader, out io.Writer) bool {
-	if h := Hint(r); h != "" {
-		fmt.Fprintf(out, "wt: %s\n", h)
-	}
-	return AskYesNo(fmt.Sprintf("%s is the repository root (branch %s). Work here instead of in a worktree?", r.Path, r.Branch), in, out)
-}
-
 // AskYesNo prints "wt: " + prompt + " [y/N]: " on out and reads one key from
 // in: y or Y is yes; every other key, Esc, Ctrl-C and the end of input are no
 // (the default). On a terminal it reads one key without waiting for Enter.
@@ -98,24 +72,9 @@ func AskYesNo(prompt string, in io.Reader, out io.Writer) bool {
 	return yes
 }
 
-// readChoice reads keys from in until one is c, w or q.
-func readChoice(in io.Reader) byte {
-	return readKey(in, func(b byte) (byte, bool) {
-		switch b {
-		case 'c', 'C':
-			return 'c', true
-		case 'w', 'W':
-			return 'w', true
-		case 'q', 'Q', 0x1b, 0x03:
-			return 'q', true
-		}
-		return 0, false
-	})
-}
-
 // readKey reads single bytes from in (raw, one key at a time, when in is a
 // terminal) until pick accepts one, and returns what pick returned for it.
-// The end of input returns 'q', which both callers read as quit / no.
+// The end of input returns 'q', which the caller reads as no.
 func readKey(in io.Reader, pick func(byte) (byte, bool)) byte {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(f.Fd()) {
 		if state, err := term.MakeRaw(f.Fd()); err == nil {
