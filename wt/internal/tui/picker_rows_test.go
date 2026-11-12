@@ -527,8 +527,9 @@ func TestPickerListsBranchesOfAnUntrackedRemote(t *testing.T) {
 	}
 }
 
-// TestPickerFailedFetchReadsAsFailed pins that a fetch on open that failed
-// is reported as failed in the list's header, not as "fetch: skipped".
+// TestPickerFailedFetchReadsAsFailed pins that the `F` refresh's fetch, when
+// it fails, is reported as failed in the list's header, not as "fetch:
+// skipped".
 func TestPickerFailedFetchReadsAsFailed(t *testing.T) {
 	r := newRmRepo(t)
 	r.git("remote", "add", "dead", filepath.Join(t.TempDir(), "missing.git"))

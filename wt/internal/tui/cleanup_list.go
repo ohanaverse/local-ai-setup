@@ -14,6 +14,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // The row list (layout A of the cleanup design, unified by the user-driven
@@ -61,6 +62,10 @@ type rowListOpts struct {
 	Mode  listMode
 	Theme themes.Theme
 	Now   time.Time // the header's clock
+	// Root is the repository root the header's refresh note reads: a fetch
+	// at this root is what "refreshed" means (worktree.FetchRemotes, and
+	// RemoveFuncs.Refetch, run there). Empty falls back to the report's Repo.
+	Root string
 }
 
 // rowChosenMsg is launch mode's enter on a row: launch there.
@@ -256,6 +261,10 @@ type cleanupListModel struct {
 	// hands it to RemoveFuncs.Rescue once the alt screen is gone.
 	rescueRow *cleanup.Row
 	clock     func() time.Time // the list's clock on a rebuild
+	// refreshNote is the header's last line — "refreshed 3m ago" or "not
+	// refreshed here" — read once when the list was built (refreshedNote):
+	// it is a git read, and View must not spawn git every frame.
+	refreshNote string
 
 	// Launch mode's type-to-filter (row_list_launch.go): filter is the
 	// query, filtering is true while it is being typed (every printable key
@@ -275,6 +284,11 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 // ticked; in launch mode nothing is. The cursor starts on the first item.
 func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
+	root := o.Root
+	if root == "" {
+		root = r.Repo
+	}
+	m.refreshNote = refreshedNote(root, o.Now)
 	here := deepestCurrent(r)
 	if o.Mode == modeLaunch {
 		m.items = append(m.items, cleanupItem{newWorktree: true})
@@ -412,6 +426,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.gotRunDone(msg)
 	case cleanupRefreshMsg:
 		return m.gotRefresh(msg)
+	case cleanupRefetchMsg:
+		return m.gotRefetch(msg)
 	case cleanupSignalMsg:
 		return m.signalled()
 	case tea.KeyMsg:
@@ -468,6 +484,15 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(-1, len(m.items))
 		case "end", "G":
 			m.move(1, len(m.items))
+		case "F":
+			// The user's refresh (`f` stays pgdown): the picker re-runs its
+			// rows load with a fetch first — the app owns its inputs and the
+			// in-flight guard — and the manage list re-reads through
+			// RemoveFuncs.Refetch.
+			if m.launch() {
+				return m, emit(refreshRowsChosenMsg{})
+			}
+			return m.startRefetch()
 		default:
 			if m.launch() {
 				if msg.String() == "n" {
@@ -776,12 +801,47 @@ func (m *cleanupListModel) statusBlock() string {
 	return out + st.Render(clip(tuilayout.WrapText(m.status, m.width), m.width)) + "\n"
 }
 
-// headerBlock is cleanup.HeaderLines, wrapped: the fetch failure ends in
-// what it means for the list.
+// headerBlock is cleanup.HeaderLines plus the refresh note, wrapped: the
+// fetch failure ends in what it means for the list, and the note says when
+// this list was last refreshed here.
 func (m *cleanupListModel) headerBlock() string {
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
-	text := tuilayout.WrapText(strings.Join(cleanup.HeaderLines(m.report, m.now), "\n"), m.width)
+	lines := append(cleanup.HeaderLines(m.report, m.now), m.refreshNote)
+	text := tuilayout.WrapText(strings.Join(lines, "\n"), m.width)
 	return clip(dim.Render(text), m.width)
+}
+
+// refreshedNote is the header's one line about the list's fetch stamp:
+// "refreshed 3m ago" when git fetch last ran at root (worktree.LastFetched
+// reads the FETCH_HEAD every fetch there rewrites, an up-to-date one
+// included), and "not refreshed here" when root has no stamp at all — a
+// fresh clone has none until a fetch runs there.
+func refreshedNote(root string, now time.Time) string {
+	if root == "" {
+		return "not refreshed here"
+	}
+	at, ok := worktree.LastFetched(root)
+	if !ok {
+		return "not refreshed here"
+	}
+	return "refreshed " + sinceUnit(now.Sub(at)) + " ago"
+}
+
+// sinceUnit is d as one truncated unit — "0s", "3m", "2h", "5d" — the shape
+// the refresh note shows at a glance ("refreshed 3m ago"). A negative gap
+// (a stamp in the future, clock skew) reads as 0s.
+func sinceUnit(d time.Duration) string {
+	switch {
+	case d < 0:
+		return "0s"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 // detail explains the highlighted row: a rule with its name, then its whole

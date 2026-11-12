@@ -42,6 +42,9 @@ type rowPRsLoadedMsg struct {
 // process's claim (so it does not hold its own root), four gh calls at a
 // time once the PR fill runs, and every remote's branches (AllRemotes: the
 // list shows everything local, not only what `wt worktrees --json` lists).
+// Fetched reads "not run": the picker fetches nothing on its own, and the
+// header and the origin rows must say so rather than name a --no-fetch flag
+// there is none of (a `F` refresh overwrites it with the fetch's result).
 // Registered model artifacts are not read here
 // (that needs the registry, which cmd/wt owns), so no row carries a
 // protected_artifact blocker in the picker; removal re-checks in the engine.
@@ -50,15 +53,18 @@ func pickerInputs(cwd string) cleanup.GatherInputs {
 	if err != nil {
 		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: "wt"}
 	}
-	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true}
+	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true,
+		Fetched: cleanup.FetchResult{NotAttempted: true}}
 }
 
-// loadRowsCmd gathers root's rows for the picker: the fetch the picker has
-// always done on open (worktree.FetchRemotes, at most five seconds; ok or
-// failure recorded in in.Fetched for the header to render — a failure is
-// shown there, never swallowed) when fetch is set, then cleanup.Gather with
-// in (never fetching itself, never asking gh: SkipPRs) and Classify. A
-// repository with no default branch still lists, every row Unknown.
+// loadRowsCmd gathers root's rows for the picker. With fetch set (the
+// picker's `F`, refreshRowsChosenMsg) it fetches the remotes first —
+// in.FetchRemotes when the call carries one, else worktree.FetchRemotes, at
+// most five seconds; ok or failure recorded in in.Fetched for the header to
+// render, a failure shown there, never swallowed. Without it (every open)
+// nothing fetches. Then cleanup.Gather with in (never fetching itself,
+// never asking gh: SkipPRs) and Classify. A repository with no default
+// branch still lists, every row Unknown.
 func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bool) tea.Cmd {
 	return func() tea.Msg {
 		if lookupErr != nil {
@@ -67,7 +73,11 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 		if fetch {
 			// The header says how the fetch went: ok, or failed with git's
 			// line (never "skipped", which would hide a dead remote).
-			if err := worktree.FetchRemotes(root); err != nil {
+			fn := in.FetchRemotes
+			if fn == nil {
+				fn = worktree.FetchRemotes
+			}
+			if err := fn(root); err != nil {
 				in.Fetched = cleanup.FetchResult{At: time.Now(), Err: err.Error()}
 			} else {
 				in.Fetched = cleanup.FetchResult{OK: true, At: time.Now()}
@@ -163,8 +173,11 @@ func entryOfRow(r cleanup.Row) worktree.Entry {
 
 // gotRows applies a picker load: the list in launch mode, the cursor on the
 // innermost worktree holding the caller's directory, and the PR fill when the
-// load skipped one.
+// load skipped one. Any load's outcome — this open, a reload, a `F` refresh
+// that failed — ends the refresh-in-flight guard and keeps the inputs, so the
+// next `F` re-runs exactly this load.
 func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
+	m.rowsRefreshing = false
 	if msg.err != nil {
 		if m.ready {
 			// Reload after a create: the list is still usable, but the error
@@ -183,8 +196,9 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 		m.status = ""
 	}
 	m.repoRoot = msg.repoRoot
+	m.rowsIn = msg.in
 	m.rowsGen++
-	rows := newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now()})
+	rows := newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot})
 	rows.width, rows.height = m.rows.width, m.rows.height
 	if here := deepestCurrent(msg.report); here != "" {
 		rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })

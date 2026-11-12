@@ -47,6 +47,14 @@ type RemoveFuncs struct {
 	// Refresh re-reads the repository after a run; the list is rebuilt from
 	// its report. nil ends the program after the results instead.
 	Refresh func() (cleanup.Report, error)
+	// Refetch fetches the remotes and re-reads the repository on the list's
+	// `F`, returning the fresh report the list is rebuilt from. Fetch at the
+	// report's repository root (worktree.FetchRemotes), so the header's
+	// refresh note advances; a fetch failure is not this error — it travels
+	// in the report's Fetch field, which the header renders. This error is
+	// the re-read's own failure: the list keeps its rows and says why, one
+	// line. nil: `F` says it is unavailable.
+	Refetch func() (cleanup.Report, error)
 	// Off, when not "", is why removal is unavailable (the registry did not
 	// load): enter says it and nothing is previewed.
 	Off string
@@ -115,6 +123,12 @@ type (
 		err      error
 	}
 	cleanupRefreshMsg struct {
+		report cleanup.Report
+		err    error
+	}
+	// cleanupRefetchMsg is the `F` re-read's answer (the user's refresh, not
+	// the post-run one: its failure keeps the program alive).
+	cleanupRefetchMsg struct {
 		report cleanup.Report
 		err    error
 	}
@@ -704,6 +718,52 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 		n.offset = n.layout().offset
 	}
 	return n, nil
+}
+
+// startRefetch handles `F` in the manage list: fetch the remotes and re-read
+// the repository through RemoveFuncs.Refetch, then rebuild from the fresh
+// report. A nil Refetch says so on the status line (like `r` with no
+// rescue). While the read is in flight the list is in
+// cleanupPhaseRefreshing, which keeps every key but ctrl+c.
+func (m cleanupListModel) startRefetch() (cleanupListModel, tea.Cmd) {
+	if m.rm.Refetch == nil {
+		m.status = "refresh is not available here"
+		return m, nil
+	}
+	m.phase = cleanupPhaseRefreshing
+	return m, refetchCmd(m.rm.Refetch)
+}
+
+// refetchCmd runs the `F` re-read off the update loop; a panic is an error.
+func refetchCmd(refetch func() (cleanup.Report, error)) tea.Cmd {
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = cleanupRefetchMsg{err: fmt.Errorf("%v", r)}
+			}
+		}()
+		rep, err := refetch()
+		return cleanupRefetchMsg{report: rep, err: err}
+	}
+}
+
+// gotRefetch applies the `F` re-read: a fresh report rebuilds the list with
+// the cursor and filter kept (withReport) and the header's clock moved to
+// now, so its "refreshed …" note counts from this refresh. A failure is one
+// line on the status and the old list stays — nothing was removed here,
+// unlike the post-run refresh, whose failure ends the program (gotRefresh).
+func (m cleanupListModel) gotRefetch(msg cleanupRefetchMsg) (tea.Model, tea.Cmd) {
+	if m.phase != cleanupPhaseRefreshing {
+		return m, nil
+	}
+	m.phase = cleanupPhaseList
+	if msg.err != nil {
+		m.status = "refresh failed: " + cleanup.OneLine(msg.err.Error())
+		return m, nil
+	}
+	m.now = m.clock()
+	m.opts.Now = m.now
+	return m.withReport(msg.report), nil
 }
 
 // removedSummary counts what a run removed.
