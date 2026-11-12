@@ -4,7 +4,7 @@ Internals reference for `wt/`, reached from [`wt/CLAUDE.md`](../../CLAUDE.md). B
 
 ## Config (Go)
 
-`~/.config/agent-wt/config.toml` (TOML) is wt-owned and holds **only Agents, DefaultTag, the `[litellm]` routing table and the `[launch]` table** (`exit_prompt`, `config.LaunchState`). Providers/Models live in the registry (below); nothing that writes `config.toml` touches them.
+`~/.config/agent-wt/config.toml` (TOML) is wt-owned and holds **only Agents, DefaultTag, the `[litellm]` routing table and the `[launch]` table** (`config.LaunchState`; its `exit_prompt` key is tolerated and ignored — parsed and round-tripped by a save, validated and consulted by nothing, one note per process when non-empty). Providers/Models live in the registry (below); nothing that writes `config.toml` touches them.
 
 Key helpers: `Dir()` (config dir), `WriteFileAtomic`, `OllamaBaseURL` (`http://localhost:11434`), `FirstTag(s, fallback)`.
 

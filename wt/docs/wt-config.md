@@ -101,12 +101,12 @@ All `wt config` settings live in `~/.config/agent-wt/` (or
 > control the `[litellm]` table in `config.toml`. There is no routing surface
 > in the editor.
 
-> **The exit prompt is not a `wt config` setting either.** `[launch]
-> exit_prompt = "ask" | "keep"` in `config.toml` (default `"ask"`) controls
-> whether wt offers to remove an untouched session worktree when the agent
-> exits. It is edited by hand; the editor saves only the agents and
-> `default_tag`, and wt keeps the table across a save. An unrecognised value
-> is rejected when the file loads. See
+> **The `[launch]` table is not a `wt config` setting either.** Its
+> `exit_prompt` key in `config.toml` is tolerated and ignored — the exit
+> prompt it once configured is removed — and a non-empty value prints one
+> note per process: `wt: note: config.toml: [launch] exit_prompt is no
+> longer used and is ignored`. The table is edited by hand; the editor saves
+> only the agents and `default_tag`, and wt keeps the table across a save. See
 > [configuration.md](./configuration.md#exit-prompt-setting).
 
 ```
