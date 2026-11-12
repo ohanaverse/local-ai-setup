@@ -722,9 +722,9 @@ func TestEngineIgnoresProcessFinderError(t *testing.T) {
 // procStart returns pid's start time in epoch seconds — what a claim records
 // (docs/contracts/session-claims.md: equal to the real start within 5 s). A
 // fixture "other session" must read live under that rule, and this package
-// cannot fake sessionclaim's process seams (unexported, and this change adds
-// no exported ones), so the claim names a real child's real start time, read
-// from ps's lstart in the local zone. (Shape: rootclaim's holdlaunch_test,
+// cannot fake sessionclaim's process seams (unexported), so the claim names a
+// real child's real start time, read from ps's lstart in the local zone.
+// (Shape: rootclaim's holdlaunch_test,
 // cleanup's snapshot_test.)
 func procStart(t *testing.T, pid int) int64 {
 	t.Helper()
