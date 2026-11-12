@@ -345,21 +345,22 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 // runs, then the summary line — and no removal-offer wording and no gh gather
 // run in it (cleanup is user-driven: `wt worktrees` / `wt remove`). This is a
 // plain pin of the tail's shape, not a red→green guard (R303a — no RED
-// theater). The old removal offer acted only on a terminal, when not kept, and
-// with a creation record; the first two are staged here (stdin reports a TTY
-// and `[launch] exit_prompt` is not "keep") and the verified mutation supplies
-// the third (a creation record), so an offer step re-inserted into the tail
-// acts (does not early-return) and its wording / gh gather is caught. Verified
-// by mutation:
+// theater). It pins no-offer-wording and no-gh-gather under the two offer gates
+// staged here (stdin reports a TTY and `[launch] exit_prompt` is not "keep");
+// the old offer's third gate — a creation record — went with the deletion and
+// is not staged, so this test alone cannot force a faithful re-add (one
+// restoring that record check) to act. What the wording and gh-stub assertions
+// actually catch is the verified mutation:
 // re-inserting an offer step into the tail with a creation record that prints
 // "Remove it and its branch" / "was created for this session" and runs a
 // `gh pr list` gather makes this test fail — the wording and gh assertions
 // fire.
 func TestTailsRunStopPickerThenSummary(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	// A removal offer acted only on a terminal and when not kept; stage both
-	// (the empty Config keeps the offer) so a re-added offer step does not
-	// early-return silently.
+	// Stage two of the old offer's three gates — a terminal (stdin is made to
+	// report a TTY just below) and "not kept" (the empty Config keeps it). The
+	// third gate, a creation record, is deleted and not staged (see the doc
+	// comment).
 	oldTTY := stdinTTY
 	stdinTTY = func() bool { return true }
 	t.Cleanup(func() { stdinTTY = oldTTY })
@@ -376,7 +377,7 @@ func TestTailsRunStopPickerThenSummary(t *testing.T) {
 	cases := []struct {
 		name string
 		run  func() error
-		want string // the tail's seam order: no "offer" step
+		want string // the stubbed seams' order (release,picker[,notice]); the offer observers are the wording + gh assertions, not this
 		sum  string // the summary line's stable prefix
 	}{
 		{"single model", func() error {
@@ -401,10 +402,10 @@ func TestTailsRunStopPickerThenSummary(t *testing.T) {
 			if runErr != nil {
 				t.Fatalf("run: %v", runErr)
 			}
-			// The tail is release, stop picker, summary (then the notice): no
-			// offer step between the picker and the summary.
+			// Pin the stubbed seams' order (release, stop picker, then the
+			// notice); only the wording and gh assertions observe an offer step.
 			if got := strings.Join(order, ","); got != c.want {
-				t.Errorf("tail order = %s, want %s (no removal offer)", got, c.want)
+				t.Errorf("stubbed seam order = %s, want %s (seams only — an offer shows in the wording / gh assertions)", got, c.want)
 			}
 			p, sum := strings.Index(s, "PICKER-MARKER"), strings.Index(s, c.sum)
 			if p < 0 || sum < 0 || p > sum {

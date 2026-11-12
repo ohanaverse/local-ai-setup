@@ -230,10 +230,12 @@ func TestGatherReportsAnEarlierFetchWhenNotFetching(t *testing.T) {
 // TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted gathers a repo with
 // one merged origin branch, with and without GatherInputs.OriginRows. What:
 // without it no `gh pr list --base` call is made and BasePRs is empty; with it
-// the branch is asked about once. Why: the query is one gh call per origin
-// candidate; `wt remove <local branch>` and the user-driven list (`wt
-// worktrees`) never show or act on an origin row, so they must not pay for it
-// (Rescan re-asks before any delete either way).
+// the branch is asked about once. Why: the query is the live `gh pr list
+// --base`, one gh call per origin candidate, so Gather makes it only when
+// OriginRows is set — callers that show or act on an origin row (the `wt
+// worktrees` list, `wt remove origin/...`) pass OriginRows and pay it, while
+// `wt remove <local branch>` never touches one and must not (Rescan re-asks
+// before any delete either way).
 func TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("topic")
