@@ -193,9 +193,8 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 		}
 	} else {
 		// Nothing was shown or asked since Preflight read the root, so its
-		// fingerprint stands and Execute skips its start-of-run re-checks;
-		// the checks after the copy and before the release still run. A
-		// prompt keeps them.
+		// fingerprint stands and Execute skips its start-of-run fingerprint
+		// re-check. A prompt keeps it.
 		plan.SkipStartRecheck()
 	}
 	// From here on a signal must not end the process part-way through the

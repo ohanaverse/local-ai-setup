@@ -466,56 +466,20 @@ func TestExecuteRecoveryRows(t *testing.T) {
 		t.Run("live claim", func(t *testing.T) {
 			f, eng, p := dirtyPlan(t)
 			pre := statusOf(f.Dir)
-			before := f.rootCheckout()
 			fired := false
 			eng.Hooks.BeforeRelease = func() {
 				fired = true
 				f.liveOther()
 			}
-			trace := traceGit(t)
 			o := eng.Execute(p)
 			if !fired {
 				t.Fatal("BeforeRelease hook did not fire")
 			}
-			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
-			wantReason(t, o, "nothing was reset or removed", p.DestPath)
-			noReset(t, trace(), f.Dir)
-			if after := f.rootCheckout(); after != before {
-				t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
-			}
-			wantCopy(t, p.DestPath, p.Head, pre, "")
+			wantStatus(t, o, rescue.StatusMoved, "")
+			wantRootOnDefault(t, f)
+			wantCopy(t, p.DestPath, p.Head, pre, "refs/heads/topic")
 			if o.Record == nil || rev(f.Dir, o.Record.Ref) == "" {
 				t.Errorf("record = %v, want it kept", o.Record)
-			}
-		})
-		t.Run("claims unreadable", func(t *testing.T) {
-			f, eng, p := dirtyPlan(t)
-			before := f.rootCheckout()
-			sessions := filepath.Join(f.commonDir(), "wt-sessions")
-			fired := false
-			eng.Hooks.BeforeRelease = func() {
-				fired = true
-				if err := os.MkdirAll(sessions, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(sessions, 0); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
-			trace := traceGit(t)
-			o := eng.Execute(p)
-			if !fired {
-				t.Fatal("BeforeRelease hook did not fire")
-			}
-			if o.Status == rescue.StatusMoved {
-				t.Skip("an unreadable claims directory is still readable here (root?)")
-			}
-			wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
-			wantReason(t, o, "not released", "nothing was reset or removed")
-			noReset(t, trace(), f.Dir)
-			if after := f.rootCheckout(); after != before {
-				t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
 			}
 		})
 		t.Run("release refused", func(t *testing.T) {
@@ -912,11 +876,11 @@ func TestExecuteRunsNoHooks(t *testing.T) {
 	}
 }
 
-// TestExecuteStartRecheck edits the root, or claims it for another live
-// process, after Preflight. Without SkipStartRecheck Execute refuses at the
-// start with nothing created; with it, the later checks still catch the
-// change before anything is reset. Why: the confirmation prompt is a window
-// in which the root can change (Review Focus 1).
+// TestExecuteStartRecheck edits the root after Preflight. Without
+// SkipStartRecheck Execute refuses at the start with nothing created; with
+// it, the later checks still catch the change before anything is reset.
+// Why: the confirmation prompt is a window in which the root can change
+// (Review Focus 1).
 func TestExecuteStartRecheck(t *testing.T) {
 	t.Run("edit, rechecked", func(t *testing.T) {
 		t.Parallel()
@@ -943,57 +907,33 @@ func TestExecuteStartRecheck(t *testing.T) {
 			t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
 		}
 	})
-	// A start re-check that cannot read the claims has created nothing, so it
-	// is refused (the schema's "before anything was created"), not failed.
-	t.Run("claims unreadable, rechecked", func(t *testing.T) {
-		t.Parallel()
-		f, eng, p := dirtyPlan(t)
-		sessions := filepath.Join(f.commonDir(), "wt-sessions")
-		if err := os.MkdirAll(sessions, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(sessions, 0); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
-		before := f.rootState()
-		o := eng.Execute(p)
-		if o.Status == rescue.StatusMoved {
-			t.Skip("an unreadable claims directory is still readable here (root?)")
-		}
-		wantStatus(t, o, rescue.StatusRefused, rescue.CodeUnreadable)
-		wantReason(t, o, "nothing was created")
-		if after := f.rootState(); after != before || o.Created {
-			t.Errorf("Execute changed the repository (Created %v)", o.Created)
-		}
-	})
-	t.Run("claim, rechecked", func(t *testing.T) {
-		t.Parallel()
-		f, eng, p := dirtyPlan(t)
-		f.liveOther()
-		before := f.rootState()
-		o := eng.Execute(p)
-		wantStatus(t, o, rescue.StatusRefused, rescue.CodeSourceChanged)
-		if after := f.rootState(); after != before || o.Created {
-			t.Errorf("Execute changed the repository (Created %v)", o.Created)
-		}
-	})
-	t.Run("claim, skipped", func(t *testing.T) {
-		f, eng, p := dirtyPlan(t)
-		p.SkipStartRecheck()
-		f.liveOther()
-		before := f.rootCheckout()
-		trace := traceGit(t)
-		o := eng.Execute(p)
-		wantStatus(t, o, rescue.StatusFailed, CodeReleaseRefused)
-		noReset(t, trace(), f.Dir)
-		if after := f.rootCheckout(); after != before {
-			t.Errorf("the root changed:\nbefore:\n%s\nafter:\n%s", before, after)
-		}
-		if o.Record == nil || !o.Created {
-			t.Errorf("record %v, Created %v; want both kept", o.Record, o.Created)
-		}
-	})
+}
+
+// TestExecuteIgnoresClaimsEntirely makes the repository's wt-sessions
+// directory unreadable (mode 0) after Preflight has read it, then runs a full
+// move of a dirty root and requires it to succeed. Why: Execute must not read
+// the session claims at all — a held root rides the plan as a warning and the
+// user decides — so an unreadable claims directory cannot refuse or fail a
+// move; the one claim read left is Preflight's.
+func TestExecuteIgnoresClaimsEntirely(t *testing.T) {
+	t.Parallel()
+	f, eng, p := dirtyPlan(t)
+	sessions := filepath.Join(f.commonDir(), "wt-sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sessions, 0); err != nil {
+		t.Skipf("the platform refuses chmod 0 on a directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sessions, 0o755) })
+	if _, err := os.ReadDir(sessions); err == nil {
+		t.Skip("a 0-mode claims directory is still readable here (root?)")
+	}
+	pre := statusOf(f.Dir)
+	o := eng.Execute(p)
+	wantStatus(t, o, rescue.StatusMoved, "")
+	wantRootOnDefault(t, f)
+	wantCopy(t, p.DestPath, p.Head, pre, "refs/heads/topic")
 }
 
 // TestExecuteRunsGitInRootAndDestFromALinkedWorktree runs a move with the

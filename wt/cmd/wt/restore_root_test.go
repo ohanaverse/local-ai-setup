@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
 )
 
@@ -603,12 +602,12 @@ func TestRestoreRootCmdDryRunText(t *testing.T) {
 }
 
 // TestRestoreRootCmdClaimWhilePromptHeld claims the root for another live
-// process while the confirmation is held. Prompted, Execute's start re-check
-// refuses source_changed (the claim is a change since the check) with nothing
-// created; with --yes (no start re-check) the claim is caught just before the
-// release: failed release_refused, the root still on topic with its work and
-// the new worktree kept with the copy. Why: the claim is checked again exactly
-// where a running agent would lose work.
+// process while the confirmation is held (or just before --yes runs) and
+// requires the move to proceed and complete anyway: exit 0, moved, the root
+// on the default and the work carried into the new worktree. Why: a held root
+// only rides Preflight's plan as a warning and the user decides — Execute
+// reads no session claims, so a claim appearing in the prompt window can
+// neither refuse nor fail a move.
 func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 	t.Run("prompted", func(t *testing.T) {
 		a := restoreRootApp(t)
@@ -616,18 +615,21 @@ func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 		rootOnTopic(t, dir)
 		restoreRootTTY = func(io.Reader, io.Writer) bool { return true }
 		afterRestoreRootConfirm = func() { liveClaim(t, dir) }
-		world := repoWorld(t, dir)
 
 		stdout, _, err := runRestoreRoot(t, a, dir, "y\n", "--json", "--no-fetch")
 
-		if exitOf(err) != 2 {
+		if exitOf(err) != 0 {
 			t.Fatalf("exit %d\n%s", exitOf(err), stdout)
 		}
-		if env := decodeRestoreRoot(t, stdout); env.Code != rescue.CodeSourceChanged || env.Created {
+		env := decodeRestoreRoot(t, stdout)
+		if env.Outcome != "moved" || !env.Created {
 			t.Errorf("envelope = %+v", env)
 		}
-		if rootBranch(t, dir) != "topic" || repoWorld(t, dir) != world {
-			t.Error("the repository changed")
+		if rootBranch(t, dir) != "main" {
+			t.Errorf("root on %s, want main", rootBranch(t, dir))
+		}
+		if b, _ := os.ReadFile(filepath.Join(env.DestPath, "new.txt")); string(b) != "n" {
+			t.Errorf("the new worktree lacks the untracked work: %q", b)
 		}
 	})
 	t.Run("yes", func(t *testing.T) {
@@ -638,20 +640,18 @@ func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 
 		stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--json", "--no-fetch")
 
-		if exitOf(err) != 2 {
+		if exitOf(err) != 0 {
 			t.Fatalf("exit %d\n%s", exitOf(err), stdout)
 		}
 		env := decodeRestoreRoot(t, stdout)
-		if env.Outcome != "failed" || env.Code != rootmove.CodeReleaseRefused || !env.Created {
-			t.Fatalf("envelope = %+v", env)
+		if env.Outcome != "moved" || !env.Created {
+			t.Errorf("envelope = %+v", env)
 		}
-		if rootBranch(t, dir) != "topic" {
-			t.Errorf("root on %s, want topic", rootBranch(t, dir))
+		if rootBranch(t, dir) != "main" {
+			t.Errorf("root on %s, want main", rootBranch(t, dir))
 		}
-		for _, d := range []string{dir, env.DestPath} {
-			if b, _ := os.ReadFile(filepath.Join(d, "new.txt")); string(b) != "n" {
-				t.Errorf("%s lacks the untracked work: %q", d, b)
-			}
+		if b, _ := os.ReadFile(filepath.Join(env.DestPath, "new.txt")); string(b) != "n" {
+			t.Errorf("the new worktree lacks the untracked work: %q", b)
 		}
 	})
 }
@@ -792,18 +792,21 @@ func TestRestoreRootCmdRemedyPrintedWhole(t *testing.T) {
 	}
 }
 
-// TestRestoreRootCmdRecoveryPrintedWhole fails a --yes run just before the
-// release (a live claim appears after the confirmation) and checks the
-// recovery sentence, which names the copy and the record, reaches the text
-// and the JSON reason whole although the reason is over 200 runes, and that
-// the text does not also say nothing was changed. Why: the recovery table's
-// row is how the user finds the work after a failure.
+// TestRestoreRootCmdRecoveryPrintedWhole fails a --yes run at the release's
+// first gate (after the confirmation the default branch becomes checked out
+// in another worktree) and checks the recovery sentence, which names the copy
+// and the record, reaches the text and the JSON reason whole although the
+// reason is over 200 runes, and that the text does not also say nothing was
+// changed. Why: the recovery table's row is how the user finds the work after
+// a failure.
 func TestRestoreRootCmdRecoveryPrintedWhole(t *testing.T) {
 	for _, asJSON := range []bool{false, true} {
 		a := restoreRootApp(t)
 		dir := cleanupRepo(t)
 		rootOnTopic(t, dir)
-		afterRestoreRootConfirm = func() { liveClaim(t, dir) }
+		afterRestoreRootConfirm = func() {
+			cgit(t, dir, "worktree", "add", "-q", filepath.Join(dir, ".worktrees", "m"), "main")
+		}
 		args := []string{"--yes", "--no-fetch"}
 		if asJSON {
 			args = append(args, "--json")

@@ -41,7 +41,7 @@ func refuse(code, format string, a ...any) *rescue.Refusal {
 // tracks, which the switch would overwrite). DefaultFF is then read and
 // never refuses. A live wt session of another process in the root refuses
 // nothing: it rides the plan as one HeldWarningPrefix warning and the plan
-// proceeds (Execute checks the claims again just before the root changes).
+// proceeds (Execute does not check the claims again).
 func (e Engine) Preflight(dirName string) (*Plan, error) {
 	root := e.Rescue.Prior.Repo
 	if root == "" {
@@ -106,7 +106,7 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 	if held, err := e.heldBy(common, root); err != nil {
 		return nil, err
 	} else if held != "" {
-		heldWarn = HeldWarningPrefix + fmt.Sprintf("another wt session is running in the root: %s; end it first (Execute checks again just before the root changes)", held)
+		heldWarn = HeldWarningPrefix + fmt.Sprintf("another wt session is running in the root: %s; end it first (Execute does not check again)", held)
 	}
 
 	switch o, err := rg.Run("check-ignore", "-q", ".worktrees/"); {
@@ -167,7 +167,6 @@ func (e Engine) Preflight(dirName string) (*Plan, error) {
 		Counts:    rp.Counts,
 		Warnings:  warnings,
 		rp:        rp,
-		common:    common,
 	}, nil
 }
 
@@ -179,19 +178,6 @@ func commonDir(rg cleanup.Git) (string, error) {
 		return "", fmt.Errorf("could not read the repository's common directory: %w", err)
 	}
 	return common, nil
-}
-
-// heldNow is heldBy for a plan: the common dir Preflight read, or one read
-// now for a plan without it. The claims are always read fresh.
-func (e Engine) heldNow(rg cleanup.Git, p *Plan) (string, error) {
-	common := p.common
-	if common == "" {
-		var err error
-		if common, err = commonDir(rg); err != nil {
-			return "", err
-		}
-	}
-	return e.heldBy(common, p.Repo)
 }
 
 // resolveCommit resolves ref to a commit id; ok is false when the ref is

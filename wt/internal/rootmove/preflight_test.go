@@ -445,7 +445,7 @@ func TestPreflightHeldWarnsAndPlans(t *testing.T) {
 	wantLine := func(c sessionclaim.Claim, now time.Time) string {
 		return HeldWarningPrefix + "another wt session is running in the root: " +
 			cleanup.OneLine(sessionclaim.Describe(c, now)) +
-			"; end it first (Execute checks again just before the root changes)"
+			"; end it first (Execute does not check again)"
 	}
 	for _, c := range []struct {
 		name string

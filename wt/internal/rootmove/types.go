@@ -90,15 +90,10 @@ type Plan struct {
 
 	rp        *rescue.Plan // the root-mode rescue plan Execute copies with
 	skipStart bool         // see SkipStartRecheck
-	// common is the absolute git common dir Preflight read once; "" (a Plan
-	// not made by Preflight) is read again where used. core.ignorecase is
-	// deliberately not kept: Execute's checks read it fresh.
-	common string
 }
 
 // SkipStartRecheck tells Execute that nothing happened between Preflight and
 // it that gave the root time to change (no prompt was shown); see
 // rescue.Plan.SkipStartRecheck.
-// Execute then skips its start-of-run fingerprint and claim re-checks; the
-// checks after the copy and before the release still run.
+// Execute then skips its start-of-run fingerprint re-check.
 func (p *Plan) SkipStartRecheck() { p.skipStart = true; p.rp.SkipStartRecheck() }
