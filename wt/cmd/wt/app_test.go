@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 )
 
 // TestNewAppLoadsProfilesStore verifies newApp populates a.profiles from
@@ -215,6 +218,75 @@ default = 3
 	for _, want := range []string{"wt: parse slot-profiles.toml: ", "line 12", "default", " — slot profiles are unavailable"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("warning = %q, want it to contain %q", got[0], want)
+		}
+	}
+}
+
+// TestWarnIgnoredLaunchKeysPrintsOnce pins warnIgnoredLaunchKeys' contract:
+// a config with no legacy key prints nothing and does not spend the note,
+// and a legacy `[launch] exit_prompt` gets exactly one note naming it per
+// process however many times the config is loaded. The once-per-process
+// state is reset per test (resetIgnoredLaunchWarnForTest), so neither this
+// test nor any other depends on run order (wt/CLAUDE.md).
+func TestWarnIgnoredLaunchKeysPrintsOnce(t *testing.T) {
+	resetIgnoredLaunchWarnForTest()
+	t.Cleanup(resetIgnoredLaunchWarnForTest)
+	var buf bytes.Buffer
+	warnIgnoredLaunchKeys(&buf, &config.Config{})
+	warnIgnoredLaunchKeys(&buf, &config.Config{LaunchTable: &config.LaunchState{}})
+	if buf.Len() != 0 {
+		t.Fatalf("warn with no legacy key printed %q, want silence", buf.String())
+	}
+	cfg := &config.Config{LaunchTable: &config.LaunchState{ExitPrompt: "keep"}}
+	warnIgnoredLaunchKeys(&buf, cfg)
+	warnIgnoredLaunchKeys(&buf, cfg)
+	got := buf.String()
+	if n := strings.Count(got, "wt: note:"); n != 1 {
+		t.Fatalf("two warns printed %d notes (%q), want exactly one per process", n, got)
+	}
+	for _, want := range []string{"[launch] exit_prompt", "ignored"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("note = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
+// TestNewAppWarnsAboutLegacyExitPrompt pins the startup wiring: a config
+// still carrying the retired `[launch] exit_prompt` key starts wt with one
+// note naming it (the key is tolerated and ignored now, R305a) instead of
+// failing the load the way validation used to. Without the call in newApp a
+// stale key would sit in the file unnoticed forever.
+func TestNewAppWarnsAboutLegacyExitPrompt(t *testing.T) {
+	resetIgnoredLaunchWarnForTest()
+	t.Cleanup(resetIgnoredLaunchWarnForTest)
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("WT_REGISTRY", "")
+	t.Setenv("MODELMAN_REGISTRY", "")
+	cfgDir := filepath.Join(dir, "agent-wt")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
+		[]byte("default_tag = \"code\"\n[launch]\nexit_prompt = \"keep\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	regDir := filepath.Join(dir, "local-ai")
+	if err := os.MkdirAll(regDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
+		[]byte("providers = []\nmodels = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notes := captureNotes(t)
+	if _, err := newApp(); err != nil {
+		t.Fatalf("newApp() error = %v", err)
+	}
+	got := notes.String()
+	for _, want := range []string{"wt: note:", "[launch] exit_prompt", "ignored"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("newApp notes = %q, want them to contain %q", got, want)
 		}
 	}
 }

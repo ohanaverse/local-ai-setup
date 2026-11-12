@@ -345,11 +345,12 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 // runs, then the summary line — and no removal-offer wording and no gh gather
 // run in it (cleanup is user-driven: `wt worktrees` / `wt remove`). This is a
 // plain pin of the tail's shape, not a red→green guard (R303a — no RED
-// theater). It pins no-offer-wording and no-gh-gather under the two offer gates
-// staged here (stdin reports a TTY and `[launch] exit_prompt` is not "keep");
-// the record gate (the offer's first check) — a creation record — went with the deletion and
-// is not staged, so this test alone cannot force a faithful re-add (one
-// restoring that record check) to act. What the wording and gh-stub assertions
+// theater). It pins no-offer-wording and no-gh-gather under the one offer gate
+// staged here (stdin reports a TTY); the "keep" gate died with the setting
+// itself (task 305 tolerates and ignores `[launch] exit_prompt`, no value
+// consulted) and the record gate (the offer's first check) — a creation
+// record — went with the deletion and is not staged, so this test alone
+// cannot force a faithful re-add (one restoring that record check) to act. What the wording and gh-stub assertions
 // actually catch is the verified mutation:
 // re-inserting an offer step into the tail with a creation record that prints
 // "Remove it and its branch" / "was created for this session" and runs a
@@ -357,10 +358,11 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 // fire.
 func TestTailsRunStopPickerThenSummary(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	// Stage two of the old offer's three gates — a terminal (stdin is made to
-	// report a TTY just below) and "not kept" (the empty Config keeps it). The
-	// record gate (the offer's first check), a creation record, is deleted and not staged (see the doc
-	// comment).
+	// Stage the old offer's terminal gate (stdin is made to report a TTY just
+	// below) — the only one left to stage: the "keep" gate died with the
+	// setting (task 305 tolerates and ignores `[launch] exit_prompt`, no value
+	// consulted), and the record gate (the offer's first check), a creation
+	// record, is deleted and not staged (see the doc comment).
 	oldTTY := stdinTTY
 	stdinTTY = func() bool { return true }
 	t.Cleanup(func() { stdinTTY = oldTTY })

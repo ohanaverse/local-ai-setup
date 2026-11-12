@@ -1,30 +1,21 @@
 package config
 
-import "fmt"
-
-// LaunchState is the `[launch]` table of wt's config.toml: settings for what
-// wt does around an agent launch. ExitPrompt is "ask" (the default; an
-// untouched worktree this launch created is offered for removal when the
-// agent exits) or "keep" (never offer). No value removes without a keypress.
+// LaunchState is the `[launch]` table of wt's config.toml. Every key under it
+// is legacy: exit_prompt configured the post-exit removal offer, which is
+// gone (cleanup is user-driven now). No value is validated or consulted any
+// more (R305a) — any spelling parses and round-trips a save unchanged — and
+// IgnoredLaunchKeys names the key so callers can note it once per process.
 type LaunchState struct {
 	ExitPrompt string `toml:"exit_prompt"`
 }
 
-// ExitPromptKeep reports whether the user turned the exit prompt off
-// (`[launch] exit_prompt = "keep"`). Absent, empty and "ask" all mean ask.
-func (c *Config) ExitPromptKeep() bool {
-	return c != nil && c.LaunchTable != nil && c.LaunchTable.ExitPrompt == "keep"
-}
-
-// validateLaunch rejects an exit_prompt value other than "", "ask" or "keep",
-// naming the key and the allowed values.
-func (c *Config) validateLaunch() error {
-	if c.LaunchTable == nil {
-		return nil
+// IgnoredLaunchKeys names the legacy keys this config carries a non-empty
+// value for: keys wt tolerates — they parse and survive every save — but no
+// longer reads. `[launch] exit_prompt` is the only one today, and every one
+// of its values counts (none is validated or consulted, R305a).
+func (c *Config) IgnoredLaunchKeys() []string {
+	if c != nil && c.LaunchTable != nil && c.LaunchTable.ExitPrompt != "" {
+		return []string{"[launch] exit_prompt"}
 	}
-	switch c.LaunchTable.ExitPrompt {
-	case "", "ask", "keep":
-		return nil
-	}
-	return fmt.Errorf("config.toml: [launch] exit_prompt = %q is not recognised; allowed values are \"ask\" and \"keep\"", c.LaunchTable.ExitPrompt)
+	return nil
 }
