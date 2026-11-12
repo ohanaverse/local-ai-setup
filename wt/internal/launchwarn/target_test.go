@@ -364,3 +364,62 @@ func TestForDirAndForNewCarryTheGoneUpstreamFact(t *testing.T) {
 		})
 	}
 }
+
+// breakRepoConfig makes git fail at the repository with a real error, not its
+// "not a git repository" refusal: .git/config becomes a directory, so git
+// exits "fatal: unknown error occurred while reading the configuration
+// files". It is the forced PrimaryOf failure the read-failure tests need.
+func breakRepoConfig(t *testing.T, repo string) {
+	t.Helper()
+	cfg := filepath.Join(repo, ".git", "config")
+	if err := os.Remove(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestForDirRealGitFailureReturnsThePartialTargetAndError checks a git
+// failure that is not git's own "not a repository" is surfaced, never
+// swallowed as a silent zero Target: ForDir returns the partial Target (the
+// directory it resolved) plus the error, which the callers print as one
+// "wt: note:" and proceed on — warn but never prevent. The zero Target with
+// no error is only for a directory outside a repository or a bare one.
+func TestForDirRealGitFailureReturnsThePartialTargetAndError(t *testing.T) {
+	repo := cloneRepo(t)
+	breakRepoConfig(t, repo)
+	tg, err := ForDir(repo)
+	if err == nil {
+		t.Fatalf("target = %+v, want a surfaced error for a real git failure", tg)
+	}
+	if tg.Dir != repo {
+		t.Errorf("partial target = %+v, want the resolved dir %s kept", tg, repo)
+	}
+}
+
+// TestForNewRealGitFailureKeepsTheCreationAndErrors checks ForNew's partial
+// Target keeps the plan's Creation through a real git failure: its facts do
+// not depend on PrimaryOf, so the frozen creation line still announces
+// exactly what the commit point creates while the read failure surfaces as
+// the note. Only a directory outside a repository or a bare one yields the
+// zero Target with no error.
+func TestForNewRealGitFailureKeepsTheCreationAndErrors(t *testing.T) {
+	repo := cloneRepo(t)
+	plan, err := worktree.Resolve(repo, "feat/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	breakRepoConfig(t, repo)
+	tg, err := ForNew(repo, "feat/x", plan)
+	if err == nil {
+		t.Fatalf("target = %+v, want a surfaced error for a real git failure", tg)
+	}
+	want := Creation{Branch: "feat/x", Tracks: "", NewBranch: true, Path: plan.Path()}
+	if tg.Creation == nil || *tg.Creation != want {
+		t.Errorf("creation = %+v, want %+v kept in the partial Target", tg.Creation, want)
+	}
+	if tg.Dir != plan.Path() || tg.Branch != "feat/x" {
+		t.Errorf("partial target = %+v, want the plan's dir and branch kept", tg)
+	}
+}

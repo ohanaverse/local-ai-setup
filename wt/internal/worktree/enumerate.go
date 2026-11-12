@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -252,13 +253,50 @@ func RootOf(dir string) (root string, ok bool) {
 	return primary, true
 }
 
+// ErrNotACheckout marks a PrimaryOf refusal that means there is no checkout
+// to launch into: a directory outside any repository (git's own "not a git
+// repository") and a bare one (it has no checkout at all). A caller turns
+// exactly these into an empty answer with no error — no launch warns there —
+// while every other PrimaryOf failure is a real read failure to surface
+// (launchwarn.ForDir/ForNew return their partial Target and the error). The
+// underlying message is kept verbatim: this classifies a refusal, it never
+// rewords one.
+var ErrNotACheckout = errors.New("not a checkout")
+
+// notACheckout marks err as an ErrNotACheckout refusal while keeping err's own
+// message: a caller quotes what was said, a caller classifies with errors.Is.
+func notACheckout(err error) error { return &notACheckoutError{err} }
+
+type notACheckoutError struct{ err error }
+
+func (e *notACheckoutError) Error() string        { return e.err.Error() }
+func (e *notACheckoutError) Unwrap() error        { return e.err }
+func (e *notACheckoutError) Is(target error) bool { return target == ErrNotACheckout }
+
+// isNotARepo reports whether err is git's own refusal to call the directory a
+// repository ("fatal: not a git repository (or any of the parent
+// directories)"). git prints exactly this outside any repository and when it
+// cannot read a repository's .git at all — its own classification of "there
+// is nothing here", which is what ErrNotACheckout means. A failure git words
+// any other way (a corrupt configuration, a missing git binary) is a real
+// read failure, never this.
+func isNotARepo(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "not a git repository")
+}
+
 // PrimaryOf returns the primary checkout (the first entry of `git worktree
 // list`) of the repository that owns dir, with symlinks resolved. It works
 // from the root, a linked worktree or a subdirectory, and errors for a bare
-// repository, a path outside any repository, or a git failure.
+// repository, a path outside any repository, or a git failure. The first two
+// are ErrNotACheckout refusals (see its doc): "nothing to launch into", not a
+// read failure.
 func PrimaryOf(dir string) (string, error) {
 	out, err := runGit(dir, "worktree", "list", "--porcelain")
 	if err != nil {
+		if isNotARepo(err) {
+			return "", notACheckout(err)
+		}
 		return "", err
 	}
 	first, _, _ := strings.Cut(string(out), "\n\n")
@@ -267,7 +305,7 @@ func PrimaryOf(dir string) (string, error) {
 		if line == "bare" {
 			// Worded so a caller that wraps this ("no primary checkout: …",
 			// cmd/wt's --root) does not repeat itself.
-			return "", fmt.Errorf("%s is a bare repository; it has no checkout", dir)
+			return "", notACheckout(fmt.Errorf("%s is a bare repository; it has no checkout", dir))
 		}
 		if p, found := strings.CutPrefix(line, "worktree "); found {
 			path = p

@@ -1,6 +1,7 @@
 package launchwarn
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,7 +46,13 @@ func forDir(dir string, knownDirt *bool) (Target, error) {
 	}
 	primary, err := worktree.PrimaryOf(resolved)
 	if err != nil {
-		return Target{}, nil // not a repository, or a bare one
+		if errors.Is(err, worktree.ErrNotACheckout) {
+			return Target{}, nil // not a repository, or a bare one
+		}
+		// A real read failure is surfaced, not swallowed as "not a
+		// repository": the partial Target carries what was read (the
+		// directory) and the callers print one "wt: note:" and proceed.
+		return Target{Dir: resolved}, err
 	}
 	t := rootTarget(primary)
 	t.Dir = resolved
@@ -82,20 +89,28 @@ func forDir(dir string, knownDirt *bool) (Target, error) {
 }
 
 // ForNew reads the Target for a launch that will create the worktree plan
-// describes in the repository at repoRoot. Nothing is created.
+// describes in the repository at repoRoot. Nothing is created. A directory
+// outside a repository, or a bare one, yields the zero Target and a nil
+// error, as ForDir reads it; any other failure returns the partial Target plus
+// the error, and that partial keeps the plan's Creation — its facts do not
+// depend on PrimaryOf, so the frozen creation line still announces exactly
+// what the commit point creates.
 func ForNew(repoRoot, branch string, plan *worktree.Plan) (Target, error) {
-	primary, err := worktree.PrimaryOf(repoRoot)
-	if err != nil {
-		return Target{}, nil
-	}
-	t := rootTarget(primary)
-	t.Dir = plan.Path()
-	t.Branch = plan.Branch()
+	t := Target{Dir: plan.Path(), Branch: plan.Branch()}
 	if t.Branch == "" {
 		t.Branch = branch
 	}
 	t.UpstreamGone = upstreamGone(repoRoot, t.Branch)
 	t.Creation = &Creation{Branch: t.Branch, Tracks: plan.Tracks(), NewBranch: plan.Creates(), Path: plan.Path()}
+	primary, err := worktree.PrimaryOf(repoRoot)
+	if err != nil {
+		if errors.Is(err, worktree.ErrNotACheckout) {
+			return Target{}, nil // not a repository, or a bare one
+		}
+		return t, err
+	}
+	root := rootTarget(primary)
+	t.Default, t.RootBranch, t.Hint = root.Default, root.RootBranch, root.Hint
 	return t, nil
 }
 

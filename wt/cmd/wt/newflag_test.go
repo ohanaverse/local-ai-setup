@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // answerOnStdin makes os.Stdin a pipe that holds answer and ends, until the
@@ -378,5 +380,41 @@ func TestDashWTrackingNameWithLocalBranchRefusesBeforeAnnouncing(t *testing.T) {
 	}
 	if strings.Contains(notes.String(), "creating") {
 		t.Errorf("a creation was announced for a plan that will be refused: %q", notes.String())
+	}
+}
+
+// TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation checks the whole
+// read-failure contract on the -W path: a forced PrimaryOf failure (a real
+// git error, not "not a repository") surfaces as the one "wt: note:" line and
+// the launch proceeds — with the frozen creation line still announced, from
+// ForNew's partial Target, so the person reads what the commit point will
+// make. Warn but never prevent.
+func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
+	root := sharedRootRepo(t)
+	plan, err := worktree.Resolve(root, "brand-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force a real git failure at the repository: .git/config becomes a
+	// directory and git exits "unknown error occurred while reading the
+	// configuration files" — not its "not a git repository" refusal.
+	cfg := filepath.Join(root, ".git", "config")
+	if err := os.Remove(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tg, readErr := launchwarn.ForNew(root, "brand-new", plan)
+	notes := captureNotes(t)
+	if err := confirmLaunch(tg, readErr, strings.NewReader(""), osStderr, false); err != nil {
+		t.Fatal(err)
+	}
+	got := notes.String()
+	if !strings.Contains(got, "wt: note:") {
+		t.Errorf("output = %q, want the read-failure note", got)
+	}
+	if !strings.Contains(got, "creating branch brand-new and worktree "+plan.Path()) {
+		t.Errorf("output = %q, want the frozen creation line from the partial Target", got)
 	}
 }
