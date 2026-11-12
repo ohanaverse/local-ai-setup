@@ -20,8 +20,8 @@ import (
 // holder would hold a checkout on a process that never claimed it. A claim by
 // self's pid or one of self's parents is this session's family, not another
 // holder (a nested wt runs inside the session that already holds the
-// checkout), and a running pid whose start time cannot be read is no holder,
-// so the caller can warn instead of trusting it.
+// checkout), and a running pid whose start time cannot be read is neither
+// counted nor deleted — scan's rule for a claim nobody can verify.
 //
 // Holders takes no lock and changes nothing — it never prunes: stale files
 // remain for Prune and the writers to remove. It reads while other sessions

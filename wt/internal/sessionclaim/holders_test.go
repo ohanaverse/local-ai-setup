@@ -29,24 +29,27 @@ func dirSnapshot(t *testing.T, dir string) map[string]string {
 // TestHoldersGroupsLiveClaimsByPath checks Holders keys its map by worktree
 // path and lists every live claim on each one, whole and sorted by pid: the
 // cleanup list and the launch warnings show "who else holds" each checkout
-// from one read, and a claim on one path must not surface under another.
+// from one read, and a claim on one path must not surface under another. The
+// pids are a lexical-vs-numeric trap on purpose — the claim files' names sort
+// as "10" < "100" < "9", so without Holders' pid sort root's slice reads
+// [100, 9] and the comparison below fails.
 func TestHoldersGroupsLiveClaimsByPath(t *testing.T) {
-	fakeProcs(t, map[int]int64{100: 1000, 101: 1000, 102: 1000})
+	fakeProcs(t, map[int]int64{9: 1000, 10: 1000, 100: 1000})
 	dir := t.TempDir()
+	claimFile(t, dir, 9, body(9, 1000, root))
 	claimFile(t, dir, 100, body(100, 1000, root))
-	claimFile(t, dir, 101, body(101, 1000, root))
-	claimFile(t, dir, 102, body(102, 1000, "/elsewhere"))
+	claimFile(t, dir, 10, body(10, 1000, "/elsewhere"))
 	got, err := Holders(dir, self())
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string][]Claim{
 		root: {
+			{PID: 9, Started: 1000, Path: root, Branch: "main", Agent: "claude"},
 			{PID: 100, Started: 1000, Path: root, Branch: "main", Agent: "claude"},
-			{PID: 101, Started: 1000, Path: root, Branch: "main", Agent: "claude"},
 		},
 		"/elsewhere": {
-			{PID: 102, Started: 1000, Path: "/elsewhere", Branch: "main", Agent: "claude"},
+			{PID: 10, Started: 1000, Path: "/elsewhere", Branch: "main", Agent: "claude"},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
