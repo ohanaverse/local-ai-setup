@@ -21,6 +21,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/smoke"
@@ -72,11 +73,10 @@ func smokeCmd(a *app) *cobra.Command {
 			anyFail, err := runSmoke(cmd, a, args)
 			if err != nil {
 				// An interrupt is not a usage mistake: no flag summary after it.
-				// Neither is a start that failed or was refused, nor the root
-				// gate's refusal — final, and its message names the remedy —
-				// and with cobra's "Error:" line gone the summary would stand
-				// alone above main's one line.
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || isRootGateError(err)
+				// Neither is a start that failed or was refused, and with
+				// cobra's "Error:" line gone the summary would stand alone
+				// above main's one line.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err)
 				return err
 			}
 			if anyFail {
@@ -164,28 +164,24 @@ func runSmoke(cmd *cobra.Command, a *app, args []string) (anyFail bool, err erro
 	}
 	toolCheck, hops, promptOverride := toolFlags.toolCheck, toolFlags.hops, toolFlags.prompt
 
-	// The root gate runs here, for the flag-validation reason above: with
-	// --cwd the root command's persistent flag, every row runs in the
-	// caller's directory, so standing in the repository root needs the
-	// person's say-so exactly as a --cwd launch gives it — a silent root
-	// launch is the failure the gate exists to prevent — and a refusal must
-	// cost neither an interactive model pick nor a model start. smoke claims
-	// the root for no session of its own (self only excludes this pid) and
-	// rows may run several agents, so the self claim names none. Without
-	// --cwd every row runs in a fresh temporary git repository (#193):
-	// permission checks are off, and a model's stray tool call must not land
-	// in a real repo.
+	// The launch warnings run here, for the flag-validation reason above:
+	// with --cwd (the root command's persistent flag) every row runs in the
+	// caller's directory, so standing in the repository root warns exactly as
+	// a --cwd launch does — and proceeds, terminal or not — and a declined
+	// question must cost neither an interactive model pick nor a model start.
+	// smoke claims the root for no session of its own (rows may run several
+	// agents), so nothing is claimed here. Without --cwd every row runs in a
+	// fresh temporary git repository (#193): permission checks are off, and a
+	// model's stray tool call must not land in a real repo.
 	inPlace, _ := cmd.Flags().GetBool("cwd")
 	cwd := ""
 	if inPlace {
 		if cwd, err = os.Getwd(); err != nil {
 			return false, err
 		}
-		if gerr := gateRoot(cwd, "", cmd.InOrStdin(), osStderr, stdinTTY(), smokeRootRemedy); gerr != nil {
-			if errors.Is(gerr, errCancelled) {
-				return false, nil
-			}
-			return false, gerr
+		t, terr := launchwarn.ForDir(cwd)
+		if gerr := confirmLaunch(t, terr, cmd.InOrStdin(), osStderr, stdinTTY()); gerr != nil {
+			return false, nil // declined: a quiet stop, like every other no
 		}
 	}
 

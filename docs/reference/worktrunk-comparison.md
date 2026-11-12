@@ -83,7 +83,7 @@
 | Commit guard | none (local CI via `[[pre-merge]]` hooks) | `block-main-commit` pre-commit hook in `<git-common-dir>/hooks/` (covers all worktrees; preserves the user's hook; auto-installed) |
 | Dirty detection | remove/prune only | **none anywhere** |
 | Self-concurrency | trash-drain lock (one deleter per repo), CAS branch deletion (`git update-ref -d` expected-tip → `retained_raced`), TOCTOU revalidation after hooks, semaphore (32 git commands), atomic no-overwrite renames; **concurrent hooks documented as racy** | n/a (few mutating operations) |
-| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, `--allow-shared-root`, shared-root menu `c`/`w`/`q`); contract read by `repo-cleanup` ([session-claims.md](../contracts/session-claims.md)) |
+| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, shared-root menu `c`/`w`/`q`); contract read by `repo-cleanup` ([session-claims.md](../contracts/session-claims.md)) |
 
 ### Automation & extension
 

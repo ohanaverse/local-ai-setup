@@ -780,76 +780,41 @@ func smokeRootCmd(t *testing.T, cfg *config.Config, stdin io.Reader, args ...str
 	return cmd, &out, &errOut
 }
 
-// TestSmokeCmdCwdAtRootRefusesWithoutTerminal pins the root gate on wt smoke:
-// standing in a repository root with no terminal, the run refuses before the
-// model is resolved (no interactive pick, no start), names smoke's own
-// remedies — --root is not its flag and -W does not move its rows — reads no
-// input, and prints no usage block, the way the root launch's refusal does.
-func TestSmokeCmdCwdAtRootRefusesWithoutTerminal(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	stubStdinTTY(t, false)
-	t.Chdir(sharedRootRepo(t))
-	oldErr := osStderr
-	var notes bytes.Buffer
-	osStderr = &notes
-	t.Cleanup(func() { osStderr = oldErr })
+// TestSmokeCmdCwdAtRootWarnsAndProceeds checks wt smoke --cwd standing in a
+// repository root warns and proceeds, terminal or not: the root warning is
+// printed, no terminal gets no question (a question would read a pipe), a
+// terminal is asked the one default-yes question, and either way the run goes
+// on to resolve the model. Why: the root gate and its smoke's-remedies refusal
+// are gone — smoke runs where it was told to run, and the warning is the only
+// thing saying the root is shared.
+func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tty  bool
+		in   io.Reader
+	}{
+		{name: "no terminal", tty: false, in: failReader{t}},
+		{name: "terminal, enter", tty: true, in: strings.NewReader("\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := smokeFixtureConfig(t)
+			stubStdinTTY(t, tc.tty)
+			t.Chdir(sharedRootRepo(t))
+			notes := captureNotes(t)
 
-	cmd, out, errOut := smokeRootCmd(t, cfg, failReader{t}, "--cwd", "ollama/does-not-exist")
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "directory below the root") {
-		t.Fatalf("err = %v, want a refusal naming smoke's remedy", err)
-	}
-	if strings.Contains(err.Error(), "unknown model") {
-		t.Errorf("the model was resolved before the gate refused: %v", err)
-	}
-	if !cmd.SilenceUsage {
-		t.Error("a root-gate refusal must silence cobra's usage block")
-	}
-	if strings.Contains(out.String()+errOut.String(), "Usage:") {
-		t.Errorf("a root-gate refusal printed the usage block:\n%s%s", out.String(), errOut.String())
-	}
-}
-
-// TestSmokeCmdCwdAtRootAsksOnATerminal pins the other half of the gate: on a
-// terminal wt smoke asks the root question before any model work, and "n"
-// ends the run quietly (nil error) — a no is a choice, not a failure.
-func TestSmokeCmdCwdAtRootAsksOnATerminal(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	stubStdinTTY(t, true)
-	t.Chdir(sharedRootRepo(t))
-	oldErr := osStderr
-	var notes bytes.Buffer
-	osStderr = &notes
-	t.Cleanup(func() { osStderr = oldErr })
-
-	cmd, _, _ := smokeRootCmd(t, cfg, strings.NewReader("n"), "--cwd", "ollama/does-not-exist")
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("err = %v, want a quiet cancel (nil)", err)
-	}
-	if !strings.Contains(notes.String(), "is the repository root") {
-		t.Errorf("no root question asked; notes = %q", notes.String())
-	}
-}
-
-// TestSmokeCmdCwdAtRootYesProceeds pins the consent path: "y" answers the
-// root question and the run goes on to resolve the model — so the question is
-// really asked (not skipped) and consent unblocks the run.
-func TestSmokeCmdCwdAtRootYesProceeds(t *testing.T) {
-	cfg := smokeFixtureConfig(t)
-	stubStdinTTY(t, true)
-	t.Chdir(sharedRootRepo(t))
-	oldErr := osStderr
-	var notes bytes.Buffer
-	osStderr = &notes
-	t.Cleanup(func() { osStderr = oldErr })
-
-	cmd, _, _ := smokeRootCmd(t, cfg, strings.NewReader("y"), "--cwd", "ollama/does-not-exist")
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "unknown model") {
-		t.Fatalf("err = %v, want the run to proceed to the model resolution", err)
-	}
-	if !strings.Contains(notes.String(), "is the repository root") {
-		t.Errorf("no root question asked; notes = %q", notes.String())
+			cmd, _, _ := smokeRootCmd(t, cfg, tc.in, "--cwd", "ollama/does-not-exist")
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "unknown model") {
+				t.Fatalf("err = %v; want the run to proceed to the model resolution", err)
+			}
+			s := notes.String()
+			if !strings.Contains(s, "is the repository root") {
+				t.Errorf("notes = %q; want the root warning", s)
+			}
+			if got := strings.Contains(s, "continue?"); got != tc.tty {
+				t.Errorf("notes = %q; asked=%v, want %v (a question is asked only on a terminal)", s, got, tc.tty)
+			}
+		})
 	}
 }
 

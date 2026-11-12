@@ -334,7 +334,7 @@ Full reference — every field, every blocked reason, what Claude Code is given:
 Live-ran (2026-08-29, all read-only):
 
 - `wt --version` → `wt 0.1.0`
-- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide). A dated capture: later builds add `--new`, `--root`, `--allow-shared-root`, `--others` and `--replace`, so read the current list from `wt --help`
+- `wt --help` → full flags: `-A/-W/-M/-T/-F`, `--yolo`, `--cwd`, `--init`, `--check-guard`, `--no-guard`, `--debug-*` (output quoted throughout this guide). A dated capture: later builds add `--new`, `--root`, `--others` and `--replace`, so read the current list from `wt --help`
 - `wt --check-guard` → `wt: main guard is installed in this repo.`
 - `wt rotate code` → one model id (example: `ollama/kimi-k2.7-code:cloud`), exit 0, no files touched
 - `wt -w foo` → `Error: -w is removed; use -W or --worktree` (followed by the usage text), exit 1, and `git worktree list` confirmed nothing was created

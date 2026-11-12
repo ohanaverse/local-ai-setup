@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
@@ -142,10 +143,11 @@ func runLaunchPath(
 	// a picker is up, so a launch that went through the TUI says it again
 	// once the TUI has returned and the terminal is the user's.
 	runTUI := func() error {
-		// The TUI checks a root launch itself, by the same rules as
-		// holdSharedRoot: --allow-shared-root continues.
-		allowShared, _ := cmd.Flags().GetBool("allow-shared-root")
-		tui.SharedRoot = tui.RootCheck{Allow: allowShared}
+		// The TUI still runs its own shared-root screen (internal/tui);
+		// replacing it with the launch warnings is a later task. The flag
+		// that used to pre-approve it is gone, so its Allow is always false —
+		// the screen's behavior with that flag never given.
+		tui.SharedRoot = tui.RootCheck{}
 		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
 		printSlotNotes()
 		// tui.Run returns the agent's run error after its post-exit flow;
@@ -178,20 +180,15 @@ func runLaunchPath(
 
 	pinnedSupplied := cmd.Flags().Changed("model")
 
-	// A launch without the picker first asks whether another session holds
-	// the repository root (holdSharedRoot), which may move it to a new
-	// worktree. The claim it takes is released when the launch returns;
-	// runAgentCmd releases it itself before its os.Exit.
-	launchHere := func(run func(dir string) error) error {
-		dir, err := holdSharedRoot(cmd, agent, launchPath)
-		if errors.Is(err, errCancelled) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+	// A launch without the picker claims the repository root when it starts
+	// in it (holdRoot), so the next launch warns about this session while the
+	// agent runs. The claim is released when the launch returns; runAgentCmd
+	// releases it itself before its os.Exit. The warnings' one question has
+	// already been answered (or never asked) upstream in RunE.
+	launchHere := func(run func() error) error {
+		holdRoot(agent, launchPath)
 		defer releaseRootClaim()
-		return run(dir)
+		return run()
 	}
 
 	// An unconfigured model-driven agent (no config.toml entry — including
@@ -206,8 +203,8 @@ func runLaunchPath(
 			return fmt.Errorf("agent %q is not configured; cannot pin model %q", agent, pinned)
 		}
 		fmt.Fprintf(os.Stderr, "wt: %s is not configured — launching it directly without a model\n", agent)
-		return launchHere(func(dir string) error {
-			return launchPassthrough(agent, dir, yolo(cmd), args, a.cfg, a.profileState())
+		return launchHere(func() error {
+			return launchPassthrough(agent, launchPath, yolo(cmd), args, a.cfg, a.profileState())
 		})
 	}
 
@@ -218,8 +215,8 @@ func runLaunchPath(
 		// it is not computed a second time.
 		m, eligible, err := resolveModel(agent, a.cfg, tags, family, pinned)
 		if err == nil && m.ID != "" {
-			return launchHere(func(dir string) error {
-				return printOnce(cmd, launchFiltered(agent, dir, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState()))
+			return launchHere(func() error {
+				return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, eligible, a.profileState()))
 			})
 		}
 		if !stdinTTY() {
@@ -228,8 +225,8 @@ func runLaunchPath(
 		return runTUI()
 	}
 
-	return launchHere(func(dir string) error {
-		return printOnce(cmd, launchFiltered(agent, dir, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))
+	return launchHere(func() error {
+		return printOnce(cmd, launchFiltered(agent, launchPath, a.cfg, yolo(cmd), tags, family, pinned, pinnedSupplied, args, nil, a.profileState()))
 	})
 }
 
@@ -293,7 +290,7 @@ func rootCmd() *cobra.Command {
 		Use:   "wt",
 		Short: "Launch AI coding agents in a chosen worktree, branch, and model",
 		Example: "  wt                          # interactive TUI\n" +
-			"  wt -W my-feature -A claude   # use the worktree; a new name asks first (--new answers)\n" +
+			"  wt -W my-feature -A claude   # use the worktree; a new name is created and said so\n" +
 			"  wt --cwd --agent codex       # launch in the current directory\n" +
 			"  wt -A claude -- --verbose    # pass arguments to the agent (a relative path is\n" +
 			"                               # resolved from the directory the agent starts in)\n" +
@@ -497,8 +494,8 @@ func rootCmd() *cobra.Command {
 			}
 
 			// --root: the primary checkout, found from anywhere. The flag is
-			// the consent, so no root prompt; the shared-root menu still runs
-			// downstream (runLaunchPath).
+			// the consent for the root warning alone (RootChosen) — a root
+			// another live session holds still asks.
 			if rootFlag {
 				if _, err := worktree.RepoRoot(); err != nil {
 					return refuse(fmt.Errorf("not in a git repo: %w", err))
@@ -507,10 +504,24 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return refuse(fmt.Errorf("no primary checkout: %w", err))
 				}
+				t, terr := launchwarn.ForDir(root)
+				t.RootChosen = true
+				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
+					if errors.Is(err, errCancelled) {
+						return nil
+					}
+					return refuse(err)
+				}
 				return runLaunchPath(cmd, a, agent, pinned, tags, family, args, root, root)
 			}
 
-			// -W <name>: use a worktree (asking before creating one), then launch (no picker).
+			// -W <name>: use a worktree, then launch (no picker). The one
+			// launch question runs before anything exists: a name the plan
+			// will create (a new branch, a tracked remote, a worktree for an
+			// existing branch) is announced as a creation; a name that is
+			// already a worktree — the root's own branch included — is judged
+			// as the directory it resolves to, root warning and all. A no
+			// creates nothing. --new is a silent no-op, kept for old scripts.
 			if name := mustGetString(cmd, "worktree"); name != "" {
 				root, err := worktree.RepoRoot()
 				if err != nil {
@@ -520,20 +531,26 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return refuse(err)
 				}
-				creates := plan.Creates()
-				if creates {
-					if err := confirmCreate(name, plan.Start(), newFlag, os.Stdin, osStderr, stdinTTY()); err != nil {
-						if errors.Is(err, errCancelled) {
-							return nil
-						}
-						return refuse(err)
-					}
+				// The target is read before the plan runs, so a creation is
+				// described while it is still only planned.
+				var t launchwarn.Target
+				var terr error
+				if plan.Creates() || plan.Tracks() != "" {
+					t, terr = launchwarn.ForNew(root, name, plan)
+				} else if _, serr := os.Stat(plan.Path()); serr != nil {
+					t, terr = launchwarn.ForNew(root, name, plan)
+				} else {
+					t, terr = launchwarn.ForDir(plan.Path())
 				}
-				path, err := plan.Ensure()
-				if err != nil {
+				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
+					if errors.Is(err, errCancelled) {
+						return nil
+					}
 					return refuse(err)
 				}
-				if err := refuseRootBranch(name, path); err != nil {
+				creates := plan.Creates()
+				path, err := plan.Ensure()
+				if err != nil {
 					return refuse(err)
 				}
 				if creates {
@@ -570,7 +587,10 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := gateRoot(wd, agent, os.Stdin, osStderr, stdinTTY(), launchRootRemedy); err != nil {
+				// Standing in the repository root is a warning and a
+				// proceed — the directory choice is already the person's.
+				t, terr := launchwarn.ForDir(wd)
+				if err := confirmLaunch(t, terr, os.Stdin, osStderr, stdinTTY()); err != nil {
 					if errors.Is(err, errCancelled) {
 						return nil
 					}
@@ -598,7 +618,7 @@ func rootCmd() *cobra.Command {
 
 	// Flags shared by wt and its subcommands.
 	cmd.PersistentFlags().Bool("yolo", false, "Skip permission prompts")
-	cmd.PersistentFlags().StringP("worktree", "W", "", "Use the worktree for a branch; a name that does not exist yet asks before creating it (see --new)")
+	cmd.PersistentFlags().StringP("worktree", "W", "", "Use the worktree for a branch; a name that exists nowhere is created and said so (see --new)")
 	cmd.PersistentFlags().StringP("agent", "A", "", "Agent or command to launch (claude, codex, copilot, pi, agy, opencode, shell)")
 	cmd.PersistentFlags().StringP("model", "M", "", "Pin the model as <provider>/<name>")
 	cmd.PersistentFlags().Bool("replace", false, "With -M, start the model even if it means stopping a running one")
@@ -614,9 +634,8 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringP("family", "F", "", "Comma-delimited model families to filter models (OR within flag)")
 	cmd.PersistentFlags().Bool("cwd", false, "Launch in the current directory, inside a git repository or not; no worktree picker (wt smoke: run the agents there, not in a temporary directory)")
 	cmd.PersistentFlags().BoolVar(&showVersion, "version", false, "Print version and exit")
-	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; asks nothing (default for a bare wt is a worktree)")
-	cmd.Flags().Bool("new", false, "With -W, create the branch and worktree when the name does not exist yet (default: ask; with no terminal, refuse)")
-	cmd.Flags().Bool("allow-shared-root", false, "Answer the shared-root menu with continue: launch in the repository root even when another wt session is running there (default: ask; with no terminal, refuse). Answers that menu only: a --cwd launch at a root no other session holds is still asked, and --root is the no-prompt way in")
+	cmd.Flags().Bool("root", false, "Launch in the repository's primary checkout, from anywhere; accepts the root warning, though a root another session holds still asks (default for a bare wt is a worktree)")
+	cmd.Flags().Bool("new", false, "With -W, accepted and ignored: a name that exists nowhere is created and said so either way (kept for old scripts)")
 
 	// Legacy short flag rejection: `-w` was removed in favor of `-W`.
 	// Register it as a hidden string flag so pflag parses the old arity
