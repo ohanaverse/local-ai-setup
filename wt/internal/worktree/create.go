@@ -28,7 +28,8 @@ type nameClass struct {
 
 // classifyName decides what name means in dir, given the registered worktree
 // entries. It is the one decision order behind EnsureForName and WouldCreate,
-// so a question about creating is asked about exactly the case that creates.
+// so a creation is announced for exactly the case that creates (and a reuse
+// announces nothing).
 // path is the worktree to reuse (nameReuseWorktree) or to add (the others,
 // except nameTrackRemote, whose path addTrackingWorktree derives from short).
 // A name that cannot be used (empty, default-branch form, path collision, too
@@ -99,8 +100,8 @@ func classifyName(dir, name string, entries []Entry) (nameClass, error) {
 		}
 		return nameClass{kind: nameExistingBranch, path: path}, nil
 	}
-	// Last, so a name git would refuse is an error before anyone is asked to
-	// create it (the question and git's own failure must agree).
+	// Last, so a name git would refuse is an error before the creation is
+	// announced (the announcement and git's own failure must agree).
 	if err := checkBranchName(dir, name); err != nil {
 		return nameClass{}, err
 	}
@@ -137,7 +138,7 @@ func refExactly(dir, ref string) (bool, error) {
 // a local branch already sits on its path: a leaf branch above it (feature
 // blocks feature/x) or a branch nested under it (feature/x blocks feature).
 // Git nests refs as directories and refuses both at the ref lock — after the
-// create question has already been asked — so it is refused here instead.
+// creation has already been announced — so it is refused here instead.
 // With core.ignorecase (git init writes it true on a case-insensitive
 // volume) the comparison folds case, so feature blocks Feature/x exactly as
 // it blocks feature/x (git's mkdir of refs/heads/Feature collides with the
@@ -189,9 +190,9 @@ func checkBranchName(dir, name string) error {
 	return nil
 }
 
-// Plan is one classification of a typed -W name, resolved once: the create
-// question reads it (Creates, Start) and the creation consumes the same
-// object (Ensure), so the phrase a user answered and the branch that is made
+// Plan is one classification of a typed -W name, resolved once: the creation
+// line reads it (Creates, Branch, Tracks, Path) and the creation consumes the
+// same object (Ensure), so what a user is told and the branch that is made
 // come from one set of git probes instead of two.
 type Plan struct {
 	dir, name string
@@ -256,21 +257,22 @@ func (p *Plan) Path() string {
 	return p.cls.path
 }
 
-// Start is how the branch Ensure would create starts — the phrase the create
-// question joins after "create it": "from <current branch>", "from detached
-// HEAD <short sha>", or "as an empty orphan branch with no shared history
-// (this repository has no commits yet)" on an unborn HEAD, where git infers
-// --orphan rather than a base. Empty when the plan does not create.
+// Start is how the branch Ensure would create starts: "from <current
+// branch>", "from detached HEAD <short sha>", or "as an empty orphan branch
+// with no shared history (this repository has no commits yet)" on an unborn
+// HEAD, where git infers --orphan rather than a base. Empty when the plan
+// does not create. Ensure's change check reports it when the repository
+// moved between the classification and the creation.
 func (p *Plan) Start() string { return p.start }
 
 // Ensure returns the worktree path for the planned name, creating it if
 // needed. A reused worktree is returned as is (idempotent).
 //
 // The classification is not repeated, but a creation re-checks the two things
-// that could have moved while the user was being asked: the base (a changed
-// Start is an error naming both phrases, never a branch made from a base the
-// user was not shown) and the name itself (git refuses `worktree add -b` for
-// a branch another wt made meanwhile, so an approved creation is never
+// that could have moved since the plan was read: the base (a changed Start is
+// an error naming both phrases, never a branch made from a base other than
+// the one the plan read) and the name itself (git refuses `worktree add -b`
+// for a branch another wt made meanwhile, so a planned creation is never
 // silently turned into a reuse of someone else's branch).
 func (p *Plan) Ensure() (string, error) {
 	switch p.cls.kind {
@@ -317,8 +319,9 @@ func startPhrase(dir string) (string, error) {
 
 // EnsureForName returns the worktree path for branch name, creating it if needed.
 // dir is the repo root. If the branch is already checked out somewhere, that
-// path is returned (idempotent). Callers that ask before creating use Resolve
-// and Plan.Ensure so the question and the creation share one classification.
+// path is returned (idempotent). Callers that announce a creation use Resolve
+// and Plan.Ensure so the announcement and the creation share one
+// classification.
 func EnsureForName(dir, name string) (string, error) {
 	p, err := Resolve(dir, name)
 	if err != nil {
