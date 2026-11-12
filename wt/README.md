@@ -40,10 +40,10 @@ The `*-wt` shims just `exec wt --agent <name>`, so the installed `wt` must be on
 # Launch in any git repo — TUI picker for worktrees and branches
 claude-wt
 
-# Work on a specific branch directly (skip TUI); a new name asks before creating it
+# Work on a specific branch directly (skip TUI); a new name is created and said so
 claude-wt -W my-feature
 
-# Create it without the question (needed when there is no terminal)
+# --new is accepted and ignored (kept for old scripts)
 claude-wt -W my-feature --new
 
 # Run in the current directory (no worktree picker; works outside a git repo too)
@@ -73,7 +73,7 @@ All launchers support:
 
 | Flag | Description |
 |---|---|
-| `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing branch or worktree is reused silently; a name that exists nowhere is created and announced (`creating branch … and worktree …`) — the one default-yes question is asked first only when a launch warning also applies, on a terminal. The root's own branch names the root and launches there with the root warning |
+| `-W <name>`, `--worktree <name>` | Use the worktree for the given branch; skip the worktree picker. An existing branch or worktree is reused with no question of its own (one `launching in …` line when nothing warns). A name that creates anything — a new branch, a worktree for an existing branch with none, or a local branch tracking a remote-tracking ref — is announced by its creation line first (`creating branch … and worktree …`, and its tracking/worktree-only variants); the one default-yes question is asked before it only when a launch warning also applies, on a terminal. The root's own branch names the root and launches there with the root warning |
 | `--new` | Accepted and ignored: a name that does not exist yet is created and said so either way (kept for old scripts). A no-op for an existing name; a usage error without `-W` or with `--cwd`/`--root` |
 | `--root` | Launch in the repository's primary checkout, from anywhere (also from a linked worktree or subdirectory); skips the picker and accepts the root warning, though a root another session holds still asks. Exclusive with `--cwd` and `-W`. |
 | `--cwd` | Launch in the current directory, inside a git repository or not; skips the worktree picker. Standing in the repository root it warns and proceeds (a terminal with any warning is asked the one question first). The agent starts there, so its own `--continue` (after `--`) finds that directory's sessions. |
@@ -169,7 +169,7 @@ The base URL is the resolved route's origin plus `/v1`. On a direct route that o
 
 ## Two sessions in one checkout
 
-wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, the launch warnings name it (agent, pid, how long, branch) and, on a terminal, ask one default-yes question before proceeding — the picker's shared-root screen still offers its `c` continue / `w` new worktree / `q` quit menu. Launching in a linked worktree (`-W <name>` or a worktree row) never asks; `-W` naming the root's branch launches in the root with the root warning. The worktree picker has no root row; `--root` and `--cwd` are the ways in. A launch in a subdirectory of the root is not checked. With no terminal the warnings print and the launch proceeds; a no at the question ends the launch quietly. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
+wt notes each launch in a repository's root checkout (not a linked worktree). If another wt session is already running in that root, the launch warnings name it (agent, pid, how long, branch) and, on a terminal, ask one default-yes question before proceeding — the picker's shared-root screen still offers its `c` continue / `w` new worktree / `q` quit menu. Launching in a linked worktree (`-W <name>` or a worktree row) gets no root or held warning (other warnings can still ask once); `-W` naming the root's branch launches in the root with the root warning. The picker's root row, `--root` and `--cwd` name the root directly. A launch in a subdirectory of the root is not checked. With no terminal the warnings print and the launch proceeds; a no at the question ends the launch quietly. Claims are small files under `<git-common-dir>/wt-sessions/`, removed when the session ends; if they cannot be read or written, wt prints a note and launches anyway.
 
 ## Main guard
 

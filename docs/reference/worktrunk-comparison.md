@@ -83,7 +83,7 @@
 | Commit guard | none (local CI via `[[pre-merge]]` hooks) | `block-main-commit` pre-commit hook in `<git-common-dir>/hooks/` (covers all worktrees; preserves the user's hook; auto-installed) |
 | Dirty detection | remove/prune only | **none anywhere** |
 | Self-concurrency | trash-drain lock (one deleter per repo), CAS branch deletion (`git update-ref -d` expected-tip → `retained_raced`), TOCTOU revalidation after hooks, semaphore (32 git commands), atomic no-overwrite renames; **concurrent hooks documented as racy** | n/a (few mutating operations) |
-| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, shared-root menu `c`/`w`/`q`); contract read by `repo-cleanup` ([session-claims.md](../contracts/session-claims.md)) |
+| Multi-session coordination | none (agents isolated in separate worktrees by design) | session claims (`<git-common-dir>/wt-sessions/<pid>`, pid + start-time liveness, flock on scan+write, ancestor rule, fail-open notes, a held-session warning with one default-yes question, and the picker's shared-root menu `c`/`w`/`q`); contract read by `repo-cleanup` ([session-claims.md](../contracts/session-claims.md)) |
 
 ### Automation & extension
 
@@ -217,6 +217,6 @@ Method: seven-agent research fan-out (worktrunk docs, worktrunk source audit, wt
 
 - worktrunk: [repository](https://github.com/max-sixty/worktrunk), [README](https://github.com/max-sixty/worktrunk/blob/main/README.md), [docs site](https://worktrunk.dev), [CHANGELOG](https://github.com/max-sixty/worktrunk/blob/main/CHANGELOG.md), [releases](https://github.com/max-sixty/worktrunk/releases), [issue #4683](https://github.com/max-sixty/worktrunk/issues/4683), [issue #4624](https://github.com/max-sixty/worktrunk/issues/4624), [list JSON Schema](https://worktrunk.dev/schema/list-v2.json) (all verified live 2026-11-04)
 - worktrunk source audit: `src/cli/mod.rs`, `src/cli/step.rs`, `src/cli/hook.rs`, `src/config/expansion.rs`, `src/git/remove.rs`, `src/git/ref_deletion.rs`, `src/git/repository/integration.rs`, `src/commands/step/prune.rs`, `src/commands/worktree/switch.rs`, `src/output/handlers.rs` (clone at `3bf9166`)
-- wt: [wt/CLAUDE.md](../../wt/CLAUDE.md), [launch-flow.md](../../wt/docs/internals/launch-flow.md), [tui.md](../../wt/docs/internals/tui.md), [session-claims.md](../contracts/session-claims.md), `wt/cmd/wt/{main,commands,sharedroot}.go`, `wt/internal/worktree/{create,enumerate,remotes,prs}.go`, `wt/internal/{sessionclaim,rootclaim,guard}/`, `wt/internal/agents/agents.go`
+- wt: [wt/CLAUDE.md](../../wt/CLAUDE.md), [launch-flow.md](../../wt/docs/internals/launch-flow.md), [tui.md](../../wt/docs/internals/tui.md), [session-claims.md](../contracts/session-claims.md), `wt/cmd/wt/{main,commands,launchwarn}.go`, `wt/internal/worktree/{create,enumerate,remotes,prs}.go`, `wt/internal/{sessionclaim,rootclaim,guard}/`, `wt/internal/agents/agents.go`
 - ecosystem: `repo-cleanup` skill (`~/.claude/skills/repo-cleanup/SKILL.md`)
 - repo health (stars, contributors, issues): `gh api` / `gh issue list`, 2026-11-04

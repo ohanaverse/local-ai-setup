@@ -782,29 +782,45 @@ func smokeRootCmd(t *testing.T, cfg *config.Config, stdin io.Reader, args ...str
 
 // TestSmokeCmdCwdAtRootWarnsAndProceeds checks wt smoke --cwd standing in a
 // repository root warns and proceeds, terminal or not: the root warning is
-// printed, no terminal gets no question (a question would read a pipe), a
-// terminal is asked the one default-yes question, and either way the run goes
-// on to resolve the model. Why: the root gate and its smoke's-remedies refusal
-// are gone — smoke runs where it was told to run, and the warning is the only
-// thing saying the root is shared.
+// printed, no terminal gets no question (a question would read a pipe), and a
+// terminal is asked the one default-yes question — enter goes on to the model
+// resolution, a "no" ends the run quietly (nil error, status 0) without
+// reaching model resolution and without claiming or creating anything. Why:
+// the root gate and its smoke's-remedies refusal are gone — smoke runs where
+// it was told to run, and the warning is the only thing saying the root is
+// shared; the decline must stay a quiet choice, not a failure and not a
+// half-started run.
 func TestSmokeCmdCwdAtRootWarnsAndProceeds(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		tty  bool
-		in   io.Reader
+		name    string
+		tty     bool
+		in      io.Reader
+		wantErr string // non-empty: the run proceeds and fails there; empty: it ends at the question
 	}{
-		{name: "no terminal", tty: false, in: failReader{t}},
-		{name: "terminal, enter", tty: true, in: strings.NewReader("\n")},
+		{name: "no terminal", tty: false, in: failReader{t}, wantErr: "unknown model"},
+		{name: "terminal, enter", tty: true, in: strings.NewReader("\n"), wantErr: "unknown model"},
+		{name: "terminal, no", tty: true, in: strings.NewReader("n\n"), wantErr: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := smokeFixtureConfig(t)
 			stubStdinTTY(t, tc.tty)
-			t.Chdir(sharedRootRepo(t))
+			root := sharedRootRepo(t)
+			t.Chdir(root)
 			notes := captureNotes(t)
 
 			cmd, _, _ := smokeRootCmd(t, cfg, tc.in, "--cwd", "ollama/does-not-exist")
 			err := cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), "unknown model") {
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("err = %v; want a declined run to end quietly, reaching no model resolution", err)
+				}
+				if fileExists(ownClaim(root)) {
+					t.Error("a root claim was written although the question was declined")
+				}
+				if strings.Contains(notes.String(), "creating") {
+					t.Errorf("notes = %q; a declined run must create nothing", notes.String())
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err = %v; want the run to proceed to the model resolution", err)
 			}
 			s := notes.String()

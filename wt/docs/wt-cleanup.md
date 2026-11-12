@@ -546,8 +546,8 @@ source, so `wt cleanup` does not list the new worktree as preserved by it.
 `wt rescue` still truncates its messages at 200 characters; `wt restore-root`
 prints reasons, warnings and steps in full.
 
-When the root is on a non-default branch, the shared-root menu, the root
-gate and the picker's shared-root screen print one line pointing here (hidden when `origin/HEAD` is not set).
+When the root is on a non-default branch, the launch warnings' hint, the
+shared-root menu and the picker's shared-root screen print one line pointing here (hidden when `origin/HEAD` is not set).
 
 Guide: [08 §9](../../docs/guides/08-maintenance-and-troubleshooting.md#9-cleaning-up-worktrees-and-branches).
 Design: [the spec](../../docs/superpowers/specs/2026-11-08-wt-restore-root-design.md).

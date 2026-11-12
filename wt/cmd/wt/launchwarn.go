@@ -41,6 +41,13 @@ func confirmLaunch(t launchwarn.Target, readErr error, in io.Reader, out io.Writ
 		fmt.Fprintf(out, "wt: note: %v\n", readErr)
 	}
 	warnings, info := launchwarn.Collect(t)
+	if t.Dir == "" {
+		// No directory, no line. A launch outside a checkout root (a plain
+		// directory, a bare repository) printed nothing before the launch
+		// warnings existed, and "launching in " with nothing after it is not
+		// a line. Check prints no empty info.
+		info = ""
+	}
 	proceed := launchwarn.Check(in, out, isTTY, warnings, info, t.Creation)
 	if t.Hint != "" {
 		fmt.Fprintf(out, "wt: %s\n", t.Hint)
