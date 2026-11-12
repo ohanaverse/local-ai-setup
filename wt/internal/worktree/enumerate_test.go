@@ -977,12 +977,18 @@ func TestPrimaryOfBareAndOutside(t *testing.T) {
 func TestToplevelOfRootLinkedSubdirAndSymlink(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
-	wantRoot, _ := filepath.EvalSymlinks(dir)
+	wantRoot, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	linked := filepath.Join(dir, ".worktrees", "feat")
 	if out, err := runGitCmd(dir, "worktree", "add", "-b", "feat", linked); err != nil {
 		t.Fatalf("worktree add: %v\n%s", err, out)
 	}
-	wantLinked, _ := filepath.EvalSymlinks(linked)
+	wantLinked, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rootSub := filepath.Join(dir, "sub")
 	linkedSub := filepath.Join(linked, "sub")
 	for _, sub := range []string{rootSub, linkedSub} {
