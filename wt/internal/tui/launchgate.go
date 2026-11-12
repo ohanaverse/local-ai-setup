@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/charmbracelet/x/term"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/exitprompt"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/launchwarn"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -31,7 +33,18 @@ func (c *launchCreation) target() (launchwarn.Target, error) {
 }
 
 // ensure creates (or reuses) the worktree the pick owes and returns its path.
-func (c *launchCreation) ensure() (string, error) { return c.plan.Ensure() }
+// A branch it creates is recorded for the exit prompt (exitprompt.RecordNote),
+// exactly as cmd/wt's -W path records one once its plan creates the branch; a
+// branch or worktree that already existed is history this launch did not make
+// and records nothing.
+func (c *launchCreation) ensure() (string, error) {
+	creates := c.plan.Creates()
+	path, err := c.plan.Ensure()
+	if err == nil && creates {
+		exitprompt.RecordNote(os.Stderr, path, c.name)
+	}
+	return path, err
+}
 
 // rootClaimRelease removes this session's claim on the repository root. It is
 // set by claimRoot and called through releaseRootClaim, mirroring cmd/wt.
@@ -53,11 +66,12 @@ func releaseRootClaim() {
 // like any other. A read failure is the caller's to note (gateFor); the
 // partial Target still carries what was learned.
 //
-// The picker's root row names the repository root explicitly, so choosing it
-// is the consent for the root warning — what --root is on the flag paths (the
-// warning's own text says so). A root nobody else holds therefore proceeds
-// with the one informational line; one another session holds asks about the
-// holder.
+// The picker's root row names the repository root explicitly and carries the
+// root warning into the one confirmation like every other warning: choosing
+// it is not consent. RootChosen is consent only where the person gave it —
+// the --root flag on the flag paths (RunE), and ForDir's ancestor-held case.
+// A root nobody else holds therefore still asks its one question naming the
+// root; one another session holds names the holder in that same question.
 func (m model) launchTarget() (launchwarn.Target, error) {
 	if m.creation != nil {
 		return m.creation.target()
@@ -66,66 +80,75 @@ func (m model) launchTarget() (launchwarn.Target, error) {
 	if dir == "" {
 		dir = m.prePath
 	}
-	t, err := launchwarn.ForDir(dir)
-	t.RootChosen = t.IsRoot
-	return t, err
+	return launchwarn.ForDir(dir)
 }
 
 // gateFor binds this model's launchGate to the launch it is about to make, as
 // the per-call value the run commands ask at the commit point. It reads the
-// Target at the ask (launchTarget), never earlier.
-func (m model) gateFor() func() bool {
-	return func() bool {
+// Target at the ask (launchTarget), never earlier, and probes stdin's
+// TTY-ness the way cmd/wt's confirmLaunch does (its stdinTTY parity): without
+// a terminal the warnings print and the launch proceeds, stdin never read.
+func (m model) gateFor() func() (bool, error) {
+	return func() (bool, error) {
 		t, readErr := m.launchTarget()
 		if readErr != nil {
 			fmt.Fprintf(os.Stderr, "wt: note: %v\n", readErr)
 		}
-		return m.launchGate(&t)
+		return m.launchGate(&t, stdinTTY())
 	}
 }
+
+// stdinTTY is the interactive-invocation probe cmd/wt's confirmLaunch uses:
+// stdin is a terminal. It is called at the ask, so a redirected stdin (a
+// script, a test) is honestly no terminal and can never be read.
+func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
 
 // launchGate is the one question before a launch commits, asked at the
 // commit point with the terminal the user's again (the run commands call it
 // where holdRoot's prompt used to be). It mirrors cmd/wt's confirmLaunch and
 // holdRoot: the collected warnings — or, with none, the one informational
-// line of a root launch, or the creation line of a pick that owes a
-// worktree — and one default-yes question when a warning remains. A "no" is
-// a choice, not a failure: ok is false, nothing is created, claimed,
-// recorded or run, and the run ends as quitting the picker does. Then the
-// owed worktree is made and the root claimed for exactly the agent's run;
-// every claims failure is one "wt: note:", never a refusal.
+// line "launching in <dir>" every pick with a directory gets (the creation
+// line of a pick that owes a worktree is the one line in its place) — and one
+// default-yes question when a warning remains and there is a terminal. With
+// no terminal the warnings print and the launch proceeds, stdin never read.
+//
+// A "no" is a choice, not a failure: ok is false and err is nil, nothing is
+// created, claimed, recorded or run, and the run ends as quitting the picker
+// does. A creation that fails once the person continued is a failure, not a
+// choice: err is that error and nothing is printed here, so it travels out as
+// the run's error and main prints it once and exits non-zero, exactly as
+// cmd/wt's -W path does through refuse. Either way the owed worktree is made
+// only here, and the root is claimed for exactly the agent's run; every
+// claims failure is one "wt: note:", never a refusal.
 //
 // A preset path (m.prePath: -W, --cwd, --root through the flag paths) was
 // judged and answered in RunE's confirmLaunch already. This is its second
 // arrival at the commit point, so the gate speaks and asks nothing there —
 // a root launch is asked at most once — and only claims.
-func (m model) launchGate(t *launchwarn.Target) (ok bool) {
+func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error) {
 	if m.prePath != "" {
 		m.claimRoot(t.Dir)
-		return true
+		return true, nil
 	}
 	warnings, info := launchwarn.Collect(*t)
-	if !t.IsRoot {
-		// The one informational line is the shared place's — the root, the
-		// screen this gate replaced — and a creation's (Check prints the
-		// creation line in its place). An ordinary linked-worktree launch
-		// says nothing.
+	if t.Dir == "" {
+		// Nothing to name (a launch outside any repository): no
+		// informational line either, as confirmLaunch decides it.
 		info = ""
 	}
-	if !launchwarn.Check(os.Stdin, os.Stderr, true, warnings, info, t.Creation) {
-		return false
+	if !launchwarn.Check(os.Stdin, os.Stderr, isTTY, warnings, info, t.Creation) {
+		return false, nil
 	}
 	if t.Hint != "" {
 		fmt.Fprintf(os.Stderr, "wt: %s\n", t.Hint)
 	}
 	if m.creation != nil {
-		if _, err := m.creation.ensure(); err != nil {
-			fmt.Fprintf(os.Stderr, "wt: %v\n", err)
-			return false
+		if _, cerr := m.creation.ensure(); cerr != nil {
+			return false, cerr
 		}
 	}
 	m.claimRoot(t.Dir)
-	return true
+	return true, nil
 }
 
 // claimRoot writes this session's claim when dir is a repository's primary

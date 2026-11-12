@@ -161,8 +161,8 @@ func entryOfRow(r cleanup.Row) worktree.Entry {
 }
 
 // gotRows applies a picker load: the list in launch mode, the cursor on the
-// row a create just made (pendingHighlight) or the innermost worktree holding
-// the caller's directory, and the PR fill when the load skipped one.
+// innermost worktree holding the caller's directory, and the PR fill when the
+// load skipped one.
 func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	if msg.err != nil {
 		if m.ready {
@@ -185,11 +185,7 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	m.rowsGen++
 	rows := newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now()})
 	rows.width, rows.height = m.rows.width, m.rows.height
-	switch here := deepestCurrent(msg.report); {
-	case m.pendingHighlight != "":
-		rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Branch == m.pendingHighlight })
-		m.pendingHighlight = ""
-	case here != "":
+	if here := deepestCurrent(msg.report); here != "" {
 		rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })
 	}
 	m.rows, m.ready = rows, true

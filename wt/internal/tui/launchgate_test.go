@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,36 +15,44 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
-// TestLaunchGateRootNoOthersPrintsInfoAndClaims checks the gate's common root
-// case costs no keystroke: a root nobody else holds prints the one
-// informational line (the shared-root screen's replacement) and claims the
-// root for the agent's run, asking nothing. It matters because every plain
-// root launch goes through it — a question here would tax the routine path.
-func TestLaunchGateRootNoOthersPrintsInfoAndClaims(t *testing.T) {
+// TestLaunchGateRootNoOthersWarnsAndClaims checks the root's routine case is
+// the one warned default-yes confirmation R1 rules: picking the root row is
+// not consent (only the --root flag is), so a root nobody else holds still
+// carries the root warning into the ONE question — named there, so the person
+// reads why — and a yes claims the root for the agent's run. It matters
+// because the root row's warning must never be silently absorbed: sharing the
+// repository root is exactly what other sessions need to know about.
+func TestLaunchGateRootNoOthersWarnsAndClaims(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
 	root := rootRepo(t)
-	stderr := answerOnStdio(t, "")
+	stderr := answerOnStdio(t, "\n")
 	m := model{agent: "claude", selectedPath: root}
 	tg, err := m.launchTarget()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.launchGate(&tg) {
-		t.Fatal("launchGate said no to a root nobody else holds")
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); a default-yes Enter continues", ok, gerr)
 	}
-	if got := stderr(); got != "wt: launching in "+root+"\n" {
-		t.Errorf("gate printed %q; want the one informational line only (no question)", got)
+	got := stderr()
+	if strings.Count(got, "wt: continue? [Y/n]: ") != 1 {
+		t.Errorf("gate asked %d times, want the one confirmation: %q", strings.Count(got, "wt: continue? [Y/n]: "), got)
+	}
+	if !strings.Contains(got, tg.Dir+" is the repository root") {
+		t.Errorf("gate did not name the root warning in the confirm: %q", got)
 	}
 	if !claimExists(root) {
 		t.Error("the root was not claimed for the agent's run")
 	}
 }
 
-// TestLaunchGateLinkedWorktreeIsSilentAndUnclaimed checks a linked-worktree
-// pick is deliberate and costs nothing: the gate prints nothing, asks nothing
-// and claims nothing — even while another session holds the root — because a
-// linked worktree is the ordinary launch and claims are root-only.
-func TestLaunchGateLinkedWorktreeIsSilentAndUnclaimed(t *testing.T) {
+// TestLaunchGateLinkedWorktreePrintsInfoAndClaimsNothing checks R1b's rule
+// for the ordinary pick: every pick with a directory states where it launches
+// (the one informational line) and, when nothing warns, asks nothing and
+// claims nothing — even while another session holds the root. The line is
+// the pick's acknowledgement, cmd/wt confirmLaunch's parity; claims stay
+// root-only.
+func TestLaunchGateLinkedWorktreePrintsInfoAndClaimsNothing(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
 	root := rootRepo(t)
 	linked := linkedWorktree(t, root)
@@ -54,11 +63,11 @@ func TestLaunchGateLinkedWorktreeIsSilentAndUnclaimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.launchGate(&tg) {
-		t.Fatal("launchGate said no to a linked worktree")
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); a linked worktree proceeds", ok, gerr)
 	}
-	if got := stderr(); got != "" {
-		t.Errorf("gate printed %q; want silence", got)
+	if got, want := stderr(), "wt: launching in "+tg.Dir+"\n"; got != want {
+		t.Errorf("gate printed %q; want the one informational line %q and no question", got, want)
 	}
 	if claimExists(root) {
 		t.Error("a linked-worktree launch claimed the root")
@@ -79,8 +88,8 @@ func TestLaunchGateRootHeldWarnsAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.launchGate(&tg) {
-		t.Fatal("launchGate said no after a yes")
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); want go after a yes", ok, gerr)
 	}
 	got := stderr()
 	if !strings.Contains(got, "in use by another session") || !strings.Contains(got, "codex") {
@@ -113,8 +122,8 @@ func TestLaunchGateNoQuitsQuietly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.launchGate(&tg) {
-		t.Fatal("launchGate said go after a no")
+	if ok, gerr := m.launchGate(&tg, true); ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); want a quiet no", ok, gerr)
 	}
 	got := stderr()
 	if !strings.HasSuffix(got, "wt: continue? [Y/n]: ") {
@@ -142,14 +151,15 @@ func TestLaunchGateClaimFailureIsANote(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file modes")
 	}
-	stderr := answerOnStdio(t, "")
+	// The root warning asks now (R1); the newline answers the default yes.
+	stderr := answerOnStdio(t, "\n")
 	m := model{agent: "claude", selectedPath: root}
 	tg, err := m.launchTarget()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.launchGate(&tg) {
-		t.Fatal("a claim failure stopped the launch")
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); a claim failure must not stop the launch", ok, gerr)
 	}
 	got := stderr()
 	if strings.Count(got, "wt: note:") != 1 || !strings.Contains(got, "could not check other sessions") {
@@ -213,8 +223,8 @@ func TestLaunchGateStatesTheCreationInTheInfoLine(t *testing.T) {
 			// creation, and nothing was created.
 			tg.Holders = []sessionclaim.Claim{{PID: 4242, Started: time.Now().Unix(), Path: root, Branch: "main", Agent: "codex"}}
 			declined := answerOnStdio(t, "n")
-			if m.launchGate(&tg) {
-				t.Fatal("launchGate said go after a no")
+			if ok, gerr := m.launchGate(&tg, true); ok || gerr != nil {
+				t.Fatalf("launchGate = (%v, %v); want a quiet no", ok, gerr)
 			}
 			if got := declined(); !strings.Contains(got, "wt: "+want+"\n") {
 				t.Errorf("gate printed %q; want the creation line %q", got, want)
@@ -227,8 +237,8 @@ func TestLaunchGateStatesTheCreationInTheInfoLine(t *testing.T) {
 			// pick's branch (never a session-<pid> name), tracking what the
 			// row said.
 			accepted := answerOnStdio(t, "y")
-			if !m.launchGate(&tg) {
-				t.Fatal("launchGate said no after a yes")
+			if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+				t.Fatalf("launchGate = (%v, %v); want go after a yes", ok, gerr)
 			}
 			if got := accepted(); !strings.Contains(got, "wt: "+want+"\n") {
 				t.Errorf("gate printed %q; want the creation line %q", got, want)
@@ -253,6 +263,9 @@ func TestRootLaunchClaimsUntilTheAgentExits(t *testing.T) {
 	keepPendingPostExit(t)
 	t.Cleanup(releaseRootClaim)
 	root := rootRepo(t)
+	// Redirected stdin is no TTY: the gate warns and proceeds without
+	// reading it, which is what a non-interactive launch must do.
+	answerOnStdio(t, "")
 	agent := exec.Command("sh", "-c", "grep -q '^agent=claude$' '"+myClaim(root)+"'")
 	agent.Dir = root
 	m := model{agent: "claude", selectedPath: root}
@@ -272,6 +285,7 @@ func TestSlotRootLaunchClaimsUntilTheAgentExits(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
 	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
 	root := rootRepo(t)
+	answerOnStdio(t, "")
 	agent := exec.Command("sh", "-c", "test -f '"+myClaim(root)+"'")
 	agent.Dir = root
 	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
@@ -293,6 +307,7 @@ func TestLinkedLaunchWritesNoClaim(t *testing.T) {
 	t.Cleanup(releaseRootClaim)
 	root := rootRepo(t)
 	linked := linkedWorktree(t, root)
+	answerOnStdio(t, "")
 	agent := exec.Command("sh", "-c", "test ! -e '"+myClaim(root)+"'")
 	agent.Dir = linked
 	m := model{agent: "claude", selectedPath: linked}
@@ -318,8 +333,8 @@ func TestNamedRootBranchIsCheckedAndClaimed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.launchGate(&tg) {
-		t.Fatal("launchGate said no to a preset path RunE confirmed")
+	if ok, gerr := m.launchGate(&tg, true); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); a preset path RunE confirmed must proceed", ok, gerr)
 	}
 	if got := stderr(); strings.Contains(got, "continue?") || strings.Contains(got, "in use by another session") {
 		t.Errorf("gate asked again for a preset path: %q", got)
@@ -331,5 +346,108 @@ func TestNamedRootBranchIsCheckedAndClaimed(t *testing.T) {
 	}
 	if claimExists(root) {
 		t.Error("the claim outlived the agent")
+	}
+}
+
+// TestLaunchGateNonTTYWarnsAndProceedsWithoutReading pins the no-TTY
+// contract at the gate: every warning prints and the launch proceeds, and
+// stdin is never read — a redirected "n" sitting in stdin must not decline
+// anything. Without this a piped or scripted launch either blocks on a
+// question nobody can see or silently obeys bytes meant for the agent.
+func TestLaunchGateNonTTYWarnsAndProceedsWithoutReading(t *testing.T) {
+	t.Cleanup(releaseRootClaim)
+	root := rootRepo(t)
+	liveOther(t, root, "codex")
+	stderr := answerOnStdio(t, "n\n")
+	m := model{agent: "claude", selectedPath: root}
+	tg, err := m.launchTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, gerr := m.launchGate(&tg, false); !ok || gerr != nil {
+		t.Fatalf("launchGate = (%v, %v); no TTY means print the warnings and proceed", ok, gerr)
+	}
+	got := stderr()
+	if strings.Contains(got, "continue?") {
+		t.Errorf("gate asked a question with no TTY: %q", got)
+	}
+	if !strings.Contains(got, "is the repository root") || !strings.Contains(got, "in use by another session") {
+		t.Errorf("gate printed %q; want every warning named", got)
+	}
+	if !claimExists(root) {
+		t.Error("the launch did not proceed (no claim written)")
+	}
+}
+
+// TestEnsureFailureAfterAContinueIsAnErrorNotAQuietDecline checks a creation
+// that fails AFTER the person continued is a failure, not a choice: the error
+// travels out of the gate as the run's error (so wt prints it once at main and
+// exits non-zero, exactly as cmd/wt's -W path does through refuse) instead of
+// sharing the decline's quiet exit 0. A quiet exit here hid every git failure
+// at the commit point.
+func TestEnsureFailureAfterAContinueIsAnErrorNotAQuietDecline(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	t.Cleanup(releaseRootClaim)
+	dir := t.TempDir()
+	gitInit(t, dir)
+	plan, err := worktree.Resolve(dir, "fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A plain file where the worktree must go makes git's `worktree add`
+	// fail at the commit point, after the confirm passed.
+	if err := os.MkdirAll(filepath.Dir(plan.Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan.Path(), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stderr := answerOnStdio(t, "")
+	m := model{agent: "claude", creation: &launchCreation{repoRoot: dir, name: "fresh", plan: plan}}
+	msg := runAndWaitCmd(exec.Command("true"), "claude", config.Model{ID: "prov/m"}, m.gateFor())()
+	done, ok := msg.(launchDoneMsg)
+	if !ok || done.err == nil {
+		t.Fatalf("msg = %#v; want the creation error carried out, not a quiet decline", msg)
+	}
+	if got := stderr(); strings.Contains(got, done.err.Error()) {
+		t.Errorf("gate printed the error (%q); main prints it once, never here", got)
+	}
+	mm, _ := updateMsg(model{cfg: testConfig()}, msg)
+	if err := runResult(mm, nil); err == nil {
+		t.Error("runResult = nil; a creation failure after a continue must end non-zero")
+	}
+}
+
+// TestDeclinedGateKeepsTheStopTail checks a gate decline still runs the
+// standard post-exit tail (ruling: the stop picker, nothing auto-stops): the
+// person declined the launch, but a model the start flow already loaded and
+// the routes it wrote stay, and the tail is what offers to stop them. Before
+// this a decline left a loaded model with no stop picker at all.
+func TestDeclinedGateKeepsTheStopTail(t *testing.T) {
+	keepPendingPostExit(t)
+	profileApplier = nil
+	msg := runAndWaitCmd(exec.Command("true"), "claude", config.Model{ID: "prov/m"}, func() (bool, error) { return false, nil })()
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+		t.Fatalf("msg = %#v; a decline is a choice: quiet, exit 0", msg)
+	}
+	if pendingSurveyState.agent != "claude" || pendingSurveyState.m.ID != "prov/m" {
+		t.Errorf("pendingSurveyState = %+v; the decline left no stop-tail state", pendingSurveyState)
+	}
+}
+
+// TestDeclinedSlotGateKeepsTheStopTail is the same for a slot-profile
+// decline, whose run command has its own decline path and must keep the
+// profile tail (stop picker, no survey) just as a real exit does.
+func TestDeclinedSlotGateKeepsTheStopTail(t *testing.T) {
+	keepPendingPostExit(t)
+	stubSlotApplier(t, func(*exec.Cmd, string, catalog.Row) (func() error, error) { return nil, nil })
+	row := catalog.Row{Model: config.Model{ID: "profile/cloud"}, Profile: &catalog.ProfileRow{}}
+	msg := runSlotAndWaitCmd(exec.Command("true"), "claude", row, func() (bool, error) { return false, nil })()
+	if done, ok := msg.(launchDoneMsg); !ok || done.err != nil {
+		t.Fatalf("msg = %#v; a decline is a choice: quiet, exit 0", msg)
+	}
+	if !pendingSurveyState.profile || pendingSurveyState.agent != "claude" {
+		t.Errorf("pendingSurveyState = %+v; the slot decline left no stop-tail state", pendingSurveyState)
 	}
 }

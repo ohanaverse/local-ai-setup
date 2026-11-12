@@ -382,7 +382,7 @@ func (m model) launchSlot() (model, tea.Cmd) {
 	// called once more before the terminal is released, and every way the
 	// run command can fail returns to the model picker.
 	m.phase = phaseModel
-	return m, runSlotAndWaitCmd(cmd, m.agent, row, m.gateFor())
+	return m.commitLaunch(runSlotAndWaitCmd(cmd, m.agent, row, m.gateFor()))
 }
 
 // runSlotAndWaitCmd is runAndWaitCmd for a slot-profile launch. It releases
@@ -393,7 +393,7 @@ func (m model) launchSlot() (model, tea.Cmd) {
 // runs nothing and records nothing, and comes back as a slotAbortMsg. gate is
 // the launch's one question at the commit point (runRecordAndWaitCmd's); a
 // decline runs nothing and records nothing.
-func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func() bool) tea.Cmd {
+func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func() (bool, error)) tea.Cmd {
 	return func() tea.Msg {
 		if currentProgram != nil {
 			currentProgram.ReleaseTerminal()
@@ -419,10 +419,18 @@ func runSlotAndWaitCmd(cmd *exec.Cmd, agent string, row catalog.Row, gate func()
 			cleanup = func() error { return nil }
 		}
 		// The launch gate asks before anything is recorded, so declining
-		// there leaves no trace of the launch.
-		if gate != nil && !gate() {
-			_ = cleanup()
-			return launchDoneMsg{}
+		// there leaves no trace of the launch — while a creation that failed
+		// after the person continued travels out as the run's error (main's
+		// one line, non-zero), never a quiet decline. Either way the profile
+		// tail's state stays: the standard stop picker offers whatever the
+		// start flow left loaded (nothing auto-stops), as after a real exit.
+		if gate != nil {
+			if ok, gerr := gate(); !ok {
+				_ = cleanup()
+				shown := config.Model{ID: row.Model.ID}
+				pendingSurveyState = pendingSurvey{agent: agent, m: shown, profile: true}
+				return launchDoneMsg{err: gerr}
+			}
 		}
 		// The commit point: the applier succeeded and the agent runs next.
 		// Both writes are best-effort, as launchAndRecord's are.

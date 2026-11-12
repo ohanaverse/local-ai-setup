@@ -183,7 +183,7 @@ var buildPassthrough = agents.BuildPassthroughCmd
 // pendingSummary (consumed by Run() after p.Run() returns), and returns a
 // launchDoneMsg. It records nothing: a command or passthrough launch has no
 // model to record.
-func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() bool) tea.Cmd {
+func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() (bool, error)) tea.Cmd {
 	return runRecordAndWaitCmd(cmd, agent, m, nil, gate)
 }
 
@@ -195,7 +195,7 @@ func runAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, gate func() bool
 // m.gateFor) at the commit point; a decline calls record never, so it leaves
 // no trace. A nil gate is a direct test call: it asks nothing and claims
 // nothing.
-func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() bool) tea.Cmd {
+func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record func() string, gate func() (bool, error)) tea.Cmd {
 	if record == nil {
 		record = func() string { return "" }
 	}
@@ -245,12 +245,22 @@ func runRecordAndWaitCmd(cmd *exec.Cmd, agent string, m config.Model, record fun
 		if profileCleanup == nil {
 			profileCleanup = func() error { return nil }
 		}
-		if gate != nil && !gate() {
-			// The person declined at the launch gate: nothing runs and
-			// nothing is created, claimed, recorded or summarised, as when
-			// quitting the picker.
-			_ = profileCleanup()
-			return launchDoneMsg{}
+		if gate != nil {
+			if ok, gerr := gate(); !ok {
+				// A "no" at the launch gate is a choice, not a failure: the
+				// run does not start and nothing is created, claimed,
+				// recorded or summarised, as when quitting the picker. A
+				// creation that failed after the person continued (gerr
+				// non-nil) is a failure, not a choice: it travels out as the
+				// run's error, so Run returns it and main prints it once and
+				// exits non-zero — cmd/wt's -W path through refuse. Either
+				// way the start flow may already have loaded a model and
+				// written its routes; pendingSurveyState keeps the standard
+				// tail (the stop picker — nothing auto-stops) for them.
+				_ = profileCleanup()
+				pendingSurveyState = pendingSurvey{agent: agent, m: m}
+				return launchDoneMsg{err: gerr}
+			}
 		}
 		// The commit point: the agent runs next. The gate has made any
 		// worktree this pick owed and claimed the root for the run.

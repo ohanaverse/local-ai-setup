@@ -700,94 +700,10 @@ func TestEnterOnNewWorktreeEmptyNameKeepsPhase(t *testing.T) {
 	}
 }
 
-// TestEnterOnNewWorktreeDispatchesCmd asserts a non-empty name
-// triggers the ensureNewWorktreeCmd with the repo root and the
-// input's current value. The cmd is what kicks off the async git
-// work; this is the contract that wires the input to the worker.
-func TestEnterOnNewWorktreeDispatchesCmd(t *testing.T) {
-	m := model{
-		phase:    phaseNewWorktree,
-		width:    80,
-		height:   24,
-		repoRoot: "/tmp/repo",
-		newInput: newInputModel(80),
-	}
-	m.newInput.SetValue("my-feature")
-
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.phase != phaseNewWorktree {
-		t.Errorf("phase = %v, want phaseNewWorktree (cmd runs async; phase stays)", gotModel.phase)
-	}
-	if cmd == nil {
-		t.Fatal("cmd = nil, want ensureNewWorktreeCmd")
-	}
-	// Run the cmd and verify the message type.
-	msg := cmd()
-	if _, ok := msg.(newWorktreeCreatedMsg); !ok {
-		t.Errorf("cmd returned %T, want newWorktreeCreatedMsg", msg)
-	}
-}
-
-// TestNewWorktreeCreatedErrorStaysOnPrompt asserts a git failure
-// surfaces inline and keeps the user on the prompt. A silent
-// failure would leave the user with no feedback.
-func TestNewWorktreeCreatedErrorStaysOnPrompt(t *testing.T) {
-	m := model{phase: phaseNewWorktree, width: 80, height: 24}
-	got, _ := m.Update(newWorktreeCreatedMsg{err: errMock("git worktree add: boom")})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.phase != phaseNewWorktree {
-		t.Errorf("phase = %v, want phaseNewWorktree (stays on error)", gotModel.phase)
-	}
-	if gotModel.newError == "" {
-		t.Error("newError = empty, want error from msg")
-	}
-	if gotModel.pendingHighlight != "" {
-		t.Errorf("pendingHighlight = %q, want empty (no success)", gotModel.pendingHighlight)
-	}
-}
-
-// TestNewWorktreeCreatedSuccessTriggersReload asserts a successful
-// create sets pendingHighlight, transitions back to phaseList, and
-// dispatches loadPickerCmd. The reload + highlight flow is what
-// brings the user back to the picker on the new entry.
-func TestNewWorktreeCreatedSuccessTriggersReload(t *testing.T) {
-	m := model{phase: phaseNewWorktree, width: 80, height: 24}
-	got, cmd := m.Update(newWorktreeCreatedMsg{path: "/repo/.worktrees/x", name: "x"})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.phase != phaseList {
-		t.Errorf("phase = %v, want phaseList (return to picker)", gotModel.phase)
-	}
-	if gotModel.pendingHighlight != "x" {
-		t.Errorf("pendingHighlight = %q, want x", gotModel.pendingHighlight)
-	}
-	if cmd == nil {
-		t.Fatal("cmd = nil, want loadPickerCmd")
-	}
-}
-
-// TestRowsLoadedAppliesPendingHighlight asserts that after the reload that
-// follows a create, the cursor moves to the worktree of the branch just
-// created. This is the "you just created this, here it is" feedback.
-func TestRowsLoadedAppliesPendingHighlight(t *testing.T) {
-	m := model{width: 80, height: 24, pendingHighlight: "other"}
-	m, _ = updateMsg(m, rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"})
-	if row, ok := m.rows.selectedRow(); !ok || row.Name != "other" {
-		t.Errorf("cursor on %+v (ok %v), want the other worktree", row, ok)
-	}
-	if m.pendingHighlight != "" {
-		t.Errorf("pendingHighlight = %q, want cleared after applying", m.pendingHighlight)
-	}
-}
+// (The typed-name Enter's contract lives in new_worktree_test.go:
+// TestTypedNameDefersCreationToTheCommitPoint and its neighbours. The old
+// ensureNewWorktreeCmd/newWorktreeCreatedMsg machinery died with the
+// deferral: the commit point creates now.)
 
 // TestQTypesInNewWorktreePrompt asserts that pressing 'q' in the
 // new-worktree prompt types the character instead of quitting the TUI.
@@ -1030,70 +946,43 @@ func TestNNotHijackedWhileFiltering(t *testing.T) {
 	}
 }
 
-// TestEnterOnNewWorktreeSetsCreating asserts the first Enter in the
-// prompt marks the create as in-flight. The flag is what later Enters
-// check to avoid dispatching a second concurrent `git worktree add`.
-func TestEnterOnNewWorktreeSetsCreating(t *testing.T) {
+// TestRePickClearsAnAbandonedCreation checks every selection rebinds the
+// launch: a later pick of an existing worktree must clear the creation plan
+// an earlier pick left behind. Without this, esc back to the list and a
+// re-pick still drove the launch — and at the commit point created — the
+// abandoned pick's worktree.
+func TestRePickClearsAnAbandonedCreation(t *testing.T) {
+	stubShellLaunch(t)
 	m := model{
-		phase:    phaseNewWorktree,
-		width:    80,
-		height:   24,
-		repoRoot: "/tmp/repo",
-		newInput: newInputModel(80),
+		cfg:          &config.Config{},
+		phase:        phaseList,
+		width:        80,
+		height:       24,
+		initialAgent: "opencode",
+		creation:     &launchCreation{repoRoot: "/repo", name: "abandoned"},
 	}
-	m.newInput.SetValue("my-feature")
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
+	m, _ = updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeWorktree, Branch: "kept", Path: "/repo/.worktrees/kept"}})
+	if m.creation != nil {
+		t.Errorf("creation = %+v, want nil after picking an existing worktree", m.creation)
 	}
-	if !gotModel.creating {
-		t.Error("creating = false, want true after first Enter")
-	}
-	if cmd == nil {
-		t.Fatal("cmd = nil, want ensureNewWorktreeCmd")
+	if m.selectedPath != "/repo/.worktrees/kept" {
+		t.Errorf("selectedPath = %q, want the re-pick's path", m.selectedPath)
 	}
 }
 
-// TestEnterIgnoredWhileCreating asserts a second Enter while a create
-// is in flight is ignored (no command dispatched). Without the
-// in-flight guard, two concurrent git worktree add calls raced and one
-// failed with a spurious "already exists" error.
-func TestEnterIgnoredWhileCreating(t *testing.T) {
-	m := model{
-		phase:    phaseNewWorktree,
-		width:    80,
-		height:   24,
-		repoRoot: "/tmp/repo",
-		newInput: newInputModel(80),
-		creating: true,
+// TestSecondEnterAtTheCommitPointIsIgnored checks the commit point takes the
+// one launch a session makes: a second Enter pressed before the terminal is
+// released must not start a second run command — with it a second creation
+// binding, a second gate and a second agent. The old m.creating guard that
+// serialized selections went with the create flow it guarded.
+func TestSecondEnterAtTheCommitPointIsIgnored(t *testing.T) {
+	m, first, _ := pickRow(t, "/repo/.worktrees/feat")
+	if first == nil {
+		t.Fatal("the first Enter did not start a run command")
 	}
-	m.newInput.SetValue("my-feature")
-	got, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if cmd != nil {
-		t.Error("cmd = non-nil, want nil (second Enter must not dispatch)")
-	}
-	if !gotModel.creating {
-		t.Error("creating = false, want true (flag must persist while in flight)")
-	}
-}
-
-// TestNewWorktreeCreatedClearsCreating asserts the in-flight flag is
-// cleared when the async create reports back (success or error). A
-// stale true would lock the prompt forever.
-func TestNewWorktreeCreatedClearsCreating(t *testing.T) {
-	m := model{phase: phaseNewWorktree, creating: true}
-	got, _ := m.Update(newWorktreeCreatedMsg{path: "/repo/.worktrees/x", name: "x"})
-	gotModel, ok := got.(model)
-	if !ok {
-		t.Fatalf("Update returned %T, want model", got)
-	}
-	if gotModel.creating {
-		t.Error("creating = true, want false after result msg")
+	_, second := updateMsg(m, selectedEntryMsg{entry: worktree.Entry{Type: worktree.TypeCurrent, Branch: "main", Path: "/repo/.worktrees/feat"}})
+	if second != nil {
+		t.Error("a second Enter started a second run command; the commit point takes one launch")
 	}
 }
 
@@ -1109,27 +998,6 @@ func TestReloadErrorVisibleAboveList(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "boom") {
 		t.Errorf("View missing reload error, got:\n%s", view)
-	}
-}
-
-// TestViewCreatingIndicator asserts the prompt shows a "creating…"
-// status while a create is in flight and hides the enter hint. This is
-// the visible feedback that explains why a second Enter does nothing.
-func TestViewCreatingIndicator(t *testing.T) {
-	m := model{
-		phase:    phaseNewWorktree,
-		width:    80,
-		height:   24,
-		newInput: newInputModel(80),
-		creating: true,
-	}
-	m.newInput.SetValue("my-feature")
-	view := m.View()
-	if !strings.Contains(view, "creating my-feature") {
-		t.Errorf("View missing creating indicator, got:\n%s", view)
-	}
-	if strings.Contains(view, "[enter] create") {
-		t.Errorf("View shows enter hint while creating, got:\n%s", view)
 	}
 }
 

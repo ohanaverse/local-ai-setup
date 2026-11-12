@@ -128,17 +128,22 @@ type model struct {
 	slotRun int       // monotonically increasing run id; stale messages are dropped by id
 
 	// creation is the pick that owes its worktree at the commit point (a bare
-	// branch or a remote-only branch): resolved read-only here, made only once
-	// the launch gate says go (launchgate.go). nil for every other pick.
+	// branch, a remote-only branch, or a typed name that owes one): resolved
+	// read-only here, made only once the launch gate says go (launchgate.go).
+	// nil for every other pick, and cleared by every selection, so an
+	// abandoned pick's plan never rides along with a later one.
 	creation *launchCreation
 
+	// committed is the commit point's in-flight guard: the first selection
+	// that reaches a run command takes it (commitLaunch) and every further
+	// Enter is ignored while that launch runs — one launch per session.
+	committed bool
+
 	// new-worktree prompt
-	newInput         textinput.Model
-	newError         string
-	pendingHighlight string // branch name to focus after re-enumerating
-	repoRoot         string // cached from rowsLoadedMsg to avoid a second rev-parse
-	creating         bool   // true while a create is in flight (guards double-Enter)
-	listError        string // reload error shown above the list when ready
+	newInput  textinput.Model
+	newError  string
+	repoRoot  string // cached from rowsLoadedMsg to avoid a second rev-parse
+	listError string // reload error shown above the list when ready
 
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
@@ -276,14 +281,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	case rowChosenMsg:
 		// Enter on a picker row: the launch flow's own message, so an owed
 		// creation is bound to the launch (selectedEntryMsg).
-		if m.creating {
-			return m, nil
-		}
 		return m, emit(selectedEntryMsg{entry: entryOfRow(msg.Row)})
 	case newWorktreeChosenMsg:
-		if m.creating {
-			return m, nil
-		}
 		return m.openNewWorktreePrompt(), nil
 	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg:
 		// The picker's `x`: its removal flow runs inside the row list.
@@ -292,12 +291,16 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case selectedEntryMsg:
-		// Bare branches (TypeBranch, Path="") and remote-only branches have
-		// no worktree yet. The pick owes one: resolve the plan read-only here
+		// Every selection rebinds the launch: a creation an earlier pick owed
+		// is dropped first, so esc back to the list and a re-pick can never
+		// drive the abandoned pick's worktree at the commit point. Bare
+		// branches (TypeBranch, Path="") and remote-only branches have no
+		// worktree yet. The pick owes one: resolve the plan read-only here
 		// — so the launch gate can state the creation in launchwarn's frozen
 		// wording and a declined gate creates nothing — and let the commit
 		// point make it (launchCreation). The plan's path is where the agent
 		// launches, rather than wt's CWD (cmd.Dir="").
+		m.creation = nil
 		if msg.entry.Type == worktree.TypeBranch && msg.entry.Path == "" {
 			plan, err := worktree.Resolve(m.repoRoot, msg.entry.Branch)
 			if err != nil {
@@ -320,15 +323,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		m.agentErr = msg.err
 		return m, tea.Quit
-	case newWorktreeCreatedMsg:
-		m.creating = false
-		if msg.err != nil {
-			m.newError = msg.err.Error()
-			return m, nil
-		}
-		m.pendingHighlight = msg.name
-		m.phase = phaseList
-		return m, loadPickerCmd()
 	case tea.KeyMsg:
 		// An in-flight start owns the keyboard: esc/q/ctrl+c cancel and a
 		// further press quits; every other key is ignored (before the picker
@@ -348,15 +342,12 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		// The worktree picker is the row list: every key is its own (q and
 		// esc quit there, `/` filters, and while the filter is typed every
-		// printable key goes into it). ctrl+c always quits; while a
-		// bare-branch create is in flight, enter and n wait, so a second
-		// selection cannot race a second `git worktree add`.
+		// printable key goes into it). ctrl+c always quits. A double Enter
+		// cannot start two launches: the commit point takes one (the
+		// committed guard at each run command's birth, commitLaunch).
 		if m.phase == phaseList && m.ready {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
-			}
-			if m.creating && !m.rows.filtering && (msg.String() == "enter" || msg.String() == "n") {
-				return m, nil
 			}
 			return m.updateRows(msg)
 		}
@@ -564,18 +555,33 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					}
 				}
 			case phaseNewWorktree:
-				if m.creating {
-					// A create is already in flight; ignore the second Enter
-					// so two concurrent `git worktree add` calls can't race.
-					return m, nil
-				}
-				if errMsg := validateNewWorktreeName(m.newInput.Value()); errMsg != "" {
+				name := m.newInput.Value()
+				if errMsg := validateNewWorktreeName(name); errMsg != "" {
 					m.newError = errMsg
 					return m, nil
 				}
+				plan, err := worktree.Resolve(m.repoRoot, name)
+				if err != nil {
+					m.newError = err.Error()
+					return m, nil
+				}
 				m.newError = ""
-				m.creating = true
-				return m, ensureNewWorktreeCmd(m.repoRoot, m.newInput.Value())
+				// A typed name is a pick, not a create: cmd/wt's -W rule
+				// decides which side of the gate it lands on. A name that
+				// owes its worktree — a new branch, a remote tracking branch,
+				// or a branch no worktree holds yet (and no directory at the
+				// plan's path) — is a creation pick, bound here read-only and
+				// made at the commit point exactly like a bare-branch row; the
+				// rest launch into the worktree they name. Nothing is created
+				// here, so a declined gate leaves nothing behind.
+				m.creation = nil
+				if plan.Creates() || plan.Tracks() != "" {
+					m.creation = &launchCreation{repoRoot: m.repoRoot, name: name, plan: plan}
+				} else if _, serr := os.Stat(plan.Path()); serr != nil {
+					m.creation = &launchCreation{repoRoot: m.repoRoot, name: name, plan: plan}
+				}
+				m.selectedPath = plan.Path()
+				return m.proceedFromSelectedPath()
 			}
 		}
 	}
@@ -619,11 +625,7 @@ func (m model) View() string {
 		if m.newError != "" {
 			body += "\n" + ErrorStyle(m.theme).Render(m.newError)
 		}
-		if m.creating {
-			body += "\ncreating " + m.newInput.Value() + "…"
-		} else {
-			body += "\n[enter] create   [esc] cancel"
-		}
+		body += "\n[enter] create   [esc] cancel"
 		return body
 	}
 	if m.phase == phaseOllamaWarn {
@@ -685,7 +687,7 @@ func (m model) launchCommand(name string) (model, tea.Cmd) {
 		m.status = "launch failed: " + err.Error()
 		return m, nil
 	}
-	return m, runAndWaitCmd(cmd, name, config.Model{}, m.gateFor())
+	return m.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, m.gateFor()))
 }
 
 // launchPassthrough builds and runs a model-driven agent that has no
@@ -701,7 +703,20 @@ func (m model) launchPassthrough(name string) (model, tea.Cmd) {
 		return m, nil
 	}
 	queueLaunchNotes(name, cmd, m.extraArgs)
-	return m, runAndWaitCmd(cmd, name, config.Model{}, m.gateFor())
+	return m.commitLaunch(runAndWaitCmd(cmd, name, config.Model{}, m.gateFor()))
+}
+
+// commitLaunch binds a run command to the one launch this session makes. The
+// first caller to reach it takes the launch (committed) and gets the command;
+// while committed, every further call returns nil — a second Enter pressed
+// before the terminal is released must not start a second run command (with
+// it a second creation binding, a second gate and a second agent).
+func (m model) commitLaunch(cmd tea.Cmd) (model, tea.Cmd) {
+	if m.committed {
+		return m, nil
+	}
+	m.committed = true
+	return m, cmd
 }
 
 // proceedFromSelectedPath continues the launch flow once m.selectedPath is
@@ -1220,7 +1235,7 @@ func (m model) launchAndRecord(cmd *exec.Cmd) (model, tea.Cmd) {
 		}
 		return strings.Join(errs, "; ")
 	}
-	return m, runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record, m.gateFor())
+	return m.commitLaunch(runRecordAndWaitCmd(cmd, m.agent, m.launchModel, record, m.gateFor()))
 }
 
 // findRepoRoot is the picker's `git rev-parse --show-toplevel`
