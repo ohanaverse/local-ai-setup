@@ -9,15 +9,22 @@ import (
 
 // TestOfferedScreensRowsWithoutGit checks which listed rows get a rescue
 // offer: worktrees with something to keep (dirty, unpushed commits, a unique
-// detached HEAD, or unpushed unknown), including a current or locked one; and
-// not primary, mid-operation, unreadable, clean, branch or remote rows. Why: the
-// list's `r` key must not offer what Preflight is certain to refuse.
+// detached HEAD, or unpushed unknown), including a current or locked one and
+// one carrying the held label; and not primary, mid-operation, unreadable,
+// clean, branch or remote rows. Why: the list's `r` key must not offer what
+// Preflight is certain to refuse.
 func TestOfferedScreensRowsWithoutGit(t *testing.T) {
 	wt := func(l cleanup.Losses, b ...string) cleanup.Row {
 		r := cleanup.Row{Kind: cleanup.KindWorktree, Name: "x", Losses: l}
 		for _, c := range b {
 			r.Blockers = append(r.Blockers, cleanup.Reason{Code: c})
 		}
+		return r
+	}
+	// held carries the held label the way the classification raises it: a
+	// cleanup.ReasonHeld reason, never a blocker.
+	held := func(r cleanup.Row) cleanup.Row {
+		r.Reasons = append(r.Reasons, cleanup.Reason{Code: cleanup.ReasonHeld})
 		return r
 	}
 	for _, c := range []struct {
@@ -31,7 +38,7 @@ func TestOfferedScreensRowsWithoutGit(t *testing.T) {
 		{"unpushed unknown", wt(cleanup.Losses{Unpushed: -1}), true, ""},
 		{"detached unique", wt(cleanup.Losses{DetachedUnique: true}), true, ""},
 		{"current and dirty", wt(cleanup.Losses{Dirty: true}, cleanup.BlockCurrent), true, ""},
-		{"locked and dirty", wt(cleanup.Losses{Dirty: true}, cleanup.BlockLocked, cleanup.BlockHeld), true, ""},
+		{"locked, held and dirty", held(wt(cleanup.Losses{Dirty: true}, cleanup.BlockLocked)), true, ""},
 		{"clean", wt(cleanup.Losses{}), false, "nothing to keep"},
 		{"ignored only", wt(cleanup.Losses{IgnoredEntries: 3}), false, "nothing to keep"},
 		{"primary", wt(cleanup.Losses{Dirty: true}, cleanup.BlockPrimary), false, "restore-root"},

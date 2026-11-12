@@ -66,7 +66,13 @@ func (e Engine) Preflight(row cleanup.Row, name string) (*Plan, error) {
 			return nil, refuse(CodePrimary, "this is the repository's primary checkout, which `wt rescue` does not take; `wt restore-root` moves its branch and work into a worktree")
 		case cleanup.BlockOperation:
 			return nil, refuse(CodeOperation, fmt.Sprintf("an operation is in progress there (%s); finish or abort it first", cleanup.OneLine(b.Detail)))
-		case cleanup.BlockHeld:
+		}
+	}
+	// Held is a label on fresh.Reasons, never a blocker (the classification
+	// raises it as cleanup.ReasonHeld, carrying the claim description):
+	// warn that the copy can race the holding session's edits, and go on.
+	for _, r := range fresh.Reasons {
+		if r.Code == cleanup.ReasonHeld {
 			p.Warnings = append(p.Warnings, "another wt session holds this worktree; if it edits files during the copy the rescue fails rather than copy a stale state")
 		}
 	}
