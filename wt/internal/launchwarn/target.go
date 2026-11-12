@@ -22,10 +22,11 @@ func ForDir(dir string) (Target, error) {
 
 // ForDirKnownDirt is ForDir with the dirt already known: dirty is the
 // caller's gathered answer (a unified-list row's raw losses), so the
-// full-tree `git status --porcelain` probe is skipped entirely and
-// Target.Dirty is exactly that value. Everything else is read live as ForDir
-// reads it. A caller with no gathered answer uses ForDir and gets a probed
-// answer.
+// full-tree `git status --porcelain` probe is skipped entirely and a
+// resolved Target carries the value as Target.Dirty. (The zero-Target
+// paths — outside a repository or a bare one — carry no dirt either way.)
+// Everything else is read live as ForDir reads it. A caller with no
+// gathered answer uses ForDir and gets a probed answer.
 func ForDirKnownDirt(dir string, dirty bool) (Target, error) {
 	return forDir(dir, &dirty)
 }
