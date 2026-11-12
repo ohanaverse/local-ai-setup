@@ -347,7 +347,7 @@ func TestForcedReadFailureSurfacesTheNoteAndKeepsTheCreation(t *testing.T) {
 // plain pin of the tail's shape, not a red→green guard (R303a — no RED
 // theater). It pins no-offer-wording and no-gh-gather under the two offer gates
 // staged here (stdin reports a TTY and `[launch] exit_prompt` is not "keep");
-// the old offer's third gate — a creation record — went with the deletion and
+// the record gate (the offer's first check) — a creation record — went with the deletion and
 // is not staged, so this test alone cannot force a faithful re-add (one
 // restoring that record check) to act. What the wording and gh-stub assertions
 // actually catch is the verified mutation:
@@ -359,13 +359,13 @@ func TestTailsRunStopPickerThenSummary(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	// Stage two of the old offer's three gates — a terminal (stdin is made to
 	// report a TTY just below) and "not kept" (the empty Config keeps it). The
-	// third gate, a creation record, is deleted and not staged (see the doc
+	// record gate (the offer's first check), a creation record, is deleted and not staged (see the doc
 	// comment).
 	oldTTY := stdinTTY
 	stdinTTY = func() bool { return true }
 	t.Cleanup(func() { stdinTTY = oldTTY })
 	// No gh at exit: the exit-prompt `gh pr list` gather is gone. Fail if any
-	// runs in the tail (a re-added removal offer would make exactly this call).
+	// runs in the tail (the record-having re-add — the verified mutation — makes exactly this call).
 	t.Cleanup(cleanup.StubPRListForTest(func(dir, branch string) ([]byte, error) {
 		t.Errorf("gh pr list ran in the run's tail (%s in %s)", branch, dir)
 		return []byte("[]"), nil

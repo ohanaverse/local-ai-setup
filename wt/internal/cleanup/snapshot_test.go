@@ -235,7 +235,9 @@ func TestGatherReportsAnEarlierFetchWhenNotFetching(t *testing.T) {
 // OriginRows is set — callers that show or act on an origin row (the `wt
 // worktrees` list, `wt remove origin/...`) pass OriginRows and pay it, while
 // `wt remove <local branch>` never touches one and must not (Rescan re-asks
-// before any delete either way).
+// the base-PR question before a delete only for an origin-branch target — its
+// kind-remote path runs LookupPRs/LookupBaseOf; a local-branch target copies and
+// asks nothing).
 func TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("topic")
