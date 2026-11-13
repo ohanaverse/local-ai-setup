@@ -60,6 +60,9 @@ type model struct {
 	// rowsRefreshing is true from the picker's `F` until its load lands: a
 	// second `F` while one is in flight is dropped, one fetch per request.
 	rowsRefreshing bool
+	// reloadGen is rowsGen when that `F` reload was dispatched: a removal
+	// run bumps rowsGen, and a reload from before it is dropped on landing.
+	reloadGen int
 	// removeFuncs builds each load's row actions (RemoveFuncsBuilder, cmd/wt's
 	// closure over cleanupRemoveFuncs); nil makes every row action say it is
 	// unavailable.
@@ -337,7 +340,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if !m.ready || m.phase != phaseList || m.rowsRefreshing {
 			return m, nil
 		}
-		m.rowsRefreshing = true
+		m.rowsRefreshing, m.reloadGen = true, m.rowsGen
 		m.rows.fetching = true
 		return m, loadRowsCmd(m.repoRoot, nil, m.rowsIn, true)
 	case cleanupPreviewMsg, cleanupProgressMsg, cleanupRunDoneMsg, cleanupRefreshMsg, cleanupRefetchMsg:
@@ -409,11 +412,14 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		// The worktree picker is the row list: every key is its own (q and
 		// esc quit there, `/` filters, and while the filter is typed every
-		// printable key goes into it). ctrl+c always quits. A double Enter
+		// printable key goes into it). ctrl+c quits from rest. A double Enter
 		// cannot start two launches: the commit point takes one (the
 		// committed guard at each run command's birth, commitLaunch).
 		if m.phase == phaseList && m.ready {
-			if msg.String() == "ctrl+c" {
+			// ctrl+c is the row list's own unless the list is at rest: it
+			// cancels a confirm and waits out a removal run (never
+			// abandoned, Ruling T); only a list at rest quits wt.
+			if msg.String() == "ctrl+c" && m.rows.phase == cleanupPhaseList {
 				return m, tea.Quit
 			}
 			return m.updateRows(msg)

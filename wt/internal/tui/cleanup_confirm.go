@@ -758,10 +758,10 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 	o.Theme, o.Now = m.theme, m.clock()
 	n := newRowList(msg.report, o)
 	n.rm, n.log, n.clock = m.rm, m.log, m.clock
-	// The post-run rebuild is a return to rest: a fill swap the run's flow
-	// deferred lands here (latest landing winning), on the fresh list.
-	n.pendingRM = m.pendingRM
-	n.applyPendingRemoveFuncs()
+	// A fill swap the run's flow deferred is dropped, not applied: it was
+	// built from a pre-removal snapshot, older than the funcs the post-run
+	// Refresh just pointed the engine at (R-F7).
+	n.pendingRM = nil
 	n.width, n.height = m.width, m.height
 	n.status = removedSummary(m.run.results) + "; the results print again when you quit"
 	if !n.empty() {
@@ -1313,7 +1313,13 @@ func (m *cleanupListModel) runningView() string {
 		body = append(body, fmt.Sprintf("%d waiting", w))
 	}
 	// Ruling T: nothing interrupts a run, and the screen says so.
-	foot := wrapIndented("removing, please wait: keys, ctrl+c and signals wait until the run ends", "", m.width)
+	// The manage program forwards signals to its list; the launch picker's
+	// Bubble Tea program owns them, so a signal there still ends wt.
+	wait := "removing, please wait: keys, ctrl+c and signals wait until the run ends"
+	if m.launch() {
+		wait = "removing, please wait: keys and ctrl+c wait until the run ends"
+	}
+	foot := wrapIndented(wait, "", m.width)
 	if m.quitAfterRun {
 		foot = append(foot, wrapIndented("a quit was asked: wt quits when this run ends", "", m.width)...)
 	}

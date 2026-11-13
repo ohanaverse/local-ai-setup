@@ -486,21 +486,30 @@ func TestFillSwapAppliesWhenARefetchLands(t *testing.T) {
 	}
 }
 
-// TestFillSwapAppliesToTheListAPostRunRefreshBuilds pins it through the
-// post-run rebuild: a swap deferred while the run's refresh is in flight
-// travels to the fresh list (pendingRM) and is applied there.
-func TestFillSwapAppliesToTheListAPostRunRefreshBuilds(t *testing.T) {
+// TestPostRunRefreshDropsAStalePendingFill pins R-F7: a fill swap deferred
+// while the run's refresh is in flight was built from a pre-removal
+// snapshot, older than the funcs the post-run Refresh pointed the engine at,
+// so the fresh list drops it (never builds it) and keeps the refresh's own.
+func TestPostRunRefreshDropsAStalePendingFill(t *testing.T) {
 	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	own := &actionRecorder{}
+	m.rm, m.opts.RemoveFuncs = own.funcs(), own.funcs()
 	m.phase, m.run = cleanupPhaseRefreshing, &cleanupRun{}
 	rec, builds := deferredFillInstance(&m)
 	if *builds != 0 {
 		t.Fatalf("the swap built %d times under a refresh, want it deferred", *builds)
 	}
 	m = cleanupSend(t, m, cleanupRefreshMsg{report: cleanupFixture()})
-	if m.phase != cleanupPhaseList || *builds != 1 {
-		t.Fatalf("after the rebuild: phase %v, builds %d; want the list and the deferred build applied once", m.phase, *builds)
+	if m.phase != cleanupPhaseList || *builds != 0 {
+		t.Fatalf("after the rebuild: phase %v, builds %d; want the list and the stale build never made", m.phase, *builds)
 	}
-	if !funcsAreThe(m, rec) {
-		t.Error("the fresh list's funcs are not the deferred fill's instance")
+	if funcsAreThe(m, rec) {
+		t.Error("the fresh list carries the pre-removal fill's instance")
+	}
+	if !funcsAreThe(m, own) {
+		t.Error("the fresh list lost the refresh's own funcs")
+	}
+	if m.pendingRM != nil {
+		t.Error("the stale build is still pending on the fresh list")
 	}
 }

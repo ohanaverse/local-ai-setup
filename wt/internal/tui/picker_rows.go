@@ -195,6 +195,12 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	refreshing := m.rowsRefreshing
 	m.rowsRefreshing = false
 	m.rows.fetching = false
+	if refreshing && m.reloadGen != m.rowsGen {
+		// A removal run began or rebuilt the rows since this reload was
+		// dispatched: its report predates the run (it would bring a removed
+		// row back), so the list keeps the run's own rows.
+		return m, nil
+	}
 	if msg.err != nil {
 		if m.ready {
 			// A `F` refresh whose re-read failed: the list is still usable,
@@ -247,9 +253,19 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 
 // updateRows hands msg to the row list and turns what it chose into the
 // launch flow's messages.
+//
+// A removal run's start and the rebuild after it each bump rowsGen: a PR fill
+// (or `F` reload) dispatched before the run answers rows the run changed, and
+// landing late it would bring a removed row back and swap in an engine built
+// from the pre-removal snapshot.
 func (m model) updateRows(msg tea.Msg) (model, tea.Cmd) {
+	before := m.rows.phase
 	next, cmd := m.rows.Update(msg)
 	m.rows = next.(cleanupListModel)
+	if after := m.rows.phase; (after == cleanupPhaseRunning && before != cleanupPhaseRunning) ||
+		(before == cleanupPhaseRefreshing && after == cleanupPhaseList) {
+		m.rowsGen++
+	}
 	return m, cmd
 }
 
