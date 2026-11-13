@@ -174,6 +174,31 @@ func TestRowListTagsWarnStyled(t *testing.T) {
 	}
 }
 
+// TestFlowUnitsWrapsOversizedUnitsAtSpaces pins the wrap a real 80x24 screen
+// asked for: a unit longer than the text column breaks at its spaces so no
+// word is split at the line's end (the held tag once drew "..., start" /
+// "ed on held)"), while a single word too long for the whole line is still
+// cut at the line's end (tuilayout.Flow's rule).
+func TestFlowUnitsWrapsOversizedUnitsAtSpaces(t *testing.T) {
+	lines := flowUnits([]unit{{text: "held by session codex (pid 70222, running 1s, started on held)"}}, 51)
+	got := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		got = append(got, unitsText(ln))
+	}
+	want := []string{"held by session codex (pid 70222, running 1s,", "started on held)"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("an oversized unit wrapped to %q, want it broken at its spaces %q", got, want)
+	}
+	lines = flowUnits([]unit{{text: "abcdefghij"}}, 4)
+	got = got[:0]
+	for _, ln := range lines {
+		got = append(got, unitsText(ln))
+	}
+	if strings.Join(got, "|") != "abcd|efgh|ij" {
+		t.Errorf("a word longer than a line = %q, want it cut at the line's end", got)
+	}
+}
+
 // newLaunchList builds the list in launch mode and sizes it.
 func newLaunchList(t *testing.T, r cleanup.Report, w, h int) cleanupListModel {
 	t.Helper()

@@ -264,8 +264,9 @@ func unitsText(us []unit) string {
 
 // flowUnits lays units out on lines of at most width runes, breaking only
 // between units (tuilayout.Flow's rule, with each unit's own separator); a
-// unit longer than a whole line is cut at the line's end. width <= 0 is one
-// line.
+// unit longer than a whole line wraps at its spaces so no word is split at
+// the line's end, and only a single word too long for the line is cut there.
+// width <= 0 is one line.
 func flowUnits(us []unit, width int) [][]unit {
 	if width <= 0 {
 		return [][]unit{us}
@@ -284,11 +285,25 @@ func flowUnits(us []unit, width int) [][]unit {
 		}
 		runes := []rune(u.text)
 		for len(runes) > width {
-			lines = append(lines, []unit{{text: string(runes[:width]), warn: u.warn}})
-			runes = runes[width:]
+			cut := width
+			if runes[cut] != ' ' { // the break fits after a whole word
+				for i := cut - 1; i > 0; i-- {
+					if runes[i] == ' ' {
+						cut = i // break at the space, which is not drawn
+						break
+					}
+				}
+			}
+			lines = append(lines, []unit{{text: string(runes[:cut]), warn: u.warn}})
+			runes = runes[cut:]
+			for len(runes) > 0 && runes[0] == ' ' {
+				runes = runes[1:]
+			}
 		}
-		u.text = string(runes)
-		cur, curW = []unit{u}, len(runes)
+		if len(runes) > 0 {
+			u.text = string(runes)
+			cur, curW = []unit{u}, len(runes)
+		}
 	}
 	if len(cur) > 0 {
 		lines = append(lines, cur)
