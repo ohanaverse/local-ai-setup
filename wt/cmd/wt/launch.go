@@ -20,7 +20,6 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
-	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // emitPriceNotice is a seam for tests: production prints the stale-pricing
@@ -133,59 +132,21 @@ var shellDir = os.Getwd
 
 // runLaunch is the one way a built agent command is run: it prints the
 // pre-launch notes (to osStderr, the seam the start progress already uses),
-// then hands off to runAgentCmd. The notes it carries today are the root
-// drift header note (rootDriftNote — the drifted root and, on a named-branch
-// drift, the `wt restore-root` remedy, whatever directory the agent runs in)
-// and agents.RelativeArgNotes — a passthrough argument that names a file from
+// then hands off to runAgentCmd. The note it carries is agents.RelativeArgNotes
+// (root drift is not one of them: RunE's confirmLaunch already names it, once,
+// from launchwarn.Target) — a passthrough argument that names a file from
 // the directory the command was typed in, but not from the worktree the agent
 // starts in, would otherwise fail (or open the wrong file) with nothing to
 // connect it to where wt started the agent. Every plain launch site goes
 // through here so none can run an agent without the notes; slot-profile and
 // TUI launches take other paths and carry their own notes (Ruling R412c).
 func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string) error {
-	if drift := rootDriftNote(cmd.Dir); drift != "" {
-		fmt.Fprintln(osStderr, drift)
-	}
 	if wd, err := shellDir(); err == nil {
 		for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
 			fmt.Fprintln(osStderr, note)
 		}
 	}
 	return runAgentCmd(cmd, agent, m, cfg, pp)
-}
-
-// rootDriftNote is the launch header's root-drift note for a launch in dir:
-// `wt: note: <rootclaim.Drift's line> — wt restore-root`, or "" when the root
-// checkout sits on its default branch, when no default is known (no drift is
-// invented without one), or when dir is no repository checkout (or names no
-// directory at all). The drift is read live at launch from the root
-// checkout's raw branch ("" on a detached HEAD, never a display sentinel)
-// against the default origin/HEAD names — the same pair launchwarn's
-// rootTarget feeds rootclaim.Drift. The remedy suffix rides a named-branch
-// drift only (Ruling R412a): a detached root reads `wt: note: root is
-// detached` with no pointer, because `wt restore-root` refuses a detached
-// root — rootclaim.Hint withholds its pointer there for the same reason. It
-// warns and never prevents: the launch is untouched.
-func rootDriftNote(dir string) string {
-	if dir == "" {
-		return ""
-	}
-	primary, err := worktree.PrimaryOf(dir)
-	if err != nil {
-		return ""
-	}
-	branch := worktree.CurrentBranchAt(primary)
-	drift := rootclaim.Drift(rootclaim.Site{Path: primary, Branch: branch}, worktree.DefaultBranch(primary))
-	if drift == "" {
-		return ""
-	}
-	// The emptiness of the raw branch is the detached fact (Site's
-	// spelling), decided before any rendering — never a comparison against
-	// one of Drift's shape strings.
-	if branch == "" {
-		return "wt: note: " + drift
-	}
-	return "wt: note: " + drift + " — wt restore-root"
 }
 
 // launchFiltered is the wired-up launch path used by main.go for every
@@ -547,8 +508,8 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	// A command with no Dir names no directory and claims nothing:
 	// filepath.Abs("") is the working directory, and a claim there would
 	// give every other session a false held warning for a root this launch
-	// never named (claimLaunch guards the same way). holdRoot's root claim
-	// (launchHere) is the same claim file for a root launch, twice-safe.
+	// never named (claimLaunch guards the same way). holdLaunch's early claim
+	// (launchHere) is the same claim file, twice-safe.
 	// HoldLaunch's others are dropped on purpose: RunE's confirmLaunch named
 	// any other holder already, and a launch prints exactly one held line. A
 	// claim that cannot be read or written is one note and never a refusal.

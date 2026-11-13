@@ -173,13 +173,13 @@ func runLaunchPath(
 
 	pinnedSupplied := cmd.Flags().Changed("model")
 
-	// A launch without the picker claims the repository root when it starts
-	// in it (holdRoot), so the next launch warns about this session while the
+	// A launch without the picker claims the worktree it starts in
+	// (holdLaunch), before any model starts, so the next launch warns about this session while the
 	// agent runs. The claim is released when the launch returns; runAgentCmd
 	// releases it itself before its os.Exit. The warnings' one question has
 	// already been answered (or never asked) upstream in RunE.
 	launchHere := func(run func() error) error {
-		holdRoot(agent, launchPath)
+		holdLaunch(agent, launchPath)
 		defer releaseRootClaim()
 		return run()
 	}

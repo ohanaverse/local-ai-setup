@@ -140,17 +140,19 @@ func cleanupLocked(r cleanup.Row) bool {
 // rowTags are the tags the list draws for a row: cleanup.RowTags without
 // "you are here", which RowTags gives every worktree holding the caller's
 // directory; the row's sentence (cleanup.RowText) already says it, on the
-// innermost one only. The root row's drift badge rides behind them: the
-// root_drift soft label's detail as a warn tag, the badge the user-driven
-// cleanup design puts on the root row ("root is on X, not main").
-func rowTags(r cleanup.Row) []cleanup.Tag {
+// innermost one only. In the manage list (drift true) the root row's drift
+// badge rides behind them: the root_drift soft label's detail as a warn tag,
+// the badge the user-driven cleanup design puts on the root row ("root is on
+// X, not main"). The picker passes false: its header already says it once
+// (headerBlock), whatever row the cursor is on.
+func rowTags(r cleanup.Row, drift bool) []cleanup.Tag {
 	var out []cleanup.Tag
 	for _, t := range cleanup.RowTags(r) {
 		if t.Text != "you are here" {
 			out = append(out, t)
 		}
 	}
-	if d := rootDriftLabel(r); d != "" {
+	if d := rootDriftLabel(r); drift && d != "" {
 		out = append(out, cleanup.Tag{Text: d, Severity: cleanup.TagWarn})
 	}
 	return out
@@ -356,7 +358,7 @@ func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	for _, g := range cleanup.KindGroups(r) {
 		m.items = append(m.items, cleanupItem{heading: g.Heading})
 		for _, row := range g.Rows {
-			it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row), locked: cleanupLocked(row)}
+			it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row, o.Mode != modeLaunch), locked: cleanupLocked(row)}
 			if o.Mode == modeLaunch {
 				it.tags = append(launchTags(r, row, here), it.tags...)
 			}
@@ -867,9 +869,10 @@ func (m *cleanupListModel) statusBlock() string {
 // headerBlock is cleanup.HeaderLines plus the refresh note, wrapped: the
 // fetch failure ends in what it means for the list, and the note says when
 // this list was last refreshed here. The picker (launch mode) leads with the
-// root drift note — the same badge the root row carries, shown whatever row
-// the cursor is on ("the `wt` launch header", the user-driven cleanup design)
-// — while the manage list surfaces the drift as its root row's badge alone.
+// root drift note, shown whatever row the cursor is on ("the `wt` launch
+// header", the user-driven cleanup design) and not repeated as a root-row
+// badge — while the manage list surfaces the drift as its root row's badge
+// alone.
 func (m *cleanupListModel) headerBlock() string {
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	lines := cleanup.HeaderLines(m.report, m.now)

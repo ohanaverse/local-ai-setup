@@ -2214,74 +2214,54 @@ func TestZeroDirLaunchClaimsNothing(t *testing.T) {
 	}
 }
 
-// TestLaunchPrintsRootDriftNote pins the plain launch's root-drift header
-// note: a `-W existing` launch while the root checkout sits on topic (origin's
-// default main) prints `wt: note: root is on topic, not main — wt restore-root`
-// before the agent runs. The left part is rootclaim.Drift's rendering and the
-// suffix is the literal remedy pointer, so a script or a person reading the
-// launch header knows `wt restore-root` undoes the drift — but never on a
-// detached root: `wt restore-root` refuses one, so `wt: note: root is
-// detached` prints with NO suffix (Ruling R412a; the pointer rootclaim.Hint
-// withholds there is withheld here too), and a root already on its default
-// branch prints no drift note at all. The topic line is the brief's worked
-// example, pinned byte-exact.
-func TestLaunchPrintsRootDriftNote(t *testing.T) {
-	noteLines := func(s string) []string {
-		return strings.Split(strings.TrimRight(s, "\n"), "\n")
+// TestLaunchNamesRootDriftOnce pins that a plain `-W existing` launch names
+// the root's drift exactly once, through RunE's confirmLaunch (launchwarn's
+// warning plus the `wt restore-root` hint), and that runLaunch adds no second
+// `wt: note:` copy: `topic` against origin's default main reads `wt: root is
+// on topic, not main`; a detached root reads `wt: root is detached` with no
+// restore-root pointer (`wt restore-root` refuses one); a root on its default
+// branch prints neither.
+func TestLaunchNamesRootDriftOnce(t *testing.T) {
+	launch := func(t *testing.T, switchRoot ...string) string {
+		t.Helper()
+		root := sharedRootRepo(t)
+		setOriginDefault(t, root)
+		existing := addLinkedWorktree(t, root, "existing")
+		if len(switchRoot) > 0 {
+			cgit(t, root, switchRoot...)
+		}
+		stubStdinTTY(t, false)
+		notes := captureNotes(t)
+		res := runPinnedLaunch(t, root, []string{"-W", "existing"})
+		if res.err != nil || res.agentDir != existing {
+			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, existing)
+		}
+		return notes.String()
 	}
-	t.Run("branch drift names the remedy", func(t *testing.T) {
-		root := sharedRootRepo(t)
-		setOriginDefault(t, root)
-		existing := addLinkedWorktree(t, root, "existing")
-		cgit(t, root, "switch", "-c", "topic")
-		stubStdinTTY(t, false)
-		notes := captureNotes(t)
-		res := runPinnedLaunch(t, root, []string{"-W", "existing"})
-		if res.err != nil || res.agentDir != existing {
-			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, existing)
+	t.Run("branch drift is named once with the remedy", func(t *testing.T) {
+		out := launch(t, "switch", "-c", "topic")
+		if n := strings.Count(out, "root is on topic, not main"); n != 1 {
+			t.Errorf("drift named %d times in %q; want once", n, out)
 		}
-		const want = "wt: note: root is on topic, not main — wt restore-root"
-		if !slices.Contains(noteLines(notes.String()), want) {
-			t.Errorf("notes = %q; want the line %q", notes.String(), want)
+		if !strings.Contains(out, "wt restore-root") {
+			t.Errorf("output %q lacks the wt restore-root pointer", out)
+		}
+		if strings.Contains(out, "wt: note: root is") {
+			t.Errorf("output %q carries runLaunch's retired drift note", out)
 		}
 	})
-	t.Run("a detached root names no remedy", func(t *testing.T) {
-		root := sharedRootRepo(t)
-		setOriginDefault(t, root)
-		existing := addLinkedWorktree(t, root, "existing")
-		cgit(t, root, "checkout", "--detach")
-		stubStdinTTY(t, false)
-		notes := captureNotes(t)
-		res := runPinnedLaunch(t, root, []string{"-W", "existing"})
-		if res.err != nil || res.agentDir != existing {
-			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, existing)
+	t.Run("a detached root is named once with no remedy", func(t *testing.T) {
+		out := launch(t, "checkout", "--detach")
+		if n := strings.Count(out, "root is detached"); n != 1 {
+			t.Errorf("drift named %d times in %q; want once", n, out)
 		}
-		lines := noteLines(notes.String())
-		if !slices.Contains(lines, "wt: note: root is detached") {
-			t.Errorf("notes = %q; want the line %q", notes.String(), "wt: note: root is detached")
-		}
-		for _, l := range lines {
-			if strings.Contains(l, "wt restore-root") {
-				t.Errorf("notes = %q; a detached root must not point at wt restore-root (it refuses one)", notes.String())
-				break
-			}
+		if strings.Contains(out, "wt restore-root") {
+			t.Errorf("output %q points a detached root at wt restore-root (it refuses one)", out)
 		}
 	})
-	t.Run("a root on its default branch prints no note", func(t *testing.T) {
-		root := sharedRootRepo(t)
-		setOriginDefault(t, root)
-		existing := addLinkedWorktree(t, root, "existing")
-		stubStdinTTY(t, false)
-		notes := captureNotes(t)
-		res := runPinnedLaunch(t, root, []string{"-W", "existing"})
-		if res.err != nil || res.agentDir != existing {
-			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, existing)
-		}
-		for _, l := range noteLines(notes.String()) {
-			if strings.HasPrefix(l, "wt: note: root is") {
-				t.Errorf("notes = %q; a root on its default branch must print no drift note", notes.String())
-				break
-			}
+	t.Run("a root on its default branch prints no drift", func(t *testing.T) {
+		if out := launch(t); strings.Contains(out, "root is on") || strings.Contains(out, "root is detached") {
+			t.Errorf("output %q names a drift on the default branch", out)
 		}
 	})
 }

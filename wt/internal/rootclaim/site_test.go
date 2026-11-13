@@ -45,30 +45,11 @@ func TestLocateSiteLinkedWorktree(t *testing.T) {
 // TestLocateSiteRootMatchesLookup checks LocateSite's answer for the root
 // checkout is the one Lookup has always given the launch paths — the same
 // path spelling (git's text and the resolved form name one checkout), the
-// same common directory, the same branch — and that Site.IsRoot tracks
-// Lookup's judgment wherever the directory sits: true at the root, false in a
-// subdirectory and in a linked worktree. The one deliberate difference is a
+// same common directory, the same branch. The one deliberate difference is a
 // detached HEAD: Lookup labels it "(detached)" while Site.Branch is empty,
 // which the drift readers (a later task) read as detached.
 func TestLocateSiteRootMatchesLookup(t *testing.T) {
-	root, linked := linkedRepo(t)
-	sub := filepath.Join(root, "sub")
-	if err := os.Mkdir(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, from := range map[string]string{"root": root, "subdirectory": sub, "linked worktree": linked} {
-		s, err := LocateSite(from)
-		if err != nil {
-			t.Fatalf("LocateSite(%s) = %v", name, err)
-		}
-		_, ok, err := Lookup(from)
-		if err != nil {
-			t.Fatalf("Lookup(%s) = %v", name, err)
-		}
-		if s.IsRoot != ok {
-			t.Errorf("LocateSite(%s).IsRoot = %v; Lookup says %v", name, s.IsRoot, ok)
-		}
-	}
+	root, _ := linkedRepo(t)
 	s, err := LocateSite(root)
 	if err != nil {
 		t.Fatalf("LocateSite(root) = %v", err)
@@ -77,8 +58,8 @@ func TestLocateSiteRootMatchesLookup(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Lookup(root) = %+v, %v, %v", r, ok, err)
 	}
-	if s.Path != r.Path || s.CommonDir != r.CommonDir || s.Branch != r.Branch || !s.IsRoot {
-		t.Errorf("LocateSite(root) = %+v; want Lookup's path %s, common dir %s, branch %s, and IsRoot", s, r.Path, r.CommonDir, r.Branch)
+	if s.Path != r.Path || s.CommonDir != r.CommonDir || s.Branch != r.Branch {
+		t.Errorf("LocateSite(root) = %+v; want Lookup's path %s, common dir %s, branch %s", s, r.Path, r.CommonDir, r.Branch)
 	}
 	if out, err := exec.Command("git", "-C", root, "checkout", "-q", "--detach").CombinedOutput(); err != nil {
 		t.Fatalf("checkout --detach: %v\n%s", err, out)

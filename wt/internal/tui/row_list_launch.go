@@ -84,6 +84,27 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	next.phase, next.conf, next.run, next.log, next.pending = m.phase, m.conf, m.run, m.log, m.pending
 	next.status, next.exitErr, next.quitAfterRun, next.rescueRow, next.done = m.status, m.exitErr, m.quitAfterRun, m.rescueRow, m.done
 	next.clock, next.now = m.clock, m.now
+	if m.opts.Mode == modeManage {
+		// The tick list's own choices survive a re-read (the `F` refresh): a
+		// row the user unticked stays unticked, never reset to newRowList's
+		// default, or enter would remove what they kept. A row the old list
+		// never showed keeps its default; one that is no longer tickable
+		// stays unticked (newRowList already left it so).
+		was := map[rowKey]bool{}
+		for i, it := range m.items {
+			if it.heading == "" && !it.newWorktree {
+				was[keyOf(it.row)] = m.ticked[i]
+			}
+		}
+		for i, it := range next.items {
+			if it.heading != "" || it.newWorktree {
+				continue
+			}
+			if ticked, seen := was[keyOf(it.row)]; seen && !ticked {
+				delete(next.ticked, i)
+			}
+		}
+	}
 	if m.cursor >= 0 && m.cursor < len(m.items) {
 		cur := m.items[m.cursor]
 		switch {

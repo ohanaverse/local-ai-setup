@@ -696,7 +696,7 @@ func TestRestoreRootCmdHeldRootWarnsAndMoves(t *testing.T) {
 	rootOnTopic(t, dir)
 	holder := holderClaim(t, dir, "topic", "codex")
 
-	stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--json", "--no-fetch")
+	stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--accept-loss", "--json", "--no-fetch")
 
 	if exitOf(err) != 0 {
 		t.Fatalf("exit %d\n%s", exitOf(err), stdout)
@@ -731,6 +731,27 @@ func TestRestoreRootCmdHeldRootWarnsAndMoves(t *testing.T) {
 	}
 	if !strings.Contains(long, rootmove.HeldWarningPrefix) {
 		t.Errorf("the help does not name the held warning line %q:\n%s", rootmove.HeldWarningPrefix, long)
+	}
+}
+
+// TestRestoreRootCmdHeldRootYesAloneIsExit3 checks --yes without --accept-loss
+// does not move a root another live wt session holds: exit 3 (approval
+// missing), nothing changed. Why: a root reset under a running agent is a
+// loss the person must name; --yes only covers a move nobody is using.
+func TestRestoreRootCmdHeldRootYesAloneIsExit3(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	holderClaim(t, dir, "topic", "codex")
+	world, before := repoWorld(t, dir), rootState(t, dir)
+
+	stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--json", "--no-fetch")
+
+	if exitOf(err) != 3 || !strings.Contains(err.Error(), "--accept-loss") {
+		t.Fatalf("err = %v (exit %d)\n%s", err, exitOf(err), stdout)
+	}
+	if repoWorld(t, dir) != world || rootState(t, dir) != before || rootBranch(t, dir) != "topic" {
+		t.Error("a --yes run without --accept-loss changed the repository")
 	}
 }
 

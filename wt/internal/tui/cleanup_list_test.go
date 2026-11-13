@@ -980,6 +980,44 @@ func TestCleanupListFKeyRefetches(t *testing.T) {
 	}
 }
 
+// TestCleanupListFKeyKeepsTheUsersUntickedRows: a row the user unticked stays
+// unticked across the `F` re-read, and the rows still ticked stay ticked.
+// Why: the rebuilt list would otherwise start from newRowList's default
+// (every tickable local row ticked), and enter would then remove a row the
+// user had deliberately kept.
+func TestCleanupListFKeyKeepsTheUsersUntickedRows(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	var kept cleanup.Row
+	var keptSet bool
+	for i, it := range m.items {
+		if m.ticked[i] && !keptSet {
+			kept, keptSet = it.row, true
+			delete(m.ticked, i)
+		}
+	}
+	if !keptSet {
+		t.Fatal("the fixture has no default-ticked row to untick")
+	}
+	wantTicked := len(m.ticked)
+	m.rm.Refetch = func() (cleanup.Report, error) { return cleanupFixture(), nil }
+	m = press(t, m, keyRunes("F"))
+	got := 0
+	for i, it := range m.items {
+		if it.heading != "" {
+			continue
+		}
+		if keyOf(it.row) == keyOf(kept) && m.ticked[i] {
+			t.Errorf("row %q was unticked by the user and is ticked again after F", kept.Name)
+		}
+		if m.ticked[i] {
+			got++
+		}
+	}
+	if got != wantTicked {
+		t.Errorf("%d rows ticked after F, want %d (the others' ticks kept)", got, wantTicked)
+	}
+}
+
 // TestCleanupListRKeyStillRescues: adding `F` must not displace `r` — the
 // manage list still hands the highlighted row to rescue and quits, and no
 // refetch runs on the way (`F` is the only refetch key).
@@ -1160,6 +1198,16 @@ func TestPickerHeaderShowsRootDrift(t *testing.T) {
 	manage := newSizedCleanupList(t, with, 120, 40)
 	if h := manage.headerBlock(); strings.Contains(h, drift) {
 		t.Errorf("manage header = %q; the drift note is the picker header's (the manage list's root row carries the badge)", h)
+	}
+	for _, it := range picker.items {
+		if it.heading != "" || it.newWorktree {
+			continue
+		}
+		for _, tg := range it.tags {
+			if tg.Text == drift {
+				t.Errorf("picker row %q repeats the drift as a badge (tags %+v); the header says it once", it.row.Path, it.tags)
+			}
+		}
 	}
 	clean := newLaunchList(t, cleanupFixture(), 120, 40)
 	if h := clean.headerBlock(); strings.Contains(h, drift) {

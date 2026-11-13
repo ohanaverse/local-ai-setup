@@ -133,8 +133,8 @@ func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
 
 // launchGate is the one question before a launch commits, asked at the
 // commit point with the terminal the user's again (the run commands call it
-// where holdRoot's prompt used to be). It mirrors cmd/wt's confirmLaunch and
-// holdRoot: the collected warnings — or, with none, the one informational
+// where the root-claim prompt used to be). It mirrors cmd/wt's confirmLaunch and
+// holdLaunch: the collected warnings — or, with none, the one informational
 // line "launching in <dir>" every pick with a directory gets (the creation
 // line of a pick that owes a worktree is the one line in its place) — and one
 // default-yes question when a warning remains and there is a terminal. With

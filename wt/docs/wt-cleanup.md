@@ -49,8 +49,8 @@ never prunes, `--no-fetch` drops nothing, and the list's open drops nothing).
 Each row carries tags such as `root`, `you are here`, `held`,
 `dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. When the
 root sits off the default `origin/HEAD` names (or on a detached HEAD) its row carries a
-`root_drift` reason and a drift badge (and, in the launch picker, the header
-names the drift: `root is on <b>, not <d>`, or `root is detached`); the drift
+`root_drift` reason and, in the manage list, a drift badge (the launch picker's header
+names the drift instead, once: `root is on <b>, not <d>`, or `root is detached`); the drift
 label floors nothing on its own — it says where the root is, and `wt
 restore-root` is the way back. No `origin/HEAD` default, no drift is invented. A bare
 repository's own entry is listed as the root with a `bare` tag: it is never
@@ -524,9 +524,11 @@ new worktree could not be switched onto the branch) or
 
 A root held by another live `wt` session refuses nothing and is never a
 `code`: the plan carries one `root_held: ` warning line naming the holder
-(`HeldWarningPrefix`, JSON `warnings`), and the move goes on once confirmed —
-a y/N on a terminal, `--yes` without one, exit 3 without either, like any run.
-Nothing checks the session claims again after that read.
+(`HeldWarningPrefix`, JSON `warnings`), and the move goes on once the person
+says so: the y/N on a terminal, or `--yes --accept-loss` (the agent running in
+the root is left in a root that changes under it). `--yes` alone with a held
+root is exit 3, approval missing, nothing changed. Nothing checks the session
+claims again after that read.
 
 | Exit | Meaning |
 |---|---|

@@ -6,8 +6,7 @@ import (
 
 // Site is where a directory sits: the worktree it is inside and which branch
 // that worktree holds, the repository's common git directory (where the
-// session claims live), and whether the directory is itself the root
-// checkout. It is the launch claims' shared vocabulary: a claim is keyed by
+// session claims live). It is the launch claims' shared vocabulary: a claim is keyed by
 // Site.Path and lives in Site.CommonDir/wt-sessions.
 type Site struct {
 	// Path is the worktree top level in git's own absolute text
@@ -23,11 +22,6 @@ type Site struct {
 	// semantics — and "" on a detached HEAD; the drift readers treat empty as
 	// detached.
 	Branch string
-	// IsRoot is worktree.RootOf's judgment on the directory itself: true only
-	// in the repository's primary checkout (a subdirectory, a linked worktree,
-	// a bare repository and a directory outside any repository are false), the
-	// same answer Lookup gives.
-	IsRoot bool
 }
 
 // LocateSite reports where dir sits. err is git's refusal when there is no
@@ -43,6 +37,5 @@ func LocateSite(dir string) (Site, error) {
 	if s.CommonDir, err = worktree.CommonDirAt(top); err != nil {
 		return Site{}, err
 	}
-	_, s.IsRoot = worktree.RootOf(dir)
 	return s, nil
 }
