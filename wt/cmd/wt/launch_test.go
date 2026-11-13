@@ -2222,7 +2222,8 @@ func TestZeroDirLaunchClaimsNothing(t *testing.T) {
 // launch header knows `wt restore-root` undoes the drift — but never on a
 // detached root: `wt restore-root` refuses one, so `wt: note: root is
 // detached` prints with NO suffix (Ruling R412a; the pointer rootclaim.Hint
-// withholds there is withheld here too). The topic line is the brief's worked
+// withholds there is withheld here too), and a root already on its default
+// branch prints no drift note at all. The topic line is the brief's worked
 // example, pinned byte-exact.
 func TestLaunchPrintsRootDriftNote(t *testing.T) {
 	noteLines := func(s string) []string {
@@ -2262,6 +2263,23 @@ func TestLaunchPrintsRootDriftNote(t *testing.T) {
 		for _, l := range lines {
 			if strings.Contains(l, "wt restore-root") {
 				t.Errorf("notes = %q; a detached root must not point at wt restore-root (it refuses one)", notes.String())
+				break
+			}
+		}
+	})
+	t.Run("a root on its default branch prints no note", func(t *testing.T) {
+		root := sharedRootRepo(t)
+		setOriginDefault(t, root)
+		existing := addLinkedWorktree(t, root, "existing")
+		stubStdinTTY(t, false)
+		notes := captureNotes(t)
+		res := runPinnedLaunch(t, root, []string{"-W", "existing"})
+		if res.err != nil || res.agentDir != existing {
+			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, existing)
+		}
+		for _, l := range noteLines(notes.String()) {
+			if strings.HasPrefix(l, "wt: note: root is") {
+				t.Errorf("notes = %q; a root on its default branch must print no drift note", notes.String())
 				break
 			}
 		}

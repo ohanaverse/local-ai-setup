@@ -139,8 +139,9 @@ var shellDir = os.Getwd
 // and agents.RelativeArgNotes — a passthrough argument that names a file from
 // the directory the command was typed in, but not from the worktree the agent
 // starts in, would otherwise fail (or open the wrong file) with nothing to
-// connect it to where wt started the agent. Every launch site goes through
-// here so none can run an agent without it.
+// connect it to where wt started the agent. Every plain launch site goes
+// through here so none can run an agent without the notes; slot-profile and
+// TUI launches take other paths and carry their own notes (Ruling R412c).
 func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string) error {
 	if drift := rootDriftNote(cmd.Dir); drift != "" {
 		fmt.Fprintln(osStderr, drift)
