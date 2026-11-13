@@ -40,8 +40,7 @@ and its own status and evidence) and not a row of its own, so
 `--plain` and `--json` still list a folded ref as its own row as well (the
 JSON row also carries the `upstream` field), but they list only `origin`'s
 branches and those of remotes a local branch tracks; the terminal list shows
-every remote's. On a terminal the list does not fetch when it opens (`r` is not a
-refresh; `--fetch` fetches every remote first and the list's `F` fetches while
+every remote's. On a terminal the list does not fetch when it opens (`--fetch` fetches every remote first and the list's `F` fetches while
 it is open; `--json`/`--plain` fetch first unless
 `--no-fetch`). Stale session claims are dropped on the list's `F` refresh and on
 a fetch-first `--json` run only (`sessionclaim.Prune`; `--plain` fetches but
@@ -59,13 +58,14 @@ repository has no working tree to launch in.
 
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
-progress, a registered model artifact, or an open PR on an `origin` branch
-or one that targets it); the row's `hard_stop` JSON field names it. A local
+progress, a worktree whose directory is gone, a registered model artifact, or an open PR on an `origin` branch
+or one that targets it); the row's `hard_stop` JSON field names it. In the terminal list a hard stop **locks** the row (`[-]`: it cannot be ticked, and `enter`, `x`, `d` and `o` refuse it with the reason). A local
 branch or worktree with an open PR is not a hard stop: it reads unique work and
 needs `--accept-loss` and `-D`. A **floor** is a verdict ceiling the user can accept: a held
-session claim (`held`), the default branch (`default_branch`) and an unknown
-pull request (`pr_unknown`) leave the row `less_sure` at best, so `wt remove`
-needs `--accept-loss` for it, and, for a branch that is not proven merged,
+session claim (`held`), the default branch (`default_branch`), an unknown
+pull request (`pr_unknown`), a root that has drifted off the default and a repository with no default branch to
+compare against (`no_default_branch`) leave the row `less_sure` at best, so `wt remove`
+needs `--accept-loss` for it (in the list a floor never locks the row: you may tick it, and the confirmation asks for the typed `delete`), and, for a branch that is not proven merged,
 `-D` as well (the engine asks for `-D` for any unproven branch).
 
 An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
@@ -136,6 +136,30 @@ registry anywhere else (`WT_REGISTRY`, a relocated `XDG_CONFIG_HOME`, no home
 directory) counts as could not be read. A `local_path` that is an ancestor of
 the repository (`~`, or `/`) blocks every worktree under it as
 `protected_artifact`, and the row's detail names that path.
+
+## The list's keys and the session loop
+
+On a terminal `wt worktrees` shows every row, locked or not, and acts only on a key you press. Nothing is cleaned up automatically anywhere in wt: nothing is asked when an agent exits, no worktree is removed and the root is never switched for you, and a launch only warns.
+
+| Key | Does |
+|---|---|
+| `space`, `a` | tick or untick the highlighted row; `a` ticks every proven local row (an `origin` row is never ticked for you) |
+| `enter` | remove the **ticked** rows (the confirm says "ticked") |
+| `x` | remove the **selected** row alone; ticks are ignored (the confirm says "selected") |
+| `d` | as `x`, with the worktree's unmerged branch also deleted (the confirm's `[ ] also delete unmerged branch` is seeded on) |
+| `o` | delete only the selected row's `origin` ref, never its worktree or local branch: the remote-only item `wt remove origin/<name> --remote` builds, under the typed `delete origin` |
+| `r` | rescue the selected row (`rescue.Offered` says from the row alone whether it is worth it, else the status line says why) |
+| `R` | restore the root (`rootmove.Offered`, below) |
+| `F` | `git fetch --all --prune` at the repository root, capped at 5s, then re-read; stale session claims are dropped |
+| `q`, `esc` | quit |
+
+A locked row refuses `x`, `d` and `o` with `cannot be removed: <its reason>`; a row with no `origin` ref refuses `o` the same way. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`.
+
+**`R` is offered only from the row.** `rootmove.Offered` (it reads the row, never git) refuses, each with its line on the status line: a row that is not the root ("only the root can be restored"), a bare repository, a root with no commit, a detached root, a root with no default branch ("no default branch to restore to") and a root already on the default ("root is already on <branch>"). The list's `R` runs the same interactive restore-root as `wt restore-root` run by hand (fetches every remote, asks `Move? [y/N]` and prints the `root_held` warning in that prompt when another session holds the root; it never passes `--yes`, so a held root is moved only after you answer `y`).
+
+**The session loop** (`RunCleanupList`). After `r` or `R` completes, the list is **re-entered** from a re-read report (`RemoveFuncs.Refetch`, which fetches), so one session can do several actions. An action error, or a failed re-read, ends the session and is returned. The removal log (every outcome of every pass, with each deleted branch's commit) prints once, when the session ends. Re-entry is only for `r` and `R`: after a removal run, any key but `q` or ctrl+c on the results screen returns to the list re-read in the same program, and leaving it ends the session. `F` failing to re-read keeps the old rows and says why in one line; a failed *fetch* is not an error: the header reads `fetch: FAILED (...)` and the rows stay listed, judged as of the last fetch.
+
+**The launch selector** (the picker `wt` shows at launch; `internal/tui/picker_rows.go`) is the same row list in launch mode. It answers `x`, `d`, `o`, `r` and `R` on the highlighted row through the same `RemoveFuncs`; `enter` still launches the row and `n` makes a new worktree. While the `/` filter box is open it takes every printable key, so action keys act only with it closed. `r` and `R` end the picker (there is no re-entry loop there; their action runs after the screen closes). A PR lookup landing while a flow is open never swaps the removal functions under it: the swap waits for the list's return to rest. The picker's gather sets `OriginRows`, so `o` works there. The width-tier key legends do not yet list `d`, `o` (list) or `x d o r R` (picker); this section is where they are named.
 
 ## Removing
 
@@ -282,8 +306,9 @@ wt rescue spike                        # asks y/N on a terminal
 wt rescue spike --yes --to keep/spike  # no prompt; choose the branch name
 ```
 
-In `wt cleanup`'s list, `r` on a worktree row with work to keep does the same
-after the list closes.
+In the `wt worktrees` list, `r` on a worktree row with work to keep does the same
+after the list closes, and the list then comes back with a fresh read (see
+[The list's keys](#the-lists-keys-and-the-session-loop)).
 
 The new branch (default `rescued/<branch>`, or `rescued/<directory>` for a
 detached worktree) starts at the original's exact HEAD, so every commit

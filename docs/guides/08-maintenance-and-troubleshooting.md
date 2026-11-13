@@ -648,6 +648,24 @@ Listing removes nothing: apart from the fetch, which updates and prunes the remo
 
 A row wt could not judge (a git error, no `gh` where a proof needs it) shows the cause and is never proven. An old branch whose reflog expired reads as new for 10 minutes after anything rewrites `packed-refs` (a clone, `git gc`, a fetch that prunes a packed ref); re-run later or with `--no-fetch`.
 
+**Keys in the list.** Every row is shown, the root and the default branch included, and nothing in wt cleans up for you: nothing is asked when an agent exits, no worktree is removed and the root is never switched on its own, and a launch only warns. What leaves the repository is what you ask for here (or with `wt remove`, `wt rescue` and `wt restore-root`). The keys:
+
+| Key | Does |
+|---|---|
+| `space` / `a` | tick or untick the highlighted row / tick every proven local row |
+| `enter` | remove the **ticked** rows, after a confirmation |
+| `x` | remove the **selected** (highlighted) row alone; the ticks play no part |
+| `d` | as `x`, and also delete the worktree's branch when it is not proven merged (the confirm opens with that choice already on) |
+| `o` | delete only the selected row's `origin` branch, never its worktree or local branch (needs the typed `delete origin`) |
+| `r` | `wt rescue` the selected row; the list comes back with a fresh read when it is done |
+| `R` | `wt restore-root` for the root row; the list comes back with a fresh read when it is done |
+| `F` | fetch every remote and refresh the rows (a failed fetch keeps the old rows and the header says `fetch: FAILED (...)`) |
+| `q` | quit |
+
+The confirmation says "ticked" for `enter` and "selected" for `x`, `d` and `o`. When every entry is proven `y` confirms; anything else needs the typed word `delete`, an `origin` branch needs `delete origin`, and a row held by another wt session names it (`held by session <id>`) and needs the typed word. `R` offers the move only for a root checked out on a named branch that is not the default; for any other row, a bare repository, a root with no commit, a detached root, a root with no default branch to return to, or a root already on the default, the status line says why and nothing runs. A root another live wt session holds is moved only after you approve it at the move's own `Move? [y/N]` prompt, which prints the `root_held` warning (`--yes --accept-loss` without a terminal). The same row keys work in the launch picker (below).
+
+**What locks a row, and what only lowers it.** A *hard stop* locks a row: it shows `[-]`, cannot be ticked and none of the keys remove it. The hard stops are the primary checkout, the directory you are in, a locked worktree, a rebase or merge in progress, a nested repository (a worktree that contains another) and a worktree whose directory is gone (also a registered model artifact, and an open PR on an `origin` branch or one that targets it). A *floor* does not lock anything: the default branch, a row another session holds, a root that sits off the default branch and a repository with no default branch to compare against lower the verdict to "less sure", so you can tick the row, and removal then asks for the typed `delete` (`--accept-loss` on the command line).
+
 **Removing.** In the list, tick rows with space (`a` ticks every proven local row; only proven local rows start ticked — an origin row is never ticked for you, so space each one yourself) and press enter. A confirmation lists every ticked entry with what it would lose (uncommitted changes, ignored files such as `.venv`, commits that exist only on this machine) and any process running in it. When every entry is proven, `y` removes them; otherwise type `delete` and press enter, and any other key cancels. An entry whose worktree branch is unmerged offers `[ ] also delete unmerged branch <name>`: `tab` toggles it for that entry only, and it is off by default, so the branch is kept. When nothing fetched this run the list's `origin` rows read less sure and cannot be ticked (only a proven `origin` row can be) — on a GitHub-recognised origin (the exempt class above reads `not_checked`, "origin is not on GitHub, so no pull request is checked", and never this wording) with no fetch flags the reason says "origin was not refreshed in this list" (it names no flag, since you passed none), with `--no-fetch` it names the flag ("origin was not fetched this run (--no-fetch)"); `--fetch` or the list's `F` fetches first and can prove one — a proven `origin` row you ticked is then removed only by typing `delete origin` in the confirmation, never by `y` or the plain `delete`. `wt remove origin/<name> --remote` removes one by name instead, fetching first and needing its own approval.
 
 From a script or another terminal, `wt remove` takes the same targets by name and uses the same engine:
@@ -681,6 +699,8 @@ wt restore-root             # asks y/N; --yes when there is no terminal
 ```
 
 It verifies a copy and writes a rescue record before the root is reset, and a failure part-way says where the root, the new worktree and the work are. It refuses a detached root and a repository that does not ignore `.worktrees/`, among other cases. A root held by another live `wt` session refuses nothing: one `root_held: ` warning line names the holder, and the move goes on once confirmed (nothing checks the claims again). Reference, refusal codes and recovery: [wt/docs/wt-cleanup.md](../../wt/docs/wt-cleanup.md#wt-restore-root-move-the-roots-branch-into-a-worktree).
+
+**In the launch picker.** The picker `wt` shows when you launch answers `x`, `d`, `o`, `r` and `R` on the highlighted row, through the same removal flow as the list; `enter` still launches the row, and nothing there removes anything unless you press one of those keys. While the `/` filter box is open it takes every key you type, so the action keys act only with it closed. `r` and `R` end the picker once their action has run (run `wt` again); `wt worktrees` comes back to its list after them instead. A launch into the root, a held row or the default branch is warned about, never refused.
 
 ## Verification
 
