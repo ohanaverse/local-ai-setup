@@ -2,13 +2,18 @@ package rescue
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
 // preflightCase is one source state and what Preflight must answer.
@@ -258,6 +263,92 @@ func TestPreflightAllowsCurrentAndLockedSources(t *testing.T) {
 				t.Errorf("plan = %+v", plan)
 			}
 		})
+	}
+}
+
+// procStart returns pid's start time in epoch seconds — what a claim records
+// (docs/contracts/session-claims.md: equal to the real start within 5 s). A
+// fixture "other session" must read live under that rule, and this package
+// cannot fake sessionclaim's process seams (unexported), so the claim names a
+// real child's real start time, read from ps's lstart in the local zone.
+// (Shape: rootclaim's holdlaunch_test, cleanup's snapshot_test.)
+func procStart(t *testing.T, pid int) int64 {
+	t.Helper()
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // English month names for the parse
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ps lstart for %d: %v", pid, err)
+	}
+	start, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatalf("parse lstart %q: %v", out, err)
+	}
+	return start.Unix()
+}
+
+// holderClaim spawns a short-lived real process and claims path for it under
+// commonDir — a fixture "other session" that reads live under the claim
+// contract's liveness rule (real pid, real start time, never manufactured).
+// The child and its claim are cleaned up. (Shape: rootclaim's holdlaunch_test,
+// cleanup's snapshot_test.)
+func holderClaim(t *testing.T, commonDir, path, branch, agent string) sessionclaim.Claim {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid), Path: path, Branch: branch, Agent: agent}
+	release, err := sessionclaim.Hold(commonDir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return c
+}
+
+// TestPreflightHeldWarns checks a worktree another live wt session holds still
+// gets rescue's held warning: Preflight plans the copy and warns that the
+// holder may edit files while it runs. The fixture builds the real held shape
+// — a hand-made claim of another live process, which the classification turns
+// into a cleanup.ReasonHeld reason carrying the claim description (never a
+// blocker). Why: held moved off the blocker list onto Row.Reasons, and this
+// warning is what tells the user the copy can race the holding session's
+// edits (a rescue that silently copied a state mid-edit would verify against
+// bytes nobody wrote).
+func TestPreflightHeldWarns(t *testing.T) {
+	f := newFixture(t)
+	p := workTree(f)
+	common := gitIn(f.t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	c := holderClaim(t, common, p, "topic", "codex")
+	eng, find := f.engine(f.Dir)
+	row := find(p)
+
+	// Pin the shape the warning must read: held is one reason whose detail
+	// names the holding session, and no held blocker.
+	var held []string
+	for _, r := range row.Reasons {
+		if r.Code == cleanup.ReasonHeld {
+			held = append(held, r.Detail)
+		}
+	}
+	if len(held) != 1 || !strings.Contains(held[0], fmt.Sprintf("codex (pid %d, ", c.PID)) {
+		t.Fatalf("held reasons %q, want one claim description naming codex pid %d", held, c.PID)
+	}
+	for _, b := range row.Blockers {
+		if b.Code == cleanup.ReasonHeld {
+			t.Fatalf("blockers %v carry held; the real shape is a reason, not a blocker", row.Blockers)
+		}
+	}
+
+	plan, err := eng.Preflight(row, "")
+	if err != nil {
+		t.Fatalf("Preflight = %v, want a plan: held warns, it never refuses", err)
+	}
+	const want = "another wt session holds this worktree; if it edits files during the copy the rescue fails rather than copy a stale state"
+	if !slices.Contains(plan.Warnings, want) {
+		t.Errorf("warnings %q, want the held warning %q", plan.Warnings, want)
 	}
 }
 

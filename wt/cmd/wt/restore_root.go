@@ -32,8 +32,8 @@ var restoreRootTTY = bothTerminals
 var afterRestoreRootConfirm = func() {}
 
 type restoreRootFlags struct {
-	to                         string
-	yes, dryRun, json, noFetch bool
+	to                                     string
+	yes, acceptLoss, dryRun, json, noFetch bool
 }
 
 func restoreRootCmd(a *app) *cobra.Command {
@@ -54,15 +54,18 @@ func restoreRootCmd(a *app) *cobra.Command {
 			"is fast-forwarded to it; never a merge.\n\n" +
 			"It refuses, creating nothing, a root on a detached HEAD, already on the\n" +
 			"default branch (exit 0, nothing to do), with no commit, with the default\n" +
-			"branch checked out in another worktree, held by another live wt session,\n" +
-			"that does not ignore .worktrees/, with an ignored file the move would\n" +
-			"overwrite, and every state `wt rescue` refuses (an operation in progress,\n" +
-			"unmerged paths, skip-worktree or assume-unchanged entries, a changed\n" +
-			"submodule, a nested repository, content filters, size limits and similar).\n" +
+			"branch checked out in another worktree, that does not ignore .worktrees/,\n" +
+			"with an ignored file the move would overwrite, and every state `wt rescue`\n" +
+			"refuses (an operation in progress, unmerged paths, skip-worktree or\n" +
+			"assume-unchanged entries, a changed submodule, a nested repository, content\n" +
+			"filters, size limits and similar).\n" +
 			"A failure part-way stops at that step and says where the root, the new\n" +
 			"worktree and the work are; nothing is rolled back and the work stays\n" +
 			"reachable. Git hooks do not run; the plan warns when a post-checkout hook\n" +
-			"exists.\n\n" +
+			"exists. A live wt session of another process in the root is a warning, not a\n" +
+			"refusal: a \"root_held: \" line names the holder, and the move goes on once\n" +
+			"confirmed at the prompt. --yes alone does not confirm it (exit 3, nothing\n" +
+			"changed): add --accept-loss. Nothing checks the claims again.\n\n" +
 			"Without --yes it asks y/N on a terminal (default No) after printing what\n" +
 			"moves, where, and what the root becomes; with no terminal it changes\n" +
 			"nothing. A real run fetches every remote first, as `wt worktrees` does;\n" +
@@ -90,6 +93,7 @@ func restoreRootCmd(a *app) *cobra.Command {
 	})
 	c.Flags().StringVar(&f.to, "to", "", "the new worktree's directory name under .worktrees/ (default: the branch name)")
 	c.Flags().BoolVar(&f.yes, "yes", false, "move without asking")
+	c.Flags().BoolVar(&f.acceptLoss, "accept-loss", false, "with --yes, also move a root another live wt session holds (the agent there is left running in a root that changes under it)")
 	c.Flags().BoolVar(&f.dryRun, "dry-run", false, "say what would happen and change nothing, fetch included (needs no --yes)")
 	c.Flags().BoolVar(&f.json, "json", false, "print the result as one JSON document (docs/contracts/restore-root-result.schema.json)")
 	c.Flags().BoolVar(&f.noFetch, "no-fetch", false, "do not fetch the remotes first (a dry run never does)")
@@ -184,6 +188,9 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 	if f.dryRun {
 		return writeRestoreRootResult(out, errOut, f.json, meta, rootmove.WouldMove(plan))
 	}
+	if f.yes && !f.acceptLoss && heldRootWarning(plan.Warnings) {
+		return restoreRootFail(out, f, snap.Repo, 3, errors.New("approval missing: another wt session holds the root (see the root_held warning); --yes alone does not move it, add --accept-loss or end that session; nothing was changed"))
+	}
 	if !f.yes {
 		if !restoreRootTTY(answer, errOut) {
 			return restoreRootFail(out, f, snap.Repo, 3, errors.New("approval missing: pass --yes (there is no terminal to ask); nothing was changed"))
@@ -193,9 +200,8 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 		}
 	} else {
 		// Nothing was shown or asked since Preflight read the root, so its
-		// fingerprint stands and Execute skips its start-of-run re-checks;
-		// the checks after the copy and before the release still run. A
-		// prompt keeps them.
+		// fingerprint stands and Execute skips its start-of-run fingerprint
+		// re-check. A prompt keeps it.
 		plan.SkipStartRecheck()
 	}
 	// From here on a signal must not end the process part-way through the
@@ -212,6 +218,17 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 		fmt.Fprintf(errOut, "interrupted (signal %v): the move was not stopped; see the result above\n", got[0])
 	}
 	return err
+}
+
+// heldRootWarning reports whether the plan's warnings carry rootmove's
+// root_held line: a live wt session holds the root.
+func heldRootWarning(warnings []string) bool {
+	for _, w := range warnings {
+		if strings.HasPrefix(w, rootmove.HeldWarningPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // heldSignals are the signals holdSignals keeps from ending the process: an

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -49,7 +50,7 @@ type GatherInputs struct {
 	FetchRemotes   func(root string) error
 	OwnRepo        string             // owner/repo for PR filtering; "" parses origin's URL
 	ProtectedPaths []string           // registered local_path model artifacts
-	Claim          sessionclaim.Claim // this process's claim (its PID); Path is set to the root
+	Claim          sessionclaim.Claim // this process's claim (its PID); self and its ancestors are never holders
 	Parallel       int                // concurrent gh calls (<1 means 1)
 	// OriginRows says the caller will show or act on origin rows (the cleanup
 	// list, `wt remove origin/...`): only then is the live `gh pr list --base`
@@ -150,6 +151,12 @@ type Snapshot struct {
 	BaseTip   string // commit id of the base ref
 	Fetch     FetchResult
 	OwnRepo   string
+	// RootDrift is the root checkout's drift line (rootclaim.Drift): `root is
+	// on <b>, not <d>`, `root is detached`, or "" when the root sits on the
+	// default branch or no default branch is known (no drift is invented
+	// without one). Read live by Gather and re-read by Rescan through
+	// readRootDrift, never carried from one to the other.
+	RootDrift string
 	Worktrees []WorktreeState
 	Heads     []RefFact           // refs/heads/*, the default branch's forms excluded
 	Remotes   []RefFact           // refs/remotes/<r>/* for origin and every upstream's remote, default forms excluded
@@ -171,8 +178,14 @@ type Snapshot struct {
 	// repository (origin is not on GitHub): there is no PR lookup to fail, so
 	// no row reads "PR ?", "PR lookup failed" or "needs gh".
 	PRNotApplicable bool
-	Claims          []sessionclaim.Claim
-	ClaimsErr       string
+	// Claims are every live claim recorded in this repository's wt-sessions
+	// (sessionclaim.Holders, read only: one Claim per holding session, the
+	// paths sorted and each path's claims PID-ascending — keyed by the
+	// recorded path, which may name a directory that is no longer a
+	// checkout); ClaimsErr is why they could not be read. HeldOn finds a
+	// row's holders among them.
+	Claims    []sessionclaim.Claim
+	ClaimsErr string
 	// Records are the well-formed rescue records; a failed listing leaves none.
 	Records []RescueRecord
 }
@@ -217,6 +230,9 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	} else {
 		s.Fetch = in.Fetched
 	}
+	// The drift is read after the fetch: one that set origin/HEAD just named
+	// the default, and the root's drift is against that.
+	s.RootDrift = readRootDrift(facts[0])
 	var baseErr error
 	s.Base, baseErr = ResolveBase(g)
 	switch {
@@ -319,19 +335,60 @@ func (s *Snapshot) baseCandidates() []string {
 	return out
 }
 
-// readClaims fills Claims and ClaimsErr (read-only, on the root's physical
-// path; s.Repo must be set) and returns the gate inputs that use them. Gather
+// readClaims fills Claims and ClaimsErr with every live claim holding a
+// checkout of this repository (sessionclaim.Holders: read only — nothing is
+// joined, pruned or written) and returns the gate inputs beside them. Gather
 // and Rescan both read claims through it.
 func (s *Snapshot) readClaims(in GatherInputs) GateInputs {
-	claim := in.Claim
-	claim.Path = resolve(s.Repo)
-	var err error
-	if s.Claims, err = sessionclaim.Others(s.CommonDir, claim); err != nil {
+	byPath, err := sessionclaim.Holders(s.CommonDir, in.Claim)
+	if err != nil {
 		s.ClaimsErr = gitDetail(err) // a row detail: one sanitised line
 	}
-	claims := s.Claims
-	held := func(p string) bool { return len(claims) > 0 && resolve(p) == claim.Path }
-	return GateInputs{Base: s.BaseTip, HeldBy: held, ProtectedPaths: in.ProtectedPaths}
+	// Flatten the map deterministically: paths sorted, each path's claims
+	// already PID-ascending as Holders returns them. Claims is filled, not
+	// grown: a re-read replaces whatever was there.
+	paths := make([]string, 0, len(byPath))
+	for p := range byPath {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	var claims []sessionclaim.Claim
+	for _, p := range paths {
+		claims = append(claims, byPath[p]...)
+	}
+	s.Claims = claims
+	return GateInputs{Base: s.BaseTip, ProtectedPaths: in.ProtectedPaths}
+}
+
+// readRootDrift is the root checkout w's live drift line: rootclaim.Drift over
+// w's branch as the worktree list just read it (Site's spelling — "" on a
+// detached HEAD) and the default origin/HEAD names. The default is
+// worktree.DefaultBranch (origin/HEAD only), never Base.Default: the base
+// falls back to main/master and would invent a drift where no default is
+// known. Gather and Rescan both read the drift through it, so a rescan
+// re-renders the line rather than copying the list's. A bare repository has
+// no checkout to drift.
+func readRootDrift(w WorktreeFact) string {
+	if w.Bare {
+		return ""
+	}
+	branch := strings.TrimPrefix(w.Branch, "refs/heads/")
+	return rootclaim.Drift(rootclaim.Site{Path: w.Path, Branch: branch}, worktree.DefaultBranch(w.Path))
+}
+
+// HeldOn returns the live claims holding path — the sessions whose claim
+// names it — matched through resolve so /var and /private/var are one
+// directory; nil when none do. It is the read-only answer to "who holds this
+// checkout", rendered into the held reason by sessionclaim.DescribeAll.
+func (s Snapshot) HeldOn(path string) []sessionclaim.Claim {
+	var out []sessionclaim.Claim
+	p := resolve(path)
+	for _, c := range s.Claims {
+		if resolve(c.Path) == p {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // checkGates is CheckGates; a seam so a test can count the gate checks a

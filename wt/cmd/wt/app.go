@@ -10,31 +10,16 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
-// ignoredLaunchWarned makes the legacy-key note a once-per-process note:
-// newApp runs per command, and a stale [launch] exit_prompt should be
-// noticed once, not on every command. resetIgnoredLaunchWarnForTest is the
-// per-test reset path, so no test depends on another's having run first
-// (wt/CLAUDE.md).
-var ignoredLaunchWarned bool
-
-// resetIgnoredLaunchWarnForTest clears the once-per-process legacy-key note
-// state; tests call it (and t.Cleanup it) so warn order never matters.
-func resetIgnoredLaunchWarnForTest() { ignoredLaunchWarned = false }
-
-// warnIgnoredLaunchKeys prints one note per process naming each legacy
+// warnIgnoredLaunchKeys prints one note naming each legacy
 // config key (config.IgnoredLaunchKeys) that wt tolerates but no longer
 // reads — the retired [launch] exit_prompt today. R305a: such a key is
 // tolerated and ignored, never a validation error. w is the caller's output
 // seam (newApp passes osStderr).
 func warnIgnoredLaunchKeys(w io.Writer, cfg *config.Config) {
-	if ignoredLaunchWarned {
-		return
-	}
 	keys := cfg.IgnoredLaunchKeys()
 	if len(keys) == 0 {
 		return
 	}
-	ignoredLaunchWarned = true
 	for _, key := range keys {
 		fmt.Fprintf(w, "wt: note: config.toml: %s is no longer used and is ignored\n", key)
 	}

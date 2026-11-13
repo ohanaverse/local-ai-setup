@@ -102,12 +102,14 @@ var reasonWording = map[string]string{
 	ReasonNoMergedPR:            "no merged PR",
 	ReasonClaimsUnavailable:     "could not check other wt sessions",
 	ReasonPreserved:             "preserved by a wt rescue record",
-	// Blocker codes (BlockOpenPR shares ReasonOpenPR's code, so its wording).
+	ReasonRootDrift:             "the root is off its default branch",
+	// Blocker codes (BlockOpenPR shares ReasonOpenPR's code, and BlockHeld
+	// is an alias of ReasonHeld, so their wording).
 	BlockDefaultBranch:     "the default branch",
 	BlockBaseOfOpenPR:      "an open PR targets it",
 	BlockPrimary:           "primary checkout",
 	BlockCurrent:           "you are here",
-	BlockHeld:              "held by another wt session",
+	ReasonHeld:             "held by another wt session",
 	BlockLocked:            "locked",
 	BlockNested:            "contains another worktree",
 	BlockOperation:         "a git operation is in progress",
@@ -120,6 +122,7 @@ var detailIsSentence = map[string]bool{
 	ReasonUnpushed: true, ReasonPRHeadMoved: true, ReasonOpenPR: true,
 	ReasonDetachedUnique: true, ReasonFreshBranch: true, ReasonBaseIsLocal: true,
 	ReasonNoMergedPR: true, BlockBaseOfOpenPR: true, ReasonPreserved: true,
+	ReasonRootDrift: true,
 }
 
 // ReasonText is one reason or blocker as a phrase. A code with no wording
@@ -607,10 +610,22 @@ func RowTags(row Row) []Tag {
 	if row.Upstream != nil && row.Upstream.Gone {
 		add(TagWarn, "upstream gone")
 	}
-	if b, ok := hasBlock(BlockHeld); ok {
+	// Held is a label: the held reason (claim-shaped), or the legacy held
+	// blocker the held test seam builds. Either way the tag names the
+	// session (the claim description).
+	held, ok := hasBlock(BlockHeld)
+	if !ok {
+		for _, r := range row.Reasons {
+			if r.Code == ReasonHeld {
+				held, ok = r, true
+				break
+			}
+		}
+	}
+	if ok {
 		text := "held by session"
-		if b.Detail != "" {
-			text += " " + b.Detail
+		if held.Detail != "" {
+			text += " " + held.Detail
 		}
 		add(TagWarn, text)
 	}

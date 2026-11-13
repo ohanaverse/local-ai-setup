@@ -16,7 +16,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/ollamacheck"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/survey"
 )
 
@@ -130,12 +132,14 @@ var shellDir = os.Getwd
 
 // runLaunch is the one way a built agent command is run: it prints the
 // pre-launch notes (to osStderr, the seam the start progress already uses),
-// then hands off to runAgentCmd. The note it carries today
-// is agents.RelativeArgNotes — a passthrough argument that names a file from
+// then hands off to runAgentCmd. The note it carries is agents.RelativeArgNotes
+// (root drift is not one of them: RunE's confirmLaunch already names it, once,
+// from launchwarn.Target) — a passthrough argument that names a file from
 // the directory the command was typed in, but not from the worktree the agent
 // starts in, would otherwise fail (or open the wrong file) with nothing to
-// connect it to where wt started the agent. Every launch site goes through
-// here so none can run an agent without it.
+// connect it to where wt started the agent. Every plain launch site goes
+// through here so none can run an agent without the notes; slot-profile and
+// TUI launches take other paths and carry their own notes (Ruling R412c).
 func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, pp *precomputedProfiles, extraArgs []string) error {
 	if wd, err := shellDir(); err == nil {
 		for _, note := range agents.RelativeArgNotes(agent, wd, cmd.Dir, extraArgs) {
@@ -496,6 +500,29 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// Every launch claims the worktree the agent runs in, for exactly the
+	// agent's run (Task 405): another launch there warns about this session
+	// (held) while it lasts. The site is read from cmd.Dir — the directory
+	// the agent will actually run in — after any worktree creation, so a
+	// bare-branch launch claims the worktree it created, never the root.
+	// A command with no Dir names no directory and claims nothing:
+	// filepath.Abs("") is the working directory, and a claim there would
+	// give every other session a false held warning for a root this launch
+	// never named (claimLaunch guards the same way). holdLaunch's early claim
+	// (launchHere) is the same claim file, twice-safe.
+	// HoldLaunch's others are dropped on purpose: RunE's confirmLaunch named
+	// any other holder already, and a launch prints exactly one held line. A
+	// claim that cannot be read or written is one note and never a refusal.
+	claimRelease := func() {} // the no-Dir release, so the defer below is unconditional
+	if cmd.Dir != "" {
+		release, _, cerr := rootclaim.HoldLaunch(cmd.Dir, agent)
+		claimRelease = release
+		if cerr != nil {
+			fmt.Fprintf(osStderr, "wt: note: %s\n", sessionclaim.CheckFailed(cmd.Dir, cerr))
+		}
+	}
+	defer claimRelease() // every exit path below releases; safe twice
+
 	profileCleanup, perr := applyProfileForLaunch(cmd, agent, m, cfg, pp)
 	if perr != nil {
 		// Mirrors the ollama-check failure path in launchFilteredImpl above:
@@ -513,7 +540,9 @@ func runAgentCmd(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config
 
 	duration, err := agents.RunAndCleanup(cmd, profileCleanup)
 	// Explicit, not deferred, for the same reason as profileCleanup: the
-	// os.Exit below would skip a deferred release.
+	// os.Exit below would skip a deferred release. Both releases take down
+	// the same claim file and are safe twice.
+	claimRelease()
 	releaseRootClaim()
 	summary := agents.Summary(agent, m, duration)
 

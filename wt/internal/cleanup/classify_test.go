@@ -65,6 +65,33 @@ func reasonCodes(rs []Reason) []string {
 	return out
 }
 
+// reasonDetail is the detail of the first reason carrying code, or "" when
+// none does.
+func reasonDetail(rs []Reason, code string) string {
+	for _, r := range rs {
+		if r.Code == code {
+			return r.Detail
+		}
+	}
+	return ""
+}
+
+// primaryRow returns the root checkout's row — the one row marked Primary,
+// whatever its name (a detached root's row is named for its directory).
+func primaryRow(t *testing.T, r Report) Row {
+	t.Helper()
+	var got []Row
+	for _, row := range r.Rows {
+		if row.Primary {
+			got = append(got, row)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("%d primary rows, want 1; rows: %s", len(got), dumpRows(r.AllRows()))
+	}
+	return got[0]
+}
+
 // noGh stubs gh with an answered, empty listing for every branch.
 func noGh(t *testing.T) {
 	stubGh(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "repo": "/Users/me/repo",
+  "dry_run": false,
+  "outcome": "moved",
+  "created": true,
+  "branch": "feature-x",
+  "default": "main",
+  "dest_path": "/Users/me/repo/.worktrees/feature-x",
+  "record": {
+    "ref": "refs/wt/rescued/0123456789abcdef",
+    "commit": "3b1c9e7a5d2f48608c1e9a7b4d5f60213a8e7c9d"
+  },
+  "carried": {
+    "commits": 2,
+    "staged": 1,
+    "unstaged": 1,
+    "untracked": 1,
+    "untracked_bytes": 22
+  },
+  "left_behind": {
+    "ignored_entries": 0
+  },
+  "completed": [
+    "created a detached worktree at f92581ff5ac55df734270fc13d5b48260567e8a9",
+    "carried staged changes",
+    "carried unstaged changes",
+    "copied 1 untracked file",
+    "verified status and file contents against the root",
+    "recorded the root at refs/wt/rescued/0123456789abcdef",
+    "released the root onto main",
+    "switched the new worktree onto feature-x"
+  ],
+  "warnings": [
+    "another wt session holds this worktree; if it edits files during the copy the rescue fails rather than copy a stale state",
+    "root_held: another wt session is running in the root: codex (pid 4242, running 3m12s, started on feature-x); end it first (Execute does not check again)"
+  ]
+}

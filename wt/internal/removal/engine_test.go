@@ -2,14 +2,18 @@ package removal
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
 // engine is an Engine over f's repository built from snapshot s (what the
@@ -715,16 +719,61 @@ func TestEngineIgnoresProcessFinderError(t *testing.T) {
 	}
 }
 
+// procStart returns pid's start time in epoch seconds — what a claim records
+// (docs/contracts/session-claims.md: equal to the real start within 5 s). A
+// fixture "other session" must read live under that rule, and this package
+// cannot fake sessionclaim's process seams (unexported), so the claim names a
+// real child's real start time, read from ps's lstart in the local zone.
+// (Shape: rootclaim's holdlaunch_test,
+// cleanup's snapshot_test.)
+func procStart(t *testing.T, pid int) int64 {
+	t.Helper()
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // English month names for the parse
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ps lstart for %d: %v", pid, err)
+	}
+	start, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatalf("parse lstart %q: %v", out, err)
+	}
+	return start.Unix()
+}
+
+// holderClaim spawns a short-lived real process and claims path for it under
+// commonDir — a fixture "other session" that reads live under the claim
+// contract's liveness rule (real pid, real start time, never manufactured).
+// The child and its claim are cleaned up. (Shape: rootclaim's holdlaunch_test,
+// cleanup's snapshot_test.)
+func holderClaim(t *testing.T, commonDir, path, branch, agent string) sessionclaim.Claim {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid), Path: path, Branch: branch, Agent: agent}
+	release, err := sessionclaim.Hold(commonDir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return c
+}
+
 // floorFixture builds a merged, otherwise-proven linked worktree "topic" and
-// returns its path; held says a live wt session holds it.
+// returns its path; held claims it for another live wt session (a real child
+// process's claim — the shape the classification reads: a ReasonHeld reason).
 func floorFixture(t *testing.T, floor string) (*fixture, cleanup.GatherInputs, string, string) {
 	t.Helper()
 	noGh(t)
 	f := newFixture(t)
 	switch floor {
-	case cleanup.BlockHeld:
+	case cleanup.ReasonHeld:
 		p := f.mergedWorktree("topic")
-		t.Cleanup(cleanup.StubHeldForTest(p))
+		common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		holderClaim(t, common, p, "topic", "codex")
 		return f, f.inputs(), p, "topic"
 	case cleanup.BlockDefaultBranch:
 		f.git("switch", "-c", "other")
@@ -740,14 +789,36 @@ func floorFixture(t *testing.T, floor string) (*fixture, cleanup.GatherInputs, s
 // branch) are verdict floors, not hard stops. Why: the user decides; without
 // the typed confirmation the engine refuses naming the missing confirmation,
 // never "hard blocker", and the worktree stays; with it the worktree goes.
+// Held rides the row's reasons as a label (the claim description), never the
+// blockers.
 func TestHeldWorktreeNeedsConfirmNotRefused(t *testing.T) {
-	for _, floor := range []string{cleanup.BlockHeld, cleanup.BlockDefaultBranch} {
+	for _, floor := range []string{cleanup.ReasonHeld, cleanup.BlockDefaultBranch} {
 		t.Run(floor, func(t *testing.T) {
 			f, in, p, name := floorFixture(t, floor)
 			s, r := f.reportWith(in)
 			row := f.row(r, cleanup.KindWorktree, name)
-			if row.HardStop != "" || row.Status != cleanup.StatusLessSure || !slices.ContainsFunc(row.Blockers, func(b cleanup.Reason) bool { return b.Code == floor }) {
-				t.Fatalf("row status %s hard stop %q blockers %v, want less_sure, no hard stop, %s", row.Status, row.HardStop, row.Blockers, floor)
+			if row.HardStop != "" || row.Status != cleanup.StatusLessSure {
+				t.Fatalf("row status %s hard stop %q, want less_sure, no hard stop", row.Status, row.HardStop)
+			}
+			// The floor entry in its real shape: held is one reason carrying
+			// the claim description (and no held blocker); default_branch
+			// stays a blocker.
+			switch floor {
+			case cleanup.ReasonHeld:
+				var held []string
+				for _, b := range row.Reasons {
+					if b.Code == cleanup.ReasonHeld {
+						held = append(held, b.Detail)
+					}
+				}
+				if len(held) != 1 || !strings.Contains(held[0], "codex (pid ") ||
+					slices.ContainsFunc(row.Blockers, func(b cleanup.Reason) bool { return b.Code == cleanup.ReasonHeld }) {
+					t.Fatalf("row held reasons %q blockers %v, want one held reason naming the claim and no held blocker", held, row.Blockers)
+				}
+			case cleanup.BlockDefaultBranch:
+				if !slices.ContainsFunc(row.Blockers, func(b cleanup.Reason) bool { return b.Code == cleanup.BlockDefaultBranch }) {
+					t.Fatalf("row blockers %v, want %s kept", row.Blockers, floor)
+				}
 			}
 			e := f.engine(s, in, Options{})
 			bare := itemOf(row)

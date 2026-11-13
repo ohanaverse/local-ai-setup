@@ -222,15 +222,12 @@ default = 3
 	}
 }
 
-// TestWarnIgnoredLaunchKeysPrintsOnce pins warnIgnoredLaunchKeys' contract:
-// a config with no legacy key prints nothing and does not spend the note,
-// and a legacy `[launch] exit_prompt` gets exactly one note naming it per
-// process however many times the config is loaded. The once-per-process
-// state is reset per test (resetIgnoredLaunchWarnForTest), so neither this
-// test nor any other depends on run order (wt/CLAUDE.md).
-func TestWarnIgnoredLaunchKeysPrintsOnce(t *testing.T) {
-	resetIgnoredLaunchWarnForTest()
-	t.Cleanup(resetIgnoredLaunchWarnForTest)
+// TestWarnIgnoredLaunchKeysNamesTheKeyOnce pins warnIgnoredLaunchKeys' contract:
+// a config with no legacy key prints nothing, and a legacy `[launch]
+// exit_prompt` gets exactly one note naming it per call. Once per process
+// holds because newApp runs once per process (rootCmd), not because of state
+// here (wt/CLAUDE.md: no package-global seams).
+func TestWarnIgnoredLaunchKeysNamesTheKeyOnce(t *testing.T) {
 	var buf bytes.Buffer
 	warnIgnoredLaunchKeys(&buf, &config.Config{})
 	warnIgnoredLaunchKeys(&buf, &config.Config{LaunchTable: &config.LaunchState{}})
@@ -239,10 +236,9 @@ func TestWarnIgnoredLaunchKeysPrintsOnce(t *testing.T) {
 	}
 	cfg := &config.Config{LaunchTable: &config.LaunchState{ExitPrompt: "keep"}}
 	warnIgnoredLaunchKeys(&buf, cfg)
-	warnIgnoredLaunchKeys(&buf, cfg)
 	got := buf.String()
 	if n := strings.Count(got, "wt: note:"); n != 1 {
-		t.Fatalf("two warns printed %d notes (%q), want exactly one per process", n, got)
+		t.Fatalf("one warn printed %d notes (%q), want exactly one", n, got)
 	}
 	for _, want := range []string{"[launch] exit_prompt", "ignored"} {
 		if !strings.Contains(got, want) {
@@ -257,8 +253,6 @@ func TestWarnIgnoredLaunchKeysPrintsOnce(t *testing.T) {
 // failing the load the way validation used to. Without the call in newApp a
 // stale key would sit in the file unnoticed forever.
 func TestNewAppWarnsAboutLegacyExitPrompt(t *testing.T) {
-	resetIgnoredLaunchWarnForTest()
-	t.Cleanup(resetIgnoredLaunchWarnForTest)
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("WT_REGISTRY", "")

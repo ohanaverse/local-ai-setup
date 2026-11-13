@@ -16,16 +16,18 @@ import (
 const restoreRootSchema = "../../../docs/contracts/restore-root-result.schema.json"
 
 // restoreRootFixtures are the samples by name, with what each must say: the
-// outcome ("" for the error sample) and whether it is a dry run.
+// outcome ("" for the error sample), whether it is a dry run, and whether it
+// is the held sample (its warnings must show both held lines).
 var restoreRootFixtures = map[string]struct {
 	path, outcome string
-	dryRun        bool
+	dryRun, held  bool
 }{
-	"moved sample":   {"../../../docs/contracts/restore-root-result.sample.json", "moved", false},
-	"dry-run sample": {"../../../docs/contracts/restore-root-result.dry-run.sample.json", "would_move", true},
-	"refused sample": {"../../../docs/contracts/restore-root-result.refused.sample.json", "refused", false},
-	"failed sample":  {"../../../docs/contracts/restore-root-result.failed.sample.json", "failed", false},
-	"error sample":   {"../../../docs/contracts/restore-root-result.error.sample.json", "", false},
+	"moved sample":   {"../../../docs/contracts/restore-root-result.sample.json", "moved", false, false},
+	"dry-run sample": {"../../../docs/contracts/restore-root-result.dry-run.sample.json", "would_move", true, false},
+	"refused sample": {"../../../docs/contracts/restore-root-result.refused.sample.json", "refused", false, false},
+	"failed sample":  {"../../../docs/contracts/restore-root-result.failed.sample.json", "failed", false, false},
+	"error sample":   {"../../../docs/contracts/restore-root-result.error.sample.json", "", false, false},
+	"held sample":    {"../../../docs/contracts/restore-root-result.held.sample.json", "moved", false, true},
 }
 
 // TestRestoreRootFixturesMatchEnvelopeShape pins the samples
@@ -66,6 +68,23 @@ func TestRestoreRootFixturesMatchEnvelopeShape(t *testing.T) {
 		case "":
 			if doc["error"] == nil {
 				t.Errorf("%s: no error", name)
+			}
+		}
+		// The held sample shows both held lines on one held plan (R408b):
+		// rescue's own and rootmove's HeldWarningPrefix line naming the
+		// holder. Held warns and the move proceeds; it is never a code.
+		if fx.held {
+			var joined string
+			if ws, ok := doc["warnings"].([]any); ok {
+				lines := make([]string, 0, len(ws))
+				for _, w := range ws {
+					s, _ := w.(string)
+					lines = append(lines, s)
+				}
+				joined = strings.Join(lines, "\n")
+			}
+			if !strings.Contains(joined, rootmove.HeldWarningPrefix) || !strings.Contains(joined, "another wt session holds this worktree") {
+				t.Errorf("%s: warnings = %q, want rescue's held line and a %q line", name, joined, rootmove.HeldWarningPrefix)
 			}
 		}
 	}

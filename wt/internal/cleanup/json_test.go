@@ -124,6 +124,60 @@ func TestEnvelopeErrorIsOneDocument(t *testing.T) {
 	}
 }
 
+// TestEncodeHeldReasonCode pins held on the wire: the held label travels in
+// `reasons` as code "held" with the claim description as its detail, and
+// `blockers` never carries "held" — not even for the legacy gate shape (a
+// held-coded blocker the held test seam still builds). Why: "held" in
+// blockers reads as "removal is blocked", while held is a label that only
+// floors the verdict at less_sure, and the detail must name the holding
+// session so a reader can see who is there.
+func TestEncodeHeldReasonCode(t *testing.T) {
+	detail := "codex (pid 4321, running 2h5m11s, started on main)"
+	rep := Report{Repo: "/r", GH: GHOK, Rows: []Row{
+		{Kind: KindWorktree, Name: "topic", Path: "/w/topic", Branch: "topic", Status: StatusLessSure,
+			Reasons: []Reason{{ReasonHeld, detail}}},
+		// The legacy held gate shape (what the held test seam builds): kept
+		// in the row while that seam lives, never on the wire.
+		{Kind: KindWorktree, Name: "legacy", Path: "/w/legacy", Status: StatusLessSure,
+			Blockers: []Reason{{BlockHeld, "/w/legacy"}}},
+	}}
+	raw, err := Encode(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2: %s", len(doc.Rows), raw)
+	}
+	type entry struct{ Code, Detail string }
+	var reasons []entry
+	if err := json.Unmarshal(doc.Rows[0]["reasons"], &reasons); err != nil {
+		t.Fatal(err)
+	}
+	if len(reasons) != 1 || reasons[0].Code != "held" || reasons[0].Detail != detail {
+		t.Errorf("held row reasons = %+v; want one held code carrying the claim description %q", reasons, detail)
+	}
+	for i := range doc.Rows {
+		var blockers []entry
+		if err := json.Unmarshal(doc.Rows[i]["blockers"], &blockers); err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range blockers {
+			if b.Code == "held" {
+				t.Errorf("row %d serializes held as a blocker (%s); it is a label in reasons", i, doc.Rows[i]["blockers"])
+			}
+		}
+	}
+	if s := string(doc.Rows[1]["blockers"]); s != "[]" {
+		t.Errorf("the legacy held gate shape serializes %s; want [] (held is never a blocker on the wire)", s)
+	}
+}
+
 // TestStatusAndEvidenceEnumsStable pins the exact wire strings of the
 // status, kind, evidence and gh enums. They are a published contract; a
 // rename here must be a deliberate version bump, not a refactor side effect.

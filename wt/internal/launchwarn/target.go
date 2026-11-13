@@ -115,22 +115,36 @@ func ForNew(repoRoot string, plan *worktree.Plan) (Target, error) {
 		return t, err
 	}
 	root := rootTarget(primary)
-	t.Default, t.RootBranch, t.Hint = root.Default, root.RootBranch, root.Hint
+	t.Default, t.RootBranch, t.RootDrift, t.Hint = root.Default, root.RootBranch, root.RootDrift, root.Hint
 	return t, nil
 }
 
 // rootTarget fills what comes from the repository's root checkout, read live:
-// its current branch (never cached), the default, and the drift hint.
+// its current branch (never cached), the default, rootclaim.Drift's line for
+// the pair, and the drift hint. raw is the branch with no display sentinel —
+// Drift reads "" as detached, and a branch literally named "(detached)" must
+// not drift as if its HEAD were.
 func rootTarget(primary string) Target {
-	r := rootclaim.Root{Path: primary, Branch: branchOr(primary), Default: worktree.DefaultBranch(primary)}
-	return Target{Default: r.Default, RootBranch: r.Branch, Hint: rootclaim.Hint(r)}
+	raw := worktree.CurrentBranchAt(primary)
+	def := worktree.DefaultBranch(primary)
+	r := rootclaim.Root{Path: primary, Branch: sentinelBranch(raw), Default: def}
+	return Target{Default: def, RootBranch: r.Branch,
+		RootDrift: rootclaim.Drift(rootclaim.Site{Path: primary, Branch: raw}, def),
+		Hint:      rootclaim.Hint(r)}
 }
 
 func branchOr(dir string) string {
-	if b := worktree.CurrentBranchAt(dir); b != "" {
-		return b
+	return sentinelBranch(worktree.CurrentBranchAt(dir))
+}
+
+// sentinelBranch is b as display text: "(detached)" when there is none. For
+// display and claim keys only, never Drift's input: git accepts a branch
+// literally named (detached), and Drift reads "" as detached.
+func sentinelBranch(b string) string {
+	if b == "" {
+		return "(detached)"
 	}
-	return "(detached)"
+	return b
 }
 
 // dirty reports uncommitted, non-ignored changes at dir; a git failure is not

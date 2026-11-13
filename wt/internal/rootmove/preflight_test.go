@@ -161,11 +161,6 @@ func TestPreflightRefusals(t *testing.T) {
 			f.git("worktree", "add", "-q", filepath.Join(f.Dir, ".worktrees", "m"), "main")
 			return f
 		}, "", CodeDefaultInWorktree, []string{"main"}},
-		{"held by another live session", func(t *testing.T) *fixture {
-			f := topic(t)
-			f.liveOther()
-			return f
-		}, "", CodeRootHeld, []string{"claude (pid "}},
 		{"no commit", func(t *testing.T) *fixture { return localOnly(t, "main", true) }, "", CodeNoCommit, nil},
 		{"ignored file at a path only the default tracks", func(t *testing.T) *fixture {
 			f := newFixture(t)
@@ -312,24 +307,15 @@ func TestPreflightRefusesWhatTheReleaseGateWouldRefuse(t *testing.T) {
 	}
 }
 
-// TestPreflightClaims checks the live-session gate: a live claim of another
-// process refuses root_held; a claim of a dead pid and this process's own
-// claim do not hold the root; an unreadable claims directory is a read
-// failure, not a refusal and not a pass. Why: moving the root's branch from
-// under a running agent changes the files it is editing.
+// TestPreflightClaims checks the live-session gate around the held warning: a
+// claim of a dead pid and this process's own claim hold nothing (no held
+// warning, the plan proceeds); an unreadable claims directory is a read
+// failure, not a warning and not a pass. Why: a stale claim or one's own must
+// not warn the user off a move, while claims nobody can read must not read as
+// "no holder". A live claim of another process warns:
+// TestPreflightHeldWarnsAndPlans.
 func TestPreflightClaims(t *testing.T) {
 	t.Parallel()
-	t.Run("live other refuses", func(t *testing.T) {
-		t.Parallel()
-		f := newFixture(t)
-		f.onBranch("topic")
-		pid := f.liveOther()
-		_, err := f.engine().Preflight("")
-		r := refusalOf(t, err)
-		if r.Code != CodeRootHeld || !strings.Contains(r.Message, "pid "+strconv.Itoa(pid)) {
-			t.Errorf("refusal = %s %q, want root_held naming pid %d", r.Code, r.Message, pid)
-		}
-	})
 	t.Run("dead pid does not hold", func(t *testing.T) {
 		t.Parallel()
 		f := newFixture(t)
@@ -339,8 +325,12 @@ func TestPreflightClaims(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.claim(cmd.Process.Pid, time.Now().Unix())
-		if _, err := f.engine().Preflight(""); err != nil {
-			t.Errorf("Preflight: %v, want a plan (a stale claim does not hold)", err)
+		p, err := f.engine().Preflight("")
+		if err != nil {
+			t.Fatalf("Preflight: %v, want a plan (a stale claim does not hold)", err)
+		}
+		if ws := heldWarnings(p); len(ws) != 0 {
+			t.Errorf("held warnings = %q, want none (a stale claim does not hold)", ws)
 		}
 	})
 	t.Run("own claim does not hold", func(t *testing.T) {
@@ -352,8 +342,12 @@ func TestPreflightClaims(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.claim(self.PID, self.Started)
-		if _, err := f.engine().Preflight(""); err != nil {
-			t.Errorf("Preflight: %v, want a plan (our own claim does not hold)", err)
+		p, err := f.engine().Preflight("")
+		if err != nil {
+			t.Fatalf("Preflight: %v, want a plan (our own claim does not hold)", err)
+		}
+		if ws := heldWarnings(p); len(ws) != 0 {
+			t.Errorf("held warnings = %q, want none (our own claim does not hold)", ws)
 		}
 	})
 	t.Run("unreadable claims directory is a read failure", func(t *testing.T) {
@@ -375,6 +369,154 @@ func TestPreflightClaims(t *testing.T) {
 			t.Errorf("err = %v, want a read failure of the claims (not a refusal, not a pass)", err)
 		}
 	})
+}
+
+// heldWarnings returns p's warnings that are held lines (HeldWarningPrefix),
+// which is what the held tests pin: rescue's own warnings ride the plan too.
+func heldWarnings(p *Plan) []string {
+	var out []string
+	for _, w := range p.Warnings {
+		if strings.HasPrefix(w, HeldWarningPrefix) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// procStart returns pid's start time in epoch seconds — what a claim records
+// (docs/contracts/session-claims.md: equal to the real start within 5 s). A
+// fixture "other session" must read live under that rule, and this package
+// cannot fake sessionclaim's process seams (unexported), so the claim names a
+// real child's real start time, read from ps's lstart in the local zone.
+// (Shape: rootclaim's holdlaunch_test, cleanup's snapshot_test, rescue's
+// preflight_test.)
+func procStart(t *testing.T, pid int) int64 {
+	t.Helper()
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // English month names for the parse
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ps lstart for %d: %v", pid, err)
+	}
+	start, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatalf("parse lstart %q: %v", out, err)
+	}
+	return start.Unix()
+}
+
+// holderClaim spawns a short-lived real process and claims path for it under
+// commonDir — a fixture "other session" that reads live under the claim
+// contract's liveness rule (real pid, real start time, never manufactured).
+// The child and its claim are cleaned up. (Shape: rootclaim's holdlaunch_test,
+// cleanup's snapshot_test, rescue's preflight_test.)
+func holderClaim(t *testing.T, commonDir, path, branch, agent string) sessionclaim.Claim {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid), Path: path, Branch: branch, Agent: agent}
+	release, err := sessionclaim.Hold(commonDir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return c
+}
+
+// TestPreflightHeldWarnsAndPlans checks a root another live wt session holds
+// warns and still plans: Preflight appends exactly one HeldWarningPrefix
+// warning naming the holder (pid included) to the plan and returns the plan —
+// held is a label to acknowledge, never a refusal. The fixture is a real live
+// claim (running process, real start time), and the line is pinned word for
+// word: the established held rendering after the prefix. The symlink case
+// claims a different spelling of the root's own directory (the /var and
+// /private/var pair as one directory) and must fold into the same warning —
+// cleanup.ResolvePath's keying, never raw string equality. Why: held stopped
+// being a code and became a plan warning; a plan that refused it would block
+// a move the user may still choose, and a re-worded line would drift from the
+// rendering the refusals carried.
+func TestPreflightHeldWarnsAndPlans(t *testing.T) {
+	t.Parallel()
+	// wantLine is the exact composed line at now: the prefix, the established
+	// held wording and sessionclaim.Describe's entry for c.
+	wantLine := func(c sessionclaim.Claim, now time.Time) string {
+		return HeldWarningPrefix + "another wt session is running in the root: " +
+			cleanup.OneLine(sessionclaim.Describe(c, now)) +
+			"; end it first (Execute does not check again)"
+	}
+	for _, c := range []struct {
+		name string
+		path func(t *testing.T, f *fixture) string // the spelling the claim records
+	}{
+		{"root", func(t *testing.T, f *fixture) string { return cleanup.ResolvePath(f.Dir) }},
+		{"symlink spelling folds", func(t *testing.T, f *fixture) string {
+			t.Helper()
+			alias := filepath.Join(t.TempDir(), "root-alias")
+			if err := os.Symlink(f.Dir, alias); err != nil {
+				t.Fatal(err)
+			}
+			return alias
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			f.onBranch("topic")
+			claim := holderClaim(t, f.commonDir(), c.path(t, f), "topic", "codex")
+			eng := f.engine()
+			t0 := time.Now()
+			p, err := eng.Preflight("")
+			t1 := time.Now()
+			if err != nil {
+				t.Fatalf("Preflight = %v; a held root warns and plans, it never refuses", err)
+			}
+			if p.Branch != "topic" || p.DirName != "topic" {
+				t.Errorf("plan = branch %q dir %q, want the move planned (topic, topic)", p.Branch, p.DirName)
+			}
+			ws := heldWarnings(p)
+			if len(ws) != 1 {
+				t.Fatalf("held warnings = %q, want exactly one naming the holder", ws)
+			}
+			// The exact composed line. Describe's "running" term is the one
+			// clocked piece (now minus the claim's start, rounded to seconds,
+			// monotone in now), so the want walks exactly the renderings the
+			// call could have made between t0 and t1 and the line must equal
+			// one of them byte for byte.
+			start := time.Unix(claim.Started, 0)
+			matched := false
+			for d := t0.Sub(start).Round(time.Second); d <= t1.Sub(start).Round(time.Second); d += time.Second {
+				if ws[0] == wantLine(claim, start.Add(d)) {
+					matched = true
+				}
+			}
+			if !matched {
+				t.Errorf("warning = %q, want the exact composed line (e.g. %q)", ws[0], wantLine(claim, t0))
+			}
+		})
+	}
+}
+
+// TestPreflightHeldFromLinkedWorktreeClaimIsIgnored checks a real live claim
+// on a LINKED worktree's path never warns about the root: Preflight plans with
+// no warning at all. Why: "held" must describe the root's own holder — a
+// session working in some other checkout says nothing about moving the root,
+// and a warning naming it would send the user to end an unrelated session.
+func TestPreflightHeldFromLinkedWorktreeClaimIsIgnored(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.onBranch("topic")
+	side := f.Worktree("side")
+	holderClaim(t, f.commonDir(), side, "side", "codex")
+	p, err := f.engine().Preflight("")
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if len(p.Warnings) != 0 {
+		t.Errorf("Warnings = %q, want none (the linked claim is not the root's)", p.Warnings)
+	}
 }
 
 // TestDefaultFFTable runs Preflight over each relation of main to origin/main

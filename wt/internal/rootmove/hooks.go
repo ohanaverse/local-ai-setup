@@ -15,7 +15,7 @@ type Hooks struct {
 	// worktree (recovery rows 2 and 3).
 	ExecuteInto func(rescue.Engine, *rescue.Plan, string) rescue.Outcome
 	// BeforeRelease fires after the work was carried and recorded, just
-	// before the claim re-check and the release (row 4 before the reset).
+	// before the release (row 4 before the reset).
 	BeforeRelease func()
 	// ReleaseRoot is step 4, the one step that resets and switches the root;
 	// rootmove only names it (row 4 after the reset).

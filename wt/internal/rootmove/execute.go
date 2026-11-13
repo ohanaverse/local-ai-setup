@@ -35,7 +35,7 @@ const (
 	stepCreate      step = iota + 1 // 1: the detached worktree
 	stepCarry                       // 2: carry and verify
 	stepRecord                      // 3: the record
-	stepBeforeReset                 // 4, before the reset: the claim re-check or a refused release
+	stepBeforeReset                 // 4, before the reset: a refused release
 	stepAfterReset                  // 4, after the reset: a *removal.ReleaseFailed
 	stepDestSwitch                  // 5: the destination onto the branch
 	stepBranchMoved                 // 5, the branch moved before the switch: not switched
@@ -139,15 +139,14 @@ func (r *run) recovery(s step, rf *removal.ReleaseFailed) string {
 // branch. The steps, each re-checking the one before:
 //
 //  0. unless SkipStartRecheck: the root still equals Preflight's fingerprint
-//     (else refused source_changed) and no other live wt session holds it
-//     (else refused root_held); a re-check that cannot read is refused
+//     (else refused source_changed); a re-check that cannot read is refused
 //     unreadable; nothing is created before this;
 //  1. worktree.CreateDetachedAt: the destination, detached at the branch tip;
 //  2. with uncommitted work, rescue's ExecuteInto carries and verifies it,
 //  3. and records it; the record is required (record_not_written otherwise);
-//  4. the claim re-check, always, then removal.ReleaseRoot with the
-//     verified copy, the record and the fingerprint as its proofs: the one
-//     step that resets the root and switches it to the default;
+//  4. removal.ReleaseRoot with the verified copy, the record and the
+//     fingerprint as its proofs: the one step that resets the root and
+//     switches it to the default;
 //  5. `git switch <branch>` in the destination, hooks off;
 //  6. the fast-forward of the default, only when strictly behind origin;
 //  7. a read-back of both checkouts; moved is claimed only after it.
@@ -172,11 +171,6 @@ func (e Engine) Execute(p *Plan) Outcome {
 			return r.refuse(rescue.CodeUnreadable, "could not re-read the root: %s; nothing was created", cleanup.Flatten(err.Error()))
 		} else if d != "" {
 			return r.refuse(rescue.CodeSourceChanged, "the root changed since it was checked (%s); nothing was created", cleanup.OneLine(d))
-		}
-		if held, err := e.heldNow(rootGit, p); err != nil {
-			return r.refuse(rescue.CodeUnreadable, "%s; nothing was created", cleanup.Flatten(err.Error()))
-		} else if held != "" {
-			return r.refuse(CodeRootHeld, "another wt session started in the root since it was checked: %s; nothing was created", held)
 		}
 	}
 
@@ -226,13 +220,9 @@ func (e Engine) Execute(p *Plan) Outcome {
 		r.o.Record = ro.Record
 	}
 
-	// 4. The claim once more, then the release.
+	// 4. The release: the one step that changes the root, behind removal's
+	// own proofs.
 	e.Hooks.before()
-	if held, err := e.heldNow(rootGit, p); err != nil {
-		return r.fail(stepBeforeReset, nil, CodeReleaseRefused, "%v, so the root was not released", err)
-	} else if held != "" {
-		return r.fail(stepBeforeReset, nil, CodeRootHeld, "another wt session started in the root: %s, so the root was not released", held)
-	}
 	rel := removal.RootRelease{
 		Root:               p.Repo,
 		Default:            p.Default,

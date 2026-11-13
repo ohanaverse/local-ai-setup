@@ -56,12 +56,54 @@ func TestDescribeNamesTheSession(t *testing.T) {
 	}
 }
 
+// TestDescribeRendersADetachedClaim checks the detached launch-claim
+// spelling (an empty branch=) reads "started on (detached)" — never the bare
+// "started on )" an empty branch used to render — and a named branch still
+// reads as its own name. Both detached spellings (this empty one, and root
+// claims' literal "(detached)") render alike in Describe output; a branch
+// actually named (detached) reads the same, a known ambiguity.
+func TestDescribeRendersADetachedClaim(t *testing.T) {
+	detached := Claim{PID: 123, Started: 1000, Path: root, Branch: "", Agent: "claude"}
+	got := Describe(detached, time.Unix(1250, 0))
+	if want := "claude (pid 123, running 4m10s, started on (detached))"; got != want {
+		t.Fatalf("Describe of a detached claim = %q; want %q", got, want)
+	}
+	named := Claim{PID: 456, Started: 1200, Path: root, Branch: "topic", Agent: "claude"}
+	got = Describe(named, time.Unix(1250, 0))
+	if want := "claude (pid 456, running 50s, started on topic)"; got != want {
+		t.Fatalf("Describe of a named claim = %q; want %q", got, want)
+	}
+}
+
 // TestCheckFailedNote checks the one-line note the root-claim step prints
 // when the claims cannot be read or written, which never stops the launch
-// (cmd/wt's holdRoot and the TUI's claimRoot both render it as `wt: note:`).
+// (cmd/wt's holdLaunch and the TUI's claimLaunch both render it as `wt: note:`).
 func TestCheckFailedNote(t *testing.T) {
 	got := CheckFailed("/repo", errors.New("permission denied"))
 	if want := "could not check other sessions in /repo (permission denied); launching anyway"; got != want {
 		t.Fatalf("CheckFailed = %q; want %q", got, want)
+	}
+}
+
+// TestDescribeAllJoinsDescriptions checks the one-line rendering of a path's
+// holders — the cleanup list's held reason and the launch warnings name every
+// session on a checkout: Describe's entry per claim, in the order given,
+// joined with "; " (the join the held warning already uses). One claim reads
+// exactly as Describe, and none gives "".
+func TestDescribeAllJoinsDescriptions(t *testing.T) {
+	now := time.Unix(1250, 0)
+	cs := []Claim{
+		{PID: 123, Started: 1000, Path: root, Branch: "main", Agent: "codex"},
+		{PID: 456, Started: 1200, Path: root, Branch: "topic", Agent: "claude"},
+	}
+	got := DescribeAll(cs, now)
+	if want := "codex (pid 123, running 4m10s, started on main); claude (pid 456, running 50s, started on topic)"; got != want {
+		t.Fatalf("DescribeAll = %q; want %q", got, want)
+	}
+	if one := DescribeAll(cs[:1], now); one != Describe(cs[0], now) {
+		t.Errorf("DescribeAll of one claim = %q; want Describe's %q", one, Describe(cs[0], now))
+	}
+	if none := DescribeAll(nil, now); none != "" {
+		t.Errorf("DescribeAll of none = %q; want %q", none, "")
 	}
 }

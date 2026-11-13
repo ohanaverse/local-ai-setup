@@ -1,8 +1,9 @@
 // Package rootclaim is what both launch paths (cmd/wt's plain terminal and the
-// picker) share around internal/sessionclaim: building this session's claim
-// on a repository's root checkout, and asking the person what to do when
-// another live session holds it. sessionclaim stays free of git; the git
-// questions are worktree's.
+// picker) share around internal/sessionclaim: building this session's claim —
+// every launch's on the worktree it runs in (HoldLaunch), a root launch's on
+// the repository's root (the root-claim flavor) — and asking the person what
+// to do when another live session holds it. sessionclaim stays free of git;
+// the git questions are worktree's.
 package rootclaim
 
 import (
@@ -14,7 +15,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
-// Root is a repository's root checkout as a claim needs it.
+// Root is a repository's root (the primary checkout) as a claim needs it.
 type Root struct {
 	Path      string // the primary checkout, symlinks resolved
 	CommonDir string // <git-common-dir>, where wt-sessions lives
@@ -22,7 +23,7 @@ type Root struct {
 	Default   string // the repository's default branch from origin/HEAD, "" when unknown
 }
 
-// Lookup reports the root checkout dir is. ok is false when dir is not a
+// Lookup reports the repository's root for dir. ok is false when dir is not a
 // repository's root (a linked worktree, a subdirectory, a bare repository, no
 // repository); then nothing else is set. err is a failure to read the common
 // directory, with ok true and Path set so a note can name the root.

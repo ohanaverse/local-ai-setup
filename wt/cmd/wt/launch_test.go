@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
@@ -21,6 +23,9 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/refcount"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rotation"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -1932,4 +1937,331 @@ func TestLaunchPassesTheUsersResumeFlagsThrough(t *testing.T) {
 	if !slices.Contains(got, "--dangerously-skip-permissions") {
 		t.Errorf("args = %v, want the yolo flag kept alongside the passthrough", got)
 	}
+}
+
+// claimLaunch is one real `wt` launch run whose fake agent copied this
+// session's claim file while it ran: where the agent started and what the
+// claim said. The claim file is released before the launch returns, so a test
+// reads it through the agent's own copy.
+type claimLaunch struct {
+	err      error
+	output   string            // cobra's own stdout+stderr
+	notes    string            // what wt printed to osStderr: warnings and notes
+	agentDir string            // where the agent ran, links resolved
+	claim    map[string]string // the claim the agent saw while it ran; nil when none
+}
+
+// runClaimLaunch runs one pinned `wt` launch (where is --cwd or -W <name>, as
+// runPinnedLaunch takes them) against a scratch config home holding one
+// claude model, with a claude on PATH that records where it started and copies
+// this session's claim file — key=value lines, the cross-repo contract
+// docs/contracts/session-claims.md — while it runs. Nothing is stubbed between
+// the flag and the agent, so the claim is the one a real launch writes.
+func runClaimLaunch(t *testing.T, dir string, where []string, extra ...string) claimLaunch {
+	t.Helper()
+	t.Chdir(dir)
+	home := t.TempDir()
+	withCleanConfigEnv(t, home)
+	cfgDir := filepath.Join(home, ".config", "agent-wt")
+	regDir := filepath.Join(home, ".config", "local-ai")
+	for _, d := range []string{cfgDir, regDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// config.toml is already native-provider aligned — it carries the agy
+	// agent migrateAgentRefs would insert — so the load migrates nothing and
+	// these tests print nothing.
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"),
+		[]byte("default_tag = \"code\"\n[[agents]]\nname = \"claude\"\nsupported_providers = [\"claude\"]\ndefault_provider = \"claude\"\n[[agents]]\nname = \"agy\"\nsupported_providers = [\"agy\"]\ndefault_provider = \"agy\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regDir, "registry.toml"),
+		[]byte("[[providers]]\nid = \"claude\"\nname = \"Claude\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"+
+			"[[providers]]\nid = \"agy\"\nname = \"Antigravity\"\nlocation = \"cloud\"\nauth = { type = \"native\" }\n"+
+			"[[models]]\nid = \"claude/opus\"\nprovider_id = \"claude\"\nmodel_name = \"opus\"\nlocation = \"cloud\"\ntags = [\"code\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A claude that records where it started and copies the claim its
+	// repository holds for this wt process while it runs.
+	binDir := t.TempDir()
+	pwdFile := filepath.Join(t.TempDir(), "pwd")
+	claimCopy := filepath.Join(t.TempDir(), "claim")
+	script := "#!/bin/sh\npwd -P > '" + pwdFile + "'\n" +
+		"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/" + strconv.Itoa(os.Getpid()) + "\" '" + claimCopy + "' 2>/dev/null\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	oldTUI, oldGuard := tuiRun, maybeInstallGuard
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
+		t.Error("tuiRun was called: a launch pinned with -A and -M never opens the picker")
+		return nil
+	}
+	maybeInstallGuard = func() {}
+	oldRelease := releaseSession
+	releaseSession = func() {}
+	t.Cleanup(func() { tuiRun, maybeInstallGuard, releaseSession = oldTUI, oldGuard, oldRelease })
+
+	res := claimLaunch{}
+	args := append(append(append([]string{}, where...), "-A", "claude", "-M", "claude/opus"), extra...)
+	notes := captureNotes(t)
+	captureFile(t, &os.Stdout, func() { res.output, res.err = runWT(t, args...) })
+	res.notes = notes.String()
+	if b, rerr := os.ReadFile(pwdFile); rerr == nil {
+		res.agentDir = strings.TrimSpace(string(b))
+	}
+	res.claim = readClaimFields(t, claimCopy)
+	return res
+}
+
+// readClaimFields parses one claim file's key=value lines — the cross-repo
+// contract format (docs/contracts/session-claims.md). A missing file gives
+// nil: the agent saw no claim.
+func readClaimFields(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			fields[k] = v
+		}
+	}
+	return fields
+}
+
+// procStart returns pid's start time in epoch seconds — what a claim records
+// (docs/contracts/session-claims.md: equal to the real start within 5 s). A
+// fixture "other session" must read live under that rule, so this names a
+// real child's real start time, read from ps's lstart in the local zone —
+// never a manufactured timestamp the liveness check could disagree with.
+func procStart(t *testing.T, pid int) int64 {
+	t.Helper()
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // English month names for the parse
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ps lstart for %d: %v", pid, err)
+	}
+	start, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatalf("parse lstart %q: %v", out, err)
+	}
+	return start.Unix()
+}
+
+// liveHolder spawns a short-lived real process and claims root's checkout for
+// it under the repository's wt-sessions — the fixture "other session" a launch
+// must warn about and never block on: one that reads live under the claim
+// contract's liveness rule. The child and its claim are cleaned up.
+func liveHolder(t *testing.T, root, agent string) int {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	pid := child.Process.Pid
+	c := sessionclaim.Claim{PID: pid, Started: procStart(t, pid), Path: root, Branch: "main", Agent: agent}
+	release, err := sessionclaim.Hold(filepath.Join(root, ".git"), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return pid
+}
+
+// TestLaunchInLinkedWorktreeWritesClaim checks a launch into a linked worktree
+// claims that worktree: the claim names the worktree's own top level in git's
+// text (the cross-contract path), its branch and the agent, live exactly
+// while the agent runs. Why: every session working in the repository must be
+// visible to the "in use by another session" warning, and a linked worktree's
+// session was invisible while claims were root-only (Task 405).
+func TestLaunchInLinkedWorktreeWritesClaim(t *testing.T) {
+	root := sharedRootRepo(t)
+	linked := addLinkedWorktree(t, root, "feat")
+	stubStdinTTY(t, false)
+	res := runClaimLaunch(t, root, []string{"-W", "feat"})
+	if res.err != nil {
+		t.Fatalf("launch error = %v", res.err)
+	}
+	if res.agentDir != linked {
+		t.Fatalf("agent ran in %q; want the linked worktree %q", res.agentDir, linked)
+	}
+	if res.claim == nil {
+		t.Fatal("no claim was written for the linked-worktree launch")
+	}
+	if got := res.claim["path"]; got != linked {
+		t.Errorf("claim path = %q; want the linked worktree %q", got, linked)
+	}
+	if got := res.claim["branch"]; got != "feat" {
+		t.Errorf("claim branch = %q; want %q", got, "feat")
+	}
+	if got := res.claim["agent"]; got != "claude" {
+		t.Errorf("claim agent = %q; want %q", got, "claude")
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("the claim outlived the agent")
+	}
+}
+
+// TestLaunchBareBranchClaimsTheCreatedWorktree checks a launch that creates
+// its worktree claims the worktree it created: the claim's path is the new
+// worktree's top level in git's text, never the root the launch ran from. Why:
+// the claim site must be read after the worktree exists — computing it early
+// from the launch directory would claim the root instead — and a created
+// worktree's session must be visible like any other (Task 405).
+func TestLaunchBareBranchClaimsTheCreatedWorktree(t *testing.T) {
+	root := sharedRootRepo(t)
+	stubStdinTTY(t, false)
+	res := runClaimLaunch(t, root, []string{"-W", "topic"})
+	if res.err != nil {
+		t.Fatalf("launch error = %v", res.err)
+	}
+	created := physical(t, filepath.Join(root, ".worktrees", "topic"))
+	if res.agentDir != created {
+		t.Fatalf("agent ran in %q; want the created worktree %q", res.agentDir, created)
+	}
+	if res.claim == nil {
+		t.Fatal("no claim was written for the worktree the launch created")
+	}
+	if got := res.claim["path"]; got != created || got == root {
+		t.Errorf("claim path = %q; want the created worktree %q, never the root %q", got, created, root)
+	}
+	if got := res.claim["branch"]; got != "topic" {
+		t.Errorf("claim branch = %q; want %q", got, "topic")
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("the claim outlived the agent")
+	}
+}
+
+// TestLaunchRootWritesClaimAndDoesNotBlockOnAnother checks a root launch
+// claims the root even while another live session holds it — and names that
+// session in exactly one warning line, exit 0. Why: claims warn, they never
+// block or refuse a launch, and a launch that already ran the warning pass
+// must not print HoldLaunch's holders as a second held line (Task 405 pins
+// the one-line behavior).
+func TestLaunchRootWritesClaimAndDoesNotBlockOnAnother(t *testing.T) {
+	root := sharedRootRepo(t)
+	pid := liveHolder(t, root, "codex")
+	stubStdinTTY(t, false)
+	res := runClaimLaunch(t, root, []string{"--root"})
+	if res.err != nil {
+		t.Fatalf("launch error = %v; a session holding the root must not block or fail the launch (exit 0)", res.err)
+	}
+	if n := strings.Count(res.notes, "in use by another session"); n != 1 {
+		t.Errorf("held warning printed %d times, want exactly one line naming the holder:\n%s", n, res.notes)
+	}
+	for _, want := range []string{"codex", "pid " + strconv.Itoa(pid)} {
+		if !strings.Contains(res.notes, want) {
+			t.Errorf("notes = %q; want the holder named with %q", res.notes, want)
+		}
+	}
+	if res.claim == nil {
+		t.Fatal("no claim was written for the root launch")
+	}
+	if got := res.claim["path"]; got != root {
+		t.Errorf("claim path = %q; want the root %q", got, root)
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("the claim outlived the agent")
+	}
+}
+
+// TestZeroDirLaunchClaimsNothing checks a direct call with a bare
+// exec.Command — cmd.Dir unset, exactly as the in-process test seams drive
+// it — writes no claim at all. Why: HoldLaunch("") resolves to the working
+// directory, so the claim would land in whatever repository the test binary
+// runs in and give a concurrent wt launch there a false "in use by another
+// session" naming the test binary (a killed run would even leave it behind).
+// A launch claims the worktree it named, or nothing (Task 405).
+func TestZeroDirLaunchClaimsNothing(t *testing.T) {
+	root := sharedRootRepo(t) // a scratch repository: the pin itself never touches the real one
+	t.Chdir(root)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	prevRelease, prevPicker := releaseSession, runStopPicker
+	t.Cleanup(func() { releaseSession, runStopPicker = prevRelease, prevPicker })
+	releaseSession, runStopPicker = func() {}, func(*config.Config) {}
+
+	// The launched command copies this session's claim while it runs: the
+	// claim is released before runAgentCmd returns, so only the agent's own
+	// window can observe it.
+	claimCopy := filepath.Join(t.TempDir(), "claim")
+	var err error
+	captureFile(t, &os.Stdout, func() {
+		err = runAgentCmd(exec.Command("/bin/sh", "-c",
+			"d=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && cp \"$d/wt-sessions/"+strconv.Itoa(os.Getpid())+"\" '"+claimCopy+"' 2>/dev/null\nexit 0"),
+			"shell", config.Model{}, &config.Config{}, nil)
+	})
+	if err != nil {
+		t.Fatalf("runAgentCmd: %v", err)
+	}
+	if claim := readClaimFields(t, claimCopy); claim != nil {
+		t.Errorf("a launch with no Dir claimed the working directory's repository: %v", claim)
+	}
+	if fileExists(ownClaim(root)) {
+		t.Error("the claim outlived the agent")
+	}
+}
+
+// TestLaunchNamesRootDriftOnce pins that a plain `-W existing` launch names
+// the root's drift exactly once, through RunE's confirmLaunch (launchwarn's
+// warning plus the `wt restore-root` hint), and that runLaunch adds no second
+// `wt: note:` copy: `topic` against origin's default main reads `wt: root is
+// on topic, not main`; a detached root reads `wt: root is detached` with no
+// restore-root pointer (`wt restore-root` refuses one); a root on its default
+// branch prints neither.
+func TestLaunchNamesRootDriftOnce(t *testing.T) {
+	launch := func(t *testing.T, switchRoot ...string) string {
+		t.Helper()
+		root := sharedRootRepo(t)
+		setOriginDefault(t, root)
+		existing := addLinkedWorktree(t, root, "existing")
+		if len(switchRoot) > 0 {
+			cgit(t, root, switchRoot...)
+		}
+		stubStdinTTY(t, false)
+		notes := captureNotes(t)
+		res := runPinnedLaunch(t, root, []string{"-W", "existing"})
+		if res.err != nil || res.agentDir != existing {
+			t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, existing)
+		}
+		return notes.String()
+	}
+	t.Run("branch drift is named once with the remedy", func(t *testing.T) {
+		out := launch(t, "switch", "-c", "topic")
+		if n := strings.Count(out, "root is on topic, not main"); n != 1 {
+			t.Errorf("drift named %d times in %q; want once", n, out)
+		}
+		if !strings.Contains(out, "wt restore-root") {
+			t.Errorf("output %q lacks the wt restore-root pointer", out)
+		}
+		if strings.Contains(out, "wt: note: root is") {
+			t.Errorf("output %q carries runLaunch's retired drift note", out)
+		}
+	})
+	t.Run("a detached root is named once with no remedy", func(t *testing.T) {
+		out := launch(t, "checkout", "--detach")
+		if n := strings.Count(out, "root is detached"); n != 1 {
+			t.Errorf("drift named %d times in %q; want once", n, out)
+		}
+		if strings.Contains(out, "wt restore-root") {
+			t.Errorf("output %q points a detached root at wt restore-root (it refuses one)", out)
+		}
+	})
+	t.Run("a root on its default branch prints no drift", func(t *testing.T) {
+		if out := launch(t); strings.Contains(out, "root is on") || strings.Contains(out, "root is detached") {
+			t.Errorf("output %q names a drift on the default branch", out)
+		}
+	})
 }

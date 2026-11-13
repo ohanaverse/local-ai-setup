@@ -19,6 +19,7 @@ import (
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
 // restoreRootApp is a test app with the classification clock an hour ahead
@@ -164,6 +165,30 @@ func liveClaim(t *testing.T, repo string) {
 	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(pid)), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// holderClaim spawns a short-lived real process and claims the root of repo
+// for it under the repository's wt-sessions — a fixture "other session" that
+// reads live under the claim contract's liveness rule (real pid, real start
+// time via procStart, never a manufactured timestamp). The child and its
+// claim are cleaned up. (Shape: rootclaim's holdlaunch_test, cleanup's
+// snapshot_test, rescue's and rootmove's preflight_test.)
+func holderClaim(t *testing.T, repo, branch, agent string) sessionclaim.Claim {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid),
+		Path: cleanup.ResolvePath(repo), Branch: branch, Agent: agent}
+	common := cgit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	release, err := sessionclaim.Hold(common, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return c
 }
 
 // rootState is sourceState for the root: its HEAD, index and .git/config
@@ -378,12 +403,6 @@ func TestRestoreRootCmdExitCodes(t *testing.T) {
 			cgit(t, dir, "switch", "-q", "--detach")
 			return dir
 		}, rootmove.CodeDetachedRoot},
-		{"held", func(t *testing.T) string {
-			dir := cleanupRepo(t)
-			rootOnTopic(t, dir)
-			liveClaim(t, dir)
-			return dir
-		}, rootmove.CodeRootHeld},
 		{"default in a worktree", func(t *testing.T) string {
 			dir := cleanupRepo(t)
 			rootOnTopic(t, dir)
@@ -608,11 +627,12 @@ func TestRestoreRootCmdDryRunText(t *testing.T) {
 }
 
 // TestRestoreRootCmdClaimWhilePromptHeld claims the root for another live
-// process while the confirmation is held. Prompted, Execute's start re-check
-// refuses root_held with nothing created; with --yes (no start re-check) the
-// claim is caught just before the release: failed root_held, the root still
-// on topic with its work and the new worktree kept with the copy. Why: the
-// claim is checked again exactly where a running agent would lose work.
+// process while the confirmation is held (or just before --yes runs) and
+// requires the move to proceed and complete anyway: exit 0, moved, the root
+// on the default and the work carried into the new worktree. Why: a held root
+// only rides Preflight's plan as a warning and the user decides — Execute
+// reads no session claims, so a claim appearing in the prompt window can
+// neither refuse nor fail a move.
 func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 	t.Run("prompted", func(t *testing.T) {
 		a := restoreRootApp(t)
@@ -620,18 +640,21 @@ func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 		rootOnTopic(t, dir)
 		restoreRootTTY = func(io.Reader, io.Writer) bool { return true }
 		afterRestoreRootConfirm = func() { liveClaim(t, dir) }
-		world := repoWorld(t, dir)
 
 		stdout, _, err := runRestoreRoot(t, a, dir, "y\n", "--json", "--no-fetch")
 
-		if exitOf(err) != 2 {
+		if exitOf(err) != 0 {
 			t.Fatalf("exit %d\n%s", exitOf(err), stdout)
 		}
-		if env := decodeRestoreRoot(t, stdout); env.Code != rootmove.CodeRootHeld || env.Created {
+		env := decodeRestoreRoot(t, stdout)
+		if env.Outcome != "moved" || !env.Created {
 			t.Errorf("envelope = %+v", env)
 		}
-		if rootBranch(t, dir) != "topic" || repoWorld(t, dir) != world {
-			t.Error("the repository changed")
+		if rootBranch(t, dir) != "main" {
+			t.Errorf("root on %s, want main", rootBranch(t, dir))
+		}
+		if b, _ := os.ReadFile(filepath.Join(env.DestPath, "new.txt")); string(b) != "n" {
+			t.Errorf("the new worktree lacks the untracked work: %q", b)
 		}
 	})
 	t.Run("yes", func(t *testing.T) {
@@ -642,22 +665,185 @@ func TestRestoreRootCmdClaimWhilePromptHeld(t *testing.T) {
 
 		stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--json", "--no-fetch")
 
-		if exitOf(err) != 2 {
+		if exitOf(err) != 0 {
 			t.Fatalf("exit %d\n%s", exitOf(err), stdout)
 		}
 		env := decodeRestoreRoot(t, stdout)
-		if env.Outcome != "failed" || env.Code != rootmove.CodeRootHeld || !env.Created {
-			t.Fatalf("envelope = %+v", env)
+		if env.Outcome != "moved" || !env.Created {
+			t.Errorf("envelope = %+v", env)
 		}
-		if rootBranch(t, dir) != "topic" {
-			t.Errorf("root on %s, want topic", rootBranch(t, dir))
+		if rootBranch(t, dir) != "main" {
+			t.Errorf("root on %s, want main", rootBranch(t, dir))
 		}
-		for _, d := range []string{dir, env.DestPath} {
-			if b, _ := os.ReadFile(filepath.Join(d, "new.txt")); string(b) != "n" {
-				t.Errorf("%s lacks the untracked work: %q", d, b)
-			}
+		if b, _ := os.ReadFile(filepath.Join(env.DestPath, "new.txt")); string(b) != "n" {
+			t.Errorf("the new worktree lacks the untracked work: %q", b)
 		}
 	})
+}
+
+// TestRestoreRootCmdHeldRootWarnsAndMoves checks a root another live wt
+// session holds still moves with --yes --json: exit 0, outcome moved, the
+// root on the default with the work carried, and the result warnings carry
+// BOTH held lines — rescue's own ("another wt session holds this worktree…")
+// and rootmove's "root_held: " line naming the holder (pid included) — and
+// the Long help lists held as that warning, never a refusal. Why: held must
+// warn and never prevent at the command too (R408b keeps both lines riding
+// one held plan), and the help is where a user learns the refusals (R409c:
+// it must not claim held refuses).
+func TestRestoreRootCmdHeldRootWarnsAndMoves(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	holder := holderClaim(t, dir, "topic", "codex")
+
+	stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--accept-loss", "--json", "--no-fetch")
+
+	if exitOf(err) != 0 {
+		t.Fatalf("exit %d\n%s", exitOf(err), stdout)
+	}
+	env := decodeRestoreRoot(t, stdout)
+	if env.Outcome != "moved" || !env.Created {
+		t.Fatalf("envelope = %+v", env)
+	}
+	var prefixed []string
+	for _, w := range env.Warnings {
+		if strings.HasPrefix(w, rootmove.HeldWarningPrefix) {
+			prefixed = append(prefixed, w)
+		}
+	}
+	if len(prefixed) != 1 || !strings.Contains(prefixed[0], fmt.Sprintf("(pid %d,", holder.PID)) {
+		t.Errorf("warnings = %q, want exactly one %q line naming pid %d", env.Warnings, rootmove.HeldWarningPrefix, holder.PID)
+	}
+	if got := strings.Count(strings.Join(env.Warnings, "\n"), "another wt session holds this worktree"); got != 1 {
+		t.Errorf("warnings = %q, want rescue's held line once (both held lines ride one held plan)", env.Warnings)
+	}
+	if rootBranch(t, dir) != "main" {
+		t.Errorf("root on %s; a held root must still move", rootBranch(t, dir))
+	}
+	if b, _ := os.ReadFile(filepath.Join(env.DestPath, "new.txt")); string(b) != "n" {
+		t.Errorf("the new worktree lacks the untracked work: %q", b)
+	}
+	long := restoreRootCmd(a).Long
+	_, rest, _ := strings.Cut(long, "It refuses")
+	refusals, _, _ := strings.Cut(rest, "A failure part-way")
+	if refusals == "" || strings.Contains(refusals, "held") {
+		t.Errorf("the help's refusals list is not truthful about held:\n%s", refusals)
+	}
+	if !strings.Contains(long, rootmove.HeldWarningPrefix) {
+		t.Errorf("the help does not name the held warning line %q:\n%s", rootmove.HeldWarningPrefix, long)
+	}
+}
+
+// TestRestoreRootCmdHeldRootYesAloneIsExit3 checks --yes without --accept-loss
+// does not move a root another live wt session holds: exit 3 (approval
+// missing), nothing changed. Why: a root reset under a running agent is a
+// loss the person must name; --yes only covers a move nobody is using.
+func TestRestoreRootCmdHeldRootYesAloneIsExit3(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	holderClaim(t, dir, "topic", "codex")
+	world, before := repoWorld(t, dir), rootState(t, dir)
+
+	stdout, _, err := runRestoreRoot(t, a, dir, "", "--yes", "--json", "--no-fetch")
+
+	if exitOf(err) != 3 || !strings.Contains(err.Error(), "--accept-loss") {
+		t.Fatalf("err = %v (exit %d)\n%s", err, exitOf(err), stdout)
+	}
+	if repoWorld(t, dir) != world || rootState(t, dir) != before || rootBranch(t, dir) != "topic" {
+		t.Error("a --yes run without --accept-loss changed the repository")
+	}
+}
+
+// TestRestoreRootCmdHeldRootPromptNamesHolder checks the y/N prompt of a held
+// root names the holder — sessionclaim.Describe's entry (agent, pid, running,
+// branch) in the "root_held: " warning line — before the confirm, and that a
+// "y" answer moves. Why: the prompt is the user's one chance to end the other
+// session first, so the holder must be named before the decision, and held
+// must not silently block the move either.
+func TestRestoreRootCmdHeldRootPromptNamesHolder(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	holder := holderClaim(t, dir, "topic", "codex")
+	restoreRootTTY = func(io.Reader, io.Writer) bool { return true }
+
+	out, errOut, err := runRestoreRoot(t, a, dir, "y\n", "--no-fetch")
+
+	if exitOf(err) != 0 {
+		t.Fatalf("exit %d (%v)\nprompt: %s\nout: %s", exitOf(err), err, errOut, out)
+	}
+	frag := fmt.Sprintf("codex (pid %d, running", holder.PID)
+	at, confirm := strings.Index(errOut, frag), strings.Index(errOut, "Move? [y/N] ")
+	switch {
+	case at < 0:
+		t.Errorf("the prompt does not name the holder (%q):\n%s", frag, errOut)
+	case confirm < 0:
+		t.Errorf("the prompt has no confirm:\n%s", errOut)
+	case at > confirm:
+		t.Errorf("the holder is named at %d, after the confirm at %d:\n%s", at, confirm, errOut)
+	}
+	if !strings.Contains(errOut, ", started on topic)") {
+		t.Errorf("the holder's rendering drops the branch (want %q):\n%s", ", started on topic)", errOut)
+	}
+	if !strings.Contains(errOut, rootmove.HeldWarningPrefix) {
+		t.Errorf("the prompt carries no %q warning line:\n%s", rootmove.HeldWarningPrefix, errOut)
+	}
+	if !strings.Contains(out, "moved") || rootBranch(t, dir) != "main" {
+		t.Errorf("out %q, root on %s; a yes answer must move a held root", out, rootBranch(t, dir))
+	}
+}
+
+// TestRestoreRootCmdHeldRootNoTerminalNoYesIsExit3 checks a held root with no
+// terminal and no --yes is exit 3 (approval missing) with nothing changed.
+// Why: warn-but-never-prevent means held never refuses a move — it never
+// waives the confirmation either; the root is reset only on approval.
+func TestRestoreRootCmdHeldRootNoTerminalNoYesIsExit3(t *testing.T) {
+	a := restoreRootApp(t) // restoreRootTTY answers false: no terminal to ask
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	holderClaim(t, dir, "topic", "codex")
+	world, before := repoWorld(t, dir), rootState(t, dir)
+
+	stdout, _, err := runRestoreRoot(t, a, dir, "", "--json", "--no-fetch")
+
+	if exitOf(err) != 3 || !strings.Contains(err.Error(), "approval missing") {
+		t.Fatalf("err = %v (exit %d)\n%s", err, exitOf(err), stdout)
+	}
+	if env := decodeRestoreRoot(t, stdout); env.Error == nil || !strings.Contains(env.Error.Message, "approval missing") {
+		t.Errorf("envelope = %+v", env)
+	}
+	if repoWorld(t, dir) != world || rootState(t, dir) != before || rootBranch(t, dir) != "topic" {
+		t.Error("an unapproved run changed the repository")
+	}
+}
+
+// TestRestoreRootCmdHeldRootDryRunReportsWarning checks a dry run of a held
+// root reports the "root_held: " warning naming the holder and moves nothing.
+// Why: --dry-run is where the user reads what a real run would do; held must
+// be visible there, and a dry run must change nothing while saying it.
+func TestRestoreRootCmdHeldRootDryRunReportsWarning(t *testing.T) {
+	a := restoreRootApp(t)
+	dir := cleanupRepo(t)
+	rootOnTopic(t, dir)
+	holder := holderClaim(t, dir, "topic", "codex")
+	world, before := repoWorld(t, dir), rootState(t, dir)
+
+	stdout, _, err := runRestoreRoot(t, a, dir, "", "--dry-run", "--json", "--no-fetch")
+
+	if exitOf(err) != 0 {
+		t.Fatalf("exit %d\n%s", exitOf(err), stdout)
+	}
+	env := decodeRestoreRoot(t, stdout)
+	if env.Outcome != "would_move" || env.Created {
+		t.Fatalf("envelope = %+v", env)
+	}
+	if w := strings.Join(env.Warnings, "\n"); !strings.Contains(w, rootmove.HeldWarningPrefix) || !strings.Contains(w, fmt.Sprintf("(pid %d,", holder.PID)) {
+		t.Errorf("warnings = %q, want the %q line naming pid %d", env.Warnings, rootmove.HeldWarningPrefix, holder.PID)
+	}
+	if repoWorld(t, dir) != world || rootState(t, dir) != before || exists(filepath.Join(dir, ".worktrees", "topic")) {
+		t.Error("a dry run changed the repository")
+	}
 }
 
 // TestRestoreRootCmdEditWhilePromptHeld edits the root while the
@@ -796,18 +982,21 @@ func TestRestoreRootCmdRemedyPrintedWhole(t *testing.T) {
 	}
 }
 
-// TestRestoreRootCmdRecoveryPrintedWhole fails a --yes run just before the
-// release (a live claim appears after the confirmation) and checks the
-// recovery sentence, which names the copy and the record, reaches the text
-// and the JSON reason whole although the reason is over 200 runes, and that
-// the text does not also say nothing was changed. Why: the recovery table's
-// row is how the user finds the work after a failure.
+// TestRestoreRootCmdRecoveryPrintedWhole fails a --yes run at the release's
+// first gate (after the confirmation the default branch becomes checked out
+// in another worktree) and checks the recovery sentence, which names the copy
+// and the record, reaches the text and the JSON reason whole although the
+// reason is over 200 runes, and that the text does not also say nothing was
+// changed. Why: the recovery table's row is how the user finds the work after
+// a failure.
 func TestRestoreRootCmdRecoveryPrintedWhole(t *testing.T) {
 	for _, asJSON := range []bool{false, true} {
 		a := restoreRootApp(t)
 		dir := cleanupRepo(t)
 		rootOnTopic(t, dir)
-		afterRestoreRootConfirm = func() { liveClaim(t, dir) }
+		afterRestoreRootConfirm = func() {
+			cgit(t, dir, "worktree", "add", "-q", filepath.Join(dir, ".worktrees", "m"), "main")
+		}
 		args := []string{"--yes", "--no-fetch"}
 		if asJSON {
 			args = append(args, "--json")

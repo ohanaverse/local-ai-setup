@@ -16,7 +16,7 @@ import (
 var errCancelled = errors.New("launch cancelled")
 
 // rootClaimRelease removes this session's claim on the repository root. It is
-// set by holdRoot and called through releaseRootClaim.
+// set by holdLaunch and called through releaseRootClaim.
 var rootClaimRelease = func() {}
 
 // releaseRootClaim removes this session's claim on the repository root, if it
@@ -58,33 +58,18 @@ func confirmLaunch(t launchwarn.Target, readErr error, in io.Reader, out io.Writ
 	return nil
 }
 
-// holdRoot is the root-claim side of a launch in dir: when dir is a
-// repository's primary checkout it writes this session's claim (path, branch,
-// agent) and keeps the release for releaseRootClaim, so other launches warn
-// about it (held) exactly while the agent runs. A linked worktree claims
-// nothing. Another live holder is not a question here — launchwarn's held
-// warning has already named them. A claim that cannot be read or written is
-// one note and never a refusal.
-func holdRoot(agent, dir string) {
-	root, ok, err := rootclaim.Lookup(dir)
-	if !ok {
-		return
-	}
-	note := func(err error) {
-		fmt.Fprintf(osStderr, "wt: note: %s\n", sessionclaim.CheckFailed(root.Path, err))
-	}
+// holdLaunch claims the worktree dir sits in (the root or a linked worktree)
+// and keeps the release for releaseRootClaim, so other launches warn about
+// this session (held) exactly while the agent runs. It runs before any model
+// starts: a launch that waits minutes for a local model is already visible to
+// the next launch in the same checkout. Another live holder is not a question
+// here — launchwarn's held warning has already named them. A directory with no
+// checkout claims nothing; a claim that cannot be read or written is one note
+// and never a refusal.
+func holdLaunch(agent, dir string) {
+	release, _, err := rootclaim.HoldLaunch(dir, agent)
 	if err != nil {
-		note(err)
-		return
-	}
-	self, err := root.Self(agent)
-	if err != nil {
-		note(err)
-		return
-	}
-	release, _, err := sessionclaim.Join(root.CommonDir, self, func([]sessionclaim.Claim) bool { return true })
-	if err != nil {
-		note(err)
+		fmt.Fprintf(osStderr, "wt: note: %s\n", sessionclaim.CheckFailed(dir, err))
 		return
 	}
 	rootClaimRelease = release

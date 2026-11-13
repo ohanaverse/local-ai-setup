@@ -23,7 +23,6 @@ const (
 	CodeDetachedRoot        = "detached_root"
 	CodeAlreadyDefault      = "already_default"
 	CodeDefaultInWorktree   = "default_in_worktree"
-	CodeRootHeld            = "root_held"
 	CodeNoCommit            = "no_commit"
 	CodeReleaseRefused      = "release_refused"
 	CodeNoDefaultBranch     = "no_default_branch"
@@ -38,6 +37,14 @@ const (
 	CodeReleaseFailed = "release_failed"
 	CodeSwitchFailed  = "switch_failed"
 )
+
+// HeldWarningPrefix starts the one warnings line a held root rides the plan
+// on: the established held rendering after this prefix. Held is a label the
+// user acknowledges, never a refusal — the plan proceeds — and never a code:
+// the word before the colon is not in Codes and no outcome carries it (see
+// TestCodesCoverEveryCodeRootmoveEmits). The contract
+// (docs/contracts/restore-root-result.*) documents the line under `warnings`.
+const HeldWarningPrefix = "root_held: "
 
 // Engine moves one repository's root. Rescue is the root-mode rescue engine
 // (its G, Prior, In and Classify as `wt rescue` builds them); Rescue.Prior.Repo
@@ -83,15 +90,10 @@ type Plan struct {
 
 	rp        *rescue.Plan // the root-mode rescue plan Execute copies with
 	skipStart bool         // see SkipStartRecheck
-	// common is the absolute git common dir Preflight read once; "" (a Plan
-	// not made by Preflight) is read again where used. core.ignorecase is
-	// deliberately not kept: Execute's checks read it fresh.
-	common string
 }
 
 // SkipStartRecheck tells Execute that nothing happened between Preflight and
 // it that gave the root time to change (no prompt was shown); see
 // rescue.Plan.SkipStartRecheck.
-// Execute then skips its start-of-run fingerprint and claim re-checks; the
-// checks after the copy and before the release still run.
+// Execute then skips its start-of-run fingerprint re-check.
 func (p *Plan) SkipStartRecheck() { p.skipStart = true; p.rp.SkipStartRecheck() }

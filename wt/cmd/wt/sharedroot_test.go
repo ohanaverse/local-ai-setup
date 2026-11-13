@@ -69,17 +69,17 @@ func (r failReader) Read([]byte) (int, error) {
 	return 0, fmt.Errorf("unexpected read")
 }
 
-// TestHoldRootClaimsTheRootOnly checks the root-claim side of a launch in
-// isolation: a launch in the repository root writes this session's claim
-// (path, branch, agent) and the release removes it again, a linked worktree
-// claims nothing, and a claims directory that cannot be written is one note
+// TestHoldLaunchClaimsTheWorktree checks the early claim side of a launch in
+// isolation: a launch in the repository root or a linked worktree writes this
+// session's claim for that checkout (path, branch, agent) before any model
+// starts and the release removes it again, and a claims directory that cannot be written is one note
 // and never a refusal. Why: the held warning other launches show reads these
 // claims, so a root launch must be visible exactly while it runs — and a
 // broken claims directory must not stop anybody from working.
-func TestHoldRootClaimsTheRootOnly(t *testing.T) {
+func TestHoldLaunchClaimsTheWorktree(t *testing.T) {
 	t.Run("the root", func(t *testing.T) {
 		root := sharedRootRepo(t)
-		holdRoot("claude", root)
+		holdLaunch("claude", root)
 		data, err := os.ReadFile(ownClaim(root))
 		if err != nil {
 			t.Fatalf("no claim written: %v", err)
@@ -97,10 +97,22 @@ func TestHoldRootClaimsTheRootOnly(t *testing.T) {
 	t.Run("a linked worktree", func(t *testing.T) {
 		root := sharedRootRepo(t)
 		linked := addLinkedWorktree(t, root, "feat")
-		holdRoot("claude", linked)
+		holdLaunch("claude", linked)
+		data, err := os.ReadFile(ownClaim(root))
+		if err != nil {
+			t.Fatalf("no claim written: %v", err)
+		}
+		for _, want := range []string{"path=" + linked + "\n", "branch=feat\n"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("claim %q lacks %q", data, want)
+			}
+		}
+		if strings.Contains(string(data), "path="+root+"\n") {
+			t.Error("a linked-worktree launch claimed the root")
+		}
 		releaseRootClaim()
 		if fileExists(ownClaim(root)) {
-			t.Error("a linked-worktree launch claimed the root")
+			t.Error("release left the claim behind")
 		}
 	})
 	t.Run("an unwritable claims directory", func(t *testing.T) {
@@ -117,7 +129,7 @@ func TestHoldRootClaimsTheRootOnly(t *testing.T) {
 			t.Skip("root ignores file modes")
 		}
 		notes := captureNotes(t)
-		holdRoot("claude", root)
+		holdLaunch("claude", root)
 		releaseRootClaim()
 		if s := notes.String(); !strings.Contains(s, "note") || strings.Count(s, "\n") != 1 {
 			t.Errorf("notes %q; want a one-line note", s)
@@ -127,11 +139,12 @@ func TestHoldRootClaimsTheRootOnly(t *testing.T) {
 
 // TestNamedWorktreeLaunchDecidesOnTheResolvedDir checks a launch is judged by
 // the directory it resolves to, not the flag that named it: -W naming a linked
-// worktree is never warned about or claimed even while another session holds
-// the root, and a launch in the root claims it for the agent's run — held by
-// another live session it warns (naming the holder) and proceeds. Why: the
-// warnings must describe the place the agent will actually start; the old
-// shared-root refusal and its c/w/q menu are gone.
+// worktree is never warned about even while another session holds the root —
+// it claims its own worktree for the agent's run (Task 405) — and a launch in
+// the root claims it for the agent's run too: held by another live session it
+// warns (naming the holder) and proceeds. Why: the warnings must describe the
+// place the agent will actually start; the old shared-root refusal and its
+// c/w/q menu are gone.
 func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
 	t.Run("linked worktree", func(t *testing.T) {
 		root := sharedRootRepo(t)
@@ -146,8 +159,11 @@ func TestNamedWorktreeLaunchDecidesOnTheResolvedDir(t *testing.T) {
 		if s := notes.String(); strings.Contains(s, "in use by another session") || strings.Contains(s, "is the repository root") {
 			t.Errorf("notes = %q; a linked worktree is not the root", s)
 		}
-		if res.claimSeen || fileExists(ownClaim(root)) {
-			t.Error("a linked-worktree launch claimed the root")
+		if !res.claimSeen {
+			t.Error("the agent did not see the linked worktree's claim while it ran")
+		}
+		if fileExists(ownClaim(root)) {
+			t.Error("the claim outlived the agent")
 		}
 	})
 	t.Run("root, held", func(t *testing.T) {

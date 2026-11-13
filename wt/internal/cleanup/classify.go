@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 )
 
 // Kind is what a row would remove.
@@ -61,7 +63,9 @@ const (
 	ReasonBaseIsLocal           = "base_is_local"           // soft: no remote default; the base is the local one
 	ReasonNoMergedPR            = "no_merged_pr"            // soft (remote rows): merged content but no merged PR
 	ReasonClaimsUnavailable     = "claims_unavailable"      // the session claims could not be read
+	ReasonHeld                  = "held"                    // soft: another live wt session holds this worktree — a label carrying the claim description, floored at less sure, never a blocker
 	ReasonPreserved             = "preserved"               // a rescue record covers the worktree's commits (informational, never lowers the status) or also its uncommitted work (soft: less sure)
+	ReasonRootDrift             = "root_drift"              // soft: the root checkout sits off the default branch (or on a detached HEAD) — the drift line (rootclaim.Drift's text) as the detail, a label on the root row only, never a blocker
 )
 
 // Blocker codes beyond CheckGates' own.
@@ -72,9 +76,11 @@ const (
 )
 
 // IsHardStop reports whether a blocker code refuses a removal outright, for a
-// row of kind k. The rest (held, default_branch) are verdict floors: the row
-// is never proven, but --accept-loss may remove it. Every code applies to
-// every kind today; k is part of the signature so a later code can differ.
+// row of kind k. The rest are verdict floors: the row is never proven, but
+// --accept-loss may remove it. That is default_branch — held is a label
+// (ReasonHeld, carried in Row.Reasons), never a blocker in the classifier,
+// and floors at less sure there. Every code applies to every kind today; k is
+// part of the signature so a later code can differ.
 func IsHardStop(code string, k Kind) bool {
 	switch code {
 	case BlockPrimary, BlockCurrent, BlockLocked, BlockNested, BlockOperation,
@@ -114,8 +120,9 @@ type Row struct {
 	Reasons  []Reason
 	Blockers []Reason
 	// HardStop is the code of the first blocker that refuses a removal
-	// outright (IsHardStop), "" when none does: the other blockers (held,
-	// default_branch) are verdict floors a user may accept. Not serialised.
+	// outright (IsHardStop), "" when none does: the other blocker
+	// (default_branch) is a verdict floor a user may accept, and so is the
+	// held label (a ReasonHeld reason). Not serialised.
 	HardStop string
 	Primary  bool // the repository's primary checkout (the root)
 	Current  bool // the worktree holding the cwd
@@ -258,8 +265,8 @@ func (j *judge) hardStop() string {
 }
 
 // status is first match wins: in use (a hard stop only), unique work, less
-// sure, proven. A floor blocker (held, default branch) caps proven at less
-// sure.
+// sure, proven. A floor (a default-branch blocker, or the held label) caps
+// proven at less sure and never overrides a stronger class.
 func (j *judge) status() Status {
 	switch {
 	case j.hardStop() != "":
@@ -544,6 +551,19 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 	}
 	if w.Primary && c.s.ClaimsErr != "" {
 		j.weak(ReasonClaimsUnavailable, c.s.ClaimsErr)
+	}
+	// Held is a label, not a blocker: the live sessions holding this
+	// checkout floor the verdict at less sure and say who is there (the
+	// claim description), and never mask work at risk (unique wins).
+	if holders := c.s.HeldOn(w.Path); len(holders) > 0 {
+		j.weak(ReasonHeld, sessionclaim.DescribeAll(holders, c.o.Now))
+	}
+	// Root drift is a label too: the root checkout is off its default branch
+	// (or on a detached HEAD) and `wt restore-root` puts it back. The detail
+	// is the drift line itself (rootclaim.Drift's text, read at gather and
+	// re-read at rescan). Soft, like held — and only on the root's own row.
+	if w.Primary && c.s.RootDrift != "" {
+		j.weak(ReasonRootDrift, c.s.RootDrift)
 	}
 
 	switch {

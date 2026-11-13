@@ -71,11 +71,11 @@ func announceGuardInstall() {
 // block the agent launch. An install this call actually made is announced on
 // stderr once — the hook must never appear silently; a hook already present
 // is left untouched and prints nothing. It is a package-level var so tests
-// can stub it out — the real guard.EnsureOnLaunch operates on the test
+// can stub it out — the real guard.Install operates on the test
 // process's cwd, which would otherwise install the hook into the repo under
 // test.
 var maybeInstallGuard = func() {
-	installed, err := guard.EnsureOnLaunch()
+	installed, err := guard.Install() // false when the hook is already there
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wt: failed to auto-install main guard: %v\n", err)
 		return

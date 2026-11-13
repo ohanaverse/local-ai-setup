@@ -37,13 +37,20 @@ type Creation struct {
 // Target is the place a launch is about to start, as already read.
 type Target struct {
 	Dir, Branch, Default, RootBranch string
-	IsRoot, RootChosen               bool // the target is the root; the user passed --root
-	UpstreamGone, Dirty              bool
-	PRState                          string // "merged", "open", "closed", "" or "unknown"
-	PRNumber                         int
-	Holders                          []sessionclaim.Claim // live sessions on Dir
-	Creation                         *Creation            // non-nil when the launch creates the worktree; Check's concern, Collect ignores it
-	Hint                             string               // optional trailing advice; the caller's to append, Collect ignores it
+	// RootDrift is rootclaim.Drift's line for the repository's root checkout
+	// ("root is on <b>, not <d>", "root is detached", or "" when it sits on
+	// the default branch or no default is known): the root_drift warning's
+	// text verbatim. It is computed from the raw branch ("" on a detached
+	// HEAD), never RootBranch's "(detached)" display sentinel — a real
+	// branch may be named that.
+	RootDrift           string
+	IsRoot, RootChosen  bool // the target is the root; the user passed --root
+	UpstreamGone, Dirty bool
+	PRState             string // "merged", "open", "closed", "" or "unknown"
+	PRNumber            int
+	Holders             []sessionclaim.Claim // live sessions on Dir
+	Creation            *Creation            // non-nil when the launch creates the worktree; Check's concern, Collect ignores it
+	Hint                string               // optional trailing advice; the caller's to append, Collect ignores it
 }
 
 // Warning is one thing worth saying before the launch. Text is plain, with no
@@ -61,8 +68,11 @@ func Collect(t Target) (warnings []Warning, info string) {
 	if t.IsRoot && !t.RootChosen {
 		add(CodeRoot, fmt.Sprintf("%s is the repository root; a launch here shares it with every other session (--root accepts this)", t.Dir))
 	}
-	if t.RootBranch != "" && t.Default != "" && t.RootBranch != t.Default {
-		add(CodeRootDrift, fmt.Sprintf("root is on %s, not %s", t.RootBranch, t.Default))
+	// The drift entry is rootclaim.Drift's line verbatim (ForDir and ForNew
+	// feed it in), so a detached root reads `root is detached` and a root
+	// with no known default warns of nothing.
+	if t.RootDrift != "" {
+		add(CodeRootDrift, t.RootDrift)
 	}
 	if len(t.Holders) > 0 {
 		n := now()

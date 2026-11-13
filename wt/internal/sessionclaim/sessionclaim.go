@@ -1,5 +1,6 @@
 // Package sessionclaim records which wt sessions are running in a repository's
-// root checkout, so a second launch there can warn the person first. A claim
+// checkout — the root or a linked worktree — so a second launch there can warn
+// the person first. A claim
 // is one key=value file per wt process in <git-common-dir>/wt-sessions/<pid>;
 // repo-cleanup (bash) reads the same files. The format is a cross-repo
 // contract: docs/contracts/session-claims.md at the monorepo root.
@@ -238,6 +239,39 @@ func Join(commonDir string, c Claim, ask func(others []Claim) bool) (release fun
 	return release, others, err
 }
 
+// Hold claims c's path in commonDir/wt-sessions for this process without
+// asking about other sessions: every launch is a claim — the warning readers
+// must see all of them — and asking belongs to the callers. It first prunes
+// the stale claims (a dead pid or a reused one, per the contract's liveness
+// rule), so a killed wt's leftovers never pile up; the prune and the write run
+// under one lock, and the prune runs before the write so a leftover named by
+// c's own pid cannot delete the fresh claim. c is written atomically and
+// release removes only that file; calling release twice is safe. release is
+// never nil, so a caller may defer it even when err is set.
+func Hold(commonDir string, c Claim) (release func(), err error) {
+	release = func() {}
+	dir := filepath.Join(commonDir, "wt-sessions")
+	mine := filepath.Join(dir, strconv.Itoa(c.PID))
+	// The parent chain costs a `ps` per generation, so it is walked before the
+	// lock, not under it, and only when there is a claim file to compare with:
+	// a claim by this process or one of its parents is kept, never pruned.
+	var parents map[int]bool
+	if hasClaims(dir) {
+		parents = ancestors()
+	}
+	err = withLock(dir, func() error {
+		if _, err := scan(dir, c, parents, true); err != nil {
+			return err
+		}
+		if err := config.WriteFileAtomic(mine, c.encode(), 0o644); err != nil {
+			return err
+		}
+		release = func() { _ = os.Remove(mine) }
+		return nil
+	})
+	return release, err
+}
+
 // Others returns the live claims in commonDir/wt-sessions on c.Path other than
 // c's own, without taking the lock or changing anything: a caller that must
 // ask before it claims (the picker's screen) reads first and joins after.
@@ -300,8 +334,10 @@ type claimEntry struct {
 }
 
 // readClaims reads every claim file in dir (files named by a pid; .lock and
-// rename temp files are skipped). It is the one directory walk the readers
-// share — scan, Others and AncestorHolds must agree on what a claim file is.
+// rename temp files are skipped). It is the one directory walk the package
+// shares — scan (which serves Others, Join, Hold and Prune), Holders,
+// AncestorHolds and Prune's own before/after reads (the comparison that
+// decides what the prune deletes) must agree on what a claim file is.
 func readClaims(dir string) ([]claimEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

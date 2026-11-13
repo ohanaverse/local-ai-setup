@@ -26,24 +26,31 @@ type WorktreeFact struct {
 const (
 	BlockPrimary           = "primary"
 	BlockCurrent           = "current"
-	BlockHeld              = "held"
 	BlockLocked            = "locked"
 	BlockNested            = "nested"
 	BlockOperation         = "operation_in_progress"
 	BlockProtectedArtifact = "protected_artifact"
 )
 
-// Reason is one hard blocker: its code and what it names (a path, an
-// operation).
+// BlockHeld is the held code under its old blocker name. Held is a label,
+// never a blocker: the classifier raises it as ReasonHeld (the same code) and
+// lists it in Row.Reasons. The alias remains for its legacy-shape consumers:
+// the held test seam (heldseam.go's StubHeldForTest faker), present.go's
+// legacy-blocker lookup, and the legacy-shape test fixtures.
+const BlockHeld = ReasonHeld
+
+// Reason is one code and what it names (a path, an operation, a session's
+// claim description) — a blocker or a row reason alike.
 type Reason struct {
 	Code   string
 	Detail string
 }
 
 // Gates are a worktree's facts that do not depend on its branch. Blockers
-// are the codes above: IsHardStop says which refuse a removal outright, the
-// rest (held) are verdict floors that only cap the row below proven; Dirty, ignored files and a unique detached HEAD
-// are soft: they move a row out of PROVEN.
+// are the codes above and every one refuses a removal outright (IsHardStop);
+// Dirty, ignored files and a unique detached HEAD are soft: they move a row
+// out of PROVEN. (Held used to block here too; it is a label now, raised
+// from the session claims — see ReasonHeld.)
 type Gates struct {
 	Blockers       []Reason
 	Dirty          bool  // tracked changes or non-ignored untracked files
@@ -54,9 +61,8 @@ type Gates struct {
 
 // GateInputs are what CheckGates cannot learn from git.
 type GateInputs struct {
-	Base           string                 // fully-qualified ref or 40-hex id; needed for a detached HEAD
-	HeldBy         func(path string) bool // another live wt session holds this root; nil: none
-	ProtectedPaths []string               // registered local_path model artifacts
+	Base           string   // fully-qualified ref or 40-hex id; needed for a detached HEAD
+	ProtectedPaths []string // registered local_path model artifacts
 }
 
 // ListWorktrees parses `worktree list --porcelain -z` run in g.Dir. The
@@ -194,9 +200,6 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	}
 	if w.Current {
 		block(BlockCurrent, w.Path)
-	}
-	if in.HeldBy != nil && in.HeldBy(w.Path) {
-		block(BlockHeld, w.Path)
 	}
 	if w.Locked {
 		block(BlockLocked, w.Path)

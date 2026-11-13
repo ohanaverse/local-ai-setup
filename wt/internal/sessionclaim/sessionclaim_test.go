@@ -471,3 +471,105 @@ func TestAncestorHoldsIgnoresAStaleAncestorsClaim(t *testing.T) {
 		t.Fatalf("AncestorHolds = %v, %v; want false, nil (a stale claim must not hold)", got, err)
 	}
 }
+
+// TestHoldWritesClaimWithoutAsking checks Hold records this launch's claim in
+// one call with no question, even while another live session holds the same
+// path: every launch is a claim (the warning readers must see all of them),
+// and asking belongs to the callers, not the write.
+func TestHoldWritesClaimWithoutAsking(t *testing.T) {
+	fakeProcs(t, map[int]int64{100: 1000})
+	dir := t.TempDir()
+	claimFile(t, dir, 100, body(100, 1000, root))
+	rel, err := Hold(dir, self())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "wt-sessions", "900"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "pid=900\nstarted=5000\npath=/repo\nbranch=main\nagent=pi\n" {
+		t.Fatalf("claim = %q", got)
+	}
+	if !exists(filepath.Join(dir, "wt-sessions", "100")) {
+		t.Fatal("Hold removed another session's live claim")
+	}
+	rel()
+}
+
+// TestHoldPrunesStaleBeforeWriting checks Hold deletes stale claims before it
+// writes its own: a dead pid's leftover and a live pid whose start time
+// differs by more than the 5-second tolerance (the OS reused the pid) must not
+// pile up, while a live claim survives. The order — pruned first and written
+// after — is pinned by this claim's own pid being dead to the fake table: a
+// prune after the write would delete the fresh claim it just wrote.
+func TestHoldPrunesStaleBeforeWriting(t *testing.T) {
+	fakeProcs(t, map[int]int64{100: 1000, 102: 1100})
+	dir := t.TempDir()
+	dead := claimFile(t, dir, 101, body(101, 1000, root))
+	reused := claimFile(t, dir, 102, body(102, 1000, root))
+	live := claimFile(t, dir, 100, body(100, 1000, root))
+	claimFile(t, dir, 900, body(900, 1000, root))
+	rel, err := Hold(dir, self())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	if exists(dead) || exists(reused) {
+		t.Fatalf("stale claims kept: dead=%v reused=%v", exists(dead), exists(reused))
+	}
+	if !exists(live) {
+		t.Fatal("a live claim was pruned")
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "wt-sessions", "900"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "pid=900\nstarted=5000\npath=/repo\nbranch=main\nagent=pi\n" {
+		t.Fatalf("claim = %q; want the fresh claim (prune must run before the write)", got)
+	}
+}
+
+// TestHoldReleaseRemovesOwnFileOnly checks release deletes just this launch's
+// claim and is safe to call twice: callers defer it and may also call it
+// explicitly, and neither may touch another session's file.
+func TestHoldReleaseRemovesOwnFileOnly(t *testing.T) {
+	fakeProcs(t, map[int]int64{100: 1000})
+	dir := t.TempDir()
+	other := claimFile(t, dir, 100, body(100, 1000, root))
+	rel, err := Hold(dir, self())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := filepath.Join(dir, "wt-sessions", "900")
+	rel()
+	if exists(mine) {
+		t.Fatal("claim survived release")
+	}
+	if !exists(other) {
+		t.Fatal("release removed another session's claim")
+	}
+	rel() // a second release must change nothing and not panic
+	if !exists(other) {
+		t.Fatal("a second release removed another session's claim")
+	}
+}
+
+// TestHoldUnwritableDirReturnsErrorNotPanic checks a commonDir that cannot
+// hold wt-sessions yields an error the caller can downgrade to a warning, with
+// a release it can still defer — a launch never dies on its own bookkeeping.
+func TestHoldUnwritableDirReturnsErrorNotPanic(t *testing.T) {
+	fakeProcs(t, nil)
+	f := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(f, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := Hold(f, self())
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if rel == nil {
+		t.Fatal("release must be non-nil even on error")
+	}
+	rel()
+}

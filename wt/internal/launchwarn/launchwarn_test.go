@@ -61,7 +61,7 @@ func TestCollectRootWarns(t *testing.T) {
 func TestCollectRootChosenSuppressesRootWarning(t *testing.T) {
 	tg := base()
 	tg.Dir, tg.Branch, tg.IsRoot, tg.RootChosen = "/r", "feat", true, true
-	tg.RootBranch = "feat"
+	tg.RootDrift = "root is on feat, not main"
 	ws, _ := Collect(tg)
 	if _, ok := has(ws, CodeRoot); ok {
 		t.Errorf("root warned despite --root: %v", codes(ws))
@@ -161,7 +161,8 @@ func TestCollectDirtyWithoutHoldersIsQuiet(t *testing.T) {
 
 func TestCollectRootNotChosenWithDriftEmitsBoth(t *testing.T) {
 	tg := base()
-	tg.Dir, tg.Branch, tg.IsRoot, tg.RootBranch = "/r", "feat", true, "feat"
+	tg.Dir, tg.Branch, tg.IsRoot = "/r", "feat", true
+	tg.RootDrift = "root is on feat, not main"
 	if got := strings.Join(codes(mustCollect(tg)), ","); got != CodeRoot+","+CodeRootDrift {
 		t.Errorf("codes = %s", got)
 	}
@@ -171,7 +172,7 @@ func TestCollectRootNotChosenWithDriftEmitsBoth(t *testing.T) {
 // worktree still says the root is off the default branch.
 func TestCollectNonRootTargetStillNotesDriftedRoot(t *testing.T) {
 	tg := base()
-	tg.RootBranch = "feat"
+	tg.RootDrift = "root is on feat, not main"
 	if got := strings.Join(codes(mustCollect(tg)), ","); got != CodeRootDrift {
 		t.Errorf("codes = %s", got)
 	}

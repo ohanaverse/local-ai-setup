@@ -69,7 +69,7 @@ func TestEncodeResultCarriesPlanFacts(t *testing.T) {
 	if v["carried"].(map[string]any)["untracked_bytes"] != float64(9) || v["left_behind"].(map[string]any)["ignored_entries"] != float64(5) || v["record"] == nil {
 		t.Errorf("counts or record missing:\n%s", b)
 	}
-	b, err = EncodeResult(Outcome{Status: rescue.StatusRefused, Code: CodeRootHeld, Plan: p}, Meta{Repo: "/r"})
+	b, err = EncodeResult(Outcome{Status: rescue.StatusRefused, Code: CodeDetachedRoot, Plan: p}, Meta{Repo: "/r"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,9 +82,12 @@ func TestEncodeResultCarriesPlanFacts(t *testing.T) {
 // package (and rescue's, for the values) and requires every Code constant
 // declared here and every rescue.Code* it names to be in Codes, and Codes to
 // hold nothing else except what rescue.Preflight can hand through: rescue's
-// own list minus `primary` and `nothing_to_keep`. Why: the schema's code enum
-// is built from Codes; a code rootmove can emit but the contract lacks makes a
-// consumer's validator reject a real document.
+// own list minus `primary` and `nothing_to_keep`, and minus the held word,
+// which is only the word a HeldWarningPrefix warnings line starts with now,
+// never a code. Why: the schema's code enum is built from Codes; a code
+// rootmove can emit but the contract lacks makes a consumer's validator
+// reject a real document, and a held root that came back as a code would
+// contradict the warning it rides the plan on.
 func TestCodesCoverEveryCodeRootmoveEmits(t *testing.T) {
 	t.Parallel()
 	fset := token.NewFileSet()
@@ -161,7 +164,10 @@ func TestCodesCoverEveryCodeRootmoveEmits(t *testing.T) {
 			t.Errorf("rescue code %q is missing from Codes", c)
 		}
 	}
-	for _, c := range []string{rescue.CodePrimary, rescue.CodeNothingToKeep} {
+	// The held word goes with the two: it is only the word a HeldWarningPrefix
+	// warnings line starts with now, never a code a document carries.
+	heldWord := strings.TrimSuffix(HeldWarningPrefix, ": ")
+	for _, c := range []string{rescue.CodePrimary, rescue.CodeNothingToKeep, heldWord} {
 		if slices.Contains(Codes, c) {
 			t.Errorf("Codes holds %q, which a root move never answers", c)
 		}

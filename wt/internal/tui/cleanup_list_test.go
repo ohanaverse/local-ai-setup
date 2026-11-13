@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -974,6 +980,44 @@ func TestCleanupListFKeyRefetches(t *testing.T) {
 	}
 }
 
+// TestCleanupListFKeyKeepsTheUsersUntickedRows: a row the user unticked stays
+// unticked across the `F` re-read, and the rows still ticked stay ticked.
+// Why: the rebuilt list would otherwise start from newRowList's default
+// (every tickable local row ticked), and enter would then remove a row the
+// user had deliberately kept.
+func TestCleanupListFKeyKeepsTheUsersUntickedRows(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	var kept cleanup.Row
+	var keptSet bool
+	for i, it := range m.items {
+		if m.ticked[i] && !keptSet {
+			kept, keptSet = it.row, true
+			delete(m.ticked, i)
+		}
+	}
+	if !keptSet {
+		t.Fatal("the fixture has no default-ticked row to untick")
+	}
+	wantTicked := len(m.ticked)
+	m.rm.Refetch = func() (cleanup.Report, error) { return cleanupFixture(), nil }
+	m = press(t, m, keyRunes("F"))
+	got := 0
+	for i, it := range m.items {
+		if it.heading != "" {
+			continue
+		}
+		if keyOf(it.row) == keyOf(kept) && m.ticked[i] {
+			t.Errorf("row %q was unticked by the user and is ticked again after F", kept.Name)
+		}
+		if m.ticked[i] {
+			got++
+		}
+	}
+	if got != wantTicked {
+		t.Errorf("%d rows ticked after F, want %d (the others' ticks kept)", got, wantTicked)
+	}
+}
+
 // TestCleanupListRKeyStillRescues: adding `F` must not displace `r` — the
 // manage list still hands the highlighted row to rescue and quits, and no
 // refetch runs on the way (`F` is the only refetch key).
@@ -1089,5 +1133,198 @@ func TestGuardedRunReleasesSignalForwardingWhenTheProgramPanics(t *testing.T) {
 	got()
 	if stops != 1 {
 		t.Errorf("returned stop did not release (stops %d)", stops)
+	}
+}
+
+// TestRootRowShowsDriftBadge pins the drift badge on the root row: the
+// root_drift soft label's detail — rootclaim.Drift's text, carried live by the
+// classifier and never re-shaped here — is drawn on the root row as a TagWarn
+// badge like the other risk tags, and a root row without the label (the root
+// on its default branch, or no default known) carries no badge: no drift is
+// invented without one (Review Focus 1).
+func TestRootRowShowsDriftBadge(t *testing.T) {
+	const drift = "root is on topic, not main"
+	with := cleanupFixture()
+	with.Rows[0].Reasons = append(with.Rows[0].Reasons,
+		cleanup.Reason{Code: cleanup.ReasonRootDrift, Detail: drift})
+	findRoot := func(m cleanupListModel) cleanupItem {
+		t.Helper()
+		for _, it := range m.items {
+			if it.heading == "" && !it.newWorktree && it.row.Path == "/repo" {
+				return it
+			}
+		}
+		t.Fatal("no root row in the list")
+		return cleanupItem{}
+	}
+	it := findRoot(newSizedCleanupList(t, with, 120, 40))
+	if !slices.Contains(it.tags, cleanup.Tag{Text: drift, Severity: cleanup.TagWarn}) {
+		t.Errorf("root row tags = %+v; want the drift badge %q as a warn tag", it.tags, drift)
+	}
+	warned := false
+	for _, u := range rowUnits(it) {
+		if u.warn && u.text == drift {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("row units = %+v; want %q drawn as a warn unit (the badge)", rowUnits(it), drift)
+	}
+	plain := findRoot(newSizedCleanupList(t, cleanupFixture(), 120, 40))
+	for _, tg := range plain.tags {
+		if tg.Text == drift || strings.HasPrefix(tg.Text, "root is ") {
+			t.Errorf("root row tags = %+v; a row with no root_drift label got a drift badge", plain.tags)
+		}
+	}
+}
+
+// TestPickerHeaderShowsRootDrift pins the picker header's root-drift note:
+// the `wt` launch header carries the drift line (the root row's root_drift
+// label, rootclaim.Drift's text) whatever row the cursor is on — the design's
+// "the same badge is shown in the `wt` launch header even when the user
+// selected something else". The note is the picker header's alone: the manage
+// list surfaces the drift as its root row's badge, and a header whose root
+// row carries no label (root on its default, or no default known) shows no
+// drift note at all.
+func TestPickerHeaderShowsRootDrift(t *testing.T) {
+	const drift = "root is on topic, not main"
+	with := cleanupFixture()
+	with.Rows[0].Reasons = append(with.Rows[0].Reasons,
+		cleanup.Reason{Code: cleanup.ReasonRootDrift, Detail: drift})
+	picker := newLaunchList(t, with, 120, 40)
+	if h := picker.headerBlock(); !strings.Contains(h, drift) {
+		t.Errorf("picker header = %q; want the root drift note %q", h, drift)
+	}
+	manage := newSizedCleanupList(t, with, 120, 40)
+	if h := manage.headerBlock(); strings.Contains(h, drift) {
+		t.Errorf("manage header = %q; the drift note is the picker header's (the manage list's root row carries the badge)", h)
+	}
+	for _, it := range picker.items {
+		if it.heading != "" || it.newWorktree {
+			continue
+		}
+		for _, tg := range it.tags {
+			if tg.Text == drift {
+				t.Errorf("picker row %q repeats the drift as a badge (tags %+v); the header says it once", it.row.Path, it.tags)
+			}
+		}
+	}
+	clean := newLaunchList(t, cleanupFixture(), 120, 40)
+	if h := clean.headerBlock(); strings.Contains(h, drift) {
+		t.Errorf("picker header = %q; want no drift note without the root_drift label", h)
+	}
+}
+
+// procStart returns pid's start time in epoch seconds — what a claim records
+// (docs/contracts/session-claims.md: equal to the real start within 5 s). A
+// fixture "other session" must read live under that rule, so the claim names
+// a real child's real start time, read from ps's lstart in the local zone,
+// never a manufactured timestamp. (Shape: cmd/wt's launch_test.go and
+// internal/cleanup's snapshot_test.go.)
+func procStart(t *testing.T, pid int) int64 {
+	t.Helper()
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // English month names for the parse
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ps lstart for %d: %v", pid, err)
+	}
+	start, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatalf("parse lstart %q: %v", out, err)
+	}
+	return start.Unix()
+}
+
+// staleClaim claims path under repo's wt-sessions for a real child process
+// through sessionclaim.Hold, then kills AND reaps the child: the claim file
+// left behind is exactly what the claim contract's liveness rule calls stale
+// — a real session that died without releasing its claim, carrying the
+// child's real start time, never a manufactured one. The reap matters as
+// much as the kill: a killed but unreaped child is still a live pid to
+// kill(pid, 0), and its claim would read live. Returns the claim and its
+// file's path. (Shape: cmd/wt's holderClaim in restore_root_test.go.)
+func staleClaim(t *testing.T, repo, path, branch, agent string) (sessionclaim.Claim, string) {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid), Path: path, Branch: branch, Agent: agent}
+	common := rmGit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	release, err := sessionclaim.Hold(common, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	return c, filepath.Join(common, "wt-sessions", strconv.Itoa(c.PID))
+}
+
+// TestRefreshPrunesStaleClaims: the `F` refresh drops the stale session
+// claims — on the manage list's re-read and on the picker's rows reload, the
+// one key path both share. Why: a claim outlives its session whenever a
+// process dies without releasing it, and the user-driven cleanup design
+// prunes those exactly on refresh ("stale ones are pruned on refresh"), so
+// the held labels a refresh shows name live sessions and leftovers stop
+// piling up. The stale claim is a real dead process — spawned, claimed with
+// its real start time through sessionclaim.Hold, then killed and reaped.
+func TestRefreshPrunesStaleClaims(t *testing.T) {
+	r := newRmRepo(t)
+	h := r.harness()
+	_, file := staleClaim(t, r.dir, r.dir, "main", "claude")
+	m := h.list(120, 40)
+	m.rm.Refetch = func() (cleanup.Report, error) { h.regather(); return h.report, nil }
+	m = press(t, m, keyRunes("F"))
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("the manage list's F left the stale claim %s behind (stat error %v)", file, err)
+	}
+
+	_, file = staleClaim(t, r.dir, r.dir, "main", "claude")
+	p := newLaunchList(t, h.report, 120, 40)
+	_, cmd := p.Update(keyRunes("F"))
+	if cmd == nil {
+		t.Fatal("the picker's F dispatched no refresh")
+	}
+	if _, ok := cmd().(refreshRowsChosenMsg); !ok {
+		t.Fatal("the picker's F did not answer with refreshRowsChosenMsg")
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("the picker's F left the stale claim %s behind (stat error %v)", file, err)
+	}
+}
+
+// TestOpeningTheListPrunesNothing: opening the list — building it, sizing it,
+// rendering it, moving in it — drops no claim, not even a stale one. Why
+// (the anti-goal): the prune belongs to the user's refresh and the
+// fetch-first `--json` run alone ("opening the list does not fetch or
+// prune", the user-driven cleanup design) — a list someone opens to look
+// must never delete anything under them.
+func TestOpeningTheListPrunesNothing(t *testing.T) {
+	r := newRmRepo(t)
+	h := r.harness()
+	_, file := staleClaim(t, r.dir, r.dir, "main", "claude")
+	before, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("the fixture claim %s: %v", file, err)
+	}
+	m := h.list(120, 40)
+	_ = m.View()
+	m = cleanupSend(t, m, keyRunes("down"))
+	_ = m.View()
+	p := newLaunchList(t, h.report, 120, 40)
+	_ = p.View()
+	after, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("opening the list dropped the stale claim %s: %v", file, err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("opening the list rewrote the stale claim %s", file)
 	}
 }

@@ -4,9 +4,9 @@ import "slices"
 
 // StubHeldForTest makes every gate check report the worktrees at paths as held
 // by another wt session (BlockHeld), for the rest of the test
-// (`t.Cleanup(cleanup.StubHeldForTest(p))`). A real claim only ever lands on
-// the primary checkout, which is a hard stop anyway, so a linked worktree can
-// be held only through this seam. Production code never calls it.
+// (`t.Cleanup(cleanup.StubHeldForTest(p))`). The seam fakes the legacy
+// blockers shape for frozen tests; real holds arrive as ReasonHeld labels from
+// sessionclaim.Holders. Production code never calls it.
 func StubHeldForTest(paths ...string) (restore func()) {
 	old := checkGates
 	resolved := make([]string, len(paths))

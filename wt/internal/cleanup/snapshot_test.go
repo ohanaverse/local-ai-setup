@@ -44,55 +44,163 @@ func snapshotDir(t *testing.T, dir string) map[string]string {
 	return out
 }
 
-// TestGatherReadsClaimsReadOnly writes a live claim on the root (a child
-// `sleep` this test owns, with its real start time) beside a stale one, then
-// gathers. Why: another live wt session in the root must make the root row in
-// use (held), and cleanup only reads claims: it must not write, prune the
-// stale claim, or take the lock file, so the directory is byte-identical.
+// procStart returns pid's start time in epoch seconds — what a claim records
+// (docs/contracts/session-claims.md: equal to the real start within 5 s). A
+// fixture "other session" must read live under that rule, and this package
+// cannot fake sessionclaim's process seams (unexported, and this change adds
+// no exported ones), so the claim names a real child's real start time, read
+// from ps's lstart in the local zone. (Shape: rootclaim's holdlaunch_test.)
+func procStart(t *testing.T, pid int) int64 {
+	t.Helper()
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // English month names for the parse
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ps lstart for %d: %v", pid, err)
+	}
+	start, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatalf("parse lstart %q: %v", out, err)
+	}
+	return start.Unix()
+}
+
+// holderClaim spawns a short-lived real process and claims path for it under
+// commonDir — a fixture "other session" that reads live under the claim
+// contract's liveness rule (real pid, real start time, never manufactured).
+// The child and its claim are cleaned up. (Shape: rootclaim's holdlaunch_test.)
+func holderClaim(t *testing.T, commonDir, path, branch, agent string) sessionclaim.Claim {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid), Path: path, Branch: branch, Agent: agent}
+	release, err := sessionclaim.Hold(commonDir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return c
+}
+
+// TestHeldLabelOnLinkedWorktree claims a linked worktree for another live
+// session (a real child process under the claim contract) and classifies the
+// repository. Why: held is a label, not a blocker — the row carries the held
+// reason with the claim description (who holds the checkout) and no held
+// blocker, the tag names the session, and HeldOn is the read-only lookup
+// behind it.
+func TestHeldLabelOnLinkedWorktree(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	wt := f.Worktree("topic")
+	common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	c := holderClaim(t, common, wt, "topic", "codex")
+	s := gather(t, f)
+	r := Classify(s, Options{Now: later()})
+	row := findRow(t, r, KindWorktree, "topic")
+	var held []string
+	for _, reason := range row.Reasons {
+		if reason.Code == ReasonHeld {
+			held = append(held, reason.Detail)
+		}
+	}
+	if len(held) != 1 || !strings.Contains(held[0], fmt.Sprintf("codex (pid %d, ", c.PID)) || !strings.Contains(held[0], "started on topic)") {
+		t.Fatalf("held reasons %q, want one claim description naming codex pid %d on topic%s", held, c.PID, dumpRows(r.Rows))
+	}
+	if slices.Contains(reasonCodes(row.Blockers), ReasonHeld) {
+		t.Fatalf("blockers %v, want held as a label only%s", reasonCodes(row.Blockers), dumpRows(r.Rows))
+	}
+	if hs := s.HeldOn(row.Path); len(hs) != 1 || hs[0].PID != c.PID {
+		t.Fatalf("HeldOn(%q) = %+v, want the one claim (pid %d)", row.Path, hs, c.PID)
+	}
+	if !slices.ContainsFunc(RowTags(row), func(tg Tag) bool {
+		return strings.Contains(tg.Text, fmt.Sprintf("held by session codex (pid %d, ", c.PID))
+	}) {
+		t.Fatalf("tags %v, want one naming the holding session", RowTags(row))
+	}
+}
+
+// TestHeldWorktreeNeverProven holds a worktree another live session claimed
+// whose branch is as merged as a row can be (the base's own commit, old
+// enough to trust): the held label alone must floor it at less_sure — a held
+// row is never proven — while the same snapshot with the claims cleared reads
+// proven. Why: proven says removing it loses nothing; a live session in the
+// directory says otherwise.
+func TestHeldWorktreeNeverProven(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	wt := f.Worktree("topic")
+	common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	holderClaim(t, common, wt, "topic", "codex")
+	s := gather(t, f)
+	r := Classify(s, Options{Now: later()})
+	row := findRow(t, r, KindWorktree, "topic")
+	if row.Status != StatusLessSure || row.Tickable() {
+		t.Fatalf("held row: status %s tickable %v, want less_sure and not tickable%s", row.Status, row.Tickable(), dumpRows(r.Rows))
+	}
+	if !slices.Contains(reasonCodes(row.Reasons), ReasonHeld) {
+		t.Fatalf("reasons %v, want held%s", reasonCodes(row.Reasons), dumpRows(r.Rows))
+	}
+	bare := s
+	bare.Claims = nil
+	if row := findRow(t, Classify(bare, Options{Now: later()}), KindWorktree, "topic"); row.Status != StatusProven {
+		t.Fatalf("the same row without the claims reads %s, want proven: held must be the only floor", row.Status)
+	}
+}
+
+// TestHeldDoesNotMaskUniqueWork holds a dirty worktree another live session
+// claimed. Why: held is a floor, never an override — uncommitted work is
+// unique_work whatever else is true, and the row carries both reasons (dirty
+// and the held label) rather than letting the label hide work at risk.
+func TestHeldDoesNotMaskUniqueWork(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	wt := f.Worktree("topic")
+	f.DirtyIn(wt, "notes.txt")
+	common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	holderClaim(t, common, wt, "topic", "codex")
+	s := gather(t, f)
+	r := Classify(s, Options{Now: later()})
+	row := findRow(t, r, KindWorktree, "topic")
+	codes := reasonCodes(row.Reasons)
+	if row.Status != StatusUniqueWork || !slices.Contains(codes, ReasonDirty) || !slices.Contains(codes, ReasonHeld) {
+		t.Fatalf("status %s reasons %v, want unique_work carrying dirty and held%s", row.Status, codes, dumpRows(r.Rows))
+	}
+}
+
+// TestGatherReadsClaimsReadOnly claims a linked worktree for another live
+// session (a real child under the claim contract) and leaves a stale and a
+// malformed claim file beside it — written after the claim, because Hold
+// prunes stale files and Gather must not — then gathers and classifies. Why:
+// gathering reads claims without writing or deleting any: it must see the
+// holder (the held label) yet leave the directory byte-identical, stale and
+// malformed files included. (Rewritten for held as a label.)
 func TestGatherReadsClaimsReadOnly(t *testing.T) {
 	f := newFixture(t)
 	noGh(t)
-	sleep := exec.Command("sleep", "60")
-	if err := sleep.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sleep.Process.Kill(); _ = sleep.Wait() })
-	root, err := filepath.EvalSymlinks(f.Dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	wt := f.Worktree("topic")
 	common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	c := holderClaim(t, common, wt, "topic", "codex")
 	dir := filepath.Join(common, "wt-sessions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	stale := filepath.Join(dir, fmt.Sprint(c.PID+1_000_000)) // no such pid: stale
+	malformed := filepath.Join(dir, fmt.Sprint(c.PID+2_000_000))
+	if err := os.WriteFile(stale, []byte(fmt.Sprintf("pid=%d\nstarted=1\npath=%s\nbranch=main\nagent=claude\n", c.PID+1_000_000, wt)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	write := func(pid int, started int64) {
-		body := fmt.Sprintf("pid=%d\nstarted=%d\npath=%s\nbranch=main\nagent=claude\n", pid, started, root)
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprint(pid)), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(malformed, []byte("pid=not-a-number\nstarted=soon\npath=\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	write(sleep.Process.Pid, time.Now().Unix())
-	write(sleep.Process.Pid+1_000_000, 1) // no such pid: stale
 	before := snapshotDir(t, dir)
 
-	s, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: t.TempDir(), OwnRepo: "o/r", Claim: sessionclaim.Claim{PID: os.Getpid()}})
-	if err != nil {
-		t.Fatalf("Gather: %v", err)
-	}
+	s := gather(t, f)
 	r := Classify(s, Options{Now: later()})
-	var rootRow *Row
-	for i, row := range r.Rows {
-		if row.Kind == KindWorktree && resolve(row.Path) == root {
-			rootRow = &r.Rows[i]
-		}
+	row := findRow(t, r, KindWorktree, "topic")
+	if !slices.Contains(reasonCodes(row.Reasons), ReasonHeld) {
+		t.Fatalf("reasons %v, want the held label: the claims were read%s", reasonCodes(row.Reasons), dumpRows(r.Rows))
 	}
-	if rootRow == nil {
-		t.Fatalf("no root row%s", dumpRows(r.Rows))
-	}
-	if rootRow.Status != StatusInUse || !slices.Contains(reasonCodes(rootRow.Blockers), BlockHeld) {
-		t.Fatalf("root row %s blockers %v, want in_use with %q", rootRow.Status, reasonCodes(rootRow.Blockers), BlockHeld)
-	}
+
 	after := snapshotDir(t, dir)
 	if len(before) != len(after) {
 		t.Fatalf("claims directory changed: before %v after %v", keys(before), keys(after))
@@ -100,6 +208,11 @@ func TestGatherReadsClaimsReadOnly(t *testing.T) {
 	for k, v := range before {
 		if !bytes.Equal([]byte(v), []byte(after[k])) {
 			t.Fatalf("claims file %s changed", k)
+		}
+	}
+	for _, p := range []string{stale, malformed} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("claims file %s is gone: gathering never prunes or deletes", p)
 		}
 	}
 }
@@ -253,5 +366,85 @@ func TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted(t *testing.T) {
 		if got := len(calls) > 0; got != want || (len(s.BasePRs) > 0) != want {
 			t.Fatalf("OriginRows=%v: base calls %v, BasePRs %v", want, calls, s.BasePRs)
 		}
+	}
+}
+
+// TestRootRowCarriesDriftReason pins the root row's drift label: a root
+// checkout off its default branch carries ReasonRootDrift on its row —
+// rootclaim.Drift's line as the detail — and a detached root reads `root is
+// detached`; only the root's own row carries it. Why: the row is what says
+// the root needs `wt restore-root`, and the detail is Drift's text so the
+// list and the launch warning read alike. It is raised soft like held: a
+// label in Reasons, never a blocker — the root's refusal to be removed stays
+// BlockPrimary's alone.
+func TestRootRowCarriesDriftReason(t *testing.T) {
+	t.Run("root on another branch", func(t *testing.T) {
+		f := newFixture(t)
+		noGh(t)
+		f.git("checkout", "-b", "topic")
+		other := f.Worktree("other")
+		s := gather(t, f)
+		r := Classify(s, Options{Now: later()})
+		row := primaryRow(t, r)
+		if got := reasonDetail(row.Reasons, ReasonRootDrift); got != "root is on topic, not main" {
+			t.Fatalf("root drift detail %q, want %q%s", got, "root is on topic, not main", dumpRows(r.Rows))
+		}
+		if slices.Contains(reasonCodes(row.Blockers), ReasonRootDrift) {
+			t.Fatalf("blockers %v, want root_drift as a label only%s", reasonCodes(row.Blockers), dumpRows(r.Rows))
+		}
+		if got := reasonDetail(findRow(t, r, KindWorktree, "other").Reasons, ReasonRootDrift); got != "" {
+			t.Errorf("linked worktree %s carries the drift %q, want the root's alone", other, got)
+		}
+	})
+	t.Run("detached root", func(t *testing.T) {
+		f := newFixture(t)
+		noGh(t)
+		f.git("checkout", "--detach")
+		other := f.Worktree("other")
+		s := gather(t, f)
+		r := Classify(s, Options{Now: later()})
+		row := primaryRow(t, r)
+		if got := reasonDetail(row.Reasons, ReasonRootDrift); got != "root is detached" {
+			t.Fatalf("root drift detail %q, want %q%s", got, "root is detached", dumpRows(r.Rows))
+		}
+		if slices.Contains(reasonCodes(row.Blockers), ReasonRootDrift) {
+			t.Fatalf("blockers %v, want root_drift as a label only%s", reasonCodes(row.Blockers), dumpRows(r.Rows))
+		}
+		if got := reasonDetail(findRow(t, r, KindWorktree, "other").Reasons, ReasonRootDrift); got != "" {
+			t.Errorf("linked worktree %s carries the drift %q, want the root's alone", other, got)
+		}
+	})
+}
+
+// TestRootDriftNotEmittedWithoutDefault (Review Focus 1) takes origin/HEAD
+// away from a repository whose root is off its main branch — on a branch and
+// detached, both pinned — and requires every row to still be listed with no
+// drift label on any of them. Why: with no known default there is nothing to
+// be off of. The default must come from origin/HEAD alone
+// (worktree.DefaultBranch), never the cleanup base's main/master fallbacks,
+// or a repository without origin/HEAD would warn of a drift nobody
+// established; detached with no default invents nothing either.
+func TestRootDriftNotEmittedWithoutDefault(t *testing.T) {
+	for name, detach := range map[string]bool{"root on another branch": false, "detached root": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			noGh(t)
+			if detach {
+				f.git("checkout", "--detach")
+			} else {
+				f.git("checkout", "-b", "topic")
+			}
+			f.Worktree("other")
+			f.git("remote", "set-head", "--delete", "origin")
+			s := gather(t, f)
+			r := Classify(s, Options{Now: later()})
+			primaryRow(t, r) // the root row is still listed
+			findRow(t, r, KindWorktree, "other")
+			for _, row := range r.Rows {
+				if got := reasonDetail(row.Reasons, ReasonRootDrift); got != "" {
+					t.Errorf("row %s carries drift %q with no default known%s", row.Name, got, dumpRows(r.Rows))
+				}
+			}
+		})
 	}
 }
