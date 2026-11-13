@@ -879,7 +879,8 @@ var rowActionSay = map[rowAction]string{
 // the branch is the removal), and rowActionDeleteOrigin hands the engine the
 // row's origin ref alone — never its worktree or local branch — as the
 // remote-only item `wt remove origin/<name> --remote` builds, under the typed
-// "delete origin".
+// "delete origin" — and for it the lock that counts is the origin target's,
+// not the local row's.
 func (m cleanupListModel) startRowAction(kind rowAction) (cleanupListModel, tea.Cmd) {
 	if m.hidden(m.cursor) {
 		return m, nil
@@ -889,14 +890,21 @@ func (m cleanupListModel) startRowAction(kind rowAction) (cleanupListModel, tea.
 	case it.newWorktree:
 		m.status = "this is the + New worktree… item, not a row: it creates a worktree, there is nothing to remove"
 		return m, nil
-	case it.locked:
+	case it.locked && kind != rowActionDeleteOrigin:
 		m.status = "cannot be removed: " + cleanup.OneLine(it.text)
 		return m, nil
 	}
 	rows := []cleanup.Row{it.row}
 	if kind == rowActionDeleteOrigin {
+		// `o` deletes the origin ref alone, which the engine allows whatever
+		// the local row is (`wt remove origin/x --remote` does not care that
+		// you stand in the worktree): the lock that counts is the target's.
 		target, ok := m.originTarget(it.row)
-		if !ok {
+		switch {
+		case !ok && it.locked, ok && cleanupLocked(target):
+			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
+			return m, nil
+		case !ok:
 			m.status = rowActionSay[kind] + "; this row has none"
 			return m, nil
 		}

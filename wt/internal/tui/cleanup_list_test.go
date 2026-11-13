@@ -2339,3 +2339,50 @@ func TestListRowWithALongHeldTagWrapsAtASpace(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanupListOJudgesTheLockOnTheOriginTarget pins the final review's M2
+// (R-F6): `o` deletes the folded origin ref, which the engine allows whatever
+// the local row is (`wt remove origin/x --remote` does not care that you are
+// standing in the worktree), so a locked local row whose folded origin ref is
+// a proven origin row starts the origin removal. The refusal stays, with the
+// local row's wording, when the origin target is itself locked or there is
+// none.
+func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
+	here := cleanup.Row{Kind: cleanup.KindWorktree, Name: "here", Path: "/repo/.worktrees/here", Branch: "here", Ref: "refs/heads/here",
+		Status: cleanup.StatusInUse, Blockers: []cleanup.Reason{{Code: cleanup.BlockCurrent}},
+		Upstream: &cleanup.Upstream{Remote: "origin", Ref: "refs/remotes/origin/here"}}
+	origin := cleanup.Row{Kind: cleanup.KindRemote, Name: "here", Branch: "here", Remote: "origin", Ref: "refs/remotes/origin/here",
+		Status: cleanup.StatusProven}
+	build := func(o cleanup.Row) cleanupListModel {
+		rep := cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Rows: []cleanup.Row{here}, Folded: []cleanup.Row{o}}
+		return moveTo(t, newSizedCleanupList(t, rep, 120, 40), "here")
+	}
+	if !cleanupLocked(here) || cleanupLocked(origin) {
+		t.Fatalf("fixture: here locked %v, origin locked %v; want true, false", cleanupLocked(here), cleanupLocked(origin))
+	}
+
+	got, fm := runPreview(t, build(origin), keyRunes("o"))
+	if fm.phase != cleanupPhasePreviewing || len(got) != 1 || got[0] != "origin/here" {
+		t.Errorf("o on a locked local row with a proven origin: previewed %v, phase %v, status %q; want the origin ref previewed", got, fm.phase, fm.status)
+	}
+
+	// x and d still refuse on the locked local row.
+	for _, k := range []string{"x", "d"} {
+		if got, fm := runPreview(t, build(origin), keyRunes(k)); len(got) != 0 || fm.status != "cannot be removed: "+cleanup.OneLine(build(origin).items[build(origin).cursor].text) {
+			t.Errorf("%s on the locked row: previewed %v, status %q; want the existing refusal", k, got, fm.status)
+		}
+	}
+
+	// The origin row itself locked (a remote that is not proven): refused
+	// with the local row's wording.
+	lockedOrigin := origin
+	lockedOrigin.Status = cleanup.StatusLessSure
+	lockedOrigin.Blockers = []cleanup.Reason{{Code: cleanup.BlockPrimary}}
+	if !cleanupLocked(lockedOrigin) {
+		lockedOrigin.Remote = "upstream" // any lock reason will do
+	}
+	got, fm = runPreview(t, build(lockedOrigin), keyRunes("o"))
+	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.HasPrefix(fm.status, "cannot be removed: ") {
+		t.Errorf("o with a locked origin target: previewed %v, phase %v, status %q; want the existing refusal", got, fm.phase, fm.status)
+	}
+}
