@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
@@ -150,6 +151,12 @@ type Snapshot struct {
 	BaseTip   string // commit id of the base ref
 	Fetch     FetchResult
 	OwnRepo   string
+	// RootDrift is the root checkout's drift line (rootclaim.Drift): `root is
+	// on <b>, not <d>`, `root is detached`, or "" when the root sits on the
+	// default branch or no default branch is known (no drift is invented
+	// without one). Read live by Gather and re-read by Rescan through
+	// readRootDrift, never carried from one to the other.
+	RootDrift string
 	Worktrees []WorktreeState
 	Heads     []RefFact           // refs/heads/*, the default branch's forms excluded
 	Remotes   []RefFact           // refs/remotes/<r>/* for origin and every upstream's remote, default forms excluded
@@ -223,6 +230,9 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	} else {
 		s.Fetch = in.Fetched
 	}
+	// The drift is read after the fetch: one that set origin/HEAD just named
+	// the default, and the root's drift is against that.
+	s.RootDrift = readRootDrift(facts[0])
 	var baseErr error
 	s.Base, baseErr = ResolveBase(g)
 	switch {
@@ -348,6 +358,22 @@ func (s *Snapshot) readClaims(in GatherInputs) GateInputs {
 	}
 	s.Claims = claims
 	return GateInputs{Base: s.BaseTip, ProtectedPaths: in.ProtectedPaths}
+}
+
+// readRootDrift is the root checkout w's live drift line: rootclaim.Drift over
+// w's branch as the worktree list just read it (Site's spelling — "" on a
+// detached HEAD) and the default origin/HEAD names. The default is
+// worktree.DefaultBranch (origin/HEAD only), never Base.Default: the base
+// falls back to main/master and would invent a drift where no default is
+// known. Gather and Rescan both read the drift through it, so a rescan
+// re-renders the line rather than copying the list's. A bare repository has
+// no checkout to drift.
+func readRootDrift(w WorktreeFact) string {
+	if w.Bare {
+		return ""
+	}
+	branch := strings.TrimPrefix(w.Branch, "refs/heads/")
+	return rootclaim.Drift(rootclaim.Site{Path: w.Path, Branch: branch}, worktree.DefaultBranch(w.Path))
 }
 
 // HeldOn returns the live claims holding path — the sessions whose claim

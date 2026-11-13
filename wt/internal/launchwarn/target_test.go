@@ -97,8 +97,9 @@ func TestForDirRoot(t *testing.T) {
 	}
 }
 
-// A root left on a non-default branch records the drift in RootBranch and
-// earns a root_drift warning, so a stray checkout cannot launch silently.
+// A root left on a non-default branch records the drift line in RootDrift
+// (rootclaim.Drift's text, fed live) and earns a root_drift warning, so a
+// stray checkout cannot launch silently.
 func TestForDirRootDrift(t *testing.T) {
 	repo := cloneRepo(t)
 	git(t, repo, "checkout", "-q", "-b", "topic")
@@ -106,7 +107,7 @@ func TestForDirRootDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tg.RootBranch != "topic" || tg.Branch != "topic" || tg.Hint == "" {
+	if tg.RootBranch != "topic" || tg.Branch != "topic" || tg.Hint == "" || tg.RootDrift != "root is on topic, not main" {
 		t.Errorf("target = %+v", tg)
 	}
 	ws, _ := Collect(tg)

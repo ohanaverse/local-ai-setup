@@ -102,6 +102,7 @@ var reasonWording = map[string]string{
 	ReasonNoMergedPR:            "no merged PR",
 	ReasonClaimsUnavailable:     "could not check other wt sessions",
 	ReasonPreserved:             "preserved by a wt rescue record",
+	ReasonRootDrift:             "the root is off its default branch",
 	// Blocker codes (BlockOpenPR shares ReasonOpenPR's code, and BlockHeld
 	// is an alias of ReasonHeld, so their wording).
 	BlockDefaultBranch:     "the default branch",
@@ -121,6 +122,7 @@ var detailIsSentence = map[string]bool{
 	ReasonUnpushed: true, ReasonPRHeadMoved: true, ReasonOpenPR: true,
 	ReasonDetachedUnique: true, ReasonFreshBranch: true, ReasonBaseIsLocal: true,
 	ReasonNoMergedPR: true, BlockBaseOfOpenPR: true, ReasonPreserved: true,
+	ReasonRootDrift: true,
 }
 
 // ReasonText is one reason or blocker as a phrase. A code with no wording

@@ -65,6 +65,7 @@ const (
 	ReasonClaimsUnavailable     = "claims_unavailable"      // the session claims could not be read
 	ReasonHeld                  = "held"                    // soft: another live wt session holds this worktree — a label carrying the claim description, floored at less sure, never a blocker
 	ReasonPreserved             = "preserved"               // a rescue record covers the worktree's commits (informational, never lowers the status) or also its uncommitted work (soft: less sure)
+	ReasonRootDrift             = "root_drift"              // soft: the root checkout sits off the default branch (or on a detached HEAD) — the drift line (rootclaim.Drift's text) as the detail, a label on the root row only, never a blocker
 )
 
 // Blocker codes beyond CheckGates' own.
@@ -556,6 +557,13 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 	// claim description), and never mask work at risk (unique wins).
 	if holders := c.s.HeldOn(w.Path); len(holders) > 0 {
 		j.weak(ReasonHeld, sessionclaim.DescribeAll(holders, c.o.Now))
+	}
+	// Root drift is a label too: the root checkout is off its default branch
+	// (or on a detached HEAD) and `wt restore-root` puts it back. The detail
+	// is the drift line itself (rootclaim.Drift's text, read at gather and
+	// re-read at rescan). Soft, like held — and only on the root's own row.
+	if w.Primary && c.s.RootDrift != "" {
+		j.weak(ReasonRootDrift, c.s.RootDrift)
 	}
 
 	switch {

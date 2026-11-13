@@ -93,6 +93,9 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 			return Row{}, fmt.Errorf("cleanup: base %s no longer resolves to a commit", flat(s.Base.Ref))
 		}
 	}
+	// The drift is re-read like the claims: the row must say what is true
+	// now, not what the list saw.
+	s.RootDrift = readRootDrift(facts[0])
 	gin := s.readClaims(in)
 
 	// mini holds the target's fresh entries only; prove runs on it, so the

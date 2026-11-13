@@ -368,3 +368,75 @@ func TestGatherAsksForTheBasePRsOnlyWhenOriginRowsAreWanted(t *testing.T) {
 		}
 	}
 }
+
+// TestRootRowCarriesDriftReason pins the root row's drift label: a root
+// checkout off its default branch carries ReasonRootDrift on its row —
+// rootclaim.Drift's line as the detail — and a detached root reads `root is
+// detached`; only the root's own row carries it. Why: the row is what says
+// the root needs `wt restore-root`, and the detail is Drift's text so the
+// list and the launch warning read alike. It is raised soft like held: a
+// label in Reasons, never a blocker — the root's refusal to be removed stays
+// BlockPrimary's alone.
+func TestRootRowCarriesDriftReason(t *testing.T) {
+	t.Run("root on another branch", func(t *testing.T) {
+		f := newFixture(t)
+		noGh(t)
+		f.git("checkout", "-b", "topic")
+		other := f.Worktree("other")
+		s := gather(t, f)
+		r := Classify(s, Options{Now: later()})
+		row := primaryRow(t, r)
+		if got := reasonDetail(row.Reasons, ReasonRootDrift); got != "root is on topic, not main" {
+			t.Fatalf("root drift detail %q, want %q%s", got, "root is on topic, not main", dumpRows(r.Rows))
+		}
+		if slices.Contains(reasonCodes(row.Blockers), ReasonRootDrift) {
+			t.Fatalf("blockers %v, want root_drift as a label only%s", reasonCodes(row.Blockers), dumpRows(r.Rows))
+		}
+		if got := reasonDetail(findRow(t, r, KindWorktree, "other").Reasons, ReasonRootDrift); got != "" {
+			t.Errorf("linked worktree %s carries the drift %q, want the root's alone", other, got)
+		}
+	})
+	t.Run("detached root", func(t *testing.T) {
+		f := newFixture(t)
+		noGh(t)
+		f.git("checkout", "--detach")
+		s := gather(t, f)
+		r := Classify(s, Options{Now: later()})
+		if got := reasonDetail(primaryRow(t, r).Reasons, ReasonRootDrift); got != "root is detached" {
+			t.Fatalf("root drift detail %q, want %q%s", got, "root is detached", dumpRows(r.Rows))
+		}
+	})
+}
+
+// TestRootDriftNotEmittedWithoutDefault (Review Focus 1) takes origin/HEAD
+// away from a repository whose root is off its main branch — on a branch and
+// detached, both pinned — and requires every row to still be listed with no
+// drift label on any of them. Why: with no known default there is nothing to
+// be off of. The default must come from origin/HEAD alone
+// (worktree.DefaultBranch), never the cleanup base's main/master fallbacks,
+// or a repository without origin/HEAD would warn of a drift nobody
+// established; detached with no default invents nothing either.
+func TestRootDriftNotEmittedWithoutDefault(t *testing.T) {
+	for name, detach := range map[string]bool{"root on another branch": false, "detached root": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			noGh(t)
+			if detach {
+				f.git("checkout", "--detach")
+			} else {
+				f.git("checkout", "-b", "topic")
+			}
+			f.Worktree("other")
+			f.git("remote", "set-head", "--delete", "origin")
+			s := gather(t, f)
+			r := Classify(s, Options{Now: later()})
+			primaryRow(t, r) // the root row is still listed
+			findRow(t, r, KindWorktree, "other")
+			for _, row := range r.Rows {
+				if got := reasonDetail(row.Reasons, ReasonRootDrift); got != "" {
+					t.Errorf("row %s carries drift %q with no default known%s", row.Name, got, dumpRows(r.Rows))
+				}
+			}
+		})
+	}
+}

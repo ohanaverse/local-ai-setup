@@ -610,3 +610,28 @@ func TestRescanKeepsPriorPRsAsked(t *testing.T) {
 		t.Fatalf("unfilled snapshot rescanned as proven: %+v", got)
 	}
 }
+
+// TestRescanRereadsRootDrift lists a repository whose root is off the default
+// (root on topic, origin/HEAD naming main), then moves origin/HEAD onto the
+// root's own branch and rescans the root row. Why: the removal re-checks a
+// row live, and the drift line must be re-read with it — the row the gather
+// labelled `root is on topic, not main` has to come back with the label gone
+// (the root sits on the default now), not with the snapshot's stale sentence.
+// The row's own branch cannot move under a rescan (the identity check refuses
+// that), so the live change pinned here is the default.
+func TestRescanRereadsRootDrift(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	o := Options{Now: later()}
+	f.git("checkout", "-b", "topic")
+	s := gather(t, f)
+	before := findRow(t, Classify(s, o), KindWorktree, "topic")
+	if got := reasonDetail(before.Reasons, ReasonRootDrift); got != "root is on topic, not main" {
+		t.Fatalf("gathered drift %q, want %q", got, "root is on topic, not main")
+	}
+	f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/topic")
+	after := mustRescan(t, f, s, o, targetOf(before))
+	if got := reasonDetail(after.Reasons, ReasonRootDrift); got != "" {
+		t.Fatalf("rescanned drift %q, want gone: the default moved, and the row must re-read it", got)
+	}
+}

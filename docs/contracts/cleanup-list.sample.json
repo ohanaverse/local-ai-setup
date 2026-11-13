@@ -13,8 +13,9 @@
     {"kind": "branch", "name": "cherry-only", "branch": "cherry-only", "remote": "origin", "status": "less_sure", "unknown": false, "age_days": 0, "reasons": [{"code": "weak_signal", "detail": "cherry-equivalent only; not a proof"}], "blockers": []},
     {"kind": "branch", "name": "undone-locally", "branch": "undone-locally", "status": "less_sure", "evidence": "no-added-changes", "unknown": false, "age_days": 2, "reasons": [{"code": "net_zero_unpushed", "detail": "2 commits on no remote-tracking ref; together they change nothing"}], "blockers": []},
     {"kind": "branch", "name": "mystery", "branch": "mystery", "status": "less_sure", "unknown": true, "reasons": [{"code": "merge_proof_unavailable", "detail": "the merge checks could not finish (a git error, no common history, or a configured merge driver)"}], "blockers": []},
+    {"kind": "branch", "name": "main", "branch": "main", "status": "less_sure", "unknown": false, "age_days": 30, "reasons": [], "blockers": [{"code": "default_branch", "detail": "main"}]},
     {"kind": "remote", "name": "old-idea", "branch": "old-idea", "remote": "origin", "status": "proven", "evidence": "ancestor", "unknown": false, "age_days": 30, "reasons": [], "blockers": [], "pr": {"number": 17, "state": "MERGED"}},
     {"kind": "remote", "name": "wip", "branch": "wip", "remote": "origin", "status": "unique_work", "unknown": false, "reasons": [{"code": "not_merged", "detail": "its commits are not in the base"}], "blockers": []},
-    {"kind": "worktree", "name": "main", "path": "/home/owner/src/project", "branch": "main", "status": "in_use", "unknown": false, "reasons": [], "blockers": [{"code": "primary", "detail": "/home/owner/src/project"}], "hard_stop": "primary"}
+    {"kind": "worktree", "name": "release-sprint", "path": "/home/owner/src/project", "branch": "release-sprint", "status": "in_use", "unknown": false, "reasons": [{"code": "root_drift", "detail": "root is on release-sprint, not main"}], "blockers": [{"code": "primary", "detail": "/home/owner/src/project"}], "hard_stop": "primary"}
   ]
 }
