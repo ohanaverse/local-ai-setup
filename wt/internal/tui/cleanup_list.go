@@ -124,8 +124,9 @@ type cleanupItem struct {
 }
 
 // cleanupLocked reports whether a row can never be ticked: an in-use row, a
-// row with any hard blocker, a worktree whose state could not be read (its
-// directory is gone: the engine refuses it whatever is approved), and a
+// row with any hard blocker, a worktree whose state could not be read (the
+// engine refuses it whatever is approved; a missing directory is the typical
+// case, any unreadable state counts), and a
 // remote row unless it is a proven origin branch (the engine removes nothing
 // else on a remote: only origin, only proven). Every other row may be ticked
 // by the user; only Tickable local rows are ticked for them (by default and
@@ -142,8 +143,9 @@ func cleanupLocked(r cleanup.Row) bool {
 	if r.Status == cleanup.StatusInUse || r.HardStop != "" {
 		return true
 	}
-	// A worktree whose state could not be read — its directory is gone
-	// ("could not read the worktree's state") — is the engine's own
+	// A worktree whose state could not be read — any cause, a missing
+	// directory being the typical one ("could not read the worktree's
+	// state") — is the engine's own
 	// unconditional refusal (worktreeGate's GatesUnknown gate), so the list
 	// locks it like every hard stop. The gates_unavailable reason rides with
 	// the flag on a classified row; either one names the same refusal.
@@ -514,6 +516,11 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	}
 	// The session's log prints once, at the end — however the session ended
 	// — carrying every pass's outcomes (never once per pass).
+	// Error precedence: an error from the session (the program, a hand-off or
+	// the re-read) wins over a failed write of this final log. Both orders
+	// drop one error; the session's is the one that says what the run did,
+	// and the two coincide only on a broken stdout pipe plus a failure in
+	// the same session.
 	if haveLast {
 		if msg := last.exitMessage(); msg != "" {
 			if _, werr := fmt.Fprintln(os.Stdout, msg); werr != nil && err == nil {

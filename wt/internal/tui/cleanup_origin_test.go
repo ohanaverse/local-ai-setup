@@ -125,12 +125,12 @@ func TestOriginDeleteNeedsItsOwnTypedPhrase(t *testing.T) {
 			t.Errorf("confirm screen lacks %q:\n%s", want, v)
 		}
 	}
-	// y does not run it.
-	if m2 := press(t, m, keyRunes("y")); m2.phase != cleanupPhaseConfirm || h.runCalls != 0 {
+	// y does not run it (each step opens its own screen: the typed buffer is shared).
+	if m2 := press(t, open(), keyRunes("y")); m2.phase != cleanupPhaseConfirm || h.runCalls != 0 {
 		t.Fatalf("y: phase %v runs %d", m2.phase, h.runCalls)
 	}
 	// plain delete does not run it.
-	m2 := press(t, typeWord(t, m, "delete"), enterKey)
+	m2 := press(t, typeWord(t, open(), "delete"), enterKey)
 	if m2.phase == cleanupPhaseResults || h.runCalls != 0 || r.originTip("topic") != tip {
 		t.Fatalf("plain delete: phase %v runs %d origin %q", m2.phase, h.runCalls, r.originTip("topic"))
 	}

@@ -1645,7 +1645,7 @@ func TestRunCleanupListRestoresRootAfterTheScreen(t *testing.T) {
 		t.Errorf("calls = %v, want stop then restore", calls)
 	}
 	if !sawScreenGone {
-		t.Error("RestoreRoot ran while the alt screen was still up")
+		t.Error("RestoreRoot did not run after the alt screen closed (it never ran, or ran while the screen was still up)")
 	}
 
 	calls = nil
@@ -1825,7 +1825,7 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 	// A rescue that fails: its own error returns, and the list is never
 	// re-entered after a failed action.
 	boom := errMock("rescue action failed")
-	runs, fetches := 0, 0
+	runs, fetches, rescueCalls := 0, 0, 0
 	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
@@ -1835,7 +1835,7 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 		return m, func() {}, nil
 	}
 	rm := RemoveFuncs{
-		Rescue:  func(cleanup.Row) error { return boom },
+		Rescue:  func(cleanup.Row) error { rescueCalls++; return boom },
 		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
 	}
 	err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
@@ -1845,10 +1845,13 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 	if runs != 1 || fetches != 0 {
 		t.Errorf("runs=%d fetches=%d, want one pass and no re-entry after a failed action", runs, fetches)
 	}
+	if rescueCalls != 1 {
+		t.Errorf("Rescue ran %d times, want exactly one (a failing action is never retried)", rescueCalls)
+	}
 
 	// A restore-root that fails: same.
 	boom = errMock("restore-root action failed")
-	runs, fetches = 0, 0
+	runs, fetches, restoreCalls := 0, 0, 0
 	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
@@ -1858,7 +1861,7 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 		return m, func() {}, nil
 	}
 	rm = RemoveFuncs{
-		RestoreRoot: func() error { return boom },
+		RestoreRoot: func() error { restoreCalls++; return boom },
 		Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
 	}
 	err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
@@ -1867,6 +1870,9 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 	}
 	if runs != 1 || fetches != 0 {
 		t.Errorf("runs=%d fetches=%d, want one pass and no re-entry after a failed action", runs, fetches)
+	}
+	if restoreCalls != 1 {
+		t.Errorf("RestoreRoot ran %d times, want exactly one (a failing action is never retried)", restoreCalls)
 	}
 
 	// The re-entry re-read that fails: the hand-off succeeded, but there is

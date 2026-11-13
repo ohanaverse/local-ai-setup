@@ -249,12 +249,13 @@ func TestCleanupListOOnFoldedRowDeletesOnlyTheOriginRef(t *testing.T) {
 	if v := m.View(); !strings.Contains(squash(v), squash("type delete origin and press enter")) {
 		t.Fatalf("the prompt must demand the phrase delete origin:\n%s", v)
 	}
-	// y confirms nothing here (an origin deletion is never a plain yes).
-	if m2 := press(t, m, keyRunes("y")); m2.phase != cleanupPhaseConfirm || h.runCalls != 0 {
+	// y confirms nothing here (an origin deletion is never a plain yes). Each
+	// step opens its own confirm screen: the typed buffer is shared state.
+	if m2 := press(t, open(), keyRunes("y")); m2.phase != cleanupPhaseConfirm || h.runCalls != 0 {
 		t.Fatalf("y: phase %v runs %d", m2.phase, h.runCalls)
 	}
 	// The plain word is not the phrase: enter cancels, origin keeps its branch.
-	m2 := press(t, typeWord(t, m, "delete"), enterKey)
+	m2 := press(t, typeWord(t, open(), "delete"), enterKey)
 	if m2.phase == cleanupPhaseResults || h.runCalls != 0 || r.originTip("topic") != tip {
 		t.Fatalf("plain delete: phase %v runs %d origin tip %q", m2.phase, h.runCalls, r.originTip("topic"))
 	}

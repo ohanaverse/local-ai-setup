@@ -138,7 +138,7 @@ func TestOfferedBareRootSaysNoCheckout(t *testing.T) {
 	t.Parallel()
 	row := primaryRow(t, rowsOf(t, bareFixture(t)))
 	if !row.Bare || row.Branch != "" {
-		t.Fatalf("bare row shape: Bare=%v Branch=%q; want Bare with %q", row.Bare, row.Branch, "")
+		t.Fatalf("bare row shape: Bare=%v Branch=%q; want Bare=true, Branch=%q", row.Bare, row.Branch, "")
 	}
 	if offered, why := Offered(row); offered || why != "a bare repository has no checkout to restore" {
 		t.Errorf("Offered = %v, %q; want false, %q", offered, why, "a bare repository has no checkout to restore")
