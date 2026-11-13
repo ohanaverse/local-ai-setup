@@ -42,15 +42,17 @@ func TestWithReportKeepsStamp(t *testing.T) {
 
 // A report swap keeps the flow's whole state: the `R` restore-root choice
 // (whose erasure a quit-window fill proved), the words that chose the
-// flow's rows and the `d` seed. A dropped field here changes the screen
-// under the user mid-decision or silently discards what they asked for.
+// flow's rows, the `d` seed and a fill's held funcs build. A dropped field
+// here changes the screen under the user mid-decision or silently discards
+// what they asked for.
 func TestWithReportKeepsFlowState(t *testing.T) {
 	st := refreshStamp{At: time.Now(), OK: true}
 	m := newRowList(cleanupFixture(), rowListOpts{Mode: modeLaunch, Now: time.Now(), Root: "/nonexistent", Stamp: &st})
 	m.restoreRoot, m.chosenByTicks, m.seedBranch = true, true, true
+	m.pendingRM = func() RemoveFuncs { return RemoveFuncs{} }
 	n := m.withReport(cleanupFixture())
-	if !n.restoreRoot || !n.chosenByTicks || !n.seedBranch {
-		t.Errorf("restoreRoot=%v chosenByTicks=%v seedBranch=%v after swap, want all kept",
-			n.restoreRoot, n.chosenByTicks, n.seedBranch)
+	if !n.restoreRoot || !n.chosenByTicks || !n.seedBranch || n.pendingRM == nil {
+		t.Errorf("restoreRoot=%v chosenByTicks=%v seedBranch=%v pendingRM set=%v after swap, want all kept",
+			n.restoreRoot, n.chosenByTicks, n.seedBranch, n.pendingRM != nil)
 	}
 }

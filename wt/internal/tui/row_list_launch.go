@@ -84,7 +84,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	next.filter, next.filtering = m.filter, m.filtering
 	next.phase, next.conf, next.run, next.log, next.pending = m.phase, m.conf, m.run, m.log, m.pending
 	next.status, next.exitErr, next.quitAfterRun, next.rescueRow, next.done = m.status, m.exitErr, m.quitAfterRun, m.rescueRow, m.done
-	next.restoreRoot, next.chosenByTicks, next.seedBranch = m.restoreRoot, m.chosenByTicks, m.seedBranch
+	next.restoreRoot, next.chosenByTicks, next.seedBranch, next.pendingRM = m.restoreRoot, m.chosenByTicks, m.seedBranch, m.pendingRM
 	next.clock, next.now = m.clock, m.now
 	if m.opts.Mode == modeManage {
 		// The tick list's own choices survive a re-read (the `F` refresh): a
