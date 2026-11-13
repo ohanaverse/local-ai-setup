@@ -17,6 +17,8 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tui"
 	"github.com/spf13/cobra"
@@ -234,11 +236,15 @@ func listRoot(cwd string) string {
 // fetch) for the rebuilt list and points the engine at the new snapshot;
 // Refetch (the list's `F`) fetches every remote once at the report's root and
 // re-reads the same way. A registry that did not load turns removal off (plan
-// call 7): enter then
-// says so and previews nothing. Rescue (the `r` key) runs `wt rescue`'s
-// executor on the list's current snapshot and is wired either way: it never
-// removes anything, so the registry does not matter to it. Refetch is wired
-// either way for the same reason.
+// call 7): enter, `x`, `d` and `o` then say so and preview nothing (the Off
+// funcs below). The three non-removals stay wired either way: Rescue (the
+// `r` key) runs `wt rescue`'s executor on the list's current snapshot and
+// never removes anything; Refetch only fetches and re-reads; RestoreRoot (the
+// `R` key) runs `wt restore-root`'s own run path from the directory the list
+// was built on — a command that never loads the registry and carries the
+// root's work into a new worktree before any reset, so the registry's failure
+// and a row's removal locks are none of its business (the list's keys page
+// and startRestoreRoot's comment say the same).
 func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
 	in.Fetch = false // a re-check never fetches
 	in.Fetched = snap.Fetch
@@ -250,9 +256,19 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	// engine there is nothing to repoint.
 	cur := &snap
 	var eng *removal.Engine
-	rescueRowFn := func(row cleanup.Row) error {
-		answer, out, errOut := rescueStreams()
-		return rescueRow(answer, out, errOut, rescueFlags{minAge: minAge}, *cur, in, row)
+	rescueRowFn := func(row cleanup.Row, answer io.Reader, out, errOut io.Writer) error {
+		var got *rescue.Outcome
+		err := rescueRowReport(answer, out, errOut, rescueFlags{minAge: minAge}, *cur, in, row, func(o rescue.Outcome) { got = &o })
+		return rescueHandOffResult(err, got)
+	}
+	// RestoreRoot (the `R` key) runs `wt restore-root`'s own run function
+	// from the directory this list was built on, with the command's default
+	// flags: a real run (it fetches every remote first) that asks y/N on the
+	// terminal the streams name, exactly as `wt restore-root` does.
+	restoreRootFn := func(answer io.Reader, out, errOut io.Writer) error {
+		var got *rootmove.Outcome
+		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o })
+		return restoreRootHandOffResult(err, got)
 	}
 	// reGather re-reads the repository (never fetching) and stands the list
 	// — and the engine, when there is one — on the fresh snapshot.
@@ -280,12 +296,13 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 		return cleanupReport(a, fresh, minAge, protErr), nil
 	}
 	if protErr != nil {
-		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn}
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn, RestoreRoot: restoreRootFn}
 	}
 	eng = &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
 	return tui.RemoveFuncs{
-		Rescue: rescueRowFn,
+		Rescue:      rescueRowFn,
+		RestoreRoot: restoreRootFn,
 		Preview: func(rows []cleanup.Row) []removal.ItemPreview {
 			items := make([]removal.Item, len(rows))
 			for i, r := range rows {
@@ -305,6 +322,57 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 		},
 		Refetch: refetch,
 	}
+}
+
+// handOffExit is the exit status of a hand-off's error, 0 when it carries
+// none (exitCodeError is what the commands' run paths return).
+func handOffExit(err error) int {
+	var ece *exitCodeError
+	if errors.As(err, &ece) {
+		return ece.code
+	}
+	return 0
+}
+
+// rescueHandOffResult turns what `r`'s run path returned into what the list's
+// session loop does next. Nothing changed (declined at the prompt, exit 3;
+// refused before anything was created, exit 2 with a refused outcome) or the
+// copy was made: a tui.HandOffNote, so the list comes back from a fresh read
+// with a status line. Anything else (a failure midway, could not start, an
+// unrecognised error) is returned as it is and ends the session, so the
+// recovery text is the last thing printed. The note's Err keeps the exit
+// status for a caller that cannot re-enter.
+func rescueHandOffResult(err error, o *rescue.Outcome) error {
+	switch {
+	case err == nil && o != nil && o.Status == rescue.StatusMoved:
+		return &tui.HandOffNote{Text: "rescued to branch " + cleanup.OneLine(o.Plan.Branch)}
+	case err == nil:
+		return nil
+	case handOffExit(err) == 3:
+		return &tui.HandOffNote{Text: "rescue: " + cleanup.OneLine(err.Error()), Err: err}
+	case handOffExit(err) == 2 && o != nil && o.Status == rescue.StatusRefused && !o.Created && !o.BranchKept:
+		return &tui.HandOffNote{Text: "rescue refused: " + cleanup.OneLine(o.Reason), Err: err}
+	}
+	return err
+}
+
+// restoreRootHandOffResult is rescueHandOffResult for `R`: a root already on
+// the default (exit 0, refused outcome) and a finished move re-enter with a
+// status line too.
+func restoreRootHandOffResult(err error, o *rootmove.Outcome) error {
+	switch {
+	case err == nil && o != nil && o.Status == rescue.StatusMoved:
+		return &tui.HandOffNote{Text: "root restored to " + cleanup.OneLine(o.Plan.Default)}
+	case err == nil && o != nil && o.Status == rescue.StatusRefused:
+		return &tui.HandOffNote{Text: "restore root: " + cleanup.OneLine(o.Reason)}
+	case err == nil:
+		return nil
+	case handOffExit(err) == 3:
+		return &tui.HandOffNote{Text: "restore root: " + cleanup.OneLine(err.Error()), Err: err}
+	case handOffExit(err) == 2 && o != nil && o.Status == rescue.StatusRefused && !o.Created:
+		return &tui.HandOffNote{Text: "restore root refused: " + cleanup.OneLine(o.Reason), Err: err}
+	}
+	return err
 }
 
 // cleanupFail ends the run with exit 1. Under --json it first prints the one

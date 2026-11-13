@@ -52,10 +52,11 @@ func (m *cleanupListModel) screenName() string {
 }
 
 // chosenWord is how the removal screens name what is being removed: "ticked"
-// when manage mode's ticks chose it, "selected" when nothing is ticked (`x`
-// on the highlighted row, always so in the picker).
+// when the ticks chose the rows (enter, in manage mode), "selected" when the
+// cursor did (the row keys `x`, `d`, `o`, and everything in the picker, which
+// ticks nothing). A row the ticks did not choose is never called "ticked".
 func (m *cleanupListModel) chosenWord() string {
-	if !m.launch() && len(m.tickedRows()) > 0 {
+	if m.chosenByTicks {
 		return "ticked"
 	}
 	return "selected"
@@ -74,7 +75,7 @@ func keyOf(r cleanup.Row) rowKey {
 // withReport is the list rebuilt from rep (the same repository, its PR
 // lookups now run) with everything the user did or was shown kept: the size,
 // the removal funcs, the filter, the status line, the scroll position, any
-// removal phase in progress (with its rescue choice and quit state) and the
+// removal phase in progress (its choices and quit state kept) and the
 // highlighted item (the same row by kind, ref, path and name; the
 // new-worktree item stays itself).
 func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
@@ -83,13 +84,17 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	next.filter, next.filtering = m.filter, m.filtering
 	next.phase, next.conf, next.run, next.log, next.pending = m.phase, m.conf, m.run, m.log, m.pending
 	next.status, next.exitErr, next.quitAfterRun, next.rescueRow, next.done = m.status, m.exitErr, m.quitAfterRun, m.rescueRow, m.done
+	next.restoreRoot, next.chosenByTicks, next.seedBranch, next.pendingRM = m.restoreRoot, m.chosenByTicks, m.seedBranch, m.pendingRM
 	next.clock, next.now = m.clock, m.now
 	if m.opts.Mode == modeManage {
 		// The tick list's own choices survive a re-read (the `F` refresh): a
 		// row the user unticked stays unticked, never reset to newRowList's
-		// default, or enter would remove what they kept. A row the old list
-		// never showed keeps its default; one that is no longer tickable
-		// stays unticked (newRowList already left it so).
+		// default, or enter would remove what they kept, and a row the user
+		// ticked that newRowList never ticks for them (a less-sure or an
+		// origin row) keeps that tick, or F would silently drop it. A row the
+		// old list never showed keeps its default; one that is no longer
+		// tickable — newly locked — stays unticked (newRowList already left
+		// it so, and startRemoval refuses a locked tick anyway).
 		was := map[rowKey]bool{}
 		for i, it := range m.items {
 			if it.heading == "" && !it.newWorktree {
@@ -100,8 +105,13 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 			if it.heading != "" || it.newWorktree {
 				continue
 			}
-			if ticked, seen := was[keyOf(it.row)]; seen && !ticked {
-				delete(next.ticked, i)
+			if ticked, seen := was[keyOf(it.row)]; seen {
+				switch {
+				case ticked && !it.locked:
+					next.ticked[i] = true
+				case !ticked:
+					delete(next.ticked, i)
+				}
 			}
 		}
 	}

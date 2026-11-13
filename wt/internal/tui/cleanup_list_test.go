@@ -2,7 +2,9 @@ package tui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -56,7 +59,7 @@ func cleanupFixture() cleanup.Report {
 // way the program does before the first frame.
 func newSizedCleanupList(t *testing.T, r cleanup.Report, w, h int) cleanupListModel {
 	t.Helper()
-	m := newCleanupList(r, themes.Default, time.Now())
+	m := newCleanupList(r, themes.Default, time.Now(), RemoveFuncs{})
 	return cleanupSend(t, m, tea.WindowSizeMsg{Width: w, Height: h})
 }
 
@@ -170,6 +173,43 @@ func TestRowListTagsWarnStyled(t *testing.T) {
 	}
 	if !strings.Contains(rowBlock(t, view, "full-branch-name-paths"), "+remote") {
 		t.Errorf("+remote tag missing:\n%s", view)
+	}
+}
+
+// TestFlowUnitsWrapsOversizedUnitsAtSpaces pins the wrap a real 80x24 screen
+// asked for: a unit longer than the text column breaks at its spaces so no
+// word is split at the line's end (the held tag once drew "..., start" /
+// "ed on held)"), while a single word too long for the whole line is still
+// cut at the line's end (tuilayout.Flow's rule).
+func TestFlowUnitsWrapsOversizedUnitsAtSpaces(t *testing.T) {
+	lines := flowUnits([]unit{{text: "held by session codex (pid 70222, running 1s, started on held)"}}, 51)
+	got := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		got = append(got, unitsText(ln))
+	}
+	want := []string{"held by session codex (pid 70222, running 1s,", "started on held)"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("an oversized unit wrapped to %q, want it broken at its spaces %q", got, want)
+	}
+	lines = flowUnits([]unit{{text: "abcdefghij"}}, 4)
+	got = got[:0]
+	for _, ln := range lines {
+		got = append(got, unitsText(ln))
+	}
+	if strings.Join(got, "|") != "abcd|efgh|ij" {
+		t.Errorf("a word longer than a line = %q, want it cut at the line's end", got)
+	}
+}
+
+// TestFlowUnitsKeepsAnEmptyUnitThatFits pins that the wrap change leaves a
+// unit that fits exactly as it was: an empty first unit stays (the next unit
+// joins it with its own separator), where only an oversized unit's emptied
+// remainder is dropped. Why: the wrap fix must not alter any layout that
+// already fit.
+func TestFlowUnitsKeepsAnEmptyUnitThatFits(t *testing.T) {
+	lines := flowUnits([]unit{{text: ""}, {text: "x", sep: " · "}}, 20)
+	if len(lines) != 1 || len(lines[0]) != 2 {
+		t.Errorf("an empty unit that fits was dropped: %d lines %v", len(lines), lines)
 	}
 }
 
@@ -309,36 +349,21 @@ func TestManageModeEnterStillRemovesTicked(t *testing.T) {
 	}
 }
 
-// TestXRemovesTickedInBothModes pins `x`: it removes the ticked rows when
-// any are ticked, else the highlighted row, in both modes (launch mode ticks
-// nothing, so there it is always the highlighted row). A locked row (a hard
-// stop) and the new-worktree item are never handed to the engine: the status
-// line says why.
-func TestXRemovesTickedInBothModes(t *testing.T) {
-	// Manage, with ticks: the ticked rows, not the highlighted one.
-	m := moveTo(t, newSizedCleanupList(t, cleanupFixture(), 120, 40), "spike-picker")
-	if got, _ := runPreview(t, m, keyRunes("x")); strings.Join(got, ",") != "full-branch-name-paths,fix-default-guard" {
-		t.Errorf("manage x with ticks previewed %v", got)
-	}
-	// Manage, nothing ticked: the highlighted row.
-	m = moveTo(t, m, "full-branch-name-paths")
-	m = cleanupSend(t, m, spaceKey)
-	m = moveTo(t, m, "fix-default-guard")
-	m = cleanupSend(t, m, spaceKey)
-	m = moveTo(t, m, "spike-picker")
-	if got, _ := runPreview(t, m, keyRunes("x")); strings.Join(got, ",") != "spike-picker" {
-		t.Errorf("manage x with nothing ticked previewed %v, want the highlighted row", got)
-	}
-
-	// Launch: the highlighted row.
-	l := moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "fix-default-guard")
-	got, fl := runPreview(t, l, keyRunes("x"))
-	if strings.Join(got, ",") != "fix-default-guard" || fl.phase != cleanupPhasePreviewing {
-		t.Errorf("launch x previewed %v (phase %v), want the highlighted row", got, fl.phase)
+// TestXRemoveKeyRefusesWhatCannotBeRemoved pins the row keys' refusals: a
+// locked row (a hard stop) and the new-worktree item are never handed to the
+// engine — nothing is previewed and the status line says why — in manage and
+// launch mode alike. What `x` does act on is pinned in
+// TestCleanupListXPreviewsOnlyTheHighlightedRow.
+func TestXRemoveKeyRefusesWhatCannotBeRemoved(t *testing.T) {
+	// Manage, a locked row: nothing previewed, the status says why.
+	m := moveTo(t, newSizedCleanupList(t, cleanupFixture(), 120, 40), "deep")
+	got, fm := runPreview(t, m, keyRunes("x"))
+	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.Contains(fm.status, "cannot be removed") {
+		t.Errorf("manage x on a locked row: previewed %v, phase %v, status %q", got, fm.phase, fm.status)
 	}
 	// Launch, a locked row: nothing previewed, the status says why.
-	l = moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "deep")
-	got, fl = runPreview(t, l, keyRunes("x"))
+	l := moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "deep")
+	got, fl := runPreview(t, l, keyRunes("x"))
 	if len(got) != 0 || fl.phase != cleanupPhaseList || !strings.Contains(fl.status, "cannot be removed") {
 		t.Errorf("launch x on a locked row: previewed %v, phase %v, status %q", got, fl.phase, fl.status)
 	}
@@ -414,9 +439,14 @@ func TestCleanupListDefaultTicksOnlyProven(t *testing.T) {
 	}
 }
 
-// TestCleanupListInUseRowsNotToggleable pins that an in-use row is drawn
-// [-] and that neither space nor `a` can tick it: it is the directory the
-// user is in, the primary checkout, a locked worktree.
+// TestCleanupListInUseRowsNotToggleable pins that a hard-stop row is drawn
+// [-] and that neither space nor `a` can tick it — hard-stop rows only: the
+// directory the user is in or an ancestor of it, the primary checkout, a
+// locked, nested or mid-operation worktree, and a worktree whose state could
+// not be read (its directory is gone). The floors never lock a row and stay
+// tickable (held in TestCleanupListHeldRowIsToggleable; the whole floor set
+// in TestCleanupLockedOnlyForHardStops): warn-but-never-prevent means a
+// softer signal must never block the user's keys.
 func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
 	m = moveTo(t, m, "deep")
@@ -441,8 +471,22 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 			Blockers: []cleanup.Reason{{Code: cleanup.BlockOpenPR}}},
 		cleanup.Row{Kind: cleanup.KindBranch, Name: "blocked-proven", Branch: "blocked-proven", Status: cleanup.StatusProven,
 			Evidence: cleanup.EvAncestor, Blockers: []cleanup.Reason{{Code: cleanup.BlockBaseOfOpenPR}}},
+		// The remaining hard stops, one code per row: locked,
+		// mid-operation and nested worktrees, then the missing-dir case —
+		// a worktree whose state could not be read (its directory is gone),
+		// the gates_unavailable reason with the Losses.GatesUnknown flag
+		// the engine refuses on ("could not read the worktree's state").
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "locked-wt", Path: "/repo/.worktrees/locked-wt", Branch: "locked-wt", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockLocked}}},
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "mid-rebase", Path: "/repo/.worktrees/mid-rebase", Branch: "mid-rebase", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockOperation, Detail: "rebase-merge"}}},
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "holds-one", Path: "/repo/.worktrees/holds-one", Branch: "holds-one", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockNested, Detail: "/repo/.worktrees/holds-one/.worktrees/inner"}}},
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "gone-dir", Path: "/repo/.worktrees/gone-dir", Branch: "gone-dir", Status: cleanup.StatusLessSure, Unknown: true,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonGatesUnavailable, Detail: "cleanup: worktree /repo/.worktrees/gone-dir is prunable: its git link is broken, so its state cannot be read"}},
+			Losses:  cleanup.Losses{GatesUnknown: true}},
 	)
-	for _, name := range []string{"inuse-noblock", "blocked-lesssure", "blocked-proven"} {
+	for _, name := range []string{"inuse-noblock", "blocked-lesssure", "blocked-proven", "locked-wt", "mid-rebase", "holds-one", "gone-dir"} {
 		m = newSizedCleanupList(t, r, 120, 50)
 		m = moveTo(t, m, name)
 		m = cleanupSend(t, m, spaceKey)
@@ -545,6 +589,42 @@ func TestCleanupListTitleNamesRemoval(t *testing.T) {
 	next, cmd := m.Update(keyRunes("q"))
 	if cmd == nil || next.(cleanupListModel).exitMessage() != "" {
 		t.Errorf("q: cmd=%v message=%q; want tea.Quit and no message", cmd, next.(cleanupListModel).exitMessage())
+	}
+}
+
+// TestCleanupListTitleLineNamesAllActions pins the manage title's key legend
+// at two widths: at 100x30 it names every action in its full form — `x
+// remove`, `R restore root`, `F refresh`, `r rescue` beside `q quit` — and at
+// 80x24 it still fits with no clipping and still spells out every action name
+// (only key qualifiers and separators tighten, never an action; `q quit` stays
+// visible). Why: the title is the only
+// place `x`, `R` and `F` are named, and a legend wider than the terminal
+// silently loses its tail — `q quit` — on the 80-column terminals people
+// actually run.
+func TestCleanupListTitleLineNamesAllActions(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 100, 30)
+	for _, want := range []string{"x remove", "R restore root", "F refresh", "r rescue", "q quit"} {
+		if !strings.Contains(m.titleLine(), want) {
+			t.Errorf("title at 100x30 misses %q:\n%s", want, m.titleLine())
+		}
+	}
+	if v := m.View(); !strings.Contains(v, "x remove") || !strings.Contains(v, "F refresh") {
+		t.Errorf("view at 100x30 does not carry the title's actions:\n%s", v)
+	}
+	if w := lipgloss.Width(m.titleLine()); w > 100 {
+		t.Errorf("title at 100x30 is %d columns and clips:\n%s", w, m.titleLine())
+	}
+	narrow := newSizedCleanupList(t, cleanupFixture(), 80, 24)
+	if w := lipgloss.Width(narrow.titleLine()); w > 80 {
+		t.Errorf("title at 80x24 is %d columns and clips:\n%s", w, narrow.titleLine())
+	}
+	if !strings.Contains(narrow.titleLine(), "q quit") {
+		t.Errorf("title at 80x24 hides q quit:\n%s", narrow.titleLine())
+	}
+	for _, want := range []string{"x remove", "R restore root", "F refresh", "r rescue"} {
+		if !strings.Contains(narrow.titleLine(), want) {
+			t.Errorf("title at 80x24 shortens %q:\n%s", want, narrow.titleLine())
+		}
 	}
 }
 
@@ -745,7 +825,7 @@ func TestCleanupListCurrentMarkerOnLongestPath(t *testing.T) {
 // zero-size window and a report with no rows, and that an empty report
 // says so and quits on any key.
 func TestCleanupListZeroSizeAndEmptyReport(t *testing.T) {
-	m := newCleanupList(cleanupFixture(), themes.Default, time.Now())
+	m := newCleanupList(cleanupFixture(), themes.Default, time.Now(), RemoveFuncs{})
 	_ = m.View()
 	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 0, Height: 0})
 	_ = m.View()
@@ -757,7 +837,7 @@ func TestCleanupListZeroSizeAndEmptyReport(t *testing.T) {
 
 	empty := cleanupFixture()
 	empty.Rows = nil
-	e := newCleanupList(empty, themes.Default, time.Now())
+	e := newCleanupList(empty, themes.Default, time.Now(), RemoveFuncs{})
 	_ = e.View()
 	e = cleanupSend(t, e, tea.WindowSizeMsg{Width: 80, Height: 24})
 	if !strings.Contains(e.View(), "nothing to clean up") {
@@ -901,7 +981,7 @@ func rescueListFixture() cleanup.Report {
 // terminal, so the list must leave the alt screen first.
 func TestCleanupListRKeyHandsTheRowToRescue(t *testing.T) {
 	m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
-	m.rm.Rescue = func(cleanup.Row) error { return nil }
+	m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "spike")
 	if v := m.View(); !strings.Contains(v, "r rescue") {
 		t.Errorf("title line does not offer r rescue:\n%s", v)
@@ -924,7 +1004,7 @@ func TestCleanupListRKeyExplainsWhenNotOffered(t *testing.T) {
 		{"lone", "wt -W lone"},
 	} {
 		m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
-		m.rm.Rescue = func(cleanup.Row) error { return nil }
+		m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 		m = moveTo(t, m, c.row)
 		next, cmd := m.Update(keyRunes("r"))
 		fm := next.(cleanupListModel)
@@ -1018,6 +1098,125 @@ func TestCleanupListFKeyKeepsTheUsersUntickedRows(t *testing.T) {
 	}
 }
 
+// TestCleanupListFKeyKeepsATickTheUserAdded: a row the user ticked by hand
+// that newRowList never ticks for them (a less-sure row) keeps that tick
+// across the `F` re-read. Why: the rebuild re-applied only the default ticks
+// and the user's *un*ticks, so a refresh silently dropped every manual tick on
+// a non-proven row and enter then answered "nothing ticked" for a selection
+// the user had just made.
+func TestCleanupListFKeyKeepsATickTheUserAdded(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = moveTo(t, m, "spike-picker")
+	if m.ticked[m.cursor] {
+		t.Fatal("fixture: the less-sure row must start unticked, or the test proves nothing")
+	}
+	m = cleanupSend(t, m, spaceKey)
+	if !m.ticked[m.cursor] {
+		t.Fatal("space did not tick the less-sure row")
+	}
+	m.rm.Refetch = func() (cleanup.Report, error) { return cleanupFixture(), nil }
+	m = press(t, m, keyRunes("F"))
+	if !m.ticked[m.cursor] {
+		t.Errorf("the row the user ticked lost its tick across F (cursor %d, ticked %v)", m.cursor, m.tickedNames())
+	}
+}
+
+// TestCleanupListFetchKeyRefreshes: `F` refreshes in place — RemoveFuncs.Refetch
+// runs exactly once and the list rebuilds from its fresh report without
+// leaving the screen. Why: this is the key path end to end (the `F` binding,
+// the refetch command and the re-entry into the list); a break anywhere along
+// it turns `F` into a dead key.
+func TestCleanupListFetchKeyRefreshes(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	calls := 0
+	m.rm.Refetch = func() (cleanup.Report, error) {
+		calls++
+		rep := cleanupFixture()
+		rep.Rows = append(rep.Rows, cleanup.Row{Kind: cleanup.KindBranch, Name: "fresh-branch", Branch: "fresh-branch", Status: cleanup.StatusLessSure})
+		return rep, nil
+	}
+	m = press(t, m, keyRunes("F"))
+	if calls != 1 {
+		t.Fatalf("Refetch called %d times, want 1", calls)
+	}
+	if v := m.View(); !strings.Contains(v, "fresh-branch") {
+		t.Errorf("the list did not rebuild from the fresh report:\n%s", v)
+	}
+	if m.done || m.phase != cleanupPhaseList {
+		t.Errorf("done=%v phase=%v; F refreshes in place and stays in the list", m.done, m.phase)
+	}
+}
+
+// TestCleanupListFetchFailureKeepsOldListAndSaysWhy: when the `F` re-read
+// fails — Refetch's own error, the re-read's failure (a fetch failure is not
+// this error: it travels in the report's Fetch field and the header renders
+// it) — the old rows stay and the status says why in one line. Why: nothing
+// was removed here, so the rows the user was reading are still what to show;
+// a blank or silent failure reads as a broken key.
+func TestCleanupListFetchFailureKeepsOldListAndSaysWhy(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m.rm.Refetch = func() (cleanup.Report, error) {
+		return cleanup.Report{}, errMock("re-read failed: git broke")
+	}
+	m = press(t, m, keyRunes("F"))
+	if v := m.View(); !strings.Contains(v, "mtplx-profiles") || !strings.Contains(v, "old-remote") {
+		t.Errorf("a failed refresh dropped the old list:\n%s", v)
+	}
+	if !strings.Contains(m.status, "git broke") || strings.Contains(m.status, "\n") {
+		t.Errorf("status = %q; want the failure's reason in one line", m.status)
+	}
+	if m.done || m.phase != cleanupPhaseList {
+		t.Errorf("done=%v phase=%v; a failed refresh stays in the list", m.done, m.phase)
+	}
+}
+
+// TestCleanupListFetchNotWired: `F` while RemoveFuncs.Refetch is still nil
+// (the pre-wiring gap cmd/wt closes) says one line on the status and does
+// nothing — no panic, no silent no-op, and nothing run at all (no prune: no
+// refresh ran). Why: the gap must read as a told gap, not a broken key.
+func TestCleanupListFetchNotWired(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	next, cmd := m.Update(keyRunes("F"))
+	fm := next.(cleanupListModel)
+	if fm.done || fm.phase != cleanupPhaseList || (cmd != nil && cmd() != nil) {
+		t.Fatalf("done=%v phase=%v cmd=%v; want nothing to happen", fm.done, fm.phase, cmd)
+	}
+	if fm.status != "refresh is not available here" {
+		t.Errorf("status = %q, want %q", fm.status, "refresh is not available here")
+	}
+	if v := fm.View(); !strings.Contains(v, "mtplx-profiles") {
+		t.Errorf("the list changed under an unwired F:\n%s", v)
+	}
+}
+
+// TestCleanupListFetchKeepsCursorOnSameRow: the `F` re-read keeps the
+// highlighted row — the same row by kind, ref, path and name, not the same
+// index (the fresh report gained a row above it) — and a failed re-read keeps
+// the cursor there too. Why: a refresh that jumps the cursor loses the user's
+// place mid-review.
+func TestCleanupListFetchKeepsCursorOnSameRow(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = moveTo(t, m, "who-knows")
+	m.rm.Refetch = func() (cleanup.Report, error) {
+		rep := cleanupFixture()
+		rep.Rows = append([]cleanup.Row{{Kind: cleanup.KindWorktree, Name: "aaa-new", Path: "/repo/.worktrees/aaa-new",
+			Branch: "aaa-new", Status: cleanup.StatusLessSure}}, rep.Rows...)
+		return rep, nil
+	}
+	m = press(t, m, keyRunes("F"))
+	if v := m.View(); !strings.Contains(v, "aaa-new") {
+		t.Fatalf("the fresh report did not rebuild the list:\n%s", v)
+	}
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "who-knows" {
+		t.Fatalf("after F the cursor is on %q (ok=%v), want who-knows", cleanup.DisplayName(row), ok)
+	}
+	m.rm.Refetch = func() (cleanup.Report, error) { return cleanup.Report{}, errMock("re-read failed") }
+	m = press(t, m, keyRunes("F"))
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "who-knows" {
+		t.Fatalf("after a failed F the cursor is on %q (ok=%v), want who-knows", cleanup.DisplayName(row), ok)
+	}
+}
+
 // TestCleanupListRKeyStillRescues: adding `F` must not displace `r` — the
 // manage list still hands the highlighted row to rescue and quits, and no
 // refetch runs on the way (`F` is the only refetch key).
@@ -1025,7 +1224,7 @@ func TestCleanupListRKeyStillRescues(t *testing.T) {
 	m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
 	refetches := 0
 	m.rm.Refetch = func() (cleanup.Report, error) { refetches++; return cleanupFixture(), nil }
-	m.rm.Rescue = func(cleanup.Row) error { return nil }
+	m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "spike")
 	next, cmd := m.Update(keyRunes("r"))
 	fm := next.(cleanupListModel)
@@ -1046,7 +1245,7 @@ func TestRunRescueStopsSignalForwardingFirst(t *testing.T) {
 	var calls []string
 	row := cleanup.Row{Name: "spike"}
 	fm := cleanupListModel{rescueRow: &row}
-	rm := RemoveFuncs{Rescue: func(r cleanup.Row) error {
+	rm := RemoveFuncs{Rescue: func(r cleanup.Row, _ io.Reader, _, _ io.Writer) error {
 		calls = append(calls, "rescue:"+r.Name)
 		return nil
 	}}
@@ -1064,25 +1263,23 @@ func TestRunRescueStopsSignalForwardingFirst(t *testing.T) {
 }
 
 // TestRunCleanupListStopsForwardingThenRescues drives RunCleanupList through
-// the program seam with a final model that holds a rescue row. What: the
-// signal forwarding is stopped and then rm.Rescue runs with that row, in that
+// its program runner (RemoveFuncs.Program) with a final model that holds a
+// rescue row. What: the signal forwarding is stopped and then rm.Rescue runs with that row, in that
 // order, and a final model without a row rescues nothing. Why:
 // TestRunRescueStopsSignalForwardingFirst covers runRescue alone; this fails
 // if RunCleanupList stops calling runRescue (the r key would do nothing) or
 // calls the rescue before the stop (Ctrl-C at its prompt would be dropped).
 func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	var calls []string
 	row := cleanup.Row{Name: "spike"}
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
-		m.rescueRow = &row
-		return m, func() { calls = append(calls, "stop") }, nil
-	}
-	rm := RemoveFuncs{Rescue: func(r cleanup.Row) error {
+	rm := RemoveFuncs{Rescue: func(r cleanup.Row, _ io.Reader, _, _ io.Writer) error {
 		calls = append(calls, "rescue:"+r.Name)
 		return nil
 	}}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		m.rescueRow = &row
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
 	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
 		t.Fatal(err)
 	}
@@ -1091,7 +1288,7 @@ func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
 	}
 
 	calls = nil
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		return m, func() { calls = append(calls, "stop") }, nil
 	}
 	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
@@ -1108,7 +1305,7 @@ func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
 // panics. What: the signal forwarding is released before the panic leaves
 // guardedRun (once), while a run that returns normally keeps it until the
 // caller calls the returned stop. Why: the release used to be deferred only
-// after runCleanupProgram returned, so a panic in the program left the
+// after the program returned, so a panic in the program left the
 // process's SIGINT/SIGTERM forwarded to a dead program.
 func TestGuardedRunReleasesSignalForwardingWhenTheProgramPanics(t *testing.T) {
 	stops := 0
@@ -1326,5 +1523,875 @@ func TestOpeningTheListPrunesNothing(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatalf("opening the list rewrote the stale claim %s", file)
+	}
+}
+
+// restoreRootListFixture is a report whose root sits on a feature branch — the
+// one row `R` restores — beside a linked worktree and a branch row (rows `R`
+// explains instead of offering). The rows carry exactly the shape
+// rootmove.Offered reads (Primary, Bare, Head, Branch, the default_branch
+// blocker): Offered is the gate, and it reads the row alone, never git.
+func restoreRootListFixture() cleanup.Report {
+	return restoreRootReport(cleanup.Row{
+		Kind: cleanup.KindWorktree, Name: "topic", Path: "/repo", Branch: "topic", Ref: "refs/heads/topic",
+		Primary: true, Head: "0123456789abcdef0123456789abcdef01234567", Status: cleanup.StatusLessSure,
+		Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is on topic, not main"}},
+	})
+}
+
+// restoreRootReport is a report around one root row, with a linked worktree
+// and a branch row beside it so a non-root refusal is always one move away.
+func restoreRootReport(root cleanup.Row) cleanup.Report {
+	return cleanup.Report{
+		Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Fetch: cleanup.FetchResult{OK: true, At: time.Now()}, GH: cleanup.GHOK,
+		Rows: []cleanup.Row{
+			root,
+			{Kind: cleanup.KindWorktree, Name: "tidy", Path: "/repo/.worktrees/tidy", Branch: "tidy", Ref: "refs/heads/tidy", Status: cleanup.StatusProven},
+			{Kind: cleanup.KindBranch, Name: "lone", Branch: "lone", Status: cleanup.StatusLessSure},
+		},
+	}
+}
+
+// TestCleanupListRestoreRootKeyHandsOff checks `R` on the root row a restore
+// is offered for quits the list and flags the restore-root hand-off, touching
+// nothing else (the rescue row stays unset). Why: restore-root asks on the
+// real terminal, so the list must leave the alt screen first — the flag is
+// what runRestoreRoot hands to RemoveFuncs.RestoreRoot after the screen.
+func TestCleanupListRestoreRootKeyHandsOff(t *testing.T) {
+	m := newSizedCleanupList(t, restoreRootListFixture(), 100, 30)
+	m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { return nil }
+	m = moveTo(t, m, "topic")
+	next, cmd := m.Update(keyRunes("R"))
+	fm := next.(cleanupListModel)
+	if cmd == nil || !fm.restoreRoot || !fm.done {
+		t.Fatalf("cmd=%v restoreRoot=%v done=%v; want quit with the restore flagged", cmd, fm.restoreRoot, fm.done)
+	}
+	if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Errorf("R's command = %T, want tea.QuitMsg (the alt screen must close first)", cmd())
+	}
+	if fm.rescueRow != nil {
+		t.Errorf("R set rescueRow %+v; the restore-root hand-off must not touch rescue", fm.rescueRow)
+	}
+}
+
+// TestCleanupListRestoreRootExplainsWhenNotOffered checks `R` on a row
+// rootmove.Offered refuses stays in the list and shows that gate's own line
+// byte-for-byte on the status line — one case per refusal shape (a linked
+// worktree and a branch row are not the root; the root on the default is
+// already there; a detached root has no branch to move; an unborn root has no
+// commit to move). Why: a key that does nothing, silently, reads as broken,
+// and re-wording Offered's line here would let the two drift apart.
+func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, c := range []struct {
+		name   string
+		report cleanup.Report
+		row    string
+		want   string
+	}{
+		{"a linked worktree is not the root", restoreRootListFixture(), "tidy", "only the root can be restored"},
+		{"a branch row is not the root", restoreRootListFixture(), "lone", "only the root can be restored"},
+		{"the root on the default is already there", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "main", Path: "/repo", Branch: "main", Ref: "refs/heads/main",
+			Primary: true, Head: sha, Status: cleanup.StatusInUse,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}, {Code: cleanup.BlockDefaultBranch, Detail: "main"}}}),
+			"main", "root is already on main"},
+		{"a detached root has no branch to move", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
+			Status:  cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}}),
+			"repo", "the root is detached — there is no branch to move"},
+		{"an unborn root has no commit to move", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "fresh", Path: "/repo", Branch: "fresh", Ref: "refs/heads/fresh",
+			Primary: true, Head: "0000000000000000000000000000000000000000", Status: cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is on fresh, not main"}}}),
+			"fresh", "the root's branch has no commits yet"},
+		{"a root mid-operation is refused by restore-root", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "busy", Path: "/repo", Branch: "busy", Ref: "refs/heads/busy",
+			Primary: true, Head: sha, Status: cleanup.StatusInUse,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}, {Code: cleanup.BlockOperation, Detail: "merge"}}}),
+			"busy", "an operation is in progress there"},
+		{"a root whose state could not be read", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "blind", Path: "/repo", Branch: "blind", Ref: "refs/heads/blind",
+			Primary: true, Head: sha, Status: cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonGatesUnavailable}},
+			Losses:  cleanup.Losses{GatesUnknown: true}}),
+			"blind", "its state could not be read"},
+	} {
+		restored := false
+		m := newSizedCleanupList(t, c.report, 100, 30)
+		m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { restored = true; return nil }
+		m = moveTo(t, m, c.row)
+		next, cmd := m.Update(keyRunes("R"))
+		fm := next.(cleanupListModel)
+		if fm.restoreRoot || fm.done || cmd != nil || restored {
+			t.Errorf("%s: restoreRoot=%v done=%v cmd=%v restored=%v; want to stay in the list", c.name, fm.restoreRoot, fm.done, cmd, restored)
+		}
+		if fm.status != c.want {
+			t.Errorf("%s: status = %q, want Offered's line byte-for-byte %q", c.name, fm.status, c.want)
+		}
+	}
+}
+
+// TestCleanupListRestoreRootNotWired checks `R` while RemoveFuncs.RestoreRoot
+// is still nil (the pre-wiring gap cmd/wt closes): on the row a restore is
+// offered for it says one line and does nothing. Why: the gap must read as a
+// told gap, not a broken key — no panic, no silent no-op.
+func TestCleanupListRestoreRootNotWired(t *testing.T) {
+	m := newSizedCleanupList(t, restoreRootListFixture(), 100, 30)
+	m = moveTo(t, m, "topic")
+	next, cmd := m.Update(keyRunes("R"))
+	fm := next.(cleanupListModel)
+	if fm.restoreRoot || fm.done || cmd != nil {
+		t.Fatalf("restoreRoot=%v done=%v cmd=%v; want nothing to happen", fm.restoreRoot, fm.done, cmd)
+	}
+	if fm.status != "restore root is not wired here" {
+		t.Errorf("status = %q, want %q", fm.status, "restore root is not wired here")
+	}
+}
+
+// TestRunCleanupListRestoresRootAfterTheScreen drives RunCleanupList through
+// its program runner (RemoveFuncs.Program) with a final model whose `R` flag
+// is set. What: the signal forwarding is stopped, then RemoveFuncs.RestoreRoot
+// runs — and it runs only once the alt screen is gone (the runner's return).
+// Why: the restore asks on the real terminal;
+// TestRunRestoreRootStopsSignalForwardingFirst covers runRestoreRoot alone,
+// this fails if RunCleanupList stops calling it or calls it while the screen
+// is still up.
+func TestRunCleanupListRestoresRootAfterTheScreen(t *testing.T) {
+	var calls []string
+	screenGone, sawScreenGone := false, false
+	rm := RemoveFuncs{RestoreRoot: func(_ io.Reader, _, _ io.Writer) error {
+		calls = append(calls, "restore")
+		sawScreenGone = screenGone
+		return nil
+	}}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		m.restoreRoot = true
+		defer func() { screenGone = true }() // the alt screen closes as the program returns
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
+	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) < 2 || calls[0] != "stop" || calls[1] != "restore" {
+		t.Errorf("calls = %v, want stop then restore", calls)
+	}
+	if !sawScreenGone {
+		t.Error("RestoreRoot did not run after the alt screen closed (it never ran, or ran while the screen was still up)")
+	}
+
+	calls = nil
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
+	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range calls {
+		if c == "restore" {
+			t.Errorf("no R chosen but restore ran: %v", calls)
+		}
+	}
+}
+
+// TestRunRestoreRootStopsSignalForwardingFirst checks the R hand-off stops
+// the signal forwarding before RemoveFuncs.RestoreRoot runs, and does nothing
+// when no restore was flagged or no func is wired. Why: the Bubble Tea program
+// has finished by then, so a forwarded signal would go to a dead p.Send and be
+// dropped, and Ctrl-C at the restore's prompt (or SIGHUP during the move)
+// would do nothing.
+func TestRunRestoreRootStopsSignalForwardingFirst(t *testing.T) {
+	var calls []string
+	fm := cleanupListModel{restoreRoot: true}
+	rm := RemoveFuncs{RestoreRoot: func(_ io.Reader, _, _ io.Writer) error {
+		calls = append(calls, "restore")
+		return nil
+	}}
+	if err := runRestoreRoot(fm, rm, func() { calls = append(calls, "stop") }); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "stop,restore" {
+		t.Errorf("calls = %s, want stop before restore", got)
+	}
+
+	calls = nil
+	if err := runRestoreRoot(cleanupListModel{}, rm, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
+		t.Errorf("no restore flagged: err=%v calls=%v, want nothing", err, calls)
+	}
+	if err := runRestoreRoot(fm, RemoveFuncs{}, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
+		t.Errorf("no RestoreRoot wired: err=%v calls=%v, want nothing", err, calls)
+	}
+}
+
+// captureStdout runs f with os.Stdout pointed at a scratch file and returns
+// what it printed. The package has no parallel tests, so the swap is safe.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdout.txt")
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = out
+	defer func() { os.Stdout = old }()
+	f()
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestRunCleanupListReentersAfterRescue drives RunCleanupList through the
+// program seam with a first pass whose `r` hand-off succeeds and a Refetch
+// that answers a fresh report. What: the session re-enters — the program runs
+// a second pass — and that pass's model is built from the FRESH report (the
+// re-read every hand-off path re-gathers through: never a cached one) and
+// starts clean, with no confirm state, no seedBranch and no hand-off flag
+// carried across passes (one hand-off per pass). The rescue itself ran once.
+// Why: without the loop one `wt cleanup` session ends after its first action,
+// and a pass built from the cached report would act on rows that may be gone.
+func TestRunCleanupListReentersAfterRescue(t *testing.T) {
+	row := cleanup.Row{Name: "spike"}
+	first := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "first-marker", Branch: "first-marker", Status: cleanup.StatusProven}}}
+	fresh := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "fresh-marker", Branch: "fresh-marker", Status: cleanup.StatusProven}}}
+	var saw []string
+	runs := 0
+	fetches, rescues := 0, 0
+	rm := RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { rescues++; return nil },
+		Refetch: func() (cleanup.Report, error) { fetches++; return fresh, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		saw = append(saw, m.report.Rows[0].Name)
+		if runs == 2 && (m.conf != nil || m.seedBranch || m.rescueRow != nil || m.restoreRoot) {
+			t.Errorf("the second pass inherited state: confirm=%v seedBranch=%v rescueRow=%v restoreRoot=%v",
+				m.conf != nil, m.seedBranch, m.rescueRow != nil, m.restoreRoot)
+		}
+		if runs == 1 {
+			m.rescueRow = &row
+		}
+		return m, func() {}, nil
+	}
+	if err := RunCleanupList(first, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2 (re-enter after the rescue)", runs)
+	}
+	if fetches != 1 || rescues != 1 {
+		t.Errorf("Refetch=%d Rescue=%d, want one re-read and one hand-off", fetches, rescues)
+	}
+	if len(saw) != 2 || saw[0] != "first-marker" || saw[1] != "fresh-marker" {
+		t.Errorf("the passes read reports %v; the second must be built from Refetch's fresh report", saw)
+	}
+}
+
+// TestRunCleanupListReentersAfterRestoreRoot is the `R` hand-off's half of the
+// loop: after the restore-root action succeeds the session re-enters with a
+// fresh report and a clean pass, and the restore ran once (one hand-off per
+// pass). Why: `R` on a drifted root is usually followed by removing what the
+// move created, and one `wt cleanup` session should do both.
+func TestRunCleanupListReentersAfterRestoreRoot(t *testing.T) {
+	first := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "first-marker", Branch: "first-marker", Status: cleanup.StatusProven}}}
+	fresh := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "fresh-marker", Branch: "fresh-marker", Status: cleanup.StatusProven}}}
+	var saw []string
+	runs := 0
+	fetches, restores := 0, 0
+	rm := RemoveFuncs{
+		RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { restores++; return nil },
+		Refetch:     func() (cleanup.Report, error) { fetches++; return fresh, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		saw = append(saw, m.report.Rows[0].Name)
+		if runs == 2 && (m.conf != nil || m.seedBranch || m.rescueRow != nil || m.restoreRoot) {
+			t.Errorf("the second pass inherited state: confirm=%v seedBranch=%v rescueRow=%v restoreRoot=%v",
+				m.conf != nil, m.seedBranch, m.rescueRow != nil, m.restoreRoot)
+		}
+		if runs == 1 {
+			m.restoreRoot = true
+		}
+		return m, func() {}, nil
+	}
+	if err := RunCleanupList(first, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2 (re-enter after the restore-root)", runs)
+	}
+	if fetches != 1 || restores != 1 {
+		t.Errorf("Refetch=%d RestoreRoot=%d, want one re-read and one hand-off", fetches, restores)
+	}
+	if len(saw) != 2 || saw[0] != "first-marker" || saw[1] != "fresh-marker" {
+		t.Errorf("the passes read reports %v; the second must be built from Refetch's fresh report", saw)
+	}
+}
+
+// TestRunCleanupListStopsLoopingOnActionError pins the session's independent
+// error paths: an error from the rescue action, from the restore-root action
+// or from the re-entry re-read stops the session right there and surfaces as
+// RunCleanupList's returned error with its own message — never swallowed,
+// never retried, no generic wrapping that hides which step failed — and no
+// later pass runs (the program ran once).
+func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
+	row := cleanup.Row{Name: "spike"}
+
+	// A rescue that fails: its own error returns, and the list is never
+	// re-entered after a failed action.
+	boom := errMock("rescue action failed")
+	runs, fetches, rescueCalls := 0, 0, 0
+	rm := RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { rescueCalls++; return boom },
+		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.rescueRow = &row
+		return m, func() {}, nil
+	}
+	err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "rescue action failed") {
+		t.Errorf("err = %v, want the rescue's own error", err)
+	}
+	if runs != 1 || fetches != 0 {
+		t.Errorf("runs=%d fetches=%d, want one pass and no re-entry after a failed action", runs, fetches)
+	}
+	if rescueCalls != 1 {
+		t.Errorf("Rescue ran %d times, want exactly one (a failing action is never retried)", rescueCalls)
+	}
+
+	// A restore-root that fails: same.
+	boom = errMock("restore-root action failed")
+	runs, fetches, restoreCalls := 0, 0, 0
+	rm = RemoveFuncs{
+		RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { restoreCalls++; return boom },
+		Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.restoreRoot = true
+		return m, func() {}, nil
+	}
+	err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "restore-root action failed") {
+		t.Errorf("err = %v, want the restore-root's own error", err)
+	}
+	if runs != 1 || fetches != 0 {
+		t.Errorf("runs=%d fetches=%d, want one pass and no re-entry after a failed action", runs, fetches)
+	}
+	if restoreCalls != 1 {
+		t.Errorf("RestoreRoot ran %d times, want exactly one (a failing action is never retried)", restoreCalls)
+	}
+
+	// The re-entry re-read that fails: the hand-off succeeded, but there is
+	// no fresh report to re-enter with, so the re-read's own error returns
+	// and no second pass runs (never one built from the cached report).
+	boom = errMock("re-entry re-read failed")
+	runs, fetches, rescues := 0, 0, 0
+	rm = RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { rescues++; return nil },
+		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, boom },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.rescueRow = &row
+		return m, func() {}, nil
+	}
+	err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "re-entry re-read failed") {
+		t.Errorf("err = %v, want the re-entry re-read's own error", err)
+	}
+	if runs != 1 || fetches != 1 || rescues != 1 {
+		t.Errorf("runs=%d fetches=%d rescues=%d, want one pass, one hand-off and one re-read", runs, fetches, rescues)
+	}
+}
+
+// stdoutSoFar is what the captured stdout (captureStdout's file) holds right
+// now: what a process that died at this point would have left printed.
+func stdoutSoFar(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(os.Stdout.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestRunCleanupListPrintsLogOncePerSession pins the session log's print:
+// every outcome of every pass prints EXACTLY ONCE across the session. Pass
+// 1's outcomes print before the `r` hand-off runs (a ctrl+c at its prompt
+// ends the process, so the log must already be out), pass 2's when the
+// session ends. Why: the log is the only record of what was removed and of
+// every deleted branch's commit; printing a pass twice would repeat it and
+// printing only at the end would lose it to a hand-off that dies.
+func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
+	row := cleanup.Row{Name: "spike"}
+	logged := func(n int) removal.Outcome {
+		return removal.NewOutcome(
+			removal.Item{Kind: cleanup.KindWorktree, Name: "work-" + strconv.Itoa(n)},
+			removal.WtRemoved, removal.BrDeleted, "outcome of pass "+strconv.Itoa(n))
+	}
+	runs := 0
+	atHandOff := ""
+	rm := RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { atHandOff = stdoutSoFar(t); return nil },
+		Refetch: func() (cleanup.Report, error) { return cleanup.Report{}, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		fmt.Println("pass", runs, "screen")
+		m.log = append(m.log, logged(runs))
+		if runs == 1 {
+			m.rescueRow = &row
+		}
+		return m, func() {}, nil
+	}
+	var err error
+	out := captureStdout(t, func() {
+		err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2", runs)
+	}
+	for _, want := range []string{"outcome of pass 1", "outcome of pass 2"} {
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("%q printed %d times, want exactly once:\n%s", want, n, out)
+		}
+	}
+	if !strings.Contains(atHandOff, "outcome of pass 1") || strings.Contains(atHandOff, "outcome of pass 2") {
+		t.Errorf("when the hand-off ran, stdout held %q; want pass 1's outcome out and pass 2's not yet", atHandOff)
+	}
+	if at := strings.Index; !(at(out, "pass 1 screen") < at(out, "outcome of pass 1") && at(out, "outcome of pass 1") < at(out, "pass 2 screen") && at(out, "pass 2 screen") < at(out, "outcome of pass 2")) {
+		t.Errorf("the log did not print pass 1 before the hand-off and pass 2 at the end:\n%s", out)
+	}
+
+	// However the session ends: a pass that ends on an error still prints
+	// the rest of the log, once, and pass 1's is not printed again.
+	runs = 0
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.log = append(m.log, logged(runs))
+		if runs == 1 {
+			m.rescueRow = &row
+		} else {
+			m.exitErr = errMock("post-run re-read failed")
+		}
+		return m, func() {}, nil
+	}
+	out = captureStdout(t, func() {
+		err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	})
+	if !errors.Is(err, errMock("post-run re-read failed")) {
+		t.Errorf("err = %v, want the pass's exitErr", err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2", runs)
+	}
+	for _, want := range []string{"outcome of pass 1", "outcome of pass 2"} {
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("after an error exit %q printed %d times, want exactly once:\n%s", want, n, out)
+		}
+	}
+}
+
+// TestRunCleanupListLogIsOutBeforeAHandOffDies is the "died at the prompt"
+// pin: a hand-off that ends the process (ctrl+c at its y/N, after stop()
+// restored Go's fatal signal handling) leaves every earlier outcome already
+// printed, restore commands included. The stub records stdout at the moment
+// it is called and then fails as a killed process would never return.
+func TestRunCleanupListLogIsOutBeforeAHandOffDies(t *testing.T) {
+	for _, which := range []string{"rescue", "restore-root"} {
+		seen := ""
+		died := errMock("process died at the prompt")
+		hand := func() error { seen = stdoutSoFar(t); return died }
+		rm := RemoveFuncs{
+			Rescue:      func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return hand() },
+			RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { return hand() },
+			Refetch:     func() (cleanup.Report, error) { return cleanup.Report{}, nil },
+		}
+		rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+			m.log = append(m.log, removal.NewOutcome(
+				removal.Item{Kind: cleanup.KindBranch, Name: "gone-branch"}, removal.WtRemoved, removal.BrDeleted, "outcome of the removal"))
+			if which == "rescue" {
+				m.rescueRow = &cleanup.Row{Name: "spike"}
+			} else {
+				m.restoreRoot = true
+			}
+			return m, func() {}, nil
+		}
+		var err error
+		out := captureStdout(t, func() { err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm) })
+		if !errors.Is(err, died) {
+			t.Errorf("%s: err = %v, want the hand-off's own", which, err)
+		}
+		if !strings.Contains(seen, "outcome of the removal") {
+			t.Errorf("%s: at the hand-off stdout held %q; the log must be out before it can die", which, seen)
+		}
+		if n := strings.Count(out, "outcome of the removal"); n != 1 {
+			t.Errorf("%s: the outcome printed %d times, want once:\n%s", which, n, out)
+		}
+	}
+}
+
+// TestRunCleanupListReentersAfterANoteHandOff pins the final review's I2: a
+// hand-off that ended with nothing changed (declined, refused) or finished
+// returns a HandOffNote, and the session re-enters the list from a fresh
+// read with the note's text on the status line; a hand-off that failed (a
+// plain error) still ends the session.
+func TestRunCleanupListReentersAfterANoteHandOff(t *testing.T) {
+	row := cleanup.Row{Name: "spike"}
+	for _, which := range []string{"rescue", "restore-root"} {
+		declined := errMock("not confirmed; nothing was changed")
+		note := &HandOffNote{Text: which + ": not confirmed - nothing changed", Err: declined}
+		runs, fetches := 0, 0
+		var statuses []string
+		rm := RemoveFuncs{
+			Rescue:      func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return note },
+			RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { return note },
+			Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+		}
+		rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+			runs++
+			statuses = append(statuses, m.status)
+			if runs == 1 {
+				if which == "rescue" {
+					m.rescueRow = &row
+				} else {
+					m.restoreRoot = true
+				}
+			}
+			return m, func() {}, nil
+		}
+		if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+			t.Errorf("%s: a declined hand-off ended the session with %v, want a re-entry", which, err)
+		}
+		if runs != 2 || fetches != 1 || len(statuses) != 2 || statuses[1] != note.Text {
+			t.Errorf("%s: runs=%d fetches=%d statuses=%q; want a re-read and the second pass opening on %q", which, runs, fetches, statuses, note.Text)
+		}
+
+		// With nothing to re-read through, the note cannot re-enter: the
+		// session ends with the error the hand-off would have returned.
+		runs = 0
+		rm.Refetch = nil
+		if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); !errors.Is(err, declined) {
+			t.Errorf("%s: with no Refetch err = %v, want the decline's own error", which, err)
+		}
+		if runs != 1 {
+			t.Errorf("%s: no Refetch ran %d passes, want 1", which, runs)
+		}
+	}
+}
+
+// TestCleanupLockedOnlyForHardStops pins the lock's exact boundary: only a
+// hard stop locks a row — primary, current, locked, mid-operation, nested and
+// missing dir, each row carrying the one real code its name maps to (the
+// classifier's in_use/HardStop derivation is pinned in the cleanup package) —
+// while the floors (default branch, held, root drift) never lock: they read
+// less sure and the user may tick past them, whereupon the engine asks for
+// --accept-loss's typed confirmation. Why: warn-but-never-prevent — a softer
+// signal must never block the user's keys. no_default_branch is this
+// builder's decision for a code the brief leaves out: a "no known default"
+// uncertainty is a floor, not a hard stop, and it is pinned on that side.
+func TestCleanupLockedOnlyForHardStops(t *testing.T) {
+	hardStops := []struct {
+		name string
+		row  cleanup.Row
+	}{
+		{"primary", cleanup.Row{Kind: cleanup.KindWorktree, Name: "primary", Path: "/repo", Branch: "main", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary, Detail: "/repo"}}}},
+		{"current", cleanup.Row{Kind: cleanup.KindWorktree, Name: "current", Path: "/repo/.worktrees/current", Branch: "current", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockCurrent, Detail: "/repo/.worktrees/current"}}}},
+		{"locked", cleanup.Row{Kind: cleanup.KindWorktree, Name: "locked", Path: "/repo/.worktrees/locked", Branch: "locked", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockLocked, Detail: "/repo/.worktrees/locked"}}}},
+		{"mid-operation", cleanup.Row{Kind: cleanup.KindWorktree, Name: "mid-operation", Path: "/repo/.worktrees/mid-operation", Branch: "mid-operation", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockOperation, Detail: "rebase-merge"}}}},
+		{"nested", cleanup.Row{Kind: cleanup.KindWorktree, Name: "nested", Path: "/repo/.worktrees/nested", Branch: "nested", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockNested, Detail: "/repo/.worktrees/nested/.worktrees/inner"}}}},
+		// missing dir: the classifier's shape when a worktree's state could
+		// not be read — its directory is gone (the engine refuses it
+		// whatever is approved: "could not read the worktree's state").
+		{"missing dir", cleanup.Row{Kind: cleanup.KindWorktree, Name: "missing-dir", Path: "/repo/.worktrees/missing-dir", Branch: "missing-dir",
+			Status: cleanup.StatusLessSure, Unknown: true,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonGatesUnavailable, Detail: "cleanup: worktree /repo/.worktrees/missing-dir is prunable: its git link is broken, so its state cannot be read"}},
+			Losses:  cleanup.Losses{GatesUnknown: true}}},
+	}
+	for _, tc := range hardStops {
+		if !cleanupLocked(tc.row) {
+			t.Errorf("%s is a hard stop but does not lock the row", tc.name)
+		}
+	}
+	floors := []struct {
+		name string
+		row  cleanup.Row
+	}{
+		{"default branch", cleanup.Row{Kind: cleanup.KindWorktree, Name: "default-branch", Path: "/repo/.worktrees/default-branch", Branch: "main", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockDefaultBranch, Detail: "main"}}}},
+		// BlockHeld is ReasonHeld's alias (worktrees.go): the same held
+		// code in the legacy blocker shape the held test seam fakes.
+		{"held", cleanup.Row{Kind: cleanup.KindWorktree, Name: "held", Path: "/repo/.worktrees/held", Branch: "held", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockHeld, Detail: "/repo/.worktrees/held"}}}},
+		{"root drift", cleanup.Row{Kind: cleanup.KindWorktree, Name: "root-drift", Path: "/repo", Branch: "topic", Status: cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is on topic, not main"}}}},
+		{"no default branch", cleanup.Row{Kind: cleanup.KindWorktree, Name: "no-default", Path: "/repo/.worktrees/no-default", Branch: "no-default",
+			Status: cleanup.StatusLessSure, Unknown: true,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonNoDefaultBranch, Detail: "no default branch, so no base to compare with"}}}},
+	}
+	for _, tc := range floors {
+		if cleanupLocked(tc.row) {
+			t.Errorf("%s is a floor but locks the row", tc.name)
+		}
+	}
+}
+
+// TestCleanupListRemoveOnCwdOrAncestorIsRefused pins Review Focus 5's list
+// half: a remove targeting the cwd's own row or an ancestor of the cwd is
+// refused with one pinned explanation on every removal path the list has —
+// `x`, `d`, `o` and enter's ticked batch — and previews nothing. Refusal,
+// never a silent skip: a ticked row that cannot be removed refuses the whole
+// selection with its reason rather than quietly dropping the row and
+// previewing the rest (the engine refuses such a target too; here the list
+// refuses before the engine is called).
+func TestCleanupListRemoveOnCwdOrAncestorIsRefused(t *testing.T) {
+	r := cleanupFixture()
+	// The caller's directory sits inside "inner": "inner" is the cwd's own
+	// row (cleanup marks every worktree containing the cwd Current, and the
+	// "you are here" sentence rides the innermost one), while "deep" — which
+	// contains inner's path — and "main" (the root, the primary checkout)
+	// are ancestors of the cwd: removing either deletes the caller's
+	// directory with it.
+	byName := map[string]cleanup.Row{}
+	for _, row := range r.Rows {
+		byName[cleanup.DisplayName(row)] = row
+	}
+	inner := cleanup.Row{Kind: cleanup.KindWorktree, Name: "inner", Path: "/repo/.worktrees/deep/inner", Branch: "inner",
+		Status: cleanup.StatusInUse, Blockers: []cleanup.Reason{{Code: cleanup.BlockCurrent, Detail: "/repo/.worktrees/deep/inner"}}}
+	r.Rows = append(r.Rows, inner)
+	byName["inner"] = inner
+
+	for _, name := range []string{"inner", "deep", "main"} {
+		row := byName[name]
+		want := "cannot be removed: " + cleanup.OneLine(cleanup.RowText(r, row))
+		for _, key := range []tea.KeyMsg{keyRunes("x"), keyRunes("d"), keyRunes("o")} {
+			m := moveTo(t, newSizedCleanupList(t, r, 120, 50), name)
+			got, fm := runPreview(t, m, key)
+			if len(got) != 0 || fm.phase != cleanupPhaseList || fm.status != want {
+				t.Errorf("%s on %s: previewed %v, phase %v, status %q, want no preview and %q", key.String(), name, got, fm.phase, fm.status, want)
+			}
+		}
+		// enter's ticked batch: the keys can never tick a locked row, so the
+		// tick is set straight here (a stale tick after a re-read, or any
+		// path that leaves one). With it ticked — alone and beside a proven
+		// row — enter refuses the whole selection with the same explanation
+		// and previews nothing.
+		for _, withProven := range []bool{false, true} {
+			m := setTicks(t, newSizedCleanupList(t, r, 120, 50))
+			for i, it := range m.items {
+				if it.heading == "" && cleanup.DisplayName(it.row) == name {
+					m.ticked[i] = true
+				}
+			}
+			if withProven {
+				m = cleanupSend(t, moveTo(t, m, "full-branch-name-paths"), spaceKey)
+			}
+			got, fm := runPreview(t, m, enterKey)
+			if len(got) != 0 || fm.phase != cleanupPhaseList || fm.status != want {
+				t.Errorf("enter with %s ticked (proven row alongside %v): previewed %v, phase %v, status %q, want no preview and %q",
+					name, withProven, got, fm.phase, fm.status, want)
+			}
+		}
+	}
+}
+
+// TestCleanupListTickedRowsReturnsTheRawTickSet pins Ruling R506b's seam
+// contract: tickedRows is the RAW tick set — every ticked row in list
+// order, locked rows included. The filter it once had dropped a ticked row
+// from every later count and batch without a word: a silent skip through
+// the back door, the exact anti-pattern this task exists to kill. A locked
+// row in the set is refused by name in startRemoval, whole-selection,
+// before anything is previewed — refusal, never a row quietly decided away
+// while the batch proceeds partial.
+func TestCleanupListTickedRowsReturnsTheRawTickSet(t *testing.T) {
+	r := cleanupFixture()
+	m := newSizedCleanupList(t, r, 120, 50)
+	// The mixed set, built through the tick seam: "deep" is locked in the
+	// current report and still carries the tick it gathered while clean
+	// (set straight here — space never ticks a locked row), beside the
+	// ordinary proven row the user ticked with the keys.
+	m = setTicks(t, m, "full-branch-name-paths")
+	for i, it := range m.items {
+		if it.heading == "" && cleanup.DisplayName(it.row) == "deep" {
+			m.ticked[i] = true
+		}
+	}
+	var names []string
+	for _, row := range m.tickedRows() {
+		names = append(names, cleanup.DisplayName(row))
+	}
+	if strings.Join(names, ",") != "full-branch-name-paths,deep" {
+		t.Errorf("tickedRows() = %v, want the raw tick set [full-branch-name-paths deep]: every ticked row, locked included, in list order", names)
+	}
+}
+
+// TestCleanupListEnterRefusesARowLockedInTheCurrentReport pins the race
+// Ruling R506b names (Refusal, never silent skip): a row can gain a hard
+// stop between the tick and the act — an F-refresh re-read can harden the
+// row it re-classifies — and the tick it gathered while clean is still on
+// it in the current report. enter then refuses the WHOLE selection with
+// the row keys' explanation, naming that row, and removes nothing: the
+// batch must not proceed partial, previewing only the rows beside it. The
+// post-refresh state is built here directly through the fixture and the
+// tick seam (space never ticks a locked row, so the tick is set straight).
+func TestCleanupListEnterRefusesARowLockedInTheCurrentReport(t *testing.T) {
+	r := cleanupFixture()
+	// "hardened" as the re-read left it: mid-operation (a rebase-merge in
+	// progress) — a hard stop gained since the user's tick landed.
+	hardened := cleanup.Row{Kind: cleanup.KindWorktree, Name: "hardened", Path: "/repo/.worktrees/hardened", Branch: "hardened",
+		Status: cleanup.StatusLessSure, Blockers: []cleanup.Reason{{Code: cleanup.BlockOperation, Detail: "rebase-merge"}}}
+	r.Rows = append(r.Rows, hardened)
+	m := setTicks(t, newSizedCleanupList(t, r, 120, 50), "full-branch-name-paths")
+	for i, it := range m.items {
+		if it.heading == "" && cleanup.DisplayName(it.row) == "hardened" {
+			m.ticked[i] = true
+		}
+	}
+	removed := false
+	m.rm.Run = func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
+		removed = true
+		return nil
+	}
+	got, fm := runPreview(t, m, enterKey)
+	want := "cannot be removed: " + cleanup.OneLine(cleanup.RowText(r, hardened))
+	if len(got) != 0 || removed || fm.phase != cleanupPhaseList || fm.status != want {
+		t.Errorf("enter with a hardened tick: previewed %v (removed %v), phase %v, status %q; want nothing previewed or run, the list and %q",
+			got, removed, fm.phase, fm.status, want)
+	}
+	// The batch source is the raw set too: both ticks are still in it,
+	// the hardened row included — nothing was silently decided away.
+	if rows := fm.tickedRows(); len(rows) != 2 {
+		t.Errorf("tickedRows() holds %d rows after the refusal, want the raw 2 (the hardened row included)", len(rows))
+	}
+}
+
+// TestListRowWithALongHeldTagWrapsAtASpace pins the oversized-unit wrap at the
+// layout level (flowUnits has its own unit test): a row whose held tag —
+// "held by session <agent> (pid N, running T, started on <host>)", the claim's
+// description — is longer than the terminal's text width is drawn at 80x24 in
+// both list modes with no line wider than 80 display columns, and the tag
+// breaks at a space: the words after the break stay whole on the next line
+// ("started on held)" never loses its first letters to a hard cut).
+func TestListRowWithALongHeldTagWrapsAtASpace(t *testing.T) {
+	const holder = "codex-the-long-named-agent (pid 70222, running 12h 30m, started on held)"
+	rep := cleanupFixture()
+	for i := range rep.Rows {
+		if rep.Rows[i].Kind == cleanup.KindWorktree && rep.Rows[i].Name == "full-branch-name-paths" {
+			rep.Rows[i].Reasons = append(rep.Rows[i].Reasons, cleanup.Reason{Code: cleanup.ReasonHeld, Detail: holder})
+		}
+	}
+	for name, m := range map[string]cleanupListModel{
+		"manage": newSizedCleanupList(t, rep, 80, 24),
+		"launch": newLaunchList(t, rep, 80, 24),
+	} {
+		view := ansi.Strip(m.View())
+		for _, ln := range strings.Split(view, "\n") {
+			if w := lipgloss.Width(ln); w > 80 {
+				t.Errorf("%s: a line is %d columns wide, want at most 80: %q", name, w, ln)
+			}
+		}
+		for _, want := range []string{"held by session", "started on held)"} {
+			if !strings.Contains(view, want) {
+				t.Errorf("%s: the view lacks the whole %q (the tag was cut inside a word):\n%s", name, want, view)
+			}
+		}
+		// The break is at a space: every word of the tag appears whole on some
+		// line (a hard cut would split a word across two lines).
+		onLines := map[string]bool{}
+		for _, ln := range strings.Split(view, "\n") {
+			for _, f := range strings.Fields(ln) {
+				onLines[f] = true
+			}
+		}
+		for _, word := range strings.Fields(holder) {
+			if !onLines[word] {
+				t.Errorf("%s: the word %q of the held tag is not whole on any line:\n%s", name, word, view)
+			}
+		}
+	}
+}
+
+// TestCleanupListOJudgesTheLockOnTheOriginTarget pins the final review's M2
+// (R-F6): `o` deletes the folded origin ref, which the engine allows whatever
+// the local row is (`wt remove origin/x --remote` does not care that you are
+// standing in the worktree), so a locked local row whose folded origin ref is
+// a proven origin row starts the origin removal. The refusal stays, with the
+// local row's wording, when the origin target is itself locked or there is
+// none.
+func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
+	here := cleanup.Row{Kind: cleanup.KindWorktree, Name: "here", Path: "/repo/.worktrees/here", Branch: "here", Ref: "refs/heads/here",
+		Status: cleanup.StatusInUse, Blockers: []cleanup.Reason{{Code: cleanup.BlockCurrent}},
+		Upstream: &cleanup.Upstream{Remote: "origin", Ref: "refs/remotes/origin/here"}}
+	origin := cleanup.Row{Kind: cleanup.KindRemote, Name: "here", Branch: "here", Remote: "origin", Ref: "refs/remotes/origin/here",
+		Status: cleanup.StatusProven}
+	build := func(o cleanup.Row) cleanupListModel {
+		rep := cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Rows: []cleanup.Row{here}, Folded: []cleanup.Row{o}}
+		return moveTo(t, newSizedCleanupList(t, rep, 120, 40), "here")
+	}
+	if !cleanupLocked(here) || cleanupLocked(origin) {
+		t.Fatalf("fixture: here locked %v, origin locked %v; want true, false", cleanupLocked(here), cleanupLocked(origin))
+	}
+
+	got, fm := runPreview(t, build(origin), keyRunes("o"))
+	if fm.phase != cleanupPhasePreviewing || len(got) != 1 || got[0] != "origin/here" {
+		t.Errorf("o on a locked local row with a proven origin: previewed %v, phase %v, status %q; want the origin ref previewed", got, fm.phase, fm.status)
+	}
+
+	// x and d still refuse on the locked local row.
+	for _, k := range []string{"x", "d"} {
+		if got, fm := runPreview(t, build(origin), keyRunes(k)); len(got) != 0 || fm.status != "cannot be removed: "+cleanup.OneLine(build(origin).items[build(origin).cursor].text) {
+			t.Errorf("%s on the locked row: previewed %v, status %q; want the existing refusal", k, got, fm.status)
+		}
+	}
+
+	// The origin row itself locked (a remote that is not proven): refused
+	// with the local row's wording.
+	lockedOrigin := origin
+	lockedOrigin.Status = cleanup.StatusLessSure
+	lockedOrigin.Blockers = []cleanup.Reason{{Code: cleanup.BlockPrimary}}
+	if !cleanupLocked(lockedOrigin) {
+		lockedOrigin.Remote = "upstream" // any lock reason will do
+	}
+	got, fm = runPreview(t, build(lockedOrigin), keyRunes("o"))
+	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.HasPrefix(fm.status, "its origin ref cannot be removed: ") {
+		t.Errorf("o with a locked origin target: previewed %v, phase %v, status %q; want the refusal naming the origin ref", got, fm.phase, fm.status)
 	}
 }

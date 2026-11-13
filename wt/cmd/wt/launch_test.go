@@ -1997,7 +1997,7 @@ func runClaimLaunch(t *testing.T, dir string, where []string, extra ...string) c
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	oldTUI, oldGuard := tuiRun, maybeInstallGuard
-	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles) error {
+	tuiRun = func(bool, bool, string, string, string, string, string, []string, themes.Theme, string, *config.Config, tui.ProfileApplier, tui.SlotProfiles, tui.RemoveFuncsBuilder) error {
 		t.Error("tuiRun was called: a launch pinned with -A and -M never opens the picker")
 		return nil
 	}

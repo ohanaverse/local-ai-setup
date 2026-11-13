@@ -686,6 +686,8 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		}},
 		{"cleanup confirm, proven", removalScreen("confirm, proven")},
 		{"cleanup confirm, typed", removalScreen("confirm, typed")},
+		{"cleanup confirm, held", removalScreen("confirm, held")},
+		{"cleanup confirm, selected", removalScreen("confirm, selected")},
 		{"cleanup progress", removalScreen("progress")},
 		{"cleanup results", removalScreen("results")},
 		{"cleanup list, status", func(t *testing.T, width, height int) string {
@@ -862,7 +864,7 @@ func TestDrawnFrameIsTheFrameTheListWasSizedFor(t *testing.T) {
 // not the placeholder and must survive.
 func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
 	loadedMsg := rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"}
-	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", &config.Config{})
+	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", &config.Config{}, nil)
 	fresh.width, fresh.height = 80, 24
 	if !strings.Contains(fresh.View(), "loading worktrees") {
 		t.Fatalf("before the load the view is %q, want the loading placeholder", fresh.View())

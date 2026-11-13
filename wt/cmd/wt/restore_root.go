@@ -85,7 +85,11 @@ func restoreRootCmd(a *app) *cobra.Command {
 					return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
 				}
 			}
-			return restoreRootRun(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f)
+			cwd, err := os.Getwd()
+			if err != nil {
+				return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
+			}
+			return restoreRootRun(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, cwd)
 		},
 	}
 	c.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
@@ -136,12 +140,25 @@ func restoreRootFail(out io.Writer, f restoreRootFlags, repo string, code int, e
 }
 
 // restoreRootRun gathers the repository (fetching only on a real run without
-// --no-fetch), checks the move, asks, moves and prints the result.
-func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags) error {
+// --no-fetch), checks the move, asks, moves and prints the result, running
+// from cwd. The command passes its own working directory and the cleanup
+// list's `R` hand-off the directory the list was built from: one run path
+// (rescueRow's shape — the command and the list's key both end here).
+func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
+	return restoreRootRunReport(answer, out, errOut, f, cwd, nil)
+}
+
+// restoreRootRunReport is restoreRootRun that also hands the outcome it
+// printed to report (when non-nil): the cleanup list's `R` hand-off tells a
+// refusal that changed nothing from a failure that did by it. Only a written
+// result carries one; the command's output and exit codes are the same.
+func restoreRootRunReport(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string, report func(rootmove.Outcome)) error {
 	signal.Ignore(syscall.SIGPIPE)
-	cwd, err := os.Getwd()
-	if err != nil {
-		return restoreRootFail(out, f, "", 1, err)
+	write := func(meta rootmove.Meta, o rootmove.Outcome) error {
+		if report != nil {
+			report(o)
+		}
+		return writeRestoreRootResult(out, errOut, f.json, meta, o)
 	}
 	root, err := worktree.PrimaryOf(cwd)
 	if err != nil {
@@ -179,14 +196,14 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 	var refusal *rescue.Refusal
 	switch {
 	case errors.As(err, &refusal):
-		return writeRestoreRootResult(out, errOut, f.json, meta, rootmove.Outcome{Status: rescue.StatusRefused,
+		return write(meta, rootmove.Outcome{Status: rescue.StatusRefused,
 			Code: refusal.Code, Reason: refusal.Message, Plan: rootmove.Plan{Repo: snap.Repo, Warnings: notes}})
 	case err != nil:
 		return restoreRootFail(out, f, snap.Repo, 1, err)
 	}
 	plan.Warnings = append(plan.Warnings, notes...)
 	if f.dryRun {
-		return writeRestoreRootResult(out, errOut, f.json, meta, rootmove.WouldMove(plan))
+		return write(meta, rootmove.WouldMove(plan))
 	}
 	if f.yes && !f.acceptLoss && heldRootWarning(plan.Warnings) {
 		return restoreRootFail(out, f, snap.Repo, 3, errors.New("approval missing: another wt session holds the root (see the root_held warning); --yes alone does not move it, add --accept-loss or end that session; nothing was changed"))
@@ -213,7 +230,7 @@ func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags)
 	defer release()
 	afterRestoreRootConfirm()
 	o := eng.Execute(plan)
-	err = writeRestoreRootResult(out, errOut, f.json, meta, o)
+	err = write(meta, o)
 	if got := received(); len(got) > 0 {
 		fmt.Fprintf(errOut, "interrupted (signal %v): the move was not stopped; see the result above\n", got[0])
 	}

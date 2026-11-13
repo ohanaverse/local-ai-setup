@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -219,8 +220,7 @@ func (h *rmHarness) funcs() RemoveFuncs {
 
 // list is the tick list over the harness's report at w x h.
 func (h *rmHarness) list(w, ht int) cleanupListModel {
-	m := newCleanupList(h.report, themes.Default, rmLater())
-	m.rm = h.funcs()
+	m := newCleanupList(h.report, themes.Default, rmLater(), h.funcs())
 	return cleanupSend(h.repo.t, m, tea.WindowSizeMsg{Width: w, Height: ht})
 }
 
@@ -764,7 +764,9 @@ func TestRemovalOffSaysWhy(t *testing.T) {
 
 // confirmScreens are the removal flow's screens over one repository, for the
 // fit test: confirm (y prompt, typed prompt with a dirty worktree and
-// toggles), progress and results.
+// toggles), a held row's confirm (naming the session that holds it), a row
+// action's single-row confirm ("selected", never "ticked"), progress and
+// results.
 func confirmScreens(t *testing.T) map[string]cleanupListModel {
 	t.Helper()
 	r := newRmRepo(t)
@@ -772,6 +774,8 @@ func confirmScreens(t *testing.T) map[string]cleanupListModel {
 	r.dirty("a-dirty-worktree-with-a-long-name")
 	r.unpushed("kept")
 	r.loose("loose")
+	heldPath := r.merged("held")
+	holderClaim(t, r.dir, heldPath, "held", "codex")
 	h := r.harness()
 	h.procs = fakeProcs{"a-dirty-worktree-with-a-long-name": {PID: 4242, Command: "node " + strings.Repeat("server.js ", 12)}}
 	out := map[string]cleanupListModel{}
@@ -782,6 +786,14 @@ func confirmScreens(t *testing.T) map[string]cleanupListModel {
 	m = press(t, m, tabKey)
 	m = typeWord(t, m, "delet")
 	out["confirm, typed"] = m
+	// A held row's confirm: its entry names the live session holding the
+	// worktree (`held by session <id>`), typed prompt (a held row is never
+	// proven).
+	out["confirm, held"] = press(t, setTicks(t, h.list(80, 24), "held"), enterKey)
+	// A row action's single-row confirm: `x` chose the highlighted row, so
+	// the summary says "selected", never "ticked" (enter's word for the rows
+	// the ticks chose).
+	out["confirm, selected"] = press(t, moveTo(t, h.list(80, 24), "a-dirty-worktree-with-a-long-name"), keyRunes("x"))
 	gate := make(chan struct{})
 	h.stubRun = func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
 		<-gate
@@ -855,6 +867,11 @@ func checkRemovalScreen(t *testing.T, name, v string, width, height int) {
 			if !strings.HasPrefix(last, "> delet_") {
 				t.Errorf("%s: typed line not last: %q", name, last)
 			}
+		case strings.HasPrefix(name, "confirm, held"), strings.HasPrefix(name, "confirm, selected"):
+			// both sit on the typed prompt with an empty buffer
+			if last != "> _" {
+				t.Errorf("%s: typed line not last: %q", name, last)
+			}
 		}
 		if strings.HasPrefix(name, "confirm") {
 			checkPromptCounts(t, name, v)
@@ -895,5 +912,172 @@ func removalScreen(name string) func(t *testing.T, width, height int) string {
 			checkPromptCounts(t, name+fmt.Sprintf(" %dx%d", width, height), v)
 		}
 		return v
+	}
+}
+
+// holderClaim spawns a short-lived real process and claims path for it under
+// repo's wt-sessions — a fixture "other session" that reads live under the
+// claim contract's liveness rule (real pid, real start time via this
+// package's procStart). An unverifiable claim (a start time that cannot be
+// read) raises no held label at all, so the held pins need this verifiable
+// one; unlike staleClaim (cleanup_list_test.go), the child stays alive for
+// the test. (Shape: cmd/wt's holderClaim in restore_root_test.go and
+// cleanup's snapshot_test holderClaim.)
+func holderClaim(t *testing.T, repo, path, branch, agent string) sessionclaim.Claim {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid), Path: path, Branch: branch, Agent: agent}
+	common := rmGit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	release, err := sessionclaim.Hold(common, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	return c
+}
+
+// TestConfirmAnyApprovalKindNeedsPlainDelete pins the simplified confirmation
+// contract (Ruling B) at the confirm layer: one selection carrying every
+// non-origin approval kind — needs_confirm, needs_force and needs_delete
+// entries together — is accepted by the plain word `delete`, one word for all
+// of them, each item still getting exactly its own approvals; and y, the
+// proven-only key, confirms none of it. Why: the typed word stands in for the
+// CLI flags item by item, and only a published deletion escalates past it
+// (TestConfirmOriginStillNeedsDeleteOrigin). Overlap disclosed: the kinds'
+// row-action paths are pinned in cleanup_rowaction_test.go, and the mixed
+// per-item rule in TestEachItemGetsOnlyItsOwnApprovals (which has no
+// needs_delete entry).
+func TestConfirmAnyApprovalKindNeedsPlainDelete(t *testing.T) {
+	r := newRmRepo(t)
+	r.unpushed("kept") // needs_confirm: 1 commit exists only here
+	r.dirty("dirty")   // needs_force: uncommitted changes
+	r.loose("loose")   // needs_delete: an unmerged branch, no worktree
+	h := r.harness()
+	// Every key sequence opens its own screen: the typed buffer is the
+	// confirm state's, and a key typed on one screen must not ride into the
+	// next (the neighbor tests' open() shape).
+	open := func() cleanupListModel {
+		m := setTicks(t, h.list(120, 50), "kept", "dirty", "loose")
+		m = press(t, m, enterKey)
+		if m.phase != cleanupPhaseConfirm {
+			t.Fatalf("phase %v, want the confirm screen (status %q)", m.phase, m.status)
+		}
+		return m
+	}
+	m := open()
+	if v := squash(m.View()); !strings.Contains(v, squash("type delete and press enter")) || strings.Contains(v, squash("delete origin")) {
+		t.Fatalf("the prompt must demand the plain word delete:\n%s", m.View())
+	}
+	// y is the proven-only key: it confirms nothing here (a lone y only
+	// accumulates toward the word and runs nothing).
+	if m2 := press(t, open(), keyRunes("y")); m2.phase != cleanupPhaseConfirm || h.runCalls != 0 {
+		t.Fatalf("y: phase %v runs %d; want no confirmation", m2.phase, h.runCalls)
+	}
+	m = press(t, typeWord(t, open(), "delete"), enterKey)
+	if h.runCalls != 1 || len(h.ran) != 3 {
+		t.Fatalf("delete+enter: runs %d items %d, want one run of 3 (status %q)", h.runCalls, len(h.ran), m.status)
+	}
+	want := map[string]removal.Needs{
+		"kept":  {Confirm: true},
+		"dirty": {Confirm: true, Force: true},
+		"loose": {Confirm: true, Delete: true},
+	}
+	for _, it := range h.ran {
+		if it.Approved != want[it.Name] {
+			t.Errorf("%s approved %+v, want %+v", it.Name, it.Approved, want[it.Name])
+		}
+	}
+}
+
+// TestConfirmOriginStillNeedsDeleteOrigin pins the confirm layer's one
+// escalation: when any entry deletes a branch on origin — even beside a local
+// item the plain word alone would cover — the whole selection demands the
+// typed phrase `delete origin`, and y and the plain `delete` confirm nothing
+// at all. Why: the plain word is the loss approval for local items and must
+// never publish a deletion. Overlap disclosed: the same contract for a lone
+// origin row is pinned in TestOriginDeleteNeedsItsOwnTypedPhrase
+// (cleanup_origin_test.go), its per-item approvals in
+// TestOriginPhraseApprovesEachItemItsOwnNeedsOnly, and through `o` in
+// TestCleanupListOOnFoldedRowDeletesOnlyTheOriginRef; this one holds it for
+// the mixed selection's word choice.
+func TestConfirmOriginStillNeedsDeleteOrigin(t *testing.T) {
+	r := newRmRepo(t)
+	tip := r.originBranch("topic")
+	r.dirty("wip")
+	h := r.originHarness()
+	open := func() cleanupListModel {
+		m := setTicks(t, h.list(120, 50), "origin/topic", "wip")
+		m = press(t, m, enterKey)
+		if m.phase != cleanupPhaseConfirm {
+			t.Fatalf("phase %v, want the confirm screen (status %q)", m.phase, m.status)
+		}
+		return m
+	}
+	m := open()
+	if v := squash(m.View()); !strings.Contains(v, squash("type delete origin and press enter")) {
+		t.Fatalf("the prompt must demand the phrase delete origin:\n%s", m.View())
+	}
+	// The plain word is not the phrase: enter cancels the whole selection
+	// and origin keeps its branch. (Its own screen: the typed buffer is the
+	// confirm state's and must not carry a key typed before.)
+	m2 := press(t, typeWord(t, open(), "delete"), enterKey)
+	if m2.phase == cleanupPhaseResults || h.runCalls != 0 || r.originTip("topic") != tip {
+		t.Fatalf("plain delete: phase %v runs %d origin tip %q", m2.phase, h.runCalls, r.originTip("topic"))
+	}
+	// y confirms nothing either (it is not even a letter of the phrase: it
+	// only accumulates toward it and runs nothing).
+	if m2 := press(t, open(), keyRunes("y")); m2.phase != cleanupPhaseConfirm || h.runCalls != 0 {
+		t.Fatalf("y: phase %v runs %d; want no confirmation", m2.phase, h.runCalls)
+	}
+	// The phrase runs both items, each with its own approvals.
+	m = press(t, typeWord(t, open(), "delete origin"), enterKey)
+	if h.runCalls != 1 || len(h.ran) != 2 {
+		t.Fatalf("delete origin: runs %d items %d, want one run of 2", h.runCalls, len(h.ran))
+	}
+	for _, it := range h.ran {
+		switch it.Kind {
+		case cleanup.KindRemote:
+			if it.Approved != (removal.Needs{Remote: true}) {
+				t.Errorf("origin item approved %+v, want Remote alone", it.Approved)
+			}
+		default:
+			if it.Approved != (removal.Needs{Confirm: true, Force: true}) {
+				t.Errorf("worktree item approved %+v, want Confirm+Force only", it.Approved)
+			}
+		}
+	}
+	if r.originTip("topic") != "" {
+		t.Errorf("origin still has the branch after the phrase")
+	}
+}
+
+// TestConfirmNamesTheHoldingSession pins the held naming on the confirm
+// screen: a worktree a live session holds — a real, verifiable claim, since
+// an unverifiable one raises no held label — is confirmed with its entry
+// naming the holder in the list tag's own spelling, `held by session <id>`,
+// on screen at 80x24 (the sweep's size). Why: the typed word removes a
+// directory someone is working in; the confirmation must say whose it is.
+func TestConfirmNamesTheHoldingSession(t *testing.T) {
+	r := newRmRepo(t)
+	p := r.merged("held")
+	c := holderClaim(t, r.dir, p, "held", "codex")
+	h := r.harness()
+	m := setTicks(t, h.list(80, 24), "held")
+	m = press(t, m, enterKey)
+	if m.phase != cleanupPhaseConfirm {
+		t.Fatalf("phase %v, want the confirm screen (status %q)", m.phase, m.status)
+	}
+	v := squash(ansi.Strip(m.View()))
+	for _, want := range []string{
+		fmt.Sprintf("held by session codex (pid %d,", c.PID),
+		"started on held)",
+	} {
+		if !strings.Contains(v, squash(want)) {
+			t.Errorf("the confirm screen does not name the holding session (want %q):\n%s", want, m.View())
+		}
 	}
 }

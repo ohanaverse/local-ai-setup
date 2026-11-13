@@ -23,10 +23,6 @@ import (
 // stream it is written to are terminals. Tests swap it.
 var rescueTTY = bothTerminals
 
-// rescueStreams are the terminal streams the cleanup list's `r` key hands to
-// the rescue once the alt screen is gone. Tests swap them.
-var rescueStreams = func() (io.Reader, io.Writer, io.Writer) { return os.Stdin, os.Stdout, os.Stderr }
-
 // dryRunFetchNote is the warning a dry run carries: it ran no fetch.
 const dryRunFetchNote = "dry run: nothing was fetched, so remote-tracking refs (and what counts as unpushed or merged) are as of the last fetch"
 
@@ -145,7 +141,22 @@ func executeRescue(cmd *cobra.Command, a *app, f rescueFlags, target string) err
 // the copy and the result. The command and the cleanup list's `r` key both
 // end here.
 func rescueRow(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap cleanup.Snapshot, in cleanup.GatherInputs, row cleanup.Row) error {
+	return rescueRowReport(answer, out, errOut, f, snap, in, row, nil)
+}
+
+// rescueRowReport is rescueRow that also hands the outcome it printed to
+// report (when non-nil), so the cleanup list's `r` hand-off can tell a
+// refusal that changed nothing from a failure that did. It is called only
+// when a result was written: the early could-not-start and not-confirmed
+// exits carry no outcome. The command's output and exit codes are the same.
+func rescueRowReport(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap cleanup.Snapshot, in cleanup.GatherInputs, row cleanup.Row, report func(rescue.Outcome)) error {
 	signal.Ignore(syscall.SIGPIPE)
+	write := func(meta rescue.Meta, o rescue.Outcome) error {
+		if report != nil {
+			report(o)
+		}
+		return writeRescueResult(out, errOut, f.json, meta, o)
+	}
 	meta := rescue.Meta{Repo: snap.Repo, DryRun: f.dryRun}
 	eng := rescue.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{Now: removeNow(), MinAge: f.minAge}}
 
@@ -157,14 +168,14 @@ func rescueRow(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap clea
 	var refusal *rescue.Refusal
 	switch {
 	case errors.As(err, &refusal):
-		return writeRescueResult(out, errOut, f.json, meta, rescue.Outcome{Status: rescue.StatusRefused, Code: refusal.Code,
+		return write(meta, rescue.Outcome{Status: rescue.StatusRefused, Code: refusal.Code,
 			Reason: refusal.Message + "; nothing was created", Plan: rescue.Plan{Source: rescue.Source{Path: row.Path, Ref: row.Ref, Head: row.Head}, Warnings: notes}})
 	case err != nil:
 		return rescueFail(out, f, snap.Repo, 1, err)
 	}
 	if f.dryRun {
 		plan.Warnings = append(plan.Warnings, notes...)
-		return writeRescueResult(out, errOut, f.json, meta, rescue.Outcome{Status: rescue.StatusWouldMove, Plan: *plan})
+		return write(meta, rescue.Outcome{Status: rescue.StatusWouldMove, Plan: *plan})
 	}
 	if !f.yes {
 		if !rescueTTY(answer, errOut) {
@@ -181,7 +192,7 @@ func rescueRow(answer io.Reader, out, errOut io.Writer, f rescueFlags, snap clea
 		plan.SkipStartRecheck()
 	}
 	afterRescueConfirm()
-	return writeRescueResult(out, errOut, f.json, meta, eng.Execute(plan))
+	return write(meta, eng.Execute(plan))
 }
 
 // afterRescueConfirm is a test seam, called after the confirmation (or --yes)

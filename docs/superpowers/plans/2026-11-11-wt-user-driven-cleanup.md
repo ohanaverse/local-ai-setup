@@ -462,7 +462,7 @@ Branch `wt-list-5-actions`, off Part 4.
 
 ### Task 508: Re-enter the list after rescue and restore-root
 
-- [ ] Write failing tests: `TestRunCleanupListReentersAfterRescue`, `TestRunCleanupListReentersAfterRestoreRoot`, `TestRunCleanupListStopsLoopingOnActionError`, `TestRunCleanupListPrintsLogOncePerSession` (swap `runCleanupProgram` as `TestRunCleanupListStopsForwardingThenRescues` does); implement the loop; → PASS; commit.
+- [ ] Write failing tests: `TestRunCleanupListReentersAfterRescue`, `TestRunCleanupListReentersAfterRestoreRoot`, `TestRunCleanupListStopsLoopingOnActionError`, `TestRunCleanupListPrintsLogOncePerSession` (set `RemoveFuncs.Program` as `TestRunCleanupListStopsForwardingThenRescues` does); implement the loop; → PASS; commit.
 
 ### Task 509: The launch selector offers the same actions
 

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -29,7 +31,7 @@ import (
 //
 // One component, two modes (rowListOpts.Mode):
 //   - manage (`wt cleanup`): a checkbox column; space ticks, `a` ticks every
-//     proven row, enter removes the ticked rows, `r` hands a row to rescue.
+//     proven row, enter removes the ticked rows.
 //   - launch (the picker): a first item "+ New worktree…" (enter or `n`
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
 //     the root, an in-use or held row too: launching warns, it never blocks
@@ -37,8 +39,15 @@ import (
 //     `/` filters the rows by name (row_list_launch.go), and the PR tags
 //     arrive later (withReport).
 //
-// In both modes `x` removes the ticked rows, or the highlighted row when
-// nothing is ticked (always, in launch mode), through the same confirm flow.
+// In both modes the row keys act on the highlighted row alone — the ticks
+// choose rows for enter, never for these — through the same confirm flow:
+// `x` removes it, `d` removes it and its unmerged branch (on a branch row `d`
+// is `x`), `o` deletes only the origin ref folded into it (its own typed
+// phrase, the engine's remote-only item). `r` hands the highlighted row to
+// rescue and `R` hands off `wt restore-root` for the root; both quit the
+// program and the hand-off runs on the real terminal once the screen is gone
+// — RunCleanupList then re-enters `wt cleanup`'s list with a fresh report,
+// while the picker (finishRowSession) ends its session there and wt exits.
 //
 // A row's text is never cut: when it does not fit beside the name it wraps
 // onto continuation lines under the text column, so a row is as many lines
@@ -71,6 +80,11 @@ type rowListOpts struct {
 	// list is first built; the list then keeps the value in its opts so a
 	// report swap (withReport) never reads git again.
 	Stamp *refreshStamp
+	// RemoveFuncs is the removal funcs the row keys act through: the launch
+	// selector passes the instance its load built (RemoveFuncsBuilder), and
+	// RunCleanupList sets its own on each manage pass right after the build.
+	// The zero value makes every removal say it is unavailable.
+	RemoveFuncs RemoveFuncs
 }
 
 // refreshStamp is when git fetch last ran at a root (worktree.LastFetched):
@@ -111,11 +125,14 @@ type cleanupItem struct {
 }
 
 // cleanupLocked reports whether a row can never be ticked: an in-use row, a
-// row with any hard blocker, and a remote row unless it is a proven origin
-// branch (the engine removes nothing else on a remote: only origin, only
-// proven). Every other row may be ticked by the user; only Tickable local
-// rows are ticked for them (by default and by `a`): an origin row is never
-// ticked for the user, who must space each one, because deleting it is
+// row with any hard blocker, a worktree whose state could not be read (the
+// engine refuses it whatever is approved; a missing directory is the typical
+// case, any unreadable state counts), and a
+// remote row unless it is a proven origin branch (the engine removes nothing
+// else on a remote: only origin, only proven). Every other row may be ticked
+// by the user; only Tickable local rows are ticked for them (by default and
+// by `a`): an origin row is never ticked for the user, who must space each
+// one, because deleting it is
 // visible to everyone with access to the repository. A ticked row that is not
 // proven, or loses anything, goes through the typed confirmation
 // (cleanup_confirm.go) before anything is removed; an origin row through its
@@ -126,6 +143,21 @@ func cleanupLocked(r cleanup.Row) bool {
 	}
 	if r.Status == cleanup.StatusInUse || r.HardStop != "" {
 		return true
+	}
+	// A worktree whose state could not be read — any cause, a missing
+	// directory being the typical one ("could not read the worktree's
+	// state") — is the engine's own
+	// unconditional refusal (worktreeGate's GatesUnknown gate), so the list
+	// locks it like every hard stop. The gates_unavailable reason rides with
+	// the flag on a classified row; either one names the same refusal.
+	// losses: raw, the effective view never changes the gates-unknown flag
+	if r.Losses.GatesUnknown {
+		return true
+	}
+	for _, x := range r.Reasons {
+		if x.Code == cleanup.ReasonGatesUnavailable {
+			return true
+		}
 	}
 	// Only a hard stop locks: held and default_branch are floors the user
 	// may tick past (the engine then asks --accept-loss's typed confirmation).
@@ -235,8 +267,9 @@ func unitsText(us []unit) string {
 
 // flowUnits lays units out on lines of at most width runes, breaking only
 // between units (tuilayout.Flow's rule, with each unit's own separator); a
-// unit longer than a whole line is cut at the line's end. width <= 0 is one
-// line.
+// unit longer than a whole line wraps at its spaces so no word is split at
+// the line's end, and only a single word too long for the line is cut there.
+// width <= 0 is one line.
 func flowUnits(us []unit, width int) [][]unit {
 	if width <= 0 {
 		return [][]unit{us}
@@ -255,11 +288,25 @@ func flowUnits(us []unit, width int) [][]unit {
 		}
 		runes := []rune(u.text)
 		for len(runes) > width {
-			lines = append(lines, []unit{{text: string(runes[:width]), warn: u.warn}})
-			runes = runes[width:]
+			cut := width
+			if runes[cut] != ' ' { // the break fits after a whole word
+				for i := cut - 1; i > 0; i-- {
+					if runes[i] == ' ' {
+						cut = i // break at the space, which is not drawn
+						break
+					}
+				}
+			}
+			lines = append(lines, []unit{{text: string(runes[:cut]), warn: u.warn}})
+			runes = runes[cut:]
+			for len(runes) > 0 && runes[0] == ' ' {
+				runes = runes[1:]
+			}
 		}
-		u.text = string(runes)
-		cur, curW = []unit{u}, len(runes)
+		if w <= width || len(runes) > 0 { // a unit that fit is kept as it was, even an empty one
+			u.text = string(runes)
+			cur, curW = []unit{u}, len(runes)
+		}
 	}
 	if len(cur) > 0 {
 		lines = append(lines, cur)
@@ -303,19 +350,39 @@ type cleanupListModel struct {
 	// The removal flow (cleanup_confirm.go).
 	rm      RemoveFuncs
 	phase   cleanupPhase
-	status  string          // one line under the list ("nothing ticked", "cancelled...")
-	pending int             // rows being previewed
-	conf    *cleanupConfirm // the confirm screen; nil outside it
-	run     *cleanupRun     // the last run; set from the progress screen on
-	log     []removal.Outcome
-	exitErr error // returned by RunCleanupList (the re-read failed)
+	status  string // one line under the list ("nothing ticked", "cancelled...")
+	pending int    // rows being previewed
+	// pendingRM is a fill's removal-funcs build held while a flow is in
+	// progress: swapRemoveFuncs defers it to the list's next return to rest,
+	// where applyPendingRemoveFuncs takes it — every path that sets the phase
+	// back to cleanupPhaseList (gotPreviews' error path, cancelConfirm,
+	// gotRefetch, gotRefresh's post-run rebuild) calls that. Latest landing
+	// wins; a done list holds none (nothing swaps after done).
+	pendingRM func() RemoveFuncs
+	// chosenByTicks says what chose the rows of the flow in progress: the
+	// ticks (enter) or the cursor (the row keys) — chosenWord's wording.
+	chosenByTicks bool
+	// seedBranch pre-toggles the confirm entries' "also delete unmerged
+	// branch" (`d` on a worktree row).
+	seedBranch bool
+	conf       *cleanupConfirm   // the confirm screen; nil outside it
+	run        *cleanupRun       // the last run; set from the progress screen on
+	log        []removal.Outcome // the session's outcomes (a new pass starts with the ones before it)
+	exitErr    error             // returned by RunCleanupList (the post-run re-read failed)
 	// quitAfterRun: a signal came during a run; the program quits when the
 	// run ends (Ruling T).
 	quitAfterRun bool
-	// rescueRow is the row `r` chose: the list quits and RunCleanupList
-	// hands it to RemoveFuncs.Rescue once the alt screen is gone.
+	// rescueRow is the row `r` chose: the list quits and the session hands it
+	// to RemoveFuncs.Rescue once the alt screen is gone — RunCleanupList then
+	// re-enters the list (set only in the pass that chose it), the picker
+	// (finishRowSession) ends its session there.
 	rescueRow *cleanup.Row
-	clock     func() time.Time // the list's clock on a rebuild
+	// restoreRoot is set when `R` chose `wt restore-root`: the list quits and
+	// the session hands off to RemoveFuncs.RestoreRoot once the alt screen is
+	// gone (one hand-off per pass) — RunCleanupList then re-enters the list,
+	// the picker (finishRowSession) ends its session there.
+	restoreRoot bool
+	clock       func() time.Time // the list's clock on a rebuild
 	// refreshNote is the header's last line — "refreshed 3m ago" or "not
 	// refreshed here" — read once when the list was built (refreshedNote):
 	// it is a git read, and View must not spawn git every frame.
@@ -330,9 +397,14 @@ type cleanupListModel struct {
 	filtering bool
 }
 
-// newCleanupList is the manage-mode list `wt cleanup` shows.
-func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupListModel {
-	return newRowList(r, rowListOpts{Mode: modeManage, Theme: th, Now: now})
+// newCleanupList builds the manage-mode list `wt cleanup` shows, standing on
+// rm. rm goes into the opts as well as the model's own field:
+// opts.RemoveFuncs is what every rebuild (withReport, gotRefresh) seeds `rm`
+// from, so seeding only one of the two leaves them divergent for the rest of
+// the session and makes each future rebuild path responsible for copying `rm`
+// back by hand.
+func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time, rm RemoveFuncs) cleanupListModel {
+	return newRowList(r, rowListOpts{Mode: modeManage, Theme: th, Now: now, RemoveFuncs: rm})
 }
 
 // newRowList builds the list for r in o.Mode: launch mode's new-worktree
@@ -340,7 +412,7 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 // cleanup.KindGroups' order. In manage mode Tickable local rows start
 // ticked; in launch mode nothing is. The cursor starts on the first item.
 func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
-	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
+	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, rm: o.RemoveFuncs, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
 	root := refreshRoot(o.Root, r)
 	if o.Stamp != nil {
 		m.stamp = *o.Stamp
@@ -384,38 +456,172 @@ func (m *cleanupListModel) launch() bool { return m.opts.Mode == modeLaunch }
 // with no rows (a launch list always has its new-worktree item).
 func (m *cleanupListModel) empty() bool { return m.cursor < 0 }
 
-// RunCleanupList shows r as the tick list on the alt screen. enter removes
-// the ticked rows through rm after a confirmation; once the screen is gone,
-// every outcome of the session is printed (what was removed and each
-// deleted branch's commit outlive the alt screen).
+// HandOffNote is what a `r`/`R` hand-off returns when it ended with the
+// repository exactly as the list left it or with its job done — declined at
+// its prompt, refused before anything was created, or finished — and the
+// session should carry on: RunCleanupList re-enters the list with Text on its
+// status line. Err is what the hand-off would otherwise have returned (nil
+// when it succeeded, the command's own exit error for a decline or a
+// refusal): a caller that cannot re-enter (the launch picker, a nil Refetch)
+// returns it unchanged, so the exit status of a hand-off that ends the
+// session is as it always was. A hand-off that FAILED midway, or could not
+// start, returns a plain error and ends the session so its recovery text is
+// the last thing printed.
+type HandOffNote struct {
+	Text string
+	Err  error
+}
+
+func (n *HandOffNote) Error() string {
+	if n.Err != nil {
+		return n.Err.Error()
+	}
+	return n.Text
+}
+
+func (n *HandOffNote) Unwrap() error { return n.Err }
+
+// noteOf splits a hand-off's return: the note when it is one (and the error
+// the session would end with without re-entry), else the plain error.
+func noteOf(err error) (note *HandOffNote, rest error) {
+	if errors.As(err, &note) {
+		return note, note.Err
+	}
+	return nil, err
+}
+
+// RunCleanupList shows r as the tick list on the alt screen and runs the
+// whole session. enter removes the ticked rows through rm after a
+// confirmation; `r` and `R` run their action on the real terminal once the
+// screen is gone and then re-enter the list with a fresh report
+// (RemoveFuncs.Refetch), so one session can do several actions. Every outcome
+// of every pass prints exactly once: the ones not yet printed are flushed
+// before each hand-off (which can end the process at its prompt) and the
+// remainder when the session ends, however it ends (what was removed and
+// each deleted branch's commit outlive the alt screen).
 func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
-	m := newCleanupList(r, th, time.Now())
-	m.rm = rm
-	final, stop, err := runCleanupProgram(m)
-	defer stop()
-	fm, ok := final.(cleanupListModel)
-	if ok && fm.exitMessage() != "" {
-		if _, werr := fmt.Fprintln(os.Stdout, fm.exitMessage()); werr != nil && err == nil {
-			err = werr
+	// One pass per program run, each built fresh from its own report: the
+	// confirm state, the ticks and the hand-off flags never cross a pass.
+	// logged is the whole session's outcome log — every pass's outcomes join
+	// it — and it is the one thing that does travel between passes. printed
+	// counts the outcomes already on stdout; status is the line a hand-off
+	// left for the next pass.
+	var logged []removal.Outcome
+	var last cleanupListModel
+	haveLast := false
+	var err, werr error
+	printed := 0
+	status := ""
+	// The program runner is read once per session from the funcs handed in
+	// (nil: the real alt-screen program), never a package global, so a test's
+	// fake cannot leak into a parallel one.
+	run := rm.Program
+	if run == nil {
+		run = realCleanupProgram
+	}
+	for {
+		m := newCleanupList(r, th, time.Now(), rm)
+		m.log = logged
+		m.status = status
+		status = ""
+		final, stop, perr := run(m)
+		defer stop() // idempotent; the hand-offs and the re-entry stop it first
+		fm, ok := final.(cleanupListModel)
+		if ok {
+			last, haveLast, logged = fm, true, fm.log
+		}
+		if perr != nil {
+			err = perr
+			break
+		}
+		if !ok {
+			break
+		}
+		if fm.exitErr != nil {
+			err = fm.exitErr
+			break
+		}
+		// The rescue and the restore-root hand-offs ask and print on the
+		// real terminal, so they run here, after the alt screen has closed.
+		// The log so far prints first: a hand-off's prompt can be answered
+		// with ctrl+c, which ends the process (the forwarding is stopped).
+		if fm.rescueRow != nil || fm.restoreRoot {
+			printed, werr = flushLog(fm.log, printed, werr)
+		}
+		var note *HandOffNote
+		var herr error
+		if herr = runRescue(fm, rm, stop); herr != nil {
+			if note, herr = noteOf(herr); note == nil {
+				err = herr
+				break
+			}
+		}
+		if herr == nil && note == nil {
+			if herr = runRestoreRoot(fm, rm, stop); herr != nil {
+				if note, herr = noteOf(herr); note == nil {
+					err = herr
+					break
+				}
+			}
+		}
+		// Re-entry is only for those two hand-offs: a pass with none ends
+		// the session (a removal run's exit from the results screen is
+		// final). A nil Refetch cannot re-enter either — with no re-read
+		// there is no fresh report, and a pass is never built from a cached
+		// one.
+		if (fm.rescueRow == nil && !fm.restoreRoot) || rm.Refetch == nil {
+			err = herr
+			break
+		}
+		// Re-enter: the re-read's own failure ends the session (its error,
+		// never a silent retry); its report builds the next pass's model.
+		rep, rerr := rm.Refetch()
+		if rerr != nil {
+			err = rerr
+			break
+		}
+		stop() // the forwarding stops before the next pass's program runs
+		r = rep
+		if note != nil {
+			status = note.Text
 		}
 	}
-	if err == nil && ok {
-		err = fm.exitErr
+	// The rest of the session's log prints at the end — however the session
+	// ended — so every outcome is out exactly once.
+	// Error precedence: an error from the session (the program, a hand-off or
+	// the re-read) wins over a failed write of the log. Both orders drop one
+	// error; the session's is the one that says what the run did, and the two
+	// coincide only on a broken stdout pipe plus a failure in the same
+	// session.
+	if haveLast {
+		if msg := last.exitMessageFrom(printed); msg != "" {
+			if _, w := fmt.Fprintln(os.Stdout, msg); w != nil && werr == nil {
+				werr = w
+			}
+		}
 	}
-	// The rescue asks and prints on the real terminal, so it runs here, after
-	// the alt screen has closed (and after the session's removal log).
-	if err == nil && ok {
-		err = runRescue(fm, rm, stop)
+	if err == nil {
+		err = werr
 	}
 	return err
 }
 
-// runCleanupProgram is the test seam over the Bubble Tea program: it runs the
-// list on the alt screen and returns the final model and the function that
-// stops the signal forwarding (idempotent). A test swaps it to drive
-// RunCleanupList's after-the-screen steps without a terminal.
-var runCleanupProgram = realCleanupProgram
+// flushLog prints the outcomes of log from index printed on, as one block,
+// and returns the new count; a failed write is kept in werr (the first one)
+// and the outcomes count as printed, never retried into a second copy.
+func flushLog(log []removal.Outcome, printed int, werr error) (int, error) {
+	if printed >= len(log) {
+		return printed, werr
+	}
+	if _, w := fmt.Fprintln(os.Stdout, logText(log[printed:])); w != nil && werr == nil {
+		werr = w
+	}
+	return len(log), werr
+}
 
+// realCleanupProgram runs the list on the alt screen and returns the final
+// model and the function that stops the signal forwarding (idempotent).
+// RemoveFuncs.Program is the seam over it: nil runs this.
 func realCleanupProgram(m cleanupListModel) (tea.Model, func(), error) {
 	// Bubble Tea's own signal handler quits on SIGINT/SIGTERM in any phase,
 	// mid-removal too; the model handles them instead (Ruling T). The
@@ -439,8 +645,9 @@ func guardedRun(stop func(), run func() (tea.Model, error)) (tea.Model, func(), 
 	return final, stop, err
 }
 
-// runRescue hands the `r` key's row to rm.Rescue, if there is one. It stops
-// the signal forwarding first: the program has finished, so a forwarded
+// runRescue hands the `r` key's row to rm.Rescue, if there is one, on the
+// real terminal's streams (the alt screen is gone by now). It stops the
+// signal forwarding first: the program has finished, so a forwarded
 // signal would go to a dead p.Send and be dropped, leaving Ctrl-C at the
 // rescue's y/N prompt (or during a long copy) with no effect. With the
 // forwarding stopped Go's default handling ends the process again.
@@ -449,7 +656,21 @@ func runRescue(fm cleanupListModel, rm RemoveFuncs, stop func()) error {
 		return nil
 	}
 	stop()
-	return rm.Rescue(*fm.rescueRow)
+	return rm.Rescue(*fm.rescueRow, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// runRestoreRoot hands off to rm.RestoreRoot after `R` chose to restore the
+// root. It stops the signal forwarding first, like runRescue: the program has
+// finished, so a forwarded signal would go to a dead p.Send and be dropped,
+// leaving Ctrl-C at the restore's prompt (or SIGHUP during a long move) with
+// no effect. With the forwarding stopped Go's default handling ends the
+// process again.
+func runRestoreRoot(fm cleanupListModel, rm RemoveFuncs, stop func()) error {
+	if !fm.restoreRoot || rm.RestoreRoot == nil {
+		return nil
+	}
+	stop()
+	return rm.RestoreRoot(os.Stdin, os.Stdout, os.Stderr)
 }
 
 // startRescue handles `r`: on a row a rescue is offered for, quit and
@@ -468,6 +689,35 @@ func (m cleanupListModel) startRescue() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.rescueRow = &row
+	m.done = true
+	return m, tea.Quit
+}
+
+// startRestoreRoot handles `R`: on the row rootmove.Offered offers a restore
+// for (the root off its default), quit and flag the hand-off; otherwise stay
+// and put that gate's own line on the status line — byte for byte, never
+// re-worded here. An offered row with no func wired says so instead.
+//
+// R deliberately reads neither the row's lock nor RemoveFuncs.Off: a restore
+// is not a removal. The hand-off runs `wt restore-root`, a command that never
+// loads the registry (so Off, the registry's failure, is none of its
+// business) and carries the root's work into a new worktree before any reset
+// (so a hard stop like protected_artifact, which guards deletions, bars it
+// no more than it bars `r`). enter, x, d and o are removals and refuse.
+func (m cleanupListModel) startRestoreRoot() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok {
+		return m, nil
+	}
+	if offered, why := rootmove.Offered(row); !offered {
+		m.status = why
+		return m, nil
+	}
+	if m.rm.RestoreRoot == nil {
+		m.status = "restore root is not wired here"
+		return m, nil
+	}
+	m.restoreRoot = true
 	m.done = true
 	return m, tea.Quit
 }
@@ -531,7 +781,11 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.startRemoval()
 		case "x":
-			return m.removeKey()
+			return m.startRowAction(rowActionRemove)
+		case "d":
+			return m.startRowAction(rowActionDeleteBranch)
+		case "o":
+			return m.startRowAction(rowActionDeleteOrigin)
 		case "up", "k":
 			m.move(-1, 1)
 		case "down", "j":
@@ -559,6 +813,16 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.startRefetch()
 		default:
+			// `r` and `R` are the highlighted row's hand-off keys in both
+			// modes (they act like the row keys above: the highlighted row
+			// alone). The filter (filterKey) has already taken every
+			// printable rune it is owed before any of this runs.
+			switch msg.String() {
+			case "r":
+				return m.startRescue()
+			case "R":
+				return m.startRestoreRoot()
+			}
 			if m.launch() {
 				if msg.String() == "n" {
 					return m, emit(newWorktreeChosenMsg{})
@@ -566,8 +830,6 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			switch msg.String() {
-			case "r":
-				return m.startRescue()
 			case " ":
 				if it := m.items[m.cursor]; !it.locked {
 					m.ticked[m.cursor] = !m.ticked[m.cursor]
@@ -608,27 +870,88 @@ func (m cleanupListModel) choose() (cleanupListModel, tea.Cmd) {
 	return m, emit(rowChosenMsg{Row: m.items[m.cursor].row})
 }
 
-// removeKey is `x`: the ticked rows, or the highlighted row when nothing is
-// ticked (always in launch mode, which ticks nothing), go to the removal
-// flow; a locked row or the new-worktree item says why not.
-func (m cleanupListModel) removeKey() (cleanupListModel, tea.Cmd) {
-	rows := m.tickedRows()
-	if len(rows) == 0 {
-		if m.hidden(m.cursor) {
-			return m, nil
-		}
-		it := m.items[m.cursor]
+// rowAction is which per-row removal key was pressed.
+type rowAction int
+
+const (
+	rowActionRemove       rowAction = iota // `x`: remove the highlighted row
+	rowActionDeleteBranch                  // `d`: also delete its unmerged branch; `x` on a branch row
+	rowActionDeleteOrigin                  // `o`: delete only its origin ref
+)
+
+// originActionSay is `o`'s refusal when the highlighted row carries no origin
+// ref: the first clause names the key's action, the second what about the row
+// stopped it. Only `o` reaches it — `x` and `d` refuse with the row's own
+// reason instead — so it is one string, not a per-action table.
+const originActionSay = "o deletes the highlighted row's origin ref"
+
+// startRowAction is one of the per-row removal keys (`x`, `d`, `o`): the
+// highlighted row alone goes to the removal flow — the ticks choose rows for
+// enter, never for these — and a locked row or the new-worktree item says why
+// not. kind picks the branch's fate: rowActionDeleteBranch pre-toggles "also
+// delete unmerged branch" on the confirm screen (on a branch row it is `x`:
+// the branch is the removal), and rowActionDeleteOrigin hands the engine the
+// row's origin ref alone — never its worktree or local branch — as the
+// remote-only item `wt remove origin/<name> --remote` builds, under the typed
+// "delete origin" — and for it the lock that counts is the origin target's,
+// not the local row's.
+func (m cleanupListModel) startRowAction(kind rowAction) (cleanupListModel, tea.Cmd) {
+	if m.hidden(m.cursor) {
+		return m, nil
+	}
+	it := m.items[m.cursor]
+	switch {
+	case it.newWorktree:
+		m.status = "this is the + New worktree… item, not a row: it creates a worktree, there is nothing to remove"
+		return m, nil
+	case it.locked && kind != rowActionDeleteOrigin:
+		m.status = "cannot be removed: " + cleanup.OneLine(it.text)
+		return m, nil
+	}
+	rows := []cleanup.Row{it.row}
+	if kind == rowActionDeleteOrigin {
+		// `o` deletes the origin ref alone, which the engine allows whatever
+		// the local row is (`wt remove origin/x --remote` does not care that
+		// you stand in the worktree): the lock that counts is the target's.
+		target, ok := m.originTarget(it.row)
 		switch {
-		case it.newWorktree:
-			m.status = "x removes the highlighted worktree or branch; this item creates one"
+		case ok && cleanupLocked(target):
+			// Name the row that is locked: the origin ref, not the local row
+			// the cursor is on (which `o` does not touch).
+			m.status = "its origin ref cannot be removed: " + cleanup.OneLine(cleanup.RowText(m.report, target))
 			return m, nil
-		case it.locked:
+		case !ok && it.locked:
 			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
 			return m, nil
+		case !ok:
+			m.status = originActionSay + "; this row has none"
+			return m, nil
 		}
-		rows = []cleanup.Row{it.row}
+		rows = []cleanup.Row{target}
 	}
+	m.chosenByTicks = false
+	m.seedBranch = kind == rowActionDeleteBranch && it.row.Kind == cleanup.KindWorktree
 	return m.startRemovalOf(rows)
+}
+
+// originTarget is the remote row whose removal deletes row's origin ref and
+// nothing else: the row itself when it is an origin ref, else the remote row
+// folded into it. Remote rows are looked up through RemoteRows — Rows alone
+// omits the folded ones — the seam `wt remove origin/<name> --remote`
+// resolves its argument through.
+func (m cleanupListModel) originTarget(row cleanup.Row) (cleanup.Row, bool) {
+	if row.Kind == cleanup.KindRemote && row.Remote == "origin" && strings.HasPrefix(row.Ref, "refs/remotes/origin/") {
+		return row, true
+	}
+	if row.Upstream == nil || row.Upstream.Gone || row.Upstream.Remote != "origin" {
+		return cleanup.Row{}, false
+	}
+	for _, r := range m.report.RemoteRows() {
+		if r.Ref == row.Upstream.Ref {
+			return r, true
+		}
+	}
+	return cleanup.Row{}, false
 }
 
 // move moves the cursor n items in direction dir, skipping headings and
@@ -847,13 +1170,36 @@ func (m *cleanupListModel) layout() cleanupLayout {
 	return l
 }
 
+// manageTitles is the manage list's key legend, widest first. Every form
+// names `space`, `a`, `enter`, `x remove`, `r rescue`, `R restore root`,
+// `F refresh`, `q quit` — the narrower ones shortening wording and tightening
+// separators (a bare key for `space`/`a`, `enter` standing for `enter remove
+// ticked`) but never dropping one of those keys or abbreviating an action
+// name. `d`, `o` and `esc` are in no form yet: wt/docs/wt-cleanup.md's key
+// table names them, and the launch picker's title names none of `x d o r R`.
+// The widest
+// form whose visible width (118, 99, 78 columns) fits the terminal is drawn,
+// so `q quit` is never clipped away at 80 columns.
+var manageTitles = []struct{ name, actions string }{
+	{"wt worktrees", "   space tick · a proven · enter remove ticked · x remove · r rescue · R restore root · F refresh · q quit"},
+	{"wt worktrees", "   space · a · enter remove · x remove · r rescue · R restore root · F refresh · q quit"},
+	{"wt worktrees", "   space·a·enter·x remove·r rescue·R restore root·F refresh·q quit"},
+}
+
 func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	if m.launch() {
 		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · / filter · q quit")
 	}
-	return accent.Render("wt worktrees") + dim.Render("   space tick · a proven · enter remove ticked · r rescue · q quit")
+	t := manageTitles[len(manageTitles)-1]
+	for _, c := range manageTitles {
+		if lipgloss.Width(c.name+c.actions) <= m.width {
+			t = c
+			break
+		}
+	}
+	return accent.Render(t.name) + dim.Render(t.actions)
 }
 
 // statusBlock is the status, wrapped, with its line break; "" without one.
@@ -1060,10 +1406,21 @@ func (m cleanupListModel) tickedNames() []string {
 	return out
 }
 
-// exitMessage is what RunCleanupList prints after the program ends: every
+// exitMessage is what RunCleanupList prints when the session ends: every
 // outcome of the session ("" when nothing ran).
-func (m cleanupListModel) exitMessage() string {
-	text := logText(m.log)
+func (m cleanupListModel) exitMessage() string { return m.exitMessageFrom(0) }
+
+// exitMessageFrom is exitMessage without the first printed outcomes, which
+// are already on stdout (a flush before a hand-off): the rest of the log and,
+// for a program that ended mid-run, what has no outcome.
+func (m cleanupListModel) exitMessageFrom(printed int) string {
+	log := m.log
+	if printed < len(log) {
+		log = log[printed:]
+	} else {
+		log = nil
+	}
+	text := logText(log)
 	if m.phase != cleanupPhaseRunning || m.run == nil {
 		return text
 	}

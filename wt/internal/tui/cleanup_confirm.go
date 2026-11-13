@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -50,21 +51,56 @@ type RemoveFuncs struct {
 	// its report. nil ends the program after the results instead.
 	Refresh func() (cleanup.Report, error)
 	// Refetch fetches the remotes and re-reads the repository on the list's
-	// `F`, returning the fresh report the list is rebuilt from. Fetch at the
+	// `F` and on the session's re-entry after an `r` or `R` hand-off,
+	// returning the fresh report the list is rebuilt from. Fetch at the
 	// report's repository root (worktree.FetchRemotes), so the header's
 	// refresh note advances; a fetch failure is not this error — it travels
 	// in the report's Fetch field, which the header renders. This error is
-	// the re-read's own failure: the list keeps its rows and says why, one
-	// line. nil: `F` says it is unavailable.
+	// the re-read's own failure: on `F` the list keeps its rows and says why,
+	// one line; on a re-entry it ends the session. nil: `F` says it is
+	// unavailable, and a hand-off cannot re-enter the list.
 	Refetch func() (cleanup.Report, error)
 	// Off, when not "", is why removal is unavailable (the registry did not
 	// load): enter says it and nothing is previewed.
 	Off string
 	// Rescue copies one row's local-only work into a new branch and worktree
-	// (`wt rescue`). It runs after the list has quit and the alt screen is
-	// gone, so it may ask on the terminal. nil: `r` says it is unavailable.
-	Rescue func(row cleanup.Row) error
+	// (`wt rescue`) on the terminal streams it is passed (answer, out, errOut:
+	// where its prompt is asked and its result printed, once the alt screen is
+	// gone). RunCleanupList's session then re-enters the list with a fresh
+	// report, while the picker's ends with the hand-off (finishRowSession).
+	// nil: `r` says it is unavailable.
+	Rescue func(row cleanup.Row, answer io.Reader, out, errOut io.Writer) error
+	// RestoreRoot moves the root checkout's branch back to the default
+	// branch (`wt restore-root`) on the terminal streams it is passed, under
+	// the same rules as Rescue: after the alt screen is gone, re-entry in
+	// RunCleanupList's session, session end in the picker. nil: `R` says it
+	// is not wired here.
+	//
+	// Both hand-off funcs (Rescue and RestoreRoot) may return a *HandOffNote:
+	// the hand-off ended with nothing changed (declined, refused) or finished,
+	// and a SUCCESSFUL one carries a nil Err — an error value that means
+	// success. Only runRescue and runRestoreRoot call them (with the real
+	// terminal's streams), and every consumer goes through noteOf before
+	// treating the value as a failure; a new caller must do the same.
+	RestoreRoot func(answer io.Reader, out, errOut io.Writer) error
+	// Program runs the list on the alt screen, once per session pass, and
+	// returns the final model plus the function that stops the signal
+	// forwarding (idempotent). nil runs the real one (realCleanupProgram).
+	// It is the test seam over the Bubble Tea program: a test sets it to
+	// drive RunCleanupList's after-the-screen steps without a terminal — a
+	// per-call value, so a failing test cannot leak a stub into another.
+	Program func(cleanupListModel) (tea.Model, func(), error)
 }
+
+// RemoveFuncsBuilder builds the RemoveFuncs one picker load's rows act
+// through: cmd/wt builds it over cleanupRemoveFuncs — the same helper `wt
+// cleanup`'s list takes — from each load's snapshot and inputs, so the
+// engine's re-check stands on the rows the picker is showing (the PR fill
+// swaps in the instance its filled snapshot builds). Like ProfileApplier, it
+// is handed in as a closure: internal/tui cannot read the registry (cmd/wt's)
+// to build the funcs itself. nil: every row action says it is unavailable,
+// as a picker without removal always did.
+type RemoveFuncsBuilder func(snap cleanup.Snapshot, in cleanup.GatherInputs) RemoveFuncs
 
 // cleanupPhase is which screen the list program shows.
 type cleanupPhase int
@@ -82,7 +118,7 @@ const (
 // whether the user toggled deleting the unmerged branch its preview offers.
 type confirmEntry struct {
 	pv        removal.ItemPreview
-	delBranch bool
+	delBranch bool // the tab toggle: also delete the unmerged branch (seeded by `d`)
 }
 
 // cleanupConfirm is the confirm screen's state.
@@ -214,33 +250,45 @@ var confirmCountWords = map[removal.Approval]string{
 	removal.ApprovalRefused:      "will not be removed",
 }
 
-// tickedRows are the rows enter hands the engine: ticked and never locked.
-// The engine is the guard for an origin row (only proven, only origin, and
-// only with the Remote approval, which only the typed phrase gives).
+// tickedRows are the rows enter hands the engine: the RAW tick set, every
+// ticked row in list order, locked rows included — no filtering here (Ruling
+// R506b). A tick on a row that cannot be removed is refused by name in
+// startRemoval, whole-selection, before anything is previewed: refusal, never
+// a row quietly decided away while the batch proceeds partial. The engine is
+// the guard for an origin row (only proven, only origin, and only with the
+// Remote approval, which only the typed phrase gives).
 func (m cleanupListModel) tickedRows() []cleanup.Row {
 	var out []cleanup.Row
 	for _, it := range m.tickedItems() {
-		if it.locked {
-			continue
-		}
 		out = append(out, it.row)
 	}
 	return out
 }
 
 // startRemoval is enter on the list: the ticked rows go to the engine's
-// preview, or the status says why not.
+// preview, or the status says why not. A ticked row that is locked (a hard
+// stop — the cwd or an ancestor of it, the primary checkout, ...) refuses the
+// whole selection with the same explanation the row keys give, before the
+// engine is called: a remove targeting such a row is refused, never silently
+// dropped from the batch while the rest is previewed.
 func (m cleanupListModel) startRemoval() (cleanupListModel, tea.Cmd) {
+	for _, it := range m.tickedItems() {
+		if it.locked {
+			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
+			return m, nil
+		}
+	}
 	rows := m.tickedRows()
 	if len(rows) == 0 {
 		m.status = "nothing ticked: space ticks the highlighted row, x removes it"
 		return m, nil
 	}
+	m.chosenByTicks, m.seedBranch = true, false
 	return m.startRemovalOf(rows)
 }
 
-// startRemovalOf hands rows (enter's ticked rows, or `x`'s) to the engine's
-// preview, or the status says why not.
+// startRemovalOf hands rows (enter's ticked rows, or a row key's highlighted
+// row) to the engine's preview, or the status says why not.
 func (m cleanupListModel) startRemovalOf(rows []cleanup.Row) (cleanupListModel, tea.Cmd) {
 	switch {
 	case m.rm.Off != "":
@@ -287,13 +335,23 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 	if msg.err != nil {
 		m.phase = cleanupPhaseList
 		m.status = "nothing was removed: " + cleanup.OneLine(msg.err.Error())
+		m.applyPendingRemoveFuncs()
 		return m, nil
 	}
 	c := &cleanupConfirm{}
 	for _, g := range confirmGroups {
 		for _, p := range msg.previews {
 			if p.Approval == g.approval {
-				c.entries = append(c.entries, confirmEntry{pv: p})
+				// `d` pre-toggles the offered branch deletion; `x` and
+				// enter leave every toggle off — each flow builds this
+				// screen from scratch, so a `d` seed never survives into
+				// another flow. The seed is not cleared on this consume: it
+				// is overwritten at each flow start, by the seedBranch
+				// setters in startRowAction (cleanup_list.go) and in
+				// startRemoval above (cleanup_confirm.go). A new flow path
+				// must call those setters too, or it inherits a stale seed
+				// from the flow before it.
+				c.entries = append(c.entries, confirmEntry{pv: p, delBranch: m.seedBranch && p.CanDeleteBranch})
 			}
 		}
 	}
@@ -389,6 +447,7 @@ func (c *cleanupConfirm) offersToggle() bool {
 func (m cleanupListModel) cancelConfirm(why string) (cleanupListModel, tea.Cmd) {
 	m.phase, m.conf = cleanupPhaseList, nil
 	m.status = why + ": nothing was removed"
+	m.applyPendingRemoveFuncs()
 	return m, nil
 }
 
@@ -715,6 +774,10 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 	o.Theme, o.Now = m.theme, m.clock()
 	n := newRowList(msg.report, o)
 	n.rm, n.log, n.clock = m.rm, m.log, m.clock
+	// A fill swap the run's flow deferred is dropped, not applied: it was
+	// built from a pre-removal snapshot, older than the funcs the post-run
+	// Refresh just pointed the engine at (R-F7).
+	n.pendingRM = nil
 	n.width, n.height = m.width, m.height
 	n.status = removedSummary(m.run.results) + "; the results print again when you quit"
 	if !n.empty() {
@@ -784,6 +847,7 @@ func (m cleanupListModel) gotRefetch(msg cleanupRefetchMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 	m.phase = cleanupPhaseList
+	m.applyPendingRemoveFuncs()
 	if msg.err != nil {
 		m.status = "refresh failed: " + cleanup.OneLine(msg.err.Error())
 		return m, nil
@@ -821,7 +885,7 @@ func outcomeLines(o removal.Outcome) []string {
 	return out
 }
 
-// logText is every outcome of the session, printed after the program ends
+// logText is every outcome of the session, printed when the session ends
 // so that what was removed, and every restore id, outlives the alt screen.
 func logText(log []removal.Outcome) string {
 	if len(log) == 0 {
@@ -918,11 +982,12 @@ func (m *cleanupListModel) shortPath(p string) string {
 func branchOf(ref string) string { return strings.TrimPrefix(ref, "refs/heads/") }
 
 // entryLines are one confirm entry: its name line, then, first, what the
-// user decides about it — the branch toggle (or the branch it deletes) and
-// the approvals it gets, or why it will not be removed — and only then what
-// it loses, the processes running in it, warnings and notes. keyN is how
-// many lines the decision part takes from the top: an entry taller than
-// the screen (dozens of processes) never hides it.
+// user decides about it — the branch toggle (or the branch it deletes), the
+// session holding the worktree, and the approvals it gets, or why it will
+// not be removed — and only then what it loses, the processes running in it,
+// warnings and notes. keyN is how many lines the decision part takes from
+// the top: an entry taller than the screen (dozens of processes) never hides
+// it.
 func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []string, keyN int) {
 	pv := e.pv
 	cursor := "  "
@@ -959,6 +1024,18 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 				add(fmt.Sprintf("merged PR #%d; no open PR uses this branch as of the re-check", pv.Fresh.PR.Number))
 			}
 			add("restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name))
+		}
+	}
+	// The held naming (the design's "the remove confirmation names the
+	// holder"): a live wt session holding this worktree is named here in the
+	// list tag's own spelling — cleanup.RowTags' `held by session <id>`,
+	// whose <id> is the held reason's claim description
+	// (sessionclaim.Describe's rendering, echoed and never re-rendered in
+	// this package). It is part of what the user decides on, so it sits in
+	// the decision part (keyN) that a tall entry keeps on screen.
+	for _, tg := range cleanup.RowTags(pv.Fresh) {
+		if strings.HasPrefix(tg.Text, "held by session") {
+			add(cleanup.OneLine(tg.Text))
 		}
 	}
 	keyN = len(out)
@@ -1252,7 +1329,13 @@ func (m *cleanupListModel) runningView() string {
 		body = append(body, fmt.Sprintf("%d waiting", w))
 	}
 	// Ruling T: nothing interrupts a run, and the screen says so.
-	foot := wrapIndented("removing, please wait: keys, ctrl+c and signals wait until the run ends", "", m.width)
+	// The manage program forwards signals to its list; the launch picker's
+	// Bubble Tea program owns them, so a signal there still ends wt.
+	wait := "removing, please wait: keys, ctrl+c and signals wait until the run ends"
+	if m.launch() {
+		wait = "removing, please wait: keys and ctrl+c wait until the run ends"
+	}
+	foot := wrapIndented(wait, "", m.width)
 	if m.quitAfterRun {
 		foot = append(foot, wrapIndented("a quit was asked: wt quits when this run ends", "", m.width)...)
 	}
