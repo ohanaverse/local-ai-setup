@@ -116,11 +116,13 @@ type cleanupItem struct {
 }
 
 // cleanupLocked reports whether a row can never be ticked: an in-use row, a
-// row with any hard blocker, and a remote row unless it is a proven origin
-// branch (the engine removes nothing else on a remote: only origin, only
-// proven). Every other row may be ticked by the user; only Tickable local
-// rows are ticked for them (by default and by `a`): an origin row is never
-// ticked for the user, who must space each one, because deleting it is
+// row with any hard blocker, a worktree whose state could not be read (its
+// directory is gone: the engine refuses it whatever is approved), and a
+// remote row unless it is a proven origin branch (the engine removes nothing
+// else on a remote: only origin, only proven). Every other row may be ticked
+// by the user; only Tickable local rows are ticked for them (by default and
+// by `a`): an origin row is never ticked for the user, who must space each
+// one, because deleting it is
 // visible to everyone with access to the repository. A ticked row that is not
 // proven, or loses anything, goes through the typed confirmation
 // (cleanup_confirm.go) before anything is removed; an origin row through its
@@ -131,6 +133,19 @@ func cleanupLocked(r cleanup.Row) bool {
 	}
 	if r.Status == cleanup.StatusInUse || r.HardStop != "" {
 		return true
+	}
+	// A worktree whose state could not be read — its directory is gone
+	// ("could not read the worktree's state") — is the engine's own
+	// unconditional refusal (worktreeGate's GatesUnknown gate), so the list
+	// locks it like every hard stop. The gates_unavailable reason rides with
+	// the flag on a classified row; either one names the same refusal.
+	if r.Losses.GatesUnknown {
+		return true
+	}
+	for _, x := range r.Reasons {
+		if x.Code == cleanup.ReasonGatesUnavailable {
+			return true
+		}
 	}
 	// Only a hard stop locks: held and default_branch are floors the user
 	// may tick past (the engine then asks --accept-loss's typed confirmation).

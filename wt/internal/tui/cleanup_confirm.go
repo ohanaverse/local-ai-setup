@@ -234,8 +234,18 @@ func (m cleanupListModel) tickedRows() []cleanup.Row {
 }
 
 // startRemoval is enter on the list: the ticked rows go to the engine's
-// preview, or the status says why not.
+// preview, or the status says why not. A ticked row that is locked (a hard
+// stop — the cwd or an ancestor of it, the primary checkout, ...) refuses the
+// whole selection with the same explanation the row keys give, before the
+// engine is called: a remove targeting such a row is refused, never silently
+// dropped from the batch while the rest is previewed.
 func (m cleanupListModel) startRemoval() (cleanupListModel, tea.Cmd) {
+	for _, it := range m.tickedItems() {
+		if it.locked {
+			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
+			return m, nil
+		}
+	}
 	rows := m.tickedRows()
 	if len(rows) == 0 {
 		m.status = "nothing ticked: space ticks the highlighted row, x removes it"
@@ -300,8 +310,13 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 		for _, p := range msg.previews {
 			if p.Approval == g.approval {
 				// `d` pre-toggles the offered branch deletion (`x` and
-				// enter leave every toggle as the user last left it: the
-				// seed is one flow's, consumed here).
+				// enter leave every toggle as the user last left it). The
+				// seed is not cleared on this consume: it is overwritten at
+				// each flow start, by the seedBranch setters in
+				// startRowAction (cleanup_list.go) and in startRemoval above
+				// (cleanup_confirm.go). A new flow path must call those
+				// setters too, or it inherits a stale seed from the flow
+				// before it.
 				c.entries = append(c.entries, confirmEntry{pv: p, delBranch: m.seedBranch && p.CanDeleteBranch})
 			}
 		}

@@ -399,9 +399,14 @@ func TestCleanupListDefaultTicksOnlyProven(t *testing.T) {
 	}
 }
 
-// TestCleanupListInUseRowsNotToggleable pins that an in-use row is drawn
-// [-] and that neither space nor `a` can tick it: it is the directory the
-// user is in, the primary checkout, a locked worktree.
+// TestCleanupListInUseRowsNotToggleable pins that a hard-stop row is drawn
+// [-] and that neither space nor `a` can tick it — hard-stop rows only: the
+// directory the user is in or an ancestor of it, the primary checkout, a
+// locked, nested or mid-operation worktree, and a worktree whose state could
+// not be read (its directory is gone). The floors never lock a row and stay
+// tickable (held in TestCleanupListHeldRowIsToggleable; the whole floor set
+// in TestCleanupLockedOnlyForHardStops): warn-but-never-prevent means a
+// softer signal must never block the user's keys.
 func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
 	m = moveTo(t, m, "deep")
@@ -426,8 +431,22 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 			Blockers: []cleanup.Reason{{Code: cleanup.BlockOpenPR}}},
 		cleanup.Row{Kind: cleanup.KindBranch, Name: "blocked-proven", Branch: "blocked-proven", Status: cleanup.StatusProven,
 			Evidence: cleanup.EvAncestor, Blockers: []cleanup.Reason{{Code: cleanup.BlockBaseOfOpenPR}}},
+		// The remaining hard stops, one code per row: locked,
+		// mid-operation and nested worktrees, then the missing-dir case —
+		// a worktree whose state could not be read (its directory is gone),
+		// the gates_unavailable reason with the Losses.GatesUnknown flag
+		// the engine refuses on ("could not read the worktree's state").
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "locked-wt", Path: "/repo/.worktrees/locked-wt", Branch: "locked-wt", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockLocked}}},
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "mid-rebase", Path: "/repo/.worktrees/mid-rebase", Branch: "mid-rebase", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockOperation, Detail: "rebase-merge"}}},
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "holds-one", Path: "/repo/.worktrees/holds-one", Branch: "holds-one", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockNested, Detail: "/repo/.worktrees/holds-one/.worktrees/inner"}}},
+		cleanup.Row{Kind: cleanup.KindWorktree, Name: "gone-dir", Path: "/repo/.worktrees/gone-dir", Branch: "gone-dir", Status: cleanup.StatusLessSure, Unknown: true,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonGatesUnavailable, Detail: "cleanup: worktree /repo/.worktrees/gone-dir is prunable: its git link is broken, so its state cannot be read"}},
+			Losses:  cleanup.Losses{GatesUnknown: true}},
 	)
-	for _, name := range []string{"inuse-noblock", "blocked-lesssure", "blocked-proven"} {
+	for _, name := range []string{"inuse-noblock", "blocked-lesssure", "blocked-proven", "locked-wt", "mid-rebase", "holds-one", "gone-dir"} {
 		m = newSizedCleanupList(t, r, 120, 50)
 		m = moveTo(t, m, name)
 		m = cleanupSend(t, m, spaceKey)
@@ -1631,5 +1650,125 @@ func TestRunRestoreRootStopsSignalForwardingFirst(t *testing.T) {
 	}
 	if err := runRestoreRoot(fm, RemoveFuncs{}, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
 		t.Errorf("no RestoreRoot wired: err=%v calls=%v, want nothing", err, calls)
+	}
+}
+
+// TestCleanupLockedOnlyForHardStops pins the lock's exact boundary: only a
+// hard stop locks a row — primary, current, locked, mid-operation, nested and
+// missing dir, each row carrying the one real code its name maps to (the
+// classifier's in_use/HardStop derivation is pinned in the cleanup package) —
+// while the floors (default branch, held, root drift) never lock: they read
+// less sure and the user may tick past them, whereupon the engine asks for
+// --accept-loss's typed confirmation. Why: warn-but-never-prevent — a softer
+// signal must never block the user's keys. no_default_branch is this
+// builder's decision for a code the brief leaves out: a "no known default"
+// uncertainty is a floor, not a hard stop, and it is pinned on that side.
+func TestCleanupLockedOnlyForHardStops(t *testing.T) {
+	hardStops := []struct {
+		name string
+		row  cleanup.Row
+	}{
+		{"primary", cleanup.Row{Kind: cleanup.KindWorktree, Name: "primary", Path: "/repo", Branch: "main", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary, Detail: "/repo"}}}},
+		{"current", cleanup.Row{Kind: cleanup.KindWorktree, Name: "current", Path: "/repo/.worktrees/current", Branch: "current", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockCurrent, Detail: "/repo/.worktrees/current"}}}},
+		{"locked", cleanup.Row{Kind: cleanup.KindWorktree, Name: "locked", Path: "/repo/.worktrees/locked", Branch: "locked", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockLocked, Detail: "/repo/.worktrees/locked"}}}},
+		{"mid-operation", cleanup.Row{Kind: cleanup.KindWorktree, Name: "mid-operation", Path: "/repo/.worktrees/mid-operation", Branch: "mid-operation", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockOperation, Detail: "rebase-merge"}}}},
+		{"nested", cleanup.Row{Kind: cleanup.KindWorktree, Name: "nested", Path: "/repo/.worktrees/nested", Branch: "nested", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockNested, Detail: "/repo/.worktrees/nested/.worktrees/inner"}}}},
+		// missing dir: the classifier's shape when a worktree's state could
+		// not be read — its directory is gone (the engine refuses it
+		// whatever is approved: "could not read the worktree's state").
+		{"missing dir", cleanup.Row{Kind: cleanup.KindWorktree, Name: "missing-dir", Path: "/repo/.worktrees/missing-dir", Branch: "missing-dir",
+			Status: cleanup.StatusLessSure, Unknown: true,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonGatesUnavailable, Detail: "cleanup: worktree /repo/.worktrees/missing-dir is prunable: its git link is broken, so its state cannot be read"}},
+			Losses:  cleanup.Losses{GatesUnknown: true}}},
+	}
+	for _, tc := range hardStops {
+		if !cleanupLocked(tc.row) {
+			t.Errorf("%s is a hard stop but does not lock the row", tc.name)
+		}
+	}
+	floors := []struct {
+		name string
+		row  cleanup.Row
+	}{
+		{"default branch", cleanup.Row{Kind: cleanup.KindWorktree, Name: "default-branch", Path: "/repo/.worktrees/default-branch", Branch: "main", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockDefaultBranch, Detail: "main"}}}},
+		// BlockHeld is ReasonHeld's alias (worktrees.go): the same held
+		// code in the legacy blocker shape the held test seam fakes.
+		{"held", cleanup.Row{Kind: cleanup.KindWorktree, Name: "held", Path: "/repo/.worktrees/held", Branch: "held", Status: cleanup.StatusLessSure,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockHeld, Detail: "/repo/.worktrees/held"}}}},
+		{"root drift", cleanup.Row{Kind: cleanup.KindWorktree, Name: "root-drift", Path: "/repo", Branch: "topic", Status: cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is on topic, not main"}}}},
+		{"no default branch", cleanup.Row{Kind: cleanup.KindWorktree, Name: "no-default", Path: "/repo/.worktrees/no-default", Branch: "no-default",
+			Status: cleanup.StatusLessSure, Unknown: true,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonNoDefaultBranch, Detail: "no default branch, so no base to compare with"}}}},
+	}
+	for _, tc := range floors {
+		if cleanupLocked(tc.row) {
+			t.Errorf("%s is a floor but locks the row", tc.name)
+		}
+	}
+}
+
+// TestCleanupListRemoveOnCwdOrAncestorIsRefused pins Review Focus 5's list
+// half: a remove targeting the cwd's own row or an ancestor of the cwd is
+// refused with one pinned explanation on every removal path the list has —
+// `x`, `d`, `o` and enter's ticked batch — and previews nothing. Refusal,
+// never a silent skip: a ticked row that cannot be removed refuses the whole
+// selection with its reason rather than quietly dropping the row and
+// previewing the rest (the engine refuses such a target too; here the list
+// refuses before the engine is called).
+func TestCleanupListRemoveOnCwdOrAncestorIsRefused(t *testing.T) {
+	r := cleanupFixture()
+	// The caller's directory sits inside "inner": "inner" is the cwd's own
+	// row (cleanup marks every worktree containing the cwd Current, and the
+	// "you are here" sentence rides the innermost one), while "deep" — which
+	// contains inner's path — and "main" (the root, the primary checkout)
+	// are ancestors of the cwd: removing either deletes the caller's
+	// directory with it.
+	byName := map[string]cleanup.Row{}
+	for _, row := range r.Rows {
+		byName[cleanup.DisplayName(row)] = row
+	}
+	inner := cleanup.Row{Kind: cleanup.KindWorktree, Name: "inner", Path: "/repo/.worktrees/deep/inner", Branch: "inner",
+		Status: cleanup.StatusInUse, Blockers: []cleanup.Reason{{Code: cleanup.BlockCurrent, Detail: "/repo/.worktrees/deep/inner"}}}
+	r.Rows = append(r.Rows, inner)
+	byName["inner"] = inner
+
+	for _, name := range []string{"inner", "deep", "main"} {
+		row := byName[name]
+		want := "cannot be removed: " + cleanup.OneLine(cleanup.RowText(r, row))
+		for _, key := range []tea.KeyMsg{keyRunes("x"), keyRunes("d"), keyRunes("o")} {
+			m := moveTo(t, newSizedCleanupList(t, r, 120, 50), name)
+			got, fm := runPreview(t, m, key)
+			if len(got) != 0 || fm.phase != cleanupPhaseList || fm.status != want {
+				t.Errorf("%s on %s: previewed %v, phase %v, status %q, want no preview and %q", key.String(), name, got, fm.phase, fm.status, want)
+			}
+		}
+		// enter's ticked batch: the keys can never tick a locked row, so the
+		// tick is set straight here (a stale tick after a re-read, or any
+		// path that leaves one). With it ticked — alone and beside a proven
+		// row — enter refuses the whole selection with the same explanation
+		// and previews nothing.
+		for _, withProven := range []bool{false, true} {
+			m := setTicks(t, newSizedCleanupList(t, r, 120, 50))
+			for i, it := range m.items {
+				if it.heading == "" && cleanup.DisplayName(it.row) == name {
+					m.ticked[i] = true
+				}
+			}
+			if withProven {
+				m = cleanupSend(t, moveTo(t, m, "full-branch-name-paths"), spaceKey)
+			}
+			got, fm := runPreview(t, m, enterKey)
+			if len(got) != 0 || fm.phase != cleanupPhaseList || fm.status != want {
+				t.Errorf("enter with %s ticked (proven row alongside %v): previewed %v, phase %v, status %q, want no preview and %q",
+					name, withProven, got, fm.phase, fm.status, want)
+			}
+		}
 	}
 }
