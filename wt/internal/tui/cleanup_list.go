@@ -900,7 +900,8 @@ func (m *cleanupListModel) layout() cleanupLayout {
 // names every key the list answers — `space`, `a`, `enter`, `x remove`, `r
 // rescue`, `R restore root`, `F refresh`, `q quit` — the narrower ones
 // shortening wording and tightening separators (a bare key for `space`/`a`,
-// "R restore root" spelled out or not) but never dropping a key. The widest
+// `enter` standing for `enter remove ticked`) but never dropping a key or
+// abbreviating an action name. The widest
 // form whose visible width (118, 99, 78 columns) fits the terminal is drawn,
 // so `q quit` is never clipped away at 80 columns.
 var manageTitles = []struct{ name, actions string }{

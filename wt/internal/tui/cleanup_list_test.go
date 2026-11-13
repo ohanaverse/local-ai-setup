@@ -551,8 +551,9 @@ func TestCleanupListTitleNamesRemoval(t *testing.T) {
 // TestCleanupListTitleLineNamesAllActions pins the manage title's key legend
 // at two widths: at 100x30 it names every action in its full form — `x
 // remove`, `R restore root`, `F refresh`, `r rescue` beside `q quit` — and at
-// 80x24 it still fits with no clipping (a narrow legend may shorten an
-// action's wording, but `q quit` stays visible). Why: the title is the only
+// 80x24 it still fits with no clipping and still spells out every action name
+// (only key qualifiers and separators tighten, never an action; `q quit` stays
+// visible). Why: the title is the only
 // place `x`, `R` and `F` are named, and a legend wider than the terminal
 // silently loses its tail — `q quit` — on the 80-column terminals people
 // actually run.
@@ -575,6 +576,11 @@ func TestCleanupListTitleLineNamesAllActions(t *testing.T) {
 	}
 	if !strings.Contains(narrow.titleLine(), "q quit") {
 		t.Errorf("title at 80x24 hides q quit:\n%s", narrow.titleLine())
+	}
+	for _, want := range []string{"x remove", "R restore root", "F refresh", "r rescue"} {
+		if !strings.Contains(narrow.titleLine(), want) {
+			t.Errorf("title at 80x24 shortens %q:\n%s", want, narrow.titleLine())
+		}
 	}
 }
 
