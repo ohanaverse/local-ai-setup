@@ -37,7 +37,7 @@
 | **Binary name** | `wt` (Windows also `git-wt`) | `wt` — direct collision |
 | **Lifecycle** | full: create, list, merge, remove, prune, backup/recovery | create-or-reuse + enumerate only |
 | **Agent/model launch** | thin: `-x <program>` runs anything; no model concepts | the core: agent pickers, model pickers, slot profiles, claims |
-| **Shared-root multi-session** | not a concept (each agent gets its own worktree) | session/root claims with a conflict menu |
+| **Shared-root multi-session** | not a concept (each agent gets its own worktree) | per-checkout session claims — a live session warns (`held`), never blocks (the shared-root conflict menu is gone) |
 | **Ignored files on delete** | die with the worktree (dirty gate exempts gitignored files) — mitigated by `copy-ignored` for caches | die with the worktree — no mitigation (the SDD-ledger loss is the recorded incident) |
 
 ---
@@ -103,7 +103,7 @@
 |---|---|---|
 | Role | **companion** to agent CLIs: plugins for Claude Code, Codex, OpenCode 2, pi, oh-my-pi, Gemini CLI route agent-created worktrees through `wt switch --create` / `wt remove` (WorktreeCreate/WorktreeRemove hooks) | **is** the integration: launches the agent as a subprocess with `cmd.Dir` = the worktree |
 | Session model | agent's own; activity markers (🤖/💬) in `wt list` | deliberately none — no session lookup/resume (#198/#204 "Don't bring the lookup back"); continuation via the agent's own flags (`claude-wt -- --continue` works because wt launched in the worktree) |
-| Extras | `/wt-switch-create` skill, `/wt-diff` pane, Claude Code statusline installer, `PermissionRequest` auto-approve for entering template-path worktrees | shared-root claims, `--replace/--others/--yolo` launch modes |
+| Extras | `/wt-switch-create` skill, `/wt-diff` pane, Claude Code statusline installer, `PermissionRequest` auto-approve for entering template-path worktrees | per-checkout session claims, `--replace/--others/--yolo` launch modes |
 
 ### Machine-consumable contracts
 

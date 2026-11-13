@@ -335,8 +335,9 @@ type claimEntry struct {
 
 // readClaims reads every claim file in dir (files named by a pid; .lock and
 // rename temp files are skipped). It is the one directory walk the package
-// shares — scan (which serves Others, Join, Hold and Prune), Holders and
-// AncestorHolds must agree on what a claim file is.
+// shares — scan (which serves Others, Join, Hold and Prune), Holders,
+// AncestorHolds and Prune's own before/after reads (the comparison that
+// decides what the prune deletes) must agree on what a claim file is.
 func readClaims(dir string) ([]claimEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
