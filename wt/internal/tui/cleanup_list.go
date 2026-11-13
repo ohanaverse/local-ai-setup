@@ -546,9 +546,12 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The user's refresh (`f` stays pgdown): the picker re-runs its
 			// rows load with a fetch first — the app owns its inputs and the
 			// in-flight guard — and the manage list re-reads through
-			// RemoveFuncs.Refetch.
+			// RemoveFuncs.Refetch. Either way the refresh drops the stale
+			// session claims first (pruneStaleFirst, the key path's one
+			// prune): refresh is one of the two paths that prune, and
+			// opening the list never is.
 			if m.launch() {
-				return m, emit(refreshRowsChosenMsg{})
+				return m, pruneStaleFirst(refreshRoot(m.opts.Root, m.report), emit(refreshRowsChosenMsg{}))
 			}
 			return m.startRefetch()
 		default:

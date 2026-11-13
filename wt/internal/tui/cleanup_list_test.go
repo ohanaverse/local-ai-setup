@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
 
@@ -1158,5 +1164,119 @@ func TestPickerHeaderShowsRootDrift(t *testing.T) {
 	clean := newLaunchList(t, cleanupFixture(), 120, 40)
 	if h := clean.headerBlock(); strings.Contains(h, drift) {
 		t.Errorf("picker header = %q; want no drift note without the root_drift label", h)
+	}
+}
+
+// procStart returns pid's start time in epoch seconds — what a claim records
+// (docs/contracts/session-claims.md: equal to the real start within 5 s). A
+// fixture "other session" must read live under that rule, so the claim names
+// a real child's real start time, read from ps's lstart in the local zone,
+// never a manufactured timestamp. (Shape: cmd/wt's launch_test.go and
+// internal/cleanup's snapshot_test.go.)
+func procStart(t *testing.T, pid int) int64 {
+	t.Helper()
+	cmd := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // English month names for the parse
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ps lstart for %d: %v", pid, err)
+	}
+	start, err := time.ParseInLocation(time.ANSIC, strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		t.Fatalf("parse lstart %q: %v", out, err)
+	}
+	return start.Unix()
+}
+
+// staleClaim claims path under repo's wt-sessions for a real child process
+// through sessionclaim.Hold, then kills AND reaps the child: the claim file
+// left behind is exactly what the claim contract's liveness rule calls stale
+// — a real session that died without releasing its claim, carrying the
+// child's real start time, never a manufactured one. The reap matters as
+// much as the kill: a killed but unreaped child is still a live pid to
+// kill(pid, 0), and its claim would read live. Returns the claim and its
+// file's path. (Shape: cmd/wt's holderClaim in restore_root_test.go.)
+func staleClaim(t *testing.T, repo, path, branch, agent string) (sessionclaim.Claim, string) {
+	t.Helper()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	c := sessionclaim.Claim{PID: child.Process.Pid, Started: procStart(t, child.Process.Pid), Path: path, Branch: branch, Agent: agent}
+	common := rmGit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	release, err := sessionclaim.Hold(common, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	return c, filepath.Join(common, "wt-sessions", strconv.Itoa(c.PID))
+}
+
+// TestRefreshPrunesStaleClaims: the `F` refresh drops the stale session
+// claims — on the manage list's re-read and on the picker's rows reload, the
+// one key path both share. Why: a claim outlives its session whenever a
+// process dies without releasing it, and the user-driven cleanup design
+// prunes those exactly on refresh ("stale ones are pruned on refresh"), so
+// the held labels a refresh shows name live sessions and leftovers stop
+// piling up. The stale claim is a real dead process — spawned, claimed with
+// its real start time through sessionclaim.Hold, then killed and reaped.
+func TestRefreshPrunesStaleClaims(t *testing.T) {
+	r := newRmRepo(t)
+	h := r.harness()
+	_, file := staleClaim(t, r.dir, r.dir, "main", "claude")
+	m := h.list(120, 40)
+	m.rm.Refetch = func() (cleanup.Report, error) { h.regather(); return h.report, nil }
+	m = press(t, m, keyRunes("F"))
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("the manage list's F left the stale claim %s behind (stat error %v)", file, err)
+	}
+
+	_, file = staleClaim(t, r.dir, r.dir, "main", "claude")
+	p := newLaunchList(t, h.report, 120, 40)
+	_, cmd := p.Update(keyRunes("F"))
+	if cmd == nil {
+		t.Fatal("the picker's F dispatched no refresh")
+	}
+	if _, ok := cmd().(refreshRowsChosenMsg); !ok {
+		t.Fatal("the picker's F did not answer with refreshRowsChosenMsg")
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("the picker's F left the stale claim %s behind (stat error %v)", file, err)
+	}
+}
+
+// TestOpeningTheListPrunesNothing: opening the list — building it, sizing it,
+// rendering it, moving in it — drops no claim, not even a stale one. Why
+// (the anti-goal): the prune belongs to the user's refresh and the
+// fetch-first `--json` run alone ("opening the list does not fetch or
+// prune", the user-driven cleanup design) — a list someone opens to look
+// must never delete anything under them.
+func TestOpeningTheListPrunesNothing(t *testing.T) {
+	r := newRmRepo(t)
+	h := r.harness()
+	_, file := staleClaim(t, r.dir, r.dir, "main", "claude")
+	before, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("the fixture claim %s: %v", file, err)
+	}
+	m := h.list(120, 40)
+	_ = m.View()
+	m = cleanupSend(t, m, keyRunes("down"))
+	_ = m.View()
+	p := newLaunchList(t, h.report, 120, 40)
+	_ = p.View()
+	after, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("opening the list dropped the stale claim %s: %v", file, err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("opening the list rewrote the stale claim %s", file)
 	}
 }

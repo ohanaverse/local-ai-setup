@@ -13,8 +13,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
 )
 
 // The `wt cleanup` list's removal: enter on the ticked rows opens a confirm
@@ -721,10 +723,11 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 	return n, nil
 }
 
-// startRefetch handles `F` in the manage list: fetch the remotes and re-read
-// the repository through RemoveFuncs.Refetch, then rebuild from the fresh
-// report. A nil Refetch says so on the status line (like `r` with no
-// rescue). While the read is in flight the list is in
+// startRefetch handles `F` in the manage list: drop the stale session claims
+// (pruneStaleFirst), fetch the remotes and re-read the repository through
+// RemoveFuncs.Refetch, then rebuild from the fresh report. A nil Refetch says
+// so on the status line (like `r` with no rescue) and prunes nothing — no
+// refresh ran. While the read is in flight the list is in
 // cleanupPhaseRefreshing, which keeps every key but ctrl+c.
 func (m cleanupListModel) startRefetch() (cleanupListModel, tea.Cmd) {
 	if m.rm.Refetch == nil {
@@ -732,7 +735,7 @@ func (m cleanupListModel) startRefetch() (cleanupListModel, tea.Cmd) {
 		return m, nil
 	}
 	m.phase = cleanupPhaseRefreshing
-	return m, refetchCmd(m.rm.Refetch, m.opts.Root)
+	return m, pruneStaleFirst(refreshRoot(m.opts.Root, m.report), refetchCmd(m.rm.Refetch, m.opts.Root))
 }
 
 // refetchCmd runs the `F` re-read off the update loop; a panic is an error.
@@ -745,6 +748,29 @@ func refetchCmd(refetch func() (cleanup.Report, error), root string) tea.Cmd {
 		}()
 		rep, err := refetch()
 		return cleanupRefetchMsg{report: rep, stamp: readRefreshStamp(refreshRoot(root, rep)), err: err}
+	}
+}
+
+// pruneStaleFirst wraps a `F` refresh's command (never nil) so the user's
+// refresh first drops the stale session claims in root's wt-sessions —
+// sessionclaim.Prune: the file of a dead or reused pid, or a malformed one —
+// then runs next (the fetch and the re-read) unchanged. This is the list
+// half of wt's prune contract and this package's single sessionclaim.Prune
+// call site: the list's refresh (this one key path, the picker's rows reload
+// and the manage list's re-read alike) and cmd/wt's fetch-first `--json` run
+// are the only two paths that prune — opening the list, the post-run re-read
+// and `--no-fetch` never drop a claim. All of it is best-effort: no readable
+// common directory, or a prune that fails, leaves the claims as they were
+// and the refresh runs anyway (the readers ignore a stale claim in display,
+// so nothing hangs on the drop).
+func pruneStaleFirst(root string, next tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		if root != "" {
+			if common, err := worktree.CommonDirAt(root); err == nil && common != "" {
+				_, _ = sessionclaim.Prune(common)
+			}
+		}
+		return next()
 	}
 }
 

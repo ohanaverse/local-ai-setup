@@ -181,6 +181,16 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 
 	switch {
 	case f.json:
+		if !f.noFetch {
+			// The fetch-first JSON run is one of the two paths that drop
+			// stale session claims (sessionclaim.Prune): an agent asking
+			// for a fresh report is its refresh, as the list's `F` is the
+			// user's (internal/tui's pruneStaleFirst holds the other call).
+			// A run told to fetch nothing (--no-fetch) drops nothing, and
+			// the plain text runs — which fetch first too — are not on the
+			// contract's two paths: they never prune.
+			_, _ = sessionclaim.Prune(snap.CommonDir)
+		}
 		b, err := cleanup.Encode(report)
 		if err != nil {
 			return cleanupFail(out, true, report.Repo, err)

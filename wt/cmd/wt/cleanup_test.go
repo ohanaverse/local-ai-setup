@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1210,5 +1211,66 @@ func TestCleanupRemoveFuncsRefetchRepointsTheRemovalEngine(t *testing.T) {
 	// proven, loss-free origin row passes the gate and asks for --remote.
 	if ps[0].Approval != removal.ApprovalNeedsRemote {
 		t.Errorf("preview after F = %+v, want needs_remote (the re-check must see the fresh snapshot F left)", ps)
+	}
+}
+
+// staleClaimFile claims the root of repo for a real child session
+// (holderClaim: a real pid and real start time under the claim contract),
+// then kills AND reaps the child so the claim file left behind reads stale —
+// a session that died without releasing its claim, its timestamps never
+// manufactured. The reap matters as much as the kill: a killed but unreaped
+// child is still a live pid to kill(pid, 0), and its claim would read live.
+// Returns the claim file's path.
+func staleClaimFile(t *testing.T, repo string) string {
+	t.Helper()
+	c := holderClaim(t, repo, "topic", "claude")
+	p, err := os.FindProcess(c.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(cgit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "wt-sessions", strconv.Itoa(c.PID))
+}
+
+// TestCleanupJSONFetchPrunesStaleClaims: a fetch-first `wt worktrees --json`
+// run drops the stale session claims. Why: the fetch-first JSON report is the
+// refresh the agent path gets (the TUI list's `F` is the other of the two
+// paths that prune), so a session that died without releasing its claim is
+// tidied when fresh state is next asked for instead of piling up. The stale
+// claim is a real dead process, never a manufactured one.
+func TestCleanupJSONFetchPrunesStaleClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	file := staleClaimFile(t, dir)
+	stdout, _, err := runCleanup(t, a, dir, "--json")
+	if err != nil {
+		t.Fatalf("--json: %v\n%s", err, stdout)
+	}
+	if _, statErr := os.Stat(file); !os.IsNotExist(statErr) {
+		t.Fatalf("the fetch-first --json run left the stale claim %s behind (stat error %v)", file, statErr)
+	}
+}
+
+// TestCleanupJSONNoFetchLeavesClaims: `--no-fetch` means the run fetched
+// nothing — no refresh happened — so it drops no claim, stale ones included.
+// Why: the prune rides the fetch-first JSON run only (sessionclaim.Prune's
+// two paths); a listing told not to touch the network must not delete
+// anything under the user either.
+func TestCleanupJSONNoFetchLeavesClaims(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	file := staleClaimFile(t, dir)
+	if _, _, err := runCleanup(t, a, dir, "--json", "--no-fetch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(file); statErr != nil {
+		t.Fatalf("the --no-fetch --json run dropped the stale claim %s: %v", file, statErr)
 	}
 }
