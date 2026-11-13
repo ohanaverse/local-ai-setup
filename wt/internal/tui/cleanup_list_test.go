@@ -1584,6 +1584,17 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 			Primary: true, Head: "0000000000000000000000000000000000000000", Status: cleanup.StatusLessSure,
 			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is on fresh, not main"}}}),
 			"fresh", "the root's branch has no commits yet"},
+		{"a root mid-operation is refused by restore-root", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "busy", Path: "/repo", Branch: "busy", Ref: "refs/heads/busy",
+			Primary: true, Head: sha, Status: cleanup.StatusInUse,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}, {Code: cleanup.BlockOperation, Detail: "merge"}}}),
+			"busy", "an operation is in progress there"},
+		{"a root whose state could not be read", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "blind", Path: "/repo", Branch: "blind", Ref: "refs/heads/blind",
+			Primary: true, Head: sha, Status: cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonGatesUnavailable}},
+			Losses:  cleanup.Losses{GatesUnknown: true}}),
+			"blind", "its state could not be read"},
 	} {
 		restored := false
 		m := newSizedCleanupList(t, c.report, 100, 30)

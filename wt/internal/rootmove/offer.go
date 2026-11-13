@@ -23,7 +23,10 @@ import (
 // the branch the row carries (the row has no default-branch name, so on a
 // default-branch root that IS the default's name). Anything else is a named
 // branch off the default — the row R exists for — with or without the drift
-// label.
+// label. Last come the two refusals Preflight takes from the rescue engine it
+// runs in root mode, in its order: an operation in progress (the row's
+// cleanup.BlockOperation blocker) and state that could not be read
+// (Losses.GatesUnknown), each worded as rescue.Offered words them.
 func Offered(row cleanup.Row) (bool, string) {
 	switch {
 	case !row.Primary:
@@ -38,6 +41,14 @@ func Offered(row cleanup.Row) (bool, string) {
 		return false, "no default branch to restore to"
 	case hasReason(row.Blockers, cleanup.BlockDefaultBranch):
 		return false, "root is already on " + row.Branch
+	case hasReason(row.Blockers, cleanup.BlockOperation):
+		// A merge, cherry-pick or revert keeps HEAD on the branch, so the row
+		// looks like any drifted root; rescue's Preflight (run in root mode)
+		// refuses it.
+		return false, "an operation is in progress there"
+	// losses: raw, the move is refused whenever the root's state could not be read
+	case row.Losses.GatesUnknown:
+		return false, "its state could not be read"
 	default:
 		return true, ""
 	}

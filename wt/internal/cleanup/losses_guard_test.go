@@ -62,6 +62,9 @@ var lossSites = map[string]lossCounts{
 	// preserved original's commits.
 	"internal/rescue/preflight.go#Engine.Preflight": {raw: 8},
 	"internal/rescue/offer.go#Offered":              {raw: 4},
+	// Deliberately raw: restore-root's Preflight refuses a root whose state
+	// could not be read, record or not (rescue's gate, run in root mode).
+	"internal/rootmove/offer.go#Offered": {raw: 1},
 
 	// Deliberately raw: the launch warning's dirt is what is physically in
 	// the worktree, whatever a rescue record covers.

@@ -268,3 +268,47 @@ func TestOfferedUsesRowNotGit(t *testing.T) {
 		t.Errorf("Offered = %v, %q; want false, %q", offered, why, "only the root can be restored")
 	}
 }
+
+// TestOfferedRefusesWhatPreflightAlwaysRefuses pins the final review's M1
+// (R-F5): a root with a git operation in progress (a merge, cherry-pick or
+// revert keeps HEAD on the branch, so the row carries the operation blocker)
+// or with state that could not be read is not offered, because restore-root's
+// Preflight (through rescue's, in root mode) always refuses both. The order
+// is Preflight's: the cases of the row's own shape come first, these two
+// after. The messages are the rescue offer's, for the same conditions.
+func TestOfferedRefusesWhatPreflightAlwaysRefuses(t *testing.T) {
+	t.Parallel()
+	head := "0123456789abcdef0123456789abcdef01234567"
+	root := func(mod func(*cleanup.Row)) cleanup.Row {
+		r := cleanup.Row{Kind: cleanup.KindWorktree, Name: "root-dir", Branch: "topic", Primary: true, Head: head,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}}}
+		mod(&r)
+		return r
+	}
+	for name, c := range map[string]struct {
+		row  cleanup.Row
+		want string
+	}{
+		"operation in progress": {root(func(r *cleanup.Row) {
+			r.Blockers = append(r.Blockers, cleanup.Reason{Code: cleanup.BlockOperation, Detail: "merge"})
+		}), "an operation is in progress there"},
+		"state could not be read": {root(func(r *cleanup.Row) {
+			r.Losses.GatesUnknown = true
+			r.Reasons = append(r.Reasons, cleanup.Reason{Code: cleanup.ReasonGatesUnavailable})
+		}), "its state could not be read"},
+		// Preflight's earlier refusals still win over these two.
+		"already on the default and mid-operation": {root(func(r *cleanup.Row) {
+			r.Blockers = append(r.Blockers, cleanup.Reason{Code: cleanup.BlockDefaultBranch}, cleanup.Reason{Code: cleanup.BlockOperation})
+		}), "root is already on topic"},
+		"detached and unreadable": {root(func(r *cleanup.Row) { r.Branch = ""; r.Losses.GatesUnknown = true }),
+			"the root is detached — there is no branch to move"},
+	} {
+		if offered, why := Offered(c.row); offered || why != c.want {
+			t.Errorf("%s: Offered = %v, %q; want false, %q", name, offered, why, c.want)
+		}
+	}
+	// A plain root off the default is still offered.
+	if offered, why := Offered(root(func(*cleanup.Row) {})); !offered || why != "" {
+		t.Errorf("a plain drifted root: Offered = %v, %q; want true", offered, why)
+	}
+}
