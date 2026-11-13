@@ -18,7 +18,7 @@ branch=<the branch that worktree checked out when the session started>
 agent=<agent name, e.g. claude>
 ```
 
-`branch` spells a detached HEAD in two ways, by writer. A launch claim (what every launch writes through `wt`'s `HoldLaunch`) writes the key with an **empty value** — a line `branch=` — because a real branch may be named `(detached)` and a launch claim must not say so falsely. The root-claim flavor (`wt`'s `holdRoot`, a root launch) writes the literal `(detached)`. A reader treats an empty value as detached, and a non-empty one as a branch name that may be `(detached)` in this older flavor. Both spellings render as `started on (detached)` in `Describe` output (the held warning/label text and `--json` `reasons[].detail`).
+`branch` spells a detached HEAD in two ways, by writer. A launch claim (what every launch writes through `wt`'s `HoldLaunch`) writes the key with an **empty value** — a line `branch=` — because a real branch may be named `(detached)` and a launch claim must not say so falsely. The root-claim flavor (`wt`'s `holdRoot`, a root launch) writes the literal `(detached)`. A reader treats an empty value as detached, and a non-empty one as a branch name that may be `(detached)` in this older flavor. Both spellings render as `started on (detached)` in `Describe` output (the held warning/label text — including `wt restore-root`'s root-held warning — and `--json` `reasons[].detail`).
 
 Rules:
 
