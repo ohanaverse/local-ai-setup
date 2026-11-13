@@ -238,7 +238,8 @@ func listRoot(cwd string) string {
 // says so and previews nothing. Rescue (the `r` key) runs `wt rescue`'s
 // executor on the list's current snapshot and is wired either way: it never
 // removes anything, so the registry does not matter to it. Refetch is wired
-// either way for the same reason.
+// either way for the same reason, as is RestoreRoot (the `R` key), which runs
+// `wt restore-root`'s own run path from the directory the list was built on.
 func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
 	in.Fetch = false // a re-check never fetches
 	in.Fetched = snap.Fetch
@@ -253,6 +254,14 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	rescueRowFn := func(row cleanup.Row) error {
 		answer, out, errOut := rescueStreams()
 		return rescueRow(answer, out, errOut, rescueFlags{minAge: minAge}, *cur, in, row)
+	}
+	// RestoreRoot (the `R` key) runs `wt restore-root`'s own run function
+	// from the directory this list was built on, with the command's default
+	// flags: a real run (it fetches every remote first) that asks y/N on the
+	// terminal the streams name, exactly as `wt restore-root` does.
+	restoreRootFn := func() error {
+		answer, out, errOut := rescueStreams()
+		return restoreRootRun(answer, out, errOut, restoreRootFlags{}, in.CWD)
 	}
 	// reGather re-reads the repository (never fetching) and stands the list
 	// — and the engine, when there is one — on the fresh snapshot.
@@ -280,12 +289,13 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 		return cleanupReport(a, fresh, minAge, protErr), nil
 	}
 	if protErr != nil {
-		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn}
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn, RestoreRoot: restoreRootFn}
 	}
 	eng = &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
 	return tui.RemoveFuncs{
-		Rescue: rescueRowFn,
+		Rescue:      rescueRowFn,
+		RestoreRoot: restoreRootFn,
 		Preview: func(rows []cleanup.Row) []removal.ItemPreview {
 			items := make([]removal.Item, len(rows))
 			for i, r := range rows {

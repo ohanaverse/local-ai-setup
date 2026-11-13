@@ -85,7 +85,11 @@ func restoreRootCmd(a *app) *cobra.Command {
 					return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
 				}
 			}
-			return restoreRootRun(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f)
+			cwd, err := os.Getwd()
+			if err != nil {
+				return restoreRootFail(cmd.OutOrStdout(), f, "", 1, err)
+			}
+			return restoreRootRun(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, cwd)
 		},
 	}
 	c.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
@@ -136,13 +140,12 @@ func restoreRootFail(out io.Writer, f restoreRootFlags, repo string, code int, e
 }
 
 // restoreRootRun gathers the repository (fetching only on a real run without
-// --no-fetch), checks the move, asks, moves and prints the result.
-func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags) error {
+// --no-fetch), checks the move, asks, moves and prints the result, running
+// from cwd. The command passes its own working directory and the cleanup
+// list's `R` hand-off the directory the list was built from: one run path
+// (rescueRow's shape — the command and the list's key both end here).
+func restoreRootRun(answer io.Reader, out, errOut io.Writer, f restoreRootFlags, cwd string) error {
 	signal.Ignore(syscall.SIGPIPE)
-	cwd, err := os.Getwd()
-	if err != nil {
-		return restoreRootFail(out, f, "", 1, err)
-	}
 	root, err := worktree.PrimaryOf(cwd)
 	if err != nil {
 		return restoreRootFail(out, f, "", 1, fmt.Errorf("no primary checkout: %w", err))
