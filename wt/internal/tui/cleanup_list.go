@@ -901,7 +901,12 @@ func (m cleanupListModel) startRowAction(kind rowAction) (cleanupListModel, tea.
 		// you stand in the worktree): the lock that counts is the target's.
 		target, ok := m.originTarget(it.row)
 		switch {
-		case !ok && it.locked, ok && cleanupLocked(target):
+		case ok && cleanupLocked(target):
+			// Name the row that is locked: the origin ref, not the local row
+			// the cursor is on (which `o` does not touch).
+			m.status = "its origin ref cannot be removed: " + cleanup.OneLine(cleanup.RowText(m.report, target))
+			return m, nil
+		case !ok && it.locked:
 			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
 			return m, nil
 		case !ok:

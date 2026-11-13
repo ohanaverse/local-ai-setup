@@ -212,3 +212,28 @@ func TestFinishRowSessionLogIsOutBeforeTheHandOff(t *testing.T) {
 		}
 	}
 }
+
+// TestFinishRowSessionSuccessNoteIsNotAnError pins that a SUCCESSFUL `r` or
+// `R` hand-off in the picker ends the session with a nil error. The hand-off
+// returns a *HandOffNote whose Err is nil — an error VALUE that means success
+// — so finishRowSession must strip it through noteOf; without that, wt would
+// print "wt: rescued to branch ..." and exit 1 after a hand-off that worked.
+// (The decline leg above cannot catch it: a decline note still matches
+// errors.Is through Unwrap.)
+func TestFinishRowSessionSuccessNoteIsNotAnError(t *testing.T) {
+	for _, which := range []string{"rescue", "restore-root"} {
+		done := func() error { return &HandOffNote{Text: "done"} }
+		var rows cleanupListModel
+		rows.rm = RemoveFuncs{Rescue: func(cleanup.Row) error { return done() }, RestoreRoot: done}
+		if which == "rescue" {
+			rows.rescueRow = &cleanup.Row{Name: "spike"}
+		} else {
+			rows.restoreRoot = true
+		}
+		var err error
+		captureStdout(t, func() { err = finishRowSession(model{rows: rows}, nil) })
+		if err != nil {
+			t.Errorf("%s: a successful hand-off ended the picker session with %v, want nil", which, err)
+		}
+	}
+}

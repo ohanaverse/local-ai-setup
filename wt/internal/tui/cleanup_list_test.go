@@ -2382,7 +2382,7 @@ func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
 		lockedOrigin.Remote = "upstream" // any lock reason will do
 	}
 	got, fm = runPreview(t, build(lockedOrigin), keyRunes("o"))
-	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.HasPrefix(fm.status, "cannot be removed: ") {
-		t.Errorf("o with a locked origin target: previewed %v, phase %v, status %q; want the existing refusal", got, fm.phase, fm.status)
+	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.HasPrefix(fm.status, "its origin ref cannot be removed: ") {
+		t.Errorf("o with a locked origin target: previewed %v, phase %v, status %q; want the refusal naming the origin ref", got, fm.phase, fm.status)
 	}
 }

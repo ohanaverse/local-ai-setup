@@ -74,6 +74,13 @@ type RemoveFuncs struct {
 	// then re-enters the list with a fresh report, while the picker's ends
 	// with the hand-off (finishRowSession). nil: `R` says it is not wired
 	// here.
+	//
+	// Both hand-off funcs (Rescue and RestoreRoot) may return a *HandOffNote:
+	// the hand-off ended with nothing changed (declined, refused) or finished,
+	// and a SUCCESSFUL one carries a nil Err — an error value that means
+	// success. Only runRescue and runRestoreRoot call them, and every consumer
+	// goes through noteOf before treating the value as a failure; a new caller
+	// must do the same.
 	RestoreRoot func() error
 }
 
