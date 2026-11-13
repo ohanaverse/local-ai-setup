@@ -83,13 +83,12 @@ func TestCleanupRestoreRootFuncDeclinedIsANote(t *testing.T) {
 		t.Fatal(err)
 	}
 	rm := cleanupRemoveFuncs(nil, snap, in, 0, nil)
-	oldStreams, oldTTY := rescueStreams, restoreRootTTY
+	oldTTY := restoreRootTTY
 	var out, errOut bytes.Buffer
-	rescueStreams = func() (io.Reader, io.Writer, io.Writer) { return strings.NewReader("n\n"), &out, &errOut }
 	restoreRootTTY = func(io.Reader, io.Writer) bool { return true }
-	t.Cleanup(func() { rescueStreams, restoreRootTTY = oldStreams, oldTTY })
+	t.Cleanup(func() { restoreRootTTY = oldTTY })
 	var note *tui.HandOffNote
-	err = rm.RestoreRoot()
+	err = rm.RestoreRoot(strings.NewReader("n\n"), &out, &errOut)
 	if !errors.As(err, &note) || handOffExit(note.Err) != 3 || !strings.Contains(note.Text, "not confirmed") {
 		t.Fatalf("RestoreRoot declined: %v, want a note carrying exit 3", err)
 	}
@@ -137,17 +136,16 @@ func TestCleanupRestoreRootFuncMovesTheRoot(t *testing.T) {
 	if rm.RestoreRoot == nil {
 		t.Fatal("RemoveFuncs.RestoreRoot is not wired; the list's R can do nothing")
 	}
-	// The hand-off asks on the real terminal once the alt screen is gone:
-	// name those streams (a "y" at the prompt) and let the prompt be asked.
-	oldStreams, oldTTY := rescueStreams, restoreRootTTY
+	// The hand-off asks on the terminal streams it is passed (the alt screen
+	// is gone): name them (a "y" at the prompt) and let the prompt be asked.
+	oldTTY := restoreRootTTY
 	var out, errOut bytes.Buffer
-	rescueStreams = func() (io.Reader, io.Writer, io.Writer) { return strings.NewReader("y\n"), &out, &errOut }
 	restoreRootTTY = func(io.Reader, io.Writer) bool { return true }
-	t.Cleanup(func() { rescueStreams, restoreRootTTY = oldStreams, oldTTY })
+	t.Cleanup(func() { restoreRootTTY = oldTTY })
 
 	// A finished move is a note: the list re-enters with a status line.
 	var note *tui.HandOffNote
-	if err := rm.RestoreRoot(); !errors.As(err, &note) || note.Err != nil || !strings.Contains(note.Text, "root restored to main") {
+	if err := rm.RestoreRoot(strings.NewReader("y\n"), &out, &errOut); !errors.As(err, &note) || note.Err != nil || !strings.Contains(note.Text, "root restored to main") {
 		t.Fatalf("RestoreRoot: %v, want a done note \"root restored to main\"\n%s", err, errOut.String())
 	}
 

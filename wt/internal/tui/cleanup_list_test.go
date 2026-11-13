@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -980,7 +981,7 @@ func rescueListFixture() cleanup.Report {
 // terminal, so the list must leave the alt screen first.
 func TestCleanupListRKeyHandsTheRowToRescue(t *testing.T) {
 	m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
-	m.rm.Rescue = func(cleanup.Row) error { return nil }
+	m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "spike")
 	if v := m.View(); !strings.Contains(v, "r rescue") {
 		t.Errorf("title line does not offer r rescue:\n%s", v)
@@ -1003,7 +1004,7 @@ func TestCleanupListRKeyExplainsWhenNotOffered(t *testing.T) {
 		{"lone", "wt -W lone"},
 	} {
 		m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
-		m.rm.Rescue = func(cleanup.Row) error { return nil }
+		m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 		m = moveTo(t, m, c.row)
 		next, cmd := m.Update(keyRunes("r"))
 		fm := next.(cleanupListModel)
@@ -1223,7 +1224,7 @@ func TestCleanupListRKeyStillRescues(t *testing.T) {
 	m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
 	refetches := 0
 	m.rm.Refetch = func() (cleanup.Report, error) { refetches++; return cleanupFixture(), nil }
-	m.rm.Rescue = func(cleanup.Row) error { return nil }
+	m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "spike")
 	next, cmd := m.Update(keyRunes("r"))
 	fm := next.(cleanupListModel)
@@ -1244,7 +1245,7 @@ func TestRunRescueStopsSignalForwardingFirst(t *testing.T) {
 	var calls []string
 	row := cleanup.Row{Name: "spike"}
 	fm := cleanupListModel{rescueRow: &row}
-	rm := RemoveFuncs{Rescue: func(r cleanup.Row) error {
+	rm := RemoveFuncs{Rescue: func(r cleanup.Row, _ io.Reader, _, _ io.Writer) error {
 		calls = append(calls, "rescue:"+r.Name)
 		return nil
 	}}
@@ -1262,25 +1263,23 @@ func TestRunRescueStopsSignalForwardingFirst(t *testing.T) {
 }
 
 // TestRunCleanupListStopsForwardingThenRescues drives RunCleanupList through
-// the program seam with a final model that holds a rescue row. What: the
-// signal forwarding is stopped and then rm.Rescue runs with that row, in that
+// its program runner (RemoveFuncs.Program) with a final model that holds a
+// rescue row. What: the signal forwarding is stopped and then rm.Rescue runs with that row, in that
 // order, and a final model without a row rescues nothing. Why:
 // TestRunRescueStopsSignalForwardingFirst covers runRescue alone; this fails
 // if RunCleanupList stops calling runRescue (the r key would do nothing) or
 // calls the rescue before the stop (Ctrl-C at its prompt would be dropped).
 func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	var calls []string
 	row := cleanup.Row{Name: "spike"}
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
-		m.rescueRow = &row
-		return m, func() { calls = append(calls, "stop") }, nil
-	}
-	rm := RemoveFuncs{Rescue: func(r cleanup.Row) error {
+	rm := RemoveFuncs{Rescue: func(r cleanup.Row, _ io.Reader, _, _ io.Writer) error {
 		calls = append(calls, "rescue:"+r.Name)
 		return nil
 	}}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		m.rescueRow = &row
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
 	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
 		t.Fatal(err)
 	}
@@ -1289,7 +1288,7 @@ func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
 	}
 
 	calls = nil
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		return m, func() { calls = append(calls, "stop") }, nil
 	}
 	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
@@ -1306,7 +1305,7 @@ func TestRunCleanupListStopsForwardingThenRescues(t *testing.T) {
 // panics. What: the signal forwarding is released before the panic leaves
 // guardedRun (once), while a run that returns normally keeps it until the
 // caller calls the returned stop. Why: the release used to be deferred only
-// after runCleanupProgram returned, so a panic in the program left the
+// after the program returned, so a panic in the program left the
 // process's SIGINT/SIGTERM forwarded to a dead program.
 func TestGuardedRunReleasesSignalForwardingWhenTheProgramPanics(t *testing.T) {
 	stops := 0
@@ -1560,7 +1559,7 @@ func restoreRootReport(root cleanup.Row) cleanup.Report {
 // what runRestoreRoot hands to RemoveFuncs.RestoreRoot after the screen.
 func TestCleanupListRestoreRootKeyHandsOff(t *testing.T) {
 	m := newSizedCleanupList(t, restoreRootListFixture(), 100, 30)
-	m.rm.RestoreRoot = func() error { return nil }
+	m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "topic")
 	next, cmd := m.Update(keyRunes("R"))
 	fm := next.(cleanupListModel)
@@ -1621,7 +1620,7 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 	} {
 		restored := false
 		m := newSizedCleanupList(t, c.report, 100, 30)
-		m.rm.RestoreRoot = func() error { restored = true; return nil }
+		m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { restored = true; return nil }
 		m = moveTo(t, m, c.row)
 		next, cmd := m.Update(keyRunes("R"))
 		fm := next.(cleanupListModel)
@@ -1652,27 +1651,26 @@ func TestCleanupListRestoreRootNotWired(t *testing.T) {
 }
 
 // TestRunCleanupListRestoresRootAfterTheScreen drives RunCleanupList through
-// the program seam with a final model whose `R` flag is set. What: the signal
-// forwarding is stopped, then RemoveFuncs.RestoreRoot runs — and it runs only
-// once the alt screen is gone (the seam's return). Why: the restore asks on
-// the real terminal; TestRunRestoreRootStopsSignalForwardingFirst covers
-// runRestoreRoot alone, this fails if RunCleanupList stops calling it or
-// calls it while the screen is still up.
+// its program runner (RemoveFuncs.Program) with a final model whose `R` flag
+// is set. What: the signal forwarding is stopped, then RemoveFuncs.RestoreRoot
+// runs — and it runs only once the alt screen is gone (the runner's return).
+// Why: the restore asks on the real terminal;
+// TestRunRestoreRootStopsSignalForwardingFirst covers runRestoreRoot alone,
+// this fails if RunCleanupList stops calling it or calls it while the screen
+// is still up.
 func TestRunCleanupListRestoresRootAfterTheScreen(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	var calls []string
 	screenGone, sawScreenGone := false, false
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
-		m.restoreRoot = true
-		defer func() { screenGone = true }() // the alt screen closes as the program returns
-		return m, func() { calls = append(calls, "stop") }, nil
-	}
-	rm := RemoveFuncs{RestoreRoot: func() error {
+	rm := RemoveFuncs{RestoreRoot: func(_ io.Reader, _, _ io.Writer) error {
 		calls = append(calls, "restore")
 		sawScreenGone = screenGone
 		return nil
 	}}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		m.restoreRoot = true
+		defer func() { screenGone = true }() // the alt screen closes as the program returns
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
 	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
 		t.Fatal(err)
 	}
@@ -1684,7 +1682,7 @@ func TestRunCleanupListRestoresRootAfterTheScreen(t *testing.T) {
 	}
 
 	calls = nil
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		return m, func() { calls = append(calls, "stop") }, nil
 	}
 	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
@@ -1706,7 +1704,7 @@ func TestRunCleanupListRestoresRootAfterTheScreen(t *testing.T) {
 func TestRunRestoreRootStopsSignalForwardingFirst(t *testing.T) {
 	var calls []string
 	fm := cleanupListModel{restoreRoot: true}
-	rm := RemoveFuncs{RestoreRoot: func() error {
+	rm := RemoveFuncs{RestoreRoot: func(_ io.Reader, _, _ io.Writer) error {
 		calls = append(calls, "restore")
 		return nil
 	}}
@@ -1759,14 +1757,17 @@ func captureStdout(t *testing.T, f func()) string {
 // Why: without the loop one `wt cleanup` session ends after its first action,
 // and a pass built from the cached report would act on rows that may be gone.
 func TestRunCleanupListReentersAfterRescue(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	row := cleanup.Row{Name: "spike"}
 	first := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "first-marker", Branch: "first-marker", Status: cleanup.StatusProven}}}
 	fresh := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "fresh-marker", Branch: "fresh-marker", Status: cleanup.StatusProven}}}
 	var saw []string
 	runs := 0
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	fetches, rescues := 0, 0
+	rm := RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { rescues++; return nil },
+		Refetch: func() (cleanup.Report, error) { fetches++; return fresh, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
 			return m, func() {}, errMock("the session ran more passes than it should")
@@ -1780,11 +1781,6 @@ func TestRunCleanupListReentersAfterRescue(t *testing.T) {
 			m.rescueRow = &row
 		}
 		return m, func() {}, nil
-	}
-	fetches, rescues := 0, 0
-	rm := RemoveFuncs{
-		Rescue:  func(cleanup.Row) error { rescues++; return nil },
-		Refetch: func() (cleanup.Report, error) { fetches++; return fresh, nil },
 	}
 	if err := RunCleanupList(first, themes.Theme{}, rm); err != nil {
 		t.Fatal(err)
@@ -1806,13 +1802,16 @@ func TestRunCleanupListReentersAfterRescue(t *testing.T) {
 // pass). Why: `R` on a drifted root is usually followed by removing what the
 // move created, and one `wt cleanup` session should do both.
 func TestRunCleanupListReentersAfterRestoreRoot(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	first := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "first-marker", Branch: "first-marker", Status: cleanup.StatusProven}}}
 	fresh := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "fresh-marker", Branch: "fresh-marker", Status: cleanup.StatusProven}}}
 	var saw []string
 	runs := 0
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	fetches, restores := 0, 0
+	rm := RemoveFuncs{
+		RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { restores++; return nil },
+		Refetch:     func() (cleanup.Report, error) { fetches++; return fresh, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
 			return m, func() {}, errMock("the session ran more passes than it should")
@@ -1826,11 +1825,6 @@ func TestRunCleanupListReentersAfterRestoreRoot(t *testing.T) {
 			m.restoreRoot = true
 		}
 		return m, func() {}, nil
-	}
-	fetches, restores := 0, 0
-	rm := RemoveFuncs{
-		RestoreRoot: func() error { restores++; return nil },
-		Refetch:     func() (cleanup.Report, error) { fetches++; return fresh, nil },
 	}
 	if err := RunCleanupList(first, themes.Theme{}, rm); err != nil {
 		t.Fatal(err)
@@ -1853,25 +1847,23 @@ func TestRunCleanupListReentersAfterRestoreRoot(t *testing.T) {
 // never retried, no generic wrapping that hides which step failed — and no
 // later pass runs (the program ran once).
 func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	row := cleanup.Row{Name: "spike"}
 
 	// A rescue that fails: its own error returns, and the list is never
 	// re-entered after a failed action.
 	boom := errMock("rescue action failed")
 	runs, fetches, rescueCalls := 0, 0, 0
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	rm := RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { rescueCalls++; return boom },
+		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
 			return m, func() {}, errMock("the session ran more passes than it should")
 		}
 		m.rescueRow = &row
 		return m, func() {}, nil
-	}
-	rm := RemoveFuncs{
-		Rescue:  func(cleanup.Row) error { rescueCalls++; return boom },
-		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
 	}
 	err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "rescue action failed") {
@@ -1887,17 +1879,17 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 	// A restore-root that fails: same.
 	boom = errMock("restore-root action failed")
 	runs, fetches, restoreCalls := 0, 0, 0
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	rm = RemoveFuncs{
+		RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { restoreCalls++; return boom },
+		Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
 			return m, func() {}, errMock("the session ran more passes than it should")
 		}
 		m.restoreRoot = true
 		return m, func() {}, nil
-	}
-	rm = RemoveFuncs{
-		RestoreRoot: func() error { restoreCalls++; return boom },
-		Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
 	}
 	err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "restore-root action failed") {
@@ -1915,17 +1907,17 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 	// and no second pass runs (never one built from the cached report).
 	boom = errMock("re-entry re-read failed")
 	runs, fetches, rescues := 0, 0, 0
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	rm = RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { rescues++; return nil },
+		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, boom },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
 			return m, func() {}, errMock("the session ran more passes than it should")
 		}
 		m.rescueRow = &row
 		return m, func() {}, nil
-	}
-	rm = RemoveFuncs{
-		Rescue:  func(cleanup.Row) error { rescues++; return nil },
-		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, boom },
 	}
 	err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "re-entry re-read failed") {
@@ -1955,8 +1947,6 @@ func stdoutSoFar(t *testing.T) string {
 // every deleted branch's commit; printing a pass twice would repeat it and
 // printing only at the end would lose it to a hand-off that dies.
 func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	row := cleanup.Row{Name: "spike"}
 	logged := func(n int) removal.Outcome {
 		return removal.NewOutcome(
@@ -1964,7 +1954,12 @@ func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 			removal.WtRemoved, removal.BrDeleted, "outcome of pass "+strconv.Itoa(n))
 	}
 	runs := 0
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	atHandOff := ""
+	rm := RemoveFuncs{
+		Rescue:  func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { atHandOff = stdoutSoFar(t); return nil },
+		Refetch: func() (cleanup.Report, error) { return cleanup.Report{}, nil },
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
 			return m, func() {}, errMock("the session ran more passes than it should")
@@ -1975,11 +1970,6 @@ func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 			m.rescueRow = &row
 		}
 		return m, func() {}, nil
-	}
-	atHandOff := ""
-	rm := RemoveFuncs{
-		Rescue:  func(cleanup.Row) error { atHandOff = stdoutSoFar(t); return nil },
-		Refetch: func() (cleanup.Report, error) { return cleanup.Report{}, nil },
 	}
 	var err error
 	out := captureStdout(t, func() {
@@ -2006,7 +1996,7 @@ func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 	// However the session ends: a pass that ends on an error still prints
 	// the rest of the log, once, and pass 1's is not printed again.
 	runs = 0
-	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
 		if runs > 2 {
 			return m, func() {}, errMock("the session ran more passes than it should")
@@ -2041,10 +2031,16 @@ func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 // printed, restore commands included. The stub records stdout at the moment
 // it is called and then fails as a killed process would never return.
 func TestRunCleanupListLogIsOutBeforeAHandOffDies(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	for _, which := range []string{"rescue", "restore-root"} {
-		runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		seen := ""
+		died := errMock("process died at the prompt")
+		hand := func() error { seen = stdoutSoFar(t); return died }
+		rm := RemoveFuncs{
+			Rescue:      func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return hand() },
+			RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { return hand() },
+			Refetch:     func() (cleanup.Report, error) { return cleanup.Report{}, nil },
+		}
+		rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 			m.log = append(m.log, removal.NewOutcome(
 				removal.Item{Kind: cleanup.KindBranch, Name: "gone-branch"}, removal.WtRemoved, removal.BrDeleted, "outcome of the removal"))
 			if which == "rescue" {
@@ -2053,14 +2049,6 @@ func TestRunCleanupListLogIsOutBeforeAHandOffDies(t *testing.T) {
 				m.restoreRoot = true
 			}
 			return m, func() {}, nil
-		}
-		seen := ""
-		died := errMock("process died at the prompt")
-		hand := func() error { seen = stdoutSoFar(t); return died }
-		rm := RemoveFuncs{
-			Rescue:      func(cleanup.Row) error { return hand() },
-			RestoreRoot: hand,
-			Refetch:     func() (cleanup.Report, error) { return cleanup.Report{}, nil },
 		}
 		var err error
 		out := captureStdout(t, func() { err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm) })
@@ -2082,15 +2070,18 @@ func TestRunCleanupListLogIsOutBeforeAHandOffDies(t *testing.T) {
 // read with the note's text on the status line; a hand-off that failed (a
 // plain error) still ends the session.
 func TestRunCleanupListReentersAfterANoteHandOff(t *testing.T) {
-	old := runCleanupProgram
-	t.Cleanup(func() { runCleanupProgram = old })
 	row := cleanup.Row{Name: "spike"}
 	for _, which := range []string{"rescue", "restore-root"} {
 		declined := errMock("not confirmed; nothing was changed")
 		note := &HandOffNote{Text: which + ": not confirmed - nothing changed", Err: declined}
 		runs, fetches := 0, 0
 		var statuses []string
-		runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		rm := RemoveFuncs{
+			Rescue:      func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return note },
+			RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { return note },
+			Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+		}
+		rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
 			runs++
 			statuses = append(statuses, m.status)
 			if runs == 1 {
@@ -2101,11 +2092,6 @@ func TestRunCleanupListReentersAfterANoteHandOff(t *testing.T) {
 				}
 			}
 			return m, func() {}, nil
-		}
-		rm := RemoveFuncs{
-			Rescue:      func(cleanup.Row) error { return note },
-			RestoreRoot: func() error { return note },
-			Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
 		}
 		if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
 			t.Errorf("%s: a declined hand-off ended the session with %v, want a re-entry", which, err)

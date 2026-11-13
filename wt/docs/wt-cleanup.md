@@ -59,7 +59,7 @@ repository has no working tree to launch in.
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
 progress, a registered model artifact, or an open PR on an `origin` branch
-or one that targets it); the row's `hard_stop` JSON field names it. A worktree whose directory is gone is refused too, but the JSON names it by reason `gates_unavailable`, not `hard_stop`. In the terminal list the hard stops, any `in_use` row, a worktree whose directory is gone and any remote row that is not a proven `origin` branch **lock** the row (`[-]`: it cannot be ticked, and `enter`, `x` and `d` refuse it with the reason; `o` is the exception — it deletes the row's `origin` ref, so it judges the lock of that ref, not of the local row it sits on). A local
+or one that targets it); the row's `hard_stop` JSON field names it. A worktree whose directory is gone is refused too, but the JSON names it by reason `gates_unavailable`, not `hard_stop`. In the terminal list the hard stops, any `in_use` row, a worktree whose directory is gone and any remote row that is not a proven `origin` branch **lock** the row (`[-]`: it cannot be ticked, and `enter`, `x` and `d` refuse it with the reason; `o` is the exception — it deletes the row's `origin` ref, so it judges the lock of that ref, not of the local row it sits on; `r` and `R` never consult the lock — they copy or move work instead of removing). A local
 branch or worktree with an open PR is not a hard stop: it reads unique work and
 needs `--accept-loss` and `-D`. A **floor** is a verdict ceiling the user can accept: a held
 session claim (`held`), the default branch (`default_branch`), an unknown
@@ -129,8 +129,12 @@ could not judge are shown in the output, never an exit status. So is a
 registry wt could not read, or a `local_path` in it that is malformed or
 relative (write every `local_path` as an absolute path; `~/` is fine): the
 list still shows, the header says artifact protection is OFF, registered
-model artifacts are not marked in use, and removal is off (enter in the list
-says why; `wt remove` exits 1). No registry at the default path means
+model artifacts are not marked in use, and removal is off (`enter`, `x`, `d`
+and `o` in the list each say why; `wt remove` exits 1). `r`, `R` and `F` are
+not removals and answer anyway: the rescue copies, `F` only fetches and
+re-reads, and `R` runs `wt restore-root`, whose command never reads the
+registry (it carries the root's work into a new worktree before any reset).
+No registry at the default path means
 nothing is registered: the header says `registry: none at <path>`; a missing
 registry anywhere else (`WT_REGISTRY`, a relocated `XDG_CONFIG_HOME`, no home
 directory) counts as could not be read. A `local_path` that is an ancestor of
@@ -153,7 +157,7 @@ On a terminal `wt worktrees` shows every row, locked or not, and acts only on a 
 | `F` | `git fetch --all --prune` at the repository root, capped at 5s, then re-read; stale session claims are dropped |
 | `q`, `esc` | quit |
 
-A locked row refuses `x` and `d` with `cannot be removed: <its reason>`. `o` is the exception: it deletes the row's `origin` ref, so it judges that ref's lock instead of the local row's — a locked origin target answers `its origin ref cannot be removed: <the origin row's reason>`, and a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none` (a locked row with none answers `cannot be removed: <its reason>`). Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`.
+A locked row refuses `x` and `d` with `cannot be removed: <its reason>`. `o` is the exception: it deletes the row's `origin` ref, so it judges that ref's lock instead of the local row's — a locked origin target answers `its origin ref cannot be removed: <the origin row's reason>`, and a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none` (a locked row with none answers `cannot be removed: <its reason>`). `r`, `R` and `F` ignore the lock entirely: they copy or move work and re-read, never remove. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`.
 
 **`R` is offered only from the row.** `rootmove.Offered` (it reads the row, never git) refuses, each with its line on the status line: a row that is not the root ("only the root can be restored"), a bare repository, a root with no commit, a detached root, a root with no default branch ("no default branch to restore to"), a root already on the default ("root is already on <branch>"), a root with a merge, cherry-pick or revert in progress and a root whose state could not be read. The list's `R` runs the same interactive restore-root as `wt restore-root` run by hand (fetches every remote, asks `Move? [y/N]` and prints the `root_held` warning in that prompt when another session holds the root; it never passes `--yes`, so a held root is moved only after you answer `y`).
 

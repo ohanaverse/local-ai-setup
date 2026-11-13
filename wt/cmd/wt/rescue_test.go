@@ -467,14 +467,13 @@ func TestCleanupListGetsTheRescue(t *testing.T) {
 	a := rescueApp(t)
 	dir := cleanupRepo(t)
 	workWorktree(t, dir)
-	oldTTY, oldList, oldStreams := isTerminalWriter, runCleanupList, rescueStreams
+	oldTTY, oldList := isTerminalWriter, runCleanupList
 	isTerminalWriter = func(io.Writer) bool { return true }
 	var got cleanup.Report
 	var rm tui.RemoveFuncs
 	runCleanupList = func(r cleanup.Report, _ themes.Theme, f tui.RemoveFuncs) error { got, rm = r, f; return nil }
 	var out, errOut bytes.Buffer
-	rescueStreams = func() (io.Reader, io.Writer, io.Writer) { return strings.NewReader("y\n"), &out, &errOut }
-	t.Cleanup(func() { isTerminalWriter, runCleanupList, rescueStreams = oldTTY, oldList, oldStreams })
+	t.Cleanup(func() { isTerminalWriter, runCleanupList = oldTTY, oldList })
 	if _, _, err := runCleanup(t, a, dir, "--no-fetch"); err != nil {
 		t.Fatal(err)
 	}
@@ -492,9 +491,11 @@ func TestCleanupListGetsTheRescue(t *testing.T) {
 	}
 	rescueTTY = func(io.Reader, io.Writer) bool { return true }
 
-	// A finished copy is a note: the list re-enters with a status line.
+	// A finished copy is a note: the list re-enters with a status line. The
+	// hand-off takes its terminal streams as arguments, so the test names
+	// them here instead of swapping a package global.
 	var note *tui.HandOffNote
-	if err := rm.Rescue(row); !errors.As(err, &note) || note.Err != nil || !strings.Contains(note.Text, "rescued to branch rescued/spike") {
+	if err := rm.Rescue(row, strings.NewReader("y\n"), &out, &errOut); !errors.As(err, &note) || note.Err != nil || !strings.Contains(note.Text, "rescued to branch rescued/spike") {
 		t.Fatalf("Rescue: %v, want a done note\n%s", err, errOut.String())
 	}
 

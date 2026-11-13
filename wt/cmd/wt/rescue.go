@@ -23,11 +23,6 @@ import (
 // stream it is written to are terminals. Tests swap it.
 var rescueTTY = bothTerminals
 
-// rescueStreams are the terminal streams the cleanup list's `r` and `R`
-// hand-offs ask and print on once the alt screen is gone (the rescue, and the
-// `wt restore-root` run behind RestoreRoot). Tests swap them.
-var rescueStreams = func() (io.Reader, io.Writer, io.Writer) { return os.Stdin, os.Stdout, os.Stderr }
-
 // dryRunFetchNote is the warning a dry run carries: it ran no fetch.
 const dryRunFetchNote = "dry run: nothing was fetched, so remote-tracking refs (and what counts as unpushed or merged) are as of the last fetch"
 

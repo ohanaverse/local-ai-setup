@@ -512,12 +512,19 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	var err, werr error
 	printed := 0
 	status := ""
+	// The program runner is read once per session from the funcs handed in
+	// (nil: the real alt-screen program), never a package global, so a test's
+	// fake cannot leak into a parallel one.
+	run := rm.Program
+	if run == nil {
+		run = realCleanupProgram
+	}
 	for {
 		m := newCleanupList(r, th, time.Now(), rm)
 		m.log = logged
 		m.status = status
 		status = ""
-		final, stop, perr := runCleanupProgram(m)
+		final, stop, perr := run(m)
 		defer stop() // idempotent; the hand-offs and the re-entry stop it first
 		fm, ok := final.(cleanupListModel)
 		if ok {
@@ -612,12 +619,9 @@ func flushLog(log []removal.Outcome, printed int, werr error) (int, error) {
 	return len(log), werr
 }
 
-// runCleanupProgram is the test seam over the Bubble Tea program: it runs the
-// list on the alt screen and returns the final model and the function that
-// stops the signal forwarding (idempotent). A test swaps it to drive
-// RunCleanupList's after-the-screen steps without a terminal.
-var runCleanupProgram = realCleanupProgram
-
+// realCleanupProgram runs the list on the alt screen and returns the final
+// model and the function that stops the signal forwarding (idempotent).
+// RemoveFuncs.Program is the seam over it: nil runs this.
 func realCleanupProgram(m cleanupListModel) (tea.Model, func(), error) {
 	// Bubble Tea's own signal handler quits on SIGINT/SIGTERM in any phase,
 	// mid-removal too; the model handles them instead (Ruling T). The
@@ -641,8 +645,9 @@ func guardedRun(stop func(), run func() (tea.Model, error)) (tea.Model, func(), 
 	return final, stop, err
 }
 
-// runRescue hands the `r` key's row to rm.Rescue, if there is one. It stops
-// the signal forwarding first: the program has finished, so a forwarded
+// runRescue hands the `r` key's row to rm.Rescue, if there is one, on the
+// real terminal's streams (the alt screen is gone by now). It stops the
+// signal forwarding first: the program has finished, so a forwarded
 // signal would go to a dead p.Send and be dropped, leaving Ctrl-C at the
 // rescue's y/N prompt (or during a long copy) with no effect. With the
 // forwarding stopped Go's default handling ends the process again.
@@ -651,7 +656,7 @@ func runRescue(fm cleanupListModel, rm RemoveFuncs, stop func()) error {
 		return nil
 	}
 	stop()
-	return rm.Rescue(*fm.rescueRow)
+	return rm.Rescue(*fm.rescueRow, os.Stdin, os.Stdout, os.Stderr)
 }
 
 // runRestoreRoot hands off to rm.RestoreRoot after `R` chose to restore the
@@ -665,7 +670,7 @@ func runRestoreRoot(fm cleanupListModel, rm RemoveFuncs, stop func()) error {
 		return nil
 	}
 	stop()
-	return rm.RestoreRoot()
+	return rm.RestoreRoot(os.Stdin, os.Stdout, os.Stderr)
 }
 
 // startRescue handles `r`: on a row a rescue is offered for, quit and
@@ -692,6 +697,13 @@ func (m cleanupListModel) startRescue() (tea.Model, tea.Cmd) {
 // for (the root off its default), quit and flag the hand-off; otherwise stay
 // and put that gate's own line on the status line — byte for byte, never
 // re-worded here. An offered row with no func wired says so instead.
+//
+// R deliberately reads neither the row's lock nor RemoveFuncs.Off: a restore
+// is not a removal. The hand-off runs `wt restore-root`, a command that never
+// loads the registry (so Off, the registry's failure, is none of its
+// business) and carries the root's work into a new worktree before any reset
+// (so a hard stop like protected_artifact, which guards deletions, bars it
+// no more than it bars `r`). enter, x, d and o are removals and refuse.
 func (m cleanupListModel) startRestoreRoot() (tea.Model, tea.Cmd) {
 	row, ok := m.selectedRow()
 	if !ok {

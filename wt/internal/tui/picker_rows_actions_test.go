@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -35,9 +36,12 @@ type actionRecorder struct {
 // (nil previews are not runnable), the hand-offs recorded and done.
 func (r *actionRecorder) funcs() RemoveFuncs {
 	return RemoveFuncs{
-		Preview:     previewRecorder(&r.previewed),
-		Rescue:      func(row cleanup.Row) error { r.rescued = append(r.rescued, cleanup.DisplayName(row)); return nil },
-		RestoreRoot: func() error { r.restored++; return nil },
+		Preview: previewRecorder(&r.previewed),
+		Rescue: func(row cleanup.Row, _ io.Reader, _, _ io.Writer) error {
+			r.rescued = append(r.rescued, cleanup.DisplayName(row))
+			return nil
+		},
+		RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { r.restored++; return nil },
 	}
 }
 

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -63,25 +64,32 @@ type RemoveFuncs struct {
 	// load): enter says it and nothing is previewed.
 	Off string
 	// Rescue copies one row's local-only work into a new branch and worktree
-	// (`wt rescue`). It runs after the list has quit and the alt screen is
-	// gone, so it may ask on the terminal; RunCleanupList's session then
-	// re-enters the list with a fresh report, while the picker's ends with
-	// the hand-off (finishRowSession). nil: `r` says it is unavailable.
-	Rescue func(row cleanup.Row) error
+	// (`wt rescue`) on the terminal streams it is passed (answer, out, errOut:
+	// where its prompt is asked and its result printed, once the alt screen is
+	// gone). RunCleanupList's session then re-enters the list with a fresh
+	// report, while the picker's ends with the hand-off (finishRowSession).
+	// nil: `r` says it is unavailable.
+	Rescue func(row cleanup.Row, answer io.Reader, out, errOut io.Writer) error
 	// RestoreRoot moves the root checkout's branch back to the default
-	// branch (`wt restore-root`). It runs after the list has quit and the alt
-	// screen is gone, so it may ask on the terminal; RunCleanupList's session
-	// then re-enters the list with a fresh report, while the picker's ends
-	// with the hand-off (finishRowSession). nil: `R` says it is not wired
-	// here.
+	// branch (`wt restore-root`) on the terminal streams it is passed, under
+	// the same rules as Rescue: after the alt screen is gone, re-entry in
+	// RunCleanupList's session, session end in the picker. nil: `R` says it
+	// is not wired here.
 	//
 	// Both hand-off funcs (Rescue and RestoreRoot) may return a *HandOffNote:
 	// the hand-off ended with nothing changed (declined, refused) or finished,
 	// and a SUCCESSFUL one carries a nil Err — an error value that means
-	// success. Only runRescue and runRestoreRoot call them, and every consumer
-	// goes through noteOf before treating the value as a failure; a new caller
-	// must do the same.
-	RestoreRoot func() error
+	// success. Only runRescue and runRestoreRoot call them (with the real
+	// terminal's streams), and every consumer goes through noteOf before
+	// treating the value as a failure; a new caller must do the same.
+	RestoreRoot func(answer io.Reader, out, errOut io.Writer) error
+	// Program runs the list on the alt screen, once per session pass, and
+	// returns the final model plus the function that stops the signal
+	// forwarding (idempotent). nil runs the real one (realCleanupProgram).
+	// It is the test seam over the Bubble Tea program: a test sets it to
+	// drive RunCleanupList's after-the-screen steps without a terminal — a
+	// per-call value, so a failing test cannot leak a stub into another.
+	Program func(cleanupListModel) (tea.Model, func(), error)
 }
 
 // RemoveFuncsBuilder builds the RemoveFuncs one picker load's rows act

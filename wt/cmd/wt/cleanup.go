@@ -236,12 +236,15 @@ func listRoot(cwd string) string {
 // fetch) for the rebuilt list and points the engine at the new snapshot;
 // Refetch (the list's `F`) fetches every remote once at the report's root and
 // re-reads the same way. A registry that did not load turns removal off (plan
-// call 7): enter then
-// says so and previews nothing. Rescue (the `r` key) runs `wt rescue`'s
-// executor on the list's current snapshot and is wired either way: it never
-// removes anything, so the registry does not matter to it. Refetch is wired
-// either way for the same reason, as is RestoreRoot (the `R` key), which runs
-// `wt restore-root`'s own run path from the directory the list was built on.
+// call 7): enter, `x`, `d` and `o` then say so and preview nothing (the Off
+// funcs below). The three non-removals stay wired either way: Rescue (the
+// `r` key) runs `wt rescue`'s executor on the list's current snapshot and
+// never removes anything; Refetch only fetches and re-reads; RestoreRoot (the
+// `R` key) runs `wt restore-root`'s own run path from the directory the list
+// was built on — a command that never loads the registry and carries the
+// root's work into a new worktree before any reset, so the registry's failure
+// and a row's removal locks are none of its business (the list's keys page
+// and startRestoreRoot's comment say the same).
 func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, minAge time.Duration, protErr error) tui.RemoveFuncs {
 	in.Fetch = false // a re-check never fetches
 	in.Fetched = snap.Fetch
@@ -253,8 +256,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	// engine there is nothing to repoint.
 	cur := &snap
 	var eng *removal.Engine
-	rescueRowFn := func(row cleanup.Row) error {
-		answer, out, errOut := rescueStreams()
+	rescueRowFn := func(row cleanup.Row, answer io.Reader, out, errOut io.Writer) error {
 		var got *rescue.Outcome
 		err := rescueRowReport(answer, out, errOut, rescueFlags{minAge: minAge}, *cur, in, row, func(o rescue.Outcome) { got = &o })
 		return rescueHandOffResult(err, got)
@@ -263,8 +265,7 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 	// from the directory this list was built on, with the command's default
 	// flags: a real run (it fetches every remote first) that asks y/N on the
 	// terminal the streams name, exactly as `wt restore-root` does.
-	restoreRootFn := func() error {
-		answer, out, errOut := rescueStreams()
+	restoreRootFn := func(answer io.Reader, out, errOut io.Writer) error {
 		var got *rootmove.Outcome
 		err := restoreRootRunReport(answer, out, errOut, restoreRootFlags{}, in.CWD, func(o rootmove.Outcome) { got = &o })
 		return restoreRootHandOffResult(err, got)

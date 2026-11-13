@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +194,10 @@ func TestFinishRowSessionLogIsOutBeforeTheHandOff(t *testing.T) {
 		}
 		var rows cleanupListModel
 		rows.log = []removal.Outcome{out1}
-		rows.rm = RemoveFuncs{Rescue: func(cleanup.Row) error { return hand() }, RestoreRoot: hand}
+		rows.rm = RemoveFuncs{
+			Rescue:      func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return hand() },
+			RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { return hand() },
+		}
 		if which == "rescue" {
 			rows.rescueRow = &cleanup.Row{Name: "spike"}
 		} else {
@@ -224,7 +228,10 @@ func TestFinishRowSessionSuccessNoteIsNotAnError(t *testing.T) {
 	for _, which := range []string{"rescue", "restore-root"} {
 		done := func() error { return &HandOffNote{Text: "done"} }
 		var rows cleanupListModel
-		rows.rm = RemoveFuncs{Rescue: func(cleanup.Row) error { return done() }, RestoreRoot: done}
+		rows.rm = RemoveFuncs{
+			Rescue:      func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return done() },
+			RestoreRoot: func(_ io.Reader, _, _ io.Writer) error { return done() },
+		}
 		if which == "rescue" {
 			rows.rescueRow = &cleanup.Row{Name: "spike"}
 		} else {
