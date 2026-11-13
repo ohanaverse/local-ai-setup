@@ -2,6 +2,7 @@ package rootmove
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
@@ -144,6 +145,30 @@ func TestOfferedBareRootSaysNoCheckout(t *testing.T) {
 	}
 }
 
+// TestOfferedUnbornBranchSaysNoCommits pins R501e: a root with no commit to
+// move is NOT offered. Its row's Head is the 40-zero null sha (what
+// `git worktree list` prints for an unborn branch — verified on this shape),
+// and the row would otherwise be the offer case although restore-root refuses
+// no_commit ("the root has no commit yet, so there is nothing to move").
+// Why: same family as the detached rule — an R that can only fail is
+// explained, not offered — and the case mirrors Preflight's refusal order
+// (no commit is checked before detached and the default questions).
+func TestOfferedUnbornBranchSaysNoCommits(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.git("switch", "-q", "--orphan", "fresh")
+	row := primaryRow(t, rowsOf(t, f))
+	if row.Branch != "fresh" {
+		t.Fatalf("root row branch = %q, want %q", row.Branch, "fresh")
+	}
+	if row.Head != "" && strings.Trim(row.Head, "0") != "" {
+		t.Fatalf("root row Head = %q, want no commit", row.Head)
+	}
+	if offered, why := Offered(row); offered || why != "the root's branch has no commits yet" {
+		t.Errorf("Offered = %v, %q; want false, %q", offered, why, "the root's branch has no commits yet")
+	}
+}
+
 // TestOfferedRootOffLocalFallbackDefaultIsOffered pins R501d's case 6 on the
 // shape a catch-all "otherwise" used to mislabel: a repository with no
 // origin whose default resolves only by the local fallback (local main), its
@@ -228,6 +253,7 @@ func TestOfferedNoDefaultRootSaysNothingToRestoreTo(t *testing.T) {
 func TestOfferedUsesRowNotGit(t *testing.T) {
 	t.Parallel()
 	row := cleanup.Row{Kind: cleanup.KindWorktree, Name: "root-dir", Branch: "trunk", Primary: true,
+		Head:     "0123456789abcdef0123456789abcdef01234567",
 		Blockers: []cleanup.Reason{{Code: cleanup.BlockDefaultBranch, Detail: "trunk"}}}
 	if offered, why := Offered(row); offered || why != "root is already on trunk" {
 		t.Errorf("Offered = %v, %q; want false, %q", offered, why, "root is already on trunk")
