@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1650,6 +1651,301 @@ func TestRunRestoreRootStopsSignalForwardingFirst(t *testing.T) {
 	}
 	if err := runRestoreRoot(fm, RemoveFuncs{}, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
 		t.Errorf("no RestoreRoot wired: err=%v calls=%v, want nothing", err, calls)
+	}
+}
+
+// captureStdout runs f with os.Stdout pointed at a scratch file and returns
+// what it printed. The package has no parallel tests, so the swap is safe.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdout.txt")
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = out
+	defer func() { os.Stdout = old }()
+	f()
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestRunCleanupListReentersAfterRescue drives RunCleanupList through the
+// program seam with a first pass whose `r` hand-off succeeds and a Refetch
+// that answers a fresh report. What: the session re-enters — the program runs
+// a second pass — and that pass's model is built from the FRESH report (the
+// re-read every hand-off path re-gathers through: never a cached one) and
+// starts clean, with no confirm state, no seedBranch and no hand-off flag
+// carried across passes (one hand-off per pass). The rescue itself ran once.
+// Why: without the loop one `wt cleanup` session ends after its first action,
+// and a pass built from the cached report would act on rows that may be gone.
+func TestRunCleanupListReentersAfterRescue(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	row := cleanup.Row{Name: "spike"}
+	first := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "first-marker", Branch: "first-marker", Status: cleanup.StatusProven}}}
+	fresh := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "fresh-marker", Branch: "fresh-marker", Status: cleanup.StatusProven}}}
+	var saw []string
+	runs := 0
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		saw = append(saw, m.report.Rows[0].Name)
+		if runs == 2 && (m.conf != nil || m.seedBranch || m.rescueRow != nil || m.restoreRoot) {
+			t.Errorf("the second pass inherited state: confirm=%v seedBranch=%v rescueRow=%v restoreRoot=%v",
+				m.conf != nil, m.seedBranch, m.rescueRow != nil, m.restoreRoot)
+		}
+		if runs == 1 {
+			m.rescueRow = &row
+		}
+		return m, func() {}, nil
+	}
+	fetches, rescues := 0, 0
+	rm := RemoveFuncs{
+		Rescue:  func(cleanup.Row) error { rescues++; return nil },
+		Refetch: func() (cleanup.Report, error) { fetches++; return fresh, nil },
+	}
+	if err := RunCleanupList(first, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2 (re-enter after the rescue)", runs)
+	}
+	if fetches != 1 || rescues != 1 {
+		t.Errorf("Refetch=%d Rescue=%d, want one re-read and one hand-off", fetches, rescues)
+	}
+	if len(saw) != 2 || saw[0] != "first-marker" || saw[1] != "fresh-marker" {
+		t.Errorf("the passes read reports %v; the second must be built from Refetch's fresh report", saw)
+	}
+}
+
+// TestRunCleanupListReentersAfterRestoreRoot is the `R` hand-off's half of the
+// loop: after the restore-root action succeeds the session re-enters with a
+// fresh report and a clean pass, and the restore ran once (one hand-off per
+// pass). Why: `R` on a drifted root is usually followed by removing what the
+// move created, and one `wt cleanup` session should do both.
+func TestRunCleanupListReentersAfterRestoreRoot(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	first := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "first-marker", Branch: "first-marker", Status: cleanup.StatusProven}}}
+	fresh := cleanup.Report{Rows: []cleanup.Row{{Kind: cleanup.KindBranch, Name: "fresh-marker", Branch: "fresh-marker", Status: cleanup.StatusProven}}}
+	var saw []string
+	runs := 0
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		saw = append(saw, m.report.Rows[0].Name)
+		if runs == 2 && (m.conf != nil || m.seedBranch || m.rescueRow != nil || m.restoreRoot) {
+			t.Errorf("the second pass inherited state: confirm=%v seedBranch=%v rescueRow=%v restoreRoot=%v",
+				m.conf != nil, m.seedBranch, m.rescueRow != nil, m.restoreRoot)
+		}
+		if runs == 1 {
+			m.restoreRoot = true
+		}
+		return m, func() {}, nil
+	}
+	fetches, restores := 0, 0
+	rm := RemoveFuncs{
+		RestoreRoot: func() error { restores++; return nil },
+		Refetch:     func() (cleanup.Report, error) { fetches++; return fresh, nil },
+	}
+	if err := RunCleanupList(first, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2 (re-enter after the restore-root)", runs)
+	}
+	if fetches != 1 || restores != 1 {
+		t.Errorf("Refetch=%d RestoreRoot=%d, want one re-read and one hand-off", fetches, restores)
+	}
+	if len(saw) != 2 || saw[0] != "first-marker" || saw[1] != "fresh-marker" {
+		t.Errorf("the passes read reports %v; the second must be built from Refetch's fresh report", saw)
+	}
+}
+
+// TestRunCleanupListStopsLoopingOnActionError pins the session's independent
+// error paths: an error from the rescue action, from the restore-root action
+// or from the re-entry re-read stops the session right there and surfaces as
+// RunCleanupList's returned error with its own message — never swallowed,
+// never retried, no generic wrapping that hides which step failed — and no
+// later pass runs (the program ran once).
+func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	row := cleanup.Row{Name: "spike"}
+
+	// A rescue that fails: its own error returns, and the list is never
+	// re-entered after a failed action.
+	boom := errMock("rescue action failed")
+	runs, fetches := 0, 0
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.rescueRow = &row
+		return m, func() {}, nil
+	}
+	rm := RemoveFuncs{
+		Rescue:  func(cleanup.Row) error { return boom },
+		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+	}
+	err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "rescue action failed") {
+		t.Errorf("err = %v, want the rescue's own error", err)
+	}
+	if runs != 1 || fetches != 0 {
+		t.Errorf("runs=%d fetches=%d, want one pass and no re-entry after a failed action", runs, fetches)
+	}
+
+	// A restore-root that fails: same.
+	boom = errMock("restore-root action failed")
+	runs, fetches = 0, 0
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.restoreRoot = true
+		return m, func() {}, nil
+	}
+	rm = RemoveFuncs{
+		RestoreRoot: func() error { return boom },
+		Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+	}
+	err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "restore-root action failed") {
+		t.Errorf("err = %v, want the restore-root's own error", err)
+	}
+	if runs != 1 || fetches != 0 {
+		t.Errorf("runs=%d fetches=%d, want one pass and no re-entry after a failed action", runs, fetches)
+	}
+
+	// The re-entry re-read that fails: the hand-off succeeded, but there is
+	// no fresh report to re-enter with, so the re-read's own error returns
+	// and no second pass runs (never one built from the cached report).
+	boom = errMock("re-entry re-read failed")
+	runs, fetches, rescues := 0, 0, 0
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.rescueRow = &row
+		return m, func() {}, nil
+	}
+	rm = RemoveFuncs{
+		Rescue:  func(cleanup.Row) error { rescues++; return nil },
+		Refetch: func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, boom },
+	}
+	err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "re-entry re-read failed") {
+		t.Errorf("err = %v, want the re-entry re-read's own error", err)
+	}
+	if runs != 1 || fetches != 1 || rescues != 1 {
+		t.Errorf("runs=%d fetches=%d rescues=%d, want one pass, one hand-off and one re-read", runs, fetches, rescues)
+	}
+}
+
+// TestRunCleanupListPrintsLogOncePerSession pins the session log's print: the
+// outcomes of EVERY pass accumulate, and the log prints exactly once per
+// RunCleanupList call — when the session ends, however it ends — not once per
+// pass: one "wt worktrees:" block carrying both passes' outcomes, printed
+// after the last pass's screen. Why: the log is the only record of what was
+// removed and of every deleted branch's commit; printing it per pass would
+// split and repeat it, and printing only the last pass's would drop the rest.
+func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	row := cleanup.Row{Name: "spike"}
+	logged := func(n int) removal.Outcome {
+		return removal.NewOutcome(
+			removal.Item{Kind: cleanup.KindWorktree, Name: "work-" + strconv.Itoa(n)},
+			removal.WtRemoved, removal.BrDeleted, "outcome of pass "+strconv.Itoa(n))
+	}
+	runs := 0
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		fmt.Println("pass", runs, "screen")
+		m.log = append(m.log, logged(runs))
+		if runs == 1 {
+			m.rescueRow = &row
+		}
+		return m, func() {}, nil
+	}
+	rm := RemoveFuncs{
+		Rescue:  func(cleanup.Row) error { return nil },
+		Refetch: func() (cleanup.Report, error) { return cleanup.Report{}, nil },
+	}
+	var err error
+	out := captureStdout(t, func() {
+		err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2", runs)
+	}
+	if n := strings.Count(out, "wt worktrees: "); n != 1 {
+		t.Errorf("the session log printed %d times, want exactly 1:\n%s", n, out)
+	}
+	for _, want := range []string{"work-1", "work-2", "outcome of pass 1", "outcome of pass 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the log is missing %q; every pass's outcomes must accumulate:\n%s", want, out)
+		}
+	}
+	at := strings.Index
+	if !(at(out, "pass 1 screen") >= 0 && at(out, "pass 1 screen") < at(out, "pass 2 screen") && at(out, "pass 2 screen") < at(out, "wt worktrees: ")) {
+		t.Errorf("the log did not print at the end of the session:\n%s", out)
+	}
+
+	// However the session ends: a pass that ends on an error still prints
+	// the accumulated log, once.
+	runs = 0
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		runs++
+		if runs > 2 {
+			return m, func() {}, errMock("the session ran more passes than it should")
+		}
+		m.log = append(m.log, logged(runs))
+		if runs == 1 {
+			m.rescueRow = &row
+		} else {
+			m.exitErr = errMock("post-run re-read failed")
+		}
+		return m, func() {}, nil
+	}
+	out = captureStdout(t, func() {
+		err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm)
+	})
+	if !errors.Is(err, errMock("post-run re-read failed")) {
+		t.Errorf("err = %v, want the pass's exitErr", err)
+	}
+	if runs != 2 {
+		t.Fatalf("the program ran %d passes, want 2", runs)
+	}
+	if n := strings.Count(out, "wt worktrees: "); n != 1 {
+		t.Errorf("after an error exit the session log printed %d times, want exactly 1:\n%s", n, out)
+	}
+	for _, want := range []string{"work-1", "work-2", "outcome of pass 1", "outcome of pass 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the log is missing %q; every pass's outcomes must accumulate:\n%s", want, out)
+		}
 	}
 }
 

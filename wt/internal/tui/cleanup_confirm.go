@@ -50,24 +50,28 @@ type RemoveFuncs struct {
 	// its report. nil ends the program after the results instead.
 	Refresh func() (cleanup.Report, error)
 	// Refetch fetches the remotes and re-reads the repository on the list's
-	// `F`, returning the fresh report the list is rebuilt from. Fetch at the
+	// `F` and on the session's re-entry after an `r` or `R` hand-off,
+	// returning the fresh report the list is rebuilt from. Fetch at the
 	// report's repository root (worktree.FetchRemotes), so the header's
 	// refresh note advances; a fetch failure is not this error — it travels
 	// in the report's Fetch field, which the header renders. This error is
-	// the re-read's own failure: the list keeps its rows and says why, one
-	// line. nil: `F` says it is unavailable.
+	// the re-read's own failure: on `F` the list keeps its rows and says why,
+	// one line; on a re-entry it ends the session. nil: `F` says it is
+	// unavailable, and a hand-off cannot re-enter the list.
 	Refetch func() (cleanup.Report, error)
 	// Off, when not "", is why removal is unavailable (the registry did not
 	// load): enter says it and nothing is previewed.
 	Off string
 	// Rescue copies one row's local-only work into a new branch and worktree
 	// (`wt rescue`). It runs after the list has quit and the alt screen is
-	// gone, so it may ask on the terminal. nil: `r` says it is unavailable.
+	// gone, so it may ask on the terminal; the session then re-enters the
+	// list with a fresh report. nil: `r` says it is unavailable.
 	Rescue func(row cleanup.Row) error
 	// RestoreRoot moves the root checkout's branch back to the default
 	// branch (`wt restore-root`). It runs after the list has quit and the alt
-	// screen is gone, so it may ask on the terminal. nil: `R` says it is not
-	// wired here.
+	// screen is gone, so it may ask on the terminal; the session then
+	// re-enters the list with a fresh report. nil: `R` says it is not wired
+	// here.
 	RestoreRoot func() error
 }
 
@@ -846,7 +850,7 @@ func outcomeLines(o removal.Outcome) []string {
 	return out
 }
 
-// logText is every outcome of the session, printed after the program ends
+// logText is every outcome of the session, printed when the session ends
 // so that what was removed, and every restore id, outlives the alt screen.
 func logText(log []removal.Outcome) string {
 	if len(log) == 0 {

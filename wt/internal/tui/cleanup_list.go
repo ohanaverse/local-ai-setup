@@ -139,6 +139,7 @@ func cleanupLocked(r cleanup.Row) bool {
 	// unconditional refusal (worktreeGate's GatesUnknown gate), so the list
 	// locks it like every hard stop. The gates_unavailable reason rides with
 	// the flag on a classified row; either one names the same refusal.
+	// losses: raw, the effective view never changes the gates-unknown flag
 	if r.Losses.GatesUnknown {
 		return true
 	}
@@ -331,19 +332,20 @@ type cleanupListModel struct {
 	// seedBranch pre-toggles the confirm entries' "also delete unmerged
 	// branch" (`d` on a worktree row).
 	seedBranch bool
-	conf       *cleanupConfirm // the confirm screen; nil outside it
-	run        *cleanupRun     // the last run; set from the progress screen on
-	log        []removal.Outcome
-	exitErr    error // returned by RunCleanupList (the re-read failed)
+	conf       *cleanupConfirm   // the confirm screen; nil outside it
+	run        *cleanupRun       // the last run; set from the progress screen on
+	log        []removal.Outcome // the session's outcomes (a new pass starts with the ones before it)
+	exitErr    error             // returned by RunCleanupList (the post-run re-read failed)
 	// quitAfterRun: a signal came during a run; the program quits when the
 	// run ends (Ruling T).
 	quitAfterRun bool
 	// rescueRow is the row `r` chose: the list quits and RunCleanupList
-	// hands it to RemoveFuncs.Rescue once the alt screen is gone.
+	// hands it to RemoveFuncs.Rescue once the alt screen is gone, then
+	// re-enters the list (set only in the pass that chose it).
 	rescueRow *cleanup.Row
 	// restoreRoot is set when `R` chose `wt restore-root`: the list quits and
 	// RunCleanupList hands off to RemoveFuncs.RestoreRoot once the alt screen
-	// is gone (one hand-off per run).
+	// is gone (one hand-off per pass), then re-enters the list.
 	restoreRoot bool
 	clock       func() time.Time // the list's clock on a rebuild
 	// refreshNote is the header's last line — "refreshed 3m ago" or "not
@@ -414,33 +416,78 @@ func (m *cleanupListModel) launch() bool { return m.opts.Mode == modeLaunch }
 // with no rows (a launch list always has its new-worktree item).
 func (m *cleanupListModel) empty() bool { return m.cursor < 0 }
 
-// RunCleanupList shows r as the tick list on the alt screen. enter removes
-// the ticked rows through rm after a confirmation; once the screen is gone,
-// every outcome of the session is printed (what was removed and each
-// deleted branch's commit outlive the alt screen).
+// RunCleanupList shows r as the tick list on the alt screen and runs the
+// whole session. enter removes the ticked rows through rm after a
+// confirmation; `r` and `R` run their action on the real terminal once the
+// screen is gone and then re-enter the list with a fresh report
+// (RemoveFuncs.Refetch), so one session can do several actions. When the
+// session ends — however it ends — every outcome of every pass prints once
+// (what was removed and each deleted branch's commit outlive the alt screen).
 func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
-	m := newCleanupList(r, th, time.Now())
-	m.rm = rm
-	final, stop, err := runCleanupProgram(m)
-	defer stop()
-	fm, ok := final.(cleanupListModel)
-	if ok && fm.exitMessage() != "" {
-		if _, werr := fmt.Fprintln(os.Stdout, fm.exitMessage()); werr != nil && err == nil {
-			err = werr
+	// One pass per program run, each built fresh from its own report: the
+	// confirm state, the ticks and the hand-off flags never cross a pass.
+	// logged is the whole session's outcome log — every pass's outcomes join
+	// it — and it is the one thing that does travel between passes.
+	var logged []removal.Outcome
+	var last cleanupListModel
+	haveLast := false
+	var err error
+	for {
+		m := newCleanupList(r, th, time.Now())
+		m.rm = rm
+		m.log = logged
+		final, stop, perr := runCleanupProgram(m)
+		defer stop() // idempotent; the hand-offs and the re-entry stop it first
+		fm, ok := final.(cleanupListModel)
+		if ok {
+			last, haveLast, logged = fm, true, fm.log
 		}
+		if perr != nil {
+			err = perr
+			break
+		}
+		if !ok {
+			break
+		}
+		if fm.exitErr != nil {
+			err = fm.exitErr
+			break
+		}
+		// The rescue and the restore-root hand-offs ask and print on the
+		// real terminal, so they run here, after the alt screen has closed
+		// (the session's removal log prints when the session ends).
+		if err = runRescue(fm, rm, stop); err != nil {
+			break
+		}
+		if err = runRestoreRoot(fm, rm, stop); err != nil {
+			break
+		}
+		// Re-entry is only for those two hand-offs: a pass with none ends
+		// the session (a removal run's exit from the results screen is
+		// final). A nil Refetch cannot re-enter either — with no re-read
+		// there is no fresh report, and a pass is never built from a cached
+		// one.
+		if (fm.rescueRow == nil && !fm.restoreRoot) || rm.Refetch == nil {
+			break
+		}
+		// Re-enter: the re-read's own failure ends the session (its error,
+		// never a silent retry); its report builds the next pass's model.
+		rep, rerr := rm.Refetch()
+		if rerr != nil {
+			err = rerr
+			break
+		}
+		stop() // the forwarding stops before the next pass's program runs
+		r = rep
 	}
-	if err == nil && ok {
-		err = fm.exitErr
-	}
-	// The rescue asks and prints on the real terminal, so it runs here, after
-	// the alt screen has closed (and after the session's removal log).
-	if err == nil && ok {
-		err = runRescue(fm, rm, stop)
-	}
-	// The restore-root hand-off asks on the real terminal too: same point,
-	// one hand-off per run (the re-entry loop is a later task's).
-	if err == nil && ok {
-		err = runRestoreRoot(fm, rm, stop)
+	// The session's log prints once, at the end — however the session ended
+	// — carrying every pass's outcomes (never once per pass).
+	if haveLast {
+		if msg := last.exitMessage(); msg != "" {
+			if _, werr := fmt.Fprintln(os.Stdout, msg); werr != nil && err == nil {
+				err = werr
+			}
+		}
 	}
 	return err
 }
@@ -1208,7 +1255,7 @@ func (m cleanupListModel) tickedNames() []string {
 	return out
 }
 
-// exitMessage is what RunCleanupList prints after the program ends: every
+// exitMessage is what RunCleanupList prints when the session ends: every
 // outcome of the session ("" when nothing ran).
 func (m cleanupListModel) exitMessage() string {
 	text := logText(m.log)
