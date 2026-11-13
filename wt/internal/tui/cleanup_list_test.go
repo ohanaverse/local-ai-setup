@@ -548,6 +548,36 @@ func TestCleanupListTitleNamesRemoval(t *testing.T) {
 	}
 }
 
+// TestCleanupListTitleLineNamesAllActions pins the manage title's key legend
+// at two widths: at 100x30 it names every action in its full form — `x
+// remove`, `R restore root`, `F refresh`, `r rescue` beside `q quit` — and at
+// 80x24 it still fits with no clipping (a narrow legend may shorten an
+// action's wording, but `q quit` stays visible). Why: the title is the only
+// place `x`, `R` and `F` are named, and a legend wider than the terminal
+// silently loses its tail — `q quit` — on the 80-column terminals people
+// actually run.
+func TestCleanupListTitleLineNamesAllActions(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 100, 30)
+	for _, want := range []string{"x remove", "R restore root", "F refresh", "r rescue", "q quit"} {
+		if !strings.Contains(m.titleLine(), want) {
+			t.Errorf("title at 100x30 misses %q:\n%s", want, m.titleLine())
+		}
+	}
+	if v := m.View(); !strings.Contains(v, "x remove") || !strings.Contains(v, "F refresh") {
+		t.Errorf("view at 100x30 does not carry the title's actions:\n%s", v)
+	}
+	if w := lipgloss.Width(m.titleLine()); w > 100 {
+		t.Errorf("title at 100x30 is %d columns and clips:\n%s", w, m.titleLine())
+	}
+	narrow := newSizedCleanupList(t, cleanupFixture(), 80, 24)
+	if w := lipgloss.Width(narrow.titleLine()); w > 80 {
+		t.Errorf("title at 80x24 is %d columns and clips:\n%s", w, narrow.titleLine())
+	}
+	if !strings.Contains(narrow.titleLine(), "q quit") {
+		t.Errorf("title at 80x24 hides q quit:\n%s", narrow.titleLine())
+	}
+}
+
 // longRowsFixture is cleanupFixture plus the rows whose sentences are too
 // long for one line at 80 columns: a long branch name, the primary
 // checkout with its path (the only Current worktree, so "you are here"),
@@ -1015,6 +1045,102 @@ func TestCleanupListFKeyKeepsTheUsersUntickedRows(t *testing.T) {
 	}
 	if got != wantTicked {
 		t.Errorf("%d rows ticked after F, want %d (the others' ticks kept)", got, wantTicked)
+	}
+}
+
+// TestCleanupListFetchKeyRefreshes: `F` refreshes in place — RemoveFuncs.Refetch
+// runs exactly once and the list rebuilds from its fresh report without
+// leaving the screen. Why: this is the key path end to end (the `F` binding,
+// the refetch command and the re-entry into the list); a break anywhere along
+// it turns `F` into a dead key.
+func TestCleanupListFetchKeyRefreshes(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	calls := 0
+	m.rm.Refetch = func() (cleanup.Report, error) {
+		calls++
+		rep := cleanupFixture()
+		rep.Rows = append(rep.Rows, cleanup.Row{Kind: cleanup.KindBranch, Name: "fresh-branch", Branch: "fresh-branch", Status: cleanup.StatusLessSure})
+		return rep, nil
+	}
+	m = press(t, m, keyRunes("F"))
+	if calls != 1 {
+		t.Fatalf("Refetch called %d times, want 1", calls)
+	}
+	if v := m.View(); !strings.Contains(v, "fresh-branch") {
+		t.Errorf("the list did not rebuild from the fresh report:\n%s", v)
+	}
+	if m.done || m.phase != cleanupPhaseList {
+		t.Errorf("done=%v phase=%v; F refreshes in place and stays in the list", m.done, m.phase)
+	}
+}
+
+// TestCleanupListFetchFailureKeepsOldListAndSaysWhy: when the `F` re-read
+// fails — Refetch's own error, the re-read's failure (a fetch failure is not
+// this error: it travels in the report's Fetch field and the header renders
+// it) — the old rows stay and the status says why in one line. Why: nothing
+// was removed here, so the rows the user was reading are still what to show;
+// a blank or silent failure reads as a broken key.
+func TestCleanupListFetchFailureKeepsOldListAndSaysWhy(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m.rm.Refetch = func() (cleanup.Report, error) {
+		return cleanup.Report{}, errMock("re-read failed: git broke")
+	}
+	m = press(t, m, keyRunes("F"))
+	if v := m.View(); !strings.Contains(v, "mtplx-profiles") || !strings.Contains(v, "old-remote") {
+		t.Errorf("a failed refresh dropped the old list:\n%s", v)
+	}
+	if !strings.Contains(m.status, "git broke") || strings.Contains(m.status, "\n") {
+		t.Errorf("status = %q; want the failure's reason in one line", m.status)
+	}
+	if m.done || m.phase != cleanupPhaseList {
+		t.Errorf("done=%v phase=%v; a failed refresh stays in the list", m.done, m.phase)
+	}
+}
+
+// TestCleanupListFetchNotWired: `F` while RemoveFuncs.Refetch is still nil
+// (the pre-wiring gap cmd/wt closes) says one line on the status and does
+// nothing — no panic, no silent no-op, and nothing run at all (no prune: no
+// refresh ran). Why: the gap must read as a told gap, not a broken key.
+func TestCleanupListFetchNotWired(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	next, cmd := m.Update(keyRunes("F"))
+	fm := next.(cleanupListModel)
+	if fm.done || fm.phase != cleanupPhaseList || (cmd != nil && cmd() != nil) {
+		t.Fatalf("done=%v phase=%v cmd=%v; want nothing to happen", fm.done, fm.phase, cmd)
+	}
+	if fm.status != "refresh is not available here" {
+		t.Errorf("status = %q, want %q", fm.status, "refresh is not available here")
+	}
+	if v := fm.View(); !strings.Contains(v, "mtplx-profiles") {
+		t.Errorf("the list changed under an unwired F:\n%s", v)
+	}
+}
+
+// TestCleanupListFetchKeepsCursorOnSameRow: the `F` re-read keeps the
+// highlighted row — the same row by kind, ref, path and name, not the same
+// index (the fresh report gained a row above it) — and a failed re-read keeps
+// the cursor there too. Why: a refresh that jumps the cursor loses the user's
+// place mid-review.
+func TestCleanupListFetchKeepsCursorOnSameRow(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = moveTo(t, m, "who-knows")
+	m.rm.Refetch = func() (cleanup.Report, error) {
+		rep := cleanupFixture()
+		rep.Rows = append([]cleanup.Row{{Kind: cleanup.KindWorktree, Name: "aaa-new", Path: "/repo/.worktrees/aaa-new",
+			Branch: "aaa-new", Status: cleanup.StatusLessSure}}, rep.Rows...)
+		return rep, nil
+	}
+	m = press(t, m, keyRunes("F"))
+	if v := m.View(); !strings.Contains(v, "aaa-new") {
+		t.Fatalf("the fresh report did not rebuild the list:\n%s", v)
+	}
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "who-knows" {
+		t.Fatalf("after F the cursor is on %q (ok=%v), want who-knows", cleanup.DisplayName(row), ok)
+	}
+	m.rm.Refetch = func() (cleanup.Report, error) { return cleanup.Report{}, errMock("re-read failed") }
+	m = press(t, m, keyRunes("F"))
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "who-knows" {
+		t.Fatalf("after a failed F the cursor is on %q (ok=%v), want who-knows", cleanup.DisplayName(row), ok)
 	}
 }
 

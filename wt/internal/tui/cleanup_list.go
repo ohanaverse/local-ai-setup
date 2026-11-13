@@ -896,13 +896,33 @@ func (m *cleanupListModel) layout() cleanupLayout {
 	return l
 }
 
+// manageTitles is the manage list's key legend, widest first. Every form
+// names every key the list answers — `space`, `a`, `enter`, `x remove`, `r
+// rescue`, `R restore root`, `F refresh`, `q quit` — the narrower ones
+// shortening wording and tightening separators (a bare key for `space`/`a`,
+// "R restore root" spelled out or not) but never dropping a key. The widest
+// form whose visible width (118, 99, 78 columns) fits the terminal is drawn,
+// so `q quit` is never clipped away at 80 columns.
+var manageTitles = []struct{ name, actions string }{
+	{"wt worktrees", "   space tick · a proven · enter remove ticked · x remove · r rescue · R restore root · F refresh · q quit"},
+	{"wt worktrees", "   space · a · enter remove · x remove · r rescue · R restore root · F refresh · q quit"},
+	{"wt worktrees", "   space·a·enter·x remove·r rescue·R restore root·F refresh·q quit"},
+}
+
 func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	if m.launch() {
 		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · / filter · q quit")
 	}
-	return accent.Render("wt worktrees") + dim.Render("   space tick · a proven · enter remove ticked · r rescue · q quit")
+	t := manageTitles[len(manageTitles)-1]
+	for _, c := range manageTitles {
+		if lipgloss.Width(c.name+c.actions) <= m.width {
+			t = c
+			break
+		}
+	}
+	return accent.Render(t.name) + dim.Render(t.actions)
 }
 
 // statusBlock is the status, wrapped, with its line break; "" without one.
