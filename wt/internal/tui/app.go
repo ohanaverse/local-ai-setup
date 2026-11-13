@@ -314,11 +314,13 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// The PR lookups of the latest load arrived: swapped in with the
 		// cursor, the filter and the scroll kept (withReport). The filled
 		// snapshot builds the row actions' removal funcs, so the engine's
-		// re-check stands on the rows now on screen (swapRemoveFuncs: at
-		// rest only — a flow in progress keeps its own).
-		if m.ready && msg.gen == m.rowsGen {
+		// re-check stands on the rows now on screen (swapRemoveFuncs: a
+		// flow in progress defers the swap to its return to rest, and a
+		// done list takes nothing at all — the quit window keeps the
+		// hand-off instance its key checked).
+		if m.ready && msg.gen == m.rowsGen && !m.rows.done {
 			m.rows = m.rows.withReport(msg.Report)
-			swapRemoveFuncs(&m.rows, m.removeFuncsFor(msg.Snap, m.rowsIn))
+			swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
 		}
 		return m, nil
 	case rowChosenMsg:

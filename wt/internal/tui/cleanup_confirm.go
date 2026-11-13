@@ -320,6 +320,7 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 	if msg.err != nil {
 		m.phase = cleanupPhaseList
 		m.status = "nothing was removed: " + cleanup.OneLine(msg.err.Error())
+		m.applyPendingRemoveFuncs()
 		return m, nil
 	}
 	c := &cleanupConfirm{}
@@ -430,6 +431,7 @@ func (c *cleanupConfirm) offersToggle() bool {
 func (m cleanupListModel) cancelConfirm(why string) (cleanupListModel, tea.Cmd) {
 	m.phase, m.conf = cleanupPhaseList, nil
 	m.status = why + ": nothing was removed"
+	m.applyPendingRemoveFuncs()
 	return m, nil
 }
 
@@ -756,6 +758,10 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 	o.Theme, o.Now = m.theme, m.clock()
 	n := newRowList(msg.report, o)
 	n.rm, n.log, n.clock = m.rm, m.log, m.clock
+	// The post-run rebuild is a return to rest: a fill swap the run's flow
+	// deferred lands here (latest landing winning), on the fresh list.
+	n.pendingRM = m.pendingRM
+	n.applyPendingRemoveFuncs()
 	n.width, n.height = m.width, m.height
 	n.status = removedSummary(m.run.results) + "; the results print again when you quit"
 	if !n.empty() {
@@ -825,6 +831,7 @@ func (m cleanupListModel) gotRefetch(msg cleanupRefetchMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 	m.phase = cleanupPhaseList
+	m.applyPendingRemoveFuncs()
 	if msg.err != nil {
 		m.status = "refresh failed: " + cleanup.OneLine(msg.err.Error())
 		return m, nil

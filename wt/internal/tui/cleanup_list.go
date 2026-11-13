@@ -334,6 +334,13 @@ type cleanupListModel struct {
 	phase   cleanupPhase
 	status  string // one line under the list ("nothing ticked", "cancelled...")
 	pending int    // rows being previewed
+	// pendingRM is a fill's removal-funcs build held while a flow is in
+	// progress: swapRemoveFuncs defers it to the list's next return to rest,
+	// where applyPendingRemoveFuncs takes it — every path that sets the phase
+	// back to cleanupPhaseList (gotPreviews' error path, cancelConfirm,
+	// gotRefetch, gotRefresh's post-run rebuild) calls that. Latest landing
+	// wins; a done list holds none (nothing swaps after done).
+	pendingRM func() RemoveFuncs
 	// chosenByTicks says what chose the rows of the flow in progress: the
 	// ticks (enter) or the cursor (the row keys) — chosenWord's wording.
 	chosenByTicks bool

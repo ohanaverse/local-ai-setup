@@ -186,6 +186,12 @@ func entryOfRow(r cleanup.Row) worktree.Entry {
 // keeps the inputs, so the next `F` re-runs exactly this load; the PR fill
 // follows when the load skipped one.
 func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
+	if m.rows.done {
+		// Nothing lands on a done list: in the `r`/`R` quit window the
+		// hand-off the key chose must survive to finishRowSession (a reload
+		// here would rebuild the list past it).
+		return m, nil
+	}
 	refreshing := m.rowsRefreshing
 	m.rowsRefreshing = false
 	m.rows.fetching = false
@@ -220,8 +226,10 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 		rows = base.withReport(msg.report)
 		// The reload's snapshot builds the row actions' removal funcs (the
 		// engine's re-check stands on the rows now on screen), and its PR
-		// fill swaps in its own instance when it lands.
-		swapRemoveFuncs(&rows, m.removeFuncsFor(msg.snap, msg.in))
+		// fill swaps in its own instance when it lands — the build waits
+		// for its swap (swapRemoveFuncs), so a flow in progress sees
+		// neither until it returns to rest.
+		swapRemoveFuncs(&rows, func() RemoveFuncs { return m.removeFuncsFor(msg.snap, msg.in) })
 	} else {
 		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot,
 			Stamp: &msg.stamp, RemoveFuncs: m.removeFuncsFor(msg.snap, msg.in)})
@@ -258,13 +266,40 @@ func (m model) removeFuncsFor(snap cleanup.Snapshot, in cleanup.GatherInputs) Re
 	return m.removeFuncs(snap, in)
 }
 
-// swapRemoveFuncs puts a load's removal funcs on its rebuilt list, at rest
-// only: a removal flow in progress keeps the funcs its sealed previews came
-// from (withReport keeps them across a report swap for the same reason) —
-// the engine must not change under what the user is confirming.
-func swapRemoveFuncs(rows *cleanupListModel, rm RemoveFuncs) {
-	if rows.phase != cleanupPhaseList {
+// swapRemoveFuncs offers a load's removal funcs to its rebuilt list. A
+// removal flow in progress keeps the funcs its sealed previews came from (the
+// engine must not change under what the user is confirming), so the build is
+// deferred to the list's next return to rest — pendingRM, latest landing
+// winning — rather than built here and thrown away with the refused swap.
+// Nothing swaps on a done list: the `r`/`R` quit window hands off through the
+// instance its key checked.
+func swapRemoveFuncs(rows *cleanupListModel, build func() RemoveFuncs) {
+	if rows.done {
 		return
 	}
+	if rows.phase != cleanupPhaseList {
+		rows.pendingRM = build
+		return
+	}
+	applyRemoveFuncs(rows, build())
+}
+
+// applyRemoveFuncs puts rm on the list — both where the flow reads it and
+// where a rebuild carries it from — and drops any deferred build it answers.
+func applyRemoveFuncs(rows *cleanupListModel, rm RemoveFuncs) {
 	rows.rm, rows.opts.RemoveFuncs = rm, rm
+	rows.pendingRM = nil
+}
+
+// applyPendingRemoveFuncs applies the fill swap a flow deferred
+// (swapRemoveFuncs), called at the list's every return to rest: gotPreviews'
+// error path, cancelConfirm (esc, the n/alt/space cancel, the wrong-typed-word
+// refusal), gotRefetch's landing, and gotRefresh's post-run rebuild. It runs
+// at rest and undone only; a flow that starts before it runs keeps its own.
+func (m *cleanupListModel) applyPendingRemoveFuncs() {
+	if m.done || m.pendingRM == nil || m.phase != cleanupPhaseList {
+		return
+	}
+	build := m.pendingRM
+	applyRemoveFuncs(m, build())
 }
