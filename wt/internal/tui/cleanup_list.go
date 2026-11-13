@@ -549,7 +549,9 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// RemoveFuncs.Refetch. Either way the refresh drops the stale
 			// session claims first (pruneStaleFirst, the key path's one
 			// prune): refresh is one of the two paths that prune, and
-			// opening the list never is.
+			// opening the list never is. An F pressed while a refresh is
+			// already in flight still prunes — idempotent, and the reload
+			// the app drops does not undo it — which is intended.
 			if m.launch() {
 				return m, pruneStaleFirst(refreshRoot(m.opts.Root, m.report), emit(refreshRowsChosenMsg{}))
 			}
