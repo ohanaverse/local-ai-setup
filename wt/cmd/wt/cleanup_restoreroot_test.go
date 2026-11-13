@@ -79,6 +79,9 @@ func TestCleanupRestoreRootFuncMovesTheRoot(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dest, "new.txt")); string(b) != "n" {
 		t.Errorf("the untracked work was not carried into %s: %q", dest, b)
 	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "staged.txt")); string(b) != "s" {
+		t.Errorf("the staged work was not carried into %s: %q", dest, b)
+	}
 	if !strings.Contains(out.String(), "moved") {
 		t.Errorf("no move result was printed:\n%s", out.String())
 	}
