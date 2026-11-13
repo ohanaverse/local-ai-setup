@@ -60,6 +60,10 @@ type model struct {
 	// rowsRefreshing is true from the picker's `F` until its load lands: a
 	// second `F` while one is in flight is dropped, one fetch per request.
 	rowsRefreshing bool
+	// removeFuncs builds each load's row actions (RemoveFuncsBuilder, cmd/wt's
+	// closure over cleanupRemoveFuncs); nil makes every row action say it is
+	// unavailable.
+	removeFuncs RemoveFuncsBuilder
 
 	phase phase
 	agent string         // current agent name
@@ -308,9 +312,13 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m.gotRows(msg)
 	case rowPRsLoadedMsg:
 		// The PR lookups of the latest load arrived: swapped in with the
-		// cursor, the filter and the scroll kept (withReport).
+		// cursor, the filter and the scroll kept (withReport). The filled
+		// snapshot builds the row actions' removal funcs, so the engine's
+		// re-check stands on the rows now on screen (swapRemoveFuncs: at
+		// rest only — a flow in progress keeps its own).
 		if m.ready && msg.gen == m.rowsGen {
 			m.rows = m.rows.withReport(msg.Report)
+			swapRemoveFuncs(&m.rows, m.removeFuncsFor(msg.Snap, m.rowsIn))
 		}
 		return m, nil
 	case rowChosenMsg:
@@ -1315,7 +1323,7 @@ const loadingStatus = "loading worktrees..."
 // newRunModel builds the TUI's initial model from Run's arguments. It is split
 // out of Run so tests can pin the argument-to-field plumbing (e.g. --replace)
 // without starting a real tea.Program.
-func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config) model {
+func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, removeFuncs RemoveFuncsBuilder) model {
 	return model{
 		status:       loadingStatus,
 		cfg:          cfg,
@@ -1329,6 +1337,7 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 		activeFamily: family,
 		extraArgs:    extraArgs,
 		prePath:      prePath,
+		removeFuncs:  removeFuncs,
 		repoRoot: func() string {
 			if prePath == "" || prePath == "." {
 				return ""
@@ -1370,11 +1379,14 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // slots carries the slot profiles: the picker shows a row for each one that
 // names this agent, and a profile launch applies slots.Apply in place of
 // applyProfile.
+// removeFuncs builds the row actions of each picker load (the removal
+// engine's window, `wt cleanup`'s cleanupRemoveFuncs in cmd/wt's closure):
+// nil leaves every row action saying it is unavailable.
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
 // cmd/wt exits with the agent's status (#412).
-func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles) error {
-	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, cfg), slots)
+func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
+	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, cfg, removeFuncs), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
 	currentProgram = p
 	// Reset any summary/survey state captured by a previous run (e.g.
@@ -1392,8 +1404,18 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 	// Route output first: it belongs to the launch (or to the launch that
 	// never happened), so it goes above the summary and the survey.
 	flushRouteNotesAfterRun(finalModel, os.Stderr)
+	// The row session's end (RunCleanupList's, one pass and no re-entry):
+	// the `r`/`R` hand-off runs on the real terminal and the session's
+	// removal log prints however the session ended — the results screen's
+	// "these results print again when you quit" is this line. A program that
+	// itself failed does no hand-off (RunCleanupList's rule) but still gets
+	// its log.
+	serr := finishRowSession(finalModel, err)
 	printPendingSummaryAndSurvey(cfg)
-	return runResult(finalModel, err)
+	if rerr := runResult(finalModel, err); rerr != nil {
+		return rerr
+	}
+	return serr
 }
 
 // runResult is what Run returns once the post-exit flow has run: the
@@ -1413,6 +1435,46 @@ func runResult(final tea.Model, err error) error {
 		return fm.fatalErr
 	}
 	return fm.agentErr
+}
+
+// finishRowSession is the row list's session end in the picker, RunCleanupList's
+// for one pass: the `r` key's row and the `R` key's restore hand off to their
+// RemoveFuncs once the alt screen is gone (runRescue, runRestoreRoot — they
+// ask on the terminal, and there is no re-entry afterwards: the picker
+// session ends with the hand-off and wt exits), then the session's removal
+// log prints however the session ended. A program run that failed does no
+// hand-off (RunCleanupList's rule) but still gets its log. progErr is what
+// the program run returned; the returned error is the hand-off's, or the log
+// write's when nothing else failed (as there, never over an earlier one).
+// It is split out of Run() so it is unit-testable without a real
+// tea.Program/TTY.
+func finishRowSession(final tea.Model, progErr error) error {
+	fm, ok := final.(model)
+	if !ok {
+		return nil
+	}
+	var err error
+	switch {
+	case progErr != nil:
+		err = progErr
+	case fm.rows.exitErr != nil:
+		// A post-run re-read that failed ends the session before the
+		// hand-offs, its own error (RunCleanupList's order).
+		err = fm.rows.exitErr
+	default:
+		// The picker's program ran with Bubble Tea's own signal handler and
+		// forwarded nothing of its own, so there is no forwarding to stop
+		// before the hand-off asks on the terminal.
+		if err = runRescue(fm.rows, fm.rows.rm, func() {}); err == nil {
+			err = runRestoreRoot(fm.rows, fm.rows.rm, func() {})
+		}
+	}
+	if msg := fm.rows.exitMessage(); msg != "" {
+		if _, werr := fmt.Fprintln(os.Stdout, msg); werr != nil && err == nil {
+			err = werr
+		}
+	}
+	return err
 }
 
 // flushRouteNotesAfterRun prints, once the alt screen is gone, whatever route

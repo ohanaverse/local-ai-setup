@@ -919,7 +919,7 @@ func TestReplaceFlagGrantsPermissionToPinnedRow(t *testing.T) {
 // allowReplace would silently disable --replace while every other test passed.
 func TestRunArgsReachModel(t *testing.T) {
 	for _, allow := range []bool{true, false} {
-		m := newRunModel(false, allow, "", "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil)
+		m := newRunModel(false, allow, "", "", "ollama/gemma4:9b", "", "", nil, themes.Theme{}, "", nil, nil)
 		if m.allowReplace != allow {
 			t.Errorf("allowReplace=%v: model.allowReplace=%v", allow, m.allowReplace)
 		}

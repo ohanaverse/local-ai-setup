@@ -406,7 +406,7 @@ func TestPinnedStartTakesTheOthersFlag(t *testing.T) {
 // launch.
 func TestRunArgsReachModelOthers(t *testing.T) {
 	for _, mode := range []string{"", "keep", "stop"} {
-		m := newRunModel(false, false, mode, "", "omlx/qwen3.8", "", "", nil, themes.Theme{}, "", &config.Config{})
+		m := newRunModel(false, false, mode, "", "omlx/qwen3.8", "", "", nil, themes.Theme{}, "", &config.Config{}, nil)
 		if m.othersMode != mode {
 			t.Errorf("--others=%q: model.othersMode = %q", mode, m.othersMode)
 		}

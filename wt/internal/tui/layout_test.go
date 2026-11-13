@@ -864,7 +864,7 @@ func TestDrawnFrameIsTheFrameTheListWasSizedFor(t *testing.T) {
 // not the placeholder and must survive.
 func TestLoadingStatusIsClearedWhenWorktreesLoad(t *testing.T) {
 	loadedMsg := rowsLoadedMsg{report: pickerFixture(), repoRoot: "/repo"}
-	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", &config.Config{})
+	fresh := newRunModel(false, false, "", "", "", "", "", nil, themes.Theme{}, "", &config.Config{}, nil)
 	fresh.width, fresh.height = 80, 24
 	if !strings.Contains(fresh.View(), "loading worktrees") {
 		t.Fatalf("before the load the view is %q, want the loading placeholder", fresh.View())

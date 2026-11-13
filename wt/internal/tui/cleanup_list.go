@@ -30,8 +30,7 @@ import (
 //
 // One component, two modes (rowListOpts.Mode):
 //   - manage (`wt cleanup`): a checkbox column; space ticks, `a` ticks every
-//     proven row, enter removes the ticked rows, `r` hands a row to rescue,
-//     `R` hands off `wt restore-root` for the root.
+//     proven row, enter removes the ticked rows.
 //   - launch (the picker): a first item "+ New worktree…" (enter or `n`
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
 //     the root, an in-use or held row too: launching warns, it never blocks
@@ -43,7 +42,11 @@ import (
 // choose rows for enter, never for these — through the same confirm flow:
 // `x` removes it, `d` removes it and its unmerged branch (on a branch row `d`
 // is `x`), `o` deletes only the origin ref folded into it (its own typed
-// phrase, the engine's remote-only item).
+// phrase, the engine's remote-only item). `r` hands the highlighted row to
+// rescue and `R` hands off `wt restore-root` for the root; both quit the
+// program and the hand-off runs on the real terminal once the screen is gone
+// — RunCleanupList then re-enters `wt cleanup`'s list with a fresh report,
+// while the picker (finishRowSession) ends its session there and wt exits.
 //
 // A row's text is never cut: when it does not fit beside the name it wraps
 // onto continuation lines under the text column, so a row is as many lines
@@ -76,6 +79,11 @@ type rowListOpts struct {
 	// list is first built; the list then keeps the value in its opts so a
 	// report swap (withReport) never reads git again.
 	Stamp *refreshStamp
+	// RemoveFuncs is the removal funcs the row keys act through: the launch
+	// selector passes the instance its load built (RemoveFuncsBuilder), and
+	// RunCleanupList sets its own on each manage pass right after the build.
+	// The zero value makes every removal say it is unavailable.
+	RemoveFuncs RemoveFuncs
 }
 
 // refreshStamp is when git fetch last ran at a root (worktree.LastFetched):
@@ -339,13 +347,15 @@ type cleanupListModel struct {
 	// quitAfterRun: a signal came during a run; the program quits when the
 	// run ends (Ruling T).
 	quitAfterRun bool
-	// rescueRow is the row `r` chose: the list quits and RunCleanupList
-	// hands it to RemoveFuncs.Rescue once the alt screen is gone, then
-	// re-enters the list (set only in the pass that chose it).
+	// rescueRow is the row `r` chose: the list quits and the session hands it
+	// to RemoveFuncs.Rescue once the alt screen is gone — RunCleanupList then
+	// re-enters the list (set only in the pass that chose it), the picker
+	// (finishRowSession) ends its session there.
 	rescueRow *cleanup.Row
 	// restoreRoot is set when `R` chose `wt restore-root`: the list quits and
-	// RunCleanupList hands off to RemoveFuncs.RestoreRoot once the alt screen
-	// is gone (one hand-off per pass), then re-enters the list.
+	// the session hands off to RemoveFuncs.RestoreRoot once the alt screen is
+	// gone (one hand-off per pass) — RunCleanupList then re-enters the list,
+	// the picker (finishRowSession) ends its session there.
 	restoreRoot bool
 	clock       func() time.Time // the list's clock on a rebuild
 	// refreshNote is the header's last line — "refreshed 3m ago" or "not
@@ -372,7 +382,7 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupLis
 // cleanup.KindGroups' order. In manage mode Tickable local rows start
 // ticked; in launch mode nothing is. The cursor starts on the first item.
 func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
-	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
+	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, rm: o.RemoveFuncs, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
 	root := refreshRoot(o.Root, r)
 	if o.Stamp != nil {
 		m.stamp = *o.Stamp
@@ -681,6 +691,16 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.startRefetch()
 		default:
+			// `r` and `R` are the highlighted row's hand-off keys in both
+			// modes (they act like the row keys above: the highlighted row
+			// alone). The filter (filterKey) has already taken every
+			// printable rune it is owed before any of this runs.
+			switch msg.String() {
+			case "r":
+				return m.startRescue()
+			case "R":
+				return m.startRestoreRoot()
+			}
 			if m.launch() {
 				if msg.String() == "n" {
 					return m, emit(newWorktreeChosenMsg{})
@@ -688,10 +708,6 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			switch msg.String() {
-			case "r":
-				return m.startRescue()
-			case "R":
-				return m.startRestoreRoot()
 			case " ":
 				if it := m.items[m.cursor]; !it.locked {
 					m.ticked[m.cursor] = !m.ticked[m.cursor]

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/guard"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/initseed"
@@ -118,6 +119,25 @@ func runLaunchPath(
 		return applyProfileForLaunch(cmd, agentName, m, a.cfg, a.profileState())
 	}
 
+	// removeFuncs gives every picker load's row actions the same removal
+	// engine `wt cleanup`'s list takes (cleanupRemoveFuncs, tui's
+	// RemoveFuncsBuilder — internal/tui cannot build it without the registry,
+	// which is this package's, so it is handed in as a closure like
+	// applyProfile), from that load's own snapshot and inputs in `wt
+	// cleanup`'s shape: the registry's protected paths (the picker's gather
+	// reads no registry, so the engine's re-check is what refuses a row
+	// holding an artifact) and PR facts re-read by every re-check and refresh
+	// (the load's SkipPRs belongs to its PR fill, not the engine). The
+	// command's default settings otherwise (no --min-age on this path); a
+	// registry that did not load turns removal off exactly as `wt cleanup`'s
+	// list is turned off.
+	protPaths, protErr := protectedPaths(a)
+	removeFuncs := func(snap cleanup.Snapshot, in cleanup.GatherInputs) tui.RemoveFuncs {
+		in.ProtectedPaths = protPaths
+		in.SkipPRs = false
+		return cleanupRemoveFuncs(a, snap, in, 0, protErr)
+	}
+
 	// Slot profiles are pin targets for resolveModel during this run. What is
 	// wrong with slot-profiles.toml is said here, before any picker opens,
 	// and only for a launch that could use a profile: no agent chosen yet, or
@@ -141,7 +161,7 @@ func runLaunchPath(
 		// (internal/tui's launchGate) — except for a preset path, which
 		// RunE's confirmLaunch above has already asked about, so a root
 		// launch is asked at most once.
-		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile})
+		err := tuiRun(yolo(cmd), allowReplace, string(othersMode), agent, pinned, tags, family, args, a.theme, launchPath, a.cfg, applyProfile, tui.SlotProfiles{Checks: a.slotChecks, Apply: applySlotProfile}, removeFuncs)
 		printSlotNotes()
 		// tui.Run returns the agent's run error after its post-exit flow;
 		// a non-zero exit becomes wt's own status, as on the non-TUI path,

@@ -33,9 +33,13 @@ type rowsLoadedMsg struct {
 	err      error
 }
 
-// rowPRsLoadedMsg is a picker load's report again, its PR lookups run.
+// rowPRsLoadedMsg is a picker load's report again, its PR lookups run, and
+// the snapshot those lookups filled: the row actions' removal funcs are built
+// from it (swapRemoveFuncs), so the engine's re-check stands on the rows the
+// screen now shows.
 type rowPRsLoadedMsg struct {
 	Report cleanup.Report
+	Snap   cleanup.Snapshot
 	gen    int
 }
 
@@ -49,12 +53,17 @@ type rowPRsLoadedMsg struct {
 // Registered model artifacts are not read here
 // (that needs the registry, which cmd/wt owns), so no row carries a
 // protected_artifact blocker in the picker; removal re-checks in the engine.
+// OriginRows is set because the picker shows and acts on origin rows (its
+// `o`, exactly GatherInputs.OriginRows's contract): the PR fill then makes
+// the per-branch `gh pr list --base` query, so a listed origin row reads
+// proven wherever `wt cleanup`'s list would — the engine removes a remote
+// row only when what was listed said proven.
 func pickerInputs(cwd string) cleanup.GatherInputs {
 	claim, err := sessionclaim.Self(cwd, "", "wt")
 	if err != nil {
 		claim = sessionclaim.Claim{PID: os.Getpid(), Agent: "wt"}
 	}
-	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true,
+	return cleanup.GatherInputs{CWD: cwd, Claim: claim, Parallel: 4, AllRemotes: true, OriginRows: true,
 		Fetched: cleanup.FetchResult{NotAttempted: true}}
 }
 
@@ -89,8 +98,9 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 // loadRowPRsCmd runs the PR lookups the first load skipped (cleanup.FillPRs,
 // gh, off the update goroutine), classifies again and drops the PR tags of
 // branches whose name was reused after their PR ended (dropStalePRTags).
-// snap is copied: the fill writes maps the painted report never reads, but
-// the model still holds the snapshot.
+// snap is copied: the fill writes maps the caller's snapshot never reads;
+// the message carries the filled copy, which the row actions' removal funcs
+// are built from.
 func loadRowPRsCmd(root string, snap cleanup.Snapshot, in cleanup.GatherInputs, gen int) tea.Cmd {
 	snap.PRs, snap.BasePRs, snap.Merges = maps.Clone(snap.PRs), maps.Clone(snap.BasePRs), maps.Clone(snap.Merges)
 	return func() tea.Msg {
@@ -98,7 +108,7 @@ func loadRowPRsCmd(root string, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 		cleanup.FillPRs(g, &snap, in)
 		rep := cleanup.Classify(snap, cleanup.Options{Now: time.Now()})
 		dropStalePRTags(g, rep.Rows)
-		return rowPRsLoadedMsg{Report: rep, gen: gen}
+		return rowPRsLoadedMsg{Report: rep, Snap: snap, gen: gen}
 	}
 }
 
@@ -208,8 +218,13 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 		base.opts.Stamp = &st
 		base.fetching = false
 		rows = base.withReport(msg.report)
+		// The reload's snapshot builds the row actions' removal funcs (the
+		// engine's re-check stands on the rows now on screen), and its PR
+		// fill swaps in its own instance when it lands.
+		swapRemoveFuncs(&rows, m.removeFuncsFor(msg.snap, msg.in))
 	} else {
-		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot, Stamp: &msg.stamp})
+		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot,
+			Stamp: &msg.stamp, RemoveFuncs: m.removeFuncsFor(msg.snap, msg.in)})
 		rows.width, rows.height = m.rows.width, m.rows.height
 		if here := deepestCurrent(msg.report); here != "" {
 			rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })
@@ -228,4 +243,28 @@ func (m model) updateRows(msg tea.Msg) (model, tea.Cmd) {
 	next, cmd := m.rows.Update(msg)
 	m.rows = next.(cleanupListModel)
 	return m, cmd
+}
+
+// removeFuncsFor is the row actions' RemoveFuncs for one load's snapshot and
+// inputs — the picker's instance of the removal engine, `wt cleanup`'s
+// cleanupRemoveFuncs through cmd/wt's builder — or the zero funcs, whose
+// actions all say they are unavailable, for a session started without one.
+// Every load builds its own instance, because the engine's re-check stands
+// on that load's snapshot; the PR fill's landing swaps its instance in.
+func (m model) removeFuncsFor(snap cleanup.Snapshot, in cleanup.GatherInputs) RemoveFuncs {
+	if m.removeFuncs == nil {
+		return RemoveFuncs{}
+	}
+	return m.removeFuncs(snap, in)
+}
+
+// swapRemoveFuncs puts a load's removal funcs on its rebuilt list, at rest
+// only: a removal flow in progress keeps the funcs its sealed previews came
+// from (withReport keeps them across a report swap for the same reason) —
+// the engine must not change under what the user is confirming.
+func swapRemoveFuncs(rows *cleanupListModel, rm RemoveFuncs) {
+	if rows.phase != cleanupPhaseList {
+		return
+	}
+	rows.rm, rows.opts.RemoveFuncs = rm, rm
 }

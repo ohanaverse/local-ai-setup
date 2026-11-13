@@ -64,16 +64,28 @@ type RemoveFuncs struct {
 	Off string
 	// Rescue copies one row's local-only work into a new branch and worktree
 	// (`wt rescue`). It runs after the list has quit and the alt screen is
-	// gone, so it may ask on the terminal; the session then re-enters the
-	// list with a fresh report. nil: `r` says it is unavailable.
+	// gone, so it may ask on the terminal; RunCleanupList's session then
+	// re-enters the list with a fresh report, while the picker's ends with
+	// the hand-off (finishRowSession). nil: `r` says it is unavailable.
 	Rescue func(row cleanup.Row) error
 	// RestoreRoot moves the root checkout's branch back to the default
 	// branch (`wt restore-root`). It runs after the list has quit and the alt
-	// screen is gone, so it may ask on the terminal; the session then
-	// re-enters the list with a fresh report. nil: `R` says it is not wired
+	// screen is gone, so it may ask on the terminal; RunCleanupList's session
+	// then re-enters the list with a fresh report, while the picker's ends
+	// with the hand-off (finishRowSession). nil: `R` says it is not wired
 	// here.
 	RestoreRoot func() error
 }
+
+// RemoveFuncsBuilder builds the RemoveFuncs one picker load's rows act
+// through: cmd/wt builds it over cleanupRemoveFuncs — the same helper `wt
+// cleanup`'s list takes — from each load's snapshot and inputs, so the
+// engine's re-check stands on the rows the picker is showing (the PR fill
+// swaps in the instance its filled snapshot builds). Like ProfileApplier, it
+// is handed in as a closure: internal/tui cannot read the registry (cmd/wt's)
+// to build the funcs itself. nil: every row action says it is unavailable,
+// as a picker without removal always did.
+type RemoveFuncsBuilder func(snap cleanup.Snapshot, in cleanup.GatherInputs) RemoveFuncs
 
 // cleanupPhase is which screen the list program shows.
 type cleanupPhase int
