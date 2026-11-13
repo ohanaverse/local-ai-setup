@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -407,5 +408,99 @@ func TestLaunchSelectorQuitWindowKeepsTheHandOffInstance(t *testing.T) {
 	}
 	if built[0].restored != 1 {
 		t.Errorf("the hand-off restored %d times through the load's instance, want 1", built[0].restored)
+	}
+}
+
+// TestLaunchSelectorFillSwapAppliesWhenAPreviewFails pins the deferred fill
+// swap's return to rest through gotPreviews' error path: `x` starts a
+// preview, the PR fill lands while it is in flight (deferred, nothing built),
+// the re-check fails — the list is back at rest with "nothing was removed" —
+// and the filled generation's instance is built and takes over right there.
+func TestLaunchSelectorFillSwapAppliesWhenAPreviewFails(t *testing.T) {
+	var built []*actionRecorder
+	builder := RemoveFuncsBuilder(func(snap cleanup.Snapshot, _ cleanup.GatherInputs) RemoveFuncs {
+		rec := &actionRecorder{snap: snap}
+		built = append(built, rec)
+		return rec.funcs()
+	})
+	rep := pickerActionsFixture()
+	m := pickerKey(t, pickerCursorTo(t, pickerActionsReady(t, rep, builder), "loose"), keyRunes("x"))
+	if m.rows.phase != cleanupPhasePreviewing {
+		t.Fatalf("x left phase %v, want the preview in flight", m.rows.phase)
+	}
+	m, _ = updateMsg(m, rowPRsLoadedMsg{Report: rep, Snap: cleanup.Snapshot{PRsAsked: true}, gen: m.rowsGen})
+	if len(built) != 1 {
+		t.Fatalf("the builder ran %d times with a fill under a preview, want 1: the swap waits for rest", len(built))
+	}
+	m, _ = updateMsg(m, cleanupPreviewMsg{err: errors.New("the re-check failed")})
+	if m.rows.phase != cleanupPhaseList {
+		t.Fatalf("a failed preview left phase %v, want the list", m.rows.phase)
+	}
+	if len(built) != 2 || !built[1].snap.PRsAsked {
+		t.Fatalf("builder ran %d times; a failed preview must apply the deferred fill's instance (built from the filled snapshot)", len(built))
+	}
+	m.rows.rm.Preview([]cleanup.Row{{Name: "probe"}})
+	if strings.Join(built[1].previewed, ",") != "probe" || len(built[0].previewed) != 1 {
+		t.Errorf("the model's funcs are not the filled instance (the load's saw only the original x): filled %v, load's %v", built[1].previewed, built[0].previewed)
+	}
+}
+
+// deferredFillInstance defers one fill swap on m (mid-flow, as the picker's
+// landing does through swapRemoveFuncs) and returns the recorder whose
+// instance the swap would install and the count of times its build ran.
+func deferredFillInstance(m *cleanupListModel) (*actionRecorder, *int) {
+	rec, builds := &actionRecorder{}, new(int)
+	swapRemoveFuncs(m, func() RemoveFuncs { *builds++; return rec.funcs() })
+	return rec, builds
+}
+
+// funcsAreThe reports whether m's Preview is rec's instance, by asking it
+// about a probe row and reading what the recorder saw.
+func funcsAreThe(m cleanupListModel, rec *actionRecorder) bool {
+	before := len(rec.previewed)
+	m.rm.Preview([]cleanup.Row{{Name: "probe"}})
+	return len(rec.previewed) == before+1
+}
+
+// TestFillSwapAppliesWhenARefetchLands pins the same return to rest through
+// the manage list's `F` re-read: a fill swap deferred while the list
+// refreshes is built and applied when the re-read lands, so the list that
+// comes out of it carries the deferred build's instance.
+func TestFillSwapAppliesWhenARefetchLands(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m.rm.Refetch = func() (cleanup.Report, error) { return cleanupFixture(), nil }
+	m, _ = m.startRefetch()
+	if m.phase != cleanupPhaseRefreshing {
+		t.Fatalf("F left phase %v, want refreshing", m.phase)
+	}
+	rec, builds := deferredFillInstance(&m)
+	if *builds != 0 {
+		t.Fatalf("the swap built %d times under a refresh, want it deferred", *builds)
+	}
+	m = cleanupSend(t, m, cleanupRefetchMsg{report: cleanupFixture()})
+	if m.phase != cleanupPhaseList || *builds != 1 {
+		t.Fatalf("after the re-read: phase %v, builds %d; want the list and the deferred build applied once", m.phase, *builds)
+	}
+	if !funcsAreThe(m, rec) {
+		t.Error("the list's funcs are not the deferred fill's instance after the re-read landed")
+	}
+}
+
+// TestFillSwapAppliesToTheListAPostRunRefreshBuilds pins it through the
+// post-run rebuild: a swap deferred while the run's refresh is in flight
+// travels to the fresh list (pendingRM) and is applied there.
+func TestFillSwapAppliesToTheListAPostRunRefreshBuilds(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m.phase, m.run = cleanupPhaseRefreshing, &cleanupRun{}
+	rec, builds := deferredFillInstance(&m)
+	if *builds != 0 {
+		t.Fatalf("the swap built %d times under a refresh, want it deferred", *builds)
+	}
+	m = cleanupSend(t, m, cleanupRefreshMsg{report: cleanupFixture()})
+	if m.phase != cleanupPhaseList || *builds != 1 {
+		t.Fatalf("after the rebuild: phase %v, builds %d; want the list and the deferred build applied once", m.phase, *builds)
+	}
+	if !funcsAreThe(m, rec) {
+		t.Error("the fresh list's funcs are not the deferred fill's instance")
 	}
 }

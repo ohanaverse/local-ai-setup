@@ -810,7 +810,7 @@ func (m cleanupListModel) startRowAction(kind rowAction) (cleanupListModel, tea.
 	it := m.items[m.cursor]
 	switch {
 	case it.newWorktree:
-		m.status = rowActionSay[kind] + "; this item creates one"
+		m.status = "this is the + New worktree… item, not a row: it creates a worktree, there is nothing to remove"
 		return m, nil
 	case it.locked:
 		m.status = "cannot be removed: " + cleanup.OneLine(it.text)

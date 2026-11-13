@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionclaim"
@@ -2179,5 +2180,51 @@ func TestCleanupListEnterRefusesARowLockedInTheCurrentReport(t *testing.T) {
 	// the hardened row included — nothing was silently decided away.
 	if rows := fm.tickedRows(); len(rows) != 2 {
 		t.Errorf("tickedRows() holds %d rows after the refusal, want the raw 2 (the hardened row included)", len(rows))
+	}
+}
+
+// TestListRowWithALongHeldTagWrapsAtASpace pins the oversized-unit wrap at the
+// layout level (flowUnits has its own unit test): a row whose held tag —
+// "held by session <agent> (pid N, running T, started on <host>)", the claim's
+// description — is longer than the terminal's text width is drawn at 80x24 in
+// both list modes with no line wider than 80 display columns, and the tag
+// breaks at a space: the words after the break stay whole on the next line
+// ("started on held)" never loses its first letters to a hard cut).
+func TestListRowWithALongHeldTagWrapsAtASpace(t *testing.T) {
+	const holder = "codex-the-long-named-agent (pid 70222, running 12h 30m, started on held)"
+	rep := cleanupFixture()
+	for i := range rep.Rows {
+		if rep.Rows[i].Kind == cleanup.KindWorktree && rep.Rows[i].Name == "full-branch-name-paths" {
+			rep.Rows[i].Reasons = append(rep.Rows[i].Reasons, cleanup.Reason{Code: cleanup.ReasonHeld, Detail: holder})
+		}
+	}
+	for name, m := range map[string]cleanupListModel{
+		"manage": newSizedCleanupList(t, rep, 80, 24),
+		"launch": newLaunchList(t, rep, 80, 24),
+	} {
+		view := ansi.Strip(m.View())
+		for _, ln := range strings.Split(view, "\n") {
+			if w := lipgloss.Width(ln); w > 80 {
+				t.Errorf("%s: a line is %d columns wide, want at most 80: %q", name, w, ln)
+			}
+		}
+		for _, want := range []string{"held by session", "started on held)"} {
+			if !strings.Contains(view, want) {
+				t.Errorf("%s: the view lacks the whole %q (the tag was cut inside a word):\n%s", name, want, view)
+			}
+		}
+		// The break is at a space: every word of the tag appears whole on some
+		// line (a hard cut would split a word across two lines).
+		onLines := map[string]bool{}
+		for _, ln := range strings.Split(view, "\n") {
+			for _, f := range strings.Fields(ln) {
+				onLines[f] = true
+			}
+		}
+		for _, word := range strings.Fields(holder) {
+			if !onLines[word] {
+				t.Errorf("%s: the word %q of the held tag is not whole on any line:\n%s", name, word, view)
+			}
+		}
 	}
 }

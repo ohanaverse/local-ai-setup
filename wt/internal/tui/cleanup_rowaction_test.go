@@ -277,3 +277,29 @@ func TestCleanupListOOnFoldedRowDeletesOnlyTheOriginRef(t *testing.T) {
 		t.Error("the local branch was deleted too")
 	}
 }
+
+// TestRowActionKeysOnTheNewWorktreeItemSayItCreates pins the status line of
+// x, d and o on the launch list's "+ New worktree…" item: the item is not a
+// row, so each key says it creates a worktree and has nothing to remove — it
+// never borrows a key's removal wording ("o deletes the ... origin ref") — and
+// no removal is previewed or started.
+func TestRowActionKeysOnTheNewWorktreeItemSayItCreates(t *testing.T) {
+	const want = "this is the + New worktree… item, not a row: it creates a worktree, there is nothing to remove"
+	for _, key := range []string{"x", "d", "o"} {
+		m := newLaunchList(t, cleanupFixture(), 120, 40)
+		m.rm.Preview = func([]cleanup.Row) []removal.ItemPreview {
+			t.Errorf("%s on the new-worktree item previewed a removal", key)
+			return nil
+		}
+		if !m.items[m.cursor].newWorktree {
+			t.Fatalf("%s: the launch list does not open on the new-worktree item", key)
+		}
+		m = press(t, m, keyRunes(key))
+		if m.status != want {
+			t.Errorf("%s: status = %q, want %q", key, m.status, want)
+		}
+		if m.phase != cleanupPhaseList {
+			t.Errorf("%s: phase = %v, want the list", key, m.phase)
+		}
+	}
+}
