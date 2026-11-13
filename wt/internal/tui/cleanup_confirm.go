@@ -943,11 +943,12 @@ func (m *cleanupListModel) shortPath(p string) string {
 func branchOf(ref string) string { return strings.TrimPrefix(ref, "refs/heads/") }
 
 // entryLines are one confirm entry: its name line, then, first, what the
-// user decides about it — the branch toggle (or the branch it deletes) and
-// the approvals it gets, or why it will not be removed — and only then what
-// it loses, the processes running in it, warnings and notes. keyN is how
-// many lines the decision part takes from the top: an entry taller than
-// the screen (dozens of processes) never hides it.
+// user decides about it — the branch toggle (or the branch it deletes), the
+// session holding the worktree, and the approvals it gets, or why it will
+// not be removed — and only then what it loses, the processes running in it,
+// warnings and notes. keyN is how many lines the decision part takes from
+// the top: an entry taller than the screen (dozens of processes) never hides
+// it.
 func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []string, keyN int) {
 	pv := e.pv
 	cursor := "  "
@@ -984,6 +985,18 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 				add(fmt.Sprintf("merged PR #%d; no open PR uses this branch as of the re-check", pv.Fresh.PR.Number))
 			}
 			add("restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name))
+		}
+	}
+	// The held naming (the design's "the remove confirmation names the
+	// holder"): a live wt session holding this worktree is named here in the
+	// list tag's own spelling — cleanup.RowTags' `held by session <id>`,
+	// whose <id> is the held reason's claim description
+	// (sessionclaim.Describe's rendering, echoed and never re-rendered in
+	// this package). It is part of what the user decides on, so it sits in
+	// the decision part (keyN) that a tall entry keeps on screen.
+	for _, tg := range cleanup.RowTags(pv.Fresh) {
+		if strings.HasPrefix(tg.Text, "held by session") {
+			add(cleanup.OneLine(tg.Text))
 		}
 	}
 	keyN = len(out)
