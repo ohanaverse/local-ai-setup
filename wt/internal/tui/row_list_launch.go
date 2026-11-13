@@ -52,10 +52,11 @@ func (m *cleanupListModel) screenName() string {
 }
 
 // chosenWord is how the removal screens name what is being removed: "ticked"
-// when manage mode's ticks chose it, "selected" when nothing is ticked (`x`
-// on the highlighted row, always so in the picker).
+// when the ticks chose the rows (enter, in manage mode), "selected" when the
+// cursor did (the row keys `x`, `d`, `o`, and everything in the picker, which
+// ticks nothing). A row the ticks did not choose is never called "ticked".
 func (m *cleanupListModel) chosenWord() string {
-	if !m.launch() && len(m.tickedRows()) > 0 {
+	if m.chosenByTicks {
 		return "ticked"
 	}
 	return "selected"

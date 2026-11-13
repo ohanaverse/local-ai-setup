@@ -309,36 +309,21 @@ func TestManageModeEnterStillRemovesTicked(t *testing.T) {
 	}
 }
 
-// TestXRemovesTickedInBothModes pins `x`: it removes the ticked rows when
-// any are ticked, else the highlighted row, in both modes (launch mode ticks
-// nothing, so there it is always the highlighted row). A locked row (a hard
-// stop) and the new-worktree item are never handed to the engine: the status
-// line says why.
-func TestXRemovesTickedInBothModes(t *testing.T) {
-	// Manage, with ticks: the ticked rows, not the highlighted one.
-	m := moveTo(t, newSizedCleanupList(t, cleanupFixture(), 120, 40), "spike-picker")
-	if got, _ := runPreview(t, m, keyRunes("x")); strings.Join(got, ",") != "full-branch-name-paths,fix-default-guard" {
-		t.Errorf("manage x with ticks previewed %v", got)
-	}
-	// Manage, nothing ticked: the highlighted row.
-	m = moveTo(t, m, "full-branch-name-paths")
-	m = cleanupSend(t, m, spaceKey)
-	m = moveTo(t, m, "fix-default-guard")
-	m = cleanupSend(t, m, spaceKey)
-	m = moveTo(t, m, "spike-picker")
-	if got, _ := runPreview(t, m, keyRunes("x")); strings.Join(got, ",") != "spike-picker" {
-		t.Errorf("manage x with nothing ticked previewed %v, want the highlighted row", got)
-	}
-
-	// Launch: the highlighted row.
-	l := moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "fix-default-guard")
-	got, fl := runPreview(t, l, keyRunes("x"))
-	if strings.Join(got, ",") != "fix-default-guard" || fl.phase != cleanupPhasePreviewing {
-		t.Errorf("launch x previewed %v (phase %v), want the highlighted row", got, fl.phase)
+// TestXRemoveKeyRefusesWhatCannotBeRemoved pins the row keys' refusals: a
+// locked row (a hard stop) and the new-worktree item are never handed to the
+// engine — nothing is previewed and the status line says why — in manage and
+// launch mode alike. What `x` does act on is pinned in
+// TestCleanupListXPreviewsOnlyTheHighlightedRow.
+func TestXRemoveKeyRefusesWhatCannotBeRemoved(t *testing.T) {
+	// Manage, a locked row: nothing previewed, the status says why.
+	m := moveTo(t, newSizedCleanupList(t, cleanupFixture(), 120, 40), "deep")
+	got, fm := runPreview(t, m, keyRunes("x"))
+	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.Contains(fm.status, "cannot be removed") {
+		t.Errorf("manage x on a locked row: previewed %v, phase %v, status %q", got, fm.phase, fm.status)
 	}
 	// Launch, a locked row: nothing previewed, the status says why.
-	l = moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "deep")
-	got, fl = runPreview(t, l, keyRunes("x"))
+	l := moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "deep")
+	got, fl := runPreview(t, l, keyRunes("x"))
 	if len(got) != 0 || fl.phase != cleanupPhaseList || !strings.Contains(fl.status, "cannot be removed") {
 		t.Errorf("launch x on a locked row: previewed %v, phase %v, status %q", got, fl.phase, fl.status)
 	}

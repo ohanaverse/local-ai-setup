@@ -87,7 +87,7 @@ const (
 // whether the user toggled deleting the unmerged branch its preview offers.
 type confirmEntry struct {
 	pv        removal.ItemPreview
-	delBranch bool
+	delBranch bool // the tab toggle: also delete the unmerged branch (seeded by `d`)
 }
 
 // cleanupConfirm is the confirm screen's state.
@@ -241,11 +241,12 @@ func (m cleanupListModel) startRemoval() (cleanupListModel, tea.Cmd) {
 		m.status = "nothing ticked: space ticks the highlighted row, x removes it"
 		return m, nil
 	}
+	m.chosenByTicks, m.seedBranch = true, false
 	return m.startRemovalOf(rows)
 }
 
-// startRemovalOf hands rows (enter's ticked rows, or `x`'s) to the engine's
-// preview, or the status says why not.
+// startRemovalOf hands rows (enter's ticked rows, or a row key's highlighted
+// row) to the engine's preview, or the status says why not.
 func (m cleanupListModel) startRemovalOf(rows []cleanup.Row) (cleanupListModel, tea.Cmd) {
 	switch {
 	case m.rm.Off != "":
@@ -298,7 +299,10 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 	for _, g := range confirmGroups {
 		for _, p := range msg.previews {
 			if p.Approval == g.approval {
-				c.entries = append(c.entries, confirmEntry{pv: p})
+				// `d` pre-toggles the offered branch deletion (`x` and
+				// enter leave every toggle as the user last left it: the
+				// seed is one flow's, consumed here).
+				c.entries = append(c.entries, confirmEntry{pv: p, delBranch: m.seedBranch && p.CanDeleteBranch})
 			}
 		}
 	}

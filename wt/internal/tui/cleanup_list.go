@@ -39,8 +39,11 @@ import (
 //     `/` filters the rows by name (row_list_launch.go), and the PR tags
 //     arrive later (withReport).
 //
-// In both modes `x` removes the ticked rows, or the highlighted row when
-// nothing is ticked (always, in launch mode), through the same confirm flow.
+// In both modes the row keys act on the highlighted row alone — the ticks
+// choose rows for enter, never for these — through the same confirm flow:
+// `x` removes it, `d` removes it and its unmerged branch (on a branch row `d`
+// is `x`), `o` deletes only the origin ref folded into it (its own typed
+// phrase, the engine's remote-only item).
 //
 // A row's text is never cut: when it does not fit beside the name it wraps
 // onto continuation lines under the text column, so a row is as many lines
@@ -305,12 +308,18 @@ type cleanupListModel struct {
 	// The removal flow (cleanup_confirm.go).
 	rm      RemoveFuncs
 	phase   cleanupPhase
-	status  string          // one line under the list ("nothing ticked", "cancelled...")
-	pending int             // rows being previewed
-	conf    *cleanupConfirm // the confirm screen; nil outside it
-	run     *cleanupRun     // the last run; set from the progress screen on
-	log     []removal.Outcome
-	exitErr error // returned by RunCleanupList (the re-read failed)
+	status  string // one line under the list ("nothing ticked", "cancelled...")
+	pending int    // rows being previewed
+	// chosenByTicks says what chose the rows of the flow in progress: the
+	// ticks (enter) or the cursor (the row keys) — chosenWord's wording.
+	chosenByTicks bool
+	// seedBranch pre-toggles the confirm entries' "also delete unmerged
+	// branch" (`d` on a worktree row).
+	seedBranch bool
+	conf       *cleanupConfirm // the confirm screen; nil outside it
+	run        *cleanupRun     // the last run; set from the progress screen on
+	log        []removal.Outcome
+	exitErr    error // returned by RunCleanupList (the re-read failed)
 	// quitAfterRun: a signal came during a run; the program quits when the
 	// run ends (Ruling T).
 	quitAfterRun bool
@@ -578,7 +587,11 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.startRemoval()
 		case "x":
-			return m.removeKey()
+			return m.startRowAction(rowActionRemove)
+		case "d":
+			return m.startRowAction(rowActionDeleteBranch)
+		case "o":
+			return m.startRowAction(rowActionDeleteOrigin)
 		case "up", "k":
 			m.move(-1, 1)
 		case "down", "j":
@@ -657,27 +670,77 @@ func (m cleanupListModel) choose() (cleanupListModel, tea.Cmd) {
 	return m, emit(rowChosenMsg{Row: m.items[m.cursor].row})
 }
 
-// removeKey is `x`: the ticked rows, or the highlighted row when nothing is
-// ticked (always in launch mode, which ticks nothing), go to the removal
-// flow; a locked row or the new-worktree item says why not.
-func (m cleanupListModel) removeKey() (cleanupListModel, tea.Cmd) {
-	rows := m.tickedRows()
-	if len(rows) == 0 {
-		if m.hidden(m.cursor) {
-			return m, nil
-		}
-		it := m.items[m.cursor]
-		switch {
-		case it.newWorktree:
-			m.status = "x removes the highlighted worktree or branch; this item creates one"
-			return m, nil
-		case it.locked:
-			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
-			return m, nil
-		}
-		rows = []cleanup.Row{it.row}
+// rowAction is which per-row removal key was pressed.
+type rowAction int
+
+const (
+	rowActionRemove       rowAction = iota // `x`: remove the highlighted row
+	rowActionDeleteBranch                  // `d`: also delete its unmerged branch; `x` on a branch row
+	rowActionDeleteOrigin                  // `o`: delete only its origin ref
+)
+
+// rowActionSay names each key's action, the first clause of its refusal
+// notices (the second names what about the row stopped it).
+var rowActionSay = map[rowAction]string{
+	rowActionRemove:       "x removes the highlighted worktree or branch",
+	rowActionDeleteBranch: "d removes the highlighted worktree or branch",
+	rowActionDeleteOrigin: "o deletes the highlighted row's origin ref",
+}
+
+// startRowAction is one of the per-row removal keys (`x`, `d`, `o`): the
+// highlighted row alone goes to the removal flow — the ticks choose rows for
+// enter, never for these — and a locked row or the new-worktree item says why
+// not. kind picks the branch's fate: rowActionDeleteBranch pre-toggles "also
+// delete unmerged branch" on the confirm screen (on a branch row it is `x`:
+// the branch is the removal), and rowActionDeleteOrigin hands the engine the
+// row's origin ref alone — never its worktree or local branch — as the
+// remote-only item `wt remove origin/<name> --remote` builds, under the typed
+// "delete origin".
+func (m cleanupListModel) startRowAction(kind rowAction) (cleanupListModel, tea.Cmd) {
+	if m.hidden(m.cursor) {
+		return m, nil
 	}
+	it := m.items[m.cursor]
+	switch {
+	case it.newWorktree:
+		m.status = rowActionSay[kind] + "; this item creates one"
+		return m, nil
+	case it.locked:
+		m.status = "cannot be removed: " + cleanup.OneLine(it.text)
+		return m, nil
+	}
+	rows := []cleanup.Row{it.row}
+	if kind == rowActionDeleteOrigin {
+		target, ok := m.originTarget(it.row)
+		if !ok {
+			m.status = rowActionSay[kind] + "; this row has none"
+			return m, nil
+		}
+		rows = []cleanup.Row{target}
+	}
+	m.chosenByTicks = false
+	m.seedBranch = kind == rowActionDeleteBranch && it.row.Kind == cleanup.KindWorktree
 	return m.startRemovalOf(rows)
+}
+
+// originTarget is the remote row whose removal deletes row's origin ref and
+// nothing else: the row itself when it is an origin ref, else the remote row
+// folded into it. Remote rows are looked up through RemoteRows — Rows alone
+// omits the folded ones — the seam `wt remove origin/<name> --remote`
+// resolves its argument through.
+func (m cleanupListModel) originTarget(row cleanup.Row) (cleanup.Row, bool) {
+	if row.Kind == cleanup.KindRemote && row.Remote == "origin" && strings.HasPrefix(row.Ref, "refs/remotes/origin/") {
+		return row, true
+	}
+	if row.Upstream == nil || row.Upstream.Gone || row.Upstream.Remote != "origin" {
+		return cleanup.Row{}, false
+	}
+	for _, r := range m.report.RemoteRows() {
+		if r.Ref == row.Upstream.Ref {
+			return r, true
+		}
+	}
+	return cleanup.Row{}, false
 }
 
 // move moves the cursor n items in direction dir, skipping headings and
