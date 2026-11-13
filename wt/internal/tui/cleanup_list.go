@@ -12,6 +12,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/removal"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/tuilayout"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/worktree"
@@ -29,7 +30,8 @@ import (
 //
 // One component, two modes (rowListOpts.Mode):
 //   - manage (`wt cleanup`): a checkbox column; space ticks, `a` ticks every
-//     proven row, enter removes the ticked rows, `r` hands a row to rescue.
+//     proven row, enter removes the ticked rows, `r` hands a row to rescue,
+//     `R` hands off `wt restore-root` for the root.
 //   - launch (the picker): a first item "+ New worktree…" (enter or `n`
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
 //     the root, an in-use or held row too: launching warns, it never blocks
@@ -315,7 +317,11 @@ type cleanupListModel struct {
 	// rescueRow is the row `r` chose: the list quits and RunCleanupList
 	// hands it to RemoveFuncs.Rescue once the alt screen is gone.
 	rescueRow *cleanup.Row
-	clock     func() time.Time // the list's clock on a rebuild
+	// restoreRoot is set when `R` chose `wt restore-root`: the list quits and
+	// RunCleanupList hands off to RemoveFuncs.RestoreRoot once the alt screen
+	// is gone (one hand-off per run).
+	restoreRoot bool
+	clock       func() time.Time // the list's clock on a rebuild
 	// refreshNote is the header's last line — "refreshed 3m ago" or "not
 	// refreshed here" — read once when the list was built (refreshedNote):
 	// it is a git read, and View must not spawn git every frame.
@@ -407,6 +413,11 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	if err == nil && ok {
 		err = runRescue(fm, rm, stop)
 	}
+	// The restore-root hand-off asks on the real terminal too: same point,
+	// one hand-off per run (the re-entry loop is a later task's).
+	if err == nil && ok {
+		err = runRestoreRoot(fm, rm, stop)
+	}
 	return err
 }
 
@@ -452,6 +463,20 @@ func runRescue(fm cleanupListModel, rm RemoveFuncs, stop func()) error {
 	return rm.Rescue(*fm.rescueRow)
 }
 
+// runRestoreRoot hands off to rm.RestoreRoot after `R` chose to restore the
+// root. It stops the signal forwarding first, like runRescue: the program has
+// finished, so a forwarded signal would go to a dead p.Send and be dropped,
+// leaving Ctrl-C at the restore's prompt (or SIGHUP during a long move) with
+// no effect. With the forwarding stopped Go's default handling ends the
+// process again.
+func runRestoreRoot(fm cleanupListModel, rm RemoveFuncs, stop func()) error {
+	if !fm.restoreRoot || rm.RestoreRoot == nil {
+		return nil
+	}
+	stop()
+	return rm.RestoreRoot()
+}
+
 // startRescue handles `r`: on a row a rescue is offered for, quit and
 // remember the row; otherwise stay and say why on the status line.
 func (m cleanupListModel) startRescue() (tea.Model, tea.Cmd) {
@@ -468,6 +493,28 @@ func (m cleanupListModel) startRescue() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.rescueRow = &row
+	m.done = true
+	return m, tea.Quit
+}
+
+// startRestoreRoot handles `R`: on the row rootmove.Offered offers a restore
+// for (the root off its default), quit and flag the hand-off; otherwise stay
+// and put that gate's own line on the status line — byte for byte, never
+// re-worded here. An offered row with no func wired says so instead.
+func (m cleanupListModel) startRestoreRoot() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok {
+		return m, nil
+	}
+	if offered, why := rootmove.Offered(row); !offered {
+		m.status = why
+		return m, nil
+	}
+	if m.rm.RestoreRoot == nil {
+		m.status = "restore root is not wired here"
+		return m, nil
+	}
+	m.restoreRoot = true
 	m.done = true
 	return m, tea.Quit
 }
@@ -568,6 +615,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "r":
 				return m.startRescue()
+			case "R":
+				return m.startRestoreRoot()
 			case " ":
 				if it := m.items[m.cursor]; !it.locked {
 					m.ticked[m.cursor] = !m.ticked[m.cursor]

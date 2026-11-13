@@ -1328,3 +1328,191 @@ func TestOpeningTheListPrunesNothing(t *testing.T) {
 		t.Fatalf("opening the list rewrote the stale claim %s", file)
 	}
 }
+
+// restoreRootListFixture is a report whose root sits on a feature branch — the
+// one row `R` restores — beside a linked worktree and a branch row (rows `R`
+// explains instead of offering). The rows carry exactly the shape
+// rootmove.Offered reads (Primary, Bare, Head, Branch, the default_branch
+// blocker): Offered is the gate, and it reads the row alone, never git.
+func restoreRootListFixture() cleanup.Report {
+	return restoreRootReport(cleanup.Row{
+		Kind: cleanup.KindWorktree, Name: "topic", Path: "/repo", Branch: "topic", Ref: "refs/heads/topic",
+		Primary: true, Head: "0123456789abcdef0123456789abcdef01234567", Status: cleanup.StatusLessSure,
+		Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is on topic, not main"}},
+	})
+}
+
+// restoreRootReport is a report around one root row, with a linked worktree
+// and a branch row beside it so a non-root refusal is always one move away.
+func restoreRootReport(root cleanup.Row) cleanup.Report {
+	return cleanup.Report{
+		Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Fetch: cleanup.FetchResult{OK: true, At: time.Now()}, GH: cleanup.GHOK,
+		Rows: []cleanup.Row{
+			root,
+			{Kind: cleanup.KindWorktree, Name: "tidy", Path: "/repo/.worktrees/tidy", Branch: "tidy", Ref: "refs/heads/tidy", Status: cleanup.StatusProven},
+			{Kind: cleanup.KindBranch, Name: "lone", Branch: "lone", Status: cleanup.StatusLessSure},
+		},
+	}
+}
+
+// TestCleanupListRestoreRootKeyHandsOff checks `R` on the root row a restore
+// is offered for quits the list and flags the restore-root hand-off, touching
+// nothing else (the rescue row stays unset). Why: restore-root asks on the
+// real terminal, so the list must leave the alt screen first — the flag is
+// what runRestoreRoot hands to RemoveFuncs.RestoreRoot after the screen.
+func TestCleanupListRestoreRootKeyHandsOff(t *testing.T) {
+	m := newSizedCleanupList(t, restoreRootListFixture(), 100, 30)
+	m.rm.RestoreRoot = func() error { return nil }
+	m = moveTo(t, m, "topic")
+	next, cmd := m.Update(keyRunes("R"))
+	fm := next.(cleanupListModel)
+	if cmd == nil || !fm.restoreRoot || !fm.done {
+		t.Fatalf("cmd=%v restoreRoot=%v done=%v; want quit with the restore flagged", cmd, fm.restoreRoot, fm.done)
+	}
+	if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Errorf("R's command = %T, want tea.QuitMsg (the alt screen must close first)", cmd())
+	}
+	if fm.rescueRow != nil {
+		t.Errorf("R set rescueRow %+v; the restore-root hand-off must not touch rescue", fm.rescueRow)
+	}
+}
+
+// TestCleanupListRestoreRootExplainsWhenNotOffered checks `R` on a row
+// rootmove.Offered refuses stays in the list and shows that gate's own line
+// byte-for-byte on the status line — one case per refusal shape (a linked
+// worktree and a branch row are not the root; the root on the default is
+// already there; a detached root has no branch to move; an unborn root has no
+// commit to move). Why: a key that does nothing, silently, reads as broken,
+// and re-wording Offered's line here would let the two drift apart.
+func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, c := range []struct {
+		name   string
+		report cleanup.Report
+		row    string
+		want   string
+	}{
+		{"a linked worktree is not the root", restoreRootListFixture(), "tidy", "only the root can be restored"},
+		{"a branch row is not the root", restoreRootListFixture(), "lone", "only the root can be restored"},
+		{"the root on the default is already there", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "main", Path: "/repo", Branch: "main", Ref: "refs/heads/main",
+			Primary: true, Head: sha, Status: cleanup.StatusInUse,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}, {Code: cleanup.BlockDefaultBranch, Detail: "main"}}}),
+			"main", "root is already on main"},
+		{"a detached root has no branch to move", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "repo", Path: "/repo", Primary: true, Head: sha,
+			Status:  cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is detached"}}}),
+			"repo", "the root is detached — there is no branch to move"},
+		{"an unborn root has no commit to move", restoreRootReport(cleanup.Row{
+			Kind: cleanup.KindWorktree, Name: "fresh", Path: "/repo", Branch: "fresh", Ref: "refs/heads/fresh",
+			Primary: true, Head: "0000000000000000000000000000000000000000", Status: cleanup.StatusLessSure,
+			Reasons: []cleanup.Reason{{Code: cleanup.ReasonRootDrift, Detail: "root is on fresh, not main"}}}),
+			"fresh", "the root's branch has no commits yet"},
+	} {
+		restored := false
+		m := newSizedCleanupList(t, c.report, 100, 30)
+		m.rm.RestoreRoot = func() error { restored = true; return nil }
+		m = moveTo(t, m, c.row)
+		next, cmd := m.Update(keyRunes("R"))
+		fm := next.(cleanupListModel)
+		if fm.restoreRoot || fm.done || cmd != nil || restored {
+			t.Errorf("%s: restoreRoot=%v done=%v cmd=%v restored=%v; want to stay in the list", c.name, fm.restoreRoot, fm.done, cmd, restored)
+		}
+		if fm.status != c.want {
+			t.Errorf("%s: status = %q, want Offered's line byte-for-byte %q", c.name, fm.status, c.want)
+		}
+	}
+}
+
+// TestCleanupListRestoreRootNotWired checks `R` while RemoveFuncs.RestoreRoot
+// is still nil (the pre-wiring gap cmd/wt closes): on the row a restore is
+// offered for it says one line and does nothing. Why: the gap must read as a
+// told gap, not a broken key — no panic, no silent no-op.
+func TestCleanupListRestoreRootNotWired(t *testing.T) {
+	m := newSizedCleanupList(t, restoreRootListFixture(), 100, 30)
+	m = moveTo(t, m, "topic")
+	next, cmd := m.Update(keyRunes("R"))
+	fm := next.(cleanupListModel)
+	if fm.restoreRoot || fm.done || cmd != nil {
+		t.Fatalf("restoreRoot=%v done=%v cmd=%v; want nothing to happen", fm.restoreRoot, fm.done, cmd)
+	}
+	if fm.status != "restore root is not wired here" {
+		t.Errorf("status = %q, want %q", fm.status, "restore root is not wired here")
+	}
+}
+
+// TestRunCleanupListRestoresRootAfterTheScreen drives RunCleanupList through
+// the program seam with a final model whose `R` flag is set. What: the signal
+// forwarding is stopped, then RemoveFuncs.RestoreRoot runs — and it runs only
+// once the alt screen is gone (the seam's return). Why: the restore asks on
+// the real terminal; TestRunRestoreRootStopsSignalForwardingFirst covers
+// runRestoreRoot alone, this fails if RunCleanupList stops calling it or
+// calls it while the screen is still up.
+func TestRunCleanupListRestoresRootAfterTheScreen(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	var calls []string
+	screenGone, sawScreenGone := false, false
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		m.restoreRoot = true
+		defer func() { screenGone = true }() // the alt screen closes as the program returns
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
+	rm := RemoveFuncs{RestoreRoot: func() error {
+		calls = append(calls, "restore")
+		sawScreenGone = screenGone
+		return nil
+	}}
+	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) < 2 || calls[0] != "stop" || calls[1] != "restore" {
+		t.Errorf("calls = %v, want stop then restore", calls)
+	}
+	if !sawScreenGone {
+		t.Error("RestoreRoot ran while the alt screen was still up")
+	}
+
+	calls = nil
+	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+		return m, func() { calls = append(calls, "stop") }, nil
+	}
+	if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range calls {
+		if c == "restore" {
+			t.Errorf("no R chosen but restore ran: %v", calls)
+		}
+	}
+}
+
+// TestRunRestoreRootStopsSignalForwardingFirst checks the R hand-off stops
+// the signal forwarding before RemoveFuncs.RestoreRoot runs, and does nothing
+// when no restore was flagged or no func is wired. Why: the Bubble Tea program
+// has finished by then, so a forwarded signal would go to a dead p.Send and be
+// dropped, and Ctrl-C at the restore's prompt (or SIGHUP during the move)
+// would do nothing.
+func TestRunRestoreRootStopsSignalForwardingFirst(t *testing.T) {
+	var calls []string
+	fm := cleanupListModel{restoreRoot: true}
+	rm := RemoveFuncs{RestoreRoot: func() error {
+		calls = append(calls, "restore")
+		return nil
+	}}
+	if err := runRestoreRoot(fm, rm, func() { calls = append(calls, "stop") }); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "stop,restore" {
+		t.Errorf("calls = %s, want stop before restore", got)
+	}
+
+	calls = nil
+	if err := runRestoreRoot(cleanupListModel{}, rm, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
+		t.Errorf("no restore flagged: err=%v calls=%v, want nothing", err, calls)
+	}
+	if err := runRestoreRoot(fm, RemoveFuncs{}, func() { calls = append(calls, "stop") }); err != nil || len(calls) != 0 {
+		t.Errorf("no RestoreRoot wired: err=%v calls=%v, want nothing", err, calls)
+	}
+}

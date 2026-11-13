@@ -64,6 +64,11 @@ type RemoveFuncs struct {
 	// (`wt rescue`). It runs after the list has quit and the alt screen is
 	// gone, so it may ask on the terminal. nil: `r` says it is unavailable.
 	Rescue func(row cleanup.Row) error
+	// RestoreRoot moves the root checkout's branch back to the default
+	// branch (`wt restore-root`). It runs after the list has quit and the alt
+	// screen is gone, so it may ask on the terminal. nil: `R` says it is not
+	// wired here.
+	RestoreRoot func() error
 }
 
 // cleanupPhase is which screen the list program shows.
