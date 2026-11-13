@@ -1772,3 +1772,73 @@ func TestCleanupListRemoveOnCwdOrAncestorIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanupListTickedRowsReturnsTheRawTickSet pins Ruling R506b's seam
+// contract: tickedRows is the RAW tick set — every ticked row in list
+// order, locked rows included. The filter it once had dropped a ticked row
+// from every later count and batch without a word: a silent skip through
+// the back door, the exact anti-pattern this task exists to kill. A locked
+// row in the set is refused by name in startRemoval, whole-selection,
+// before anything is previewed — refusal, never a row quietly decided away
+// while the batch proceeds partial.
+func TestCleanupListTickedRowsReturnsTheRawTickSet(t *testing.T) {
+	r := cleanupFixture()
+	m := newSizedCleanupList(t, r, 120, 50)
+	// The mixed set, built through the tick seam: "deep" is locked in the
+	// current report and still carries the tick it gathered while clean
+	// (set straight here — space never ticks a locked row), beside the
+	// ordinary proven row the user ticked with the keys.
+	m = setTicks(t, m, "full-branch-name-paths")
+	for i, it := range m.items {
+		if it.heading == "" && cleanup.DisplayName(it.row) == "deep" {
+			m.ticked[i] = true
+		}
+	}
+	var names []string
+	for _, row := range m.tickedRows() {
+		names = append(names, cleanup.DisplayName(row))
+	}
+	if strings.Join(names, ",") != "full-branch-name-paths,deep" {
+		t.Errorf("tickedRows() = %v, want the raw tick set [full-branch-name-paths deep]: every ticked row, locked included, in list order", names)
+	}
+}
+
+// TestCleanupListEnterRefusesARowLockedInTheCurrentReport pins the race
+// Ruling R506b names (Refusal, never silent skip): a row can gain a hard
+// stop between the tick and the act — an F-refresh re-read can harden the
+// row it re-classifies — and the tick it gathered while clean is still on
+// it in the current report. enter then refuses the WHOLE selection with
+// the row keys' explanation, naming that row, and removes nothing: the
+// batch must not proceed partial, previewing only the rows beside it. The
+// post-refresh state is built here directly through the fixture and the
+// tick seam (space never ticks a locked row, so the tick is set straight).
+func TestCleanupListEnterRefusesARowLockedInTheCurrentReport(t *testing.T) {
+	r := cleanupFixture()
+	// "hardened" as the re-read left it: mid-operation (a rebase-merge in
+	// progress) — a hard stop gained since the user's tick landed.
+	hardened := cleanup.Row{Kind: cleanup.KindWorktree, Name: "hardened", Path: "/repo/.worktrees/hardened", Branch: "hardened",
+		Status: cleanup.StatusLessSure, Blockers: []cleanup.Reason{{Code: cleanup.BlockOperation, Detail: "rebase-merge"}}}
+	r.Rows = append(r.Rows, hardened)
+	m := setTicks(t, newSizedCleanupList(t, r, 120, 50), "full-branch-name-paths")
+	for i, it := range m.items {
+		if it.heading == "" && cleanup.DisplayName(it.row) == "hardened" {
+			m.ticked[i] = true
+		}
+	}
+	removed := false
+	m.rm.Run = func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
+		removed = true
+		return nil
+	}
+	got, fm := runPreview(t, m, enterKey)
+	want := "cannot be removed: " + cleanup.OneLine(cleanup.RowText(r, hardened))
+	if len(got) != 0 || removed || fm.phase != cleanupPhaseList || fm.status != want {
+		t.Errorf("enter with a hardened tick: previewed %v (removed %v), phase %v, status %q; want nothing previewed or run, the list and %q",
+			got, removed, fm.phase, fm.status, want)
+	}
+	// The batch source is the raw set too: both ticks are still in it,
+	// the hardened row included — nothing was silently decided away.
+	if rows := fm.tickedRows(); len(rows) != 2 {
+		t.Errorf("tickedRows() holds %d rows after the refusal, want the raw 2 (the hardened row included)", len(rows))
+	}
+}

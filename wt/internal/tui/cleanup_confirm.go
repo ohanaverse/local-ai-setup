@@ -219,15 +219,16 @@ var confirmCountWords = map[removal.Approval]string{
 	removal.ApprovalRefused:      "will not be removed",
 }
 
-// tickedRows are the rows enter hands the engine: ticked and never locked.
-// The engine is the guard for an origin row (only proven, only origin, and
-// only with the Remote approval, which only the typed phrase gives).
+// tickedRows are the rows enter hands the engine: the RAW tick set, every
+// ticked row in list order, locked rows included — no filtering here (Ruling
+// R506b). A tick on a row that cannot be removed is refused by name in
+// startRemoval, whole-selection, before anything is previewed: refusal, never
+// a row quietly decided away while the batch proceeds partial. The engine is
+// the guard for an origin row (only proven, only origin, and only with the
+// Remote approval, which only the typed phrase gives).
 func (m cleanupListModel) tickedRows() []cleanup.Row {
 	var out []cleanup.Row
 	for _, it := range m.tickedItems() {
-		if it.locked {
-			continue
-		}
 		out = append(out, it.row)
 	}
 	return out
