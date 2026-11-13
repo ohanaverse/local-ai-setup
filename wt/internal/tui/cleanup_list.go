@@ -140,7 +140,9 @@ func cleanupLocked(r cleanup.Row) bool {
 // rowTags are the tags the list draws for a row: cleanup.RowTags without
 // "you are here", which RowTags gives every worktree holding the caller's
 // directory; the row's sentence (cleanup.RowText) already says it, on the
-// innermost one only.
+// innermost one only. The root row's drift badge rides behind them: the
+// root_drift soft label's detail as a warn tag, the badge the user-driven
+// cleanup design puts on the root row ("root is on X, not main").
 func rowTags(r cleanup.Row) []cleanup.Tag {
 	var out []cleanup.Tag
 	for _, t := range cleanup.RowTags(r) {
@@ -148,7 +150,36 @@ func rowTags(r cleanup.Row) []cleanup.Tag {
 			out = append(out, t)
 		}
 	}
+	if d := rootDriftLabel(r); d != "" {
+		out = append(out, cleanup.Tag{Text: d, Severity: cleanup.TagWarn})
+	}
 	return out
+}
+
+// rootDriftLabel is the row's root_drift soft label's detail — rootclaim.Drift's
+// text as the classifier carried it live ("root is on <b>, not <d>" or the
+// literal "root is detached") — and "" when the row carries no label (the root
+// on its default branch, or no default known). The list never re-shapes the
+// line and never invents one: classify puts the label on the root's own row
+// only, and only when a default branch is known.
+func rootDriftLabel(r cleanup.Row) string {
+	for _, re := range r.Reasons {
+		if re.Code == cleanup.ReasonRootDrift {
+			return re.Detail
+		}
+	}
+	return ""
+}
+
+// rootDriftOf is the report's root drift line — the one root_drift label any
+// row carries (only the root row ever does) — and "" when none does.
+func rootDriftOf(r cleanup.Report) string {
+	for _, row := range r.Rows {
+		if d := rootDriftLabel(row); d != "" {
+			return d
+		}
+	}
+	return ""
 }
 
 // verdictText is the row's status in words: what the status headings said
@@ -830,10 +861,18 @@ func (m *cleanupListModel) statusBlock() string {
 
 // headerBlock is cleanup.HeaderLines plus the refresh note, wrapped: the
 // fetch failure ends in what it means for the list, and the note says when
-// this list was last refreshed here.
+// this list was last refreshed here. The picker (launch mode) leads with the
+// root drift note — the same badge the root row carries, shown whatever row
+// the cursor is on ("the `wt` launch header", the user-driven cleanup design)
+// — while the manage list surfaces the drift as its root row's badge alone.
 func (m *cleanupListModel) headerBlock() string {
 	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	lines := cleanup.HeaderLines(m.report, m.now)
+	if m.launch() {
+		if d := rootDriftOf(m.report); d != "" {
+			lines = append([]string{d}, lines...)
+		}
+	}
 	if m.fetching {
 		lines = append(lines, "fetching every remote… (up to 5s)")
 	}

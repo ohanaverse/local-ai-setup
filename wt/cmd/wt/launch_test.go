@@ -2213,3 +2213,27 @@ func TestZeroDirLaunchClaimsNothing(t *testing.T) {
 		t.Error("the claim outlived the agent")
 	}
 }
+
+// TestLaunchPrintsRootDriftNote pins the plain launch's root-drift header
+// note: a `-W existing` launch while the root checkout sits on topic (origin's
+// default main) prints `wt: note: root is on topic, not main — wt restore-root`
+// before the agent runs. The left part is rootclaim.Drift's rendering and the
+// suffix is the literal remedy pointer, so a script or a person reading the
+// launch header knows `wt restore-root` undoes the drift. This is the brief's
+// worked example, pinned byte-exact.
+func TestLaunchPrintsRootDriftNote(t *testing.T) {
+	root := sharedRootRepo(t)
+	setOriginDefault(t, root)
+	existing := addLinkedWorktree(t, root, "existing")
+	cgit(t, root, "switch", "-c", "topic")
+	stubStdinTTY(t, false)
+	notes := captureNotes(t)
+	res := runPinnedLaunch(t, root, []string{"-W", "existing"})
+	if res.err != nil || res.agentDir != existing {
+		t.Fatalf("err=%v agentDir=%q; want a launch in %s", res.err, res.agentDir, existing)
+	}
+	const want = "wt: note: root is on topic, not main — wt restore-root"
+	if !slices.Contains(strings.Split(strings.TrimRight(notes.String(), "\n"), "\n"), want) {
+		t.Errorf("notes = %q; want the line %q", notes.String(), want)
+	}
+}

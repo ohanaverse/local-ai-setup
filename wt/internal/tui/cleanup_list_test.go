@@ -1091,3 +1091,72 @@ func TestGuardedRunReleasesSignalForwardingWhenTheProgramPanics(t *testing.T) {
 		t.Errorf("returned stop did not release (stops %d)", stops)
 	}
 }
+
+// TestRootRowShowsDriftBadge pins the drift badge on the root row: the
+// root_drift soft label's detail — rootclaim.Drift's text, carried live by the
+// classifier and never re-shaped here — is drawn on the root row as a TagWarn
+// badge like the other risk tags, and a root row without the label (the root
+// on its default branch, or no default known) carries no badge: no drift is
+// invented without one (Review Focus 1).
+func TestRootRowShowsDriftBadge(t *testing.T) {
+	const drift = "root is on topic, not main"
+	with := cleanupFixture()
+	with.Rows[0].Reasons = append(with.Rows[0].Reasons,
+		cleanup.Reason{Code: cleanup.ReasonRootDrift, Detail: drift})
+	findRoot := func(m cleanupListModel) cleanupItem {
+		t.Helper()
+		for _, it := range m.items {
+			if it.heading == "" && !it.newWorktree && it.row.Path == "/repo" {
+				return it
+			}
+		}
+		t.Fatal("no root row in the list")
+		return cleanupItem{}
+	}
+	it := findRoot(newSizedCleanupList(t, with, 120, 40))
+	if !slices.Contains(it.tags, cleanup.Tag{Text: drift, Severity: cleanup.TagWarn}) {
+		t.Errorf("root row tags = %+v; want the drift badge %q as a warn tag", it.tags, drift)
+	}
+	warned := false
+	for _, u := range rowUnits(it) {
+		if u.warn && u.text == drift {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("row units = %+v; want %q drawn as a warn unit (the badge)", rowUnits(it), drift)
+	}
+	plain := findRoot(newSizedCleanupList(t, cleanupFixture(), 120, 40))
+	for _, tg := range plain.tags {
+		if tg.Text == drift || strings.HasPrefix(tg.Text, "root is ") {
+			t.Errorf("root row tags = %+v; a row with no root_drift label got a drift badge", plain.tags)
+		}
+	}
+}
+
+// TestPickerHeaderShowsRootDrift pins the picker header's root-drift note:
+// the `wt` launch header carries the drift line (the root row's root_drift
+// label, rootclaim.Drift's text) whatever row the cursor is on — the design's
+// "the same badge is shown in the `wt` launch header even when the user
+// selected something else". The note is the picker header's alone: the manage
+// list surfaces the drift as its root row's badge, and a header whose root
+// row carries no label (root on its default, or no default known) shows no
+// drift note at all.
+func TestPickerHeaderShowsRootDrift(t *testing.T) {
+	const drift = "root is on topic, not main"
+	with := cleanupFixture()
+	with.Rows[0].Reasons = append(with.Rows[0].Reasons,
+		cleanup.Reason{Code: cleanup.ReasonRootDrift, Detail: drift})
+	picker := newLaunchList(t, with, 120, 40)
+	if h := picker.headerBlock(); !strings.Contains(h, drift) {
+		t.Errorf("picker header = %q; want the root drift note %q", h, drift)
+	}
+	manage := newSizedCleanupList(t, with, 120, 40)
+	if h := manage.headerBlock(); strings.Contains(h, drift) {
+		t.Errorf("manage header = %q; the drift note is the picker header's (the manage list's root row carries the badge)", h)
+	}
+	clean := newLaunchList(t, cleanupFixture(), 120, 40)
+	if h := clean.headerBlock(); strings.Contains(h, drift) {
+		t.Errorf("picker header = %q; want no drift note without the root_drift label", h)
+	}
+}
