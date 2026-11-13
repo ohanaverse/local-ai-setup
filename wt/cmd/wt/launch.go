@@ -134,9 +134,9 @@ var shellDir = os.Getwd
 // runLaunch is the one way a built agent command is run: it prints the
 // pre-launch notes (to osStderr, the seam the start progress already uses),
 // then hands off to runAgentCmd. The notes it carries today are the root
-// drift header note (rootDriftNote — the drifted root and the `wt
-// restore-root` remedy, whatever directory the agent runs in) and
-// agents.RelativeArgNotes — a passthrough argument that names a file from
+// drift header note (rootDriftNote — the drifted root and, on a named-branch
+// drift, the `wt restore-root` remedy, whatever directory the agent runs in)
+// and agents.RelativeArgNotes — a passthrough argument that names a file from
 // the directory the command was typed in, but not from the worktree the agent
 // starts in, would otherwise fail (or open the wrong file) with nothing to
 // connect it to where wt started the agent. Every launch site goes through
@@ -160,8 +160,11 @@ func runLaunch(cmd *exec.Cmd, agent string, m config.Model, cfg *config.Config, 
 // directory at all). The drift is read live at launch from the root
 // checkout's raw branch ("" on a detached HEAD, never a display sentinel)
 // against the default origin/HEAD names — the same pair launchwarn's
-// rootTarget feeds rootclaim.Drift — and the suffix is the literal remedy
-// pointer. It warns and never prevents: the launch is untouched.
+// rootTarget feeds rootclaim.Drift. The remedy suffix rides a named-branch
+// drift only (Ruling R412a): a detached root reads `wt: note: root is
+// detached` with no pointer, because `wt restore-root` refuses a detached
+// root — rootclaim.Hint withholds its pointer there for the same reason. It
+// warns and never prevents: the launch is untouched.
 func rootDriftNote(dir string) string {
 	if dir == "" {
 		return ""
@@ -170,11 +173,16 @@ func rootDriftNote(dir string) string {
 	if err != nil {
 		return ""
 	}
-	drift := rootclaim.Drift(
-		rootclaim.Site{Path: primary, Branch: worktree.CurrentBranchAt(primary)},
-		worktree.DefaultBranch(primary))
+	branch := worktree.CurrentBranchAt(primary)
+	drift := rootclaim.Drift(rootclaim.Site{Path: primary, Branch: branch}, worktree.DefaultBranch(primary))
 	if drift == "" {
 		return ""
+	}
+	// The emptiness of the raw branch is the detached fact (Site's
+	// spelling), decided before any rendering — never a comparison against
+	// one of Drift's shape strings.
+	if branch == "" {
+		return "wt: note: " + drift
 	}
 	return "wt: note: " + drift + " — wt restore-root"
 }
