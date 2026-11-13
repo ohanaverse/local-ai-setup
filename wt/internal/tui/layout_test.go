@@ -686,6 +686,8 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		}},
 		{"cleanup confirm, proven", removalScreen("confirm, proven")},
 		{"cleanup confirm, typed", removalScreen("confirm, typed")},
+		{"cleanup confirm, held", removalScreen("confirm, held")},
+		{"cleanup confirm, selected", removalScreen("confirm, selected")},
 		{"cleanup progress", removalScreen("progress")},
 		{"cleanup results", removalScreen("results")},
 		{"cleanup list, status", func(t *testing.T, width, height int) string {

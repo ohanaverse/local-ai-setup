@@ -868,6 +868,11 @@ func checkRemovalScreen(t *testing.T, name, v string, width, height int) {
 			if !strings.HasPrefix(last, "> delet_") {
 				t.Errorf("%s: typed line not last: %q", name, last)
 			}
+		case strings.HasPrefix(name, "confirm, held"), strings.HasPrefix(name, "confirm, selected"):
+			// both sit on the typed prompt with an empty buffer
+			if last != "> _" {
+				t.Errorf("%s: typed line not last: %q", name, last)
+			}
 		}
 		if strings.HasPrefix(name, "confirm") {
 			checkPromptCounts(t, name, v)
