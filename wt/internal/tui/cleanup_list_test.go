@@ -58,7 +58,7 @@ func cleanupFixture() cleanup.Report {
 // way the program does before the first frame.
 func newSizedCleanupList(t *testing.T, r cleanup.Report, w, h int) cleanupListModel {
 	t.Helper()
-	m := newCleanupList(r, themes.Default, time.Now())
+	m := newCleanupList(r, themes.Default, time.Now(), RemoveFuncs{})
 	return cleanupSend(t, m, tea.WindowSizeMsg{Width: w, Height: h})
 }
 
@@ -824,7 +824,7 @@ func TestCleanupListCurrentMarkerOnLongestPath(t *testing.T) {
 // zero-size window and a report with no rows, and that an empty report
 // says so and quits on any key.
 func TestCleanupListZeroSizeAndEmptyReport(t *testing.T) {
-	m := newCleanupList(cleanupFixture(), themes.Default, time.Now())
+	m := newCleanupList(cleanupFixture(), themes.Default, time.Now(), RemoveFuncs{})
 	_ = m.View()
 	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 0, Height: 0})
 	_ = m.View()
@@ -836,7 +836,7 @@ func TestCleanupListZeroSizeAndEmptyReport(t *testing.T) {
 
 	empty := cleanupFixture()
 	empty.Rows = nil
-	e := newCleanupList(empty, themes.Default, time.Now())
+	e := newCleanupList(empty, themes.Default, time.Now(), RemoveFuncs{})
 	_ = e.View()
 	e = cleanupSend(t, e, tea.WindowSizeMsg{Width: 80, Height: 24})
 	if !strings.Contains(e.View(), "nothing to clean up") {
@@ -1094,6 +1094,29 @@ func TestCleanupListFKeyKeepsTheUsersUntickedRows(t *testing.T) {
 	}
 	if got != wantTicked {
 		t.Errorf("%d rows ticked after F, want %d (the others' ticks kept)", got, wantTicked)
+	}
+}
+
+// TestCleanupListFKeyKeepsATickTheUserAdded: a row the user ticked by hand
+// that newRowList never ticks for them (a less-sure row) keeps that tick
+// across the `F` re-read. Why: the rebuild re-applied only the default ticks
+// and the user's *un*ticks, so a refresh silently dropped every manual tick on
+// a non-proven row and enter then answered "nothing ticked" for a selection
+// the user had just made.
+func TestCleanupListFKeyKeepsATickTheUserAdded(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = moveTo(t, m, "spike-picker")
+	if m.ticked[m.cursor] {
+		t.Fatal("fixture: the less-sure row must start unticked, or the test proves nothing")
+	}
+	m = cleanupSend(t, m, spaceKey)
+	if !m.ticked[m.cursor] {
+		t.Fatal("space did not tick the less-sure row")
+	}
+	m.rm.Refetch = func() (cleanup.Report, error) { return cleanupFixture(), nil }
+	m = press(t, m, keyRunes("F"))
+	if !m.ticked[m.cursor] {
+		t.Errorf("the row the user ticked lost its tick across F (cursor %d, ticked %v)", m.cursor, m.tickedNames())
 	}
 }
 

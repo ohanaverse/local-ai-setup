@@ -334,14 +334,15 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 	for _, g := range confirmGroups {
 		for _, p := range msg.previews {
 			if p.Approval == g.approval {
-				// `d` pre-toggles the offered branch deletion (`x` and
-				// enter leave every toggle as the user last left it). The
-				// seed is not cleared on this consume: it is overwritten at
-				// each flow start, by the seedBranch setters in
-				// startRowAction (cleanup_list.go) and in startRemoval above
-				// (cleanup_confirm.go). A new flow path must call those
-				// setters too, or it inherits a stale seed from the flow
-				// before it.
+				// `d` pre-toggles the offered branch deletion; `x` and
+				// enter leave every toggle off — each flow builds this
+				// screen from scratch, so a `d` seed never survives into
+				// another flow. The seed is not cleared on this consume: it
+				// is overwritten at each flow start, by the seedBranch
+				// setters in startRowAction (cleanup_list.go) and in
+				// startRemoval above (cleanup_confirm.go). A new flow path
+				// must call those setters too, or it inherits a stale seed
+				// from the flow before it.
 				c.entries = append(c.entries, confirmEntry{pv: p, delBranch: m.seedBranch && p.CanDeleteBranch})
 			}
 		}

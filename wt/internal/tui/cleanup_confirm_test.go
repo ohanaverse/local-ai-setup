@@ -220,8 +220,7 @@ func (h *rmHarness) funcs() RemoveFuncs {
 
 // list is the tick list over the harness's report at w x h.
 func (h *rmHarness) list(w, ht int) cleanupListModel {
-	m := newCleanupList(h.report, themes.Default, rmLater())
-	m.rm = h.funcs()
+	m := newCleanupList(h.report, themes.Default, rmLater(), h.funcs())
 	return cleanupSend(h.repo.t, m, tea.WindowSizeMsg{Width: w, Height: ht})
 }
 

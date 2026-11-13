@@ -397,9 +397,14 @@ type cleanupListModel struct {
 	filtering bool
 }
 
-// newCleanupList is the manage-mode list `wt cleanup` shows.
-func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time) cleanupListModel {
-	return newRowList(r, rowListOpts{Mode: modeManage, Theme: th, Now: now})
+// newCleanupList builds the manage-mode list `wt cleanup` shows, standing on
+// rm. rm goes into the opts as well as the model's own field:
+// opts.RemoveFuncs is what every rebuild (withReport, gotRefresh) seeds `rm`
+// from, so seeding only one of the two leaves them divergent for the rest of
+// the session and makes each future rebuild path responsible for copying `rm`
+// back by hand.
+func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time, rm RemoveFuncs) cleanupListModel {
+	return newRowList(r, rowListOpts{Mode: modeManage, Theme: th, Now: now, RemoveFuncs: rm})
 }
 
 // newRowList builds the list for r in o.Mode: launch mode's new-worktree
@@ -508,8 +513,7 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	printed := 0
 	status := ""
 	for {
-		m := newCleanupList(r, th, time.Now())
-		m.rm = rm
+		m := newCleanupList(r, th, time.Now(), rm)
 		m.log = logged
 		m.status = status
 		status = ""
@@ -863,13 +867,11 @@ const (
 	rowActionDeleteOrigin                  // `o`: delete only its origin ref
 )
 
-// rowActionSay names each key's action, the first clause of its refusal
-// notices (the second names what about the row stopped it).
-var rowActionSay = map[rowAction]string{
-	rowActionRemove:       "x removes the highlighted worktree or branch",
-	rowActionDeleteBranch: "d removes the highlighted worktree or branch",
-	rowActionDeleteOrigin: "o deletes the highlighted row's origin ref",
-}
+// originActionSay is `o`'s refusal when the highlighted row carries no origin
+// ref: the first clause names the key's action, the second what about the row
+// stopped it. Only `o` reaches it — `x` and `d` refuse with the row's own
+// reason instead — so it is one string, not a per-action table.
+const originActionSay = "o deletes the highlighted row's origin ref"
 
 // startRowAction is one of the per-row removal keys (`x`, `d`, `o`): the
 // highlighted row alone goes to the removal flow — the ticks choose rows for
@@ -910,7 +912,7 @@ func (m cleanupListModel) startRowAction(kind rowAction) (cleanupListModel, tea.
 			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
 			return m, nil
 		case !ok:
-			m.status = rowActionSay[kind] + "; this row has none"
+			m.status = originActionSay + "; this row has none"
 			return m, nil
 		}
 		rows = []cleanup.Row{target}
@@ -1157,11 +1159,13 @@ func (m *cleanupListModel) layout() cleanupLayout {
 }
 
 // manageTitles is the manage list's key legend, widest first. Every form
-// names every key the list answers — `space`, `a`, `enter`, `x remove`, `r
-// rescue`, `R restore root`, `F refresh`, `q quit` — the narrower ones
-// shortening wording and tightening separators (a bare key for `space`/`a`,
-// `enter` standing for `enter remove ticked`) but never dropping a key or
-// abbreviating an action name. The widest
+// names `space`, `a`, `enter`, `x remove`, `r rescue`, `R restore root`,
+// `F refresh`, `q quit` — the narrower ones shortening wording and tightening
+// separators (a bare key for `space`/`a`, `enter` standing for `enter remove
+// ticked`) but never dropping one of those keys or abbreviating an action
+// name. `d`, `o` and `esc` are in no form yet: wt/docs/wt-cleanup.md's key
+// table names them, and the launch picker's title names none of `x d o r R`.
+// The widest
 // form whose visible width (118, 99, 78 columns) fits the terminal is drawn,
 // so `q quit` is never clipped away at 80 columns.
 var manageTitles = []struct{ name, actions string }{

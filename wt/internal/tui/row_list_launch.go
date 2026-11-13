@@ -89,9 +89,12 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	if m.opts.Mode == modeManage {
 		// The tick list's own choices survive a re-read (the `F` refresh): a
 		// row the user unticked stays unticked, never reset to newRowList's
-		// default, or enter would remove what they kept. A row the old list
-		// never showed keeps its default; one that is no longer tickable
-		// stays unticked (newRowList already left it so).
+		// default, or enter would remove what they kept, and a row the user
+		// ticked that newRowList never ticks for them (a less-sure or an
+		// origin row) keeps that tick, or F would silently drop it. A row the
+		// old list never showed keeps its default; one that is no longer
+		// tickable — newly locked — stays unticked (newRowList already left
+		// it so, and startRemoval refuses a locked tick anyway).
 		was := map[rowKey]bool{}
 		for i, it := range m.items {
 			if it.heading == "" && !it.newWorktree {
@@ -102,8 +105,13 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 			if it.heading != "" || it.newWorktree {
 				continue
 			}
-			if ticked, seen := was[keyOf(it.row)]; seen && !ticked {
-				delete(next.ticked, i)
+			if ticked, seen := was[keyOf(it.row)]; seen {
+				switch {
+				case ticked && !it.locked:
+					next.ticked[i] = true
+				case !ticked:
+					delete(next.ticked, i)
+				}
 			}
 		}
 	}
