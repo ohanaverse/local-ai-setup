@@ -400,10 +400,18 @@ func TestRootRowCarriesDriftReason(t *testing.T) {
 		f := newFixture(t)
 		noGh(t)
 		f.git("checkout", "--detach")
+		other := f.Worktree("other")
 		s := gather(t, f)
 		r := Classify(s, Options{Now: later()})
-		if got := reasonDetail(primaryRow(t, r).Reasons, ReasonRootDrift); got != "root is detached" {
+		row := primaryRow(t, r)
+		if got := reasonDetail(row.Reasons, ReasonRootDrift); got != "root is detached" {
 			t.Fatalf("root drift detail %q, want %q%s", got, "root is detached", dumpRows(r.Rows))
+		}
+		if slices.Contains(reasonCodes(row.Blockers), ReasonRootDrift) {
+			t.Fatalf("blockers %v, want root_drift as a label only%s", reasonCodes(row.Blockers), dumpRows(r.Rows))
+		}
+		if got := reasonDetail(findRow(t, r, KindWorktree, "other").Reasons, ReasonRootDrift); got != "" {
+			t.Errorf("linked worktree %s carries the drift %q, want the root's alone", other, got)
 		}
 	})
 }
