@@ -1,5 +1,6 @@
 // Package sessionclaim records which wt sessions are running in a repository's
-// root checkout, so a second launch there can warn the person first. A claim
+// checkout — the root or a linked worktree — so a second launch there can warn
+// the person first. A claim
 // is one key=value file per wt process in <git-common-dir>/wt-sessions/<pid>;
 // repo-cleanup (bash) reads the same files. The format is a cross-repo
 // contract: docs/contracts/session-claims.md at the monorepo root.
@@ -333,8 +334,9 @@ type claimEntry struct {
 }
 
 // readClaims reads every claim file in dir (files named by a pid; .lock and
-// rename temp files are skipped). It is the one directory walk the readers
-// share — scan, Others and AncestorHolds must agree on what a claim file is.
+// rename temp files are skipped). It is the one directory walk the package
+// shares — scan (which serves Others, Join, Hold and Prune), Holders and
+// AncestorHolds must agree on what a claim file is.
 func readClaims(dir string) ([]claimEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -43,8 +43,16 @@ branches and those of remotes a local branch tracks; the terminal list shows
 every remote's. On a terminal the list does not fetch when it opens (`r` is not a
 refresh; `--fetch` fetches every remote first and the list's `F` fetches while
 it is open; `--json`/`--plain` fetch first unless
-`--no-fetch`). Each row carries tags such as `root`, `you are here`, `held`,
-`dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. A bare
+`--no-fetch`). Stale session claims are dropped on the list's `F` refresh and on
+a fetch-first `--json` run only (`sessionclaim.Prune`; `--plain` fetches but
+never prunes, `--no-fetch` drops nothing, and the list's open drops nothing).
+Each row carries tags such as `root`, `you are here`, `held`,
+`dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. When the
+root sits off the default `origin/HEAD` names (or on a detached HEAD) its row carries a
+`root_drift` reason and a drift badge (and, in the launch picker, the header
+names the drift: `root is on <b>, not <d>`, or `root is detached`); the drift
+label floors nothing on its own — it says where the root is, and `wt
+restore-root` is the way back. No `origin/HEAD` default, no drift is invented. A bare
 repository's own entry is listed as the root with a `bare` tag: it is never
 removable, and in the launch picker enter on it only says that a bare
 repository has no working tree to launch in.
@@ -499,8 +507,7 @@ Refused, with nothing created (JSON `code` in brackets): a detached HEAD
 default branch (`already_default`; exit 0, nothing to do); no commit yet
 (`no_commit`); no default branch, or one that exists only as `origin/<name>`
 (`no_default_branch`); the default branch checked out in another worktree
-(`default_in_worktree`); another live `wt` session in the root (`root_held`;
-checked again just before the root changes); a root that does not ignore
+(`default_in_worktree`); a root that does not ignore
 `.worktrees/` (`worktrees_not_ignored`; the message gives the one-line fix, and
 wt writes nothing to the repository); an ignored file the reset would destroy,
 or one at a path the default branch tracks (`ignored_collision`; ignored files
@@ -514,6 +521,12 @@ copy could not be recorded, so the root was not released), `release_refused`
 `release_failed` (the reset or switch stopped part-way), `switch_failed` (the
 new worktree could not be switched onto the branch) or
 `source_changed_while_copying` (the root changed during the copy).
+
+A root held by another live `wt` session refuses nothing and is never a
+`code`: the plan carries one `root_held: ` warning line naming the holder
+(`HeldWarningPrefix`, JSON `warnings`), and the move goes on once confirmed —
+a y/N on a terminal, `--yes` without one, exit 3 without either, like any run.
+Nothing checks the session claims again after that read.
 
 | Exit | Meaning |
 |---|---|

@@ -2,7 +2,7 @@ package rootclaim
 
 import "fmt"
 
-// Drift is the one drift line for root checkout s against defaultBranch: how
+// Drift is the one drift line for root s against defaultBranch: how
 // far the root has left its default branch, worded as the cleanup root row's
 // reason detail and the launch warning's text both render it. The shapes, in
 // precedence order:
