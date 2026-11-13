@@ -34,9 +34,9 @@ const (
 
 // BlockHeld is the held code under its old blocker name. Held is a label,
 // never a blocker: the classifier raises it as ReasonHeld (the same code) and
-// lists it in Row.Reasons. This alias only keeps the held test seam
-// (heldseam.go) and rescue's preflight switch compiling until a later task
-// retires them.
+// lists it in Row.Reasons. The alias remains for its legacy-shape consumers:
+// the held test seam (heldseam.go's StubHeldForTest faker), present.go's
+// legacy-blocker lookup, and the legacy-shape test fixtures.
 const BlockHeld = ReasonHeld
 
 // Reason is one code and what it names (a path, an operation, a session's

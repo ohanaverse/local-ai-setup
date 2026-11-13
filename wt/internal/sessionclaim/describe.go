@@ -8,10 +8,16 @@ import (
 
 // Describe names one other session in the warning text it is rendered into
 // — the launch warnings' held entry and `wt restore-root`'s root-held
-// warning: its agent, pid, how long it has run at now, and its branch.
+// warning: its agent, pid, how long it has run at now, and its branch. An
+// empty branch (the detached launch-claim spelling) renders as "(detached)",
+// like root claims' literal one.
 func Describe(c Claim, now time.Time) string {
 	running := now.Sub(time.Unix(c.Started, 0)).Round(time.Second)
-	return fmt.Sprintf("%s (pid %d, running %s, started on %s)", c.Agent, c.PID, running, c.Branch)
+	branch := c.Branch
+	if branch == "" {
+		branch = "(detached)" // never render "started on )"
+	}
+	return fmt.Sprintf("%s (pid %d, running %s, started on %s)", c.Agent, c.PID, running, branch)
 }
 
 // CheckFailed is the note a launch prints when the claims in root cannot be

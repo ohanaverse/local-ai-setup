@@ -56,6 +56,25 @@ func TestDescribeNamesTheSession(t *testing.T) {
 	}
 }
 
+// TestDescribeRendersADetachedClaim checks the detached launch-claim
+// spelling (an empty branch=) reads "started on (detached)" — never the bare
+// "started on )" an empty branch used to render — and a named branch still
+// reads as its own name. Both detached spellings (this empty one, and root
+// claims' literal "(detached)") render alike in Describe output; a branch
+// actually named (detached) reads the same, a known ambiguity.
+func TestDescribeRendersADetachedClaim(t *testing.T) {
+	detached := Claim{PID: 123, Started: 1000, Path: root, Branch: "", Agent: "claude"}
+	got := Describe(detached, time.Unix(1250, 0))
+	if want := "claude (pid 123, running 4m10s, started on (detached))"; got != want {
+		t.Fatalf("Describe of a detached claim = %q; want %q", got, want)
+	}
+	named := Claim{PID: 456, Started: 1200, Path: root, Branch: "topic", Agent: "claude"}
+	got = Describe(named, time.Unix(1250, 0))
+	if want := "claude (pid 456, running 50s, started on topic)"; got != want {
+		t.Fatalf("Describe of a named claim = %q; want %q", got, want)
+	}
+}
+
 // TestCheckFailedNote checks the one-line note the root-claim step prints
 // when the claims cannot be read or written, which never stops the launch
 // (cmd/wt's holdRoot and the TUI's claimLaunch both render it as `wt: note:`).

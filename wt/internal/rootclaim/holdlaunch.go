@@ -36,5 +36,10 @@ func HoldLaunch(dir, agent string) (release func(), others []sessionclaim.Claim,
 		return release, nil, err
 	}
 	holders, err := sessionclaim.Holders(site.CommonDir, self)
+	// others is keyed by each claim's recorded path as written (wt's own
+	// writers normalize via worktree.ToplevelOf, so they match); a consumer
+	// that must catch foreign or hand-written claims recorded under a symlink
+	// alias should fold via cleanup.ResolvePath the way HeldOn and rootmove's
+	// heldBy do.
 	return release, holders[site.Path], err
 }
