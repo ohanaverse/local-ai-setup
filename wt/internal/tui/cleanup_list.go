@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -450,26 +451,68 @@ func (m *cleanupListModel) launch() bool { return m.opts.Mode == modeLaunch }
 // with no rows (a launch list always has its new-worktree item).
 func (m *cleanupListModel) empty() bool { return m.cursor < 0 }
 
+// HandOffNote is what a `r`/`R` hand-off returns when it ended with the
+// repository exactly as the list left it or with its job done — declined at
+// its prompt, refused before anything was created, or finished — and the
+// session should carry on: RunCleanupList re-enters the list with Text on its
+// status line. Err is what the hand-off would otherwise have returned (nil
+// when it succeeded, the command's own exit error for a decline or a
+// refusal): a caller that cannot re-enter (the launch picker, a nil Refetch)
+// returns it unchanged, so the exit status of a hand-off that ends the
+// session is as it always was. A hand-off that FAILED midway, or could not
+// start, returns a plain error and ends the session so its recovery text is
+// the last thing printed.
+type HandOffNote struct {
+	Text string
+	Err  error
+}
+
+func (n *HandOffNote) Error() string {
+	if n.Err != nil {
+		return n.Err.Error()
+	}
+	return n.Text
+}
+
+func (n *HandOffNote) Unwrap() error { return n.Err }
+
+// noteOf splits a hand-off's return: the note when it is one (and the error
+// the session would end with without re-entry), else the plain error.
+func noteOf(err error) (note *HandOffNote, rest error) {
+	if errors.As(err, &note) {
+		return note, note.Err
+	}
+	return nil, err
+}
+
 // RunCleanupList shows r as the tick list on the alt screen and runs the
 // whole session. enter removes the ticked rows through rm after a
 // confirmation; `r` and `R` run their action on the real terminal once the
 // screen is gone and then re-enter the list with a fresh report
-// (RemoveFuncs.Refetch), so one session can do several actions. When the
-// session ends — however it ends — every outcome of every pass prints once
-// (what was removed and each deleted branch's commit outlive the alt screen).
+// (RemoveFuncs.Refetch), so one session can do several actions. Every outcome
+// of every pass prints exactly once: the ones not yet printed are flushed
+// before each hand-off (which can end the process at its prompt) and the
+// remainder when the session ends, however it ends (what was removed and
+// each deleted branch's commit outlive the alt screen).
 func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 	// One pass per program run, each built fresh from its own report: the
 	// confirm state, the ticks and the hand-off flags never cross a pass.
 	// logged is the whole session's outcome log — every pass's outcomes join
-	// it — and it is the one thing that does travel between passes.
+	// it — and it is the one thing that does travel between passes. printed
+	// counts the outcomes already on stdout; status is the line a hand-off
+	// left for the next pass.
 	var logged []removal.Outcome
 	var last cleanupListModel
 	haveLast := false
-	var err error
+	var err, werr error
+	printed := 0
+	status := ""
 	for {
 		m := newCleanupList(r, th, time.Now())
 		m.rm = rm
 		m.log = logged
+		m.status = status
+		status = ""
 		final, stop, perr := runCleanupProgram(m)
 		defer stop() // idempotent; the hand-offs and the re-entry stop it first
 		fm, ok := final.(cleanupListModel)
@@ -488,13 +531,27 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 			break
 		}
 		// The rescue and the restore-root hand-offs ask and print on the
-		// real terminal, so they run here, after the alt screen has closed
-		// (the session's removal log prints when the session ends).
-		if err = runRescue(fm, rm, stop); err != nil {
-			break
+		// real terminal, so they run here, after the alt screen has closed.
+		// The log so far prints first: a hand-off's prompt can be answered
+		// with ctrl+c, which ends the process (the forwarding is stopped).
+		if fm.rescueRow != nil || fm.restoreRoot {
+			printed, werr = flushLog(fm.log, printed, werr)
 		}
-		if err = runRestoreRoot(fm, rm, stop); err != nil {
-			break
+		var note *HandOffNote
+		var herr error
+		if herr = runRescue(fm, rm, stop); herr != nil {
+			if note, herr = noteOf(herr); note == nil {
+				err = herr
+				break
+			}
+		}
+		if herr == nil && note == nil {
+			if herr = runRestoreRoot(fm, rm, stop); herr != nil {
+				if note, herr = noteOf(herr); note == nil {
+					err = herr
+					break
+				}
+			}
 		}
 		// Re-entry is only for those two hand-offs: a pass with none ends
 		// the session (a removal run's exit from the results screen is
@@ -502,6 +559,7 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 		// there is no fresh report, and a pass is never built from a cached
 		// one.
 		if (fm.rescueRow == nil && !fm.restoreRoot) || rm.Refetch == nil {
+			err = herr
 			break
 		}
 		// Re-enter: the re-read's own failure ends the session (its error,
@@ -513,22 +571,41 @@ func RunCleanupList(r cleanup.Report, th themes.Theme, rm RemoveFuncs) error {
 		}
 		stop() // the forwarding stops before the next pass's program runs
 		r = rep
+		if note != nil {
+			status = note.Text
+		}
 	}
-	// The session's log prints once, at the end — however the session ended
-	// — carrying every pass's outcomes (never once per pass).
+	// The rest of the session's log prints at the end — however the session
+	// ended — so every outcome is out exactly once.
 	// Error precedence: an error from the session (the program, a hand-off or
-	// the re-read) wins over a failed write of this final log. Both orders
-	// drop one error; the session's is the one that says what the run did,
-	// and the two coincide only on a broken stdout pipe plus a failure in
-	// the same session.
+	// the re-read) wins over a failed write of the log. Both orders drop one
+	// error; the session's is the one that says what the run did, and the two
+	// coincide only on a broken stdout pipe plus a failure in the same
+	// session.
 	if haveLast {
-		if msg := last.exitMessage(); msg != "" {
-			if _, werr := fmt.Fprintln(os.Stdout, msg); werr != nil && err == nil {
-				err = werr
+		if msg := last.exitMessageFrom(printed); msg != "" {
+			if _, w := fmt.Fprintln(os.Stdout, msg); w != nil && werr == nil {
+				werr = w
 			}
 		}
 	}
+	if err == nil {
+		err = werr
+	}
 	return err
+}
+
+// flushLog prints the outcomes of log from index printed on, as one block,
+// and returns the new count; a failed write is kept in werr (the first one)
+// and the outcomes count as printed, never retried into a second copy.
+func flushLog(log []removal.Outcome, printed int, werr error) (int, error) {
+	if printed >= len(log) {
+		return printed, werr
+	}
+	if _, w := fmt.Fprintln(os.Stdout, logText(log[printed:])); w != nil && werr == nil {
+		werr = w
+	}
+	return len(log), werr
 }
 
 // runCleanupProgram is the test seam over the Bubble Tea program: it runs the
@@ -1302,8 +1379,19 @@ func (m cleanupListModel) tickedNames() []string {
 
 // exitMessage is what RunCleanupList prints when the session ends: every
 // outcome of the session ("" when nothing ran).
-func (m cleanupListModel) exitMessage() string {
-	text := logText(m.log)
+func (m cleanupListModel) exitMessage() string { return m.exitMessageFrom(0) }
+
+// exitMessageFrom is exitMessage without the first printed outcomes, which
+// are already on stdout (a flush before a hand-off): the rest of the log and,
+// for a program that ended mid-run, what has no outcome.
+func (m cleanupListModel) exitMessageFrom(printed int) string {
+	log := m.log
+	if printed < len(log) {
+		log = log[printed:]
+	} else {
+		log = nil
+	}
+	text := logText(log)
 	if m.phase != cleanupPhaseRunning || m.run == nil {
 		return text
 	}

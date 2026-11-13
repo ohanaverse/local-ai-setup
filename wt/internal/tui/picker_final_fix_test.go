@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,43 @@ func TestPickerReloadFromBeforeARunIsDropped(t *testing.T) {
 	for _, it := range m.rows.items {
 		if it.heading == "" && !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
 			t.Error("a reload from before the run brought the removed row back")
+		}
+	}
+}
+
+// TestFinishRowSessionLogIsOutBeforeTheHandOff is the picker's "died at the
+// prompt" pin (final review I1): the removal log is printed before an `r` or
+// `R` hand-off asks on the terminal, exactly once overall, and a note the
+// hand-off returns (declined, refused, done) ends the picker session with
+// the error the hand-off would have returned.
+func TestFinishRowSessionLogIsOutBeforeTheHandOff(t *testing.T) {
+	out1 := removal.NewOutcome(removal.ItemFromRow(cleanup.Row{Kind: cleanup.KindWorktree, Name: "done", Path: "/repo/.worktrees/done"}),
+		removal.WtRemoved, removal.BrDeleted, "outcome of the removal")
+	for _, which := range []string{"rescue", "restore-root"} {
+		seen := ""
+		declined := errMock("not confirmed; nothing was changed")
+		hand := func() error {
+			seen = stdoutSoFar(t)
+			return &HandOffNote{Text: "declined", Err: declined}
+		}
+		var rows cleanupListModel
+		rows.log = []removal.Outcome{out1}
+		rows.rm = RemoveFuncs{Rescue: func(cleanup.Row) error { return hand() }, RestoreRoot: hand}
+		if which == "rescue" {
+			rows.rescueRow = &cleanup.Row{Name: "spike"}
+		} else {
+			rows.restoreRoot = true
+		}
+		var err error
+		out := captureStdout(t, func() { err = finishRowSession(model{rows: rows}, nil) })
+		if !errors.Is(err, declined) {
+			t.Errorf("%s: err = %v, want the declined hand-off's own error", which, err)
+		}
+		if !strings.Contains(seen, "outcome of the removal") {
+			t.Errorf("%s: at the hand-off stdout held %q; the log must be out first", which, seen)
+		}
+		if n := strings.Count(out, "outcome of the removal"); n != 1 {
+			t.Errorf("%s: the outcome printed %d times, want once:\n%s", which, n, out)
 		}
 	}
 }

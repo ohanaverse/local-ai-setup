@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -491,8 +492,10 @@ func TestCleanupListGetsTheRescue(t *testing.T) {
 	}
 	rescueTTY = func(io.Reader, io.Writer) bool { return true }
 
-	if err := rm.Rescue(row); err != nil {
-		t.Fatalf("Rescue: %v\n%s", err, errOut.String())
+	// A finished copy is a note: the list re-enters with a status line.
+	var note *tui.HandOffNote
+	if err := rm.Rescue(row); !errors.As(err, &note) || note.Err != nil || !strings.Contains(note.Text, "rescued to branch rescued/spike") {
+		t.Fatalf("Rescue: %v, want a done note\n%s", err, errOut.String())
 	}
 
 	if !hasBranch(t, dir, "rescued/spike") || !strings.Contains(out.String(), "copied") || !strings.Contains(errOut.String(), "Copy it? [y/N]") {

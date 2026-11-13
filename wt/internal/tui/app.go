@@ -1461,7 +1461,8 @@ func finishRowSession(final tea.Model, progErr error) error {
 	if !ok {
 		return nil
 	}
-	var err error
+	var err, werr error
+	printed := 0
 	switch {
 	case progErr != nil:
 		err = progErr
@@ -1472,15 +1473,29 @@ func finishRowSession(final tea.Model, progErr error) error {
 	default:
 		// The picker's program ran with Bubble Tea's own signal handler and
 		// forwarded nothing of its own, so there is no forwarding to stop
-		// before the hand-off asks on the terminal.
-		if err = runRescue(fm.rows, fm.rows.rm, func() {}); err == nil {
+		// before the hand-off asks on the terminal. The log so far prints
+		// first, as in RunCleanupList: the hand-off's prompt can be answered
+		// with ctrl+c. There is no re-entry after a hand-off here, so a
+		// note (declined, refused, done) ends the session with the error the
+		// hand-off would have returned.
+		if fm.rows.rescueRow != nil || fm.rows.restoreRoot {
+			printed, werr = flushLog(fm.rows.log, printed, werr)
+		}
+		err = runRescue(fm.rows, fm.rows.rm, func() {})
+		if err == nil {
 			err = runRestoreRoot(fm.rows, fm.rows.rm, func() {})
 		}
-	}
-	if msg := fm.rows.exitMessage(); msg != "" {
-		if _, werr := fmt.Fprintln(os.Stdout, msg); werr != nil && err == nil {
-			err = werr
+		if note, rest := noteOf(err); note != nil {
+			err = rest
 		}
+	}
+	if msg := fm.rows.exitMessageFrom(printed); msg != "" {
+		if _, w := fmt.Fprintln(os.Stdout, msg); w != nil && werr == nil {
+			werr = w
+		}
+	}
+	if err == nil {
+		err = werr
 	}
 	return err
 }

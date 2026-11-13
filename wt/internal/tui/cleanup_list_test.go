@@ -1902,13 +1902,24 @@ func TestRunCleanupListStopsLoopingOnActionError(t *testing.T) {
 	}
 }
 
-// TestRunCleanupListPrintsLogOncePerSession pins the session log's print: the
-// outcomes of EVERY pass accumulate, and the log prints exactly once per
-// RunCleanupList call — when the session ends, however it ends — not once per
-// pass: one "wt worktrees:" block carrying both passes' outcomes, printed
-// after the last pass's screen. Why: the log is the only record of what was
-// removed and of every deleted branch's commit; printing it per pass would
-// split and repeat it, and printing only the last pass's would drop the rest.
+// stdoutSoFar is what the captured stdout (captureStdout's file) holds right
+// now: what a process that died at this point would have left printed.
+func stdoutSoFar(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(os.Stdout.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestRunCleanupListPrintsLogOncePerSession pins the session log's print:
+// every outcome of every pass prints EXACTLY ONCE across the session. Pass
+// 1's outcomes print before the `r` hand-off runs (a ctrl+c at its prompt
+// ends the process, so the log must already be out), pass 2's when the
+// session ends. Why: the log is the only record of what was removed and of
+// every deleted branch's commit; printing a pass twice would repeat it and
+// printing only at the end would lose it to a hand-off that dies.
 func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 	old := runCleanupProgram
 	t.Cleanup(func() { runCleanupProgram = old })
@@ -1931,8 +1942,9 @@ func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 		}
 		return m, func() {}, nil
 	}
+	atHandOff := ""
 	rm := RemoveFuncs{
-		Rescue:  func(cleanup.Row) error { return nil },
+		Rescue:  func(cleanup.Row) error { atHandOff = stdoutSoFar(t); return nil },
 		Refetch: func() (cleanup.Report, error) { return cleanup.Report{}, nil },
 	}
 	var err error
@@ -1945,21 +1957,20 @@ func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 	if runs != 2 {
 		t.Fatalf("the program ran %d passes, want 2", runs)
 	}
-	if n := strings.Count(out, "wt worktrees: "); n != 1 {
-		t.Errorf("the session log printed %d times, want exactly 1:\n%s", n, out)
-	}
-	for _, want := range []string{"work-1", "work-2", "outcome of pass 1", "outcome of pass 2"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the log is missing %q; every pass's outcomes must accumulate:\n%s", want, out)
+	for _, want := range []string{"outcome of pass 1", "outcome of pass 2"} {
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("%q printed %d times, want exactly once:\n%s", want, n, out)
 		}
 	}
-	at := strings.Index
-	if !(at(out, "pass 1 screen") >= 0 && at(out, "pass 1 screen") < at(out, "pass 2 screen") && at(out, "pass 2 screen") < at(out, "wt worktrees: ")) {
-		t.Errorf("the log did not print at the end of the session:\n%s", out)
+	if !strings.Contains(atHandOff, "outcome of pass 1") || strings.Contains(atHandOff, "outcome of pass 2") {
+		t.Errorf("when the hand-off ran, stdout held %q; want pass 1's outcome out and pass 2's not yet", atHandOff)
+	}
+	if at := strings.Index; !(at(out, "pass 1 screen") < at(out, "outcome of pass 1") && at(out, "outcome of pass 1") < at(out, "pass 2 screen") && at(out, "pass 2 screen") < at(out, "outcome of pass 2")) {
+		t.Errorf("the log did not print pass 1 before the hand-off and pass 2 at the end:\n%s", out)
 	}
 
 	// However the session ends: a pass that ends on an error still prints
-	// the accumulated log, once.
+	// the rest of the log, once, and pass 1's is not printed again.
 	runs = 0
 	runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
 		runs++
@@ -1983,12 +1994,101 @@ func TestRunCleanupListPrintsLogOncePerSession(t *testing.T) {
 	if runs != 2 {
 		t.Fatalf("the program ran %d passes, want 2", runs)
 	}
-	if n := strings.Count(out, "wt worktrees: "); n != 1 {
-		t.Errorf("after an error exit the session log printed %d times, want exactly 1:\n%s", n, out)
+	for _, want := range []string{"outcome of pass 1", "outcome of pass 2"} {
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("after an error exit %q printed %d times, want exactly once:\n%s", want, n, out)
+		}
 	}
-	for _, want := range []string{"work-1", "work-2", "outcome of pass 1", "outcome of pass 2"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the log is missing %q; every pass's outcomes must accumulate:\n%s", want, out)
+}
+
+// TestRunCleanupListLogIsOutBeforeAHandOffDies is the "died at the prompt"
+// pin: a hand-off that ends the process (ctrl+c at its y/N, after stop()
+// restored Go's fatal signal handling) leaves every earlier outcome already
+// printed, restore commands included. The stub records stdout at the moment
+// it is called and then fails as a killed process would never return.
+func TestRunCleanupListLogIsOutBeforeAHandOffDies(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	for _, which := range []string{"rescue", "restore-root"} {
+		runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+			m.log = append(m.log, removal.NewOutcome(
+				removal.Item{Kind: cleanup.KindBranch, Name: "gone-branch"}, removal.WtRemoved, removal.BrDeleted, "outcome of the removal"))
+			if which == "rescue" {
+				m.rescueRow = &cleanup.Row{Name: "spike"}
+			} else {
+				m.restoreRoot = true
+			}
+			return m, func() {}, nil
+		}
+		seen := ""
+		died := errMock("process died at the prompt")
+		hand := func() error { seen = stdoutSoFar(t); return died }
+		rm := RemoveFuncs{
+			Rescue:      func(cleanup.Row) error { return hand() },
+			RestoreRoot: hand,
+			Refetch:     func() (cleanup.Report, error) { return cleanup.Report{}, nil },
+		}
+		var err error
+		out := captureStdout(t, func() { err = RunCleanupList(cleanup.Report{}, themes.Theme{}, rm) })
+		if !errors.Is(err, died) {
+			t.Errorf("%s: err = %v, want the hand-off's own", which, err)
+		}
+		if !strings.Contains(seen, "outcome of the removal") {
+			t.Errorf("%s: at the hand-off stdout held %q; the log must be out before it can die", which, seen)
+		}
+		if n := strings.Count(out, "outcome of the removal"); n != 1 {
+			t.Errorf("%s: the outcome printed %d times, want once:\n%s", which, n, out)
+		}
+	}
+}
+
+// TestRunCleanupListReentersAfterANoteHandOff pins the final review's I2: a
+// hand-off that ended with nothing changed (declined, refused) or finished
+// returns a HandOffNote, and the session re-enters the list from a fresh
+// read with the note's text on the status line; a hand-off that failed (a
+// plain error) still ends the session.
+func TestRunCleanupListReentersAfterANoteHandOff(t *testing.T) {
+	old := runCleanupProgram
+	t.Cleanup(func() { runCleanupProgram = old })
+	row := cleanup.Row{Name: "spike"}
+	for _, which := range []string{"rescue", "restore-root"} {
+		declined := errMock("not confirmed; nothing was changed")
+		note := &HandOffNote{Text: which + ": not confirmed - nothing changed", Err: declined}
+		runs, fetches := 0, 0
+		var statuses []string
+		runCleanupProgram = func(m cleanupListModel) (tea.Model, func(), error) {
+			runs++
+			statuses = append(statuses, m.status)
+			if runs == 1 {
+				if which == "rescue" {
+					m.rescueRow = &row
+				} else {
+					m.restoreRoot = true
+				}
+			}
+			return m, func() {}, nil
+		}
+		rm := RemoveFuncs{
+			Rescue:      func(cleanup.Row) error { return note },
+			RestoreRoot: func() error { return note },
+			Refetch:     func() (cleanup.Report, error) { fetches++; return cleanup.Report{}, nil },
+		}
+		if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); err != nil {
+			t.Errorf("%s: a declined hand-off ended the session with %v, want a re-entry", which, err)
+		}
+		if runs != 2 || fetches != 1 || len(statuses) != 2 || statuses[1] != note.Text {
+			t.Errorf("%s: runs=%d fetches=%d statuses=%q; want a re-read and the second pass opening on %q", which, runs, fetches, statuses, note.Text)
+		}
+
+		// With nothing to re-read through, the note cannot re-enter: the
+		// session ends with the error the hand-off would have returned.
+		runs = 0
+		rm.Refetch = nil
+		if err := RunCleanupList(cleanup.Report{}, themes.Theme{}, rm); !errors.Is(err, declined) {
+			t.Errorf("%s: with no Refetch err = %v, want the decline's own error", which, err)
+		}
+		if runs != 1 {
+			t.Errorf("%s: no Refetch ran %d passes, want 1", which, runs)
 		}
 	}
 }
