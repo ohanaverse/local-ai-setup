@@ -199,6 +199,18 @@ func TestFlowUnitsWrapsOversizedUnitsAtSpaces(t *testing.T) {
 	}
 }
 
+// TestFlowUnitsKeepsAnEmptyUnitThatFits pins that the wrap change leaves a
+// unit that fits exactly as it was: an empty first unit stays (the next unit
+// joins it with its own separator), where only an oversized unit's emptied
+// remainder is dropped. Why: the wrap fix must not alter any layout that
+// already fit.
+func TestFlowUnitsKeepsAnEmptyUnitThatFits(t *testing.T) {
+	lines := flowUnits([]unit{{text: ""}, {text: "x", sep: " · "}}, 20)
+	if len(lines) != 1 || len(lines[0]) != 2 {
+		t.Errorf("an empty unit that fits was dropped: %d lines %v", len(lines), lines)
+	}
+}
+
 // newLaunchList builds the list in launch mode and sizes it.
 func newLaunchList(t *testing.T, r cleanup.Report, w, h int) cleanupListModel {
 	t.Helper()

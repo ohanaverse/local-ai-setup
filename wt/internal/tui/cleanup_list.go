@@ -300,7 +300,7 @@ func flowUnits(us []unit, width int) [][]unit {
 				runes = runes[1:]
 			}
 		}
-		if len(runes) > 0 {
+		if w <= width || len(runes) > 0 { // a unit that fit is kept as it was, even an empty one
 			u.text = string(runes)
 			cur, curW = []unit{u}, len(runes)
 		}
