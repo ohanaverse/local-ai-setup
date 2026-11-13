@@ -58,14 +58,14 @@ repository has no working tree to launch in.
 
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
-progress, a worktree whose directory is gone, a registered model artifact, or an open PR on an `origin` branch
-or one that targets it); the row's `hard_stop` JSON field names it. In the terminal list a hard stop **locks** the row (`[-]`: it cannot be ticked, and `enter`, `x`, `d` and `o` refuse it with the reason). A local
+progress, a registered model artifact, or an open PR on an `origin` branch
+or one that targets it); the row's `hard_stop` JSON field names it. A worktree whose directory is gone is refused too, but the JSON names it by reason `gates_unavailable`, not `hard_stop`. In the terminal list the hard stops, any `in_use` row, a worktree whose directory is gone and any remote row that is not a proven `origin` branch **lock** the row (`[-]`: it cannot be ticked, and `enter`, `x`, `d` and `o` refuse it with the reason). A local
 branch or worktree with an open PR is not a hard stop: it reads unique work and
 needs `--accept-loss` and `-D`. A **floor** is a verdict ceiling the user can accept: a held
 session claim (`held`), the default branch (`default_branch`), an unknown
 pull request (`pr_unknown`), a root that has drifted off the default and a repository with no default branch to
 compare against (`no_default_branch`) leave the row `less_sure` at best, so `wt remove`
-needs `--accept-loss` for it (in the list a floor never locks the row: you may tick it, and the confirmation asks for the typed `delete`), and, for a branch that is not proven merged,
+needs `--accept-loss` for it (in the list a floor never locks a worktree or local branch: you may tick it, and the confirmation asks for the typed `delete`), and, for a branch that is not proven merged,
 `-D` as well (the engine asks for `-D` for any unproven branch).
 
 An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
@@ -153,7 +153,7 @@ On a terminal `wt worktrees` shows every row, locked or not, and acts only on a 
 | `F` | `git fetch --all --prune` at the repository root, capped at 5s, then re-read; stale session claims are dropped |
 | `q`, `esc` | quit |
 
-A locked row refuses `x`, `d` and `o` with `cannot be removed: <its reason>`; a row with no `origin` ref refuses `o` the same way. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`.
+A locked row refuses `x`, `d` and `o` with `cannot be removed: <its reason>`; a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none`. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`.
 
 **`R` is offered only from the row.** `rootmove.Offered` (it reads the row, never git) refuses, each with its line on the status line: a row that is not the root ("only the root can be restored"), a bare repository, a root with no commit, a detached root, a root with no default branch ("no default branch to restore to") and a root already on the default ("root is already on <branch>"). The list's `R` runs the same interactive restore-root as `wt restore-root` run by hand (fetches every remote, asks `Move? [y/N]` and prints the `root_held` warning in that prompt when another session holds the root; it never passes `--yes`, so a held root is moved only after you answer `y`).
 

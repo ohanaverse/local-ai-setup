@@ -168,7 +168,7 @@ is still present. Cherry also ignores merge commits.
 
 ### Worktree gates (independent of the branch)
 
-> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: "root held by another live `wt` session" is no longer a hard blocker: a held row is a floor (the row reads less sure and removal needs the typed `delete` / `--accept-loss`), and the confirmation names `held by session <id>`. The note that claims exist for the repo root only is stale too: every launch claims the worktree its agent runs in. The other hard blockers (primary, cwd inside it, locked, contains another worktree, an operation in progress, a registered artifact) stay, and a worktree whose directory is gone now locks the row in the list instead of reading less sure.
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: "root held by another live `wt` session" is no longer a hard blocker: a held row is a floor (the row reads less sure and removal needs the typed `delete` / `--accept-loss`), and the confirmation names `held by session <id>`. The note that claims exist for the repo root only is stale too: every launch claims the worktree its agent runs in. The other hard blockers (primary, cwd inside it, locked, contains another worktree, an operation in progress, a registered artifact) stay, and a worktree whose directory is gone still reads less sure and now also locks the row in the list.
 
 A **prunable** worktree (directory gone) runs no gates against the missing
 path: its row is LESS SURE with reason `prunable`.
@@ -391,7 +391,7 @@ dirt is a later PR). Design:
 
 ## Fate of the `repo-cleanup` skill (my call)
 
-> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: the skill's job is now the same sub-command: it is to call `wt worktrees --json` for what is safe to remove, and the root-switching menus have an equivalent in `wt restore-root` (and `R` in the list), so the skill no longer switches the root itself.
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: the skill's job is meant to become the same sub-command: it is to call `wt worktrees --json` for what is safe to remove, and the root-switching menus have an equivalent in `wt restore-root` (and `R` in the list), so the skill is meant to stop switching the root itself (the skill file lives outside this repository and is unchanged).
 
 Unchanged until PR A's comparison is clean. After PR B it can shrink to a
 wrapper that calls `wt cleanup`, or be retired; the user decides then. Its
