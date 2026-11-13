@@ -29,6 +29,8 @@ Work sometimes starts directly in the repository root, leaving it on a branch ot
 
 ## Non-goals
 
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: "A TUI row/key" is no longer a non-goal: `R` in the `wt worktrees` list and in the launch picker runs `wt restore-root` for the root row (`rootmove.Offered` decides when it is offered). Also, nothing in wt switches the root automatically; the move happens only when the user asks.
+
 - A detached root. There is no branch to keep (the issue says refuse). **The user's decision:** v1 refuses and names `git switch -c <name>` first. A rescue-style `rescued/` branch for a detached root is a later option.
 - A root already on the default branch (nothing to do; exit 0 with that message).
 - Carrying ignored files (they stay in the root, as in `wt rescue`; the count is shown).
@@ -38,6 +40,8 @@ Work sometimes starts directly in the repository root, leaving it on a branch ot
 - Stashing as a fallback. `git stash` is a shared stack and loses untracked/mode fidelity; the verified copy plus the record is the safer carrier.
 
 ## Anti-goals (a failure even if it "works")
+
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: "Switching the root under a live `wt` session that holds it" is no longer refused: a held root is a warning (`root_held`, one line naming the holder) that the user approves at the `Move? [y/N]` prompt, or with `--yes --accept-loss` without a terminal. Nothing checks the claims again after that approval.
 
 - Deleting the root's uncommitted work before a verified copy exists **and** the record ref exists **and** the root is unchanged since the copy was verified.
 - Switching the root under a live `wt` session that holds it.
@@ -106,6 +110,8 @@ The window between that last check and `git reset --hard` is not zero, as in #55
 
 ## Surfacing
 
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: the hint line is not the only surface: `R` offers the move in the list and the launch picker. The shared-root menu and `rootgate.go` this section names are gone (a launch only warns).
+
 - The shared-root menu (`c`/`w`/`q`) and the root gate in `cmd/wt/rootgate.go` print, when the root is on a non-default branch, one added line: ``run `wt restore-root` to move it and put the root back on <default>``. Text only, no new key (the user's decision). The line is hidden when `origin/HEAD` is unset (`worktree.DefaultBranch` is its source); `wt restore-root` itself still works there. In the confirmation prompt it is its own `wt:` line before the question. After the move the new worktree is not marked preserved by the record in `wt cleanup` (the record's source path is the root).
 - `docs/guides/08-maintenance-and-troubleshooting.md` §9 and `wt/docs/wt-cleanup.md` get a short pointer; `wt/CLAUDE.md` replaced the "#522 reuses the engine" bullet with the real description.
 
@@ -139,6 +145,8 @@ Real scratch repos throughout, as in the rescue and removal tests:
 - How the fetch is done (reuse `cleanup`'s fetch helper).
 
 ## Decisions confirmed by the user (2026-11-08)
+
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: decision 5 ("surfacing in v1 is the hint line only; a `wt cleanup` list key can follow") is overtaken: the list key `R` exists.
 
 1. Command name `wt restore-root`.
 2. A detached root is refused in v1.

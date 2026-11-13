@@ -60,6 +60,8 @@ deletes.
 
 ## The list
 
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: the list is no longer grouped by verdict on a terminal: it is grouped by kind (WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES) with the verdict on each row, and every row is shown (the root, the default branch, held and in-use rows are never hidden; an in-use row is locked, not dropped). The four verdict groups survive in `--plain`. The keys are also no longer just space, `a`, enter and `q`: `x`, `d`, `o`, `r`, `R` and `F` act on the highlighted row (see `wt/docs/wt-cleanup.md`, "The list's keys and the session loop"). The mockup above is the original as-of-date layout.
+
 Illustrative layout (chosen from mockups; rows below are made up):
 
 ```
@@ -166,6 +168,8 @@ is still present. Cherry also ignores merge commits.
 
 ### Worktree gates (independent of the branch)
 
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: "root held by another live `wt` session" is no longer a hard blocker: a held row is a floor (the row reads less sure and removal needs the typed `delete` / `--accept-loss`), and the confirmation names `held by session <id>`. The note that claims exist for the repo root only is stale too: every launch claims the worktree its agent runs in. The other hard blockers (primary, cwd inside it, locked, contains another worktree, an operation in progress, a registered artifact) stay, and a worktree whose directory is gone now locks the row in the list instead of reading less sure.
+
 A **prunable** worktree (directory gone) runs no gates against the missing
 path: its row is LESS SURE with reason `prunable`.
 
@@ -197,6 +201,8 @@ without a merged PR stays out of PROVEN (it may be an unrelated new branch at
 main). Without `gh`, rows say "can't verify" and are not tickable.
 
 ### Safety rules that apply everywhere
+
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: "Default branch in any form is never listed as removable" no longer holds: the default branch is listed like any row and is a floor (never proven, removable with the typed `delete` / `--accept-loss`); `origin/<default>` is still never deleted (`retained_default`).
 
 - **Min-age:** a branch with no commits of its own (its tip is the base or an
   ancestor of it) that is younger than a non-zero threshold is never PROVEN (a
@@ -384,6 +390,8 @@ dirt is a later PR). Design:
   still applies before any schema pins an edge case.
 
 ## Fate of the `repo-cleanup` skill (my call)
+
+> Superseded in part by `2026-11-11-wt-user-driven-cleanup-design.md`: the skill's job is now the same sub-command: it is to call `wt worktrees --json` for what is safe to remove, and the root-switching menus have an equivalent in `wt restore-root` (and `R` in the list), so the skill no longer switches the root itself.
 
 Unchanged until PR A's comparison is clean. After PR B it can shrink to a
 wrapper that calls `wt cleanup`, or be retired; the user decides then. Its
