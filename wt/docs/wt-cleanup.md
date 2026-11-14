@@ -82,7 +82,7 @@ stays less sure or worse.
 
 | Group | Meaning |
 |---|---|
-| Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing; or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
+| Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, `merge-tree` adds nothing, or the change-set reverse-applies onto the base's tree (evidence `changes-in-base`: a squash merge whose file the base later edited — content, not hashes, so a later revert on the base does not prove); or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read; also a rescued original whose uncommitted changes still equal its record. |
 | Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR on a local branch or worktree. |
 | In use / locked | A primary, current, locked, nested or mid-operation worktree, a registered model artifact (`protected_artifact`) or an `origin` branch with an open PR, or one an open PR targets: hard stops no flag overrides (the row's `hard_stop`). A held session claim (`held`), the default branch (`default_branch`) and an unknown PR (`pr_unknown`) are floors, not hard stops: the row reads less sure and `wt remove` needs `--accept-loss` for it. |
@@ -109,7 +109,10 @@ asks is yours. The terminal list's explicit fetches (`--fetch`, the list's
 root: one result for every remote at once, not one per remote.
 The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
-object store, which `git gc` collects.
+object store, which `git gc` collects. The `changes-in-base` proof creates
+nothing: it validates the change-set against a throwaway index
+(`git apply --check`) and never writes a ref, index or object of the
+repository.
 
 ## `wt worktrees` flags
 

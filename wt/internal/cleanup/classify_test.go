@@ -141,6 +141,26 @@ func squashThenEditSameLine(f *fixture) (tip, squash string) {
 	return tip, squash
 }
 
+// adjacentSquash squash-merges topic (which changes line 5 of a.txt) into
+// main, then edits the adjacent line 4 on main: merge-tree conflicts on the
+// folded region, so no rung before containment can prove the merge — the
+// layout changes-in-base exists for. main is pushed (origin/main, the base,
+// holds both edits); topic stays local, so its commits read unpushed.
+func adjacentSquash(f *fixture) {
+	base := containedLines()
+	f.Commit("a.txt", containedRender(base), "add a.txt")
+	f.Branch("topic")
+	f.Checkout("topic")
+	ls := containedCopy(base)
+	ls[4] = "CHANGED5"
+	f.Commit("a.txt", containedRender(ls), "topic changes line 5")
+	f.Squash("topic")
+	after := containedCopy(ls)
+	after[3] = "EDITED4"
+	f.Commit("a.txt", containedRender(after), "main edits line 4")
+	f.Push("main")
+}
+
 // TestClassify runs Gather and Classify over one fixture per scenario ported
 // from repo-cleanup's setup_test_repo and checks the target row's kind,
 // status, evidence and reason codes. Why: each scenario is a way real repos
@@ -319,6 +339,14 @@ func TestClassify(t *testing.T) {
 			f.MergeResolving("main", "x", "resolved\n")
 			f.Checkout("main")
 		}, want: want{kind: KindBranch, name: "topic", status: StatusUniqueWork, reasons: []string{ReasonUnpushed}}},
+		// Rung 6 (changes-in-base): squash-merged, then main edited a line
+		// adjacent to the branch's change — merge-tree conflicts, so only
+		// containment can prove it. Deliberately fresh (now: time.Now):
+		// min-age gates same-commit and ancestor only (ageGated), and
+		// containment is content, not time, so the row proves regardless.
+		{name: "squash then main edited an adjacent line, fresh", now: time.Now, setup: func(t *testing.T, f *fixture) {
+			adjacentSquash(f)
+		}, want: want{kind: KindBranch, name: "topic", status: StatusProven, ev: EvChangesInBase}},
 		{name: "git failure is unknown", setup: func(t *testing.T, f *fixture) {
 			f.Branch("topic")
 			f.Checkout("topic")
@@ -793,6 +821,23 @@ func TestClassifyFailClosedRules(t *testing.T) {
 		{"trees-match, a real squash with unpushed commits (control)", branch(Proof{Evidence: EvTreesMatch, Verdict: Merged, NetZero: TriNo, Unpushed: 2}),
 			KindBranch, StatusProven, false, ""},
 		{"open PR on a local branch", branch(merged, PRInfo{Number: 4, State: "OPEN", HeadRefOid: tip, BaseRef: "main"}), KindBranch, StatusUniqueWork, false, ReasonOpenPR},
+		// changes-in-base (rung 6) answers only what the ladder proves; every
+		// soft rule then applies to it exactly as to the other proofs.
+		{"changes-in-base is proven, unpushed count ignored", branch(Proof{Evidence: EvChangesInBase, Verdict: Merged, Unpushed: 3}),
+			KindBranch, StatusProven, false, ""},
+		{"changes-in-base with an open PR", branch(Proof{Evidence: EvChangesInBase, Verdict: Merged}, PRInfo{Number: 4, State: "OPEN", HeadRefOid: tip, BaseRef: "main"}),
+			KindBranch, StatusUniqueWork, false, ReasonOpenPR},
+		{"changes-in-base, PR lookup pending", func() Snapshot {
+			s := branch(Proof{Evidence: EvChangesInBase, Verdict: Merged})
+			s.PRs["topic"] = PRResult{Lookup: LookupUnknown}
+			s.PRsSkipped = true // the lookup is owed, not never-asked: prPending
+			return s
+		}(), KindBranch, StatusLessSure, false, ReasonPRUnknown},
+		{"changes-in-base capped by a local base", func() Snapshot {
+			s := branch(Proof{Evidence: EvChangesInBase, Verdict: Merged})
+			s.Base = Base{Default: "main", Ref: "main", Fallback: true}
+			return s
+		}(), KindBranch, StatusLessSure, false, ReasonBaseIsLocal},
 		{"unmerged remote", func() Snapshot {
 			s := handSnapshot()
 			s.Worktrees = []WorktreeState{primary}
@@ -821,6 +866,28 @@ func TestClassifyFailClosedRules(t *testing.T) {
 				t.Fatalf("reasons %v lack %q", reasonCodes(row.Reasons), c.code)
 			}
 		})
+	}
+}
+
+// TestClassifyChangesInBaseIsNotATreeProof pins rung 6's verdict
+// consequences end to end: a squash-merged, never-pushed branch whose file
+// main later edited reads proven with evidence changes-in-base, and its
+// Losses.Unpushed is 0 — unpushedOf returns 0 for any non-treeProof Merged,
+// so Ruling 17's net-zero demotion never applies. Why: the common rung-6 row
+// IS an unpushed squash; if the treeProof rules read containment as "only
+// equal trees", the row would sit at less sure forever.
+func TestClassifyChangesInBaseIsNotATreeProof(t *testing.T) {
+	f := newFixture(t)
+	adjacentSquash(f)
+	noGh(t)
+
+	r := Classify(gather(t, f), Options{Now: later(), MinAge: DefaultMinAge})
+	row := findRow(t, r, KindBranch, "topic")
+	if row.Status != StatusProven || row.Evidence != EvChangesInBase {
+		t.Fatalf("row = (%s, ev %q), want (proven, %q)%s", row.Status, row.Evidence, EvChangesInBase, dumpRows(r.Rows))
+	}
+	if row.Losses.Unpushed != 0 {
+		t.Fatalf("Losses.Unpushed = %d, want 0: changes-in-base is a proof, not a treeProof (unpushedOf returns 0 for it)", row.Losses.Unpushed)
 	}
 }
 

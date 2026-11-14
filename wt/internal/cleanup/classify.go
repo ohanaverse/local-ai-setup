@@ -848,6 +848,15 @@ func (c *classifier) local(j *judge, h RefFact, covered bool) {
 	c.minAge(j, h)
 }
 
+// Ruling 18 (extends Ruling 17's family): changes-in-base is a proof; cherry
+// and patch-id stay weak signals. The change-set must reverse-apply onto
+// base's tree — content, not hashes — so a squash merge whose file base later
+// edited proves, while a later revert on base (the exact defeat of
+// cherry/patch-id) fails closed. It is deliberately not a treeProof (see
+// treeProof in snapshot.go): unlike trees-match/no-added-changes it says "the
+// content is in base", not "the trees are equal", so unpushedOf returns 0 for
+// it and the netZeroUnpushed demotion below never applies.
+//
 // netZeroUnpushed is Ruling 17. trees-match and no-added-changes prove only
 // that two trees are equal. When the tip's tree is its merge-base's (the
 // branch nets to nothing: say a commit and its revert) and some of its
