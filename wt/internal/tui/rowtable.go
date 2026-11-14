@@ -24,10 +24,10 @@ const (
 
 // rtDropOrder is the order the columns are given up when the list is
 // narrower than the table: PR first, then the ignored count, then STATUS,
-// then DIFF. The PR column is the most redundant (the detail block's
-// sentence names the PR and its state), the counts least — DIFF is given up
-// last because it is the work itself, and then the detail block names the
-// highlighted row's counts (diffLine).
+// then DIFF. The PR column goes first because the highlighted row's detail
+// block names its PR and state when the column is not drawn (prLine); the
+// counts least — DIFF is given up last because it is the work itself, and
+// then the detail block names the highlighted row's counts (diffLine).
 var rtDropOrder = []int{rtPR, rtIgn, rtStatus, rtDiff}
 
 // The prefix widths: the session digit and cursor in launch mode, plus the
@@ -105,7 +105,7 @@ func prCell(r cleanup.Row) string {
 	case r.PRUnknown:
 		return "?"
 	case r.PRTag != nil:
-		return fmt.Sprintf("#%d %s", r.PRTag.Number, strings.ToLower(r.PRTag.State))
+		return strings.TrimSpace(fmt.Sprintf("#%d %s", r.PRTag.Number, strings.ToLower(r.PRTag.State)))
 	}
 	return ""
 }
@@ -136,7 +136,8 @@ func newRowTable(rows []cleanup.Row, prefix int) *tuilayout.Columns {
 }
 
 // rowLine renders one row through the table's shared layout: number cells
-// (PR#, DIFF, IGN) sit on their column's right edge, name cells on the left,
+// (DIFF, IGN) sit on their column's right edge, name cells (PR# is free text,
+// "#3 open" or "?") on the left,
 // and Columns keeps every shown column whole.
 func rowLine(r cleanup.Row, cols *tuilayout.Columns) string {
 	cells := rowCells(r)
@@ -144,7 +145,7 @@ func rowLine(r cleanup.Row, cols *tuilayout.Columns) string {
 	for i, cell := range cells {
 		w := cols.Widths[i]
 		switch i {
-		case rtPR, rtDiff, rtIgn:
+		case rtDiff, rtIgn:
 			if n := utf8.RuneCountInString(cell); n < w {
 				cell = strings.Repeat(" ", w-n) + cell
 			}
@@ -171,6 +172,21 @@ func rowPrefix(sessions int, cursor bool, box string) string {
 		out += box + " "
 	}
 	return out
+}
+
+// prLine is the highlighted row's PR fact for the detail block, used when the
+// PR# column is not drawn: "PR #3 open", "PR lookup unknown", or "" when the
+// row has no PR or is still pending (the table draws "-" for those too).
+func prLine(r cleanup.Row) string {
+	if r.Pending {
+		return ""
+	}
+	if c := prCell(r); c == "?" {
+		return "PR lookup unknown"
+	} else if c != "" {
+		return "PR " + c
+	}
+	return ""
 }
 
 // diffLine is the highlighted row's counts for the detail block, used when

@@ -116,6 +116,7 @@ func TestRowCellsPerKind(t *testing.T) {
 		{"closed", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 4, State: "CLOSED"}}, "#4 closed"},
 		{"unknown", cleanup.Row{Kind: cleanup.KindBranch, PRUnknown: true}, "?"},
 		{"no pr", rows[1], ""},
+		{"empty state", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 5}}, "#5"},
 		{"pending wins", cleanup.Row{Kind: cleanup.KindBranch, Pending: true, PRUnknown: true}, "-"},
 	} {
 		if got := rowCells(c.row)[rtPR]; got != c.want {
@@ -126,8 +127,8 @@ func TestRowCellsPerKind(t *testing.T) {
 
 // TestRowTableWidthsAndRightAlignment pins the layout: every column is as
 // wide as its widest cell or heading (measured in runes), and the number
-// cells (PR#, DIFF, IGN) sit on their column's right edge while name cells
-// sit on the left. Why: the table only scans if its digits stack and its
+// cells (DIFF, IGN) sit on their column's right edge while name cells and the
+// free-text PR# cell ("#3 open", "?") sit on the left. Why: the table only scans if its digits stack and its
 // headings line up over their columns.
 func TestRowTableWidthsAndRightAlignment(t *testing.T) {
 	rows := tableFixture()
@@ -165,6 +166,12 @@ func TestRowTableWidthsAndRightAlignment(t *testing.T) {
 		if !strings.Contains(header, head) {
 			t.Errorf("header %q lacks %q", header, head)
 		}
+	}
+	// PR# is left-aligned: a short cell is padded after, so the "#" of every
+	// PR cell starts at the same column under the heading.
+	short := cleanup.Row{Kind: cleanup.KindBranch, Branch: "b", PRTag: &cleanup.PRInfo{Number: 3, State: "OPEN"}}
+	if l, long := rowLine(short, cols), rowLine(rows[0], cols); strings.Index(l, "#3 open") != strings.Index(long, "#383 merged") {
+		t.Errorf("PR cells not left-aligned: %q vs %q", l, long)
 	}
 	// One line per row, each starting with the row's own cells.
 	for i, r := range rows {
@@ -270,3 +277,23 @@ func TestDiffLineWhenDropped(t *testing.T) {
 // ensure the layout compiles against tuilayout's API (a nil check keeps the
 // import honest if the helpers above ever stop building a table).
 var _ = tuilayout.PadRunes
+
+// TestPRLineNamesThePRWhenTheColumnIsGone pins the detail block's fallback
+// for a dropped PR# column: the PR and its state, "PR lookup unknown", and
+// nothing for no PR or a pending row. Why: the column is the first dropped on
+// a narrow terminal and is the only other place the PR fact reads.
+func TestPRLineNamesThePRWhenTheColumnIsGone(t *testing.T) {
+	for _, c := range []struct {
+		row  cleanup.Row
+		want string
+	}{
+		{cleanup.Row{PRTag: &cleanup.PRInfo{Number: 4, State: "CLOSED"}}, "PR #4 closed"},
+		{cleanup.Row{PRUnknown: true}, "PR lookup unknown"},
+		{cleanup.Row{}, ""},
+		{cleanup.Row{Pending: true, PRUnknown: true}, ""},
+	} {
+		if got := prLine(c.row); got != c.want {
+			t.Errorf("prLine(%+v) = %q, want %q", c.row, got, c.want)
+		}
+	}
+}

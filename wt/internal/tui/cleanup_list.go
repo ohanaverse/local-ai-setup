@@ -1228,6 +1228,12 @@ func (m *cleanupListModel) detail() string {
 	if m.table != nil && !m.table.Shown(rtDiff) && it.row.Kind == cleanup.KindWorktree && !it.row.Bare && !it.row.Pending {
 		text += " · " + diffLine(it.row)
 	}
+	// Likewise the PR column: its fact is named here when the column is gone.
+	if m.table != nil && !m.table.Shown(rtPR) {
+		if pr := prLine(it.row); pr != "" {
+			text += " · " + pr
+		}
+	}
 	switch {
 	case it.newWorktree:
 		text = "create a new branch and worktree, then launch in it"

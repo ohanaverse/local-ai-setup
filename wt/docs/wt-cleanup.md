@@ -69,7 +69,8 @@ counted diffstat-style (`+99/-55`; `-` when it could not be read or is over
 the caps), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
 `in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
 `IGN`, `STATUS`, `DIFF`; the worktree, branch and verdict columns never drop,
-and the detail block then names the highlighted row's `+N/-N · N ignored`.
+and the detail block then names the highlighted row's PR (`PR #3 open`, or
+`PR lookup unknown`) and `+N/-N · N ignored`.
 The list paints from the cheap git calls alone (`cleanup.GatherFacts`) and
 fills gates, ladder and PRs behind the first paint (`cleanup.FillDetails`,
 then the `gh` lookups); while that runs the removal keys (`enter`, `x`, `d`,

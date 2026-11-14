@@ -153,7 +153,9 @@ func filterText(it cleanupItem) string {
 	for _, t := range it.tags {
 		parts = append(parts, t.Text)
 	}
-	parts = append(parts, prCell(it.row))
+	if !it.row.Pending { // the table draws "-" for a pending row's PR cell
+		parts = append(parts, prCell(it.row))
+	}
 	return strings.ToLower(strings.Join(parts, " "))
 }
 

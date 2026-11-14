@@ -7,7 +7,9 @@
 - The worktree list's `PR#` column names the PR and its state (`#555 merged`,
   `#3 open`) and shows `?` while a PR lookup could not answer; the row's
   badges after the verdict no longer repeat PR info, and the `/` filter keeps
-  finding a row by its PR number through the column.
+  finding a row by its PR number through the column. `PR#` is left-aligned,
+  and when a narrow terminal drops it the detail block names the highlighted
+  row's PR instead.
 
 - `wt cleanup` is now `wt worktrees` (`wt cleanup` stays as an alias). On a
   terminal the list is grouped by kind (WORKTREES, LOCAL BRANCHES, REMOTE
