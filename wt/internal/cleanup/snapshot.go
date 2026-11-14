@@ -391,6 +391,13 @@ func (s Snapshot) HeldOn(path string) []sessionclaim.Claim {
 	return out
 }
 
+// SessionsOn counts the live sessions holding path — the row's session
+// digit. Claims are read through sessionclaim.Holders, which counts only
+// running processes other than this session and its ancestors, so the count
+// is running sessions by construction and the browsing session never counts
+// itself. Branch and remote rows have no directory: no digit.
+func (s Snapshot) SessionsOn(path string) int { return len(s.HeldOn(path)) }
+
 // checkGates is CheckGates; a seam so a test can count the gate checks a
 // rescan runs (TestRescanCostIsScoped).
 var checkGates = CheckGates

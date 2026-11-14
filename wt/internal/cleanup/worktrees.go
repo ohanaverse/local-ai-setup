@@ -57,6 +57,18 @@ type Gates struct {
 	IgnoredCount   int   // ignored entries (a wholly ignored directory counts once)
 	IgnoredBytes   int64 // their size on disk, symlinks not followed
 	DetachedUnique bool  // detached HEAD the base does not reach
+	// Diff counts the uncommitted change diffstat-style (readDiffStat).
+	// Unknown when it could not be read — including every gate error before
+	// it, so a row whose gates failed never shows a confident +0/-0.
+	Diff DiffStat
+	// InBase answers whether the whole uncommitted change-set is contained in
+	// the base (worktreeContainedInBase) — STATUS's "in main". It is set only
+	// for a dirty worktree with a base, readable diff counts and a non-empty
+	// change-set: a clean worktree has nothing to contain, a diff that counts
+	// nothing readable (hidden index flags, an ignore-configured submodule)
+	// cannot claim containment, and anything else is the zero value,
+	// TriUnknown — never contained.
+	InBase Tri
 }
 
 // GateInputs are what CheckGates cannot learn from git.
@@ -193,7 +205,7 @@ var operationMarkers = []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "C
 func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	var out Gates
 	block := func(code, detail string) { out.Blockers = append(out.Blockers, Reason{code, detail}) }
-	partial := func() Gates { return Gates{Blockers: out.Blockers} }
+	partial := func() Gates { return Gates{Blockers: out.Blockers, Diff: DiffStat{Unknown: true}} }
 
 	if w.Primary {
 		block(BlockPrimary, w.Path)
@@ -249,6 +261,11 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	}
 	if out.IgnoredCount, out.IgnoredBytes, err = ignored(wg); err != nil {
 		return partial(), err
+	}
+	out.Diff = readDiffStat(wg)
+	if out.Dirty && in.Base != "" && !out.Diff.Unknown &&
+		(out.Diff.Added != 0 || out.Diff.Removed != 0) {
+		out.InBase = worktreeContainedInBase(wg, in.Base)
 	}
 	if w.Detached {
 		if out.DetachedUnique, err = detachedUnique(g, w.Head, in.Base); err != nil {

@@ -123,6 +123,36 @@ func WithoutFSMonitor(g Git) Git {
 	return g
 }
 
+// indexCopy returns wg with GIT_INDEX_FILE pointing at a throwaway copy of
+// the checkout's real index, plus a release func that removes the copy (call
+// it on every path). ok is false when the real index is missing or the copy
+// cannot be made. Any diff-shaped read runs against the copy: `git diff`
+// rewrites the index's stat cache even under GIT_OPTIONAL_LOCKS=0, and this
+// package must leave the real index byte-identical.
+func indexCopy(wg Git) (Git, func(), bool) {
+	noop := func() {}
+	o, err := wg.Run("rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil || o.Code != 0 {
+		return wg, noop, false
+	}
+	real, err := os.ReadFile(filepath.Join(strings.TrimSpace(o.Stdout), "index"))
+	if err != nil {
+		return wg, noop, false
+	}
+	tmp, err := os.MkdirTemp("", "wt-index-")
+	if err != nil {
+		return wg, noop, false
+	}
+	idx := filepath.Join(tmp, "index")
+	if err := os.WriteFile(idx, real, 0o600); err != nil {
+		_ = os.RemoveAll(tmp)
+		return wg, noop, false
+	}
+	cg := wg
+	cg.Env = append(slices.Clone(wg.Env), "GIT_INDEX_FILE="+idx)
+	return cg, func() { _ = os.RemoveAll(tmp) }, true
+}
+
 // UnsafeRel says why p cannot name a file inside a root (and outside any .git
 // directory of it, repository metadata a rescue never carries), or "". It is
 // the union of the rules every caller needs: empty or ".", absolute, not a

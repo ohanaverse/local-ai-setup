@@ -136,28 +136,14 @@ func triJoin(a, b Tri) Tri {
 // worktreePatch returns the worktree's staged+unstaged net diff against HEAD
 // as a reversible patch. ok is false on any failure, including a missing or
 // unreadable real index. The diff runs against a byte-copy of the real index
-// under GIT_INDEX_FILE: `git diff` rewrites the index's stat cache even under
+// (indexCopy): `git diff` rewrites the index's stat cache even under
 // GIT_OPTIONAL_LOCKS=0, and this package must leave the real index untouched.
 func worktreePatch(wg Git) (string, bool) {
-	o, err := wg.Run("rev-parse", "--path-format=absolute", "--git-dir")
-	if err != nil || o.Code != 0 {
+	dg, release, ok := indexCopy(wg)
+	if !ok {
 		return "", false
 	}
-	real, err := os.ReadFile(filepath.Join(strings.TrimSpace(o.Stdout), "index"))
-	if err != nil {
-		return "", false
-	}
-	tmp, err := os.MkdirTemp("", "wt-contained-")
-	if err != nil {
-		return "", false
-	}
-	defer os.RemoveAll(tmp)
-	idx := filepath.Join(tmp, "index")
-	if err := os.WriteFile(idx, real, 0o600); err != nil {
-		return "", false
-	}
-	dg := wg
-	dg.Env = append(slices.Clone(wg.Env), "GIT_INDEX_FILE="+idx)
+	defer release()
 	d, err := dg.Run("diff", "--binary", "--no-renames", "--no-color", "--no-ext-diff",
 		"--no-textconv", "-U0", "HEAD")
 	if err != nil || d.Code != 0 {
