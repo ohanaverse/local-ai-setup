@@ -35,6 +35,9 @@ var (
 	runCleanupList = tui.RunCleanupList
 	// cleanupGather is cleanup.Gather, so a test can see the GatherInputs.
 	cleanupGather = cleanup.Gather
+	// cleanupGatherFacts is cleanup.GatherFacts — the interactive list's
+	// first stage — so a test can see which paths call which.
+	cleanupGatherFacts = cleanup.GatherFacts
 )
 
 func worktreesCmd(a *app) *cobra.Command {
@@ -157,7 +160,6 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 	in := cleanupListInputs(cwd, !f.noFetch, protected, "wt-cleanup")
 	if interactive {
 		// The list never fetches on open and shows every remote's branches.
-		// PRs stay synchronous here: RunCleanupList takes a finished report.
 		in.Fetch, in.AllRemotes = false, true
 		switch {
 		case f.fetch:
@@ -170,6 +172,29 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 			// say so instead of naming a flag the user did not pass.
 			in.Fetched = cleanup.FetchResult{NotAttempted: true}
 		}
+		// Stage 1: the facts paint at once; rm.Fill completes them behind
+		// the first paint (gates, records, ladder and the PR lookups, all
+		// off the update goroutine) and brings the removal funcs built from
+		// the filled snapshot — nothing removable from half-read rows.
+		snap, err := cleanupGatherFacts(cleanup.Git{Dir: cwd}, in)
+		if err != nil {
+			repo := snap.Repo
+			if repo == "" {
+				repo = cwd
+			}
+			return cleanupFail(out, f.json, repo, err)
+		}
+		report := cleanupReport(a, snap, f.minAge, protErr)
+		rm := cleanupRemoveFuncs(a, snap, in, f.minAge, protErr)
+		rm.Fill = func() (cleanup.Report, tui.RemoveFuncs, error) {
+			filled, err := cleanup.FillDetails(cleanup.Git{Dir: cwd}, snap, in)
+			if err != nil && !errors.Is(err, cleanup.ErrNoDefaultBranch) {
+				return cleanup.Report{}, tui.RemoveFuncs{}, err
+			}
+			return cleanupReport(a, filled, f.minAge, protErr),
+				cleanupRemoveFuncs(a, filled, in, f.minAge, protErr), nil
+		}
+		return runCleanupList(report, a.theme, rm)
 	}
 	snap, err := cleanupGather(cleanup.Git{Dir: cwd}, in)
 	if err != nil {
@@ -199,8 +224,6 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		}
 		_, err = out.Write(b)
 		return err
-	case interactive:
-		return runCleanupList(report, a.theme, cleanupRemoveFuncs(a, snap, in, f.minAge, protErr))
 	}
 	return printCleanupPlain(out, report, time.Now())
 }

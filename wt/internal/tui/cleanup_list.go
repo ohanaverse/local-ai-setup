@@ -268,6 +268,10 @@ type cleanupListModel struct {
 	// chosenByTicks says what chose the rows of the flow in progress: the
 	// ticks (enter) or the cursor (the row keys) — chosenWord's wording.
 	chosenByTicks bool
+	// fillGen numbers the manage list's fill dispatches: Init sends one for
+	// a facts report, and any report replacement (an F refetch) spends the
+	// generation so a fill dispatched before it is dropped on landing.
+	fillGen int
 	// seedBranch pre-toggles the confirm entries' "also delete unmerged
 	// branch" (`d` on a worktree row).
 	seedBranch bool
@@ -594,7 +598,7 @@ func (m cleanupListModel) startRescue() (tea.Model, tea.Cmd) {
 		m.status = "rescue: " + why
 		return m, nil
 	}
-	if m.rm.Rescue == nil {
+	if m.rm.Rescue == nil || m.filling() {
 		m.status = "rescue is not available here"
 		return m, nil
 	}
@@ -623,7 +627,7 @@ func (m cleanupListModel) startRestoreRoot() (tea.Model, tea.Cmd) {
 		m.status = why
 		return m, nil
 	}
-	if m.rm.RestoreRoot == nil {
+	if m.rm.RestoreRoot == nil || m.filling() {
 		m.status = "restore root is not wired here"
 		return m, nil
 	}
@@ -632,7 +636,44 @@ func (m cleanupListModel) startRestoreRoot() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-func (m cleanupListModel) Init() tea.Cmd { return nil }
+// Init dispatches the fill when the list was given a facts-only report and
+// the command wired one in: stage 1 (the facts) is already painted by the
+// constructor; this is stage 2 arriving off the update goroutine. A filled
+// report, or no Fill, inits nothing — behaviour unchanged.
+func (m cleanupListModel) Init() tea.Cmd {
+	if m.rm.Fill == nil || !factsPending(m.report) {
+		return nil
+	}
+	return m.fillCmd(m.fillGen)
+}
+
+// fillCmd runs rm.Fill off the update loop, tagging the message with gen.
+func (m cleanupListModel) fillCmd(gen int) tea.Cmd {
+	fill := m.rm.Fill
+	return func() tea.Msg {
+		report, rm, err := fill()
+		return cleanupFillMsg{report: report, rm: rm, err: err, gen: gen}
+	}
+}
+
+// gotFill applies a fill landing: a stale one (its generation spent by an F
+// refetch) is dropped; a failure is one status line on the still-showing
+// facts list (F can still re-read); a success swaps the filled report in
+// (withReport: cursor, filter, ticks-per-the-pending-rule) and applies the
+// funcs built from its snapshot.
+func (m cleanupListModel) gotFill(msg cleanupFillMsg) (tea.Model, tea.Cmd) {
+	if m.done || msg.gen != m.fillGen {
+		return m, nil
+	}
+	m.fillGen++
+	if msg.err != nil {
+		m.status = "fill failed: " + cleanup.OneLine(msg.err.Error())
+		return m, nil
+	}
+	next := m.withReport(msg.report)
+	applyRemoveFuncs(&next, msg.rm)
+	return next, nil
+}
 
 func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -646,6 +687,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.gotRunDone(msg)
 	case cleanupRefreshMsg:
 		return m.gotRefresh(msg)
+	case cleanupFillMsg:
+		return m.gotFill(msg)
 	case cleanupRefetchMsg:
 		return m.gotRefetch(msg)
 	case cleanupSignalMsg:

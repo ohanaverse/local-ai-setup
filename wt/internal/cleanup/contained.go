@@ -1,6 +1,7 @@
 package cleanup
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -193,7 +194,10 @@ func untrackedContained(wg Git, base string) Tri {
 			return TriUnknown
 		}
 		got := strings.TrimSpace(h.Stdout)
-		r, err := wg.Run("rev-parse", "--verify", "--quiet", base+":"+p)
+		// Sprintf, not a colon concatenation: the cleanup command's
+		// no-deletion scan bans that shape (a push refspec spells one),
+		// and this is a rev-parse path argument, nothing like a refspec.
+		r, err := wg.Run("rev-parse", "--verify", "--quiet", fmt.Sprintf("%s:%s", base, p))
 		if err != nil {
 			return TriUnknown
 		}

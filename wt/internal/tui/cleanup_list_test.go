@@ -2599,3 +2599,161 @@ func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
 		t.Errorf("o with a locked origin target: previewed %v, phase %v, status %q; want the refusal naming the origin ref", got, fm.phase, fm.status)
 	}
 }
+
+// TestRunCleanupListFillsAfterFirstPaint pins the manage list's two-stage
+// load: RunCleanupList receives the facts-only report, Init dispatches the
+// rm.Fill the command wired in, and the program's single pass sees the
+// filled report — one fill, one pass. Why: `wt worktrees` must paint its
+// rows at once like the picker, and the fill must land through the same
+// generation-guarded swap, never blocking the open.
+func TestRunCleanupListFillsAfterFirstPaint(t *testing.T) {
+	facts := cleanupFixture()
+	filled := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	fills := 0
+	rm := RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) {
+			fills++
+			return filled, RemoveFuncs{}, nil
+		},
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		if !m.filling() {
+			t.Fatal("the first pass is not the facts stage")
+		}
+		cmd := m.Init()
+		if cmd == nil {
+			t.Fatal("Init dispatches no fill for a facts report")
+		}
+		next, _ := m.Update(cmd())
+		nm := next.(cleanupListModel)
+		if nm.filling() {
+			t.Fatal("still filling after the fill message landed")
+		}
+		found := false
+		for _, it := range nm.items {
+			if it.heading == "" && !it.newWorktree && it.row.Name == "deep" && !it.row.Pending {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("the filled report's rows are not on the list")
+		}
+		return nm, func() {}, nil
+	}
+	if err := RunCleanupList(facts, themes.Theme{}, rm); err != nil {
+		t.Fatalf("RunCleanupList: %v", err)
+	}
+	if fills != 1 {
+		t.Errorf("Fill ran %d times, want exactly 1", fills)
+	}
+}
+
+// TestManageEnterRemoveUnavailableUntilFill pins that enter on the tick list
+// refuses while the fill is in flight — with the existing nil-RemoveFuncs
+// status, not a preview from half-read rows — and works once the fill
+// lands. Why: nothing may be removed from a facts-only report; the keys
+// coming back with the fill is the whole contract.
+func TestManageEnterRemoveUnavailableUntilFill(t *testing.T) {
+	facts := cleanupFixture()
+	filled := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	preview := func(rows []cleanup.Row) []removal.ItemPreview {
+		var out []removal.ItemPreview
+		for _, r := range rows {
+			out = append(out, removal.ItemPreview{Item: removal.ItemFromRow(r), Approval: removal.ApprovalProven})
+		}
+		return out
+	}
+	m := newCleanupList(facts, themes.Default, time.Now(), RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) { return filled, RemoveFuncs{Preview: preview}, nil },
+	})
+	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = moveTo(t, m, "full-branch-name-paths")
+	m = cleanupSend(t, m, spaceKey) // a tick, so "nothing ticked" cannot answer
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != cleanupPhaseList {
+		t.Fatalf("enter while filling entered phase %v, want the list", m.phase)
+	}
+	if m.status != "removal is not available here; nothing was removed" {
+		t.Errorf("status while filling = %q, want the existing unavailable status", m.status)
+	}
+
+	// The fill lands: enter now previews.
+	next, _ := m.Update(cleanupFillMsg{report: filled, rm: RemoveFuncs{Preview: preview}, gen: 0})
+	m = next.(cleanupListModel)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != cleanupPhasePreviewing {
+		t.Fatalf("enter after the fill entered phase %v, want the preview", m.phase)
+	}
+}
+
+// TestRefreshDuringFillIsReplaced pins the F rule on the manage list: a
+// refetch landing while a fill is in flight invalidates that fill (its
+// generation is spent), so the stale fill's message is dropped and the
+// refetch's full report stays. Why: the F re-reads the repository now; the
+// stale fill would paint the state it read before the fetch.
+func TestRefreshDuringFillIsReplaced(t *testing.T) {
+	facts := cleanupFixture()
+	filled := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	m := newCleanupList(facts, themes.Default, time.Now(), RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) { return filled, RemoveFuncs{}, nil },
+	})
+	// The F re-read's answer lands (its cmd set the refreshing phase).
+	m.phase = cleanupPhaseRefreshing
+	next, _ := m.Update(cleanupRefetchMsg{report: filled})
+	m = next.(cleanupListModel)
+	if m.fillGen == 0 {
+		t.Fatal("the refetch did not spend the fill generation")
+	}
+	if m.filling() {
+		t.Fatal("the refetch's full report did not land")
+	}
+	// The fill dispatched before the F lands now: dropped.
+	stale := filled
+	stale.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	stale.Rows[0].Name = "stale-fill-swap"
+	next, cmd := m.Update(cleanupFillMsg{report: stale, gen: 0})
+	m = next.(cleanupListModel)
+	if cmd != nil {
+		t.Errorf("stale fill returned a command: %v", cmd)
+	}
+	for _, it := range m.items {
+		if it.row.Name == "stale-fill-swap" {
+			t.Fatal("a fill dispatched before the F replaced the refetch's report")
+		}
+	}
+}
+
+// TestFillErrorShowsOnTheListNotPanics pins the fill's failure path: the
+// error lands as one status line on the still-showing facts list — no
+// panic, no dead screen, and F can still re-read the repository. Why: a
+// fill that fails (a repository that changed under it, a git error) must
+// leave the list usable, not take the alt screen down.
+func TestFillErrorShowsOnTheListNotPanics(t *testing.T) {
+	facts := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	m := newCleanupList(facts, themes.Default, time.Now(), RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) { return cleanup.Report{}, RemoveFuncs{}, nil },
+	})
+	next, _ := m.Update(cleanupFillMsg{err: errors.New("git exploded"), gen: 0})
+	nm := next.(cleanupListModel)
+	if nm.phase != cleanupPhaseList {
+		t.Errorf("phase = %v, want the list", nm.phase)
+	}
+	if !strings.Contains(nm.status, "fill failed") || !strings.Contains(nm.status, "git exploded") {
+		t.Errorf("status = %q, want it to name the fill failure", nm.status)
+	}
+	if !nm.filling() {
+		t.Error("a failed fill cleared the facts: the list would offer removal rows it never read")
+	}
+}

@@ -83,6 +83,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	next.rm, next.width, next.height, next.offset = m.rm, m.width, m.height, m.offset
 	next.filter, next.filtering = m.filter, m.filtering
 	next.phase, next.conf, next.run, next.log, next.pending = m.phase, m.conf, m.run, m.log, m.pending
+	next.fillGen = m.fillGen // a swap keeps the fill generation (an accepted fill or refetch spent it)
 	next.status, next.exitErr, next.quitAfterRun, next.rescueRow, next.done = m.status, m.exitErr, m.quitAfterRun, m.rescueRow, m.done
 	next.restoreRoot, next.chosenByTicks, next.seedBranch, next.pendingRM = m.restoreRoot, m.chosenByTicks, m.seedBranch, m.pendingRM
 	next.clock, next.now = m.clock, m.now
