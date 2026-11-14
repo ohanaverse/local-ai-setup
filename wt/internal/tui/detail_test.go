@@ -771,3 +771,54 @@ func TestRunFinishReturnsToList(t *testing.T) {
 		t.Errorf("the run kept the detail state (rowDetail %+v, confFromDetail %v)", m.rowDetail, m.confFromDetail)
 	}
 }
+
+// TestEscOnDetailTakesTheDeferredRemoveFuncs pins that a fill's removal funcs,
+// deferred while the detail screen was open (swapRemoveFuncs), are applied
+// when esc returns to the list. Why: the picker's fill can land under a
+// screen opened during the facts stage, and a list that kept the facts-stage
+// funcs would refuse x, d, o, r and R until some other flow ended.
+func TestEscOnDetailTakesTheDeferredRemoveFuncs(t *testing.T) {
+	m := detailReady(t, detailOneRow(detailWorktreeRow("topic")), nil)
+	m = press(t, m, keyRunes("i"))
+	m.pendingRM = func() RemoveFuncs { return RemoveFuncs{Preview: detailPreviewFn} }
+	m.rm.Preview = nil
+	m = press(t, m, escKey)
+	if m.phase != cleanupPhaseList || m.pendingRM != nil || m.rm.Preview == nil {
+		t.Errorf("esc: phase %v, pendingRM set %v, Preview wired %v; want the list holding the deferred funcs",
+			m.phase, m.pendingRM != nil, m.rm.Preview != nil)
+	}
+}
+
+// TestDetailStatusClearsOnTheNextKey pins that a refusal's status line on the
+// detail screen goes away with the next key. Why: the list clears its status
+// on every key, and a refusal that stuck to the screen for good would read as
+// the answer to every later key.
+func TestDetailStatusClearsOnTheNextKey(t *testing.T) {
+	m := detailReady(t, detailOneRow(detailWorktreeRow("topic")), nil)
+	m = press(t, m, keyRunes("i"))
+	m.status = "something refused"
+	m = press(t, m, keyRunes("j"))
+	if m.status != "" {
+		t.Errorf("status after another key: %q, want none", m.status)
+	}
+}
+
+// TestSingleRowConfirmDropsTheKeptBranchNoteWhenTheToggleDeletesIt pins that
+// the single-row confirm leaves out the engine's notes while the branch toggle
+// is on. Why: the kept-branch note would then contradict the "[x] also delete
+// unmerged branch" line under it (the batch layout drops it for the same
+// reason).
+func TestSingleRowConfirmDropsTheKeptBranchNoteWhenTheToggleDeletesIt(t *testing.T) {
+	m := &cleanupListModel{}
+	pv := detailPreview(detailWorktreeRow("topic"))
+	pv.Notes = []string{"branch topic is kept"}
+	pv.CanDeleteBranch = true
+	e := confirmEntry{pv: pv, delBranch: true}
+	if got := m.confirmDetail(e); len(got.pv.Notes) != 0 {
+		t.Errorf("notes with the toggle on: %q, want none", got.pv.Notes)
+	}
+	e.delBranch = false
+	if got := m.confirmDetail(e); len(got.pv.Notes) != 1 {
+		t.Errorf("notes with the toggle off: %q, want the kept-branch note", got.pv.Notes)
+	}
+}

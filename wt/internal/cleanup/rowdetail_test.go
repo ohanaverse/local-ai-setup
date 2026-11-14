@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -213,4 +214,29 @@ func fingerprintRepo(t *testing.T, dir, gitDir string) string {
 		t.Fatalf("walk %s: %v", dir, err)
 	}
 	return fmt.Sprintf("%x", sum.Sum(nil))
+}
+
+// TestReadRowDetailUnbornHeadAndBareRow checks that a worktree whose HEAD has
+// no commit yet lists its uncommitted files with a "no commits yet" note, and
+// that a bare row reads empty with a note, neither as an error: both states
+// are ordinary, and the screen should not report them as a failed git call.
+func TestReadRowDetailUnbornHeadAndBareRow(t *testing.T) {
+	dir := t.TempDir()
+	if b, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("init: %v\n%s", err, b)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := ReadRowDetail(Git{Dir: dir}, Row{Kind: KindWorktree, Path: dir})
+	if d.Err != "" || d.Note != "no commits yet" {
+		t.Fatalf("unborn: Err = %q, Note = %q; want no error and the note", d.Err, d.Note)
+	}
+	if len(d.Uncommitted) != 1 || d.Uncommitted[0].Path != "a.txt" {
+		t.Errorf("unborn: Uncommitted = %+v, want a.txt", d.Uncommitted)
+	}
+	b := ReadRowDetail(Git{Dir: dir}, Row{Kind: KindWorktree, Path: dir, Bare: true})
+	if b.Err != "" || b.Note == "" || len(b.Commits)+len(b.Uncommitted) != 0 {
+		t.Errorf("bare: %+v, want empty with a note and no error", b)
+	}
 }

@@ -1173,7 +1173,14 @@ func (m *cleanupListModel) singleRowConfirm() bool {
 // the screen underneath is the same row's. No screen (a flow started from the
 // list) leaves the lists nil, and the block says they are not available here.
 func (m *cleanupListModel) confirmDetail(e confirmEntry) *rowDetail {
-	d := &rowDetail{row: e.pv.Fresh, pv: &e.pv}
+	pv := e.pv
+	// The batch layout drops the engine's notes for an entry that will not run
+	// and for one whose branch the toggle deletes (the kept-branch note would
+	// then be false); the single-row block must say no less.
+	if !e.runnable() || (pv.CanDeleteBranch && e.delBranch) {
+		pv.Notes = nil
+	}
+	d := &rowDetail{row: pv.Fresh, pv: &pv}
 	if m.rowDetail != nil && keyOf(m.rowDetail.row) == keyOf(e.pv.Fresh) {
 		d.lists, d.loading = m.rowDetail.lists, m.rowDetail.loading
 	}

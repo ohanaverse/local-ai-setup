@@ -47,6 +47,10 @@ type RowDetail struct {
 	// which listing failed and why otherwise; that listing's section is then
 	// empty.
 	Err string
+	// Note is "" or one line saying why a listing is empty by construction:
+	// a bare repository has no working tree and an unborn HEAD has no commits.
+	// It is not a failure; Err stays "".
+	Note string
 }
 
 // ReadRowDetail reads row's local-only work: the commits no remote has, and,
@@ -74,7 +78,20 @@ func ReadRowDetail(g Git, row Row) RowDetail {
 	}
 	wg := Git{Dir: dir, Timeout: g.Timeout}
 
-	commits, more, why := readDetailCommits(wg, rev)
+	if row.Bare {
+		d.Note = "a bare repository: no working tree and no commits of its own to list"
+		return d
+	}
+	unborn := row.Kind != KindBranch && !detailHasCommit(wg)
+	if unborn {
+		d.Note = "no commits yet"
+	}
+	var commits []DetailCommit
+	var more int
+	var why string
+	if !unborn {
+		commits, more, why = readDetailCommits(wg, rev)
+	}
 	if why != "" {
 		d.Err = OneLine("could not list its local-only commits: " + why)
 		return d
@@ -120,6 +137,13 @@ func readDetailCommits(g Git, rev string) ([]DetailCommit, int, string) {
 	}
 	cs, more := capDetail(all)
 	return cs, more, ""
+}
+
+// detailHasCommit reports whether the checkout's HEAD names a commit; an
+// unborn HEAD (a fresh `git init`) has none, so `git log HEAD` would fail.
+func detailHasCommit(g Git) bool {
+	o, err := g.Run("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	return err == nil && o.Code == 0
 }
 
 // readDetailStatus lists the checkout's uncommitted entries — staged,
@@ -203,6 +227,9 @@ func parseDetailStatus(raw string) ([]DetailFile, error) {
 // when it says something, else the index column, else "?" for a pair that
 // says nothing at all.
 func detailLetter(xy string) string {
+	if xy == "" {
+		return "?"
+	}
 	for _, c := range []byte{xy[len(xy)-1], xy[0]} {
 		if c != '.' {
 			return string(c)

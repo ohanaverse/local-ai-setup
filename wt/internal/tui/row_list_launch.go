@@ -117,6 +117,9 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 		}
 	}
 	next.settleCursor()
+	// An open detail screen follows its row onto the new report (a picker's
+	// fill or PR lookup lands under it), or closes when the row is gone.
+	next.settleDetail()
 	return next
 }
 
@@ -164,7 +167,7 @@ func (m *cleanupListModel) hidden(i int) bool {
 	if m.items[i].newWorktree {
 		return true
 	}
-	return !strings.Contains(filterText(m.items[i]), strings.ToLower(m.filter))
+	return !strings.Contains(m.items[i].filter, strings.ToLower(m.filter))
 }
 
 // settleCursor puts the cursor on the first visible item when the filter

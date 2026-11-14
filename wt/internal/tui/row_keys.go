@@ -64,8 +64,8 @@ func balanceHints(forms []string, width int) (string, bool) {
 		if diff < 0 {
 			diff = -diff
 		}
-		if d := diff; best == "" || d < bestDiff {
-			best, bestDiff = a+"\n"+b, d
+		if best == "" || diff < bestDiff {
+			best, bestDiff = a+"\n"+b, diff
 		}
 	}
 	return best, best != ""

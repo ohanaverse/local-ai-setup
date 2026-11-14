@@ -122,6 +122,7 @@ type cleanupItem struct {
 	text        string        // cleanup.RowText for the row
 	tags        []cleanup.Tag // the tags drawn for the row (rowTags)
 	locked      bool          // can never be ticked or removed: drawn [-], space does nothing
+	filter      string        // filterText(it), built once with the item so a keystroke in the filter does not rebuild every row's tags
 }
 
 // cleanupLocked reports whether a row can never be ticked: an in-use row, a
@@ -365,6 +366,7 @@ func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	}
 	for _, row := range cleanup.ListOrder(r) {
 		it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row, o.Mode != modeLaunch), locked: cleanupLocked(row)}
+		it.filter = filterText(it)
 		if o.Mode == modeManage && row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
 			m.ticked[len(m.items)] = true
 		}
@@ -931,11 +933,11 @@ func (m cleanupListModel) originTarget(row cleanup.Row) (cleanup.Row, bool) {
 	return cleanup.Row{}, false
 }
 
-// move moves the cursor n items in direction dir, skipping hidden rows. A single step (n == 1) wraps past either end — down from the
-// last item lands on the first, up from the first on the last (spec §6) —
-// while a multi-item move (paging: pgup/pgdown, home/end) still stops at
-// the ends. A wrap that would land back on the cursor (one item to sit on)
-// leaves it put.
+// move moves the cursor n items in direction dir, skipping hidden rows. A
+// single step (n == 1) wraps past either end — down from the last item lands
+// on the first, up from the first on the last (spec §6) — while a multi-item
+// move (paging: pgup/pgdown, home/end) still stops at the ends. A wrap that
+// would land back on the cursor (one item to sit on) leaves it put.
 func (m *cleanupListModel) move(dir, n int, wrap bool) {
 	sittable := func(j int) bool { return !m.hidden(j) }
 	for ; n > 0; n-- {

@@ -81,9 +81,9 @@ func (m cleanupListModel) detailActions() []detailAction {
 	// No removal while the fill is in flight: the removal funcs are built
 	// from the filled snapshot only, so the actions are absent exactly when
 	// their handlers would refuse (nil-RemoveFuncs rule).
-	removal := !filling && m.rm.Off == "" && m.rm.Preview != nil
+	canRemove := !filling && m.rm.Off == "" && m.rm.Preview != nil
 	var out []detailAction
-	if removal && !cleanupLocked(row) {
+	if canRemove && !cleanupLocked(row) {
 		out = append(out,
 			detailAction{Key: "x", Label: "remove", Does: "deletes the worktree directory; keeps the branch unless it is proven merged; lists what is lost; unproven rows need the typed word delete."},
 			detailAction{Key: "d", Label: "remove + branch", Does: "as x, and also deletes the unmerged branch (the box starts on, tab toggles it); on a branch-only row it equals x."},
@@ -95,7 +95,7 @@ func (m cleanupListModel) detailActions() []detailAction {
 	if ok, _ := rootmove.Offered(row); ok && !filling && m.rm.RestoreRoot != nil {
 		out = append(out, detailAction{Key: "R", Label: "restore root", Does: "moves its branch and its work into a new worktree and puts the root back on the default branch."})
 	}
-	if target, has := m.originTarget(row); removal && has && !cleanupLocked(target) {
+	if target, has := m.originTarget(row); canRemove && has && !cleanupLocked(target) {
 		out = append(out, detailAction{Key: "o", Label: "delete origin", Does: "deletes the origin ref and nothing local; needs the typed phrase delete origin."})
 	}
 	return append(out, detailAction{Key: "esc", Label: "back to the list", Does: "returns to the list, with the cursor still on this row."})
@@ -192,8 +192,15 @@ func (m cleanupListModel) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	page := max(1, m.height/2)
+	// A refusal or a cancel's status answers the key before this one: the next
+	// key takes it down, as on the list.
+	m.status = ""
 	switch msg.String() {
 	case "esc":
+		// The detail screen is a rest: a fill that landed under it was
+		// deferred (swapRemoveFuncs), and the list it returns to must not
+		// keep the facts-stage funcs.
+		m.applyPendingRemoveFuncs()
 		m.phase, m.rowDetail = cleanupPhaseList, nil
 		return m, nil
 	case "ctrl+c":
@@ -345,6 +352,9 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 		l := d.lists
 		if l.Err != "" {
 			say(cleanup.OneLine(l.Err))
+		}
+		if l.Note != "" {
+			say(cleanup.OneLine(l.Note))
 		}
 		// Each entry wraps under its own two-space indent: a long subject or
 		// a deep path is readable at 40 columns too, never a line past the
