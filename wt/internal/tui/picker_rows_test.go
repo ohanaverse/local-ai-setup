@@ -734,30 +734,69 @@ func TestRemovalKeysUnavailableWhileFilling(t *testing.T) {
 	}
 }
 
-// TestFReloadReplacesAnInFlightFill pins the refresh rule: an F pressed
-// while a fill is in flight owns the reload — the old fill's landing is
-// dropped, and the F's own facts load dispatches a fresh fill. Why: the F
-// re-reads the repository now; the stale fill would paint what it read
-// before the fetch.
+// TestFReloadReplacesAnInFlightFill pins the refresh rule and its recovery:
+// a fill landing while an F's re-read is in flight is judged by generation
+// alone (it still matches, so it lands — a fill is never silently dropped),
+// the F's own facts load then replaces it and spends the generation so any
+// older fill is stale, and if that re-read FAILS the list is not stranded at
+// the facts stage: the landed fill's rows stay, filling() is false and the
+// removal keys come back, with the failure on the status. Why: dropping the
+// in-flight fill and then failing the reload left rows Pending forever —
+// verdict cells "-", no removal — recoverable only by an F that succeeded.
 func TestFReloadReplacesAnInFlightFill(t *testing.T) {
 	m := pickerReady(t, pickerFixture())
 	m.rowsGen = 3
 	// An F is in flight (rowsRefreshing set, reloadGen at dispatch).
 	m.rowsRefreshing, m.reloadGen = true, m.rowsGen
-	rep := pickerFixture()
-	rep2 := pickerFixture()
-	rep2.Rows = append(rep2.Rows[:0:0], rep2.Rows...)
-	rep2.Rows[0].Name = "in-flight-fill"
-	m, cmd := updateMsg(m, rowsFilledMsg{Report: rep2, gen: m.rowsGen})
-	if cmd != nil {
-		t.Errorf("fill landing during an F returned a command: %v", cmd)
+
+	// The fill that was in flight lands: generation matches, so it applies.
+	filled := pickerFixture()
+	filled.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	filled.Rows[0].Name = "filled-during-f"
+	m, cmd := updateMsg(m, rowsFilledMsg{Report: filled, gen: 3})
+	if cmd == nil {
+		t.Fatal("a fill whose generation still matches was dropped: the gen guard is the only supersession rule")
 	}
+	seen := false
 	for _, it := range m.rows.items {
-		if it.row.Name == "in-flight-fill" {
-			t.Fatal("a fill landed while an F reload was in flight")
+		if it.row.Name == "filled-during-f" {
+			seen = true
 		}
 	}
-	_ = rep
+	if !seen {
+		t.Fatal("the in-flight fill's rows are not on the list")
+	}
+
+	// The F's re-read then fails: the error is shown, the filled rows stay,
+	// and the list is NOT stuck at the facts stage.
+	m, cmd = updateMsg(m, rowsLoadedMsg{err: errMock("fetch dead"), gen: 3})
+	if cmd != nil {
+		t.Errorf("a failed reload returned a command: %v", cmd)
+	}
+	if !strings.Contains(m.listError, "fetch dead") {
+		t.Errorf("listError = %q, want the reload's failure", m.listError)
+	}
+	if m.rows.filling() {
+		t.Error("the list is stuck filling after a failed F: the fill landed but the state read as pending")
+	}
+	if m.rowsRefreshing {
+		t.Error("rowsRefreshing stayed set after the reload failed: no later F could start")
+	}
+
+	// An older fill (generation spent by a later load) is still dropped.
+	stale := filled
+	stale.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	stale.Rows[0].Name = "stale-fill"
+	m.rowsGen = 5
+	m, cmd = updateMsg(m, rowsFilledMsg{Report: stale, gen: 4})
+	if cmd != nil {
+		t.Errorf("stale fill returned a command: %v", cmd)
+	}
+	for _, it := range m.rows.items {
+		if it.row.Name == "stale-fill" {
+			t.Fatal("a fill for a superseded generation swapped the list")
+		}
+	}
 }
 
 // TestTicksDefaultAfterFillAndKeepLaterChoices pins withReport's pending

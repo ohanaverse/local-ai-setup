@@ -85,7 +85,10 @@ session claim (`held`), the default branch (`default_branch`), an unknown
 pull request (`pr_unknown`), a root that has drifted off the default and a repository with no default branch to
 compare against (`no_default_branch`) leave the row `less_sure` at best, so `wt remove`
 needs `--accept-loss` for it (in the list a floor never locks a worktree or local branch: you may tick it, and the confirmation asks for the typed `delete`), and, for a branch that is not proven merged,
-`-D` as well (the engine asks for `-D` for any unproven branch).
+`-D` as well (the engine asks for `-D` for any unproven branch). A row
+proven by any rung — including `changes-in-base`, how a squash merge reads
+even after the base later edited the same file — needs no typed phrase:
+`wt remove --yes`, or `y` when every item is proven, removes it directly.
 
 An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
 failed) floors a row below proven, with a `PR ?` tag, because a merged PR is

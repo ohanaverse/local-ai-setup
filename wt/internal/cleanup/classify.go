@@ -605,11 +605,15 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		row.Losses.DetachedUnique = g.DetachedUnique
 		// Covered dirt is not raised; the preserved reason (soft) says it
 		// instead, and Losses.Dirty stays raw. Contained dirt is not raised
-		// either (spec §4's worktree rule): its changes are in the base, so
-		// removal loses none of them — the row keeps whatever its other
-		// evidence says, proven when the branch itself is proven. An unknown
-		// containment (TriUnknown) raises it as always: fail closed.
-		if g.Dirty && !c.dirtCovered(ws) && g.InBase != TriYes {
+		// either, but only under spec §4's own gate: the branch (or a
+		// detached HEAD) must be proven by a ladder rung AND the change-set
+		// contained — then the row reads proven with its dirt described, not
+		// unique. An unmerged branch's contained dirt still raises unique
+		// work: the dirt may be in the base, the branch is not, and
+		// suppressing that would relabel --json verdict values beyond the
+		// class the spec sanctioned. An unknown containment (TriUnknown)
+		// raises it as always: fail closed.
+		if g.Dirty && !c.dirtCovered(ws) && !(c.ladderProven(ws.Fact) && g.InBase == TriYes) {
 			j.uniq(ReasonDirty, "uncommitted or untracked files")
 		}
 		if g.DetachedUnique && !c.detachedPreserved(ws) {
@@ -842,6 +846,19 @@ func (c *classifier) preserve(j *judge, p *Preserved) *Preserved {
 	}
 	cp := *p
 	return &cp
+}
+
+// ladderProven reports whether a worktree's own ref — its branch, or a
+// detached HEAD — carries a Merged verdict from the proof ladder (any rung,
+// rescued included). Spec §4's worktree rule keys its dirty-gate suppression
+// on this: contained dirt silences the gate only for a row whose commits are
+// themselves proven. A facts-only snapshot has no proofs and answers false.
+func (c *classifier) ladderProven(w WorktreeFact) bool {
+	if w.Head == "" {
+		return false
+	}
+	p, ok := c.s.Proofs[w.Head]
+	return ok && p.Verdict == Merged
 }
 
 // unpushedOf is Losses.Unpushed for local head h: 0 when a proof other than

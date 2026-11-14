@@ -301,7 +301,12 @@ func factsPending(rep cleanup.Report) bool {
 // dispatch. The generation bumps so a PR answer for anything older than this
 // fill is dropped too.
 func (m model) gotFilled(msg rowsFilledMsg) (model, tea.Cmd) {
-	if m.rows.done || msg.gen != m.rowsGen || m.rowsRefreshing {
+	// The generation alone judges a fill: a fill dispatched before a later
+	// load still matches while that load's re-read is in flight, and dropping
+	// it there — when the re-read may then fail — would strand the list at
+	// the facts stage with no fill to wait for. A superseded fill (its load
+	// accepted, rowsGen bumped) fails the gen check instead.
+	if m.rows.done || msg.gen != m.rowsGen {
 		return m, nil
 	}
 	if msg.err != nil {
@@ -313,7 +318,11 @@ func (m model) gotFilled(msg rowsFilledMsg) (model, tea.Cmd) {
 		return m, nil
 	}
 	m.listError = ""
-	m.rowsGen++
+	// No rowsGen bump here: the generation numbers LOADS (a load, an F
+	// reload, a removal run), and bumping it on a fill would break the
+	// reloadGen comparison that judges the F's own landing. Supersession of
+	// this fill is any later load's bump; the PR stage carries the current
+	// rowsGen, so a PR answer older than any load is dropped as before.
 	m.rows = m.rows.withReport(msg.Report)
 	swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
 	return m, loadRowPRsCmd(m.repoRoot, msg.Snap, m.rowsIn, m.rowsGen)

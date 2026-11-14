@@ -1451,3 +1451,35 @@ func TestNoDefaultKnownStillListsEveryRow(t *testing.T) {
 		}
 	}
 }
+
+// TestWorktreeRuleContainedDirtNeedsAProvenBranch pins spec §4's gate: the
+// dirty gate stays quiet only when the branch itself is proven by a ladder
+// rung AND the change-set is contained. Why: the containment read is about
+// the dirt, not the branch — an unmerged branch whose dirt happens to be in
+// the base still has work at risk on its own, and suppressing the gate
+// unconditionally would relabel --json verdict values (unique_work →
+// less_sure) for rows the spec never sanctioned.
+func TestWorktreeRuleContainedDirtNeedsAProvenBranch(t *testing.T) {
+	f := newFixture(t)
+	wp := f.Worktree("topic") // forked before main gains n.txt
+	f.Commit("n.txt", "same\n", "main adds n.txt")
+	f.Push("main") // the base holds n.txt: the worktree's copy is contained
+	// The branch itself is NOT in the base: one commit of its own, pushed
+	// (so unpushed is not what raises unique work — the commit is).
+	commitIn(t, wp, "unique.txt", "u\n", "unique work")
+	f.git("push", "-u", "origin", "topic")
+	if err := os.WriteFile(filepath.Join(wp, "n.txt"), []byte("same\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noGh(t)
+
+	r := Classify(gather(t, f), Options{Now: later()})
+	row := findRow(t, r, KindWorktree, "topic")
+	if row.Status != StatusUniqueWork || !slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+		t.Fatalf("row = (%s, %v), want unique_work with the dirty reason: contained dirt silences the gate only for a proven branch%s",
+			row.Status, reasonCodes(row.Reasons), dumpRows(r.Rows))
+	}
+	if row.State != StateInMain {
+		t.Errorf("State = %q, want %q (the dirt itself is contained)", row.State, StateInMain)
+	}
+}
