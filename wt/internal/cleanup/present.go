@@ -541,8 +541,14 @@ func KindGroups(r Report) []KindGroup {
 	}
 	slices.SortStableFunc(wt, byDisplayName)
 	slices.SortStableFunc(local, byDisplayName)
-	if i := slices.IndexFunc(wt, func(r Row) bool { return r.Primary }); i > 0 {
-		// The root leads its group whatever its name sorts as.
+	// The root leads its group whatever its name sorts as. The root is
+	// named either by Row.Primary (a classified row) or by its
+	// primary-checkout blocker (a hand-built report): a report carries one
+	// or the other, never nothing.
+	isRoot := func(r Row) bool {
+		return r.Primary || slices.ContainsFunc(r.Blockers, func(b Reason) bool { return b.Code == BlockPrimary })
+	}
+	if i := slices.IndexFunc(wt, isRoot); i > 0 {
 		root := wt[i]
 		wt = slices.Concat([]Row{root}, wt[:i], wt[i+1:])
 	}

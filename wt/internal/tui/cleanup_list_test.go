@@ -2255,8 +2255,10 @@ func TestCleanupListTickedRowsReturnsTheRawTickSet(t *testing.T) {
 	for _, row := range m.tickedRows() {
 		names = append(names, cleanup.DisplayName(row))
 	}
-	if strings.Join(names, ",") != "full-branch-name-paths,deep" {
-		t.Errorf("tickedRows() = %v, want the raw tick set [full-branch-name-paths deep]: every ticked row, locked included, in list order", names)
+	// List order, which since the table design is the kind group with its
+	// rows by display name (root hoisted): deep precedes full-branch.
+	if strings.Join(names, ",") != "deep,full-branch-name-paths" {
+		t.Errorf("tickedRows() = %v, want the raw tick set [deep full-branch-name-paths]: every ticked row, locked included, in list order", names)
 	}
 }
 
