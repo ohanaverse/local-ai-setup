@@ -36,7 +36,7 @@ func TestTabAfterPgdownTogglesOnlyAVisibleEntry(t *testing.T) {
 	}
 	m = press(t, m, pgDownKey)
 	m = press(t, m, pgDownKey)
-	if strings.Contains(m.View(), "worktree k1") {
+	if strings.Contains(m.View(), "worktree .worktrees/k1") {
 		t.Fatalf("k1 still on screen after 2x pgdown; the fixture does not scroll it away:\n%s", m.View())
 	}
 	toggledVisible := func(step string) {
@@ -50,7 +50,7 @@ func TestTabAfterPgdownTogglesOnlyAVisibleEntry(t *testing.T) {
 	}
 	m = press(t, m, tabKey)
 	toggledVisible("first tab")
-	if !strings.Contains(m.View(), "worktree k1") {
+	if !strings.Contains(m.View(), "worktree .worktrees/k1") {
 		t.Errorf("tab did not bring the highlighted entry back into view:\n%s", m.View())
 	}
 	for _, e := range m.conf.entries {

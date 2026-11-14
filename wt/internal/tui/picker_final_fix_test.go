@@ -46,8 +46,8 @@ func TestPickerCtrlCFollowsTheRowList(t *testing.T) {
 		t.Fatalf("phase %v, want the confirm screen", m.rows.phase)
 	}
 	next, cmd = updateMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
-	if quits(cmd) || next.rows.done || next.rows.phase != cleanupPhaseList || !strings.Contains(next.rows.status, "cancelled") {
-		t.Errorf("ctrl+c on the confirm screen: quit %v, phase %v, status %q; want it cancelled", quits(cmd), next.rows.phase, next.rows.status)
+	if quits(cmd) || next.rows.done || next.rows.phase != cleanupPhaseDetail || !strings.Contains(next.rows.status, "cancelled") {
+		t.Errorf("ctrl+c on the confirm screen: quit %v, phase %v, status %q; want the detail screen, cancelled", quits(cmd), next.rows.phase, next.rows.status)
 	}
 
 	// At rest it still quits wt.

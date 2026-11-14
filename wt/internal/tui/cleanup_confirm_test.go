@@ -311,7 +311,9 @@ func TestConfirmListsLossesForEveryTickedItem(t *testing.T) {
 	v := m.View()
 	for _, want := range []string{
 		"PROVEN MERGED", "NOT PROVEN, OR LOSES WHAT IS LISTED", "UNCOMMITTED CHANGES OR DETACHED COMMITS", "UNMERGED BRANCHES",
-		"worktree done", "worktree dirty", "worktree kept", "branch loose",
+		// A worktree whose directory is named after it says the name once: the
+		// head line is `worktree .worktrees/<name>`.
+		"worktree .worktrees/done", "worktree .worktrees/dirty", "worktree .worktrees/kept", "branch loose",
 		"will lose: uncommitted changes will be lost",
 		"running in it: pid 4242 vim wip.txt",
 		"will lose: 1 commit exists only on this machine",
@@ -323,7 +325,6 @@ func TestConfirmListsLossesForEveryTickedItem(t *testing.T) {
 		"approvals: --accept-loss -D",
 		"type delete and press enter to remove 4 items",
 		"(1 proven, 1 not proven or losing something, 1 with uncommitted changes or detached commits, 1 unmerged branch)",
-		"worktree dirty  .worktrees/dirty",
 	} {
 		if !strings.Contains(v, want) && !strings.Contains(squash(v), squash(want)) {
 			t.Errorf("confirm screen lacks %q:\n%s", want, v)
@@ -331,7 +332,7 @@ func TestConfirmListsLossesForEveryTickedItem(t *testing.T) {
 	}
 	// Group order: proven before not-proven before force before -D.
 	last := -1
-	for _, g := range []string{"worktree done", "worktree kept", "worktree dirty", "branch loose"} {
+	for _, g := range []string{"worktree .worktrees/done", "worktree .worktrees/kept", "worktree .worktrees/dirty", "branch loose"} {
 		i := strings.Index(v, g)
 		if i <= last {
 			t.Errorf("%q out of group order:\n%s", g, v)

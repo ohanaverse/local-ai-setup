@@ -123,8 +123,10 @@ func TestCleanupListXOnDirtyWorktreeNeedsTypedDelete(t *testing.T) {
 	}
 	// y is not the word: enter cancels, nothing runs.
 	m = press(t, press(t, m, keyRunes("y")), enterKey)
-	if m.phase != cleanupPhaseList || h.runCalls != 0 || !strings.Contains(m.status, "nothing was removed") {
-		t.Fatalf("y+enter: phase %v runs %d status %q; want cancelled", m.phase, h.runCalls, m.status)
+	// The refused word goes back one step, to the detail screen the removal
+	// was started from (its own esc goes back to the list).
+	if m.phase != cleanupPhaseDetail || h.runCalls != 0 || !strings.Contains(m.status, "nothing was removed") {
+		t.Fatalf("y+enter: phase %v runs %d status %q; want the detail screen with nothing removed", m.phase, h.runCalls, m.status)
 	}
 	if _, err := os.Stat(p); err != nil {
 		t.Fatal("the worktree was removed without the typed word")

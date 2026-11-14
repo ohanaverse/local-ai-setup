@@ -333,6 +333,9 @@ func (m cleanupListModel) startRemovalOf(rows []cleanup.Row) (cleanupListModel, 
 		m.status = "removal is not available here; nothing was removed"
 		return m, nil
 	}
+	// Where this flow started decides where a cancel goes back to: the detail
+	// screen that started it (its `x`/`d`/`o`), or the list (enter's ticks).
+	m.confFromDetail = m.phase == cleanupPhaseDetail
 	m.phase = cleanupPhasePreviewing
 	m.pending = len(rows)
 	return m, previewCmd(m.rm.Preview, rows)
@@ -480,9 +483,27 @@ func (c *cleanupConfirm) offersToggle() bool {
 
 // cancelConfirm leaves the confirm screen with nothing removed.
 func (m cleanupListModel) cancelConfirm(why string) (cleanupListModel, tea.Cmd) {
-	m.phase, m.conf = cleanupPhaseList, nil
+	m.conf = nil
 	m.status = why + ": nothing was removed"
+	// One step back, never two: a confirm the detail screen opened returns to
+	// that screen (its row and its reads still there), and a batch confirm —
+	// enter's ticked rows — returns to the list, which is where it started.
+	back := m.rowDetail
+	if !m.confFromDetail || back == nil {
+		m.phase = cleanupPhaseList
+		m.applyPendingRemoveFuncs()
+		return m, nil
+	}
+	m.phase = cleanupPhaseDetail
+	// A fill that landed under the confirm was deferred (swapRemoveFuncs) and
+	// the screen is at rest again: it takes the filled instance, and reads its
+	// row again through it.
+	deferred := m.pendingRM != nil
 	m.applyPendingRemoveFuncs()
+	if deferred {
+		back.loading = true
+		return m, m.detailCmd(back.row)
+	}
 	return m, nil
 }
 
@@ -600,6 +621,11 @@ func (m cleanupListModel) confirmed() (cleanupListModel, tea.Cmd) {
 		r.items = append(r.items, it)
 	}
 	m.conf, m.run = nil, r
+	// The removal is decided: the screen that read the row has nothing left
+	// to show (the row may be gone when the run ends), so the flow finishes
+	// on the results screen and a list rebuilt from the repository as it is
+	// now — never back on that row's detail screen.
+	m.rowDetail, m.confFromDetail = nil, false
 	if len(r.items) == 0 || m.rm.Run == nil {
 		if len(r.items) > 0 {
 			r.err = fmt.Errorf("removal is not available here")
@@ -1022,27 +1048,35 @@ func (m *cleanupListModel) shortPath(p string) string {
 // branchOf is a full refname's short name.
 func branchOf(ref string) string { return strings.TrimPrefix(ref, "refs/heads/") }
 
-// entryLines are one confirm entry: its name line, then, first, what the
-// user decides about it — the branch toggle (or the branch it deletes), the
-// session holding the worktree, and the approvals it gets, or why it will
-// not be removed — and only then what it loses, the processes running in it,
-// warnings and notes. keyN is how many lines the decision part takes from
-// the top: an entry taller than the screen (dozens of processes) never hides
-// it.
-func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []string, keyN int) {
+// entryHead is one entry's head line: its kind and name, then, for a
+// worktree, its path — the name once, the path standing for it when the
+// directory is named after it (the head line is the one line a tall entry
+// keeps on screen, so it does not spend half of it repeating itself).
+func (m *cleanupListModel) entryHead(e confirmEntry, cursor string) string {
 	pv := e.pv
-	cursor := "  "
-	if selected {
-		cursor = "> "
-	}
 	head := cursor + string(pv.Item.Kind) + " " + cleanup.OneLine(pv.Item.Name)
 	if pv.Item.Kind == cleanup.KindRemote {
 		head = cursor + "remote origin/" + cleanup.OneLine(pv.Item.Name)
 	}
 	if pv.Item.Kind == cleanup.KindWorktree && pv.Item.Path != "" {
-		head += "  " + cleanup.OneLine(m.shortPath(pv.Item.Path))
+		if path := cleanup.OneLine(m.shortPath(pv.Item.Path)); filepath.Base(path) == cleanup.OneLine(pv.Item.Name) {
+			head = cursor + string(pv.Item.Kind) + " " + path
+		} else {
+			head += "  " + path
+		}
 	}
-	out = wrapIndented(head, "", m.width)
+	return head
+}
+
+// decisionLines are what the user decides with, for one entry: the branch
+// toggle (or the branch the removal deletes), the approvals the removal
+// takes, the origin ref's restore hint, or why the entry will not be
+// removed. They are the part a tall entry keeps on screen (entryLines' keyN),
+// and the part a single-row confirm prints under the detail block, whose
+// other facts — identity, losses, the holder, the notes — are its own lines.
+func (m *cleanupListModel) decisionLines(e confirmEntry) []string {
+	pv := e.pv
+	var out []string
 	add := func(s string) { out = append(out, wrapIndented(s, "      ", m.width)...) }
 	if !e.runnable() {
 		why := pv.Reason
@@ -1050,36 +1084,34 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 			why = pv.Plan.Reason
 		}
 		add("not removed: " + cleanup.OneLine(why))
-	} else {
-		switch {
-		case pv.CanDeleteBranch && e.delBranch:
-			add("[x] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
-		case pv.CanDeleteBranch:
-			add("[ ] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
-		case pv.Item.Kind == cleanup.KindBranch && pv.Needs.Delete:
-			add("deletes unmerged branch " + cleanup.OneLine(pv.Item.Name))
-		}
-		add(approvalText(e.approved()))
-		if pv.Item.Kind == cleanup.KindRemote && pv.Fresh.Tip != "" {
-			if pv.Fresh.PR != nil {
-				add(fmt.Sprintf("merged PR #%d; no open PR uses this branch as of the re-check", pv.Fresh.PR.Number))
-			}
-			add("restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name))
-		}
+		return out
 	}
-	// The held naming (the design's "the remove confirmation names the
-	// holder"): a live wt session holding this worktree is named here in the
-	// list tag's own spelling — cleanup.RowTags' `held by session <id>`,
-	// whose <id> is the held reason's claim description
-	// (sessionclaim.Describe's rendering, echoed and never re-rendered in
-	// this package). It is part of what the user decides on, so it sits in
-	// the decision part (keyN) that a tall entry keeps on screen.
-	for _, tg := range cleanup.RowTags(pv.Fresh) {
-		if strings.HasPrefix(tg.Text, "held by session") {
-			add(cleanup.OneLine(tg.Text))
-		}
+	switch {
+	case pv.CanDeleteBranch && e.delBranch:
+		add("[x] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
+	case pv.CanDeleteBranch:
+		add("[ ] also delete unmerged branch " + cleanup.OneLine(branchOf(pv.Fresh.Ref)) + " (tab)")
+	case pv.Item.Kind == cleanup.KindBranch && pv.Needs.Delete:
+		add("deletes unmerged branch " + cleanup.OneLine(pv.Item.Name))
 	}
-	keyN = len(out)
+	add(approvalText(e.approved()))
+	if pv.Item.Kind == cleanup.KindRemote && pv.Fresh.Tip != "" {
+		if pv.Fresh.PR != nil {
+			add(fmt.Sprintf("merged PR #%d; no open PR uses this branch as of the re-check", pv.Fresh.PR.Number))
+		}
+		add("restore: git push origin " + cleanup.OneLine(pv.Fresh.Tip) + ":refs/heads/" + cleanup.OneLine(pv.Item.Name))
+	}
+	return out
+}
+
+// lossLines are what the removal costs, in the engine's words: the losses,
+// the processes running in the worktree, the warnings and the notes (a note
+// about a branch the removal deletes is replaced by the toggle that says so,
+// which would make it false).
+func (m *cleanupListModel) lossLines(e confirmEntry) []string {
+	pv := e.pv
+	var out []string
+	add := func(s string) { out = append(out, wrapIndented(s, "      ", m.width)...) }
 	for _, l := range pv.LossLines {
 		add("will lose: " + cleanup.OneLine(l))
 	}
@@ -1089,14 +1121,63 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 	for _, w := range pv.Warnings {
 		add("warning: " + cleanup.OneLine(w))
 	}
-	// A toggled-on branch deletion replaces the kept-branch note, which
-	// would then be false.
 	if e.runnable() && !(pv.CanDeleteBranch && e.delBranch) {
 		for _, n := range pv.Notes {
 			add("note: " + cleanup.OneLine(n))
 		}
 	}
-	return out, keyN
+	return out
+}
+
+// entryLines are one confirm entry, in the batch's per-entry layout: its head
+// line, then, first, what the user decides about it — the branch toggle (or
+// the branch it deletes), the session holding the worktree, and the approvals
+// it gets, or why it will not be removed — and only then what it loses, the
+// processes running in it, warnings and notes. keyN is how many lines the
+// decision part takes from the top: an entry taller than the screen (dozens
+// of processes) never hides it.
+func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []string, keyN int) {
+	cursor := "  "
+	if selected {
+		cursor = "> "
+	}
+	out = wrapIndented(m.entryHead(e, cursor), "", m.width)
+	out = append(out, m.decisionLines(e)...)
+	// The held naming (the design's "the remove confirmation names the
+	// holder"): a live wt session holding this worktree is named here in the
+	// list tag's own spelling — cleanup.RowTags' `held by session <id>`,
+	// whose <id> is the held reason's claim description
+	// (sessionclaim.Describe's rendering, echoed and never re-rendered in
+	// this package). It is part of what the user decides on, so it sits in
+	// the decision part (keyN) that a tall entry keeps on screen.
+	for _, tg := range cleanup.RowTags(e.pv.Fresh) {
+		if strings.HasPrefix(tg.Text, "held by session") {
+			out = append(out, wrapIndented(cleanup.OneLine(tg.Text), "      ", m.width)...)
+		}
+	}
+	keyN = len(out)
+	return append(out, m.lossLines(e)...), keyN
+}
+
+// singleRowConfirm says the confirm screen has one row chosen by a row key
+// (`x`, `d`, `o`) rather than the ticked batch: one row gets the detail
+// screen's own block in place of the batch's per-entry layout (the spec's
+// "the detail block is identical for i and for the confirmation"), and the
+// ticked batch keeps entryLines — its rows are compared, not read one by one.
+func (m *cleanupListModel) singleRowConfirm() bool {
+	return m.conf != nil && !m.chosenByTicks && len(m.conf.entries) == 1
+}
+
+// confirmDetail is the rowDetail a single-row confirm renders from: the
+// entry's own fresh re-check, and the listings the detail screen loaded when
+// the screen underneath is the same row's. No screen (a flow started from the
+// list) leaves the lists nil, and the block says they are not available here.
+func (m *cleanupListModel) confirmDetail(e confirmEntry) *rowDetail {
+	d := &rowDetail{row: e.pv.Fresh, pv: &e.pv}
+	if m.rowDetail != nil && keyOf(m.rowDetail.row) == keyOf(e.pv.Fresh) {
+		d.lists, d.loading = m.rowDetail.lists, m.rowDetail.loading
+	}
+	return d
 }
 
 // confirmBody is the confirm screen's scrolling part: each group's heading
@@ -1104,6 +1185,20 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 // its decision part (entryLines' keyN).
 func (m *cleanupListModel) confirmBody() (lines []string, starts, keyEnds []int) {
 	c := m.conf
+	if m.singleRowConfirm() {
+		// One row: the detail screen's block, in full, then what the user
+		// decides with (the toggle, the approvals) — the block already
+		// carries the losses, the holder and the notes. The decision part is
+		// the whole body: a block taller than the screen shows its end, where
+		// the losses and the decisions are, never a toggle scrolled away.
+		e := c.entries[0]
+		body := detailBlock(m.report, e.pv.Fresh, m.confirmDetail(e), m.theme, m.width)
+		body = append(body, m.decisionLines(e)...)
+		for i, l := range body {
+			body[i] = clip(l, m.width)
+		}
+		return body, []int{0}, []int{len(body)}
+	}
 	head := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader)).Bold(true)
 	sel := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
 	starts, keyEnds = make([]int, len(c.entries)), make([]int, len(c.entries))

@@ -339,12 +339,18 @@ func TestLaunchSelectorFillSwapWaitsForTheList(t *testing.T) {
 	if len(built) != 1 {
 		t.Fatalf("the builder ran %d times for a load and a mid-flow fill, want 1: a landing under a flow builds nothing it would discard", len(built))
 	}
+	// esc goes back one step, to the row's detail screen — a rest too, so the
+	// deferred fill's instance builds and takes over there.
 	m = pickerKey(t, m, escKey)
-	if m.rows.phase != cleanupPhaseList {
-		t.Fatalf("esc left phase %v, want the list", m.rows.phase)
+	if m.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("esc left phase %v, want the row detail", m.rows.phase)
 	}
 	if len(built) != 2 {
 		t.Fatalf("the builder ran %d times by the return to rest, want 2: the deferred fill's instance builds there", len(built))
+	}
+	m = pickerKey(t, m, escKey)
+	if m.rows.phase != cleanupPhaseList {
+		t.Fatalf("esc left phase %v, want the list", m.rows.phase)
 	}
 	m = pickerCursorTo(t, m, "loose")
 	m = pickerRowAction(t, m, "x")

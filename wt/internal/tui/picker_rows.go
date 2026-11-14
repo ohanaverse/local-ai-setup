@@ -393,12 +393,14 @@ func applyRemoveFuncs(rows *cleanupListModel, rm RemoveFuncs) {
 }
 
 // applyPendingRemoveFuncs applies the fill swap a flow deferred
-// (swapRemoveFuncs), called at the list's every return to rest: gotPreviews'
-// error path, cancelConfirm (esc, the n/alt/space cancel, the wrong-typed-word
-// refusal), gotRefetch's landing, and gotRefresh's post-run rebuild. It runs
-// at rest and undone only; a flow that starts before it runs keeps its own.
+// (swapRemoveFuncs), called at every return to rest: gotPreviews' error path,
+// cancelConfirm (esc, the n/alt/space cancel, the wrong-typed-word refusal),
+// gotRefetch's landing, and gotRefresh's post-run rebuild. The detail screen
+// is such a rest — nothing in flight, nothing removed — so a cancel back to it
+// applies the swap there too (and re-reads its row). It runs at rest and
+// undone only; a flow that starts before it runs keeps its own.
 func (m *cleanupListModel) applyPendingRemoveFuncs() {
-	if m.done || m.pendingRM == nil || m.phase != cleanupPhaseList {
+	if m.done || m.pendingRM == nil || (m.phase != cleanupPhaseList && m.phase != cleanupPhaseDetail) {
 		return
 	}
 	build := m.pendingRM

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -499,3 +500,200 @@ func lastPreviewed(got []string) string {
 
 // ptrDetail is a pointer to a copy of d.
 func ptrDetail(d cleanup.RowDetail) *cleanup.RowDetail { return &d }
+
+// detailOneRow is a report holding exactly one row, so a row action's confirm
+// is a single-entry one.
+func detailOneRow(row cleanup.Row) cleanup.Report {
+	return cleanup.Report{
+		Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"},
+		Fetch: cleanup.FetchResult{OK: true, At: time.Now()}, GH: cleanup.GHOK,
+		Rows: []cleanup.Row{row},
+	}
+}
+
+// TestSingleRowConfirmShowsTheSameDetailBlockAsI pins the spec's "the detail
+// block is identical for i and for the confirmation": the confirm screen a
+// single row's action opens renders the same lines — the row's identity, its
+// Verdict line, its commits and files, what a removal would lose — because it
+// is the same renderer over the same row. Why: the user decides on the second
+// screen, and a fact the reading screen showed but the confirmation drops is
+// a fact they confirm without.
+func TestSingleRowConfirmShowsTheSameDetailBlockAsI(t *testing.T) {
+	row := detailWorktreeRow("topic")
+	lists := detailLists()
+	m := press(t, detailReady(t, detailOneRow(row), &lists), keyRunes("i"))
+	if m.phase != cleanupPhaseDetail {
+		t.Fatalf("i: phase %v, want the detail screen (status %q)", m.phase, m.status)
+	}
+	want := detailBlock(m.report, m.rowDetail.row, m.rowDetail, themes.Default, 100)
+	if strings.Join(want, "\n") == "" {
+		t.Fatal("the detail screen's block is empty")
+	}
+	m = press(t, m, keyRunes("x"))
+	if m.phase != cleanupPhaseConfirm {
+		t.Fatalf("x: phase %v, want the confirm screen (status %q)", m.phase, m.status)
+	}
+	got, starts, keyEnds := m.confirmBody()
+	if len(starts) != 1 || starts[0] != 0 || keyEnds[0] != len(got) {
+		t.Errorf("the single-entry body starts %v, decision ends %v; want [0] and [%d]", starts, keyEnds, len(got))
+	}
+	if len(got) < len(want) || strings.Join(got[:len(want)], "\n") != strings.Join(want, "\n") {
+		t.Errorf("the confirm's block differs from the detail screen's:\ni:      %q\nconfirm: %q", want, got)
+	}
+	// The decisions follow it (the block's losses are their own lines), so
+	// the confirm adds rather than loses.
+	if rest := strings.Join(got[len(want):], "\n"); !strings.Contains(rest, "approvals:") {
+		t.Errorf("the confirm carries no decision lines under the block: %q", rest)
+	}
+}
+
+// TestXOnDetailConfirmsInPlace pins the flow from the detail screen: `x` there
+// previews the same row and lands on the confirm screen, where the typed word
+// removes exactly that row once. Why: the two-key path (`x` to read, `x` to
+// act) must not lose the removal it was aimed at.
+func TestXOnDetailConfirmsInPlace(t *testing.T) {
+	r := newRmRepo(t)
+	p := r.dirty("dirty")
+	r.merged("other")
+	h := r.harness()
+	m := press(t, press(t, moveTo(t, h.list(120, 50), "dirty"), keyRunes("x")), keyRunes("x"))
+	if m.phase != cleanupPhaseConfirm {
+		t.Fatalf("x on the detail screen: phase %v, want the confirm screen (status %q)", m.phase, m.status)
+	}
+	if v := m.View(); !strings.Contains(v, "type delete and press enter to remove 1 item") {
+		t.Fatalf("the confirm does not demand the typed word:\n%s", v)
+	}
+	// The confirm still shows the row in full, not a one-line entry.
+	if v := m.View(); !strings.Contains(squash(v), squash(p)) || !strings.Contains(v, "Verdict") {
+		t.Errorf("the confirm screen does not carry the detail block:\n%s", v)
+	}
+	m = press(t, typeWord(t, m, "delete"), enterKey)
+	if h.runCalls != 1 || len(h.ran) != 1 || h.ran[0].Name != "dirty" {
+		t.Fatalf("runs %d for %v, want one item: the dirty row", h.runCalls, h.ran)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Error("the worktree is still there")
+	}
+}
+
+// TestDDetailSeedsBranchToggle pins `d` from the detail screen: it opens the
+// same row's confirm with the "also delete unmerged branch" box ticked, and
+// tab unticks it there (`x` would have left it unticked). Why: the key still
+// means what it meant on the list — the two presses are what changed.
+func TestDDetailSeedsBranchToggle(t *testing.T) {
+	r := newRmRepo(t)
+	r.unpushed("kept")
+	h := r.harness()
+	m := moveTo(t, h.list(120, 50), "kept")
+	m = press(t, m, keyRunes("d"))
+	if m.phase != cleanupPhaseDetail {
+		t.Fatalf("d: phase %v, want the detail screen", m.phase)
+	}
+	m = press(t, m, keyRunes("d"))
+	if m.phase != cleanupPhaseConfirm || len(m.conf.entries) != 1 {
+		t.Fatalf("d: phase %v entries %d, want the confirm screen", m.phase, len(m.conf.entries))
+	}
+	if !m.conf.entries[0].delBranch {
+		t.Error("d did not seed delBranch on the confirm entry")
+	}
+	if v := m.View(); !strings.Contains(v, "[x] also delete unmerged branch kept (tab)") {
+		t.Errorf("the seeded toggle is not drawn on:\n%s", v)
+	}
+	if v := press(t, m, tabKey).View(); !strings.Contains(v, "[ ] also delete unmerged branch kept (tab)") {
+		t.Errorf("tab does not untick the box:\n%s", v)
+	}
+}
+
+// TestEscInConfirmReturnsToDetail pins the esc ladder: a confirm opened from
+// the detail screen goes back to that screen (with the row still in full and
+// the cancellation on its status line), and the screen's own esc goes back to
+// the list; a batch confirm (enter's ticked rows) keeps its esc to the list.
+// Why: esc undoes one step, and the step before the confirm was the screen.
+func TestEscInConfirmReturnsToDetail(t *testing.T) {
+	lists := detailLists()
+	m := press(t, detailReady(t, detailOneRow(detailWorktreeRow("topic")), &lists), keyRunes("i"))
+	m = press(t, m, keyRunes("x"))
+	if m.phase != cleanupPhaseConfirm {
+		t.Fatalf("x: phase %v, want the confirm screen", m.phase)
+	}
+	m = press(t, m, escKey)
+	if m.phase != cleanupPhaseDetail {
+		t.Fatalf("esc: phase %v, want the detail screen", m.phase)
+	}
+	if m.rowDetail == nil || cleanup.DisplayName(m.rowDetail.row) != "topic" {
+		t.Errorf("the screen came back without its row: %+v", m.rowDetail)
+	}
+	if !strings.Contains(m.status, "cancelled") || !strings.Contains(m.status, "nothing was removed") {
+		t.Errorf("the cancellation is not on the screen's status line: %q", m.status)
+	}
+	if v := m.View(); !strings.Contains(v, "Verdict") || !strings.Contains(v, "1a2b3c4d fix the thing") {
+		t.Errorf("the returned screen lost its block:\n%s", v)
+	}
+	m = press(t, m, escKey)
+	if m.phase != cleanupPhaseList || m.rowDetail != nil {
+		t.Errorf("esc on the screen: phase %v rowDetail %+v, want the list", m.phase, m.rowDetail)
+	}
+
+	// The batch confirm (enter's ticked rows) still returns to the list.
+	r := newRmRepo(t)
+	r.merged("done")
+	h := r.harness()
+	batch := press(t, setTicks(t, h.list(120, 50), "done"), enterKey)
+	if batch.phase != cleanupPhaseConfirm {
+		t.Fatalf("enter: phase %v, want the confirm screen (status %q)", batch.phase, batch.status)
+	}
+	if b := press(t, batch, escKey); b.phase != cleanupPhaseList {
+		t.Errorf("esc on the batch confirm: phase %v, want the list", b.phase)
+	}
+}
+
+// TestConfirmEntryDoesNotRepeatTheWorktreeName pins the batch entry's head
+// line: a worktree whose directory is named after it says the name once (the
+// path stands for it). Why: the head line is the one line a tall batch keeps
+// on screen, and "worktree wt-pr-column  .worktrees/wt-pr-column" spends half
+// of it repeating itself.
+func TestConfirmEntryDoesNotRepeatTheWorktreeName(t *testing.T) {
+	row := cleanup.Row{Kind: cleanup.KindWorktree, Name: "wt-pr-column", Path: "/repo/.worktrees/wt-pr-column",
+		Branch: "wt-pr-column", Ref: "refs/heads/wt-pr-column", Status: cleanup.StatusProven}
+	m := newSizedCleanupList(t, detailOneRow(row), 100, 40)
+	e := confirmEntry{pv: removal.ItemPreview{Item: removal.ItemFromRow(row), Fresh: row, Approval: removal.ApprovalProven, CanDeleteBranch: true}}
+	out, _ := m.entryLines(e, false)
+	if len(out) == 0 {
+		t.Fatal("the entry has no lines")
+	}
+	if n := strings.Count(out[0], "wt-pr-column"); n != 1 {
+		t.Errorf("the head line names the worktree %d times: %q", n, out[0])
+	}
+	if !strings.Contains(out[0], "worktree") || !strings.Contains(out[0], ".worktrees/wt-pr-column") {
+		t.Errorf("the head line does not carry the row's kind and path: %q", out[0])
+	}
+	// A worktree whose directory is not named after it keeps both.
+	odd := row
+	odd.Name, odd.Path = "feature", "/repo/.worktrees/wt-pr-column"
+	e.pv = removal.ItemPreview{Item: removal.ItemFromRow(odd), Fresh: odd, Approval: removal.ApprovalProven}
+	out, _ = m.entryLines(e, false)
+	if !strings.Contains(out[0], "feature") || !strings.Contains(out[0], ".worktrees/wt-pr-column") {
+		t.Errorf("a differently-named worktree lost one of its names: %q", out[0])
+	}
+}
+
+// TestRunFinishReturnsToList pins where a confirmed removal ends: the results
+// screen, then a list rebuilt from the repository as it is now — never the
+// detail screen of the row that was just removed. Why: the screen's actions
+// were about a row that no longer exists.
+func TestRunFinishReturnsToList(t *testing.T) {
+	r := newRmRepo(t)
+	r.merged("done")
+	h := r.harness()
+	m := press(t, press(t, moveTo(t, h.list(120, 50), "done"), keyRunes("x")), keyRunes("x"))
+	if m.phase != cleanupPhaseConfirm {
+		t.Fatalf("x: phase %v, want the confirm screen (status %q)", m.phase, m.status)
+	}
+	m = press(t, m, keyRunes("y"))
+	if m.phase != cleanupPhaseResults {
+		t.Fatalf("y: phase %v, want the results screen", m.phase)
+	}
+	if m.rowDetail != nil || m.confFromDetail {
+		t.Errorf("the run kept the detail state (rowDetail %+v, confFromDetail %v)", m.rowDetail, m.confFromDetail)
+	}
+}
