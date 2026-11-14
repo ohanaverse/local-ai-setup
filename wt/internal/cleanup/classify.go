@@ -174,6 +174,10 @@ type Row struct {
 	State    WorkState
 	Diff     DiffStat
 	Sessions int
+	// Pending is true on every row of a facts-only report: the fill is owed,
+	// so the detail cells read "-" and nothing is proven (Classify's floor
+	// for Snapshot.FactsOnly). Never serialised.
+	Pending bool
 
 	// The facts below serve removal only and are never serialised (RowJSON
 	// is built field by field; TestCleanupJSONUnchangedByNewRowFields).
@@ -387,7 +391,28 @@ func Classify(s Snapshot, o Options) Report {
 	}
 	slices.SortStableFunc(r.Rows, rowOrder)
 	slices.SortStableFunc(r.Folded, rowOrder)
+	if s.FactsOnly {
+		for i := range r.Rows {
+			pendFacts(&r.Rows[i])
+		}
+		for i := range r.Folded {
+			pendFacts(&r.Folded[i])
+		}
+	}
 	return r
+}
+
+// pendFacts floors one row of a facts-only report: Pending (the fill is
+// owed), State "-" (no gate read yet) and never proven. The facts carry no
+// proof — no ladder ran — but the proven floor holds regardless: a first
+// paint is never a verdict someone can act on. Sessions stay (claims are
+// facts) and so does everything else the facts established.
+func pendFacts(row *Row) {
+	row.Pending = true
+	row.State = StateUnknown
+	if row.Status == StatusProven {
+		row.Status = StatusLessSure
+	}
 }
 
 // rowOrder is the order Classify lists rows in: status, then kind, name,

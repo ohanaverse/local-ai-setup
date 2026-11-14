@@ -523,26 +523,34 @@ const (
 )
 
 // KindGroups splits the report by kind: worktrees (the root first, then the
-// others in the report's order), local branches without a worktree, remote
-// branches (folded ones included, via RemoteRows). Empty groups are left out.
+// others by display name), local branches without a worktree by display
+// name, remote branches (folded ones included, via RemoteRows) by display
+// name. Empty groups are left out. Within-group order is the display name —
+// never the verdict — so the list holds still when a fill lands: the facts
+// and the filled report name the same rows in the same order, though their
+// verdicts differ (spec §5, stable across stages).
 func KindGroups(r Report) []KindGroup {
 	var wt, local []Row
 	for _, row := range r.AllRows() {
 		switch row.Kind {
 		case KindWorktree:
-			if row.Primary {
-				wt = append([]Row{row}, wt...)
-				// keep several primaries (never expected) in report order
-				continue
-			}
 			wt = append(wt, row)
 		case KindBranch:
 			local = append(local, row)
 		}
 	}
+	slices.SortStableFunc(wt, byDisplayName)
+	slices.SortStableFunc(local, byDisplayName)
+	if i := slices.IndexFunc(wt, func(r Row) bool { return r.Primary }); i > 0 {
+		// The root leads its group whatever its name sorts as.
+		root := wt[i]
+		wt = slices.Concat([]Row{root}, wt[:i], wt[i+1:])
+	}
+	remote := remoteOnly(r)
+	slices.SortStableFunc(remote, byDisplayName)
 	var out []KindGroup
 	for _, g := range []KindGroup{
-		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, remoteOnly(r)},
+		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, remote},
 	} {
 		if len(g.Rows) > 0 {
 			out = append(out, g)
@@ -550,6 +558,9 @@ func KindGroups(r Report) []KindGroup {
 	}
 	return out
 }
+
+// byDisplayName orders rows inside a kind group by their display name.
+func byDisplayName(a, b Row) int { return strings.Compare(DisplayName(a), DisplayName(b)) }
 
 // remoteOnly is the remote rows no local row folds: a folded ref is its local
 // row's Upstream (one row per branch), still reachable through RemoteRows.

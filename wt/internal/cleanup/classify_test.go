@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -868,6 +869,102 @@ func TestClassifyFailClosedRules(t *testing.T) {
 				t.Fatalf("reasons %v lack %q", reasonCodes(row.Reasons), c.code)
 			}
 		})
+	}
+}
+
+// TestFactsOnlyRowsArePendingAndNeverProven classifies a facts-only
+// snapshot: every row carries Pending, no row is proven, worktree rows read
+// State "-", and the session count is already filled (claims are facts).
+// Filling the same repository then proves the squash-merged branch — the
+// pending row was a paint, not a verdict. Why: stage 1 shows names while the
+// detail cells say "-", and nothing on it may read as a verdict someone
+// could act on; a proven row at first paint would tick a row before the
+// gates and ladder ever ran.
+func TestFactsOnlyRowsArePendingAndNeverProven(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Checkout("topic")
+	f.Commit("a", "a", "a")
+	f.Checkout("main")
+	f.Squash("topic")
+	wt := f.Worktree("wt2")
+	common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	holderClaim(t, common, wt, "wt2", "codex")
+
+	s, err := GatherFacts(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2})
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	r := Classify(s, Options{Now: later()})
+	if len(r.Rows) == 0 {
+		t.Fatal("no rows: facts must already name every entry")
+	}
+	for _, row := range r.Rows {
+		if !row.Pending {
+			t.Errorf("%s %s: not Pending", row.Kind, row.Name)
+		}
+		if row.Status == StatusProven {
+			t.Errorf("%s %s: proven on a facts-only snapshot", row.Kind, row.Name)
+		}
+		if row.Kind == KindWorktree && row.State != StateUnknown {
+			t.Errorf("worktree %s: State %q, want %q while pending", row.Name, row.State, StateUnknown)
+		}
+	}
+	if row := findRow(t, r, KindWorktree, "wt2"); row.Sessions != 1 {
+		t.Errorf("wt2 Sessions = %d, want 1: claims are facts, filled at stage 1", row.Sessions)
+	}
+
+	noGh(t)
+	filled, err := FillDetails(Git{Dir: f.Dir}, s, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2})
+	if err != nil {
+		t.Fatalf("FillDetails: %v", err)
+	}
+	if row := findRow(t, Classify(filled, Options{Now: later()}), KindBranch, "topic"); row.Status != StatusProven {
+		t.Errorf("filled topic = %s, want proven: the pending row only waited for the fill", row.Status)
+	}
+}
+
+// TestFactsOnlyKeepsRowOrderOfTheFilledReport compares the rendered order
+// (KindGroups: kind groups, root first, display names — the order the list
+// shows) of the same repository classified from its facts-only snapshot and
+// from the filled one. Why: the fill lands under the cursor after first
+// paint; if the order shifted with the verdicts, rows would jump beneath the
+// selection when the details arrive (spec §5 / the anti-goal).
+func TestFactsOnlyKeepsRowOrderOfTheFilledReport(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	wt := f.Worktree("aaa-worktree")
+	f.DirtyIn(wt, "notes.txt")
+	f.Branch("zzz-branch")
+	f.Push("zzz-branch")
+	f.Branch("topic")
+	f.Checkout("topic")
+	f.Commit("a", "a", "a")
+	f.Checkout("main")
+	f.Squash("topic") // filled: topic proven, aaa-worktree unique — facts: all alike
+	in := GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+
+	facts, err := GatherFacts(Git{Dir: f.Dir}, in)
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	full := gather(t, f)
+
+	sig := func(r Report) [][]string {
+		var out [][]string
+		for _, g := range KindGroups(r) {
+			names := []string{g.Heading}
+			for _, row := range g.Rows {
+				names = append(names, DisplayName(row))
+			}
+			out = append(out, names)
+		}
+		return out
+	}
+	got := sig(Classify(facts, Options{Now: later()}))
+	want := sig(Classify(full, Options{Now: later()}))
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("row order changed between stages:\n facts %+v\n full  %+v", got, want)
 	}
 }
 
