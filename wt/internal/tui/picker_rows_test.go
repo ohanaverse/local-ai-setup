@@ -155,18 +155,20 @@ func TestPickerLoadsRowsFromCleanupAndRendersRootDefaultAndHeld(t *testing.T) {
 	if root == nil || mainBranch == nil || topic == nil {
 		t.Fatalf("root %v, default branch %v, topic %v: want all three rows", root != nil, mainBranch != nil, topic != nil)
 	}
-	held := false
-	for _, tag := range root.tags {
-		held = held || strings.HasPrefix(tag.Text, "held by session")
-	}
-	if !held {
-		t.Errorf("root tags %v, want a held-by-session tag", root.tags)
+	// The root row's identity tags are gone from the line (the row's position
+	// says it is the root, the session digit covers "in use"); the holder is
+	// named on the detail screen instead.
+	if len(root.tags) != 0 {
+		t.Errorf("root tags %v, want none", tagTexts(root.tags))
 	}
 	v := m.View()
-	for _, want := range []string{"root", "held by session", "drift", "topic", "main"} {
+	for _, want := range []string{"drift", "topic", "main"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view lacks %q:\n%s", want, v)
 		}
+	}
+	if strings.Contains(v, "held by session") {
+		t.Errorf("view still draws the held tag:\n%s", v)
 	}
 	// Enter on the held root and on the default branch's bare row each emit
 	// a selectedEntryMsg for that row. (Launching the default branch's bare
@@ -195,24 +197,22 @@ func TestPickerStartsOnCurrentRow(t *testing.T) {
 	if row, ok := m.rows.selectedRow(); !ok || !row.Primary {
 		t.Errorf("cursor on %+v (ok %v), want the root row", row, ok)
 	}
-	// The labels the old picker drew: (current) on the current row and
-	// (default) on the default branch's.
+	// The labels the old picker drew are gone: no row carries "current" or
+	// "default" any more (the cursor marks the current row, the header names
+	// the default branch once).
 	tags := func(name string) string {
 		var out []string
 		for _, it := range m.rows.items {
 			if !it.newWorktree && it.row.Name == name {
-				for _, tg := range it.tags {
-					out = append(out, tg.Text)
-				}
+				out = append(out, tagTexts(it.tags)...)
 			}
 		}
 		return strings.Join(out, ",")
 	}
-	if got := tags("main"); !strings.Contains(got, "current") || !strings.Contains(got, "default") {
-		t.Errorf("root tags %q, want current and default", got)
-	}
-	if got := tags("other"); strings.Contains(got, "current") || strings.Contains(got, "default") {
-		t.Errorf("other's tags %q, want neither current nor default", got)
+	for _, name := range []string{"main", "other"} {
+		if got := tags(name); got != "" {
+			t.Errorf("%s's tags %q, want none", name, got)
+		}
 	}
 }
 
@@ -310,8 +310,10 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	if m.rows.filling() {
 		t.Fatal("still filling after the fill landed")
 	}
-	if v := m.View(); !strings.Contains(v, "PR ?") {
-		t.Fatalf("filled view has no PR ? (the lookups are still owed):\n%s", v)
+	// The row carries the owed lookup (PRUnknown); the list no longer draws a
+	// "PR ?" tag, so the fact is read from the row itself.
+	if row, ok := m.rows.selectedRow(); !ok || !row.PRUnknown {
+		t.Fatalf("the filled row does not carry the owed PR lookup: %+v (ok %v)", row, ok)
 	}
 	if cmd == nil {
 		t.Fatal("no PR fill command after the fill")
@@ -328,12 +330,11 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	if row, ok := m.rows.selectedRow(); !ok || row.Name != "loose" {
 		t.Errorf("cursor on %+v after the fill, want loose", row)
 	}
-	v := m.View()
-	if !strings.Contains(v, "#7 open") {
-		t.Errorf("filled view lacks #7 open:\n%s", v)
+	if row, ok := m.rows.selectedRow(); !ok || row.PRTag == nil || row.PRTag.Number != 7 {
+		t.Errorf("the row does not carry PR #7 after the lookups: %+v", row)
 	}
-	if strings.Contains(v, "PR ?") {
-		t.Errorf("filled view still has PR ?:\n%s", v)
+	if strings.Contains(m.View(), "PR ?") {
+		t.Errorf("filled view still has PR ?:\n%s", m.View())
 	}
 	// The PR number finds its row, as the old picker's filter did.
 	m.rows.filter = "#7"
@@ -393,19 +394,16 @@ func TestPickerStalePRTagSuppressed(t *testing.T) {
 		if it.newWorktree {
 			continue
 		}
-		var texts []string
-		for _, tg := range it.tags {
-			texts = append(texts, tg.Text)
-		}
-		got := strings.Join(texts, ",")
+		// The tags are no longer drawn, so the assertion reads the PR the row
+		// carries (the filter still searches it, see filterText).
 		switch it.row.Name {
 		case "reused":
-			if strings.Contains(got, "#9") {
-				t.Errorf("reused branch tagged with its old PR: %q", got)
+			if it.row.PRTag != nil && it.row.PRTag.Number == 9 {
+				t.Errorf("reused branch carries its old PR: %+v", it.row.PRTag)
 			}
 		case "kept":
-			if !strings.Contains(got, "#11 merged") {
-				t.Errorf("kept branch tags %q, want #11 merged", got)
+			if it.row.PRTag == nil || it.row.PRTag.Number != 11 {
+				t.Errorf("kept branch carries %+v, want #11 merged", it.row.PRTag)
 			}
 		}
 	}

@@ -169,19 +169,34 @@ func cleanupLocked(r cleanup.Row) bool {
 	return false
 }
 
-// rowTags are the tags the list draws for a row: cleanup.RowTags without
-// "you are here", which RowTags gives every worktree holding the caller's
-// directory; the row's sentence (cleanup.RowText) already says it, on the
-// innermost one only. In the manage list (drift true) the root row's drift
-// badge rides behind them: the root_drift soft label's detail as a warn tag,
-// the badge the user-driven cleanup design puts on the root row ("root is on
-// X, not main"). The picker passes false: its header already says it once
-// (headerBlock), whatever row the cursor is on.
+// rowTags are the tags the list draws for a row, and they are deliberately
+// few: `dirty`, `unpushed` and `upstream gone`, and only on a row that is not
+// proven. The identity tags cleanup.RowTags also carries — root, bare, "you
+// are here", the PR ("#N state"), +remote, held by session, locked — are not
+// drawn: the row's order says it is the root, the session digit covers "in
+// use", the header says the default branch, and the detail screen names the
+// rest (the spec's no-loss rule: what leaves the line is reachable on the
+// detail screen, which reads cleanup.RowTags itself). A proven row hides the
+// risk tags too: a squash merge leaves its commits on no remote ref, so
+// "unpushed" is its normal state and says nothing the proof has not already
+// answered. cleanup.RowTags is unchanged — the confirm screen keeps reading
+// its `held by session` tag. In the manage list (drift true) the root row's
+// drift badge rides behind them: the root_drift soft label's detail as a warn
+// tag, the badge the user-driven cleanup design puts on the root row ("root
+// is on X, not main"). The picker passes false: its header already says it
+// once (headerBlock), whatever row the cursor is on.
 func rowTags(r cleanup.Row, drift bool) []cleanup.Tag {
 	var out []cleanup.Tag
-	for _, t := range cleanup.RowTags(r) {
-		if t.Text != "you are here" {
-			out = append(out, t)
+	if r.Status != cleanup.StatusProven {
+		losses := r.EffectiveLosses()
+		if losses.Dirty {
+			out = append(out, cleanup.Tag{Text: "dirty", Severity: cleanup.TagWarn})
+		}
+		if losses.Unpushed > 0 {
+			out = append(out, cleanup.Tag{Text: "unpushed", Severity: cleanup.TagWarn})
+		}
+		if r.Upstream != nil && r.Upstream.Gone {
+			out = append(out, cleanup.Tag{Text: "upstream gone", Severity: cleanup.TagWarn})
 		}
 	}
 	if d := rootDriftLabel(r); drift && d != "" {
@@ -216,10 +231,30 @@ func rootDriftOf(r cleanup.Report) string {
 	return ""
 }
 
-// verdictText is the row's status in words: what the status headings said
-// before the list was grouped by kind.
-func verdictText(s cleanup.Status) string {
-	return strings.ReplaceAll(string(s), "_", " ")
+// verdictWord is the row's verdict as the list's VERDICT column says it in
+// one short word: `safe` for a proven row, `check` for a less-sure one, `work`
+// for unique work, and `locked` for a row nothing can be done about — the
+// root, a hard stop, an unreadable worktree state, an origin ref no proof
+// backs (cleanupLocked's own set, so the word never reads safer than the keys
+// are). A row whose fill has not landed reads "-": the facts carry no
+// verdict. The wire strings (proven / less_sure / unique_work / in_use) stay
+// what --json and --plain print; this is a display mapping only.
+func verdictWord(r cleanup.Row) string {
+	switch {
+	case r.Pending:
+		return "-"
+	case cleanupLocked(r):
+		return "locked"
+	}
+	switch r.Status {
+	case cleanup.StatusProven:
+		return "safe"
+	case cleanup.StatusLessSure:
+		return "check"
+	case cleanup.StatusUniqueWork:
+		return "work"
+	}
+	return "-"
 }
 
 // cleanupListModel is the row list's Bubble Tea model.

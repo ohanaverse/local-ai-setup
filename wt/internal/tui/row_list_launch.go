@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,8 +11,8 @@ import (
 )
 
 // The row list's launch-mode extras (cleanup_list.go has the list itself):
-// the "current" and "default" tags the old picker drew as (current) and
-// (default), type-to-filter, the cursor placement the picker asks for, and
+// the empty tag set launch mode prepends (the "current" and "default" labels
+// are gone), type-to-filter, the cursor placement the picker asks for, and
 // swapping in a report whose PR lookups have run.
 
 // deepestCurrent is the path of the innermost worktree holding the caller's
@@ -27,19 +28,14 @@ func deepestCurrent(r cleanup.Report) string {
 	return here
 }
 
-// launchTags are the picker's own tags for row: "current" on the innermost
-// worktree holding the caller's directory (here), "default" on the default
-// branch's worktree or local branch. A remote row is never either: the old
-// picker labelled only the bare name.
+// launchTags are the picker's own tags for row — and there are none now: the
+// "current" and "default" labels left the row line with the other identity
+// tags (the header says the default branch once, and the cursor marks where
+// you are). It stays a function, returning nil, because the list prepends its
+// answer in launch mode and a caller that reads tags should not have to know
+// the mode.
 func launchTags(r cleanup.Report, row cleanup.Row, here string) []cleanup.Tag {
-	var out []cleanup.Tag
-	if row.Kind == cleanup.KindWorktree && here != "" && row.Path == here {
-		out = append(out, cleanup.Tag{Text: "current"})
-	}
-	if row.Kind != cleanup.KindRemote && r.Base.Default != "" && row.Branch == r.Base.Default {
-		out = append(out, cleanup.Tag{Text: "default"})
-	}
-	return out
+	return nil
 }
 
 // screenName is the title the removal screens carry: `wt worktrees` in manage
@@ -146,11 +142,20 @@ func (m *cleanupListModel) selectWhere(pred func(cleanup.Row) bool) bool {
 }
 
 // filterText is what the filter matches a row against: its listed name, its
-// branch and its tags (so "#383" finds the row with that PR).
+// branch, its drawn tags, and its PR ("#383", or "PR ?" while the lookup is
+// owed) — the tags the list no longer draws are still searchable facts, and
+// the PR number is how a user finds the row behind the PR they are looking
+// at.
 func filterText(it cleanupItem) string {
 	parts := []string{cleanup.DisplayName(it.row), it.row.Branch}
 	for _, t := range it.tags {
 		parts = append(parts, t.Text)
+	}
+	switch {
+	case it.row.PRUnknown:
+		parts = append(parts, "PR ?")
+	case it.row.PRTag != nil:
+		parts = append(parts, fmt.Sprintf("#%d %s", it.row.PRTag.Number, strings.ToLower(it.row.PRTag.State)))
 	}
 	return strings.ToLower(strings.Join(parts, " "))
 }

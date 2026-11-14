@@ -133,7 +133,7 @@ func TestListHasNoHeadings(t *testing.T) {
 		t.Errorf("root is not the first row:\n%s", view)
 	}
 	for name, verdict := range map[string]string{
-		"full-branch-name-paths": "proven", "spike-picker": "less sure", "mtplx-profiles": "unique work", "deep": "in use",
+		"full-branch-name-paths": "safe", "spike-picker": "check", "mtplx-profiles": "work", "deep": "locked",
 	} {
 		if block := rowBlock(t, view, name); !strings.Contains(block, verdict) {
 			t.Errorf("%s does not say its verdict %q: %q", name, verdict, block)
@@ -312,11 +312,13 @@ func TestFilterMatchesWorktreeBranchAndPR(t *testing.T) {
 	}
 }
 
-// TestRowListTagsWarnStyled pins the tag facts behind the row: the warn
+// TestRowListTagsWarnStyled pins the tag facts behind the row: the risk
 // badges (unpushed, …) carry TagWarn severity on the item and their text is
 // drawn on the row's table line. Why: with the prose row gone the badges
 // travel as trailing marks — losing either the severity or the text would
-// drop the at-a-glance risk signal the list is for.
+// drop the at-a-glance risk signal the list is for. An identity tag (the PR,
+// +remote) is no longer drawn at all, so a proven row's line carries no
+// badge.
 func TestRowListTagsWarnStyled(t *testing.T) {
 	r := cleanupFixture()
 	r.Rows[3].Losses = cleanup.Losses{Unpushed: 4}           // mtplx-profiles
@@ -337,19 +339,17 @@ func TestRowListTagsWarnStyled(t *testing.T) {
 	if !warn["mtplx-profiles:unpushed"] {
 		t.Errorf("unpushed is not a warn badge: %v", warn)
 	}
-	for k := range warn {
-		if strings.HasPrefix(k, "full-branch-name-paths:") {
-			t.Errorf("info tag marked as a warning: %s", k)
-		}
-	}
 	view := m.View()
-	for name, tag := range map[string]string{"mtplx-profiles": "unpushed", "full-branch-name-paths": "#517 merged"} {
-		if !strings.Contains(rowBlock(t, view, name), tag) {
-			t.Errorf("%s does not show tag %q:\n%s", name, tag, view)
-		}
+	if !strings.Contains(rowBlock(t, view, "mtplx-profiles"), "unpushed") {
+		t.Errorf("mtplx-profiles does not show its unpushed badge:\n%s", view)
 	}
-	if !strings.Contains(rowBlock(t, view, "full-branch-name-paths"), "+remote") {
-		t.Errorf("+remote tag missing:\n%s", view)
+	if block := rowBlock(t, view, "full-branch-name-paths"); strings.Contains(block, "+remote") || strings.Contains(block, "#517 merged") {
+		t.Errorf("a proven row still draws identity tags: %q", block)
+	}
+	for _, it := range m.items {
+		if cleanup.DisplayName(it.row) == "full-branch-name-paths" && len(it.tags) != 0 {
+			t.Errorf("a proven row carries tags %v, want none", tagTexts(it.tags))
+		}
 	}
 }
 
@@ -2880,5 +2880,64 @@ func TestCleanupListPageMoveStopsAtTheEndsEvenForOneRow(t *testing.T) {
 	m.move(1, 1, true)
 	if m.cursor == last {
 		t.Fatal("a single arrow step past the end must wrap")
+	}
+}
+
+// TestListTagsHideRiskOnSafeRows pins that a proven row draws no risk tag it
+// does not need: `dirty`, `unpushed` and `upstream gone` say nothing on a row
+// whose merged PR proves the work is elsewhere (a squash merge leaves the
+// original commits on no remote ref, so "unpushed" is the normal state), while
+// the same facts on a less-sure row are exactly what the user must see. Why:
+// tags that always show train the eye to ignore them.
+func TestListTagsHideRiskOnSafeRows(t *testing.T) {
+	tags := func(status cleanup.Status) []string {
+		m := newSizedCleanupList(t, cleanup.Report{Rows: []cleanup.Row{{
+			Kind: cleanup.KindBranch, Name: "topic", Branch: "topic", Status: status,
+			Losses:   cleanup.Losses{Dirty: true, Unpushed: 2},
+			Upstream: &cleanup.Upstream{Remote: "origin", Gone: true},
+		}}}, 120, 40)
+		return tagTexts(m.items[0].tags)
+	}
+	if got := tags(cleanup.StatusProven); len(got) != 0 {
+		t.Errorf("a proven row draws %v, want no risk tags", got)
+	}
+	want := []string{"dirty", "unpushed", "upstream gone"}
+	if got := tags(cleanup.StatusLessSure); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("a less-sure row draws %v, want %v", got, want)
+	}
+}
+
+// TestListDropsIdentityTags pins the tags the list no longer draws anywhere:
+// `root`, `current`, `default`, `+remote` and `held by session …`, in both
+// modes. The session digit covers "in use", the ordering covers the root, the
+// header covers the default branch, and a held row's holder belongs on the
+// detail screen. Why: identity tags pushed the line past 80 columns and told
+// the user what the row's position already says.
+func TestListDropsIdentityTags(t *testing.T) {
+	root := cleanup.Row{
+		Kind: cleanup.KindWorktree, Name: "main", Path: "/repo", Branch: "main",
+		Primary: true, Current: true, Status: cleanup.StatusInUse,
+		Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}, {Code: cleanup.BlockCurrent}},
+		Upstream: &cleanup.Upstream{Remote: "origin"},
+		Reasons:  []cleanup.Reason{{Code: cleanup.ReasonHeld, Detail: "s-42"}},
+		PRTag:    &cleanup.PRInfo{Number: 12, State: "MERGED"},
+	}
+	rep := cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main"}, Rows: []cleanup.Row{root}}
+	dropped := []string{"root", "current", "default", "+remote", "held by session"}
+	for _, mode := range []listMode{modeManage, modeLaunch} {
+		m := newRowList(rep, rowListOpts{Mode: mode, Theme: themes.Default, Now: time.Now()})
+		m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+		for _, it := range m.items {
+			for _, tag := range tagTexts(it.tags) {
+				for _, bad := range dropped {
+					if tag == bad || strings.HasPrefix(tag, bad+" ") {
+						t.Errorf("mode %v draws the dropped tag %q", mode, tag)
+					}
+				}
+			}
+		}
+	}
+	if got := launchTags(rep, root, "/repo"); len(got) != 0 {
+		t.Errorf("launchTags = %v, want none", tagTexts(got))
 	}
 }
