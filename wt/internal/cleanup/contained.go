@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/scratchdir"
 )
 
 // Containment answers one question: is this change-set already in base's
@@ -37,11 +39,11 @@ func reverseApplies(g Git, baseTree, patch string) Tri {
 	if patch == "" {
 		return TriYes
 	}
-	tmp, err := os.MkdirTemp("", "wt-contained-")
-	if err != nil {
+	tmp, release, ok := scratchdir.Temp("wt-contained-")
+	if !ok {
 		return TriUnknown
 	}
-	defer os.RemoveAll(tmp)
+	defer release()
 	idx := filepath.Join(tmp, "index")
 	gi := g
 	gi.Env = append(slices.Clone(g.Env), "GIT_INDEX_FILE="+idx)

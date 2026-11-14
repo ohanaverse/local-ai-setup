@@ -1,7 +1,10 @@
 // Package cleanup judges which worktrees and branches are safe to remove. It
 // is read-only by design: nothing here deletes a worktree, branch or ref.
 // internal/removal acts on its rows (re-checking each with Rescan first) and
-// is the only package in wt allowed to delete.
+// is the only package in wt allowed to delete a user's worktree, branch or
+// ref; the throwaway GIT_INDEX_FILE directories this package's read-only
+// checks run against are made and removed by internal/scratchdir (the one
+// allow-listed temp-dir deleter, so this file holds no deletion call).
 package cleanup
 
 import (
@@ -15,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/scratchdir"
 )
 
 // defaultTimeout bounds a git call when Git.Timeout is zero.
@@ -139,18 +144,18 @@ func indexCopy(wg Git) (Git, func(), bool) {
 	if err != nil {
 		return wg, noop, false
 	}
-	tmp, err := os.MkdirTemp("", "wt-index-")
-	if err != nil {
+	tmp, release, ok := scratchdir.Temp("wt-index-")
+	if !ok {
 		return wg, noop, false
 	}
 	idx := filepath.Join(tmp, "index")
 	if err := os.WriteFile(idx, real, 0o600); err != nil {
-		_ = os.RemoveAll(tmp)
+		release()
 		return wg, noop, false
 	}
 	cg := wg
 	cg.Env = append(slices.Clone(wg.Env), "GIT_INDEX_FILE="+idx)
-	return cg, func() { _ = os.RemoveAll(tmp) }, true
+	return cg, release, true
 }
 
 // UnsafeRel says why p cannot name a file inside a root (and outside any .git

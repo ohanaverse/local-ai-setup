@@ -41,6 +41,7 @@ var fileOpAllowed = map[string]allowedFileOps{
 	"internal/litellm/configfile.go":        {5, "atomic write of LiteLLM's config.yaml: temp file removed on failure, renamed over the target"},
 	"internal/profiles/configcontent.go":    {12, "restores an agent config file a profile's config_content replaced and removes its own backups"},
 	"internal/rotation/rotation.go":         {1, "removes legacy rotation-*.state files after migrating them into rotation.state"},
+	"internal/scratchdir/scratchdir.go":     {1, "removes the throwaway directory its own MkdirTemp made: the GIT_INDEX_FILE copies internal/cleanup's read-only containment and diffstat checks run against"},
 	"internal/sessionclaim/sessionclaim.go": {3, "removes claims under wt-sessions/: this process's own claim (Join's and Hold's release) and stale claims (dead or reused pids, malformed)"},
 	"internal/slotedit/apply.go":            {2, "slot-profiles.toml edit: removes its own dated backup / temp file when a write fails"},
 	"internal/smoke/smoke.go":               {2, "removes the temporary git repos and dirs wt smoke made for its rows"},

@@ -735,15 +735,6 @@ func TestCleanupCmdContainsNoDeletion(t *testing.T) {
 		// HeldRefs reads (a read-only path whose name contains "update-ref"),
 		// exact spelling. Every "update-ref" there must be that spelling.
 		src := string(b)
-		// The containment engine's throwaway directories: contained.go and
-		// git.go's indexCopy delete ONLY what their own os.MkdirTemp made
-		// (a GIT_INDEX_FILE copy — the read-only proof
-		// TestContainedLeavesTheRealIndexAlone pins them to it), always at
-		// the exact spelling os.RemoveAll(tmp). Reviewed here: internal/
-		// cleanup still removes no worktree, branch or ref.
-		if base := filepath.Base(f); (base == "contained.go" || base == "git.go") && strings.Contains(f, "internal/cleanup/") {
-			src = strings.ReplaceAll(src, "os.RemoveAll(tmp)", "")
-		}
 		if filepath.Base(f) == "held.go" && strings.Contains(filepath.ToSlash(f), "internal/cleanup/") {
 			const stateFile = "rebase-merge/update-refs"
 			if n, m := strings.Count(src, "update-ref"), strings.Count(src, stateFile); n != m {
