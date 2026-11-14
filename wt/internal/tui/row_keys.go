@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
@@ -85,7 +86,11 @@ type keyHint struct{ key, long, short string }
 // rescue.Offered, rootmove.Offered, the wired RemoveFuncs), so a key is
 // listed exactly when its handler would not refuse it; TestRowKeysMatchTheHandlers
 // holds the two together. The `/` input, while open, owns every printable
-// key, so it shows only what it answers to.
+// key, so it shows only what it answers to; a query kept with the input
+// closed lists esc, which clears it then and no other time (with no query,
+// esc falls through to the quit binding). The long form of d follows
+// startRowAction's seeding: `d +branch` on a worktree row, `d remove`
+// elsewhere, where the branch is the row itself.
 func (m *cleanupListModel) rowKeys() []keyHint {
 	if m.empty() {
 		return nil
@@ -107,6 +112,9 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 			out = append(out, keyHint{"enter", "enter launch", "enter"})
 		}
 		out = append(out, keyHint{"n", "n new worktree", "n new"}, keyHint{"/", "/ filter", "/"})
+		if m.filter != "" {
+			out = append(out, keyHint{"esc", "esc clear filter", "esc"})
+		}
 	} else {
 		if onRow && !it.locked {
 			out = append(out, keyHint{"space", "space tick", "space"})
@@ -116,7 +124,14 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 	if row, ok := m.selectedRow(); ok {
 		removal := m.rm.Off == "" && m.rm.Preview != nil
 		if removal && !it.locked {
-			out = append(out, keyHint{"x", "x remove", "x"}, keyHint{"d", "d +branch", "d"})
+			// The branch toggle is seeded only for a worktree row
+			// (startRowAction), so `d +branch` is its long form; elsewhere d
+			// is x, the branch being the row itself.
+			dLong := "d remove"
+			if it.row.Kind == cleanup.KindWorktree {
+				dLong = "d +branch"
+			}
+			out = append(out, keyHint{"x", "x remove", "x"}, keyHint{"d", dLong, "d"})
 		}
 		if target, has := m.originTarget(row); removal && has && !cleanupLocked(target) {
 			out = append(out, keyHint{"o", "o delete origin", "o"})

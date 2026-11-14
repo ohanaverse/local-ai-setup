@@ -49,10 +49,10 @@
 - Filter open (`m.filtering`): only `↑/↓ move`, `enter keep filter`, `esc clear filter`, `ctrl+c quit`. Nothing else.
 - Empty list: no hints (the screen says "press any key to quit").
 - Always on: `↑/↓ move`, `F` (`F fetch` in launch mode, `F refresh` in manage mode), `q quit`.
-- Launch mode adds `enter launch` (not on a heading, hidden row or `row.Bare`), `n new worktree`, `/ filter`.
+- Launch mode adds `enter launch` (not on a heading, hidden row or `row.Bare`), `n new worktree`, `/ filter`; and, once a query is kept (`m.filter != ""`, the input closed), `esc clear filter` — which filterKey takes then and only then (with no query, esc falls through to the quit binding).
 - Manage mode adds `space tick` and `a proven` (cursor row not locked for `space`; `a` always), and `enter remove ticked`.
 - Row keys apply only when the cursor is on a real row (not a heading, not hidden, not the `newWorktree` item):
-  - `x remove` and `d +branch`: row not `locked`, `m.rm.Off == ""`, `m.rm.Preview != nil`.
+  - `x remove`: row not `locked`, `m.rm.Off == ""`, `m.rm.Preview != nil`. `d`'s long form is row-conditional, the same rule as `startRowAction`'s seeding: `d +branch` on a worktree row; `d remove` on a branch or origin row, where the branch is the row itself and `d` is `x`. Same conditions as `x`.
   - `o origin`: `originTarget(row)` is ok and the target is not `cleanupLocked`, and the same `rm` conditions.
   - `r rescue`: `rescue.Offered(row)` true and `m.rm.Rescue != nil`.
   - `R restore root`: `rootmove.Offered(row)` true and `m.rm.RestoreRoot != nil`. It reads neither the row's lock nor `rm.Off` (see the comment on `startRestoreRoot`).

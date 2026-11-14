@@ -44,9 +44,12 @@ same on the worktree screens: the available commands in the footer.
 
 - `rowKeys(it cleanupItem) []keyHint` in `internal/tui` (a new small file, or
   next to `titleLine`). Always-on keys: `↑/↓`, `q`; launch mode adds `enter`
-  (not on a bare row), `n`, `/`, `F`; manage mode adds `space`/`a` (not on a
+  (not on a bare row), `n`, `/`, `F`, and `esc` while the input has kept a
+  query (esc clears it; with none it falls through to the quit binding);
+  manage mode adds `space`/`a` (not on a
   locked row), `enter remove ticked`, `F`. Row keys: `x` (not locked, not the
-  new-worktree item), `d` (as `x`; named for the branch it also deletes), `o`
+  new-worktree item), `d` (as `x`; on a worktree row named for the branch it
+  also deletes, elsewhere `d remove`), `o`
   (an unlocked origin target exists), `r` (`rescue.Offered`), `R`
   (`rootmove.Offered`). The `+ New worktree…` item and an empty or filtered-out
   cursor get only the always-on keys that apply.
@@ -69,6 +72,15 @@ same on the worktree screens: the available commands in the footer.
   refuse; asserted on unexported functions, not rendered ANSI.
 - `TestEveryListPhaseFitsTheTerminal` must still pass: the view never exceeds
   the terminal height.
+
+## Amendments
+
+- 2026-11-13 (code review of the built footer): the launch picker lists
+  `esc clear filter` whenever it has kept a query and the input is closed,
+  because `filterKey` takes esc then and only then — with no query, esc falls
+  through to the quit binding. The long form of `d` is row-conditional, the
+  same rule as `startRowAction`'s seeding: `d +branch` on a worktree row,
+  `d remove` on a branch or origin row, where the branch is the row itself.
 
 ## Left to the builder
 

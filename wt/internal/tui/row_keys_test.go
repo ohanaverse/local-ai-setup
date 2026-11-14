@@ -63,6 +63,15 @@ func hasKey(hints []keyHint, key string) bool {
 	return slices.ContainsFunc(hints, func(h keyHint) bool { return h.key == key })
 }
 
+func hintOf(hints []keyHint, key string) (keyHint, bool) {
+	for _, h := range hints {
+		if h.key == key {
+			return h, true
+		}
+	}
+	return keyHint{}, false
+}
+
 // TestRowKeysMatchTheHandlers is the footer's parity guard: on every real row
 // of both modes, with every function wired, a row key (x d o r R) is in
 // rowKeys exactly when pressing it is not refused by its handler. Why: the
@@ -153,6 +162,62 @@ func TestRowKeysWhileFiltering(t *testing.T) {
 	want := []string{"↑/↓", "enter", "esc", "ctrl+c"}
 	if !slices.Equal(got, want) {
 		t.Errorf("filtering footer keys = %v, want %v", got, want)
+	}
+}
+
+// TestRowKeysKeptFilterListsEsc pins esc's outside-input listing: the input
+// closed with a query kept is the one state where filterKey takes esc (it
+// clears the query; with none it falls through to the quit binding), so the
+// footer lists esc exactly then, in both modes' rows of launch mode.
+func TestRowKeysKeptFilterListsEsc(t *testing.T) {
+	m := newRowList(footerKeysReport(), rowListOpts{Mode: modeLaunch, Theme: themes.Default, Now: time.Now(), RemoveFuncs: wiredRemoveFuncs()})
+	m = moveTo(t, m, "free")
+	if hasKey(m.rowKeys(), "esc") {
+		t.Errorf("no query kept: footer lists esc: %+v", m.rowKeys())
+	}
+	m.filter = "free"
+	hints := m.rowKeys()
+	if !hasKey(hints, "esc") {
+		t.Errorf("query kept: footer does not list esc: %+v", hints)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(cleanupListModel)
+	if m.filter != "" {
+		t.Fatalf("esc did not clear the kept query: %q", m.filter)
+	}
+	if hasKey(m.rowKeys(), "esc") {
+		t.Errorf("query cleared: footer still lists esc: %+v", m.rowKeys())
+	}
+}
+
+// TestRowKeysDNamesTheToggleOnlyOnWorktreeRows pins the long form of d: the
+// branch toggle is seeded only for a worktree row (startRowAction), so `d
+// +branch` appears exactly there, and a branch or origin row — where d is x,
+// the branch being the row itself — reads `d remove`.
+func TestRowKeysDNamesTheToggleOnlyOnWorktreeRows(t *testing.T) {
+	m := newRowList(footerKeysReport(), rowListOpts{Mode: modeLaunch, Theme: themes.Default, Now: time.Now(), RemoveFuncs: wiredRemoveFuncs()})
+	m = moveTo(t, m, "free")
+	if h, ok := hintOf(m.rowKeys(), "d"); !ok || h.long != "d +branch" || h.short != "d" {
+		t.Errorf("worktree row: want d hint `d +branch`/`d`, got (%+v, %v)", h, ok)
+	}
+	for _, want := range []cleanup.Kind{cleanup.KindBranch, cleanup.KindRemote} {
+		found := false
+		for i, it := range m.items {
+			if it.heading != "" || it.newWorktree {
+				continue
+			}
+			if it.heading == "" && it.row.Kind == want && it.row.Name == "withup" {
+				m.cursor = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("fixture lost the %v row named withup", want)
+		}
+		if h, ok := hintOf(m.rowKeys(), "d"); !ok || h.long != "d remove" || h.short != "d" {
+			t.Errorf("%v row: want d hint `d remove`/`d`, got (%+v, %v)", want, h, ok)
+		}
 	}
 }
 
