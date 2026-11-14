@@ -59,7 +59,7 @@
     "status": {"type": "string", "enum": ["proven", "less_sure", "unique_work", "in_use"]},
     "evidence": {
       "type": "string",
-      "enum": ["same-commit", "ancestor", "trees-match", "no-added-changes", "merge-adds-nothing", "pr-tip", "cherry-equivalent", "patch-id", "rescued"]
+      "enum": ["same-commit", "ancestor", "trees-match", "no-added-changes", "merge-adds-nothing", "changes-in-base", "pr-tip", "cherry-equivalent", "patch-id", "rescued"]
     },
     "row": {
       "type": "object",

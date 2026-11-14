@@ -647,14 +647,22 @@ func TestWorktreesCmdTTYDoesNotFetchOnOpen(t *testing.T) {
 	a, _ := newTestApp(t)
 	stubCleanupGH(t)
 	dir := cleanupRepo(t)
-	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	oldTTY, oldList, oldGather, oldFacts := isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts
 	var ins []cleanup.GatherInputs
 	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
 		ins = append(ins, in)
 		return oldGather(g, in)
 	}
+	// The interactive list gathers through the facts stage now; its inputs
+	// land in the same recorder (the json/plain paths still use cleanupGather).
+	cleanupGatherFacts = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldFacts(g, in)
+	}
 	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { return nil }
-	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+	t.Cleanup(func() {
+		isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts = oldTTY, oldList, oldGather, oldFacts
+	})
 
 	isTerminalWriter = func(io.Writer) bool { return true }
 	if _, _, err := runCleanup(t, a, dir); err != nil {
@@ -783,14 +791,22 @@ func TestCleanupCmdTerminalDoesNotFetchOnOpen(t *testing.T) {
 	stubCleanupGH(t)
 	dir := cleanupRepo(t)
 	before, hadBefore := worktree.LastFetched(dir)
-	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	oldTTY, oldList, oldGather, oldFacts := isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts
 	var ins []cleanup.GatherInputs
 	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
 		ins = append(ins, in)
 		return oldGather(g, in)
 	}
+	// The interactive list gathers through the facts stage now; its inputs
+	// land in the same recorder (the json/plain paths still use cleanupGather).
+	cleanupGatherFacts = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldFacts(g, in)
+	}
 	runCleanupList = func(cleanup.Report, themes.Theme, tui.RemoveFuncs) error { return nil }
-	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+	t.Cleanup(func() {
+		isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts = oldTTY, oldList, oldGather, oldFacts
+	})
 	isTerminalWriter = func(io.Writer) bool { return true }
 
 	if _, _, err := runCleanup(t, a, dir); err != nil {
@@ -851,15 +867,23 @@ func TestCleanupCmdTerminalFetchFlagFetches(t *testing.T) {
 	rootBefore, rootHad := worktree.LastFetched(dir)
 	cwdBefore, cwdHad := worktree.LastFetched(linked)
 
-	oldTTY, oldList, oldGather := isTerminalWriter, runCleanupList, cleanupGather
+	oldTTY, oldList, oldGather, oldFacts := isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts
 	var ins []cleanup.GatherInputs
 	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
 		ins = append(ins, in)
 		return oldGather(g, in)
 	}
+	// The interactive list gathers through the facts stage now; its inputs
+	// land in the same recorder (the json/plain paths still use cleanupGather).
+	cleanupGatherFacts = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		ins = append(ins, in)
+		return oldFacts(g, in)
+	}
 	var got cleanup.Report
 	runCleanupList = func(r cleanup.Report, _ themes.Theme, _ tui.RemoveFuncs) error { got = r; return nil }
-	t.Cleanup(func() { isTerminalWriter, runCleanupList, cleanupGather = oldTTY, oldList, oldGather })
+	t.Cleanup(func() {
+		isTerminalWriter, runCleanupList, cleanupGather, cleanupGatherFacts = oldTTY, oldList, oldGather, oldFacts
+	})
 	isTerminalWriter = func(io.Writer) bool { return true }
 
 	if _, _, err := runCleanup(t, a, linked, "--fetch"); err != nil {
@@ -1272,5 +1296,41 @@ func TestCleanupJSONNoFetchLeavesClaims(t *testing.T) {
 	}
 	if _, statErr := os.Stat(file); statErr != nil {
 		t.Fatalf("the --no-fetch --json run dropped the stale claim %s: %v", file, statErr)
+	}
+}
+
+// TestExecuteCleanupJSONAndPlainStaySynchronous pins the split: the
+// --json and --plain paths keep the one synchronous cleanupGather and never
+// call the facts stage (cleanupGatherFacts). Why: a scripted consumer wants
+// one complete, immediately-usable document; only the interactive list may
+// paint facts and fill behind them.
+func TestExecuteCleanupJSONAndPlainStaySynchronous(t *testing.T) {
+	a, _ := newTestApp(t)
+	stubCleanupGH(t)
+	dir := cleanupRepo(t)
+	factsCalls, gatherCalls := 0, 0
+	oldFacts, oldGather := cleanupGatherFacts, cleanupGather
+	cleanupGatherFacts = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		factsCalls++
+		return oldFacts(g, in)
+	}
+	cleanupGather = func(g cleanup.Git, in cleanup.GatherInputs) (cleanup.Snapshot, error) {
+		gatherCalls++
+		return oldGather(g, in)
+	}
+	t.Cleanup(func() { cleanupGatherFacts, cleanupGather = oldFacts, oldGather })
+
+	if _, _, err := runCleanup(t, a, dir, "--json", "--no-fetch"); err != nil {
+		t.Fatalf("--json: %v", err)
+	}
+	if factsCalls != 0 || gatherCalls != 1 {
+		t.Errorf("--json: GatherFacts=%d Gather=%d, want 0 and 1", factsCalls, gatherCalls)
+	}
+	factsCalls, gatherCalls = 0, 0
+	if _, _, err := runCleanup(t, a, dir, "--plain", "--no-fetch"); err != nil {
+		t.Fatalf("--plain: %v", err)
+	}
+	if factsCalls != 0 || gatherCalls != 1 {
+		t.Errorf("--plain: GatherFacts=%d Gather=%d, want 0 and 1", factsCalls, gatherCalls)
 	}
 }

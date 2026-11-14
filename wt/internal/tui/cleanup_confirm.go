@@ -83,6 +83,14 @@ type RemoveFuncs struct {
 	// terminal's streams), and every consumer goes through noteOf before
 	// treating the value as a failure; a new caller must do the same.
 	RestoreRoot func(answer io.Reader, out, errOut io.Writer) error
+	// Fill completes a facts-only report off the update goroutine: it runs
+	// cleanup.FillDetails and the PR lookups, classifies, and returns the
+	// filled report with the RemoveFuncs built from its snapshot (and the
+	// error, if the fill failed). The list dispatches it from Init when the
+	// report it was given has Pending rows and swaps the result in through
+	// the generation guard (cleanupFillMsg). nil: the list never fills —
+	// behaviour is exactly a synchronous, already-filled report.
+	Fill func() (cleanup.Report, RemoveFuncs, error)
 	// Program runs the list on the alt screen, once per session pass, and
 	// returns the final model plus the function that stops the signal
 	// forwarding (idempotent). nil runs the real one (realCleanupProgram).
@@ -166,6 +174,16 @@ type (
 	}
 	// cleanupRefetchMsg is the `F` re-read's answer (the user's refresh, not
 	// the post-run one: its failure keeps the program alive).
+	// cleanupFillMsg is a manage list's fill landing (RemoveFuncs.Fill):
+	// the filled report and the funcs built from its snapshot, or the
+	// failure. gen guards it: one dispatched before the report was replaced
+	// (an F refetch) is dropped.
+	cleanupFillMsg struct {
+		report cleanup.Report
+		rm     RemoveFuncs
+		err    error
+		gen    int
+	}
 	cleanupRefetchMsg struct {
 		report cleanup.Report
 		stamp  refreshStamp
@@ -272,6 +290,13 @@ func (m cleanupListModel) tickedRows() []cleanup.Row {
 // engine is called: a remove targeting such a row is refused, never silently
 // dropped from the batch while the rest is previewed.
 func (m cleanupListModel) startRemoval() (cleanupListModel, tea.Cmd) {
+	if m.filling() {
+		// The fill has not landed: no ticked row was judged against the
+		// gates or the ladder — the existing unavailable status, as if the
+		// removal funcs were not built yet.
+		m.status = "removal is not available here; nothing was removed"
+		return m, nil
+	}
 	for _, it := range m.tickedItems() {
 		if it.locked {
 			m.status = "cannot be removed: " + cleanup.OneLine(it.text)
@@ -291,6 +316,9 @@ func (m cleanupListModel) startRemoval() (cleanupListModel, tea.Cmd) {
 // row) to the engine's preview, or the status says why not.
 func (m cleanupListModel) startRemovalOf(rows []cleanup.Row) (cleanupListModel, tea.Cmd) {
 	switch {
+	case m.filling():
+		m.status = "removal is not available here; nothing was removed"
+		return m, nil
 	case m.rm.Off != "":
 		m.status = cleanup.OneLine(m.rm.Off)
 		return m, nil
@@ -770,6 +798,9 @@ func (m cleanupListModel) gotRefresh(msg cleanupRefreshMsg) (tea.Model, tea.Cmd)
 		m.exitErr = fmt.Errorf("could not re-read the repository after removing: %w", msg.err)
 		return m, tea.Quit
 	}
+	// The post-run refresh rebuilds from its own full report: any fill
+	// dispatched before it is stale now.
+	m.fillGen++
 	o := m.opts
 	o.Theme, o.Now = m.theme, m.clock()
 	n := newRowList(msg.report, o)
@@ -856,6 +887,9 @@ func (m cleanupListModel) gotRefetch(msg cleanupRefetchMsg) (tea.Model, tea.Cmd)
 	m.opts.Now = m.now
 	st := msg.stamp
 	m.opts.Stamp = &st
+	// The refetch's full report replaces whatever was on screen: a fill
+	// dispatched before it is stale now.
+	m.fillGen++
 	return m.withReport(msg.report), nil
 }
 

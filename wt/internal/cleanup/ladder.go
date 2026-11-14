@@ -19,6 +19,11 @@ const (
 	EvMergeAddsNothing Evidence = "merge-adds-nothing" // merging tip into base changes nothing
 	EvPRTip            Evidence = "pr-tip"             // a merged PR's head is the tip (set by the classifier)
 
+	// EvChangesInBase: merge-tree declined (a conflict, or a merged tree that
+	// differs from base's), but the tip's change-set reverse-applies onto
+	// base's tree — the squash merge whose file base later edited.
+	EvChangesInBase Evidence = "changes-in-base"
+
 	// EvRescued is not a merge proof: a wt rescue record covers the
 	// worktree's unpushed commits (or detached HEAD), so removing it loses
 	// none of them (set by the classifier for a preserved worktree row only).
@@ -215,11 +220,27 @@ func Prove(g Git, base, tip string) (Evidence, Verdict) {
 		if strings.TrimSpace(first) == bt {
 			return EvMergeAddsNothing, Merged
 		}
-		return "", NotMerged
 	case 1:
-		return "", NotMerged // conflict: tip changes what base changed differently
+		// conflict: tip changes what base changed differently. Rung 6 below
+		// still judges it: a squash merge whose file base later edited (an
+		// adjacent line) conflicts here yet is fully in base's content.
+	default:
+		return "", Undetermined
 	}
-	return "", Undetermined
+
+	// 6. the tip's change-set reverse-applies onto base's tree
+	// (changes-in-base): merge-tree answered "not merged" (a conflict, or a
+	// merged tree that differs from base's), but the content may still be
+	// there — the squash merge whose file base later edited. Containment is
+	// content, not hashes: it fails when base later reverted the change (the
+	// exact defeat of cherry/patch-id, which stay weak signals). Only TriYes
+	// proves; unknown (over the caps, a git failure) stays NotMerged, and
+	// rung 5's Undetermined above still stops the ladder before this runs
+	// (a configured merge driver could hide a real conflict).
+	if tipContainedInBase(g, b, t) == TriYes {
+		return EvChangesInBase, Merged
+	}
+	return "", NotMerged
 }
 
 // WeakSignals reports the signals that suggest, but never prove, tip's work is

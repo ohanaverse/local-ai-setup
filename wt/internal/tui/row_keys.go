@@ -106,6 +106,7 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 	}
 	out := []keyHint{move}
 	it := m.items[m.cursor]
+	filling := m.filling()
 	onRow := !m.hidden(m.cursor) && it.heading == ""
 	if m.launch() {
 		if onRow && (it.newWorktree || !it.row.Bare) {
@@ -119,10 +120,16 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 		if onRow && !it.locked {
 			out = append(out, keyHint{"space", "space tick", "space"})
 		}
-		out = append(out, keyHint{"a", "a proven", "a"}, keyHint{"enter", "enter remove ticked", "enter"})
+		out = append(out, keyHint{"a", "a proven", "a"})
+		if !filling {
+			out = append(out, keyHint{"enter", "enter remove ticked", "enter"})
+		}
 	}
 	if row, ok := m.selectedRow(); ok {
-		removal := m.rm.Off == "" && m.rm.Preview != nil
+		// No removal while the fill is in flight: the removal funcs are
+		// built from the filled snapshot only, so the keys are absent
+		// exactly when their handlers would refuse (nil-RemoveFuncs rule).
+		removal := !filling && m.rm.Off == "" && m.rm.Preview != nil
 		if removal && !it.locked {
 			// The branch toggle is seeded only for a worktree row
 			// (startRowAction), so `d +branch` is its long form; elsewhere d
@@ -136,10 +143,10 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 		if target, has := m.originTarget(row); removal && has && !cleanupLocked(target) {
 			out = append(out, keyHint{"o", "o delete origin", "o"})
 		}
-		if ok, _ := rescue.Offered(row); ok && m.rm.Rescue != nil {
+		if ok, _ := rescue.Offered(row); ok && !filling && m.rm.Rescue != nil {
 			out = append(out, keyHint{"r", "r rescue", "r"})
 		}
-		if ok, _ := rootmove.Offered(row); ok && m.rm.RestoreRoot != nil {
+		if ok, _ := rootmove.Offered(row); ok && !filling && m.rm.RestoreRoot != nil {
 			out = append(out, keyHint{"R", "R restore root", "R restore"})
 		}
 	}

@@ -313,6 +313,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 	case rowsLoadedMsg:
 		return m.gotRows(msg)
+	case rowsFilledMsg:
+		return m.gotFilled(msg)
 	case rowPRsLoadedMsg:
 		// The PR lookups of the latest load arrived: swapped in with the
 		// cursor, the filter and the scroll kept (withReport). The filled
@@ -856,6 +858,7 @@ func (m model) proceedWithPath() (model, tea.Cmd) {
 	m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	m.agentList.Title = "Pick an agent or command"
 	m.agentList.SetShowStatusBar(false)
+	m.agentList.InfiniteScrolling = true // the cursor wraps at either edge (spec §6)
 	m.phase = phaseAgent
 	return m, nil
 }
@@ -961,6 +964,7 @@ func (m model) enterModelPhase(agent string, models []config.Model, firstTag str
 	ml.Title = tbl.header
 	styleTableTitle(&ml, m.theme)
 	ml.SetShowStatusBar(false)
+	ml.InfiniteScrolling = true // the cursor wraps at either edge (spec §6)
 	m.models = ml
 
 	// The -M pin's verdict comes from the same rows the table shows, so the
@@ -1094,6 +1098,7 @@ func (m model) routeBackToAgent(status string) (model, tea.Cmd) {
 	m.agentList = list.New(items, ThemedListDelegate(m.theme), m.width-2, m.height-2)
 	m.agentList.Title = "Pick an agent or command"
 	m.agentList.SetShowStatusBar(false)
+	m.agentList.InfiniteScrolling = true // the cursor wraps at either edge (spec §6)
 	m.phase = phaseAgent
 	return m, nil
 }

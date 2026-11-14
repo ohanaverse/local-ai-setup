@@ -427,6 +427,8 @@ func TestCleanupJSONUnchangedByNewRowFields(t *testing.T) {
 	// Display-only fields never serialize.
 	full[0].Primary, full[0].Current, full[0].Bare = true, true, true
 	full[0].PRUnknown, full[1].PRTag = true, &PRInfo{Number: 9, State: "OPEN"}
+	full[0].State, full[0].Diff, full[0].Sessions = StateInMain, DiffStat{Added: 9, Removed: 4}, 2
+	full[1].State, full[1].Diff, full[1].Sessions = StateUnknown, DiffStat{Unknown: true}, 3
 	rep := func(rows []Row) Report {
 		return Report{Repo: "/r", GH: GHOK, Base: Base{Default: "main", Ref: "origin/main"}, Rows: rows}
 	}

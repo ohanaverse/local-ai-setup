@@ -161,6 +161,8 @@ func evidenceText(row Row, base string) string {
 		return "adds nothing to " + base
 	case EvMergeAddsNothing:
 		return "squash merged, content is in " + base
+	case EvChangesInBase:
+		return "all the changes are in " + base
 	case EvPRTip:
 		if row.PR != nil {
 			return fmt.Sprintf("squash merged, PR #%d", row.PR.Number)
@@ -246,6 +248,9 @@ func RowText(rep Report, row Row) string {
 	}
 	if ev := evidenceText(row, rep.Base.Ref); ev != "" {
 		parts = append(parts, ev)
+	}
+	if row.State == StateInMain {
+		parts = append(parts, "uncommitted changes are in main")
 	}
 	if len(parts) == 0 {
 		return "no evidence"
@@ -518,26 +523,40 @@ const (
 )
 
 // KindGroups splits the report by kind: worktrees (the root first, then the
-// others in the report's order), local branches without a worktree, remote
-// branches (folded ones included, via RemoteRows). Empty groups are left out.
+// others by display name), local branches without a worktree by display
+// name, remote branches (folded ones included, via RemoteRows) by display
+// name. Empty groups are left out. Within-group order is the display name —
+// never the verdict — so the list holds still when a fill lands: the facts
+// and the filled report name the same rows in the same order, though their
+// verdicts differ (spec §5, stable across stages).
 func KindGroups(r Report) []KindGroup {
 	var wt, local []Row
 	for _, row := range r.AllRows() {
 		switch row.Kind {
 		case KindWorktree:
-			if row.Primary {
-				wt = append([]Row{row}, wt...)
-				// keep several primaries (never expected) in report order
-				continue
-			}
 			wt = append(wt, row)
 		case KindBranch:
 			local = append(local, row)
 		}
 	}
+	slices.SortStableFunc(wt, byDisplayName)
+	slices.SortStableFunc(local, byDisplayName)
+	// The root leads its group whatever its name sorts as. The root is
+	// named either by Row.Primary (a classified row) or by its
+	// primary-checkout blocker (a hand-built report): a report carries one
+	// or the other, never nothing.
+	isRoot := func(r Row) bool {
+		return r.Primary || slices.ContainsFunc(r.Blockers, func(b Reason) bool { return b.Code == BlockPrimary })
+	}
+	if i := slices.IndexFunc(wt, isRoot); i > 0 {
+		root := wt[i]
+		wt = slices.Concat([]Row{root}, wt[:i], wt[i+1:])
+	}
+	remote := remoteOnly(r)
+	slices.SortStableFunc(remote, byDisplayName)
 	var out []KindGroup
 	for _, g := range []KindGroup{
-		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, remoteOnly(r)},
+		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, remote},
 	} {
 		if len(g.Rows) > 0 {
 			out = append(out, g)
@@ -545,6 +564,9 @@ func KindGroups(r Report) []KindGroup {
 	}
 	return out
 }
+
+// byDisplayName orders rows inside a kind group by their display name.
+func byDisplayName(a, b Row) int { return strings.Compare(DisplayName(a), DisplayName(b)) }
 
 // remoteOnly is the remote rows no local row folds: a folded ref is its local
 // row's Upstream (one row per branch), still reachable through RemoteRows.

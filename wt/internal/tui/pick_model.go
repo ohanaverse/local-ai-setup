@@ -87,6 +87,7 @@ func newPickModel(cfg *config.Config, models []config.Model, theme themes.Theme,
 	l.Title = tbl.header
 	styleTableTitle(&l, theme)
 	l.SetShowStatusBar(false)
+	l.InfiniteScrolling = true // the cursor wraps at either edge (spec §6)
 	return pickModel{list: l}
 }
 

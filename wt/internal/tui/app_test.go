@@ -1541,3 +1541,50 @@ func TestPrintPendingSummaryAndSurveySkipsPriceNoticeForCommandAgent(t *testing.
 		t.Error("emitPriceNotice was invoked for a command agent (m.ID == \"\")")
 	}
 }
+
+// TestModelSelectorWrapsInAppAndStandalone pins spec §6: the cursor wraps
+// in the model selector on both of its build paths — the launcher's model
+// phase (enterModelPhase) and the standalone start picker (newPickModel) —
+// through bubbles' InfiniteScrolling. Why: the same screen two flows reach
+// must not dead-end at either list edge; a flag set on one build site only
+// would leave the other flow's cursor stuck.
+func TestModelSelectorWrapsInAppAndStandalone(t *testing.T) {
+	stubUsageStore(t)
+	stubRefcountStore(t)
+	stubInventory(t, runningOmlxSnapshot())
+	tempStateDir(t)
+	cfg := modelTestConfig()
+
+	// Standalone start picker.
+	pm := newPickModel(cfg, cfg.Models, themes.Default, false)
+	if !pm.list.InfiniteScrolling {
+		t.Fatal("standalone picker does not wrap (InfiniteScrolling unset)")
+	}
+	pm.list.Select(len(pm.list.Items()) - 1)
+	next, _ := pm.list.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if got := next.Index(); got != 0 {
+		t.Errorf("standalone: down from the last row = %d, want wrap to 0", got)
+	}
+	// Up from the wrapped-top row wraps back down to the end. (list.Update
+	// returns an updated copy without mutating the field, so the chain runs
+	// on the returned model.)
+	prev, _ := next.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if got := prev.Index(); got != len(pm.list.Items())-1 {
+		t.Errorf("standalone: up from the top row = %d, want wrap to the last row %d", got, len(pm.list.Items())-1)
+	}
+
+	// The launcher's model phase.
+	m := model{cfg: cfg, width: 80, height: 24}
+	nm, _ := m.enterModelPhase("claude", cfg.Models, "")
+	if len(nm.models.Items()) == 0 {
+		t.Fatal("model phase list is empty")
+	}
+	if !nm.models.InfiniteScrolling {
+		t.Fatal("model phase list does not wrap (InfiniteScrolling unset)")
+	}
+	nm.models.Select(len(nm.models.Items()) - 1)
+	updated, _ := nm.models.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if got := updated.Index(); got != 0 {
+		t.Errorf("model phase: down from the last row = %d, want wrap to 0", got)
+	}
+}

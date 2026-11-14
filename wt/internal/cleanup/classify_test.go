@@ -6,10 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/dirtsnap"
 )
 
 // later is a clock an hour ahead: every branch the fixture made is older than
@@ -139,6 +142,26 @@ func squashThenEditSameLine(f *fixture) (tip, squash string) {
 	f.Commit("x", "later\n", "later x")
 	f.Push("main")
 	return tip, squash
+}
+
+// adjacentSquash squash-merges topic (which changes line 5 of a.txt) into
+// main, then edits the adjacent line 4 on main: merge-tree conflicts on the
+// folded region, so no rung before containment can prove the merge — the
+// layout changes-in-base exists for. main is pushed (origin/main, the base,
+// holds both edits); topic stays local, so its commits read unpushed.
+func adjacentSquash(f *fixture) {
+	base := containedLines()
+	f.Commit("a.txt", containedRender(base), "add a.txt")
+	f.Branch("topic")
+	f.Checkout("topic")
+	ls := containedCopy(base)
+	ls[4] = "CHANGED5"
+	f.Commit("a.txt", containedRender(ls), "topic changes line 5")
+	f.Squash("topic")
+	after := containedCopy(ls)
+	after[3] = "EDITED4"
+	f.Commit("a.txt", containedRender(after), "main edits line 4")
+	f.Push("main")
 }
 
 // TestClassify runs Gather and Classify over one fixture per scenario ported
@@ -319,6 +342,14 @@ func TestClassify(t *testing.T) {
 			f.MergeResolving("main", "x", "resolved\n")
 			f.Checkout("main")
 		}, want: want{kind: KindBranch, name: "topic", status: StatusUniqueWork, reasons: []string{ReasonUnpushed}}},
+		// Rung 6 (changes-in-base): squash-merged, then main edited a line
+		// adjacent to the branch's change — merge-tree conflicts, so only
+		// containment can prove it. Deliberately fresh (now: time.Now):
+		// min-age gates same-commit and ancestor only (ageGated), and
+		// containment is content, not time, so the row proves regardless.
+		{name: "squash then main edited an adjacent line, fresh", now: time.Now, setup: func(t *testing.T, f *fixture) {
+			adjacentSquash(f)
+		}, want: want{kind: KindBranch, name: "topic", status: StatusProven, ev: EvChangesInBase}},
 		{name: "git failure is unknown", setup: func(t *testing.T, f *fixture) {
 			f.Branch("topic")
 			f.Checkout("topic")
@@ -793,6 +824,23 @@ func TestClassifyFailClosedRules(t *testing.T) {
 		{"trees-match, a real squash with unpushed commits (control)", branch(Proof{Evidence: EvTreesMatch, Verdict: Merged, NetZero: TriNo, Unpushed: 2}),
 			KindBranch, StatusProven, false, ""},
 		{"open PR on a local branch", branch(merged, PRInfo{Number: 4, State: "OPEN", HeadRefOid: tip, BaseRef: "main"}), KindBranch, StatusUniqueWork, false, ReasonOpenPR},
+		// changes-in-base (rung 6) answers only what the ladder proves; every
+		// soft rule then applies to it exactly as to the other proofs.
+		{"changes-in-base is proven, unpushed count ignored", branch(Proof{Evidence: EvChangesInBase, Verdict: Merged, Unpushed: 3}),
+			KindBranch, StatusProven, false, ""},
+		{"changes-in-base with an open PR", branch(Proof{Evidence: EvChangesInBase, Verdict: Merged}, PRInfo{Number: 4, State: "OPEN", HeadRefOid: tip, BaseRef: "main"}),
+			KindBranch, StatusUniqueWork, false, ReasonOpenPR},
+		{"changes-in-base, PR lookup pending", func() Snapshot {
+			s := branch(Proof{Evidence: EvChangesInBase, Verdict: Merged})
+			s.PRs["topic"] = PRResult{Lookup: LookupUnknown}
+			s.PRsSkipped = true // the lookup is owed, not never-asked: prPending
+			return s
+		}(), KindBranch, StatusLessSure, false, ReasonPRUnknown},
+		{"changes-in-base capped by a local base", func() Snapshot {
+			s := branch(Proof{Evidence: EvChangesInBase, Verdict: Merged})
+			s.Base = Base{Default: "main", Ref: "main", Fallback: true}
+			return s
+		}(), KindBranch, StatusLessSure, false, ReasonBaseIsLocal},
 		{"unmerged remote", func() Snapshot {
 			s := handSnapshot()
 			s.Worktrees = []WorktreeState{primary}
@@ -821,6 +869,294 @@ func TestClassifyFailClosedRules(t *testing.T) {
 				t.Fatalf("reasons %v lack %q", reasonCodes(row.Reasons), c.code)
 			}
 		})
+	}
+}
+
+// TestFactsOnlyRowsArePendingAndNeverProven classifies a facts-only
+// snapshot: every row carries Pending, no row is proven, worktree rows read
+// State "-", and the session count is already filled (claims are facts).
+// Filling the same repository then proves the squash-merged branch — the
+// pending row was a paint, not a verdict. Why: stage 1 shows names while the
+// detail cells say "-", and nothing on it may read as a verdict someone
+// could act on; a proven row at first paint would tick a row before the
+// gates and ladder ever ran.
+func TestFactsOnlyRowsArePendingAndNeverProven(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Checkout("topic")
+	f.Commit("a", "a", "a")
+	f.Checkout("main")
+	f.Squash("topic")
+	wt := f.Worktree("wt2")
+	common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	holderClaim(t, common, wt, "wt2", "codex")
+
+	s, err := GatherFacts(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2})
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	r := Classify(s, Options{Now: later()})
+	if len(r.Rows) == 0 {
+		t.Fatal("no rows: facts must already name every entry")
+	}
+	for _, row := range r.Rows {
+		if !row.Pending {
+			t.Errorf("%s %s: not Pending", row.Kind, row.Name)
+		}
+		if row.Status == StatusProven {
+			t.Errorf("%s %s: proven on a facts-only snapshot", row.Kind, row.Name)
+		}
+		if row.Kind == KindWorktree && row.State != StateUnknown {
+			t.Errorf("worktree %s: State %q, want %q while pending", row.Name, row.State, StateUnknown)
+		}
+	}
+	if row := findRow(t, r, KindWorktree, "wt2"); row.Sessions != 1 {
+		t.Errorf("wt2 Sessions = %d, want 1: claims are facts, filled at stage 1", row.Sessions)
+	}
+
+	noGh(t)
+	filled, err := FillDetails(Git{Dir: f.Dir}, s, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2})
+	if err != nil {
+		t.Fatalf("FillDetails: %v", err)
+	}
+	if row := findRow(t, Classify(filled, Options{Now: later()}), KindBranch, "topic"); row.Status != StatusProven {
+		t.Errorf("filled topic = %s, want proven: the pending row only waited for the fill", row.Status)
+	}
+}
+
+// TestFactsOnlyKeepsRowOrderOfTheFilledReport compares the rendered order
+// (KindGroups: kind groups, root first, display names — the order the list
+// shows) of the same repository classified from its facts-only snapshot and
+// from the filled one. Why: the fill lands under the cursor after first
+// paint; if the order shifted with the verdicts, rows would jump beneath the
+// selection when the details arrive (spec §5 / the anti-goal).
+func TestFactsOnlyKeepsRowOrderOfTheFilledReport(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	wt := f.Worktree("aaa-worktree")
+	f.DirtyIn(wt, "notes.txt")
+	f.Branch("zzz-branch")
+	f.Push("zzz-branch")
+	f.Branch("topic")
+	f.Checkout("topic")
+	f.Commit("a", "a", "a")
+	f.Checkout("main")
+	f.Squash("topic") // filled: topic proven, aaa-worktree unique — facts: all alike
+	in := GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+
+	facts, err := GatherFacts(Git{Dir: f.Dir}, in)
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	full := gather(t, f)
+
+	sig := func(r Report) [][]string {
+		var out [][]string
+		for _, g := range KindGroups(r) {
+			names := []string{g.Heading}
+			for _, row := range g.Rows {
+				names = append(names, DisplayName(row))
+			}
+			out = append(out, names)
+		}
+		return out
+	}
+	got := sig(Classify(facts, Options{Now: later()}))
+	want := sig(Classify(full, Options{Now: later()}))
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("row order changed between stages:\n facts %+v\n full  %+v", got, want)
+	}
+}
+
+// TestClassifyWorkStatePrecedence pins the STATUS word (Row.State) per the
+// spec's precedence: conflicted (operation marker or a bare unmerged index)
+// over clean (ignored files alone leave a row clean) over in main (contained
+// dirt) over dirty, and "-" on rows with no readable worktree state (gates
+// error, branch, remote, bare). Why: the table's STATUS cell and the "in
+// main" signal are verdicts a user scans at a glance; a wrong word there
+// misstates how much uncommitted work sits where.
+func TestClassifyWorkStatePrecedence(t *testing.T) {
+	// Each scenario gets a fresh repository: conflict fixtures write to
+	// main as well as the worktree and are not idempotent, and a fresh repo
+	// per case keeps one scenario's leftovers out of another's gather.
+	scenarios := []struct {
+		name  string
+		build func(t *testing.T, f *fixture) string // returns the row name
+		want  WorkState
+	}{
+		{"clean worktree", func(t *testing.T, f *fixture) string {
+			f.Worktree("topic")
+			return "topic"
+		}, StateClean},
+		{"ignored files alone leave it clean", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.IgnoredIn(p, ".env")
+			return "topic"
+		}, StateClean},
+		{"dirty", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.DirtyIn(p, "notes.txt")
+			return "topic"
+		}, StateDirty},
+		{"conflicted by an operation in progress", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.StoppedMerge(p)
+			return "topic"
+		}, StateConflicted},
+		{"conflicted by a bare unmerged index (no marker)", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.StoppedMerge(p)
+			// Remove the marker: the index keeps its unmerged entries, which
+			// must still read conflicted.
+			if err := os.Remove(gitPath(t, p, "MERGE_HEAD")); err != nil {
+				t.Fatal(err)
+			}
+			return "topic"
+		}, StateConflicted},
+		{"in main: contained uncommitted work", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic") // forked before main gains n.txt
+			f.Commit("n.txt", "same\n", "main adds n.txt")
+			f.Push("main") // the base holds n.txt; the worktree's copy stays untracked
+			if err := os.WriteFile(filepath.Join(p, "n.txt"), []byte("same\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return "topic"
+		}, StateInMain},
+		{"gates error (prunable)", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			if err := os.RemoveAll(p); err != nil { // broken .git link: gates cannot run
+				t.Fatal(err)
+			}
+			return "topic"
+		}, StateUnknown},
+	}
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			f := newFixture(t)
+			noGh(t)
+			row := sc.build(t, f)
+			r := Classify(gather(t, f), Options{Now: later()})
+			got := findRow(t, r, KindWorktree, row)
+			if got.State != sc.want {
+				t.Fatalf("State = %q, want %q%s", got.State, sc.want, dumpRows(r.Rows))
+			}
+		})
+	}
+
+	t.Run("bare row", func(t *testing.T) {
+		s := handSnapshot()
+		s.NoDefault = true
+		s.Worktrees = []WorktreeState{{Fact: WorktreeFact{Path: "/r", Bare: true, Primary: true}}}
+		r := Classify(s, Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "r")
+		if row.State != StateUnknown {
+			t.Fatalf("bare State = %q, want %q", row.State, StateUnknown)
+		}
+	})
+	t.Run("branch and remote rows", func(t *testing.T) {
+		f := newFixture(t)
+		noGh(t)
+		f.Branch("solo")
+		f.Push("solo")
+		r := Classify(gather(t, f), Options{Now: later()})
+		if row := findRow(t, r, KindBranch, "solo"); row.State != StateUnknown {
+			t.Errorf("branch State = %q, want %q", row.State, StateUnknown)
+		}
+		if row := findRow(t, r, KindRemote, "solo"); row.State != StateUnknown {
+			t.Errorf("remote State = %q, want %q", row.State, StateUnknown)
+		}
+	})
+}
+
+// TestWorktreeRuleContainedDirtDoesNotRaiseUniqueWork pins spec §4's worktree
+// rule: a branch proven by any rung whose uncommitted change-set is contained
+// in the base reads proven (the dirty gate stays quiet), the detail says the
+// uncommitted changes are in main, and State is "in main"; any part not
+// contained (TriNo) or unreadable (TriUnknown, over the caps) keeps today's
+// unique_work. Why: contained dirt loses nothing by removal — making it raise
+// unique work would deny --yes exactly where deletion is safe, and letting an
+// unknown count as contained would be a false proven.
+func TestWorktreeRuleContainedDirtDoesNotRaiseUniqueWork(t *testing.T) {
+	build := func(t *testing.T, content string, capFiles *int) (*fixture, string) {
+		t.Helper()
+		f := newFixture(t)
+		wp := f.Worktree("topic") // topic at the fork: an ancestor of main
+		f.Commit("n.txt", "same\n", "main adds n.txt")
+		f.Push("main") // the base holds n.txt
+		if err := os.WriteFile(filepath.Join(wp, "n.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if capFiles != nil {
+			old := dirtLimits
+			dirtLimits = dirtsnap.Limits{MaxFiles: *capFiles, MaxBytes: DirtMaxBytes}
+			t.Cleanup(func() { dirtLimits = old })
+		}
+		return f, wp
+	}
+
+	t.Run("contained: proven, detail says in main", func(t *testing.T) {
+		f, _ := build(t, "same\n", nil)
+		noGh(t)
+		r := Classify(gather(t, f), Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "topic")
+		if row.Status != StatusProven || row.State != StateInMain {
+			t.Fatalf("row = (%s, state %q), want (proven, %q)%s", row.Status, row.State, StateInMain, dumpRows(r.Rows))
+		}
+		if slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+			t.Errorf("reasons %v carry dirty: contained dirt must not raise unique work", reasonCodes(row.Reasons))
+		}
+		if text := RowText(r, row); !strings.Contains(text, "uncommitted changes are in main") {
+			t.Errorf("detail = %q, want it to say the uncommitted changes are in main", text)
+		}
+	})
+
+	t.Run("not contained: unique work stands", func(t *testing.T) {
+		f, _ := build(t, "different\n", nil)
+		noGh(t)
+		r := Classify(gather(t, f), Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "topic")
+		if row.Status != StatusUniqueWork || row.State != StateDirty {
+			t.Fatalf("row = (%s, state %q), want (unique_work, %q)%s", row.Status, row.State, StateDirty, dumpRows(r.Rows))
+		}
+		if !slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+			t.Errorf("reasons %v lack dirty", reasonCodes(row.Reasons))
+		}
+	})
+
+	t.Run("containment unknown: unique work stands", func(t *testing.T) {
+		overCap := 0
+		f, _ := build(t, "same\n", &overCap)
+		noGh(t)
+		r := Classify(gather(t, f), Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "topic")
+		if row.Status != StatusUniqueWork {
+			t.Fatalf("status %s, want unique_work over the caps%s", row.Status, dumpRows(r.Rows))
+		}
+		if !slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+			t.Errorf("reasons %v lack dirty", reasonCodes(row.Reasons))
+		}
+	})
+}
+
+// TestClassifyChangesInBaseIsNotATreeProof pins rung 6's verdict
+// consequences end to end: a squash-merged, never-pushed branch whose file
+// main later edited reads proven with evidence changes-in-base, and its
+// Losses.Unpushed is 0 — unpushedOf returns 0 for any non-treeProof Merged,
+// so Ruling 17's net-zero demotion never applies. Why: the common rung-6 row
+// IS an unpushed squash; if the treeProof rules read containment as "only
+// equal trees", the row would sit at less sure forever.
+func TestClassifyChangesInBaseIsNotATreeProof(t *testing.T) {
+	f := newFixture(t)
+	adjacentSquash(f)
+	noGh(t)
+
+	r := Classify(gather(t, f), Options{Now: later(), MinAge: DefaultMinAge})
+	row := findRow(t, r, KindBranch, "topic")
+	if row.Status != StatusProven || row.Evidence != EvChangesInBase {
+		t.Fatalf("row = (%s, ev %q), want (proven, %q)%s", row.Status, row.Evidence, EvChangesInBase, dumpRows(r.Rows))
+	}
+	if row.Losses.Unpushed != 0 {
+		t.Fatalf("Losses.Unpushed = %d, want 0: changes-in-base is a proof, not a treeProof (unpushedOf returns 0 for it)", row.Losses.Unpushed)
 	}
 }
 
@@ -1113,5 +1449,72 @@ func TestNoDefaultKnownStillListsEveryRow(t *testing.T) {
 		if !row.Unknown || slices.Contains(reasonCodes(row.Blockers), BlockDefaultBranch) {
 			t.Errorf("%s: unknown %v blockers %v, want Unknown and no default_branch", name, row.Unknown, reasonCodes(row.Blockers))
 		}
+	}
+}
+
+// TestWorktreeRuleContainedDirtNeedsAProvenBranch pins spec §4's gate: the
+// dirty gate stays quiet only when the branch itself is proven by a ladder
+// rung AND the change-set is contained. Why: the containment read is about
+// the dirt, not the branch — an unmerged branch whose dirt happens to be in
+// the base still has work at risk on its own, and suppressing the gate
+// unconditionally would relabel --json verdict values (unique_work →
+// less_sure) for rows the spec never sanctioned.
+func TestWorktreeRuleContainedDirtNeedsAProvenBranch(t *testing.T) {
+	f := newFixture(t)
+	wp := f.Worktree("topic") // forked before main gains n.txt
+	f.Commit("n.txt", "same\n", "main adds n.txt")
+	f.Push("main") // the base holds n.txt: the worktree's copy is contained
+	// The branch itself is NOT in the base: one commit of its own, pushed
+	// (so unpushed is not what raises unique work — the commit is).
+	commitIn(t, wp, "unique.txt", "u\n", "unique work")
+	f.git("push", "-u", "origin", "topic")
+	if err := os.WriteFile(filepath.Join(wp, "n.txt"), []byte("same\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noGh(t)
+
+	r := Classify(gather(t, f), Options{Now: later()})
+	row := findRow(t, r, KindWorktree, "topic")
+	if row.Status != StatusUniqueWork || !slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+		t.Fatalf("row = (%s, %v), want unique_work with the dirty reason: contained dirt silences the gate only for a proven branch%s",
+			row.Status, reasonCodes(row.Reasons), dumpRows(r.Rows))
+	}
+	if row.State != StateInMain {
+		t.Errorf("State = %q, want %q (the dirt itself is contained)", row.State, StateInMain)
+	}
+}
+
+// TestPRFillSkipsGhWhenOriginIsNotGitHub pins the source gate: with no known
+// GitHub own-repository, askPRs (the one entry FillPRs and every fill stage
+// use) runs no `gh pr list --base`, even with OriginRows set as both list
+// paths set it — gh cannot answer for a non-GitHub origin, so every such call
+// fails. The control half proves the gate is not blanket silence: with an
+// own repository the lookup runs.
+func TestPRFillSkipsGhWhenOriginIsNotGitHub(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic") // origin/topic's tip is in the base: a baseCandidates entry
+
+	baseCalls := 0
+	stubGhBase(t, func(string, string) ([]byte, error) {
+		baseCalls++
+		return []byte("[]"), nil
+	})
+	stubGh(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+
+	// No own repository (the fixture's origin is a local path).
+	if _, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OriginRows: true, Parallel: 2}); err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if baseCalls != 0 {
+		t.Errorf("gh --base ran %d times with no GitHub own-repository, want 0", baseCalls)
+	}
+
+	// Control: with an own repository the lookup runs (once per candidate).
+	if _, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", OriginRows: true, Parallel: 2}); err != nil {
+		t.Fatalf("Gather(o/r): %v", err)
+	}
+	if baseCalls == 0 {
+		t.Error("gh --base never ran with an own repository: the gate must not silence it there")
 	}
 }

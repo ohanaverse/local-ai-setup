@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -293,20 +294,36 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	if asked != 0 {
 		t.Fatalf("the first paint asked gh %d times, want none", asked)
 	}
-	if v := m.View(); !strings.Contains(v, "PR ?") {
-		t.Fatalf("first view has no PR ?:\n%s", v)
+	if !m.rows.filling() {
+		t.Fatalf("first paint is not the facts stage:\n%s", m.View())
 	}
 	if cmd == nil {
-		t.Fatal("no PR fill command after the load")
+		t.Fatal("no fill command after the load")
 	}
 	m = pickerCursorTo(t, m, "loose")
+	// Stage 2: the fill lands (still no gh: the PR lookups are stage 3).
+	fillMsg := cmd()
+	if _, ok := fillMsg.(rowsFilledMsg); !ok {
+		t.Fatalf("the load's command answered %T, want rowsFilledMsg", fillMsg)
+	}
+	m, cmd = updateMsg(m, fillMsg)
+	if m.rows.filling() {
+		t.Fatal("still filling after the fill landed")
+	}
+	if v := m.View(); !strings.Contains(v, "PR ?") {
+		t.Fatalf("filled view has no PR ? (the lookups are still owed):\n%s", v)
+	}
+	if cmd == nil {
+		t.Fatal("no PR fill command after the fill")
+	}
+	// Stage 3: the PR lookups.
 	msg := cmd()
 	if _, ok := msg.(rowPRsLoadedMsg); !ok {
-		t.Fatalf("fill answered %T", msg)
+		t.Fatalf("the fill answered %T, want rowPRsLoadedMsg", msg)
 	}
 	m, _ = updateMsg(m, msg)
 	if asked == 0 {
-		t.Error("the fill asked gh nothing")
+		t.Error("the PR lookups asked gh nothing")
 	}
 	if row, ok := m.rows.selectedRow(); !ok || row.Name != "loose" {
 		t.Errorf("cursor on %+v after the fill, want loose", row)
@@ -370,7 +387,8 @@ func TestPickerStalePRTagSuppressed(t *testing.T) {
 		return []byte("[]"), nil
 	}
 	m, cmd := pickerLoad(t, r.dir, prs)
-	m, _ = updateMsg(m, cmd())
+	m, cmd = updateMsg(m, cmd()) // the fill
+	m, _ = updateMsg(m, cmd())   // the PR lookups
 	for _, it := range m.rows.items {
 		if it.heading != "" || it.newWorktree {
 			continue
@@ -582,5 +600,312 @@ func TestPRFillKeepsTheStatusLine(t *testing.T) {
 	m, _ = updateMsg(m, rowPRsLoadedMsg{Report: pickerFixture(), gen: m.rowsGen})
 	if m.rows.status != "cannot be removed: primary checkout" {
 		t.Errorf("status after the fill = %q", m.rows.status)
+	}
+}
+
+// TestPickerPaintsFactsThenFillsThenPRs pins the three-stage picker: the
+// rows load returns immediately with the facts report (every row Pending:
+// names and session digits on screen, detail cells "-", no verdict), its
+// command fills the details off the update goroutine (rowsFilledMsg), and
+// that landing dispatches the PR lookup (rowPRsLoadedMsg). Why: the first
+// paint must never wait on the gates/ladder/gh — three messages, in that
+// order, each swapping through the generation guard.
+func TestPickerPaintsFactsThenFillsThenPRs(t *testing.T) {
+	r := newRmRepo(t)
+	r.worktree("topic")
+	m, cmd := pickerLoad(t, r.dir, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	if cmd == nil {
+		t.Fatal("no fill command after the facts load")
+	}
+	// First paint: rows exist and are Pending — "-" detail cells, names.
+	view := m.View()
+	if !strings.Contains(view, "topic") {
+		t.Fatalf("first paint lacks the row name:\n%s", view)
+	}
+	if !strings.Contains(view, "-") {
+		t.Fatalf("first paint lacks the - cells:\n%s", view)
+	}
+	pending := 0
+	for _, it := range m.rows.items {
+		if it.heading == "" && !it.newWorktree {
+			if !it.row.Pending {
+				t.Fatalf("first paint row %q is not Pending", it.row.Name)
+			}
+			pending++
+		}
+	}
+	if pending == 0 {
+		t.Fatal("first paint has no rows")
+	}
+
+	// Stage 2: the fill lands.
+	filled := cmd()
+	if _, ok := filled.(rowsFilledMsg); !ok {
+		t.Fatalf("the load's command answered %T, want rowsFilledMsg", filled)
+	}
+	m, cmd = updateMsg(m, filled)
+	for _, it := range m.rows.items {
+		if it.heading == "" && !it.newWorktree && it.row.Pending {
+			t.Fatalf("row %q still Pending after the fill", it.row.Name)
+		}
+	}
+	if cmd == nil {
+		t.Fatal("no PR command after the fill")
+	}
+
+	// Stage 3: the PR lookups land.
+	prs := cmd()
+	if _, ok := prs.(rowPRsLoadedMsg); !ok {
+		t.Fatalf("the fill's command answered %T, want rowPRsLoadedMsg", prs)
+	}
+	m, _ = updateMsg(m, prs)
+	if m.rows.filling() {
+		t.Error("still filling after every stage landed")
+	}
+}
+
+// TestStaleFillIsDropped pins the generation guard on the fill: a
+// rowsFilledMsg for an older load leaves the list untouched. Why: a slow
+// fill for a repository state the user has moved past must never overwrite
+// the newer screen.
+func TestStaleFillIsDropped(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	m.rowsGen = 5
+	rep := pickerFixture()
+	rep.Rows = append(rep.Rows[:0:0], rep.Rows...)
+	rep.Rows[0].Name = "stale-swap"
+	m, cmd := updateMsg(m, rowsFilledMsg{Report: rep, gen: 4})
+	if cmd != nil {
+		t.Errorf("stale fill returned a command, want none: %v", cmd)
+	}
+	for _, it := range m.rows.items {
+		if it.row.Name == "stale-swap" {
+			t.Fatal("a stale fill swapped the list")
+		}
+	}
+}
+
+// TestFillKeepsTheHighlightedRowByKey pins that the facts→fill swap keeps
+// the cursor on the same row (withReport's keyed selection): the details
+// landing under the cursor must not move it to another row.
+func TestFillKeepsTheHighlightedRowByKey(t *testing.T) {
+	r := newRmRepo(t)
+	r.worktree("topic")
+	r.loose("loose")
+	m, cmd := pickerLoad(t, r.dir, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	if cmd == nil {
+		t.Fatal("no fill command")
+	}
+	m = pickerCursorTo(t, m, "loose")
+	m, _ = updateMsg(m, cmd())
+	if row, ok := m.rows.selectedRow(); !ok || row.Name != "loose" {
+		t.Fatalf("after the fill the cursor sits on %+v (ok=%v), want loose", row.Name, ok)
+	}
+}
+
+// TestRemovalKeysUnavailableWhileFilling pins that a facts-first list offers
+// no removal: rowKeys lacks x/d/o/r/R (the nil-RemoveFuncs rule), the row
+// keys say so when pressed, and launching still works. Why: nothing may be
+// removed from a half-read repository, but choosing where to work must not
+// wait for the fill.
+func TestRemovalKeysUnavailableWhileFilling(t *testing.T) {
+	r := newRmRepo(t)
+	r.worktree("topic")
+	m, _ := pickerLoad(t, r.dir, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+	keys := m.rows.footer()
+	for _, banned := range []string{"x remove", "d ", "o delete", "r rescue", "R restore"} {
+		if strings.Contains(keys, banned) {
+			t.Errorf("footer offers %q while filling: %q", banned, keys)
+		}
+	}
+	if !strings.Contains(keys, "enter launch") {
+		t.Errorf("footer lacks enter launch while filling: %q", keys)
+	}
+	// Pressing x answers with the existing unavailable status, not a flow.
+	got, _ := updateMsg(m, keyRunes("x"))
+	if got.rows.phase != cleanupPhaseList {
+		t.Errorf("x while filling entered phase %v, want the list with an unavailable status", got.rows.phase)
+	}
+	// Launching works: enter produces the launch message.
+	if _, sel := pickerEnter(t, m); sel.entry.Branch == "" && sel.entry.Path == "" {
+		t.Error("enter while filling did not choose the row")
+	}
+}
+
+// TestFReloadReplacesAnInFlightFill pins the refresh rule and its recovery:
+// a fill landing while an F's re-read is in flight is judged by generation
+// alone (it still matches, so it lands — a fill is never silently dropped),
+// the F's own facts load then replaces it and spends the generation so any
+// older fill is stale, and if that re-read FAILS the list is not stranded at
+// the facts stage: the landed fill's rows stay, filling() is false and the
+// removal keys come back, with the failure on the status. Why: dropping the
+// in-flight fill and then failing the reload left rows Pending forever —
+// verdict cells "-", no removal — recoverable only by an F that succeeded.
+func TestFReloadReplacesAnInFlightFill(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	m.rowsGen = 3
+	// An F is in flight (rowsRefreshing set, reloadGen at dispatch).
+	m.rowsRefreshing, m.reloadGen = true, m.rowsGen
+
+	// The fill that was in flight lands: generation matches, so it applies.
+	// (Acceptance is the row swap, not the command: with no GitHub own repo
+	// in this hand-built snapshot the PR stage is skipped by design.)
+	filled := pickerFixture()
+	filled.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	filled.Rows[0].Name = "filled-during-f"
+	m, _ = updateMsg(m, rowsFilledMsg{Report: filled, gen: 3})
+	seen := false
+	for _, it := range m.rows.items {
+		if it.row.Name == "filled-during-f" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the in-flight fill's rows are not on the list")
+	}
+
+	// The F's re-read then fails: the error is shown, the filled rows stay,
+	// and the list is NOT stuck at the facts stage.
+	m, cmd := updateMsg(m, rowsLoadedMsg{err: errMock("fetch dead"), gen: 3})
+	if cmd != nil {
+		t.Errorf("a failed reload returned a command: %v", cmd)
+	}
+	if !strings.Contains(m.listError, "fetch dead") {
+		t.Errorf("listError = %q, want the reload's failure", m.listError)
+	}
+	if m.rows.filling() {
+		t.Error("the list is stuck filling after a failed F: the fill landed but the state read as pending")
+	}
+	if m.rowsRefreshing {
+		t.Error("rowsRefreshing stayed set after the reload failed: no later F could start")
+	}
+
+	// An older fill (generation spent by a later load) is still dropped.
+	stale := filled
+	stale.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	stale.Rows[0].Name = "stale-fill"
+	m.rowsGen = 5
+	m, cmd = updateMsg(m, rowsFilledMsg{Report: stale, gen: 4})
+	if cmd != nil {
+		t.Errorf("stale fill returned a command: %v", cmd)
+	}
+	for _, it := range m.rows.items {
+		if it.row.Name == "stale-fill" {
+			t.Fatal("a fill for a superseded generation swapped the list")
+		}
+	}
+}
+
+// TestTicksDefaultAfterFillAndKeepLaterChoices pins withReport's pending
+// tick rule: a row that was Pending in the old list is unseen — it takes
+// the new report's default tick (proven rows ticked in manage mode), and a
+// manual tick made on it during the fill does not survive. Why: the facts
+// report cannot know which rows will prove; carrying a choice made against
+// the unknown state into the filled list would tick (or untick) rows the
+// user never judged.
+func TestTicksDefaultAfterFillAndKeepLaterChoices(t *testing.T) {
+	facts := pickerFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+		facts.Rows[i].Status = cleanup.StatusLessSure
+	}
+	filled := pickerFixture()
+	filled.Rows[3].Status = cleanup.StatusProven // loose: Tickable when filled
+	filled.Rows[3].Evidence = cleanup.EvAncestor
+	filled.Rows[3].Ref = "refs/heads/loose"
+	filled.Rows[3].Tip = strings.Repeat("a", 40)
+
+	m := model{width: 100, height: 40, theme: themes.Default, cfg: &config.Config{}}
+	m, _ = updateMsg(m, rowsLoadedMsg{report: facts, repoRoot: facts.Repo})
+	m.rows.opts.Mode = modeManage // the tick list (Task 10 wires manage fills)
+	// A manual tick on a pending row during the fill.
+	for i, it := range m.rows.items {
+		if it.row.Name == "deep" {
+			m.rows.ticked[i] = true
+		}
+	}
+	m.rows = m.rows.withReport(filled)
+
+	ticked := map[string]bool{}
+	for i, it := range m.rows.items {
+		if it.heading == "" && !it.newWorktree {
+			ticked[it.row.Name] = m.rows.ticked[i]
+		}
+	}
+	if ticked["loose"] != true {
+		t.Errorf("filled proven row loose ticked=%v, want the new default (true)", ticked["loose"])
+	}
+	if ticked["deep"] {
+		t.Error("a tick made on a pending row survived the fill; pending rows are unseen")
+	}
+}
+
+// TestRowOrderStableAcrossStages pins that the facts→fill swap keeps the
+// rendered row order (kind groups, root first, display names): the fill
+// lands under the cursor, and rows jumping beneath it is the anti-goal.
+func TestRowOrderStableAcrossStages(t *testing.T) {
+	facts := pickerFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	filled := pickerFixture()
+	filled.Rows[0].Status = cleanup.StatusProven
+
+	m := model{width: 100, height: 40, theme: themes.Default, cfg: &config.Config{}}
+	m, _ = updateMsg(m, rowsLoadedMsg{report: facts, repoRoot: facts.Repo})
+	names := func() []string {
+		var out []string
+		for _, g := range cleanup.KindGroups(m.rows.report) {
+			for _, row := range g.Rows {
+				out = append(out, cleanup.DisplayName(row)+"/"+g.Heading)
+			}
+		}
+		return out
+	}
+	before := names()
+	m.rows = m.rows.withReport(filled)
+	if after := names(); !slices.Equal(before, after) {
+		t.Errorf("row order changed across stages:\n before %v\n after  %v", before, after)
+	}
+}
+
+// TestPickerFillSkipsThePRStageWithoutAGitHubOrigin pins the picker's
+// pre-three-stage contract: a fill whose snapshot says PRs are not
+// applicable (no GitHub own-repository) returns NO PR command — the rows
+// still swap and the funcs still apply — while one that skipped the lookups
+// for a GitHub repo still dispatches them. Why: without the guard every
+// picker open on a non-GitHub origin spawned failing gh calls in stage 3.
+func TestPickerFillSkipsThePRStageWithoutAGitHubOrigin(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	filled := pickerFixture()
+	filled.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	filled.Rows[0].Name = "filled-no-gh"
+
+	m, cmd := updateMsg(m, rowsFilledMsg{
+		Report: filled,
+		Snap:   cleanup.Snapshot{PRNotApplicable: true},
+		gen:    m.rowsGen,
+	})
+	if cmd != nil {
+		t.Errorf("a fill with no GitHub own-repository returned the PR command: %v", cmd)
+	}
+	seen := false
+	for _, it := range m.rows.items {
+		if it.row.Name == "filled-no-gh" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the filled rows did not swap in when the PR stage was skipped")
+	}
+
+	// Control: a GitHub repo's fill still dispatches its PR stage.
+	_, cmd = updateMsg(m, rowsFilledMsg{
+		Report: filled,
+		Snap:   cleanup.Snapshot{PRsSkipped: true},
+		gen:    m.rowsGen,
+	})
+	if cmd == nil {
+		t.Error("a fill that skipped the lookups for a GitHub repo returned no PR command")
 	}
 }

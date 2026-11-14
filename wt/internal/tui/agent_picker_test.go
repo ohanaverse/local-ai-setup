@@ -569,3 +569,45 @@ func TestProceedFromSelectedPathPinnedUninstalledAgentBlocked(t *testing.T) {
 		t.Errorf("status = %q, want it to mention not installed", nm.status)
 	}
 }
+
+// TestAgentPickerWraps pins spec §6 on both of the agent picker's build
+// sites: the flow that builds it from an entry (proceedWithPath's unpinned
+// branch) and the flow back from the model screen (routeBackToAgent).
+// bubbles' InfiniteScrolling makes the cursor wrap at either edge. Why: the
+// agent/command picker is the same third list in both flows; one site
+// missing the flag strands that flow's cursor at the ends.
+func TestAgentPickerWraps(t *testing.T) {
+	tempStateDir(t)
+	stubUsageStore(t)
+	requireBinary(t, "claude")
+	t.Cleanup(stubInstalled("claude"))
+
+	// Build site 1: an entry chosen, no pin — the picker is built here.
+	m := model{
+		cfg:          singleModelConfig(),
+		phase:        phaseList,
+		width:        80,
+		height:       24,
+		initialAgent: "",
+	}
+	m.selectedPath = t.TempDir()
+	got, _ := m.Update(selectedEntryMsg{entry: worktree.Entry{Branch: "feature"}})
+	nm := got.(model)
+	if nm.phase != phaseAgent {
+		t.Fatalf("phase = %v, want phaseAgent (the unpinned flow builds the picker)", nm.phase)
+	}
+	if !nm.agentList.InfiniteScrolling {
+		t.Fatal("agent picker (entry flow) does not wrap (InfiniteScrolling unset)")
+	}
+	nm.agentList.Select(len(nm.agentList.Items()) - 1)
+	updated, _ := nm.agentList.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if got := updated.Index(); got != 0 {
+		t.Errorf("entry flow: down from the last row = %d, want wrap to 0", got)
+	}
+
+	// Build site 2: back from the model screen.
+	rb, _ := m.routeBackToAgent("back")
+	if !rb.agentList.InfiniteScrolling {
+		t.Fatal("agent picker (route-back flow) does not wrap (InfiniteScrolling unset)")
+	}
+}

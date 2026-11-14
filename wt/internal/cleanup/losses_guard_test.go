@@ -73,6 +73,11 @@ var lossSites = map[string]lossCounts{
 	// Deliberately raw: the list's lock mirrors the engine's gates-unknown
 	// gate — a flag the effective view never changes.
 	"internal/tui/cleanup_list.go#cleanupLocked": {raw: 1},
+
+	// The table's IGN cell and the detail block's ignored count show what a
+	// removal would lose: the effective view, like LossLines and RowTags.
+	"internal/tui/rowtable.go#rowCells": {effective: 1},
+	"internal/tui/rowtable.go#diffLine": {effective: 1},
 }
 
 // rawMarker starts the comment a raw read carries.

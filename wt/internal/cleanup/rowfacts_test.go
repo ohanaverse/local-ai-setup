@@ -8,6 +8,33 @@ import (
 	"time"
 )
 
+// TestRowSessionsCountsHolders pins Row.Sessions: one live claim on a
+// linked worktree counts 1 on its row, and 0 on rows whose directory no
+// claim names (the root, a branch row). Why: the table's session digit
+// reports running sessions other than the browsing one; a digit missing, or
+// sitting on the wrong row, would misstate who is using a checkout. Branch
+// rows also carry no worktree facts: their STATUS word is "-".
+func TestRowSessionsCountsHolders(t *testing.T) {
+	f := newFixture(t)
+	noGh(t)
+	wt := f.Worktree("topic")
+	common := gitIn(t, f.Dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	holderClaim(t, common, wt, "topic", "codex")
+	f.Branch("solo")
+
+	r := Classify(gather(t, f), Options{Now: later()})
+	if row := findRow(t, r, KindWorktree, "topic"); row.Sessions != 1 {
+		t.Errorf("worktree Sessions = %d, want 1", row.Sessions)
+	}
+	if row := findRow(t, r, KindWorktree, "main"); row.Sessions != 0 {
+		t.Errorf("root Sessions = %d, want 0 (no claim names it)", row.Sessions)
+	}
+	if row := findRow(t, r, KindBranch, "solo"); row.Sessions != 0 || row.State != StateUnknown {
+		t.Errorf("branch Sessions/State = %d/%q, want 0/%q (branch rows carry no worktree facts)",
+			row.Sessions, row.State, StateUnknown)
+	}
+}
+
 // TestClassifyFillsRefTipHeadLosses gathers a repository with a dirty
 // worktree holding two ignored entries, a local branch with three unpushed
 // commits, a pushed branch (so a remote row) and a detached worktree, and
