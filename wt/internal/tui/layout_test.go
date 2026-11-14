@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
@@ -683,6 +684,21 @@ func TestEveryListPhaseFitsTheTerminal(t *testing.T) {
 		}},
 		{"cleanup list, gh down, wrapped row highlighted", func(t *testing.T, width, height int) string {
 			return moveTo(t, newSizedCleanupList(t, ghDownFixture(), width, height), "many-reasons").View()
+		}},
+		{"cleanup detail", func(t *testing.T, width, height int) string {
+			// A row with a full block — every listing at its cap, so the
+			// screen has to scroll at every size — and the long report's
+			// wrapped sentences behind it.
+			var lists cleanup.RowDetail
+			for i := 0; i < cleanup.DetailListCap+5; i++ {
+				lists.Commits = append(lists.Commits, cleanup.DetailCommit{Hash: "a1b2c3d4", Subject: "a commit subject long enough to wrap at forty columns"})
+				lists.Uncommitted = append(lists.Uncommitted, cleanup.DetailFile{Status: "M", Path: "a/long/path/that/wraps/at/most/widths/here.txt"})
+				lists.Ignored = append(lists.Ignored, "ignored/path/entry")
+			}
+			lists.CommitsMore, lists.UncommittedMore, lists.IgnoredMore = 7, 7, 7
+			m := detailReady(t, longRowsFixture(), &lists)
+			m = cleanupSend(t, m, tea.WindowSizeMsg{Width: width, Height: height})
+			return press(t, moveTo(t, m, "many-reasons"), keyRunes("i")).View()
 		}},
 		{"cleanup confirm, proven", removalScreen("confirm, proven")},
 		{"cleanup confirm, typed", removalScreen("confirm, typed")},

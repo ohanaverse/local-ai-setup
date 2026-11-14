@@ -28,16 +28,6 @@ func deepestCurrent(r cleanup.Report) string {
 	return here
 }
 
-// launchTags are the picker's own tags for row — and there are none now: the
-// "current" and "default" labels left the row line with the other identity
-// tags (the header says the default branch once, and the cursor marks where
-// you are). It stays a function, returning nil, because the list prepends its
-// answer in launch mode and a caller that reads tags should not have to know
-// the mode.
-func launchTags(r cleanup.Report, row cleanup.Row, here string) []cleanup.Tag {
-	return nil
-}
-
 // screenName is the title the removal screens carry: `wt worktrees` in manage
 // mode, plain `wt` in the picker.
 func (m *cleanupListModel) screenName() string {
@@ -143,13 +133,17 @@ func (m *cleanupListModel) selectWhere(pred func(cleanup.Row) bool) bool {
 }
 
 // filterText is what the filter matches a row against: its listed name, its
-// branch, its drawn tags, and its PR ("#383", or "PR ?" while the lookup is
-// owed) — the tags the list no longer draws are still searchable facts, and
-// the PR number is how a user finds the row behind the PR they are looking
-// at.
+// branch, its drawn tags, every identity tag the list no longer draws (root,
+// bare, held by session, locked, +remote) and its PR ("#383", or "PR ?" while
+// the lookup is owed). Why the undrawn ones: the filter is a reader of the
+// row's vocabulary, not of the line's — a user looking for the worktree a
+// session holds should not have to know its name.
 func filterText(it cleanupItem) string {
 	parts := []string{cleanup.DisplayName(it.row), it.row.Branch}
 	for _, t := range it.tags {
+		parts = append(parts, t.Text)
+	}
+	for _, t := range cleanup.RowTags(it.row) {
 		parts = append(parts, t.Text)
 	}
 	switch {

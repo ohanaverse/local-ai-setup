@@ -359,16 +359,12 @@ func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	}
 	st := m.stamp
 	m.opts.Stamp = &st
-	here := deepestCurrent(r)
 	if o.Mode == modeLaunch {
 		m.items = append(m.items, cleanupItem{newWorktree: true})
 		m.cursor = 0
 	}
 	for _, row := range cleanup.ListOrder(r) {
 		it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row, o.Mode != modeLaunch), locked: cleanupLocked(row)}
-		if o.Mode == modeLaunch {
-			it.tags = append(launchTags(r, row, here), it.tags...)
-		}
 		if o.Mode == modeManage && row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
 			m.ticked[len(m.items)] = true
 		}

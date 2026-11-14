@@ -312,6 +312,47 @@ func TestFilterMatchesWorktreeBranchAndPR(t *testing.T) {
 	}
 }
 
+// TestFilterStillFindsIdentityWords pins the words the filter matches though
+// the row line no longer draws them: the root, a held row's session, a locked
+// row and a PR still under a lookup. Why: the badges left the line, and the
+// filter was the list's other reader of the same vocabulary — a user looking
+// for the worktree a session holds should not have to know its name.
+func TestFilterStillFindsIdentityWords(t *testing.T) {
+	r := cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main"}, Rows: []cleanup.Row{
+		{Kind: cleanup.KindWorktree, Name: "main", Path: "/repo", Branch: "main", Primary: true,
+			Status: cleanup.StatusInUse, Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}}},
+		{Kind: cleanup.KindWorktree, Name: "pinned", Path: "/repo/.worktrees/pinned", Branch: "pinned",
+			Status: cleanup.StatusLessSure, Reasons: []cleanup.Reason{{Code: cleanup.ReasonHeld, Detail: "s-42"}}},
+		{Kind: cleanup.KindWorktree, Name: "busy", Path: "/repo/.worktrees/busy", Branch: "busy",
+			Status: cleanup.StatusInUse, Blockers: []cleanup.Reason{{Code: cleanup.BlockLocked}}},
+		{Kind: cleanup.KindBranch, Name: "unchecked", Branch: "unchecked", PRUnknown: true},
+	}}
+	m := newSizedCleanupList(t, r, 120, 40)
+	showing := func(query string) []string {
+		m.filter = query
+		var out []string
+		for i, it := range m.items {
+			if !it.newWorktree && !m.hidden(i) {
+				out = append(out, cleanup.DisplayName(it.row))
+			}
+		}
+		m.filter = ""
+		return out
+	}
+	for query, want := range map[string][]string{
+		"root":            {"main"},
+		"held by session": {"pinned"},
+		"s-42":            {"pinned"},
+		"locked":          {"busy"},
+		"PR ?":            {"unchecked"},
+	} {
+		got := showing(query)
+		if !slices.Equal(got, want) {
+			t.Errorf("filter %q shows %v, want %v", query, got, want)
+		}
+	}
+}
+
 // TestRowListTagsWarnStyled pins the tag facts behind the row: the risk
 // badges (unpushed, …) carry TagWarn severity on the item and their text is
 // drawn on the row's table line. Why: with the prose row gone the badges
@@ -3001,8 +3042,5 @@ func TestListDropsIdentityTags(t *testing.T) {
 				}
 			}
 		}
-	}
-	if got := launchTags(rep, root, "/repo"); len(got) != 0 {
-		t.Errorf("launchTags = %v, want none", tagTexts(got))
 	}
 }

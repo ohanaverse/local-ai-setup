@@ -224,6 +224,15 @@ func (m cleanupListModel) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// shortSHA is a commit id as the screen shows it: its first eight characters,
+// the same abbreviation the listings use.
+func shortSHA(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
+}
+
 // detailLine is one labelled line of the block, its value wrapped and its
 // continuation lines indented under the value.
 func detailLine(name, value string, width int) []string {
@@ -285,11 +294,16 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 		add("path", cleanup.OneLine(row.Path))
 	case cleanup.KindBranch:
 		add("branch", cleanup.OneLine(row.Branch))
+		if row.Tip != "" {
+			add("tip", shortSHA(row.Tip))
+		}
 	default:
+		// A remote row has no path: its ref, the commit it points at and the
+		// remote it lives on are what name it.
 		add("remote", cleanup.OneLine(row.Remote))
 		add("branch", cleanup.OneLine(row.Branch))
 		if row.Tip != "" {
-			add("tip", cleanup.OneLine(row.Tip))
+			add("tip", shortSHA(row.Tip))
 		}
 	}
 	switch {
@@ -315,7 +329,7 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 	}
 	add("Verdict", verdict)
 	if row.Kind == cleanup.KindRemote {
-		add("note", "deleting an origin branch is visible to everyone with access to the repository; GitHub can restore it from its merged PR.")
+		say("note: deleting an origin branch is visible to everyone with access to the repository; GitHub can restore it from its merged PR.")
 	}
 
 	// The listings: what the row holds that nothing else has.
@@ -332,31 +346,35 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 		if l.Err != "" {
 			say(cleanup.OneLine(l.Err))
 		}
+		// Each entry wraps under its own two-space indent: a long subject or
+		// a deep path is readable at 40 columns too, never a line past the
+		// terminal's edge.
+		item := func(text string) { out = append(out, wrapIndented(text, "  ", width)...) }
 		if n := len(l.Commits) + l.CommitsMore; n > 0 {
 			section(fmt.Sprintf("Local-only commits (%d)", n))
 			for _, c := range l.Commits {
-				out = append(out, "  "+cleanup.OneLine(c.Hash)+" "+cleanup.OneLine(c.Subject))
+				item(cleanup.OneLine(c.Hash) + " " + cleanup.OneLine(c.Subject))
 			}
 			if l.CommitsMore > 0 {
-				out = append(out, fmt.Sprintf("  … and %d more", l.CommitsMore))
+				item(fmt.Sprintf("… and %d more", l.CommitsMore))
 			}
 		}
 		if n := len(l.Uncommitted) + l.UncommittedMore; n > 0 {
 			section(fmt.Sprintf("Uncommitted files (%d)", n))
 			for _, f := range l.Uncommitted {
-				out = append(out, "  "+f.Status+"  "+cleanup.OneLine(f.Path))
+				item(cleanup.OneLine(f.Status) + "  " + cleanup.OneLine(f.Path))
 			}
 			if l.UncommittedMore > 0 {
-				out = append(out, fmt.Sprintf("  … and %d more", l.UncommittedMore))
+				item(fmt.Sprintf("… and %d more", l.UncommittedMore))
 			}
 		}
 		if n := len(l.Ignored) + l.IgnoredMore; n > 0 {
 			section(fmt.Sprintf("Ignored files (%d)", n))
 			for _, p := range l.Ignored {
-				out = append(out, "  "+cleanup.OneLine(p))
+				item(cleanup.OneLine(p))
 			}
 			if l.IgnoredMore > 0 {
-				out = append(out, fmt.Sprintf("  … and %d more", l.IgnoredMore))
+				item(fmt.Sprintf("… and %d more", l.IgnoredMore))
 			}
 		}
 	}

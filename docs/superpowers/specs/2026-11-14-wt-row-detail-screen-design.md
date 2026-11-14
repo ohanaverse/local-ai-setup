@@ -108,3 +108,12 @@ written.
 - **The verdict cell reads `-` while a row is pending**, like the other
   verdict-shaped cells, rather than guessing a word for a row nothing has
   judged yet.
+- **A branch or remote row shows the commit it points at.** The sketch's
+  label list is a worktree's; a row with no path is named by its ref and its
+  tip (`tip       d4e5f6a7`, the eight-character abbreviation the listings
+  use), which is the whole of what it identifies. A worktree's HEAD stays
+  implicit: its commits are the first listing.
+- **A listing entry wraps under its own indent.** A deep path or a long
+  commit subject is two lines at 40 columns rather than a line past the
+  terminal's edge; every line of the block fits the width (the layout sweep
+  covers the screen at every size now).

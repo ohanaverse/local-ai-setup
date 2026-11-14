@@ -176,6 +176,80 @@ func TestDetailBlockShowsRowFacts(t *testing.T) {
 	}
 }
 
+// TestDetailOpensWhenTheListsCouldNotBeRead pins a worktree whose state could
+// not be read (a missing or unreadable directory is the usual cause): the
+// screen still opens — the row's facts are what say it could not be read —
+// it prints the read error where the listings would go, and it offers no
+// removal action (the engine refuses such a row unconditionally). Why: a
+// screen that would not open on the rows most worth looking at is the wrong
+// half of "read everything, act from here".
+func TestDetailOpensWhenTheListsCouldNotBeRead(t *testing.T) {
+	row := detailWorktreeRow("gone")
+	row.Status, row.Losses, row.Diff = cleanup.StatusLessSure, cleanup.Losses{GatesUnknown: true}, cleanup.DiffStat{}
+	row.Reasons = []cleanup.Reason{{Code: cleanup.ReasonGatesUnavailable}}
+	m := newSizedCleanupList(t, cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main"}, Rows: []cleanup.Row{row}}, 100, 40)
+	m.rm.Detail = func(cleanup.Row) cleanup.RowDetail {
+		return cleanup.RowDetail{Err: "could not read the worktree's state: no such directory"}
+	}
+	m = press(t, m, keyRunes("i"))
+	if m.phase != cleanupPhaseDetail {
+		t.Fatalf("i on an unreadable row landed on phase %v", m.phase)
+	}
+	wantKeys(t, "unreadable row", detailActionKeys(m), []string{"esc"})
+	text := strings.Join(detailBlock(m.report, m.rowDetail.row, m.rowDetail, themes.Default, 100), "\n")
+	if !strings.Contains(text, "could not read the worktree's state") {
+		t.Errorf("the block does not say the lists could not be read:\n%s", text)
+	}
+	if strings.Contains(text, "Local-only commits (0)") || strings.Contains(text, "Uncommitted files (0)") {
+		t.Errorf("an empty listing still gets a heading:\n%s", text)
+	}
+}
+
+// TestDetailBlockOmitsLinesTheRowHasNot pins the three shapes with nothing to
+// say in a common line: a detached worktree names no branch but says so, a
+// bare entry has no branch at all (so no "(detached)" either), and a remote
+// row names its remote and its tip rather than a path. Why: a blank value or
+// an empty section reads as missing data instead of as "this row is not that
+// kind of thing".
+func TestDetailBlockOmitsLinesTheRowHasNot(t *testing.T) {
+	line := func(name string, block []string) (string, bool) {
+		for _, l := range block {
+			if strings.HasPrefix(strings.TrimSpace(l), name+" ") || strings.TrimSpace(l) == name {
+				return l, true
+			}
+		}
+		return "", false
+	}
+	// A detached worktree.
+	det := detailWorktreeRow("lost")
+	det.Branch, det.Ref = "", ""
+	block := detailBlock(cleanup.Report{Repo: "/repo"}, det, nil, themes.Default, 100)
+	if l, ok := line("branch", block); !ok || !strings.Contains(l, "(detached)") {
+		t.Errorf("a detached worktree's branch line is %q (found %v), want (detached)", l, ok)
+	}
+	// A bare entry: no branch line at all.
+	bare := det
+	bare.Bare, bare.Kind = true, cleanup.KindBranch
+	block = detailBlock(cleanup.Report{Repo: "/repo"}, bare, nil, themes.Default, 100)
+	if l, ok := line("branch", block); ok {
+		t.Errorf("a bare entry carries a branch line %q", l)
+	}
+	// A remote row: its remote and tip, no path.
+	remote := cleanup.Row{Kind: cleanup.KindRemote, Name: "origin/gone", Branch: "gone",
+		Ref: "refs/remotes/origin/gone", Remote: "origin", Tip: "d4e5f6a700000000000000000000000000000000",
+		Status: cleanup.StatusUniqueWork}
+	block = detailBlock(cleanup.Report{Repo: "/repo"}, remote, nil, themes.Default, 100)
+	text := strings.Join(block, "\n")
+	for _, want := range []string{"remote    origin", "tip       d4e5f6a7"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("a remote row's block lacks %q:\n%s", want, text)
+		}
+	}
+	if _, ok := line("path", block); ok {
+		t.Errorf("a remote row carries a path line:\n%s", text)
+	}
+}
+
 // TestDetailActionsOnlyWhatApplies pins the action list per row shape: the
 // root offers only esc (plus R off its default branch), a clean worktree x
 // and d but no rescue, a dirty one the rescue too, a branch row no rescue and
