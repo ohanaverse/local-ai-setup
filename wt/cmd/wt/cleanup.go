@@ -188,7 +188,7 @@ func executeCleanup(cmd *cobra.Command, a *app, f cleanupFlags) error {
 		rm := cleanupRemoveFuncs(a, snap, in, f.minAge, protErr)
 		rm.Fill = func() (cleanup.Report, tui.RemoveFuncs, error) {
 			filled, err := cleanup.FillDetails(cleanup.Git{Dir: cwd}, snap, in)
-			if err != nil && !errors.Is(err, cleanup.ErrNoDefaultBranch) {
+			if err != nil {
 				return cleanup.Report{}, tui.RemoveFuncs{}, err
 			}
 			return cleanupReport(a, filled, f.minAge, protErr),

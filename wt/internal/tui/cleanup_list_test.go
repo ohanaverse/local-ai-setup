@@ -2838,3 +2838,29 @@ func TestRowListFitsWithFilterAndPendingFill(t *testing.T) {
 		t.Errorf("removal keys offered after keeping the query while filling:\n%s", view)
 	}
 }
+
+// TestCleanupListPageMoveStopsAtTheEndsEvenForOneRow pins that only a single
+// arrow step wraps: a page move that happens to be one row long (a very short
+// terminal makes listH/2 equal 1) stops at the last row like any other page
+// move. Why: the wrap rule used to read "n == 1", so a one-row page wrapped.
+func TestCleanupListPageMoveStopsAtTheEndsEvenForOneRow(t *testing.T) {
+	m := newCleanupList(cleanupFixture(), themes.Default, time.Now(), RemoveFuncs{})
+	last := -1
+	for i := range m.items {
+		if m.items[i].heading == "" && !m.hidden(i) {
+			last = i
+		}
+	}
+	if last < 0 {
+		t.Fatal("fixture has no sittable row")
+	}
+	m.cursor = last
+	m.move(1, 1, false)
+	if m.cursor != last {
+		t.Fatalf("one-row page move past the end: cursor = %d, want it to stay at %d", m.cursor, last)
+	}
+	m.move(1, 1, true)
+	if m.cursor == last {
+		t.Fatal("a single arrow step past the end must wrap")
+	}
+}

@@ -225,9 +225,9 @@ func (m cleanupListModel) filterKey(msg tea.KeyMsg) (next cleanupListModel, cmd 
 			m.filter = string(r[:len(r)-1])
 		}
 	case tea.KeyUp:
-		m.move(-1, 1)
+		m.move(-1, 1, true)
 	case tea.KeyDown:
-		m.move(1, 1)
+		m.move(1, 1, true)
 	case tea.KeyRunes, tea.KeySpace:
 		m.filter += string(msg.Runes)
 	}

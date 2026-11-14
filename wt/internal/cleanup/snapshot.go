@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -297,6 +298,10 @@ func GatherFacts(g Git, in GatherInputs) (Snapshot, error) {
 // ErrNoDefaultBranch when the snapshot has no base (the gates have run, as
 // in a one-shot Gather; nothing can be proven).
 func FillDetails(g Git, s Snapshot, in GatherInputs) (Snapshot, error) {
+	// The caller keeps its own copy of the facts snapshot (the removal funcs
+	// built at paint time hold it): fill copies, never writes into it.
+	s.Worktrees = slices.Clone(s.Worktrees)
+	s.Proofs = maps.Clone(s.Proofs)
 	s.Records, _ = ListRecords(g) // an error reads as no records
 	gin := GateInputs{Base: s.BaseTip, ProtectedPaths: in.ProtectedPaths}
 	for i := range s.Worktrees {

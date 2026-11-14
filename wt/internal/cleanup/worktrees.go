@@ -62,7 +62,7 @@ type Gates struct {
 	// it, so a row whose gates failed never shows a confident +0/-0.
 	Diff DiffStat
 	// InBase answers whether the whole uncommitted change-set is contained in
-	// the base (worktreeContainedInBase) — STATUS's "in main". It is set only
+	// the base (worktreeDiff.containedInBase) — STATUS's "in main". It is set only
 	// for a dirty worktree with a base, readable diff counts and a non-empty
 	// change-set: a clean worktree has nothing to contain, a diff that counts
 	// nothing readable (hidden index flags, an ignore-configured submodule)
@@ -248,10 +248,11 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	if out.IgnoredCount, out.IgnoredBytes, err = ignored(wg); err != nil {
 		return partial(), err
 	}
-	out.Diff = readDiffStat(wg)
+	diff := readWorktreeDiff(wg)
+	out.Diff = diff.stat(wg)
 	if out.Dirty && in.Base != "" && !out.Diff.Unknown &&
 		(out.Diff.Added != 0 || out.Diff.Removed != 0) {
-		out.InBase = worktreeContainedInBase(wg, in.Base)
+		out.InBase = diff.containedInBase(wg, in.Base)
 	}
 	if w.Detached {
 		if out.DetachedUnique, err = detachedUnique(g, w.Head, in.Base); err != nil {

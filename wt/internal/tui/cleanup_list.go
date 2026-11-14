@@ -726,17 +726,17 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "o":
 			return m.startRowAction(rowActionDeleteOrigin)
 		case "up", "k":
-			m.move(-1, 1)
+			m.move(-1, 1, true)
 		case "down", "j":
-			m.move(1, 1)
+			m.move(1, 1, true)
 		case "pgup", "b":
-			m.move(-1, max(1, m.layout().listH/2))
+			m.move(-1, max(1, m.layout().listH/2), false)
 		case "pgdown", "f":
-			m.move(1, max(1, m.layout().listH/2))
+			m.move(1, max(1, m.layout().listH/2), false)
 		case "home", "g":
-			m.move(-1, len(m.items))
+			m.move(-1, len(m.items), false)
 		case "end", "G":
-			m.move(1, len(m.items))
+			m.move(1, len(m.items), false)
 		case "F":
 			// The user's refresh (`f` stays pgdown): the picker re-runs its
 			// rows load with a fetch first — the app owns its inputs and the
@@ -899,8 +899,7 @@ func (m cleanupListModel) originTarget(row cleanup.Row) (cleanup.Row, bool) {
 // while a multi-item move (paging: pgup/pgdown, home/end) still stops at
 // the ends. A wrap that would land back on the cursor (one item to sit on)
 // leaves it put.
-func (m *cleanupListModel) move(dir, n int) {
-	wrap := n == 1
+func (m *cleanupListModel) move(dir, n int, wrap bool) {
 	sittable := func(j int) bool { return m.items[j].heading == "" && !m.hidden(j) }
 	for ; n > 0; n-- {
 		next := -1

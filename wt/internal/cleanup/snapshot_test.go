@@ -534,3 +534,40 @@ func TestRootDriftNotEmittedWithoutDefault(t *testing.T) {
 		})
 	}
 }
+
+// TestFillDetailsLeavesTheFactsSnapshotAlone pins that the fill writes into
+// copies: the facts snapshot the caller keeps (the removal funcs built at
+// paint time hold it) still has its seeded gates and empty proofs after the
+// fill ran. Why: the fill runs off the update goroutine while those funcs
+// read the same snapshot; a shared backing array or map would be a data race
+// the TUI's hidden-removal-while-filling rule only happens to mask.
+func TestFillDetailsLeavesTheFactsSnapshotAlone(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.DirtyIn(p, "notes.txt")
+	f.Branch("other")
+	noGh(t)
+	in := GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+	g := Git{Dir: f.Dir}
+
+	facts, err := GatherFacts(g, in)
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	before, err := GatherFacts(g, in)
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	if _, err := FillDetails(g, facts, in); err != nil {
+		t.Fatalf("FillDetails: %v", err)
+	}
+	if !reflect.DeepEqual(before.Worktrees, facts.Worktrees) {
+		t.Fatalf("FillDetails wrote into the facts snapshot's worktrees:\n before %+v\n after  %+v", before.Worktrees, facts.Worktrees)
+	}
+	if len(facts.Proofs) != 0 {
+		t.Fatalf("FillDetails wrote %d proofs into the facts snapshot's map", len(facts.Proofs))
+	}
+	if !facts.FactsOnly {
+		t.Fatal("FillDetails cleared FactsOnly on the caller's snapshot")
+	}
+}

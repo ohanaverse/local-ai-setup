@@ -150,6 +150,23 @@ cannot stand. Decide which wins:
 Open, deferred at the final review of that branch (the reviewer flagged the
 contradiction; the executor ruled toward the spec and recorded it).
 
+## 8. `changes-in-base` matches an added line anywhere in the file (2026-11-14)
+
+`reverseApplies` (`wt/internal/cleanup/contained.go`) validates a `-U0` patch
+against base's tree, and a zero-context hunk applies wherever its text appears
+in the file. A branch that only adds a line base already holds elsewhere (a
+blank line, `}`, `return nil`, an import) therefore reads as contained: the
+reverse-apply removes base's copy and `--check` passes. The deletion-only
+variant is closed (`hasUncheckedDeletion`, 2026-11-14); this added-line one is
+not.
+
+Requiring context lines would close it but also stop an adjacent later edit
+from proving, which the rung accepts on purpose (more branches would read
+`less_sure`). Decide: keep the weaker proof, or trade some proofs for a
+stricter one.
+
+Open, found by the `/code-review --fix` of PR #590; deliberately not changed.
+
 ## Minor / already handled notes
 
 - wt PATH shadowing (stale `~/.local/bin/wt` hides GOPATH builds): documented in

@@ -127,14 +127,14 @@ func tipContainedInBase(g Git, baseTip, tip string) Tri {
 	return reverseApplies(g, bt, o.Stdout)
 }
 
-// worktreeContainedInBase reports whether a worktree's whole uncommitted
+// containedInBase reports whether a worktree's whole uncommitted
 // change-set — the staged+unstaged net vs HEAD plus its non-ignored untracked
 // files — is contained in baseTip's tree. Ignored files never enter it (they
 // are IGN's subject). The tracked part is judged by reverseApplies, each
 // untracked file by blob equality with base:<path>; any TriNo anywhere means
 // TriNo, TriYes needs both halves TriYes, anything unreadable or over the caps
 // is TriUnknown.
-func worktreeContainedInBase(wg Git, baseTip string) Tri {
+func (d worktreeDiff) containedInBase(wg Git, baseTip string) Tri {
 	b, ok := commitOf(wg, baseTip)
 	if !ok {
 		return TriUnknown
@@ -143,14 +143,10 @@ func worktreeContainedInBase(wg Git, baseTip string) Tri {
 	if !ok {
 		return TriUnknown
 	}
-	patch, ok := worktreePatch(wg)
-	if !ok {
+	if !d.ok || int64(len(d.patch)) > dirtLimits.MaxBytes {
 		return TriUnknown
 	}
-	if int64(len(patch)) > dirtLimits.MaxBytes {
-		return TriUnknown
-	}
-	return triJoin(reverseApplies(wg, bt, patch), untrackedContained(wg, b))
+	return triJoin(reverseApplies(wg, bt, d.patch), untrackedContained(wg, b))
 }
 
 // triJoin combines two containment answers: any TriNo wins (one part not in
@@ -164,25 +160,6 @@ func triJoin(a, b Tri) Tri {
 		return TriYes
 	}
 	return TriUnknown
-}
-
-// worktreePatch returns the worktree's staged+unstaged net diff against HEAD
-// as a reversible patch. ok is false on any failure, including a missing or
-// unreadable real index. The diff runs against a byte-copy of the real index
-// (indexCopy): `git diff` rewrites the index's stat cache even under
-// GIT_OPTIONAL_LOCKS=0, and this package must leave the real index untouched.
-func worktreePatch(wg Git) (string, bool) {
-	dg, release, ok := indexCopy(wg)
-	if !ok {
-		return "", false
-	}
-	defer release()
-	d, err := dg.Run("diff", "--binary", "--no-renames", "--no-color", "--no-ext-diff",
-		"--no-textconv", "-U0", "HEAD")
-	if err != nil || d.Code != 0 {
-		return "", false
-	}
-	return d.Stdout, true
 }
 
 // untrackedContained judges the worktree's non-ignored untracked files

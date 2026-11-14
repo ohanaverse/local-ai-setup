@@ -187,9 +187,9 @@ func TestWorktreeContainedUntrackedBlobEquality(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(wp, "new.txt"), []byte("hello\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		got := worktreeContainedInBase(Git{Dir: wp}, "refs/heads/main")
+		got := readWorktreeDiff(Git{Dir: wp}).containedInBase(Git{Dir: wp}, "refs/heads/main")
 		if got != TriYes {
-			t.Fatalf("worktreeContainedInBase = %v, want TriYes (blob equals main's)", got)
+			t.Fatalf("containedInBase = %v, want TriYes (blob equals main's)", got)
 		}
 	})
 
@@ -198,18 +198,18 @@ func TestWorktreeContainedUntrackedBlobEquality(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(wp, "new.txt"), []byte("hello!\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		got := worktreeContainedInBase(Git{Dir: wp}, "refs/heads/main")
+		got := readWorktreeDiff(Git{Dir: wp}).containedInBase(Git{Dir: wp}, "refs/heads/main")
 		if got != TriNo {
-			t.Fatalf("worktreeContainedInBase = %v, want TriNo (blob differs from main's)", got)
+			t.Fatalf("containedInBase = %v, want TriNo (blob differs from main's)", got)
 		}
 	})
 
 	t.Run("ignored file never considered", func(t *testing.T) {
 		f, wp := build(t)
 		f.IgnoredIn(wp, "scratch.log")
-		got := worktreeContainedInBase(Git{Dir: wp}, "refs/heads/main")
+		got := readWorktreeDiff(Git{Dir: wp}).containedInBase(Git{Dir: wp}, "refs/heads/main")
 		if got != TriYes {
-			t.Fatalf("worktreeContainedInBase = %v, want TriYes (ignored work never enters the change-set)", got)
+			t.Fatalf("containedInBase = %v, want TriYes (ignored work never enters the change-set)", got)
 		}
 	})
 }
@@ -259,7 +259,7 @@ func TestContainedUnknownOnGitFailureAndOverCaps(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if got := worktreeContainedInBase(Git{Dir: wp}, "refs/heads/main"); got != TriUnknown {
+		if got := readWorktreeDiff(Git{Dir: wp}).containedInBase(Git{Dir: wp}, "refs/heads/main"); got != TriUnknown {
 			t.Fatalf("over the file cap = %v, want TriUnknown, never TriYes", got)
 		}
 	})
@@ -298,7 +298,7 @@ func TestContainedLeavesTheRealIndexAlone(t *testing.T) {
 	before := gittest.RawIndex(t, f.Dir)
 
 	tipContainedInBase(Git{Dir: f.Dir}, "refs/heads/main", "refs/heads/topic")
-	worktreeContainedInBase(Git{Dir: f.Dir}, "refs/heads/main")
+	readWorktreeDiff(Git{Dir: f.Dir}).containedInBase(Git{Dir: f.Dir}, "refs/heads/main")
 
 	if after := gittest.RawIndex(t, f.Dir); after != before {
 		t.Fatal("the containment check rewrote the real index (it must diff against a throwaway copy)")

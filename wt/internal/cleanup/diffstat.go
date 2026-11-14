@@ -34,18 +34,49 @@ type DiffStat struct {
 // of the real index: `git diff` rewrites the index's stat cache even under
 // GIT_OPTIONAL_LOCKS=0, and this package never touches the real one.
 func readDiffStat(wg Git) DiffStat {
+	return readWorktreeDiff(wg).stat(wg)
+}
+
+// worktreeDiff is one `git diff` of a worktree against HEAD, read once for
+// both consumers: the numstat block (the DIFF counts) and the reversible
+// patch (the containment proof). ok is false when the diff could not be read.
+// Renames are not detected (the patch must not rename), so a pure rename
+// counts as its deleted and added lines rather than +0/-0.
+type worktreeDiff struct {
+	numstat string
+	patch   string
+	ok      bool
+}
+
+// readWorktreeDiff runs the one diff against a throwaway copy of the real
+// index (indexCopy). With --numstat and a patch format together git writes
+// the numstat block, one blank line, then the patch.
+func readWorktreeDiff(wg Git) worktreeDiff {
 	dg, release, ok := indexCopy(wg)
 	if !ok {
-		return DiffStat{Unknown: true}
+		return worktreeDiff{}
 	}
-	o, err := dg.Run("diff", "--numstat", "--no-ext-diff", "--no-textconv", "HEAD")
-	release()
+	defer release()
+	o, err := dg.Run("diff", "--numstat", "--binary", "--no-renames", "--no-color",
+		"--no-ext-diff", "--no-textconv", "-U0", "HEAD")
 	if err != nil || o.Code != 0 {
+		return worktreeDiff{}
+	}
+	num, patch, found := strings.Cut(o.Stdout, "\n\n")
+	if !found && strings.TrimSpace(num) != "" {
+		return worktreeDiff{} // a numstat with no patch behind it: not the shape we asked for
+	}
+	return worktreeDiff{numstat: num, patch: patch, ok: true}
+}
+
+// stat turns the numstat block and wg's untracked files into the DiffStat.
+func (d worktreeDiff) stat(wg Git) DiffStat {
+	if !d.ok {
 		return DiffStat{Unknown: true}
 	}
 	var out DiffStat
 	entries := 0
-	for _, line := range strings.Split(o.Stdout, "\n") {
+	for _, line := range strings.Split(d.numstat, "\n") {
 		if line == "" {
 			continue
 		}
@@ -79,11 +110,11 @@ func readDiffStat(wg Git) DiffStat {
 	if entries+len(paths) > dirtLimits.MaxFiles {
 		return DiffStat{Unknown: true}
 	}
-	var bytes int
+	var total int64
 	for _, p := range paths {
 		lines, size := countUntrackedLines(filepath.Join(wg.Dir, p))
-		bytes += size
-		if int64(bytes) > dirtLimits.MaxBytes {
+		total += int64(size)
+		if total > dirtLimits.MaxBytes {
 			return DiffStat{Unknown: true}
 		}
 		out.Added += lines
