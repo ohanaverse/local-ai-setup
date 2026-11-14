@@ -46,7 +46,9 @@ it is open; `--json`/`--plain` fetch first unless
 a fetch-first `--json` run only (`sessionclaim.Prune`; `--plain` fetches but
 never prunes, `--no-fetch` drops nothing, and the list's open drops nothing).
 Each row carries tags such as `root`, `you are here`, `held`,
-`dirty`, `unpushed`, the PR, and `PR ?` while a PR lookup is unknown. When the
+`dirty` and `unpushed`. The PR reads in the `PR#` column instead: `#N <state>`
+(`#555 merged`), `?` while a PR lookup is unknown, blank when there is no PR.
+When the
 root sits off the default `origin/HEAD` names (or on a detached HEAD) its row carries a
 `root_drift` reason and, in the manage list, a drift badge (the launch picker's header
 names the drift instead, once: `root is on <b>, not <d>`, or `root is detached`); the drift
@@ -60,7 +62,9 @@ On a terminal each row is one table line (the `rowtable.go` renderer over
 `tuilayout.Columns`): a session digit (the running wt sessions holding that
 worktree; the browsing session never counts itself), the cursor and, in the
 tick list, the checkbox, then `WORKTREE BRANCH PR# DIFF IGN STATUS VERDICT`
-with the row's badges after the verdict. `DIFF` is the uncommitted change
+with the row's badges after the verdict. `PR#` holds the PR and its state
+(`#383 merged`; `?` when the lookup could not answer; blank when there is no
+PR; `-` while the row is pending). `DIFF` is the uncommitted change
 counted diffstat-style (`+99/-55`; `-` when it could not be read or is over
 the caps), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
 `in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
@@ -91,7 +95,8 @@ even after the base later edited the same file — needs no typed phrase:
 `wt remove --yes`, or `y` when every item is proven, removes it directly.
 
 An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
-failed) floors a row below proven, with a `PR ?` tag, because a merged PR is
+failed) floors a row below proven, with `?` in its `PR#` column, because a
+merged PR is
 part of the proof. The exception is a repository whose `origin` is not on
 GitHub: the lookup does not apply there (an origin wt does not recognise as
 github.com, such as an ssh host alias, an `insteadOf` short form or GitHub

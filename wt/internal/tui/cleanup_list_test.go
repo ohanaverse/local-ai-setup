@@ -289,9 +289,9 @@ func TestFilterTextMatchesThePRColumn(t *testing.T) {
 }
 
 // TestFilterMatchesWorktreeBranchAndPR pins the filter's targets after the
-// table swap: a worktree's display name, its branch and its PR tag ("#517")
-// each find their row. Why: the row no longer prints its sentence, so the
-// filter must keep matching everything it matched through the tags.
+// table swap: a worktree's display name, its branch and its PR column cell
+// ("#517") each find their row. Why: the row no longer prints its sentence,
+// so the filter must keep matching everything it matched through the tags.
 func TestFilterMatchesWorktreeBranchAndPR(t *testing.T) {
 	r := cleanupFixture()
 	r.Rows[2].PRTag = &cleanup.PRInfo{Number: 517, State: "MERGED"} // full-branch-name-paths
@@ -326,7 +326,8 @@ func TestFilterMatchesWorktreeBranchAndPR(t *testing.T) {
 // badges (unpushed, …) carry TagWarn severity on the item and their text is
 // drawn on the row's table line. Why: with the prose row gone the badges
 // travel as trailing marks — losing either the severity or the text would
-// drop the at-a-glance risk signal the list is for.
+// drop the at-a-glance risk signal the list is for. (No tag carries PR info
+// any more: the "#517 merged" a badge once named reads in the PR# column.)
 func TestRowListTagsWarnStyled(t *testing.T) {
 	r := cleanupFixture()
 	r.Rows[3].Losses = cleanup.Losses{Unpushed: 4}           // mtplx-profiles

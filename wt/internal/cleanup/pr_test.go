@@ -531,8 +531,8 @@ func TestPRUnknownIsNeverProvenWhenAsked(t *testing.T) {
 	if row.Status == StatusProven || !row.PRUnknown || !hasReason(row, ReasonPRUnknown) {
 		t.Fatalf("row = %+v, want not proven, PRUnknown, pr_unknown", row)
 	}
-	if got := RowTags(row); len(got) != 1 || got[0].Text != "PR ?" {
-		t.Fatalf("tags %v", got)
+	if hasPRTag(row) {
+		t.Fatalf("tags %v, want no PR badge (it reads in the PR# column)", RowTags(row))
 	}
 }
 
@@ -593,8 +593,8 @@ func TestPRTagOnceKnown(t *testing.T) {
 	if row.PRUnknown || row.PRTag == nil || row.PRTag.Number != 5 {
 		t.Fatalf("row %+v", row)
 	}
-	if got := RowTags(row); len(got) != 1 || got[0].Text != "#5 merged" {
-		t.Fatalf("tags %v", got)
+	if hasPRTag(row) {
+		t.Fatalf("tags %v, want no PR badge (it reads in the PR# column)", RowTags(row))
 	}
 }
 

@@ -578,7 +578,7 @@ func remoteOnly(r Report) []Row {
 type TagSeverity int
 
 const (
-	// TagInfo is a plain fact (root, you are here, PR, +remote).
+	// TagInfo is a plain fact (root, you are here, +remote).
 	TagInfo TagSeverity = iota
 	// TagWarn is a risk: removal could lose work or the row is held.
 	TagWarn
@@ -591,8 +591,9 @@ type Tag struct {
 }
 
 // RowTags is every fact tag of a row, in a fixed order: root, bare, you are here,
-// PR ("PR ?" while unknown, "#N state" once known), +remote, then the risk
-// tags dirty, unpushed, upstream gone, held by session <id>, locked.
+// +remote, then the risk tags dirty, unpushed, upstream gone, held by
+// session <id>, locked. No badge carries PR info: the PR and its state read
+// in the PR# column ("#N state", "?" while unknown, blank on no PR).
 func RowTags(row Row) []Tag {
 	var tags []Tag
 	add := func(sev TagSeverity, text string) { tags = append(tags, Tag{text, sev}) }
@@ -612,12 +613,6 @@ func RowTags(row Row) []Tag {
 	}
 	if _, ok := hasBlock(BlockCurrent); ok || row.Current || row.HardStop == BlockCurrent {
 		add(TagInfo, "you are here")
-	}
-	switch {
-	case row.PRUnknown:
-		add(TagInfo, "PR ?")
-	case row.PRTag != nil:
-		add(TagInfo, fmt.Sprintf("#%d %s", row.PRTag.Number, strings.ToLower(row.PRTag.State)))
 	}
 	if row.Upstream != nil && !row.Upstream.Gone {
 		add(TagInfo, "+remote")
