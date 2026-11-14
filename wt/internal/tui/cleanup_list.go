@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -224,126 +223,33 @@ func verdictText(s cleanup.Status) string {
 
 // unit is one unbreakable piece of a row's text: the verdict, a tag, a word
 // of the sentence or of the age. sep goes before it when it follows another
-// unit on the same line.
+// unit on the same line. (The prose row these built is gone: the row is a
+// table line now, and the sentence and age live in the detail block.)
 type unit struct {
 	sep, text string
 	warn      bool // drawn in the warning style (a TagWarn tag)
 }
 
-// rowUnits is a row's text as units: verdict · tags · sentence  age.
-func rowUnits(it cleanupItem) []unit {
-	out := []unit{{text: verdictText(it.row.Status)}}
-	for _, t := range it.tags {
-		out = append(out, unit{sep: " · ", text: t.Text, warn: t.Severity == cleanup.TagWarn})
-	}
-	for k, w := range strings.Fields(it.text) {
-		sep := " "
-		if k == 0 {
-			sep = " · "
-		}
-		out = append(out, unit{sep: sep, text: w})
-	}
-	for k, w := range strings.Fields(cleanup.AgeText(it.row)) {
-		sep := " "
-		if k == 0 {
-			sep = "  "
-		}
-		out = append(out, unit{sep: sep, text: w})
-	}
-	return out
-}
-
-// unitsText is units on one line.
-func unitsText(us []unit) string {
-	var b strings.Builder
-	for k, u := range us {
-		if k > 0 {
-			b.WriteString(u.sep)
-		}
-		b.WriteString(u.text)
-	}
-	return b.String()
-}
-
-// flowUnits lays units out on lines of at most width runes, breaking only
-// between units (tuilayout.Flow's rule, with each unit's own separator); a
-// unit longer than a whole line wraps at its spaces so no word is split at
-// the line's end, and only a single word too long for the line is cut there.
-// width <= 0 is one line.
-func flowUnits(us []unit, width int) [][]unit {
-	if width <= 0 {
-		return [][]unit{us}
-	}
-	var lines [][]unit
-	var cur []unit
-	curW := 0
-	for _, u := range us {
-		w := utf8.RuneCountInString(u.text)
-		if len(cur) > 0 {
-			if curW+utf8.RuneCountInString(u.sep)+w <= width {
-				cur, curW = append(cur, u), curW+utf8.RuneCountInString(u.sep)+w
-				continue
-			}
-			lines, cur, curW = append(lines, cur), nil, 0
-		}
-		runes := []rune(u.text)
-		for len(runes) > width {
-			cut := width
-			if runes[cut] != ' ' { // the break fits after a whole word
-				for i := cut - 1; i > 0; i-- {
-					if runes[i] == ' ' {
-						cut = i // break at the space, which is not drawn
-						break
-					}
-				}
-			}
-			lines = append(lines, []unit{{text: string(runes[:cut]), warn: u.warn}})
-			runes = runes[cut:]
-			for len(runes) > 0 && runes[0] == ' ' {
-				runes = runes[1:]
-			}
-		}
-		if w <= width || len(runes) > 0 { // a unit that fit is kept as it was, even an empty one
-			u.text = string(runes)
-			cur, curW = []unit{u}, len(runes)
-		}
-	}
-	if len(cur) > 0 {
-		lines = append(lines, cur)
-	}
-	return lines
-}
-
 // Row geometry: "> " cursor, "[x] " box (manage mode only), the kind padded
 // to 8, then the name and the text, two spaces apart. Names stay whole while
-// that leaves the text cleanupRoomyTextW columns (the text wraps instead: a
 // wrapped text loses nothing, a cut name hides which row it is). Otherwise
-// the name column narrows to cleanupMinNameW so texts fit on one line, and
-// below that (a terminal too narrow to give the text cleanupMinTextW columns
-// beside it) to cleanupFloorNameW.
-const (
-	cleanupKindW      = 8
-	cleanupBoxW       = 4
-	cleanupFixedW     = 2 + cleanupBoxW + cleanupKindW + 2 + 2
-	cleanupMinNameW   = 16
-	cleanupMinTextW   = 24
-	cleanupRoomyTextW = 40
-	cleanupFloorNameW = 4
-)
+const ()
 
 // cleanupListModel is the row list's Bubble Tea model.
 type cleanupListModel struct {
-	opts          rowListOpts
-	report        cleanup.Report
-	theme         themes.Theme
-	now           time.Time
-	items         []cleanupItem
-	ticked        map[int]bool // by item index
-	cursor        int          // item index of the highlighted item; -1 with none
-	offset        int          // the first list line on screen
-	rows          int          // number of row items (headings and the new-worktree item excluded)
-	maxName       int          // the longest display name
-	maxText       int          // the longest row text (verdict, tags, sentence, age)
+	opts   rowListOpts
+	report cleanup.Report
+	theme  themes.Theme
+	now    time.Time
+	items  []cleanupItem
+	ticked map[int]bool // by item index
+	cursor int          // item index of the highlighted item; -1 with none
+	offset int          // the first list line on screen
+	rows   int          // number of row items (headings and the new-worktree item excluded)
+	// table is the shared column layout every row line renders through
+	// (rowtable): built from the report's rows once, refitted to m.width on
+	// every frame. Nil only before a report is loaded.
+	table         *tuilayout.Columns
 	width, height int
 	done          bool
 
@@ -425,7 +331,6 @@ func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	if o.Mode == modeLaunch {
 		m.items = append(m.items, cleanupItem{newWorktree: true})
 		m.cursor = 0
-		m.maxName = lipgloss.Width(newWorktreeLabel)
 	}
 	for _, g := range cleanup.KindGroups(r) {
 		m.items = append(m.items, cleanupItem{heading: g.Heading})
@@ -440,12 +345,17 @@ func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 			if m.cursor < 0 {
 				m.cursor = len(m.items)
 			}
-			m.maxName = max(m.maxName, lipgloss.Width(cleanup.DisplayName(row)))
-			m.maxText = max(m.maxText, lipgloss.Width(unitsText(rowUnits(it))))
 			m.items = append(m.items, it)
 			m.rows++
 		}
 	}
+	// One table for the header and every row; the prefix is the rows' fixed
+	// left margin (4 in launch mode, 8 in manage: the checkbox).
+	prefix := rowPrefixWidthLaunch
+	if o.Mode != modeLaunch {
+		prefix = rowPrefixWidthManage
+	}
+	m.table = newRowTable(r.Rows, prefix)
 	return m
 }
 
@@ -972,37 +882,10 @@ func (m *cleanupListModel) move(dir, n int) {
 	}
 }
 
-// fixedW is the row's fixed columns: cursor, box (manage mode), kind, gaps.
-func (m *cleanupListModel) fixedW() int {
-	if m.launch() {
-		return cleanupFixedW - cleanupBoxW
-	}
-	return cleanupFixedW
-}
-
-// nameWidth is the name column's width: as wide as the longest name when
-// that leaves the text cleanupRoomyTextW columns or every row's text fits
-// beside it on one line, otherwise narrower, down to
-// cleanupMinNameW (texts longer than that leaves wrap); on a terminal too
-// narrow to leave a text cleanupMinTextW columns, narrower still.
-func (m *cleanupListModel) nameWidth() int {
-	if m.width <= 0 {
-		return m.maxName
-	}
-	if m.width-m.fixedW()-m.maxName >= cleanupRoomyTextW {
-		return m.maxName
-	}
-	nw := max(cleanupMinNameW, m.width-m.fixedW()-m.maxText)
-	if m.width-m.fixedW()-nw < cleanupMinTextW {
-		nw = max(cleanupFloorNameW, m.width-m.fixedW()-cleanupMinTextW)
-	}
-	return min(m.maxName, nw)
-}
-
-// itemLines renders item i: a heading or the new-worktree item is one line;
-// a row is its first line (cursor, box, kind, the name cut to the name
-// column, the text's first part) and the rest of its text wrapped under the
-// text column, a warn tag in the warning style.
+// itemLines renders item i: a heading is one line; a row is exactly one
+// table line — its prefix (session digit, cursor, checkbox) plus the fitted
+// columns, with its badges as trailing marks — and the new-worktree item its
+// own label line. The row's sentence and age live in the detail block.
 func (m *cleanupListModel) itemLines(i int) []string {
 	if m.hidden(i) {
 		return nil
@@ -1012,55 +895,28 @@ func (m *cleanupListModel) itemLines(i int) []string {
 		style := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader)).Bold(true)
 		return []string{style.Render(clip(it.heading, m.width))}
 	}
-	cursor := "  "
-	if i == m.cursor {
-		cursor = "> "
-	}
 	style := m.rowStyle(it, i == m.cursor)
 	if it.newWorktree {
-		return []string{style.Render(clip(cursor+newWorktreeLabel, m.width))}
-	}
-	nameW := m.nameWidth()
-	name := cleanup.DisplayName(it.row)
-	if lipgloss.Width(name) > nameW {
-		name = cutLines(name, nameW)
+		return []string{style.Render(clip(rowPrefix(0, i == m.cursor, "")+newWorktreeLabel, m.width))}
 	}
 	box := ""
 	if !m.launch() {
-		box = m.box(i) + " "
+		box = m.box(i)
 	}
-	prefix := cursor + box + tuilayout.PadRunes(string(it.row.Kind), cleanupKindW) + "  " + padCols(name, nameW) + "  "
-	textW := 0 // no width yet: one line
-	if m.width > 0 {
-		textW = max(1, m.width-lipgloss.Width(prefix))
+	line := rowPrefix(it.row.Sessions, i == m.cursor, box) + rowLine(it.row, m.table)
+	if texts := tagTexts(it.tags); len(texts) > 0 {
+		line += "  · " + strings.Join(texts, " · ")
 	}
-	warn := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenWarning)).Bold(i == m.cursor)
-	indent := strings.Repeat(" ", lipgloss.Width(prefix))
+	return []string{style.Render(clip(line, m.width))}
+}
+
+// tagTexts is the badges' text in order: the trailing marks on a row's
+// table line (their severity styles live in the detail sentence; the row
+// itself is one styled line).
+func tagTexts(tags []cleanup.Tag) []string {
 	var out []string
-	for k, line := range flowUnits(rowUnits(it), textW) {
-		lead := indent
-		if k == 0 {
-			lead = prefix
-		}
-		plain := strings.TrimRight(lead+unitsText(line), " ")
-		if m.width > 0 && lipgloss.Width(plain) > m.width {
-			// A terminal narrower than the prefix: clip, one style.
-			out = append(out, style.Render(clip(plain, m.width)))
-			continue
-		}
-		var b strings.Builder
-		b.WriteString(style.Render(lead))
-		for j, u := range line {
-			if j > 0 {
-				b.WriteString(style.Render(u.sep))
-			}
-			if u.warn {
-				b.WriteString(warn.Render(u.text))
-			} else {
-				b.WriteString(style.Render(u.text))
-			}
-		}
-		out = append(out, b.String())
+	for _, t := range tags {
+		out = append(out, t.Text)
 	}
 	return out
 }
@@ -1085,14 +941,6 @@ func (m *cleanupListModel) rowStyle(it cleanupItem, selected bool) lipgloss.Styl
 	return lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenUnselected))
 }
 
-// padCols pads s with spaces to w display columns.
-func padCols(s string, w int) string {
-	if n := lipgloss.Width(s); n < w {
-		return s + strings.Repeat(" ", w-n)
-	}
-	return s
-}
-
 // cleanupLayout is one frame of the screen: what goes above and below the
 // list, how many list lines fit between, and the list's lines and offset.
 type cleanupLayout struct {
@@ -1113,6 +961,13 @@ type cleanupLayout struct {
 // with its group heading when it is the group's first row and there is room.
 // A list taller than its room gives one of its lines to a scroll hint.
 func (m *cleanupListModel) layout() cleanupLayout {
+	// Fit the table to this frame's width before any line renders: which
+	// columns are shown decides the header, every row line and detail's
+	// diffLine. Fit recomputes from the whole table each time, so a resize
+	// widens columns back as well as dropping them.
+	if m.table != nil && m.width > 0 {
+		m.table.Fit(m.width)
+	}
 	var lines []string
 	start := make([]int, len(m.items)+1)
 	for i := range m.items {
@@ -1123,19 +978,40 @@ func (m *cleanupListModel) layout() cleanupLayout {
 	cs, ce := start[m.cursor], start[m.cursor+1]
 
 	title := clip(m.titleLine(), m.width) + "\n"
-	header := m.headerBlock() + "\n\n"
+	repHdr := m.headerBlock() + "\n"
 	stat := m.statusBlock()
-	detail := "\n" + stat + m.detail()
+	if stat != "" && !strings.HasSuffix(stat, "\n") {
+		stat += "\n"
+	}
+	// The table's own header line: a dim line over the rows, with the blank
+	// line the model screen's title bar keeps under its header.
+	tblLine := ""
+	if m.table != nil {
+		dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+		tblLine = dim.Render(clip(m.table.Header(), m.width)) + "\n"
+	}
+	// topOf closes a top block with the one blank line before the list.
+	topOf := func(content string) string {
+		if content == "" {
+			return ""
+		}
+		return content + "\n"
+	}
+	detail := "\n" + m.detail()
 	foot := m.footer()
 	if foot != "" {
 		foot = "\n" + foot
 	}
 	// The footer is the key legend for the highlighted row: the last thing
-	// given up, after the header, the title and the detail (the status stays
-	// with it, as news).
+	// given up, after the report header, the title, the detail (and the
+	// table header with it) and the status. The filter and status ride the
+	// top block, above the table header (spec §6).
 	frames := [][2]string{
-		{title + header, detail + foot}, {title, detail + foot}, {"", detail + foot},
-		{"", "\n" + stat + strings.TrimPrefix(foot, "\n")}, {"", ""},
+		{topOf(title + repHdr + stat + tblLine), detail + foot},
+		{topOf(title + stat + tblLine), detail + foot},
+		{topOf(stat + tblLine), detail + foot},
+		{topOf(stat), foot},
+		{"", ""},
 	}
 	l := cleanupLayout{lines: lines}
 	for k, f := range frames {
@@ -1283,6 +1159,11 @@ func (m *cleanupListModel) detail() string {
 	if age := cleanup.AgeText(it.row); age != "" {
 		text += " [" + age + "]"
 	}
+	// When the table gave the DIFF column up, its numbers live here — shown
+	// whole or not at all (the mode-line rule).
+	if m.table != nil && !m.table.Shown(rtDiff) && it.row.Kind == cleanup.KindWorktree && !it.row.Bare && !it.row.Pending {
+		text += " · " + diffLine(it.row)
+	}
 	switch {
 	case it.newWorktree:
 		text = "create a new branch and worktree, then launch in it"
@@ -1345,6 +1226,15 @@ func (m cleanupListModel) View() string {
 		}
 		dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 		view += "\n" + dim.Render(clip("  "+strings.Join(more, " · "), m.width))
+	}
+	// Anchor the bottom block to the last terminal line: when the list shows
+	// fewer lines than its room (few rows), blank filler fills the gap
+	// between the last row and the detail block. The scroll hint counts as a
+	// list line, so it cancels out of the gap.
+	if m.height > 0 {
+		if filler := l.listH - (end - l.offset); filler > 0 {
+			view += strings.Repeat("\n", filler)
+		}
 	}
 	view += l.bottom
 	return capLines(view, m.height)
