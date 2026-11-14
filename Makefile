@@ -1,4 +1,4 @@
-.PHONY: lint lint-shell lint-skills check-links test-all install update-tools
+.PHONY: lint lint-shell lint-skills check-links test-all install update-tools install-skill-claude install-skill-pi install-skill-codex uninstall-skill-claude uninstall-skill-pi uninstall-skill-codex
 
 SHELL_SCRIPTS := \
 	bin/lib/mlx-lm-resolve.sh \
@@ -59,3 +59,35 @@ install: ## Install all monorepo components (wt + llmbench + modeltiers).
 
 update-tools: ## Update every tool the wt stack runs (see bin/update-tools)
 	@bin/update-tools $(ARGS)
+
+# wt-repo-cleanup is the one skill meant to run in any repo, so it is installed globally for
+# each agent host. The other wt-* skills are repo-local. Each install replaces the old
+# repo-cleanup copy (from the retired standalone repo) and any earlier wt-repo-cleanup.
+SKILL_SRC := .claude/skills/wt-repo-cleanup/SKILL.md
+
+install-skill-claude: ## Install wt-repo-cleanup for Claude Code (~/.claude/skills)
+	@rm -rf $(HOME)/.claude/skills/repo-cleanup $(HOME)/.claude/skills/wt-repo-cleanup
+	@mkdir -p $(HOME)/.claude/skills/wt-repo-cleanup
+	@cp $(SKILL_SRC) $(HOME)/.claude/skills/wt-repo-cleanup/SKILL.md
+	@echo "installed wt-repo-cleanup -> $(HOME)/.claude/skills/wt-repo-cleanup"
+
+install-skill-pi: ## Install wt-repo-cleanup for Pi (~/.agents/skills)
+	@rm -rf $(HOME)/.agents/skills/repo-cleanup $(HOME)/.agents/skills/wt-repo-cleanup
+	@mkdir -p $(HOME)/.agents/skills/wt-repo-cleanup
+	@cp $(SKILL_SRC) $(HOME)/.agents/skills/wt-repo-cleanup/SKILL.md
+	@echo "installed wt-repo-cleanup -> $(HOME)/.agents/skills/wt-repo-cleanup"
+
+install-skill-codex: ## Install wt-repo-cleanup for Codex (~/.codex/skills)
+	@rm -rf $(HOME)/.codex/skills/repo-cleanup $(HOME)/.codex/skills/wt-repo-cleanup
+	@mkdir -p $(HOME)/.codex/skills/wt-repo-cleanup
+	@cp $(SKILL_SRC) $(HOME)/.codex/skills/wt-repo-cleanup/SKILL.md
+	@echo "installed wt-repo-cleanup -> $(HOME)/.codex/skills/wt-repo-cleanup"
+
+uninstall-skill-claude: ## Remove wt-repo-cleanup from Claude Code
+	@rm -rf $(HOME)/.claude/skills/wt-repo-cleanup
+
+uninstall-skill-pi: ## Remove wt-repo-cleanup from Pi
+	@rm -rf $(HOME)/.agents/skills/wt-repo-cleanup
+
+uninstall-skill-codex: ## Remove wt-repo-cleanup from Codex
+	@rm -rf $(HOME)/.codex/skills/wt-repo-cleanup
