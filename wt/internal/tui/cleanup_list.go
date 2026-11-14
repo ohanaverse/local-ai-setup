@@ -221,20 +221,6 @@ func verdictText(s cleanup.Status) string {
 	return strings.ReplaceAll(string(s), "_", " ")
 }
 
-// unit is one unbreakable piece of a row's text: the verdict, a tag, a word
-// of the sentence or of the age. sep goes before it when it follows another
-// unit on the same line. (The prose row these built is gone: the row is a
-// table line now, and the sentence and age live in the detail block.)
-type unit struct {
-	sep, text string
-	warn      bool // drawn in the warning style (a TagWarn tag)
-}
-
-// Row geometry: "> " cursor, "[x] " box (manage mode only), the kind padded
-// to 8, then the name and the text, two spaces apart. Names stay whole while
-// wrapped text loses nothing, a cut name hides which row it is). Otherwise
-const ()
-
 // cleanupListModel is the row list's Bubble Tea model.
 type cleanupListModel struct {
 	opts   rowListOpts

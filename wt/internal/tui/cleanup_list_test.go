@@ -2757,3 +2757,84 @@ func TestFillErrorShowsOnTheListNotPanics(t *testing.T) {
 		t.Error("a failed fill cleared the facts: the list would offer removal rows it never read")
 	}
 }
+
+// TestRowListFitsWithFilterAndPendingFill pins Review Focus 5's exact
+// conjunction, which the component tests cover only piecewise: the LAUNCH
+// picker (the screen that has an open filter — the manage list takes no
+// filter) with a facts-first (Pending) long-row list, filter open, at
+// 40x12. The view is exactly the terminal, no line exceeds the width, the
+// dropped columns are gone from the header whole, the filter line shows,
+// no removal keys appear (they are absent while filling), and the footer is
+// the last line. Why: three features stacked on one screen is where frame
+// math goes wrong — the filter line and the header both moved blocks in this
+// change, and pending rows change what the footer lists.
+func TestRowListFitsWithFilterAndPendingFill(t *testing.T) {
+	r := longRowsFixture()
+	for i := range r.Rows {
+		r.Rows[i].Pending = true
+		r.Rows[i].Status = cleanup.StatusLessSure
+	}
+	m := newLaunchList(t, r, 40, 12)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ma")})
+	view := m.View()
+
+	if h := lipgloss.Height(view); h != 12 {
+		t.Errorf("view is %d lines, want exactly 12 (filler pads the gap):\n%s", h, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Errorf("line %d is %d columns, want <= 40: %q", i, w, line)
+		}
+	}
+	if !strings.Contains(view, "filter: ma") {
+		t.Errorf("filter line missing:\n%s", view)
+	}
+	// Columns dropped whole: the header shows none of the droppable names
+	// (the never-drop WORKTREE heading is cut at the edge, never split
+	// into a partial droppable column).
+	for _, dropped := range []string{"PR#", "DIFF", "IGN", "STATUS"} {
+		if strings.Contains(view, dropped) {
+			t.Errorf("dropped column %q still on screen at 40 columns:\n%s", dropped, view)
+		}
+	}
+	lines := strings.Split(view, "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, "ctrl+c quit") {
+		t.Errorf("last line while typing the filter = %q, want the filter-mode footer", last)
+	}
+	if strings.Contains(view, "x remove") || strings.Contains(view, "enter remove") {
+		t.Errorf("removal keys offered while the fill is pending:\n%s", view)
+	}
+	if !m.filling() {
+		t.Fatal("the list does not read as filling (the Pending premise broke)")
+	}
+
+	// Enter keeps the query: the resting footer returns (launch keys, no
+	// removal keys while filling), the filter line stays, and the frame still
+	// fits to the last line.
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	view = m.View()
+	if h := lipgloss.Height(view); h != 12 {
+		t.Errorf("view after keeping the query is %d lines, want 12:\n%s", h, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Errorf("after-keep line %d is %d columns, want <= 40: %q", i, w, line)
+		}
+	}
+	if !strings.Contains(view, "filter: ma") {
+		t.Errorf("kept query's filter line missing:\n%s", view)
+	}
+	// At 40 columns the footer drops to its short forms (fitHints): it is
+	// still the launch footer (n new = the new-worktree key) and still the
+	// last line, with the kept query's esc to clear it.
+	if !strings.Contains(view, "n new") {
+		t.Errorf("launch footer missing while filling:\n%s", view)
+	}
+	if last := strings.Split(view, "\n"); !strings.Contains(last[len(last)-1], "n new") {
+		t.Errorf("last line after keeping = %q, want the launch key footer", last[len(last)-1])
+	}
+	if strings.Contains(view, "x remove") {
+		t.Errorf("removal keys offered after keeping the query while filling:\n%s", view)
+	}
+}

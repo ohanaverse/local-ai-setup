@@ -345,7 +345,11 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 func (s *Snapshot) askPRs(g Git, in GatherInputs) {
 	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel, in)
 	s.checkMerges(g)
-	if in.OriginRows {
+	// The live "who targets this branch" query is gh's to answer: with no
+	// known GitHub own-repository (a non-GitHub origin) every such call
+	// fails, so the gate is the own repo itself — OriginRows alone must not
+	// spawn them (the picker's open and the manage fill both set it).
+	if in.OriginRows && s.OwnRepo != "" {
 		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel, in)
 	}
 	// An unknown own repository (a non-GitHub origin) has no PRs to ask

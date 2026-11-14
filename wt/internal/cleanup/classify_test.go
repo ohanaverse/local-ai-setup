@@ -1483,3 +1483,38 @@ func TestWorktreeRuleContainedDirtNeedsAProvenBranch(t *testing.T) {
 		t.Errorf("State = %q, want %q (the dirt itself is contained)", row.State, StateInMain)
 	}
 }
+
+// TestPRFillSkipsGhWhenOriginIsNotGitHub pins the source gate: with no known
+// GitHub own-repository, askPRs (the one entry FillPRs and every fill stage
+// use) runs no `gh pr list --base`, even with OriginRows set as both list
+// paths set it — gh cannot answer for a non-GitHub origin, so every such call
+// fails. The control half proves the gate is not blanket silence: with an
+// own repository the lookup runs.
+func TestPRFillSkipsGhWhenOriginIsNotGitHub(t *testing.T) {
+	f := newFixture(t)
+	f.Branch("topic")
+	f.Push("topic") // origin/topic's tip is in the base: a baseCandidates entry
+
+	baseCalls := 0
+	stubGhBase(t, func(string, string) ([]byte, error) {
+		baseCalls++
+		return []byte("[]"), nil
+	})
+	stubGh(t, func(string, string) ([]byte, error) { return []byte("[]"), nil })
+
+	// No own repository (the fixture's origin is a local path).
+	if _, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OriginRows: true, Parallel: 2}); err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if baseCalls != 0 {
+		t.Errorf("gh --base ran %d times with no GitHub own-repository, want 0", baseCalls)
+	}
+
+	// Control: with an own repository the lookup runs (once per candidate).
+	if _, err := Gather(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", OriginRows: true, Parallel: 2}); err != nil {
+		t.Fatalf("Gather(o/r): %v", err)
+	}
+	if baseCalls == 0 {
+		t.Error("gh --base never ran with an own repository: the gate must not silence it there")
+	}
+}

@@ -671,8 +671,6 @@ func TestPickerPaintsFactsThenFillsThenPRs(t *testing.T) {
 func TestStaleFillIsDropped(t *testing.T) {
 	m := pickerReady(t, pickerFixture())
 	m.rowsGen = 5
-	before := m.rows.withReport // struct copy: compare fields we care about
-	_ = before
 	rep := pickerFixture()
 	rep.Rows = append(rep.Rows[:0:0], rep.Rows...)
 	rep.Rows[0].Name = "stale-swap"
@@ -750,13 +748,12 @@ func TestFReloadReplacesAnInFlightFill(t *testing.T) {
 	m.rowsRefreshing, m.reloadGen = true, m.rowsGen
 
 	// The fill that was in flight lands: generation matches, so it applies.
+	// (Acceptance is the row swap, not the command: with no GitHub own repo
+	// in this hand-built snapshot the PR stage is skipped by design.)
 	filled := pickerFixture()
 	filled.Rows = append(filled.Rows[:0:0], filled.Rows...)
 	filled.Rows[0].Name = "filled-during-f"
-	m, cmd := updateMsg(m, rowsFilledMsg{Report: filled, gen: 3})
-	if cmd == nil {
-		t.Fatal("a fill whose generation still matches was dropped: the gen guard is the only supersession rule")
-	}
+	m, _ = updateMsg(m, rowsFilledMsg{Report: filled, gen: 3})
 	seen := false
 	for _, it := range m.rows.items {
 		if it.row.Name == "filled-during-f" {
@@ -769,7 +766,7 @@ func TestFReloadReplacesAnInFlightFill(t *testing.T) {
 
 	// The F's re-read then fails: the error is shown, the filled rows stay,
 	// and the list is NOT stuck at the facts stage.
-	m, cmd = updateMsg(m, rowsLoadedMsg{err: errMock("fetch dead"), gen: 3})
+	m, cmd := updateMsg(m, rowsLoadedMsg{err: errMock("fetch dead"), gen: 3})
 	if cmd != nil {
 		t.Errorf("a failed reload returned a command: %v", cmd)
 	}
@@ -869,5 +866,46 @@ func TestRowOrderStableAcrossStages(t *testing.T) {
 	m.rows = m.rows.withReport(filled)
 	if after := names(); !slices.Equal(before, after) {
 		t.Errorf("row order changed across stages:\n before %v\n after  %v", before, after)
+	}
+}
+
+// TestPickerFillSkipsThePRStageWithoutAGitHubOrigin pins the picker's
+// pre-three-stage contract: a fill whose snapshot says PRs are not
+// applicable (no GitHub own-repository) returns NO PR command — the rows
+// still swap and the funcs still apply — while one that skipped the lookups
+// for a GitHub repo still dispatches them. Why: without the guard every
+// picker open on a non-GitHub origin spawned failing gh calls in stage 3.
+func TestPickerFillSkipsThePRStageWithoutAGitHubOrigin(t *testing.T) {
+	m := pickerReady(t, pickerFixture())
+	filled := pickerFixture()
+	filled.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	filled.Rows[0].Name = "filled-no-gh"
+
+	m, cmd := updateMsg(m, rowsFilledMsg{
+		Report: filled,
+		Snap:   cleanup.Snapshot{PRNotApplicable: true},
+		gen:    m.rowsGen,
+	})
+	if cmd != nil {
+		t.Errorf("a fill with no GitHub own-repository returned the PR command: %v", cmd)
+	}
+	seen := false
+	for _, it := range m.rows.items {
+		if it.row.Name == "filled-no-gh" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the filled rows did not swap in when the PR stage was skipped")
+	}
+
+	// Control: a GitHub repo's fill still dispatches its PR stage.
+	_, cmd = updateMsg(m, rowsFilledMsg{
+		Report: filled,
+		Snap:   cleanup.Snapshot{PRsSkipped: true},
+		gen:    m.rowsGen,
+	})
+	if cmd == nil {
+		t.Error("a fill that skipped the lookups for a GitHub repo returned no PR command")
 	}
 }

@@ -1565,8 +1565,13 @@ func TestModelSelectorWrapsInAppAndStandalone(t *testing.T) {
 	if got := next.Index(); got != 0 {
 		t.Errorf("standalone: down from the last row = %d, want wrap to 0", got)
 	}
-	prev, _ := pm.list.Update(tea.KeyMsg{Type: tea.KeyUp}) // from the last row: up must not wrap back
-	_ = prev
+	// Up from the wrapped-top row wraps back down to the end. (list.Update
+	// returns an updated copy without mutating the field, so the chain runs
+	// on the returned model.)
+	prev, _ := next.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if got := prev.Index(); got != len(pm.list.Items())-1 {
+		t.Errorf("standalone: up from the top row = %d, want wrap to the last row %d", got, len(pm.list.Items())-1)
+	}
 
 	// The launcher's model phase.
 	m := model{cfg: cfg, width: 80, height: 24}

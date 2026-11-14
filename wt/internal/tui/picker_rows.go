@@ -325,6 +325,14 @@ func (m model) gotFilled(msg rowsFilledMsg) (model, tea.Cmd) {
 	// rowsGen, so a PR answer older than any load is dropped as before.
 	m.rows = m.rows.withReport(msg.Report)
 	swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
+	// Stage 3 only for a GitHub repository: FillDetails marked a snapshot
+	// with no own repo PRNotApplicable (PRsSkipped false), and the old
+	// single-load picker ran no PR stage there either — every gh call would
+	// fail (the source gate in askPRs stops the --base ones; this stops
+	// dispatching the stage at all).
+	if !msg.Snap.PRsSkipped {
+		return m, nil
+	}
 	return m, loadRowPRsCmd(m.repoRoot, msg.Snap, m.rowsIn, m.rowsGen)
 }
 
