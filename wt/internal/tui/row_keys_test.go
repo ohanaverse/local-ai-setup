@@ -27,8 +27,10 @@ func wiredRemoveFuncs() RemoveFuncs {
 }
 
 // footerKeysReport has one row for each way the row keys can differ: a free
-// worktree with work to keep, a locked worktree, a branch whose origin ref is
-// a proven row, a branch with no origin ref, and the root off its default.
+// worktree with work to keep, a locked worktree, a locked branch whose origin
+// ref is a proven, removable row (so `o` is offered where `x` and `d` are
+// not), a branch whose origin ref is a proven row, a branch with no origin
+// ref, and the root off its default.
 func footerKeysReport() cleanup.Report {
 	return cleanup.Report{
 		Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Fetch: cleanup.FetchResult{OK: true, At: time.Now()}, GH: cleanup.GHOK,
@@ -43,9 +45,16 @@ func footerKeysReport() cleanup.Report {
 				Status: cleanup.StatusInUse, Blockers: []cleanup.Reason{{Code: cleanup.BlockCurrent}}},
 			{Kind: cleanup.KindBranch, Name: "withup", Branch: "withup", Status: cleanup.StatusProven, Evidence: cleanup.EvAncestor,
 				Upstream: &cleanup.Upstream{Ref: "refs/remotes/origin/withup", Remote: "origin", Name: "withup"}},
+			// A locked row whose origin target is not: `o` judges the origin
+			// ref's lock, not the local row's, so the footer offers `o` and no
+			// `x`/`d` here — the one case where its rule leaves `x`/`d`'s.
+			{Kind: cleanup.KindBranch, Name: "lockedup", Branch: "lockedup", Status: cleanup.StatusInUse,
+				Upstream: &cleanup.Upstream{Ref: "refs/remotes/origin/lockedup", Remote: "origin", Name: "lockedup"}},
 			{Kind: cleanup.KindBranch, Name: "lone", Branch: "lone", Status: cleanup.StatusLessSure},
 			{Kind: cleanup.KindRemote, Name: "withup", Branch: "withup", Ref: "refs/remotes/origin/withup", Remote: "origin",
 				Status: cleanup.StatusProven, Evidence: cleanup.EvPRTip, PR: &cleanup.PRInfo{Number: 9, State: "MERGED"}},
+			{Kind: cleanup.KindRemote, Name: "lockedup", Branch: "lockedup", Ref: "refs/remotes/origin/lockedup", Remote: "origin",
+				Status: cleanup.StatusProven, Evidence: cleanup.EvAncestor},
 		},
 	}
 }
