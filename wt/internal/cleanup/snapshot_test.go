@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -224,6 +225,91 @@ func keys(m map[string]string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// TestGatherEqualsFactsThenFill composes GatherFacts + FillDetails on a
+// fixture with real state (a dirty worktree, a squash-merged branch) and
+// deep-equals the result against a one-shot Gather. Why: Gather must stay
+// behaviourally identical to the split — every fact the synchronous path
+// shows (gates, records, proofs, PRs) has to come out of the two stages in
+// the same shape, or a caller picking the fast first paint would see a
+// different repository than the fill later reports.
+func TestGatherEqualsFactsThenFill(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.DirtyIn(p, "notes.txt")
+	f.Branch("other")
+	f.Checkout("other")
+	f.Commit("a", "a", "a")
+	f.Checkout("main")
+	f.Squash("other")
+	noGh(t)
+	in := GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2}
+	g := Git{Dir: f.Dir}
+
+	whole, err := Gather(g, in)
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	facts, err := GatherFacts(g, in)
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	filled, err := FillDetails(g, facts, in)
+	if err != nil {
+		t.Fatalf("FillDetails: %v", err)
+	}
+	if !reflect.DeepEqual(whole, filled) {
+		t.Fatalf("GatherFacts+FillDetails != Gather:\n whole %+v\n filled %+v", whole, filled)
+	}
+	if filled.FactsOnly {
+		t.Fatal("FillDetails left FactsOnly set")
+	}
+}
+
+// TestGatherFactsRunsNoGatesProofsOrGh pins the facts stage as facts only:
+// no per-worktree gates (the checkGates seam counts zero calls), no proof
+// ladder (Proofs stays empty — prove is what would run merge-tree), no gh
+// (the stubs fail the test if called). Why: stage 1 exists to paint in
+// milliseconds from the cheap git calls alone; a gate, ladder or gh call
+// leaking into it would put the slow work back on the first frame.
+func TestGatherFactsRunsNoGatesProofsOrGh(t *testing.T) {
+	f := newFixture(t)
+	p := f.Worktree("topic")
+	f.DirtyIn(p, "notes.txt")
+
+	var gateCalls int
+	oldGates := checkGates
+	checkGates = func(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
+		gateCalls++
+		return oldGates(g, w, in)
+	}
+	t.Cleanup(func() { checkGates = oldGates })
+	stubGh(t, func(string, string) ([]byte, error) {
+		t.Error("GatherFacts must not call gh")
+		return nil, nil
+	})
+	stubGhBase(t, func(string, string) ([]byte, error) {
+		t.Error("GatherFacts must not call gh --base")
+		return nil, nil
+	})
+
+	s, err := GatherFacts(Git{Dir: f.Dir}, GatherInputs{CWD: f.Dir, OwnRepo: "o/r", Parallel: 2})
+	if err != nil {
+		t.Fatalf("GatherFacts: %v", err)
+	}
+	if !s.FactsOnly {
+		t.Error("FactsOnly not set")
+	}
+	if gateCalls != 0 {
+		t.Errorf("gate checks = %d, want 0", gateCalls)
+	}
+	if len(s.Proofs) != 0 {
+		t.Errorf("Proofs = %v, want empty: prove (and with it merge-tree) never ran", s.Proofs)
+	}
+	if len(s.Worktrees) == 0 || s.Worktrees[0].Fact.Path == "" {
+		t.Error("worktree facts missing: the rows need names and paths from stage 1")
+	}
 }
 
 // TestGatherNotARepoIsAnError runs Gather outside any repository. Why: with

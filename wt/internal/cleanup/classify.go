@@ -30,6 +30,23 @@ const (
 	StatusInUse      Status = "in_use"      // a hard blocker: cannot be removed
 )
 
+// WorkState is a worktree row's STATUS word: what its uncommitted state
+// reads as (Row.State), independent of its verdict. Precedence when Classify
+// derives it: conflicted over clean over in main over dirty; StateUnknown
+// ("-") when the state could not be read and on rows with no worktree state
+// (branch, remote, bare). Classify only reads facts the gather produced —
+// containment and the diffstat are computed in CheckGates (review amendment
+// 1: gathered, never classified).
+type WorkState string
+
+const (
+	StateClean      WorkState = "clean"      // no tracked changes, no non-ignored untracked files
+	StateDirty      WorkState = "dirty"      // changes that are not contained in the base
+	StateInMain     WorkState = "in main"    // dirty, but the whole change-set is in the base
+	StateConflicted WorkState = "conflicted" // an operation in progress or an unmerged index
+	StateUnknown    WorkState = "-"          // unreadable, or no worktree state to read
+)
+
 // GHState says how much of the PR lookup gh answered.
 type GHState string
 
@@ -144,6 +161,23 @@ type Row struct {
 	PRTag     *PRInfo
 	AgeDays   int
 	AgeKnown  bool // AgeDays is a real age (0 then means under a day), not "could not tell"
+
+	// State is a worktree row's STATUS word (WorkState): what its
+	// uncommitted state reads as, independent of its verdict — "clean",
+	// "dirty", "in main" (the whole change-set is contained in the base),
+	// "conflicted", or "-" when the state could not be read and on branch,
+	// remote and bare rows, which have no worktree state. Diff counts that
+	// uncommitted change and Sessions the live sessions holding the
+	// checkout; both zero on branch and remote rows. Display facts: never
+	// serialised (RowJSON is built field by field;
+	// TestCleanupJSONUnchangedByNewRowFields).
+	State    WorkState
+	Diff     DiffStat
+	Sessions int
+	// Pending is true on every row of a facts-only report: the fill is owed,
+	// so the detail cells read "-" and nothing is proven (Classify's floor
+	// for Snapshot.FactsOnly). Never serialised.
+	Pending bool
 
 	// The facts below serve removal only and are never serialised (RowJSON
 	// is built field by field; TestCleanupJSONUnchangedByNewRowFields).
@@ -357,7 +391,28 @@ func Classify(s Snapshot, o Options) Report {
 	}
 	slices.SortStableFunc(r.Rows, rowOrder)
 	slices.SortStableFunc(r.Folded, rowOrder)
+	if s.FactsOnly {
+		for i := range r.Rows {
+			pendFacts(&r.Rows[i])
+		}
+		for i := range r.Folded {
+			pendFacts(&r.Folded[i])
+		}
+	}
 	return r
+}
+
+// pendFacts floors one row of a facts-only report: Pending (the fill is
+// owed), State "-" (no gate read yet) and never proven. The facts carry no
+// proof — no ladder ran — but the proven floor holds regardless: a first
+// paint is never a verdict someone can act on. Sessions stay (claims are
+// facts) and so does everything else the facts established.
+func pendFacts(row *Row) {
+	row.Pending = true
+	row.State = StateUnknown
+	if row.Status == StatusProven {
+		row.Status = StatusLessSure
+	}
 }
 
 // rowOrder is the order Classify lists rows in: status, then kind, name,
@@ -518,6 +573,24 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 	row.Primary, row.Current, row.Bare = w.Primary, w.Current, w.Bare
 	j := judge{kind: KindWorktree}
 	g := ws.Gates
+	// The display facts: the STATUS word (spec §3's precedence), the
+	// diffstat and the live-session count. Everything but a healthy
+	// non-bare worktree's state reads "-".
+	row.State = StateUnknown
+	row.Diff = g.Diff
+	row.Sessions = c.s.SessionsOn(w.Path)
+	if ws.GatesErr == "" && !w.Bare {
+		switch {
+		case g.Conflicted || slices.ContainsFunc(g.Blockers, func(r Reason) bool { return r.Code == BlockOperation }):
+			row.State = StateConflicted
+		case !g.Dirty:
+			row.State = StateClean
+		case g.InBase == TriYes:
+			row.State = StateInMain
+		default:
+			row.State = StateDirty
+		}
+	}
 	// The blockers found before a gates error still block: in use wins.
 	j.blockers = append(j.blockers, g.Blockers...)
 	if ws.GatesErr != "" {
@@ -531,8 +604,16 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		row.Losses.IgnoredBytes = g.IgnoredBytes
 		row.Losses.DetachedUnique = g.DetachedUnique
 		// Covered dirt is not raised; the preserved reason (soft) says it
-		// instead, and Losses.Dirty stays raw.
-		if g.Dirty && !c.dirtCovered(ws) {
+		// instead, and Losses.Dirty stays raw. Contained dirt is not raised
+		// either, but only under spec §4's own gate: the branch (or a
+		// detached HEAD) must be proven by a ladder rung AND the change-set
+		// contained — then the row reads proven with its dirt described, not
+		// unique. An unmerged branch's contained dirt still raises unique
+		// work: the dirt may be in the base, the branch is not, and
+		// suppressing that would relabel --json verdict values beyond the
+		// class the spec sanctioned. An unknown containment (TriUnknown)
+		// raises it as always: fail closed.
+		if g.Dirty && !c.dirtCovered(ws) && !(c.ladderProven(ws.Fact) && g.InBase == TriYes) {
 			j.uniq(ReasonDirty, "uncommitted or untracked files")
 		}
 		if g.DetachedUnique && !c.detachedPreserved(ws) {
@@ -634,6 +715,7 @@ func (c *classifier) head(ref string) (RefFact, bool) {
 
 func (c *classifier) branchRow(h RefFact) Row {
 	row := Row{Kind: KindBranch, Name: h.Name, Branch: h.Name, Remote: h.Remote, Ref: h.Ref, Tip: h.Tip}
+	row.State = StateUnknown // branch rows have no worktree state
 	row.Losses.Unpushed = -1
 	j := judge{kind: KindBranch}
 	if c.isDefault(h.Name) {
@@ -766,6 +848,19 @@ func (c *classifier) preserve(j *judge, p *Preserved) *Preserved {
 	return &cp
 }
 
+// ladderProven reports whether a worktree's own ref — its branch, or a
+// detached HEAD — carries a Merged verdict from the proof ladder (any rung,
+// rescued included). Spec §4's worktree rule keys its dirty-gate suppression
+// on this: contained dirt silences the gate only for a row whose commits are
+// themselves proven. A facts-only snapshot has no proofs and answers false.
+func (c *classifier) ladderProven(w WorktreeFact) bool {
+	if w.Head == "" {
+		return false
+	}
+	p, ok := c.s.Proofs[w.Head]
+	return ok && p.Verdict == Merged
+}
+
 // unpushedOf is Losses.Unpushed for local head h: 0 when a proof other than
 // trees-match / no-added-changes puts the content in the base (the count is
 // not taken then); otherwise the counted commits reachable from no
@@ -848,6 +943,15 @@ func (c *classifier) local(j *judge, h RefFact, covered bool) {
 	c.minAge(j, h)
 }
 
+// Ruling 18 (extends Ruling 17's family): changes-in-base is a proof; cherry
+// and patch-id stay weak signals. The change-set must reverse-apply onto
+// base's tree — content, not hashes — so a squash merge whose file base later
+// edited proves, while a later revert on base (the exact defeat of
+// cherry/patch-id) fails closed. It is deliberately not a treeProof (see
+// treeProof in snapshot.go): unlike trees-match/no-added-changes it says "the
+// content is in base", not "the trees are equal", so unpushedOf returns 0 for
+// it and the netZeroUnpushed demotion below never applies.
+//
 // netZeroUnpushed is Ruling 17. trees-match and no-added-changes prove only
 // that two trees are equal. When the tip's tree is its merge-base's (the
 // branch nets to nothing: say a commit and its revert) and some of its
@@ -878,6 +982,7 @@ func (c *classifier) netZeroUnpushed(j *judge, p Proof) {
 // content in the base.
 func (c *classifier) remoteRow(rf RefFact) Row {
 	row := Row{Kind: KindRemote, Name: rf.Name, Branch: rf.Name, Remote: rf.Remote, Ref: rf.Ref, Tip: rf.Tip}
+	row.State = StateUnknown // remote rows have no worktree state
 	j := judge{kind: KindRemote}
 	if c.isDefault(rf.Name) {
 		// The remote ref of the default branch (origin/main): a floor, like

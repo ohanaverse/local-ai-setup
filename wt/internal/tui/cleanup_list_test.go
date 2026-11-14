@@ -115,16 +115,17 @@ func TestCleanupListGroupsByKind(t *testing.T) {
 		}
 	}
 	// Rows sit under their own kind heading, the root first among worktrees.
+	// The rows are table lines now: box, then the WORKTREE cell's name.
 	wtAt, localAt, remoteAt := strings.Index(view, cleanup.HeadingWorktrees), strings.Index(view, cleanup.HeadingLocal), strings.Index(view, cleanup.HeadingRemote)
 	for name, want := range map[string][2]int{
-		"worktree  main": {wtAt, localAt}, "worktree  deep": {wtAt, localAt}, "fix-default-guard": {localAt, remoteAt},
+		"[-] main": {wtAt, localAt}, "[-] deep": {wtAt, localAt}, "fix-default-guard": {localAt, remoteAt},
 		"spike-picker": {localAt, remoteAt}, "origin/merged-remote": {remoteAt, len(view)},
 	} {
 		if i := strings.Index(view, name); i < want[0] || i > want[1] {
 			t.Errorf("%s drawn outside its group:\n%s", name, view)
 		}
 	}
-	if strings.Index(view, "worktree  main") > strings.Index(view, "worktree  full-branch") {
+	if strings.Index(view, "[-] main") > strings.Index(view, "[x] full-branch") {
 		t.Errorf("root is not the first worktree row:\n%s", view)
 	}
 	for name, verdict := range map[string]string{
@@ -140,6 +141,178 @@ func TestCleanupListGroupsByKind(t *testing.T) {
 // that a TagWarn tag (unpushed, dirty, held, ...) is drawn in the warning
 // style while an info tag (the PR, +remote) is not: the warning colour is
 // what makes a risky row stand out in a long list.
+// TestRowListRendersOneLinePerRow pins the table contract: every row item
+// draws exactly one line (no prose wrapping) in both modes at 120, 80 and
+// 40 columns — the row is its table line, and the sentence it once wrapped
+// lives in the detail block. Why: one line per entry is what makes the list
+// scannable like a table; a wrapped row would push later rows off-screen
+// and break the drop-column alignment.
+func TestRowListRendersOneLinePerRow(t *testing.T) {
+	for _, tc := range []struct {
+		mode listMode
+		w    int
+	}{{modeManage, 120}, {modeManage, 80}, {modeManage, 40}, {modeLaunch, 120}, {modeLaunch, 80}, {modeLaunch, 40}} {
+		m := newRowList(cleanupFixture(), rowListOpts{Mode: tc.mode, Theme: themes.Default, Now: time.Now()})
+		m = cleanupSend(t, m, tea.WindowSizeMsg{Width: tc.w, Height: 40})
+		for i, it := range m.items {
+			if it.heading != "" || it.newWorktree {
+				continue
+			}
+			lines := m.itemLines(i)
+			if len(lines) != 1 {
+				t.Errorf("mode %v width %d item %d (%s): %d lines, want 1:\n%q",
+					tc.mode, tc.w, i, cleanup.DisplayName(it.row), len(lines), lines)
+			}
+			if w := lipgloss.Width(lines[0]); tc.w > 0 && w > tc.w {
+				t.Errorf("mode %v width %d: row line is %d columns: %q", tc.mode, tc.w, w, lines[0])
+			}
+		}
+	}
+}
+
+// TestRowListHeaderLineIsTheTableHeader pins that the fitted table header
+// (WORKTREE … VERDICT, indented by the prefix) is drawn as its own line in
+// the top block, at the width the list shows it. Why: the header is what
+// makes the columns readable; without it the cells are unlabelled numbers.
+func TestRowListHeaderLineIsTheTableHeader(t *testing.T) {
+	for _, w := range []int{120, 80, 40} {
+		m := newSizedCleanupList(t, cleanupFixture(), w, 40)
+		view := m.View() // renders fit the table to the width first
+		want := strings.TrimSpace(clip(m.table.Header(), w))
+		found := false
+		for _, line := range strings.Split(view, "\n") {
+			if strings.Contains(line, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("width %d: fitted table header %q not drawn as its own line:\n%s", w, want, view)
+		}
+	}
+	// The headings name the columns at 120, where nothing is dropped.
+	view := newSizedCleanupList(t, cleanupFixture(), 120, 40).View()
+	for _, head := range []string{"WORKTREE", "BRANCH", "PR#", "DIFF", "IGN", "STATUS", "VERDICT"} {
+		if !strings.Contains(view, head) {
+			t.Errorf("width 120: heading %q missing:\n%s", head, view)
+		}
+	}
+}
+
+// TestFooterSitsOnTheLastTerminalLine pins the bottom anchoring: with few
+// rows the view is exactly the terminal's height, blank filler fills the
+// gap between the last row and the detail block, and the key footer is the
+// last line. Why: a footer floating mid-screen wastes the screen and hides
+// the keys' position; the model screen pins its footer, and this design
+// says both screens lay out the same way.
+func TestFooterSitsOnTheLastTerminalLine(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	view := m.View()
+	if h := lipgloss.Height(view); h != 40 {
+		t.Fatalf("view is %d lines, want the full 40 (filler pads the gap):\n%s", h, view)
+	}
+	lines := strings.Split(view, "\n")
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "quit") {
+		t.Errorf("last line = %q, want the key footer", last)
+	}
+	// Blank filler sits between the last row's line and the detail rule.
+	lastRowAt, ruleAt := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "origin/old-remote") { // the last row of the fixture's groups
+			lastRowAt = i
+		}
+		if strings.Contains(line, "── ") {
+			ruleAt = i
+		}
+	}
+	if lastRowAt < 0 || ruleAt < 0 || ruleAt <= lastRowAt {
+		t.Fatalf("rows at %d, detail rule at %d:\n%s", lastRowAt, ruleAt, view)
+	}
+	blank := false
+	for _, line := range lines[lastRowAt+1 : ruleAt] {
+		if strings.TrimSpace(line) == "" {
+			blank = true
+		}
+	}
+	if !blank {
+		t.Errorf("no blank filler between the last row and the detail block:\n%s", view)
+	}
+}
+
+// TestGiveUpLadderUnchanged pins the short-terminal give-up order: the
+// report header goes first, then the title, then the detail block, and the
+// key footer is the last thing kept. Why: the row-aware-footer design fixed
+// this ladder; the table and the anchored footer must not reorder it.
+func TestGiveUpLadderUnchanged(t *testing.T) {
+	firstDrop := map[string]int{} // element -> the smallest height that loses it
+	for h := 40; h >= 4; h-- {
+		m := newSizedCleanupList(t, cleanupFixture(), 100, h)
+		view := m.View()
+		for _, el := range []string{"repo:", "wt worktrees", "── ", "quit"} {
+			if !strings.Contains(view, el) {
+				if _, seen := firstDrop[el]; !seen {
+					firstDrop[el] = h
+				}
+			}
+		}
+	}
+	order := []string{"repo:", "wt worktrees", "── "}
+	prev := 41
+	for _, el := range order {
+		w, ok := firstDrop[el]
+		if !ok {
+			t.Fatalf("%q never dropped (drops: %v)", el, firstDrop)
+		}
+		if w >= prev {
+			t.Fatalf("give-up order wrong: %q dropped at height %d after %d (drops %v)", el, w, prev, firstDrop)
+		}
+		prev = w
+	}
+	// The footer survives every height where anything at all shows.
+	if w, ok := firstDrop["quit"]; ok && w < prev {
+		t.Errorf("footer dropped at height %d, before the detail (%d): %v", w, prev, firstDrop)
+	}
+}
+
+// TestFilterMatchesWorktreeBranchAndPR pins the filter's targets after the
+// table swap: a worktree's display name, its branch and its PR tag ("#517")
+// each find their row. Why: the row no longer prints its sentence, so the
+// filter must keep matching everything it matched through the tags.
+func TestFilterMatchesWorktreeBranchAndPR(t *testing.T) {
+	r := cleanupFixture()
+	r.Rows[2].PRTag = &cleanup.PRInfo{Number: 517, State: "MERGED"} // full-branch-name-paths
+	m := newSizedCleanupList(t, r, 120, 40)
+	showing := func(query string) []string {
+		m.filter = query
+		var out []string
+		for i, it := range m.items {
+			if it.heading == "" && !it.newWorktree && !m.hidden(i) {
+				out = append(out, cleanup.DisplayName(it.row))
+			}
+		}
+		m.filter = ""
+		return out
+	}
+	for query, want := range map[string][]string{
+		"deep":             {"deep"},
+		"fix-default":      {"fix-default-guard"},
+		"#517":             {"full-branch-name-paths"},
+		"origin/old-":      {"origin/old-remote"},
+		"no-such-row":      {},
+		"FULL-BRANCH-NAME": {"full-branch-name-paths"}, // case-insensitive
+	} {
+		got := showing(query)
+		if !slices.Equal(got, want) {
+			t.Errorf("filter %q shows %v, want %v", query, got, want)
+		}
+	}
+}
+
+// TestRowListTagsWarnStyled pins the tag facts behind the row: the warn
+// badges (unpushed, …) carry TagWarn severity on the item and their text is
+// drawn on the row's table line. Why: with the prose row gone the badges
+// travel as trailing marks — losing either the severity or the text would
+// drop the at-a-glance risk signal the list is for.
 func TestRowListTagsWarnStyled(t *testing.T) {
 	r := cleanupFixture()
 	r.Rows[3].Losses = cleanup.Losses{Unpushed: 4}           // mtplx-profiles
@@ -151,18 +324,18 @@ func TestRowListTagsWarnStyled(t *testing.T) {
 		if it.heading != "" || it.newWorktree {
 			continue
 		}
-		for _, u := range rowUnits(it) {
-			if u.warn {
-				warn[cleanup.DisplayName(it.row)+":"+u.text] = true
+		for _, tg := range it.tags {
+			if tg.Severity == cleanup.TagWarn {
+				warn[cleanup.DisplayName(it.row)+":"+tg.Text] = true
 			}
 		}
 	}
 	if !warn["mtplx-profiles:unpushed"] {
-		t.Errorf("unpushed is not a warn unit: %v", warn)
+		t.Errorf("unpushed is not a warn badge: %v", warn)
 	}
 	for k := range warn {
 		if strings.HasPrefix(k, "full-branch-name-paths:") {
-			t.Errorf("info tag drawn as a warning: %s", k)
+			t.Errorf("info tag marked as a warning: %s", k)
 		}
 	}
 	view := m.View()
@@ -176,40 +349,71 @@ func TestRowListTagsWarnStyled(t *testing.T) {
 	}
 }
 
-// TestFlowUnitsWrapsOversizedUnitsAtSpaces pins the wrap a real 80x24 screen
-// asked for: a unit longer than the text column breaks at its spaces so no
-// word is split at the line's end (the held tag once drew "..., start" /
-// "ed on held)"), while a single word too long for the whole line is still
-// cut at the line's end (tuilayout.Flow's rule).
-func TestFlowUnitsWrapsOversizedUnitsAtSpaces(t *testing.T) {
-	lines := flowUnits([]unit{{text: "held by session codex (pid 70222, running 1s, started on held)"}}, 51)
-	got := make([]string, 0, len(lines))
-	for _, ln := range lines {
-		got = append(got, unitsText(ln))
+// TestRowListCursorWrapsSingleSteps pins spec §6's cursor wrap: a single
+// step down past the last item lands on the first, and up past the first on
+// the last, over exactly the items the cursor can sit on — headings and
+// filter-hidden rows skipped, launch mode's "+ New worktree…" included.
+// Why: at either end a dead key feels like a broken list; the wrap keeps
+// browsing circular without ever parking the cursor on a heading.
+func TestRowListCursorWrapsSingleSteps(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("end selected %v (ok=%v), want the last row origin/old-remote", row.Name, ok)
 	}
-	want := []string{"held by session codex (pid 70222, running 1s,", "started on held)"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("an oversized unit wrapped to %q, want it broken at its spaces %q", got, want)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "main" {
+		t.Fatalf("down past the end selected %v (ok=%v), want the first row main (headings skipped)", row.Name, ok)
 	}
-	lines = flowUnits([]unit{{text: "abcdefghij"}}, 4)
-	got = got[:0]
-	for _, ln := range lines {
-		got = append(got, unitsText(ln))
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("up past the start selected %v (ok=%v), want the last row", row.Name, ok)
 	}
-	if strings.Join(got, "|") != "abcd|efgh|ij" {
-		t.Errorf("a word longer than a line = %q, want it cut at the line's end", got)
+
+	// Launch mode: the wrap reaches "+ New worktree…" (the first item).
+	lm := newLaunchList(t, cleanupFixture(), 120, 40)
+	lm = cleanupSend(t, lm, tea.KeyMsg{Type: tea.KeyEnd})
+	lm = cleanupSend(t, lm, tea.KeyMsg{Type: tea.KeyDown})
+	if lm.cursor != 0 || !lm.items[lm.cursor].newWorktree {
+		t.Fatalf("launch: down past the end landed on cursor %d (%q), want + New worktree…", lm.cursor, lm.items[lm.cursor].heading)
+	}
+
+	// A filter's hidden rows are skipped: with only the two remote rows
+	// visible, the wrap hops between them and never onto a hidden row.
+	fm := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	fm.filter = "remote"
+	fm = cleanupSend(t, fm, tea.KeyMsg{Type: tea.KeyEnd})
+	if row, ok := fm.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("filtered end selected %v (ok=%v), want origin/old-remote", row.Name, ok)
+	}
+	fm = cleanupSend(t, fm, tea.KeyMsg{Type: tea.KeyDown})
+	if row, ok := fm.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/merged-remote" {
+		t.Fatalf("filtered wrap selected %v (ok=%v), want the other visible row origin/merged-remote", row.Name, ok)
 	}
 }
 
-// TestFlowUnitsKeepsAnEmptyUnitThatFits pins that the wrap change leaves a
-// unit that fits exactly as it was: an empty first unit stays (the next unit
-// joins it with its own separator), where only an oversized unit's emptied
-// remainder is dropped. Why: the wrap fix must not alter any layout that
-// already fit.
-func TestFlowUnitsKeepsAnEmptyUnitThatFits(t *testing.T) {
-	lines := flowUnits([]unit{{text: ""}, {text: "x", sep: " · "}}, 20)
-	if len(lines) != 1 || len(lines[0]) != 2 {
-		t.Errorf("an empty unit that fits was dropped: %d lines %v", len(lines), lines)
+// TestRowListPagingStopsAtTheEnds pins the other half of spec §6's rule:
+// a multi-item move (end, home, pgdown, pgup) still stops at the ends —
+// only single steps wrap. Why: paging is "take me to the edge"; wrapping
+// there would sail past the last row back to the first.
+func TestRowListPagingStopsAtTheEnds(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	last, ok := m.selectedRow()
+	if !ok || cleanup.DisplayName(last) != "origin/old-remote" {
+		t.Fatalf("end selected %v (ok=%v), want the last row", last.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("pgdown past the end selected %v (ok=%v), want it to stop on origin/old-remote", row.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyHome})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "main" {
+		t.Fatalf("home selected %v (ok=%v), want the first row main", row.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "main" {
+		t.Fatalf("pgup past the start selected %v (ok=%v), want it to stop on main", row.Name, ok)
 	}
 }
 
@@ -434,8 +638,8 @@ func TestCleanupListDefaultTicksOnlyProven(t *testing.T) {
 			t.Errorf("%s: ticked=%v, Tickable=%v", cleanup.DisplayName(row), ticked, row.Tickable())
 		}
 	}
-	if !strings.Contains(m.View(), "[x] worktree  full-branch-name") {
-		t.Errorf("proven row not drawn ticked:\n%s", m.View())
+	if line := rowBlock(t, m.View(), "full-branch-name"); !strings.Contains(line, "[x]") {
+		t.Errorf("proven row not drawn ticked:\n%s", line)
 	}
 }
 
@@ -457,8 +661,8 @@ func TestCleanupListInUseRowsNotToggleable(t *testing.T) {
 			t.Errorf("in-use row %q was ticked", n)
 		}
 	}
-	if !strings.Contains(m.View(), "[-] worktree  deep") {
-		t.Errorf("in-use row not drawn [-]:\n%s", m.View())
+	if line := rowBlock(t, m.View(), "deep"); !strings.Contains(line, "[-]") {
+		t.Errorf("in-use row not drawn [-]:\n%s", line)
 	}
 
 	// Each clause of the lock on its own: an in_use row with no blockers,
@@ -533,8 +737,8 @@ func TestCleanupListUnprovenRemoteRowsAreLocked(t *testing.T) {
 				t.Errorf("remote row %s was ticked", name)
 			}
 		}
-		if !strings.Contains(m.View(), "[-] remote    "+name) {
-			t.Errorf("remote row %s not drawn [-]:\n%s", name, m.View())
+		if line := rowBlock(t, m.View(), name); !strings.Contains(line, "[-]") {
+			t.Errorf("remote row %s not drawn [-]:\n%s", name, line)
 		}
 		if !strings.Contains(m.View(), "only a proven origin branch can be removed") {
 			t.Errorf("the detail line does not say why %s cannot be ticked:\n%s", name, m.View())
@@ -662,8 +866,10 @@ func rowBlock(t *testing.T, view, namePrefix string) string {
 		if !(strings.HasPrefix(trim, "[x]") || strings.HasPrefix(trim, "[ ]") || strings.HasPrefix(trim, "[-]")) {
 			continue
 		}
-		// After the 3-column box ("[ ]" holds a space): kind, then name.
-		if fields := strings.Fields(trim[3:]); len(fields) < 2 || !strings.HasPrefix(fields[1], namePrefix) {
+		// After the box: the WORKTREE cell holds the row's name; a branch or
+		// remote row's blank worktree cell collapses in Fields, leaving its
+		// branch name first (the kind column is gone with the table swap).
+		if fields := strings.Fields(trim[3:]); len(fields) < 1 || !strings.HasPrefix(fields[0], namePrefix) {
 			continue
 		}
 		block := []string{line}
@@ -681,9 +887,9 @@ func rowBlock(t *testing.T, view, namePrefix string) string {
 
 // TestCleanupListNarrowWidthKeepsEvidence pins the width rule at 80
 // columns with long names and long sentences: no line is wider than the
-// terminal, the name column is what gets cut, and EVERY row's whole
-// sentence (cleanup.RowText, the age after it) is in that row's own lines —
-// wrapped onto continuation lines, never cut with an ellipsis.
+// terminal (the table clips whole at the edge), and EVERY row's whole
+// sentence (cleanup.RowText) is reachable as that row's detail when it is
+// highlighted — wrapped at spaces, never cut with an ellipsis.
 func TestCleanupListNarrowWidthKeepsEvidence(t *testing.T) {
 	r := longRowsFixture()
 	m := newSizedCleanupList(t, r, 80, 60)
@@ -693,27 +899,15 @@ func TestCleanupListNarrowWidthKeepsEvidence(t *testing.T) {
 			t.Errorf("line %d is %d columns wide: %q", i, w, line)
 		}
 	}
-	long := r.Rows[len(r.Rows)-2].Name
-	for _, line := range strings.Split(view, "\n") {
-		if strings.Contains(line, "[x]") && strings.Contains(line, long) {
-			t.Errorf("long name was not truncated in its row at 80 columns: %q", line)
-		}
-	}
-	wrapped := 0
+	// Every row's whole sentence is reachable as the highlighted row's
+	// detail — wrapped at spaces, never cut with an ellipsis: walk the rows
+	// and check each sentence with the cursor on its row.
 	for _, row := range r.Rows {
-		name := cleanup.DisplayName(row)
-		block := rowBlock(t, view, name[:min(len(name), 12)])
-		if strings.Count(block, "\n") > 0 {
-			wrapped++
+		m = moveTo(t, m, cleanup.DisplayName(row))
+		if !strings.Contains(squash(m.View()), squash(cleanup.RowText(r, row))) {
+			t.Errorf("row %q: its detail does not carry the whole sentence %q:\n%s",
+				cleanup.DisplayName(row), cleanup.RowText(r, row), m.View())
 		}
-		if !strings.Contains(squash(block), squash(cleanup.RowText(r, row))) {
-			t.Errorf("row %q does not carry its whole sentence %q:\n%s", name, cleanup.RowText(r, row), block)
-		}
-		// A sentence cut with an ellipsis cannot contain its own end, so the
-		// check above is also the no-"…" check for the evidence.
-	}
-	if wrapped < 2 {
-		t.Errorf("only %d rows wrapped at 80 columns; the fixture's long sentences should wrap:\n%s", wrapped, view)
 	}
 }
 
@@ -732,14 +926,8 @@ func TestCleanupListSaysWhenRowsAreOffScreen(t *testing.T) {
 	if !strings.Contains(view, "↑ more above") || strings.Contains(view, "↓ more below") {
 		t.Errorf("end of a long list: want only the above hint:\n%s", view)
 	}
-	// Scrolled, the list opens on a heading or a row's first line, never on
-	// the tail of a wrapped row.
-	lines := strings.Split(view, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "gh:") && i+2 < len(lines) && strings.HasPrefix(lines[i+2], "    ") {
-			t.Errorf("list opens on a continuation line %q:\n%s", lines[i+2], view)
-		}
-	}
+	// (Rows are one line each since the table swap: there is no tail of a
+	// wrapped row to open on, and the table header's indent is not one.)
 	if h := lipgloss.Height(view); h > 24 {
 		t.Errorf("view is %d lines at 24", h)
 	}
@@ -749,13 +937,13 @@ func TestCleanupListSaysWhenRowsAreOffScreen(t *testing.T) {
 }
 
 // TestCleanupListPrimaryCheckoutSaysYouAreHere pins that at 80 columns the
-// primary checkout's row, with its long path, still shows "you are here":
-// the marker was the part an ellipsis cut off first.
+// primary checkout's row still says the cursor is there: the detail block
+// (the cursor starts on the root) carries the marker, since the row itself
+// is now its narrow table line and trailing badges can clip.
 func TestCleanupListPrimaryCheckoutSaysYouAreHere(t *testing.T) {
 	m := newSizedCleanupList(t, longRowsFixture(), 80, 60)
-	block := rowBlock(t, m.View(), "main")
-	if !strings.Contains(squash(block), squash("you are here")) {
-		t.Errorf("primary checkout row lacks the marker:\n%s", block)
+	if !strings.Contains(squash(m.View()), squash("you are here")) {
+		t.Errorf("primary checkout does not say you are here:\n%s", m.View())
 	}
 }
 
@@ -771,16 +959,24 @@ func TestCleanupListWrappedRowStaysOnScreen(t *testing.T) {
 	if h := lipgloss.Height(view); h > 24 {
 		t.Errorf("view is %d lines at 24:\n%s", h, view)
 	}
-	block := rowBlock(t, view, "many-reasons")
-	if strings.Count(block, "\n") < 2 {
-		t.Fatalf("highlighted row is not 3+ lines at 80 columns:\n%s", block)
+	// The row is one table line under the cursor; its long sentence wraps in
+	// the detail block instead (rows stopped wrapping with the table swap).
+	// The row's own name may clip past 80 columns here — the never-drop
+	// columns overflow by design (tuilayout.Columns.Fit cuts at the edge) —
+	// so the cursor line and the detail rule below are the anchors.
+	cursorLine := ""
+	for _, l := range strings.Split(view, "\n") {
+		if strings.HasPrefix(l, "  > ") {
+			cursorLine = l
+			break
+		}
 	}
-	if !strings.HasPrefix(block, "> ") {
-		t.Errorf("highlighted row has no cursor:\n%s", block)
+	if cursorLine == "" {
+		t.Fatalf("no highlighted row line on screen:\n%s", view)
 	}
 	row := r.Rows[len(r.Rows)-1]
-	if !strings.Contains(squash(block), squash(cleanup.RowText(r, row))) {
-		t.Errorf("highlighted row cut:\n%s", block)
+	if !strings.Contains(squash(view), squash(cleanup.RowText(r, row))) {
+		t.Errorf("highlighted row's sentence cut:\n%s", view)
 	}
 	if !strings.Contains(view, "base:  origin/main") {
 		t.Errorf("header missing:\n%s", view)
@@ -788,12 +984,11 @@ func TestCleanupListWrappedRowStaysOnScreen(t *testing.T) {
 	if !strings.Contains(view, "── many-reasons ─") {
 		t.Errorf("detail line missing:\n%s", view)
 	}
-	// Moving back up to the top brings the first row (and its heading) back.
-	for i := 0; i < 20; i++ {
-		m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyUp})
-	}
+	// Getting back to the top brings the first row (and its heading) back.
+	// Home is the paging move: single steps up would now wrap (spec §6).
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyHome})
 	view = m.View()
-	if !strings.Contains(view, cleanup.HeadingWorktrees) || !strings.Contains(view, "> [-] worktree  main") {
+	if !strings.Contains(view, cleanup.HeadingWorktrees) || !strings.Contains(view, "> [-] main") {
 		t.Errorf("top of the list not back on screen:\n%s", view)
 	}
 }
@@ -896,8 +1091,10 @@ func TestCleanupListNestedPrimaryRowIsShort(t *testing.T) {
 	if n := strings.Count(block, "\n") + 1; n > 4 {
 		t.Errorf("primary row is %d lines at 80 columns, want <= 4:\n%s", n, block)
 	}
-	if !strings.Contains(squash(block), squash("contains 30 other worktrees")) || strings.Contains(block, "agent-") {
-		t.Errorf("primary row does not collapse its nested worktrees:\n%s", block)
+	// The row is one table line; the count phrase travels in the detail
+	// (the cursor starts on the root) and the paths appear nowhere.
+	if !strings.Contains(squash(m.View()), squash("contains 30 other worktrees")) || strings.Contains(m.View(), "agent-") {
+		t.Errorf("primary row does not collapse its nested worktrees:\n%s", m.View())
 	}
 
 	m = moveTo(t, newSizedCleanupList(t, nestedReport(30), 80, 24), "main")
@@ -924,8 +1121,11 @@ func TestCleanupListDetailNamesNestedPathsThatFit(t *testing.T) {
 	if !strings.Contains(view, "/repo/.claude/worktrees/agent-00") {
 		t.Errorf("detail lacks the one nested path:\n%s", view)
 	}
-	if block := rowBlock(t, view, "main"); strings.Contains(block, "agent-00") || !strings.Contains(block, "contains 1 other worktree") {
-		t.Errorf("row should carry the count, not the path:\n%s", block)
+	if block := rowBlock(t, view, "main"); strings.Contains(block, "agent-00") {
+		t.Errorf("row should never carry the path:\n%s", block)
+	}
+	if !strings.Contains(squash(view), squash("contains 1 other worktree")) {
+		t.Errorf("the detail should carry the count:\n%s", view)
 	}
 }
 
@@ -951,7 +1151,9 @@ func TestCleanupListFortyRowsAllReachable(t *testing.T) {
 			t.Fatalf("%s: view is %d lines", name, h)
 		}
 		block := rowBlock(t, view, name)
-		if !strings.HasPrefix(block, "> ") || !strings.Contains(block, "ancestor of origin/main") {
+		// The row is one line under the cursor (digit + "> " prefix); its
+		// sentence is the highlighted row's detail.
+		if !strings.HasPrefix(block, "  > ") || !strings.Contains(squash(view), squash(cleanup.RowText(r, row))) {
 			t.Fatalf("%s not whole and highlighted on screen:\n%s", name, view)
 		}
 		m = cleanupSend(t, m, keyRunes("j"))
@@ -1355,14 +1557,10 @@ func TestRootRowShowsDriftBadge(t *testing.T) {
 	if !slices.Contains(it.tags, cleanup.Tag{Text: drift, Severity: cleanup.TagWarn}) {
 		t.Errorf("root row tags = %+v; want the drift badge %q as a warn tag", it.tags, drift)
 	}
-	warned := false
-	for _, u := range rowUnits(it) {
-		if u.warn && u.text == drift {
-			warned = true
-		}
-	}
-	if !warned {
-		t.Errorf("row units = %+v; want %q drawn as a warn unit (the badge)", rowUnits(it), drift)
+	// The badge text is drawn on the root row's table line as a trailing mark.
+	view := newSizedCleanupList(t, with, 120, 40).View()
+	if !strings.Contains(rowBlock(t, view, "main"), drift) {
+		t.Errorf("root row line does not draw the drift badge %q:\n%s", drift, view)
 	}
 	plain := findRoot(newSizedCleanupList(t, cleanupFixture(), 120, 40))
 	for _, tg := range plain.tags {
@@ -2255,8 +2453,10 @@ func TestCleanupListTickedRowsReturnsTheRawTickSet(t *testing.T) {
 	for _, row := range m.tickedRows() {
 		names = append(names, cleanup.DisplayName(row))
 	}
-	if strings.Join(names, ",") != "full-branch-name-paths,deep" {
-		t.Errorf("tickedRows() = %v, want the raw tick set [full-branch-name-paths deep]: every ticked row, locked included, in list order", names)
+	// List order, which since the table design is the kind group with its
+	// rows by display name (root hoisted): deep precedes full-branch.
+	if strings.Join(names, ",") != "deep,full-branch-name-paths" {
+		t.Errorf("tickedRows() = %v, want the raw tick set [deep full-branch-name-paths]: every ticked row, locked included, in list order", names)
 	}
 }
 
@@ -2315,9 +2515,12 @@ func TestListRowWithALongHeldTagWrapsAtASpace(t *testing.T) {
 			rep.Rows[i].Reasons = append(rep.Rows[i].Reasons, cleanup.Reason{Code: cleanup.ReasonHeld, Detail: holder})
 		}
 	}
+	// The cursor sits on the held row: its detail block wraps the whole
+	// held-by-session tag at spaces (rows are one table line each; a badge
+	// on a non-highlighted row may clip at 80 columns).
 	for name, m := range map[string]cleanupListModel{
-		"manage": newSizedCleanupList(t, rep, 80, 24),
-		"launch": newLaunchList(t, rep, 80, 24),
+		"manage": moveTo(t, newSizedCleanupList(t, rep, 80, 24), "full-branch-name-paths"),
+		"launch": moveTo(t, newLaunchList(t, rep, 80, 24), "full-branch-name-paths"),
 	} {
 		view := ansi.Strip(m.View())
 		for _, ln := range strings.Split(view, "\n") {
@@ -2325,21 +2528,25 @@ func TestListRowWithALongHeldTagWrapsAtASpace(t *testing.T) {
 				t.Errorf("%s: a line is %d columns wide, want at most 80: %q", name, w, ln)
 			}
 		}
-		for _, want := range []string{"held by session", "started on held)"} {
-			if !strings.Contains(view, want) {
-				t.Errorf("%s: the view lacks the whole %q (the tag was cut inside a word):\n%s", name, want, view)
-			}
+		// The highlighted row's detail carries the held reason whole,
+		// wrapped at spaces.
+		if !strings.Contains(squash(view), squash("held by another wt session")) ||
+			!strings.Contains(squash(view), squash(holder)) {
+			t.Errorf("%s: the detail lacks the whole held reason:\n%s", name, view)
 		}
-		// The break is at a space: every word of the tag appears whole on some
-		// line (a hard cut would split a word across two lines).
+		// The break is at a space: every word of the holder appears whole on
+		// some line (a hard cut would split a word across two lines).
+		// Surrounding punctuation the reason's wording adds ("held);") is
+		// trimmed from both sides before comparing.
+		trimP := func(s string) string { return strings.Trim(s, "();,") }
 		onLines := map[string]bool{}
 		for _, ln := range strings.Split(view, "\n") {
 			for _, f := range strings.Fields(ln) {
-				onLines[f] = true
+				onLines[trimP(f)] = true
 			}
 		}
 		for _, word := range strings.Fields(holder) {
-			if !onLines[word] {
+			if !onLines[trimP(word)] {
 				t.Errorf("%s: the word %q of the held tag is not whole on any line:\n%s", name, word, view)
 			}
 		}
@@ -2390,5 +2597,244 @@ func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
 	got, fm = runPreview(t, build(lockedOrigin), keyRunes("o"))
 	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.HasPrefix(fm.status, "its origin ref cannot be removed: ") {
 		t.Errorf("o with a locked origin target: previewed %v, phase %v, status %q; want the refusal naming the origin ref", got, fm.phase, fm.status)
+	}
+}
+
+// TestRunCleanupListFillsAfterFirstPaint pins the manage list's two-stage
+// load: RunCleanupList receives the facts-only report, Init dispatches the
+// rm.Fill the command wired in, and the program's single pass sees the
+// filled report — one fill, one pass. Why: `wt worktrees` must paint its
+// rows at once like the picker, and the fill must land through the same
+// generation-guarded swap, never blocking the open.
+func TestRunCleanupListFillsAfterFirstPaint(t *testing.T) {
+	facts := cleanupFixture()
+	filled := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	fills := 0
+	rm := RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) {
+			fills++
+			return filled, RemoveFuncs{}, nil
+		},
+	}
+	rm.Program = func(m cleanupListModel) (tea.Model, func(), error) {
+		if !m.filling() {
+			t.Fatal("the first pass is not the facts stage")
+		}
+		cmd := m.Init()
+		if cmd == nil {
+			t.Fatal("Init dispatches no fill for a facts report")
+		}
+		next, _ := m.Update(cmd())
+		nm := next.(cleanupListModel)
+		if nm.filling() {
+			t.Fatal("still filling after the fill message landed")
+		}
+		found := false
+		for _, it := range nm.items {
+			if it.heading == "" && !it.newWorktree && it.row.Name == "deep" && !it.row.Pending {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("the filled report's rows are not on the list")
+		}
+		return nm, func() {}, nil
+	}
+	if err := RunCleanupList(facts, themes.Theme{}, rm); err != nil {
+		t.Fatalf("RunCleanupList: %v", err)
+	}
+	if fills != 1 {
+		t.Errorf("Fill ran %d times, want exactly 1", fills)
+	}
+}
+
+// TestManageEnterRemoveUnavailableUntilFill pins that enter on the tick list
+// refuses while the fill is in flight — with the existing nil-RemoveFuncs
+// status, not a preview from half-read rows — and works once the fill
+// lands. Why: nothing may be removed from a facts-only report; the keys
+// coming back with the fill is the whole contract.
+func TestManageEnterRemoveUnavailableUntilFill(t *testing.T) {
+	facts := cleanupFixture()
+	filled := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	preview := func(rows []cleanup.Row) []removal.ItemPreview {
+		var out []removal.ItemPreview
+		for _, r := range rows {
+			out = append(out, removal.ItemPreview{Item: removal.ItemFromRow(r), Approval: removal.ApprovalProven})
+		}
+		return out
+	}
+	m := newCleanupList(facts, themes.Default, time.Now(), RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) { return filled, RemoveFuncs{Preview: preview}, nil },
+	})
+	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = moveTo(t, m, "full-branch-name-paths")
+	m = cleanupSend(t, m, spaceKey) // a tick, so "nothing ticked" cannot answer
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != cleanupPhaseList {
+		t.Fatalf("enter while filling entered phase %v, want the list", m.phase)
+	}
+	if m.status != "removal is not available here; nothing was removed" {
+		t.Errorf("status while filling = %q, want the existing unavailable status", m.status)
+	}
+
+	// The fill lands: enter now previews.
+	next, _ := m.Update(cleanupFillMsg{report: filled, rm: RemoveFuncs{Preview: preview}, gen: 0})
+	m = next.(cleanupListModel)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != cleanupPhasePreviewing {
+		t.Fatalf("enter after the fill entered phase %v, want the preview", m.phase)
+	}
+}
+
+// TestRefreshDuringFillIsReplaced pins the F rule on the manage list: a
+// refetch landing while a fill is in flight invalidates that fill (its
+// generation is spent), so the stale fill's message is dropped and the
+// refetch's full report stays. Why: the F re-reads the repository now; the
+// stale fill would paint the state it read before the fetch.
+func TestRefreshDuringFillIsReplaced(t *testing.T) {
+	facts := cleanupFixture()
+	filled := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	m := newCleanupList(facts, themes.Default, time.Now(), RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) { return filled, RemoveFuncs{}, nil },
+	})
+	// The F re-read's answer lands (its cmd set the refreshing phase).
+	m.phase = cleanupPhaseRefreshing
+	next, _ := m.Update(cleanupRefetchMsg{report: filled})
+	m = next.(cleanupListModel)
+	if m.fillGen == 0 {
+		t.Fatal("the refetch did not spend the fill generation")
+	}
+	if m.filling() {
+		t.Fatal("the refetch's full report did not land")
+	}
+	// The fill dispatched before the F lands now: dropped.
+	stale := filled
+	stale.Rows = append(filled.Rows[:0:0], filled.Rows...)
+	stale.Rows[0].Name = "stale-fill-swap"
+	next, cmd := m.Update(cleanupFillMsg{report: stale, gen: 0})
+	m = next.(cleanupListModel)
+	if cmd != nil {
+		t.Errorf("stale fill returned a command: %v", cmd)
+	}
+	for _, it := range m.items {
+		if it.row.Name == "stale-fill-swap" {
+			t.Fatal("a fill dispatched before the F replaced the refetch's report")
+		}
+	}
+}
+
+// TestFillErrorShowsOnTheListNotPanics pins the fill's failure path: the
+// error lands as one status line on the still-showing facts list — no
+// panic, no dead screen, and F can still re-read the repository. Why: a
+// fill that fails (a repository that changed under it, a git error) must
+// leave the list usable, not take the alt screen down.
+func TestFillErrorShowsOnTheListNotPanics(t *testing.T) {
+	facts := cleanupFixture()
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+	}
+	m := newCleanupList(facts, themes.Default, time.Now(), RemoveFuncs{
+		Fill: func() (cleanup.Report, RemoveFuncs, error) { return cleanup.Report{}, RemoveFuncs{}, nil },
+	})
+	next, _ := m.Update(cleanupFillMsg{err: errors.New("git exploded"), gen: 0})
+	nm := next.(cleanupListModel)
+	if nm.phase != cleanupPhaseList {
+		t.Errorf("phase = %v, want the list", nm.phase)
+	}
+	if !strings.Contains(nm.status, "fill failed") || !strings.Contains(nm.status, "git exploded") {
+		t.Errorf("status = %q, want it to name the fill failure", nm.status)
+	}
+	if !nm.filling() {
+		t.Error("a failed fill cleared the facts: the list would offer removal rows it never read")
+	}
+}
+
+// TestRowListFitsWithFilterAndPendingFill pins Review Focus 5's exact
+// conjunction, which the component tests cover only piecewise: the LAUNCH
+// picker (the screen that has an open filter — the manage list takes no
+// filter) with a facts-first (Pending) long-row list, filter open, at
+// 40x12. The view is exactly the terminal, no line exceeds the width, the
+// dropped columns are gone from the header whole, the filter line shows,
+// no removal keys appear (they are absent while filling), and the footer is
+// the last line. Why: three features stacked on one screen is where frame
+// math goes wrong — the filter line and the header both moved blocks in this
+// change, and pending rows change what the footer lists.
+func TestRowListFitsWithFilterAndPendingFill(t *testing.T) {
+	r := longRowsFixture()
+	for i := range r.Rows {
+		r.Rows[i].Pending = true
+		r.Rows[i].Status = cleanup.StatusLessSure
+	}
+	m := newLaunchList(t, r, 40, 12)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ma")})
+	view := m.View()
+
+	if h := lipgloss.Height(view); h != 12 {
+		t.Errorf("view is %d lines, want exactly 12 (filler pads the gap):\n%s", h, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Errorf("line %d is %d columns, want <= 40: %q", i, w, line)
+		}
+	}
+	if !strings.Contains(view, "filter: ma") {
+		t.Errorf("filter line missing:\n%s", view)
+	}
+	// Columns dropped whole: the header shows none of the droppable names
+	// (the never-drop WORKTREE heading is cut at the edge, never split
+	// into a partial droppable column).
+	for _, dropped := range []string{"PR#", "DIFF", "IGN", "STATUS"} {
+		if strings.Contains(view, dropped) {
+			t.Errorf("dropped column %q still on screen at 40 columns:\n%s", dropped, view)
+		}
+	}
+	lines := strings.Split(view, "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, "ctrl+c quit") {
+		t.Errorf("last line while typing the filter = %q, want the filter-mode footer", last)
+	}
+	if strings.Contains(view, "x remove") || strings.Contains(view, "enter remove") {
+		t.Errorf("removal keys offered while the fill is pending:\n%s", view)
+	}
+	if !m.filling() {
+		t.Fatal("the list does not read as filling (the Pending premise broke)")
+	}
+
+	// Enter keeps the query: the resting footer returns (launch keys, no
+	// removal keys while filling), the filter line stays, and the frame still
+	// fits to the last line.
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	view = m.View()
+	if h := lipgloss.Height(view); h != 12 {
+		t.Errorf("view after keeping the query is %d lines, want 12:\n%s", h, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Errorf("after-keep line %d is %d columns, want <= 40: %q", i, w, line)
+		}
+	}
+	if !strings.Contains(view, "filter: ma") {
+		t.Errorf("kept query's filter line missing:\n%s", view)
+	}
+	// At 40 columns the footer drops to its short forms (fitHints): it is
+	// still the launch footer (n new = the new-worktree key) and still the
+	// last line, with the kept query's esc to clear it.
+	if !strings.Contains(view, "n new") {
+		t.Errorf("launch footer missing while filling:\n%s", view)
+	}
+	if last := strings.Split(view, "\n"); !strings.Contains(last[len(last)-1], "n new") {
+		t.Errorf("last line after keeping = %q, want the launch key footer", last[len(last)-1])
+	}
+	if strings.Contains(view, "x remove") {
+		t.Errorf("removal keys offered after keeping the query while filling:\n%s", view)
 	}
 }

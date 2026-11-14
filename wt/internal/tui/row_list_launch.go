@@ -83,6 +83,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	next.rm, next.width, next.height, next.offset = m.rm, m.width, m.height, m.offset
 	next.filter, next.filtering = m.filter, m.filtering
 	next.phase, next.conf, next.run, next.log, next.pending = m.phase, m.conf, m.run, m.log, m.pending
+	next.fillGen = m.fillGen // a swap keeps the fill generation (an accepted fill or refetch spent it)
 	next.status, next.exitErr, next.quitAfterRun, next.rescueRow, next.done = m.status, m.exitErr, m.quitAfterRun, m.rescueRow, m.done
 	next.restoreRoot, next.chosenByTicks, next.seedBranch, next.pendingRM = m.restoreRoot, m.chosenByTicks, m.seedBranch, m.pendingRM
 	next.clock, next.now = m.clock, m.now
@@ -97,7 +98,11 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 		// it so, and startRemoval refuses a locked tick anyway).
 		was := map[rowKey]bool{}
 		for i, it := range m.items {
-			if it.heading == "" && !it.newWorktree {
+			// A row that was Pending in the old list is unseen: the facts
+			// stage never knew whether it would prove, so a tick (or the
+			// lack of one) made against that ignorance carries no choice —
+			// it takes the new report's default below.
+			if it.heading == "" && !it.newWorktree && !it.row.Pending {
 				was[keyOf(it.row)] = m.ticked[i]
 			}
 		}

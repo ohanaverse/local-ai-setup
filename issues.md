@@ -130,6 +130,26 @@ maintenance trap if `piCompat` ever grows more fields.
 - [ ] Fix: merge into existing `compat` fields instead of full-pointer
       replacement (deferred until `piCompat` gains a second field)
 
+## 7. Plan Review Focus 3 vs spec §2: `DIFF -` or `+0/-0` for binary/unreadable changes? (2026-11-13)
+
+The wt-worktree-table implementation follows **spec §2**'s diffstat rule
+(`docs/superpowers/specs/2026-11-13-wt-worktree-table-design.md`): a binary,
+unreadable or non-regular file contributes no lines, so a worktree whose only
+change is such a file reads `DIFF +0/-0` with `STATUS dirty` (over-cap and
+git failures still read `-`). The same plan's **Review Focus bullet 3** says
+these should read `DIFF -` instead
+(`docs/superpowers/plans/2026-11-13-wt-worktree-table.md`). Both wordings
+cannot stand. Decide which wins:
+
+- `+0/-0` stays → correct the plan's Review Focus line (the implementation
+  and its tests keep git's own diffstat rule).
+- The dash reads truer → change spec §2's rule and `readDiffStat`'s
+  file-read handling together (`wt/internal/cleanup/diffstat.go`, with its
+  `TestDiffStatBinaryAndOverCapAreUnknownOrZero` subtest).
+
+Open, deferred at the final review of that branch (the reviewer flagged the
+contradiction; the executor ruled toward the spec and recorded it).
+
 ## Minor / already handled notes
 
 - wt PATH shadowing (stale `~/.local/bin/wt` hides GOPATH builds): documented in

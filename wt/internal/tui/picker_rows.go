@@ -67,14 +67,15 @@ func pickerInputs(cwd string) cleanup.GatherInputs {
 		Fetched: cleanup.FetchResult{NotAttempted: true}}
 }
 
-// loadRowsCmd gathers root's rows for the picker. With fetch set (the
-// picker's `F`, refreshRowsChosenMsg) it fetches the remotes first —
+// loadRowsCmd gathers root's rows for the picker — the cheap first stage:
+// cleanup.GatherFacts (worktree list, refs, base, claims; no gates, no
+// proof ladder, no gh) and Classify, whose rows are Pending. With fetch set
+// (the picker's `F`, refreshRowsChosenMsg) it fetches the remotes first —
 // in.FetchRemotes when the call carries one, else worktree.FetchRemotes, at
 // most five seconds; ok or failure recorded in in.Fetched for the header to
 // render, a failure shown there, never swallowed. Without it (every open)
-// nothing fetches. Then cleanup.Gather with in (never fetching itself,
-// never asking gh: SkipPRs) and Classify. A repository with no default
-// branch still lists, every row Unknown.
+// nothing fetches. A repository with no default branch still lists; the
+// fill (loadRowFillCmd) completes what this stage left out.
 func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bool) tea.Cmd {
 	return func() tea.Msg {
 		if lookupErr != nil {
@@ -85,13 +86,41 @@ func loadRowsCmd(root string, lookupErr error, in cleanup.GatherInputs, fetch bo
 			// line (never "skipped", which would hide a dead remote).
 			in.Fetched = cleanup.RecordFetch(in.FetchRemotes, root)
 		}
-		in.Fetch, in.SkipPRs = false, true
-		snap, err := cleanup.Gather(cleanup.Git{Dir: root}, in)
+		in.Fetch = false
+		snap, err := cleanup.GatherFacts(cleanup.Git{Dir: root}, in)
 		if err != nil && !errors.Is(err, cleanup.ErrNoDefaultBranch) {
 			return rowsLoadedMsg{err: err}
 		}
 		rep := cleanup.Classify(snap, cleanup.Options{Now: time.Now()})
 		return rowsLoadedMsg{report: rep, snap: snap, in: in, repoRoot: root, stamp: readRefreshStamp(refreshRoot(root, rep))}
+	}
+}
+
+// rowsFilledMsg is a picker load's facts report with its details filled in:
+// the per-worktree gates, the rescue records, the proof ladder and the
+// own-repo answer (cleanup.FillDetails), classified. PR lookups are still
+// to come (loadRowPRsCmd), so gen guards it like every stage: one for an
+// older load is dropped.
+type rowsFilledMsg struct {
+	Report cleanup.Report
+	Snap   cleanup.Snapshot
+	gen    int
+	err    error
+}
+
+// loadRowFillCmd completes a facts snapshot off the update goroutine:
+// FillDetails with the PR lookups still skipped (they are the third stage),
+// then Classify. snap is the facts snapshot the load carried; gen is the
+// load it answers.
+func loadRowFillCmd(root string, snap cleanup.Snapshot, in cleanup.GatherInputs, gen int) tea.Cmd {
+	return func() tea.Msg {
+		in.Fetch, in.SkipPRs = false, true
+		filled, err := cleanup.FillDetails(cleanup.Git{Dir: root}, snap, in)
+		if err != nil && !errors.Is(err, cleanup.ErrNoDefaultBranch) {
+			return rowsFilledMsg{gen: gen, err: err}
+		}
+		rep := cleanup.Classify(filled, cleanup.Options{Now: time.Now()})
+		return rowsFilledMsg{Report: rep, Snap: filled, gen: gen}
 	}
 }
 
@@ -230,25 +259,81 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 		base.opts.Stamp = &st
 		base.fetching = false
 		rows = base.withReport(msg.report)
-		// The reload's snapshot builds the row actions' removal funcs (the
-		// engine's re-check stands on the rows now on screen), and its PR
-		// fill swaps in its own instance when it lands — the build waits
-		// for its swap (swapRemoveFuncs), so a flow in progress sees
-		// neither until it returns to rest.
-		swapRemoveFuncs(&rows, func() RemoveFuncs { return m.removeFuncsFor(msg.snap, msg.in) })
+		// Removal funcs come with a filled report, never with the facts (a
+		// hand-injected filled report still builds them here, as always).
+		if !factsPending(msg.report) {
+			swapRemoveFuncs(&rows, func() RemoveFuncs { return m.removeFuncsFor(msg.snap, msg.in) })
+		}
 	} else {
-		rows = newRowList(msg.report, rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot,
-			Stamp: &msg.stamp, RemoveFuncs: m.removeFuncsFor(msg.snap, msg.in)})
+		opts := rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot, Stamp: &msg.stamp}
+		if !factsPending(msg.report) {
+			opts.RemoveFuncs = m.removeFuncsFor(msg.snap, msg.in)
+		}
+		rows = newRowList(msg.report, opts)
 		rows.width, rows.height = m.rows.width, m.rows.height
 		if here := deepestCurrent(msg.report); here != "" {
 			rows.selectWhere(func(r cleanup.Row) bool { return r.Kind == cleanup.KindWorktree && r.Path == here })
 		}
 	}
 	m.rows, m.ready = rows, true
-	if !msg.snap.PRsSkipped {
+	// Stage 2 of 3: the fill completes the facts off the update goroutine;
+	// its landing builds the removal funcs from the filled snapshot —
+	// nothing is removable from a half-read repository.
+	return m, loadRowFillCmd(msg.repoRoot, msg.snap, msg.in, m.rowsGen)
+}
+
+// factsPending reports whether a report is still the facts stage (any row
+// Pending): such a report carries no gates, records or proofs, so nothing
+// on it may be removed yet.
+func factsPending(rep cleanup.Report) bool {
+	for _, r := range rep.Rows {
+		if r.Pending {
+			return true
+		}
+	}
+	return false
+}
+
+// gotFilled applies a picker fill (stage 2): the stale one is dropped (an
+// older generation, or an `F` reload now owns the rows), the filled report
+// swaps in through withReport — cursor, filter and scroll kept — the removal
+// funcs are built from the filled snapshot, and the PR lookups (stage 3)
+// dispatch. The generation bumps so a PR answer for anything older than this
+// fill is dropped too.
+func (m model) gotFilled(msg rowsFilledMsg) (model, tea.Cmd) {
+	// The generation alone judges a fill: a fill dispatched before a later
+	// load still matches while that load's re-read is in flight, and dropping
+	// it there — when the re-read may then fail — would strand the list at
+	// the facts stage with no fill to wait for. A superseded fill (its load
+	// accepted, rowsGen bumped) fails the gen check instead.
+	if m.rows.done || msg.gen != m.rowsGen {
 		return m, nil
 	}
-	return m, loadRowPRsCmd(msg.repoRoot, msg.snap, msg.in, m.rowsGen)
+	if msg.err != nil {
+		if m.ready {
+			m.listError = msg.err.Error()
+		} else {
+			m.status = "error: " + msg.err.Error()
+		}
+		return m, nil
+	}
+	m.listError = ""
+	// No rowsGen bump here: the generation numbers LOADS (a load, an F
+	// reload, a removal run), and bumping it on a fill would break the
+	// reloadGen comparison that judges the F's own landing. Supersession of
+	// this fill is any later load's bump; the PR stage carries the current
+	// rowsGen, so a PR answer older than any load is dropped as before.
+	m.rows = m.rows.withReport(msg.Report)
+	swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
+	// Stage 3 only for a GitHub repository: FillDetails marked a snapshot
+	// with no own repo PRNotApplicable (PRsSkipped false), and the old
+	// single-load picker ran no PR stage there either — every gh call would
+	// fail (the source gate in askPRs stops the --base ones; this stops
+	// dispatching the stage at all).
+	if !msg.Snap.PRsSkipped {
+		return m, nil
+	}
+	return m, loadRowPRsCmd(m.repoRoot, msg.Snap, m.rowsIn, m.rowsGen)
 }
 
 // updateRows hands msg to the row list and turns what it chose into the

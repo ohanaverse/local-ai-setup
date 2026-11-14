@@ -57,6 +57,21 @@ type Gates struct {
 	IgnoredCount   int   // ignored entries (a wholly ignored directory counts once)
 	IgnoredBytes   int64 // their size on disk, symlinks not followed
 	DetachedUnique bool  // detached HEAD the base does not reach
+	// Diff counts the uncommitted change diffstat-style (readDiffStat).
+	// Unknown when it could not be read — including every gate error before
+	// it, so a row whose gates failed never shows a confident +0/-0.
+	Diff DiffStat
+	// InBase answers whether the whole uncommitted change-set is contained in
+	// the base (worktreeContainedInBase) — STATUS's "in main". It is set only
+	// for a dirty worktree with a base, readable diff counts and a non-empty
+	// change-set: a clean worktree has nothing to contain, a diff that counts
+	// nothing readable (hidden index flags, an ignore-configured submodule)
+	// cannot claim containment, and anything else is the zero value,
+	// TriUnknown — never contained.
+	InBase Tri
+	// Conflicted is an unmerged index: a conflict git still holds, even
+	// when the operation marker is gone. STATUS's "conflicted".
+	Conflicted bool
 }
 
 // GateInputs are what CheckGates cannot learn from git.
@@ -193,38 +208,18 @@ var operationMarkers = []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "C
 func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	var out Gates
 	block := func(code, detail string) { out.Blockers = append(out.Blockers, Reason{code, detail}) }
-	partial := func() Gates { return Gates{Blockers: out.Blockers} }
+	partial := func() Gates { return Gates{Blockers: out.Blockers, Diff: DiffStat{Unknown: true}} }
 
-	if w.Primary {
-		block(BlockPrimary, w.Path)
-	}
-	if w.Current {
-		block(BlockCurrent, w.Path)
-	}
-	if w.Locked {
-		block(BlockLocked, w.Path)
-	}
-	self := resolve(w.Path)
 	// Every check that needs no git runs before the first git call, so its
-	// blocker is in the partial Gates whatever fails later.
-	// Both directions: an artifact inside the worktree, or the worktree
-	// inside (or equal to) an artifact directory; removing it would delete
-	// part of the artifact either way. within is separator-safe (/a/b is not
-	// under /a/bc) and both sides are resolved through symlinks.
-	for _, p := range in.ProtectedPaths {
-		if rp := resolve(p); within(rp, self) || within(self, rp) {
-			block(BlockProtectedArtifact, flat(p))
-		}
-	}
+	// blocker is in the partial Gates whatever fails later: the fact-derived
+	// ones, the same list GatherFacts seeds on a facts-only snapshot.
+	out.Blockers = factBlockers(w, in.ProtectedPaths)
 	all, err := listWorktrees(g)
 	if err != nil {
 		return partial(), err
 	}
-	for _, o := range all {
-		if op := resolve(o.Path); op != self && within(op, self) {
-			block(BlockNested, o.Path)
-		}
-	}
+	out.Blockers = append(out.Blockers, nestedBlockers(w, all)...)
+	self := resolve(w.Path)
 	if w.Bare {
 		return out, nil // no working tree to inspect
 	}
@@ -243,6 +238,9 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	for _, op := range ops {
 		block(BlockOperation, op)
 	}
+	if out.Conflicted, err = unmergedIndex(wg); err != nil {
+		return partial(), err
+	}
 
 	if out.Dirty, err = dirty(wg); err != nil {
 		return partial(), err
@@ -250,12 +248,74 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	if out.IgnoredCount, out.IgnoredBytes, err = ignored(wg); err != nil {
 		return partial(), err
 	}
+	out.Diff = readDiffStat(wg)
+	if out.Dirty && in.Base != "" && !out.Diff.Unknown &&
+		(out.Diff.Added != 0 || out.Diff.Removed != 0) {
+		out.InBase = worktreeContainedInBase(wg, in.Base)
+	}
 	if w.Detached {
 		if out.DetachedUnique, err = detachedUnique(g, w.Head, in.Base); err != nil {
 			return partial(), err
 		}
 	}
 	return out, nil
+}
+
+// unmergedIndex reports whether the checkout wg runs in has an index with
+// unmerged entries — a conflict git still holds even when the operation
+// marker that caused it is gone (a hand-aborted merge). It reads only; ls-files
+// never refreshes the index.
+func unmergedIndex(wg Git) (bool, error) {
+	args := []string{"ls-files", "--unmerged", "-z"}
+	o, err := wg.Run(args...)
+	if err != nil {
+		return false, err
+	}
+	if o.Code != 0 {
+		return false, gitFailure(o, args...)
+	}
+	return strings.Trim(o.Stdout, "\x00") != "", nil
+}
+
+// factBlockers is every hard blocker a worktree's own facts give without
+// running git: the primary checkout, the one holding the cwd, a locked
+// worktree, and a registered artifact overlapping it. GatherFacts seeds
+// these on a facts-only snapshot so the first paint locks the right rows;
+// CheckGates recomputes them with the git-dependent facts.
+// Both directions for the artifact: one inside the worktree, or the
+// worktree inside (or equal to) an artifact directory; removing it would
+// delete part of the artifact either way. within is separator-safe (/a/b
+// is not under /a/bc) and both sides are resolved through symlinks.
+func factBlockers(w WorktreeFact, protected []string) []Reason {
+	var out []Reason
+	if w.Primary {
+		out = append(out, Reason{BlockPrimary, w.Path})
+	}
+	if w.Current {
+		out = append(out, Reason{BlockCurrent, w.Path})
+	}
+	if w.Locked {
+		out = append(out, Reason{BlockLocked, w.Path})
+	}
+	self := resolve(w.Path)
+	for _, p := range protected {
+		if rp := resolve(p); within(rp, self) || within(self, rp) {
+			out = append(out, Reason{BlockProtectedArtifact, flat(p)})
+		}
+	}
+	return out
+}
+
+// nestedBlockers is BlockNested for a worktree another worktree sits inside.
+func nestedBlockers(w WorktreeFact, all []WorktreeFact) []Reason {
+	var out []Reason
+	self := resolve(w.Path)
+	for _, o := range all {
+		if op := resolve(o.Path); op != self && within(op, self) {
+			out = append(out, Reason{BlockNested, o.Path})
+		}
+	}
+	return out
 }
 
 // operationsInProgress names each operation marker present in the

@@ -188,17 +188,31 @@ type Snapshot struct {
 	ClaimsErr string
 	// Records are the well-formed rescue records; a failed listing leaves none.
 	Records []RescueRecord
+	// FactsOnly marks a snapshot from GatherFacts whose fill has not run
+	// yet: the worktree facts, refs, base and claims are read, the per-worktree
+	// gates, records, proofs and PR lookups are not. Classify floors such a
+	// report to Pending rows (never proven, State "-"); FillDetails clears
+	// the flag. A hand-built Snapshot has it false and classifies fully.
+	FactsOnly bool
 }
 
 // refFormat is one for-each-ref record: fields split by NUL.
 const refFormat = "%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(upstream)%00%(upstream:remotename)%00%(upstream:track)%00%(committerdate:unix)"
 
-// Gather reads one snapshot of g's repository. It never writes: no claim is
-// joined or pruned, nothing is deleted. The error is set only when nothing can
-// be classified: not a repository, a git failure on the porcelain list or the
-// refs, or no default branch (ErrNoDefaultBranch). With ErrNoDefaultBranch the
-// Snapshot is still returned (NoDefault set) so every row can show Unknown.
-func Gather(g Git, in GatherInputs) (Snapshot, error) {
+// Gather reads one snapshot of g's repository: GatherFacts then
+// FillDetails. It never writes: no claim is joined or pruned, nothing is
+// deleted. The error is set only when nothing can be classified: not a
+// repository, a git failure on the porcelain list or the refs, or no default
+// branch (ErrNoDefaultBranch). With ErrNoDefaultBranch the Snapshot is still
+// returned (NoDefault set) so every row can show Unknown.
+//
+// GatherFacts is the cheap first stage: the worktree list, refs, base
+// resolution and the session claims — the facts the always-shown cells need —
+// with FactsOnly set. It runs no per-worktree gates, no rescue records, no
+// proof ladder and no gh, so a caller can paint immediately. The NoDefault
+// answer comes back here too (rows read Unknown, as always); the gates a
+// full run would read come with FillDetails either way.
+func GatherFacts(g Git, in GatherInputs) (Snapshot, error) {
 	var s Snapshot
 	args := []string{"rev-parse", "--path-format=absolute", "--git-common-dir"}
 	o, err := g.Run(args...)
@@ -256,15 +270,39 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 
-	s.Records, _ = ListRecords(g) // an error reads as no records
-	gin := s.readClaims(in)
-	for _, w := range facts {
-		s.Worktrees = append(s.Worktrees, worktreeState(g, w, gin, s.Records))
-	}
-
+	s.readClaims(in)
 	s.Proofs = map[string]Proof{}
 	s.PRs = map[string]PRResult{}
 	s.Merges = map[string]Tri{}
+	// The rows' names and paths are facts, and so are the hard blockers
+	// derivable without git (factBlockers/nestedBlockers): seed them so the
+	// first paint locks the primary, current, locked and nested rows. The
+	// git-dependent gates come with the fill.
+	for _, w := range facts {
+		blockers := append(factBlockers(w, in.ProtectedPaths), nestedBlockers(w, facts)...)
+		s.Worktrees = append(s.Worktrees, WorktreeState{Fact: w, Gates: Gates{Blockers: blockers}})
+	}
+	s.FactsOnly = true
+	if s.NoDefault {
+		return s, ErrNoDefaultBranch
+	}
+	return s, nil
+}
+
+// FillDetails completes a GatherFacts snapshot in place: the rescue records,
+// the per-worktree gates (through gateState, so Gather and a later Rescan
+// read them alike), the proof ladder, the own-repo answer and the PR
+// lookups — everything stage 1 left out — and clears FactsOnly. The rows keep
+// their order: the gates fill the same list the facts laid out. The error is
+// ErrNoDefaultBranch when the snapshot has no base (the gates have run, as
+// in a one-shot Gather; nothing can be proven).
+func FillDetails(g Git, s Snapshot, in GatherInputs) (Snapshot, error) {
+	s.Records, _ = ListRecords(g) // an error reads as no records
+	gin := GateInputs{Base: s.BaseTip, ProtectedPaths: in.ProtectedPaths}
+	for i := range s.Worktrees {
+		s.Worktrees[i] = worktreeState(g, s.Worktrees[i].Fact, gin, s.Records)
+	}
+	s.FactsOnly = false
 	if s.NoDefault {
 		return s, ErrNoDefaultBranch
 	}
@@ -286,12 +324,32 @@ func Gather(g Git, in GatherInputs) (Snapshot, error) {
 	return s, nil
 }
 
+// Gather reads one finished snapshot of g's repository, synchronously:
+// the two stages back to back, with the same error contract as always.
+// A caller that can paint twice (the list screens) runs GatherFacts, shows
+// it, then FillDetails; --json and --plain run this.
+func Gather(g Git, in GatherInputs) (Snapshot, error) {
+	s, err := GatherFacts(g, in)
+	if err != nil && !errors.Is(err, ErrNoDefaultBranch) {
+		return s, err
+	}
+	filled, fillErr := FillDetails(g, s, in)
+	if err != nil {
+		return filled, err // ErrNoDefaultBranch, where the one-shot always raised it
+	}
+	return filled, fillErr
+}
+
 // askPRs runs the gh lookups (PRs, the merge-commit checks, BasePRs) and
 // marks the snapshot as asked.
 func (s *Snapshot) askPRs(g Git, in GatherInputs) {
 	s.PRs = LookupPRs(g.Dir, s.branchNames(), s.OwnRepo, in.Parallel, in)
 	s.checkMerges(g)
-	if in.OriginRows {
+	// The live "who targets this branch" query is gh's to answer: with no
+	// known GitHub own-repository (a non-GitHub origin) every such call
+	// fails, so the gate is the own repo itself — OriginRows alone must not
+	// spawn them (the picker's open and the manage fill both set it).
+	if in.OriginRows && s.OwnRepo != "" {
 		s.BasePRs = LookupBaseOf(g.Dir, s.baseCandidates(), in.Parallel, in)
 	}
 	// An unknown own repository (a non-GitHub origin) has no PRs to ask
@@ -390,6 +448,13 @@ func (s Snapshot) HeldOn(path string) []sessionclaim.Claim {
 	}
 	return out
 }
+
+// SessionsOn counts the live sessions holding path — the row's session
+// digit. Claims are read through sessionclaim.Holders, which counts only
+// running processes other than this session and its ancestors, so the count
+// is running sessions by construction and the browsing session never counts
+// itself. Branch and remote rows have no directory: no digit.
+func (s Snapshot) SessionsOn(path string) int { return len(s.HeldOn(path)) }
 
 // checkGates is CheckGates; a seam so a test can count the gate checks a
 // rescan runs (TestRescanCostIsScoped).

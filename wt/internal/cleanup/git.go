@@ -1,7 +1,10 @@
 // Package cleanup judges which worktrees and branches are safe to remove. It
 // is read-only by design: nothing here deletes a worktree, branch or ref.
 // internal/removal acts on its rows (re-checking each with Rescan first) and
-// is the only package in wt allowed to delete.
+// is the only package in wt allowed to delete a user's worktree, branch or
+// ref; the throwaway GIT_INDEX_FILE directories this package's read-only
+// checks run against are made and removed by internal/scratchdir (the one
+// allow-listed temp-dir deleter, so this file holds no deletion call).
 package cleanup
 
 import (
@@ -15,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/scratchdir"
 )
 
 // defaultTimeout bounds a git call when Git.Timeout is zero.
@@ -121,6 +126,36 @@ func PathSets(paths []string, fold func(string) string) (files, dirs PathSet) {
 func WithoutFSMonitor(g Git) Git {
 	g.Config = append(slices.Clone(g.Config), "core.fsmonitor=false")
 	return g
+}
+
+// indexCopy returns wg with GIT_INDEX_FILE pointing at a throwaway copy of
+// the checkout's real index, plus a release func that removes the copy (call
+// it on every path). ok is false when the real index is missing or the copy
+// cannot be made. Any diff-shaped read runs against the copy: `git diff`
+// rewrites the index's stat cache even under GIT_OPTIONAL_LOCKS=0, and this
+// package must leave the real index byte-identical.
+func indexCopy(wg Git) (Git, func(), bool) {
+	noop := func() {}
+	o, err := wg.Run("rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil || o.Code != 0 {
+		return wg, noop, false
+	}
+	real, err := os.ReadFile(filepath.Join(strings.TrimSpace(o.Stdout), "index"))
+	if err != nil {
+		return wg, noop, false
+	}
+	tmp, release, ok := scratchdir.Temp("wt-index-")
+	if !ok {
+		return wg, noop, false
+	}
+	idx := filepath.Join(tmp, "index")
+	if err := os.WriteFile(idx, real, 0o600); err != nil {
+		release()
+		return wg, noop, false
+	}
+	cg := wg
+	cg.Env = append(slices.Clone(wg.Env), "GIT_INDEX_FILE="+idx)
+	return cg, release, true
 }
 
 // UnsafeRel says why p cannot name a file inside a root (and outside any .git

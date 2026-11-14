@@ -56,6 +56,25 @@ repository's own entry is listed as the root with a `bare` tag: it is never
 removable, and in the launch picker enter on it only says that a bare
 repository has no working tree to launch in.
 
+On a terminal each row is one table line (the `rowtable.go` renderer over
+`tuilayout.Columns`): a session digit (the running wt sessions holding that
+worktree; the browsing session never counts itself), the cursor and, in the
+tick list, the checkbox, then `WORKTREE BRANCH PR# DIFF IGN STATUS VERDICT`
+with the row's badges after the verdict. `DIFF` is the uncommitted change
+counted diffstat-style (`+99/-55`; `-` when it could not be read or is over
+the caps), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
+`in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
+`IGN`, `STATUS`, `DIFF`; the worktree, branch and verdict columns never drop,
+and the detail block then names the highlighted row's `+N/-N · N ignored`.
+The list paints from the cheap git calls alone (`cleanup.GatherFacts`) and
+fills gates, ladder and PRs behind the first paint (`cleanup.FillDetails`,
+then the `gh` lookups); while that runs the removal keys (`enter`, `x`, `d`,
+`o`, `r`, `R`) are absent and come back with the fill — launching, the
+filter, `n`, `F` and `q` work throughout, and nothing is ever removed from a
+half-read repository. The key footer sits on the terminal's last line, and a
+single step past either end of the row list wraps onto the other (paging
+stops at the ends).
+
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
 progress, a registered model artifact, or an open PR on an `origin` branch
@@ -66,7 +85,10 @@ session claim (`held`), the default branch (`default_branch`), an unknown
 pull request (`pr_unknown`), a root that has drifted off the default and a repository with no default branch to
 compare against (`no_default_branch`) leave the row `less_sure` at best, so `wt remove`
 needs `--accept-loss` for it (in the list a floor never locks a worktree or local branch: you may tick it, and the confirmation asks for the typed `delete`), and, for a branch that is not proven merged,
-`-D` as well (the engine asks for `-D` for any unproven branch).
+`-D` as well (the engine asks for `-D` for any unproven branch). A row
+proven by any rung — including `changes-in-base`, how a squash merge reads
+even after the base later edited the same file — needs no typed phrase:
+`wt remove --yes`, or `y` when every item is proven, removes it directly.
 
 An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
 failed) floors a row below proven, with a `PR ?` tag, because a merged PR is
@@ -82,7 +104,7 @@ stays less sure or worse.
 
 | Group | Meaning |
 |---|---|
-| Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, or `merge-tree` adds nothing; or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
+| Proven merged | A rung of the evidence ladder holds: same commit, ancestor of the base, trees match, no added changes, `merge-tree` adds nothing, or the change-set reverse-applies onto the base's tree (evidence `changes-in-base`: a squash merge whose file the base later edited — content, not hashes, so a later revert on the base does not prove); or a clean worktree whose own commits a `wt rescue` record keeps (evidence `rescued`, see [The record](#wt-rescue-keep-work-before-it-is-lost)). |
 | Looks merged (less sure) | Only a weak signal (`git cherry`, patch-id), no proof, or a fact wt could not read; also a rescued original whose uncommitted changes still equal its record. |
 | Has work that exists nowhere else | Commits not in the base and not on any remote-tracking ref (unless a rescue record keeps them and the worktree is clean), uncommitted or untracked changes (unless a rescue record holds them exactly: then less sure), or an open PR on a local branch or worktree. |
 | In use / locked | A primary, current, locked, nested or mid-operation worktree, a registered model artifact (`protected_artifact`) or an `origin` branch with an open PR, or one an open PR targets: hard stops no flag overrides (the row's `hard_stop`). A held session claim (`held`), the default branch (`default_branch`) and an unknown PR (`pr_unknown`) are floors, not hard stops: the row reads less sure and `wt remove` needs `--accept-loss` for it. |
@@ -109,7 +131,10 @@ asks is yours. The terminal list's explicit fetches (`--fetch`, the list's
 root: one result for every remote at once, not one per remote.
 The merge-adds-nothing proof
 (`git merge-tree --write-tree`) may leave unreachable tree objects in the
-object store, which `git gc` collects.
+object store, which `git gc` collects. The `changes-in-base` proof creates
+nothing: it validates the change-set against a throwaway index
+(`git apply --check`) and never writes a ref, index or object of the
+repository.
 
 ## `wt worktrees` flags
 

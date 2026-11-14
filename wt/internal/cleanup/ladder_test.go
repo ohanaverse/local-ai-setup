@@ -3,6 +3,8 @@ package cleanup
 import (
 	"slices"
 	"testing"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/dirtsnap"
 )
 
 // Prove and WeakSignals take only fully-qualified refs or full commit ids.
@@ -276,5 +278,79 @@ func TestProveRequiresQualifiedRefs(t *testing.T) {
 	}
 	if w := WeakSignals(g, baseRef, "t2"); len(w) != 0 {
 		t.Fatalf("bare t2: WeakSignals = %v, want none", w)
+	}
+}
+
+// TestProveChangesInBaseAfterMainEditedSameFile pins rung 6: when main
+// squash-merges the branch and then edits a line adjacent to the branch's
+// change, merge-tree conflicts (rung 5 declines) yet the branch's change-set
+// reverse-applies onto main's tree, so the ladder must answer
+// (changes-in-base, Merged) instead of NotMerged. Why: without the rung a
+// squash-merged row whose file main kept editing reads as unique work — the
+// exact false negative containment exists to close.
+func TestProveChangesInBaseAfterMainEditedSameFile(t *testing.T) {
+	f := newFixture(t)
+	adjacentSquash(f)
+
+	// Sanity: rung 5 really declines this layout (the folded-region conflict
+	// an adjacent later edit causes), so the proof can only come from rung 6.
+	f.mustFail(f.Dir, "", "merge-tree", "--write-tree", "main", "topic")
+
+	if ev, v := Prove(Git{Dir: f.Dir}, baseRef, topicRef); ev != EvChangesInBase || v != Merged {
+		t.Fatalf("Prove = (%q, %v), want (%q, Merged)", ev, v, EvChangesInBase)
+	}
+}
+
+// TestProveRevertedChangeStaysNotMerged pins rung 6 failing closed on a
+// revert: after main reverts the squashed change the text is gone from the
+// base, containment says no, and the ladder must stay NotMerged. Why: a
+// reverted change must never prove — that is the exact defeat of the weak
+// cherry/patch-id signals rung 6 must not repeat.
+func TestProveRevertedChangeStaysNotMerged(t *testing.T) {
+	f := newFixture(t)
+	base := containedLines()
+	f.Commit("a.txt", containedRender(base), "add a.txt")
+	f.Branch("topic")
+	f.Checkout("topic")
+	ls := containedCopy(base)
+	ls[0] = "CHANGED1"
+	f.Commit("a.txt", containedRender(ls), "topic changes line 1")
+	f.Squash("topic")
+	f.Revert(f.git("rev-parse", "HEAD"))
+	f.Push("main")
+
+	if ev, v := Prove(Git{Dir: f.Dir}, baseRef, topicRef); v != NotMerged || ev != "" {
+		t.Fatalf("Prove = (%q, %v), want (\"\", NotMerged): main reverted the change, it is not in the base", ev, v)
+	}
+}
+
+// TestProveMergeDriverStillUndetermined pins that a configured merge driver
+// stops the ladder before containment: rung 6 runs only after rung 5 answered
+// NotMerged, and a driver makes rung 5 unanswerable, so an answerable
+// containment check must never overwrite Undetermined with a proof (the
+// driver could be hiding a real conflict).
+func TestProveMergeDriverStillUndetermined(t *testing.T) {
+	f := newFixture(t)
+	adjacentSquash(f)
+	f.git("config", "merge.keep.driver", "true")
+
+	if ev, v := Prove(Git{Dir: f.Dir}, baseRef, topicRef); v != Undetermined || ev != "" {
+		t.Fatalf("Prove = (%q, %v), want (\"\", Undetermined): a configured merge driver stops the ladder", ev, v)
+	}
+}
+
+// TestProveContainmentUnknownStaysNotMerged pins that an unknown containment
+// answer is NotMerged, never Merged: over the caps (or any git failure) the
+// ladder must not promote "could not tell" to proof. Why: every new signal
+// fails closed — a false Merged loses work.
+func TestProveContainmentUnknownStaysNotMerged(t *testing.T) {
+	f := newFixture(t)
+	adjacentSquash(f)
+	old := dirtLimits
+	dirtLimits = dirtsnap.Limits{MaxFiles: DirtMaxFiles, MaxBytes: 4}
+	t.Cleanup(func() { dirtLimits = old })
+
+	if ev, v := Prove(Git{Dir: f.Dir}, baseRef, topicRef); v != NotMerged || ev != "" {
+		t.Fatalf("Prove = (%q, %v), want (\"\", NotMerged): containment unknown over the caps must not prove", ev, v)
 	}
 }
