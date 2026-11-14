@@ -263,15 +263,29 @@ func tagTexts(row Row) []string {
 	return out
 }
 
-func TestRowTagsShowsPRQuestionMarkWhileUnknown(t *testing.T) {
-	if got := tagTexts(Row{PRUnknown: true}); !slices.Equal(got, []string{"PR ?"}) {
-		t.Errorf("unknown: %v", got)
+// hasPRTag reports whether row still carries a PR badge ("PR ?" or
+// "#N …"): the absence TestRowTagsCarriesNoPRInfo pins after the PR moved
+// into the PR# column.
+func hasPRTag(row Row) bool {
+	return slices.ContainsFunc(RowTags(row), func(t Tag) bool {
+		return t.Text == "PR ?" || strings.HasPrefix(t.Text, "#")
+	})
+}
+
+// TestRowTagsCarriesNoPRInfo pins that no badge carries PR info: "PR ?" and
+// "#N state" read from the PR# column alone (RowTags' old PR badges).
+// Why: the verdict line keeps only risk and fact badges.
+func TestRowTagsCarriesNoPRInfo(t *testing.T) {
+	for _, row := range []Row{
+		{PRUnknown: true},
+		{PRTag: &PRInfo{Number: 7, State: "MERGED"}},
+	} {
+		if got := tagTexts(row); len(got) != 0 {
+			t.Errorf("row %+v: tags %v, want no PR badge", row, got)
+		}
 	}
-	if got := tagTexts(Row{PRTag: &PRInfo{Number: 7, State: "MERGED"}}); !slices.Equal(got, []string{"#7 merged"}) {
-		t.Errorf("known: %v", got)
-	}
-	if got := RowTags(Row{}); got != nil {
-		t.Errorf("none: %v", got)
+	if RowTags(Row{}) != nil {
+		t.Errorf("an empty row carried tags %v", RowTags(Row{}))
 	}
 }
 
@@ -289,10 +303,6 @@ func TestRowTagsEveryFact(t *testing.T) {
 		{"dirty", Row{Losses: Losses{Dirty: true}}, "dirty", TagWarn},
 		{"unpushed", Row{Losses: Losses{Unpushed: 2}}, "unpushed", TagWarn},
 		{"upstream gone", Row{Upstream: &Upstream{Gone: true}}, "upstream gone", TagWarn},
-		{"pr merged", Row{PRTag: &PRInfo{Number: 9, State: "MERGED"}}, "#9 merged", TagInfo},
-		{"pr open", Row{PRTag: &PRInfo{Number: 3, State: "OPEN"}}, "#3 open", TagInfo},
-		{"pr closed", Row{PRTag: &PRInfo{Number: 4, State: "CLOSED"}}, "#4 closed", TagInfo},
-		{"pr unknown", Row{PRUnknown: true}, "PR ?", TagInfo},
 		{"locked", Row{HardStop: BlockLocked, Blockers: []Reason{{BlockLocked, ""}}}, "locked", TagWarn},
 		{"+remote", Row{Upstream: &Upstream{Ref: "refs/remotes/origin/x"}}, "+remote", TagInfo},
 	}

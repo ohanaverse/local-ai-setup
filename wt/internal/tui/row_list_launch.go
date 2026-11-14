@@ -146,11 +146,15 @@ func (m *cleanupListModel) selectWhere(pred func(cleanup.Row) bool) bool {
 }
 
 // filterText is what the filter matches a row against: its listed name, its
-// branch and its tags (so "#383" finds the row with that PR).
+// branch, its tags and its PR column cell (prCell) — so "#383" finds the row
+// with that PR, by the same text the table draws.
 func filterText(it cleanupItem) string {
 	parts := []string{cleanup.DisplayName(it.row), it.row.Branch}
 	for _, t := range it.tags {
 		parts = append(parts, t.Text)
+	}
+	if !it.row.Pending { // the table draws "-" for a pending row's PR cell
+		parts = append(parts, prCell(it.row))
 	}
 	return strings.ToLower(strings.Join(parts, " "))
 }
