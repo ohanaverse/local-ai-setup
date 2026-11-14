@@ -4,6 +4,7 @@
 - User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance, agent benchmarks, MLX quantization, capability eval, model tiers). Read `docs/guides/00-config-map.md` first for config-file ownership.
 - `./issues.md` — follow-ups from the 2026-08-29 guide-set review (items 1–5 FIXED, kept as a historical record), plus one open, deferred item: #6, `piCompat` full-pointer replacement in `wt/internal/agents/pi_models.go`.
 - `.claude/skills/wt-manage-slot-profiles/` — project skill: keep slot profiles current (refresh tiers, remove unused profiles, propose better models, run `wt smoke`) through `wt profile slots`; `docs/guides/08-maintenance-and-troubleshooting.md` §8
+- Skills are all named `wt-*` (directory name = frontmatter `name:`; `make lint-skills` checks it). `.claude/skills/wt-repo-cleanup/` drives `wt worktrees|remove|rescue|restore-root` from any agent; unlike the repo-local skills it is installed globally: `make install-skill-claude|install-skill-pi|install-skill-codex` (`docs/guides/08-maintenance-and-troubleshooting.md` §9)
 - Package-level context: `llmbench/CLAUDE.md` (Python benchmarks + provider isolation), `modeltiers/CLAUDE.md` (Python capability tiers from public sources), `wt/CLAUDE.md` (Go worktree launcher) and `litellm-session-logs/CLAUDE.md` (session-log pipeline) and `agent-utilities/CLAUDE.md` (per-agent helper scripts) contain per-package commands, architecture, and gotchas.
 
 ## Commands
