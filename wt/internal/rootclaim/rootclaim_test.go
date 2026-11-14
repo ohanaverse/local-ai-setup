@@ -31,7 +31,7 @@ func repo(t *testing.T) string {
 
 // TestLookupRoot checks Lookup names the root, its common directory and its
 // branch, and that Self builds the claim from them: both launch paths build
-// their claim here, so a drift in this answer changes what repo-cleanup reads.
+// their claim here, so a drift in this answer changes what a claim reader sees.
 func TestLookupRoot(t *testing.T) {
 	root := repo(t)
 	r, ok, err := Lookup(root)

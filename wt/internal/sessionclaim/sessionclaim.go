@@ -2,8 +2,8 @@
 // checkout — the root or a linked worktree — so a second launch there can warn
 // the person first. A claim
 // is one key=value file per wt process in <git-common-dir>/wt-sessions/<pid>;
-// repo-cleanup (bash) reads the same files. The format is a cross-repo
-// contract: docs/contracts/session-claims.md at the monorepo root.
+// `wt cleanup` reads the same files (the retired repo-cleanup bash script did
+// too). The format is a documented contract: docs/contracts/session-claims.md at the monorepo root.
 package sessionclaim
 
 import (
@@ -31,7 +31,7 @@ type Claim struct {
 }
 
 // startTolerance is how far the recorded and actual start times may differ and
-// still match: wt (Go) and repo-cleanup (bash) each take now minus a whole-second
+// still match: a writer and a reader (wt and the retired repo-cleanup bash script) each take now minus a whole-second
 // `ps -o etime=` reading, so the two can differ by up to 2 s from rounding alone.
 const startTolerance = 5
 
@@ -43,7 +43,7 @@ var pidAlive = func(pid int) bool {
 }
 
 // startTime returns pid's start time in epoch seconds: now minus the elapsed
-// time `ps -o etime=` reports, the same method repo-cleanup uses. Package-level
+// time `ps -o etime=` reports, the same method the retired repo-cleanup bash reader used. Package-level
 // var so tests can inject start times.
 var startTime = func(pid int) (int64, error) {
 	out, err := exec.Command("ps", "-o", "etime=", "-p", strconv.Itoa(pid)).Output()
@@ -71,7 +71,7 @@ var parentPID = func(pid int) (int, error) {
 const maxAncestors = 64
 
 // ancestors returns this process and its parents up to pid 1, the same set
-// repo-cleanup's pid_is_ancestor walks: a wt launched from inside a root
+// the retired repo-cleanup's pid_is_ancestor walked: a wt launched from inside a root
 // session must not count that session as another one.
 func ancestors() map[int]bool {
 	set := map[int]bool{}
