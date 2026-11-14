@@ -865,18 +865,41 @@ func (m cleanupListModel) originTarget(row cleanup.Row) (cleanup.Row, bool) {
 }
 
 // move moves the cursor n items in direction dir, skipping headings and
-// stopping at either end.
+// hidden rows. A single step (n == 1) wraps past either end — down from the
+// last item lands on the first, up from the first on the last (spec §6) —
+// while a multi-item move (paging: pgup/pgdown, home/end) still stops at
+// the ends. A wrap that would land back on the cursor (one item to sit on)
+// leaves it put.
 func (m *cleanupListModel) move(dir, n int) {
+	wrap := n == 1
+	sittable := func(j int) bool { return m.items[j].heading == "" && !m.hidden(j) }
 	for ; n > 0; n-- {
 		next := -1
 		for j := m.cursor + dir; j >= 0 && j < len(m.items); j += dir {
-			if m.items[j].heading == "" && !m.hidden(j) {
+			if sittable(j) {
 				next = j
 				break
 			}
 		}
 		if next < 0 {
-			return
+			if !wrap {
+				return
+			}
+			// Past the end: scan from the far side for the first item the
+			// cursor may sit on (headings and hidden rows skipped there too).
+			from, step := 0, 1
+			if dir < 0 {
+				from, step = len(m.items)-1, -1
+			}
+			for j := from; j >= 0 && j < len(m.items); j += step {
+				if sittable(j) {
+					next = j
+					break
+				}
+			}
+			if next < 0 || next == m.cursor {
+				return
+			}
 		}
 		m.cursor = next
 	}

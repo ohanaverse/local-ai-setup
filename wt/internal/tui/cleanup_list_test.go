@@ -349,6 +349,74 @@ func TestRowListTagsWarnStyled(t *testing.T) {
 	}
 }
 
+// TestRowListCursorWrapsSingleSteps pins spec §6's cursor wrap: a single
+// step down past the last item lands on the first, and up past the first on
+// the last, over exactly the items the cursor can sit on — headings and
+// filter-hidden rows skipped, launch mode's "+ New worktree…" included.
+// Why: at either end a dead key feels like a broken list; the wrap keeps
+// browsing circular without ever parking the cursor on a heading.
+func TestRowListCursorWrapsSingleSteps(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("end selected %v (ok=%v), want the last row origin/old-remote", row.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "main" {
+		t.Fatalf("down past the end selected %v (ok=%v), want the first row main (headings skipped)", row.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("up past the start selected %v (ok=%v), want the last row", row.Name, ok)
+	}
+
+	// Launch mode: the wrap reaches "+ New worktree…" (the first item).
+	lm := newLaunchList(t, cleanupFixture(), 120, 40)
+	lm = cleanupSend(t, lm, tea.KeyMsg{Type: tea.KeyEnd})
+	lm = cleanupSend(t, lm, tea.KeyMsg{Type: tea.KeyDown})
+	if lm.cursor != 0 || !lm.items[lm.cursor].newWorktree {
+		t.Fatalf("launch: down past the end landed on cursor %d (%q), want + New worktree…", lm.cursor, lm.items[lm.cursor].heading)
+	}
+
+	// A filter's hidden rows are skipped: with only the two remote rows
+	// visible, the wrap hops between them and never onto a hidden row.
+	fm := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	fm.filter = "remote"
+	fm = cleanupSend(t, fm, tea.KeyMsg{Type: tea.KeyEnd})
+	if row, ok := fm.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("filtered end selected %v (ok=%v), want origin/old-remote", row.Name, ok)
+	}
+	fm = cleanupSend(t, fm, tea.KeyMsg{Type: tea.KeyDown})
+	if row, ok := fm.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/merged-remote" {
+		t.Fatalf("filtered wrap selected %v (ok=%v), want the other visible row origin/merged-remote", row.Name, ok)
+	}
+}
+
+// TestRowListPagingStopsAtTheEnds pins the other half of spec §6's rule:
+// a multi-item move (end, home, pgdown, pgup) still stops at the ends —
+// only single steps wrap. Why: paging is "take me to the edge"; wrapping
+// there would sail past the last row back to the first.
+func TestRowListPagingStopsAtTheEnds(t *testing.T) {
+	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	last, ok := m.selectedRow()
+	if !ok || cleanup.DisplayName(last) != "origin/old-remote" {
+		t.Fatalf("end selected %v (ok=%v), want the last row", last.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "origin/old-remote" {
+		t.Fatalf("pgdown past the end selected %v (ok=%v), want it to stop on origin/old-remote", row.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyHome})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "main" {
+		t.Fatalf("home selected %v (ok=%v), want the first row main", row.Name, ok)
+	}
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != "main" {
+		t.Fatalf("pgup past the start selected %v (ok=%v), want it to stop on main", row.Name, ok)
+	}
+}
+
 // newLaunchList builds the list in launch mode and sizes it.
 func newLaunchList(t *testing.T, r cleanup.Report, w, h int) cleanupListModel {
 	t.Helper()
@@ -916,10 +984,9 @@ func TestCleanupListWrappedRowStaysOnScreen(t *testing.T) {
 	if !strings.Contains(view, "── many-reasons ─") {
 		t.Errorf("detail line missing:\n%s", view)
 	}
-	// Moving back up to the top brings the first row (and its heading) back.
-	for i := 0; i < 20; i++ {
-		m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyUp})
-	}
+	// Getting back to the top brings the first row (and its heading) back.
+	// Home is the paging move: single steps up would now wrap (spec §6).
+	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyHome})
 	view = m.View()
 	if !strings.Contains(view, cleanup.HeadingWorktrees) || !strings.Contains(view, "> [-] main") {
 		t.Errorf("top of the list not back on screen:\n%s", view)
