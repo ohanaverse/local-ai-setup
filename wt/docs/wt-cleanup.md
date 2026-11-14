@@ -56,6 +56,25 @@ repository's own entry is listed as the root with a `bare` tag: it is never
 removable, and in the launch picker enter on it only says that a bare
 repository has no working tree to launch in.
 
+On a terminal each row is one table line (the `rowtable.go` renderer over
+`tuilayout.Columns`): a session digit (the running wt sessions holding that
+worktree; the browsing session never counts itself), the cursor and, in the
+tick list, the checkbox, then `WORKTREE BRANCH PR# DIFF IGN STATUS VERDICT`
+with the row's badges after the verdict. `DIFF` is the uncommitted change
+counted diffstat-style (`+99/-55`; `-` when it could not be read or is over
+the caps), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
+`in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
+`IGN`, `STATUS`, `DIFF`; the worktree, branch and verdict columns never drop,
+and the detail block then names the highlighted row's `+N/-N · N ignored`.
+The list paints from the cheap git calls alone (`cleanup.GatherFacts`) and
+fills gates, ladder and PRs behind the first paint (`cleanup.FillDetails`,
+then the `gh` lookups); while that runs the removal keys (`enter`, `x`, `d`,
+`o`, `r`, `R`) are absent and come back with the fill — launching, the
+filter, `n`, `F` and `q` work throughout, and nothing is ever removed from a
+half-read repository. The key footer sits on the terminal's last line, and a
+single step past either end of the row list wraps onto the other (paging
+stops at the ends).
+
 A **hard stop** is a state no flag overrides (the primary checkout, the
 directory you are in, a locked or nested worktree, a rebase or merge in
 progress, a registered model artifact, or an open PR on an `origin` branch

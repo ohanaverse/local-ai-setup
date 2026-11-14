@@ -294,11 +294,11 @@ func TestFilterMatchesWorktreeBranchAndPR(t *testing.T) {
 		return out
 	}
 	for query, want := range map[string][]string{
-		"deep":         {"deep"},
-		"fix-default":  {"fix-default-guard"},
-		"#517":         {"full-branch-name-paths"},
-		"origin/old-":  {"origin/old-remote"},
-		"no-such-row":  {},
+		"deep":             {"deep"},
+		"fix-default":      {"fix-default-guard"},
+		"#517":             {"full-branch-name-paths"},
+		"origin/old-":      {"origin/old-remote"},
+		"no-such-row":      {},
 		"FULL-BRANCH-NAME": {"full-branch-name-paths"}, // case-insensitive
 	} {
 		got := showing(query)
