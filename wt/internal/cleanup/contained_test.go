@@ -304,3 +304,25 @@ func TestContainedLeavesTheRealIndexAlone(t *testing.T) {
 		t.Fatal("the containment check rewrote the real index (it must diff against a throwaway copy)")
 	}
 }
+
+// TestContainedDeletionOnlyChangeIsNotProven pins that a change-set that only
+// removes lines never reads as contained while base still holds them: the
+// reverse of a -U0 deletion is a zero-length insertion that applies anywhere,
+// so it proves nothing and the rung fails closed.
+func TestContainedDeletionOnlyChangeIsNotProven(t *testing.T) {
+	f := newFixture(t)
+	f.Commit("a.txt", containedRender(containedLines()), "add a.txt")
+	f.Branch("topic")
+	f.Checkout("topic")
+	ls := containedCopy(containedLines())
+	ls = append(ls[:4], ls[5:]...)
+	f.Commit("a.txt", containedRender(ls), "topic deletes line5")
+	f.Checkout("main")
+
+	if got := tipContainedInBase(Git{Dir: f.Dir}, "refs/heads/main", "refs/heads/topic"); got == TriYes {
+		t.Fatalf("tipContainedInBase = %v for a deletion main never made, want not TriYes", got)
+	}
+	if _, v := Prove(Git{Dir: f.Dir}, "refs/heads/main", "refs/heads/topic"); v == Merged {
+		t.Fatal("Prove = Merged for an unmerged deletion-only branch")
+	}
+}

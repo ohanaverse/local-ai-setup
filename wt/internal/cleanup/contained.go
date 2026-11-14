@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -39,6 +40,9 @@ func reverseApplies(g Git, baseTree, patch string) Tri {
 	if patch == "" {
 		return TriYes
 	}
+	if hasUncheckedDeletion(patch) {
+		return TriUnknown
+	}
 	tmp, release, ok := scratchdir.Temp("wt-contained-")
 	if !ok {
 		return TriUnknown
@@ -62,6 +66,32 @@ func reverseApplies(g Git, baseTree, patch string) Tri {
 	default:
 		return TriUnknown
 	}
+}
+
+// deletionOnlyHunk matches a -U0 hunk header whose post-image is empty: the
+// hunk only removes lines.
+var deletionOnlyHunk = regexp.MustCompile(`^@@ -[0-9,]+ \+[0-9]+,0 @@`)
+
+// hasUncheckedDeletion reports whether patch holds a hunk that only removes
+// lines from a file that stays. Reverse-applied it becomes a zero-length
+// preimage insertion, which -U0 lets match anywhere — so it passes whether or
+// not base still holds the lines, and cannot show that base made the
+// deletion. Such a change-set is not provable here (fail closed:
+// TriUnknown). A whole-file deletion is exempt: its reverse creates a file,
+// which git refuses when base still has it, so that case is checked.
+func hasUncheckedDeletion(patch string) bool {
+	deleted := false
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			deleted = false
+		case strings.HasPrefix(line, "deleted file mode "):
+			deleted = true
+		case !deleted && deletionOnlyHunk.MatchString(line):
+			return true
+		}
+	}
+	return false
 }
 
 // tipContainedInBase reports whether tip's change-set against the merge-base
