@@ -471,15 +471,18 @@ func TestLaunchModeRemovalWordingIsNeutral(t *testing.T) {
 	m.rm = h.funcs()
 	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = moveTo(t, m, "done")
-	next, cmd := m.Update(keyRunes("x"))
-	m = next.(cleanupListModel)
 	check := func(screen, v string) {
 		t.Helper()
 		if strings.Contains(v, "ticked") || strings.Contains(v, "wt cleanup") {
 			t.Errorf("%s screen says ticked or wt cleanup:\n%s", screen, v)
 		}
 	}
+	// `x` opens the detail screen, the second x starts the row's removal.
+	next, cmd := m.Update(keyRunes("x"))
+	m = next.(cleanupListModel)
 	check("re-check", m.View())
+	next, cmd = m.Update(keyRunes("x"))
+	m = next.(cleanupListModel)
 	next, _ = m.Update(cmd())
 	m = next.(cleanupListModel)
 	if m.phase != cleanupPhaseConfirm {
@@ -721,10 +724,16 @@ func TestRemovalKeysUnavailableWhileFilling(t *testing.T) {
 	if !strings.Contains(keys, "enter launch") {
 		t.Errorf("footer lacks enter launch while filling: %q", keys)
 	}
-	// Pressing x answers with the existing unavailable status, not a flow.
+	// Pressing x opens the read-only screen (it lists no removal while the
+	// fill is in flight) and starts no flow.
 	got, _ := updateMsg(m, keyRunes("x"))
-	if got.rows.phase != cleanupPhaseList {
-		t.Errorf("x while filling entered phase %v, want the list with an unavailable status", got.rows.phase)
+	if got.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("x while filling entered phase %v, want the row detail", got.rows.phase)
+	}
+	for _, a := range got.rows.detailActions() {
+		if a.Key != "esc" {
+			t.Errorf("the screen offers %q while the fill is in flight", a.Key)
+		}
 	}
 	// Launching works: enter produces the launch message.
 	if _, sel := pickerEnter(t, m); sel.entry.Branch == "" && sel.entry.Path == "" {

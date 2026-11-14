@@ -74,9 +74,11 @@ func hintOf(hints []keyHint, key string) (keyHint, bool) {
 
 // TestRowKeysMatchTheHandlers is the footer's parity guard: on every real row
 // of both modes, with every function wired, a row key (x d o r R) is in
-// rowKeys exactly when pressing it is not refused by its handler. Why: the
-// footer is built from copies of the handlers' predicates, and a copy that
-// drifts either hides a key that works or offers one that answers "cannot".
+// rowKeys exactly when the detail screen offers that action for the row — and
+// every row key opens that screen, offered or not (it is where the row says
+// why an action is missing). Why: the footer and the screen are built from
+// copies of the handlers' predicates, and a copy that drifts either hides a
+// key that works or offers one that answers "cannot".
 func TestRowKeysMatchTheHandlers(t *testing.T) {
 	for _, mode := range []listMode{modeManage, modeLaunch} {
 		m := newRowList(footerKeysReport(), rowListOpts{Mode: mode, Theme: themes.Default, Now: time.Now(), RemoveFuncs: wiredRemoveFuncs()})
@@ -87,13 +89,23 @@ func TestRowKeysMatchTheHandlers(t *testing.T) {
 			}
 			m.cursor = i
 			hints := m.rowKeys()
+			if !hasKey(hints, "i") {
+				t.Errorf("mode %v row %q: the footer does not offer i", mode, cleanup.DisplayName(it.row))
+			}
+			screen := press(t, m, keyRunes("i"))
+			offered := map[string]bool{}
+			for _, a := range screen.detailActions() {
+				offered[a.Key] = true
+			}
 			for _, key := range []string{"x", "d", "o", "r", "R"} {
+				if got := hasKey(hints, key); got != offered[key] {
+					t.Errorf("mode %v row %q key %q: in footer = %v, the detail screen offers it = %v",
+						mode, cleanup.DisplayName(it.row), key, got, offered[key])
+				}
 				next, _ := m.Update(keyRunes(key))
-				fm := next.(cleanupListModel)
-				accepted := fm.phase != cleanupPhaseList || fm.done || fm.restoreRoot
-				if got := hasKey(hints, key); got != accepted {
-					t.Errorf("mode %v row %q key %q: in footer = %v, handler accepts = %v (status %q)",
-						mode, cleanup.DisplayName(it.row), key, got, accepted, fm.status)
+				if fm := next.(cleanupListModel); fm.phase != cleanupPhaseDetail {
+					t.Errorf("mode %v row %q key %q: phase %v, want the detail screen",
+						mode, cleanup.DisplayName(it.row), key, fm.phase)
 				}
 			}
 		}

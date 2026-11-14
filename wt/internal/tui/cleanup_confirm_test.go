@@ -790,7 +790,7 @@ func confirmScreens(t *testing.T) map[string]cleanupListModel {
 	// A row action's single-row confirm: `x` chose the highlighted row, so
 	// the summary says "selected", never "ticked" (enter's word for the rows
 	// the ticks chose).
-	out["confirm, selected"] = press(t, moveTo(t, h.list(80, 24), "a-dirty-worktree-with-a-long-name"), keyRunes("x"))
+	out["confirm, selected"] = pressRowAction(t, moveTo(t, h.list(80, 24), "a-dirty-worktree-with-a-long-name"), "x")
 	gate := make(chan struct{})
 	h.stubRun = func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
 		<-gate

@@ -41,7 +41,7 @@ func (r *rmRepo) foldedOrigin(branch string) (string, string) {
 func TestCleanupListXPreviewsOnlyTheHighlightedRow(t *testing.T) {
 	// Manage, with the proven rows ticked and the cursor on an unticked one.
 	m := moveTo(t, newSizedCleanupList(t, cleanupFixture(), 120, 40), "spike-picker")
-	got, fm := runPreview(t, m, keyRunes("x"))
+	got, fm := runPreview(t, press(t, m, keyRunes("x")), keyRunes("x"))
 	if strings.Join(got, ",") != "spike-picker" {
 		t.Errorf("x previewed %v, want only the highlighted row (ticks ignored)", got)
 	}
@@ -51,13 +51,13 @@ func TestCleanupListXPreviewsOnlyTheHighlightedRow(t *testing.T) {
 	// Manage, nothing ticked: the highlighted row all the same.
 	m = setTicks(t, newSizedCleanupList(t, cleanupFixture(), 120, 40))
 	m = moveTo(t, m, "fix-default-guard")
-	got, _ = runPreview(t, m, keyRunes("x"))
+	got, _ = runPreview(t, press(t, m, keyRunes("x")), keyRunes("x"))
 	if strings.Join(got, ",") != "fix-default-guard" {
 		t.Errorf("x previewed %v, want only the highlighted row", got)
 	}
 	// Launch mode: the highlighted row.
 	l := moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "fix-default-guard")
-	got, fl := runPreview(t, l, keyRunes("x"))
+	got, fl := runPreview(t, press(t, l, keyRunes("x")), keyRunes("x"))
 	if strings.Join(got, ",") != "fix-default-guard" || fl.phase != cleanupPhasePreviewing {
 		t.Errorf("launch x previewed %v (phase %v), want the highlighted row", got, fl.phase)
 	}
@@ -72,8 +72,7 @@ func TestCleanupListXOnProvenWorktreeAcceptsY(t *testing.T) {
 	done := r.merged("done")
 	extra := r.merged("extra")
 	h := r.harness()
-	m := moveTo(t, h.list(120, 50), "done")
-	m = press(t, m, keyRunes("x"))
+	m := pressRowAction(t, moveTo(t, h.list(120, 50), "done"), "x")
 	if m.phase != cleanupPhaseConfirm {
 		t.Fatalf("x: phase %v, want the confirm screen (status %q)", m.phase, m.status)
 	}
@@ -113,7 +112,7 @@ func TestCleanupListXOnDirtyWorktreeNeedsTypedDelete(t *testing.T) {
 	r.merged("done")
 	h := r.harness()
 	open := func() cleanupListModel {
-		return press(t, moveTo(t, h.list(120, 50), "dirty"), keyRunes("x"))
+		return pressRowAction(t, moveTo(t, h.list(120, 50), "dirty"), "x")
 	}
 	m := open()
 	if m.phase != cleanupPhaseConfirm {
@@ -154,12 +153,13 @@ func TestCleanupListDOnWorktreeRowSeedsDeleteBranch(t *testing.T) {
 	r := newRmRepo(t)
 	p := r.unpushed("kept")
 	h := r.harness()
-	m := moveTo(t, h.list(120, 50), "kept")
-	m = press(t, m, keyRunes("d"))
+	m := pressRowAction(t, moveTo(t, h.list(120, 50), "kept"), "d")
 	if m.phase != cleanupPhaseConfirm {
 		t.Fatalf("d: phase %v, want the confirm screen (status %q)", m.phase, m.status)
 	}
-	if len(h.previewed) != 1 || len(h.previewed[0]) != 1 || h.previewed[0][0].Name != "kept" {
+	// Two reads of the same row: the detail screen's own when `d` opened it,
+	// then the action's fresh re-check before the confirm.
+	if len(h.previewed) != 2 || len(h.previewed[1]) != 1 || h.previewed[1][0].Name != "kept" {
 		t.Fatalf("d previewed %v, want only the highlighted row", h.previewed)
 	}
 	if len(m.conf.entries) != 1 {
@@ -196,13 +196,13 @@ func TestCleanupListDOnBranchRowIsRemove(t *testing.T) {
 	r.loose("x-spike")
 	h := r.harness()
 	// `x` on one loose branch: the typed word removes it.
-	m := press(t, moveTo(t, h.list(120, 50), "x-spike"), keyRunes("x"))
+	m := pressRowAction(t, moveTo(t, h.list(120, 50), "x-spike"), "x")
 	if m.phase != cleanupPhaseConfirm {
 		t.Fatalf("x: phase %v, want the confirm screen (status %q)", m.phase, m.status)
 	}
 	m = press(t, typeWord(t, m, "delete"), enterKey)
 	// `d` on the other: exactly the same treatment.
-	m = press(t, moveTo(t, h.list(120, 50), "d-spike"), keyRunes("d"))
+	m = pressRowAction(t, moveTo(t, h.list(120, 50), "d-spike"), "d")
 	if m.phase != cleanupPhaseConfirm {
 		t.Fatalf("d: phase %v, want the confirm screen (status %q)", m.phase, m.status)
 	}
@@ -234,16 +234,17 @@ func TestCleanupListOOnFoldedRowDeletesOnlyTheOriginRef(t *testing.T) {
 	p, tip := r.foldedOrigin("topic")
 	h := r.originHarness()
 	open := func() cleanupListModel {
-		return press(t, moveTo(t, h.list(120, 50), "topic"), keyRunes("o"))
+		return pressRowAction(t, moveTo(t, h.list(120, 50), "topic"), "o")
 	}
 	m := open()
 	if m.phase != cleanupPhaseConfirm {
 		t.Fatalf("o: phase %v, want the confirm screen (status %q)", m.phase, m.status)
 	}
-	if len(h.previewed) != 1 || len(h.previewed[0]) != 1 {
+	// The screen's own read first (the local row), then the action's.
+	if len(h.previewed) != 2 || len(h.previewed[1]) != 1 {
 		t.Fatalf("o previewed %v, want one row", h.previewed)
 	}
-	if got := h.previewed[0][0]; got.Kind != cleanup.KindRemote || got.Ref != "refs/remotes/origin/topic" {
+	if got := h.previewed[1][0]; got.Kind != cleanup.KindRemote || got.Ref != "refs/remotes/origin/topic" {
 		t.Errorf("o previewed %+v, want only the folded origin ref", got)
 	}
 	if v := m.View(); !strings.Contains(squash(v), squash("type delete origin and press enter")) {

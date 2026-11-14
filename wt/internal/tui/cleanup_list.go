@@ -304,6 +304,12 @@ type cleanupListModel struct {
 	// quitAfterRun: a signal came during a run; the program quits when the
 	// run ends (Ruling T).
 	quitAfterRun bool
+	// rowDetail is the detail screen's state (`i` and the row actions open
+	// it): nil outside that phase (detail.go).
+	rowDetail *rowDetail
+	// confFromDetail says the confirm in progress was opened from the detail
+	// screen, so cancelling returns there rather than to the list.
+	confFromDetail bool
 	// rescueRow is the row `r` chose: the list quits and the session hands it
 	// to RemoveFuncs.Rescue once the alt screen is gone — RunCleanupList then
 	// re-enters the list (set only in the pass that chose it), the picker
@@ -691,6 +697,13 @@ func (m cleanupListModel) gotFill(msg cleanupFillMsg) (tea.Model, tea.Cmd) {
 	}
 	next := m.withReport(msg.report)
 	applyRemoveFuncs(&next, msg.rm)
+	// A report swap under the open detail screen: the screen follows its row
+	// or closes, and reads that row again from the filled snapshot.
+	next.settleDetail()
+	if next.phase == cleanupPhaseDetail && next.rowDetail != nil {
+		next.rowDetail.loading = true
+		return next, next.detailCmd(next.rowDetail.row)
+	}
 	return next, nil
 }
 
@@ -710,6 +723,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.gotFill(msg)
 	case cleanupRefetchMsg:
 		return m.gotRefetch(msg)
+	case detailLoadedMsg:
+		return m.gotDetailLoaded(msg)
 	case cleanupSignalMsg:
 		return m.signalled()
 	case tea.KeyMsg:
@@ -719,6 +734,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.phase {
 		case cleanupPhaseConfirm:
 			return m.confirmKey(msg)
+		case cleanupPhaseDetail:
+			return m.detailKey(msg)
 		case cleanupPhaseResults:
 			return m.resultsKey(msg)
 		case cleanupPhaseRunning:
@@ -752,12 +769,12 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.choose()
 			}
 			return m.startRemoval()
-		case "x":
-			return m.startRowAction(rowActionRemove)
-		case "d":
-			return m.startRowAction(rowActionDeleteBranch)
-		case "o":
-			return m.startRowAction(rowActionDeleteOrigin)
+		case "i", "x", "d", "o", "r", "R":
+			// The row keys open the detail screen unarmed: it shows what the
+			// row is and offers the actions that apply, so nothing is
+			// previewed, handed off or refused before the user has read it
+			// (detail.go). The screen's own keys then act.
+			return m.openDetail()
 		case "up", "k":
 			m.move(-1, 1, true)
 		case "down", "j":
@@ -785,16 +802,8 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.startRefetch()
 		default:
-			// `r` and `R` are the highlighted row's hand-off keys in both
-			// modes (they act like the row keys above: the highlighted row
-			// alone). The filter (filterKey) has already taken every
-			// printable rune it is owed before any of this runs.
-			switch msg.String() {
-			case "r":
-				return m.startRescue()
-			case "R":
-				return m.startRestoreRoot()
-			}
+			// The filter (filterKey) has already taken every printable rune
+			// it is owed before any of this runs.
 			if m.launch() {
 				if msg.String() == "n" {
 					return m, emit(newWorktreeChosenMsg{})
@@ -1294,6 +1303,8 @@ func (m cleanupListModel) View() string {
 		return m.resultsView()
 	case cleanupPhaseRefreshing:
 		return m.waitView(m.screenName() + " · re-reading the repository")
+	case cleanupPhaseDetail:
+		return m.detailView()
 	}
 	if m.empty() {
 		body := m.headerBlock() + "\n\n" + m.statusBlock() + "nothing to clean up: no other worktree or branch\n\npress any key to quit"

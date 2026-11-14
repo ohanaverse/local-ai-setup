@@ -178,6 +178,12 @@ func evidenceText(row Row, base string) string {
 	return string(row.Evidence)
 }
 
+// CurrentPath is the path of the longest Current worktree row — the one row
+// RowText words "you are here" rather than "contains the directory you are
+// in". A screen that shows one row's verdict reads it to pick the same words
+// the list's own detail line uses.
+func CurrentPath(rep Report) string { return deepestCurrent(rep) }
+
 // deepestCurrent is the path of the longest Current worktree row: every
 // worktree that contains the caller's directory is Current, and only the
 // innermost one is where the caller is.

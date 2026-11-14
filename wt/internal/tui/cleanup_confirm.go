@@ -83,6 +83,12 @@ type RemoveFuncs struct {
 	// terminal's streams), and every consumer goes through noteOf before
 	// treating the value as a failure; a new caller must do the same.
 	RestoreRoot func(answer io.Reader, out, errOut io.Writer) error
+	// Detail reads one row's read-only listings — the commits no remote has,
+	// its uncommitted and its ignored files (cleanup.ReadRowDetail) — for the
+	// detail screen. It runs off the update goroutine, like Preview, and is
+	// reached by `i` and by the row actions, which all open that screen first.
+	// nil: the screen says the lists are not available here.
+	Detail func(row cleanup.Row) cleanup.RowDetail
 	// Fill completes a facts-only report off the update goroutine: it runs
 	// cleanup.FillDetails and the PR lookups, classifies, and returns the
 	// filled report with the RemoveFuncs built from its snapshot (and the
@@ -120,6 +126,7 @@ const (
 	cleanupPhaseRunning                        // the engine is removing
 	cleanupPhaseResults                        // the outcomes, until a key
 	cleanupPhaseRefreshing                     // the repository is being re-read
+	cleanupPhaseDetail                         // one row in full, with its actions (detail.go)
 )
 
 // confirmEntry is one ticked item on the confirm screen: its preview and

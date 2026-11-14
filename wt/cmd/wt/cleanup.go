@@ -318,14 +318,21 @@ func cleanupRemoveFuncs(a *app, snap cleanup.Snapshot, in cleanup.GatherInputs, 
 		}
 		return cleanupReport(a, fresh, minAge, protErr), nil
 	}
+	// detail reads one row's read-only listings for the detail screen (`i`):
+	// it runs where the list was built, so a worktree row's own path is what
+	// its git calls run in (cleanup.ReadRowDetail).
+	detail := func(row cleanup.Row) cleanup.RowDetail {
+		return cleanup.ReadRowDetail(cleanup.Git{Dir: in.CWD}, row)
+	}
 	if protErr != nil {
-		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn, RestoreRoot: restoreRootFn}
+		return tui.RemoveFuncs{Off: "removal refused: " + protErr.Error() + "; nothing was removed", Refetch: refetch, Rescue: rescueRowFn, RestoreRoot: restoreRootFn, Detail: detail}
 	}
 	eng = &removal.Engine{G: cleanup.Git{Dir: in.CWD}, Prior: snap, In: in, Classify: cleanup.Options{MinAge: minAge},
 		Opts: removal.Options{Now: removeNow, Procs: removeProcs()}}
 	return tui.RemoveFuncs{
 		Rescue:      rescueRowFn,
 		RestoreRoot: restoreRootFn,
+		Detail:      detail,
 		Preview: func(rows []cleanup.Row) []removal.ItemPreview {
 			items := make([]removal.Item, len(rows))
 			for i, r := range rows {

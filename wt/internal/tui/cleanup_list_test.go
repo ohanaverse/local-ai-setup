@@ -563,19 +563,29 @@ func TestManageModeEnterStillRemovesTicked(t *testing.T) {
 // launch mode alike. What `x` does act on is pinned in
 // TestCleanupListXPreviewsOnlyTheHighlightedRow.
 func TestXRemoveKeyRefusesWhatCannotBeRemoved(t *testing.T) {
-	// Manage, a locked row: nothing previewed, the status says why.
+	// Manage, a locked row: x opens its detail screen — where the Verdict line
+	// says why — offering no removal, and x again previews nothing.
 	m := moveTo(t, newSizedCleanupList(t, cleanupFixture(), 120, 40), "deep")
-	got, fm := runPreview(t, m, keyRunes("x"))
-	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.Contains(fm.status, "cannot be removed") {
+	screen := press(t, m, keyRunes("x"))
+	if screen.phase != cleanupPhaseDetail {
+		t.Fatalf("manage x on a locked row: phase %v, want the detail screen", screen.phase)
+	}
+	for _, a := range screen.detailActions() {
+		if a.Key == "x" || a.Key == "d" || a.Key == "o" {
+			t.Errorf("manage x on a locked row: the screen offers %q", a.Key)
+		}
+	}
+	got, fm := runPreview(t, screen, keyRunes("x"))
+	if len(got) != 0 || fm.phase != cleanupPhaseDetail || !strings.Contains(fm.status, "cannot be removed") {
 		t.Errorf("manage x on a locked row: previewed %v, phase %v, status %q", got, fm.phase, fm.status)
 	}
-	// Launch, a locked row: nothing previewed, the status says why.
+	// Launch, a locked row: the same.
 	l := moveTo(t, newLaunchList(t, cleanupFixture(), 120, 40), "deep")
-	got, fl := runPreview(t, l, keyRunes("x"))
-	if len(got) != 0 || fl.phase != cleanupPhaseList || !strings.Contains(fl.status, "cannot be removed") {
+	got, fl := runPreview(t, press(t, l, keyRunes("x")), keyRunes("x"))
+	if len(got) != 0 || fl.phase != cleanupPhaseDetail || !strings.Contains(fl.status, "cannot be removed") {
 		t.Errorf("launch x on a locked row: previewed %v, phase %v, status %q", got, fl.phase, fl.status)
 	}
-	// Launch, the new-worktree item: nothing previewed.
+	// Launch, the new-worktree item: not a row, so no screen and no preview.
 	got, fl = runPreview(t, newLaunchList(t, cleanupFixture(), 120, 40), keyRunes("x"))
 	if len(got) != 0 || fl.phase != cleanupPhaseList || fl.status == "" {
 		t.Errorf("launch x on new worktree: previewed %v, phase %v, status %q", got, fl.phase, fl.status)
@@ -1204,10 +1214,19 @@ func TestCleanupListRKeyHandsTheRowToRescue(t *testing.T) {
 	m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "spike")
 	if v := m.View(); !strings.Contains(v, "r rescue") {
-		t.Errorf("title line does not offer r rescue:\n%s", v)
+		t.Errorf("footer does not offer r rescue:\n%s", v)
 	}
 
-	next, cmd := m.Update(keyRunes("r"))
+	// `r` opens the row's detail screen (offering r rescue there), then the
+	// second r quits with the row held for the hand-off.
+	screen := press(t, m, keyRunes("r"))
+	if screen.phase != cleanupPhaseDetail {
+		t.Fatalf("r: phase %v, want the detail screen", screen.phase)
+	}
+	if !strings.Contains(strings.Join(detailActionKeys(screen), " "), "r") {
+		t.Errorf("the screen does not offer r: %v", detailActionKeys(screen))
+	}
+	next, cmd := screen.Update(keyRunes("r"))
 
 	fm := next.(cleanupListModel)
 	if cmd == nil || fm.rescueRow == nil || fm.rescueRow.Name != "spike" || !fm.done {
@@ -1226,14 +1245,18 @@ func TestCleanupListRKeyExplainsWhenNotOffered(t *testing.T) {
 		m := newSizedCleanupList(t, rescueListFixture(), 100, 30)
 		m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 		m = moveTo(t, m, c.row)
-		next, cmd := m.Update(keyRunes("r"))
+		screen := press(t, m, keyRunes("r"))
+		if strings.Contains(strings.Join(detailActionKeys(screen), " "), "r") {
+			t.Errorf("%s: the screen offers r although rescue.Offered refuses it", c.row)
+		}
+		next, cmd := screen.Update(keyRunes("r"))
 		fm := next.(cleanupListModel)
 		if fm.rescueRow != nil || fm.done || (cmd != nil && cmd() != nil) || !strings.Contains(fm.status, c.want) {
 			t.Errorf("%s: rescueRow=%v done=%v status=%q; want to stay with %q", c.row, fm.rescueRow, fm.done, fm.status, c.want)
 		}
 	}
 	m := moveTo(t, newSizedCleanupList(t, rescueListFixture(), 100, 30), "spike")
-	next, _ := m.Update(keyRunes("r"))
+	next, _ := press(t, m, keyRunes("r")).Update(keyRunes("r"))
 	if fm := next.(cleanupListModel); fm.rescueRow != nil || !strings.Contains(fm.status, "not available") {
 		t.Errorf("no Rescue wired: rescueRow=%v status=%q", fm.rescueRow, fm.status)
 	}
@@ -1443,7 +1466,7 @@ func TestCleanupListRKeyStillRescues(t *testing.T) {
 	m.rm.Refetch = func() (cleanup.Report, error) { refetches++; return cleanupFixture(), nil }
 	m.rm.Rescue = func(_ cleanup.Row, _ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "spike")
-	next, cmd := m.Update(keyRunes("r"))
+	next, cmd := press(t, m, keyRunes("r")).Update(keyRunes("r"))
 	fm := next.(cleanupListModel)
 	if cmd == nil || fm.rescueRow == nil || fm.rescueRow.Name != "spike" || !fm.done {
 		t.Fatalf("cmd=%v rescueRow=%+v done=%v; want quit with the spike row", cmd, fm.rescueRow, fm.done)
@@ -1774,7 +1797,10 @@ func TestCleanupListRestoreRootKeyHandsOff(t *testing.T) {
 	m := newSizedCleanupList(t, restoreRootListFixture(), 100, 30)
 	m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { return nil }
 	m = moveTo(t, m, "topic")
-	next, cmd := m.Update(keyRunes("R"))
+	if screen := press(t, m, keyRunes("R")); screen.phase != cleanupPhaseDetail || !strings.Contains(strings.Join(detailActionKeys(screen), " "), "R") {
+		t.Fatalf("R does not open a screen offering R: phase %v actions %v", screen.phase, detailActionKeys(screen))
+	}
+	next, cmd := press(t, m, keyRunes("R")).Update(keyRunes("R"))
 	fm := next.(cleanupListModel)
 	if cmd == nil || !fm.restoreRoot || !fm.done {
 		t.Fatalf("cmd=%v restoreRoot=%v done=%v; want quit with the restore flagged", cmd, fm.restoreRoot, fm.done)
@@ -1835,7 +1861,11 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 		m := newSizedCleanupList(t, c.report, 100, 30)
 		m.rm.RestoreRoot = func(_ io.Reader, _, _ io.Writer) error { restored = true; return nil }
 		m = moveTo(t, m, c.row)
-		next, cmd := m.Update(keyRunes("R"))
+		screen := press(t, m, keyRunes("R"))
+		if strings.Contains(strings.Join(detailActionKeys(screen), " "), "R") {
+			t.Errorf("%s: the screen offers R although rootmove.Offered refuses it", c.name)
+		}
+		next, cmd := screen.Update(keyRunes("R"))
 		fm := next.(cleanupListModel)
 		if fm.restoreRoot || fm.done || cmd != nil || restored {
 			t.Errorf("%s: restoreRoot=%v done=%v cmd=%v restored=%v; want to stay in the list", c.name, fm.restoreRoot, fm.done, cmd, restored)
@@ -1853,7 +1883,7 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 func TestCleanupListRestoreRootNotWired(t *testing.T) {
 	m := newSizedCleanupList(t, restoreRootListFixture(), 100, 30)
 	m = moveTo(t, m, "topic")
-	next, cmd := m.Update(keyRunes("R"))
+	next, cmd := press(t, m, keyRunes("R")).Update(keyRunes("R"))
 	fm := next.(cleanupListModel)
 	if fm.restoreRoot || fm.done || cmd != nil {
 		t.Fatalf("restoreRoot=%v done=%v cmd=%v; want nothing to happen", fm.restoreRoot, fm.done, cmd)
@@ -2416,9 +2446,23 @@ func TestCleanupListRemoveOnCwdOrAncestorIsRefused(t *testing.T) {
 		row := byName[name]
 		want := "cannot be removed: " + cleanup.OneLine(cleanup.RowText(r, row))
 		for _, key := range []tea.KeyMsg{keyRunes("x"), keyRunes("d"), keyRunes("o")} {
-			m := moveTo(t, newSizedCleanupList(t, r, 120, 50), name)
-			got, fm := runPreview(t, m, key)
-			if len(got) != 0 || fm.phase != cleanupPhaseList || fm.status != want {
+			// The key opens the row's detail screen, which offers no removal
+			// for a row that cannot be removed, says why in its Verdict line,
+			// and refuses the key itself with the list's own wording.
+			screen := press(t, moveTo(t, newSizedCleanupList(t, r, 120, 50), name), key)
+			if screen.phase != cleanupPhaseDetail {
+				t.Fatalf("%s on %s: phase %v, want the detail screen", key.String(), name, screen.phase)
+			}
+			for _, a := range screen.detailActions() {
+				if a.Key == "x" || a.Key == "d" || a.Key == "o" {
+					t.Errorf("%s on %s: the screen offers %q for a row that cannot be removed", key.String(), name, a.Key)
+				}
+			}
+			if v := squash(screen.View()); !strings.Contains(v, squash(cleanup.RowText(r, row))) {
+				t.Errorf("%s on %s: the Verdict line does not say why:\n%s", key.String(), name, screen.View())
+			}
+			got, fm := runPreview(t, screen, key)
+			if len(got) != 0 || fm.phase != cleanupPhaseDetail || fm.status != want {
 				t.Errorf("%s on %s: previewed %v, phase %v, status %q, want no preview and %q", key.String(), name, got, fm.phase, fm.status, want)
 			}
 		}
@@ -2586,20 +2630,36 @@ func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
 		Status: cleanup.StatusProven}
 	build := func(o cleanup.Row) cleanupListModel {
 		rep := cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Rows: []cleanup.Row{here}, Folded: []cleanup.Row{o}}
-		return moveTo(t, newSizedCleanupList(t, rep, 120, 40), "here")
+		m := moveTo(t, newSizedCleanupList(t, rep, 120, 40), "here")
+		// The removal funcs, as cmd/wt wires them: the screen lists an action
+		// only when its func exists (runPreview swaps in its own recorder).
+		var ignored []string
+		m.rm.Preview = previewRecorder(&ignored)
+		return m
 	}
 	if !cleanupLocked(here) || cleanupLocked(origin) {
 		t.Fatalf("fixture: here locked %v, origin locked %v; want true, false", cleanupLocked(here), cleanupLocked(origin))
 	}
 
-	got, fm := runPreview(t, build(origin), keyRunes("o"))
+	// The screen offers o (its target is proven) even though the local row is
+	// locked, and the second o previews the origin ref alone.
+	screen := press(t, build(origin), keyRunes("o"))
+	if !strings.Contains(strings.Join(detailActionKeys(screen), " "), "o") {
+		t.Errorf("o on a locked local row with a proven origin: the screen offers no o: %v", detailActionKeys(screen))
+	}
+	got, fm := runPreview(t, screen, keyRunes("o"))
 	if fm.phase != cleanupPhasePreviewing || len(got) != 1 || got[0] != "origin/here" {
 		t.Errorf("o on a locked local row with a proven origin: previewed %v, phase %v, status %q; want the origin ref previewed", got, fm.phase, fm.status)
 	}
 
-	// x and d still refuse on the locked local row.
+	// x and d still refuse on the locked local row, and their screen does not
+	// offer them either.
 	for _, k := range []string{"x", "d"} {
-		if got, fm := runPreview(t, build(origin), keyRunes(k)); len(got) != 0 || fm.status != "cannot be removed: "+cleanup.OneLine(build(origin).items[build(origin).cursor].text) {
+		screen := press(t, build(origin), keyRunes(k))
+		if strings.Contains(strings.Join(detailActionKeys(screen), " "), k) {
+			t.Errorf("%s on the locked row: the screen offers it", k)
+		}
+		if got, fm := runPreview(t, screen, keyRunes(k)); len(got) != 0 || fm.status != "cannot be removed: "+cleanup.OneLine(build(origin).items[build(origin).cursor].text) {
 			t.Errorf("%s on the locked row: previewed %v, status %q; want the existing refusal", k, got, fm.status)
 		}
 	}
@@ -2612,8 +2672,12 @@ func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
 	if !cleanupLocked(lockedOrigin) {
 		lockedOrigin.Remote = "upstream" // any lock reason will do
 	}
-	got, fm = runPreview(t, build(lockedOrigin), keyRunes("o"))
-	if len(got) != 0 || fm.phase != cleanupPhaseList || !strings.HasPrefix(fm.status, "its origin ref cannot be removed: ") {
+	screen = press(t, build(lockedOrigin), keyRunes("o"))
+	if strings.Contains(strings.Join(detailActionKeys(screen), " "), "o") {
+		t.Errorf("o with a locked origin target: the screen offers o")
+	}
+	got, fm = runPreview(t, screen, keyRunes("o"))
+	if len(got) != 0 || fm.phase != cleanupPhaseDetail || !strings.HasPrefix(fm.status, "its origin ref cannot be removed: ") {
 		t.Errorf("o with a locked origin target: previewed %v, phase %v, status %q; want the refusal naming the origin ref", got, fm.phase, fm.status)
 	}
 }
@@ -2843,14 +2907,15 @@ func TestRowListFitsWithFilterAndPendingFill(t *testing.T) {
 	if !strings.Contains(view, "filter: ma") {
 		t.Errorf("kept query's filter line missing:\n%s", view)
 	}
-	// At 40 columns the footer drops to its short forms (fitHints): it is
-	// still the launch footer (n new = the new-worktree key) and still the
-	// last line, with the kept query's esc to clear it.
+	// At 40 columns the footer wraps to two balanced lines of short forms
+	// (fitHints), because `i` pushed it past the width: it is still the launch
+	// footer (n new = the new-worktree key), the kept query's esc is still
+	// there to clear it, and it is still the last thing on screen.
 	if !strings.Contains(view, "n new") {
 		t.Errorf("launch footer missing while filling:\n%s", view)
 	}
-	if last := strings.Split(view, "\n"); !strings.Contains(last[len(last)-1], "n new") {
-		t.Errorf("last line after keeping = %q, want the launch key footer", last[len(last)-1])
+	if lines := strings.Split(view, "\n"); !strings.Contains(strings.Join(lines[max(0, len(lines)-2):], " "), "q") {
+		t.Errorf("the footer is not the last thing on screen: %q", lines[len(lines)-1])
 	}
 	if strings.Contains(view, "x remove") {
 		t.Errorf("removal keys offered after keeping the query while filling:\n%s", view)

@@ -39,7 +39,7 @@ func TestPickerCtrlCFollowsTheRowList(t *testing.T) {
 	}
 
 	// The confirm screen: ctrl+c cancels it and the list stays.
-	m = pickerKey(t, pickerCursorTo(t, pickerActionsReady(t, rep, build), "loose"), keyRunes("x"))
+	m = pickerRowAction(t, pickerCursorTo(t, pickerActionsReady(t, rep, build), "loose"), "x")
 	row, _ := m.rows.selectedRow()
 	m, _ = updateMsg(m, cleanupPreviewMsg{previews: []removal.ItemPreview{{Item: removal.ItemFromRow(row), Approval: removal.ApprovalProven}}})
 	if m.rows.phase != cleanupPhaseConfirm {
@@ -128,6 +128,7 @@ func TestPickerRunStartBumpsTheGeneration(t *testing.T) {
 	m.rows.width, m.rows.height = 120, 40
 	m.ready = true
 	m = pickerCursorTo(t, m, "one")
+	m = pickerKey(t, m, keyRunes("x")) // the row's detail screen
 	next, cmd := updateMsg(m, keyRunes("x"))
 	m = next
 	for cmd != nil && m.rows.phase != cleanupPhaseConfirm {
