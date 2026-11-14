@@ -1,5 +1,5 @@
 ---
-name: adding-a-wt-agent
+name: wt-adding-a-wt-agent
 description: Steps to add a new AI agent driver to the wt launcher (internal/agents driver, bin shim, docs entry). Use when asked to add support for a new agent/CLI to wt.
 ---
 

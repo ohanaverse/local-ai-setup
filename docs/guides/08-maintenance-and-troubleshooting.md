@@ -607,7 +607,7 @@ and leaves the untracked ones (`modelman/.venv`, caches). If
 
 ### 8. Keeping slot profiles current
 
-Slot profiles (`~/.config/agent-wt/slot-profiles.toml`, [06 §10](06-wt-agents-and-models.md)) go stale: a model leaves the registry, a profile stops being launched, a better model appears. The project skill `manage-slot-profiles` (`.claude/skills/manage-slot-profiles/`) walks through it in Claude Code: it refreshes modeltiers when stale, offers to remove unused profiles, proposes better models per profile and confirms every write. Ask Claude to "manage my slot profiles" from this repo.
+Slot profiles (`~/.config/agent-wt/slot-profiles.toml`, [06 §10](06-wt-agents-and-models.md)) go stale: a model leaves the registry, a profile stops being launched, a better model appears. The project skill `wt-manage-slot-profiles` (`.claude/skills/wt-manage-slot-profiles/`) walks through it in Claude Code: it refreshes modeltiers when stale, offers to remove unused profiles, proposes better models per profile and confirms every write. Ask Claude to "manage my slot profiles" from this repo.
 
 The commands it runs, which you can also run yourself:
 

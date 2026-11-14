@@ -128,7 +128,7 @@ The `[litellm]` table (`enabled`/`url`/`api_key`) decides whether non-native mod
 
 > **Fixture gotcha.** `config.toml` lives in `$XDG_CONFIG_HOME/agent-wt/`, `registry.toml` in `$XDG_CONFIG_HOME/local-ai/` — fixtures populate both. LiteLLM's `config.yaml` follows neither, so a fixture that redirects the registry also names it (`WT_LITELLM_CONFIG` or `litellm.Options.Path`), or route writes refuse with `litellm.ErrRegistryRedirected`. `migrateConfigSchema` always ensures an `agy` agent, so a registry fixture with agents needs an `agy` provider or `Load` fails with `unknown provider "agy"`.
 
-Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry). Adding a provider: the `adding-a-provider` skill.
+Full rules: [docs/internals/config-and-registry.md](docs/internals/config-and-registry.md#registry). Adding a provider: the `wt-adding-a-provider` skill.
 
 ## Local-model resolution
 
@@ -181,7 +181,7 @@ Each agent registers a `Driver`; `BuildLaunchCmd(agent, m, worktreePath, yolo, c
 - **claude declares a gateway model's context window** (#405): `CLAUDE_CODE_MAX_CONTEXT_TOKENS` from the `context` of its `tiers.toml` entry **only when `context_basis` is `host`** (`claudeWindow`; #470: a `largest_row` window, or a file with no basis, is never declared; cloud models only, a local build has none). The single-model launch sets it unless the user's environment already has it; a slot profile sets the smallest window among the slots that have one, provided the default slot has one (`claudeSlotWindow`, #471; opusplan anchors on the smaller of opus and sonnet, none if either is unknown; a slot with no window is ignored, not a veto) unless the profile's env, `config_content.env` or the user's environment names it. The `loadTiers` seam is stubbed by tests and `tiers.IsolateForTest` closes the real file.
 - agy is a native passthrough, not a command agent: `-A agy` without `-M` errors when more than one agy model is eligible.
 
-Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driver, `Route`, an optional capability (`Seeder`, `Syncer`, `ArgSetter`, …), or `ollamacheck.Check`. Per-agent env/args: [docs/wt-agents/](docs/wt-agents/). New driver: the `adding-a-wt-agent` skill.
+Read [docs/internals/agents.md](docs/internals/agents.md) before changing a driver, `Route`, an optional capability (`Seeder`, `Syncer`, `ArgSetter`, …), or `ollamacheck.Check`. Per-agent env/args: [docs/wt-agents/](docs/wt-agents/). New driver: the `wt-adding-a-wt-agent` skill.
 
 ## Profiles (`internal/profiles`)
 
@@ -215,7 +215,7 @@ Read [docs/internals/smoke.md](docs/internals/smoke.md) before changing row dire
 
 ## Cloud sync (`wt cloud-sync`)
 
-`internal/cloudsync` decides what a sync changes (no I/O, no clock); `cmd/wt/cloudsync*.go` owns fetches, the ollama CLI, the confirmation, the one registry write, the route sync and exit codes. Behavior: [docs/wt-cloud-sync.md](docs/wt-cloud-sync.md); operator procedure (parser repair after exit 3): the `cloud-sync` skill. **Change the page and the skill with the behavior** — both quote its messages.
+`internal/cloudsync` decides what a sync changes (no I/O, no clock); `cmd/wt/cloudsync*.go` owns fetches, the ollama CLI, the confirmation, the one registry write, the route sync and exit codes. Behavior: [docs/wt-cloud-sync.md](docs/wt-cloud-sync.md); operator procedure (parser repair after exit 3): the `wt-cloud-sync` skill. **Change the page and the skill with the behavior** — both quote its messages.
 
 - **`ParsePricing` is the only code that knows the pricing page's HTML**; anything that stops looking like a price table is a `*ParseError`, never a short catalog (it would plan removing every ollama cloud entry).
 - **The plan's text is the plan** (`CatalogPlan.Format`/`PricePlan.Format`): deterministic, no clock, compared with the re-plan under the registry lock; `Apply` methods are pure and write only the shown diff.

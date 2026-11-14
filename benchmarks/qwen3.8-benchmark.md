@@ -309,7 +309,7 @@ To add another model (e.g., a different qwen3.8 quantization):
 For a totally new provider (say, vLLM), add it to:
 - `DIRECT_URLS`, `DIRECT_MODELS`, `LITELLM_MODELS`
 - `ISOLATE_ID` and both `for backend in` loops
-- llmbench: a `Backend` with the provider's start/stop/warmup in `llmbench/src/llmbench/providers/lifecycle/backends/`, registered in `BACKENDS` (see the `adding-a-benchmark-backend` skill). The script has no service-management code of its own; `isolate_one` calls `llmbench provider isolate`.
+- llmbench: a `Backend` with the provider's start/stop/warmup in `llmbench/src/llmbench/providers/lifecycle/backends/`, registered in `BACKENDS` (see the `wt-adding-a-benchmark-backend` skill). The script has no service-management code of its own; `isolate_one` calls `llmbench provider isolate`.
 
 For a new OpenRouter model, add its slug to the `OPENROUTER_MODELS` array in the script and register the model (`wt model add`): wt routes every configured cloud model, so the next `wt litellm sync` (or `wt start`) writes its `openrouter/<slug>` row — don't hand-add it to `~/.config/litellm/config.yaml`. The OpenRouter loop tests each model both directly and via LiteLLM automatically.
 

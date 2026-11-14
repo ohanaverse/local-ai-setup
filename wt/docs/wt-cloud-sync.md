@@ -12,8 +12,8 @@ wt cloud-sync --yes --approve-removals <digest>      # apply without a terminal
 wt cloud-sync --only openrouter                      # one flow
 ```
 
-An agent running the sync for you follows the `cloud-sync` skill
-(`wt/.claude/skills/cloud-sync/SKILL.md`), which is this page as a
+An agent running the sync for you follows the `wt-cloud-sync` skill
+(`wt/.claude/skills/wt-cloud-sync/SKILL.md`), which is this page as a
 procedure.
 
 ## The two flows

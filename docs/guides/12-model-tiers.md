@@ -521,7 +521,7 @@ message that names the entry.
 
 ### 5. Re-calibrate after a sentinel failure
 
-(In Claude Code, the `sentinel-failure` skill does the investigation below, reports what it found with a recommended edit, and asks before changing anything.)
+(In Claude Code, the `wt-sentinel-failure` skill does the investigation below, reports what it found with a recommended edit, and asks before changing anything.)
 
 `contracts.toml` pins a handful of sentinel models to the votes and the tier
 they had when the floors were set. When one differs, `run` prints every

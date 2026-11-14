@@ -711,7 +711,7 @@ def test_a_failed_sentinel_writes_nothing_and_exits_3(
         failed(
             3,
             "a sentinel moved. If the move is real, edit contracts.toml "
-            "(guide 12, step 5, or the sentinel-failure skill)",
+            "(guide 12, step 5, or the wt-sentinel-failure skill)",
         )
     )
     assert _arena(tmp_path / "cache") == (8, 3)  # and nothing pruned

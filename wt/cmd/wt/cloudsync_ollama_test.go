@@ -151,7 +151,7 @@ func TestRealOllamaCLIPinsTheDaemon(t *testing.T) {
 // `ollama pull` writes its progress, cursor escapes included, to stderr before
 // its `Error:` line, and wt prints the failure after an `ollama: error:`
 // prefix: handed the whole of stderr, every line after the first would lose
-// the prefix a reader (or the cloud-sync skill) finds errors by, and the
+// the prefix a reader (or the wt-cloud-sync skill) finds errors by, and the
 // escapes would reach the terminal. One line comes back: the last one that
 // says anything, which is where ollama puts its error.
 func TestOllamaFailureIsOneCleanLine(t *testing.T) {

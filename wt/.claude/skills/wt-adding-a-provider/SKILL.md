@@ -1,5 +1,5 @@
 ---
-name: adding-a-provider
+name: wt-adding-a-provider
 description: Steps to add a new model provider to wt (provider table row, live inventory probe, start/stop backend). Use when asked to add support for a new local or cloud model provider to wt.
 ---
 
@@ -111,5 +111,5 @@ start and stop needs all of them.
    (`TestProcessProvidersContractMatchesTheProviderTable`).
 
 For the benchmarks (`llmbench provider isolate <id>`), a local provider also
-needs an llmbench backend: see the `adding-a-benchmark-backend` skill at the
+needs an llmbench backend: see the `wt-adding-a-benchmark-backend` skill at the
 repo root.
