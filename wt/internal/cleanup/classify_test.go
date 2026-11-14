@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ohanaverse/local-ai-setup/wt/internal/dirtsnap"
 )
 
 // later is a clock an hour ahead: every branch the fixture made is older than
@@ -867,6 +869,176 @@ func TestClassifyFailClosedRules(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClassifyWorkStatePrecedence pins the STATUS word (Row.State) per the
+// spec's precedence: conflicted (operation marker or a bare unmerged index)
+// over clean (ignored files alone leave a row clean) over in main (contained
+// dirt) over dirty, and "-" on rows with no readable worktree state (gates
+// error, branch, remote, bare). Why: the table's STATUS cell and the "in
+// main" signal are verdicts a user scans at a glance; a wrong word there
+// misstates how much uncommitted work sits where.
+func TestClassifyWorkStatePrecedence(t *testing.T) {
+	// Each scenario gets a fresh repository: conflict fixtures write to
+	// main as well as the worktree and are not idempotent, and a fresh repo
+	// per case keeps one scenario's leftovers out of another's gather.
+	scenarios := []struct {
+		name  string
+		build func(t *testing.T, f *fixture) string // returns the row name
+		want  WorkState
+	}{
+		{"clean worktree", func(t *testing.T, f *fixture) string {
+			f.Worktree("topic")
+			return "topic"
+		}, StateClean},
+		{"ignored files alone leave it clean", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.IgnoredIn(p, ".env")
+			return "topic"
+		}, StateClean},
+		{"dirty", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.DirtyIn(p, "notes.txt")
+			return "topic"
+		}, StateDirty},
+		{"conflicted by an operation in progress", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.StoppedMerge(p)
+			return "topic"
+		}, StateConflicted},
+		{"conflicted by a bare unmerged index (no marker)", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			f.StoppedMerge(p)
+			// Remove the marker: the index keeps its unmerged entries, which
+			// must still read conflicted.
+			if err := os.Remove(gitPath(t, p, "MERGE_HEAD")); err != nil {
+				t.Fatal(err)
+			}
+			return "topic"
+		}, StateConflicted},
+		{"in main: contained uncommitted work", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic") // forked before main gains n.txt
+			f.Commit("n.txt", "same\n", "main adds n.txt")
+			f.Push("main") // the base holds n.txt; the worktree's copy stays untracked
+			if err := os.WriteFile(filepath.Join(p, "n.txt"), []byte("same\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return "topic"
+		}, StateInMain},
+		{"gates error (prunable)", func(t *testing.T, f *fixture) string {
+			p := f.Worktree("topic")
+			if err := os.RemoveAll(p); err != nil { // broken .git link: gates cannot run
+				t.Fatal(err)
+			}
+			return "topic"
+		}, StateUnknown},
+	}
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			f := newFixture(t)
+			noGh(t)
+			row := sc.build(t, f)
+			r := Classify(gather(t, f), Options{Now: later()})
+			got := findRow(t, r, KindWorktree, row)
+			if got.State != sc.want {
+				t.Fatalf("State = %q, want %q%s", got.State, sc.want, dumpRows(r.Rows))
+			}
+		})
+	}
+
+	t.Run("bare row", func(t *testing.T) {
+		s := handSnapshot()
+		s.NoDefault = true
+		s.Worktrees = []WorktreeState{{Fact: WorktreeFact{Path: "/r", Bare: true, Primary: true}}}
+		r := Classify(s, Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "r")
+		if row.State != StateUnknown {
+			t.Fatalf("bare State = %q, want %q", row.State, StateUnknown)
+		}
+	})
+	t.Run("branch and remote rows", func(t *testing.T) {
+		f := newFixture(t)
+		noGh(t)
+		f.Branch("solo")
+		f.Push("solo")
+		r := Classify(gather(t, f), Options{Now: later()})
+		if row := findRow(t, r, KindBranch, "solo"); row.State != StateUnknown {
+			t.Errorf("branch State = %q, want %q", row.State, StateUnknown)
+		}
+		if row := findRow(t, r, KindRemote, "solo"); row.State != StateUnknown {
+			t.Errorf("remote State = %q, want %q", row.State, StateUnknown)
+		}
+	})
+}
+
+// TestWorktreeRuleContainedDirtDoesNotRaiseUniqueWork pins spec §4's worktree
+// rule: a branch proven by any rung whose uncommitted change-set is contained
+// in the base reads proven (the dirty gate stays quiet), the detail says the
+// uncommitted changes are in main, and State is "in main"; any part not
+// contained (TriNo) or unreadable (TriUnknown, over the caps) keeps today's
+// unique_work. Why: contained dirt loses nothing by removal — making it raise
+// unique work would deny --yes exactly where deletion is safe, and letting an
+// unknown count as contained would be a false proven.
+func TestWorktreeRuleContainedDirtDoesNotRaiseUniqueWork(t *testing.T) {
+	build := func(t *testing.T, content string, capFiles *int) (*fixture, string) {
+		t.Helper()
+		f := newFixture(t)
+		wp := f.Worktree("topic") // topic at the fork: an ancestor of main
+		f.Commit("n.txt", "same\n", "main adds n.txt")
+		f.Push("main") // the base holds n.txt
+		if err := os.WriteFile(filepath.Join(wp, "n.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if capFiles != nil {
+			old := dirtLimits
+			dirtLimits = dirtsnap.Limits{MaxFiles: *capFiles, MaxBytes: DirtMaxBytes}
+			t.Cleanup(func() { dirtLimits = old })
+		}
+		return f, wp
+	}
+
+	t.Run("contained: proven, detail says in main", func(t *testing.T) {
+		f, _ := build(t, "same\n", nil)
+		noGh(t)
+		r := Classify(gather(t, f), Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "topic")
+		if row.Status != StatusProven || row.State != StateInMain {
+			t.Fatalf("row = (%s, state %q), want (proven, %q)%s", row.Status, row.State, StateInMain, dumpRows(r.Rows))
+		}
+		if slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+			t.Errorf("reasons %v carry dirty: contained dirt must not raise unique work", reasonCodes(row.Reasons))
+		}
+		if text := RowText(r, row); !strings.Contains(text, "uncommitted changes are in main") {
+			t.Errorf("detail = %q, want it to say the uncommitted changes are in main", text)
+		}
+	})
+
+	t.Run("not contained: unique work stands", func(t *testing.T) {
+		f, _ := build(t, "different\n", nil)
+		noGh(t)
+		r := Classify(gather(t, f), Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "topic")
+		if row.Status != StatusUniqueWork || row.State != StateDirty {
+			t.Fatalf("row = (%s, state %q), want (unique_work, %q)%s", row.Status, row.State, StateDirty, dumpRows(r.Rows))
+		}
+		if !slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+			t.Errorf("reasons %v lack dirty", reasonCodes(row.Reasons))
+		}
+	})
+
+	t.Run("containment unknown: unique work stands", func(t *testing.T) {
+		overCap := 0
+		f, _ := build(t, "same\n", &overCap)
+		noGh(t)
+		r := Classify(gather(t, f), Options{Now: later()})
+		row := findRow(t, r, KindWorktree, "topic")
+		if row.Status != StatusUniqueWork {
+			t.Fatalf("status %s, want unique_work over the caps%s", row.Status, dumpRows(r.Rows))
+		}
+		if !slices.Contains(reasonCodes(row.Reasons), ReasonDirty) {
+			t.Errorf("reasons %v lack dirty", reasonCodes(row.Reasons))
+		}
+	})
 }
 
 // TestClassifyChangesInBaseIsNotATreeProof pins rung 6's verdict

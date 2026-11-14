@@ -30,6 +30,23 @@ const (
 	StatusInUse      Status = "in_use"      // a hard blocker: cannot be removed
 )
 
+// WorkState is a worktree row's STATUS word: what its uncommitted state
+// reads as (Row.State), independent of its verdict. Precedence when Classify
+// derives it: conflicted over clean over in main over dirty; StateUnknown
+// ("-") when the state could not be read and on rows with no worktree state
+// (branch, remote, bare). Classify only reads facts the gather produced —
+// containment and the diffstat are computed in CheckGates (review amendment
+// 1: gathered, never classified).
+type WorkState string
+
+const (
+	StateClean      WorkState = "clean"      // no tracked changes, no non-ignored untracked files
+	StateDirty      WorkState = "dirty"      // changes that are not contained in the base
+	StateInMain     WorkState = "in main"    // dirty, but the whole change-set is in the base
+	StateConflicted WorkState = "conflicted" // an operation in progress or an unmerged index
+	StateUnknown    WorkState = "-"          // unreadable, or no worktree state to read
+)
+
 // GHState says how much of the PR lookup gh answered.
 type GHState string
 
@@ -144,6 +161,19 @@ type Row struct {
 	PRTag     *PRInfo
 	AgeDays   int
 	AgeKnown  bool // AgeDays is a real age (0 then means under a day), not "could not tell"
+
+	// State is a worktree row's STATUS word (WorkState): what its
+	// uncommitted state reads as, independent of its verdict — "clean",
+	// "dirty", "in main" (the whole change-set is contained in the base),
+	// "conflicted", or "-" when the state could not be read and on branch,
+	// remote and bare rows, which have no worktree state. Diff counts that
+	// uncommitted change and Sessions the live sessions holding the
+	// checkout; both zero on branch and remote rows. Display facts: never
+	// serialised (RowJSON is built field by field;
+	// TestCleanupJSONUnchangedByNewRowFields).
+	State    WorkState
+	Diff     DiffStat
+	Sessions int
 
 	// The facts below serve removal only and are never serialised (RowJSON
 	// is built field by field; TestCleanupJSONUnchangedByNewRowFields).
@@ -518,6 +548,24 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 	row.Primary, row.Current, row.Bare = w.Primary, w.Current, w.Bare
 	j := judge{kind: KindWorktree}
 	g := ws.Gates
+	// The display facts: the STATUS word (spec §3's precedence), the
+	// diffstat and the live-session count. Everything but a healthy
+	// non-bare worktree's state reads "-".
+	row.State = StateUnknown
+	row.Diff = g.Diff
+	row.Sessions = c.s.SessionsOn(w.Path)
+	if ws.GatesErr == "" && !w.Bare {
+		switch {
+		case g.Conflicted || slices.ContainsFunc(g.Blockers, func(r Reason) bool { return r.Code == BlockOperation }):
+			row.State = StateConflicted
+		case !g.Dirty:
+			row.State = StateClean
+		case g.InBase == TriYes:
+			row.State = StateInMain
+		default:
+			row.State = StateDirty
+		}
+	}
 	// The blockers found before a gates error still block: in use wins.
 	j.blockers = append(j.blockers, g.Blockers...)
 	if ws.GatesErr != "" {
@@ -531,8 +579,12 @@ func (c *classifier) worktree(ws WorktreeState) Row {
 		row.Losses.IgnoredBytes = g.IgnoredBytes
 		row.Losses.DetachedUnique = g.DetachedUnique
 		// Covered dirt is not raised; the preserved reason (soft) says it
-		// instead, and Losses.Dirty stays raw.
-		if g.Dirty && !c.dirtCovered(ws) {
+		// instead, and Losses.Dirty stays raw. Contained dirt is not raised
+		// either (spec §4's worktree rule): its changes are in the base, so
+		// removal loses none of them — the row keeps whatever its other
+		// evidence says, proven when the branch itself is proven. An unknown
+		// containment (TriUnknown) raises it as always: fail closed.
+		if g.Dirty && !c.dirtCovered(ws) && g.InBase != TriYes {
 			j.uniq(ReasonDirty, "uncommitted or untracked files")
 		}
 		if g.DetachedUnique && !c.detachedPreserved(ws) {
@@ -634,6 +686,7 @@ func (c *classifier) head(ref string) (RefFact, bool) {
 
 func (c *classifier) branchRow(h RefFact) Row {
 	row := Row{Kind: KindBranch, Name: h.Name, Branch: h.Name, Remote: h.Remote, Ref: h.Ref, Tip: h.Tip}
+	row.State = StateUnknown // branch rows have no worktree state
 	row.Losses.Unpushed = -1
 	j := judge{kind: KindBranch}
 	if c.isDefault(h.Name) {
@@ -887,6 +940,7 @@ func (c *classifier) netZeroUnpushed(j *judge, p Proof) {
 // content in the base.
 func (c *classifier) remoteRow(rf RefFact) Row {
 	row := Row{Kind: KindRemote, Name: rf.Name, Branch: rf.Name, Remote: rf.Remote, Ref: rf.Ref, Tip: rf.Tip}
+	row.State = StateUnknown // remote rows have no worktree state
 	j := judge{kind: KindRemote}
 	if c.isDefault(rf.Name) {
 		// The remote ref of the default branch (origin/main): a floor, like

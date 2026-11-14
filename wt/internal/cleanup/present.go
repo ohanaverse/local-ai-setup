@@ -161,6 +161,8 @@ func evidenceText(row Row, base string) string {
 		return "adds nothing to " + base
 	case EvMergeAddsNothing:
 		return "squash merged, content is in " + base
+	case EvChangesInBase:
+		return "all the changes are in " + base
 	case EvPRTip:
 		if row.PR != nil {
 			return fmt.Sprintf("squash merged, PR #%d", row.PR.Number)
@@ -246,6 +248,9 @@ func RowText(rep Report, row Row) string {
 	}
 	if ev := evidenceText(row, rep.Base.Ref); ev != "" {
 		parts = append(parts, ev)
+	}
+	if row.State == StateInMain {
+		parts = append(parts, "uncommitted changes are in main")
 	}
 	if len(parts) == 0 {
 		return "no evidence"

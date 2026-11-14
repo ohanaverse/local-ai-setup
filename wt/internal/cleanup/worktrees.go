@@ -69,6 +69,9 @@ type Gates struct {
 	// cannot claim containment, and anything else is the zero value,
 	// TriUnknown — never contained.
 	InBase Tri
+	// Conflicted is an unmerged index: a conflict git still holds, even
+	// when the operation marker is gone. STATUS's "conflicted".
+	Conflicted bool
 }
 
 // GateInputs are what CheckGates cannot learn from git.
@@ -255,6 +258,9 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	for _, op := range ops {
 		block(BlockOperation, op)
 	}
+	if out.Conflicted, err = unmergedIndex(wg); err != nil {
+		return partial(), err
+	}
 
 	if out.Dirty, err = dirty(wg); err != nil {
 		return partial(), err
@@ -273,6 +279,22 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 		}
 	}
 	return out, nil
+}
+
+// unmergedIndex reports whether the checkout wg runs in has an index with
+// unmerged entries — a conflict git still holds even when the operation
+// marker that caused it is gone (a hand-aborted merge). It reads only; ls-files
+// never refreshes the index.
+func unmergedIndex(wg Git) (bool, error) {
+	args := []string{"ls-files", "--unmerged", "-z"}
+	o, err := wg.Run(args...)
+	if err != nil {
+		return false, err
+	}
+	if o.Code != 0 {
+		return false, gitFailure(o, args...)
+	}
+	return strings.Trim(o.Stdout, "\x00") != "", nil
 }
 
 // operationsInProgress names each operation marker present in the
