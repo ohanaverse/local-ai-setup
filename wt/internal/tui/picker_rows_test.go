@@ -60,7 +60,7 @@ func pickerReady(t *testing.T, rep cleanup.Report) model {
 func pickerCursorTo(t *testing.T, m model, name string) model {
 	t.Helper()
 	for i, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && cleanup.DisplayName(it.row) == name {
+		if !it.newWorktree && cleanup.DisplayName(it.row) == name {
 			m.rows.cursor = i
 			return m
 		}
@@ -143,7 +143,7 @@ func TestPickerLoadsRowsFromCleanupAndRendersRootDefaultAndHeld(t *testing.T) {
 	for i := range m.rows.items {
 		it := &m.rows.items[i]
 		switch {
-		case it.heading != "" || it.newWorktree:
+		case it.newWorktree:
 		case it.row.Primary:
 			root = it
 		case it.row.Kind == cleanup.KindBranch && it.row.Name == "main":
@@ -200,7 +200,7 @@ func TestPickerStartsOnCurrentRow(t *testing.T) {
 	tags := func(name string) string {
 		var out []string
 		for _, it := range m.rows.items {
-			if !it.newWorktree && it.heading == "" && it.row.Name == name {
+			if !it.newWorktree && it.row.Name == name {
 				for _, tg := range it.tags {
 					out = append(out, tg.Text)
 				}
@@ -390,7 +390,7 @@ func TestPickerStalePRTagSuppressed(t *testing.T) {
 	m, cmd = updateMsg(m, cmd()) // the fill
 	m, _ = updateMsg(m, cmd())   // the PR lookups
 	for _, it := range m.rows.items {
-		if it.heading != "" || it.newWorktree {
+		if it.newWorktree {
 			continue
 		}
 		var texts []string
@@ -508,11 +508,13 @@ func TestSelectedRowIsFalseOffRows(t *testing.T) {
 		t.Error("selectedRow ok on the new-worktree item")
 	}
 	m.cursor = 1
-	if m.items[1].heading == "" {
-		t.Fatal("item 1 is not a heading")
+	if _, ok := m.selectedRow(); !ok {
+		t.Fatal("item 1 is not a row")
 	}
+	// A filtered-out row is off the list too.
+	m.filter, m.cursor = "zzz-no-such-row", 1
 	if _, ok := m.selectedRow(); ok {
-		t.Error("selectedRow ok on a heading")
+		t.Error("selectedRow ok on a row the filter hides")
 	}
 }
 
@@ -627,7 +629,7 @@ func TestPickerPaintsFactsThenFillsThenPRs(t *testing.T) {
 	}
 	pending := 0
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree {
+		if !it.newWorktree {
 			if !it.row.Pending {
 				t.Fatalf("first paint row %q is not Pending", it.row.Name)
 			}
@@ -645,7 +647,7 @@ func TestPickerPaintsFactsThenFillsThenPRs(t *testing.T) {
 	}
 	m, cmd = updateMsg(m, filled)
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && it.row.Pending {
+		if !it.newWorktree && it.row.Pending {
 			t.Fatalf("row %q still Pending after the fill", it.row.Name)
 		}
 	}
@@ -828,7 +830,7 @@ func TestTicksDefaultAfterFillAndKeepLaterChoices(t *testing.T) {
 
 	ticked := map[string]bool{}
 	for i, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree {
+		if !it.newWorktree {
 			ticked[it.row.Name] = m.rows.ticked[i]
 		}
 	}
@@ -855,10 +857,8 @@ func TestRowOrderStableAcrossStages(t *testing.T) {
 	m, _ = updateMsg(m, rowsLoadedMsg{report: facts, repoRoot: facts.Repo})
 	names := func() []string {
 		var out []string
-		for _, g := range cleanup.KindGroups(m.rows.report) {
-			for _, row := range g.Rows {
-				out = append(out, cleanup.DisplayName(row)+"/"+g.Heading)
-			}
+		for _, row := range cleanup.ListOrder(m.rows.report) {
+			out = append(out, cleanup.DisplayName(row))
 		}
 		return out
 	}

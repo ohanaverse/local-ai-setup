@@ -102,12 +102,12 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 			// stage never knew whether it would prove, so a tick (or the
 			// lack of one) made against that ignorance carries no choice —
 			// it takes the new report's default below.
-			if it.heading == "" && !it.newWorktree && !it.row.Pending {
+			if !it.newWorktree && !it.row.Pending {
 				was[keyOf(it.row)] = m.ticked[i]
 			}
 		}
 		for i, it := range next.items {
-			if it.heading != "" || it.newWorktree {
+			if it.newWorktree {
 				continue
 			}
 			if ticked, seen := was[keyOf(it.row)]; seen {
@@ -125,7 +125,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 		switch {
 		case cur.newWorktree:
 			next.cursor = 0
-		case cur.heading == "":
+		default:
 			next.selectWhere(func(r cleanup.Row) bool { return keyOf(r) == keyOf(cur.row) })
 		}
 	}
@@ -137,7 +137,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 // whether there was one.
 func (m *cleanupListModel) selectWhere(pred func(cleanup.Row) bool) bool {
 	for i, it := range m.items {
-		if it.heading == "" && !it.newWorktree && pred(it.row) {
+		if !it.newWorktree && pred(it.row) {
 			m.cursor = i
 			return true
 		}
@@ -156,25 +156,15 @@ func filterText(it cleanupItem) string {
 }
 
 // hidden reports whether the filter hides item i: a row that does not match
-// it, the new-worktree item while there is a query, a heading with no row
-// left under it.
+// it, and the new-worktree item while there is a query.
 func (m *cleanupListModel) hidden(i int) bool {
 	if m.filter == "" || i < 0 || i >= len(m.items) {
 		return false
 	}
-	it := m.items[i]
-	switch {
-	case it.newWorktree:
-		return true
-	case it.heading != "":
-		for j := i + 1; j < len(m.items) && m.items[j].heading == ""; j++ {
-			if !m.hidden(j) {
-				return false
-			}
-		}
+	if m.items[i].newWorktree {
 		return true
 	}
-	return !strings.Contains(filterText(it), strings.ToLower(m.filter))
+	return !strings.Contains(filterText(m.items[i]), strings.ToLower(m.filter))
 }
 
 // settleCursor puts the cursor on the first visible item when the filter
@@ -183,8 +173,8 @@ func (m *cleanupListModel) settleCursor() {
 	if m.cursor >= 0 && !m.hidden(m.cursor) {
 		return
 	}
-	for i, it := range m.items {
-		if it.heading == "" && !m.hidden(i) {
+	for i := range m.items {
+		if !m.hidden(i) {
 			m.cursor = i
 			return
 		}

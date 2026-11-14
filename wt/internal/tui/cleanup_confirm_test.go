@@ -266,9 +266,6 @@ func setTicks(t *testing.T, m cleanupListModel, names ...string) cleanupListMode
 		want[n] = true
 	}
 	for i, it := range m.items {
-		if it.heading != "" {
-			continue
-		}
 		if m.ticked[i] != want[cleanup.DisplayName(it.row)] {
 			m.cursor = i
 			m = cleanupSend(t, m, spaceKey)
@@ -538,7 +535,7 @@ func TestResultsShowReasonsAndRetainedBranches(t *testing.T) {
 		t.Fatalf("after a key: phase %v refreshed %d", m.phase, h.refreshed)
 	}
 	for _, it := range m.items {
-		if it.heading == "" && it.row.Kind == cleanup.KindWorktree && (it.row.Name == "done") {
+		if it.row.Kind == cleanup.KindWorktree && (it.row.Name == "done") {
 			t.Errorf("rebuilt list still has worktree done")
 		}
 	}
@@ -563,7 +560,7 @@ func TestRemoteRowsNeverEnterTheSelection(t *testing.T) {
 	m := h.list(120, 50)
 	remotes := 0
 	for i, it := range m.items {
-		if it.heading == "" && it.row.Kind == cleanup.KindRemote {
+		if it.row.Kind == cleanup.KindRemote {
 			remotes++
 			m.cursor = i
 			m = cleanupSend(t, m, spaceKey)
@@ -580,7 +577,7 @@ func TestRemoteRowsNeverEnterTheSelection(t *testing.T) {
 	}
 	// Even a remote row forced into the tick map stays out of the preview.
 	for i, it := range m.items {
-		if it.heading == "" && it.row.Kind == cleanup.KindRemote {
+		if it.row.Kind == cleanup.KindRemote {
 			m.ticked[i] = true
 		}
 	}

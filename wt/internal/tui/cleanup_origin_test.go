@@ -64,7 +64,7 @@ func TestOriginRowsAreTickableButNeverTickedForYou(t *testing.T) {
 	m := newSizedCleanupList(t, r, 120, 40)
 	at := func(name string) int {
 		for i, it := range m.items {
-			if it.heading == "" && cleanup.DisplayName(it.row) == name {
+			if cleanup.DisplayName(it.row) == name {
 				return i
 			}
 		}

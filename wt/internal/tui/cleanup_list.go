@@ -19,14 +19,16 @@ import (
 )
 
 // The row list (layout A of the cleanup design, unified by the user-driven
-// cleanup design's "The list"): the report's header, then every row grouped
-// by kind (cleanup.KindGroups: WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES),
-// each row carrying its verdict (proven / less sure / unique work / in use),
-// its cleanup.RowTags (a TagWarn tag in the warning colour) and its
-// sentence, and a detail line under the list that explains the highlighted
-// row. The words — headings, tags, the evidence sentence, the header lines,
-// which rows are tickable — are all internal/cleanup/present.go's; this file
-// only lays them out and styles them.
+// cleanup design's "The list"): the report's header, then every row in one
+// flat order (cleanup.ListOrder: the root first, then local worktrees and
+// branches, then remote branches, each part by display name), each row
+// carrying its verdict (proven / less sure / unique work / in use), its
+// cleanup.RowTags (a TagWarn tag in the warning colour) and its sentence, and
+// a detail line under the list that explains the highlighted row. The words —
+// tags, the evidence sentence, the header lines, which rows are tickable — are
+// all internal/cleanup/present.go's; this file only lays them out and styles
+// them. Kind is an ordering rule now, not a heading: the list draws no
+// section lines.
 //
 // One component, two modes (rowListOpts.Mode):
 //   - manage (`wt cleanup`): a checkbox column; space ticks, `a` ticks every
@@ -112,11 +114,10 @@ type newWorktreeChosenMsg struct{}
 // newWorktreeLabel is launch mode's first item.
 const newWorktreeLabel = "+ New worktree…"
 
-// cleanupItem is one entry of the list: a group heading, a row, or launch
-// mode's new-worktree item.
+// cleanupItem is one entry of the list: a row, or launch mode's
+// new-worktree item.
 type cleanupItem struct {
-	heading     string // set on a heading; the rest is then unset
-	newWorktree bool   // launch mode's "+ New worktree…"; the rest is unset
+	newWorktree bool // launch mode's "+ New worktree…"; the rest is unset
 	row         cleanup.Row
 	text        string        // cleanup.RowText for the row
 	tags        []cleanup.Tag // the tags drawn for the row (rowTags)
@@ -231,7 +232,7 @@ type cleanupListModel struct {
 	ticked map[int]bool // by item index
 	cursor int          // item index of the highlighted item; -1 with none
 	offset int          // the first list line on screen
-	rows   int          // number of row items (headings and the new-worktree item excluded)
+	rows   int          // number of row items (the new-worktree item excluded)
 	// table is the shared column layout every row line renders through
 	// (rowtable): built from the report's rows once, refitted to m.width on
 	// every frame. Nil only before a report is loaded.
@@ -304,9 +305,9 @@ func newCleanupList(r cleanup.Report, th themes.Theme, now time.Time, rm RemoveF
 }
 
 // newRowList builds the list for r in o.Mode: launch mode's new-worktree
-// item first, then every kind group's heading and rows in
-// cleanup.KindGroups' order. In manage mode Tickable local rows start
-// ticked; in launch mode nothing is. The cursor starts on the first item.
+// item first, then every row in cleanup.ListOrder's order. In manage mode
+// Tickable local rows start ticked; in launch mode nothing is. The cursor
+// starts on the first item.
 func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 	m := cleanupListModel{opts: o, report: r, theme: o.Theme, now: o.Now, rm: o.RemoveFuncs, ticked: map[int]bool{}, cursor: -1, clock: time.Now}
 	root := refreshRoot(o.Root, r)
@@ -322,22 +323,19 @@ func newRowList(r cleanup.Report, o rowListOpts) cleanupListModel {
 		m.items = append(m.items, cleanupItem{newWorktree: true})
 		m.cursor = 0
 	}
-	for _, g := range cleanup.KindGroups(r) {
-		m.items = append(m.items, cleanupItem{heading: g.Heading})
-		for _, row := range g.Rows {
-			it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row, o.Mode != modeLaunch), locked: cleanupLocked(row)}
-			if o.Mode == modeLaunch {
-				it.tags = append(launchTags(r, row, here), it.tags...)
-			}
-			if o.Mode == modeManage && row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
-				m.ticked[len(m.items)] = true
-			}
-			if m.cursor < 0 {
-				m.cursor = len(m.items)
-			}
-			m.items = append(m.items, it)
-			m.rows++
+	for _, row := range cleanup.ListOrder(r) {
+		it := cleanupItem{row: row, text: cleanup.RowText(r, row), tags: rowTags(row, o.Mode != modeLaunch), locked: cleanupLocked(row)}
+		if o.Mode == modeLaunch {
+			it.tags = append(launchTags(r, row, here), it.tags...)
 		}
+		if o.Mode == modeManage && row.Tickable() && !it.locked && row.Kind != cleanup.KindRemote {
+			m.ticked[len(m.items)] = true
+		}
+		if m.cursor < 0 {
+			m.cursor = len(m.items)
+		}
+		m.items = append(m.items, it)
+		m.rows++
 	}
 	// One table for the header and every row; the prefix is the rows' fixed
 	// left margin (4 in launch mode, 8 in manage: the checkbox).
@@ -775,7 +773,7 @@ func (m cleanupListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "a":
 				for i, it := range m.items {
-					if it.heading == "" && !it.locked && it.row.Tickable() && it.row.Kind != cleanup.KindRemote {
+					if !it.locked && it.row.Tickable() && it.row.Kind != cleanup.KindRemote {
 						m.ticked[i] = true
 					}
 				}
@@ -796,7 +794,7 @@ func emit(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
 // refusal is a bare repository's own row: it has no directory to run an
 // agent in, so enter only says so.
 func (m cleanupListModel) choose() (cleanupListModel, tea.Cmd) {
-	if m.hidden(m.cursor) || m.items[m.cursor].heading != "" {
+	if m.hidden(m.cursor) {
 		return m, nil
 	}
 	if m.items[m.cursor].newWorktree {
@@ -893,14 +891,13 @@ func (m cleanupListModel) originTarget(row cleanup.Row) (cleanup.Row, bool) {
 	return cleanup.Row{}, false
 }
 
-// move moves the cursor n items in direction dir, skipping headings and
-// hidden rows. A single step (n == 1) wraps past either end — down from the
+// move moves the cursor n items in direction dir, skipping hidden rows. A single step (n == 1) wraps past either end — down from the
 // last item lands on the first, up from the first on the last (spec §6) —
 // while a multi-item move (paging: pgup/pgdown, home/end) still stops at
 // the ends. A wrap that would land back on the cursor (one item to sit on)
 // leaves it put.
 func (m *cleanupListModel) move(dir, n int, wrap bool) {
-	sittable := func(j int) bool { return m.items[j].heading == "" && !m.hidden(j) }
+	sittable := func(j int) bool { return !m.hidden(j) }
 	for ; n > 0; n-- {
 		next := -1
 		for j := m.cursor + dir; j >= 0 && j < len(m.items); j += dir {
@@ -914,7 +911,7 @@ func (m *cleanupListModel) move(dir, n int, wrap bool) {
 				return
 			}
 			// Past the end: scan from the far side for the first item the
-			// cursor may sit on (headings and hidden rows skipped there too).
+			// cursor may sit on (hidden rows skipped there too).
 			from, step := 0, 1
 			if dir < 0 {
 				from, step = len(m.items)-1, -1
@@ -933,7 +930,7 @@ func (m *cleanupListModel) move(dir, n int, wrap bool) {
 	}
 }
 
-// itemLines renders item i: a heading is one line; a row is exactly one
+// itemLines renders item i: a row is exactly one
 // table line — its prefix (session digit, cursor, checkbox) plus the fitted
 // columns, with its badges as trailing marks — and the new-worktree item its
 // own label line. The row's sentence and age live in the detail block.
@@ -942,10 +939,6 @@ func (m *cleanupListModel) itemLines(i int) []string {
 		return nil
 	}
 	it := m.items[i]
-	if it.heading != "" {
-		style := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenHeader)).Bold(true)
-		return []string{style.Render(clip(it.heading, m.width))}
-	}
 	style := m.rowStyle(it, i == m.cursor)
 	if it.newWorktree {
 		return []string{style.Render(clip(rowPrefix(0, i == m.cursor, "")+newWorktreeLabel, m.width))}
@@ -978,7 +971,7 @@ func tagTexts(tags []cleanup.Tag) []string {
 // gates, records or proofs to stand on.
 func (m cleanupListModel) filling() bool {
 	for _, it := range m.items {
-		if it.heading == "" && !it.newWorktree && it.row.Pending {
+		if !it.newWorktree && it.row.Pending {
 			return true
 		}
 	}
@@ -1021,8 +1014,7 @@ type cleanupLayout struct {
 // highlighted row is used, so a short terminal loses the report header
 // first, then the title, then the detail line, and the footer only when even
 // the row alone barely fits. The offset keeps the whole
-// highlighted row on screen (its top line when it is taller than the room),
-// with its group heading when it is the group's first row and there is room.
+// highlighted row on screen (its top line when it is taller than the room).
 // A list taller than its room gives one of its lines to a scroll hint.
 func (m *cleanupListModel) layout() cleanupLayout {
 	// Fit the table to this frame's width before any line renders: which
@@ -1102,11 +1094,6 @@ func (m *cleanupListModel) layout() cleanupLayout {
 	}
 	if cs < off {
 		off = cs
-	}
-	if m.cursor > 0 && m.items[m.cursor-1].heading != "" {
-		if hs := start[m.cursor-1]; hs < off && ce-hs <= l.listH {
-			off = hs
-		}
 	}
 	// Never open the list on the tail of a wrapped row: start at the next
 	// item instead, while that still shows the highlighted row.
@@ -1319,12 +1306,12 @@ func capLines(s string, height int) string {
 }
 
 // selectedRow is the highlighted row; false on an empty list, on launch
-// mode's new-worktree item, on a heading and on a row the filter hides.
+// mode's new-worktree item and on a row the filter hides.
 func (m cleanupListModel) selectedRow() (cleanup.Row, bool) {
 	if m.cursor < 0 || m.hidden(m.cursor) {
 		return cleanup.Row{}, false
 	}
-	if it := m.items[m.cursor]; it.heading == "" && !it.newWorktree {
+	if it := m.items[m.cursor]; !it.newWorktree {
 		return it.row, true
 	}
 	return cleanup.Row{}, false
@@ -1334,7 +1321,7 @@ func (m cleanupListModel) selectedRow() (cleanup.Row, bool) {
 func (m cleanupListModel) tickedItems() []cleanupItem {
 	var out []cleanupItem
 	for i, it := range m.items {
-		if it.heading == "" && m.ticked[i] {
+		if m.ticked[i] {
 			out = append(out, it)
 		}
 	}

@@ -106,7 +106,7 @@ func TestPickerRemovalDiscardsEarlierFills(t *testing.T) {
 	}
 	m, _ = updateMsg(m, rowPRsLoadedMsg{Report: rep, gen: gen, Snap: cleanup.Snapshot{PRsAsked: true}})
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
+		if !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
 			t.Error("a fill dispatched before the run brought the removed row back")
 		}
 	}
@@ -171,7 +171,7 @@ func TestPickerReloadFromBeforeARunIsDropped(t *testing.T) {
 		t.Error("a dropped reload left the refresh guard set")
 	}
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
+		if !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
 			t.Error("a reload from before the run brought the removed row back")
 		}
 	}

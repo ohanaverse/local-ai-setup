@@ -95,38 +95,42 @@ func moveTo(t *testing.T, m cleanupListModel, name string) cleanupListModel {
 // in, and that each row still says its verdict (proven / less sure / unique
 // work / in use): the status headings are gone, so the verdict must travel
 // with the row or the user loses "is this safe" at a glance.
-func TestCleanupListGroupsByKind(t *testing.T) {
+// TestListHasNoHeadings pins the flat list: no WORKTREES / LOCAL BRANCHES /
+// REMOTE BRANCHES lines and no status headings, the cursor starting on the
+// root row, and the arrow keys walking the rows in cleanup.ListOrder's order
+// (root, then local rows, then remote rows, each part by display name). Why:
+// the headings cost three lines on a 24-row terminal and said nothing the row
+// names did not; the order alone carries kind now.
+func TestListHasNoHeadings(t *testing.T) {
 	m := newSizedCleanupList(t, cleanupFixture(), 120, 40)
 	view := m.View()
-	last := -1
-	for _, h := range []string{cleanup.HeadingWorktrees, cleanup.HeadingLocal, cleanup.HeadingRemote} {
-		i := strings.Index(view, h)
-		if i < 0 {
-			t.Fatalf("heading %q missing from view:\n%s", h, view)
+	for _, h := range []string{"WORKTREES", "LOCAL BRANCHES", "REMOTE BRANCHES"} {
+		if strings.Contains(view, h) {
+			t.Errorf("kind heading %q still drawn:\n%s", h, view)
 		}
-		if i <= last {
-			t.Errorf("heading %q out of order in view:\n%s", h, view)
-		}
-		last = i
 	}
 	for _, st := range cleanup.GroupOrder {
 		if strings.Contains(view, cleanup.Heading(st)) {
 			t.Errorf("status heading %q still drawn:\n%s", cleanup.Heading(st), view)
 		}
 	}
-	// Rows sit under their own kind heading, the root first among worktrees.
-	// The rows are table lines now: box, then the WORKTREE cell's name.
-	wtAt, localAt, remoteAt := strings.Index(view, cleanup.HeadingWorktrees), strings.Index(view, cleanup.HeadingLocal), strings.Index(view, cleanup.HeadingRemote)
-	for name, want := range map[string][2]int{
-		"[-] main": {wtAt, localAt}, "[-] deep": {wtAt, localAt}, "fix-default-guard": {localAt, remoteAt},
-		"spike-picker": {localAt, remoteAt}, "origin/merged-remote": {remoteAt, len(view)},
-	} {
-		if i := strings.Index(view, name); i < want[0] || i > want[1] {
-			t.Errorf("%s drawn outside its group:\n%s", name, view)
+	rows := cleanup.ListOrder(m.report)
+	if row, ok := m.selectedRow(); !ok || cleanup.DisplayName(row) != cleanup.DisplayName(rows[0]) {
+		t.Fatalf("cursor does not start on the first row %q", cleanup.DisplayName(rows[0]))
+	}
+	for i := 1; i < len(rows); i++ {
+		m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyDown})
+		row, ok := m.selectedRow()
+		if !ok {
+			t.Fatalf("step %d: nothing highlighted", i)
+		}
+		if got, want := cleanup.DisplayName(row), cleanup.DisplayName(rows[i]); got != want {
+			t.Fatalf("step %d highlighted %q, want %q (%v)", i, got, want, cleanup.ListOrder(m.report))
 		}
 	}
+	// The root is the first row whatever its name sorts as.
 	if strings.Index(view, "[-] main") > strings.Index(view, "[x] full-branch") {
-		t.Errorf("root is not the first worktree row:\n%s", view)
+		t.Errorf("root is not the first row:\n%s", view)
 	}
 	for name, verdict := range map[string]string{
 		"full-branch-name-paths": "proven", "spike-picker": "less sure", "mtplx-profiles": "unique work", "deep": "in use",
@@ -155,7 +159,7 @@ func TestRowListRendersOneLinePerRow(t *testing.T) {
 		m := newRowList(cleanupFixture(), rowListOpts{Mode: tc.mode, Theme: themes.Default, Now: time.Now()})
 		m = cleanupSend(t, m, tea.WindowSizeMsg{Width: tc.w, Height: 40})
 		for i, it := range m.items {
-			if it.heading != "" || it.newWorktree {
+			if it.newWorktree {
 				continue
 			}
 			lines := m.itemLines(i)
@@ -286,7 +290,7 @@ func TestFilterMatchesWorktreeBranchAndPR(t *testing.T) {
 		m.filter = query
 		var out []string
 		for i, it := range m.items {
-			if it.heading == "" && !it.newWorktree && !m.hidden(i) {
+			if !it.newWorktree && !m.hidden(i) {
 				out = append(out, cleanup.DisplayName(it.row))
 			}
 		}
@@ -321,7 +325,7 @@ func TestRowListTagsWarnStyled(t *testing.T) {
 	m := newSizedCleanupList(t, r, 120, 40)
 	warn := map[string]bool{}
 	for _, it := range m.items {
-		if it.heading != "" || it.newWorktree {
+		if it.newWorktree {
 			continue
 		}
 		for _, tg := range it.tags {
@@ -375,7 +379,7 @@ func TestRowListCursorWrapsSingleSteps(t *testing.T) {
 	lm = cleanupSend(t, lm, tea.KeyMsg{Type: tea.KeyEnd})
 	lm = cleanupSend(t, lm, tea.KeyMsg{Type: tea.KeyDown})
 	if lm.cursor != 0 || !lm.items[lm.cursor].newWorktree {
-		t.Fatalf("launch: down past the end landed on cursor %d (%q), want + New worktree…", lm.cursor, lm.items[lm.cursor].heading)
+		t.Fatalf("launch: down past the end landed on cursor %d, want + New worktree…", lm.cursor)
 	}
 
 	// A filter's hidden rows are skipped: with only the two remote rows
@@ -457,7 +461,7 @@ func TestLaunchModeEnterChoosesTheRow(t *testing.T) {
 func TestLaunchModeNewWorktreeRow(t *testing.T) {
 	m := newLaunchList(t, cleanupFixture(), 120, 40)
 	view := m.View()
-	ni, wi := strings.Index(view, "+ New worktree…"), strings.Index(view, cleanup.HeadingWorktrees)
+	ni, wi := strings.Index(view, "+ New worktree…"), firstRowIndex(view, cleanup.DisplayName(cleanup.ListOrder(m.report)[0]))
 	if ni < 0 || ni > wi {
 		t.Fatalf("new-worktree item missing or not first:\n%s", view)
 	}
@@ -545,7 +549,7 @@ func TestManageModeEnterStillRemovesTicked(t *testing.T) {
 	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = moveTo(t, m, "spike-picker")
 	got, fm := runPreview(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if strings.Join(got, ",") != "full-branch-name-paths,fix-default-guard" {
+	if strings.Join(got, ",") != "fix-default-guard,full-branch-name-paths" {
 		t.Errorf("enter previewed %v, want the two ticked rows", got)
 	}
 	if fm.phase != cleanupPhasePreviewing {
@@ -625,7 +629,7 @@ func TestCleanupListDefaultTicksOnlyProven(t *testing.T) {
 	r := cleanupFixture()
 	m := newSizedCleanupList(t, r, 120, 40)
 	got := strings.Join(m.tickedNames(), ",")
-	want := "full-branch-name-paths,fix-default-guard"
+	want := "fix-default-guard,full-branch-name-paths"
 	if got != want {
 		t.Errorf("default ticks = %q, want %q", got, want)
 	}
@@ -777,7 +781,7 @@ func TestCleanupListAllTicksOnlyProven(t *testing.T) {
 	m = moveTo(t, m, "spike-picker")
 	m = cleanupSend(t, m, keyRunes("a"))
 	got := strings.Join(m.tickedNames(), ",")
-	if want := "full-branch-name-paths,fix-default-guard"; got != want {
+	if want := "fix-default-guard,full-branch-name-paths"; got != want {
 		t.Errorf("after a: ticked = %q, want %q", got, want)
 	}
 }
@@ -885,6 +889,20 @@ func rowBlock(t *testing.T, view, namePrefix string) string {
 	return ""
 }
 
+// firstRowIndex is where the view's first line naming the row called name
+// starts, or -1. It anchors order assertions that used to name a kind heading
+// (launch mode has no box to key on: the line begins with the session digit,
+// the cursor and the WORKTREE cell).
+func firstRowIndex(view, name string) int {
+	for _, l := range strings.Split(view, "\n") {
+		trim := strings.TrimLeft(l, "> ")
+		if strings.HasPrefix(trim, name+" ") || trim == name {
+			return strings.Index(view, l)
+		}
+	}
+	return -1
+}
+
 // TestCleanupListNarrowWidthKeepsEvidence pins the width rule at 80
 // columns with long names and long sentences: no line is wider than the
 // terminal (the table clips whole at the edge), and EVERY row's whole
@@ -912,11 +930,14 @@ func TestCleanupListNarrowWidthKeepsEvidence(t *testing.T) {
 }
 
 // TestCleanupListSaysWhenRowsAreOffScreen pins the scroll hints: a list
-// taller than its room says there is more below (the real 80x24 screen
-// ended on a group heading with its rows out of sight and no sign of them),
-// and once scrolled, that there is more above. The view stays within 24.
+// taller than its room says there is more below, and once scrolled, that
+// there is more above. The view stays within the terminal's height. The room
+// is 16 rows, not 24: with the kind headings gone these eleven rows fit a
+// 24-row terminal whole, and the last line of this test pins that a list
+// which fits shows no hint.
 func TestCleanupListSaysWhenRowsAreOffScreen(t *testing.T) {
-	m := newSizedCleanupList(t, longRowsFixture(), 80, 24)
+	const height = 16
+	m := newSizedCleanupList(t, longRowsFixture(), 80, height)
 	view := m.View()
 	if !strings.Contains(view, "↓ more below") || strings.Contains(view, "↑ more above") {
 		t.Errorf("top of a long list: want only the below hint:\n%s", view)
@@ -928,8 +949,8 @@ func TestCleanupListSaysWhenRowsAreOffScreen(t *testing.T) {
 	}
 	// (Rows are one line each since the table swap: there is no tail of a
 	// wrapped row to open on, and the table header's indent is not one.)
-	if h := lipgloss.Height(view); h > 24 {
-		t.Errorf("view is %d lines at 24", h)
+	if h := lipgloss.Height(view); h > height {
+		t.Errorf("view is %d lines at %d", h, height)
 	}
 	if strings.Contains(newSizedCleanupList(t, cleanupFixture(), 120, 60).View(), "more below") {
 		t.Error("a list that fits shows a scroll hint")
@@ -988,7 +1009,7 @@ func TestCleanupListWrappedRowStaysOnScreen(t *testing.T) {
 	// Home is the paging move: single steps up would now wrap (spec §6).
 	m = cleanupSend(t, m, tea.KeyMsg{Type: tea.KeyHome})
 	view = m.View()
-	if !strings.Contains(view, cleanup.HeadingWorktrees) || !strings.Contains(view, "> [-] main") {
+	if !strings.Contains(view, "> [-] main") {
 		t.Errorf("top of the list not back on screen:\n%s", view)
 	}
 }
@@ -1282,9 +1303,6 @@ func TestCleanupListFKeyKeepsTheUsersUntickedRows(t *testing.T) {
 	m = press(t, m, keyRunes("F"))
 	got := 0
 	for i, it := range m.items {
-		if it.heading != "" {
-			continue
-		}
 		if keyOf(it.row) == keyOf(kept) && m.ticked[i] {
 			t.Errorf("row %q was unticked by the user and is ticked again after F", kept.Name)
 		}
@@ -1546,7 +1564,7 @@ func TestRootRowShowsDriftBadge(t *testing.T) {
 	findRoot := func(m cleanupListModel) cleanupItem {
 		t.Helper()
 		for _, it := range m.items {
-			if it.heading == "" && !it.newWorktree && it.row.Path == "/repo" {
+			if !it.newWorktree && it.row.Path == "/repo" {
 				return it
 			}
 		}
@@ -1592,7 +1610,7 @@ func TestPickerHeaderShowsRootDrift(t *testing.T) {
 		t.Errorf("manage header = %q; the drift note is the picker header's (the manage list's root row carries the badge)", h)
 	}
 	for _, it := range picker.items {
-		if it.heading != "" || it.newWorktree {
+		if it.newWorktree {
 			continue
 		}
 		for _, tg := range it.tags {
@@ -2412,7 +2430,7 @@ func TestCleanupListRemoveOnCwdOrAncestorIsRefused(t *testing.T) {
 		for _, withProven := range []bool{false, true} {
 			m := setTicks(t, newSizedCleanupList(t, r, 120, 50))
 			for i, it := range m.items {
-				if it.heading == "" && cleanup.DisplayName(it.row) == name {
+				if cleanup.DisplayName(it.row) == name {
 					m.ticked[i] = true
 				}
 			}
@@ -2445,7 +2463,7 @@ func TestCleanupListTickedRowsReturnsTheRawTickSet(t *testing.T) {
 	// ordinary proven row the user ticked with the keys.
 	m = setTicks(t, m, "full-branch-name-paths")
 	for i, it := range m.items {
-		if it.heading == "" && cleanup.DisplayName(it.row) == "deep" {
+		if cleanup.DisplayName(it.row) == "deep" {
 			m.ticked[i] = true
 		}
 	}
@@ -2478,7 +2496,7 @@ func TestCleanupListEnterRefusesARowLockedInTheCurrentReport(t *testing.T) {
 	r.Rows = append(r.Rows, hardened)
 	m := setTicks(t, newSizedCleanupList(t, r, 120, 50), "full-branch-name-paths")
 	for i, it := range m.items {
-		if it.heading == "" && cleanup.DisplayName(it.row) == "hardened" {
+		if cleanup.DisplayName(it.row) == "hardened" {
 			m.ticked[i] = true
 		}
 	}
@@ -2634,7 +2652,7 @@ func TestRunCleanupListFillsAfterFirstPaint(t *testing.T) {
 		}
 		found := false
 		for _, it := range nm.items {
-			if it.heading == "" && !it.newWorktree && it.row.Name == "deep" && !it.row.Pending {
+			if !it.newWorktree && it.row.Name == "deep" && !it.row.Pending {
 				found = true
 			}
 		}
@@ -2847,7 +2865,7 @@ func TestCleanupListPageMoveStopsAtTheEndsEvenForOneRow(t *testing.T) {
 	m := newCleanupList(cleanupFixture(), themes.Default, time.Now(), RemoveFuncs{})
 	last := -1
 	for i := range m.items {
-		if m.items[i].heading == "" && !m.hidden(i) {
+		if !m.hidden(i) {
 			last = i
 		}
 	}

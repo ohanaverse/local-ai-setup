@@ -82,7 +82,7 @@ func TestRowKeysMatchTheHandlers(t *testing.T) {
 		m := newRowList(footerKeysReport(), rowListOpts{Mode: mode, Theme: themes.Default, Now: time.Now(), RemoveFuncs: wiredRemoveFuncs()})
 		m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 		for i, it := range m.items {
-			if it.heading != "" || it.newWorktree {
+			if it.newWorktree {
 				continue
 			}
 			m.cursor = i
@@ -203,10 +203,10 @@ func TestRowKeysDNamesTheToggleOnlyOnWorktreeRows(t *testing.T) {
 	for _, want := range []cleanup.Kind{cleanup.KindBranch, cleanup.KindRemote} {
 		found := false
 		for i, it := range m.items {
-			if it.heading != "" || it.newWorktree {
+			if it.newWorktree {
 				continue
 			}
-			if it.heading == "" && it.row.Kind == want && it.row.Name == "withup" {
+			if it.row.Kind == want && it.row.Name == "withup" {
 				m.cursor = i
 				found = true
 				break

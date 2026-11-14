@@ -223,7 +223,7 @@ func TestLaunchSelectorActionKeysNotCapturedByFilter(t *testing.T) {
 	}
 	rows, hidden := 0, 0
 	for i, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree {
+		if !it.newWorktree {
 			rows++
 			if m.rows.hidden(i) {
 				hidden++

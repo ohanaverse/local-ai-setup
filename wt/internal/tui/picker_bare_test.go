@@ -30,7 +30,7 @@ func bareRepoPicker(t *testing.T) model {
 func bareRowIndex(t *testing.T, m model) int {
 	t.Helper()
 	for i, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && it.row.Bare {
+		if !it.newWorktree && it.row.Bare {
 			return i
 		}
 	}

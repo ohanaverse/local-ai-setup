@@ -107,7 +107,7 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 	out := []keyHint{move}
 	it := m.items[m.cursor]
 	filling := m.filling()
-	onRow := !m.hidden(m.cursor) && it.heading == ""
+	onRow := !m.hidden(m.cursor)
 	if m.launch() {
 		if onRow && (it.newWorktree || !it.row.Bare) {
 			out = append(out, keyHint{"enter", "enter launch", "enter"})

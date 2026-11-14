@@ -307,30 +307,72 @@ func TestRowTagsEveryFact(t *testing.T) {
 	}
 }
 
-func TestKindGroupsOrder(t *testing.T) {
+// TestListOrder pins the flat list's one order: the root first whatever its
+// name sorts as, then every local worktree and local branch together by
+// display name, then the remote-only rows by display name. Why: the list has
+// no headings, so kind grouping is now an ordering rule and the root must
+// stay where the user's eye starts.
+func TestListOrder(t *testing.T) {
 	rep := Report{Rows: []Row{
-		{Kind: KindRemote, Name: "r"},
-		{Kind: KindBranch, Name: "b"},
-		{Kind: KindWorktree, Name: "w"},
+		{Kind: KindRemote, Remote: "origin", Name: "b"},
+		{Kind: KindWorktree, Name: "zeta"},
+		{Kind: KindBranch, Name: "mid"},
+		{Kind: KindWorktree, Name: "main", Primary: true},
+		{Kind: KindBranch, Name: "beta"},
+		{Kind: KindWorktree, Name: "alpha"},
+		{Kind: KindRemote, Remote: "origin", Name: "a"},
+	}, Folded: []Row{{Kind: KindRemote, Remote: "origin", Name: "folded"}}}
+	got := names(ListOrder(rep))
+	want := []string{"main", "alpha", "beta", "mid", "zeta", "origin/a", "origin/b"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ListOrder names %v, want %v", got, want)
+	}
+	// The root leads by being the root, not by sorting first: a folded remote
+	// ref is its local row's upstream and is never a row of its own here.
+	zzz := Report{Rows: []Row{
+		{Kind: KindWorktree, Name: "aaa"},
+		{Kind: KindWorktree, Name: "zzz", Primary: true},
+	}}
+	if got := names(ListOrder(zzz)); !slices.Equal(got, []string{"zzz", "aaa"}) {
+		t.Errorf("root named zzz: %v, want [zzz aaa]", got)
+	}
+	if got := ListOrder(Report{}); len(got) != 0 {
+		t.Errorf("empty report gave %v", got)
+	}
+}
+
+// TestListOrderStableAcrossFill pins that the facts-only report and the
+// filled one order the rows identically. Why: the fill lands under the
+// cursor after first paint; an order that moved with the verdicts would move
+// the rows beneath the selection (spec §5 / the anti-goal).
+func TestListOrderStableAcrossFill(t *testing.T) {
+	rows := []Row{
+		{Kind: KindWorktree, Name: "beta"},
 		{Kind: KindWorktree, Name: "root", Primary: true},
-	}, Folded: []Row{{Kind: KindRemote, Name: "folded"}}}
-	gs := KindGroups(rep)
-	var heads []string
-	for _, g := range gs {
-		heads = append(heads, g.Heading)
+		{Kind: KindBranch, Name: "alpha"},
+		{Kind: KindRemote, Remote: "origin", Name: "zzz"},
 	}
-	if !slices.Equal(heads, []string{"WORKTREES", "LOCAL BRANCHES", "REMOTE BRANCHES"}) {
-		t.Fatalf("headings %v", heads)
+	facts := Report{Rows: slices.Clone(rows)}
+	for i := range facts.Rows {
+		facts.Rows[i].Pending = true
+		facts.Rows[i].Status = StatusLessSure
 	}
-	if gs[0].Rows[0].Name != "root" || gs[0].Rows[1].Name != "w" {
-		t.Errorf("worktrees %+v", gs[0].Rows)
+	full := Report{Rows: slices.Clone(rows)}
+	full.Rows[0].Status = StatusUniqueWork
+	full.Rows[2].Status = StatusProven
+	full.Rows[3].Status = StatusInUse
+	if a, b := names(ListOrder(facts)), names(ListOrder(full)); !slices.Equal(a, b) {
+		t.Fatalf("order changed across stages:\n facts %v\n full  %v", a, b)
 	}
-	if len(gs[2].Rows) != 1 || gs[2].Rows[0].Name != "r" {
-		t.Errorf("remote group should list only the remote-only row, not the folded one: %+v", gs[2].Rows)
+}
+
+// names is the display names of rows, in order.
+func names(rows []Row) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = DisplayName(r)
 	}
-	if got := KindGroups(Report{Rows: []Row{{Kind: KindBranch}}}); len(got) != 1 || got[0].Heading != "LOCAL BRANCHES" {
-		t.Errorf("empty groups must be omitted: %+v", got)
-	}
+	return out
 }
 
 // TestRowTextDropsRepeatedReasonWording pins that one sentence never says the
