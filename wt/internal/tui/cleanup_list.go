@@ -1124,7 +1124,8 @@ func (m *cleanupListModel) layout() cleanupLayout {
 
 	title := clip(m.titleLine(), m.width) + "\n"
 	header := m.headerBlock() + "\n\n"
-	detail := "\n" + m.statusBlock() + m.detail()
+	stat := m.statusBlock()
+	detail := "\n" + stat + m.detail()
 	foot := m.footer()
 	if foot != "" {
 		foot = "\n" + foot
@@ -1134,7 +1135,7 @@ func (m *cleanupListModel) layout() cleanupLayout {
 	// with it, as news).
 	frames := [][2]string{
 		{title + header, detail + foot}, {title, detail + foot}, {"", detail + foot},
-		{"", "\n" + m.statusBlock() + strings.TrimPrefix(foot, "\n")}, {"", ""},
+		{"", "\n" + stat + strings.TrimPrefix(foot, "\n")}, {"", ""},
 	}
 	l := cleanupLayout{lines: lines}
 	for k, f := range frames {
