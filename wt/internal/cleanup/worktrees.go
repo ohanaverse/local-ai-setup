@@ -210,36 +210,16 @@ func CheckGates(g Git, w WorktreeFact, in GateInputs) (Gates, error) {
 	block := func(code, detail string) { out.Blockers = append(out.Blockers, Reason{code, detail}) }
 	partial := func() Gates { return Gates{Blockers: out.Blockers, Diff: DiffStat{Unknown: true}} }
 
-	if w.Primary {
-		block(BlockPrimary, w.Path)
-	}
-	if w.Current {
-		block(BlockCurrent, w.Path)
-	}
-	if w.Locked {
-		block(BlockLocked, w.Path)
-	}
-	self := resolve(w.Path)
 	// Every check that needs no git runs before the first git call, so its
-	// blocker is in the partial Gates whatever fails later.
-	// Both directions: an artifact inside the worktree, or the worktree
-	// inside (or equal to) an artifact directory; removing it would delete
-	// part of the artifact either way. within is separator-safe (/a/b is not
-	// under /a/bc) and both sides are resolved through symlinks.
-	for _, p := range in.ProtectedPaths {
-		if rp := resolve(p); within(rp, self) || within(self, rp) {
-			block(BlockProtectedArtifact, flat(p))
-		}
-	}
+	// blocker is in the partial Gates whatever fails later: the fact-derived
+	// ones, the same list GatherFacts seeds on a facts-only snapshot.
+	out.Blockers = factBlockers(w, in.ProtectedPaths)
 	all, err := listWorktrees(g)
 	if err != nil {
 		return partial(), err
 	}
-	for _, o := range all {
-		if op := resolve(o.Path); op != self && within(op, self) {
-			block(BlockNested, o.Path)
-		}
-	}
+	out.Blockers = append(out.Blockers, nestedBlockers(w, all)...)
+	self := resolve(w.Path)
 	if w.Bare {
 		return out, nil // no working tree to inspect
 	}
@@ -295,6 +275,47 @@ func unmergedIndex(wg Git) (bool, error) {
 		return false, gitFailure(o, args...)
 	}
 	return strings.Trim(o.Stdout, "\x00") != "", nil
+}
+
+// factBlockers is every hard blocker a worktree's own facts give without
+// running git: the primary checkout, the one holding the cwd, a locked
+// worktree, and a registered artifact overlapping it. GatherFacts seeds
+// these on a facts-only snapshot so the first paint locks the right rows;
+// CheckGates recomputes them with the git-dependent facts.
+// Both directions for the artifact: one inside the worktree, or the
+// worktree inside (or equal to) an artifact directory; removing it would
+// delete part of the artifact either way. within is separator-safe (/a/b
+// is not under /a/bc) and both sides are resolved through symlinks.
+func factBlockers(w WorktreeFact, protected []string) []Reason {
+	var out []Reason
+	if w.Primary {
+		out = append(out, Reason{BlockPrimary, w.Path})
+	}
+	if w.Current {
+		out = append(out, Reason{BlockCurrent, w.Path})
+	}
+	if w.Locked {
+		out = append(out, Reason{BlockLocked, w.Path})
+	}
+	self := resolve(w.Path)
+	for _, p := range protected {
+		if rp := resolve(p); within(rp, self) || within(self, rp) {
+			out = append(out, Reason{BlockProtectedArtifact, flat(p)})
+		}
+	}
+	return out
+}
+
+// nestedBlockers is BlockNested for a worktree another worktree sits inside.
+func nestedBlockers(w WorktreeFact, all []WorktreeFact) []Reason {
+	var out []Reason
+	self := resolve(w.Path)
+	for _, o := range all {
+		if op := resolve(o.Path); op != self && within(op, self) {
+			out = append(out, Reason{BlockNested, o.Path})
+		}
+	}
+	return out
 }
 
 // operationsInProgress names each operation marker present in the

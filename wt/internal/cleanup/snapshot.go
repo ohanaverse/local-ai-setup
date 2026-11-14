@@ -274,9 +274,13 @@ func GatherFacts(g Git, in GatherInputs) (Snapshot, error) {
 	s.Proofs = map[string]Proof{}
 	s.PRs = map[string]PRResult{}
 	s.Merges = map[string]Tri{}
-	// The rows' names and paths are facts; their gates come with the fill.
+	// The rows' names and paths are facts, and so are the hard blockers
+	// derivable without git (factBlockers/nestedBlockers): seed them so the
+	// first paint locks the primary, current, locked and nested rows. The
+	// git-dependent gates come with the fill.
 	for _, w := range facts {
-		s.Worktrees = append(s.Worktrees, WorktreeState{Fact: w})
+		blockers := append(factBlockers(w, in.ProtectedPaths), nestedBlockers(w, facts)...)
+		s.Worktrees = append(s.Worktrees, WorktreeState{Fact: w, Gates: Gates{Blockers: blockers}})
 	}
 	s.FactsOnly = true
 	if s.NoDefault {

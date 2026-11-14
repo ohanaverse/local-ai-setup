@@ -313,6 +313,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 	case rowsLoadedMsg:
 		return m.gotRows(msg)
+	case rowsFilledMsg:
+		return m.gotFilled(msg)
 	case rowPRsLoadedMsg:
 		// The PR lookups of the latest load arrived: swapped in with the
 		// cursor, the filter and the scroll kept (withReport). The filled

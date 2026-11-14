@@ -944,6 +944,19 @@ func tagTexts(tags []cleanup.Tag) []string {
 	return out
 }
 
+// filling reports whether the shown report is still the facts stage: some
+// row has not been filled in yet. While it is, nothing may be removed (the
+// removal funcs are not built; rowKeys hides the keys) — the facts carry no
+// gates, records or proofs to stand on.
+func (m cleanupListModel) filling() bool {
+	for _, it := range m.items {
+		if it.heading == "" && !it.newWorktree && it.row.Pending {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *cleanupListModel) box(i int) string {
 	switch {
 	case m.items[i].locked:

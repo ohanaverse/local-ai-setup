@@ -97,7 +97,11 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 		// it so, and startRemoval refuses a locked tick anyway).
 		was := map[rowKey]bool{}
 		for i, it := range m.items {
-			if it.heading == "" && !it.newWorktree {
+			// A row that was Pending in the old list is unseen: the facts
+			// stage never knew whether it would prove, so a tick (or the
+			// lack of one) made against that ignorance carries no choice —
+			// it takes the new report's default below.
+			if it.heading == "" && !it.newWorktree && !it.row.Pending {
 				was[keyOf(it.row)] = m.ticked[i]
 			}
 		}
