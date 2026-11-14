@@ -592,38 +592,35 @@ func TestCleanupListTitleNamesRemoval(t *testing.T) {
 	}
 }
 
-// TestCleanupListTitleLineNamesAllActions pins the manage title's key legend
-// at two widths: at 100x30 it names every action in its full form — `x
-// remove`, `R restore root`, `F refresh`, `r rescue` beside `q quit` — and at
-// 80x24 it still fits with no clipping and still spells out every action name
-// (only key qualifiers and separators tighten, never an action; `q quit` stays
-// visible). Why: the title is the only
-// place `x`, `R` and `F` are named, and a legend wider than the terminal
-// silently loses its tail — `q quit` — on the 80-column terminals people
-// actually run.
-func TestCleanupListTitleLineNamesAllActions(t *testing.T) {
-	m := newSizedCleanupList(t, cleanupFixture(), 100, 30)
-	for _, want := range []string{"x remove", "R restore root", "F refresh", "r rescue", "q quit"} {
-		if !strings.Contains(m.titleLine(), want) {
-			t.Errorf("title at 100x30 misses %q:\n%s", want, m.titleLine())
+// TestCleanupListFooterNamesTheRowsKeys pins the manage footer at two sizes:
+// on a worktree with work to keep, 100x30 and 80x24 both name every key in
+// its full wording (`x remove`, `r rescue`, `F refresh`, `q quit`), no line
+// is wider than the terminal, and on the root off its default `R restore
+// root` is named. Why: the footer is the only place the row keys are named, and
+// a legend wider than the terminal would silently lose its tail — `q quit` —
+// on the 80-column terminals people actually run.
+func TestCleanupListFooterNamesTheRowsKeys(t *testing.T) {
+	for _, size := range [][2]int{{100, 30}, {80, 24}} {
+		m := newRowList(footerKeysReport(), rowListOpts{Mode: modeManage, Theme: themes.Default, Now: time.Now(), RemoveFuncs: wiredRemoveFuncs()})
+		m = cleanupSend(t, m, tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = moveTo(t, m, "free")
+		foot := m.footer()
+		for _, want := range []string{"x remove", "r rescue", "F refresh", "q quit"} {
+			if !strings.Contains(foot, want) {
+				t.Errorf("footer at %v misses %q:\n%s", size, want, foot)
+			}
 		}
-	}
-	if v := m.View(); !strings.Contains(v, "x remove") || !strings.Contains(v, "F refresh") {
-		t.Errorf("view at 100x30 does not carry the title's actions:\n%s", v)
-	}
-	if w := lipgloss.Width(m.titleLine()); w > 100 {
-		t.Errorf("title at 100x30 is %d columns and clips:\n%s", w, m.titleLine())
-	}
-	narrow := newSizedCleanupList(t, cleanupFixture(), 80, 24)
-	if w := lipgloss.Width(narrow.titleLine()); w > 80 {
-		t.Errorf("title at 80x24 is %d columns and clips:\n%s", w, narrow.titleLine())
-	}
-	if !strings.Contains(narrow.titleLine(), "q quit") {
-		t.Errorf("title at 80x24 hides q quit:\n%s", narrow.titleLine())
-	}
-	for _, want := range []string{"x remove", "R restore root", "F refresh", "r rescue"} {
-		if !strings.Contains(narrow.titleLine(), want) {
-			t.Errorf("title at 80x24 shortens %q:\n%s", want, narrow.titleLine())
+		if !strings.Contains(m.View(), "x remove") {
+			t.Errorf("view at %v does not carry the footer:\n%s", size, m.View())
+		}
+		for _, line := range strings.Split(foot, "\n") {
+			if w := lipgloss.Width(line); w > size[0] {
+				t.Errorf("footer at %v is %d columns and clips: %q", size, w, line)
+			}
+		}
+		m = moveTo(t, m, "topic")
+		if foot := m.footer(); !strings.Contains(foot, "R restore") {
+			t.Errorf("footer on the drifted root at %v misses R:\n%s", size, foot)
 		}
 	}
 }

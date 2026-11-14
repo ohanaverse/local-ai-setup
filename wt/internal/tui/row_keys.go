@@ -1,9 +1,78 @@
 package tui
 
 import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rescue"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/rootmove"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/themes"
 )
+
+// hintSep joins the hints of a footer line.
+const hintSep = " · "
+
+// fitHints lays hints out for a terminal width: the long forms on one line
+// when they fit; else the long forms on two lines; else the short forms on
+// two lines. A hint is shortened before any is dropped; only a terminal too
+// narrow for even the short forms on two lines loses the tail, and each line
+// is cut at the edge. A width that is not positive gives the long forms on
+// one line.
+func fitHints(hints []keyHint, width int) string {
+	long := make([]string, len(hints))
+	short := make([]string, len(hints))
+	for i, h := range hints {
+		long[i], short[i] = h.long, h.short
+	}
+	if width <= 0 {
+		return strings.Join(long, hintSep)
+	}
+	for _, forms := range [][]string{long, short} {
+		if lines := packHints(forms, width); len(lines) <= 2 {
+			return strings.Join(lines, "\n")
+		}
+	}
+	lines := packHints(short, width)
+	return strings.Join(lines[:2], "\n")
+}
+
+// packHints fills lines greedily with forms, each line no wider than width
+// unless one form alone is wider (the caller clips that one).
+func packHints(forms []string, width int) []string {
+	var lines []string
+	cur := ""
+	for _, f := range forms {
+		switch {
+		case cur == "":
+			cur = f
+		case lipgloss.Width(cur+hintSep+f) <= width:
+			cur += hintSep + f
+		default:
+			lines = append(lines, cur)
+			cur = f
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// footer is the screen's key legend for the highlighted row, dim, one or two
+// lines no wider than the terminal; "" when there is nothing to show.
+func (m *cleanupListModel) footer() string {
+	hints := m.rowKeys()
+	if len(hints) == 0 {
+		return ""
+	}
+	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
+	lines := strings.Split(fitHints(hints, m.width), "\n")
+	for i, line := range lines {
+		lines[i] = dim.Render(clip(line, m.width))
+	}
+	return strings.Join(lines, "\n")
+}
 
 // keyHint is one entry of the worktree screens' footer: the key as the
 // handlers see it, the wording shown when there is room (long) and the
