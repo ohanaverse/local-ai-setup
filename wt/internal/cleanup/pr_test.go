@@ -515,7 +515,8 @@ func TestFillPRsMatchesAFullGather(t *testing.T) {
 }
 
 // TestPRUnknownIsNeverProvenWhenAsked: git proves the content, gh is down:
-// less_sure with pr_unknown, tagged "PR ?" (Review Focus 2).
+// less_sure with pr_unknown, "?" in the PR# column, no PR badge (Review
+// Focus 2).
 func TestPRUnknownIsNeverProvenWhenAsked(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("done")
@@ -583,7 +584,8 @@ func TestPRUnknownAppliesToWorktreeBranchAndOriginRows(t *testing.T) {
 	}
 }
 
-// TestPRTagOnceKnown: a known PR shows its tag and no PR ?.
+// TestPRTagOnceKnown: a known PR names itself in the PR# column (#5 merged)
+// and no badge carries PR info.
 func TestPRTagOnceKnown(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("done")
