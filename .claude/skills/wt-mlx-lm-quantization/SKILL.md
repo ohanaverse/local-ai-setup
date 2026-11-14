@@ -1,5 +1,5 @@
 ---
-name: mlx-lm-quantization
+name: wt-mlx-lm-quantization
 description: Produce a quantized MLX model variant with mlx-lm and register it (bin/mlx-quantize): by hand as a local_path entry, or with wt model add once it is in omlx's model directory. Use when the user wants to quantize a model locally or try a new quantization recipe.
 ---
 

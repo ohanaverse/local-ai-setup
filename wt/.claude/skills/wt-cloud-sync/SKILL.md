@@ -1,5 +1,5 @@
 ---
-name: cloud-sync
+name: wt-cloud-sync
 description: Refresh cloud model prices and the ollama cloud catalog with `wt cloud-sync` — OpenRouter prices into registry.toml, and https://ollama.com/pricing mirrored into the registry, ollama and LiteLLM (new cloud models registered and pulled, ones Ollama no longer lists unregistered and removed, prices including off-peak). Use when asked to update or refresh model prices, ollama cloud models or ollama pricing, when wt prints "token pricing last refreshed … — run 'wt cloud-sync'", or when `wt cloud-sync` exits 3 (the ollama pricing page changed shape and the parser needs repair).
 ---
 

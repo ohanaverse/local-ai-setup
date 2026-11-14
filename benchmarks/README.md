@@ -63,7 +63,7 @@ For new model variants or providers:
    - `ISOLATE_ID` (the `llmbench provider` id that isolates it)
    - Both `for backend in` loops (direct rows and LiteLLM rows)
 
-   The script has no start/stop/warmup code of its own: `isolate_one` in `lib/benchmark-common.sh` calls `llmbench provider isolate`. A new provider also needs a `Backend` registered in `llmbench/src/llmbench/providers/lifecycle/backends/` (see the `adding-a-benchmark-backend` skill).
+   The script has no start/stop/warmup code of its own: `isolate_one` in `lib/benchmark-common.sh` calls `llmbench provider isolate`. A new provider also needs a `Backend` registered in `llmbench/src/llmbench/providers/lifecycle/backends/` (see the `wt-adding-a-benchmark-backend` skill).
 2. Give the model a LiteLLM route: register it (`wt model add`) and run `wt litellm sync` while it is running, or start it through wt. Don't hand-add the row to `~/.config/litellm/config.yaml` — wt builds the managed rows from `registry.toml` plus live probes ([docs/guides/00-config-map.md](../docs/guides/00-config-map.md))
 3. Run a smoke test with `./qwen3.8-benchmark 30` (small max_tokens for speed)
 4. Update the main benchmark doc with the new numbers

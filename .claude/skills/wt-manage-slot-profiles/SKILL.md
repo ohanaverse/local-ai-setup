@@ -1,5 +1,5 @@
 ---
-name: manage-slot-profiles
+name: wt-manage-slot-profiles
 description: Keep Claude Code slot profiles (~/.config/agent-wt/slot-profiles.toml) healthy with `wt profile slots` - refresh modeltiers when stale, remove profiles no longer launched, propose better models for each slot, create new profiles (including an ollama/openrouter twin pair), research thinly scored models and smoke-test the chosen ones. Asks before every write. Use when the user wants to create, clean up or review slot profiles, asks which models to put in a slot, or says new models were released.
 ---
 
@@ -34,7 +34,7 @@ Run it only on a yes. Then by exit code (`docs/guides/12-model-tiers.md`, step 3
 - **0**: written; re-run `candidates --json` and go on.
 - **1**: not written. Show the last stderr line (`ERROR: modeltiers run FAILED (exit 1): …`), which names the cause; go on with the old file and say how old it is.
 - **2**: written, but a source fell back to its last good snapshot; name it, say its tiers are as old as that snapshot, and go on.
-- **3**: a sentinel moved and nothing was written. Stop this step and hand off to the `sentinel-failure` skill; do not re-pin anything from here. Go on with the old file only if the user wants to, and say it is stale.
+- **3**: a sentinel moved and nothing was written. Stop this step and hand off to the `wt-sentinel-failure` skill; do not re-pin anything from here. Go on with the old file only if the user wants to, and say it is stale.
 
 If the user declines, go on and say the tiers are from `<tiers_generated_at>`.
 
