@@ -2,7 +2,7 @@
 
 ## Docs
 - User playbooks: `docs/guides/` — canonical task guides (config map, setup, models, families, LiteLLM, benchmarks, wt, usage, maintenance, agent benchmarks, MLX quantization, capability eval, model tiers). Read `docs/guides/00-config-map.md` first for config-file ownership.
-- `./issues.md` — follow-ups from the 2026-08-29 guide-set review (items 1–5 FIXED, kept as a historical record), plus one open, deferred item: #6, `piCompat` full-pointer replacement in `wt/internal/agents/pi_models.go`.
+- `./issues.md` — follow-ups from the 2026-08-29 guide-set review (items 1–5 FIXED, kept as a historical record), plus open items: #6 (`piCompat` full-pointer replacement in `wt/internal/agents/pi_models.go`, deferred), #7 (`DIFF -` vs `+0/-0` for binary or unreadable changes) and #8 (`changes-in-base` matches an added line anywhere in the file).
 - `.claude/skills/manage-slot-profiles/` — project skill: keep slot profiles current (refresh tiers, remove unused profiles, propose better models, run `wt smoke`) through `wt profile slots`; `docs/guides/08-maintenance-and-troubleshooting.md` §8
 - Package-level context: `llmbench/CLAUDE.md` (Python benchmarks + provider isolation), `modeltiers/CLAUDE.md` (Python capability tiers from public sources), `wt/CLAUDE.md` (Go worktree launcher) and `litellm-session-logs/CLAUDE.md` (session-log pipeline) and `agent-utilities/CLAUDE.md` (per-agent helper scripts) contain per-package commands, architecture, and gotchas.
 
