@@ -35,8 +35,8 @@ import (
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
 //     the root, an in-use or held row too: launching warns, it never blocks
 //     — and nothing is ticked. Rows carry a "current" and a "default" tag,
-//     `/` filters the rows by name (row_list_launch.go), and the PR tags
-//     arrive later (withReport).
+//     `/` filters the rows by name, branch, tags and the PR# column's cell,
+//     which the PR lookups fill later (withReport).
 //
 // In both modes the row keys act on the highlighted row alone — the ticks
 // choose rows for enter, never for these — through the same confirm flow:

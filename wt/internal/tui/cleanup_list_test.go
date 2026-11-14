@@ -274,6 +274,20 @@ func TestGiveUpLadderUnchanged(t *testing.T) {
 	}
 }
 
+// TestFilterTextMatchesThePRColumn pins that the filter finds a row by its
+// PR column cell ("#517", "merged") even when the row carries no badges: the
+// PR badge is leaving RowTags, so the column is what the filter must read.
+func TestFilterTextMatchesThePRColumn(t *testing.T) {
+	it := cleanupItem{row: cleanup.Row{Kind: cleanup.KindBranch, Branch: "b",
+		PRTag: &cleanup.PRInfo{Number: 517, State: "MERGED"}}}
+	got := filterText(it)
+	for _, want := range []string{"#517", "merged"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("filterText = %q, want it to contain %q", got, want)
+		}
+	}
+}
+
 // TestFilterMatchesWorktreeBranchAndPR pins the filter's targets after the
 // table swap: a worktree's display name, its branch and its PR tag ("#517")
 // each find their row. Why: the row no longer prints its sentence, so the
