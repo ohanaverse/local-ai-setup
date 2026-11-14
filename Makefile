@@ -1,4 +1,4 @@
-.PHONY: lint lint-shell check-links test-all install update-tools
+.PHONY: lint lint-shell lint-skills check-links test-all install update-tools
 
 SHELL_SCRIPTS := \
 	bin/lib/mlx-lm-resolve.sh \
@@ -19,7 +19,7 @@ SHELL_SCRIPTS := \
 	litellm-session-logs/02_export_proxy_server_request.sh \
 	litellm-session-logs/03_capture_claude_code.sh
 
-lint: lint-shell check-links
+lint: lint-shell lint-skills check-links
 
 # Run bash -n and shellcheck (error severity only for now) on all shell scripts.
 lint-shell:
@@ -32,6 +32,16 @@ lint-shell:
 	else \
 		echo "shellcheck not installed; skipping"; \
 	fi
+
+# Every skill is named wt-<dir>: the directory name equals the frontmatter name, which starts with wt-.
+lint-skills:
+	@n=0; for f in .claude/skills/*/SKILL.md wt/.claude/skills/*/SKILL.md; do \
+		dir=$$(basename "$$(dirname "$$f")"); \
+		name=$$(sed -n 's/^name: *//p' "$$f" | head -1); \
+		case "$$name" in wt-*) ;; *) echo "FAIL: $$f: name '$$name' lacks the wt- prefix"; exit 1;; esac; \
+		[ "$$name" = "$$dir" ] || { echo "FAIL: $$f: name '$$name' differs from directory '$$dir'"; exit 1; }; \
+		n=$$((n+1)); \
+	done; echo "  OK: $$n skills named wt-<dir>"
 
 check-links:
 	@bin/check-links
