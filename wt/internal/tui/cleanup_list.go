@@ -1104,10 +1104,11 @@ type cleanupLayout struct {
 }
 
 // layout fits the screen to the terminal. The frames, fullest first: title,
-// header and detail; title and detail; detail alone; nothing. The first that
-// leaves room for the whole highlighted row is used, so a short terminal
-// loses the report header first, then the title, and the detail line only
-// when even the row alone barely fits. The offset keeps the whole
+// header, detail and footer; title, detail and footer; detail and footer;
+// status and footer; nothing. The first that leaves room for the whole
+// highlighted row is used, so a short terminal loses the report header
+// first, then the title, then the detail line, and the footer only when even
+// the row alone barely fits. The offset keeps the whole
 // highlighted row on screen (its top line when it is taller than the room),
 // with its group heading when it is the group's first row and there is room.
 // A list taller than its room gives one of its lines to a scroll hint.
@@ -1123,8 +1124,19 @@ func (m *cleanupListModel) layout() cleanupLayout {
 
 	title := clip(m.titleLine(), m.width) + "\n"
 	header := m.headerBlock() + "\n\n"
-	detail := "\n" + m.statusBlock() + m.detail()
-	frames := [][2]string{{title + header, detail}, {title, detail}, {"", detail}, {"", ""}}
+	stat := m.statusBlock()
+	detail := "\n" + stat + m.detail()
+	foot := m.footer()
+	if foot != "" {
+		foot = "\n" + foot
+	}
+	// The footer is the key legend for the highlighted row: the last thing
+	// given up, after the header, the title and the detail (the status stays
+	// with it, as news).
+	frames := [][2]string{
+		{title + header, detail + foot}, {title, detail + foot}, {"", detail + foot},
+		{"", "\n" + stat + strings.TrimPrefix(foot, "\n")}, {"", ""},
+	}
 	l := cleanupLayout{lines: lines}
 	for k, f := range frames {
 		l.top, l.bottom = f[0], f[1]
@@ -1170,36 +1182,14 @@ func (m *cleanupListModel) layout() cleanupLayout {
 	return l
 }
 
-// manageTitles is the manage list's key legend, widest first. Every form
-// names `space`, `a`, `enter`, `x remove`, `r rescue`, `R restore root`,
-// `F refresh`, `q quit` — the narrower ones shortening wording and tightening
-// separators (a bare key for `space`/`a`, `enter` standing for `enter remove
-// ticked`) but never dropping one of those keys or abbreviating an action
-// name. `d`, `o` and `esc` are in no form yet: wt/docs/wt-cleanup.md's key
-// table names them, and the launch picker's title names none of `x d o r R`.
-// The widest
-// form whose visible width (118, 99, 78 columns) fits the terminal is drawn,
-// so `q quit` is never clipped away at 80 columns.
-var manageTitles = []struct{ name, actions string }{
-	{"wt worktrees", "   space tick · a proven · enter remove ticked · x remove · r rescue · R restore root · F refresh · q quit"},
-	{"wt worktrees", "   space · a · enter remove · x remove · r rescue · R restore root · F refresh · q quit"},
-	{"wt worktrees", "   space·a·enter·x remove·r rescue·R restore root·F refresh·q quit"},
-}
-
+// titleLine is the screen's name. The key legend is the footer (footer,
+// rowKeys), which names the keys that work on the highlighted row.
 func (m *cleanupListModel) titleLine() string {
 	accent := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenAccent)).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(m.theme.Token(themes.TokenDim))
 	if m.launch() {
-		return accent.Render("wt") + dim.Render("   enter launch · n new worktree · / filter · q quit")
+		return accent.Render("wt")
 	}
-	t := manageTitles[len(manageTitles)-1]
-	for _, c := range manageTitles {
-		if lipgloss.Width(c.name+c.actions) <= m.width {
-			t = c
-			break
-		}
-	}
-	return accent.Render(t.name) + dim.Render(t.actions)
+	return accent.Render("wt worktrees")
 }
 
 // statusBlock is the status, wrapped, with its line break; "" without one.

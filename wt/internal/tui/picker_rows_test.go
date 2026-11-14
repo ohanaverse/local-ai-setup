@@ -563,13 +563,13 @@ func TestPickerOpenFetchReadsAsNotRun(t *testing.T) {
 	}
 }
 
-// TestPickerTitleDoesNotOfferRemoval pins that the picker's title does not
+// TestPickerFooterDoesNotOfferRemoval pins that the picker's footer does not
 // advertise `x remove` while the picker has no removal wired in (every `x`
-// would answer "not available").
-func TestPickerTitleDoesNotOfferRemoval(t *testing.T) {
+// would answer "not available"), and still names what works.
+func TestPickerFooterDoesNotOfferRemoval(t *testing.T) {
 	m := pickerReady(t, pickerFixture())
-	if title := m.rows.titleLine(); strings.Contains(title, "x remove") || !strings.Contains(title, "enter launch") {
-		t.Errorf("title = %q", title)
+	if foot := m.rows.footer(); strings.Contains(foot, "x remove") || !strings.Contains(foot, "enter launch") {
+		t.Errorf("footer = %q", foot)
 	}
 }
 
