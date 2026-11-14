@@ -9,7 +9,7 @@ A thin wrapper over the `wt` CLI. `wt` classifies and removes; this skill reads 
 
 ## Requirements
 
-- `wt` on `PATH` **with the `worktrees` subcommand.** Check: `wt worktrees --help` must print the list's own help. An older `wt` falls through to the launcher's top-level help ("Launch AI coding agents in a chosen worktree..."). Then stop and tell the user to install the current `wt` (`make install` in the repo that holds this skill).
+- `wt` on `PATH` **with the `worktrees` subcommand.** Check: `wt worktrees --help` must print the list's own help. An older `wt` falls through to the launcher's top-level help ("Launch AI coding agents in a chosen worktree..."). Then stop and tell the user to install the current `wt` (`make install` in the local-ai-setup repo).
 - `gh` is optional. Without it (missing, signed out, offline) the JSON's `gh` is `unavailable` and rows carry reason `pr_unknown` (the `PR ?` tag): a merged PR is part of the proof, so no origin branch is proven and other rows read at best `less_sure`. A repo whose `origin` is not on GitHub is exempt for local rows, but its origin rows read `not_checked` and are never removable.
 
 ## Flow
@@ -69,7 +69,7 @@ Bringing the default branch up to date with origin, and the old discard/stash/re
 
 | Problem | What to do |
 |---|---|
-| `wt worktrees --help` shows the launcher help | Old `wt`; install the current one (`make install` in the repo that holds this skill). |
+| `wt worktrees --help` shows the launcher help | Old `wt`; install the current one (`make install` in the local-ai-setup repo). |
 | `notes` says the registry could not be read; `wt remove` refuses | wt will not remove while it cannot read its model registry; relay the note (`wt model init` seeds it). |
 | Origin rows `less_sure`, reason `pr_unknown` or `not_checked` | Install `gh` and run `gh auth login`; a non-GitHub origin never proves its branches. |
 | A new branch reads `less_sure`, reason `fresh_branch` | Younger than `--min-age` (default 10m), so never proven merged. Wait, or ask the user before lowering it (`--min-age 1m` at the lowest). |
