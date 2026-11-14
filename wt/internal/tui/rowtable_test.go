@@ -19,7 +19,7 @@ func tableFixture() []cleanup.Row {
 			Status: cleanup.StatusProven, Evidence: cleanup.EvMergeAddsNothing,
 			State: cleanup.StateInMain, Diff: cleanup.DiffStat{Added: 99, Removed: 55},
 			Losses: cleanup.Losses{IgnoredEntries: 12},
-			PRTag:  &cleanup.PRInfo{Number: 383}, Sessions: 2,
+			PRTag:  &cleanup.PRInfo{Number: 383, State: "MERGED"}, Sessions: 2,
 		},
 		{
 			Kind: cleanup.KindWorktree, Name: "wt-loose", Status: cleanup.StatusUniqueWork,
@@ -55,7 +55,7 @@ func TestRowCellsPerKind(t *testing.T) {
 	rows := tableFixture()
 
 	got := rowCells(rows[0]) // filled worktree
-	want := []string{"feat/x", "feat/x", "#383", "+99/-55", "12", "in main", "proven"}
+	want := []string{"feat/x", "feat/x", "#383 merged", "+99/-55", "12", "in main", "proven"}
 	if len(got) != len(want) {
 		t.Fatalf("cells = %q, want 7 entries", got)
 	}
@@ -100,6 +100,26 @@ func TestRowCellsPerKind(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("pending branch cell %d = %q, want %q (all: %q)", i, got[i], want[i], got)
+		}
+	}
+
+	// The PR column carries the PR fact alone: the state lower-cased, "?" while
+	// the lookup could not answer, blank when there is no PR, and "-" while
+	// pending beats both (verdict-shaped cells wait for the fill).
+	for _, c := range []struct {
+		name string
+		row  cleanup.Row
+		want string
+	}{
+		{"merged", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 555, State: "MERGED"}}, "#555 merged"},
+		{"open", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 3, State: "OPEN"}}, "#3 open"},
+		{"closed", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 4, State: "CLOSED"}}, "#4 closed"},
+		{"unknown", cleanup.Row{Kind: cleanup.KindBranch, PRUnknown: true}, "?"},
+		{"no pr", rows[1], ""},
+		{"pending wins", cleanup.Row{Kind: cleanup.KindBranch, Pending: true, PRUnknown: true}, "-"},
+	} {
+		if got := rowCells(c.row)[rtPR]; got != c.want {
+			t.Errorf("PR cell (%s) = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

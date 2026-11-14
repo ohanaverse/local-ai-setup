@@ -168,7 +168,11 @@ Columns and their cells:
 - `BRANCH` — the branch name. A remote row shows `remote/name` (e.g.
   `origin/feat/x`), which keeps it distinguishable from the same-named local
   branch without a kind column. Blank on a detached worktree row.
-- `PR#` — `#383` from `Row.PRTag`. Blank when there is no PR.
+- `PR#` — `#383 merged` from `Row.PRTag` (GitHub's state, lower-cased), `?`
+  while the PR lookup could not answer, blank when there is no PR, `-` while
+  pending. (Amended 2026-11-14: the column carries the state and the unknown
+  marker the row's badge used to name; see
+  2026-11-14-wt-worktree-pr-column-design.md.)
 - `DIFF` — `+99/-55`, added/deleted lines of the uncommitted change-set (below).
   `+0/-0` for a clean worktree, `-` when it could not be read or is over the
   caps. Blank on rows with no worktree.
