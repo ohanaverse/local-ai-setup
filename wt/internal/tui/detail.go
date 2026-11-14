@@ -256,6 +256,10 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 	dim := lipgloss.NewStyle().Foreground(th.Token(themes.TokenDim))
 	var out []string
 	add := func(name, value string) { out = append(out, detailLine(name, value, width)...) }
+	// say is a line with no label — a loss, a warning, a note — at the block's
+	// own column, the way a section heading sits: the label column is for the
+	// row's facts, and an indent there reads as a missing label.
+	say := func(text string) { out = append(out, wrapIndented(text, "", width)...) }
 	section := func(text string) {
 		out = append(out, dim.Render(clip(text, width)))
 	}
@@ -264,16 +268,21 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 	switch row.Kind {
 	case cleanup.KindWorktree:
 		// The path names the worktree when its directory is the name (the
-		// usual case): printing both says it twice.
-		if base := filepath.Base(row.Path); name != "" && base != name {
+		// usual case): printing both says it twice. A root always names
+		// itself, since being the primary checkout is a fact about it and not
+		// a path.
+		switch base := filepath.Base(row.Path); {
+		case row.Primary:
+			add("worktree", cleanup.OneLine(name)+" (primary checkout)")
+		case name != "" && base != name:
 			add("worktree", cleanup.OneLine(name))
 		}
-		add("path", cleanup.OneLine(row.Path))
 		if row.Branch != "" {
 			add("branch", cleanup.OneLine(row.Branch))
 		} else if !row.Bare {
 			add("branch", "(detached)")
 		}
+		add("path", cleanup.OneLine(row.Path))
 	case cleanup.KindBranch:
 		add("branch", cleanup.OneLine(row.Branch))
 	default:
@@ -314,14 +323,14 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 	case d == nil || d.lists == nil:
 		switch {
 		case d != nil && d.loading:
-			add("", "loading the commits and files…")
+			say("loading the commits and files…")
 		default:
-			add("", "the commit and file lists are not available here")
+			say("the commit and file lists are not available here")
 		}
 	default:
 		l := d.lists
 		if l.Err != "" {
-			add("", cleanup.OneLine(l.Err))
+			say(cleanup.OneLine(l.Err))
 		}
 		if n := len(l.Commits) + l.CommitsMore; n > 0 {
 			section(fmt.Sprintf("Local-only commits (%d)", n))
@@ -355,16 +364,16 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 	// What the engine's preview says removal would lose.
 	if d != nil && d.pv != nil {
 		for _, l := range d.pv.LossLines {
-			add("", "will lose: "+cleanup.OneLine(l))
+			say("will lose: " + cleanup.OneLine(l))
 		}
 		for _, p := range d.pv.Procs {
-			add("", fmt.Sprintf("running in it: pid %d %s", p.PID, cleanup.OneLine(p.Command)))
+			say(fmt.Sprintf("running in it: pid %d %s", p.PID, cleanup.OneLine(p.Command)))
 		}
 		for _, w := range d.pv.Warnings {
-			add("", "warning: "+cleanup.OneLine(w))
+			say("warning: " + cleanup.OneLine(w))
 		}
 		for _, n := range d.pv.Notes {
-			add("", "note: "+cleanup.OneLine(n))
+			say("note: " + cleanup.OneLine(n))
 		}
 	}
 	return out

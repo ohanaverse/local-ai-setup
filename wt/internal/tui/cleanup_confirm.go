@@ -1074,10 +1074,10 @@ func (m *cleanupListModel) entryHead(e confirmEntry, cursor string) string {
 // removed. They are the part a tall entry keeps on screen (entryLines' keyN),
 // and the part a single-row confirm prints under the detail block, whose
 // other facts — identity, losses, the holder, the notes — are its own lines.
-func (m *cleanupListModel) decisionLines(e confirmEntry) []string {
+func (m *cleanupListModel) decisionLines(e confirmEntry, indent string) []string {
 	pv := e.pv
 	var out []string
-	add := func(s string) { out = append(out, wrapIndented(s, "      ", m.width)...) }
+	add := func(s string) { out = append(out, wrapIndented(s, indent, m.width)...) }
 	if !e.runnable() {
 		why := pv.Reason
 		if why == "" {
@@ -1142,7 +1142,7 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 		cursor = "> "
 	}
 	out = wrapIndented(m.entryHead(e, cursor), "", m.width)
-	out = append(out, m.decisionLines(e)...)
+	out = append(out, m.decisionLines(e, "      ")...)
 	// The held naming (the design's "the remove confirmation names the
 	// holder"): a live wt session holding this worktree is named here in the
 	// list tag's own spelling — cleanup.RowTags' `held by session <id>`,
@@ -1193,7 +1193,9 @@ func (m *cleanupListModel) confirmBody() (lines []string, starts, keyEnds []int)
 		// the losses and the decisions are, never a toggle scrolled away.
 		e := c.entries[0]
 		body := detailBlock(m.report, e.pv.Fresh, m.confirmDetail(e), m.theme, m.width)
-		body = append(body, m.decisionLines(e)...)
+		// The decisions come after the block at its own column, under a blank
+		// line: they are the one thing the confirmation adds to what `i` said.
+		body = append(append(body, ""), m.decisionLines(e, "")...)
 		for i, l := range body {
 			body[i] = clip(l, m.width)
 		}
@@ -1256,12 +1258,17 @@ func (m *cleanupListModel) confirmTop() (title, summary []string) {
 	return []string{accent.Render(clip(m.screenName()+" · confirm", m.width))}, wrapIndented(sum, "", m.width)
 }
 
-// confirmHints are the confirm screen's key hints.
+// confirmHints are the confirm screen's key hints: the movement keys only
+// when there is more than one entry to move between.
 func (m *cleanupListModel) confirmHints() []string {
 	if !m.conf.offersToggle() {
 		return nil
 	}
-	return wrapIndented("↑↓ move · pgup/pgdown scroll · tab: also delete the highlighted item's unmerged branch", "", m.width)
+	move := "↑↓ move · "
+	if len(m.conf.entries) < 2 {
+		move = ""
+	}
+	return wrapIndented(move+"pgup/pgdown scroll · tab: also delete the highlighted item's unmerged branch", "", m.width)
 }
 
 // confirmPrompt is the confirm screen's prompt (never given up). It always
