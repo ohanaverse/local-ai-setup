@@ -1,6 +1,6 @@
 # wt worktree/branch screens: table layout, async fill, content-in-base signal (full design)
 
-Status: draft for approval, 2026-11-13. Size: project.
+Status: reviewed against the code 2026-11-13 (see "Review amendments"); approved to plan. Size: project.
 
 ## Intent and why
 
@@ -62,7 +62,8 @@ the footer sits changes: anchored to the bottom edge.
 ## Non-goals
 
 - `wt worktrees --json` / `--plain` shapes and `docs/contracts/cleanup-list.*`:
-  unchanged. Every new `Row` fact stays unserialised
+  unchanged, except the one new `evidence` enum value `changes-in-base`
+  (review amendment 2). Every new `Row` fact stays unserialised
   (`TestCleanupJSONUnchangedByNewRowFields` keeps passing). (My call: the new
   numbers stay TUI-only until someone asks for them in JSON.)
 - What any key does: row keys, refusal status lines, `RemoveFuncs`, the removal
@@ -304,6 +305,41 @@ phrase — approved in the conversation as the meaning of "treat it as a proof".
   model selector — both `app.go`'s model phase and the standalone
   `pick_model.go` — and in the agent/command picker (my call: the same flow's
   third list should not behave differently).
+
+## Review amendments (2026-11-13, from reading the code; these win over the text above)
+
+1. **Containment is gathered, never classified.** `Classify` does no I/O, so
+   §3/§4's "classifier produces `State`/containment" means: `Gather`/`Rescan`
+   compute the facts (`Proof` gains the rung through `Prove`;
+   `WorktreeState` gains the diffstat and `InBase Tri` for the uncommitted
+   set) and `Classify` only reads them. `Rescan` (which removal re-checks
+   through) must compute the same facts, or `wt remove --yes` would refuse
+   rows the list called proven.
+2. **The JSON contract gains one enum value.** `evidence` in
+   `docs/contracts/cleanup-list.schema.json` lists the evidence strings;
+   `changes-in-base` is added there (and in the sample/fixture test), plus
+   `wt/docs/wt-cleanup.md` and guide 08 §9. No key or shape changes.
+3. **Rung 6 runs only when rung 5 answered `NotMerged`** (conflict, or a merged
+   tree that differs from base's). `Undetermined` anywhere earlier still stops
+   the ladder (the ladder's own rule); a configured merge driver therefore
+   still yields `Undetermined` (my call: fail closed, no special-casing).
+4. **Stage-1 rows are pending, not "less sure".** The facts-only report marks
+   every row `Pending` (a `Row` field and a `Snapshot.FactsOnly` input):
+   `VERDICT`/`STATUS`/`DIFF`/`IGN`/`PR#` read `-`, no row is proven, none is
+   removable. Stage 2 swaps in the real report.
+5. **Ticks survive the swap correctly.** `withReport` today keeps a row the
+   user "unticked" and never default-ticks it; stage-1 rows are all unticked,
+   so the stage-1→2 swap must treat a pending row as unseen (apply the new
+   default tick) and keep only choices made after the fill. Same for rows that
+   become locked.
+6. **`wt worktrees` needs a loader.** `RunCleanupList` takes a finished report;
+   the manage screen gets a `RemoveFuncs`-sibling `Load` seam (`cmd/wt` builds
+   it from `cleanupGather` staged) so it can paint stage 1 and fill. `--json` /
+   `--plain` stay synchronous and fetch-first as today.
+7. **Cursor wrap is for single steps only.** `move(dir, 1)` wraps; paging
+   (`move(dir, n>1)`) still stops at the ends (my call).
+8. **Footer anchoring** adds blank filler inside `layout()` so the bottom
+   block ends on the last terminal line; the give-up ladder is unchanged.
 
 ## What's left to the builder
 
