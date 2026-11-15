@@ -91,7 +91,7 @@ make -C .. test-all   # CI-equivalent: root lint + llmbench + modeltiers + wt
 
 ## Go module
 
-Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,gittest,scratchdir,launchwarn,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,dirtsnap,removal,rescue,rootmove}`.
+Module root is `wt/` (`go.mod`: `github.com/ohanaverse/local-ai-setup/wt`); run `go build ./...` / `go test ./...` from there, not from the monorepo root. Packages are `cmd/wt`, `cmd/wt-model` plus `internal/{config,provider,tomlw,tiers,candidates,slotedit,cloudsync,rotation,usage,refcount,survey,agents,profiles,guard,sessionclaim,rootclaim,worktree,initseed,gitenv,gittest,scratchdir,launchwarn,themes,tui,tuilayout,configeditor,ollamacheck,catalog,localmodels,modeladmin,lifecycle,litellm,spend,smoke,cleanup,dirtsnap,removal,rescue,rootmove,modelapi,sessionreg,modeljobs,modelgateway,modelserver}`.
 
 **Never use the stock `toml.Encoder` on the registry** (`internal/tomlw` reproduces tomli-w's layout). `internal/spend` never takes the connection string as a `psql` argument (#282).
 
@@ -299,6 +299,15 @@ Read [docs/internals/tui.md](docs/internals/tui.md) before changing layout, star
 - No automatic cleanup anywhere: nothing runs at agent exit and the root is never switched for you.
 
 Read [docs/internals/cleanup-and-removal.md](docs/internals/cleanup-and-removal.md) before changing the classifier, a proof, `internal/removal`, origin removal, `internal/rescue`, `internal/rootmove`, the list's keys or the detail screen: it holds the removal, rescue and restore-root invariants in full, the rulings, the declared losses and the still-to-do list.
+
+## wt-model (`cmd/wt-model`)
+
+`wt-model serve --listen ADDR --token-file PATH [--idle-grace 10m]` is a second binary: one daemon on one port that holds the model side of wt so sessions on other machines need no registry of their own. `/control/v1/*` is a JSON control API (catalog, resolve, start/stop jobs, session register/heartbeat); `/v1/*` is a streaming gateway to LiteLLM. Design: [../docs/superpowers/specs/2026-11-15-wt-model-session-split-design.md](../docs/superpowers/specs/2026-11-15-wt-model-session-split-design.md); wire types: `internal/modelapi`, fixture [../docs/contracts/model-api.sample.json](../docs/contracts/model-api.sample.json).
+
+- **A token is always required** (`--token-file`, mode 0600, loopback included); `--listen` has no default. `NewServer` also refuses an empty token.
+- **The gateway swaps credentials**: it checks the client's token, drops the client's `Authorization` and forwards with the LiteLLM key from wt's `[litellm]` table. `wt-model serve` stops with a message naming `wt litellm set --url --api-key` when either is empty.
+- **Auto-stop is the only stop that is not asked for**: a model no live session lists stops after `--idle-grace` (must be > 0).
+- Change a wire type in `internal/modelapi` only together with the fixture. `cmd/wt-model`'s tests inject a fake `Deps` through `depsFactory`; its `TestMain` carries the four isolations (config home, git, tiers, lifecycle processes).
 
 ## Verification commands
 
