@@ -247,3 +247,35 @@ func TestDefaultDepsWiresEveryField(t *testing.T) {
 		t.Fatalf("DefaultDeps left a field nil: %+v", d)
 	}
 }
+
+// TestAutoStopWaitsAfterSuccessfulStart pins that a successful start restarts
+// the idle clock of a model sessions have used: a model idle past the grace
+// that a client has just started again is not stopped by the next scan, and
+// is once the grace passes after the start.
+func TestAutoStopWaitsAfterSuccessfulStart(t *testing.T) {
+	const grace = 10 * time.Minute
+	clk := &fakeClock{t: testNow}
+	f := &fakeLife{snap: serverSnap("omlx/a")}
+	d := f.deps(serverCfg())
+	d.Now = clk.now
+	reg := sessionreg.New(time.Minute, clk.now)
+	_ = reg.Register("s", []string{"omlx/a"})
+	reg.End("s")
+	clk.advance(grace + time.Minute) // idle past the grace
+	jobs := newJobs(t, clk)
+	if res := d.StartJob(modelapi.StartRequest{Model: "omlx/a"}, reg)(context.Background(), func(string) {}); !res.OK {
+		t.Fatalf("start = %+v, want OK", res)
+	}
+	a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+	a.Tick(context.Background())
+	drain(t, jobs)
+	if stops := f.stopped(); len(stops) != 0 {
+		t.Fatalf("stopped %+v right after a successful start, want nothing", stops)
+	}
+	clk.advance(grace)
+	a.Tick(context.Background())
+	drain(t, jobs)
+	if stops := f.stopped(); len(stops) != 1 {
+		t.Fatalf("stopped %+v once the grace passed after the start, want one stop", stops)
+	}
+}

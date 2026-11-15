@@ -147,7 +147,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	id := s.jobs.Submit("start", req.Model, s.d.StartJob(req))
+	id := s.jobs.Submit("start", req.Model, s.d.StartJob(req, s.sessions))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
 }
 

@@ -174,3 +174,14 @@ func (r *Registry) Seen() []string {
 	sort.Strings(out)
 	return out
 }
+
+// Touch restarts the idle clock of a model some session has registered. It
+// does nothing for a model never registered, which therefore stays out of
+// auto-stop's reach.
+func (r *Registry) Touch(model string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.lastUsed[model]; ok {
+		r.lastUsed[model] = r.now()
+	}
+}

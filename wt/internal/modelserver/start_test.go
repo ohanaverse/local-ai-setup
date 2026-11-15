@@ -184,7 +184,7 @@ func wantProblem(t *testing.T, res modelapi.JobResult, code string) *modelapi.Pr
 func TestStartSuccessWaitsForRoute(t *testing.T) {
 	f := &fakeLife{snap: serverSnap()}
 	var steps stepLog
-	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"})(context.Background(), steps.step)
+	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), steps.step)
 	if !res.OK || res.Error != nil {
 		t.Fatalf("result = %+v, want OK", res)
 	}
@@ -207,7 +207,7 @@ func TestStartOccupiedIsReportedNotLooped(t *testing.T) {
 		Others:        []lifecycle.Resident{{Entry: entry("omlx", "b", true), Stoppable: true}},
 		OthersUnknown: []string{"sushi"},
 	}}
-	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "mtplx/x"})(context.Background(), func(string) {})
+	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "mtplx/x"}, nil)(context.Background(), func(string) {})
 	p := wantProblem(t, res, modelapi.CodeOccupied)
 	if got := f.callList(); !slices.Equal(got, []string{"Start mtplx/x"}) {
 		t.Fatalf("calls = %q, want one Start and nothing else", got)
@@ -233,7 +233,7 @@ func TestStartOthersOnlyIsOthersCode(t *testing.T) {
 	f := &fakeLife{snap: serverSnap("omlx/b"), startErr: &lifecycle.OccupiedError{
 		Others: []lifecycle.Resident{{Entry: entry("omlx", "b", true), Stoppable: true}},
 	}}
-	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "mtplx/x"})(context.Background(), func(string) {})
+	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "mtplx/x"}, nil)(context.Background(), func(string) {})
 	p := wantProblem(t, res, modelapi.CodeOthers)
 	if len(p.Others) != 1 || p.Others[0].ID != "omlx/b" {
 		t.Errorf("others = %+v, want omlx/b", p.Others)
@@ -258,7 +258,7 @@ func TestStartRefusalAlreadyAnsweredIsFailed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeLife{snap: serverSnap(), startErr: tc.err}
 			req := modelapi.StartRequest{Model: "mtplx/x", AllowReplace: true, Others: &modelapi.OthersAnswer{}}
-			res := f.deps(serverCfg()).StartJob(req)(context.Background(), func(string) {})
+			res := f.deps(serverCfg()).StartJob(req, nil)(context.Background(), func(string) {})
 			wantProblem(t, res, modelapi.CodeFailed)
 			if n := len(f.callList()); n != 1 {
 				t.Errorf("%d calls, want exactly one Start", n)
@@ -271,7 +271,7 @@ func TestStartRefusalAlreadyAnsweredIsFailed(t *testing.T) {
 // occupancy_unknown problem the client answers with allow_replace.
 func TestStartOccupancyUnknown(t *testing.T) {
 	f := &fakeLife{snap: serverSnap(), startErr: &lifecycle.OccupancyUnknownError{ProviderID: "mtplx", Origin: "http://127.0.0.1:8003"}}
-	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "mtplx/x"})(context.Background(), func(string) {})
+	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "mtplx/x"}, nil)(context.Background(), func(string) {})
 	wantProblem(t, res, modelapi.CodeOccupancyUnknown)
 }
 
@@ -291,8 +291,8 @@ func TestStartCarriesAnswersIntoOptions(t *testing.T) {
 		o.Progress(lifecycle.StageWarming)
 		return nil
 	}
-	d.StartJob(modelapi.StartRequest{Model: "omlx/a", AllowReplace: true, Others: &modelapi.OthersAnswer{Stop: []string{"mtplx/y"}}})(context.Background(), steps.step)
-	d.StartJob(modelapi.StartRequest{Model: "omlx/a"})(context.Background(), func(string) {})
+	d.StartJob(modelapi.StartRequest{Model: "omlx/a", AllowReplace: true, Others: &modelapi.OthersAnswer{Stop: []string{"mtplx/y"}}}, nil)(context.Background(), steps.step)
+	d.StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), func(string) {})
 	if len(f.opts) != 2 {
 		t.Fatalf("%d Start calls, want 2", len(f.opts))
 	}
@@ -326,7 +326,7 @@ func TestStartUnknownAndBlockedRows(t *testing.T) {
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			f := &fakeLife{snap: serverSnap()}
-			res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: tc.id})(context.Background(), func(string) {})
+			res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: tc.id}, nil)(context.Background(), func(string) {})
 			p := wantProblem(t, res, tc.code)
 			if !strings.Contains(p.Message, tc.msg) {
 				t.Errorf("message %q does not mention %q", p.Message, tc.msg)
@@ -343,7 +343,7 @@ func TestStartUnknownAndBlockedRows(t *testing.T) {
 // the gateway is not waited for.
 func TestStartStoppedDuringSettle(t *testing.T) {
 	f := &fakeLife{snap: serverSnap(), settleErr: &lifecycle.StoppedError{Why: "the server went away"}}
-	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"})(context.Background(), func(string) {})
+	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), func(string) {})
 	p := wantProblem(t, res, modelapi.CodeStopped)
 	if !strings.Contains(p.Message, "omlx/a") {
 		t.Errorf("message %q does not name the model", p.Message)
@@ -358,7 +358,7 @@ func TestStartStoppedDuringSettle(t *testing.T) {
 // printed to Options.Out appended so the client sees it.
 func TestStartFailureCarriesEngineOutput(t *testing.T) {
 	f := &fakeLife{snap: serverSnap(), startErr: errors.New("boom"), startOut: "wt: route not updated\n"}
-	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"})(context.Background(), func(string) {})
+	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), func(string) {})
 	p := wantProblem(t, res, modelapi.CodeFailed)
 	if !strings.Contains(p.Message, lifecycle.StartErrorMessage("omlx/a", errors.New("boom"))) || !strings.Contains(p.Message, "route not updated") {
 		t.Errorf("message = %q, want the start error and the engine output", p.Message)
@@ -374,7 +374,7 @@ func TestStartCancelled(t *testing.T) {
 		{snap: serverSnap(), startErr: fmt.Errorf("waiting: %w", context.Canceled)},
 		{snap: serverSnap(), routedErr: context.Canceled},
 	} {
-		res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"})(ctx, func(string) {})
+		res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(ctx, func(string) {})
 		wantProblem(t, res, modelapi.CodeCancelled)
 	}
 }
@@ -384,7 +384,7 @@ func TestStartCancelled(t *testing.T) {
 // model answers through the gateway, not just that a server came up.
 func TestStartGatewayNeverListsIsFailed(t *testing.T) {
 	f := &fakeLife{snap: serverSnap(), routedErr: errors.New("not listed after 30s")}
-	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"})(context.Background(), func(string) {})
+	res := f.deps(serverCfg()).StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), func(string) {})
 	p := wantProblem(t, res, modelapi.CodeFailed)
 	if !strings.Contains(p.Message, "omlx/a") || !strings.Contains(p.Message, "not listed") {
 		t.Errorf("message = %q, want the model and the cause", p.Message)
@@ -397,7 +397,7 @@ func TestStartGatewayNeverListsIsFailed(t *testing.T) {
 func TestJobRecoversFromPanic(t *testing.T) {
 	f := &fakeLife{panicIn: "inventory"}
 	d := f.deps(serverCfg())
-	res := d.StartJob(modelapi.StartRequest{Model: "omlx/a"})(context.Background(), func(string) {})
+	res := d.StartJob(modelapi.StartRequest{Model: "omlx/a"}, nil)(context.Background(), func(string) {})
 	p := wantProblem(t, res, modelapi.CodeFailed)
 	if !strings.Contains(p.Message, "inventory exploded") {
 		t.Errorf("start message = %q, want the panic value", p.Message)

@@ -10,6 +10,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeljobs"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionreg"
 )
 
 // stepGateway is the step a start reports while it waits for the gateway.
@@ -19,8 +20,9 @@ const stepGateway = "waiting for the gateway"
 // exactly once: a refusal goes back to the client as a problem (occupied,
 // others, occupancy_unknown) for it to answer by posting a new start, never
 // answered here. A start succeeds only once the model is settled and its
-// gateway id is listed.
-func (d Deps) StartJob(req modelapi.StartRequest) modeljobs.RunFunc {
+// gateway id is listed, and then restarts the model's idle clock in sessions
+// (nil skips that).
+func (d Deps) StartJob(req modelapi.StartRequest, sessions *sessionreg.Registry) modeljobs.RunFunc {
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
 		cfg := d.Config
 		snap := d.Inventory(cfg)
@@ -62,6 +64,11 @@ func (d Deps) StartJob(req modelapi.StartRequest) modeljobs.RunFunc {
 				return problem(modelapi.CodeCancelled, fmt.Sprintf("cancelled while waiting for %s to answer through the gateway", id))
 			}
 			return problem(modelapi.CodeFailed, withOutput(fmt.Sprintf("%s started but does not answer through the gateway: %v", id, err), out))
+		}
+		if sessions != nil {
+			// Restart the idle clock: a model idle past the grace that was
+			// just started must not be auto-stopped on the next scan.
+			sessions.Touch(id)
 		}
 		return modelapi.JobResult{OK: true}
 	})

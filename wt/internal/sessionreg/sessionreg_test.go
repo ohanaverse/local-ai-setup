@@ -124,3 +124,22 @@ func TestLiveIsIdAgnostic(t *testing.T) {
 		t.Fatalf("Users = %v, want sorted [s1 s2]", users)
 	}
 }
+
+// TestTouchRefreshesOnlySeenModels checks that Touch moves a registered
+// model's idle clock to now but leaves a never-registered model unseen, so a
+// model started by hand can never become auto-stoppable through a start job.
+func TestTouchRefreshesOnlySeenModels(t *testing.T) {
+	r, c := newReg(time.Minute)
+	t0 := c.t
+	_ = r.Register("s", []string{"m"})
+	r.End("s")
+	c.t = t0.Add(time.Hour)
+	r.Touch("m")
+	r.Touch("unseen")
+	if since, seen := r.IdleSince("m"); !seen || !since.Equal(c.t) {
+		t.Fatalf("IdleSince(m) = (%v,%v), want (%v,true)", since, seen, c.t)
+	}
+	if _, seen := r.IdleSince("unseen"); seen {
+		t.Fatal("Touch made an unseen model seen")
+	}
+}
