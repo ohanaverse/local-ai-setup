@@ -76,7 +76,12 @@ func ReadRowDetail(g Git, row Row) RowDetail {
 		}
 		dir, rev = row.Path, "HEAD"
 	}
-	wg := Git{Dir: dir, Timeout: g.Timeout}
+	// WithoutFSMonitor: the status must not answer from (or start) the
+	// fsmonitor daemon — a stale daemon's word is exactly what this listing
+	// must not say — and dirtTimeout gives it the same budget every other
+	// full-status read of a worktree gets (an --untracked-files=all status
+	// hashes a large tree; the 30s default turns that into a failure).
+	wg := WithoutFSMonitor(Git{Dir: dir, Timeout: dirtTimeout})
 
 	if row.Bare {
 		d.Note = "a bare repository: no working tree and no commits of its own to list"

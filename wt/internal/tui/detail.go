@@ -40,21 +40,27 @@ const detailLabelWidth = 10
 // rowDetail is the detail screen's state: the row it was opened on, what the
 // engine's preview said about it (nil until it lands, and nil when there is
 // no preview to make), the read-only listings (nil when it could not be read
-// here, or has not landed yet), whether a load is still in flight, and how
-// far down the block the user scrolled.
+// here, or has not landed yet), whether a load is still in flight, how far
+// down the block the user scrolled, and seq — how many reads the screen has
+// dispatched. A landing stamped with an older seq is dropped: several reads
+// can be in flight at once (a report swap re-reads mid-screen), and the last
+// one landing wins only by the stamp, not by arrival order.
 type rowDetail struct {
 	row     cleanup.Row
 	pv      *removal.ItemPreview
 	lists   *cleanup.RowDetail
 	loading bool
 	offset  int
+	seq     int
 }
 
 // detailLoadedMsg is a row's preview and listings landing, off the update
-// goroutine. key says which row they belong to, so a load that lands after
-// the screen moved (or closed) is dropped.
+// goroutine. key says which row they belong to, and seq which dispatch they
+// answer, so a load that lands after the screen moved (or closed), or after
+// a newer read of the same row was dispatched, is dropped.
 type detailLoadedMsg struct {
 	key   rowKey
+	seq   int
 	pv    *removal.ItemPreview
 	lists cleanup.RowDetail
 }
@@ -128,10 +134,15 @@ func (m cleanupListModel) openDetail() (cleanupListModel, tea.Cmd) {
 
 // detailCmd reads one row's preview and listings. The preview goes through
 // previewCmd, so a preview that panics or answers for another row is dropped
-// rather than shown; the listings are the read-only detail reads.
+// rather than shown; the listings are the read-only detail reads. It stamps
+// the message with the screen's next read seq, so a slower older read (a
+// swap's re-read already dispatched) cannot land over the newer one's answer.
 func (m cleanupListModel) detailCmd(row cleanup.Row) tea.Cmd {
 	preview, detail := m.rm.Preview, m.rm.Detail
 	key := keyOf(row)
+	d := m.rowDetail
+	d.seq++
+	seq := d.seq
 	return func() tea.Msg {
 		var pv *removal.ItemPreview
 		if preview != nil {
@@ -143,17 +154,18 @@ func (m cleanupListModel) detailCmd(row cleanup.Row) tea.Cmd {
 		if detail != nil {
 			lists = detail(row)
 		}
-		return detailLoadedMsg{key: key, pv: pv, lists: lists}
+		return detailLoadedMsg{key: key, seq: seq, pv: pv, lists: lists}
 	}
 }
 
-// gotDetailLoaded applies a landing: a load for another row, or one that
-// arrives after the screen closed (rowDetail is nil then), is dropped.
+// gotDetailLoaded applies a landing: a load for another row, one that arrives
+// after the screen closed (rowDetail is nil then), or one answering an older
+// dispatch than the newest is dropped.
 func (m cleanupListModel) gotDetailLoaded(msg detailLoadedMsg) (cleanupListModel, tea.Cmd) {
 	// Any phase with the screen's state alive takes it: a load that lands
 	// while a confirm opened from the screen is up must not be lost, or the
 	// screen the cancel returns to would read "loading" for good.
-	if m.rowDetail == nil || keyOf(m.rowDetail.row) != msg.key {
+	if m.rowDetail == nil || keyOf(m.rowDetail.row) != msg.key || msg.seq != m.rowDetail.seq {
 		return m, nil
 	}
 	m.rowDetail.pv = msg.pv
@@ -249,7 +261,8 @@ func shortSHA(s string) string {
 }
 
 // detailLine is one labelled line of the block, its value wrapped and its
-// continuation lines indented under the value.
+// continuation lines indented under the value: the label pads the head line
+// only, the continuation lines sit on a blank label column.
 func detailLine(name, value string, width int) []string {
 	if value == "" {
 		return nil
@@ -257,11 +270,11 @@ func detailLine(name, value string, width int) []string {
 	head := tuilayout.PadRunes(name, detailLabelWidth)
 	w := 0
 	if width > 0 {
-		w = max(1, width-detailLabelWidth)
+		w = max(1, width-lipgloss.Width(head))
 	}
 	lines := strings.Split(tuilayout.WrapText(value, w), "\n")
 	out := []string{head + lines[0]}
-	indent := strings.Repeat(" ", detailLabelWidth)
+	indent := strings.Repeat(" ", lipgloss.Width(head))
 	for _, l := range lines[1:] {
 		out = append(out, indent+l)
 	}

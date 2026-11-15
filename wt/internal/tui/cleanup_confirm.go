@@ -376,6 +376,11 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 		// returns there, a batch flow to the list.
 		if m.confFromDetail && m.rowDetail != nil {
 			m.phase = cleanupPhaseDetail
+			// A report swap that landed while the preview ran never settled
+			// the screen (settleDetail runs at the detail phase only): settle
+			// now, so the screen returns to a row the list still has — or
+			// closes when it does not.
+			m.settleDetail()
 		} else {
 			m.phase = cleanupPhaseList
 			m.rowDetail, m.confFromDetail = nil, false
@@ -495,21 +500,29 @@ func (m cleanupListModel) cancelConfirm(why string) (cleanupListModel, tea.Cmd) 
 	// One step back, never two: a confirm the detail screen opened returns to
 	// that screen (its row and its reads still there), and a batch confirm —
 	// enter's ticked rows — returns to the list, which is where it started.
-	back := m.rowDetail
-	if !m.confFromDetail || back == nil {
+	if !m.confFromDetail || m.rowDetail == nil {
 		m.phase = cleanupPhaseList
 		m.applyPendingRemoveFuncs()
 		return m, nil
 	}
 	m.phase = cleanupPhaseDetail
-	// A fill that landed under the confirm was deferred (swapRemoveFuncs) and
-	// the screen is at rest again: it takes the filled instance, and reads its
-	// row again through it.
+	// A report swap that landed while the confirm was up never settled the
+	// screen (settleDetail runs at the detail phase only): settle now, so the
+	// screen the cancel returns to shows a row the list still has — re-pointed
+	// at the report's own copy, or closed with the gone line when the row left
+	// the list while the user was confirming.
+	m.settleDetail()
 	deferred := m.pendingRM != nil
 	m.applyPendingRemoveFuncs()
+	if m.phase != cleanupPhaseDetail || m.rowDetail == nil {
+		// Settled away: the row the confirm started from is gone from the
+		// list, so there is no screen to return to — the deferred funcs are
+		// applied where the list now reads them.
+		return m, nil
+	}
 	if deferred {
-		back.loading = true
-		return m, m.detailCmd(back.row)
+		m.rowDetail.loading = true
+		return m, m.detailCmd(m.rowDetail.row)
 	}
 	return m, nil
 }

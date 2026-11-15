@@ -89,12 +89,6 @@ func moveTo(t *testing.T, m cleanupListModel, name string) cleanupListModel {
 	return m
 }
 
-// TestCleanupListGroupsByKind pins that the list is grouped by kind
-// (WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES, cleanup.KindGroups' order,
-// the root first) instead of by status, whatever order the report's rows came
-// in, and that each row still says its verdict (proven / less sure / unique
-// work / in use): the status headings are gone, so the verdict must travel
-// with the row or the user loses "is this safe" at a glance.
 // TestListHasNoHeadings pins the flat list: no WORKTREES / LOCAL BRANCHES /
 // REMOTE BRANCHES lines and no status headings, the cursor starting on the
 // root row, and the arrow keys walking the rows in cleanup.ListOrder's order
