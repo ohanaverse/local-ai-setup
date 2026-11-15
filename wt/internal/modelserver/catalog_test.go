@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
@@ -95,13 +96,17 @@ func TestCatalogStatesAndActions(t *testing.T) {
 	}
 }
 
-// TestCatalogSkipsProfileRows pins that no slot-profile row reaches the wire
-// catalog, even when the config names slot-profile-shaped models.
+// TestCatalogSkipsProfileRows pins that buildRows drops a slot-profile row
+// handed to it beside a normal row, so no profile ever reaches the wire.
 func TestCatalogSkipsProfileRows(t *testing.T) {
-	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"})
-	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), testNow)
-	if len(c.Rows) != 1 {
-		t.Errorf("rows = %+v, want exactly the one model", c.Rows)
+	cfg := testCfg()
+	rows := []catalog.Row{
+		{Model: config.Model{ID: "slot/profile", ProviderID: "openrouter"}, Location: config.LocationCloud, Profile: &catalog.ProfileRow{}},
+		{Model: config.Model{ID: "openrouter/c", ProviderID: "openrouter", ModelName: "c"}, Location: config.LocationCloud},
+	}
+	got := buildRows(rows, cfg, nil, testSessions(), testNow)
+	if len(got) != 1 || got[0].ID != "openrouter/c" {
+		t.Errorf("rows = %+v, want only openrouter/c", got)
 	}
 }
 

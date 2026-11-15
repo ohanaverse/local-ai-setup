@@ -25,11 +25,17 @@ func BuildCatalog(cfg *config.Config, snap localmodels.Snapshot, ix tiers.Index,
 		Schema:    modelapi.SchemaVersion,
 		Generated: now.UTC().Format(time.RFC3339),
 		Providers: make(map[string]string, len(snap.Providers)),
-		Rows:      make([]modelapi.Row, 0, len(rows)),
 	}
 	for family, st := range snap.Providers {
 		out.Providers[family] = string(st)
 	}
+	out.Rows = buildRows(rows, cfg, ix, sessions, now)
+	return out
+}
+
+// buildRows converts already-built catalog rows to wire rows, skipping
+// slot-profile rows, sorted by ID.
+func buildRows(rows []catalog.Row, cfg *config.Config, ix tiers.Index, sessions *sessionreg.Registry, now time.Time) []modelapi.Row {
 	var ids []string
 	for _, r := range rows {
 		if !r.IsProfile() {
@@ -37,13 +43,14 @@ func BuildCatalog(cfg *config.Config, snap localmodels.Snapshot, ix tiers.Index,
 		}
 	}
 	counts := sessions.Counts(ids)
+	out := make([]modelapi.Row, 0, len(ids))
 	for _, r := range rows {
 		if r.IsProfile() {
 			continue
 		}
-		out.Rows = append(out.Rows, wireRow(cfg, r, ix, counts[r.Model.ID], now))
+		out = append(out, wireRow(cfg, r, ix, counts[r.Model.ID], now))
 	}
-	slices.SortFunc(out.Rows, func(a, b modelapi.Row) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(out, func(a, b modelapi.Row) int { return strings.Compare(a.ID, b.ID) })
 	return out
 }
 
