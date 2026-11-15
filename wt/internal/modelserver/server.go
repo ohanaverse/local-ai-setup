@@ -56,12 +56,16 @@ type Server struct {
 // serverOption adjusts a Server in NewServer (test seams only).
 type serverOption func(*Server)
 
-// NewServer builds the server. It refuses an empty Token on every Listen
+// NewServer builds the server. It refuses a non-positive IdleGrace (a model
+// would be auto-stopped the moment it went idle) and an empty Token on every Listen
 // address: the control API starts and stops models and the gateway spends the
 // host's upstream key, so neither is ever open.
 func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	if o.Token == "" {
 		return nil, errors.New("wt-model: a token is required: pass --token-file PATH (create one with `umask 077; head -c 32 /dev/urandom | base64 > PATH`)")
+	}
+	if o.IdleGrace <= 0 {
+		return nil, fmt.Errorf("wt-model: the idle grace must be greater than zero, got %s", o.IdleGrace)
 	}
 	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery}
 	s.sessions = sessionreg.New(sessionTTL, d.Now)
@@ -151,6 +155,10 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "model is required")
+		return
+	}
 	id := s.jobs.Submit("start", req.Model, s.d.StartJob(req, s.sessions))
 	writeJSON(w, http.StatusAccepted, modelapi.JobRef{ID: id})
 }
@@ -158,6 +166,10 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	var req modelapi.StopRequest
 	if !decodeBody(w, r, &req) {
+		return
+	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "model is required")
 		return
 	}
 	id := s.jobs.Submit("stop", req.Model, s.d.StopJob(req, s.sessions))

@@ -294,7 +294,7 @@ func TestNewServerRequiresToken(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "--token-file") || !strings.Contains(err.Error(), "token is required") {
 			t.Errorf("Listen %q: err = %v, want a required-token error naming --token-file", listen, err)
 		}
-		if _, err := NewServer(Options{Listen: listen, Token: "t"}, d); err != nil {
+		if _, err := NewServer(Options{Listen: listen, Token: "t", IdleGrace: time.Minute}, d); err != nil {
 			t.Errorf("Listen %q with a token: %v", listen, err)
 		}
 	}
@@ -329,8 +329,10 @@ func TestGatewayIsMountedAndAuthenticated(t *testing.T) {
 // auto-stop loop on the shortened period, and returns nil once ctx is done.
 func TestServeAnnouncesAndShutsDownCleanly(t *testing.T) {
 	f := &fakeLife{snap: serverSnap("omlx/a")}
-	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: 0},
-		f.deps(serverCfg()), func(s *Server) { s.autoStopEvery = 10 * time.Millisecond })
+	d := f.deps(serverCfg())
+	d.Now = time.Now // a real clock, so a 1ns grace elapses between End and a scan
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Nanosecond},
+		d, func(s *Server) { s.autoStopEvery = 10 * time.Millisecond })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,5 +444,32 @@ func TestReloadingConfigKeepsLastGood(t *testing.T) {
 	get = reloadingConfig(initial, func() (*config.Config, error) { return nil, errors.New("boom") })
 	if got := get(); got != initial {
 		t.Fatal("a failing first reload must return the initial config")
+	}
+}
+
+// TestStartStopRejectEmptyModel pins that a start or stop naming no model is a
+// 400 bad_request and submits no job.
+func TestStartStopRejectEmptyModel(t *testing.T) {
+	f := &fakeLife{snap: serverSnap()}
+	_, ts := newTestServer(t, f, nil)
+	for _, path := range []string{"/control/v1/start", "/control/v1/stop"} {
+		for _, body := range []string{``, `{}`, `{"model":""}`} {
+			st, b := call(t, ts, "POST", path, body)
+			wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+		}
+	}
+	if got := f.callList(); len(got) != 0 {
+		t.Errorf("calls = %q, want none", got)
+	}
+}
+
+// TestNewServerRejectsNonPositiveIdleGrace pins that a zero or negative idle
+// grace is refused: it would auto-stop a model the moment it went idle.
+func TestNewServerRejectsNonPositiveIdleGrace(t *testing.T) {
+	d := (&fakeLife{}).deps(serverCfg())
+	for _, g := range []time.Duration{0, -time.Second} {
+		if _, err := NewServer(Options{Listen: "127.0.0.1:0", Token: "t", IdleGrace: g}, d); err == nil {
+			t.Errorf("IdleGrace %s accepted, want an error", g)
+		}
 	}
 }
