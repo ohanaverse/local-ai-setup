@@ -1,0 +1,93 @@
+{
+  "ping": {"api_major": 1, "schema": 1, "server": "wt-model 0.1.0"},
+  "catalog": {
+    "schema": 1,
+    "generated": "2026-11-15T10:00:00Z",
+    "providers": {"omlx": "oMLX", "openrouter": "OpenRouter", "mtplx": "MTPLX"},
+    "rows": [
+      {
+        "id": "omlx/qwen3.8-35b",
+        "gateway_id": "qwen3.8-35b-omlx",
+        "family": "qwen3.8",
+        "provider_id": "omlx",
+        "model_name": "qwen3.8-35b",
+        "location": "local",
+        "tags": ["moe", "coding"],
+        "registered": true,
+        "discovered": false,
+        "state": "running",
+        "action": "launch",
+        "tier": "strong",
+        "tier_code": "S2",
+        "confidence": "high",
+        "aligned": 0.82,
+        "context": 131072,
+        "protocols": ["openai", "anthropic"],
+        "sessions": 2
+      },
+      {
+        "id": "openrouter/minimax-m2.5",
+        "gateway_id": "minimax-m2.5-openrouter",
+        "family": "minimax",
+        "provider_id": "openrouter",
+        "model_name": "minimax-m2.5",
+        "location": "cloud",
+        "tags": [],
+        "registered": true,
+        "discovered": false,
+        "state": "stopped",
+        "action": "launch",
+        "context": 200000,
+        "protocols": ["openai"],
+        "price": {"input": 0.3, "cache": 0.03, "output": 1.2},
+        "sessions": 0
+      },
+      {
+        "id": "mtplx/org/big-model",
+        "gateway_id": "big-model-mtplx",
+        "family": "big",
+        "provider_id": "mtplx",
+        "model_name": "org/big-model",
+        "location": "local",
+        "tags": ["large"],
+        "registered": true,
+        "discovered": true,
+        "state": "blocked",
+        "action": "block",
+        "block_reason": "pack does not fit iogpu.wired_limit_mb",
+        "protocols": ["openai"],
+        "sessions": 0
+      }
+    ]
+  },
+  "job": {
+    "id": "job-0001",
+    "kind": "start",
+    "model": "omlx/qwen3.8-35b",
+    "state": "failed",
+    "step": "checking occupancy",
+    "created": "2026-11-15T10:00:01Z",
+    "updated": "2026-11-15T10:00:03Z",
+    "result": {
+      "ok": false,
+      "error": {
+        "code": "occupied",
+        "message": "mtplx is serving another model",
+        "occupants": ["mtplx/org/other-model"],
+        "others": [{"id": "ollama/llama4", "label": "llama4 (ollama)", "stoppable": true}]
+      }
+    }
+  },
+  "start_request": {
+    "model": "omlx/qwen3.8-35b",
+    "allow_replace": true,
+    "others": {"stop": ["ollama/llama4"]}
+  },
+  "problem": {
+    "code": "others",
+    "message": "other models are resident",
+    "others": [{"id": "ollama/llama4", "label": "llama4 (ollama)", "stoppable": true}],
+    "others_unknown": ["sushi"],
+    "sessions": ["sess-1"]
+  }
+}
