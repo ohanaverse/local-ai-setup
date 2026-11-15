@@ -371,8 +371,15 @@ func (m cleanupListModel) gotPreviews(msg cleanupPreviewMsg) (cleanupListModel, 
 		return m, nil
 	}
 	if msg.err != nil {
-		m.phase = cleanupPhaseList
 		m.status = "nothing was removed: " + cleanup.OneLine(msg.err.Error())
+		// One step back, as cancelConfirm: a flow the detail screen opened
+		// returns there, a batch flow to the list.
+		if m.confFromDetail && m.rowDetail != nil {
+			m.phase = cleanupPhaseDetail
+		} else {
+			m.phase = cleanupPhaseList
+			m.rowDetail, m.confFromDetail = nil, false
+		}
 		m.applyPendingRemoveFuncs()
 		return m, nil
 	}

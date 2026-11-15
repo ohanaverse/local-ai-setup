@@ -426,8 +426,9 @@ func TestLaunchSelectorQuitWindowKeepsTheHandOffInstance(t *testing.T) {
 // TestLaunchSelectorFillSwapAppliesWhenAPreviewFails pins the deferred fill
 // swap's return to rest through gotPreviews' error path: `x` starts a
 // preview, the PR fill lands while it is in flight (deferred, nothing built),
-// the re-check fails — the list is back at rest with "nothing was removed" —
-// and the filled generation's instance is built and takes over right there.
+// the re-check fails — the flow is one step back at rest (the detail screen
+// `x` opened it from) with "nothing was removed" — and the filled
+// generation's instance is built and takes over right there.
 func TestLaunchSelectorFillSwapAppliesWhenAPreviewFails(t *testing.T) {
 	var built []*actionRecorder
 	builder := RemoveFuncsBuilder(func(snap cleanup.Snapshot, _ cleanup.GatherInputs) RemoveFuncs {
@@ -445,8 +446,8 @@ func TestLaunchSelectorFillSwapAppliesWhenAPreviewFails(t *testing.T) {
 		t.Fatalf("the builder ran %d times with a fill under a preview, want 1: the swap waits for rest", len(built))
 	}
 	m, _ = updateMsg(m, cleanupPreviewMsg{err: errors.New("the re-check failed")})
-	if m.rows.phase != cleanupPhaseList {
-		t.Fatalf("a failed preview left phase %v, want the list", m.rows.phase)
+	if m.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("a failed preview left phase %v, want the detail screen the flow started from", m.rows.phase)
 	}
 	if len(built) != 2 || !built[1].snap.PRsAsked {
 		t.Fatalf("builder ran %d times; a failed preview must apply the deferred fill's instance (built from the filled snapshot)", len(built))
@@ -523,5 +524,33 @@ func TestPostRunRefreshDropsAStalePendingFill(t *testing.T) {
 	}
 	if m.pendingRM != nil {
 		t.Error("the stale build is still pending on the fresh list")
+	}
+}
+
+// TestPickerFillUnderDetailScreenSwapsAndRereads pins that the detail screen
+// is a rest for a fill swap: a PR lookup landing under it builds the filled
+// instance at once (the actions the screen draws stand on the new report) and
+// dispatches a fresh read of the row, instead of deferring the swap to esc and
+// leaving the screen on the old snapshot's data.
+func TestPickerFillUnderDetailScreenSwapsAndRereads(t *testing.T) {
+	var built []*actionRecorder
+	builder := RemoveFuncsBuilder(func(snap cleanup.Snapshot, _ cleanup.GatherInputs) RemoveFuncs {
+		rec := &actionRecorder{snap: snap}
+		built = append(built, rec)
+		return rec.funcs()
+	})
+	rep := pickerActionsFixture()
+	m := pickerCursorTo(t, pickerActionsReady(t, rep, builder), "loose")
+	m = pickerKey(t, m, keyRunes("i"))
+	if m.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("i left phase %v, want the detail screen", m.rows.phase)
+	}
+	before := len(built)
+	m, cmd := updateMsg(m, rowPRsLoadedMsg{Report: rep, Snap: cleanup.Snapshot{PRsAsked: true}, gen: m.rowsGen})
+	if len(built) != before+1 || !built[len(built)-1].snap.PRsAsked {
+		t.Fatalf("builder ran %d times, want one more built from the filled snapshot", len(built))
+	}
+	if cmd == nil || m.rows.rowDetail == nil || !m.rows.rowDetail.loading {
+		t.Errorf("the screen did not re-read its row after the swap (cmd %v, detail %+v)", cmd != nil, m.rows.rowDetail)
 	}
 }

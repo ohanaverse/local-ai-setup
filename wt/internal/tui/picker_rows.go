@@ -251,6 +251,7 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	m.rowsIn = msg.in
 	m.rowsGen++
 	var rows cleanupListModel
+	var swapCmd tea.Cmd
 	if refreshing {
 		base := m.rows
 		base.now = base.clock()
@@ -262,7 +263,7 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 		// Removal funcs come with a filled report, never with the facts (a
 		// hand-injected filled report still builds them here, as always).
 		if !factsPending(msg.report) {
-			swapRemoveFuncs(&rows, func() RemoveFuncs { return m.removeFuncsFor(msg.snap, msg.in) })
+			swapCmd = swapRemoveFuncs(&rows, func() RemoveFuncs { return m.removeFuncsFor(msg.snap, msg.in) })
 		}
 	} else {
 		opts := rowListOpts{Mode: modeLaunch, Theme: m.theme, Now: time.Now(), Root: msg.repoRoot, Stamp: &msg.stamp}
@@ -279,7 +280,7 @@ func (m model) gotRows(msg rowsLoadedMsg) (model, tea.Cmd) {
 	// Stage 2 of 3: the fill completes the facts off the update goroutine;
 	// its landing builds the removal funcs from the filled snapshot —
 	// nothing is removable from a half-read repository.
-	return m, loadRowFillCmd(msg.repoRoot, msg.snap, msg.in, m.rowsGen)
+	return m, tea.Batch(swapCmd, loadRowFillCmd(msg.repoRoot, msg.snap, msg.in, m.rowsGen))
 }
 
 // factsPending reports whether a report is still the facts stage (any row
@@ -324,16 +325,16 @@ func (m model) gotFilled(msg rowsFilledMsg) (model, tea.Cmd) {
 	// this fill is any later load's bump; the PR stage carries the current
 	// rowsGen, so a PR answer older than any load is dropped as before.
 	m.rows = m.rows.withReport(msg.Report)
-	swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
+	reread := swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
 	// Stage 3 only for a GitHub repository: FillDetails marked a snapshot
 	// with no own repo PRNotApplicable (PRsSkipped false), and the old
 	// single-load picker ran no PR stage there either — every gh call would
 	// fail (the source gate in askPRs stops the --base ones; this stops
 	// dispatching the stage at all).
 	if !msg.Snap.PRsSkipped {
-		return m, nil
+		return m, reread
 	}
-	return m, loadRowPRsCmd(m.repoRoot, msg.Snap, m.rowsIn, m.rowsGen)
+	return m, tea.Batch(reread, loadRowPRsCmd(m.repoRoot, msg.Snap, m.rowsIn, m.rowsGen))
 }
 
 // updateRows hands msg to the row list and turns what it chose into the
@@ -374,15 +375,33 @@ func (m model) removeFuncsFor(snap cleanup.Snapshot, in cleanup.GatherInputs) Re
 // winning — rather than built here and thrown away with the refused swap.
 // Nothing swaps on a done list: the `r`/`R` quit window hands off through the
 // instance its key checked.
-func swapRemoveFuncs(rows *cleanupListModel, build func() RemoveFuncs) {
+func swapRemoveFuncs(rows *cleanupListModel, build func() RemoveFuncs) tea.Cmd {
 	if rows.done {
-		return
+		return nil
 	}
-	if rows.phase != cleanupPhaseList {
+	switch rows.phase {
+	case cleanupPhaseList:
+		applyRemoveFuncs(rows, build())
+	case cleanupPhaseDetail:
+		// The detail screen is a rest (nothing in flight, nothing sealed): the
+		// funcs swap now so the actions it draws match the new report, and its
+		// preview and listings are read again through them.
+		applyRemoveFuncs(rows, build())
+		return rows.rereadDetail()
+	default:
 		rows.pendingRM = build
-		return
 	}
-	applyRemoveFuncs(rows, build())
+	return nil
+}
+
+// rereadDetail dispatches a fresh read of the open detail screen's row through
+// the funcs now wired, or nothing when no screen is open.
+func (m *cleanupListModel) rereadDetail() tea.Cmd {
+	if m.phase != cleanupPhaseDetail || m.rowDetail == nil {
+		return nil
+	}
+	m.rowDetail.loading = true
+	return m.detailCmd(m.rowDetail.row)
 }
 
 // applyRemoveFuncs puts rm on the list — both where the flow reads it and

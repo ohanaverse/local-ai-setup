@@ -79,8 +79,8 @@ the lookup could not answer; blank when there is no PR; `-` while the row is
 pending). `VERDICT` is `safe` (proven), `check` (less sure), `work` (work that
 exists nowhere else) or `locked` (nothing can be done with it, and the detail
 screen says why), `-` while the row is still being read. `DIFF` is the uncommitted change
-counted diffstat-style (`+99/-55`; `-` when it could not be read or is over
-the caps), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
+counted diffstat-style (`+99/-55`; `-` when it could not be read, is over
+the caps or includes a binary, unreadable or non-regular file), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
 `in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
 `IGN`, `STATUS`, `DIFF`; the worktree, branch and verdict columns never drop,
 and the detail block then names the highlighted row's PR (`PR #3 open`, or

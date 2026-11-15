@@ -83,13 +83,14 @@ func TestDiffStatIgnoredFilesNeverCount(t *testing.T) {
 	}
 }
 
-// TestDiffStatBinaryAndOverCapAreUnknownOrZero pins git's diffstat rule for
-// binaries (they contribute no lines, tracked or untracked) and the caps
-// (over DirtMaxFiles the counts are Unknown, never a confident number). Why:
-// a binary counted as text would report thousands of phantom lines, and a
-// change-set over the caps must read as "could not tell", not as zero.
+// TestDiffStatBinaryAndOverCapAreUnknownOrZero pins that a change the counts
+// cannot see (a binary, tracked or untracked) and a change-set over the caps
+// (DirtMaxFiles) both read Unknown, never a confident number. Why: a binary
+// counted as text would report thousands of phantom lines, and counted as
+// nothing it would read +0/-0 for a worktree that has a change — "could not
+// tell" is the honest answer for both.
 func TestDiffStatBinaryAndOverCapAreUnknownOrZero(t *testing.T) {
-	t.Run("binary changes add no lines", func(t *testing.T) {
+	t.Run("binary changes read unknown", func(t *testing.T) {
 		f := newFixture(t)
 		writeFileAt(t, f.Dir, "bin.dat", "\x00\x01\x02ONE\x00")
 		f.git("add", "bin.dat")
@@ -98,8 +99,8 @@ func TestDiffStatBinaryAndOverCapAreUnknownOrZero(t *testing.T) {
 		writeFileAt(t, f.Dir, "untracked-bin.dat", "\x00\x00binary\x00")
 
 		got := readDiffStat(Git{Dir: f.Dir})
-		if got != (DiffStat{}) {
-			t.Fatalf("readDiffStat = %+v, want +0/-0 (binaries contribute no lines)", got)
+		if !got.Unknown {
+			t.Fatalf("readDiffStat = %+v, want Unknown (binary changes have no countable lines)", got)
 		}
 	})
 	t.Run("lowered caps read unknown", func(t *testing.T) {

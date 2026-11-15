@@ -326,3 +326,61 @@ func TestContainedDeletionOnlyChangeIsNotProven(t *testing.T) {
 		t.Fatal("Prove = Merged for an unmerged deletion-only branch")
 	}
 }
+
+// TestContainedAddedLineIsAnchoredByContext pins the anchoring rule for a
+// change-set that only adds lines to an existing file. Why: the reverse of a
+// -U0 addition removes lines, and git finds them wherever they sit, so a
+// branch that adds a "}" base already holds elsewhere would read as merged.
+// The three cases: a line base holds elsewhere proves nothing; a real squash
+// of the addition still proves after main edits far from it; and an edit right
+// next to the addition (inside the context) falls back to not proven, the
+// stated trade of the stricter rule.
+func TestContainedAddedLineIsAnchoredByContext(t *testing.T) {
+	g := func(f *fixture) Git { return Git{Dir: f.Dir} }
+	t.Run("a line base holds elsewhere is not proven", func(t *testing.T) {
+		f := newFixture(t)
+		base := []string{"func a() {", "x()", "}", "func b() {", "y()", "}", "func c() {", "z()", "}"}
+		f.Commit("a.go", containedRender(base), "add a.go")
+		f.Branch("topic")
+		f.Checkout("topic")
+		f.Commit("a.go", containedRender(append(containedCopy(base), "}")), "topic adds a stray brace")
+		f.Checkout("main")
+		if got := tipContainedInBase(g(f), "refs/heads/main", "refs/heads/topic"); got == TriYes {
+			t.Fatalf("tipContainedInBase = %v for a brace main never gained, want not TriYes", got)
+		}
+	})
+	t.Run("a squashed addition proves after a distant edit", func(t *testing.T) {
+		f := newFixture(t)
+		base := containedLines()
+		f.Commit("a.txt", containedRender(base), "add a.txt")
+		f.Branch("topic")
+		f.Checkout("topic")
+		added := append(containedCopy(base[:3]), append([]string{"added"}, base[3:]...)...)
+		f.Commit("a.txt", containedRender(added), "topic adds a line")
+		f.Checkout("main")
+		f.Commit("a.txt", containedRender(added), "squash")
+		after := containedCopy(added)
+		after[len(after)-1] = "main edits the last line"
+		f.Commit("a.txt", containedRender(after), "main edits far away")
+		if got := tipContainedInBase(g(f), "refs/heads/main", "refs/heads/topic"); got != TriYes {
+			t.Fatalf("tipContainedInBase = %v, want TriYes (the addition is in main, anchored)", got)
+		}
+	})
+	t.Run("an edit beside the addition is not provable", func(t *testing.T) {
+		f := newFixture(t)
+		base := containedLines()
+		f.Commit("a.txt", containedRender(base), "add a.txt")
+		f.Branch("topic")
+		f.Checkout("topic")
+		added := append(containedCopy(base[:3]), append([]string{"added"}, base[3:]...)...)
+		f.Commit("a.txt", containedRender(added), "topic adds a line")
+		f.Checkout("main")
+		f.Commit("a.txt", containedRender(added), "squash")
+		after := containedCopy(added)
+		after[4] = "main edits the next line"
+		f.Commit("a.txt", containedRender(after), "main edits beside it")
+		if got := tipContainedInBase(g(f), "refs/heads/main", "refs/heads/topic"); got == TriYes {
+			t.Fatalf("tipContainedInBase = %v, want not TriYes (the context no longer matches)", got)
+		}
+	})
+}
