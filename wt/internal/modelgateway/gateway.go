@@ -1,7 +1,11 @@
 // Package modelgateway is the wt-model server's streaming reverse proxy: it
 // authenticates a caller with the shared token and forwards /v1/* to the
 // host's LiteLLM proxy under the host's LiteLLM key, which the client never
-// sees.
+// sees. A caller presents the token as `Authorization: Bearer TOKEN` or as
+// `x-api-key: TOKEN`; a Bearer Authorization header takes precedence, so when
+// one is present it is the only credential checked and a wrong one is refused
+// even beside a valid x-api-key. Every /v1/* path is forwarded, non-inference
+// LiteLLM routes included.
 package modelgateway
 
 import (
