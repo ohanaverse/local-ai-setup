@@ -69,8 +69,8 @@ type GatherInputs struct {
 	PRList     func(dir, branch string) ([]byte, error) // `gh pr list --head <branch>` JSON
 	PRBaseList func(dir, base string) ([]byte, error)   // `gh pr list --base <base> --state open` JSON
 	// SkipPRs makes Gather make no gh call: the Snapshot comes back with
-	// PRsAsked false and PRsSkipped true, and every row reads "PR ?" and is
-	// never proven until FillPRs runs the lookups.
+	// PRsAsked false and PRsSkipped true, and every row reads "?" in its
+	// PR# column and is never proven until FillPRs runs the lookups.
 	SkipPRs bool
 	// AllRemotes keeps every remote's branches in Remotes. Without it only
 	// origin's and those of remotes a local head's upstream names are kept
@@ -169,7 +169,8 @@ type Snapshot struct {
 	BasePRs map[string]PRResult
 	Merges  map[string]Tri // merged PR merge commit -> is it an ancestor of the base
 	// PRsAsked is true once the PR lookups ran (a full Gather, FillPRs). A
-	// row whose lookup is then unknown reads "PR ?" and is never proven.
+	// row whose lookup is then unknown reads "?" in its PR# column and is
+	// never proven.
 	PRsAsked bool
 	// PRsSkipped is true after Gather(SkipPRs) until FillPRs: no lookup has
 	// run, so every row's PR state is unknown and none is proven. A
@@ -177,7 +178,7 @@ type Snapshot struct {
 	PRsSkipped bool
 	// PRNotApplicable is true when the repository has no known own
 	// repository (origin is not on GitHub): there is no PR lookup to fail, so
-	// no row reads "PR ?", "PR lookup failed" or "needs gh".
+	// no row reads "?", "PR lookup failed" or "needs gh" in its PR# column.
 	PRNotApplicable bool
 	// Claims are every live claim recorded in this repository's wt-sessions
 	// (sessionclaim.Holders, read only: one Claim per holding session, the
@@ -359,7 +360,7 @@ func (s *Snapshot) askPRs(g Git, in GatherInputs) {
 	}
 	// An unknown own repository (a non-GitHub origin) has no PRs to ask
 	// about: the state is "not applicable", never "unknown", so the floor
-	// does not apply and no row reads "PR ?".
+	// does not apply and no row's PR# column reads "?".
 	s.PRsAsked, s.PRsSkipped = s.OwnRepo != "", false
 }
 

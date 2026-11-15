@@ -586,8 +586,8 @@ func TestRescanDefaultBranchBranchRowReturnsARow(t *testing.T) {
 }
 
 // TestRescanKeepsPriorPRsAsked: a re-check of a filled snapshot behaves like
-// Gather (PRsAsked carried), so a branch with no PR answer stays PR ? and
-// never proven, and a snapshot never filled stays unproven.
+// Gather (PRsAsked carried), so a branch with no PR answer keeps its "?"
+// cell and is never proven, and a snapshot never filled stays unproven.
 func TestRescanKeepsPriorPRsAsked(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("done")

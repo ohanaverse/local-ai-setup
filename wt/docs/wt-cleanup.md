@@ -53,10 +53,12 @@ a fetch-first `--json` run only (`sessionclaim.Prune`; `--plain` fetches but
 never prunes, `--no-fetch` drops nothing, and the list's open drops nothing).
 A row's line carries only what warns, so a row read as safe stays quiet: the
 `dirty`, `unpushed` and `upstream gone` badges (on a row that is not proven)
-and the root's drift badge below. Everything else about a row — that it is the
-root or the one you are in, its PR and state, the session holding it, its age,
-its local-only commits, its uncommitted and ignored files — is on its detail
-screen (`i`), which also says why a row cannot be removed. When the
+and the root's drift badge below. The PR reads in the `PR#` column: `#N <state>`
+(`#555 merged`), `?` while a PR lookup is unknown, blank when there is no PR.
+Everything else about a row — that it is the root or the one you are in, the
+session holding it, its age, its local-only commits, its uncommitted and
+ignored files — is on its detail screen (`i`), which also says why a row
+cannot be removed. When the
 root sits off the default `origin/HEAD` names (or on a detached HEAD) its row carries a
 `root_drift` reason and, in the manage list, a drift badge (the launch picker's header
 names the drift instead, once: `root is on <b>, not <d>`, or `root is detached`); the drift
@@ -72,14 +74,17 @@ worktree; the browsing session never counts itself), the cursor and, in the
 tick list, the checkbox, then `WORKTREE BRANCH PR# DIFF IGN STATUS VERDICT`
 with the row's badges after the verdict, one line per row and no headings:
 the root first, then the local worktrees and branches together, by name, then
-the remote branches. `VERDICT` is `safe` (proven), `check` (less sure), `work`
-(work that exists nowhere else) or `locked` (nothing can be done with it, and
-the detail screen says why), `-` while the row is still being read. `DIFF` is the uncommitted change
+the remote branches. `PR#` holds the PR and its state (`#383 merged`; `?` when
+the lookup could not answer; blank when there is no PR; `-` while the row is
+pending). `VERDICT` is `safe` (proven), `check` (less sure), `work` (work that
+exists nowhere else) or `locked` (nothing can be done with it, and the detail
+screen says why), `-` while the row is still being read. `DIFF` is the uncommitted change
 counted diffstat-style (`+99/-55`; `-` when it could not be read or is over
 the caps), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
 `in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
 `IGN`, `STATUS`, `DIFF`; the worktree, branch and verdict columns never drop,
-and the detail block then names the highlighted row's `+N/-N · N ignored`.
+and the detail block then names the highlighted row's PR (`PR #3 open`, or
+`PR lookup unknown`) and `+N/-N · N ignored`.
 The list paints from the cheap git calls alone (`cleanup.GatherFacts`) and
 fills gates, ladder and PRs behind the first paint (`cleanup.FillDetails`,
 then the `gh` lookups); while that runs the removal keys (`enter`, `x`, `d`,
@@ -106,7 +111,8 @@ even after the base later edited the same file — needs no typed phrase:
 `wt remove --yes`, or `y` when every item is proven, removes it directly.
 
 An unknown PR lookup (`gh` missing, signed out or offline, or the lookup
-failed) floors a row below proven, with a `PR ?` tag, because a merged PR is
+failed) floors a row below proven, with `?` in its `PR#` column, because a
+merged PR is
 part of the proof. The exception is a repository whose `origin` is not on
 GitHub: the lookup does not apply there (an origin wt does not recognise as
 github.com, such as an ssh host alias, an `insteadOf` short form or GitHub

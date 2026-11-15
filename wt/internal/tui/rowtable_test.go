@@ -19,7 +19,7 @@ func tableFixture() []cleanup.Row {
 			Status: cleanup.StatusProven, Evidence: cleanup.EvMergeAddsNothing,
 			State: cleanup.StateInMain, Diff: cleanup.DiffStat{Added: 99, Removed: 55},
 			Losses: cleanup.Losses{IgnoredEntries: 12},
-			PRTag:  &cleanup.PRInfo{Number: 383}, Sessions: 2,
+			PRTag:  &cleanup.PRInfo{Number: 383, State: "MERGED"}, Sessions: 2,
 		},
 		{
 			Kind: cleanup.KindWorktree, Name: "wt-loose", Status: cleanup.StatusUniqueWork,
@@ -55,7 +55,7 @@ func TestRowCellsPerKind(t *testing.T) {
 	rows := tableFixture()
 
 	got := rowCells(rows[0]) // filled worktree
-	want := []string{"feat/x", "feat/x", "#383", "+99/-55", "12", "in main", "safe"}
+	want := []string{"feat/x", "feat/x", "#383 merged", "+99/-55", "12", "in main", "safe"}
 	if len(got) != len(want) {
 		t.Fatalf("cells = %q, want 7 entries", got)
 	}
@@ -102,12 +102,33 @@ func TestRowCellsPerKind(t *testing.T) {
 			t.Errorf("pending branch cell %d = %q, want %q (all: %q)", i, got[i], want[i], got)
 		}
 	}
+
+	// The PR column carries the PR fact alone: the state lower-cased, "?" while
+	// the lookup could not answer, blank when there is no PR, and "-" while
+	// pending beats both (verdict-shaped cells wait for the fill).
+	for _, c := range []struct {
+		name string
+		row  cleanup.Row
+		want string
+	}{
+		{"merged", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 555, State: "MERGED"}}, "#555 merged"},
+		{"open", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 3, State: "OPEN"}}, "#3 open"},
+		{"closed", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 4, State: "CLOSED"}}, "#4 closed"},
+		{"unknown", cleanup.Row{Kind: cleanup.KindBranch, PRUnknown: true}, "?"},
+		{"no pr", rows[1], ""},
+		{"empty state", cleanup.Row{Kind: cleanup.KindBranch, PRTag: &cleanup.PRInfo{Number: 5}}, "#5"},
+		{"pending wins", cleanup.Row{Kind: cleanup.KindBranch, Pending: true, PRUnknown: true}, "-"},
+	} {
+		if got := rowCells(c.row)[rtPR]; got != c.want {
+			t.Errorf("PR cell (%s) = %q, want %q", c.name, got, c.want)
+		}
+	}
 }
 
 // TestRowTableWidthsAndRightAlignment pins the layout: every column is as
 // wide as its widest cell or heading (measured in runes), and the number
-// cells (PR#, DIFF, IGN) sit on their column's right edge while name cells
-// sit on the left. Why: the table only scans if its digits stack and its
+// cells (DIFF, IGN) sit on their column's right edge while name cells and the
+// free-text PR# cell ("#3 open", "?") sit on the left. Why: the table only scans if its digits stack and its
 // headings line up over their columns.
 func TestRowTableWidthsAndRightAlignment(t *testing.T) {
 	rows := tableFixture()
@@ -145,6 +166,12 @@ func TestRowTableWidthsAndRightAlignment(t *testing.T) {
 		if !strings.Contains(header, head) {
 			t.Errorf("header %q lacks %q", header, head)
 		}
+	}
+	// PR# is left-aligned: a short cell is padded after, so the "#" of every
+	// PR cell starts at the same column under the heading.
+	short := cleanup.Row{Kind: cleanup.KindBranch, Branch: "b", PRTag: &cleanup.PRInfo{Number: 3, State: "OPEN"}}
+	if l, long := rowLine(short, cols), rowLine(rows[0], cols); strings.Index(l, "#3 open") != strings.Index(long, "#383 merged") {
+		t.Errorf("PR cells not left-aligned: %q vs %q", l, long)
 	}
 	// One line per row, each starting with the row's own cells.
 	for i, r := range rows {
@@ -298,5 +325,25 @@ func TestVerdictColumnIsShort(t *testing.T) {
 	cols.Fit(80)
 	if !cols.Shown(rtVerdict) || !strings.Contains(cols.Header(), "VERDICT") {
 		t.Errorf("VERDICT not drawn at 80 columns: %q", cols.Header())
+	}
+}
+
+// TestPRLineNamesThePRWhenTheColumnIsGone pins the detail block's fallback
+// for a dropped PR# column: the PR and its state, "PR lookup unknown", and
+// nothing for no PR or a pending row. Why: the column is the first dropped on
+// a narrow terminal and is the only other place the PR fact reads.
+func TestPRLineNamesThePRWhenTheColumnIsGone(t *testing.T) {
+	for _, c := range []struct {
+		row  cleanup.Row
+		want string
+	}{
+		{cleanup.Row{PRTag: &cleanup.PRInfo{Number: 4, State: "CLOSED"}}, "PR #4 closed"},
+		{cleanup.Row{PRUnknown: true}, "PR lookup unknown"},
+		{cleanup.Row{}, ""},
+		{cleanup.Row{Pending: true, PRUnknown: true}, ""},
+	} {
+		if got := prLine(c.row); got != c.want {
+			t.Errorf("prLine(%+v) = %q, want %q", c.row, got, c.want)
+		}
 	}
 }

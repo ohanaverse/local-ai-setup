@@ -80,8 +80,8 @@ func Rescan(g Git, prior Snapshot, in GatherInputs, o Options, t Target) (Row, e
 		Fetch:     prior.Fetch,
 		OwnRepo:   prior.OwnRepo,
 		PRs:       prior.PRs,
-		// A filled snapshot re-checks like Gather; one never filled stays
-		// "PR ?" (nothing proven on it).
+		// A filled snapshot re-checks like Gather; one never filled keeps the
+		// rows' "?" cells (nothing proven on them).
 		PRsAsked:   prior.PRsAsked,
 		PRsSkipped: prior.PRsSkipped,
 

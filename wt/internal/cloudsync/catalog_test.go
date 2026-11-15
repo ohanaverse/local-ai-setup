@@ -656,7 +656,7 @@ func TestFormatPriceMatchesPythonsG(t *testing.T) {
 }
 
 // TestCatalogPlanFormat pins the whole printed plan for a run with one of
-// everything. A user approves this text and the cloud-sync skill reads the
+// everything. A user approves this text and the wt-cloud-sync skill reads the
 // digest line out of it, so a reworded line is a changed contract with both.
 func TestCatalogPlanFormat(t *testing.T) {
 	entries := []Entry{

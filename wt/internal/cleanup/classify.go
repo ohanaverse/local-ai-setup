@@ -153,10 +153,10 @@ type Row struct {
 	Upstream *Upstream
 	PR       *PRInfo // the PR the verdict rests on, if any
 	// PRUnknown is true while the row's PR state is unknown (the lookup was
-	// skipped, still to run, or gave no usable answer); the row reads "PR ?"
-	// and is never proven on git evidence alone. PRTag is the PR once known
-	// (the verdict's own, else an open one, else the first). Neither is
-	// serialised.
+	// skipped, still to run, or gave no usable answer); the row reads "?" in
+	// its PR# column and is never proven on git evidence alone. PRTag is the
+	// PR once known (the verdict's own, else an open one, else the first).
+	// Neither is serialised.
 	PRUnknown bool
 	PRTag     *PRInfo
 	AgeDays   int

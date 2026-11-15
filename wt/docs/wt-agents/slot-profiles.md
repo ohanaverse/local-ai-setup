@@ -512,7 +512,7 @@ survey and no price notice for a profile session.
 
 Five subcommands of `wt profile slots` manage the file. Editing it by hand
 stays valid; use the commands when you want a validated, backed-up edit, or
-let the `manage-slot-profiles` skill (`.claude/skills/manage-slot-profiles/`)
+let the `wt-manage-slot-profiles` skill (`.claude/skills/wt-manage-slot-profiles/`)
 drive them. Every write leaves a `.bak-<stamp>` backup beside the file; old
 backups are not pruned, so delete them by hand.
 

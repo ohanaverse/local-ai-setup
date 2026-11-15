@@ -1,5 +1,5 @@
 ---
-name: adding-a-benchmark-backend
+name: wt-adding-a-benchmark-backend
 description: Steps to add a new local-model backend to the benchmark scripts and llmbench. Use when asked to add a new benchmark backend or wire a new provider into the isolation/benchmark tooling.
 ---
 
@@ -29,7 +29,7 @@ spawn argv, a stop argv, a pidfile, a log and a readiness check is:
 
 1. **A wt provider table row** with a `Process` spec, its family facts
    (`WtPort`, `Scope`, default origin, readiness) and a `Seed` in
-   `wt/internal/provider/table.go` — the `adding-a-provider` skill in
+   `wt/internal/provider/table.go` — the `wt-adding-a-provider` skill in
    `wt/.claude/skills/`.
 2. **An entry in `docs/contracts/process-providers.toml`** with the same
    values, in the same commit:
@@ -106,7 +106,7 @@ spawn argv, a stop argv, a pidfile, a log and a readiness check is:
    set(DEFAULT_PROVIDER_IDS)` in `src/llmbench/benchmark/runner.py`) — a
    backend missing from that set is silently skipped by `llmbench run` —
    and, if `wt model init` should seed the provider's row, give the provider
-   a `Seed` in `wt/internal/provider/table.go` (see the `adding-a-provider`
+   a `Seed` in `wt/internal/provider/table.go` (see the `wt-adding-a-provider`
    skill in `wt/.claude/skills/`).
 6. **Update the drift trip-wire.** `tests/benchmark/test_isolation.py`'s
    `test_supported_provider_ids_matches_the_backends_registry_documented_list`

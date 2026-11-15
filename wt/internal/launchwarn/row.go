@@ -26,9 +26,9 @@ func FromRow(r cleanup.Row) *Target {
 	}
 	switch {
 	case r.PRUnknown:
-		// "PR ?" — the lookup never answered (skipped, still to run, or no
-		// usable answer): the state is unknown regardless of any tag, and
-		// Collect warns no merge for it.
+		// "?" in the PR# column — the lookup never answered (skipped, still
+		// to run, or no usable answer): the state is unknown regardless of
+		// any row, and Collect warns no merge for it.
 		t.PRState = "unknown"
 	case r.PRTag != nil:
 		t.PRState = strings.ToLower(r.PRTag.State) // GitHub's spelling ("MERGED") to Target's ("merged")

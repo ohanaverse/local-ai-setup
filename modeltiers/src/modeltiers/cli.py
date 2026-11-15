@@ -246,7 +246,7 @@ def _run(args: argparse.Namespace, deps: Deps) -> int:
         _run_failed(
             EXIT_SENTINEL,
             f"a sentinel moved. If the move is real, edit {contracts.origin} "
-            "(guide 12, step 5, or the sentinel-failure skill)",
+            "(guide 12, step 5, or the wt-sentinel-failure skill)",
         )
         return EXIT_SENTINEL
     out = paths.output_path()

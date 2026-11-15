@@ -1,6 +1,6 @@
 # Cloud sync internals
 
-Read this before changing `wt cloud-sync`: the planners and parsers in `internal/cloudsync`, or the command in `cmd/wt/cloudsync*.go`. What the command does for a user is [../wt-cloud-sync.md](../wt-cloud-sync.md); the operator's procedure is the `cloud-sync` skill (`.claude/skills/cloud-sync/`). Both quote the command's messages, so change them with the behavior.
+Read this before changing `wt cloud-sync`: the planners and parsers in `internal/cloudsync`, or the command in `cmd/wt/cloudsync*.go`. What the command does for a user is [../wt-cloud-sync.md](../wt-cloud-sync.md); the operator's procedure is the `wt-cloud-sync` skill (`.claude/skills/wt-cloud-sync/`). Both quote the command's messages, so change them with the behavior.
 
 `internal/cloudsync` holds everything that decides what a sync changes, with no I/O and no clock. The command owns the fetches, the ollama CLI, the confirmation, the one registry write, the route sync and the exit codes.
 
@@ -26,4 +26,4 @@ Read this before changing `wt cloud-sync`: the planners and parsers in `internal
 
 The full text of rules that [CLAUDE.md](../../CLAUDE.md) now keeps as one-line summaries.
 
-- `internal/cloudsync` holds everything that decides what a sync changes, with no I/O and no clock. The command (`cmd/wt/cloudsync*.go`) owns the fetches, the ollama CLI, the confirmation, the one registry write, the route sync and the exit codes. What the command does for a user — the two flows, the order of a run, every flag, exit code and message, failure and recovery — is [docs/wt-cloud-sync.md](../wt-cloud-sync.md); the operator's procedure, including the parser repair after an exit 3, is the `cloud-sync` skill (`.claude/skills/cloud-sync/`). **Change the page and the skill with the behavior**: both quote the command's messages.
+- `internal/cloudsync` holds everything that decides what a sync changes, with no I/O and no clock. The command (`cmd/wt/cloudsync*.go`) owns the fetches, the ollama CLI, the confirmation, the one registry write, the route sync and the exit codes. What the command does for a user — the two flows, the order of a run, every flag, exit code and message, failure and recovery — is [docs/wt-cloud-sync.md](../wt-cloud-sync.md); the operator's procedure, including the parser repair after an exit 3, is the `wt-cloud-sync` skill (`.claude/skills/wt-cloud-sync/`). **Change the page and the skill with the behavior**: both quote the command's messages.

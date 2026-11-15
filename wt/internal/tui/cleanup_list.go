@@ -37,8 +37,8 @@ import (
 //     emits newWorktreeChosenMsg), enter on any row emits rowChosenMsg —
 //     the root, an in-use or held row too: launching warns, it never blocks
 //     — and nothing is ticked. Rows carry a "current" and a "default" tag,
-//     `/` filters the rows by name (row_list_launch.go), and the PR tags
-//     arrive later (withReport).
+//     `/` filters the rows by name, branch, tags and the PR# column's cell,
+//     which the PR lookups fill later (withReport).
 //
 // In both modes the row keys act on the highlighted row alone — the ticks
 // choose rows for enter, never for these — through the same confirm flow:
@@ -1256,6 +1256,12 @@ func (m *cleanupListModel) detail() string {
 	// whole or not at all (the mode-line rule).
 	if m.table != nil && !m.table.Shown(rtDiff) && it.row.Kind == cleanup.KindWorktree && !it.row.Bare && !it.row.Pending {
 		text += " · " + diffLine(it.row)
+	}
+	// Likewise the PR column: its fact is named here when the column is gone.
+	if m.table != nil && !m.table.Shown(rtPR) {
+		if pr := prLine(it.row); pr != "" {
+			text += " · " + pr
+		}
 	}
 	switch {
 	case it.newWorktree:

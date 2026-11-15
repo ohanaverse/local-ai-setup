@@ -515,7 +515,8 @@ func TestFillPRsMatchesAFullGather(t *testing.T) {
 }
 
 // TestPRUnknownIsNeverProvenWhenAsked: git proves the content, gh is down:
-// less_sure with pr_unknown, tagged "PR ?" (Review Focus 2).
+// less_sure with pr_unknown, "?" in the PR# column, no PR badge (Review
+// Focus 2).
 func TestPRUnknownIsNeverProvenWhenAsked(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("done")
@@ -531,8 +532,8 @@ func TestPRUnknownIsNeverProvenWhenAsked(t *testing.T) {
 	if row.Status == StatusProven || !row.PRUnknown || !hasReason(row, ReasonPRUnknown) {
 		t.Fatalf("row = %+v, want not proven, PRUnknown, pr_unknown", row)
 	}
-	if got := RowTags(row); len(got) != 1 || got[0].Text != "PR ?" {
-		t.Fatalf("tags %v", got)
+	if hasPRTag(row) {
+		t.Fatalf("tags %v, want no PR badge (it reads in the PR# column)", RowTags(row))
 	}
 }
 
@@ -583,7 +584,8 @@ func TestPRUnknownAppliesToWorktreeBranchAndOriginRows(t *testing.T) {
 	}
 }
 
-// TestPRTagOnceKnown: a known PR shows its tag and no PR ?.
+// TestPRTagOnceKnown: a known PR names itself in the PR# column (#5 merged)
+// and no badge carries PR info.
 func TestPRTagOnceKnown(t *testing.T) {
 	f := newFixture(t)
 	f.Branch("done")
@@ -593,8 +595,8 @@ func TestPRTagOnceKnown(t *testing.T) {
 	if row.PRUnknown || row.PRTag == nil || row.PRTag.Number != 5 {
 		t.Fatalf("row %+v", row)
 	}
-	if got := RowTags(row); len(got) != 1 || got[0].Text != "#5 merged" {
-		t.Fatalf("tags %v", got)
+	if hasPRTag(row) {
+		t.Fatalf("tags %v, want no PR badge (it reads in the PR# column)", RowTags(row))
 	}
 }
 

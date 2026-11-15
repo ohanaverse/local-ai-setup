@@ -24,9 +24,10 @@ const (
 
 // rtDropOrder is the order the columns are given up when the list is
 // narrower than the table: PR first, then the ignored count, then STATUS,
-// then DIFF. The PR tag is the most redundant (the detail block names it),
-// the counts least — DIFF is given up last because it is the work itself,
-// and then the detail block names the highlighted row's counts (diffLine).
+// then DIFF. The PR column goes first because the highlighted row's detail
+// block names its PR and state when the column is not drawn (prLine); the
+// counts least — DIFF is given up last because it is the work itself, and
+// then the detail block names the highlighted row's counts (diffLine).
 var rtDropOrder = []int{rtPR, rtIgn, rtStatus, rtDiff}
 
 // The prefix widths: the session digit and cursor in launch mode, plus the
@@ -46,7 +47,9 @@ var rowHeads = []string{"WORKTREE", "BRANCH", "PR#", "DIFF", "IGN", "STATUS", "V
 // row's detail cells read "-", per the facts-first amendment — but only
 // cells that apply at all: inapplicability is permanent, so a pending branch
 // row's DIFF/IGN stay blank, as they are once filled). Cell text is
-// sanitised through cleanup.OneLine, as DisplayName is.
+// sanitised through cleanup.OneLine, as DisplayName is. The PR cell is the
+// PR fact alone (prCell): "#N state", "?" while unknown — overridden by
+// "-" while the row is pending, like every verdict-shaped cell.
 func rowCells(r cleanup.Row) []string {
 	wt, branch := "", ""
 	switch r.Kind {
@@ -84,15 +87,27 @@ func rowCells(r cleanup.Row) []string {
 		}
 	}
 
-	pr, status, verdictCell := "", string(state), verdict
+	pr, status, verdictCell := prCell(r), string(state), verdict
 	if r.Pending {
 		// The names are facts (stage 1); every verdict-shaped cell waits.
 		pr, status, verdictCell = "-", "-", "-"
-	} else if r.PRTag != nil {
-		pr = fmt.Sprintf("#%d", r.PRTag.Number)
 	}
 
 	return []string{wt, branch, pr, diff, ign, status, verdictCell}
+}
+
+// prCell is the PR column's fact: "#383 merged" from the row's PR (GitHub's
+// state, lower-cased), "?" while the lookup gave no usable answer, "" when
+// there is no PR (the lookup answered none — never read as unknown). The
+// filter matches this cell too, so the column is the one place the PR reads.
+func prCell(r cleanup.Row) string {
+	switch {
+	case r.PRUnknown:
+		return "?"
+	case r.PRTag != nil:
+		return strings.TrimSpace(fmt.Sprintf("#%d %s", r.PRTag.Number, strings.ToLower(r.PRTag.State)))
+	}
+	return ""
 }
 
 // newRowTable builds the shared layout for the header and every row: the
@@ -121,7 +136,8 @@ func newRowTable(rows []cleanup.Row, prefix int) *tuilayout.Columns {
 }
 
 // rowLine renders one row through the table's shared layout: number cells
-// (PR#, DIFF, IGN) sit on their column's right edge, name cells on the left,
+// (DIFF, IGN) sit on their column's right edge, name cells (PR# is free text,
+// "#3 open" or "?") on the left,
 // and Columns keeps every shown column whole.
 func rowLine(r cleanup.Row, cols *tuilayout.Columns) string {
 	cells := rowCells(r)
@@ -129,7 +145,7 @@ func rowLine(r cleanup.Row, cols *tuilayout.Columns) string {
 	for i, cell := range cells {
 		w := cols.Widths[i]
 		switch i {
-		case rtPR, rtDiff, rtIgn:
+		case rtDiff, rtIgn:
 			if n := utf8.RuneCountInString(cell); n < w {
 				cell = strings.Repeat(" ", w-n) + cell
 			}
@@ -156,6 +172,21 @@ func rowPrefix(sessions int, cursor bool, box string) string {
 		out += box + " "
 	}
 	return out
+}
+
+// prLine is the highlighted row's PR fact for the detail block, used when the
+// PR# column is not drawn: "PR #3 open", "PR lookup unknown", or "" when the
+// row has no PR or is still pending (the table draws "-" for those too).
+func prLine(r cleanup.Row) string {
+	if r.Pending {
+		return ""
+	}
+	if c := prCell(r); c == "?" {
+		return "PR lookup unknown"
+	} else if c != "" {
+		return "PR " + c
+	}
+	return ""
 }
 
 // diffLine is the highlighted row's counts for the detail block, used when

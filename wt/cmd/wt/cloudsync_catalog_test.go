@@ -193,7 +193,7 @@ func TestCloudSyncOllamaApplyUnderTheApprovedDigest(t *testing.T) {
 
 // TestCloudSyncOllamaChangesNothingAndSaysWhy walks every way the ollama flow
 // stops before changing anything, and pins the exit code a caller (the
-// cloud-sync skill) branches on: 2 for an input that could not be read, 3
+// wt-cloud-sync skill) branches on: 2 for an input that could not be read, 3
 // for a page that changed shape (with its HTML saved for the repair), 4 for a
 // mass removal, 5 for removals nobody approved. In each the registry is
 // byte-identical, ollama was asked for nothing but its list, and the

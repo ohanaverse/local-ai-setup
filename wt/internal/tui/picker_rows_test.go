@@ -275,9 +275,9 @@ func TestPickerEnterOnRemoteOnlyRowUsesOriginForm(t *testing.T) {
 }
 
 // TestPickerPRFillArrivesAfterFirstPaint pins the asynchronous PR lookup: the
-// list paints from git alone with "PR ?" (no gh call has run), then the
-// filled report swaps in with the PR tag and the cursor stays on the row the
-// user had highlighted.
+// list paints from git alone with "?" in its PR# column (no gh call has
+// run), then the filled report swaps in with the PR cells and the cursor
+// stays on the row the user had highlighted.
 func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	r := newRmRepo(t)
 	r.loose("loose")
@@ -310,10 +310,8 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	if m.rows.filling() {
 		t.Fatal("still filling after the fill landed")
 	}
-	// The row carries the owed lookup (PRUnknown); the list no longer draws a
-	// "PR ?" tag, so the fact is read from the row itself.
-	if row, ok := m.rows.selectedRow(); !ok || !row.PRUnknown {
-		t.Fatalf("the filled row does not carry the owed PR lookup: %+v (ok %v)", row, ok)
+	if v := m.View(); !strings.Contains(v, "?") {
+		t.Fatalf("filled view draws no ? in its PR# column cell (the lookups are still owed):\n%s", v)
 	}
 	if cmd == nil {
 		t.Fatal("no PR fill command after the fill")
@@ -333,8 +331,21 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	if row, ok := m.rows.selectedRow(); !ok || row.PRTag == nil || row.PRTag.Number != 7 {
 		t.Errorf("the row does not carry PR #7 after the lookups: %+v", row)
 	}
-	if strings.Contains(m.View(), "PR ?") {
-		t.Errorf("filled view still has PR ?:\n%s", m.View())
+	// A lookup that answered no PR leaves the cell blank, never "?": the
+	// unknown marker is only for a lookup that gave no usable answer.
+	prCellOf := func(name string) string {
+		for _, it := range m.rows.items {
+			if !it.newWorktree && it.row.Name == name {
+				return prCell(it.row)
+			}
+		}
+		return "<missing row>"
+	}
+	if got := prCellOf("topic"); got != "" {
+		t.Errorf("topic's PR cell %q, want blank (the lookup answered no PR)", got)
+	}
+	if v := m.View(); strings.Contains(v, "?") {
+		t.Errorf("filled view still has a ? cell:\n%s", v)
 	}
 	// The PR number finds its row, as the old picker's filter did.
 	m.rows.filter = "#7"
@@ -363,9 +374,9 @@ func TestPickerOpenResolvesTheRepoRootOnce(t *testing.T) {
 
 // TestPickerStalePRTagSuppressed pins #451 on the new path: a merged PR whose
 // head is neither in the branch nor ahead of it (the branch name was reused
-// after the merge) tags nothing, while a PR whose head is the branch's tip
-// keeps its tag. cleanup's lookup is by branch name, so without this the
-// reused name would show the old PR as merged.
+// after the merge) leaves the PR# cell blank, while a PR whose head is the
+// branch's tip names itself there. cleanup's lookup is by branch name, so
+// without this the reused name would show the old PR as merged.
 func TestPickerStalePRTagSuppressed(t *testing.T) {
 	r := newRmRepo(t)
 	r.git("switch", "-c", "reused")
@@ -394,16 +405,14 @@ func TestPickerStalePRTagSuppressed(t *testing.T) {
 		if it.newWorktree {
 			continue
 		}
-		// The tags are no longer drawn, so the assertion reads the PR the row
-		// carries (the filter still searches it, see filterText).
 		switch it.row.Name {
 		case "reused":
-			if it.row.PRTag != nil && it.row.PRTag.Number == 9 {
-				t.Errorf("reused branch carries its old PR: %+v", it.row.PRTag)
+			if got := prCell(it.row); got != "" {
+				t.Errorf("reused branch's PR cell %q, want blank (the old PR is suppressed)", got)
 			}
 		case "kept":
-			if it.row.PRTag == nil || it.row.PRTag.Number != 11 {
-				t.Errorf("kept branch carries %+v, want #11 merged", it.row.PRTag)
+			if got := prCell(it.row); got != "#11 merged" {
+				t.Errorf("kept branch's PR cell %q, want #11 merged", got)
 			}
 		}
 	}

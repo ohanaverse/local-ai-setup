@@ -1098,7 +1098,7 @@ func TestCloudSyncRowsOnlyUpdateLeavesTheRoutesAlone(t *testing.T) {
 // does around a model whose time-of-day pricing it cannot read: that model
 // is warned about and left as it is (price, no stamp), every other model in
 // the plan is refreshed and stamped, and the run exits 0 with nothing on
-// stderr. The cloud-sync skill tells an agent to carry on to the next step
+// stderr. The wt-cloud-sync skill tells an agent to carry on to the next step
 // after this warning; if the warning ever became a failing exit, an agent
 // following it would apply a plan the run had refused.
 func TestCloudSyncUnreadableScheduleIsAWarningNotAFailure(t *testing.T) {

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -137,10 +136,11 @@ func (m *cleanupListModel) selectWhere(pred func(cleanup.Row) bool) bool {
 
 // filterText is what the filter matches a row against: its listed name, its
 // branch, its drawn tags, every identity tag the list no longer draws (root,
-// bare, held by session, locked, +remote) and its PR ("#383", or "PR ?" while
-// the lookup is owed). Why the undrawn ones: the filter is a reader of the
-// row's vocabulary, not of the line's — a user looking for the worktree a
-// session holds should not have to know its name.
+// bare, held by session, locked, +remote) and its PR column cell (prCell), so
+// "#383" finds the row with that PR by the same text the table draws. Why the
+// undrawn tags: the filter is a reader of the row's vocabulary, not of the
+// line's — a user looking for the worktree a session holds should not have to
+// know its name.
 func filterText(it cleanupItem) string {
 	parts := []string{cleanup.DisplayName(it.row), it.row.Branch}
 	for _, t := range it.tags {
@@ -149,11 +149,8 @@ func filterText(it cleanupItem) string {
 	for _, t := range cleanup.RowTags(it.row) {
 		parts = append(parts, t.Text)
 	}
-	switch {
-	case it.row.PRUnknown:
-		parts = append(parts, "PR ?")
-	case it.row.PRTag != nil:
-		parts = append(parts, fmt.Sprintf("#%d %s", it.row.PRTag.Number, strings.ToLower(it.row.PRTag.State)))
+	if !it.row.Pending { // the table draws "-" for a pending row's PR cell
+		parts = append(parts, prCell(it.row))
 	}
 	return strings.ToLower(strings.Join(parts, " "))
 }

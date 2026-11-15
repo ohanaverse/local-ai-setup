@@ -1,5 +1,5 @@
 ---
-name: sentinel-failure
+name: wt-sentinel-failure
 description: Investigate a failed modeltiers sentinel check (modeltiers run exits 3, prints "sentinels: F of N FAILED" or "a sentinel moved"), say what moved and why, and recommend a contracts.toml fix. Diagnoses and recommends; asks before editing anything. Use when a modeltiers run fails on a sentinel or the user asks why one moved.
 ---
 
