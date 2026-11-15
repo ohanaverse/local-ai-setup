@@ -34,7 +34,7 @@ const (
 // Options configures a Server.
 type Options struct {
 	Listen      string        // host:port to listen on
-	Token       string        // bearer token; empty only on a loopback Listen
+	Token       string        // bearer token; required
 	IdleGrace   time.Duration // how long an unused model survives before auto-stop
 	Upstream    *url.URL      // the LiteLLM proxy the gateway forwards to
 	UpstreamKey string        // the gateway's upstream credential
@@ -55,12 +55,12 @@ type Server struct {
 // serverOption adjusts a Server in NewServer (test seams only).
 type serverOption func(*Server)
 
-// NewServer builds the server. It refuses a non-loopback Listen with an empty
-// Token: the control API starts and stops models, so it is never open to the
-// network.
+// NewServer builds the server. It refuses an empty Token on every Listen
+// address: the control API starts and stops models and the gateway spends the
+// host's upstream key, so neither is ever open.
 func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
-	if o.Token == "" && !isLoopback(o.Listen) {
-		return nil, fmt.Errorf("refusing to listen on %q without a token: a non-loopback address needs --token-file", o.Listen)
+	if o.Token == "" {
+		return nil, errors.New("wt-model: a token is required: pass --token-file PATH (create one with `umask 077; head -c 32 /dev/urandom | base64 > PATH`)")
 	}
 	s := &Server{o: o, d: d, autoStopEvery: autoStopEvery}
 	s.sessions = sessionreg.New(sessionTTL, d.Now)
@@ -71,19 +71,6 @@ func NewServer(o Options, d Deps, opts ...serverOption) (*Server, error) {
 	}
 	s.handler = s.routes()
 	return s, nil
-}
-
-// isLoopback reports whether a host:port names only the loopback interface.
-func isLoopback(listen string) bool {
-	host, _, err := net.SplitHostPort(listen)
-	if err != nil {
-		return false
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // Handler returns the full HTTP handler (control API and gateway).

@@ -42,12 +42,8 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 }
 
 // requireToken wraps next so a request without the bearer token is a 401 and
-// next never runs. An empty configured token leaves it open (NewServer allows
-// that on a loopback listener only).
+// next never runs. The token is never empty (NewServer refuses that).
 func requireToken(token string, next http.Handler) http.Handler {
-	if token == "" {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {

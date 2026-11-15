@@ -264,38 +264,19 @@ func TestUnknownBodyFieldIs400(t *testing.T) {
 	}
 }
 
-// TestNewServerRefusesNonLoopbackWithoutToken pins that an empty token is
-// allowed only on a loopback listener; any other address is refused with an
-// error naming --token-file.
-func TestNewServerRefusesNonLoopbackWithoutToken(t *testing.T) {
+// TestNewServerRequiresToken pins that an empty token is refused on every
+// listen address, loopback or not, with an error naming --token-file, and that
+// a non-empty token is accepted.
+func TestNewServerRequiresToken(t *testing.T) {
 	d := (&fakeLife{}).deps(serverCfg())
-	for _, listen := range []string{"0.0.0.0:8080", ":8080", "192.168.1.5:8080", "example.com:80"} {
+	for _, listen := range []string{"127.0.0.1:0", "[::1]:0", "localhost:0", "0.0.0.0:8080", ":8080", "192.168.1.5:8080"} {
 		_, err := NewServer(Options{Listen: listen}, d)
-		if err == nil || !strings.Contains(err.Error(), "--token-file") {
-			t.Errorf("Listen %q: err = %v, want one naming --token-file", listen, err)
+		if err == nil || !strings.Contains(err.Error(), "--token-file") || !strings.Contains(err.Error(), "token is required") {
+			t.Errorf("Listen %q: err = %v, want a required-token error naming --token-file", listen, err)
 		}
-	}
-	for _, listen := range []string{"127.0.0.1:0", "[::1]:0", "localhost:0"} {
-		if _, err := NewServer(Options{Listen: listen}, d); err != nil {
-			t.Errorf("Listen %q: %v, want accepted", listen, err)
+		if _, err := NewServer(Options{Listen: listen, Token: "t"}, d); err != nil {
+			t.Errorf("Listen %q with a token: %v", listen, err)
 		}
-	}
-	if _, err := NewServer(Options{Listen: "0.0.0.0:8080", Token: "t"}, d); err != nil {
-		t.Errorf("non-loopback with a token: %v", err)
-	}
-}
-
-// TestControlOpenOnLoopbackWithoutToken pins that an empty token on loopback
-// leaves the control API open.
-func TestControlOpenOnLoopbackWithoutToken(t *testing.T) {
-	s, err := NewServer(Options{Listen: "127.0.0.1:0"}, (&fakeLife{snap: serverSnap()}).deps(serverCfg()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ts := httptest.NewServer(s.Handler())
-	defer ts.Close()
-	if st, _ := callAuth(t, ts, "GET", "/control/v1/ping", "", ""); st != 200 {
-		t.Errorf("ping = %d, want 200", st)
 	}
 }
 
