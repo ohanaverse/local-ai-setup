@@ -1,6 +1,11 @@
 // Package modelapi holds the wire types shared by the wt-model server and its
 // clients. It imports only the standard library so any side can depend on it.
 // The contract fixture is docs/contracts/model-api.sample.json.
+//
+// Compatibility within one APIMajor: a minor version may add optional fields
+// to any response and to any request body. A server therefore ignores unknown
+// request fields and treats an empty request body as an empty JSON object; a
+// client ignores unknown response fields.
 package modelapi
 
 const (

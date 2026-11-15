@@ -252,19 +252,35 @@ func TestEndSessionIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestUnknownBodyFieldIs400 pins that a request body with an unknown field, or
-// that is not JSON, is a 400 APIError and starts nothing.
-func TestUnknownBodyFieldIs400(t *testing.T) {
+// TestUnknownBodyFieldIsIgnored pins forward compatibility: a newer minor may
+// add optional request fields, so an unknown field in a body is ignored (the
+// request is served), while a body that is not JSON is still a 400 APIError
+// that starts nothing.
+func TestUnknownBodyFieldIsIgnored(t *testing.T) {
 	f := &fakeLife{snap: serverSnap()}
 	_, ts := newTestServer(t, f, nil)
-	for _, body := range []string{`{"model":"omlx/a","bogus":1}`, `not json`} {
-		st, b := call(t, ts, "POST", "/control/v1/start", body)
-		wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+	if st, b := call(t, ts, "POST", "/control/v1/start", `{"model":"omlx/a","bogus":1}`); st != http.StatusAccepted {
+		t.Fatalf("start with an unknown field = %d %s, want 202", st, b)
 	}
-	st, b := call(t, ts, "POST", "/control/v1/sessions", `{"id":"s","models":[],"x":true}`)
+	if st, b := call(t, ts, "POST", "/control/v1/sessions", `{"id":"s","models":[],"x":true}`); st != http.StatusNoContent {
+		t.Fatalf("register with an unknown field = %d %s, want 204", st, b)
+	}
+	st, b := call(t, ts, "POST", "/control/v1/start", `not json`)
 	wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
-	if got := f.callList(); len(got) != 0 {
-		t.Errorf("calls = %q, want none", got)
+	st, b = call(t, ts, "POST", "/control/v1/sessions", `{"id":`)
+	wantAPIError(t, st, b, http.StatusBadRequest, "bad_request")
+}
+
+// TestHeartbeatAcceptsEmptyBody pins that a heartbeat with no body at all is
+// the same as an empty JSON object: a bare keep-alive needs no payload.
+func TestHeartbeatAcceptsEmptyBody(t *testing.T) {
+	f := &fakeLife{snap: serverSnap()}
+	_, ts := newTestServer(t, f, nil)
+	if st, b := call(t, ts, "POST", "/control/v1/sessions", `{"id":"s1","models":["omlx/a"]}`); st != http.StatusNoContent {
+		t.Fatalf("register = %d %s", st, b)
+	}
+	if st, b := call(t, ts, "POST", "/control/v1/sessions/s1/heartbeat", ""); st != http.StatusNoContent {
+		t.Fatalf("heartbeat with an empty body = %d %s, want 204", st, b)
 	}
 }
 
