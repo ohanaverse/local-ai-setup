@@ -285,3 +285,29 @@ func TestShutdownHonoursItsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestCancelAfterCompletionKeepsSuccess pins that a Cancel arriving after the
+// RunFunc has done its work, but before the manager records the outcome, does
+// not turn a successful result into cancelled: the work happened.
+func TestCancelAfterCompletionKeepsSuccess(t *testing.T) {
+	m := NewManager(fixedNow)
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	cancelled, release := make(chan struct{}), make(chan struct{})
+	id := m.Submit("start", "m1", func(ctx context.Context, _ func(string)) modelapi.JobResult {
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return modelapi.JobResult{OK: true} // finished the work despite the cancel
+	})
+	waitFor(t, "running", func() bool { return stateOf(m, id) == modelapi.JobRunning })
+	if !m.Cancel(id) {
+		t.Fatal("Cancel = false")
+	}
+	<-cancelled
+	close(release)
+	waitFor(t, "finished", func() bool { return stateOf(m, id) != modelapi.JobRunning })
+	st, _ := m.Get(id)
+	if st.State != modelapi.JobSucceeded || st.Result == nil || !st.Result.OK {
+		t.Fatalf("state = %q result = %+v, want succeeded OK", st.State, st.Result)
+	}
+}

@@ -210,13 +210,15 @@ func (m *Manager) worker() {
 		m.mu.Lock()
 		m.running = nil
 		switch {
+		case res.OK:
+			// A Cancel that lost the race with completion must not turn
+			// finished work into cancelled.
+			m.finishLocked(j, modelapi.JobSucceeded, &res)
 		case j.cancelled:
 			if res.Error == nil {
 				res.Error = cancelledResult().Error
 			}
 			m.finishLocked(j, modelapi.JobCancelled, &res)
-		case res.OK:
-			m.finishLocked(j, modelapi.JobSucceeded, &res)
 		default:
 			m.finishLocked(j, modelapi.JobFailed, &res)
 		}
