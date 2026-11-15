@@ -31,6 +31,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	root := rootCmd(modelserver.DefaultDeps)
+	// After the first signal cancels ctx, stop() restores the default signal
+	// behavior, so a second SIGINT/SIGTERM kills the process even when the
+	// graceful shutdown hangs.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	err := root.ExecuteContext(ctx)
 	// Never exit while an async LiteLLM proxy restart a route write started is
 	// still in flight: goroutines do not survive main returning.
