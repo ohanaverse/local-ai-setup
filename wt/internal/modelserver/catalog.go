@@ -3,6 +3,7 @@
 package modelserver
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -68,7 +69,10 @@ func wireRow(cfg *config.Config, r catalog.Row, ix tiers.Index, sessions int, no
 		Protocols:  []string{},
 		Sessions:   sessions,
 	}
-	if row.Action == modelapi.ActionBlock {
+	switch {
+	case r.Unmapped:
+		row.BlockReason = fmt.Sprintf("provider %q has no LiteLLM mapping, so the gateway cannot route %s", m.ProviderID, m.ID)
+	case row.Action == modelapi.ActionBlock:
 		row.BlockReason = r.BlockReason()
 	}
 	if p := cfg.ProviderByID(m.ProviderID); p != nil {
@@ -95,6 +99,8 @@ func wireRow(cfg *config.Config, r catalog.Row, ix tiers.Index, sessions int, no
 // rowState maps a catalog row to its wire state.
 func rowState(r catalog.Row) string {
 	switch {
+	case r.Unmapped:
+		return modelapi.StateBlocked
 	case r.Ready():
 		return modelapi.StateRunning
 	case r.Loading:
@@ -109,6 +115,9 @@ func rowState(r catalog.Row) string {
 
 // rowAction maps a catalog row to its wire action.
 func rowAction(r catalog.Row) string {
+	if r.Unmapped {
+		return modelapi.ActionBlock
+	}
 	switch r.Action() {
 	case catalog.ActionStart:
 		return modelapi.ActionStart

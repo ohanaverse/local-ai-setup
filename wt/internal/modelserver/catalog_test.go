@@ -3,6 +3,7 @@ package modelserver
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,5 +249,21 @@ func TestCatalogJSONMatchesFixture(t *testing.T) {
 		if string(v) == "null" {
 			t.Errorf("key %q marshalled as null", k)
 		}
+	}
+}
+
+// TestCatalogUnmappedCloudRowIsBlocked pins that a cloud row whose provider
+// has no LiteLLM mapping reaches the wire as blocked with a reason saying so,
+// since the gateway cannot route it and a client must not offer it as ready.
+func TestCatalogUnmappedCloudRowIsBlocked(t *testing.T) {
+	cfg := testCfg(config.Model{ID: "acme/m", Family: "f", ProviderID: "acme", ModelName: "m"})
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud})
+	c := BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), testNow)
+	r := rowByID(t, c, "acme/m")
+	if r.State != modelapi.StateBlocked || r.Action != modelapi.ActionBlock {
+		t.Fatalf("state/action = %s/%s, want blocked/block", r.State, r.Action)
+	}
+	if !strings.Contains(r.BlockReason, "no LiteLLM mapping") || strings.Contains(r.BlockReason, "wt litellm off") {
+		t.Errorf("block_reason = %q, want it to say the provider has no LiteLLM mapping", r.BlockReason)
 	}
 }
