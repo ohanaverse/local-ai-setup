@@ -65,7 +65,7 @@ func rowCells(r cleanup.Row) []string {
 	if state == "" {
 		state = cleanup.StateUnknown
 	}
-	verdict := verdictText(r.Status)
+	verdict := verdictWord(r)
 
 	// DIFF and IGN exist only where a working tree can hold changes. The
 	// ignored count is what removal would lose: the effective view, as every

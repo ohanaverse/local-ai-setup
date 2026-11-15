@@ -130,7 +130,7 @@ maintenance trap if `piCompat` ever grows more fields.
 - [ ] Fix: merge into existing `compat` fields instead of full-pointer
       replacement (deferred until `piCompat` gains a second field)
 
-## 7. Plan Review Focus 3 vs spec §2: `DIFF -` or `+0/-0` for binary/unreadable changes? (2026-11-13)
+## 7. Plan Review Focus 3 vs spec §2: `DIFF -` or `+0/-0` for binary/unreadable changes? — FIXED (2026-11-15)
 
 The wt-worktree-table implementation follows **spec §2**'s diffstat rule
 (`docs/superpowers/specs/2026-11-13-wt-worktree-table-design.md`): a binary,
@@ -147,10 +147,12 @@ cannot stand. Decide which wins:
   file-read handling together (`wt/internal/cleanup/diffstat.go`, with its
   `TestDiffStatBinaryAndOverCapAreUnknownOrZero` subtest).
 
-Open, deferred at the final review of that branch (the reviewer flagged the
-contradiction; the executor ruled toward the spec and recorded it).
+Resolved 2026-11-15: the dash wins. A binary, unreadable or non-regular file
+makes the whole `DiffStat` unknown (`diffstat.go`, `-` in the cell), and
+`TestDiffStatBinaryAndOverCapAreUnknownOrZero` pins it. The spec §2 rule and the
+plan's Review Focus line were left as the historical record.
 
-## 8. `changes-in-base` matches an added line anywhere in the file (2026-11-14)
+## 8. `changes-in-base` matches an added line anywhere in the file — FIXED (2026-11-15)
 
 `reverseApplies` (`wt/internal/cleanup/contained.go`) validates a `-U0` patch
 against base's tree, and a zero-context hunk applies wherever its text appears
@@ -165,7 +167,11 @@ from proving, which the rung accepts on purpose (more branches would read
 `less_sure`). Decide: keep the weaker proof, or trade some proofs for a
 stricter one.
 
-Open, found by the `/code-review --fix` of PR #590; deliberately not changed.
+Resolved 2026-11-15: stricter proof chosen. A patch with an addition-only hunk
+in a surviving file must also reverse-apply with `-U3` context
+(`containedWithContext`, `contained.go`); a failure there is unknown, so an edit
+beside a squashed addition now reads not proven. `TestContainedAddedLineIsAnchoredByContext`
+pins the three cases.
 
 ## Minor / already handled notes
 

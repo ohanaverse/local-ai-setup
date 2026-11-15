@@ -266,9 +266,6 @@ func setTicks(t *testing.T, m cleanupListModel, names ...string) cleanupListMode
 		want[n] = true
 	}
 	for i, it := range m.items {
-		if it.heading != "" {
-			continue
-		}
 		if m.ticked[i] != want[cleanup.DisplayName(it.row)] {
 			m.cursor = i
 			m = cleanupSend(t, m, spaceKey)
@@ -314,7 +311,9 @@ func TestConfirmListsLossesForEveryTickedItem(t *testing.T) {
 	v := m.View()
 	for _, want := range []string{
 		"PROVEN MERGED", "NOT PROVEN, OR LOSES WHAT IS LISTED", "UNCOMMITTED CHANGES OR DETACHED COMMITS", "UNMERGED BRANCHES",
-		"worktree done", "worktree dirty", "worktree kept", "branch loose",
+		// A worktree whose directory is named after it says the name once: the
+		// head line is `worktree .worktrees/<name>`.
+		"worktree .worktrees/done", "worktree .worktrees/dirty", "worktree .worktrees/kept", "branch loose",
 		"will lose: uncommitted changes will be lost",
 		"running in it: pid 4242 vim wip.txt",
 		"will lose: 1 commit exists only on this machine",
@@ -326,7 +325,6 @@ func TestConfirmListsLossesForEveryTickedItem(t *testing.T) {
 		"approvals: --accept-loss -D",
 		"type delete and press enter to remove 4 items",
 		"(1 proven, 1 not proven or losing something, 1 with uncommitted changes or detached commits, 1 unmerged branch)",
-		"worktree dirty  .worktrees/dirty",
 	} {
 		if !strings.Contains(v, want) && !strings.Contains(squash(v), squash(want)) {
 			t.Errorf("confirm screen lacks %q:\n%s", want, v)
@@ -334,7 +332,7 @@ func TestConfirmListsLossesForEveryTickedItem(t *testing.T) {
 	}
 	// Group order: proven before not-proven before force before -D.
 	last := -1
-	for _, g := range []string{"worktree done", "worktree kept", "worktree dirty", "branch loose"} {
+	for _, g := range []string{"worktree .worktrees/done", "worktree .worktrees/kept", "worktree .worktrees/dirty", "branch loose"} {
 		i := strings.Index(v, g)
 		if i <= last {
 			t.Errorf("%q out of group order:\n%s", g, v)
@@ -538,7 +536,7 @@ func TestResultsShowReasonsAndRetainedBranches(t *testing.T) {
 		t.Fatalf("after a key: phase %v refreshed %d", m.phase, h.refreshed)
 	}
 	for _, it := range m.items {
-		if it.heading == "" && it.row.Kind == cleanup.KindWorktree && (it.row.Name == "done") {
+		if it.row.Kind == cleanup.KindWorktree && (it.row.Name == "done") {
 			t.Errorf("rebuilt list still has worktree done")
 		}
 	}
@@ -563,7 +561,7 @@ func TestRemoteRowsNeverEnterTheSelection(t *testing.T) {
 	m := h.list(120, 50)
 	remotes := 0
 	for i, it := range m.items {
-		if it.heading == "" && it.row.Kind == cleanup.KindRemote {
+		if it.row.Kind == cleanup.KindRemote {
 			remotes++
 			m.cursor = i
 			m = cleanupSend(t, m, spaceKey)
@@ -580,7 +578,7 @@ func TestRemoteRowsNeverEnterTheSelection(t *testing.T) {
 	}
 	// Even a remote row forced into the tick map stays out of the preview.
 	for i, it := range m.items {
-		if it.heading == "" && it.row.Kind == cleanup.KindRemote {
+		if it.row.Kind == cleanup.KindRemote {
 			m.ticked[i] = true
 		}
 	}
@@ -793,7 +791,7 @@ func confirmScreens(t *testing.T) map[string]cleanupListModel {
 	// A row action's single-row confirm: `x` chose the highlighted row, so
 	// the summary says "selected", never "ticked" (enter's word for the rows
 	// the ticks chose).
-	out["confirm, selected"] = press(t, moveTo(t, h.list(80, 24), "a-dirty-worktree-with-a-long-name"), keyRunes("x"))
+	out["confirm, selected"] = pressRowAction(t, moveTo(t, h.list(80, 24), "a-dirty-worktree-with-a-long-name"), "x")
 	gate := make(chan struct{})
 	h.stubRun = func(items []removal.Item, progress func(removal.Outcome)) []removal.Outcome {
 		<-gate

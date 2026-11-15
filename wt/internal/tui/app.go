@@ -325,7 +325,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		// hand-off instance its key checked).
 		if m.ready && msg.gen == m.rowsGen && !m.rows.done {
 			m.rows = m.rows.withReport(msg.Report)
-			swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
+			return m, swapRemoveFuncs(&m.rows, func() RemoveFuncs { return m.removeFuncsFor(msg.Snap, m.rowsIn) })
 		}
 		return m, nil
 	case rowChosenMsg:

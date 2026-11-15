@@ -203,7 +203,7 @@ func TestRowsLoadedMsgBuildsTheList(t *testing.T) {
 func TestViewReady(t *testing.T) {
 	m := pickerReady(t, pickerFixture())
 	view := m.View()
-	for _, want := range []string{"enter launch", "WORKTREES", "loose"} {
+	for _, want := range []string{"enter launch", "WORKTREE", "loose"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View missing %q:\n%s", want, view)
 		}
@@ -233,27 +233,6 @@ func TestEnterSelectsEntry(t *testing.T) {
 	_, sel := pickerEnter(t, m)
 	if sel.entry.Branch != "other" || sel.entry.Path != "/repo/.worktrees/other" {
 		t.Errorf("selected %+v, want the other worktree", sel.entry)
-	}
-}
-
-// TestEnterOnHeadingIsIgnored asserts that Enter on a group heading does
-// nothing rather than forwarding a zero-value row: its entry would launch
-// the agent in wt's CWD with cmd.Dir="". The cursor never stops on a heading
-// by itself; this pins the guard should it get there.
-func TestEnterOnHeadingIsIgnored(t *testing.T) {
-	m := pickerReady(t, pickerFixture())
-	m.rows.cursor = 1
-	if m.rows.items[1].heading == "" {
-		t.Fatal("item 1 is not a heading")
-	}
-	m, cmd := updateMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.phase != phaseList {
-		t.Fatalf("phase = %v, want phaseList", m.phase)
-	}
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			t.Errorf("heading Enter produced %T, want nothing", msg)
-		}
 	}
 }
 
@@ -1114,7 +1093,7 @@ func pickerOpenOn(t *testing.T, r *rmRepo, fetchErr error) (model, func() int) {
 // pickerRowListed reports whether the picker's list carries a row named name.
 func pickerRowListed(m model, name string) bool {
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && it.row.Name == name {
+		if !it.newWorktree && it.row.Name == name {
 			return true
 		}
 	}

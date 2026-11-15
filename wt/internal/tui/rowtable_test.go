@@ -55,7 +55,7 @@ func TestRowCellsPerKind(t *testing.T) {
 	rows := tableFixture()
 
 	got := rowCells(rows[0]) // filled worktree
-	want := []string{"feat/x", "feat/x", "#383 merged", "+99/-55", "12", "in main", "proven"}
+	want := []string{"feat/x", "feat/x", "#383 merged", "+99/-55", "12", "in main", "safe"}
 	if len(got) != len(want) {
 		t.Fatalf("cells = %q, want 7 entries", got)
 	}
@@ -277,6 +277,56 @@ func TestDiffLineWhenDropped(t *testing.T) {
 // ensure the layout compiles against tuilayout's API (a nil check keeps the
 // import honest if the helpers above ever stop building a table).
 var _ = tuilayout.PadRunes
+
+// TestVerdictWords pins the VERDICT column's one-word mapping: safe / check /
+// work for the three real verdicts, locked for a row nothing can be done
+// about (the root, a hard stop), and "-" while the fill is still owed. Why:
+// the column is the list's one glance-level answer, and a word that reads
+// safer than the row is (a hard-stopped row saying "safe") is the mistake
+// this table exists to prevent.
+func TestVerdictWords(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		row  cleanup.Row
+		want string
+	}{
+		{"proven", cleanup.Row{Kind: cleanup.KindBranch, Name: "b", Branch: "b", Status: cleanup.StatusProven}, "safe"},
+		{"less sure", cleanup.Row{Kind: cleanup.KindBranch, Name: "b", Branch: "b", Status: cleanup.StatusLessSure}, "check"},
+		{"unique work", cleanup.Row{Kind: cleanup.KindBranch, Name: "b", Branch: "b", Status: cleanup.StatusUniqueWork}, "work"},
+		{"root", cleanup.Row{Kind: cleanup.KindWorktree, Name: "r", Primary: true, Status: cleanup.StatusInUse,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary, Detail: "the primary checkout"}}}, "locked"},
+		{"pending", cleanup.Row{Kind: cleanup.KindBranch, Name: "b", Branch: "b", Status: cleanup.StatusLessSure, Pending: true}, "-"},
+	} {
+		if got := verdictWord(tc.row); got != tc.want {
+			t.Errorf("%s: verdictWord = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestVerdictColumnIsShort pins that no verdict word outgrows the column at
+// 80 columns: the longest is "locked" (6 runes), and the VERDICT heading
+// still fits and is drawn there. Why: the column is never dropped, so a
+// longer word would push the table past the terminal at 80 — the shape the
+// list was flattened to keep.
+func TestVerdictColumnIsShort(t *testing.T) {
+	rows := []cleanup.Row{
+		{Kind: cleanup.KindBranch, Name: "safe-row", Branch: "safe-row", Status: cleanup.StatusProven},
+		{Kind: cleanup.KindBranch, Name: "check-row", Branch: "check-row", Status: cleanup.StatusLessSure},
+		{Kind: cleanup.KindBranch, Name: "work-row", Branch: "work-row", Status: cleanup.StatusUniqueWork},
+		{Kind: cleanup.KindWorktree, Name: "root", Primary: true, Status: cleanup.StatusInUse,
+			Blockers: []cleanup.Reason{{Code: cleanup.BlockPrimary}}},
+	}
+	for _, r := range rows {
+		if got := utf8.RuneCountInString(rowCells(r)[rtVerdict]); got > 6 {
+			t.Errorf("%s: verdict cell is %d runes, want at most 6", cleanup.DisplayName(r), got)
+		}
+	}
+	cols := newRowTable(rows, rowPrefixWidthManage)
+	cols.Fit(80)
+	if !cols.Shown(rtVerdict) || !strings.Contains(cols.Header(), "VERDICT") {
+		t.Errorf("VERDICT not drawn at 80 columns: %q", cols.Header())
+	}
+}
 
 // TestPRLineNamesThePRWhenTheColumnIsGone pins the detail block's fallback
 // for a dropped PR# column: the PR and its state, "PR lookup unknown", and

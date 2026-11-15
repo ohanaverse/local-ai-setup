@@ -27,10 +27,11 @@ type DiffStat struct {
 // check uses. A whole change-set over DirtMaxFiles (tracked entries plus
 // untracked paths) or DirtMaxBytes (untracked bytes; the tracked side's bytes
 // are already bounded by dirty()'s dirtsnap check under the same limits) is
-// Unknown. Binaries contribute no lines — `-	-` from numstat, NUL in the
-// first 8000 bytes for an untracked file (git's own rule) — and so does a
-// file that cannot be read or is not a regular file (the diffstat rule; a git
-// command failing is Unknown). The numstat diff runs against a throwaway copy
+// Unknown. A binary (`-	-` from numstat, NUL in the first 8000 bytes for an
+// untracked file, git's own rule), a file that cannot be read and one that is
+// not a regular file have no countable lines, so any of them makes the whole
+// stat Unknown ("-"): a confident +0/-0 would claim a change the counts
+// cannot see is empty. A git command failing is Unknown too. The numstat diff runs against a throwaway copy
 // of the real index: `git diff` rewrites the index's stat cache even under
 // GIT_OPTIONAL_LOCKS=0, and this package never touches the real one.
 func readDiffStat(wg Git) DiffStat {
@@ -86,7 +87,7 @@ func (d worktreeDiff) stat(wg Git) DiffStat {
 		}
 		entries++
 		if f[0] == "-" && f[1] == "-" {
-			continue // binary: contributes no lines
+			return DiffStat{Unknown: true} // binary: its lines cannot be counted
 		}
 		a, errA := strconv.Atoi(f[0])
 		r, errR := strconv.Atoi(f[1])
@@ -112,9 +113,9 @@ func (d worktreeDiff) stat(wg Git) DiffStat {
 	}
 	var total int64
 	for _, p := range paths {
-		lines, size := countUntrackedLines(filepath.Join(wg.Dir, p))
+		lines, size, counted := countUntrackedLines(filepath.Join(wg.Dir, p))
 		total += int64(size)
-		if total > dirtLimits.MaxBytes {
+		if total > dirtLimits.MaxBytes || !counted {
 			return DiffStat{Unknown: true}
 		}
 		out.Added += lines
@@ -123,23 +124,24 @@ func (d worktreeDiff) stat(wg Git) DiffStat {
 }
 
 // countUntrackedLines reports one untracked file's contribution: its newline
-// count (a final unterminated line counts one) and its size in bytes. A
-// non-regular or unreadable file contributes no lines and no bytes read
-// beyond its lstat size; a binary (NUL in the first 8000 bytes, git's own
-// rule) contributes no lines. Size still counts toward the byte cap, so a
-// huge unreadable file cannot slip under it.
-func countUntrackedLines(p string) (lines, size int) {
+// count (a final unterminated line counts one) and its size in bytes, and
+// whether the lines could be counted at all. A non-regular, unreadable or
+// vanished file, and a binary (NUL in the first 8000 bytes, git's own rule),
+// is not counted: the caller reads the whole diffstat as unknown rather than
+// as a confident number that leaves the file out. Size still counts toward the
+// byte cap, so a huge unreadable file cannot slip under it.
+func countUntrackedLines(p string) (lines, size int, counted bool) {
 	fi, err := os.Lstat(p)
 	if err != nil {
-		return 0, 0
+		return 0, 0, false
 	}
 	if !fi.Mode().IsRegular() {
-		return 0, int(fi.Size()) // a symlink or special file: no lines
+		return 0, int(fi.Size()), false // a symlink or special file
 	}
 	size = int(fi.Size())
 	f, err := os.Open(p)
 	if err != nil {
-		return 0, size // unreadable: contributes no lines (diffstat rule)
+		return 0, size, false // unreadable
 	}
 	defer f.Close()
 	scanned := 0
@@ -153,7 +155,7 @@ func countUntrackedLines(p string) (lines, size int) {
 			if scanned < 8000 {
 				limit := min(n, 8000-scanned)
 				if bytes.IndexByte(chunk[:limit], 0) >= 0 {
-					return 0, size // binary
+					return 0, size, false // binary
 				}
 				scanned += limit
 			}
@@ -165,11 +167,11 @@ func countUntrackedLines(p string) (lines, size int) {
 			break
 		}
 		if err != nil {
-			return 0, size // read failed midway: contributes no lines
+			return 0, size, false // read failed midway
 		}
 	}
 	if sawAny && last != '\n' {
 		lines++ // a final unterminated line counts one
 	}
-	return lines, size
+	return lines, size, true
 }

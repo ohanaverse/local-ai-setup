@@ -10,7 +10,7 @@ A thin wrapper over the `wt` CLI. `wt` classifies and removes; this skill reads 
 ## Requirements
 
 - `wt` on `PATH` **with the `worktrees` subcommand.** Check: `wt worktrees --help` must print the list's own help. An older `wt` falls through to the launcher's top-level help ("Launch AI coding agents in a chosen worktree..."). Then stop and tell the user to install the current `wt` (`make install` in the local-ai-setup repo).
-- `gh` is optional. Without it (missing, signed out, offline) the JSON's `gh` is `unavailable` and rows carry reason `pr_unknown` (the `PR ?` tag): a merged PR is part of the proof, so no origin branch is proven and other rows read at best `less_sure`. A repo whose `origin` is not on GitHub is exempt for local rows, but its origin rows read `not_checked` and are never removable.
+- `gh` is optional. Without it (missing, signed out, offline) the JSON's `gh` is `unavailable` and rows carry reason `pr_unknown` (`?` in the `PR#` column): a merged PR is part of the proof, so no origin branch is proven and other rows read at best `less_sure`. A repo whose `origin` is not on GitHub is exempt for local rows, but its origin rows read `not_checked` and are never removable.
 
 ## Flow
 

@@ -29,13 +29,46 @@ func fitHints(hints []keyHint, width int) string {
 	if width <= 0 {
 		return strings.Join(long, hintSep)
 	}
-	for _, forms := range [][]string{long, short} {
-		if lines := packHints(forms, width); len(lines) <= 2 {
-			return strings.Join(lines, "\n")
-		}
+	// One line first, the long wording before the short. Then two lines, if
+	// two lines must be: also long before short, and balanced, so a wrapped
+	// footer does not leave one key alone under the rest.
+	if lines := packHints(long, width); len(lines) <= 1 {
+		return strings.Join(lines, "\n")
+	}
+	if two, ok := balanceHints(long, width); ok {
+		return two
+	}
+	if lines := packHints(short, width); len(lines) <= 1 {
+		return strings.Join(lines, "\n")
+	}
+	if two, ok := balanceHints(short, width); ok {
+		return two
 	}
 	lines := packHints(short, width)
 	return strings.Join(lines[:2], "\n")
+}
+
+// balanceHints splits forms into two lines, each no wider than width, as even
+// as the split allows: the footer's last line is read as a whole, and one
+// dangling key under a full line reads as a stray. ok is false when no split
+// puts both halves on one line each.
+func balanceHints(forms []string, width int) (string, bool) {
+	best, bestDiff := "", 0
+	for k := 1; k < len(forms); k++ {
+		a, b := strings.Join(forms[:k], hintSep), strings.Join(forms[k:], hintSep)
+		wa, wb := lipgloss.Width(a), lipgloss.Width(b)
+		if wa > width || wb > width {
+			continue
+		}
+		diff := wa - wb
+		if diff < 0 {
+			diff = -diff
+		}
+		if best == "" || diff < bestDiff {
+			best, bestDiff = a+"\n"+b, diff
+		}
+	}
+	return best, best != ""
 }
 
 // packHints fills lines greedily with forms, each line no wider than width
@@ -107,7 +140,7 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 	out := []keyHint{move}
 	it := m.items[m.cursor]
 	filling := m.filling()
-	onRow := !m.hidden(m.cursor) && it.heading == ""
+	onRow := !m.hidden(m.cursor)
 	if m.launch() {
 		if onRow && (it.newWorktree || !it.row.Bare) {
 			out = append(out, keyHint{"enter", "enter launch", "enter"})
@@ -126,6 +159,10 @@ func (m *cleanupListModel) rowKeys() []keyHint {
 		}
 	}
 	if row, ok := m.selectedRow(); ok {
+		// `i` opens the detail screen on every row, the root and a remote row
+		// included, the fill in flight too: it only reads (an action it lists
+		// is still refused while the fill has not landed).
+		out = append(out, keyHint{"i", "i details", "i"})
 		// No removal while the fill is in flight: the removal funcs are
 		// built from the filled snapshot only, so the keys are absent
 		// exactly when their handlers would refuse (nil-RemoveFuncs rule).

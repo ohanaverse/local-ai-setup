@@ -39,15 +39,15 @@ func TestPickerCtrlCFollowsTheRowList(t *testing.T) {
 	}
 
 	// The confirm screen: ctrl+c cancels it and the list stays.
-	m = pickerKey(t, pickerCursorTo(t, pickerActionsReady(t, rep, build), "loose"), keyRunes("x"))
+	m = pickerRowAction(t, pickerCursorTo(t, pickerActionsReady(t, rep, build), "loose"), "x")
 	row, _ := m.rows.selectedRow()
 	m, _ = updateMsg(m, cleanupPreviewMsg{previews: []removal.ItemPreview{{Item: removal.ItemFromRow(row), Approval: removal.ApprovalProven}}})
 	if m.rows.phase != cleanupPhaseConfirm {
 		t.Fatalf("phase %v, want the confirm screen", m.rows.phase)
 	}
 	next, cmd = updateMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
-	if quits(cmd) || next.rows.done || next.rows.phase != cleanupPhaseList || !strings.Contains(next.rows.status, "cancelled") {
-		t.Errorf("ctrl+c on the confirm screen: quit %v, phase %v, status %q; want it cancelled", quits(cmd), next.rows.phase, next.rows.status)
+	if quits(cmd) || next.rows.done || next.rows.phase != cleanupPhaseDetail || !strings.Contains(next.rows.status, "cancelled") {
+		t.Errorf("ctrl+c on the confirm screen: quit %v, phase %v, status %q; want the detail screen, cancelled", quits(cmd), next.rows.phase, next.rows.status)
 	}
 
 	// At rest it still quits wt.
@@ -106,7 +106,7 @@ func TestPickerRemovalDiscardsEarlierFills(t *testing.T) {
 	}
 	m, _ = updateMsg(m, rowPRsLoadedMsg{Report: rep, gen: gen, Snap: cleanup.Snapshot{PRsAsked: true}})
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
+		if !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
 			t.Error("a fill dispatched before the run brought the removed row back")
 		}
 	}
@@ -128,6 +128,7 @@ func TestPickerRunStartBumpsTheGeneration(t *testing.T) {
 	m.rows.width, m.rows.height = 120, 40
 	m.ready = true
 	m = pickerCursorTo(t, m, "one")
+	m = pickerKey(t, m, keyRunes("x")) // the row's detail screen
 	next, cmd := updateMsg(m, keyRunes("x"))
 	m = next
 	for cmd != nil && m.rows.phase != cleanupPhaseConfirm {
@@ -171,7 +172,7 @@ func TestPickerReloadFromBeforeARunIsDropped(t *testing.T) {
 		t.Error("a dropped reload left the refresh guard set")
 	}
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
+		if !it.newWorktree && cleanup.DisplayName(it.row) == "loose" {
 			t.Error("a reload from before the run brought the removed row back")
 		}
 	}

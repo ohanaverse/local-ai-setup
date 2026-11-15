@@ -10,8 +10,8 @@ import (
 )
 
 // The row list's launch-mode extras (cleanup_list.go has the list itself):
-// the "current" and "default" tags the old picker drew as (current) and
-// (default), type-to-filter, the cursor placement the picker asks for, and
+// the empty tag set launch mode prepends (the "current" and "default" labels
+// are gone), type-to-filter, the cursor placement the picker asks for, and
 // swapping in a report whose PR lookups have run.
 
 // deepestCurrent is the path of the innermost worktree holding the caller's
@@ -25,21 +25,6 @@ func deepestCurrent(r cleanup.Report) string {
 		}
 	}
 	return here
-}
-
-// launchTags are the picker's own tags for row: "current" on the innermost
-// worktree holding the caller's directory (here), "default" on the default
-// branch's worktree or local branch. A remote row is never either: the old
-// picker labelled only the bare name.
-func launchTags(r cleanup.Report, row cleanup.Row, here string) []cleanup.Tag {
-	var out []cleanup.Tag
-	if row.Kind == cleanup.KindWorktree && here != "" && row.Path == here {
-		out = append(out, cleanup.Tag{Text: "current"})
-	}
-	if row.Kind != cleanup.KindRemote && r.Base.Default != "" && row.Branch == r.Base.Default {
-		out = append(out, cleanup.Tag{Text: "default"})
-	}
-	return out
 }
 
 // screenName is the title the removal screens carry: `wt worktrees` in manage
@@ -83,6 +68,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 	next.rm, next.width, next.height, next.offset = m.rm, m.width, m.height, m.offset
 	next.filter, next.filtering = m.filter, m.filtering
 	next.phase, next.conf, next.run, next.log, next.pending = m.phase, m.conf, m.run, m.log, m.pending
+	next.rowDetail, next.confFromDetail = m.rowDetail, m.confFromDetail
 	next.fillGen = m.fillGen // a swap keeps the fill generation (an accepted fill or refetch spent it)
 	next.status, next.exitErr, next.quitAfterRun, next.rescueRow, next.done = m.status, m.exitErr, m.quitAfterRun, m.rescueRow, m.done
 	next.restoreRoot, next.chosenByTicks, next.seedBranch, next.pendingRM = m.restoreRoot, m.chosenByTicks, m.seedBranch, m.pendingRM
@@ -102,12 +88,12 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 			// stage never knew whether it would prove, so a tick (or the
 			// lack of one) made against that ignorance carries no choice —
 			// it takes the new report's default below.
-			if it.heading == "" && !it.newWorktree && !it.row.Pending {
+			if !it.newWorktree && !it.row.Pending {
 				was[keyOf(it.row)] = m.ticked[i]
 			}
 		}
 		for i, it := range next.items {
-			if it.heading != "" || it.newWorktree {
+			if it.newWorktree {
 				continue
 			}
 			if ticked, seen := was[keyOf(it.row)]; seen {
@@ -125,11 +111,14 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 		switch {
 		case cur.newWorktree:
 			next.cursor = 0
-		case cur.heading == "":
+		default:
 			next.selectWhere(func(r cleanup.Row) bool { return keyOf(r) == keyOf(cur.row) })
 		}
 	}
 	next.settleCursor()
+	// An open detail screen follows its row onto the new report (a picker's
+	// fill or PR lookup lands under it), or closes when the row is gone.
+	next.settleDetail()
 	return next
 }
 
@@ -137,7 +126,7 @@ func (m cleanupListModel) withReport(rep cleanup.Report) cleanupListModel {
 // whether there was one.
 func (m *cleanupListModel) selectWhere(pred func(cleanup.Row) bool) bool {
 	for i, it := range m.items {
-		if it.heading == "" && !it.newWorktree && pred(it.row) {
+		if !it.newWorktree && pred(it.row) {
 			m.cursor = i
 			return true
 		}
@@ -146,11 +135,18 @@ func (m *cleanupListModel) selectWhere(pred func(cleanup.Row) bool) bool {
 }
 
 // filterText is what the filter matches a row against: its listed name, its
-// branch, its tags and its PR column cell (prCell) — so "#383" finds the row
-// with that PR, by the same text the table draws.
+// branch, its drawn tags, every identity tag the list no longer draws (root,
+// bare, held by session, locked, +remote) and its PR column cell (prCell), so
+// "#383" finds the row with that PR by the same text the table draws. Why the
+// undrawn tags: the filter is a reader of the row's vocabulary, not of the
+// line's — a user looking for the worktree a session holds should not have to
+// know its name.
 func filterText(it cleanupItem) string {
 	parts := []string{cleanup.DisplayName(it.row), it.row.Branch}
 	for _, t := range it.tags {
+		parts = append(parts, t.Text)
+	}
+	for _, t := range cleanup.RowTags(it.row) {
 		parts = append(parts, t.Text)
 	}
 	if !it.row.Pending { // the table draws "-" for a pending row's PR cell
@@ -160,25 +156,15 @@ func filterText(it cleanupItem) string {
 }
 
 // hidden reports whether the filter hides item i: a row that does not match
-// it, the new-worktree item while there is a query, a heading with no row
-// left under it.
+// it, and the new-worktree item while there is a query.
 func (m *cleanupListModel) hidden(i int) bool {
 	if m.filter == "" || i < 0 || i >= len(m.items) {
 		return false
 	}
-	it := m.items[i]
-	switch {
-	case it.newWorktree:
-		return true
-	case it.heading != "":
-		for j := i + 1; j < len(m.items) && m.items[j].heading == ""; j++ {
-			if !m.hidden(j) {
-				return false
-			}
-		}
+	if m.items[i].newWorktree {
 		return true
 	}
-	return !strings.Contains(filterText(it), strings.ToLower(m.filter))
+	return !strings.Contains(m.items[i].filter, strings.ToLower(m.filter))
 }
 
 // settleCursor puts the cursor on the first visible item when the filter
@@ -187,8 +173,8 @@ func (m *cleanupListModel) settleCursor() {
 	if m.cursor >= 0 && !m.hidden(m.cursor) {
 		return
 	}
-	for i, it := range m.items {
-		if it.heading == "" && !m.hidden(i) {
+	for i := range m.items {
+		if !m.hidden(i) {
 			m.cursor = i
 			return
 		}

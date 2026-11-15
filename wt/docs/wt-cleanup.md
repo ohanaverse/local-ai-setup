@@ -2,10 +2,16 @@
 
 `wt worktrees` (`wt cleanup` is an alias that does the same) lists the
 repository's worktrees, local branches and remote branches. On a terminal the
-list is grouped by kind (WORKTREES, LOCAL BRANCHES, REMOTE BRANCHES), each
-row with a verdict (how sure wt is that it can go, with the evidence) and
-tags; `--plain` and `--json` carry the same verdict per row, `--plain` grouped
-by verdict instead (see [Groups](#groups)). On a terminal the list removes the
+list is one table with no headings: the root first, then the local worktrees
+and branches together, by name, then the remote branches. Each row ends in a
+short verdict word — `safe`, `check`, `work` or `locked`, the manage list's
+own words for proven, less sure, unique work and in use — and carries only the
+badges that warn (`dirty`, `unpushed`, `upstream gone` on a row that is not
+proven, and the root's drift badge); `i` opens a detail screen with everything
+known about the highlighted row, every key that acts on it, and nothing else
+(see [The detail screen](#the-detail-screen)). `--plain` and `--json` carry the
+full verdict and its evidence per row, `--plain` grouped by verdict (see
+[Groups](#groups)). On a terminal the list removes the
 worktrees and local branches you tick, after a confirmation (its `origin`
 rows read less sure, because the list has not fetched). `wt remove` does the same for
 targets named on the command line. Both use one removal engine, which also
@@ -45,10 +51,14 @@ it is open; `--json`/`--plain` fetch first unless
 `--no-fetch`). Stale session claims are dropped on the list's `F` refresh and on
 a fetch-first `--json` run only (`sessionclaim.Prune`; `--plain` fetches but
 never prunes, `--no-fetch` drops nothing, and the list's open drops nothing).
-Each row carries tags such as `root`, `you are here`, `held`,
-`dirty` and `unpushed`. The PR reads in the `PR#` column instead: `#N <state>`
+A row's line carries only what warns, so a row read as safe stays quiet: the
+`dirty`, `unpushed` and `upstream gone` badges (on a row that is not proven)
+and the root's drift badge below. The PR reads in the `PR#` column: `#N <state>`
 (`#555 merged`), `?` while a PR lookup is unknown, blank when there is no PR.
-When the
+Everything else about a row — that it is the root or the one you are in, the
+session holding it, its age, its local-only commits, its uncommitted and
+ignored files — is on its detail screen (`i`), which also says why a row
+cannot be removed. When the
 root sits off the default `origin/HEAD` names (or on a detached HEAD) its row carries a
 `root_drift` reason and, in the manage list, a drift badge (the launch picker's header
 names the drift instead, once: `root is on <b>, not <d>`, or `root is detached`); the drift
@@ -62,11 +72,15 @@ On a terminal each row is one table line (the `rowtable.go` renderer over
 `tuilayout.Columns`): a session digit (the running wt sessions holding that
 worktree; the browsing session never counts itself), the cursor and, in the
 tick list, the checkbox, then `WORKTREE BRANCH PR# DIFF IGN STATUS VERDICT`
-with the row's badges after the verdict. `PR#` holds the PR and its state
-(`#383 merged`; `?` when the lookup could not answer; blank when there is no
-PR; `-` while the row is pending). `DIFF` is the uncommitted change
-counted diffstat-style (`+99/-55`; `-` when it could not be read or is over
-the caps), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
+with the row's badges after the verdict, one line per row and no headings:
+the root first, then the local worktrees and branches together, by name, then
+the remote branches. `PR#` holds the PR and its state (`#383 merged`; `?` when
+the lookup could not answer; blank when there is no PR; `-` while the row is
+pending). `VERDICT` is `safe` (proven), `check` (less sure), `work` (work that
+exists nowhere else) or `locked` (nothing can be done with it, and the detail
+screen says why), `-` while the row is still being read. `DIFF` is the uncommitted change
+counted diffstat-style (`+99/-55`; `-` when it could not be read, is over
+the caps or includes a binary, unreadable or non-regular file), `IGN` the ignored entries, `STATUS` one of `clean`, `dirty`,
 `in main`, `conflicted`, `-`. A narrow terminal gives columns up `PR#`, then
 `IGN`, `STATUS`, `DIFF`; the worktree, branch and verdict columns never drop,
 and the detail block then names the highlighted row's PR (`PR #3 open`, or
@@ -75,8 +89,9 @@ The list paints from the cheap git calls alone (`cleanup.GatherFacts`) and
 fills gates, ladder and PRs behind the first paint (`cleanup.FillDetails`,
 then the `gh` lookups); while that runs the removal keys (`enter`, `x`, `d`,
 `o`, `r`, `R`) are absent and come back with the fill — launching, the
-filter, `n`, `F` and `q` work throughout, and nothing is ever removed from a
-half-read repository. The key footer sits on the terminal's last line, and a
+filter, `n`, `i`, `F` and `q` work throughout (`i` reads, so a half-read row
+opens its screen, which lists no removal until the fill lands), and nothing
+is ever removed from a half-read repository. The key footer sits on the terminal's last line, and a
 single step past either end of the row list wraps onto the other (paging
 stops at the ends).
 
@@ -172,6 +187,69 @@ directory) counts as could not be read. A `local_path` that is an ancestor of
 the repository (`~`, or `/`) blocks every worktree under it as
 `protected_artifact`, and the row's detail names that path.
 
+## The detail screen
+
+One row, in full: what it is and what it holds, then only the actions that
+apply to it. `i` opens it to read; `x`, `d`, `o`, `r` and `R` open it too,
+unarmed, so the first press of a row key never removes or hands off anything —
+the second, on the screen, is the action the screen lists.
+
+```
+── wt-tweaks ─────────────────────────────────────────────────────────────
+ worktree  wt-tweaks
+ branch    wt-tweaks
+ path      /Users/keith/github/ohanaverse/local-ai-setup/.worktrees/wt-tweaks
+ PR        #590 open
+ age       12 days
+ Verdict   work — 2 commits and 3 files exist only here
+
+ Local-only commits (2)
+   a1b2c3d4  wip: retry the fill
+   b7cc0341  feat(wt): flat list order
+ Uncommitted files (1)
+   M  wt/internal/tui/cleanup_list.go
+ Ignored files (1)
+   .venv
+
+ Actions
+   x  remove — deletes the worktree directory; keeps the branch unless it is
+      proven merged; lists what is lost; unproven rows need the typed word
+      delete.
+   d  remove + branch — as x, and also deletes the unmerged branch (the box
+      starts on, tab toggles it); on a branch-only row it equals x.
+   r  rescue — copies uncommitted and unpushed work into a new rescued/<name>
+      branch and worktree; the original is untouched.
+   esc  back to the list — returns to the list, with the cursor still on this
+      row.
+```
+
+The block reads: `worktree`/`branch`/`path`/`remote` and `tip`, the `PR` and
+its state, the row's `age`, its running `sessions` and the session `holder`
+when one holds it, then the **Verdict** line — the same word the list shows,
+followed by why: the reason a row cannot be removed (the root cannot be
+removed; you are here; contains the directory you are in; ...), or the
+facts that lowered it. Then the local-only commits, the uncommitted files
+(with their status letters) and the ignored files, twenty of each with
+`… and N more` after that (`cleanup.DetailListCap`), and what the removal
+preview says would be lost, the processes running in it, and its warnings
+and notes.
+
+The listings are read-only (`cleanup.ReadRowDetail`: `git log`, `status
+--porcelain=v2`, `ls-files --others --ignored`, in the directory the list was
+built in). They run off the update loop, so the screen paints its first lines
+while they load; a repository they cannot read says so in one line rather
+than failing. When a fill or a refresh replaces the report the screen stays on
+its row, re-read from the new report, and when the row is no longer there the
+screen closes and the status line says it is gone.
+
+The screen lists an action only when its key would act: `x` and `d` on a row
+that can be removed, `o` when the row's `origin` ref can (its own lock
+judging, as above), `r` and `R` where a rescue or a restore is offered, and
+`esc` always. `x`, `d` and `o` start the same preview → confirmation → run
+flow as the list, with the confirmation showing this screen's block, and `esc`
+there comes back here; `r` and `R` keep their quit-and-hand-off flow (they ask
+on the real terminal, so the alt screen has to close).
+
 ## The list's keys and the session loop
 
 On a terminal `wt worktrees` shows every row, locked or not, and acts only on a key you press. Nothing is cleaned up automatically anywhere in wt: nothing is asked when an agent exits, no worktree is removed and the root is never switched for you, and a launch only warns.
@@ -180,21 +258,18 @@ On a terminal `wt worktrees` shows every row, locked or not, and acts only on a 
 |---|---|
 | `space`, `a` | tick or untick the highlighted row; `a` ticks every proven local row (an `origin` row is never ticked for you) |
 | `enter` | remove the **ticked** rows (the confirm says "ticked") |
-| `x` | remove the **selected** row alone; ticks are ignored (the confirm says "selected") |
-| `d` | as `x`, with the worktree's unmerged branch also deleted (the confirm's `[ ] also delete unmerged branch` is seeded on) |
-| `o` | delete only the selected row's `origin` ref, never its worktree or local branch: the remote-only item `wt remove origin/<name> --remote` builds, under the typed `delete origin` |
-| `r` | rescue the selected row (`rescue.Offered` says from the row alone whether it is worth it, else the status line says why) |
-| `R` | restore the root (`rootmove.Offered`, below) |
+| `i` | open the highlighted row's [detail screen](#the-detail-screen): everything known about it, and the actions that apply to it |
+| `x`, `d`, `o`, `r`, `R` | open that same screen on the highlighted row, unarmed; press the key again there to act |
 | `F` | `git fetch --all --prune` at the repository root, capped at 5s, then re-read; stale session claims are dropped |
-| `q`, `esc` | quit |
+| `q`, `esc` | quit (on the detail screen, `esc` goes back to the list) |
 
-A locked row refuses `x` and `d` with `cannot be removed: <its reason>`. `o` is the exception: it deletes the row's `origin` ref, so it judges that ref's lock instead of the local row's — a locked origin target answers `its origin ref cannot be removed: <the origin row's reason>`, and a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none` (a locked row with none answers `cannot be removed: <its reason>`). `r`, `R` and `F` ignore the lock entirely: they copy or move work and re-read, never remove. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`.
+The action on the second press is the one the screen lists. `x` removes the **selected** row alone (the confirm says "selected"; ticks are ignored), `d` as `x` with the worktree's unmerged branch also deleted (the confirm's `[ ] also delete unmerged branch` is seeded on), `o` deletes only the row's `origin` ref — never its worktree or local branch — as the remote-only item `wt remove origin/<name> --remote` builds, under the typed `delete origin`, `r` rescues the row and `R` restores the root (`rootmove.Offered`, below). A key the screen does not list still answers, with the refusal on its status line: a locked row refuses `x` and `d` with `cannot be removed: <its reason>`. `o` is the exception: it deletes the row's `origin` ref, so it judges that ref's lock instead of the local row's — a locked origin target answers `its origin ref cannot be removed: <the origin row's reason>`, and a row with no `origin` ref answers `o` on the status line with `o deletes the highlighted row's origin ref; this row has none` (a locked row with none answers `cannot be removed: <its reason>`). `r`, `R` and `F` ignore the lock entirely: they copy or move work and re-read, never remove. Confirmation (`cleanup_confirm.go`): `y` is accepted only when every entry is proven; anything else needs the typed word `delete`, an `origin` entry `delete origin`, and a held entry's line names `held by session <id>`. A confirmation for one row (one `x`, `d` or `o`) shows that row's [detail block](#the-detail-screen) above the prompt — the same lines `i` showed, plus the toggle and the approvals — and `esc` goes back to the detail screen, not to the list; a batch confirmation (`enter`) keeps the compact per-entry layout and `esc` goes back to the list.
 
 **`R` is offered only from the row.** `rootmove.Offered` (it reads the row, never git) refuses, each with its line on the status line: a row that is not the root ("only the root can be restored"), a bare repository, a root with no commit, a detached root, a root with no default branch ("no default branch to restore to"), a root already on the default ("root is already on <branch>"), a root with a merge, cherry-pick or revert in progress and a root whose state could not be read. The list's `R` runs the same interactive restore-root as `wt restore-root` run by hand (fetches every remote, asks `Move? [y/N]` and prints the `root_held` warning in that prompt when another session holds the root; it never passes `--yes`, so a held root is moved only after you answer `y`).
 
 **The session loop** (`RunCleanupList`). After `r` or `R` completes, the list is **re-entered** from a re-read report (`RemoveFuncs.Refetch`, which fetches), so one session can do several actions. A hand-off that changed nothing (declined at its `y/N`, or refused before anything was created) or finished also re-enters, with a one-line status naming what happened; a hand-off that failed midway, could not start, or a failed re-read ends the session and is returned, so its recovery text is the last thing printed. The removal log (every outcome of every pass, with each deleted branch's commit) prints each outcome exactly once: the ones not yet printed are flushed before each `r`/`R` hand-off (ctrl+c at its prompt ends wt) and the rest when the session ends. Re-entry is only for `r` and `R`: after a removal run, any key but `q` or ctrl+c on the results screen returns to the list re-read in the same program, and leaving it ends the session. `F` failing to re-read keeps the old rows and says why in one line; a failed *fetch* is not an error: the header reads `fetch: FAILED (...)` and the rows stay listed, judged as of the last fetch.
 
-**The launch selector** (the picker `wt` shows at launch; `internal/tui/picker_rows.go`) is the same row list in launch mode. It answers `x`, `d`, `o`, `r` and `R` on the highlighted row through the same `RemoveFuncs`; `enter` still launches the row and `n` makes a new worktree. While the `/` filter box is open it takes every printable key, so action keys act only with it closed. `r` and `R` end the picker (there is no re-entry loop there; their action runs after the screen closes, after the removal log so far has printed). Its ctrl+c cancels a confirmation and waits while a removal runs (only a list at rest quits); a termination or hangup signal during a run still ends wt. A PR lookup landing while a flow is open never swaps the removal functions under it: the swap waits for the list's return to rest. The picker's gather sets `OriginRows`, so `o` works there. Both screens end in a footer that lists the keys that work on the highlighted row, and only those (`x d` on a row that is not locked, `o` when its origin ref can be removed, `r` and `R` where a rescue or a restore is offered, none of them on the `+ New worktree…` item); with the `/` input open it lists the input's own keys, and, with a query kept and the box closed, `esc clear filter`. Wide terminals get the full wording on one line, narrower ones two lines, then shortened wording; the footer is the last thing a short terminal gives up.
+**The launch selector** (the picker `wt` shows at launch; `internal/tui/picker_rows.go`) is the same row list in launch mode. It opens the same detail screen on `i`, `x`, `d`, `o`, `r` and `R` and acts on the second press through the same `RemoveFuncs`; `enter` still launches the row and `n` makes a new worktree. While the `/` filter box is open it takes every printable key, so action keys act only with it closed. `r` and `R` end the picker (there is no re-entry loop there; their action runs after the screen closes, after the removal log so far has printed). Its ctrl+c cancels a confirmation and waits while a removal runs (only a list at rest quits); a termination or hangup signal during a run still ends wt. A PR lookup landing while a flow is open never swaps the removal functions under it: the swap waits for the list's return to rest. The picker's gather sets `OriginRows`, so `o` works there. Both screens end in a footer that lists the keys that work on the highlighted row, and only those (`i` on every row, `x d` on a row that is not locked, `o` when its origin ref can be removed, `r` and `R` where a rescue or a restore is offered, none of them on the `+ New worktree…` item); with the `/` input open it lists the input's own keys, and, with a query kept and the box closed, `esc clear filter`. Wide terminals get the full wording on one line; a narrower one wraps the hints onto two balanced lines, then shortens them; the footer is the last thing a short terminal gives up. The detail screen's own footer is built from its action list, so it can only offer what the screen does.
 
 ## Removing
 

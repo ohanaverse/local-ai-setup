@@ -108,12 +108,12 @@ func TestLaunchSelectorPassesRemoveFuncs(t *testing.T) {
 	// `x` reaches the instance the picker was loaded with.
 	built = nil
 	m := pickerCursorTo(t, pickerActionsReady(t, rep, builder), "loose")
-	m = pickerKey(t, m, keyRunes("x"))
+	m = pickerRowAction(t, m, "x")
 	if len(built) != 1 {
 		t.Fatalf("the builder ran %d times for one load, want 1", len(built))
 	}
-	if got := strings.Join(built[0].previewed, ","); got != "loose" {
-		t.Errorf("x previewed %q (phase %v), want the highlighted row through the instance the picker received", got, m.rows.phase)
+	if got := lastPreviewed(built[0].previewed); got != "loose" {
+		t.Errorf("x previewed %q (%v, phase %v), want the highlighted row through the instance the picker received", got, built[0].previewed, m.rows.phase)
 	}
 
 	// The PR fill landing swaps in the instance built for the filled load.
@@ -121,21 +121,21 @@ func TestLaunchSelectorPassesRemoveFuncs(t *testing.T) {
 	m = pickerActionsReady(t, rep, builder)
 	m, _ = updateMsg(m, rowPRsLoadedMsg{Report: rep, Snap: cleanup.Snapshot{PRsAsked: true}, gen: m.rowsGen})
 	m = pickerCursorTo(t, m, "loose")
-	m = pickerKey(t, m, keyRunes("x"))
+	m = pickerRowAction(t, m, "x")
 	if len(built) != 2 {
 		t.Fatalf("the builder ran %d times for a load and its PR fill, want 2", len(built))
 	}
 	if len(built[0].previewed) != 0 {
 		t.Errorf("x previewed through the pre-fill instance %v", built[0].previewed)
 	}
-	if got := strings.Join(built[1].previewed, ","); got != "loose" {
-		t.Errorf("x previewed %q, want the highlighted row through the filled load's instance", got)
+	if got := lastPreviewed(built[1].previewed); got != "loose" {
+		t.Errorf("x previewed %q (%v), want the highlighted row through the filled load's instance", got, built[1].previewed)
 	}
 
 	// `r` hands its row to the same instance's Rescue at the session's end.
 	built = nil
 	m = pickerCursorTo(t, pickerActionsReady(t, rep, builder), "wip")
-	m = pickerKey(t, m, keyRunes("r"))
+	m = pickerRowAction(t, m, "r")
 	if m.rows.rescueRow == nil || cleanup.DisplayName(*m.rows.rescueRow) != "wip" {
 		t.Fatalf("r left rescueRow %v, want the wip row held for the hand-off", m.rows.rescueRow)
 	}
@@ -152,7 +152,7 @@ func TestLaunchSelectorPassesRemoveFuncs(t *testing.T) {
 	// `R` hands off to the same instance's RestoreRoot the same way.
 	built = nil
 	m = pickerCursorTo(t, pickerActionsReady(t, rep, builder), "drift")
-	m = pickerKey(t, m, keyRunes("R"))
+	m = pickerRowAction(t, m, "R")
 	if !m.rows.restoreRoot {
 		t.Fatal("R did not flag the restore-root hand-off")
 	}
@@ -223,7 +223,7 @@ func TestLaunchSelectorActionKeysNotCapturedByFilter(t *testing.T) {
 	}
 	rows, hidden := 0, 0
 	for i, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree {
+		if !it.newWorktree {
 			rows++
 			if m.rows.hidden(i) {
 				hidden++
@@ -243,18 +243,18 @@ func TestLaunchSelectorActionKeysNotCapturedByFilter(t *testing.T) {
 
 	// The box closed: `x` acts on the highlighted row.
 	m = pickerCursorTo(t, pickerActionsReady(t, rep, builder), "loose")
-	m = pickerKey(t, m, keyRunes("x"))
-	if got := strings.Join(rec.previewed, ","); got != "loose" {
-		t.Errorf("x with the filter closed previewed %q, want the highlighted row", got)
+	m = pickerRowAction(t, m, "x")
+	if got := lastPreviewed(rec.previewed); got != "loose" {
+		t.Errorf("x with the filter closed previewed %q (%v), want the highlighted row", got, rec.previewed)
 	}
 	// `r` and `R` act the same way, each on its own list (each ends it).
 	m = pickerCursorTo(t, pickerActionsReady(t, rep, builder), "wip")
-	m = pickerKey(t, m, keyRunes("r"))
+	m = pickerRowAction(t, m, "r")
 	if m.rows.rescueRow == nil {
 		t.Error("r with the filter closed held no row for rescue")
 	}
 	m = pickerCursorTo(t, pickerActionsReady(t, rep, builder), "drift")
-	m = pickerKey(t, m, keyRunes("R"))
+	m = pickerRowAction(t, m, "R")
 	if !m.rows.restoreRoot {
 		t.Error("R with the filter closed flagged no restore-root")
 	}
@@ -268,9 +268,9 @@ func TestLaunchSelectorActionKeysNotCapturedByFilter(t *testing.T) {
 		m = pickerKey(t, m, keyRunes(string(r)))
 	}
 	m = pickerKey(t, m, enterKey) // keeps the query and closes the box
-	m = pickerKey(t, m, keyRunes("x"))
-	if got := strings.Join(rec.previewed, ","); got != "loose" {
-		t.Errorf("x with a kept query previewed %q, want the one row it left visible", got)
+	m = pickerRowAction(t, m, "x")
+	if got := lastPreviewed(rec.previewed); got != "loose" {
+		t.Errorf("x with a kept query previewed %q (%v), want the one row it left visible", got, rec.previewed)
 	}
 }
 
@@ -317,7 +317,7 @@ func TestLaunchSelectorFillSwapWaitsForTheList(t *testing.T) {
 	// fed by hand — only Confirmed* is sealed behind genuine previews).
 	openConfirm := func(m model) model {
 		t.Helper()
-		m = pickerKey(t, m, keyRunes("x"))
+		m = pickerRowAction(t, m, "x")
 		row, ok := m.rows.selectedRow()
 		if !ok {
 			t.Fatal("the highlighted row vanished before its preview")
@@ -339,20 +339,28 @@ func TestLaunchSelectorFillSwapWaitsForTheList(t *testing.T) {
 	if len(built) != 1 {
 		t.Fatalf("the builder ran %d times for a load and a mid-flow fill, want 1: a landing under a flow builds nothing it would discard", len(built))
 	}
+	// esc goes back one step, to the row's detail screen — a rest too, so the
+	// deferred fill's instance builds and takes over there.
 	m = pickerKey(t, m, escKey)
-	if m.rows.phase != cleanupPhaseList {
-		t.Fatalf("esc left phase %v, want the list", m.rows.phase)
+	if m.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("esc left phase %v, want the row detail", m.rows.phase)
 	}
 	if len(built) != 2 {
 		t.Fatalf("the builder ran %d times by the return to rest, want 2: the deferred fill's instance builds there", len(built))
 	}
-	m = pickerCursorTo(t, m, "loose")
-	m = pickerKey(t, m, keyRunes("x"))
-	if got := strings.Join(built[1].previewed, ","); got != "loose" {
-		t.Errorf("x previewed %q through %d instances, want the row through the filled load's instance", got, len(built))
+	m = pickerKey(t, m, escKey)
+	if m.rows.phase != cleanupPhaseList {
+		t.Fatalf("esc left phase %v, want the list", m.rows.phase)
 	}
-	if len(built[0].previewed) != 1 {
-		t.Errorf("the pre-fill instance answered the post-cancel x too: %v", built[0].previewed)
+	m = pickerCursorTo(t, m, "loose")
+	m = pickerRowAction(t, m, "x")
+	if got := lastPreviewed(built[1].previewed); got != "loose" {
+		t.Errorf("x previewed %q (%v) through %d instances, want the row through the filled load's instance", got, built[1].previewed, len(built))
+	}
+	// The pre-fill instance answered the first flow's two reads — the detail
+	// screen's own and the action's re-check — and nothing after the swap.
+	if len(built[0].previewed) != 2 {
+		t.Errorf("the pre-fill instance answered %d reads (%v), want only the first flow's two", len(built[0].previewed), built[0].previewed)
 	}
 	if !built[1].snap.PRsAsked {
 		t.Error("the instance in use was not built from the filled snapshot: its engine re-checks the load's never-filled PR facts and reads the proven row as status changed since it was listed")
@@ -396,7 +404,7 @@ func TestLaunchSelectorQuitWindowKeepsTheHandOffInstance(t *testing.T) {
 	})
 	rep := pickerActionsFixture()
 	m := pickerCursorTo(t, pickerActionsReady(t, rep, builder), "drift")
-	m = pickerKey(t, m, keyRunes("R"))
+	m = pickerRowAction(t, m, "R")
 	if !m.rows.restoreRoot || !m.rows.done {
 		t.Fatalf("R left restoreRoot %v and done %v, want the hand-off held and the list done", m.rows.restoreRoot, m.rows.done)
 	}
@@ -418,8 +426,9 @@ func TestLaunchSelectorQuitWindowKeepsTheHandOffInstance(t *testing.T) {
 // TestLaunchSelectorFillSwapAppliesWhenAPreviewFails pins the deferred fill
 // swap's return to rest through gotPreviews' error path: `x` starts a
 // preview, the PR fill lands while it is in flight (deferred, nothing built),
-// the re-check fails — the list is back at rest with "nothing was removed" —
-// and the filled generation's instance is built and takes over right there.
+// the re-check fails — the flow is one step back at rest (the detail screen
+// `x` opened it from) with "nothing was removed" — and the filled
+// generation's instance is built and takes over right there.
 func TestLaunchSelectorFillSwapAppliesWhenAPreviewFails(t *testing.T) {
 	var built []*actionRecorder
 	builder := RemoveFuncsBuilder(func(snap cleanup.Snapshot, _ cleanup.GatherInputs) RemoveFuncs {
@@ -428,7 +437,7 @@ func TestLaunchSelectorFillSwapAppliesWhenAPreviewFails(t *testing.T) {
 		return rec.funcs()
 	})
 	rep := pickerActionsFixture()
-	m := pickerKey(t, pickerCursorTo(t, pickerActionsReady(t, rep, builder), "loose"), keyRunes("x"))
+	m := pickerRowAction(t, pickerCursorTo(t, pickerActionsReady(t, rep, builder), "loose"), "x")
 	if m.rows.phase != cleanupPhasePreviewing {
 		t.Fatalf("x left phase %v, want the preview in flight", m.rows.phase)
 	}
@@ -437,15 +446,15 @@ func TestLaunchSelectorFillSwapAppliesWhenAPreviewFails(t *testing.T) {
 		t.Fatalf("the builder ran %d times with a fill under a preview, want 1: the swap waits for rest", len(built))
 	}
 	m, _ = updateMsg(m, cleanupPreviewMsg{err: errors.New("the re-check failed")})
-	if m.rows.phase != cleanupPhaseList {
-		t.Fatalf("a failed preview left phase %v, want the list", m.rows.phase)
+	if m.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("a failed preview left phase %v, want the detail screen the flow started from", m.rows.phase)
 	}
 	if len(built) != 2 || !built[1].snap.PRsAsked {
 		t.Fatalf("builder ran %d times; a failed preview must apply the deferred fill's instance (built from the filled snapshot)", len(built))
 	}
 	m.rows.rm.Preview([]cleanup.Row{{Name: "probe"}})
-	if strings.Join(built[1].previewed, ",") != "probe" || len(built[0].previewed) != 1 {
-		t.Errorf("the model's funcs are not the filled instance (the load's saw only the original x): filled %v, load's %v", built[1].previewed, built[0].previewed)
+	if strings.Join(built[1].previewed, ",") != "probe" || len(built[0].previewed) != 2 {
+		t.Errorf("the model's funcs are not the filled instance (the load's saw only the first flow's two reads): filled %v, load's %v", built[1].previewed, built[0].previewed)
 	}
 }
 
@@ -515,5 +524,33 @@ func TestPostRunRefreshDropsAStalePendingFill(t *testing.T) {
 	}
 	if m.pendingRM != nil {
 		t.Error("the stale build is still pending on the fresh list")
+	}
+}
+
+// TestPickerFillUnderDetailScreenSwapsAndRereads pins that the detail screen
+// is a rest for a fill swap: a PR lookup landing under it builds the filled
+// instance at once (the actions the screen draws stand on the new report) and
+// dispatches a fresh read of the row, instead of deferring the swap to esc and
+// leaving the screen on the old snapshot's data.
+func TestPickerFillUnderDetailScreenSwapsAndRereads(t *testing.T) {
+	var built []*actionRecorder
+	builder := RemoveFuncsBuilder(func(snap cleanup.Snapshot, _ cleanup.GatherInputs) RemoveFuncs {
+		rec := &actionRecorder{snap: snap}
+		built = append(built, rec)
+		return rec.funcs()
+	})
+	rep := pickerActionsFixture()
+	m := pickerCursorTo(t, pickerActionsReady(t, rep, builder), "loose")
+	m = pickerKey(t, m, keyRunes("i"))
+	if m.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("i left phase %v, want the detail screen", m.rows.phase)
+	}
+	before := len(built)
+	m, cmd := updateMsg(m, rowPRsLoadedMsg{Report: rep, Snap: cleanup.Snapshot{PRsAsked: true}, gen: m.rowsGen})
+	if len(built) != before+1 || !built[len(built)-1].snap.PRsAsked {
+		t.Fatalf("builder ran %d times, want one more built from the filled snapshot", len(built))
+	}
+	if cmd == nil || m.rows.rowDetail == nil || !m.rows.rowDetail.loading {
+		t.Errorf("the screen did not re-read its row after the swap (cmd %v, detail %+v)", cmd != nil, m.rows.rowDetail)
 	}
 }

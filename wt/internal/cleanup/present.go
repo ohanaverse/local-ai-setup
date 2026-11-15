@@ -178,6 +178,12 @@ func evidenceText(row Row, base string) string {
 	return string(row.Evidence)
 }
 
+// CurrentPath is the path of the longest Current worktree row — the one row
+// RowText words "you are here" rather than "contains the directory you are
+// in". A screen that shows one row's verdict reads it to pick the same words
+// the list's own detail line uses.
+func CurrentPath(rep Report) string { return deepestCurrent(rep) }
+
 // deepestCurrent is the path of the longest Current worktree row: every
 // worktree that contains the caller's directory is Current, and only the
 // innermost one is where the caller is.
@@ -509,63 +515,45 @@ func otherRemotesText(f FetchResult) string {
 	return "; " + strings.Join(parts, "; ")
 }
 
-// KindGroup is one kind-based group of the unified list.
-type KindGroup struct {
-	Heading string
-	Rows    []Row
-}
-
-// Kind-group headings, in list order.
-const (
-	HeadingWorktrees = "WORKTREES"
-	HeadingLocal     = "LOCAL BRANCHES"
-	HeadingRemote    = "REMOTE BRANCHES"
-)
-
-// KindGroups splits the report by kind: worktrees (the root first, then the
-// others by display name), local branches without a worktree by display
-// name, remote branches (folded ones included, via RemoteRows) by display
-// name. Empty groups are left out. Within-group order is the display name —
-// never the verdict — so the list holds still when a fill lands: the facts
-// and the filled report name the same rows in the same order, though their
-// verdicts differ (spec §5, stable across stages).
-func KindGroups(r Report) []KindGroup {
-	var wt, local []Row
-	for _, row := range r.AllRows() {
-		switch row.Kind {
-		case KindWorktree:
-			wt = append(wt, row)
-		case KindBranch:
-			local = append(local, row)
-		}
-	}
-	slices.SortStableFunc(wt, byDisplayName)
-	slices.SortStableFunc(local, byDisplayName)
-	// The root leads its group whatever its name sorts as. The root is
-	// named either by Row.Primary (a classified row) or by its
+// ListOrder is the flat list's one order: the root first, then every local
+// worktree and local branch row together by display name, then the
+// remote-only rows by display name. No headings — kind is no longer a
+// display concept, it is this ordering rule. Within a part the order is the
+// display name, never the verdict, so the list holds still when a fill
+// lands: the facts and the filled report name the same rows in the same
+// order, though their verdicts differ (spec §5, stable across stages).
+func ListOrder(r Report) []Row {
+	// The root is named either by Row.Primary (a classified row) or by its
 	// primary-checkout blocker (a hand-built report): a report carries one
 	// or the other, never nothing.
 	isRoot := func(r Row) bool {
 		return r.Primary || slices.ContainsFunc(r.Blockers, func(b Reason) bool { return b.Code == BlockPrimary })
 	}
-	if i := slices.IndexFunc(wt, isRoot); i > 0 {
-		root := wt[i]
-		wt = slices.Concat([]Row{root}, wt[:i], wt[i+1:])
-	}
-	remote := remoteOnly(r)
-	slices.SortStableFunc(remote, byDisplayName)
-	var out []KindGroup
-	for _, g := range []KindGroup{
-		{HeadingWorktrees, wt}, {HeadingLocal, local}, {HeadingRemote, remote},
-	} {
-		if len(g.Rows) > 0 {
-			out = append(out, g)
+	var root Row
+	hasRoot := false
+	var local []Row
+	for _, row := range r.AllRows() {
+		switch row.Kind {
+		case KindWorktree, KindBranch:
+			if !hasRoot && isRoot(row) {
+				root, hasRoot = row, true
+				continue
+			}
+			local = append(local, row)
 		}
 	}
-	return out
+	slices.SortStableFunc(local, byDisplayName)
+	remote := remoteOnly(r)
+	slices.SortStableFunc(remote, byDisplayName)
+	out := make([]Row, 0, len(local)+len(remote)+1)
+	if hasRoot {
+		out = append(out, root)
+	}
+	out = append(out, local...)
+	return append(out, remote...)
 }
 
-// byDisplayName orders rows inside a kind group by their display name.
+// byDisplayName orders rows inside a part of the list by their display name.
 func byDisplayName(a, b Row) int { return strings.Compare(DisplayName(a), DisplayName(b)) }
 
 // remoteOnly is the remote rows no local row folds: a folded ref is its local

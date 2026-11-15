@@ -26,7 +26,8 @@ import (
 // even though `git diff` would refresh its stat cache under
 // GIT_OPTIONAL_LOCKS=0. Diff flags pin the shape: -U0 keeps every hunk's own
 // preimage the only thing that must match (an adjacent later edit in main
-// then still proves — the same text is in main, which is the claim), --binary
+// then still proves — the same text is in main, which is the claim; a hunk
+// that only adds lines is the exception, see containedWithContext), --binary
 // carries binary patches, --no-renames judges a rename as delete+add,
 // --no-color/--no-ext-diff/--no-textconv keep the patch reversible.
 
@@ -94,6 +95,54 @@ func hasUncheckedDeletion(patch string) bool {
 	return false
 }
 
+// additionOnlyHunk matches a -U0 hunk header whose preimage is empty: the
+// hunk only adds lines.
+var additionOnlyHunk = regexp.MustCompile(`^@@ -[0-9]+,0 \+`)
+
+// hasUnanchoredAddition reports whether patch holds a hunk that only adds
+// lines to a file that already existed. Reverse-applied under -U0 it removes
+// lines, and git finds those lines wherever they sit in the file, so a branch
+// that adds a line base holds elsewhere (a blank line, `}`, `return nil`)
+// would pass. A whole-file addition is exempt: its reverse deletes the file
+// and git checks the content. Such a patch is judged again with context
+// (containedWithContext).
+func hasUnanchoredAddition(patch string) bool {
+	added := false
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			added = false
+		case strings.HasPrefix(line, "new file mode "):
+			added = true
+		case !added && additionOnlyHunk.MatchString(line):
+			return true
+		}
+	}
+	return false
+}
+
+// containedWithContext is reverseApplies for a -U0 patch plus the anchoring
+// rule: when the patch holds an addition-only hunk in a surviving file, the
+// same change-set read with context lines (ctxPatch, -U3) must reverse-apply
+// too, so the added lines are found where they were added, not merely
+// somewhere. Fail closed: a context patch that cannot be read, is over the cap
+// or does not apply (base edited next to the change since) is TriUnknown —
+// the change may well be in base, it is just not provable this way.
+func containedWithContext(g Git, baseTree, patch string, ctxPatch func() (string, bool)) Tri {
+	r := reverseApplies(g, baseTree, patch)
+	if r != TriYes || !hasUnanchoredAddition(patch) {
+		return r
+	}
+	cp, ok := ctxPatch()
+	if !ok || int64(len(cp)) > dirtLimits.MaxBytes {
+		return TriUnknown
+	}
+	if reverseApplies(g, baseTree, cp) != TriYes {
+		return TriUnknown
+	}
+	return TriYes
+}
+
 // tipContainedInBase reports whether tip's change-set against the merge-base
 // of baseTip and tip is contained in baseTip's tree. baseTip and tip follow
 // commitOf's contract (qualified refs or full commit ids); anything unresolvable
@@ -124,7 +173,14 @@ func tipContainedInBase(g Git, baseTip, tip string) Tri {
 	if !ok {
 		return TriUnknown
 	}
-	return reverseApplies(g, bt, o.Stdout)
+	return containedWithContext(g, bt, o.Stdout, func() (string, bool) {
+		c, err := g.Run("diff-tree", "--binary", "--no-renames", "--no-color", "--no-ext-diff",
+			"--no-textconv", "-U3", "-p", mb, t)
+		if err != nil || c.Code != 0 {
+			return "", false
+		}
+		return c.Stdout, true
+	})
 }
 
 // containedInBase reports whether a worktree's whole uncommitted
@@ -146,7 +202,24 @@ func (d worktreeDiff) containedInBase(wg Git, baseTip string) Tri {
 	if !d.ok || int64(len(d.patch)) > dirtLimits.MaxBytes {
 		return TriUnknown
 	}
-	return triJoin(reverseApplies(wg, bt, d.patch), untrackedContained(wg, b))
+	return triJoin(containedWithContext(wg, bt, d.patch, func() (string, bool) { return readContextPatch(wg) }), untrackedContained(wg, b))
+}
+
+// readContextPatch is the worktree's change-set against HEAD with three lines
+// of context (the anchoring read of containedWithContext), taken against a
+// throwaway copy of the index like readWorktreeDiff.
+func readContextPatch(wg Git) (string, bool) {
+	dg, release, ok := indexCopy(wg)
+	if !ok {
+		return "", false
+	}
+	defer release()
+	o, err := dg.Run("diff", "--binary", "--no-renames", "--no-color", "--no-ext-diff",
+		"--no-textconv", "-U3", "HEAD")
+	if err != nil || o.Code != 0 {
+		return "", false
+	}
+	return o.Stdout, true
 }
 
 // triJoin combines two containment answers: any TriNo wins (one part not in

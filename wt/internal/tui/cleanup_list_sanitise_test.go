@@ -28,9 +28,6 @@ func TestCleanupListSanitisesToolDetails(t *testing.T) {
 	bad := []string{"\x1b]", "\x07", "‮", "\r"}
 	seen := 0
 	for i, it := range m.items {
-		if it.heading != "" {
-			continue
-		}
 		seen++
 		for _, b := range append(bad, "\x1b", "\n") {
 			if strings.Contains(it.text, b) {

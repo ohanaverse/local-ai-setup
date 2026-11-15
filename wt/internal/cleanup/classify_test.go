@@ -925,11 +925,12 @@ func TestFactsOnlyRowsArePendingAndNeverProven(t *testing.T) {
 }
 
 // TestFactsOnlyKeepsRowOrderOfTheFilledReport compares the rendered order
-// (KindGroups: kind groups, root first, display names — the order the list
-// shows) of the same repository classified from its facts-only snapshot and
-// from the filled one. Why: the fill lands under the cursor after first
-// paint; if the order shifted with the verdicts, rows would jump beneath the
-// selection when the details arrive (spec §5 / the anti-goal).
+// (ListOrder: the root first, then local rows and remote rows by display
+// name — the order the list shows) of the same repository classified from
+// its facts-only snapshot and from the filled one. Why: the fill lands under
+// the cursor after first paint; if the order shifted with the verdicts, rows
+// would jump beneath the selection when the details arrive (spec §5 / the
+// anti-goal).
 func TestFactsOnlyKeepsRowOrderOfTheFilledReport(t *testing.T) {
 	f := newFixture(t)
 	noGh(t)
@@ -950,17 +951,7 @@ func TestFactsOnlyKeepsRowOrderOfTheFilledReport(t *testing.T) {
 	}
 	full := gather(t, f)
 
-	sig := func(r Report) [][]string {
-		var out [][]string
-		for _, g := range KindGroups(r) {
-			names := []string{g.Heading}
-			for _, row := range g.Rows {
-				names = append(names, DisplayName(row))
-			}
-			out = append(out, names)
-		}
-		return out
-	}
+	sig := func(r Report) []string { return names(ListOrder(r)) }
 	got := sig(Classify(facts, Options{Now: later()}))
 	want := sig(Classify(full, Options{Now: later()}))
 	if !reflect.DeepEqual(got, want) {

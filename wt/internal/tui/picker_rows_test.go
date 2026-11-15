@@ -60,7 +60,7 @@ func pickerReady(t *testing.T, rep cleanup.Report) model {
 func pickerCursorTo(t *testing.T, m model, name string) model {
 	t.Helper()
 	for i, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && cleanup.DisplayName(it.row) == name {
+		if !it.newWorktree && cleanup.DisplayName(it.row) == name {
 			m.rows.cursor = i
 			return m
 		}
@@ -143,7 +143,7 @@ func TestPickerLoadsRowsFromCleanupAndRendersRootDefaultAndHeld(t *testing.T) {
 	for i := range m.rows.items {
 		it := &m.rows.items[i]
 		switch {
-		case it.heading != "" || it.newWorktree:
+		case it.newWorktree:
 		case it.row.Primary:
 			root = it
 		case it.row.Kind == cleanup.KindBranch && it.row.Name == "main":
@@ -155,18 +155,20 @@ func TestPickerLoadsRowsFromCleanupAndRendersRootDefaultAndHeld(t *testing.T) {
 	if root == nil || mainBranch == nil || topic == nil {
 		t.Fatalf("root %v, default branch %v, topic %v: want all three rows", root != nil, mainBranch != nil, topic != nil)
 	}
-	held := false
-	for _, tag := range root.tags {
-		held = held || strings.HasPrefix(tag.Text, "held by session")
-	}
-	if !held {
-		t.Errorf("root tags %v, want a held-by-session tag", root.tags)
+	// The root row's identity tags are gone from the line (the row's position
+	// says it is the root, the session digit covers "in use"); the holder is
+	// named on the detail screen instead.
+	if len(root.tags) != 0 {
+		t.Errorf("root tags %v, want none", tagTexts(root.tags))
 	}
 	v := m.View()
-	for _, want := range []string{"root", "held by session", "drift", "topic", "main"} {
+	for _, want := range []string{"drift", "topic", "main"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view lacks %q:\n%s", want, v)
 		}
+	}
+	if strings.Contains(v, "held by session") {
+		t.Errorf("view still draws the held tag:\n%s", v)
 	}
 	// Enter on the held root and on the default branch's bare row each emit
 	// a selectedEntryMsg for that row. (Launching the default branch's bare
@@ -195,24 +197,22 @@ func TestPickerStartsOnCurrentRow(t *testing.T) {
 	if row, ok := m.rows.selectedRow(); !ok || !row.Primary {
 		t.Errorf("cursor on %+v (ok %v), want the root row", row, ok)
 	}
-	// The labels the old picker drew: (current) on the current row and
-	// (default) on the default branch's.
+	// The labels the old picker drew are gone: no row carries "current" or
+	// "default" any more (the cursor marks the current row, the header names
+	// the default branch once).
 	tags := func(name string) string {
 		var out []string
 		for _, it := range m.rows.items {
-			if !it.newWorktree && it.heading == "" && it.row.Name == name {
-				for _, tg := range it.tags {
-					out = append(out, tg.Text)
-				}
+			if !it.newWorktree && it.row.Name == name {
+				out = append(out, tagTexts(it.tags)...)
 			}
 		}
 		return strings.Join(out, ",")
 	}
-	if got := tags("main"); !strings.Contains(got, "current") || !strings.Contains(got, "default") {
-		t.Errorf("root tags %q, want current and default", got)
-	}
-	if got := tags("other"); strings.Contains(got, "current") || strings.Contains(got, "default") {
-		t.Errorf("other's tags %q, want neither current nor default", got)
+	for _, name := range []string{"main", "other"} {
+		if got := tags(name); got != "" {
+			t.Errorf("%s's tags %q, want none", name, got)
+		}
 	}
 }
 
@@ -328,15 +328,14 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	if row, ok := m.rows.selectedRow(); !ok || row.Name != "loose" {
 		t.Errorf("cursor on %+v after the fill, want loose", row)
 	}
-	v := m.View()
-	if !strings.Contains(v, "#7 open") {
-		t.Errorf("filled view lacks #7 open:\n%s", v)
+	if row, ok := m.rows.selectedRow(); !ok || row.PRTag == nil || row.PRTag.Number != 7 {
+		t.Errorf("the row does not carry PR #7 after the lookups: %+v", row)
 	}
 	// A lookup that answered no PR leaves the cell blank, never "?": the
 	// unknown marker is only for a lookup that gave no usable answer.
 	prCellOf := func(name string) string {
 		for _, it := range m.rows.items {
-			if it.heading == "" && !it.newWorktree && it.row.Name == name {
+			if !it.newWorktree && it.row.Name == name {
 				return prCell(it.row)
 			}
 		}
@@ -345,7 +344,7 @@ func TestPickerPRFillArrivesAfterFirstPaint(t *testing.T) {
 	if got := prCellOf("topic"); got != "" {
 		t.Errorf("topic's PR cell %q, want blank (the lookup answered no PR)", got)
 	}
-	if strings.Contains(v, "?") {
+	if v := m.View(); strings.Contains(v, "?") {
 		t.Errorf("filled view still has a ? cell:\n%s", v)
 	}
 	// The PR number finds its row, as the old picker's filter did.
@@ -403,7 +402,7 @@ func TestPickerStalePRTagSuppressed(t *testing.T) {
 	m, cmd = updateMsg(m, cmd()) // the fill
 	m, _ = updateMsg(m, cmd())   // the PR lookups
 	for _, it := range m.rows.items {
-		if it.heading != "" || it.newWorktree {
+		if it.newWorktree {
 			continue
 		}
 		switch it.row.Name {
@@ -481,15 +480,18 @@ func TestLaunchModeRemovalWordingIsNeutral(t *testing.T) {
 	m.rm = h.funcs()
 	m = cleanupSend(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = moveTo(t, m, "done")
-	next, cmd := m.Update(keyRunes("x"))
-	m = next.(cleanupListModel)
 	check := func(screen, v string) {
 		t.Helper()
 		if strings.Contains(v, "ticked") || strings.Contains(v, "wt cleanup") {
 			t.Errorf("%s screen says ticked or wt cleanup:\n%s", screen, v)
 		}
 	}
+	// `x` opens the detail screen, the second x starts the row's removal.
+	next, cmd := m.Update(keyRunes("x"))
+	m = next.(cleanupListModel)
 	check("re-check", m.View())
+	next, cmd = m.Update(keyRunes("x"))
+	m = next.(cleanupListModel)
 	next, _ = m.Update(cmd())
 	m = next.(cleanupListModel)
 	if m.phase != cleanupPhaseConfirm {
@@ -516,11 +518,13 @@ func TestSelectedRowIsFalseOffRows(t *testing.T) {
 		t.Error("selectedRow ok on the new-worktree item")
 	}
 	m.cursor = 1
-	if m.items[1].heading == "" {
-		t.Fatal("item 1 is not a heading")
+	if _, ok := m.selectedRow(); !ok {
+		t.Fatal("item 1 is not a row")
 	}
+	// A filtered-out row is off the list too.
+	m.filter, m.cursor = "zzz-no-such-row", 1
 	if _, ok := m.selectedRow(); ok {
-		t.Error("selectedRow ok on a heading")
+		t.Error("selectedRow ok on a row the filter hides")
 	}
 }
 
@@ -635,7 +639,7 @@ func TestPickerPaintsFactsThenFillsThenPRs(t *testing.T) {
 	}
 	pending := 0
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree {
+		if !it.newWorktree {
 			if !it.row.Pending {
 				t.Fatalf("first paint row %q is not Pending", it.row.Name)
 			}
@@ -653,7 +657,7 @@ func TestPickerPaintsFactsThenFillsThenPRs(t *testing.T) {
 	}
 	m, cmd = updateMsg(m, filled)
 	for _, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree && it.row.Pending {
+		if !it.newWorktree && it.row.Pending {
 			t.Fatalf("row %q still Pending after the fill", it.row.Name)
 		}
 	}
@@ -729,10 +733,16 @@ func TestRemovalKeysUnavailableWhileFilling(t *testing.T) {
 	if !strings.Contains(keys, "enter launch") {
 		t.Errorf("footer lacks enter launch while filling: %q", keys)
 	}
-	// Pressing x answers with the existing unavailable status, not a flow.
+	// Pressing x opens the read-only screen (it lists no removal while the
+	// fill is in flight) and starts no flow.
 	got, _ := updateMsg(m, keyRunes("x"))
-	if got.rows.phase != cleanupPhaseList {
-		t.Errorf("x while filling entered phase %v, want the list with an unavailable status", got.rows.phase)
+	if got.rows.phase != cleanupPhaseDetail {
+		t.Fatalf("x while filling entered phase %v, want the row detail", got.rows.phase)
+	}
+	for _, a := range got.rows.detailActions() {
+		if a.Key != "esc" {
+			t.Errorf("the screen offers %q while the fill is in flight", a.Key)
+		}
 	}
 	// Launching works: enter produces the launch message.
 	if _, sel := pickerEnter(t, m); sel.entry.Branch == "" && sel.entry.Path == "" {
@@ -836,7 +846,7 @@ func TestTicksDefaultAfterFillAndKeepLaterChoices(t *testing.T) {
 
 	ticked := map[string]bool{}
 	for i, it := range m.rows.items {
-		if it.heading == "" && !it.newWorktree {
+		if !it.newWorktree {
 			ticked[it.row.Name] = m.rows.ticked[i]
 		}
 	}
@@ -863,10 +873,8 @@ func TestRowOrderStableAcrossStages(t *testing.T) {
 	m, _ = updateMsg(m, rowsLoadedMsg{report: facts, repoRoot: facts.Repo})
 	names := func() []string {
 		var out []string
-		for _, g := range cleanup.KindGroups(m.rows.report) {
-			for _, row := range g.Rows {
-				out = append(out, cleanup.DisplayName(row)+"/"+g.Heading)
-			}
+		for _, row := range cleanup.ListOrder(m.rows.report) {
+			out = append(out, cleanup.DisplayName(row))
 		}
 		return out
 	}
