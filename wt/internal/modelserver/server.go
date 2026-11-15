@@ -121,21 +121,23 @@ func (s *Server) ping(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) catalog(w http.ResponseWriter, _ *http.Request) {
-	snap := s.d.Inventory(s.d.Config)
-	writeJSON(w, http.StatusOK, BuildCatalog(s.d.Config, snap, s.d.Tiers(), s.sessions, s.d.Now()))
+	cfg := s.d.Config()
+	snap := s.d.Inventory(cfg)
+	writeJSON(w, http.StatusOK, BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.d.Now()))
 }
 
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("model")
-	snap := s.d.Inventory(s.d.Config)
-	cat := BuildCatalog(s.d.Config, snap, s.d.Tiers(), s.sessions, s.d.Now())
+	cfg := s.d.Config()
+	snap := s.d.Inventory(cfg)
+	cat := BuildCatalog(cfg, snap, s.d.Tiers(), s.sessions, s.d.Now())
 	for _, row := range cat.Rows {
 		if row.ID == id {
 			writeJSON(w, http.StatusOK, row)
 			return
 		}
 	}
-	msg := catalog.MissingReason(s.d.Config, &snap, id)
+	msg := catalog.MissingReason(cfg, &snap, id)
 	if msg == "" {
 		msg = fmt.Sprintf("unknown model %q", id)
 	}

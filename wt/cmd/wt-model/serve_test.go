@@ -72,9 +72,9 @@ func writeToken(t *testing.T, mode os.FileMode) string {
 }
 
 // fakeDeps is a depsFactory whose Deps reach nothing outside the process.
-func fakeDeps(cfg *config.Config, _ *url.URL, _ string) modelserver.Deps {
+func fakeDeps(cfg *config.Config, _ func() (*config.Config, error), _ *url.URL, _ string) modelserver.Deps {
 	return modelserver.Deps{
-		Config:    cfg,
+		Config:    func() *config.Config { return cfg },
 		Inventory: func(*config.Config) localmodels.Snapshot { return localmodels.Snapshot{} },
 		Tiers:     func() tiers.Index { return tiers.Index{} },
 		Now:       time.Now,

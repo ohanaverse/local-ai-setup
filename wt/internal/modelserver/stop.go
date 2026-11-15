@@ -22,7 +22,7 @@ import (
 // no-op.
 func (d Deps) StopJob(req modelapi.StopRequest, sessions *sessionreg.Registry) modeljobs.RunFunc {
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
-		cfg := d.Config
+		cfg := d.Config()
 		snap := d.Inventory(cfg)
 		en, found := runningEntry(snap, req.Model)
 		if !found {

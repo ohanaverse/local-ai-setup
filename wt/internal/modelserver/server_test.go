@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
 
@@ -350,5 +354,77 @@ func TestServeAnnouncesAndShutsDownCleanly(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Serve did not return after ctx done")
+	}
+}
+
+// TestCatalogSeesReloadedConfig pins that the catalog is built from the
+// config returned at each request, not one captured at startup: a model added
+// to the registry between two requests appears in the second answer.
+func TestCatalogSeesReloadedConfig(t *testing.T) {
+	f := &fakeLife{snap: serverSnap()}
+	cfg := serverCfg()
+	d := f.deps(cfg)
+	var current atomic.Pointer[config.Config]
+	current.Store(cfg)
+	d.Config = current.Load
+	s, err := NewServer(Options{Listen: "127.0.0.1:0", Token: testToken, IdleGrace: time.Hour}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	ids := func() []string {
+		_, body := call(t, ts, "GET", "/control/v1/catalog", "")
+		var c modelapi.Catalog
+		if err := json.Unmarshal(body, &c); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range c.Rows {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	before := ids()
+	next := *cfg
+	next.Models = append(slices.Clone(cfg.Models), config.Model{
+		ID: "openrouter/added", Family: "f", ProviderID: "openrouter", ModelName: "added",
+	})
+	current.Store(&next)
+	after := ids()
+	if slices.Contains(before, "openrouter/added") || !slices.Contains(after, "openrouter/added") {
+		t.Fatalf("before = %v, after = %v; want openrouter/added only after the config changed", before, after)
+	}
+}
+
+// TestReloadingConfigKeepsLastGood pins the production Deps.Config getter: it
+// returns each fresh reload, and when a reload fails (a registry mid-write)
+// it keeps answering with the last good config instead of failing.
+func TestReloadingConfigKeepsLastGood(t *testing.T) {
+	initial, second := serverCfg(), serverCfg()
+	var fail bool
+	next := second
+	get := reloadingConfig(initial, func() (*config.Config, error) {
+		if fail {
+			return nil, errors.New("registry mid-write")
+		}
+		return next, nil
+	})
+	if got := get(); got != second {
+		t.Fatal("did not return the reloaded config")
+	}
+	fail = true
+	if got := get(); got != second {
+		t.Fatal("a failed reload must keep the last good config")
+	}
+	fresh := serverCfg()
+	fail, next = false, fresh
+	if got := get(); got != fresh {
+		t.Fatal("did not recover after the reload succeeded again")
+	}
+	// Before any good reload the initial config is the last good one.
+	get = reloadingConfig(initial, func() (*config.Config, error) { return nil, errors.New("boom") })
+	if got := get(); got != initial {
+		t.Fatal("a failing first reload must return the initial config")
 	}
 }

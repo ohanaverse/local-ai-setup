@@ -241,7 +241,7 @@ func TestRoutedTimesOut(t *testing.T) {
 // field nil (a nil field would panic inside a job), without calling any.
 func TestDefaultDepsWiresEveryField(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:4000")
-	d := DefaultDeps(serverCfg(), u, "k")
+	d := DefaultDeps(serverCfg(), func() (*config.Config, error) { return serverCfg(), nil }, u, "k")
 	if d.Config == nil || d.Inventory == nil || d.Tiers == nil || d.Now == nil || d.Start == nil ||
 		d.Settle == nil || d.BeginStops == nil || d.SettleRoutes == nil || d.Routed == nil {
 		t.Fatalf("DefaultDeps left a field nil: %+v", d)

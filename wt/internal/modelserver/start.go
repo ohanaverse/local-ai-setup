@@ -24,7 +24,7 @@ const stepGateway = "waiting for the gateway"
 // (nil skips that).
 func (d Deps) StartJob(req modelapi.StartRequest, sessions *sessionreg.Registry) modeljobs.RunFunc {
 	return guarded(func(ctx context.Context, step func(string)) modelapi.JobResult {
-		cfg := d.Config
+		cfg := d.Config()
 		snap := d.Inventory(cfg)
 		rows := catalog.Build(catalog.Input{Config: cfg, Models: cfg.Models, Inventory: &snap})
 		row, ok := catalog.Find(rows, req.Model)

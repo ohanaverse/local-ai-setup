@@ -15,8 +15,8 @@ import (
 const defaultIdleGrace = 10 * time.Minute
 
 // depsFactory builds the server's dependencies from the host config and the
-// LiteLLM upstream; main passes modelserver.DefaultDeps, tests a fake.
-type depsFactory func(cfg *config.Config, upstream *url.URL, upstreamKey string) modelserver.Deps
+// LiteLLM upstream; main passes modelserver.DefaultDeps, tests a fake. reload re-reads the host config on each use (config.Load).
+type depsFactory func(cfg *config.Config, reload func() (*config.Config, error), upstream *url.URL, upstreamKey string) modelserver.Deps
 
 // loadServeConfig loads the host config and the LiteLLM base URL and key the
 // gateway forwards to, from wt's own [litellm] table.
@@ -59,7 +59,7 @@ func serveCmd(mk depsFactory) *cobra.Command {
 			srv, err := modelserver.NewServer(modelserver.Options{
 				Listen: listen, Token: token, IdleGrace: idle,
 				Upstream: upstream, UpstreamKey: key,
-			}, mk(cfg, upstream, key))
+			}, mk(cfg, config.Load, upstream, key))
 			if err != nil {
 				return err
 			}

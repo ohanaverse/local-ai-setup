@@ -33,7 +33,7 @@ func (a *AutoStopper) Tick(ctx context.Context) {
 	if len(seen) == 0 || ctx.Err() != nil {
 		return
 	}
-	cfg := a.Deps.Config
+	cfg := a.Deps.Config()
 	snap := a.Deps.Inventory(cfg)
 	now := a.Deps.Now()
 	for _, id := range seen {

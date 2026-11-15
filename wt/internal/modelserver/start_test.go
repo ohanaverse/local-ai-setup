@@ -69,7 +69,7 @@ func (b fakeBatch) Stop(_ context.Context, en localmodels.Entry) (bool, error) {
 
 func (f *fakeLife) deps(cfg *config.Config) Deps {
 	return Deps{
-		Config: cfg,
+		Config: func() *config.Config { return cfg },
 		Inventory: func(*config.Config) localmodels.Snapshot {
 			if f.panicIn == "inventory" {
 				panic("inventory exploded")

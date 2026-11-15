@@ -30,7 +30,11 @@ type StopBatcher interface {
 // the process through. DefaultDeps wires the real lifecycle engine, inventory
 // probe and gateway; tests build one from closures.
 type Deps struct {
-	Config       *config.Config
+	// Config returns the host config. It is called at each request, job and
+	// scan, so edits to the registry (wt model, wt cloud-sync) show without a
+	// restart; DefaultDeps backs it with a reload that keeps the last good
+	// config when the file cannot be read.
+	Config       func() *config.Config
 	Inventory    func(*config.Config) localmodels.Snapshot
 	Tiers        func() tiers.Index
 	Now          func() time.Time
@@ -48,19 +52,37 @@ const routePollEvery = 500 * time.Millisecond
 // routeRequestTimeout bounds one /v1/models request of the default Routed.
 const routeRequestTimeout = 5 * time.Second
 
+// reloadingConfig returns a Deps.Config getter: each call runs reload and
+// returns the fresh config, or the last good one (initially cfg) when reload
+// fails, so a half-written registry never fails a request. Safe for
+// concurrent use.
+func reloadingConfig(cfg *config.Config, reload func() (*config.Config, error)) func() *config.Config {
+	var mu sync.Mutex
+	last := cfg
+	return func() *config.Config {
+		mu.Lock()
+		defer mu.Unlock()
+		if fresh, err := reload(); err == nil && fresh != nil {
+			last = fresh
+		}
+		return last
+	}
+}
+
 // DefaultDeps wires the real functions: the only place this package names a
-// lifecycle function that does I/O. Routed polls GET <upstream>/v1/models with
+// lifecycle function that does I/O. cfg is the initial config and reload
+// (production passes config.Load) re-reads it on each use. Routed polls GET <upstream>/v1/models with
 // upstreamKey every 500 ms for up to litellm.ProxyReadyTimeout. SettleRoutes
 // also waits for the proxy restart it starts, so a stop job ends with the
 // route gone.
-func DefaultDeps(cfg *config.Config, upstream *url.URL, upstreamKey string) Deps {
+func DefaultDeps(cfg *config.Config, reload func() (*config.Config, error), upstream *url.URL, upstreamKey string) Deps {
 	w := routeWaiter{
 		client:   &http.Client{Timeout: routeRequestTimeout},
 		upstream: upstream, key: upstreamKey,
 		every: routePollEvery, timeout: litellm.ProxyReadyTimeout,
 	}
 	return Deps{
-		Config:    cfg,
+		Config:    reloadingConfig(cfg, reload),
 		Inventory: localmodels.Inventory,
 		Tiers:     tiers.Load,
 		Now:       time.Now,
