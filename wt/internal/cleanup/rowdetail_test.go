@@ -240,3 +240,13 @@ func TestReadRowDetailUnbornHeadAndBareRow(t *testing.T) {
 		t.Errorf("bare: %+v, want empty with a note and no error", b)
 	}
 }
+
+// TestReadRowDetailMissingDirectoryIsAnErrorNotUnborn checks that a worktree
+// whose directory is gone reads as a failed listing, not as "no commits yet".
+func TestReadRowDetailMissingDirectoryIsAnErrorNotUnborn(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	d := ReadRowDetail(Git{Dir: t.TempDir()}, Row{Kind: KindWorktree, Path: gone})
+	if d.Err == "" || d.Note != "" {
+		t.Fatalf("missing dir: Err = %q, Note = %q; want an error and no note", d.Err, d.Note)
+	}
+}

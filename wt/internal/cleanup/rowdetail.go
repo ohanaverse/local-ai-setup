@@ -82,9 +82,19 @@ func ReadRowDetail(g Git, row Row) RowDetail {
 		d.Note = "a bare repository: no working tree and no commits of its own to list"
 		return d
 	}
-	unborn := row.Kind != KindBranch && !detailHasCommit(wg)
-	if unborn {
-		d.Note = "no commits yet"
+	unborn := false
+	if row.Kind != KindBranch {
+		has, why := detailHasCommit(wg)
+		if why != "" {
+			// A directory git cannot read (gone, not a repository) is a
+			// failure, not an unborn HEAD: the screen must not say "no
+			// commits yet" about it.
+			d.Err = OneLine("could not read its checkout: " + why)
+			return d
+		}
+		if unborn = !has; unborn {
+			d.Note = "no commits yet"
+		}
 	}
 	var commits []DetailCommit
 	var more int
@@ -141,9 +151,19 @@ func readDetailCommits(g Git, rev string) ([]DetailCommit, int, string) {
 
 // detailHasCommit reports whether the checkout's HEAD names a commit; an
 // unborn HEAD (a fresh `git init`) has none, so `git log HEAD` would fail.
-func detailHasCommit(g Git) bool {
+// Only exit 1 (`--quiet`'s "no such commit") means unborn; any other failure
+// (a missing directory exits 128) comes back as why.
+func detailHasCommit(g Git) (has bool, why string) {
 	o, err := g.Run("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-	return err == nil && o.Code == 0
+	switch {
+	case err != nil:
+		return false, OneLine(err.Error())
+	case o.Code == 0:
+		return true, ""
+	case o.Code == 1:
+		return false, ""
+	}
+	return false, OneLine(fmt.Sprintf("git rev-parse: exit %d: %s", o.Code, OneLine(o.Stderr)))
 }
 
 // readDetailStatus lists the checkout's uncommitted entries — staged,

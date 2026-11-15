@@ -148,9 +148,12 @@ func (m cleanupListModel) detailCmd(row cleanup.Row) tea.Cmd {
 }
 
 // gotDetailLoaded applies a landing: a load for another row, or one that
-// arrives after the screen closed, is dropped.
+// arrives after the screen closed (rowDetail is nil then), is dropped.
 func (m cleanupListModel) gotDetailLoaded(msg detailLoadedMsg) (cleanupListModel, tea.Cmd) {
-	if m.phase != cleanupPhaseDetail || m.rowDetail == nil || keyOf(m.rowDetail.row) != msg.key {
+	// Any phase with the screen's state alive takes it: a load that lands
+	// while a confirm opened from the screen is up must not be lost, or the
+	// screen the cancel returns to would read "loading" for good.
+	if m.rowDetail == nil || keyOf(m.rowDetail.row) != msg.key {
 		return m, nil
 	}
 	m.rowDetail.pv = msg.pv
@@ -220,12 +223,17 @@ func (m cleanupListModel) detailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d.offset = 1 << 16 // clamped by detailView against the block's length
 	case "x", "d", "o":
 		kind := map[string]rowAction{"x": rowActionRemove, "d": rowActionDeleteBranch, "o": rowActionDeleteOrigin}[msg.String()]
-		// Task 5 reads this: a confirm opened from here returns to here.
-		m.confFromDetail = true
+		// This screen is a rest: a report swap deferred under it (picker
+		// fill or PR lookup) is applied before an action reads the funcs, so
+		// the action stands on the rows the screen shows. startRemovalOf
+		// records that the confirm it opens returns here.
+		m.applyPendingRemoveFuncs()
 		return m.startRowAction(kind)
 	case "r":
+		m.applyPendingRemoveFuncs()
 		return m.startRescue()
 	case "R":
+		m.applyPendingRemoveFuncs()
 		return m.startRestoreRoot()
 	}
 	return m, nil
@@ -341,6 +349,8 @@ func detailBlock(rep cleanup.Report, row cleanup.Row, d *rowDetail, th themes.Th
 
 	// The listings: what the row holds that nothing else has.
 	switch {
+	case row.Kind == cleanup.KindRemote:
+		// A remote row has no local-only work to list: nothing is missing.
 	case d == nil || d.lists == nil:
 		switch {
 		case d != nil && d.loading:

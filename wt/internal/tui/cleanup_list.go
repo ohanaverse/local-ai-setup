@@ -695,9 +695,8 @@ func (m cleanupListModel) gotFill(msg cleanupFillMsg) (tea.Model, tea.Cmd) {
 	}
 	next := m.withReport(msg.report)
 	applyRemoveFuncs(&next, msg.rm)
-	// A report swap under the open detail screen: the screen follows its row
-	// or closes, and reads that row again from the filled snapshot.
-	next.settleDetail()
+	// withReport already settled an open detail screen onto its row (or
+	// closed it); one still open reads that row again from the filled snapshot.
 	if next.phase == cleanupPhaseDetail && next.rowDetail != nil {
 		next.rowDetail.loading = true
 		return next, next.detailCmd(next.rowDetail.row)

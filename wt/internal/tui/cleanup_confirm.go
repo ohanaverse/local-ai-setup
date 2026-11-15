@@ -1165,7 +1165,10 @@ func (m *cleanupListModel) entryLines(e confirmEntry, selected bool) (out []stri
 // "the detail block is identical for i and for the confirmation"), and the
 // ticked batch keeps entryLines — its rows are compared, not read one by one.
 func (m *cleanupListModel) singleRowConfirm() bool {
-	return m.conf != nil && !m.chosenByTicks && len(m.conf.entries) == 1
+	// A preview with no Fresh row (refused before it could be read, or the
+	// row is gone) has nothing for the detail block to draw: the batch
+	// layout names it from the item instead.
+	return m.conf != nil && !m.chosenByTicks && len(m.conf.entries) == 1 && m.conf.entries[0].pv.Fresh.Kind != ""
 }
 
 // confirmDetail is the rowDetail a single-row confirm renders from: the
