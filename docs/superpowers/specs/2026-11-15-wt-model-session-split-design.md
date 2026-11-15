@@ -100,7 +100,7 @@ A **start** is always an explicit client request (a 28 GB load plus a proxy rest
 
 ### Connection and configuration
 
-- `wt-model serve --listen ADDR --token-file PATH`. **No default listen address.** A non-loopback `--listen` without a token refuses to start. **[call]**
+- `wt-model serve --listen ADDR --token-file PATH`. **No default listen address, and a token is always required** (also on loopback): without one the gateway could not be used and the control API would be open. A token file readable by group or others refuses to start. **[call]**
 - `wt-session` reads its endpoint and token from its config (token from a file or env var). **If either is missing it stops with a message naming both settings and the command to run `wt-model serve`; it never starts `wt-model` or guesses an address.** Case 3 users run `wt-model serve --listen 127.0.0.1:PORT` themselves and point the session at it.
 - A session whose server is unreachable fails fast with the address it tried; it does not fall back to anything local.
 
