@@ -279,3 +279,43 @@ func TestAutoStopWaitsAfterSuccessfulStart(t *testing.T) {
 		t.Fatalf("stopped %+v once the grace passed after the start, want one stop", stops)
 	}
 }
+
+// TestAutoStopSkipsUntrustedProbe pins that a family whose probe is not
+// trustworthy (the server answered partially or not at all) is skipped: the
+// scan must not submit a stop job that would only fail on every pass.
+func TestAutoStopSkipsUntrustedProbe(t *testing.T) {
+	const grace = time.Minute
+	clk := &fakeClock{t: testNow}
+	snap := serverSnap("omlx/a")
+	snap.Providers["omlx"] = localmodels.StatusPartial
+	f := &fakeLife{snap: snap}
+	d := f.deps(serverCfg())
+	d.Now = clk.now
+	var probes atomic.Int32
+	inv := d.Inventory
+	d.Inventory = func(c *config.Config) localmodels.Snapshot { probes.Add(1); return inv(c) }
+	reg := sessionreg.New(time.Minute, clk.now)
+	_ = reg.Register("s", []string{"omlx/a"})
+	reg.End("s")
+	clk.advance(grace)
+	jobs := newJobs(t, clk)
+	a := &AutoStopper{Deps: d, Sessions: reg, Grace: grace, Jobs: jobs}
+	a.Tick(context.Background())
+	drain(t, jobs)
+	if stops := f.stopped(); len(stops) != 0 {
+		t.Errorf("stopped %+v, want nothing for an untrusted probe", stops)
+	}
+	// A submitted StopJob would probe the inventory a second time (and fail).
+	if n := probes.Load(); n != 1 {
+		t.Errorf("%d inventory probes, want 1: the scan submitted a job for an untrusted probe", n)
+	}
+	// The probe recovering makes the model stoppable again.
+	f.mu.Lock()
+	f.snap.Providers["omlx"] = localmodels.StatusOK
+	f.mu.Unlock()
+	a.Tick(context.Background())
+	drain(t, jobs)
+	if stops := f.stopped(); len(stops) != 1 {
+		t.Errorf("stopped %+v after the probe recovered, want one stop", stops)
+	}
+}

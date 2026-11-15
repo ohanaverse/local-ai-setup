@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modeljobs"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/sessionreg"
@@ -24,8 +25,8 @@ type AutoStopper struct {
 }
 
 // Tick runs one scan. A model is stopped when it is running locally in a
-// fresh inventory, no live session uses it (family-wide on an Exclusive
-// provider), its idle clock is at least Grace old and no job for it is queued
+// fresh inventory whose probe of its family is trusted, no live session uses
+// it (family-wide on an Exclusive provider), its idle clock is at least Grace old and no job for it is queued
 // or running. The stop is an ordinary StopJob without ConfirmInUse, so a
 // session that registers between the scan and the job still blocks it.
 func (a *AutoStopper) Tick(ctx context.Context) {
@@ -39,6 +40,11 @@ func (a *AutoStopper) Tick(ctx context.Context) {
 	for _, id := range seen {
 		en, ok := runningEntry(snap, id)
 		if !ok || !lifecycle.CanStop(en.ProviderID) {
+			continue
+		}
+		// An untrusted probe would make StopJob refuse; skip the model
+		// instead of submitting a failing job on every scan.
+		if !lifecycle.ProbeTrusted(snap, localmodels.Family(en.ProviderID)) {
 			continue
 		}
 		if len(stopBlockers(cfg, a.Sessions, en)) > 0 {
