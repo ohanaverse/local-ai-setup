@@ -3,9 +3,13 @@ package modelapi
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -24,11 +28,15 @@ func TestFixtureMatchesTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	members := map[string]any{
-		"ping":          &Ping{},
-		"catalog":       &Catalog{},
-		"job":           &JobStatus{},
-		"start_request": &StartRequest{},
-		"problem":       &Problem{},
+		"ping":             &Ping{},
+		"catalog":          &Catalog{},
+		"job":              &JobStatus{},
+		"start_request":    &StartRequest{},
+		"stop_request":     &StopRequest{},
+		"session_register": &SessionRegister{},
+		"session_beat":     &SessionBeat{},
+		"problem":          &Problem{},
+		"problem_in_use":   &Problem{},
 	}
 	if len(doc) != len(members) {
 		t.Fatalf("fixture has %d members, want %d", len(doc), len(members))
@@ -77,6 +85,25 @@ func TestEveryProblemCodeIsDocumented(t *testing.T) {
 		"CodeUnknownModel":     CodeUnknownModel,
 		"CodeBlocked":          CodeBlocked,
 	}
+	// The table must list every Code* constant the package declares.
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "modelapi.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			for _, n := range spec.(*ast.ValueSpec).Names {
+				if _, ok := codes[n.Name]; !ok && strings.HasPrefix(n.Name, "Code") {
+					t.Errorf("constant %s is missing from the codes table in this test", n.Name)
+				}
+			}
+		}
+	}
 	snake := regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
 	seen := map[string]string{}
 	for name, v := range codes {
@@ -94,11 +121,17 @@ func TestEveryProblemCodeIsDocumented(t *testing.T) {
 	}
 	var doc struct {
 		Problem Problem `json:"problem"`
+		InUse   Problem `json:"problem_in_use"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := seen[doc.Problem.Code]; !ok {
-		t.Errorf("fixture problem code %q is not a Code* constant", doc.Problem.Code)
+	for _, p := range []Problem{doc.Problem, doc.InUse} {
+		if _, ok := seen[p.Code]; !ok {
+			t.Errorf("fixture problem code %q is not a Code* constant", p.Code)
+		}
+	}
+	if doc.InUse.Code != CodeInUse || len(doc.InUse.Sessions) == 0 {
+		t.Errorf("fixture problem_in_use = %+v, want code in_use with sessions", doc.InUse)
 	}
 }

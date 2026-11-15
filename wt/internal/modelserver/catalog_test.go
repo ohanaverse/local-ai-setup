@@ -2,6 +2,7 @@ package modelserver
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -201,10 +202,10 @@ func TestCatalogPriceAndProtocols(t *testing.T) {
 	}
 }
 
-// TestCatalogJSONMatchesFixture pins the marshalled row against the contract
-// fixture docs/contracts/model-api.sample.json: every key the fixture's rows
-// use for a row of the same shape must exist in what the server marshals.
-func TestCatalogJSONMatchesFixture(t *testing.T) {
+// fixtureRows reads the catalog member of the contract fixture
+// docs/contracts/model-api.sample.json as raw rows.
+func fixtureRows(t *testing.T) []map[string]json.RawMessage {
+	t.Helper()
 	raw, err := os.ReadFile("../../../docs/contracts/model-api.sample.json")
 	if err != nil {
 		t.Fatal(err)
@@ -217,20 +218,47 @@ func TestCatalogJSONMatchesFixture(t *testing.T) {
 	if err := json.Unmarshal(raw, &fx); err != nil {
 		t.Fatal(err)
 	}
-	// Keys every fixture row has, whatever its optional fields.
-	required := map[string]bool{}
-	for k := range fx.Catalog.Rows[0] {
-		required[k] = true
+	if len(fx.Catalog.Rows) == 0 {
+		t.Fatal("the fixture has no catalog rows")
 	}
-	for _, row := range fx.Catalog.Rows[1:] {
-		for k := range required {
-			if _, ok := row[k]; !ok {
-				delete(required, k)
-			}
+	return fx.Catalog.Rows
+}
+
+// TestCatalogJSONMatchesFixture pins the marshalled rows against the contract
+// fixture docs/contracts/model-api.sample.json: the keys the server marshals
+// across a catalog that exercises every optional field (tier, price, context,
+// block reason) are exactly the keys the fixture's rows use, so the fixture
+// neither misses a key the server sends nor documents one it never sends; no
+// key marshals as null.
+func TestCatalogJSONMatchesFixture(t *testing.T) {
+	want := map[string]bool{}
+	for _, row := range fixtureRows(t) {
+		for k := range row {
+			want[k] = true
 		}
 	}
-	cfg := testCfg(config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c"})
-	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, nil, testSessions(), testNow))
+	ix, err := tiers.Parse([]byte(`
+[[models]]
+provider_id = "openrouter"
+model_name = "c"
+tier = "standard"
+code = "S"
+confidence = "high"
+aligned_score = 61.0
+context = 200000
+context_basis = "host"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := 0.3
+	cfg := testCfg(
+		config.Model{ID: "openrouter/c", Family: "f", ProviderID: "openrouter", ModelName: "c",
+			Cost: config.ModelCost{InputPricePerMillion: &in}},
+		config.Model{ID: "acme/m", Family: "f", ProviderID: "acme", ModelName: "m"},
+	)
+	cfg.Providers = append(cfg.Providers, config.Provider{ID: "acme", Location: config.LocationCloud})
+	b, err := json.Marshal(BuildCatalog(cfg, localmodels.Snapshot{}, ix, testSessions(), testNow))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,15 +268,93 @@ func TestCatalogJSONMatchesFixture(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	for k := range required {
-		if _, ok := got.Rows[0][k]; !ok {
-			t.Errorf("marshalled row lacks fixture key %q", k)
+	have := map[string]bool{}
+	for _, row := range got.Rows {
+		for k, v := range row {
+			have[k] = true
+			if string(v) == "null" {
+				t.Errorf("key %q marshalled as null", k)
+			}
 		}
 	}
-	for k, v := range got.Rows[0] {
-		if string(v) == "null" {
-			t.Errorf("key %q marshalled as null", k)
+	for k := range want {
+		if !have[k] {
+			t.Errorf("the fixture documents row key %q the server never marshals", k)
 		}
+	}
+	for k := range have {
+		if !want[k] {
+			t.Errorf("the server marshals row key %q the fixture does not document", k)
+		}
+	}
+}
+
+// TestFixtureRowsAgreeWithServerRules pins that the fixture's rows obey the
+// rules the server applies, so a client built from the fixture does not learn
+// a contract the server breaks: gateway_id equals id, a row is registered xor
+// discovered, a blocked row is exactly a block action with a reason, a running
+// row launches, and the ping is what the server answers.
+func TestFixtureRowsAgreeWithServerRules(t *testing.T) {
+	str := func(row map[string]json.RawMessage, k string) string {
+		var v string
+		_ = json.Unmarshal(row[k], &v)
+		return v
+	}
+	boolean := func(row map[string]json.RawMessage, k string) bool {
+		var v bool
+		_ = json.Unmarshal(row[k], &v)
+		return v
+	}
+	states := map[string]bool{}
+	for _, row := range fixtureRows(t) {
+		id := str(row, "id")
+		states[str(row, "state")] = true
+		if str(row, "gateway_id") != id {
+			t.Errorf("%s: gateway_id %q differs from id", id, str(row, "gateway_id"))
+		}
+		if boolean(row, "registered") == boolean(row, "discovered") {
+			t.Errorf("%s: registered and discovered must differ", id)
+		}
+		blocked := str(row, "state") == modelapi.StateBlocked
+		if blocked != (str(row, "action") == modelapi.ActionBlock) {
+			t.Errorf("%s: state %q and action %q disagree about blocking", id, str(row, "state"), str(row, "action"))
+		}
+		if _, has := row["block_reason"]; has != blocked {
+			t.Errorf("%s: block_reason present = %v, want %v", id, has, blocked)
+		}
+		if str(row, "state") == modelapi.StateRunning && str(row, "action") != modelapi.ActionLaunch {
+			t.Errorf("%s: a running row must launch", id)
+		}
+	}
+	for _, s := range []string{modelapi.StateRunning, modelapi.StateLoading, modelapi.StateStopped, modelapi.StateBlocked, modelapi.StateUnknown} {
+		if !states[s] {
+			t.Errorf("the fixture has no row in state %q", s)
+		}
+	}
+	srv, err := NewServer(Options{Listen: "127.0.0.1:0", Token: "t", IdleGrace: time.Minute}, (&fakeLife{}).deps(serverCfg()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/control/v1/ping", nil)
+	req.Header.Set("Authorization", "Bearer t")
+	srv.Handler().ServeHTTP(rec, req)
+	raw, err := os.ReadFile("../../../docs/contracts/model-api.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Ping modelapi.Ping `json:"ping"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	var got modelapi.Ping
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != fx.Ping {
+		t.Errorf("server ping = %+v, fixture ping = %+v", got, fx.Ping)
 	}
 }
 
