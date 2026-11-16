@@ -53,9 +53,10 @@ func WithHTTPClient(hc *http.Client) Option { return func(c *Client) { c.hc = hc
 // WithRequestTimeout sets the bound on one control call.
 func WithRequestTimeout(d time.Duration) Option { return func(c *Client) { c.timeout = d } }
 
-// WithSleep replaces the sleep WaitGatewayReady uses between polls.
+// withGatewayCap shortens the gateway wait cap for a test.
 func withGatewayCap(d time.Duration) Option { return func(c *Client) { c.gwCap = d } }
 
+// WithSleep replaces the sleep WaitGatewayReady uses between polls.
 func WithSleep(f func(time.Duration)) Option { return func(c *Client) { c.sleep = f } }
 
 // New returns a client for ep.
