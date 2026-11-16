@@ -772,7 +772,7 @@ func startCmd(a *app) *cobra.Command {
 					return remoteExit(err)
 				}
 				ans := &cliAnswerer{id: id, replace: replace, others: string(othersMode), out: osStderr, tty: interactiveTTY}
-				return runStartRemote(cmd.Context(), cmd.OutOrStdout(), ms, a.theme, id, ans)
+				return runStartRemote(cmd.Context(), cmd.OutOrStdout(), ms, a.theme, id, replace, ans)
 			}
 			if a.cfgErr != nil {
 				return configError(a.cfgErr)

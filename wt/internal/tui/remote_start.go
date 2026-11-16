@@ -318,11 +318,9 @@ func (m model) handleRemoteStartKey(msg tea.KeyMsg) (model, tea.Cmd) {
 		m.start = nil
 		m.phase = phaseModel
 		m.status = fmt.Sprintf("detached — job %s keeps running on the model server", st.jobID)
-		h, modelID := m.hold, st.item.model.ID
-		return m, func() tea.Msg {
-			h.drop(context.Background(), modelID)
-			return nil
-		}
+		ids := m.startDropIDs(st.item.model.ID)
+		m.rslot = nil
+		return m, dropAllCmd(m.hold, ids)
 	case "c":
 		if !m.start.canCancelJob() {
 			return m, nil
@@ -376,6 +374,13 @@ func (m model) finishRemoteStart(msg startDoneMsg) (model, tea.Cmd) {
 	back := func(status string) (model, tea.Cmd) {
 		m.status = withNote(note, status)
 		m.phase = phaseModel
+		if m.rslot != nil && m.rslot.row.Profile != nil {
+			// The job already took its own model out; a slot profile's other
+			// models were held for this launch alone.
+			ids := slotModelIDs(m.rslot.row)
+			m.rslot = nil
+			return m, dropAllCmd(m.hold, ids)
+		}
 		return m, nil
 	}
 	if msg.err == nil && st.cancelAsked {
@@ -384,11 +389,9 @@ func (m model) finishRemoteStart(msg startDoneMsg) (model, tea.Cmd) {
 		// the user asked for no launch: none, and nothing will use it.
 		m.status = withNote(note, fmt.Sprintf("started %s; launch cancelled (job %s)", st.item.model.ID, st.jobID))
 		m.phase = phaseModel
-		h, modelID := m.hold, st.item.model.ID
-		return m, func() tea.Msg {
-			h.drop(context.Background(), modelID)
-			return nil
-		}
+		ids := m.startDropIDs(st.item.model.ID)
+		m.rslot = nil
+		return m, dropAllCmd(m.hold, ids)
 	}
 	if msg.err == nil {
 		m.phase = phaseModel

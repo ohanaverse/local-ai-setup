@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/agents"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
@@ -302,5 +303,76 @@ func TestSlotFlowRemotePinBeginsTheProfileLaunch(t *testing.T) {
 	h = settle(t, h, cmd)
 	if h.phase != phaseAgent || !strings.Contains(h.status, `model "profile/mix" is a slot profile, excluded by -T`) {
 		t.Errorf("phase = %v, status %q: want the -T exclusion on the agent screen", h.phase, h.status)
+	}
+}
+
+// TestLateEscDropsTheSlotProfilesModels pins that a slot prep which finished
+// before the esc reached Update (its result arrives stale) takes every slot
+// model out of the client session, as the single-model prep does: nothing
+// will launch them, so the server's idle scan must not be kept from stopping
+// the local one.
+func TestLateEscDropsTheSlotProfilesModels(t *testing.T) {
+	m, f := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"})
+	m, cmd := enterRemote(t, m, "profile/mix")
+	if m.phase != phaseLaunching || cmd == nil {
+		t.Fatalf("phase %v, cmd nil %v: want the launching screen", m.phase, cmd == nil)
+	}
+	msg := cmd() // the prep ran to its end, holding both models
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, drop := updateMsg(m, msg)
+	if m.committed || drop == nil {
+		t.Fatalf("committed %v, cmd nil %v: want nothing launched and a drop command", m.committed, drop == nil)
+	}
+	drop()
+	h := f.history()
+	for _, id := range []string{"openrouter/a", "openrouter/b"} {
+		if !slices.Contains(h, "remove "+id) {
+			t.Errorf("calls = %v, want %s dropped from the client session", h, id)
+		}
+	}
+}
+
+// TestStaleSlotPrepKeepsTheModelsForANewLaunch pins the ordering guard on the
+// slot drop: the first prep's late result arrives while a second launch of
+// the same profile is preparing, and must not drop the models under it.
+func TestStaleSlotPrepKeepsTheModelsForANewLaunch(t *testing.T) {
+	m, f := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"})
+	m, cmd := enterRemote(t, m, "profile/mix")
+	stale := cmd()
+	m, _ = updateMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd2 := enterRemote(t, m, "profile/mix")
+	if m.phase != phaseLaunching || cmd2 == nil {
+		t.Fatalf("phase %v, cmd nil %v: want the second launching screen", m.phase, cmd2 == nil)
+	}
+	if _, drop := updateMsg(m, stale); drop != nil {
+		t.Errorf("the stale slot prep returned a command; it must not drop the models under the new launch")
+	}
+	for _, c := range f.history() {
+		if strings.HasPrefix(c, "remove ") {
+			t.Errorf("calls = %v, a model was dropped from the new launch", f.history())
+		}
+	}
+}
+
+// TestFailedSlotStartDropsEverySlotModel pins that a slot profile's local
+// start that ends without a launch (a failure here) takes every slot model
+// out of the client session, not only the local one the job itself drops.
+func TestFailedSlotStartDropsEverySlotModel(t *testing.T) {
+	m, f := slotRemoteTable(t, map[string]string{"sonnet": "openrouter/a", "haiku": "openrouter/b"})
+	m, cmd := enterRemote(t, m, "profile/mix")
+	prepared := cmd().(remoteSlotPreparedMsg)
+	m.hold.holdAll(context.Background(), []string{"openrouter/a", "openrouter/b"})
+	m.rslot = &remoteSlot{item: m.rslot.item, row: prepared.row}
+	m.start = &startState{item: &modelItem{model: config.Model{ID: "openrouter/a"}}, cancel: func() {}}
+	m, drop := m.finishRemoteStart(startDoneMsg{err: errors.New("boom")})
+	if drop == nil || m.rslot != nil {
+		t.Fatalf("cmd nil %v, rslot %v: want a drop command and the profile launch forgotten", drop == nil, m.rslot)
+	}
+	drop()
+	h := f.history()
+	for _, id := range []string{"openrouter/a", "openrouter/b"} {
+		if !slices.Contains(h, "remove "+id) {
+			t.Errorf("calls = %v, want %s dropped from the client session", h, id)
+		}
 	}
 }

@@ -52,7 +52,7 @@ func TestStartRemoteAlreadyRunningIsANoop(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r, ms := startRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, routed))
 			var out bytes.Buffer
-			if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", fixedAnswerer{}); err != nil {
+			if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", false, fixedAnswerer{}); err != nil {
 				t.Fatalf("err = %v", err)
 			}
 			if out.String() != "omlx/q is already running\n" {
@@ -72,7 +72,7 @@ func TestStartRemoteAttachesToActiveJob(t *testing.T) {
 	r, ms := startRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
 	r.f.ActiveStart = "job-active"
 	var out bytes.Buffer
-	if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", fixedAnswerer{}); err != nil {
+	if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", false, fixedAnswerer{}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if n := r.f.count("GET /control/v1/jobs/job-active"); n == 0 {
@@ -92,7 +92,7 @@ func TestStartRemoteAttachesToActiveJob(t *testing.T) {
 func TestStartRemoteRegistersAndEndsASession(t *testing.T) {
 	r, ms := startRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
 	var out bytes.Buffer
-	if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", fixedAnswerer{}); err != nil {
+	if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", false, fixedAnswerer{}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	reqs := r.f.reqs()
@@ -121,7 +121,7 @@ func TestStartRemoteCtrlCExits2(t *testing.T) {
 	defer cancel()
 	r.f.Hang = true
 	r.f.OnPoll = cancel
-	err := runStartRemote(ctx, &bytes.Buffer{}, ms, themes.Default, "omlx/q", fixedAnswerer{})
+	err := runStartRemote(ctx, &bytes.Buffer{}, ms, themes.Default, "omlx/q", false, fixedAnswerer{})
 	var det *modelclient.DetachedError
 	if !errors.As(err, &det) || exitcode.Of(err) != 2 {
 		t.Fatalf("err = %v (exit %d), want *DetachedError, exit 2", err, exitcode.Of(err))
@@ -144,7 +144,7 @@ func TestStartRemoteDeclinedExits3(t *testing.T) {
 	r.f.Outcome = func(int, modelapi.StartRequest) *modelapi.Problem {
 		return &modelapi.Problem{Code: modelapi.CodeOccupied, Message: "x", Occupants: []string{"mtplx/y"}}
 	}
-	err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "omlx/q", fixedAnswerer{replace: false})
+	err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "omlx/q", false, fixedAnswerer{replace: false})
 	if exitcode.Of(err) != 3 || err == nil || err.Error() != "declined — nothing was started" {
 		t.Fatalf("err = %v (exit %d), want exit 3 and the declined text", err, exitcode.Of(err))
 	}
@@ -161,7 +161,7 @@ func TestStartRemoteCloudRowRefusesWithTheServersText(t *testing.T) {
 	r.f.Outcome = func(int, modelapi.StartRequest) *modelapi.Problem {
 		return &modelapi.Problem{Code: modelapi.CodeFailed, Message: "openrouter/x is a cloud model; wt starts local models only"}
 	}
-	err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "openrouter/x", fixedAnswerer{})
+	err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "openrouter/x", false, fixedAnswerer{})
 	if exitcode.Of(err) != 2 || err == nil || !strings.Contains(err.Error(), "is a cloud model; wt starts local models only") {
 		t.Fatalf("err = %v (exit %d)", err, exitcode.Of(err))
 	}
@@ -176,7 +176,7 @@ func TestStartRemoteCloudRowRefusesWithTheServersText(t *testing.T) {
 func TestStartRemoteNoTerminalNoIdSaysPassAnId(t *testing.T) {
 	r, ms := startRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
 	stubStdinTTY(t, false)
-	err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "", fixedAnswerer{})
+	err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "", false, fixedAnswerer{})
 	const want = "the model picker needs a TTY; pass a model id (wt start ID) to start without it"
 	if err == nil || err.Error() != want || exitcode.Of(err) != 1 {
 		t.Fatalf("err = %v (exit %d), want %q, exit 1", err, exitcode.Of(err), want)
@@ -191,7 +191,7 @@ func TestStartRemoteNoTerminalNoIdSaysPassAnId(t *testing.T) {
 func TestStartRemoteStartsARunningModelKnownToBeUnrouted(t *testing.T) {
 	r, ms := startRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(false)))
 	var out bytes.Buffer
-	if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", fixedAnswerer{}); err != nil {
+	if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", false, fixedAnswerer{}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if n := r.f.count("POST /control/v1/start"); n != 1 {
@@ -208,7 +208,7 @@ func TestStartRemoteStartsARunningModelKnownToBeUnrouted(t *testing.T) {
 func TestStartRemoteRegisterFailureIsOneNoteAndTheStartGoesOn(t *testing.T) {
 	r, ms := startRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
 	r.f.RegisterStatus = 500
-	if err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "omlx/q", fixedAnswerer{}); err != nil {
+	if err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "omlx/q", false, fixedAnswerer{}); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if n := strings.Count(r.stderr.String(), "did not register this client session"); n != 1 {
@@ -258,5 +258,25 @@ func TestStartAndStopCommandsDispatchOnTheEndpoint(t *testing.T) {
 	})
 	if len(r.f.Stops) != 1 || r.f.Stops[0].Model != "omlx/q" {
 		t.Errorf("stops = %+v, want the picked model", r.f.Stops)
+	}
+}
+
+// TestStartRemoteReplaceFlagIsSentWithTheFirstJob proves wt start --replace
+// puts AllowReplace on the first start request: without it the server ran one
+// doomed job that failed occupied before the answer re-posted it.
+func TestStartRemoteReplaceFlagIsSentWithTheFirstJob(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		r, ms := startRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
+		var got []bool
+		r.f.Outcome = func(_ int, req modelapi.StartRequest) *modelapi.Problem {
+			got = append(got, req.AllowReplace)
+			return nil
+		}
+		if err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "omlx/q", allow, fixedAnswerer{}); err != nil {
+			t.Fatalf("allow=%v: err = %v", allow, err)
+		}
+		if len(got) != 1 || got[0] != allow {
+			t.Errorf("allow=%v: AllowReplace of the start requests = %v, want one request carrying it", allow, got)
+		}
 	}
 }

@@ -95,7 +95,7 @@ func localRowsOf(rows []modelapi.Row) []modelapi.Row {
 //
 // Ctrl-C during the job detaches (exit 2; the job keeps running); a declined
 // question exits 3.
-func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme themes.Theme, id string, ans modelclient.Answerer) error {
+func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme themes.Theme, id string, allowReplace bool, ans modelclient.Answerer) error {
 	const still = "nothing was started"
 	if id == "" && !stdinTTY() {
 		return exitcode.New(1, errors.New("the model picker needs a TTY; pass a model id (wt start ID) to start without it"), false)
@@ -147,7 +147,7 @@ func runStartRemote(ctx context.Context, out io.Writer, ms *modelSession, theme 
 
 	sctx, stop := interruptCtx(ctx)
 	defer stop()
-	_, err = ms.client.RunStart(sctx, modelapi.StartRequest{Model: id}, ans, startProgressRemote(osStderr, id))
+	_, err = ms.client.RunStart(sctx, modelapi.StartRequest{Model: id, AllowReplace: allowReplace}, ans, startProgressRemote(osStderr, id))
 	end()
 	if err != nil {
 		return remoteExit(stillUnlessTyped(err, still))

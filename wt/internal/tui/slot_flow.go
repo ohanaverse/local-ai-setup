@@ -632,7 +632,7 @@ func dropAll(h *clientHold, ids []string) {
 // prep the user left (esc, ctrl+c) or one superseded is dropped.
 func (m model) handleRemoteSlotPrepared(msg remoteSlotPreparedMsg) (model, tea.Cmd) {
 	if m.prep == nil || msg.id != m.prep.id || m.prep.quitting || m.phase != phaseLaunching || m.rslot == nil {
-		return m, nil
+		return m, m.staleSlotDropCmd(msg)
 	}
 	m.prep.cancel()
 	m.prep = nil
@@ -654,6 +654,37 @@ func (m model) handleRemoteSlotPrepared(msg remoteSlotPreparedMsg) (model, tea.C
 		return m.beginRemoteStart(&modelItem{model: local, line: local.ID}, m.allowReplace && pinned, m.othersFor(pinned))
 	}
 	return m.launchRemoteSlot()
+}
+
+// staleSlotDropCmd takes a stale slot prep's models out of the client session,
+// the slot twin of staleDropCmd: a prep left with esc may have finished its
+// register just after the cancel, and nothing will use the models. Only a
+// prep that succeeded holds anything (a failed or cancelled one dropped its
+// own), and only while the picker is back at the table with no launch in
+// flight: a newer launch of the same models must not lose them.
+func (m model) staleSlotDropCmd(msg remoteSlotPreparedMsg) tea.Cmd {
+	if msg.err != nil || msg.row.Profile == nil || m.hold == nil || m.prep != nil || m.phase != phaseModel {
+		return nil
+	}
+	return dropAllCmd(m.hold, slotModelIDs(msg.row))
+}
+
+// dropAllCmd is dropAll as a command, for the update goroutine.
+func dropAllCmd(h *clientHold, ids []string) tea.Cmd {
+	return func() tea.Msg {
+		dropAll(h, ids)
+		return nil
+	}
+}
+
+// startDropIDs is what a start that ends without a launch takes out of the
+// client session: the model alone, or, in a slot-profile launch, every slot
+// model its prep held (the other slots are held only for this launch).
+func (m model) startDropIDs(modelID string) []string {
+	if m.rslot != nil && m.rslot.row.Profile != nil {
+		return slotModelIDs(m.rslot.row)
+	}
+	return []string{modelID}
 }
 
 // launchRemoteSlot builds the profile's command against the gateway and hands
