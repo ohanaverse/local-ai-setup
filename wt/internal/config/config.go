@@ -818,6 +818,10 @@ type Agent struct {
 	Name               string   `toml:"name"`
 	SupportedProviders []string `toml:"supported_providers"`        // hard constraint
 	DefaultProvider    string   `toml:"default_provider,omitempty"` // optional
+	// AllProviders marks an in-memory agent LoadSession synthesized for a
+	// driver config.toml does not list: it accepts every provider. Never
+	// persisted.
+	AllProviders bool `toml:"-"`
 }
 
 // ── Config ────────────────────────────────────────────────
@@ -838,6 +842,9 @@ type Config struct {
 	// and wt never sets it, but no value is read or validated —
 	// IgnoredLaunchKeys names it so a launch can note it once per process.
 	LaunchTable *LaunchState `toml:"launch,omitempty"`
+	// ModelServerTable is the hand-edited [model-server] table (see
+	// ModelServerState); it round-trips through every save like LaunchTable.
+	ModelServerTable *ModelServerState `toml:"model-server,omitempty"`
 	// wt decides which local models are running from the live inventory
 	// (internal/localmodels), never from a stored flag. See
 	// docs/superpowers/specs/2026-09-20-wt-live-resolution-design.md.
