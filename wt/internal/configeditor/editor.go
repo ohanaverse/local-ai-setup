@@ -90,7 +90,7 @@ func newModel(theme themes.Theme, cfg *config.Config, cfgErr error) *model {
 }
 
 // Init emits the loaded config immediately. The config is supplied by the
-// caller (cmd/wt) rather than reloaded inside the TUI, so a validation error
+// caller (cmd/wt-session) rather than reloaded inside the TUI, so a validation error
 // can be surfaced without hanging on the "Loading config..." screen.
 func (m *model) Init() tea.Cmd {
 	loaded := func() tea.Msg {

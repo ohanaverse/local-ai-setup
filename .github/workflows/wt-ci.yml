@@ -142,7 +142,7 @@ jobs:
   # The git-heavy packages (removal, rescue, cleanup, rootmove): nearly every
   # test spawns git subprocesses and they carry the suite - measured on
   # macos-latest, removal 545s, cleanup 231s, rescue 209s, rootmove 125s,
-  # while the whole rest tops out at cmd/wt 240s. Their own job beside test
+  # while the whole rest tops out at cmd/wt-session 240s. Their own job beside test
   # (deliberately no needs:) so the wall is max(removal, everything else)
   # instead of one blob, and their runner-speed wobble shows in one check.
   # The set lives in GIT_HEAVY_RE (workflow env) - both split jobs read it.

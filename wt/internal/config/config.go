@@ -1007,7 +1007,7 @@ func (c *Config) ModelsWithTag(tag string) []Model {
 
 // IndexModelByID returns the index of the model with the given registry id
 // in models, or -1 when absent. One lookup helper for every consumer of
-// model ids (cmd/wt, internal/tui) instead of a per-package copy.
+// model ids (cmd/wt-session, internal/tui) instead of a per-package copy.
 func IndexModelByID(models []Model, id string) int {
 	for i := range models {
 		if models[i].ID == id {

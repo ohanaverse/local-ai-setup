@@ -159,7 +159,7 @@ const NotInstalledIssue = "not installed — install the binary"
 //
 // IssueFor is consulted by ListEntries only — it is NOT the source of truth
 // for the actual launch-blocking precedence used elsewhere. Both
-// cmd/wt/main.go's launch gate and the TUI's pinned-agent path
+// cmd/wt-session/main.go's launch gate and the TUI's pinned-agent path
 // (proceedFromSelectedPath in internal/tui/app.go) re-implement this
 // precedence independently, checking installed BEFORE configured (a pinned
 // agent that is neither installed nor configured must report "not

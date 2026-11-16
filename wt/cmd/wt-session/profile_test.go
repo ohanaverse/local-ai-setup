@@ -1,4 +1,4 @@
-// wt/cmd/wt/profile_test.go
+// wt/cmd/wt-session/profile_test.go
 package main
 
 import (

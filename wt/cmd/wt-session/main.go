@@ -24,7 +24,7 @@ import (
 
 // version is set at build time via -ldflags:
 //
-//	go build -ldflags "-X main.version=1.2.3" ./cmd/wt
+//	go build -ldflags "-X main.version=1.2.3" ./cmd/wt-session
 var version = "0.1.0"
 
 // tuiRun is the entry point for the interactive TUI. It is a package-level
@@ -35,7 +35,7 @@ var tuiRun = tui.Run
 // installed is a test seam wrapping agents.Installed for the pinned-agent
 // binary check in RunE (issue #147): a pinned agent whose binary is missing
 // must fail before any worktree work, and tests stub this so that check does
-// not depend on the host's installed binaries. cmd/wt's TestMain defaults it
+// not depend on the host's installed binaries. cmd/wt-session's TestMain defaults it
 // to true so existing tests are unaffected unless they opt into stubbing it.
 var installed = agents.Installed
 

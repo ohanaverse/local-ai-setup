@@ -32,7 +32,7 @@ func exitStatusOf(err error) int {
 // TestGateFailureIsNeverReadAsTheAgentsExit checks the one discrimination the
 // exit routing depends on (#412's edge): a gate/creation failure can wrap
 // git's own *exec.ExitError (gitError's empty-stderr branch and startPhrase's
-// rev-parse failure both %w one), and cmd/wt's agentExitStatus reads any
+// rev-parse failure both %w one), and cmd/wt-session's agentExitStatus reads any
 // error carrying an *exec.ExitError as the agent's own quiet exit — printing
 // nothing and exiting with git's status instead of the gate failure's one
 // line. The gate's error must travel out of the run command with no
@@ -60,7 +60,7 @@ func TestGateFailureIsNeverReadAsTheAgentsExit(t *testing.T) {
 }
 
 // TestPickerLaunchReturnsTheAgentsExitStatus pins #412 for a single-model
-// launch: an agent that exits 3 makes Run's result carry status 3 (cmd/wt
+// launch: an agent that exits 3 makes Run's result carry status 3 (cmd/wt-session
 // exits with it), and the status line still says how the agent exited; an
 // agent that exits 0 leaves the result nil. Before #412 the launchDoneMsg
 // handler dropped the error and wt exited 0 after a failed session.

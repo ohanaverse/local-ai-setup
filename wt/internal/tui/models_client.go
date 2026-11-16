@@ -26,7 +26,7 @@ import (
 
 // ModelClient is what the picker needs from the model server: the catalog, one
 // model's row, a start job, the client session and the gateway the agent is
-// launched against. cmd/wt hands in an adapter over *modelclient.Client
+// launched against. cmd/wt-session hands in an adapter over *modelclient.Client
 // (NewModelClient); tests hand in a fake. A nil ModelClient is the legacy
 // registry path, deleted once every caller is on the server.
 type ModelClient interface {

@@ -96,7 +96,7 @@ Both are package data under `src/modeltiers/data/`, loaded with `importlib.resou
 
 ## Inventory contract
 
-`docs/contracts/model-list.sample.json` is one `wt model list --json` document, shared with wt: wt's `cmd/wt/model_list_contract_test.go` fails when it and the command's output differ in a key or JSON type, and these tests read it as the golden inventory (`INVENTORY` in `tests/conftest.py`). A key wt renames reaches this suite through the fixture, in a change that runs `modeltiers-ci`. The registry path in it is made up; `size_bytes` and `path` are nulled. It is not in `tests/fixtures/`; a row added to it moves the same pinned counts as a golden-fixture row, and wt's test must still pass.
+`docs/contracts/model-list.sample.json` is one `wt model list --json` document, shared with wt: wt's `cmd/wt-session/model_list_contract_test.go` fails when it and the command's output differ in a key or JSON type, and these tests read it as the golden inventory (`INVENTORY` in `tests/conftest.py`). A key wt renames reaches this suite through the fixture, in a change that runs `modeltiers-ci`. The registry path in it is made up; `size_bytes` and `path` are nulled. It is not in `tests/fixtures/`; a row added to it moves the same pinned counts as a golden-fixture row, and wt's test must still pass.
 
 ## Output file
 

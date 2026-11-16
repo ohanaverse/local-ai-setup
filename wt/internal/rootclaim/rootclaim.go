@@ -1,4 +1,4 @@
-// Package rootclaim is what both launch paths (cmd/wt's plain terminal and the
+// Package rootclaim is what both launch paths (cmd/wt-session's plain terminal and the
 // picker) share around internal/sessionclaim: building this session's claim —
 // every launch's on the worktree it runs in (HoldLaunch), a root launch's on
 // the repository's root (the root-claim flavor) — and asking the person what

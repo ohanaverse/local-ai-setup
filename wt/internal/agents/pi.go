@@ -66,7 +66,7 @@ func (piDriver) Build(m config.Model, yolo bool, r Route) LaunchCmd {
 
 // ProfileMechanisms declares the profile mechanisms pi supports: wrapper
 // (the little-coder integration) and env. There is no pi-specific env
-// lever, but profile env lands on the launched process (cmd/wt applies
+// lever, but profile env lands on the launched process (cmd/wt-session applies
 // env before the wrapper), and with the little-coder wrapper that process
 // is little-coder itself — which reads LITTLE_CODER_* env vars.
 func (piDriver) ProfileMechanisms() []profiles.Mechanism {

@@ -12,7 +12,7 @@ import (
 // restart itself is not replaced: WT_LITELLM_RESTART_CMD or Options.Restart
 // stands in for it, and RestartContext refuses launchctl in a test binary.
 // Production code never calls it; it is exported because the code that
-// reaches the default restart lives in cmd/wt, whose tests must not probe or
+// reaches the default restart lives in cmd/wt-session, whose tests must not probe or
 // wait on whatever answers at the developer's proxy address.
 func StubProxyReadinessForTest(
 	listening func(ctx context.Context, baseURL string, timeout time.Duration) bool,

@@ -3,7 +3,7 @@
 #
 # Why this is a rebuild rather than a download: wt is not published anywhere —
 # the checkout beside this script IS the source of truth. `make install` in
-# wt/ is the right entry point and not a shortcut: it builds to wt/bin/wt,
+# wt/ is the right entry point and not a shortcut: it builds to wt/bin/wt-session and a copy, wt/bin/wt,
 # re-seals the ad-hoc code signature, then copies bin/* into ~/.local/bin and
 # re-seals the copy again. Both seals matter. A stale or drifted signature is
 # rejected by AMFI with "Taskgated Invalid Signature" and the binary is
@@ -51,9 +51,13 @@ done
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 WT_DIR="$REPO_ROOT/wt"
 INSTALLED="$HOME/.local/bin/wt"
+# `make install` puts the same binary down under two names, wt-session and wt;
+# an install that lacks either is incomplete (one from before the split has
+# only wt), so it reads as not installed: run `make -C wt install` once.
+INSTALLED_SESSION="$HOME/.local/bin/wt-session"
 
-if [ ! -x "$INSTALLED" ]; then
-    update_finish not-installed "no binary at $INSTALLED (run: make -C wt install)"
+if [ ! -x "$INSTALLED" ] || [ ! -x "$INSTALLED_SESSION" ]; then
+    update_finish not-installed "no binary at $INSTALLED or $INSTALLED_SESSION (run: make -C wt install)"
 fi
 
 installed_version=$("$INSTALLED" --version 2> /dev/null || echo unknown)

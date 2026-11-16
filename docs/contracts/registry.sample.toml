@@ -20,7 +20,7 @@
 # Read by:
 #   - wt/internal/config/registry_fixture_test.go (Go)
 #   - wt/internal/catalog/registry_fixture_test.go (Go)
-#   - wt/cmd/wt/litellm_test.go (Go)
+#   - wt/cmd/wt-session/litellm_test.go (Go)
 #   - wt/internal/config/model_artifact_test.go (Go)
 #   - llmbench/tests/test_registry.py (Python; reads id/family/provider_id/
 #     model_name/location/fetch/draft only)

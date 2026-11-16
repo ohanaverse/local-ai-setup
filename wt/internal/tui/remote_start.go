@@ -32,7 +32,7 @@ import (
 )
 
 // buildGatewayLaunch is a test seam over agents.BuildLaunchCmdGateway, the
-// agent command against the model server's gateway (cmd/wt's buildGatewayCmd
+// agent command against the model server's gateway (cmd/wt-session's buildGatewayCmd
 // on the non-TUI path).
 var buildGatewayLaunch = agents.BuildLaunchCmdGateway
 
@@ -44,7 +44,7 @@ var buildGatewayLaunch = agents.BuildLaunchCmdGateway
 var clientNotes = &startOutput{what: "client session"}
 
 // startQueued is the start screen's text for a job waiting its turn: the
-// non-TUI start's words (cmd/wt's startQueued).
+// non-TUI start's words (cmd/wt-session's startQueued).
 const startQueued = "queued behind another start or stop on the model server"
 
 // clientHold is the picker's client session with the model server: created on
@@ -58,7 +58,7 @@ type clientHold struct {
 	sess ClientSession
 	held map[string]bool
 	// registered is true once a register succeeded: an End after only
-	// refused registers is refused too, which is not news (cmd/wt's rule).
+	// refused registers is refused too, which is not news (cmd/wt-session's rule).
 	registered bool
 	ended      bool
 }

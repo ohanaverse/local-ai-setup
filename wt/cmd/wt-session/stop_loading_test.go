@@ -293,7 +293,7 @@ func TestStopLeavesAloneWhatItCannotVerifyAsMtplx(t *testing.T) {
 // TestMainIsolatesEveryProcessPidfile checks TestMain's
 // lifecycle.IsolateProcessesForTest() redirects every process family's
 // pidfile env var to a scratch path that is not the real
-// /tmp/local-ai-setup-* default: a cmd/wt test must never read or signal a
+// /tmp/local-ai-setup-* default: a cmd/wt-session test must never read or signal a
 // developer's real server, and sushi's stop reads its pidfile to find the pid
 // it signals.
 func TestMainIsolatesEveryProcessPidfile(t *testing.T) {
@@ -318,7 +318,7 @@ func TestMainIsolatesEveryProcessPidfile(t *testing.T) {
 // seam the engine's own are closed — the pidfile is a scratch path, and the
 // process-table read fails even with a live pid in that pidfile. The second
 // half is what notices lifecycle.IsolateProcessesForTest() being removed
-// from TestMain: without it a cmd/wt test that swaps the real stop state in
+// from TestMain: without it a cmd/wt-session test that swaps the real stop state in
 // would read the developer's mtplx pidfile and could signal their server.
 func TestStopLoadingSeamFailsClosed(t *testing.T) {
 	if err := stopLoading(context.Background(), mtplxOnlyCfg(), "mtplx", os.Getpid()); err == nil || !strings.Contains(err.Error(), "not stubbed") {

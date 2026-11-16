@@ -25,7 +25,7 @@ func TestApplyEnvAndArgsEnvWinsOnCollision(t *testing.T) {
 
 // TestApplyEnvAndArgsExtraArgsAppended verifies ExtraArgs land at the end
 // of cmd.Args, after whatever BuildLaunchCmdGateway already assembled (driver
-// args, user passthrough, resume flag) — matching cmd/wt's
+// args, user passthrough, resume flag) — matching cmd/wt-session's
 // applyResolvedProfile ordering (env/args before config_content/wrapper).
 func TestApplyEnvAndArgsExtraArgsAppended(t *testing.T) {
 	cmd := exec.Command("codex", "--model", "x")
@@ -38,7 +38,7 @@ func TestApplyEnvAndArgsExtraArgsAppended(t *testing.T) {
 }
 
 // TestRestoreAndReattachDropsMutationsAndKeepsOneShotArgs verifies
-// RestoreAndReattach's two call sites (cmd/wt's applyResolvedProfile, wt
+// RestoreAndReattach's two call sites (cmd/wt-session's applyResolvedProfile, wt
 // smoke's realBuildAndRun) both get a genuinely clean revert: any
 // cmd.Env/cmd.Args mutation made between the snapshot and the failure must
 // be gone afterward, not just have oneShotArgs appended on top of it — a
@@ -63,7 +63,7 @@ func TestRestoreAndReattachDropsMutationsAndKeepsOneShotArgs(t *testing.T) {
 }
 
 // TestApplyEnvAndArgsThenApplyWrapperComposesCorrectly verifies the real
-// production sequence (cmd/wt's applyResolvedProfile: ApplyEnvAndArgs,
+// production sequence (cmd/wt-session's applyResolvedProfile: ApplyEnvAndArgs,
 // then — with a config_content step interleaved in production, omitted
 // here since it's tested separately — ApplyWrapper) swaps cmd.Path/Args[0]
 // for the wrapper binary and splices the ORIGINAL argv, including
@@ -117,7 +117,7 @@ func TestApplyWrapperErrorsWhenArgsTemplateMissingPlaceholder(t *testing.T) {
 }
 
 // TestApplyEnvAndArgsNeverAppliesWrapper verifies ApplyEnvAndArgs applies
-// Env/ExtraArgs but leaves Wrapper untouched — cmd/wt's applyResolvedProfile
+// Env/ExtraArgs but leaves Wrapper untouched — cmd/wt-session's applyResolvedProfile
 // depends on this to interleave a config_content mutation between the two.
 func TestApplyEnvAndArgsNeverAppliesWrapper(t *testing.T) {
 	cmd := exec.Command("pi", "--model", "x")
@@ -133,7 +133,7 @@ func TestApplyEnvAndArgsNeverAppliesWrapper(t *testing.T) {
 }
 
 // TestApplyWrapperExported verifies ApplyWrapper behaves as documented —
-// cmd/wt calls it directly so it can apply config_content between args and
+// cmd/wt-session calls it directly so it can apply config_content between args and
 // wrapper.
 func TestApplyWrapperExported(t *testing.T) {
 	cmd := exec.Command("pi", "--model", "x")

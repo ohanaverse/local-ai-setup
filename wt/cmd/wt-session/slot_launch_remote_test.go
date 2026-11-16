@@ -118,7 +118,7 @@ func TestSlotLaunchRemoteRegistersAllDistinctModels(t *testing.T) {
 // catalog read and no resolve (a profile id is not a model the server knows),
 // and that a running, routed local model or a cloud-only profile starts
 // nothing. The cloud-route write, the proxy restart and the proxy probe of the
-// registry path do not exist here: cmd/wt's TestMain makes each fail.
+// registry path do not exist here: cmd/wt-session's TestMain makes each fail.
 func TestSlotLaunchRemoteStartsTheLocalSlotOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

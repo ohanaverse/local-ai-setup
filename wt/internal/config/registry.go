@@ -11,7 +11,7 @@ import (
 )
 
 // ErrRegistryMissing is returned by loadRegistry when the shared
-// registry.toml does not exist yet. cmd/wt tolerates it for command agents
+// registry.toml does not exist yet. cmd/wt-session tolerates it for command agents
 // (which have no model layer) while still failing closed for real agents.
 var ErrRegistryMissing = errors.New("model registry not found")
 

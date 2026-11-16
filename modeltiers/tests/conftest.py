@@ -36,7 +36,7 @@ ALIGN_MIN = 3
 CONTRACTS_DIR = Path(__file__).parents[2] / "docs" / "contracts"
 # The inventory contract: one `wt model list --json` document. wt's own tests
 # hold the same file to what the command prints
-# (wt/cmd/wt/model_list_contract_test.go), so a key wt renames fails there
+# (wt/cmd/wt-session/model_list_contract_test.go), so a key wt renames fails there
 # before it can reach a run here. Every test that needs the golden inventory
 # reads it through this name.
 INVENTORY = CONTRACTS_DIR / "model-list.sample.json"

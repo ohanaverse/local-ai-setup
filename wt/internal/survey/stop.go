@@ -303,7 +303,7 @@ func candidatesFrom(snap localmodels.Snapshot, d stopDeps) []Candidate {
 }
 
 // stopSignalCtx is a test seam: production uses realStopSignalCtx, following the
-// var/realfunc shape wt/CLAUDE.md documents for package-level seams. (cmd/wt's
+// var/realfunc shape wt/CLAUDE.md documents for package-level seams. (cmd/wt-session's
 // startSignalCtx covers the same ground for the start path but is an inline
 // closure, so what the two share is the intent, not the declaration form.)
 var stopSignalCtx = realStopSignalCtx
@@ -318,7 +318,7 @@ func realStopSignalCtx() (context.Context, context.CancelFunc) {
 }
 
 // Select is the numbered prompt of a client session's `wt stop` picker
-// (cmd/wt's model_cmds_remote.go): it
+// (cmd/wt-session's model_cmds_remote.go): it
 // prints header and labels, reads one line on its own goroutine and races that
 // read against ctx. It returns the chosen indices in list order (see
 // chooseLabeled for what a line may say); nothing chosen is an empty result,

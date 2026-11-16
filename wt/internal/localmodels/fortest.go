@@ -14,7 +14,7 @@ import (
 // every configured local model. A model of a running-only family
 // (RunningOnly) or a served-only one (rec) gets no artifact, exactly as the real inventory reports one,
 // so a stopped pairing has no row here either. Production code never calls
-// it; it is exported, like internal/config's ...ForTest helpers, so cmd/wt
+// it; it is exported, like internal/config's ...ForTest helpers, so cmd/wt-session
 // and internal/tui share one definition of "on disk" instead of a copy each.
 func OnDiskSnapshotForTest(cfg *config.Config) Snapshot {
 	snap := Snapshot{Providers: map[string]Status{}}

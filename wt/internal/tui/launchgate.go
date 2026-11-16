@@ -41,7 +41,7 @@ func (c *launchCreation) ensure() (string, error) {
 }
 
 // rootClaimRelease removes this session's claim on the launch's worktree. It
-// is set by claimLaunch and called through releaseRootClaim, mirroring cmd/wt.
+// is set by claimLaunch and called through releaseRootClaim, mirroring cmd/wt-session.
 var rootClaimRelease = func() {}
 
 // releaseRootClaim removes this session's claim on the launch's worktree, if
@@ -100,7 +100,7 @@ func (m model) launchTarget() (launchwarn.Target, error) {
 // answer still wins here); the dirt is the row's raw answer, which the
 // ForDir branch passes in as the gathered value so no probe runs to be
 // overwritten (ForDir probes dirt for the callers that have no row — preset
-// paths, typed names, cmd/wt's confirmLaunch — and keeps doing so).
+// paths, typed names, cmd/wt-session's confirmLaunch — and keeps doing so).
 // Everything else keeps its existing source — the holders, the root's branch
 // and default, the hint, and the creation the pick's plan owns (one creation
 // path). A typed-name or preset-path pick (row nil) is untouched.
@@ -116,7 +116,7 @@ func foldRowFacts(t launchwarn.Target, row *launchwarn.Target) launchwarn.Target
 // gateFor binds this model's launchGate to the launch it is about to make, as
 // the per-call value the run commands ask at the commit point. It reads the
 // Target at the ask (launchTarget), never earlier, and probes stdin's
-// TTY-ness the way cmd/wt's confirmLaunch does (its stdinTTY parity): without
+// TTY-ness the way cmd/wt-session's confirmLaunch does (its stdinTTY parity): without
 // a terminal the warnings print and the launch proceeds, stdin never read.
 func (m model) gateFor() func() (bool, error) {
 	return func() (bool, error) {
@@ -128,14 +128,14 @@ func (m model) gateFor() func() (bool, error) {
 	}
 }
 
-// stdinTTY is the interactive-invocation probe cmd/wt's confirmLaunch uses:
+// stdinTTY is the interactive-invocation probe cmd/wt-session's confirmLaunch uses:
 // stdin is a terminal. It is called at the ask, so a redirected stdin (a
 // script, a test) is honestly no terminal and can never be read.
 func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
 
 // launchGate is the one question before a launch commits, asked at the
 // commit point with the terminal the user's again (the run commands call it
-// where the root-claim prompt used to be). It mirrors cmd/wt's confirmLaunch and
+// where the root-claim prompt used to be). It mirrors cmd/wt-session's confirmLaunch and
 // holdLaunch: the collected warnings — or, with none, the one informational
 // line "launching in <dir>" every pick with a directory gets (the creation
 // line of a pick that owes a worktree is the one line in its place) — and one
@@ -147,7 +147,7 @@ func stdinTTY() bool { return term.IsTerminal(os.Stdin.Fd()) }
 // errLaunchDeclined, exit 3 like every declined prompt (C9). A creation that fails once the person continued is a failure, not a
 // choice: err is that error and nothing is printed here, so it travels out as
 // the run's error and main prints it once and exits non-zero, exactly as
-// cmd/wt's -W path does through refuse. Either way the owed worktree is made
+// cmd/wt-session's -W path does through refuse. Either way the owed worktree is made
 // only here, and the run's worktree is claimed for exactly the agent's run;
 // every claims failure is one "wt: note:", never a refusal.
 //
@@ -178,7 +178,7 @@ func (m model) launchGate(t *launchwarn.Target, isTTY bool) (ok bool, err error)
 		}
 	} else if m.typedPlan != nil {
 		// A typed name that announced nothing still runs its plan's Ensure
-		// here — cmd/wt's -W runs it unconditionally after the question
+		// here — cmd/wt-session's -W runs it unconditionally after the question
 		// (main.go:551). A reused worktree is Ensure's idempotent no-op and
 		// keeps this silent; a path that is only debris (a partial add, a
 		// stray file) is git's own error instead of a launch at a directory
@@ -225,7 +225,7 @@ func (m model) claimLaunch(dir string) {
 }
 
 // errLaunchDeclined is the run's error after a "no" at the launch gate: exit
-// 3, one line, like cmd/wt's confirmLaunch (a declined prompt is approval
+// 3, one line, like cmd/wt-session's confirmLaunch (a declined prompt is approval
 // missing, C9). Not a GateError: it carries no exec status to misread.
 var errLaunchDeclined = exitcode.New(3, errors.New("approval missing: declined; nothing was launched"), false)
 

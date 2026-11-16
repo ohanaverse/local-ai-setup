@@ -89,7 +89,7 @@ func pickerActionsFixture() cleanup.Report {
 
 // TestLaunchSelectorPassesRemoveFuncs pins the plumbing the launch
 // selector's actions need: the RemoveFuncs the picker is started with (the
-// builder Run takes, cmd/wt's over cleanupRemoveFuncs) are the instance its
+// builder Run takes, cmd/wt-session's over cleanupRemoveFuncs) are the instance its
 // key handling uses. `x` reaches that instance's Preview on the highlighted
 // row. `r` and `R` reach its Rescue and RestoreRoot through
 // finishRowSession, where the shared flow lands once the screen is gone (the

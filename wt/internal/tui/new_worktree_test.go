@@ -159,7 +159,7 @@ func TestTypedNameCreationNeverAsksTheWFlagQuestion(t *testing.T) {
 
 // TestTypedNameLeftoverDirIsAnErrorNotALaunch checks the typed-name path runs
 // the plan's Ensure at the commit point even when nothing is announced (the
-// contract cmd/wt's -W holds by running plan.Ensure() unconditionally after
+// contract cmd/wt-session's -W holds by running plan.Ensure() unconditionally after
 // its one question, main.go:551): a branch with an unregistered leftover
 // directory at the plan's path — a partial `git worktree add`, a half-deleted
 // worktree, a stray file — must come back as git's own error with the agent
@@ -330,7 +330,7 @@ func gitInit(t *testing.T, dir string) {
 }
 
 // TestTypedNameVanishedWorktreeRefusesNamingGitWorktreePrune checks the typed
-// name's twin of cmd/wt's -W refusal: a branch registered to a worktree whose
+// name's twin of cmd/wt-session's -W refusal: a branch registered to a worktree whose
 // directory was deleted resolves to a reuse that creates nothing, so Enter
 // must refuse before any creation is bound (nothing may announce a creation
 // the commit point will not make) and name the fix — git worktree prune frees
@@ -360,7 +360,7 @@ func TestTypedNameVanishedWorktreeRefusesNamingGitWorktreePrune(t *testing.T) {
 }
 
 // TestTypedNameTrackingNameWithLocalBranchRefusesBeforeAnnouncing checks the
-// typed twin of cmd/wt's early tracking refusal: "origin/foo" with a local foo
+// typed twin of cmd/wt-session's early tracking refusal: "origin/foo" with a local foo
 // held by no worktree must be refused at Enter — before any creation is bound,
 // because the commit point's addTrackingWorktree would refuse it after the
 // creation line already promised it. The prompt keeps the input for a

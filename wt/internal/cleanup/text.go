@@ -35,7 +35,7 @@ func gitErrText(s string) string {
 
 // OneLine is error text from outside the classifier (the registry load, the
 // OS) as a header line or row detail shows it: one sanitised line, at most
-// gitErrMax runes. It is gitErrText, exported for cmd/wt.
+// gitErrMax runes. It is gitErrText, exported for cmd/wt-session.
 func OneLine(s string) string { return gitErrText(s) }
 
 // Flatten is OneLine without the length cap: one sanitised line (every

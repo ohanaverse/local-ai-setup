@@ -11,7 +11,7 @@ import (
 // IsolateConfigHomeForTest points the test process's config environment at a
 // throwaway directory, so Dir(), RegistryPath() and everything derived from
 // them never resolve into the developer's real ~/.config/agent-wt. The test
-// binaries that need it (cmd/wt, internal/tui and internal/config) call it
+// binaries that need it (cmd/wt-session, internal/tui and internal/config) call it
 // from their TestMain: their tests launch stub agents, record usage, take
 // profile locks and load the config, and without this every run rewrote the
 // real rotation.state with a test model and appended wt-stub launches to the

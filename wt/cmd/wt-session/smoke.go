@@ -448,7 +448,7 @@ func (a *app) runSmokeRows(ctx context.Context, stderr io.Writer, cfg *config.Co
 
 		// Resolve the profile for this agent×model pair. If one matches,
 		// build a ProfileApplier that applies it via the same
-		// applyResolvedProfile used by a real launch (cmd/wt/launch.go),
+		// applyResolvedProfile used by a real launch (cmd/wt-session/launch.go),
 		// so smoke and a real launch can never drift on apply/rollback
 		// semantics.
 		var pa smoke.ProfileApplier

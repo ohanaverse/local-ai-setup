@@ -2,7 +2,7 @@
 
 help:                   # Show available targets
 	@echo "Available targets:"
-	@echo "  build     - Build the Go wt and wt-model binaries to bin/"
+	@echo "  build     - Build bin/wt-session, bin/wt (the same binary, a copy) and bin/wt-model"
 	@echo "  install   - Copy bin/* to ~/.local/bin/"
 	@echo "  uninstall - Remove installed scripts from ~/.local/bin/"
 	@echo "  lint      - Run shellcheck on bin/*-wt and scripts/agents-smoke.sh"
@@ -12,24 +12,26 @@ help:                   # Show available targets
 	@echo "  single-p      - One-P pass over the goroutine-sensitive packages (wt-ci's single-p job and test-all run this)"
 	@echo "  check     - Run lint + format-check + go-format-check"
 	@echo "  test      - Run smoke tests"
-	@echo "  test-agents - BROKEN until its rewrite (Task 20): live agent smoke tests that still flip the retired wt litellm on/off (exit 1)"
+	@echo "  test-agents - Live agent smoke tests, gateway mode only (needs WT_MODEL_URL and WT_MODEL_TOKEN_FILE)"
 	@echo "  clean     - Remove build artifacts"
 
 BINDIR := $(HOME)/.local/bin
 SRCDIR := bin
 
-build:                  # Build the Go wt and wt-model binaries
-	@echo "Building wt and wt-model..."
-	go build -o bin/wt ./cmd/wt
+build:                  # Build wt-session, wt (a copy of it) and wt-model
+	@echo "Building wt-session, wt and wt-model..."
+	go build -o bin/wt-session ./cmd/wt-session
+	cp bin/wt-session bin/wt
 	go build -o bin/wt-model ./cmd/wt-model
 ifeq ($(shell uname -s),Darwin)
 	@# Re-seal the ad-hoc code signature so AMFI doesn't SIGKILL the binary
 	@# on launch (a stale/drifted linker signature is rejected with
 	@# "Taskgated Invalid Signature"; a fresh codesign regenerates the seal).
+	@codesign --force --sign - bin/wt-session
 	@codesign --force --sign - bin/wt
 	@codesign --force --sign - bin/wt-model
 endif
-	@echo "Built bin/wt and bin/wt-model"
+	@echo "Built bin/wt-session, bin/wt (the same binary) and bin/wt-model"
 
 install: build          # Build then install scripts to ~/.local/bin/
 	cp -r $(SRCDIR)/* $(BINDIR)/
@@ -37,17 +39,18 @@ install: build          # Build then install scripts to ~/.local/bin/
 ifeq ($(shell uname -s),Darwin)
 	@# The cp above leaves the copied binary with a signature AMFI rejects
 	@# ("Taskgated Invalid Signature"), SIGKILLing it on launch (exit 137)
-	@# even though the source bin/wt was re-sealed at build time. A conditional
+	@# even though the source bin/wt-session and bin/wt were re-sealed at build time. A conditional
 	@# `codesign -v` check is NOT enough: the copy can be structurally valid to
 	@# codesign yet still rejected by AMFI, so always force re-seal. The cost is
 	@# one codesign syscall per install.
+	@codesign --force --sign - $(BINDIR)/wt-session
 	@codesign --force --sign - $(BINDIR)/wt
 	@codesign --force --sign - $(BINDIR)/wt-model
 endif
 	@echo "Installed wt scripts to $(BINDIR)"
 
 uninstall:              # Remove installed scripts from ~/.local/bin/
-	rm -f $(BINDIR)/*-wt $(BINDIR)/wt $(BINDIR)/wt-model
+	rm -f $(BINDIR)/*-wt $(BINDIR)/wt-session $(BINDIR)/wt $(BINDIR)/wt-model
 	@echo "Uninstalled wt scripts from $(BINDIR)"
 
 lint:                   # Run shellcheck
@@ -83,12 +86,11 @@ go-format-check:        # Fail if any Go file is not gofmt-clean
 # without it wt-ci's single-p job replays the multi-P run from cache and
 # guards nothing.
 single-p:               # Run the goroutine-sensitive packages on one P
-	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./cmd/wt-model
+	GOMAXPROCS=1 go test -timeout 20m -p 3 -count=1 ./cmd/wt-session ./internal/tui ./internal/lifecycle ./internal/configeditor ./internal/config ./internal/litellm ./internal/cloudsync ./internal/localmodels ./internal/profiles ./internal/sessionclaim ./internal/smoke ./internal/spend ./internal/survey ./internal/usage ./internal/cleanup ./internal/modelserver ./internal/modeljobs ./internal/modelgateway ./internal/sessionreg ./internal/modelclient ./cmd/wt-model
 
-test-agents:            # BROKEN until its rewrite (Task 20): live agent smoke tests that still flip the retired wt litellm on/off (exit 1)
-	@echo "test-agents is broken until its rewrite (Task 20): scripts/agents-smoke.sh still flips 'wt litellm on/off', retired 2026-11-15 (exit 1)." >&2
-	@echo "Run 'wt smoke <model-id> [--only claude,codex]' per model in the meantime." >&2
-	@exit 1
+test-agents:            # Run live agent smoke tests (gateway mode)
+	@command -v wt >/dev/null 2>&1 || { echo "wt not on PATH; ensure ~/.local/bin is in PATH or run: make install"; exit 1; }
+	@scripts/agents-smoke.sh $(ARGS)
 
 check:                  # Run all quality checks
 	@echo "Running lint..."
@@ -115,5 +117,5 @@ test:                   # Run smoke tests
 	@echo "All tests complete."
 
 clean:                  # Remove build artifacts
-	rm -f bin/wt bin/wt-model
+	rm -f bin/wt-session bin/wt bin/wt-model
 	find . -type f -name "*.test" -delete 2>/dev/null || true

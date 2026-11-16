@@ -9,7 +9,7 @@ import (
 
 // EnvelopeVersion is the `version` of the rescue result document. Bump it for
 // any change a consumer could trip on; docs/contracts/rescue-result.schema.json
-// and its samples move with it (held by cmd/wt/rescue_contract_test.go).
+// and its samples move with it (held by cmd/wt-session/rescue_contract_test.go).
 const EnvelopeVersion = 1
 
 // Meta is the run-wide part of the document.

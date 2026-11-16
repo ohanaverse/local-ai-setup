@@ -339,7 +339,7 @@ grep -n 'model_dir' ~/.config/local-ai/registry.toml                            
 
 ### 6. Routing: what is routed, and when
 
-<!-- UNVERIFIED — the `start` below was not run from this session (it loads a real local model); the success line is from `wt/cmd/wt/model_cmds.go` (`runStart`). `wt litellm sync --dry-run` and `wt litellm list` are read-only and were run live 2026-10-03. Errors go to stderr with exit 1. -->
+<!-- UNVERIFIED — the `start` below was not run from this session (it loads a real local model); the success line is from `wt/cmd/wt-session/model_cmds.go` (`runStart`). `wt litellm sync --dry-run` and `wt litellm list` are read-only and were run live 2026-10-03. Errors go to stderr with exit 1. -->
 
 Nothing in this guide's steps asks you to "turn routing on" for a model, because there is nothing to turn on. `wt` derives the LiteLLM routes from `registry.toml` plus live probes:
 

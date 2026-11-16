@@ -88,7 +88,7 @@ func TestPiBuildLitellmNotConfigured(t *testing.T) {
 // TestPiDriverDeclaresWrapperAndEnvProfileMechanisms verifies pi's
 // ProfileMechanisms is exactly {wrapper, env} — wrapper is the little-coder
 // integration; env is allowed because profile env lands on the launched
-// process (cmd/wt applies env before the wrapper), which with the
+// process (cmd/wt-session applies env before the wrapper), which with the
 // little-coder wrapper is little-coder itself and its LITTLE_CODER_*
 // whitelist gate reads it. Anything else (args/config_file) must still fail
 // Validate rather than silently doing nothing.

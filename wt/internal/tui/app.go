@@ -56,7 +56,7 @@ type model struct {
 	// reloadGen is rowsGen when that `F` reload was dispatched: a removal
 	// run bumps rowsGen, and a reload from before it is dropped on landing.
 	reloadGen int
-	// removeFuncs builds each load's row actions (RemoveFuncsBuilder, cmd/wt's
+	// removeFuncs builds each load's row actions (RemoveFuncsBuilder, cmd/wt-session's
 	// closure over cleanupRemoveFuncs); nil makes every row action say it is
 	// unavailable.
 	removeFuncs RemoveFuncsBuilder
@@ -65,7 +65,7 @@ type model struct {
 	agent string         // current agent name
 	tag   string         // active rotation tag group
 	cfg   *config.Config // loaded config for the model catalog
-	theme themes.Theme   // active color theme; passed from cmd/wt
+	theme themes.Theme   // active color theme; passed from cmd/wt-session
 
 	// client is the model server the picker reads its table from; nil only
 	// for a pinned command agent (shell), whose picker never reaches a model.
@@ -149,7 +149,7 @@ type model struct {
 	creation *launchCreation
 
 	// typedPlan is the plan behind a typed name, kept even when no creation
-	// is announced: cmd/wt's -W runs plan.Ensure() unconditionally after its
+	// is announced: cmd/wt-session's -W runs plan.Ensure() unconditionally after its
 	// one question (main.go:551), so the commit point runs it here too. A
 	// reused worktree is Ensure's idempotent no-op (nothing announced,
 	// nothing made); a path that is only debris is git's own error instead of
@@ -187,14 +187,14 @@ type model struct {
 	// fatalErr, when set, is paired with a tea.Quit return so the whole
 	// program exits; Run() below surfaces it as the function's returned
 	// error, matching the non-TUI path's exit-with-message behavior
-	// (cmd/wt/main.go's runLaunchPath). Nothing currently sets this
+	// (cmd/wt-session/main.go's runLaunchPath). Nothing currently sets this
 	// field — enterModelPhase's route-backs return a status, never a
 	// fatal error — but it remains wired into Run() for any future
 	// genuinely-fatal condition.
 	fatalErr error
 
 	// agentErr is what running the launched agent returned (nil for an
-	// exit 0). Run() returns it once the post-exit flow has run, so cmd/wt
+	// exit 0). Run() returns it once the post-exit flow has run, so cmd/wt-session
 	// exits with the agent's status as the non-TUI path does (#412).
 	agentErr error
 }
@@ -565,7 +565,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 					return m, nil
 				}
 				m.newError = ""
-				// A typed name is a pick, not a create: cmd/wt's -W rule
+				// A typed name is a pick, not a create: cmd/wt-session's -W rule
 				// decides which side of the gate it lands on. A name that
 				// owes its worktree — a new branch, a remote tracking branch,
 				// or a branch no worktree holds yet (and no directory at the
@@ -574,7 +574,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				// rest launch into the worktree they name. Nothing is created
 				// here, so a declined gate leaves nothing behind. The plan
 				// is kept either way (typedPlan): the commit point runs its
-				// Ensure unconditionally, as cmd/wt's -W does after its one
+				// Ensure unconditionally, as cmd/wt-session's -W does after its one
 				// question (main.go:551).
 				m.creation = nil
 				m.typedPlan = plan
@@ -824,7 +824,7 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // flag value (comma-delimited; "" = no filter). family is the -F/--family
 // flag value (comma-delimited; "" = no filter). extraArgs are the user's
 // passthrough args after --. theme is the active color theme, loaded by
-// cmd/wt. allowReplace grants the -M start path permission to stop a running
+// cmd/wt-session. allowReplace grants the -M start path permission to stop a running
 // occupant without the replace dialog (it comes from --replace). others is
 // --others ("keep", "stop" or ""): the -M start path's answer about other
 // providers' models loaded beside the model it starts, in place of the
@@ -835,22 +835,22 @@ func newRunModel(yolo, allowReplace bool, others, agent, pinned, tags, family st
 // prePath is inside a git repo, repoRoot is seeded so the new-worktree prompt
 // has a valid directory even if it becomes reachable from the pre-path entry
 // point. models, when non-nil, is the model server the picker reads its
-// table from; nil is the legacy registry path. cfg is the already-loaded config from cmd/wt's newApp (validated
+// table from; nil is the legacy registry path. cfg is the already-loaded config from cmd/wt-session's newApp (validated
 // before Run is called); it is not re-loaded here.
 // applyProfile, when non-nil, applies a local-model launch profile before
 // the agent's cmd.Run() and is called from runAndWaitCmd for every launch
-// this session makes; cmd/wt's main.go builds it as a closure over the
+// this session makes; cmd/wt-session's main.go builds it as a closure over the
 // already-loaded profiles.toml state (mirrors the non-TUI path's
 // applyProfileForLaunch).
 // slots carries the slot profiles: the picker shows a row for each one that
 // names this agent, and a profile launch applies slots.Apply in place of
 // applyProfile.
 // removeFuncs builds the row actions of each picker load (the removal
-// engine's window, `wt cleanup`'s cleanupRemoveFuncs in cmd/wt's closure):
+// engine's window, `wt cleanup`'s cleanupRemoveFuncs in cmd/wt-session's closure):
 // nil leaves every row action saying it is unavailable.
 // When the launched agent's run failed, Run returns that error (an
 // *exec.ExitError for a non-zero exit) after the post-exit flow has run, and
-// cmd/wt exits with the agent's status (#412).
+// cmd/wt-session exits with the agent's status (#412).
 func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, extraArgs []string, theme themes.Theme, prePath string, models ModelClient, cfg *config.Config, applyProfile ProfileApplier, slots SlotProfiles, removeFuncs RemoveFuncsBuilder) error {
 	initial := withSlotProfiles(newRunModel(yolo, allowReplace, others, agent, pinned, tags, family, extraArgs, theme, prePath, models, cfg, removeFuncs), slots)
 	p := tea.NewProgram(initial, tea.WithAltScreen())
@@ -893,7 +893,7 @@ func Run(yolo, allowReplace bool, others, agent, pinned, tags, family string, ex
 // runResult is what Run returns once the post-exit flow has run: the
 // program's own error, else the model's fatal error, else the error the
 // launched agent's run returned (an *exec.ExitError for a non-zero exit,
-// which cmd/wt turns into wt's own exit status, #412). It is extracted from
+// which cmd/wt-session turns into wt's own exit status, #412). It is extracted from
 // Run() so it is unit-testable without a real tea.Program/TTY.
 func runResult(final tea.Model, err error) error {
 	if err != nil {

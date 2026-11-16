@@ -919,7 +919,7 @@ func removalScreen(name string) func(t *testing.T, width, height int) string {
 // package's procStart). An unverifiable claim (a start time that cannot be
 // read) raises no held label at all, so the held pins need this verifiable
 // one; unlike staleClaim (cleanup_list_test.go), the child stays alive for
-// the test. (Shape: cmd/wt's holderClaim in restore_root_test.go and
+// the test. (Shape: cmd/wt-session's holderClaim in restore_root_test.go and
 // cleanup's snapshot_test holderClaim.)
 func holderClaim(t *testing.T, repo, path, branch, agent string) sessionclaim.Claim {
 	t.Helper()

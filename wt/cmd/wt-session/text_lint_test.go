@@ -12,7 +12,7 @@ import (
 )
 
 // sessionWordFiles are the files TestUserTextQualifiesSession reads: every
-// non-test file of internal/modelclient, and the cmd/wt files the client path
+// non-test file of internal/modelclient, and the cmd/wt-session files the client path
 // added (Tasks 10-17) whose whole text is the client's.
 func sessionWordFiles(t *testing.T) []string {
 	t.Helper()
@@ -53,7 +53,7 @@ func unqualifiedSession(s string) (int, bool) {
 // text of the model server's client says "client session" wherever it means
 // the server's registry of clients, because "wt session" already names a
 // launch that claims a worktree, and a bare "session" could be either. It
-// parses internal/modelclient and the client files of cmd/wt and fails,
+// parses internal/modelclient and the client files of cmd/wt-session and fails,
 // case-insensitively, on any string literal holding "session" not preceded by
 // "client " or "wt ". A literal that starts with "/" (a URL path such as
 // "/control/v1/sessions"), a struct tag (a JSON key) and an import path are

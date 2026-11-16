@@ -22,7 +22,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Test seams. cmd/wt's TestMain makes all of them fail closed, so no test
+// Test seams. cmd/wt-session's TestMain makes all of them fail closed, so no test
 // reaches the network, a terminal or the developer's ollama (the ollama CLI's
 // own seam is in cloudsync_ollama.go).
 var (

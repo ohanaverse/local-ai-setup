@@ -51,7 +51,7 @@ type rowPRsLoadedMsg struct {
 // header and the origin rows must say so rather than name a --no-fetch flag
 // there is none of (a `F` refresh overwrites it with the fetch's result).
 // Registered model artifacts are not read here
-// (that needs the registry, which cmd/wt owns), so no row carries a
+// (that needs the registry, which cmd/wt-session owns), so no row carries a
 // protected_artifact blocker in the picker; removal re-checks in the engine.
 // OriginRows is set because the picker shows and acts on origin rows (its
 // `o`, exactly GatherInputs.OriginRows's contract): the PR fill then makes
@@ -357,7 +357,7 @@ func (m model) updateRows(msg tea.Msg) (model, tea.Cmd) {
 
 // removeFuncsFor is the row actions' RemoveFuncs for one load's snapshot and
 // inputs — the picker's instance of the removal engine, `wt cleanup`'s
-// cleanupRemoveFuncs through cmd/wt's builder — or the zero funcs, whose
+// cleanupRemoveFuncs through cmd/wt-session's builder — or the zero funcs, whose
 // actions all say they are unavailable, for a session started without one.
 // Every load builds its own instance, because the engine's re-check stands
 // on that load's snapshot; the PR fill's landing swaps its instance in.

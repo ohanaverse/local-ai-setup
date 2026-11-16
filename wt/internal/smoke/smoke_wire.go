@@ -76,7 +76,7 @@ var gatewayRun = realGatewayRun
 
 // SetGatewayRunForTest replaces the gateway agent-run seam with fn, which
 // reports a row's output and exit code (a non-zero code makes the row FAIL),
-// and returns the func restoring the real seam. It exists for cmd/wt's tests,
+// and returns the func restoring the real seam. It exists for cmd/wt-session's tests,
 // which cannot assign this package's unexported gatewayRun. Tests only.
 func SetGatewayRunForTest(fn func(gw agents.Gateway, models []config.Model, agentName string, m config.Model, prompt, cwd string, timeout time.Duration, profileApplier ProfileApplier, cleanup *func() error) ExecOutcome) (restore func()) {
 	old := gatewayRun

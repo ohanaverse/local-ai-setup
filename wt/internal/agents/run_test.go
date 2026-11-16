@@ -10,7 +10,7 @@ import (
 // TestRunAndCleanupCallsCleanupAfterRunRegardlessOfOutcome verifies
 // RunAndCleanup always invokes cleanup exactly once after cmd.Run()
 // returns, whether the command succeeds or fails — the shared
-// apply->run->cleanup sequence duplicated between cmd/wt's runAgentCmd and
+// apply->run->cleanup sequence duplicated between cmd/wt-session's runAgentCmd and
 // internal/tui's runAndWaitCmd depends on cleanup running unconditionally
 // so a profile's config_content file is always restored.
 func TestRunAndCleanupCallsCleanupAfterRunRegardlessOfOutcome(t *testing.T) {

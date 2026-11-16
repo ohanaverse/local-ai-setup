@@ -1461,7 +1461,7 @@ func TestCleanupListFetchFailureKeepsOldListAndSaysWhy(t *testing.T) {
 }
 
 // TestCleanupListFetchNotWired: `F` while RemoveFuncs.Refetch is still nil
-// (the pre-wiring gap cmd/wt closes) says one line on the status and does
+// (the pre-wiring gap cmd/wt-session closes) says one line on the status and does
 // nothing — no panic, no silent no-op, and nothing run at all (no prune: no
 // refresh ran). Why: the gap must read as a told gap, not a broken key.
 func TestCleanupListFetchNotWired(t *testing.T) {
@@ -1702,7 +1702,7 @@ func TestPickerHeaderShowsRootDrift(t *testing.T) {
 // (docs/contracts/session-claims.md: equal to the real start within 5 s). A
 // fixture "other session" must read live under that rule, so the claim names
 // a real child's real start time, read from ps's lstart in the local zone,
-// never a manufactured timestamp. (Shape: cmd/wt's launch_test.go and
+// never a manufactured timestamp. (Shape: cmd/wt-session's launch_test.go and
 // internal/cleanup's snapshot_test.go.)
 func procStart(t *testing.T, pid int) int64 {
 	t.Helper()
@@ -1726,7 +1726,7 @@ func procStart(t *testing.T, pid int) int64 {
 // child's real start time, never a manufactured one. The reap matters as
 // much as the kill: a killed but unreaped child is still a live pid to
 // kill(pid, 0), and its claim would read live. Returns the claim and its
-// file's path. (Shape: cmd/wt's holderClaim in restore_root_test.go.)
+// file's path. (Shape: cmd/wt-session's holderClaim in restore_root_test.go.)
 func staleClaim(t *testing.T, repo, path, branch, agent string) (sessionclaim.Claim, string) {
 	t.Helper()
 	child := exec.Command("sleep", "30")
@@ -1927,7 +1927,7 @@ func TestCleanupListRestoreRootExplainsWhenNotOffered(t *testing.T) {
 }
 
 // TestCleanupListRestoreRootNotWired checks `R` while RemoveFuncs.RestoreRoot
-// is still nil (the pre-wiring gap cmd/wt closes): on the row a restore is
+// is still nil (the pre-wiring gap cmd/wt-session closes): on the row a restore is
 // offered for it says one line and does nothing. Why: the gap must read as a
 // told gap, not a broken key — no panic, no silent no-op.
 func TestCleanupListRestoreRootNotWired(t *testing.T) {
@@ -2681,7 +2681,7 @@ func TestCleanupListOJudgesTheLockOnTheOriginTarget(t *testing.T) {
 	build := func(o cleanup.Row) cleanupListModel {
 		rep := cleanup.Report{Repo: "/repo", Base: cleanup.Base{Default: "main", Ref: "origin/main"}, Rows: []cleanup.Row{here}, Folded: []cleanup.Row{o}}
 		m := moveTo(t, newSizedCleanupList(t, rep, 120, 40), "here")
-		// The removal funcs, as cmd/wt wires them: the screen lists an action
+		// The removal funcs, as cmd/wt-session wires them: the screen lists an action
 		// only when its func exists (runPreview swaps in its own recorder).
 		var ignored []string
 		m.rm.Preview = previewRecorder(&ignored)

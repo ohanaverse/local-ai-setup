@@ -24,7 +24,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Test seams: production talks to the live inventory/providers; cmd/wt's
+// Test seams: production talks to the live inventory/providers; cmd/wt-session's
 // TestMain stubs all of them.
 var (
 	// stopState is one inventory round and one read of the live sessions: the

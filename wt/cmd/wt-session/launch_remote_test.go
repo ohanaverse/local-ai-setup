@@ -109,7 +109,7 @@ func fastModelClient(ep modelclient.Endpoint) *modelclient.Client {
 	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil || (host != "localhost" && !net.ParseIP(host).IsLoopback()) {
-			return nil, fmt.Errorf("cmd/wt tests dial loopback only, not %q", addr)
+			return nil, fmt.Errorf("cmd/wt-session tests dial loopback only, not %q", addr)
 		}
 		return d.DialContext(ctx, network, addr)
 	}}

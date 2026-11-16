@@ -125,7 +125,7 @@ func TestLoad_FailsClosedWithoutRegistry(t *testing.T) {
 }
 
 // loadRegistry must return the ErrRegistryMissing sentinel (not just any
-// error) when registry.toml is absent, so cmd/wt can distinguish "no
+// error) when registry.toml is absent, so cmd/wt-session can distinguish "no
 // registry yet" (tolerable for command agents) from a genuine config
 // problem (malformed file, etc.).
 func TestLoadRegistryMissingReturnsSentinel(t *testing.T) {
