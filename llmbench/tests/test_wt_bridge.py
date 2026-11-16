@@ -172,3 +172,46 @@ def test_stop_runs_wt_stop_and_reports_its_failure(monkeypatch, wt_on_path):
     result["cp"] = _cp(returncode=1, stderr="Error: not running\n")
     with pytest.raises(wt_bridge.WtBridgeError, match="^not running$"):
         wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")
+
+
+# wt's not-configured refusal leads (wt/internal/modelclient/endpoint.go),
+# one per missing setting, plus an unrelated refusal as the negative case.
+_NOT_CONFIGURED_CASES = [
+    ("Error: no model server is configured; [litellm] is no longer used by wt\n", True),
+    ("Error: the model server url is not configured\n", True),
+    ("Error: the model server token is not configured\n", True),
+    ("Error: not running\n", False),
+]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "want_hint"),
+    _NOT_CONFIGURED_CASES,
+    ids=["both-missing", "url-missing", "token-missing", "other-refusal"],
+)
+def test_stop_not_configured_refusal_hints_at_the_model_server_settings(
+    monkeypatch, wt_on_path, stderr, want_hint
+):
+    """Since the wt-model split a model-id stop goes through the model
+    server, so with no [model-server] endpoint configured every unload is
+    refused and benchmark isolation fails. When the refusal is wt's
+    not-configured one (its pinned leads), stop()'s failure output must
+    carry the hint that names the settings — [model-server] in
+    ~/.config/agent-wt/config.toml, or WT_MODEL_URL and WT_MODEL_TOKEN_FILE;
+    any other refusal keeps its own message alone."""
+
+    def run(argv, **kwargs):
+        return _cp(returncode=1, stderr=stderr)
+
+    monkeypatch.setattr(wt_bridge.subprocess, "run", run)
+    with pytest.raises(wt_bridge.WtBridgeError) as excinfo:
+        wt_bridge.stop("omlx/Qwen3.6-35B-A3B-6bit")
+    msg = str(excinfo.value)
+    assert stderr.removeprefix("Error: ").strip() in msg  # wt's own line is kept
+    for name in (
+        "[model-server]",
+        "~/.config/agent-wt/config.toml",
+        "WT_MODEL_URL",
+        "WT_MODEL_TOKEN_FILE",
+    ):
+        assert (name in msg) == want_hint, f"{name} hint presence != {want_hint}"

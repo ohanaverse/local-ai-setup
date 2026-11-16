@@ -214,7 +214,7 @@ def run_benchmark(
             print(
                 "llmbench: no LiteLLM apiKey seeded in ~/.pi/agent/models.json; "
                 "litellm rows send no key — if the proxy requires one, launch a wt "
-                "pi session in litellm mode at least once to seed it",
+                "pi session first",
                 file=sys.stderr,
             )
         else:
