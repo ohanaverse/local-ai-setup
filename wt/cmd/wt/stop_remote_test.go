@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 )
@@ -161,5 +163,121 @@ func TestStopProviderStaysOnTheHostPath(t *testing.T) {
 	})
 	if len(r.f.Stops) != 1 || r.f.Stops[0].Model != "omlx/q" {
 		t.Errorf("stops = %+v, want a model id to go to the server", r.f.Stops)
+	}
+}
+
+// pickAll runs the stop picker over rows with the answer "a" (every row).
+func pickAll(t *testing.T, ms *modelSession, yes bool) error {
+	t.Helper()
+	stubStdinTTY(t, true)
+	old := stopSelectIn
+	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
+	t.Cleanup(func() { stopSelectIn = old })
+	return runStopRemote(context.Background(), &bytes.Buffer{}, ms, "", yes)
+}
+
+// answerNoTTY makes the stop's terminal a file that reads as an empty answer
+// (a decline), whatever is written to it.
+func answerNoTTY(t *testing.T) {
+	t.Helper()
+	old := openTTY
+	openTTY = func() (*os.File, error) {
+		return os.OpenFile(t.TempDir()+"/tty", os.O_RDWR|os.O_CREATE, 0o600)
+	}
+	t.Cleanup(func() { openTTY = old })
+}
+
+func twoRunning(t *testing.T) (*remoteRig, *modelSession) {
+	return startRig(t,
+		localRow("omlx/a", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)),
+		localRow("omlx/b", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+}
+
+// TestStopRemotePickerAllDeclinedExits3 proves a batch in which every stop was
+// declined exits 3 (C9, nothing changed), with the per-item lines once and a
+// summary that does not repeat them.
+func TestStopRemotePickerAllDeclinedExits3(t *testing.T) {
+	r, ms := twoRunning(t)
+	r.f.StopOutcome = inUseProblem
+	answerNoTTY(t)
+	err := pickAll(t, ms, false)
+	if err == nil || exitcode.Of(err) != 3 || err.Error() != "2 of 2 stops failed" {
+		t.Fatalf("err = %v (exit %d), want exit 3, 2 of 2 stops failed", err, exitcode.Of(err))
+	}
+	for _, id := range []string{"omlx/a", "omlx/b"} {
+		if n := strings.Count(r.stderr.String(), "wt: "+id+": declined"); n != 1 {
+			t.Errorf("%s reason printed %d times:\n%s", id, n, r.stderr.String())
+		}
+	}
+}
+
+// TestStopRemotePickerMixedFailureExits2 proves one declined and one failed
+// stop in a batch exit 2.
+func TestStopRemotePickerMixedFailureExits2(t *testing.T) {
+	r, ms := twoRunning(t)
+	r.f.StopOutcome = func(n int, req modelapi.StopRequest) *modelapi.Problem {
+		if req.Model == "omlx/a" {
+			return inUseProblem(n, req)
+		}
+		return &modelapi.Problem{Code: modelapi.CodeFailed, Message: "omlx/b would not stop"}
+	}
+	answerNoTTY(t)
+	err := pickAll(t, ms, false)
+	if err == nil || exitcode.Of(err) != 2 || err.Error() != "2 of 2 stops failed" {
+		t.Fatalf("err = %v (exit %d), want exit 2", err, exitcode.Of(err))
+	}
+	if !strings.Contains(r.stderr.String(), "wt: omlx/b: omlx/b would not stop") {
+		t.Errorf("stderr = %q", r.stderr.String())
+	}
+}
+
+// TestStopRemotePickerDetachStopsTheBatch proves a Ctrl-C detach in the middle
+// of a batch ends it: exit 2, the later model never posted, and the summary
+// says the rest were not stopped instead of counting them failed.
+func TestStopRemotePickerDetachStopsTheBatch(t *testing.T) {
+	r, ms := twoRunning(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.f.Hang = true
+	r.f.OnPoll = cancel
+	stubStdinTTY(t, true)
+	old := stopSelectIn
+	stopSelectIn = func() io.Reader { return strings.NewReader("a\n") }
+	t.Cleanup(func() { stopSelectIn = old })
+	err := runStopRemote(ctx, &bytes.Buffer{}, ms, "", false)
+	if err == nil || exitcode.Of(err) != 2 || err.Error() != "1 of 2 stops failed; the 1 remaining were not stopped" {
+		t.Fatalf("err = %v (exit %d)", err, exitcode.Of(err))
+	}
+	if n := len(r.f.Stops); n != 1 {
+		t.Errorf("stops posted = %d, want 1", n)
+	}
+}
+
+// TestStopAnswererNamesTheRealTerminalFailure proves "there is no terminal to
+// ask" is said only when there is none: another failure to open it is named.
+func TestStopAnswererNamesTheRealTerminalFailure(t *testing.T) {
+	p := modelapi.Problem{Code: modelapi.CodeInUse, Sessions: []string{"a"}}
+	a := &stopAnswerer{id: "omlx/q", tty: func() (*os.File, error) { return nil, errors.New("open /dev/tty: device not configured") }}
+	_, err := a.ConfirmInUse(context.Background(), p)
+	if err == nil || exitcode.Of(err) != 3 || strings.Contains(err.Error(), "no terminal to ask") ||
+		!strings.Contains(err.Error(), "could not open the terminal: open /dev/tty: device not configured") {
+		t.Errorf("err = %v (exit %d)", err, exitcode.Of(err))
+	}
+}
+
+// TestStopAllStaysOnTheHostPathWithAnEndpoint proves a bare `wt stop --all`
+// with a model server configured acts on this machine (R3): the server is
+// never asked. The app's registry has no provider, so the host path has
+// nothing to stop and touches no real service.
+func TestStopAllStaysOnTheHostPathWithAnEndpoint(t *testing.T) {
+	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+	r.a.cfg = &config.Config{}
+	cmd := stopCmd(r.a)
+	cmd.SetArgs([]string{"--all", "--yes"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	captureFile(t, &os.Stdout, func() { _ = cmd.Execute() })
+	if n := len(r.f.reqs()); n != 0 {
+		t.Errorf("the model server was asked %d times:\n%s", n, strings.Join(r.f.reqs(), "\n"))
 	}
 }

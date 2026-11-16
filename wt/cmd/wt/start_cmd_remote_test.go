@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -181,5 +183,80 @@ func TestStartRemoteNoTerminalNoIdSaysPassAnId(t *testing.T) {
 	}
 	if n := r.f.count("POST"); n != 0 {
 		t.Errorf("POSTs = %d, want none", n)
+	}
+}
+
+// TestStartRemoteStartsARunningModelKnownToBeUnrouted proves R7's one start of
+// a running model: routed explicitly false starts it (the job adds the route).
+func TestStartRemoteStartsARunningModelKnownToBeUnrouted(t *testing.T) {
+	r, ms := startRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(false)))
+	var out bytes.Buffer
+	if err := runStartRemote(context.Background(), &out, ms, themes.Default, "omlx/q", fixedAnswerer{}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if n := r.f.count("POST /control/v1/start"); n != 1 {
+		t.Errorf("starts = %d, want 1\n%s", n, strings.Join(r.f.reqs(), "\n"))
+	}
+	if strings.Contains(out.String(), "already running") {
+		t.Errorf("stdout = %q", out.String())
+	}
+}
+
+// TestStartRemoteRegisterFailureIsOneNoteAndTheStartGoesOn proves a client
+// session the server refuses is one note, the start still runs, the session is
+// still ended (a DELETE is sent), and that end says nothing.
+func TestStartRemoteRegisterFailureIsOneNoteAndTheStartGoesOn(t *testing.T) {
+	r, ms := startRig(t, localRow("omlx/q", modelapi.StateStopped, modelapi.ActionStart, nil))
+	r.f.RegisterStatus = 500
+	if err := runStartRemote(context.Background(), &bytes.Buffer{}, ms, themes.Default, "omlx/q", fixedAnswerer{}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if n := strings.Count(r.stderr.String(), "did not register this client session"); n != 1 {
+		t.Errorf("register notes = %d, want 1:\n%s", n, r.stderr.String())
+	}
+	if strings.Contains(r.stderr.String(), "could not end the client session") {
+		t.Errorf("the end of an unregistered session spoke: %q", r.stderr.String())
+	}
+	if r.f.count("POST /control/v1/start") != 1 || r.f.count("DELETE /control/v1/sessions/") != 1 {
+		t.Errorf("start and delete counts wrong:\n%s", strings.Join(r.f.reqs(), "\n"))
+	}
+}
+
+// TestStartAndStopCommandsDispatchOnTheEndpoint proves, at the command level
+// with a model server configured: bare `wt start` with no terminal is P5's
+// refusal, bare `wt stop` likewise, and bare `wt stop` with a terminal opens
+// the server's picker.
+func TestStartAndStopCommandsDispatchOnTheEndpoint(t *testing.T) {
+	r := newRemoteRig(t, localRow("omlx/q", modelapi.StateRunning, modelapi.ActionLaunch, boolp(true)))
+	run := func(cmd interface {
+		SetArgs([]string)
+		SetOut(io.Writer)
+		SetErr(io.Writer)
+		Execute() error
+	}) error {
+		cmd.SetArgs(nil)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		return cmd.Execute()
+	}
+	err := run(startCmd(r.a))
+	if err == nil || err.Error() != "the model picker needs a TTY; pass a model id (wt start ID) to start without it" || exitcode.Of(err) != 1 {
+		t.Errorf("start: err = %v (exit %d)", err, exitcode.Of(err))
+	}
+	err = run(stopCmd(r.a))
+	if err == nil || err.Error() != "the stop picker needs a TTY; pass a model id (wt stop ID) to stop without it" || exitcode.Of(err) != 1 {
+		t.Errorf("stop: err = %v (exit %d)", err, exitcode.Of(err))
+	}
+	stubStdinTTY(t, true)
+	old := stopSelectIn
+	stopSelectIn = func() io.Reader { return strings.NewReader("1\n") }
+	t.Cleanup(func() { stopSelectIn = old })
+	captureFile(t, &os.Stdout, func() {
+		if err := run(stopCmd(r.a)); err != nil {
+			t.Errorf("stop with a terminal: %v", err)
+		}
+	})
+	if len(r.f.Stops) != 1 || r.f.Stops[0].Model != "omlx/q" {
+		t.Errorf("stops = %+v, want the picked model", r.f.Stops)
 	}
 }

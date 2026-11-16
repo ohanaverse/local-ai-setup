@@ -67,7 +67,9 @@ type fakeModelServer struct {
 	// cancelled.
 	Fixed         map[string]modelapi.JobStatus
 	CancelRunning int
-	Cancels       []string
+	// FailPollAfterCancel makes a cancelled fixed job's polls answer a 500.
+	FailPollAfterCancel bool
+	Cancels             []string
 	// Log, when set, gets each request line appended as it arrives (a child
 	// process's fake reports to its parent through it).
 	Log string
@@ -235,6 +237,11 @@ func (f *fakeModelServer) poll(w http.ResponseWriter, id string) {
 	f.mu.Lock()
 	if fx, ok := f.Fixed[id]; ok {
 		if n, was := f.cancelled[id]; was {
+			if f.FailPollAfterCancel {
+				f.mu.Unlock()
+				f.apiErr(w, 500, modelapi.CodeFailed, "poll failed")
+				return
+			}
 			f.cancelled[id] = n + 1
 			if n < f.CancelRunning {
 				fx.State, fx.Step, fx.Result = modelapi.JobRunning, "cancelling", nil

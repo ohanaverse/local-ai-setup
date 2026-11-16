@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/cleanup"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/exitcode"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/modelclient"
@@ -55,7 +56,8 @@ func jobCmd(a *app) *cobra.Command {
 			"--json prints the job (or, when the command fails, the error) as one JSON\n" +
 			"document with the same exit code, described by docs/contracts/job.sample.json.\n\n" +
 			"Exit 0 for a job that is queued, running or succeeded, 2 for a job that failed\n" +
-			"or was cancelled (its problem is the error line), 1 when the server does not\n" +
+			"or was cancelled (its problem is the error line) or for a --cancel whose wait\n" +
+			"failed after the cancel was sent, 1 when the server does not\n" +
 			"know the job (it finished and was dropped from the list, or the server\n" +
 			"restarted) or cannot be reached. Needs a model server ([model-server] in\n" +
 			"config.toml, or WT_MODEL_URL).",
@@ -179,7 +181,7 @@ func jobErrorExit(err error) int {
 func cancelJob(ctx context.Context, ms *modelSession, id string) (modelapi.JobStatus, error) {
 	if err := ms.client.CancelJob(ctx, id); err != nil {
 		if modelclient.IsCode(err, modelapi.CodeUnknownJob) {
-			return modelapi.JobStatus{}, &jobUnknownError{fmt.Sprintf("no job %s on the model server — it is unknown, finished and dropped from the list, or the server restarted; nothing was cancelled", id)}
+			return modelapi.JobStatus{}, &jobUnknownError{fmt.Sprintf("no job %s on the model server — it is unknown, finished and dropped from the list, or the server restarted; nothing was cancelled", cleanup.Flatten(id))}
 		}
 		return modelapi.JobStatus{}, modelclient.Still(err, "it is not known whether the job was cancelled")
 	}
@@ -190,7 +192,9 @@ func cancelJob(ctx context.Context, ms *modelSession, id string) (modelapi.JobSt
 			if ctx.Err() != nil {
 				break
 			}
-			return modelapi.JobStatus{}, modelclient.Still(err, fmt.Sprintf("the cancel was sent; check the job with 'wt job %s'", id))
+			// The cancel was sent and what became of it is unknown: not
+			// "nothing changed" (1), but 2, as the timeout below.
+			return modelapi.JobStatus{}, exitcode.New(2, modelclient.Still(err, fmt.Sprintf("the cancel was sent; check the job with 'wt job %s'", id)), false)
 		}
 		switch js.State {
 		case modelapi.JobSucceeded, modelapi.JobFailed, modelapi.JobCancelled:

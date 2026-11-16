@@ -65,3 +65,36 @@ func TestSelectCancelledByContext(t *testing.T) {
 		t.Errorf("got %v cancelled=%v out=%q", got, cancelled, out.String())
 	}
 }
+
+// TestSelectEdgeInputs proves the legacy stop picker's parse through Select:
+// q, skip, esc and an empty line choose nothing; a number out of range or a
+// non-number rejects the whole line and asks again (the reason printed); an
+// exhausted reader chooses nothing.
+func TestSelectEdgeInputs(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in       string
+		want     []int
+		rejected bool
+	}{
+		"q":             {"q\n", nil, false},
+		"esc":           {"esc\n", nil, false},
+		"skip":          {"skip\n", nil, false},
+		"out of range":  {"9\n2\n", []int{1}, true},
+		"zero":          {"0\n1\n", []int{0}, true},
+		"non-numeric":   {"x\n2\n", []int{1}, true},
+		"partly bad":    {"1 x\n3\n", []int{2}, true},
+		"eof":           {"", nil, false},
+		"eof after bad": {"x\n", nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			got, cancelled := Select(context.Background(), strings.NewReader(tc.in), &out, "Pick?", []string{"a", "b", "c"})
+			if cancelled || !slices.Equal(got, tc.want) {
+				t.Errorf("got %v cancelled=%v, want %v", got, cancelled, tc.want)
+			}
+			if has := strings.Contains(out.String(), "not a number from the list"); has != tc.rejected {
+				t.Errorf("rejection printed = %v, want %v:\n%s", has, tc.rejected, out.String())
+			}
+		})
+	}
+}

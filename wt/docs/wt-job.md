@@ -35,8 +35,8 @@ one prints nothing more, the result line says it.
 | Code | Meaning |
 |---|---|
 | 0 | The job is queued, running or succeeded (for `--cancel`: it succeeded before the cancel took effect). |
-| 1 | The model server does not know the job (it finished and was dropped from its list, or the server restarted), or it cannot be reached or refused the token. Nothing was cancelled, or, if the cancel was sent and the wait failed, the error says so. |
-| 2 | The job failed or was cancelled (a cancel that worked ends here), or `--cancel` stopped waiting before the job ended. |
+| 1 | The model server does not know the job (it finished and was dropped from its list, or the server restarted), or it cannot be reached or refused the token. Nothing was cancelled. |
+| 2 | The job failed or was cancelled (a cancel that worked ends here), or `--cancel` could not finish waiting after the cancel was sent (the wait failed, timed out or was interrupted): the error says so and `wt job ID` shows where the job is. |
 
 An unknown id reads as
 `the model server no longer knows job ID (it finished and was dropped from its list, or the server restarted) — run 'wt model list --server' to see whether the model came up`,

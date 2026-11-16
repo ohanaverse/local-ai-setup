@@ -266,3 +266,28 @@ func TestJobHelpHasLongAndExample(t *testing.T) {
 		}
 	}
 }
+
+// TestJobCancelPollFailureExits2 proves a --cancel whose poll fails after the
+// cancel was sent exits 2 (C9: the outcome is unknown, so 1 "nothing changed"
+// would lie), keeping the "the cancel was sent" clause.
+func TestJobCancelPollFailureExits2(t *testing.T) {
+	r := newJobRig(t, jobStatus("job-1", modelapi.JobRunning, "loading the model"))
+	r.f.FailPollAfterCancel = true
+	_, err := r.run(t, "job-1", "--cancel")
+	if err == nil || exitcode.Of(err) != 2 || !strings.Contains(err.Error(), "the cancel was sent") {
+		t.Fatalf("err = %v (exit %d), want exit 2 with the cancel-was-sent clause", err, exitcode.Of(err))
+	}
+	if n := len(r.f.Cancels); n != 1 {
+		t.Errorf("cancels = %d, want 1", n)
+	}
+}
+
+// TestJobUnknownCancelFlattensTheId proves the user's id is shown as one
+// printable line in the unknown-cancel text (M11 consistency).
+func TestJobUnknownCancelFlattensTheId(t *testing.T) {
+	r := newJobRig(t)
+	_, err := r.run(t, "a\nb\x1b[31m", "--cancel")
+	if err == nil || strings.ContainsAny(err.Error(), "\n\x1b") || !strings.Contains(err.Error(), "no job a b[31m on the model server") {
+		t.Errorf("err = %q", err)
+	}
+}

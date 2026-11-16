@@ -610,6 +610,8 @@ not read.
 - Without an id it opens the model picker over the server's local models and
   needs a terminal; without one it exits 1 with
   `the model picker needs a TTY; pass a model id (wt start ID) to start without it`.
+  The picker lists the server's local rows, and a blocked row is refused by the
+  start job rather than greyed out.
 - A running model the gateway lists, or whose route the server could not read,
   is left alone: `<id> is already running` on stdout, exit 0. A model that is
   running but known not to be routed is started again, which adds the route.
@@ -641,6 +643,10 @@ not read.
 - A stop the provider accepted but has not finished is a success (exit 0):
   `<id> — still finishing: …`.
 - Success prints `<id> stopped` on stdout. Ctrl+C detaches as for a start.
+- Picking several models stops them in turn. Each failure prints its reason once
+  on stderr (`wt: <id>: …`) and the last line counts them (`2 of 3 stops failed`):
+  exit 3 when every one was declined, otherwise 2. A detach ends the batch and
+  the line says how many were not stopped.
 
 **`wt job ID`** shows or cancels a job by id: [wt-job.md](wt-job.md).
 

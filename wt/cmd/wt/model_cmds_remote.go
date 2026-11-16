@@ -185,8 +185,12 @@ func (a *stopAnswerer) ConfirmInUse(ctx context.Context, p modelapi.Problem) (bo
 	}
 	f, err := a.tty()
 	if err != nil {
+		why := errNoTerminal.Error()
+		if !errors.Is(err, errNoTerminal) {
+			why = "could not open the terminal: " + err.Error()
+		}
 		return false, exitcode.New(exitApprovalMissing,
-			fmt.Errorf("approval missing: %s; pass --yes to stop it anyway (%s); nothing was stopped", what, errNoTerminal), false)
+			fmt.Errorf("approval missing: %s; pass --yes to stop it anyway (%s); nothing was stopped", what, why), false)
 	}
 	defer f.Close()
 	if _, err := fmt.Fprintf(f, "%s; stop it anyway? [y/N] ", what); err != nil {
@@ -240,8 +244,11 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 			ids = append(ids, running[i].ID)
 		}
 	}
-	failed := 0
-	for _, id := range ids {
+	// A batch prints each failed model's reason once, as it happens; the one
+	// error at the end counts them and does not repeat a reason. A detach ends
+	// the batch: the models after it were never asked, which is not a failure.
+	failed, declinedN := 0, 0
+	for i, id := range ids {
 		err := stopOneRemote(ctx, out, ms, id, yes)
 		if err == nil {
 			continue
@@ -252,12 +259,24 @@ func runStopRemote(ctx context.Context, out io.Writer, ms *modelSession, arg str
 		fmt.Fprintf(osStderr, "wt: %s: %v\n", cleanup.Flatten(id), err)
 		failed++
 		var det *modelclient.DetachedError
+		if exitcode.Of(err) == exitApprovalMissing {
+			declinedN++ // declined, or approval missing: nothing changed
+		}
 		if errors.As(err, &det) {
-			break
+			rest := len(ids) - i - 1
+			msg := fmt.Sprintf("%d of %d stops failed", failed, len(ids))
+			if rest > 0 {
+				msg += fmt.Sprintf("; the %d remaining were not stopped", rest)
+			}
+			return exitcode.New(2, errors.New(msg), false)
 		}
 	}
 	if failed > 0 {
-		return exitcode.New(2, fmt.Errorf("%d of %d stops failed", failed, len(ids)), false)
+		code := 2
+		if declinedN == failed {
+			code = exitApprovalMissing // nothing changed: every stop was declined
+		}
+		return exitcode.New(code, fmt.Errorf("%d of %d stops failed", failed, len(ids)), false)
 	}
 	return nil
 }
