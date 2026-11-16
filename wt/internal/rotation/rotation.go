@@ -124,7 +124,20 @@ func (r *Rotation) RecordProfile(agent, profileID string) error {
 // caller must pass a slice resolved from live rows, not cfg.EligibleModels,
 // which applies exposure and tag/family filters only, with no running check.
 func (r *Rotation) NextFromEligible(eligible []config.Model, cfg *config.Config) (config.Model, bool) {
-	if len(eligible) == 0 || cfg == nil || len(cfg.Models) == 0 {
+	if cfg == nil {
+		return config.Model{}, false
+	}
+	return r.NextFromOrder(eligible, cfg.Models)
+}
+
+// NextFromOrder is NextFromEligible's algorithm over ordered in place of
+// cfg.Models: the first model after the last launched one, in ordered's
+// order and wrapping, that is in eligible; index 0 when the last launched
+// model is not in ordered. A session building ordered from the server's
+// catalog passes registered rows only, so a discovered model is never
+// rotated into.
+func (r *Rotation) NextFromOrder(eligible, ordered []config.Model) (config.Model, bool) {
+	if len(eligible) == 0 || len(ordered) == 0 {
 		return config.Model{}, false
 	}
 	allowed := map[string]bool{}
@@ -134,7 +147,7 @@ func (r *Rotation) NextFromEligible(eligible []config.Model, cfg *config.Config)
 
 	start := 0
 	if last, ok := r.Last(); ok {
-		for i, m := range cfg.Models {
+		for i, m := range ordered {
 			if m.ID == last {
 				start = i + 1
 				break
@@ -142,9 +155,8 @@ func (r *Rotation) NextFromEligible(eligible []config.Model, cfg *config.Config)
 		}
 	}
 
-	for offset := 0; offset < len(cfg.Models); offset++ {
-		idx := (start + offset) % len(cfg.Models)
-		m := cfg.Models[idx]
+	for offset := 0; offset < len(ordered); offset++ {
+		m := ordered[(start+offset)%len(ordered)]
 		if allowed[m.ID] {
 			return m, true
 		}

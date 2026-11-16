@@ -594,6 +594,12 @@ type Model struct {
 	// load; read it through PricingUpdated.
 	PricingUpdatedAt any  `toml:"pricing_updated_at,omitempty"`
 	Native           bool `toml:"-"` // derived: provider auth.type == "native"; not persisted
+	// HostContext is a cloud model's context window as the wt-model server
+	// reports it; 0 otherwise. Session-side only, never persisted.
+	HostContext int `toml:"-"`
+	// GatewayID is the id an agent must send to the gateway; empty means ID.
+	// Session-side only, never persisted.
+	GatewayID string `toml:"-"`
 }
 
 // pricingStampLayouts are the spellings of pricing_updated_at wt reads: the
@@ -818,6 +824,10 @@ type Agent struct {
 	Name               string   `toml:"name"`
 	SupportedProviders []string `toml:"supported_providers"`        // hard constraint
 	DefaultProvider    string   `toml:"default_provider,omitempty"` // optional
+	// AllProviders marks an in-memory agent LoadSession synthesized for a
+	// driver config.toml does not list: it accepts every provider. Never
+	// persisted.
+	AllProviders bool `toml:"-"`
 }
 
 // ── Config ────────────────────────────────────────────────
@@ -838,6 +848,9 @@ type Config struct {
 	// and wt never sets it, but no value is read or validated —
 	// IgnoredLaunchKeys names it so a launch can note it once per process.
 	LaunchTable *LaunchState `toml:"launch,omitempty"`
+	// ModelServerTable is the hand-edited [model-server] table (see
+	// ModelServerState); it round-trips through every save like LaunchTable.
+	ModelServerTable *ModelServerState `toml:"model-server,omitempty"`
 	// wt decides which local models are running from the live inventory
 	// (internal/localmodels), never from a stored flag. See
 	// docs/superpowers/specs/2026-09-20-wt-live-resolution-design.md.
@@ -1488,6 +1501,13 @@ func writeConfigFile(cfg *Config) error {
 	trimmed := *cfg
 	trimmed.Providers = nil
 	trimmed.Models = nil
+	// Agents LoadSession synthesized (AllProviders) exist only in memory.
+	trimmed.Agents = make([]Agent, 0, len(cfg.Agents))
+	for _, a := range cfg.Agents {
+		if !a.AllProviders {
+			trimmed.Agents = append(trimmed.Agents, a)
+		}
+	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(&trimmed); err != nil {
 		return err

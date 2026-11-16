@@ -13,6 +13,7 @@ import (
 	"github.com/ohanaverse/local-ai-setup/wt/internal/lifecycle"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/litellm"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/localmodels"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/profiles"
 )
 
@@ -47,13 +48,20 @@ type Row struct {
 	// Unmapped marks a cloud row whose provider has no LiteLLM mapping: it
 	// is in the catalog (every configured model is, #179) but sync never
 	// routes it, so a launch through the proxy would fail with "Invalid
-	// model name". RefusedByRoute refuses it there; direct, it launches.
+	// model name". RefusedByRoute refuses it there; direct, it launches (true
+	// only for pre-server Build rows: a row FromWire converts follows the
+	// server's block instead).
 	Unmapped bool
 	// Profile is set on a slot-profile row and nil on every model row. A
 	// profile row's Model holds the row id ("profile/<name>") and nothing
 	// else, so code that reads another Model field, resolves a route or
 	// starts the model must test Profile first.
 	Profile *ProfileRow
+	// Wire is the server catalog row this Row was made from (FromWire). When
+	// set, Ready, Action and BlockReason answer from it, not from the local
+	// lifecycle rules, since the server already decided them; Row.Action()
+	// follows the wire.
+	Wire *modelapi.Row
 }
 
 // Input gathers everything Build needs. Models is the caller's eligible list
@@ -277,7 +285,12 @@ func Find(rows []Row, id string) (Row, bool) {
 // Ready reports whether the row's model can take a request now: running, and
 // not still loading. A cloud row is never Running, so it is never Ready; its
 // launch does not depend on this.
-func (r Row) Ready() bool { return r.Running && !r.Loading }
+func (r Row) Ready() bool {
+	if r.Wire != nil {
+		return r.Wire.State == modelapi.StateRunning
+	}
+	return r.Running && !r.Loading
+}
 
 // Action reports what selecting r does. A local row that is not Ready is
 // startable when its provider has a lifecycle backend (lifecycle.Startable,
@@ -289,6 +302,9 @@ func (r Row) Ready() bool { return r.Running && !r.Loading }
 func (r Row) Action() Action {
 	if r.Profile != nil {
 		return r.Profile.Verdict
+	}
+	if r.Wire != nil {
+		return r.wireAction()
 	}
 	if r.Location != config.LocationLocal || r.Ready() {
 		return ActionLaunch
@@ -305,6 +321,9 @@ func (r Row) BlockReason() string {
 	if r.Profile != nil {
 		return r.Profile.Reason
 	}
+	if r.Wire != nil {
+		return r.Wire.BlockReason
+	}
 	if r.Action() != ActionBlock {
 		return ""
 	}
@@ -318,7 +337,9 @@ func (r Row) BlockReason() string {
 // is false when the route failed to resolve (a launch row with a route error
 // stays selectable and reports the error on Enter). The picker table, the
 // non-TUI -M pin and `wt smoke` all decide through this one rule, and
-// RouteRefusal gives them its one wording.
+// RouteRefusal gives them its one wording. "Direct, it launches" holds only
+// for pre-server Build rows; a row converted by FromWire follows the server's
+// block.
 func (r Row) RefusedByRoute(route config.Route, routeErr error) bool {
 	return r.Unmapped && routeErr == nil && (route.Litellm || route.Forced)
 }

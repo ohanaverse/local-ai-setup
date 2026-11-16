@@ -358,6 +358,15 @@ func BuildLaunchCmdInfo(agent string, m config.Model, worktreePath string, yolo 
 			return nil, info, err
 		}
 	}
+	return launchWithRoute(d, m, worktreePath, yolo, route, extraArgs)
+}
+
+// launchWithRoute is the part of a launch every route source shares: hand
+// ArgSetter drivers their args, build the command from route and append the
+// passthrough args. BuildLaunchCmdInfo and BuildLaunchCmdGateway differ only
+// in where route comes from and what is synced before it.
+func launchWithRoute(d Driver, m config.Model, worktreePath string, yolo bool, route Route, extraArgs []string) (*exec.Cmd, LaunchInfo, error) {
+	var info LaunchInfo
 	// If the driver consumes args itself (e.g. shell), hand them over and
 	// clear the slice so they are not double-appended.
 	if as, ok := d.(ArgSetter); ok {

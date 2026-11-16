@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohanaverse/local-ai-setup/wt/internal/catalog"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/config"
+	"github.com/ohanaverse/local-ai-setup/wt/internal/modelapi"
 	"github.com/ohanaverse/local-ai-setup/wt/internal/usage"
 )
 
@@ -547,5 +549,61 @@ func TestRecordKeepsUsageWhenLastPickedFails(t *testing.T) {
 		if counts[id].ThirtyDay != 1 {
 			t.Errorf("launches of %s = %d, want 1", id, counts[id].ThirtyDay)
 		}
+	}
+}
+
+// TestNextFromOrderMatchesRegistryRotation pins that NextFromOrder walks the
+// ordered slice the way NextFromEligible walks cfg.Models: after the last
+// launch, wrapping, skipping the ineligible, and from index 0 when the last
+// launch is absent from the order.
+func TestNextFromOrderMatchesRegistryRotation(t *testing.T) {
+	ordered := []config.Model{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	r := NewAt(t.TempDir())
+	if got, ok := r.NextFromOrder(ordered, ordered); !ok || got.ID != "a" {
+		t.Fatalf("no last = %q %v", got.ID, ok)
+	}
+	if err := r.RecordFor("", "b"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.NextFromOrder(ordered, ordered); got.ID != "c" {
+		t.Errorf("after b = %q", got.ID)
+	}
+	if err := r.RecordFor("", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.NextFromOrder(ordered, ordered); got.ID != "a" {
+		t.Errorf("wrap = %q", got.ID)
+	}
+	if err := r.RecordFor("", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.NextFromOrder([]config.Model{{ID: "c"}}, ordered); got.ID != "c" {
+		t.Errorf("skip = %q", got.ID)
+	}
+	if err := r.RecordFor("", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.NextFromOrder(ordered, ordered); got.ID != "a" {
+		t.Errorf("absent last = %q", got.ID)
+	}
+	if _, ok := r.NextFromOrder(nil, ordered); ok {
+		t.Error("empty eligible returned a model")
+	}
+}
+
+// TestNextFromOrderSkipsDiscovered pins that a discovered running row is never
+// the rotation pick when the caller orders registered rows only.
+func TestNextFromOrderSkipsDiscovered(t *testing.T) {
+	rows := []modelapi.Row{
+		{ID: "a", Order: 0, Registered: true},
+		{ID: "disc", Order: 1, Discovered: true},
+		{ID: "b", Order: 2, Registered: true},
+	}
+	ordered := catalog.RegisteredOrdered(rows)
+	eligible := ordered
+	r := NewAt(t.TempDir())
+	_ = r.RecordFor("", "a")
+	if got, _ := r.NextFromOrder(eligible, ordered); got.ID != "b" {
+		t.Errorf("next = %q, want b", got.ID)
 	}
 }

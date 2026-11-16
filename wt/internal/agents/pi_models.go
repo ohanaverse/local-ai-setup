@@ -271,11 +271,27 @@ func launchEntry(id string) piModel {
 // routes it under in LiteLLM). Existing entries are never removed or
 // reordered.
 func syncLitellmProvider(cfg *config.Config, f piModelsFile, models []config.Model) bool {
+	var ids []string
+	for _, m := range models {
+		if m.Native || m.ModelName == "" {
+			continue
+		}
+		ids = append(ids, m.ID)
+	}
+	return syncLitellmBlock(f, cfg.LitellmBaseURL(), cfg.LitellmAPIKey(), ids)
+}
+
+// syncLitellmBlock is the block builder both the direct-rewrite sync and the
+// gateway sync use: provider "litellm" gets baseURL+"/v1" and apiKey (and the
+// openai-completions api when it has none) plus a _launch entry for every id
+// it lacks. Existing entries are never removed or reordered. Returns whether
+// the block changed.
+func syncLitellmBlock(f piModelsFile, baseURL, apiKey string, ids []string) bool {
 	p := f.Providers[piLitellmProviderID]
 	mutated := false
-	if p.BaseURL != cfg.LitellmBaseURL()+"/v1" || p.APIKey != cfg.LitellmAPIKey() {
-		p.BaseURL = cfg.LitellmBaseURL() + "/v1"
-		p.APIKey = cfg.LitellmAPIKey()
+	if p.BaseURL != baseURL+"/v1" || p.APIKey != apiKey {
+		p.BaseURL = baseURL + "/v1"
+		p.APIKey = apiKey
 		if p.API == "" {
 			p.API = "openai-completions"
 		}
@@ -285,15 +301,12 @@ func syncLitellmProvider(cfg *config.Config, f piModelsFile, models []config.Mod
 	for _, m := range p.Models {
 		existing[m.ID] = true
 	}
-	for _, m := range models {
-		if m.Native || m.ModelName == "" {
+	for _, id := range ids {
+		if existing[id] {
 			continue
 		}
-		if existing[m.ID] {
-			continue
-		}
-		p.Models = append(p.Models, launchEntry(m.ID))
-		existing[m.ID] = true
+		p.Models = append(p.Models, launchEntry(id))
+		existing[id] = true
 		mutated = true
 	}
 	if mutated {
@@ -585,4 +598,50 @@ func isLaunchable(providerID, id, path string) bool {
 		}
 	}
 	return false
+}
+
+// syncGateway is SyncGateway over an explicit path. The catalog models plus
+// the launch target (when the catalog lacks it) each get an entry keyed by
+// gatewayID.
+func syncGateway(gw Gateway, path string, models []config.Model, target config.Model) error {
+	var f piModelsFile
+	data, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		return err
+	default:
+		if err := json.Unmarshal(data, &f); err != nil {
+			return err
+		}
+	}
+	if f.Providers == nil {
+		f.Providers = make(map[string]piProvider, 1)
+	}
+	var ids []string
+	for _, m := range append(slices.Clone(models), target) {
+		if m.Native || gatewayID(m) == "" {
+			continue
+		}
+		ids = append(ids, gatewayID(m))
+	}
+	mutated := syncLitellmBlock(f, gw.origin(), gw.Token, ids)
+	for id, p := range f.Providers {
+		if id != piLitellmProviderID && p.WTOwned {
+			delete(f.Providers, id)
+			mutated = true
+		}
+	}
+	if !mutated {
+		// Nothing to change, but the file holds the token: keep it owner-only.
+		if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != 0o600 {
+			return os.Chmod(path, 0o600)
+		}
+		return nil
+	}
+	out, err := json.MarshalIndent(&f, "", "  ")
+	if err != nil {
+		return err
+	}
+	return config.WriteFileAtomic(path, out, 0o600)
 }

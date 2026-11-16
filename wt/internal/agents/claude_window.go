@@ -19,8 +19,11 @@ const claudeContextVar = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
 // developer's own file is never read (#405).
 var loadTiers = tiers.Load
 
-// claudeWindow is the context window, in tokens, the tiers file records for
-// every one of models, the smallest of them. It reports false when any model
+// claudeWindow is the context window, in tokens, of every one of models, the
+// smallest of them. A model's own HostContext (what the wt-model server
+// reports) is read first; the tiers file answers only for a model without one,
+// a fallback that goes with the legacy path (Task 19).
+// It reports false when any model
 // is native (Claude Code knows those), has no entry, has an entry with no
 // context, or has one whose window is not its host's: tiers.toml carries a
 // window for cloud models only, a window for some of the models says nothing
@@ -33,6 +36,14 @@ func claudeWindow(ix tiers.Index, models ...config.Model) (int, bool) {
 	for _, m := range models {
 		if m.Native {
 			return 0, false
+		}
+		if m.HostContext > 0 {
+			// The wt-model server reported this model's window: it is the
+			// host's own, whatever tiers.toml says or has never heard of.
+			if window == 0 || m.HostContext < window {
+				window = m.HostContext
+			}
+			continue
 		}
 		e, ok := ix.Lookup(m.ProviderID, m.ModelName)
 		if !ok || e.Context <= 0 || e.ContextBasis != tiers.ContextBasisHost {
