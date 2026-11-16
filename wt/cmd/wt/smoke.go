@@ -78,8 +78,9 @@ func smokeCmd(a *app) *cobra.Command {
 				// An interrupt is not a usage mistake: no flag summary after it.
 				// Neither is a start that failed or was refused, and with
 				// cobra's "Error:" line gone the summary would stand alone
-				// above main's one line.
-				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err)
+				// above main's one line. A "no" at the --cwd launch question
+				// is a decline (exit 3), not a usage mistake either.
+				cmd.SilenceUsage = errors.Is(err, errSmokeInterrupted) || isStartError(err) || errors.Is(err, errCancelled)
 				return err
 			}
 			if anyFail {
